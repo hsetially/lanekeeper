@@ -745,7 +745,8 @@ CREATE TABLE sentinels (
 -- so it is done only by maintain_sentinel_partitions(), which the migrator owns (below). A default partition means an
 -- insert never fails for lack of a partition.
 CREATE TABLE sentinel_records (
-  sentinel_id    bigint      NOT NULL REFERENCES sentinels (id) ON DELETE CASCADE,
+  -- RESTRICT, never CASCADE: the app may delete sentinels, and a cascade would erase records inside their life (S9, S21).
+  sentinel_id    bigint      NOT NULL REFERENCES sentinels (id) ON DELETE RESTRICT,
   batch_seq      bigint      NOT NULL,
   record_index   integer     NOT NULL,
   observed_at    timestamptz NOT NULL,

@@ -40,6 +40,9 @@ const SUPERUSER_PASSWORD: &str = "lanekeeper-test-superuser-only";
 const MIGRATOR: (&str, &str) = ("lanekeeper_migrator", "lanekeeper-migrator-dev-only");
 const APP: (&str, &str) = ("lanekeeper_app", "lanekeeper-app-dev-only");
 
+/// The advisory lock key that serialises `deploy/dev/init.sql` across test threads (see `run_init`).
+const INIT_LOCK: &str = "hashtextextended('lanekeeper.test.run_init', 0)";
+
 const PGVECTOR_BEGIN: &str = "-- lk:pgvector:begin";
 const PGVECTOR_END: &str = "-- lk:pgvector:end";
 
@@ -382,16 +385,19 @@ impl TestDb {
         if !self.pgvector {
             sql = sql.replace("CREATE EXTENSION IF NOT EXISTS vector;", "");
         }
-        let mut conn = self.admin().await;
-        // Roles are cluster-wide, so tests running in parallel threads against one external server would race on
-        // `CREATE ROLE`. A session advisory lock serialises the init SQL; it is released when the connection drops.
-        sqlx::query("SELECT pg_advisory_lock(hashtextextended('lanekeeper.test.run_init', 0))")
-            .execute(&mut conn)
+        // Roles are cluster-wide, so tests running in parallel threads against one server race on `CREATE ROLE`
+        // (`duplicate key ... pg_authid_rolname_index`). An advisory lock is scoped to the database of the connection
+        // that takes it, so the lock must sit on a connection to one database every test shares: the base database of
+        // `admin_options`, never the per-test database. It is a session lock, released at unlock or when `lock` drops.
+        let mut lock = connect(&self.admin_options).await.unwrap();
+        sqlx::query(&format!("SELECT pg_advisory_lock({INIT_LOCK})"))
+            .execute(&mut lock)
             .await
             .unwrap();
+        let mut conn = self.admin().await;
         sqlx::raw_sql(&sql).execute(&mut conn).await.unwrap();
-        sqlx::query("SELECT pg_advisory_unlock(hashtextextended('lanekeeper.test.run_init', 0))")
-            .execute(&mut conn)
+        sqlx::query(&format!("SELECT pg_advisory_unlock({INIT_LOCK})"))
+            .execute(&mut lock)
             .await
             .unwrap();
     }
@@ -1389,6 +1395,129 @@ async fn sentinel_partition_function_refuses_short_retention() {
             .await
             .unwrap();
     assert_eq!(dropped, 0);
+}
+
+/// S9, S21: `lanekeeper_app` may DELETE from `sentinels`, so the foreign key from `sentinel_records` must not cascade,
+/// or deleting a sentinel would erase its records inside their 90-day life.
+#[tokio::test]
+async fn app_cannot_erase_sentinel_records_by_deleting_the_sentinel() {
+    let db = db!();
+    let mut app = db.app().await;
+    let mut owner = db.migrator().await;
+    sqlx::query(
+        "INSERT INTO sentinels (vm, export_root) VALUES ('nfs-sit1', '/export'), ('nfs-empty', '/export')",
+    )
+    .execute(&mut owner)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sentinel_records (sentinel_id, batch_seq, record_index, observed_at, path, operation, success) \
+         SELECT id, 1, 0, now(), 'a/b.yml', 'write', true FROM sentinels WHERE vm = 'nfs-sit1'",
+    )
+    .execute(&mut app)
+    .await
+    .unwrap();
+
+    let records = "SELECT count(*) FROM sentinel_records";
+    let sentinels = "SELECT count(*) FROM sentinels";
+    for sql in [
+        "DELETE FROM sentinels",
+        "DELETE FROM sentinels WHERE vm = 'nfs-sit1'",
+    ] {
+        let err = sqlx::query(sql)
+            .execute(&mut app)
+            .await
+            .expect_err(&format!("expected failure: {sql}"));
+        assert_eq!(
+            sqlstate(&err).as_deref(),
+            Some("23503"),
+            "{sql}: a sentinel with records must be refused with foreign_key_violation: {err}"
+        );
+    }
+    let kept: i64 = sqlx::query_scalar(records).fetch_one(&mut owner).await.unwrap();
+    assert_eq!(kept, 1, "sentinel_records is unchanged");
+    let kept: i64 = sqlx::query_scalar(sentinels).fetch_one(&mut owner).await.unwrap();
+    assert_eq!(
+        kept, 2,
+        "no sentinel was removed, not even the one without records"
+    );
+
+    // A sentinel without records can still be removed: the guard is about records, not about sentinels.
+    let removed = sqlx::query("DELETE FROM sentinels WHERE vm = 'nfs-empty'")
+        .execute(&mut app)
+        .await
+        .unwrap()
+        .rows_affected();
+    assert_eq!(removed, 1);
+    let kept: i64 = sqlx::query_scalar(records).fetch_one(&mut owner).await.unwrap();
+    assert_eq!(kept, 1);
+}
+
+/// S9, S21: a foreign key whose delete (or update) action is CASCADE, SET NULL or SET DEFAULT changes the rows of the
+/// child table without a privilege check on it. When the child, or the parent, is a protected table (no DELETE for
+/// `lanekeeper_app`, or guarded by the append-only trigger), that is a way around the protection. This walks the
+/// catalog so a later migration cannot add one.
+#[tokio::test]
+async fn no_cascading_foreign_key_touches_a_protected_table() {
+    let db = db!();
+    let mut owner = db.migrator().await;
+
+    let protected: BTreeSet<String> = sqlx::query_scalar(
+        "SELECT c.relname::text FROM pg_class c \
+         WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'p') AND c.relname <> '_sqlx_migrations' \
+           AND (NOT has_table_privilege('lanekeeper_app', c.oid, 'DELETE') \
+                OR EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid \
+                           WHERE t.tgrelid = c.oid AND NOT t.tgisinternal AND p.proname = 'audit_append_only'))",
+    )
+    .fetch_all(&mut owner)
+    .await
+    .unwrap()
+    .into_iter()
+    .collect();
+    for t in ["audit_events", "audit_checkpoints", "sentinel_records"] {
+        assert!(
+            protected.contains(t),
+            "{t} must count as protected: {protected:?}"
+        );
+    }
+    assert!(
+        !protected.contains("sentinels"),
+        "sentinels is deletable by the app, so it is not protected: {protected:?}"
+    );
+
+    // Every foreign key in `public`, including the copies on partitions. confdeltype/confupdtype: a = no action,
+    // r = restrict, c = cascade, n = set null, d = set default.
+    let fks = sqlx::query(
+        "SELECT conname::text, conrelid::regclass::text, confrelid::regclass::text, confdeltype::text, confupdtype::text \
+         FROM pg_constraint WHERE contype = 'f' AND connamespace = 'public'::regnamespace ORDER BY 1, 2",
+    )
+    .fetch_all(&mut owner)
+    .await
+    .unwrap();
+    let mut touching = 0;
+    let mut violations = Vec::new();
+    for row in &fks {
+        let (name, child, parent): (String, String, String) = (row.get(0), row.get(1), row.get(2));
+        let (on_delete, on_update): (String, String) = (row.get(3), row.get(4));
+        if !protected.contains(&child) && !protected.contains(&parent) {
+            continue;
+        }
+        touching += 1;
+        let passive = |a: &str| a == "a" || a == "r";
+        if !passive(&on_delete) || !passive(&on_update) {
+            violations.push(format!(
+                "{name}: {child} -> {parent} (on delete '{on_delete}', on update '{on_update}')"
+            ));
+        }
+    }
+    assert!(
+        touching >= 2,
+        "the walk must see the audit_checkpoints and sentinel_records keys, saw {touching}"
+    );
+    assert!(
+        violations.is_empty(),
+        "foreign keys that can change a protected table without a privilege check: {violations:#?}"
+    );
 }
 
 #[tokio::test]
