@@ -49,7 +49,7 @@ tools-check:
     pnpm exec redocly --version
 
 # Prompt 01 gate. Each task of prompt 01 adds its own recipe to this list; it is green only after T9.
-verify-01: tools-check domain-verify ports-verify proto-verify openapi-verify db-verify mcp-doc-verify fuzz-smoke
+verify-01: tools-check domain-verify ports-verify proto-verify openapi-verify db-verify mcp-doc-verify perf-verify fixtures-verify fuzz-smoke
 
 # T2: domain types, validators and secrets (S11, S21)
 domain-verify:
@@ -84,6 +84,40 @@ db-verify:
 mcp-doc-verify:
     cargo test -p xtask --test mcp_tools_doc
     cargo clippy -p xtask --all-targets -- -D warnings
+
+# T8: the budget registry (P1-P15) and bench-check (AC5). The planted over-budget value must be rejected, and the
+# real registry is checked without --strict (an unregistered budget is a warning until its owning prompt registers it).
+perf-verify: bench-check-selftest
+    cargo test -p xtask --test budgets_registry --test bench_check
+    cargo clippy -p xtask --all-targets -- -D warnings
+    cargo xtask bench-check
+
+# T8: bench-check must exit 1 on a planted over-budget value (budget 10 ms, committed samples 50 ms), not 0 and not a
+# usage error.
+bench-check-selftest:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir=crates/xtask/testdata/bench-planted
+    code=0
+    cargo xtask bench-check --budgets "$dir/budgets.toml" --criterion-dir "$dir/criterion" --results-dir "$dir/no-results" || code=$?
+    if [ "$code" -ne 1 ]; then echo "bench-check-selftest: expected exit 1 on the planted over-budget value, got $code"; exit 1; fi
+    echo "bench-check-selftest: the planted over-budget value was rejected"
+
+# T8: deterministic fixtures (AC4). Two small-scale runs with the same seed must give the same manifest, NFS files and
+# Git object ids; the target-scale check (40 swimlanes, about 80,000 files, 60 tenant branches) is #[ignore] and runs here.
+fixtures-verify:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo test -p xtask --test fixtures
+    cargo clippy -p xtask --all-targets -- -D warnings
+    a=target/fixtures/determinism-a
+    b=target/fixtures/determinism-b
+    cargo xtask gen-fixtures --scale small --out "$a"
+    cargo xtask gen-fixtures --scale small --out "$b"
+    cmp "$a/manifest.json" "$b/manifest.json"
+    diff -r "$a/nfs" "$b/nfs"
+    echo "fixtures-verify: two same-seed runs give an identical manifest (including every Git ref id) and identical NFS trees"
+    cargo test -p xtask --test fixtures -- --ignored
 
 verify-02:
     @echo "verify-02 not implemented yet" && exit 1
