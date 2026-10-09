@@ -9,3 +9,4 @@
 /design/handoff/     @lanekeeper/design-owner
 /docs/security.md    @lanekeeper/security
 /docs/threat-model.md @lanekeeper/security
+/.claude/skills/    @lanekeeper/contracts-owner

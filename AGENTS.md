@@ -55,6 +55,8 @@ Load the matching skill before you start a task. Claude Code reads them from `.c
 - **`lanekeeper-ui-from-design`:** any `web/` work. The `.dc.html` references are in `design/handoff/screens/`.
 - **`lanekeeper-pr-review`:** reviewing a PR.
 
+Third-party skills (shadcn, skill-creator, webapp-testing, systematic-debugging, verification-before-completion, test-driven-development, receiving-code-review, six Rust skills, writing-for-agents) are vendored in the same folder at pinned commits; see `.claude/skills/THIRD-PARTY.md`. The `lanekeeper-*` skills win on any conflict, and a third-party skill must not change the plan, commit or PR protocol above.
+
 ## Ownership
 
 - Each prompt lists the paths it owns. Edit only those, plus tests, benches and fixtures under them.
