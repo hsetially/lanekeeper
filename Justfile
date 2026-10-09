@@ -7,6 +7,15 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 # buf and redocly come from the root package.json and pnpm-lock.yaml (run `pnpm install --frozen-lockfile` in the repo root).
 cargo_deny_version := "0.19.9"
 cargo_audit_version := "0.22.2"
+# Fuzzing (S22, plan 01 Q24). cargo-fuzz needs a nightly compiler for the sanitizer flags; the date is pinned and was
+# at least 14 days old when chosen. The fuzz crate is outside the workspace, so the main toolchain stays on stable 1.88.
+#   rustup toolchain install {{fuzz_nightly}} --profile minimal
+#   cargo +{{fuzz_nightly}} install --locked cargo-fuzz --version {{cargo_fuzz_version}}   (the pinned 1.88 is too old to build it)
+fuzz_nightly := "nightly-2026-09-14"
+cargo_fuzz_version := "0.13.2"
+# Override for a longer run, for example: just fuzz_seconds=600 fuzz-smoke
+fuzz_seconds := "30"
+fuzz_targets := "nfs_path compare_ref path_mapping_reverse"
 
 # Everything a PR must pass (AGENTS.md, rule 13)
 verify: rust-verify web-verify
@@ -28,9 +37,31 @@ lk-test:
 bench:
     cargo bench --workspace
 
-# 30 seconds per fuzz target. Replaced by T9 of prompt 01; until then it fails, so verify-01 stays red.
-fuzz-smoke:
-    @echo "fuzz targets are added in prompt 01, T9" && exit 1
+# Fail early, with the install command, when the pinned nightly toolchain or cargo-fuzz is missing. Never skips.
+fuzz-tools-check:
+    @cargo +{{fuzz_nightly}} --version >/dev/null 2>&1 || { echo "need the {{fuzz_nightly}} toolchain for cargo-fuzz: rustup toolchain install {{fuzz_nightly}} --profile minimal"; exit 1; }
+    @cargo fuzz --version 2>/dev/null | grep -qx 'cargo-fuzz {{cargo_fuzz_version}}' || { echo "need cargo-fuzz {{cargo_fuzz_version}}: cargo +{{fuzz_nightly}} install --locked cargo-fuzz --version {{cargo_fuzz_version}}"; exit 1; }
+    @command -v clang >/dev/null 2>&1 || command -v cc >/dev/null 2>&1 || { echo "cargo-fuzz compiles libFuzzer, which needs a C++ compiler (clang or gcc/g++)"; exit 1; }
+
+# Fail early when no Docker daemon is reachable. db-verify (Postgres 16 with pgvector in testcontainers) needs one.
+docker-check:
+    @docker info >/dev/null 2>&1 || { echo "verify-01 needs a running Docker daemon: db-verify starts Postgres 16 with pgvector through testcontainers"; exit 1; }
+
+# T9: the fuzz crate's own lockfile is committed and complete, passes cargo deny and cargo audit (S19), then each target
+# runs {{fuzz_seconds}} s on the pinned nightly. The committed seeds in fuzz/corpus/ are only read; new inputs go to
+# target/fuzz-corpus/. A crash fails the recipe and leaves the input in fuzz/artifacts/. The same seeds also replay on
+# stable in `cargo test -p domain` (crates/domain/tests/corpus_replay.rs).
+fuzz-smoke: fuzz-tools-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo +{{fuzz_nightly}} metadata --locked --format-version 1 --manifest-path fuzz/Cargo.toml > /dev/null
+    cargo deny --manifest-path fuzz/Cargo.toml check --config deny.toml
+    cargo audit --file fuzz/Cargo.lock
+    for target in {{fuzz_targets}}; do
+        mkdir -p "target/fuzz-corpus/$target"
+        cargo +{{fuzz_nightly}} fuzz run "$target" "target/fuzz-corpus/$target" "fuzz/corpus/$target" -- -max_total_time={{fuzz_seconds}}
+    done
+    echo "fuzz-smoke: {{fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
 
 # Local dev: Postgres (pgvector + pg_trgm), hub, web
 dev:
@@ -48,8 +79,10 @@ tools-check:
     pnpm exec buf --version
     pnpm exec redocly --version
 
-# Prompt 01 gate. Each task of prompt 01 adds its own recipe to this list; it is green only after T9.
-verify-01: tools-check domain-verify ports-verify proto-verify openapi-verify db-verify mcp-doc-verify perf-verify fixtures-verify fuzz-smoke
+# Prompt 01 gate: every sub-recipe, in order, stopping at the first failure. The prerequisite checks come first so a
+# missing tool or Docker daemon fails at once with the fix, never a silent skip. perf-verify includes the bench-check
+# self-test and `cargo xtask bench-check`; run `just verify` after this gate (AGENTS.md, protocol step 4).
+verify-01: tools-check fuzz-tools-check docker-check domain-verify ports-verify proto-verify openapi-verify db-verify mcp-doc-verify perf-verify fixtures-verify fuzz-smoke
 
 # T2: domain types, validators and secrets (S11, S21)
 domain-verify:
