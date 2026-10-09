@@ -1,0 +1,5 @@
+# S19: refuse package versions published less than 14 days ago (value in minutes).
+minimumReleaseAge: 20160
+# Lifecycle scripts stay blocked (pnpm's default). esbuild works without its postinstall check.
+ignoredBuiltDependencies:
+  - esbuild

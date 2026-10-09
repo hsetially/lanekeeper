@@ -1,0 +1,11 @@
+{
+  "skill_name": "lanekeeper-ui-from-design",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Build the swimlanes overview screen from design/handoff/screens/swimlanes-overview.dc.html.",
+      "expected_output": "Inspects the reference first; tokens from handoff; shadcn components; no pasted markup; orval hooks; every state; virtualised rows; screenshot tests in light and dark.",
+      "files": []
+    }
+  ]
+}

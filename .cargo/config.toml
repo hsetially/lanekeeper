@@ -1,0 +1,6 @@
+[alias]
+xtask = "run --package xtask --"
+
+[env]
+# CI builds offline against the committed .sqlx metadata (prompt 01).
+SQLX_OFFLINE = { value = "true", force = false }

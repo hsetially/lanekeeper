@@ -1,0 +1,10 @@
+/target
+**/node_modules
+web/dist
+.env
+*.local
+/fixtures-generated
+.DS_Store
+
+# Agent worktrees (created by scripts/lk.mjs)
+/.worktrees/

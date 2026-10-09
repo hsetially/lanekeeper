@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/domain", "crates/ports", "crates/proto", "crates/engine",
+  "crates/hub-identity", "crates/hub-platform", "crates/hub-registry", "crates/hub-writes",
+  "crates/hub-docsearch", "crates/hub-mcp", "crates/hub",
+  "crates/agent", "crates/sentinel", "crates/xtask",
+]
+
+[workspace.package]
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+rust-version = "1.88"
+
+# Shared dependencies. Add them here and reference them from member crates with `dep.workspace = true`.
+# Rules (AGENTS.md, rule 15): pinned versions at least 14 days old, justified in the PR, and passing `cargo deny`.
+[workspace.dependencies]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "warn"
+print_stderr = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

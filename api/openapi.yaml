@@ -1,0 +1,9 @@
+# REST contract for the web UI. Prompt 01 (T5) writes every operation.
+# Every operation must carry x-required-role (S4).
+openapi: 3.1.0
+info:
+  title: Lanekeeper API
+  version: 0.1.0
+servers:
+  - url: /api/v1
+paths: {}

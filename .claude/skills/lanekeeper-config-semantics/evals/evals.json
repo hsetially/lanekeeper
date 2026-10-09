@@ -1,0 +1,23 @@
+{
+  "skill_name": "lanekeeper-config-semantics",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Implement property_view in crates/engine so application.properties and application-bis.properties merge the way the config-server does, with golden tests.",
+      "expected_output": "Merges setting by setting with tenant precedence; .properties beats .yml at equal rank; ports the CORE_ROUTING fixture as a golden test.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Why does the grid show different deposit settings for sitb and sitc even though both have the same entryGroupConfig.yml base file?",
+      "expected_output": "Explains whole-file tenant copies, channel folders and rendering from each swimlane's property view; uses the tenant set; doesn't claim keys merge for resource files.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Add check C9 to the engine.",
+      "expected_output": "Flags the same name in more than one non-channel folder, excludes channel folders listed in channels.yml, and expects 13 names on the real base snapshot.",
+      "files": []
+    }
+  ]
+}

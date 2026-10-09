@@ -1,0 +1,13 @@
+# Contract paths need the contracts owner's approval (AGENTS.md, Ownership).
+/crates/domain/      @lanekeeper/contracts-owner
+/crates/ports/       @lanekeeper/contracts-owner
+/proto/              @lanekeeper/contracts-owner
+/api/                @lanekeeper/contracts-owner
+/db/migrations/      @lanekeeper/contracts-owner
+/docs/mcp-tools.md   @lanekeeper/contracts-owner
+/perf/budgets.toml   @lanekeeper/contracts-owner
+/design/handoff/     @lanekeeper/design-owner
+/docs/security.md    @lanekeeper/security
+/docs/threat-model.md @lanekeeper/security
+/.claude/            @lanekeeper/contracts-owner
+/scripts/lk          @lanekeeper/contracts-owner
