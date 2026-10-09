@@ -4,16 +4,33 @@
 
 use std::process::ExitCode;
 
+use xtask::cli;
+
 fn main() -> ExitCode {
-    let task = std::env::args().nth(1).unwrap_or_default();
-    match task.as_str() {
-        "gen-fixtures" | "bench-check" => {
-            eprintln!("xtask {task}: not implemented yet, see prompts/01-contracts.md T8");
-            ExitCode::FAILURE
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (task, rest) = args.split_first().map_or(("", &[][..]), |(t, r)| (t.as_str(), r));
+    match task {
+        "bench-check" => {
+            let (text, code) = cli::run_bench_check(rest);
+            if code == cli::EXIT_USAGE {
+                eprint!("{text}");
+            } else {
+                print!("{text}");
+            }
+            ExitCode::from(code)
+        }
+        "gen-fixtures" => {
+            let (text, code) = cli::run_gen_fixtures(rest);
+            if code == cli::EXIT_OK {
+                print!("{text}");
+            } else {
+                eprint!("{text}");
+            }
+            ExitCode::from(code)
         }
         _ => {
-            eprintln!("usage: cargo xtask <gen-fixtures|bench-check>");
-            ExitCode::FAILURE
+            eprintln!("{}", cli::USAGE);
+            ExitCode::from(cli::EXIT_USAGE)
         }
     }
 }

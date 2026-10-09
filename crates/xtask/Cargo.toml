@@ -10,3 +10,18 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+# Registry and bench-check (T8): perf/budgets.toml, criterion sample.json and load-test result files.
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+# Fixture generator (T8): content hashes in manifest.json, and the validated Git <-> NFS path mapping.
+sha2.workspace = true
+hex.workspace = true
+domain.workspace = true
+
+[dev-dependencies]
+# Integration tests for db/migrations (T6): a real Postgres 16 with pgvector in a container, driven through
+# sqlx's runtime Migrator (no `query!` macros, so no `.sqlx` metadata). No TLS feature on either crate (S19).
+sqlx = { workspace = true, features = ["postgres", "migrate", "runtime-tokio"] }
+testcontainers.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

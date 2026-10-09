@@ -1,6 +1,23 @@
-# Performance budget registry (contract). Prompt 01 (T8) implements `cargo xtask bench-check`.
-# An entry with registered = false counts as unmet until its owning prompt registers a benchmark.
-# Thresholds are p95 unless `statistic` says otherwise. Units: milliseconds unless `unit` says otherwise.
+# Performance budget registry (contract). Prompt 01 (T8) implements `cargo xtask bench-check`; budgets come from
+# docs/performance.md and are changed only through a contract-change PR.
+#
+# Fields
+#   id          P# or P#.sub_budget. Unique.
+#   description What is measured.
+#   bench       Where the result comes from. A criterion benchmark is `<group>/<function>` (read from
+#               target/criterion/<group>/<function>/new/sample.json). Anything else (load tests, bundle size,
+#               Lighthouse, memory) is a JSON file in target/perf-results/ with the same `bench` name.
+#   statistic   p50, p95, p99, mean, max or min, computed over the per-iteration samples.
+#   threshold   The budget, in `unit`.
+#   unit        ms for criterion results; any other unit must match the result file's `unit` exactly.
+#   scale       small or target: the fixture scale the measurement is made at.
+#   direction   "upper" (default): the value must be <= threshold. "lower": the value must be >= threshold
+#               (frames per second, Lighthouse score, replay throughput).
+#   registered  false until the owning prompt has a benchmark or load test that produces the result. Flipping it to
+#               true is that prompt's contract-change.
+#
+# bench-check fails on a registered entry that is over budget or has no result. An entry with registered = false is
+# listed as UNMET and only fails with --strict (used by the load-test gate in prompt 16 and by release).
 
 [[budget]]
 id = "P1"
@@ -43,11 +60,41 @@ scale = "target"
 registered = false
 
 [[budget]]
+id = "P4.cpu_mcores"
+description = "Agent steady-state CPU (millicores)"
+bench = "agent/steady_state_cpu_mcores"
+statistic = "p95"
+threshold = 50
+unit = "mcores"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P4.memory_mib"
+description = "Agent steady-state memory (MiB)"
+bench = "agent/steady_state_memory_mib"
+statistic = "max"
+threshold = 64
+unit = "mib"
+scale = "target"
+registered = false
+
+[[budget]]
 id = "P5"
 description = "Incremental recompute base cost"
 bench = "hub-registry/incremental_recompute_base"
 statistic = "p95"
 threshold = 50
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P5.per_file_per_swimlane"
+description = "Incremental recompute cost per changed file per affected swimlane"
+bench = "hub-registry/incremental_recompute_per_file_per_swimlane"
+statistic = "p95"
+threshold = 2
 unit = "ms"
 scale = "target"
 registered = false
@@ -63,11 +110,41 @@ scale = "target"
 registered = false
 
 [[budget]]
-id = "P7.grid"
-description = "Grid across 40 swimlanes"
-bench = "hub-registry/grid_40_swimlanes"
+id = "P7.swimlane_list"
+description = "Swimlane list"
+bench = "hub-registry/swimlane_list"
 statistic = "p95"
-threshold = 150
+threshold = 50
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P7.file_tree"
+description = "File tree"
+bench = "hub-registry/file_tree"
+statistic = "p95"
+threshold = 100
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P7.file_content_cached"
+description = "File content, cached"
+bench = "hub-registry/file_content_cached"
+statistic = "p95"
+threshold = 30
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P7.file_content_cold"
+description = "File content, cold"
+bench = "hub-registry/file_content_cold"
+statistic = "p95"
+threshold = 80
 unit = "ms"
 scale = "target"
 registered = false
@@ -78,6 +155,36 @@ description = "Compare a 6,000-line file"
 bench = "engine/compare_6000_lines"
 statistic = "p95"
 threshold = 100
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P7.grid"
+description = "Grid across 40 swimlanes"
+bench = "hub-registry/grid_40_swimlanes"
+statistic = "p95"
+threshold = 150
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P7.whole_swimlane_compare"
+description = "Whole-swimlane compare"
+bench = "hub-registry/whole_swimlane_compare"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P7.settings_search"
+description = "Settings search across all swimlanes"
+bench = "hub-registry/search_settings_all_swimlanes"
+statistic = "p95"
+threshold = 200
 unit = "ms"
 scale = "target"
 registered = false
@@ -103,6 +210,16 @@ scale = "target"
 registered = false
 
 [[budget]]
+id = "P7.feature_status"
+description = "Feature status"
+bench = "hub-docsearch/feature_status"
+statistic = "p95"
+threshold = 200
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
 id = "P8"
 description = "Edit applied on NFS"
 bench = "hub-writes/edit_applied"
@@ -123,11 +240,83 @@ scale = "target"
 registered = false
 
 [[budget]]
+id = "P10.initial_js_gzip_kb"
+description = "Initial JavaScript bundle, gzipped (KB)"
+bench = "web/initial_js_gzip_kb"
+statistic = "max"
+threshold = 250
+unit = "kb"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P10.route_change_ms"
+description = "Route change with cached data"
+bench = "web/route_change_cached"
+statistic = "p95"
+threshold = 100
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P10.diff_6000_lines_ms"
+description = "Diff view of a 6,000-line file interactive"
+bench = "web/diff_6000_lines_interactive"
+statistic = "p95"
+threshold = 500
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P10.grid_5000_rows_fps"
+description = "5,000-row grid scroll rate (lower bound)"
+bench = "web/grid_5000_rows_scroll_fps"
+statistic = "min"
+threshold = 60
+unit = "fps"
+scale = "target"
+direction = "lower"
+registered = false
+
+[[budget]]
+id = "P10.lighthouse_perf"
+description = "Lighthouse performance score (lower bound)"
+bench = "web/lighthouse_performance"
+statistic = "p50"
+threshold = 90
+unit = "score"
+scale = "target"
+direction = "lower"
+registered = false
+
+[[budget]]
 id = "P11"
 description = "Hub startup"
 bench = "hub/startup"
 statistic = "p95"
 threshold = 10000
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P11.memory_mib"
+description = "Hub memory per replica at design scale (MiB)"
+bench = "hub/memory_at_design_scale_mib"
+statistic = "max"
+threshold = 1536
+unit = "mib"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P12.steady_state_query_ms"
+description = "Steady-state query latency"
+bench = "hub-registry/steady_state_queries"
+statistic = "p95"
+threshold = 50
 unit = "ms"
 scale = "target"
 registered = false
@@ -150,4 +339,15 @@ statistic = "p95"
 threshold = 30000
 unit = "ms"
 scale = "target"
+registered = false
+
+[[budget]]
+id = "P15.spool_replay_versions_per_s"
+description = "Spool replay after a 1-hour outage (versions per second, lower bound)"
+bench = "agent/spool_replay_versions_per_s"
+statistic = "min"
+threshold = 1000
+unit = "versions_per_s"
+scale = "target"
+direction = "lower"
 registered = false

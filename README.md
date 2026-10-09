@@ -45,6 +45,21 @@ cd web && pnpm install && pnpm dev
 cargo build --workspace     # the Rust toolchain is pinned in rust-toolchain.toml
 ```
 
+## Tools the gates need
+
+`just verify` and `just verify-NN` use these tools. `just tools-check` fails with the install command when one is missing or has the wrong version.
+
+| Tool | Install | Used for |
+|---|---|---|
+| Rust 1.88.0 | `rustup` reads `rust-toolchain.toml` | build, fmt, clippy, tests |
+| `just` | `cargo install --locked just` | task runner |
+| `cargo-deny`, `cargo-audit` | `cargo install --locked cargo-deny --version 0.19.9`, `cargo install --locked cargo-audit --version 0.22.2` | S19 licences, bans, sources and advisories |
+| `buf`, `redocly` | `pnpm install --frozen-lockfile` in the repo root (versions are pinned in `package.json` and `pnpm-lock.yaml`) | lint `proto/` and `api/openapi.yaml` |
+| pnpm 10 and Node 22 | see `web/.nvmrc` | the root tools and `web/` |
+| Docker | Docker Desktop or Docker Engine | the dev database, and the database tests (set `LK_REQUIRE_DOCKER=1` to fail instead of skip when it is missing) |
+| `git` | any recent version | the fixture generator builds Git repos with `git fast-import` |
+| `cargo-fuzz` and a pinned nightly | see `fuzz/README.md` | `just fuzz-smoke` |
+
 ## Before the pilot goes live
 
 Answer the seven pilot-blocking questions in `docs/open-questions.md`: Q1, Q2, Q11, Q17, Q21, Q24 and Q26.

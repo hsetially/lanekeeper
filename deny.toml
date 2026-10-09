@@ -11,6 +11,13 @@ version = 2
 allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "CC0-1.0", "MPL-2.0"]
 confidence-threshold = 0.9
 
+# libfuzzer-sys bundles LLVM's libFuzzer, which is also under the permissive NCSA licence. It is a build-time tool of the
+# fuzz crate (`fuzz/`, never shipped), so the exception names that one crate instead of allowing NCSA everywhere.
+# Checked by `just fuzz-smoke` (it runs `cargo deny --manifest-path fuzz/Cargo.toml` first); the root workspace does not contain it.
+[[licenses.exceptions]]
+crate = "libfuzzer-sys"
+allow = ["NCSA"]
+
 # Workspace crates are `publish = false` with license "UNLICENSED"; skip the license check for them only.
 [licenses.private]
 ignore = true

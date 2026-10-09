@@ -1,0 +1,44 @@
+[package]
+name = "lanekeeper-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+# cargo-fuzz needs a nightly compiler (sanitizer flags). The date is pinned in the Justfile (`fuzz_nightly`).
+# The main workspace stays on stable 1.88; this crate is outside it and has its own lockfile (S19).
+
+[package.metadata]
+cargo-fuzz = true
+
+# Not a member of the root workspace: it builds with nightly and must not change the root lockfile.
+[workspace]
+
+# The target names are the corpus directory names and the names in the plan, so they stay snake_case.
+[lints.cargo]
+non_kebab_case_bins = "allow"
+
+[dependencies]
+# Exact pin (S19). libfuzzer-sys 0.4.13 was published 2026-06-04.
+libfuzzer-sys = "=0.4.13"
+domain = { path = "../crates/domain", version = "0.1.0" }
+
+[[bin]]
+name = "nfs_path"
+path = "fuzz_targets/nfs_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compare_ref"
+path = "fuzz_targets/compare_ref.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "path_mapping_reverse"
+path = "fuzz_targets/path_mapping_reverse.rs"
+test = false
+doc = false
+bench = false

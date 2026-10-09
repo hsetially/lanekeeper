@@ -1,0 +1,11 @@
+# Planted over-budget value for `just bench-check-selftest`. The budget is 10 ms and the committed samples
+# (criterion/planted/over_budget/new/sample.json) are all 50 ms, so `cargo xtask bench-check` must exit non-zero.
+[[budget]]
+id = "P99.PLANTED"
+description = "PLANTED over-budget value: the gate must reject this"
+bench = "planted/over_budget"
+statistic = "p95"
+threshold = 10
+unit = "ms"
+scale = "small"
+registered = true

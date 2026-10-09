@@ -1,0 +1,31 @@
+---
+source: crates/ports/tests/contract_shape.rs
+expression: "serde_json::json!({ \"actors\": actors, \"vias\": vias })"
+---
+{
+  "actors": [
+    {
+      "kind": "user",
+      "user": "72f988bf-86f1-41af-91ab-2d7cd011db47:00000000-0000-4000-8000-000000000001"
+    },
+    {
+      "kind": "agent",
+      "swimlane": "sit1"
+    },
+    {
+      "kind": "sentinel",
+      "name": "nfs-vm-1"
+    },
+    {
+      "component": "retention",
+      "kind": "system"
+    }
+  ],
+  "vias": [
+    "ui",
+    "mcp",
+    "sync",
+    "agent_detected",
+    "system"
+  ]
+}

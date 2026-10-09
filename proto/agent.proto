@@ -1,6 +1,408 @@
-// Agent <-> hub and sentinel <-> hub contract.
-// Prompt 01 (T4) writes the full message set; the spec is in prompts/01-contracts.md.
+// Agent <-> hub and sentinel <-> hub contract (prompt 01, T4; spec in prompts/01-contracts.md).
 // Contract file: changes go through the lanekeeper-contract-change skill.
+//
+// Rules for editing this file (buf `breaking` uses the FILE category):
+//   - Field numbers are assigned once and never reused. Removed fields are `reserved`.
+//   - New fields are additive. New oneof variants are additive: a peer that does not know a variant sees an
+//     empty oneof and ignores the message (crates/proto `convert` returns `None`).
+//   - Every enum starts with an `_UNSPECIFIED = 0` value that is always rejected on receipt.
+//
+// Conventions:
+//   - Paths are NFS-relative strings (validated into `NfsPath` by crates/proto, S11).
+//   - Hashes are the 32 raw bytes of a SHA-256 (validated into `ContentHash`). Hashes are never hex here.
+//   - Times are Unix milliseconds in an int64 (`*_ms`); 0 is a real instant, so "unset" is an `optional` field.
+//   - Message size: at most 4 MiB on the wire (crates/proto `limits`); file bytes per message at most 3 MiB.
 syntax = "proto3";
 
 package lanekeeper.agent.v1;
+
+// ---------------------------------------------------------------- services
+
+// Served by the hub to in-cluster agents. mTLS identity is `spiffe://lanekeeper/agent/<swimlane>` (S5).
+service Agent {
+  // Exchanges a CSR plus a credential for a short-lived client certificate. The only RPC allowed without a
+  // client certificate.
+  rpc Join(JoinRequest) returns (JoinResponse);
+  // The long-lived stream. The agent speaks first with `Hello`. Sent by the agent: reports and command results.
+  // Sent by the hub: configuration, scan and file commands, acknowledgements.
+  rpc Connect(stream AgentMessage) returns (stream HubMessage);
+}
+
+// Served by the hub to the sentinel daemon on the NFS VM (D72). mTLS identity is
+// `spiffe://lanekeeper/sentinel/<name>`: a sentinel certificate is never accepted on `Agent` and vice versa.
+service Sentinel {
+  // Same exchange as `Agent.Join`, with `kind = PEER_KIND_SENTINEL` and the VM's service-account ID token.
+  rpc Join(JoinRequest) returns (JoinResponse);
+  // The sentinel sends spooled audit batches; the hub answers with its settings and with acknowledgements.
+  rpc Report(stream SentinelMessage) returns (stream SentinelAck);
+}
+
+// ---------------------------------------------------------------- join
+
+enum PeerKind {
+  PEER_KIND_UNSPECIFIED = 0;
+  PEER_KIND_AGENT = 1;
+  PEER_KIND_SENTINEL = 2;
+}
+
+// Carries secrets (S7). The generated `Debug` is replaced by a redacting one in crates/proto.
+message JoinRequest {
+  // The swimlane id for an agent. For a sentinel, the VM's name (the hub issues `.../sentinel/<name>`).
+  string swimlane_id = 1;
+  // PKCS#10 certificate signing request, DER.
+  bytes csr_der = 2;
+  oneof credential {
+    // Google ID token of the node service account (S5).
+    string google_id_token = 3;
+    // One-time join token issued by an Admin (S5).
+    string join_token = 4;
+  }
+  // Decides the certificate SAN, so a sentinel cannot obtain an agent identity or the reverse.
+  PeerKind kind = 5;
+}
+
+message JoinResponse {
+  // Leaf first, then intermediates. DER.
+  repeated bytes cert_chain_der = 1;
+  int64 not_after_ms = 2;
+}
+
+message CertRenewalRequest {
+  bytes csr_der = 1;
+}
+
+message CertRenewalResponse {
+  repeated bytes cert_chain_der = 1;
+  int64 not_after_ms = 2;
+}
+
+// ---------------------------------------------------------------- shared
+
+message ServiceRef {
+  string namespace = 1;
+  string name = 2;
+}
+
+// The Kubernetes Job that was running when a change was observed (D72).
+message JobRef {
+  string name = 1;
+  string uid = 2;
+}
+
+// The state a file must be in for a write to proceed. There is no blind write.
+message Expected {
+  message Absent {}
+  oneof state {
+    // The file must not exist (a create).
+    Absent absent = 1;
+    // The file must have exactly this SHA-256.
+    bytes hash = 2;
+  }
+}
+
+// ---------------------------------------------------------------- agent -> hub
+
+message AgentMessage {
+  // 15 to 19 are kept free for additions.
+  reserved 15 to 19;
+  oneof kind {
+    Hello hello = 1;
+    Heartbeat heartbeat = 2;
+    ScanDelta scan_delta = 3;
+    OpResult op_result = 4;
+    ClusterReport cluster_report = 5;
+    CertRenewalRequest cert_renewal_request = 6;
+    // The answer to `ReadFile`.
+    FileContent file_content = 7;
+    // The answer to `FetchServed`.
+    ServedResponse served_response = 8;
+  }
+}
+
+message Hello {
+  string agent_version = 1;
+  string swimlane = 2;
+  string cluster = 3;
+  string project = 4;
+  string nfs_server = 5;
+  string export = 6;
+  string mount_root = 7;
+}
+
+message Heartbeat {
+  uint64 scan_seq = 1;
+  // Merkle root of the NFS tree (32 bytes).
+  bytes merkle_root = 2;
+  uint64 file_count = 3;
+}
+
+// One message of a scan delta, at most 3 MiB of file bytes. A logical delta can span several messages:
+// the hub applies it only when it receives the message with `more = false` (continuation, same roots).
+message ScanDelta {
+  // Per message; acknowledged with `HubMessage.ack`.
+  uint64 seq = 1;
+  // Unset for a full scan.
+  optional bytes base_root = 2;
+  bytes new_root = 3;
+  repeated ScanEntry entries = 4;
+  repeated string removed = 5;
+  repeated SkippedEntry skipped = 6;
+  // The sync Job that was running when these changes were observed (D72).
+  optional JobRef during_job = 7;
+  // More messages of the same logical delta follow.
+  bool more = 8;
+  // Zero-based index of this message within the logical delta.
+  uint32 part = 9;
+}
+
+message ScanEntry {
+  string path = 1;
+  bytes hash = 2;
+  uint64 size = 3;
+  int64 mtime_ms = 4;
+  int64 observed_at_ms = 5;
+  // Denied entries (D79) carry name, size and hash but never bytes.
+  bool denied = 6;
+  // Unset when the content is not sent (denied, or too large for this message).
+  optional bytes content = 7;
+}
+
+message SkippedEntry {
+  string path = 1;
+  string reason = 2;
+}
+
+enum OpErrorCode {
+  // Success: `ok = true`.
+  OP_ERROR_CODE_UNSPECIFIED = 0;
+  // The expected hash did not match; `current_hash` says what is on NFS.
+  OP_ERROR_CODE_CONFLICT = 1;
+  OP_ERROR_CODE_NOT_FOUND = 2;
+  OP_ERROR_CODE_DENIED = 3;
+  OP_ERROR_CODE_IO = 4;
+  OP_ERROR_CODE_UNSUPPORTED = 5;
+}
+
+message OpResult {
+  string request_id = 1;
+  bool ok = 2;
+  OpErrorCode error_code = 3;
+  // The hash on NFS after the operation, or on a conflict. Unset when the file is absent.
+  optional bytes current_hash = 4;
+}
+
+message FileContent {
+  string request_id = 1;
+  string path = 2;
+  bytes hash = 3;
+  bytes content = 4;
+}
+
+message ServedResponse {
+  string request_id = 1;
+  // The config-server's HTTP status (100 to 599).
+  uint32 status = 2;
+  bytes body = 3;
+}
+
+message EnvValue {
+  string name = 1;
+  string value = 2;
+}
+
+message PodInfo {
+  string name = 1;
+  int64 started_at_ms = 2;
+}
+
+message DeploymentInfo {
+  ServiceRef service = 1;
+  repeated PodInfo pods = 2;
+  // Values of allowlisted variables only (D88), such as CONFIG_CLIENT_CACHE_TTL.
+  repeated EnvValue env_values = 3;
+  // Names, never values, of every other environment variable.
+  repeated string env_names = 4;
+  // In a delta report: the deployment no longer exists.
+  bool removed = 5;
+}
+
+message ReleaseHint {
+  ServiceRef service = 1;
+  string key = 2;
+  string value = 3;
+}
+
+enum SyncWindowKind {
+  SYNC_WINDOW_KIND_UNSPECIFIED = 0;
+  SYNC_WINDOW_KIND_OPENED = 1;
+  SYNC_WINDOW_KIND_CLOSED = 2;
+}
+
+// A sync Job started or finished (D72).
+message SyncWindowEvent {
+  SyncWindowKind kind = 1;
+  JobRef job = 2;
+  int64 at_ms = 3;
+}
+
+message ClusterReport {
+  // True for a full report, false for a delta.
+  bool full = 1;
+  repeated DeploymentInfo deployments = 2;
+  repeated ReleaseHint release_hints = 3;
+  // When the config-server pod started (C11).
+  optional int64 config_server_started_at_ms = 4;
+  repeated SyncWindowEvent sync_windows = 5;
+  // Set when this answers `RequestClusterReport`; empty for an unsolicited report.
+  string request_id = 6;
+}
+
+// ---------------------------------------------------------------- hub -> agent
+
+message HubMessage {
+  // 15 to 19 are kept free for additions.
+  reserved 15 to 19;
+  oneof kind {
+    AgentConfig agent_config = 1;
+    RequestDelta request_delta = 2;
+    RequestFullScan request_full_scan = 3;
+    ReadFile read_file = 4;
+    WriteFile write_file = 5;
+    DeleteFile delete_file = 6;
+    RestartDeployment restart_deployment = 7;
+    RequestClusterReport request_cluster_report = 8;
+    CertRenewalResponse cert_renewal_response = 9;
+    // Acknowledges the `ScanDelta` with this `seq`.
+    Ack ack = 10;
+    NotifyConfigServer notify_config_server = 11;
+    FetchServed fetch_served = 12;
+  }
+}
+
+message AgentConfig {
+  uint32 scan_interval_secs = 1;
+  uint32 heartbeat_interval_secs = 2;
+  uint64 max_file_bytes = 3;
+  // Files matching these globs are recorded by name, size and hash only (D79).
+  repeated string deny_globs = 4;
+  // Environment variables whose values the agent may report (D88).
+  repeated string env_allowlist = 5;
+  repeated string tenants = 6;
+}
+
+message Ack {
+  uint64 seq = 1;
+}
+
+message RequestDelta {
+  // The Merkle root the hub already has.
+  bytes since_root = 1;
+}
+
+message RequestFullScan {}
+
+message ReadFile {
+  string request_id = 1;
+  string path = 2;
+}
+
+message WriteFile {
+  string request_id = 1;
+  string path = 2;
+  Expected expected = 3;
+  bytes content = 4;
+}
+
+message DeleteFile {
+  string request_id = 1;
+  string path = 2;
+  // Deleting needs a hash; there is no "delete whatever is there".
+  bytes expected_hash = 3;
+}
+
+message RestartDeployment {
+  string request_id = 1;
+  ServiceRef service = 2;
+}
+
+message RequestClusterReport {
+  string request_id = 1;
+}
+
+// The agent POSTs these paths to the config-server's /update-resources (D86).
+message NotifyConfigServer {
+  string request_id = 1;
+  repeated string paths = 2;
+}
+
+// The agent GETs the config-server's answer for this request (D88).
+message FetchServed {
+  string request_id = 1;
+  string application = 2;
+  string tenant = 3;
+  optional string channel = 4;
+  string file = 5;
+}
+
+// ---------------------------------------------------------------- sentinel
+
+message SentinelMessage {
+  // 15 to 19 are kept free for additions.
+  reserved 15 to 19;
+  oneof kind {
+    SentinelHello hello = 1;
+    AuditRecordBatch batch = 2;
+    SentinelHeartbeat heartbeat = 3;
+  }
+}
+
+message SentinelHello {
+  string vm = 1;
+  string export_root = 2;
+  string version = 3;
+}
+
+message SentinelHeartbeat {
+  int64 sent_at_ms = 1;
+}
+
+enum AuditOperation {
+  AUDIT_OPERATION_UNSPECIFIED = 0;
+  AUDIT_OPERATION_CREATE = 1;
+  AUDIT_OPERATION_WRITE = 2;
+  AUDIT_OPERATION_DELETE = 3;
+  AUDIT_OPERATION_RENAME = 4;
+  AUDIT_OPERATION_ATTRIBUTE = 5;
+}
+
+// One local audit record from the NFS VM (D72).
+message AuditRecord {
+  int64 time_ms = 1;
+  string path = 2;
+  AuditOperation operation = 3;
+  bool success = 4;
+  string login_user = 5;
+  string effective_user = 6;
+  string exe = 7;
+  string comm = 8;
+}
+
+message AuditRecordBatch {
+  // Spool sequence number; acknowledged with `SentinelAck.acked_seq` (D74).
+  uint64 seq = 1;
+  repeated AuditRecord records = 2;
+}
+
+message SentinelSettings {
+  uint32 max_batch_records = 1;
+  uint32 flush_interval_secs = 2;
+}
+
+message SentinelAck {
+  oneof kind {
+    // The hub durably applied every batch up to and including this `seq`.
+    uint64 acked_seq = 1;
+    // Sent once after `SentinelHello`.
+    SentinelSettings settings = 2;
+  }
+}

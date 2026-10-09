@@ -1,0 +1,22 @@
+# buf configuration for the agent contract (T4). `pnpm exec buf lint proto` runs in `just proto-verify`.
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - STANDARD
+  except:
+    # The file is `proto/agent.proto` (fixed by the prompt), not `proto/lanekeeper/agent/v1/agent.proto`.
+    - PACKAGE_DIRECTORY_MATCH
+    # The services are `Agent` and `Sentinel` (names fixed by the prompt and docs/interfaces.md).
+    - SERVICE_SUFFIX
+    # `Connect` and `Report` are bidirectional streams of `AgentMessage`/`HubMessage` and
+    # `SentinelMessage`/`SentinelAck`, which are not named after the RPC.
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+    # `Agent.Join` and `Sentinel.Join` deliberately share `JoinRequest` and `JoinResponse`; `PeerKind` in the
+    # request keeps the identities apart (Q11).
+    - RPC_REQUEST_RESPONSE_UNIQUE
+breaking:
+  use:
+    - FILE
