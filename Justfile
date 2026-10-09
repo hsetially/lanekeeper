@@ -49,7 +49,11 @@ tools-check:
     pnpm exec redocly --version
 
 # Prompt 01 gate. Each task of prompt 01 adds its own recipe to this list; it is green only after T9.
-verify-01: tools-check fuzz-smoke
+verify-01: tools-check domain-verify fuzz-smoke
+
+# T2: domain types, validators and secrets (S11, S21)
+domain-verify:
+    cargo test -p domain
 verify-02:
     @echo "verify-02 not implemented yet" && exit 1
 verify-03a:

@@ -1,0 +1,94 @@
+---
+source: crates/domain/tests/events.rs
+expression: all_events()
+---
+[
+  {
+    "type": "file_observed",
+    "swimlane": "sitb",
+    "path": "tx-infinity-api/tx-infinity-core-sit1.yml",
+    "hash": "abababababababababababababababababababababababababababababababab",
+    "source": "scan"
+  },
+  {
+    "type": "drift_changed",
+    "swimlane": "sitb",
+    "paths": [
+      "tx-infinity-api/tx-infinity-core-sit1.yml"
+    ]
+  },
+  {
+    "type": "findings_changed",
+    "swimlane": "sitb"
+  },
+  {
+    "type": "pending_restart_changed",
+    "swimlane": "sitb",
+    "services": [
+      {
+        "namespace": "csp",
+        "name": "tx-infinity-api"
+      }
+    ]
+  },
+  {
+    "type": "proposal_changed",
+    "id": 7,
+    "status": "pending"
+  },
+  {
+    "type": "agent_status_changed",
+    "swimlane": "sitb",
+    "status": "connected"
+  },
+  {
+    "type": "git_head_moved",
+    "repo": "tenant",
+    "branch": "sit1",
+    "from": "1111111111111111111111111111111111111111",
+    "to": "2222222222222222222222222222222222222222"
+  },
+  {
+    "type": "access_request_created",
+    "user": "72f988bf-86f1-41af-91ab-2d7cd011db47:0b6c3e0e-5a1d-4a52-8f55-3f9d6f0a7f11"
+  },
+  {
+    "type": "doc_indexed",
+    "doc": 3
+  },
+  {
+    "type": "resync"
+  },
+  {
+    "type": "attribution_updated",
+    "swimlane": "sitb",
+    "path": "tx-infinity-api/tx-infinity-core-sit1.yml",
+    "hash": "abababababababababababababababababababababababababababababababab"
+  },
+  {
+    "type": "pr_state_changed",
+    "link_id": 11,
+    "state": "merged"
+  },
+  {
+    "type": "pr_job_progress",
+    "job_id": 12,
+    "state": "committing"
+  },
+  {
+    "type": "sync_window_opened",
+    "swimlane": "sitb",
+    "job": {
+      "name": "sync-job-1",
+      "uid": "uid-1"
+    }
+  },
+  {
+    "type": "sync_window_closed",
+    "swimlane": "sitb",
+    "job": {
+      "name": "sync-job-1",
+      "uid": "uid-1"
+    }
+  }
+]

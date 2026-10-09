@@ -10,3 +10,15 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+serde.workspace = true
+thiserror.workspace = true
+bytes.workspace = true
+secrecy.workspace = true
+zeroize.workspace = true
+subtle.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+proptest.workspace = true
+insta = { workspace = true, features = ["json"] }
+static_assertions.workspace = true

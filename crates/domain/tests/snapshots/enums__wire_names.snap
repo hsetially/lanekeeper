@@ -1,0 +1,116 @@
+---
+source: crates/domain/tests/enums.rs
+expression: "serde_json::json!({\n    \"role\": names(&Role::ALL), \"user_status\": names(&UserStatus::ALL),\n    \"file_kind\": names(&FileKind::ALL), \"file_class\": names(&FileClass::ALL),\n    \"eol_style\": names(&EolStyle::ALL), \"merge_mode\": names(&MergeMode::ALL),\n    \"drift_state\": names(&DriftState::ALL), \"via\": names(&Via::ALL),\n    \"proposal_status\": names(&ProposalStatus::ALL), \"finding_kind\":\n    names(&FindingKind::ALL), \"file_role\": names(&FileRole::ALL),\n    \"pickup_state\": names(&PickupState::ALL), \"repo_kind\":\n    names(&RepoKind::ALL), \"attribution_source\":\n    names(&AttributionSource::ALL), \"confidence\": names(&Confidence::ALL),\n    \"severity\": names(&Severity::ALL), \"observation_source\":\n    names(&ObservationSource::ALL), \"agent_status\": names(&AgentStatus::ALL),\n})"
+---
+{
+  "agent_status": [
+    "connected",
+    "disconnected",
+    "never_seen"
+  ],
+  "attribution_source": [
+    "tool_write",
+    "sentinel_login",
+    "sync_job",
+    "nfs_client",
+    "fs_owner_hint",
+    "unknown"
+  ],
+  "confidence": [
+    "low",
+    "medium",
+    "high",
+    "certain"
+  ],
+  "drift_state": [
+    "in_sync",
+    "git_ahead",
+    "nfs_ahead",
+    "conflict",
+    "unknown",
+    "untracked",
+    "intentional_divergence"
+  ],
+  "eol_style": [
+    "lf",
+    "crlf",
+    "mixed"
+  ],
+  "file_class": [
+    "structured",
+    "text",
+    "binary",
+    "denied"
+  ],
+  "file_kind": [
+    "base",
+    "tenant",
+    "untracked"
+  ],
+  "file_role": [
+    "property_source",
+    "resource"
+  ],
+  "finding_kind": [
+    "missed_base_changes",
+    "redundant_tenant_file",
+    "uneven_tenant_files",
+    "orphan_file",
+    "drift",
+    "environment_host_mismatch",
+    "overwritten_nfs_change",
+    "duplicate_keys",
+    "ambiguous_file_name",
+    "unresolved_placeholder",
+    "config_server_restart_required"
+  ],
+  "merge_mode": [
+    "whole_file",
+    "spring_merge"
+  ],
+  "observation_source": [
+    "scan",
+    "tool_write",
+    "sync"
+  ],
+  "pickup_state": [
+    "live",
+    "live_within_ttl",
+    "needs_notify_or_restart",
+    "needs_config_server_restart"
+  ],
+  "proposal_status": [
+    "draft",
+    "pending",
+    "approved",
+    "rejected",
+    "stale",
+    "expired",
+    "applied"
+  ],
+  "repo_kind": [
+    "base",
+    "tenant"
+  ],
+  "role": [
+    "viewer",
+    "editor",
+    "operator",
+    "admin"
+  ],
+  "severity": [
+    "low",
+    "medium",
+    "high",
+    "critical"
+  ],
+  "user_status": [
+    "pending",
+    "active",
+    "disabled"
+  ],
+  "via": [
+    "ui",
+    "mcp"
+  ]
+}
