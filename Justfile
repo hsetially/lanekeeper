@@ -49,7 +49,7 @@ tools-check:
     pnpm exec redocly --version
 
 # Prompt 01 gate. Each task of prompt 01 adds its own recipe to this list; it is green only after T9.
-verify-01: tools-check domain-verify ports-verify fuzz-smoke
+verify-01: tools-check domain-verify ports-verify proto-verify fuzz-smoke
 
 # T2: domain types, validators and secrets (S11, S21)
 domain-verify:
@@ -59,6 +59,12 @@ domain-verify:
 ports-verify:
     cargo test -p ports --all-features
     cargo clippy -p ports --all-features --all-targets -- -D warnings
+
+# T4: agent.proto lints with buf, the generated code builds without warnings, round trips and zstd (S5, S11)
+proto-verify:
+    pnpm exec buf lint proto
+    cargo test -p proto
+    cargo clippy -p proto --all-targets -- -D warnings
 
 verify-02:
     @echo "verify-02 not implemented yet" && exit 1

@@ -48,6 +48,10 @@ tonic-prost-build = "=0.14.6"
 prost = "=0.14.4"
 prost-types = "=0.14.4"
 protox = "=0.9.1"
+# Duplex-channel gRPC tests in crates/proto (tonic's own transport stack, already in the graph).
+tokio-stream = { version = "=0.1.19", default-features = false }
+hyper-util = { version = "=0.1.21", default-features = false }
+tower = { version = "=0.5.3", default-features = false }
 # Test tooling
 proptest = "=1.11.0"
 insta = "=1.48.0"
