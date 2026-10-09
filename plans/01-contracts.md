@@ -1,6 +1,6 @@
 # Plan 01: Contracts, skeleton, ports, gates and fixtures
 
-Status: DRAFT
+Status: APPROVED
 Contract-change: none
 Extra-paths: `docs/threat-model.md`
 Prompt: prompts/01-contracts.md
