@@ -1,0 +1,11 @@
+{
+  "skill_name": "lanekeeper-pr-review",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Review PR #42 for prompt 06 (write paths).",
+      "expected_output": "Re-runs the gates; checks ownership; traces S4, S8, S9 and the others to tests; checks P8 bench; posts the exact verdict template.",
+      "files": []
+    }
+  ]
+}

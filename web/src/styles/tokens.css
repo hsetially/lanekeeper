@@ -1,0 +1,10 @@
+/* Design tokens. Prompt 08 (T0) replaces these with the handoff token list (token parity test). */
+:root {
+  --lk-bg: #ffffff;
+  --lk-text: #1a1a1a;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --lk-bg: #121212; --lk-text: #ededed; }
+}
+body { margin: 0; background: var(--lk-bg); color: var(--lk-text); font-family: system-ui, sans-serif; }
+.app { padding: 24px; }

@@ -1,0 +1,153 @@
+# Performance budget registry (contract). Prompt 01 (T8) implements `cargo xtask bench-check`.
+# An entry with registered = false counts as unmet until its owning prompt registers a benchmark.
+# Thresholds are p95 unless `statistic` says otherwise. Units: milliseconds unless `unit` says otherwise.
+
+[[budget]]
+id = "P1"
+description = "Out-of-band change visible in UI"
+bench = "agent/oob_change_visible"
+statistic = "p95"
+threshold = 15000
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P2"
+description = "Git push to drift via webhook"
+bench = "hub-platform/push_to_drift_webhook"
+statistic = "p95"
+threshold = 10000
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P3"
+description = "Agent idle traffic (bytes/min)"
+bench = "agent/idle_traffic_bytes_per_min"
+statistic = "p95"
+threshold = 1024
+unit = "bytes_per_min"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P4"
+description = "Agent full rehash of 2,000 files"
+bench = "agent/full_rehash_2000_files"
+statistic = "p95"
+threshold = 20000
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P5"
+description = "Incremental recompute base cost"
+bench = "hub-registry/incremental_recompute_base"
+statistic = "p95"
+threshold = 50
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P6"
+description = "Nightly full recompute"
+bench = "engine/full_recompute_target_scale"
+statistic = "p95"
+threshold = 180000
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P7.grid"
+description = "Grid across 40 swimlanes"
+bench = "hub-registry/grid_40_swimlanes"
+statistic = "p95"
+threshold = 150
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P7.compare"
+description = "Compare a 6,000-line file"
+bench = "engine/compare_6000_lines"
+statistic = "p95"
+threshold = 100
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P7.text_search"
+description = "Text search across all swimlanes"
+bench = "hub-registry/search_text_all_swimlanes"
+statistic = "p95"
+threshold = 400
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P7.docs_search"
+description = "Docs search"
+bench = "hub-docsearch/search"
+statistic = "p95"
+threshold = 150
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P8"
+description = "Edit applied on NFS"
+bench = "hub-writes/edit_applied"
+statistic = "p95"
+threshold = 1500
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9"
+description = "MCP read tools"
+bench = "hub-mcp/read_tools"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P11"
+description = "Hub startup"
+bench = "hub/startup"
+statistic = "p95"
+threshold = 10000
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P13"
+description = "SSE delivery across replicas"
+bench = "hub-platform/sse_delivery"
+statistic = "p95"
+threshold = 1000
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P14"
+description = "Sentinel attribution attached"
+bench = "hub-registry/sentinel_attribution"
+statistic = "p95"
+threshold = 30000
+unit = "ms"
+scale = "target"
+registered = false

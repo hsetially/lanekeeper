@@ -1,0 +1,17 @@
+{
+  "skill_name": "lanekeeper-security",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Add an endpoint that lets admins reveal a masked value in a file.",
+      "expected_output": "Requires Editor+, audited with reason, rate-limited, returns only that line, Viewer test gets 403, threat model updated.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Implement the GitHub token save flow.",
+      "expected_output": "Fine-grained only, GET /user check, login link, envelope encryption with associated data, zeroize, log-capture test.",
+      "files": []
+    }
+  ]
+}

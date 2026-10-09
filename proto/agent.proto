@@ -1,0 +1,6 @@
+// Agent <-> hub and sentinel <-> hub contract.
+// Prompt 01 (T4) writes the full message set; the spec is in prompts/01-contracts.md.
+// Contract file: changes go through the lanekeeper-contract-change skill.
+syntax = "proto3";
+
+package lanekeeper.agent.v1;

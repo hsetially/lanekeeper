@@ -1,0 +1,17 @@
+{
+  "skill_name": "lanekeeper",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Is account sorting on for remote teller in presita?",
+      "expected_output": "Uses get_feature_status; cites the Account sorting doc; doesn't guess.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Set tefraThresholdAmount to 2000 in sitb.",
+      "expected_output": "read_file, then propose_change, then apply_change with confirmation; reports the pickup state; offers notify only if asked.",
+      "files": []
+    }
+  ]
+}

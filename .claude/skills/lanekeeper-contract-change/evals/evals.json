@@ -1,0 +1,11 @@
+{
+  "skill_name": "lanekeeper-contract-change",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I need a new field on ScanDelta to carry the file mode.",
+      "expected_output": "Separate contract-change PR; adds a new proto field number without reusing any; updates fakes and conformance; lists affected prompts 02, 03b, 05.",
+      "files": []
+    }
+  ]
+}

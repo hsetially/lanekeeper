@@ -1,0 +1,7 @@
+/target
+**/node_modules
+web/dist
+.env
+*.local
+/fixtures-generated
+.DS_Store

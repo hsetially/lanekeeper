@@ -1,0 +1,10 @@
+* text=auto
+# Fixtures keep their exact bytes, CRLF included (D17); never normalise them.
+crates/*/tests/fixtures/** -text
+fixtures-generated/** -text
+# Design references are kept as exported.
+design/handoff/** -text
+*.png binary
+*.jpeg binary
+*.jpg binary
+*.bmp binary

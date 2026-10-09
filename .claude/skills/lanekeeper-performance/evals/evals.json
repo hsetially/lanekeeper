@@ -1,0 +1,11 @@
+{
+  "skill_name": "lanekeeper-performance",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "The grid endpoint takes 900 ms at target scale. Make it meet P7.",
+      "expected_output": "Profiles first; uses settings_index rather than parsing per request; content-hash cache; registers the bench in budgets.toml; escalates with measurements if still over.",
+      "files": []
+    }
+  ]
+}

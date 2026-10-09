@@ -1,0 +1,17 @@
+{
+  "skill_name": "lanekeeper-rust-conventions",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Add a GET /api/v1/swimlanes/{id}/history endpoint in hub-registry with pagination.",
+      "expected_output": "Keyset pagination, guarded route, sqlx query! with EXPLAIN snapshot, bounded limit, no OFFSET.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Implement the BlobStore port on Postgres.",
+      "expected_output": "Port implementation with moka cache weighted by size, conformance test, Bytes not Vec copies, no unwrap.",
+      "files": []
+    }
+  ]
+}

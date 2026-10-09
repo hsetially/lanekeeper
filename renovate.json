@@ -1,0 +1,11 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "minimumReleaseAge": "14 days",
+  "internalChecksFilter": "strict",
+  "packageRules": [
+    { "matchManagers": ["cargo"], "groupName": "rust dependencies" },
+    { "matchManagers": ["npm"], "groupName": "web dependencies" },
+    { "matchFileNames": ["crates/domain/**", "crates/ports/**", "proto/**", "api/**", "db/**"], "automerge": false, "labels": ["contract-change"] }
+  ]
+}
