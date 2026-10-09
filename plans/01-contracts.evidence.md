@@ -242,3 +242,30 @@ All runs below used a throwaway local PostgreSQL 16.15 **without pgvector** (`LK
 - `just verify`: exit 0; the workspace test run totals 257 passed, 0 failed, 1 ignored.
 - `cargo xtask bench-check`: exit 0, `0 pass, 0 fail, 33 unmet of 33 budgets` (unchanged).
 - Not run: `db-verify` / `just verify-01` (no Docker daemon), the pgvector checks, `osv-scanner`.
+
+## Round 3 review fix (S4, D37)
+
+### Blocking: the self-approval claim was too strong
+
+- Real. The trigger `approvals_no_self_approval` is `BEFORE INSERT` only, and `lanekeeper_app` has SELECT, INSERT, UPDATE and DELETE on `approvals` and `proposals`. As that role, an approval can be inserted for another user and then `approver_oid` set to the author's, `proposals.author_oid` can be changed, or a proposal can be deleted (the cascade removes its approvals). The earlier text ("the table refuses it", "independent of application code") was false for those paths. Round 2 already admitted above that `approvals` is mutable; the threat model, the migration comment and the migration README did not.
+- Human decision: option (a), **reword only**. No schema, grant or trigger change. The gap is accepted as a residual risk.
+- Changed (text only): `docs/threat-model.md` (the E row for self-approval, and a new residual-risk bullet), the comment above `CREATE TABLE approvals` in `db/migrations/0001_init.sql` (comment lines only; `git diff` shows no changed SQL statement), and the `approvals` line in `db/migrations/README.md`.
+- What the three places now say: the trigger refuses an INSERT of an approval by the proposal's author and guards against a hub bug on that path. It does not protect against a caller that holds UPDATE or DELETE on `approvals` or `proposals`. Approval enforcement (S4/D37) must also be done in application code in prompt 06. Closing the gap (SELECT and INSERT only on `approvals`, a `BEFORE UPDATE` trigger on `approvals`, an author-immutability trigger on `proposals`) is a possible hardening for prompt 06 or a later contract-change.
+- Test coverage is unchanged and matches the reworded claim: `approvals_reject_self_approval` proves the insert path only. There is no test for UPDATE or DELETE, because those paths are open by design for now.
+
+### Non-blocking items from round 3 that go to the PR text
+
+1. pgvector, the `pgvector/pgvector` image path, and `db-verify` / `just verify-01` through testcontainers are unproven (no Docker daemon). Run `LK_REQUIRE_DOCKER=1 cargo test -p xtask --test db_migrations` or `just verify-01` on a Docker host or in CI before merge.
+2. Prompt 09: CI must set `LK_REQUIRE_DOCKER=1` for the test step (it runs `cargo test --workspace` without it today), and `lanekeeper_app` must never be the database owner (it would then be a member of `pg_database_owner`, which owns schema `public` in PG15+ and could drop `audit_events` and `sentinel_records`). A catalog test that `lanekeeper_app` is not a member of `pg_database_owner` is suggested.
+3. The NCSA licence exception for `libfuzzer-sys` in `deny.toml` needs explicit human acceptance.
+4. `osv-scanner` was not run. `hyper-util` 0.1.21 is about 15 days old (dev-only).
+5. `lanekeeper_app` keeps PUBLIC's TEMP privilege. It is harmless here (`search_path` is pinned and temp functions and operators were tested against the definer function); consider `REVOKE TEMP`.
+6. All 33 P# are `registered = false`; prompt 16 and the release gate must use `--strict`.
+
+### Gates after the round 3 fix
+
+- `git diff` of `db/migrations/0001_init.sql`: only comment lines changed (9 comment lines added or removed, no SQL statement).
+- `cargo fmt --all -- --check`: exit 0.
+- `cargo test -p xtask --test db_migrations` **without** a Postgres server or Docker (`LK_TEST_PG_ADMIN_URL` unset): `25 passed; 0 failed`, with 20 `SKIPPED` lines. The 20 database tests did not run, so this run proves only the text-level tests; the reworded text has no test of its own. The database tests were last run against a local PG16 in round 2 and the migration SQL is unchanged since.
+- `just verify`: exit 0.
+- Not run: `just verify-01` / `db-verify` (no Docker daemon), the pgvector checks, `osv-scanner`, `cargo xtask bench-check` (no code or budget changed in this round; last result `0 pass, 0 fail, 33 unmet of 33`).

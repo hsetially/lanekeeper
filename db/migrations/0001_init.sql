@@ -487,7 +487,13 @@ CREATE INDEX proposals_status_idx ON proposals (status, id DESC);
 CREATE INDEX proposals_swimlane_idx ON proposals (swimlane_id, id DESC);
 CREATE INDEX proposals_expiry_idx ON proposals (expires_at) WHERE status = 'pending';
 
--- The decision on a proposal (D37). Nobody can approve their own proposal: the table refuses it.
+-- The decision on a proposal (D37). The trigger below refuses an INSERT of an approval by the proposal's author.
+-- That is a guard on the insert path against a hub bug. It is NOT a barrier against a caller that holds UPDATE or
+-- DELETE on `approvals` or `proposals` (lanekeeper_app does): such a caller can change approvals.approver_oid or
+-- proposals.author_oid after the insert, or delete a proposal, which cascades to its approvals. Approval rules
+-- (S4/D37) are therefore also enforced in application code (prompt 06). Closing the gap (SELECT and INSERT only
+-- on approvals, plus an author-immutability trigger on proposals) is a possible hardening for prompt 06 or a later
+-- contract-change. Recorded as a residual risk in docs/threat-model.md.
 CREATE TABLE approvals (
   id             bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   proposal_id    bigint      NOT NULL UNIQUE REFERENCES proposals (id) ON DELETE CASCADE,
