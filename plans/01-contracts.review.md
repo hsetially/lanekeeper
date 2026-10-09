@@ -76,3 +76,39 @@ The round 1 finding is fixed: the 90-day floor holds against every bypass tried 
 - `just verify`: exit 0. `cargo xtask bench-check`: exit 0, 0 pass, 0 fail, 33 unmet of 33.
 - `just verify-01`: exit 1 at `docker-check` (known sandbox limit, not weakened).
 - Spec chain: plan approval commit `2153623` exists; commit order T1 to T9, `01/fix`, `01/evidence`, `01/review`, `01/fix`. Traceability table not re-verified row by row.
+
+---
+
+# Review 01, round 3
+
+VERDICT: CHANGES REQUESTED
+
+Both round 2 fixes hold (cascade on `sentinel_records` is `ON DELETE RESTRICT` in all six constraint copies; the harness lock works on a fresh `initdb` cluster: 25 passed at 4 and at 8 threads, 3 fresh-cluster runs each). One false security claim remains.
+
+## Blocking
+
+1. `docs/threat-model.md` (E row "A proposal's author approves their own change"), `db/migrations/0001_init.sql:490` and `:504-519` (comment "Nobody can approve their own proposal: the table refuses it"), and `db/migrations/README.md` ("`approvals`: a trigger refuses an approval by the proposal's author"). The claim is false for the app role (S4/D37, and the rule that docs must match reality).
+   - `lanekeeper_app` holds SELECT, INSERT, UPDATE and DELETE on `approvals` and `proposals` (`0001_init.sql:982-993`). The trigger is `BEFORE INSERT` only.
+   - Reproduced on PG16 as `lanekeeper_app`: `INSERT INTO approvals` with the author as approver is refused; but inserting an approval as user b, then `UPDATE approvals SET approver_oid='a' WHERE proposal_id=...` (a is the author) succeeded; `UPDATE proposals SET author_oid='b'` succeeded; `DELETE FROM proposals` cascaded and removed the approval.
+   - The threat model says this cannot happen "independent of application code". The trigger only covers the INSERT path. The evidence file (Round 2, `approvals`) admits `approvals` is mutable; the threat-model row and the migration comment do not.
+   - Fix, either of:
+     - (a) Reword all three places: the trigger is a guard on the insert path against a hub bug, not against a caller holding UPDATE or DELETE on `approvals` or `proposals`; add it to the residual risks.
+     - (b) Harden it: grant `approvals` only SELECT and INSERT (the proposal-delete cascade stays), add a `BEFORE UPDATE` trigger on `approvals` and an author-immutability trigger on `proposals`, and add a test that the UPDATE path is refused.
+
+## Non-blocking
+
+1. Unproven: pgvector, the `pgvector/pgvector` image path, and `just verify-01`/`db-verify` through testcontainers (no Docker daemon). Run `LK_REQUIRE_DOCKER=1 cargo test -p xtask --test db_migrations` (or `just verify-01`) on a Docker host or in CI before merge.
+2. Prompt 09 must make sure `lanekeeper_app` is never the database owner (it would then belong to `pg_database_owner`, which owns schema `public` in PG15+ and could drop `audit_events` and `sentinel_records`). Consider a catalog test that `lanekeeper_app` is not a member of `pg_database_owner`.
+3. CI runs `cargo test --workspace` without `LK_REQUIRE_DOCKER=1` (prompt 09).
+4. The `libfuzzer-sys` NCSA licence exception in `deny.toml` needs explicit human acceptance. `osv-scanner` was not run. `hyper-util` 0.1.21 is about 15 days old (dev-only).
+5. The app keeps PUBLIC's TEMP privilege; temp functions and operators were tested against the definer function and none were picked up. Consider `REVOKE TEMP`.
+6. All 33 P# are `registered = false`; prompt 16 and the release gate must use `--strict`.
+7. `plans/01-contracts.md` changed after approval only in `ca6c822` (human-approved Extra-path).
+
+## Evidence re-run
+
+- Erase/modify probes as `lanekeeper_app`, all refused: TRUNCATE (with CASCADE), DROP, DETACH PARTITION, ALTER (DISABLE TRIGGER, drop constraint, owner), CREATE OR REPLACE of the definer function, CREATE RULE/TRIGGER/TABLE/SCHEMA, GRANT/REVOKE, SET session_replication_role / ROLE / SESSION AUTHORIZATION, COPY FROM PROGRAM, direct UPDATE/DELETE on `audit_events`, `audit_checkpoints`, `sentinel_records` and its partitions, INSERT ... ON CONFLICT DO UPDATE, MERGE-delete, VACUUM, CLUSTER, REINDEX, LOCK TABLE.
+- `maintain_sentinel_partitions`: 89, NULL and `keep_days => 1` refused (22023), also under changed timezone and datestyle; 90 drops nothing inside the life.
+- `just verify`: exit 0. `cargo xtask bench-check`: exit 0, 0 pass, 0 fail, 33 unmet of 33.
+- `just verify-01`: exit 1 at `docker-check` (known sandbox limit, not weakened).
+- Spec chain intact: plan approval commit `2153623`; commits in order T1 to T9, fixes, evidence and reviews; changed paths inside ownership, Extra-paths or shared files; Contract-change "none" is correct.
