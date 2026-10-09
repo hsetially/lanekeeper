@@ -49,7 +49,7 @@ tools-check:
     pnpm exec redocly --version
 
 # Prompt 01 gate. Each task of prompt 01 adds its own recipe to this list; it is green only after T9.
-verify-01: tools-check domain-verify ports-verify proto-verify openapi-verify db-verify fuzz-smoke
+verify-01: tools-check domain-verify ports-verify proto-verify openapi-verify db-verify mcp-doc-verify fuzz-smoke
 
 # T2: domain types, validators and secrets (S11, S21)
 domain-verify:
@@ -77,6 +77,12 @@ openapi-verify:
 # database-role tests (S9, S21). LK_REQUIRE_DOCKER=1 turns a missing Docker daemon into a failure instead of a skip.
 db-verify:
     LK_REQUIRE_DOCKER=1 cargo test -p xtask --test db_migrations
+    cargo clippy -p xtask --all-targets -- -D warnings
+
+# T7: docs/mcp-tools.md lint: the 25 tools, schemas that parse and resolve, bounded inputs, role floor against
+# api/openapi.yaml, confirmation on the write tools, output caps (S4, S14, S14b, S15, D52, P9)
+mcp-doc-verify:
+    cargo test -p xtask --test mcp_tools_doc
     cargo clippy -p xtask --all-targets -- -D warnings
 
 verify-02:

@@ -17,3 +17,5 @@ workspace = true
 sqlx = { workspace = true, features = ["postgres", "migrate", "runtime-tokio"] }
 testcontainers.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+# Parses the JSON Schema blocks of docs/mcp-tools.md in the doc lint (T7). Already in the lockfile.
+serde_json.workspace = true
