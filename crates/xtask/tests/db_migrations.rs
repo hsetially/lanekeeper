@@ -383,7 +383,17 @@ impl TestDb {
             sql = sql.replace("CREATE EXTENSION IF NOT EXISTS vector;", "");
         }
         let mut conn = self.admin().await;
+        // Roles are cluster-wide, so tests running in parallel threads against one external server would race on
+        // `CREATE ROLE`. A session advisory lock serialises the init SQL; it is released when the connection drops.
+        sqlx::query("SELECT pg_advisory_lock(hashtextextended('lanekeeper.test.run_init', 0))")
+            .execute(&mut conn)
+            .await
+            .unwrap();
         sqlx::raw_sql(&sql).execute(&mut conn).await.unwrap();
+        sqlx::query("SELECT pg_advisory_unlock(hashtextextended('lanekeeper.test.run_init', 0))")
+            .execute(&mut conn)
+            .await
+            .unwrap();
     }
 }
 
@@ -1257,6 +1267,128 @@ async fn sentinel_partition_function_is_the_only_ddl_path() {
         .await
         .unwrap();
     assert_eq!(moved, 1);
+}
+
+/// Creates the monthly `sentinel_records` partition `months_back` months before the current UTC month, as the owner,
+/// and has the app insert one record into it. Returns the partition name.
+async fn sentinel_partition_with_record(
+    owner: &mut PgConnection,
+    app: &mut PgConnection,
+    months_back: i32,
+    batch_seq: i64,
+) -> String {
+    let month = format!("date_trunc('month', now() AT TIME ZONE 'UTC') - interval '{months_back} months'");
+    let name: String = sqlx::query_scalar(&format!(
+        "SELECT 'sentinel_records_y' || to_char({month}, 'YYYY\"m\"MM')"
+    ))
+    .fetch_one(&mut *owner)
+    .await
+    .unwrap();
+    sqlx::raw_sql(&format!(
+        "DO $$ DECLARE m timestamp := {month}; BEGIN \
+           EXECUTE format('CREATE TABLE public.{name} PARTITION OF public.sentinel_records FOR VALUES FROM (%L) TO (%L)', \
+                          m AT TIME ZONE 'UTC', (m + interval '1 month') AT TIME ZONE 'UTC'); END $$"
+    ))
+    .execute(&mut *owner)
+    .await
+    .unwrap();
+    sqlx::query(&format!(
+        "INSERT INTO sentinel_records (sentinel_id, batch_seq, record_index, observed_at, path, operation, success) \
+         SELECT id, $1, 0, ({month} + interval '2 days') AT TIME ZONE 'UTC', 'a/b.yml', 'write', true \
+         FROM sentinels WHERE vm = 'nfs-sit1'"
+    ))
+    .bind(batch_seq)
+    .execute(&mut *app)
+    .await
+    .unwrap();
+    name
+}
+
+/// S9, S21: the definer function lets the app drop partitions, so it must never drop one that is still inside the
+/// 90-day life, whatever the app passes. The floor is a constant in the function body.
+#[tokio::test]
+async fn sentinel_partition_function_refuses_short_retention() {
+    let db = db!();
+    let mut app = db.app().await;
+    let mut owner = db.migrator().await;
+    sqlx::query("INSERT INTO sentinels (vm, export_root) VALUES ('nfs-sit1', '/export')")
+        .execute(&mut owner)
+        .await
+        .unwrap();
+    // Six months back is long expired; two months back ended at most 62 days ago, so it is inside the life. Last
+    // month's partition (made by the migration) is inside it too.
+    let expired = sentinel_partition_with_record(&mut owner, &mut app, 6, 1).await;
+    let recent = sentinel_partition_with_record(&mut owner, &mut app, 2, 2).await;
+    let partitions = "SELECT count(*) FROM pg_inherits WHERE inhparent = 'public.sentinel_records'::regclass";
+    let before_partitions: i64 = sqlx::query_scalar(partitions)
+        .fetch_one(&mut owner)
+        .await
+        .unwrap();
+    let before_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM sentinel_records")
+        .fetch_one(&mut owner)
+        .await
+        .unwrap();
+    assert_eq!(before_rows, 2);
+
+    // Anything below 90 days is refused (22023) and changes nothing.
+    for keep_days in [1, 2, 30, 62, 89] {
+        expect_sqlstate(
+            &mut app,
+            &format!("SELECT * FROM maintain_sentinel_partitions({keep_days})"),
+            "22023",
+        )
+        .await;
+    }
+    expect_sqlstate(
+        &mut app,
+        "SELECT * FROM maintain_sentinel_partitions(NULL)",
+        "22023",
+    )
+    .await;
+    let after_partitions: i64 = sqlx::query_scalar(partitions)
+        .fetch_one(&mut owner)
+        .await
+        .unwrap();
+    let after_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM sentinel_records")
+        .fetch_one(&mut owner)
+        .await
+        .unwrap();
+    assert_eq!(
+        after_partitions, before_partitions,
+        "a refused call drops nothing"
+    );
+    assert_eq!(after_rows, before_rows, "a refused call deletes nothing");
+
+    // The legitimate call (90 days, and its default) drops only the partition past the floor.
+    let (created, dropped): (i32, i32) =
+        sqlx::query("SELECT created, dropped FROM maintain_sentinel_partitions(90)")
+            .map(|r: sqlx::postgres::PgRow| (r.get(0), r.get(1)))
+            .fetch_one(&mut app)
+            .await
+            .unwrap();
+    assert_eq!((created, dropped), (0, 1));
+    for (name, want_present) in [(expired, false), (recent, true)] {
+        let found: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+            .bind(&name)
+            .fetch_one(&mut owner)
+            .await
+            .unwrap();
+        assert_eq!(found.is_some(), want_present, "{name}");
+    }
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM sentinel_records")
+        .fetch_one(&mut owner)
+        .await
+        .unwrap();
+    assert_eq!(left, 1, "the record inside the 90-day life survives");
+
+    // A longer retention is allowed and keeps the recent partition too.
+    let (_, dropped): (i32, i32) =
+        sqlx::query("SELECT created, dropped FROM maintain_sentinel_partitions(365)")
+            .map(|r: sqlx::postgres::PgRow| (r.get(0), r.get(1)))
+            .fetch_one(&mut app)
+            .await
+            .unwrap();
+    assert_eq!(dropped, 0);
 }
 
 #[tokio::test]

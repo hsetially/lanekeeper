@@ -765,6 +765,10 @@ CREATE INDEX sentinel_records_path_idx ON sentinel_records (sentinel_id, path, o
 
 -- Creates last month, this month and the next two, moves default-partition rows into a new partition, and drops whole
 -- months that ended before now() - keep_days, plus default-partition rows older than that. Months are UTC.
+-- Retention floor (S9, S21): keep_days below 90 is refused (22023). lanekeeper_app holds EXECUTE and sentinel_records is
+-- otherwise insert-only, so a caller that could pass a short keep_days could erase attribution evidence still inside its
+-- 90-day life. The floor is a constant in the body below: it is not a parameter, a setting or a row an app can write.
+-- Raising it is a new migration; lowering retention below 90 days needs a human decision in docs/decisions.md.
 -- SECURITY DEFINER: runs with the migrator's rights, so lanekeeper_app needs no DDL right of its own (Q18). Every name
 -- is schema-qualified and search_path is pinned, so a temp table or a search_path change cannot redirect it.
 -- Concurrent calls are serialised with an advisory lock. Dropping a partition briefly locks the parent table.
@@ -774,6 +778,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
+  min_keep_days CONSTANT integer := 90;
   cutoff    timestamptz;
   month_ts  timestamp;
   lo        timestamptz;
@@ -782,8 +787,8 @@ DECLARE
   r         record;
   ym        text[];
 BEGIN
-  IF keep_days IS NULL OR keep_days < 1 OR keep_days > 3650 THEN
-    RAISE EXCEPTION 'keep_days must be between 1 and 3650' USING ERRCODE = '22023';
+  IF keep_days IS NULL OR keep_days < min_keep_days OR keep_days > 3650 THEN
+    RAISE EXCEPTION 'keep_days must be between % and 3650', min_keep_days USING ERRCODE = '22023';
   END IF;
   created := 0;
   dropped := 0;
