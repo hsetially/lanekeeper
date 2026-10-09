@@ -2,7 +2,7 @@
 
 Status: APPROVED
 Contract-change: none
-Extra-paths: `docs/threat-model.md`
+Extra-paths: `docs/threat-model.md`, `.cargo/audit.toml`
 Prompt: prompts/01-contracts.md
 Branch: agent/01-contracts
 
