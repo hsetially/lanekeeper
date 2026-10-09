@@ -7,7 +7,7 @@ Lanekeeper is an internal tool for seeing, comparing, changing and auditing the 
 1. **Read `AGENTS.md`.** It's the contract every agent follows. Claude Code loads it through `CLAUDE.md`, and Cursor reads it directly.
 2. **Read `prompts/README.md`** for the waves, the human gates, and how to start an agent.
 3. **Put the design screens** (`*.dc.html`) in `design/handoff/screens/`, following the README there, and commit them as `design: handoff v1`.
-4. **Run prompt 01 first.** It builds contracts, ports, gates and fixtures on top of this scaffold. Then run wave 1 in parallel.
+4. **Run prompt 01 first:** `/run-prompt 01` in Claude Code. It plans, waits for your approval, implements task by task with subagents, runs the gates and has a reviewer agent check it. Then run wave 1 in parallel with `/run-prompt wave:1`. See "Running prompts (automated)" in `AGENTS.md`.
 
 ## What's here
 

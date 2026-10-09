@@ -57,6 +57,20 @@ Load the matching skill before you start a task. Claude Code reads them from `.c
 
 Third-party skills (shadcn, skill-creator, webapp-testing, systematic-debugging, verification-before-completion, test-driven-development, receiving-code-review, six Rust skills, writing-for-agents) are vendored in the same folder at pinned commits; see `.claude/skills/THIRD-PARTY.md`. The `lanekeeper-*` skills win on any conflict, and a third-party skill must not change the plan, commit or PR protocol above.
 
+## Running prompts (automated)
+
+Start work with `/run-prompt NN` (or `/run-prompt wave:1`) in Claude Code. It runs the protocol above with subagents, in an isolated worktree per prompt (`.worktrees/NN-slug`, branch `agent/NN-slug`):
+
+1. `planner` writes `plans/NN-slug.md` from `plans/TEMPLATE.md`. **A human approves it.** This is the one routine stop.
+2. One implementer subagent per task (`rust-`, `web-` or `ops-implementer`), test first, one `NN/Tk:` commit each.
+3. A final step runs `just verify-NN`, `just verify` and `cargo xtask bench-check` and writes `plans/NN-slug.evidence.md`.
+4. `reviewer` runs `prompts/REVIEW.md` independently. Blocking findings go back to the implementer, for at most 3 rounds.
+5. The PR text is written to `plans/NN-slug.pr.md`; with `--pr` the PR is opened.
+
+Inside `agent/*` worktrees a PreToolUse hook (`.claude/hooks/guard.mjs`) blocks edits until the plan is approved, blocks edits outside the prompt's owned paths (plus tests, benches and fixtures under them, and the shared `Cargo.toml`, `Cargo.lock` and `Justfile`), blocks contract paths unless the approved plan says so, freezes the plan after approval, and blocks `--no-verify`, force pushes and pushes to main. The hook cannot see arbitrary shell writes, so the reviewer and CI stay the backstop. Cursor does not run these hooks; in Cursor follow the protocol by hand.
+
+A plan can list `Extra-paths:` (paths beyond the prompt's ownership) and `Contract-change:`. Both take effect only when the human approves the plan.
+
 ## Ownership
 
 - Each prompt lists the paths it owns. Edit only those, plus tests, benches and fixtures under them.

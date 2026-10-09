@@ -5,3 +5,6 @@ web/dist
 *.local
 /fixtures-generated
 .DS_Store
+
+# Agent worktrees (created by scripts/lk.mjs)
+/.worktrees/

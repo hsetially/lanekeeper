@@ -14,6 +14,10 @@ rust-verify:
 web-verify:
     cd web && pnpm install --frozen-lockfile && pnpm lint && pnpm typecheck && pnpm test --run && pnpm build
 
+# Tests for the agent automation (scripts/lk.mjs and the guard hook)
+lk-test:
+    node --test scripts/lk.test.mjs
+
 bench:
     cargo bench --workspace
 
