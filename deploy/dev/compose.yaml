@@ -1,7 +1,8 @@
 # Local development only. Never used in any shared environment.
+# The image is pinned by digest (S19). Renovate proposes bumps; the digest is the multi-arch index of pgvector/pgvector:pg16.
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
     environment:
       POSTGRES_USER: lanekeeper
       POSTGRES_PASSWORD: lanekeeper-dev-only
@@ -9,5 +10,11 @@ services:
     ports: ["127.0.0.1:5432:5432"]
     command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
     volumes: ["pgdata:/var/lib/postgresql/data", "./init.sql:/docker-entrypoint-initdb.d/init.sql:ro"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lanekeeper -d lanekeeper"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    security_opt: ["no-new-privileges:true"]
 volumes:
   pgdata: {}

@@ -1,0 +1,14 @@
+{
+  "name": "lanekeeper-tools",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Contract linters for the repo root (buf for proto/, redocly for api/). The web app has its own package in web/.",
+  "devDependencies": {
+    "@bufbuild/buf": "1.73.0",
+    "@redocly/cli": "2.53.3"
+  },
+  "packageManager": "pnpm@10.34.6",
+  "engines": {
+    "node": ">=22"
+  }
+}

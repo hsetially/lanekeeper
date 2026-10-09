@@ -4,6 +4,8 @@ web/dist
 .env
 *.local
 /fixtures-generated
+# Synthetic fixtures from `cargo xtask gen-fixtures` (never committed, AGENTS.md rule 12)
+/target/fixtures/
 .DS_Store
 
 # Agent worktrees (created by scripts/lk.mjs)

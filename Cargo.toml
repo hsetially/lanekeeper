@@ -16,6 +16,38 @@ rust-version = "1.88"
 # Shared dependencies. Add them here and reference them from member crates with `dep.workspace = true`.
 # Rules (AGENTS.md, rule 15): pinned versions at least 14 days old, justified in the PR, and passing `cargo deny`.
 [workspace.dependencies]
+# Every version is an exact pin, at least 14 days old when chosen (S19). Default features are off; member crates enable what they use.
+# Data and errors
+serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+thiserror = "=2.0.20"
+toml = { version = "=0.9.8", default-features = false, features = ["std", "parse", "serde"] }
+hex = { version = "=0.4.3", default-features = false, features = ["alloc"] }
+# Secrets and hashing (S7, S21)
+secrecy = { version = "=0.10.3", default-features = false }
+zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
+subtle = { version = "=2.6.1", default-features = false }
+sha2 = { version = "=0.10.9", default-features = false }
+# Async runtime and ports
+bytes = "=1.12.1"
+futures = { version = "=0.3.34", default-features = false, features = ["std", "async-await"] }
+async-trait = "=0.1.92"
+tokio = { version = "=1.53.1", default-features = false }
+tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
+# Database. No TLS feature here: sqlx's rustls roots pull webpki-roots (CDLA-Permissive-2.0), which deny.toml does not allow. 0.9 needs rustc 1.94.
+sqlx = { version = "=0.8.6", default-features = false }
+# gRPC. protox is a pure-Rust protobuf compiler, so no protoc binary is needed.
+tonic = { version = "=0.14.6", default-features = false }
+tonic-prost = "=0.14.6"
+tonic-prost-build = "=0.14.6"
+prost = "=0.14.4"
+prost-types = "=0.14.4"
+protox = "=0.9.1"
+# Test tooling
+proptest = "=1.11.0"
+insta = "=1.48.0"
+static_assertions = "=1.1.0"
+testcontainers = { version = "=0.28.0", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

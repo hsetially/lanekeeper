@@ -1,0 +1,6 @@
+# Settings for the root tools package. web/ is a separate pnpm project with its own lockfile and settings.
+# S19: refuse package versions published less than 14 days ago (value in minutes).
+minimumReleaseAge: 20160
+# Lifecycle scripts stay blocked (pnpm's default).
+ignoredBuiltDependencies:
+  - core-js
