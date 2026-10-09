@@ -39,3 +39,5 @@ tokio = { workspace = true, features = ["macros", "rt", "test-util", "time", "sy
 proptest.workspace = true
 insta = { workspace = true, features = ["json"] }
 static_assertions.workspace = true
+# Reads api/openapi.yaml in the conventions test. Already pinned for the route-guard harness.
+serde-saphyr.workspace = true

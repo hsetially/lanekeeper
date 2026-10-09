@@ -1,9 +1,6171 @@
-# REST contract for the web UI. Prompt 01 (T5) writes every operation.
-# Every operation must carry x-required-role (S4).
+# REST contract for the web UI. Prompt 01 (T5) writes every operation. Generated clients (orval) come from this file.
+# Paths are full paths (`/api/v1/...`) because the S4 route-guard harness compares them with the hub's routes as written.
+# Every operation carries x-required-role (S4); `none` is reserved for /auth/login, /auth/callback, /auth/logout and /hooks/github.
+# Changing this file is a contract change: see the lanekeeper-contract-change skill.
 openapi: 3.1.0
 info:
   title: Lanekeeper API
   version: 0.1.0
+  summary: REST contract for the web UI.
+  description: 'Prompt 01 (T5) writes every operation. Conventions: every path is the full path (`/api/v1/...`);
+    cookie session plus a double-submit `X-CSRF-Token` on every non-GET; `Idempotency-Key` on every write; errors
+    are `application/problem+json`; lists use keyset pagination (`cursor`, `limit` at most 500); content responses
+    carry an `ETag` and honour `If-None-Match`; every operation declares `x-required-role` (`viewer`, `editor`,
+    `operator`, `admin`, or `none` for the four open operations) (S4).'
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
 servers:
-  - url: /api/v1
-paths: {}
+- url: /
+security:
+- sessionCookie: []
+tags:
+- name: auth
+  description: Sign-in and sessions (outside /api/v1)
+- name: me
+  description: The signed-in user
+- name: swimlanes
+  description: Swimlanes and their files
+- name: compare
+  description: Comparisons and the grid
+- name: search
+  description: Setting and text search
+- name: findings
+  description: Consistency checks
+- name: writes
+  description: Edits, uploads, restarts, PRs, proposals and drafts
+- name: content-store
+  description: Content by hash
+- name: events
+  description: Server-sent events
+- name: hooks
+  description: Inbound webhooks
+- name: docs
+  description: Docs, search and feature flags
+- name: admin
+  description: Administration (Admin only)
+- name: content
+  description: Operations whose responses carry an ETag and honour If-None-Match
+paths:
+  /api/v1/admin/access-requests:
+    get:
+      operationId: adminListAccessRequests
+      summary: List access requests
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/AccessRequestStatus'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessRequestPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/access-requests/{id}/approve:
+    post:
+      operationId: adminApproveAccessRequest
+      summary: Approve an access request with a role
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/NumericId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccessApproval'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/access-requests/{id}/reject:
+    post:
+      operationId: adminRejectAccessRequest
+      summary: Reject an access request
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/NumericId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RejectRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessRequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/agents:
+    get:
+      operationId: adminListAgents
+      summary: List agent registrations
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRegistrationPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/agents/{swimlane}:
+    put:
+      operationId: adminPutAgent
+      summary: Register the agent service account of a swimlane
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneParam'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentRegistrationInput'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRegistration'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: adminDeleteAgent
+      summary: Remove an agent registration
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneParam'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Done. No body.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/agents/{swimlane}/join-token:
+    post:
+      operationId: adminIssueJoinToken
+      summary: Issue a fallback join token
+      description: Only for clusters without Workload Identity (S5). Admin only; there is no agent-facing endpoint.
+        Audited.
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneParam'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: Token issued; shown once
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JoinToken'
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/audit:
+    get:
+      operationId: adminListAudit
+      summary: Read the audit log
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - name: actor
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/UserId'
+      - name: action
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/ShortText'
+      - name: swimlane
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/SwimlaneId'
+      - name: from
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/Timestamp'
+      - name: to
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/Timestamp'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEventPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/folder-mappings:
+    get:
+      operationId: adminListFolderMappings
+      summary: List folder mappings
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FolderMappingPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/folder-mappings/{id}:
+    put:
+      operationId: adminPutFolderMappings
+      summary: Create or replace folder mappings
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/ConfigKey'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FolderMappingInput'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FolderMapping'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: adminDeleteFolderMappings
+      summary: Delete folder mappings
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/ConfigKey'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Done. No body.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/host-tiers:
+    get:
+      operationId: adminListHostTiers
+      summary: List host tiers
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostTierPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/host-tiers/{id}:
+    put:
+      operationId: adminPutHostTiers
+      summary: Create or replace host tiers
+      description: Used by check C6 (an external host from the wrong environment tier).
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/ConfigKey'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostTierInput'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostTier'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: adminDeleteHostTiers
+      summary: Delete host tiers
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/ConfigKey'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Done. No body.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/merge-modes:
+    get:
+      operationId: adminListMergeModes
+      summary: List merge mode rules
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MergeModeRulePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/merge-modes/{id}:
+    put:
+      operationId: adminPutMergeModes
+      summary: Create or replace merge mode rules
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/ConfigKey'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MergeModeRuleInput'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MergeModeRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: adminDeleteMergeModes
+      summary: Delete merge mode rules
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/ConfigKey'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Done. No body.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/notifications:
+    get:
+      operationId: adminListNotifications
+      summary: List notification channels
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationChannelPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/notifications/{id}:
+    put:
+      operationId: adminPutNotification
+      summary: Create or replace a notification channel
+      description: The webhook URL is write-only; omit it to keep the stored one.
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/ConfigKey'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationChannelInput'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationChannel'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: adminDeleteNotification
+      summary: Delete a notification channel
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/ConfigKey'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Done. No body.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/os-login-users:
+    get:
+      operationId: adminListOsLoginUsers
+      summary: List OS Login user mappings
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OsLoginUserPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/os-login-users/{login}:
+    put:
+      operationId: adminPutOsLoginUser
+      summary: Map an OS Login identity to a user
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - name: login
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ShortText'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OsLoginUserInput'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OsLoginUser'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: adminDeleteOsLoginUser
+      summary: Remove an OS Login mapping
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - name: login
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ShortText'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Done. No body.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/path-mappings:
+    get:
+      operationId: adminListPathMappings
+      summary: List path mapping rules
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PathMappingRulePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/path-mappings/{id}:
+    put:
+      operationId: adminPutPathMappings
+      summary: Create or replace path mapping rules
+      description: Maps `data/config/<rel>/<name>.<ext>` on tenant branch B to `<nfs_root>/<rel>/<name>-B.<ext>`
+        and back (D13).
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/ConfigKey'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PathMappingRuleInput'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PathMappingRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: adminDeletePathMappings
+      summary: Delete path mapping rules
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/ConfigKey'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Done. No body.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/retention:
+    get:
+      operationId: adminGetRetention
+      summary: Version retention settings
+      tags:
+      - admin
+      x-required-role: admin
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetentionSettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+    put:
+      operationId: adminPutRetention
+      summary: Change retention, or preview it with dry_run
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - name: dry_run
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+        description: Compute `dry_run_preview` and change nothing.
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetentionInput'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetentionSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/sentinels:
+    get:
+      operationId: adminListSentinels
+      summary: List NFS sentinels
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SentinelInfoPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/severity-rules:
+    get:
+      operationId: adminListSeverityRules
+      summary: List severity rules
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SeverityRulePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/severity-rules/{id}:
+    put:
+      operationId: adminPutSeverityRules
+      summary: Create or replace severity rules
+      description: Deterministic rules that set the severity of changes and findings (D76).
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/ConfigKey'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SeverityRuleInput'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SeverityRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: adminDeleteSeverityRules
+      summary: Delete severity rules
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/ConfigKey'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Done. No body.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/swimlanes/{id}/auto-notify:
+    get:
+      operationId: adminGetAutoNotify
+      summary: Auto-notify setting of a swimlane
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutoNotify'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+    put:
+      operationId: adminPutAutoNotify
+      summary: Turn auto-notify on or off
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AutoNotify'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutoNotify'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/swimlanes/{id}/tenants:
+    get:
+      operationId: adminGetTenants
+      summary: Tenant set of a swimlane
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSetInput'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+    put:
+      operationId: adminPutTenants
+      summary: Replace the tenant set of a swimlane
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantSetInput'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSetInput'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/users:
+    get:
+      operationId: adminListUsers
+      summary: List users
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/UserStatus'
+      - name: q
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/ShortText'
+        description: Part of the email or name.
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/admin/users/{id}:
+    patch:
+      operationId: adminUpdateUser
+      summary: Change a user's role, status or approval flag
+      tags:
+      - admin
+      x-required-role: admin
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/UserId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdate'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/blobs/{hash}:
+    get:
+      operationId: getBlob
+      summary: Content by hash
+      description: Never serves denied or withheld files (404).
+      tags:
+      - content-store
+      - content
+      x-required-role: viewer
+      parameters:
+      - name: hash
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[0-9a-fA-F]{64}$
+      - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: 'The bytes. Immutable: the hash is the ETag and the content never changes.'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - private, max-age=31536000, immutable
+              description: 'Private: only for signed-in users, never a shared cache.'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '304':
+          description: 'Not modified: the ETag matched.'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/compare:
+    get:
+      operationId: compareFile
+      summary: Compare one file between two sides
+      description: Both sides are parsed as typed references. The ETag is derived from the two content hashes.
+      tags:
+      - compare
+      - content
+      x-required-role: viewer
+      parameters:
+      - name: left
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/CompareRef'
+      - name: right
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/CompareRef'
+      - name: file
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/LogicalFile'
+      - name: channel
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/ChannelName'
+      - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comparison'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '304':
+          description: 'Not modified: the ETag matched.'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/compare/tree:
+    get:
+      operationId: compareTree
+      summary: Compare two sides, folder by folder
+      tags:
+      - compare
+      x-required-role: viewer
+      parameters:
+      - name: left
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/CompareRef'
+      - name: right
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/CompareRef'
+      - name: prefix
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/NfsPath'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TreeComparison'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/docs:
+    get:
+      operationId: listDocs
+      summary: List docs
+      tags:
+      - docs
+      x-required-role: viewer
+      parameters:
+      - name: source
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - git
+          - upload
+      - name: path_prefix
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/DocPath'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocSummaryPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: createDoc
+      summary: Upload a Markdown doc
+      tags:
+      - docs
+      x-required-role: editor
+      parameters:
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocCreateRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/docs/for-file:
+    get:
+      operationId: docsForFile
+      summary: Docs that describe a file or setting
+      tags:
+      - docs
+      x-required-role: viewer
+      parameters:
+      - name: file
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/LogicalFile'
+      - name: setting
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/SettingPath'
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocHits'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/docs/fs/grep:
+    get:
+      operationId: grepDocs
+      summary: Search docs text by pattern
+      tags:
+      - docs
+      x-required-role: viewer
+      parameters:
+      - name: pattern
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 512
+      - name: path_prefix
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/DocPath'
+      - name: context
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          maximum: 20
+          default: 2
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocGrepResults'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/docs/fs/read:
+    get:
+      operationId: readDoc
+      summary: Read a doc by path
+      tags:
+      - docs
+      - content
+      x-required-role: viewer
+      parameters:
+      - name: path
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/DocPath'
+      - name: start
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+      - name: end
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+      - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocText'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '304':
+          description: 'Not modified: the ETag matched.'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/docs/search:
+    get:
+      operationId: searchDocs
+      summary: Search docs
+      tags:
+      - docs
+      x-required-role: viewer
+      parameters:
+      - name: q
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 512
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+        description: Top results; hybrid ranking has no cursor.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocHits'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/docs/{id}:
+    put:
+      operationId: updateDoc
+      summary: Replace an uploaded doc
+      tags:
+      - docs
+      x-required-role: editor
+      parameters:
+      - $ref: '#/components/parameters/NumericId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocUpdateRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: deleteDoc
+      summary: Delete an uploaded doc
+      tags:
+      - docs
+      x-required-role: editor
+      parameters:
+      - $ref: '#/components/parameters/NumericId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Done. No body.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/drafts:
+    post:
+      operationId: createDraft
+      summary: Create a draft from an edit
+      description: Computes the diff and setting changes without writing anything. Drafts expire.
+      tags:
+      - writes
+      x-required-role: editor
+      parameters:
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DraftRequest'
+      responses:
+        '201':
+          description: Draft created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Draft'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/drafts/{id}/apply:
+    post:
+      operationId: applyDraft
+      summary: Apply a draft
+      tags:
+      - writes
+      x-required-role: editor
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/DraftId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '423':
+          $ref: '#/components/responses/Locked'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/events:
+    get:
+      operationId: streamEvents
+      summary: Live events (SSE)
+      tags:
+      - events
+      x-required-role: viewer
+      parameters:
+      - name: swimlane
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/SwimlaneId'
+          maxItems: 64
+          uniqueItems: true
+        description: Only events of these swimlanes; limited to what the user can see.
+        style: form
+        explode: true
+      - name: kinds
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventKind'
+          maxItems: 15
+          uniqueItems: true
+        description: Only these kinds; all when absent.
+        style: form
+        explode: true
+      - name: Last-Event-ID
+        in: header
+        required: false
+        schema:
+          type: string
+          maxLength: 64
+        description: Resume after this event; a `resync` event is sent if it is too old.
+      responses:
+        '200':
+          description: A `text/event-stream`. Events carry ids and kinds only, never file content (S12).
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/features/status:
+    get:
+      operationId: getFeatureStatus
+      summary: Documented flags and their values per swimlane
+      tags:
+      - docs
+      x-required-role: viewer
+      parameters:
+      - name: flag
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/ShortText'
+      - name: file
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/LogicalFile'
+      - name: channel
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/ChannelName'
+      - name: swimlanes
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/SwimlaneId'
+          maxItems: 64
+          uniqueItems: true
+        style: form
+        explode: false
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/findings:
+    get:
+      operationId: listFindings
+      summary: List findings (checks C1 to C11)
+      tags:
+      - findings
+      x-required-role: viewer
+      parameters:
+      - name: swimlane
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/SwimlaneId'
+      - name: kinds
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/FindingKind'
+          maxItems: 11
+          uniqueItems: true
+        style: form
+        explode: false
+      - name: min_severity
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/Severity'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FindingPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/grid:
+    get:
+      operationId: getGrid
+      summary: One file across swimlanes
+      tags:
+      - compare
+      x-required-role: viewer
+      parameters:
+      - name: file
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/LogicalFile'
+      - name: swimlanes
+        in: query
+        required: true
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/SwimlaneId'
+          minItems: 1
+          maxItems: 64
+          uniqueItems: true
+        description: Swimlanes to compare, comma separated.
+        style: form
+        explode: false
+      - name: channel
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/ChannelName'
+      - name: only_differing
+        in: query
+        required: false
+        schema:
+          type: boolean
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Grid'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/me:
+    get:
+      operationId: getMe
+      summary: The signed-in user
+      tags:
+      - me
+      x-required-role: viewer
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/me/access-request:
+    post:
+      operationId: createAccessRequest
+      summary: Ask for a different role
+      tags:
+      - me
+      x-required-role: viewer
+      parameters:
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccessRequestCreate'
+      responses:
+        '202':
+          description: Request created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessRequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/me/github-token:
+    put:
+      operationId: putGithubToken
+      summary: Store or replace my GitHub token
+      description: Verified against GitHub, then stored envelope-encrypted with the user and credential ids as associated
+        data (S7). The response never contains the token.
+      tags:
+      - me
+      x-required-role: editor
+      parameters:
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GithubTokenRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GithubCredential'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: deleteGithubToken
+      summary: Remove my GitHub token
+      tags:
+      - me
+      x-required-role: editor
+      parameters:
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Done. No body.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/pr-jobs/{id}:
+    get:
+      operationId: getPrJob
+      summary: A pull-request job
+      tags:
+      - writes
+      x-required-role: viewer
+      parameters:
+      - $ref: '#/components/parameters/NumericId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrJob'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/proposals:
+    get:
+      operationId: listProposals
+      summary: List proposals
+      tags:
+      - writes
+      x-required-role: viewer
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/ProposalStatus'
+      - name: swimlane
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/SwimlaneId'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProposalPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/proposals/{id}/approve:
+    post:
+      operationId: approveProposal
+      summary: Approve a proposal
+      description: Applies the change if the file still matches; otherwise the proposal becomes stale (409).
+      tags:
+      - writes
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/NumericId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApproveRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '423':
+          $ref: '#/components/responses/Locked'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/proposals/{id}/reject:
+    post:
+      operationId: rejectProposal
+      summary: Reject a proposal
+      tags:
+      - writes
+      x-required-role: admin
+      parameters:
+      - $ref: '#/components/parameters/NumericId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RejectRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Proposal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/prs:
+    post:
+      operationId: createPr
+      summary: Raise a pull request
+      description: A second PR for a change that already has an open PR is blocked with 409 (D77). The user's own
+        GitHub token is used.
+      tags:
+      - writes
+      x-required-role: editor
+      parameters:
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePrRequest'
+      responses:
+        '202':
+          description: Job accepted; follow it over SSE or `GET /pr-jobs/{id}`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrJob'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
+    get:
+      operationId: listPrs
+      summary: List pull-request links
+      tags:
+      - writes
+      x-required-role: viewer
+      parameters:
+      - name: swimlane
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/SwimlaneId'
+      - name: state
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/PrState'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrLinkPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/search/settings:
+    get:
+      operationId: searchSettings
+      summary: Search setting paths
+      tags:
+      - search
+      x-required-role: viewer
+      parameters:
+      - name: q
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 256
+        description: Part of a setting path.
+      - name: swimlanes
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/SwimlaneId'
+          maxItems: 64
+          uniqueItems: true
+        style: form
+        explode: false
+      - name: file
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/LogicalFile'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingHitPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/search/text:
+    get:
+      operationId: searchText
+      summary: Search file text
+      description: Results are capped by `max_total`; `truncated` says when more exist.
+      tags:
+      - search
+      x-required-role: viewer
+      parameters:
+      - name: pattern
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 512
+        description: Linear-time regex or literal, at most 512 bytes.
+      - name: regex
+        in: query
+        required: false
+        schema:
+          type: boolean
+      - name: case_sensitive
+        in: query
+        required: false
+        schema:
+          type: boolean
+      - name: swimlanes
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/SwimlaneId'
+          maxItems: 64
+          uniqueItems: true
+        style: form
+        explode: false
+      - name: path_glob
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/ShortText'
+      - name: max_total
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 500
+      - name: max_per_file
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TextResults'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/swimlanes:
+    get:
+      operationId: listSwimlanes
+      summary: List swimlanes
+      tags:
+      - swimlanes
+      x-required-role: viewer
+      parameters:
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SwimlaneSummaryPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}:
+    get:
+      operationId: getSwimlane
+      summary: One swimlane with its services
+      tags:
+      - swimlanes
+      x-required-role: viewer
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SwimlaneDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/drift:
+    get:
+      operationId: listDrift
+      summary: Files that are not in sync
+      tags:
+      - swimlanes
+      x-required-role: viewer
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - name: state
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/DriftState'
+      - name: prefix
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/NfsPath'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileEntryPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/effective:
+    get:
+      operationId: getEffectiveConfig
+      summary: Effective config of a file
+      tags:
+      - swimlanes
+      - content
+      x-required-role: viewer
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - name: file
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/LogicalFile'
+      - name: tenant
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/TenantId'
+      - name: channel
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/ChannelName'
+      - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EffectiveConfig'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '304':
+          description: 'Not modified: the ETag matched.'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/files:
+    put:
+      operationId: editFile
+      summary: Edit a file
+      description: Carries the expected hash. A mismatch is 409 and nothing is written. May create a proposal instead
+        of applying (D-approvals).
+      tags:
+      - writes
+      x-required-role: editor
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EditFileRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '423':
+          $ref: '#/components/responses/Locked'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: deleteFile
+      summary: Delete a file
+      tags:
+      - writes
+      x-required-role: editor
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - name: path
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/NfsPath'
+      - name: expected
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/ContentHash'
+        description: The hash the caller believes is there.
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '423':
+          $ref: '#/components/responses/Locked'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/files/content:
+    get:
+      operationId: getFileContent
+      summary: Read one file
+      description: 'Denied files return `content_withheld: true` and no text (D79). The ETag is the content hash.'
+      tags:
+      - swimlanes
+      - content
+      x-required-role: viewer
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - name: path
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/NfsPath'
+      - name: source
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - nfs
+          - baseline
+          - blob
+          - git
+          default: nfs
+        description: Where to read from.
+      - name: hash
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/ContentHash'
+        description: With source=blob.
+      - name: repo
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/RepoKind'
+        description: With source=git.
+      - name: ref
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/GitRef'
+        description: With source=git.
+      - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileContent'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '304':
+          description: 'Not modified: the ETag matched.'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/files/history:
+    get:
+      operationId: listFileHistory
+      summary: Versions of one file
+      tags:
+      - swimlanes
+      x-required-role: viewer
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - name: path
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/NfsPath'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/files/reveal:
+    post:
+      operationId: revealValue
+      summary: Reveal a masked value
+      description: Audited. The value is never cached.
+      tags:
+      - swimlanes
+      x-required-role: editor
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevealRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevealedValue'
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/files/revert:
+    post:
+      operationId: revertFile
+      summary: Revert a file to an earlier version
+      tags:
+      - writes
+      x-required-role: editor
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevertFileRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '423':
+          $ref: '#/components/responses/Locked'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/files/upload:
+    post:
+      operationId: uploadFile
+      summary: Upload a file
+      tags:
+      - writes
+      x-required-role: editor
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                path:
+                  $ref: '#/components/schemas/NfsPath'
+                expected_state:
+                  type: string
+                  enum:
+                  - absent
+                  - hash
+                expected_hash:
+                  $ref: '#/components/schemas/ContentHash'
+                file:
+                  type: string
+                  format: binary
+                  description: At most 25 MiB. Binary images and other non-text files are allowed; denied globs
+                    are refused.
+              additionalProperties: false
+              required:
+              - path
+              - expected_state
+              - file
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '423':
+          $ref: '#/components/responses/Locked'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/notify:
+    post:
+      operationId: notifyServices
+      summary: Tell the config-server about changed paths
+      description: Audited. The only caller of the config-server's `/update-resources` is the agent on the hub's
+        behalf (Q37).
+      tags:
+      - writes
+      x-required-role: operator
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotifyRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotifyResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/pending-restarts:
+    get:
+      operationId: listPendingRestarts
+      summary: Services that have not picked up changes
+      tags:
+      - swimlanes
+      x-required-role: viewer
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceStatePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/restart:
+    post:
+      operationId: restartService
+      summary: Restart a service
+      tags:
+      - writes
+      x-required-role: operator
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceRef'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '423':
+          $ref: '#/components/responses/Locked'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/served:
+    get:
+      operationId: getServedFile
+      summary: A file as the config-server serves it
+      tags:
+      - swimlanes
+      - content
+      x-required-role: viewer
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - name: application
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/AppName'
+      - name: tenant
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/TenantId'
+      - name: channel
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/ChannelName'
+      - name: file
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/NfsPath'
+      - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServedFile'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '304':
+          description: 'Not modified: the ETag matched.'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/tree:
+    get:
+      operationId: listSwimlaneTree
+      summary: List files below a folder
+      tags:
+      - swimlanes
+      x-required-role: viewer
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - name: prefix
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/NfsPath'
+        description: Folder to list; the root when absent.
+      - name: drift
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/DriftState'
+        description: Only entries in this drift state.
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileEntryPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+  /auth/callback:
+    get:
+      operationId: authCallback
+      summary: Finish the Entra sign-in
+      description: 'Open by design: the state and nonce checks authenticate the response (S1).'
+      tags:
+      - auth
+      x-required-role: none
+      parameters:
+      - name: code
+        in: query
+        required: true
+        schema:
+          type: string
+          maxLength: 4096
+      - name: state
+        in: query
+        required: true
+        schema:
+          type: string
+          maxLength: 512
+      responses:
+        '302':
+          description: Session cookie set; redirect to the web app. A first sign-in creates a pending user and an
+            access request (D36).
+          headers:
+            Location:
+              schema:
+                type: string
+            Set-Cookie:
+              schema:
+                type: string
+              description: '`lk_session` (HttpOnly, Secure, SameSite=Lax) and `lk_csrf`.'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        default:
+          $ref: '#/components/responses/Error'
+      security: []
+  /auth/login:
+    get:
+      operationId: authLogin
+      summary: Start the Entra sign-in
+      description: No session exists yet, so this operation is open by design (S1).
+      tags:
+      - auth
+      x-required-role: none
+      parameters:
+      - name: return_to
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 512
+          pattern: ^/[^/\\].*$|^/$
+        description: A path inside the web app to return to after sign-in. Never an absolute URL.
+      responses:
+        '302':
+          description: Redirect to Microsoft Entra ID with state, nonce and PKCE.
+          headers:
+            Location:
+              schema:
+                type: string
+            Set-Cookie:
+              schema:
+                type: string
+              description: Short-lived sign-in state cookie.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        default:
+          $ref: '#/components/responses/Error'
+      security: []
+  /auth/logout:
+    post:
+      operationId: authLogout
+      summary: End the session
+      description: 'Open by design: with no session there is nothing to end. A request with a session must pass
+        the CSRF check.'
+      tags:
+      - auth
+      x-required-role: none
+      parameters:
+      - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204':
+          description: Done. No body.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+      security: []
+  /hooks/github:
+    post:
+      operationId: githubWebhook
+      summary: GitHub webhook
+      description: No session. Verified by HMAC over the raw body with a constant-time comparison, plus delivery-id
+        replay protection (S3, S4).
+      tags:
+      - hooks
+      x-required-role: none
+      parameters:
+      - name: X-Hub-Signature-256
+        in: header
+        required: true
+        schema:
+          type: string
+          pattern: ^sha256=[0-9a-f]{64}$
+      - name: X-GitHub-Event
+        in: header
+        required: true
+        schema:
+          type: string
+          enum:
+          - push
+          - pull_request
+          - ping
+      - name: X-GitHub-Delivery
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: GitHub's payload. Only the fields the hub reads are interpreted; the body is limited
+                to 1 MiB.
+      responses:
+        '202':
+          description: Accepted. Replays of a delivery id are acknowledged and ignored.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        default:
+          $ref: '#/components/responses/Error'
+      security: []
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: lk_session
+      description: HttpOnly, Secure, SameSite=Lax session cookie set by `/auth/callback` (S2).
+  parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 256
+      description: 'Double-submit token (S3): the value of the `lk_csrf` cookie. The server also checks that `Origin`
+        is the public origin.'
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        pattern: ^[A-Za-z0-9._-]{1,128}$
+      description: Chosen by the client for each logical write. The same key with the same request returns the stored
+        response; the same key with a different request returns 422. Kept 24 hours.
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 200
+      description: An ETag from an earlier response. A match returns 304 with no body.
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        $ref: '#/components/schemas/Cursor'
+      description: The `next` value of the previous page. Absent for the first page.
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 100
+      description: Page size, at most 500.
+    SwimlaneId:
+      name: id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/SwimlaneId'
+    SwimlaneParam:
+      name: swimlane
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/SwimlaneId'
+    ConfigKey:
+      name: id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/ConfigKey'
+    NumericId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+  headers:
+    ETag:
+      description: Strong validator. For content it is derived from content hashes.
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: The request is malformed or a parameter failed validation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: No valid session.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: The user is pending or disabled, lacks the role, or failed the CSRF or Origin check.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: No such resource, or the user may not know it exists.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Conflict:
+      description: The expected hash or version did not match. Nothing was written.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ConflictProblem'
+    PayloadTooLarge:
+      description: The body exceeds the size limit.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Locked:
+      description: A sync window or PR job holds the file.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/LockedProblem'
+    Error:
+      description: Any other error.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unprocessable:
+      description: The content is invalid, the request is not allowed, or the Idempotency-Key was reused with a
+        different request. Write rejections add `reason`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+  schemas:
+    SwimlaneId:
+      type: string
+      pattern: ^[a-z0-9][a-z0-9-]{0,62}$
+      description: Lower case letters, digits and hyphens, at most 63 characters.
+    TenantId:
+      type: string
+      pattern: ^[a-z0-9][a-z0-9_-]{0,62}$
+      description: Equals the tenant Git branch name.
+    ContentHash:
+      type: string
+      pattern: ^[0-9a-f]{64}$
+      description: SHA-256 of the content, 64 lower case hex characters.
+    NfsPath:
+      type: string
+      minLength: 1
+      maxLength: 1024
+      description: Relative path below the swimlane's NFS root. No leading slash, no `..`, no backslash or control
+        characters. The server parses it with NfsPath.
+    LogicalFile:
+      type: string
+      minLength: 1
+      maxLength: 1024
+      description: A base-relative path without the tenant suffix, such as `tx-infinity-api/tx-infinity-core.yml`.
+    RepoPath:
+      type: string
+      minLength: 1
+      maxLength: 1024
+      description: A path inside a Git repository, relative to its root.
+    SettingPath:
+      type: string
+      minLength: 1
+      maxLength: 1024
+      description: A flattened setting path such as `a.b.c` or `a.b[0]`, optionally prefixed `#<doc>/`.
+    DocPath:
+      type: string
+      minLength: 1
+      maxLength: 1024
+      description: 'A path in the docs filesystem: `/git/<branch>/<path>` or `/uploads/<name>`.'
+    ChannelName:
+      type: string
+      pattern: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$
+    AppName:
+      type: string
+      pattern: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$
+    GitRef:
+      type: string
+      minLength: 1
+      maxLength: 255
+      description: A branch, tag or 40/64 character commit id.
+    CommitId:
+      type: string
+      pattern: ^[0-9a-f]{40}([0-9a-f]{24})?$
+    UserId:
+      type: string
+      pattern: ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}:[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$
+      description: '`<Entra tenant id>:<Entra object id>`.'
+    Timestamp:
+      type: integer
+      format: int64
+      description: Milliseconds since the Unix epoch.
+    ShortText:
+      type: string
+      maxLength: 256
+    Cursor:
+      type: string
+      pattern: ^[A-Za-z0-9_=.-]{1,512}$
+      description: Opaque keyset cursor. Pass the `next` of the previous page.
+    CompareRef:
+      type: string
+      maxLength: 300
+      pattern: ^((nfs|baseline|effective):[a-z0-9][a-z0-9-]{0,62}|git:(base|tenant)@.{1,255})$
+      description: 'One side of a comparison: `nfs:<swimlane>`, `baseline:<swimlane>`, `effective:<swimlane>`, `git:base@<ref>`
+        or `git:tenant@<ref>`.'
+      examples:
+      - nfs:sit1
+      - git:base@v2.3.1
+    ConfigKey:
+      type: string
+      pattern: ^[a-z0-9][a-z0-9_-]{0,62}$
+      description: Identifier of an admin-managed setting row.
+    DraftId:
+      type: string
+      pattern: ^[A-Za-z0-9._-]{1,128}$
+    LineRange:
+      type: object
+      properties:
+        start:
+          type: integer
+          minimum: 1
+        end:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+      required:
+      - start
+      - end
+      description: 1-based, inclusive.
+    Role:
+      type: string
+      enum:
+      - viewer
+      - editor
+      - operator
+      - admin
+      description: 'Ordered: viewer < editor < operator < admin.'
+    UserStatus:
+      type: string
+      enum:
+      - pending
+      - active
+      - disabled
+    FileKind:
+      type: string
+      enum:
+      - base
+      - tenant
+      - untracked
+    FileClass:
+      type: string
+      enum:
+      - structured
+      - text
+      - binary
+      - denied
+      description: '`denied` files are known by name, size and hash only (D79).'
+    EolStyle:
+      type: string
+      enum:
+      - lf
+      - crlf
+      - mixed
+    TextEncoding:
+      type: string
+      enum:
+      - utf8
+      - utf16le
+      - utf16be
+      - latin1
+    MergeMode:
+      type: string
+      enum:
+      - whole_file
+      - spring_merge
+    DriftState:
+      type: string
+      enum:
+      - in_sync
+      - git_ahead
+      - nfs_ahead
+      - conflict
+      - unknown
+      - untracked
+      - intentional_divergence
+    ProposalStatus:
+      type: string
+      enum:
+      - draft
+      - pending
+      - approved
+      - rejected
+      - stale
+      - expired
+      - applied
+    FindingKind:
+      type: string
+      enum:
+      - missed_base_changes
+      - redundant_tenant_file
+      - uneven_tenant_files
+      - orphan_file
+      - drift
+      - environment_host_mismatch
+      - overwritten_nfs_change
+      - duplicate_keys
+      - ambiguous_file_name
+      - unresolved_placeholder
+      - config_server_restart_required
+    FileRole:
+      type: string
+      enum:
+      - property_source
+      - resource
+    PickupState:
+      type: string
+      enum:
+      - live
+      - live_within_ttl
+      - needs_notify_or_restart
+      - needs_config_server_restart
+      description: When a change takes effect for a consuming service (D85). There is no bare pending-restart state.
+    RepoKind:
+      type: string
+      enum:
+      - base
+      - tenant
+    AttributionSource:
+      type: string
+      enum:
+      - tool_write
+      - sentinel_login
+      - sync_job
+      - nfs_client
+      - fs_owner_hint
+      - unknown
+      description: Strongest evidence first (D73).
+    Confidence:
+      type: string
+      enum:
+      - low
+      - medium
+      - high
+      - certain
+    Severity:
+      type: string
+      enum:
+      - low
+      - medium
+      - high
+      - critical
+    ObservationSource:
+      type: string
+      enum:
+      - scan
+      - tool_write
+      - sync
+    AgentStatus:
+      type: string
+      enum:
+      - connected
+      - disconnected
+      - never_seen
+    PrState:
+      type: string
+      enum:
+      - open
+      - merged
+      - closed
+    PrJobState:
+      type: string
+      enum:
+      - pending
+      - preparing
+      - committing
+      - opening
+      - completed
+      - failed
+    EventKind:
+      type: string
+      enum:
+      - file_observed
+      - drift_changed
+      - findings_changed
+      - pending_restart_changed
+      - proposal_changed
+      - agent_status_changed
+      - git_head_moved
+      - access_request_created
+      - doc_indexed
+      - resync
+      - attribution_updated
+      - pr_state_changed
+      - pr_job_progress
+      - sync_window_opened
+      - sync_window_closed
+    ValueType:
+      type: string
+      enum:
+      - string
+      - int
+      - float
+      - bool
+      - 'null'
+      - other
+    ChangeKind:
+      type: string
+      enum:
+      - added
+      - removed
+      - changed
+      - type_changed
+    DiffLineKind:
+      type: string
+      enum:
+      - context
+      - added
+      - removed
+    CompareState:
+      type: string
+      enum:
+      - same
+      - different
+      - left_only
+      - right_only
+    RejectReason:
+      type: string
+      enum:
+      - denied
+      - too_large
+      - invalid_content
+      - unknown_swimlane
+      - agent_unavailable
+      - not_allowed
+    NotificationKind:
+      type: string
+      enum:
+      - access_requested
+      - proposal_pending
+      - proposal_decided
+      - service_restarted
+      - pr_raised
+      - agent_disconnected
+      - critical_finding
+    AccessRequestStatus:
+      type: string
+      enum:
+      - pending
+      - approved
+      - rejected
+    Problem:
+      type: object
+      description: RFC 9457 problem details. Never contains SQL, paths of the server, stack traces or secrets.
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        detail:
+          type: string
+        instance:
+          type: string
+        request_id:
+          type: string
+          description: Quote this to find the request in the logs.
+        reason:
+          $ref: '#/components/schemas/RejectReason'
+          description: Why a write was refused (422), when it was.
+      required:
+      - type
+      - title
+      - status
+      additionalProperties: true
+    ConflictProblem:
+      allOf:
+      - $ref: '#/components/schemas/Problem'
+      - type: object
+        properties:
+          current:
+            oneOf:
+            - $ref: '#/components/schemas/ContentHash'
+            - type: 'null'
+        additionalProperties: false
+        required:
+        - current
+        description: '`current` is the hash found instead of the expected one; null when the file is absent.'
+    LockedProblem:
+      allOf:
+      - $ref: '#/components/schemas/Problem'
+      - type: object
+        properties:
+          until:
+            oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        additionalProperties: false
+        required:
+        - until
+        description: A sync window or PR job holds the file.
+    Evidence:
+      type: object
+      properties:
+        executable:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+        login_identity:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+        observed_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+      additionalProperties: false
+    ActorUser:
+      type: object
+      properties:
+        kind:
+          const: user
+        user:
+          $ref: '#/components/schemas/UserId'
+      additionalProperties: false
+      required:
+      - kind
+      - user
+    ActorOsLogin:
+      type: object
+      properties:
+        kind:
+          const: os_login
+        login:
+          $ref: '#/components/schemas/ShortText'
+      additionalProperties: false
+      required:
+      - kind
+      - login
+    ActorJob:
+      type: object
+      properties:
+        kind:
+          const: job
+        job:
+          type: object
+          properties:
+            name:
+              type: string
+            uid:
+              type: string
+          additionalProperties: false
+          required:
+          - name
+          - uid
+      additionalProperties: false
+      required:
+      - kind
+      - job
+    Actor:
+      oneOf:
+      - $ref: '#/components/schemas/ActorUser'
+      - $ref: '#/components/schemas/ActorOsLogin'
+      - $ref: '#/components/schemas/ActorJob'
+      discriminator:
+        propertyName: kind
+        mapping:
+          user: '#/components/schemas/ActorUser'
+          os_login: '#/components/schemas/ActorOsLogin'
+          job: '#/components/schemas/ActorJob'
+    Attribution:
+      type: object
+      properties:
+        source:
+          $ref: '#/components/schemas/AttributionSource'
+        confidence:
+          $ref: '#/components/schemas/Confidence'
+        actor:
+          oneOf:
+          - $ref: '#/components/schemas/Actor'
+          - type: 'null'
+        evidence:
+          $ref: '#/components/schemas/Evidence'
+      additionalProperties: false
+      required:
+      - source
+      - confidence
+      - actor
+      - evidence
+      description: Who changed a file and how sure we are (D73). Upgraded later, never downgraded.
+    User:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UserId'
+        email:
+          $ref: '#/components/schemas/ShortText'
+        display_name:
+          $ref: '#/components/schemas/ShortText'
+        role:
+          oneOf:
+          - $ref: '#/components/schemas/Role'
+          - type: 'null'
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        requires_approval:
+          type: boolean
+        github_login:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+        last_seen_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - id
+      - email
+      - display_name
+      - role
+      - status
+      - requires_approval
+      - github_login
+      - last_seen_at
+    FileFormat:
+      type: object
+      properties:
+        eol:
+          $ref: '#/components/schemas/EolStyle'
+        encoding:
+          $ref: '#/components/schemas/TextEncoding'
+        bom:
+          type: boolean
+      additionalProperties: false
+      required:
+      - eol
+      - encoding
+      - bom
+    FileEntry:
+      type: object
+      properties:
+        path:
+          $ref: '#/components/schemas/NfsPath'
+        is_dir:
+          type: boolean
+        kind:
+          $ref: '#/components/schemas/FileKind'
+        class:
+          $ref: '#/components/schemas/FileClass'
+        role:
+          $ref: '#/components/schemas/FileRole'
+        size:
+          type: integer
+          minimum: 0
+        hash:
+          oneOf:
+          - $ref: '#/components/schemas/ContentHash'
+          - type: 'null'
+        drift:
+          $ref: '#/components/schemas/DriftState'
+        format:
+          oneOf:
+          - $ref: '#/components/schemas/FileFormat'
+          - type: 'null'
+        content_withheld:
+          type: boolean
+          description: 'True for denied files: no content is stored or served.'
+        attribution:
+          oneOf:
+          - $ref: '#/components/schemas/Attribution'
+          - type: 'null'
+        severity:
+          oneOf:
+          - $ref: '#/components/schemas/Severity'
+          - type: 'null'
+        pickup_state:
+          oneOf:
+          - $ref: '#/components/schemas/PickupState'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - path
+      - is_dir
+      - kind
+      - class
+      - role
+      - size
+      - hash
+      - drift
+      - format
+      - content_withheld
+      - attribution
+      - severity
+      - pickup_state
+    VersionLabel:
+      type: object
+      properties:
+        tag:
+          oneOf:
+          - $ref: '#/components/schemas/GitRef'
+          - type: 'null'
+        distance:
+          type: integer
+          minimum: 0
+        commit:
+          $ref: '#/components/schemas/CommitId'
+      additionalProperties: false
+      required:
+      - tag
+      - distance
+      - commit
+    SwimlaneSummary:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/SwimlaneId'
+        display_name:
+          $ref: '#/components/schemas/ShortText'
+        tenants:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantId'
+          minItems: 1
+          maxItems: 100
+          description: A swimlane has a set of tenants, not exactly one (Q34).
+        agent:
+          $ref: '#/components/schemas/AgentStatus'
+        last_scan_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+        base_version:
+          oneOf:
+          - $ref: '#/components/schemas/VersionLabel'
+          - type: 'null'
+        drift_counts:
+          type: array
+          items:
+            type: array
+            prefixItems:
+            - $ref: '#/components/schemas/DriftState'
+            - type: integer
+              minimum: 0
+            minItems: 2
+            maxItems: 2
+          maxItems: 16
+        finding_count:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+      required:
+      - id
+      - display_name
+      - tenants
+      - agent
+      - last_scan_at
+      - base_version
+      - drift_counts
+      - finding_count
+    ServiceRef:
+      type: object
+      properties:
+        namespace:
+          type: string
+          pattern: ^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$
+        name:
+          type: string
+          pattern: ^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$
+      additionalProperties: false
+      required:
+      - namespace
+      - name
+    ServiceState:
+      type: object
+      properties:
+        service:
+          $ref: '#/components/schemas/ServiceRef'
+        pickup:
+          $ref: '#/components/schemas/PickupState'
+        pending_since:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+        live_by:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+        notifications_enabled:
+          type: boolean
+        cache_ttl_secs:
+          type: integer
+          minimum: 0
+        pending_files:
+          type: array
+          items:
+            $ref: '#/components/schemas/NfsPath'
+          maxItems: 500
+      additionalProperties: false
+      required:
+      - service
+      - pickup
+      - pending_since
+      - live_by
+      - notifications_enabled
+      - cache_ttl_secs
+      - pending_files
+    SwimlaneDetail:
+      allOf:
+      - $ref: '#/components/schemas/SwimlaneSummary'
+      - type: object
+        properties:
+          services:
+            type: array
+            items:
+              $ref: '#/components/schemas/ServiceState'
+            maxItems: 500
+          auto_notify:
+            type: boolean
+        additionalProperties: false
+        required:
+        - services
+        - auto_notify
+    FileContent:
+      type: object
+      properties:
+        path:
+          $ref: '#/components/schemas/NfsPath'
+        hash:
+          $ref: '#/components/schemas/ContentHash'
+        class:
+          $ref: '#/components/schemas/FileClass'
+        format:
+          $ref: '#/components/schemas/FileFormat'
+        size:
+          type: integer
+          minimum: 0
+        content_withheld:
+          type: boolean
+          description: True for denied files. `text` is then null and `/blobs/{hash}` returns 404.
+        text:
+          oneOf:
+          - type: string
+          - type: 'null'
+          description: Decoded text for structured and text files, with the original line endings. Null for binary
+            and withheld files; binary content comes from `/blobs/{hash}`.
+      additionalProperties: false
+      required:
+      - path
+      - hash
+      - class
+      - format
+      - size
+      - content_withheld
+      - text
+    Version:
+      type: object
+      properties:
+        hash:
+          $ref: '#/components/schemas/ContentHash'
+        observed_at:
+          $ref: '#/components/schemas/Timestamp'
+        source:
+          $ref: '#/components/schemas/ObservationSource'
+        size:
+          type: integer
+          minimum: 0
+        attribution:
+          $ref: '#/components/schemas/Attribution'
+        severity:
+          oneOf:
+          - $ref: '#/components/schemas/Severity'
+          - type: 'null'
+        commit:
+          oneOf:
+          - $ref: '#/components/schemas/CommitId'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - hash
+      - observed_at
+      - source
+      - size
+      - attribution
+      - severity
+      - commit
+    SettingLocation:
+      type: object
+      properties:
+        path:
+          $ref: '#/components/schemas/SettingPath'
+        lines:
+          $ref: '#/components/schemas/LineRange'
+      additionalProperties: false
+      required:
+      - path
+      - lines
+    EffectiveSource:
+      type: object
+      properties:
+        path:
+          $ref: '#/components/schemas/NfsPath'
+        rank:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+      required:
+      - path
+      - rank
+    EffectiveSetting:
+      type: object
+      properties:
+        path:
+          $ref: '#/components/schemas/SettingPath'
+        value:
+          type: string
+        source:
+          $ref: '#/components/schemas/NfsPath'
+        location:
+          oneOf:
+          - $ref: '#/components/schemas/SettingLocation'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - path
+      - value
+      - source
+      - location
+      description: Values the secret scan flags are masked; `/files/reveal` shows one (audited).
+    EffectiveConfig:
+      type: object
+      properties:
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        file:
+          $ref: '#/components/schemas/LogicalFile'
+        tenant:
+          $ref: '#/components/schemas/TenantId'
+        channel:
+          oneOf:
+          - $ref: '#/components/schemas/ChannelName'
+          - type: 'null'
+        role:
+          $ref: '#/components/schemas/FileRole'
+        hash:
+          $ref: '#/components/schemas/ContentHash'
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/EffectiveSource'
+          maxItems: 16
+        settings:
+          type: array
+          items:
+            $ref: '#/components/schemas/EffectiveSetting'
+          maxItems: 100000
+        unresolved_placeholders:
+          type: array
+          items:
+            $ref: '#/components/schemas/ShortText'
+          maxItems: 10000
+      additionalProperties: false
+      required:
+      - swimlane
+      - file
+      - tenant
+      - channel
+      - role
+      - hash
+      - sources
+      - settings
+      - unresolved_placeholders
+    ServedFile:
+      type: object
+      properties:
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        application:
+          $ref: '#/components/schemas/AppName'
+        tenant:
+          $ref: '#/components/schemas/TenantId'
+        channel:
+          oneOf:
+          - $ref: '#/components/schemas/ChannelName'
+          - type: 'null'
+        file:
+          $ref: '#/components/schemas/NfsPath'
+        role:
+          $ref: '#/components/schemas/FileRole'
+        hash:
+          $ref: '#/components/schemas/ContentHash'
+        content_withheld:
+          type: boolean
+        text:
+          oneOf:
+          - type: string
+          - type: 'null'
+          description: 'The file exactly as the config-server would serve it: `${KEY}` replaced only where the property
+            view has the key.'
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/EffectiveSource'
+          maxItems: 16
+        unresolved_placeholders:
+          type: array
+          items:
+            $ref: '#/components/schemas/ShortText'
+          maxItems: 10000
+      additionalProperties: false
+      required:
+      - swimlane
+      - application
+      - tenant
+      - channel
+      - file
+      - role
+      - hash
+      - content_withheld
+      - text
+      - sources
+      - unresolved_placeholders
+      description: The 'as served' view. Never uses environment values.
+    RevealedValue:
+      type: object
+      properties:
+        value:
+          type: string
+          description: The unmasked value. Audited; the response is never cached.
+      additionalProperties: false
+      required:
+      - value
+    SettingValue:
+      type: object
+      properties:
+        text:
+          type: string
+        ty:
+          $ref: '#/components/schemas/ValueType'
+        flag:
+          oneOf:
+          - type: string
+            enum:
+            - yaml_boolean_like
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - text
+      - ty
+      - flag
+    SettingChange:
+      type: object
+      properties:
+        path:
+          $ref: '#/components/schemas/SettingPath'
+        kind:
+          $ref: '#/components/schemas/ChangeKind'
+        left:
+          oneOf:
+          - $ref: '#/components/schemas/SettingValue'
+          - type: 'null'
+        right:
+          oneOf:
+          - $ref: '#/components/schemas/SettingValue'
+          - type: 'null'
+        left_location:
+          oneOf:
+          - $ref: '#/components/schemas/SettingLocation'
+          - type: 'null'
+        right_location:
+          oneOf:
+          - $ref: '#/components/schemas/SettingLocation'
+          - type: 'null'
+        severity:
+          oneOf:
+          - $ref: '#/components/schemas/Severity'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - path
+      - kind
+      - left
+      - right
+      - left_location
+      - right_location
+      - severity
+    InlineRange:
+      type: object
+      properties:
+        start:
+          type: integer
+          minimum: 0
+        end:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+      required:
+      - start
+      - end
+    DiffLine:
+      type: object
+      properties:
+        kind:
+          $ref: '#/components/schemas/DiffLineKind'
+        text:
+          type: string
+        inline_changes:
+          type: array
+          items:
+            $ref: '#/components/schemas/InlineRange'
+          maxItems: 10000
+      additionalProperties: false
+      required:
+      - kind
+      - text
+      - inline_changes
+    DiffHunk:
+      type: object
+      properties:
+        old_start:
+          type: integer
+          minimum: 0
+        old_lines:
+          type: integer
+          minimum: 0
+        new_start:
+          type: integer
+          minimum: 0
+        new_lines:
+          type: integer
+          minimum: 0
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiffLine'
+          maxItems: 100000
+      additionalProperties: false
+      required:
+      - old_start
+      - old_lines
+      - new_start
+      - new_lines
+      - lines
+    BinaryCompare:
+      type: object
+      properties:
+        left:
+          oneOf:
+          - $ref: '#/components/schemas/ContentHash'
+          - type: 'null'
+        right:
+          oneOf:
+          - $ref: '#/components/schemas/ContentHash'
+          - type: 'null'
+        left_size:
+          oneOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+        right_size:
+          oneOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - left
+      - right
+      - left_size
+      - right_size
+    Comparison:
+      type: object
+      properties:
+        left:
+          $ref: '#/components/schemas/CompareRef'
+        right:
+          $ref: '#/components/schemas/CompareRef'
+        file:
+          oneOf:
+          - $ref: '#/components/schemas/LogicalFile'
+          - type: 'null'
+        class:
+          $ref: '#/components/schemas/FileClass'
+        identical:
+          type: boolean
+        eol_only:
+          type: boolean
+        hunks:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiffHunk'
+          maxItems: 100000
+        setting_changes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SettingChange'
+          maxItems: 100000
+        binary:
+          oneOf:
+          - $ref: '#/components/schemas/BinaryCompare'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - left
+      - right
+      - file
+      - class
+      - identical
+      - eol_only
+      - hunks
+      - setting_changes
+      - binary
+    TreeCompareEntry:
+      type: object
+      properties:
+        file:
+          $ref: '#/components/schemas/LogicalFile'
+        state:
+          $ref: '#/components/schemas/CompareState'
+      additionalProperties: false
+      required:
+      - file
+      - state
+    TreeComparison:
+      type: object
+      properties:
+        entries:
+          $ref: '#/components/schemas/TreeCompareEntryPage'
+        skipped_identical_subtrees:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+      required:
+      - entries
+      - skipped_identical_subtrees
+    GridCell:
+      type: object
+      properties:
+        value:
+          oneOf:
+          - $ref: '#/components/schemas/SettingValue'
+          - type: 'null'
+        location:
+          oneOf:
+          - $ref: '#/components/schemas/SettingLocation'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - value
+      - location
+    GridRow:
+      type: object
+      properties:
+        path:
+          $ref: '#/components/schemas/SettingPath'
+        cells:
+          type: array
+          items:
+            $ref: '#/components/schemas/GridCell'
+          maxItems: 64
+          description: One cell per swimlane, in the order of `swimlanes`.
+      additionalProperties: false
+      required:
+      - path
+      - cells
+    Grid:
+      type: object
+      properties:
+        swimlanes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SwimlaneId'
+          maxItems: 64
+        rows:
+          $ref: '#/components/schemas/GridRowPage'
+      additionalProperties: false
+      required:
+      - swimlanes
+      - rows
+    SettingHit:
+      type: object
+      properties:
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        file:
+          $ref: '#/components/schemas/NfsPath'
+        path:
+          $ref: '#/components/schemas/SettingPath'
+        value:
+          $ref: '#/components/schemas/SettingValue'
+        location:
+          $ref: '#/components/schemas/SettingLocation'
+      additionalProperties: false
+      required:
+      - swimlane
+      - file
+      - path
+      - value
+      - location
+    TextHit:
+      type: object
+      properties:
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        path:
+          $ref: '#/components/schemas/NfsPath'
+        line:
+          type: integer
+          minimum: 1
+        text:
+          type: string
+        ranges:
+          type: array
+          items:
+            type: array
+            prefixItems:
+            - type: integer
+              minimum: 0
+            - type: integer
+              minimum: 0
+            minItems: 2
+            maxItems: 2
+          maxItems: 1000
+      additionalProperties: false
+      required:
+      - swimlane
+      - path
+      - line
+      - text
+      - ranges
+    TextResults:
+      type: object
+      properties:
+        hits:
+          type: array
+          items:
+            $ref: '#/components/schemas/TextHit'
+          maxItems: 500
+        truncated:
+          type: boolean
+      additionalProperties: false
+      required:
+      - hits
+      - truncated
+    Finding:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        kind:
+          $ref: '#/components/schemas/FindingKind'
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        path:
+          oneOf:
+          - $ref: '#/components/schemas/NfsPath'
+          - type: 'null'
+        severity:
+          $ref: '#/components/schemas/Severity'
+        rule_ids:
+          type: array
+          items:
+            $ref: '#/components/schemas/ShortText'
+          maxItems: 100
+        message:
+          $ref: '#/components/schemas/ShortText'
+        locations:
+          type: array
+          items:
+            $ref: '#/components/schemas/SettingLocation'
+          maxItems: 1000
+        detected_at:
+          $ref: '#/components/schemas/Timestamp'
+      additionalProperties: false
+      required:
+      - id
+      - kind
+      - swimlane
+      - path
+      - severity
+      - rule_ids
+      - message
+      - locations
+      - detected_at
+    ExpectedAbsent:
+      type: object
+      properties:
+        state:
+          const: absent
+      additionalProperties: false
+      required:
+      - state
+    ExpectedHash:
+      type: object
+      properties:
+        state:
+          const: hash
+        hash:
+          $ref: '#/components/schemas/ContentHash'
+      additionalProperties: false
+      required:
+      - state
+      - hash
+    Expected:
+      oneOf:
+      - $ref: '#/components/schemas/ExpectedAbsent'
+      - $ref: '#/components/schemas/ExpectedHash'
+      discriminator:
+        propertyName: state
+        mapping:
+          absent: '#/components/schemas/ExpectedAbsent'
+          hash: '#/components/schemas/ExpectedHash'
+      description: 'What the caller expects to find. There is no blind write: a mismatch returns 409 and writes
+        nothing.'
+    EditFileRequest:
+      type: object
+      properties:
+        path:
+          $ref: '#/components/schemas/NfsPath'
+        expected:
+          $ref: '#/components/schemas/Expected'
+        content:
+          type: string
+          maxLength: 4194304
+          description: The whole new text, at most 4 MiB. The server restores the file's line endings, encoding
+            and BOM.
+      additionalProperties: false
+      required:
+      - path
+      - expected
+      - content
+    RevertFileRequest:
+      type: object
+      properties:
+        path:
+          $ref: '#/components/schemas/NfsPath'
+        expected:
+          $ref: '#/components/schemas/Expected'
+        to:
+          $ref: '#/components/schemas/ContentHash'
+      additionalProperties: false
+      required:
+      - path
+      - expected
+      - to
+    RevealRequest:
+      type: object
+      properties:
+        path:
+          $ref: '#/components/schemas/NfsPath'
+        setting:
+          $ref: '#/components/schemas/SettingPath'
+      additionalProperties: false
+      required:
+      - path
+      - setting
+    NotifyRequest:
+      type: object
+      properties:
+        paths:
+          type: array
+          items:
+            $ref: '#/components/schemas/NfsPath'
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+      additionalProperties: false
+      required:
+      - paths
+      description: Paths whose change the config-server should pick up (its `/update-resources`).
+    NotifyResult:
+      type: object
+      properties:
+        accepted:
+          type: integer
+          minimum: 0
+        audit_id:
+          type: integer
+          format: int64
+      additionalProperties: false
+      required:
+      - accepted
+      - audit_id
+    WriteApplied:
+      type: object
+      properties:
+        outcome:
+          const: applied
+        hash:
+          oneOf:
+          - $ref: '#/components/schemas/ContentHash'
+          - type: 'null'
+        audit_id:
+          type: integer
+          format: int64
+      additionalProperties: false
+      required:
+      - outcome
+      - hash
+      - audit_id
+    WriteProposalCreated:
+      type: object
+      properties:
+        outcome:
+          const: proposal_created
+        id:
+          type: integer
+          format: int64
+      additionalProperties: false
+      required:
+      - outcome
+      - id
+    WriteResult:
+      oneOf:
+      - $ref: '#/components/schemas/WriteApplied'
+      - $ref: '#/components/schemas/WriteProposalCreated'
+      discriminator:
+        propertyName: outcome
+        mapping:
+          applied: '#/components/schemas/WriteApplied'
+          proposal_created: '#/components/schemas/WriteProposalCreated'
+      description: A write either applies or becomes a proposal. Conflicts, locks and rejections are problem+json
+        (409, 423, 422).
+    CreatePrRequest:
+      type: object
+      properties:
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        paths:
+          type: array
+          items:
+            $ref: '#/components/schemas/NfsPath'
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+        title:
+          $ref: '#/components/schemas/ShortText'
+        body:
+          oneOf:
+          - type: string
+            maxLength: 65536
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - swimlane
+      - paths
+      - title
+    PrJob:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        state:
+          $ref: '#/components/schemas/PrJobState'
+        paths:
+          type: array
+          items:
+            $ref: '#/components/schemas/NfsPath'
+          maxItems: 100
+        pr_url:
+          oneOf:
+          - type: string
+            format: uri
+            maxLength: 512
+          - type: 'null'
+        error:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+      additionalProperties: false
+      required:
+      - id
+      - swimlane
+      - state
+      - paths
+      - pr_url
+      - error
+      - created_at
+      - updated_at
+    PrLink:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        path:
+          $ref: '#/components/schemas/NfsPath'
+        nfs_hash:
+          $ref: '#/components/schemas/ContentHash'
+        state:
+          $ref: '#/components/schemas/PrState'
+        pr_url:
+          type: string
+          format: uri
+          maxLength: 512
+        pr_number:
+          type: integer
+          minimum: 1
+        author:
+          $ref: '#/components/schemas/UserId'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        closed_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - id
+      - swimlane
+      - path
+      - nfs_hash
+      - state
+      - pr_url
+      - pr_number
+      - author
+      - created_at
+      - closed_at
+    Proposal:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        author:
+          $ref: '#/components/schemas/UserId'
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        path:
+          $ref: '#/components/schemas/NfsPath'
+        expected:
+          $ref: '#/components/schemas/Expected'
+        new_hash:
+          $ref: '#/components/schemas/ContentHash'
+        status:
+          $ref: '#/components/schemas/ProposalStatus'
+        hunks:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiffHunk'
+          maxItems: 100000
+        setting_changes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SettingChange'
+          maxItems: 100000
+        severity:
+          oneOf:
+          - $ref: '#/components/schemas/Severity'
+          - type: 'null'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+        decided_by:
+          oneOf:
+          - $ref: '#/components/schemas/UserId'
+          - type: 'null'
+        decision_comment:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - id
+      - author
+      - swimlane
+      - path
+      - expected
+      - new_hash
+      - status
+      - hunks
+      - setting_changes
+      - severity
+      - created_at
+      - expires_at
+      - decided_by
+      - decision_comment
+    ApproveRequest:
+      type: object
+      properties:
+        comment:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+      additionalProperties: false
+    RejectRequest:
+      type: object
+      properties:
+        reason:
+          $ref: '#/components/schemas/ShortText'
+      additionalProperties: false
+      required:
+      - reason
+    Draft:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/DraftId'
+        author:
+          $ref: '#/components/schemas/UserId'
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        path:
+          $ref: '#/components/schemas/NfsPath'
+        expected:
+          $ref: '#/components/schemas/Expected'
+        new_hash:
+          $ref: '#/components/schemas/ContentHash'
+        hunks:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiffHunk'
+          maxItems: 100000
+        setting_changes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SettingChange'
+          maxItems: 100000
+        status:
+          $ref: '#/components/schemas/ProposalStatus'
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+      additionalProperties: false
+      required:
+      - id
+      - author
+      - swimlane
+      - path
+      - expected
+      - new_hash
+      - hunks
+      - setting_changes
+      - status
+      - expires_at
+    DraftRequest:
+      type: object
+      properties:
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        path:
+          $ref: '#/components/schemas/NfsPath'
+        expected:
+          $ref: '#/components/schemas/Expected'
+        content:
+          type: string
+          maxLength: 4194304
+      additionalProperties: false
+      required:
+      - swimlane
+      - path
+      - expected
+      - content
+    Me:
+      allOf:
+      - $ref: '#/components/schemas/User'
+      - type: object
+        properties:
+          swimlane_access:
+            type: string
+            enum:
+            - all
+            description: Every signed-in user sees every swimlane.
+        additionalProperties: false
+    GithubTokenRequest:
+      type: object
+      properties:
+        token:
+          type: string
+          minLength: 1
+          maxLength: 512
+          writeOnly: true
+          format: password
+          description: A GitHub personal access token. Stored envelope-encrypted; never returned, logged or audited
+            (S7, S21).
+      additionalProperties: false
+      required:
+      - token
+    GithubCredential:
+      type: object
+      properties:
+        github_login:
+          $ref: '#/components/schemas/ShortText'
+        verified_at:
+          $ref: '#/components/schemas/Timestamp'
+        scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ShortText'
+          maxItems: 64
+      additionalProperties: false
+      required:
+      - github_login
+      - verified_at
+      - scopes
+    AccessRequestCreate:
+      type: object
+      properties:
+        requested_role:
+          $ref: '#/components/schemas/Role'
+        reason:
+          $ref: '#/components/schemas/ShortText'
+      additionalProperties: false
+      required:
+      - requested_role
+      - reason
+    AccessRequest:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        user:
+          $ref: '#/components/schemas/UserId'
+        email:
+          $ref: '#/components/schemas/ShortText'
+        requested_role:
+          oneOf:
+          - $ref: '#/components/schemas/Role'
+          - type: 'null'
+        reason:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+        status:
+          $ref: '#/components/schemas/AccessRequestStatus'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        decided_by:
+          oneOf:
+          - $ref: '#/components/schemas/UserId'
+          - type: 'null'
+        decided_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - id
+      - user
+      - email
+      - requested_role
+      - reason
+      - status
+      - created_at
+      - decided_by
+      - decided_at
+    DocSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          $ref: '#/components/schemas/ShortText'
+        path:
+          $ref: '#/components/schemas/DocPath'
+        source:
+          type: string
+          enum:
+          - git
+          - upload
+        version:
+          type: integer
+          minimum: 1
+        size:
+          type: integer
+          minimum: 0
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_by:
+          oneOf:
+          - $ref: '#/components/schemas/UserId'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - id
+      - title
+      - path
+      - source
+      - version
+      - size
+      - updated_at
+      - updated_by
+    DocCreateRequest:
+      type: object
+      properties:
+        title:
+          $ref: '#/components/schemas/ShortText'
+        markdown:
+          type: string
+          maxLength: 2097152
+          description: At most 2 MiB. Rendered on the server and sanitised with an allow-list (S12).
+      additionalProperties: false
+      required:
+      - title
+      - markdown
+    DocUpdateRequest:
+      type: object
+      properties:
+        markdown:
+          type: string
+          maxLength: 2097152
+        expected_version:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+      required:
+      - markdown
+      - expected_version
+    DocHit:
+      type: object
+      properties:
+        doc:
+          type: integer
+          format: int64
+        title:
+          $ref: '#/components/schemas/ShortText'
+        path:
+          $ref: '#/components/schemas/DocPath'
+        heading_path:
+          type: array
+          items:
+            $ref: '#/components/schemas/ShortText'
+          maxItems: 16
+        snippet:
+          type: string
+        score:
+          type: number
+          format: float
+        related_files:
+          type: array
+          items:
+            $ref: '#/components/schemas/LogicalFile'
+          maxItems: 100
+      additionalProperties: false
+      required:
+      - doc
+      - title
+      - path
+      - heading_path
+      - snippet
+      - score
+      - related_files
+    DocHits:
+      type: object
+      properties:
+        hits:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocHit'
+          maxItems: 50
+      additionalProperties: false
+      required:
+      - hits
+      description: Top results by hybrid ranking, bounded by `limit`.
+    DocText:
+      type: object
+      properties:
+        path:
+          $ref: '#/components/schemas/DocPath'
+        lines:
+          oneOf:
+          - $ref: '#/components/schemas/LineRange'
+          - type: 'null'
+        total_lines:
+          type: integer
+          minimum: 0
+        text:
+          type: string
+          description: Document text. Data, never instructions.
+        truncated:
+          type: boolean
+        content_hash:
+          $ref: '#/components/schemas/ContentHash'
+      additionalProperties: false
+      required:
+      - path
+      - lines
+      - total_lines
+      - text
+      - truncated
+      - content_hash
+    DocGrepHit:
+      type: object
+      properties:
+        path:
+          $ref: '#/components/schemas/DocPath'
+        line:
+          type: integer
+          minimum: 1
+        text:
+          type: string
+        before:
+          type: array
+          items:
+            type: string
+          maxItems: 20
+        after:
+          type: array
+          items:
+            type: string
+          maxItems: 20
+      additionalProperties: false
+      required:
+      - path
+      - line
+      - text
+      - before
+      - after
+    DocGrepResults:
+      type: object
+      properties:
+        hits:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocGrepHit'
+          maxItems: 500
+        truncated:
+          type: boolean
+      additionalProperties: false
+      required:
+      - hits
+      - truncated
+    FlagValue:
+      type: object
+      properties:
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        value:
+          oneOf:
+          - $ref: '#/components/schemas/SettingValue'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - swimlane
+      - value
+    FlagStatus:
+      type: object
+      properties:
+        flag:
+          $ref: '#/components/schemas/ShortText'
+        file:
+          $ref: '#/components/schemas/LogicalFile'
+        channel:
+          oneOf:
+          - $ref: '#/components/schemas/ChannelName'
+          - type: 'null'
+        setting:
+          $ref: '#/components/schemas/SettingPath'
+        template_default:
+          oneOf:
+          - $ref: '#/components/schemas/SettingValue'
+          - type: 'null'
+        values:
+          type: array
+          items:
+            $ref: '#/components/schemas/FlagValue'
+          maxItems: 64
+      additionalProperties: false
+      required:
+      - flag
+      - file
+      - channel
+      - setting
+      - template_default
+      - values
+    FeatureStatus:
+      type: object
+      properties:
+        flags:
+          type: array
+          items:
+            $ref: '#/components/schemas/FlagStatus'
+          maxItems: 1000
+      additionalProperties: false
+      required:
+      - flags
+    UserUpdate:
+      type: object
+      properties:
+        role:
+          oneOf:
+          - $ref: '#/components/schemas/Role'
+          - type: 'null'
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        requires_approval:
+          type: boolean
+      additionalProperties: false
+      minProperties: 1
+      description: The last active admin cannot be removed, and an admin cannot change their own role (S4).
+    AccessApproval:
+      type: object
+      properties:
+        role:
+          $ref: '#/components/schemas/Role'
+      additionalProperties: false
+      required:
+      - role
+    PathMappingRule:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ConfigKey'
+        base_root:
+          $ref: '#/components/schemas/RepoPath'
+        tenant_root:
+          $ref: '#/components/schemas/RepoPath'
+        swimlanes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SwimlaneId'
+          maxItems: 64
+          description: Empty means the default for every swimlane.
+      additionalProperties: false
+      required:
+      - id
+      - base_root
+      - tenant_root
+      - swimlanes
+    PathMappingRuleInput:
+      type: object
+      properties:
+        base_root:
+          $ref: '#/components/schemas/RepoPath'
+        tenant_root:
+          $ref: '#/components/schemas/RepoPath'
+        swimlanes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SwimlaneId'
+          maxItems: 64
+      additionalProperties: false
+      required:
+      - base_root
+      - tenant_root
+      - swimlanes
+    MergeModeRule:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ConfigKey'
+        file_pattern:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: A glob over logical file paths.
+        mode:
+          $ref: '#/components/schemas/MergeMode'
+      additionalProperties: false
+      required:
+      - id
+      - file_pattern
+      - mode
+    MergeModeRuleInput:
+      type: object
+      properties:
+        file_pattern:
+          type: string
+          minLength: 1
+          maxLength: 256
+        mode:
+          $ref: '#/components/schemas/MergeMode'
+      additionalProperties: false
+      required:
+      - file_pattern
+      - mode
+    HostTier:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ConfigKey'
+        host_pattern:
+          type: string
+          minLength: 1
+          maxLength: 253
+        tier:
+          $ref: '#/components/schemas/ConfigKey'
+      additionalProperties: false
+      required:
+      - id
+      - host_pattern
+      - tier
+    HostTierInput:
+      type: object
+      properties:
+        host_pattern:
+          type: string
+          minLength: 1
+          maxLength: 253
+        tier:
+          $ref: '#/components/schemas/ConfigKey'
+      additionalProperties: false
+      required:
+      - host_pattern
+      - tier
+    FolderMapping:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ConfigKey'
+        folder:
+          $ref: '#/components/schemas/NfsPath'
+        deployments:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceRef'
+          minItems: 1
+          maxItems: 100
+      additionalProperties: false
+      required:
+      - id
+      - folder
+      - deployments
+    FolderMappingInput:
+      type: object
+      properties:
+        folder:
+          $ref: '#/components/schemas/NfsPath'
+        deployments:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceRef'
+          minItems: 1
+          maxItems: 100
+      additionalProperties: false
+      required:
+      - folder
+      - deployments
+    SeverityMatch:
+      type: object
+      properties:
+        finding_kinds:
+          type: array
+          items:
+            $ref: '#/components/schemas/FindingKind'
+          maxItems: 16
+        change_kinds:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChangeKind'
+          maxItems: 8
+        path_glob:
+          oneOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
+        setting_glob:
+          oneOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
+      additionalProperties: false
+    SeverityRuleInput:
+      type: object
+      properties:
+        name:
+          $ref: '#/components/schemas/ShortText'
+        match:
+          $ref: '#/components/schemas/SeverityMatch'
+        severity:
+          $ref: '#/components/schemas/Severity'
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 10000
+        enabled:
+          type: boolean
+      additionalProperties: false
+      required:
+      - name
+      - match
+      - severity
+      - priority
+      - enabled
+    SeverityRule:
+      allOf:
+      - type: object
+        properties:
+          id:
+            $ref: '#/components/schemas/ConfigKey'
+        additionalProperties: false
+        required:
+        - id
+      - $ref: '#/components/schemas/SeverityRuleInput'
+    OsLoginUser:
+      type: object
+      properties:
+        os_login:
+          $ref: '#/components/schemas/ShortText'
+        user:
+          $ref: '#/components/schemas/UserId'
+      additionalProperties: false
+      required:
+      - os_login
+      - user
+      description: Maps the login identity auditd records to a real person (D72).
+    OsLoginUserInput:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/UserId'
+      additionalProperties: false
+      required:
+      - user
+    NotificationChannelInput:
+      type: object
+      properties:
+        name:
+          $ref: '#/components/schemas/ShortText'
+        webhook_url:
+          type: string
+          format: uri
+          maxLength: 2048
+          writeOnly: true
+          description: 'Teams webhook. A secret: accepted here, never returned (S21).'
+        min_severity:
+          $ref: '#/components/schemas/Severity'
+        kinds:
+          type: array
+          items:
+            $ref: '#/components/schemas/NotificationKind'
+          maxItems: 16
+          uniqueItems: true
+        enabled:
+          type: boolean
+      additionalProperties: false
+      required:
+      - name
+      - min_severity
+      - kinds
+      - enabled
+    NotificationChannel:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ConfigKey'
+        name:
+          $ref: '#/components/schemas/ShortText'
+        webhook_configured:
+          type: boolean
+        min_severity:
+          $ref: '#/components/schemas/Severity'
+        kinds:
+          type: array
+          items:
+            $ref: '#/components/schemas/NotificationKind'
+          maxItems: 16
+        enabled:
+          type: boolean
+      additionalProperties: false
+      required:
+      - id
+      - name
+      - webhook_configured
+      - min_severity
+      - kinds
+      - enabled
+    RetentionPreview:
+      type: object
+      properties:
+        versions_to_delete:
+          type: integer
+          minimum: 0
+        bytes_to_free:
+          type: integer
+          minimum: 0
+        versions_kept_by_reference:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+      required:
+      - versions_to_delete
+      - bytes_to_free
+      - versions_kept_by_reference
+    RetentionInput:
+      type: object
+      properties:
+        keep_last_versions:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          description: Per file (default 50).
+        keep_days:
+          type: integer
+          minimum: 1
+          maximum: 3650
+          description: Default 180 (Q33).
+      additionalProperties: false
+      required:
+      - keep_last_versions
+      - keep_days
+      description: Baselines and versions referenced by audit events, proposals, drafts or PR links are always kept
+        (D78).
+    RetentionSettings:
+      allOf:
+      - $ref: '#/components/schemas/RetentionInput'
+      - type: object
+        properties:
+          updated_at:
+            oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+          updated_by:
+            oneOf:
+            - $ref: '#/components/schemas/UserId'
+            - type: 'null'
+          dry_run_preview:
+            oneOf:
+            - $ref: '#/components/schemas/RetentionPreview'
+            - type: 'null'
+        additionalProperties: false
+        required:
+        - updated_at
+        - updated_by
+        - dry_run_preview
+    AgentRegistration:
+      type: object
+      properties:
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        service_account_email:
+          $ref: '#/components/schemas/ShortText'
+        status:
+          $ref: '#/components/schemas/AgentStatus'
+        connected_replica:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+        last_seen_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+        certificate_expires_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - swimlane
+      - service_account_email
+      - status
+      - connected_replica
+      - last_seen_at
+      - certificate_expires_at
+    AgentRegistrationInput:
+      type: object
+      properties:
+        service_account_email:
+          type: string
+          format: email
+          maxLength: 256
+      additionalProperties: false
+      required:
+      - service_account_email
+    JoinToken:
+      type: object
+      properties:
+        token:
+          type: string
+          readOnly: true
+          description: A one-time fallback token for clusters without Workload Identity. Shown once, stored hashed,
+            valid 24 hours, bound to one swimlane (S5).
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+      additionalProperties: false
+      required:
+      - token
+      - swimlane
+      - expires_at
+    SentinelInfo:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/ShortText'
+        host:
+          $ref: '#/components/schemas/ShortText'
+        version:
+          $ref: '#/components/schemas/ShortText'
+        status:
+          type: string
+          enum:
+          - connected
+          - disconnected
+          - never_seen
+        last_seen_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+        spool_backlog:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+      required:
+      - id
+      - host
+      - version
+      - status
+      - last_seen_at
+      - spool_backlog
+    AutoNotify:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+      additionalProperties: false
+      required:
+      - enabled
+    TenantSetInput:
+      type: object
+      properties:
+        tenants:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantId'
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+      additionalProperties: false
+      required:
+      - tenants
+    AuditEvent:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        seq:
+          type: integer
+          format: int64
+        at:
+          $ref: '#/components/schemas/Timestamp'
+        action:
+          $ref: '#/components/schemas/ShortText'
+        actor:
+          oneOf:
+          - $ref: '#/components/schemas/UserId'
+          - type: 'null'
+        via:
+          type: string
+          enum:
+          - ui
+          - mcp
+          - system
+        swimlane:
+          oneOf:
+          - $ref: '#/components/schemas/SwimlaneId'
+          - type: 'null'
+        target:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+        request_id:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+        attribution:
+          oneOf:
+          - $ref: '#/components/schemas/Attribution'
+          - type: 'null'
+        diff:
+          oneOf:
+          - type: string
+            description: The change's own diff text, kept so evidence survives blob garbage collection (D78).
+          - type: 'null'
+        prev_hash:
+          $ref: '#/components/schemas/ContentHash'
+        hash:
+          $ref: '#/components/schemas/ContentHash'
+      additionalProperties: false
+      required:
+      - id
+      - seq
+      - at
+      - action
+      - actor
+      - via
+      - swimlane
+      - target
+      - request_id
+      - attribution
+      - diff
+      - prev_hash
+      - hash
+      description: One link of the tamper-evident audit chain (S9).
+    SwimlaneSummaryPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SwimlaneSummary'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    FileEntryPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileEntry'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    VersionPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Version'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    ServiceStatePage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceState'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    TreeCompareEntryPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TreeCompareEntry'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    GridRowPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/GridRow'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    SettingHitPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SettingHit'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    FindingPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Finding'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    PrLinkPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PrLink'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    ProposalPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Proposal'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    DocSummaryPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocSummary'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    UserPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    AccessRequestPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccessRequest'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    PathMappingRulePage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PathMappingRule'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    MergeModeRulePage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/MergeModeRule'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    HostTierPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/HostTier'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    FolderMappingPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/FolderMapping'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    SeverityRulePage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SeverityRule'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    OsLoginUserPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OsLoginUser'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    NotificationChannelPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/NotificationChannel'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    AgentRegistrationPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentRegistration'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    SentinelInfoPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SentinelInfo'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    AuditEventPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEvent'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next

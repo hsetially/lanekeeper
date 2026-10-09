@@ -1,0 +1,76 @@
+# Linter for api/openapi.yaml (T5 of prompt 01). Run: pnpm exec redocly lint api/openapi.yaml
+# The conventions that need more than a lint rule are tested in crates/ports/tests/openapi_conventions.rs.
+extends:
+  - recommended
+
+apis:
+  main:
+    root: api/openapi.yaml
+
+rules:
+  # Everything the recommended set only warns about is an error here: a warning nobody reads is no gate.
+  operation-operationId: error
+  operation-operationId-unique: error
+  operation-summary: error
+  operation-4xx-response: error
+  operation-2xx-response: error
+  info-license: error
+  no-unused-components: error
+  security-defined: error
+  tag-description: error
+  no-invalid-media-type-examples: error
+  no-server-example.com: error
+  no-ambiguous-paths: error
+  no-identical-paths: error
+  path-parameters-defined: error
+  no-path-trailing-slash: error
+  no-empty-servers: error
+  operation-parameters-unique: error
+
+  # S4: every operation names who may call it.
+  rule/operation-x-required-role:
+    subject:
+      type: Operation
+      property: x-required-role
+    assertions:
+      defined: true
+      enum:
+        - viewer
+        - editor
+        - operator
+        - admin
+        - none
+    message: Every operation needs x-required-role set to viewer, editor, operator, admin or none (S4).
+    severity: error
+
+  # Errors are RFC 9457 problem details. Redocly can require that an error response describes a body;
+  # that the body is application/problem+json and nothing else is asserted by the conventions test
+  # (crates/ports/tests/openapi_conventions.rs::errors_are_problem_json_and_every_operation_has_a_default).
+  rule/error-responses-have-a-body:
+    subject:
+      type: Response
+      filterInParentKeys:
+        - '400'
+        - '401'
+        - '403'
+        - '404'
+        - '409'
+        - '413'
+        - '422'
+        - '423'
+        - default
+    assertions:
+      required:
+        - content
+    message: Error responses must describe an application/problem+json body.
+    severity: error
+
+  # Every operation documents the generic error response, so clients can rely on one shape.
+  rule/operation-has-default-response:
+    subject:
+      type: Responses
+    assertions:
+      required:
+        - default
+    message: Every operation needs a default error response.
+    severity: error

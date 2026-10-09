@@ -49,7 +49,7 @@ tools-check:
     pnpm exec redocly --version
 
 # Prompt 01 gate. Each task of prompt 01 adds its own recipe to this list; it is green only after T9.
-verify-01: tools-check domain-verify ports-verify proto-verify fuzz-smoke
+verify-01: tools-check domain-verify ports-verify proto-verify openapi-verify fuzz-smoke
 
 # T2: domain types, validators and secrets (S11, S21)
 domain-verify:
@@ -65,6 +65,13 @@ proto-verify:
     pnpm exec buf lint proto
     cargo test -p proto
     cargo clippy -p proto --all-targets -- -D warnings
+
+# T5: api/openapi.yaml passes redocly (every operation has x-required-role, problem+json errors, operationIds) and the
+# conventions test (CSRF, Idempotency-Key, keyset lists, ETag, no agent join-token endpoint; S3, S4, S7, S21)
+openapi-verify:
+    pnpm exec redocly lint api/openapi.yaml --config .redocly.yaml
+    cargo test -p ports --all-features --test openapi_conventions
+    cargo clippy -p ports --all-features --all-targets -- -D warnings
 
 verify-02:
     @echo "verify-02 not implemented yet" && exit 1
