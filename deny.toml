@@ -13,7 +13,7 @@ confidence-threshold = 0.9
 
 # libfuzzer-sys bundles LLVM's libFuzzer, which is also under the permissive NCSA licence. It is a build-time tool of the
 # fuzz crate (`fuzz/`, never shipped), so the exception names that one crate instead of allowing NCSA everywhere.
-# Checked by `just fuzz-deps-check`; the root workspace does not contain it.
+# Checked by `just fuzz-smoke` (it runs `cargo deny --manifest-path fuzz/Cargo.toml` first); the root workspace does not contain it.
 [[licenses.exceptions]]
 crate = "libfuzzer-sys"
 allow = ["NCSA"]
