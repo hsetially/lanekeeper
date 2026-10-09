@@ -37,3 +37,42 @@ VERDICT: CHANGES REQUESTED
 - Manual probe as `lanekeeper_app`: `maintain_sentinel_partitions(1)` dropped a partition (blocking finding 1). `SET session_replication_role` was refused.
 - `cargo tree -i rsa -e all --target all`: nothing, so the RUSTSEC-2023-0071 ignore is justified.
 - Spec chain: plan approval commit exists; all commits in order T1 to T9, `01/fix`, `01/evidence`; every test name in the traceability table exists; no path outside ownership, Extra-paths, shared files or tests/fixtures changed; Contract-change "none" is correct.
+
+---
+
+# Review 01, round 2
+
+VERDICT: CHANGES REQUESTED
+
+The round 1 finding is fixed: the 90-day floor holds against every bypass tried on the function (NULL, -5, 0, 89, 2147483647, named and string arguments, timezone and datestyle changes; DROP, TRUNCATE, DELETE, UPDATE, DETACH PARTITION, CREATE TABLE and CREATE SCHEMA all refused). Two new problems remain.
+
+## Blocking
+
+1. `db/migrations/0001_init.sql:748` (with the grant at about `:985`, `GRANT ... DELETE ... sentinels ... TO lanekeeper_app`). `sentinel_records.sentinel_id REFERENCES sentinels (id) ON DELETE CASCADE`, and the app has DELETE on `sentinels`. This breaks S9/S21, the "History nobody may rewrite or prune" comment, and the "append-only" decision for `sentinel_records` in `db/migrations/README.md`. It lets `lanekeeper_app` erase sentinel records inside the 90-day life, which is the round 1 threat by another path.
+   - Reproduced on PG16 as `lanekeeper_app`: after inserting one sentinel record, `DELETE FROM sentinels` printed `DELETE 1`; the record count as migrator went from 1 to 0. Direct DELETE, UPDATE and TRUNCATE on `sentinel_records` were all refused.
+   - `docs/threat-model.md` (E row and the "definer function" residual-risk bullet) says a compromised hub cannot prune records inside the life. That is still false through this path.
+   - Fix: change the FK to `ON DELETE RESTRICT`, so removing a sentinel that has records is refused. Alternatives: drop DELETE on `sentinels` for the app and add a `decommissioned_at` column, or add a trigger. Add a test that, as `lanekeeper_app`, `DELETE FROM sentinels` with records present is refused and `sentinel_records` is unchanged. Update the threat-model text to match. Also check every other table with an ON DELETE CASCADE into an append-only table.
+
+2. `crates/xtask/tests/db_migrations.rs` (`run_init`, about lines 386-397), plus the claims in `db/migrations/README.md` ("parallel test threads are safe") and the new section of `plans/01-contracts.evidence.md` ("--test-threads=4 and 8 ... 23 passed"). The advisory lock does not serialise anything: `pg_advisory_lock` is scoped to the current database, and each test takes it in its own `lk_t_*` database. The role-creation race (round 1 non-blocking 6) is therefore unfixed.
+   - Failing scenario: on a fresh external server with no roles, `LK_TEST_PG_ADMIN_URL=... cargo test -p xtask --test db_migrations` failed in 3 of 5 runs (1, 2 and 3 failures), each `duplicate key value violates unique constraint "pg_authid_rolname_index"` (`CREATE ROLE lanekeeper_migrator`). The 8 later runs on a cluster that already had the roles passed.
+   - The README and evidence statements are therefore false. Evidence that does not match reality is blocking.
+   - Fix: take the lock on a connection to one shared database (the base `postgres` database from `admin_options`), or create the roles once under a process-wide `tokio::sync::OnceCell` or mutex. Then re-prove it on a FRESH cluster (drop the roles and `lk_t_*` databases first), or remove the claim from the README and evidence.
+
+## Non-blocking
+
+1. The pgvector part of db-verify is still unproven (no Docker daemon, no pgvector). Run `LK_REQUIRE_DOCKER=1 cargo test -p xtask --test db_migrations` or `just verify-01` on a Docker host or in CI before merge.
+2. CI runs `cargo test --workspace` without `LK_REQUIRE_DOCKER=1`; belongs to prompt 09.
+3. `deny.toml` NCSA licence exception for `libfuzzer-sys` needs explicit human acceptance.
+4. The plan changed after approval only in `ca6c822` (human-approved Extra-path).
+5. `osv-scanner` not run. `hyper-util` 0.1.21 is about 15 days old (dev-only).
+6. The app keeps PUBLIC's TEMP privilege; harmless here (`search_path` pinned). Consider `REVOKE TEMP`.
+7. All 33 P# are `registered = false`; prompt 16 and the release gate must use `--strict`.
+8. `6380730` touched only the migration, DB test file, migration README, threat model and evidence file.
+
+## Evidence re-run
+
+- Throwaway PG16.15 (no pgvector), floor probes as `lanekeeper_app`: all refused as listed above; the cascade bypass via `DELETE FROM sentinels` succeeded (blocking 1).
+- `db_migrations` against the external server: fresh cluster failed on the first run and in 3 of 5 runs of the loop (blocking 2); with roles present, 23 passed in 8 of 8 runs.
+- `just verify`: exit 0. `cargo xtask bench-check`: exit 0, 0 pass, 0 fail, 33 unmet of 33.
+- `just verify-01`: exit 1 at `docker-check` (known sandbox limit, not weakened).
+- Spec chain: plan approval commit `2153623` exists; commit order T1 to T9, `01/fix`, `01/evidence`, `01/review`, `01/fix`. Traceability table not re-verified row by row.
