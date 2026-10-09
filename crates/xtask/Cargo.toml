@@ -10,3 +10,10 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+# Integration tests for db/migrations (T6): a real Postgres 16 with pgvector in a container, driven through
+# sqlx's runtime Migrator (no `query!` macros, so no `.sqlx` metadata). No TLS feature on either crate (S19).
+sqlx = { workspace = true, features = ["postgres", "migrate", "runtime-tokio"] }
+testcontainers.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

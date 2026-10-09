@@ -49,7 +49,7 @@ tools-check:
     pnpm exec redocly --version
 
 # Prompt 01 gate. Each task of prompt 01 adds its own recipe to this list; it is green only after T9.
-verify-01: tools-check domain-verify ports-verify proto-verify openapi-verify fuzz-smoke
+verify-01: tools-check domain-verify ports-verify proto-verify openapi-verify db-verify fuzz-smoke
 
 # T2: domain types, validators and secrets (S11, S21)
 domain-verify:
@@ -72,6 +72,12 @@ openapi-verify:
     pnpm exec redocly lint api/openapi.yaml --config .redocly.yaml
     cargo test -p ports --all-features --test openapi_conventions
     cargo clippy -p ports --all-features --all-targets -- -D warnings
+
+# T6: db/migrations/0001_init.sql on Postgres 16 with pgvector (testcontainers, image pinned by digest) and the
+# database-role tests (S9, S21). LK_REQUIRE_DOCKER=1 turns a missing Docker daemon into a failure instead of a skip.
+db-verify:
+    LK_REQUIRE_DOCKER=1 cargo test -p xtask --test db_migrations
+    cargo clippy -p xtask --all-targets -- -D warnings
 
 verify-02:
     @echo "verify-02 not implemented yet" && exit 1
