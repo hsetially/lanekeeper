@@ -49,11 +49,17 @@ tools-check:
     pnpm exec redocly --version
 
 # Prompt 01 gate. Each task of prompt 01 adds its own recipe to this list; it is green only after T9.
-verify-01: tools-check domain-verify fuzz-smoke
+verify-01: tools-check domain-verify ports-verify fuzz-smoke
 
 # T2: domain types, validators and secrets (S11, S21)
 domain-verify:
     cargo test -p domain
+
+# T3: ports, fakes and conformance suites (S4, S21). All features, so the Postgres `Tx` is compiled too.
+ports-verify:
+    cargo test -p ports --all-features
+    cargo clippy -p ports --all-features --all-targets -- -D warnings
+
 verify-02:
     @echo "verify-02 not implemented yet" && exit 1
 verify-03a:

@@ -16,11 +16,16 @@ rust-version = "1.88"
 # Shared dependencies. Add them here and reference them from member crates with `dep.workspace = true`.
 # Rules (AGENTS.md, rule 15): pinned versions at least 14 days old, justified in the PR, and passing `cargo deny`.
 [workspace.dependencies]
+# Workspace crates. The version keeps `cargo deny` from flagging them as wildcard dependencies.
+domain = { path = "crates/domain", version = "0.1.0" }
+ports = { path = "crates/ports", version = "0.1.0" }
 # Every version is an exact pin, at least 14 days old when chosen (S19). Default features are off; member crates enable what they use.
 # Data and errors
 serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
 thiserror = "=2.0.20"
+# Reads OpenAPI YAML in the route-guard harness and conformance tests (Q8). Pure safe Rust, maintained; serde_yaml is denied in deny.toml.
+serde-saphyr = { version = "=1.1.0", default-features = false, features = ["deserialize"] }
 toml = { version = "=0.9.8", default-features = false, features = ["std", "parse", "serde"] }
 hex = { version = "=0.4.3", default-features = false, features = ["alloc"] }
 # Secrets and hashing (S7, S21)

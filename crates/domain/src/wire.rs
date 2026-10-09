@@ -80,6 +80,21 @@ pub struct ScanDelta {
     pub part: u32,
 }
 
+impl ScanDelta {
+    /// The most file bytes one message may carry (3 MiB), under gRPC's 4 MiB message limit.
+    pub const MAX_BYTES: usize = 3 * 1024 * 1024;
+    /// The most entries one message may carry.
+    pub const MAX_ENTRIES: usize = 10_000;
+
+    /// Total size of the file bytes in this message.
+    pub fn payload_bytes(&self) -> usize {
+        self.entries
+            .iter()
+            .map(|e| e.bytes.as_ref().map_or(0, Bytes::len))
+            .sum()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncWindowKind {
     Opened,

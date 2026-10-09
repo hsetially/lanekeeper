@@ -1,0 +1,41 @@
+---
+source: crates/ports/tests/contract_shape.rs
+expression: names
+---
+[
+  "file_edited",
+  "file_uploaded",
+  "file_deleted",
+  "file_reverted",
+  "file_change_detected",
+  "attribution_upgraded",
+  "service_restarted",
+  "config_server_notified",
+  "pr_raised",
+  "proposal_created",
+  "proposal_approved",
+  "proposal_rejected",
+  "proposal_expired",
+  "draft_applied",
+  "baseline_adopted",
+  "drift_marked_intentional",
+  "drift_mark_cleared",
+  "flagged_value_revealed",
+  "role_changed",
+  "user_status_changed",
+  "access_requested",
+  "access_approved",
+  "access_denied",
+  "github_token_stored",
+  "github_token_deleted",
+  "doc_created",
+  "doc_updated",
+  "doc_deleted",
+  "agent_joined",
+  "agent_certificate_renewed",
+  "sentinel_enrolled",
+  "settings_changed",
+  "auto_notify_changed",
+  "session_signed_in",
+  "session_signed_out"
+]

@@ -259,3 +259,34 @@ fn doc_path_lives_under_git_or_uploads() {
         assert!(DocPath::parse(bad).is_err(), "{bad:?}");
     }
 }
+
+#[test]
+fn scan_delta_payload_is_the_sum_of_file_bytes_and_capped_at_3_mib() {
+    use domain::{ScanDelta, ScanEntry};
+    let entry = |path: &str, bytes: Option<&'static [u8]>| ScanEntry {
+        path: NfsPath::parse(path).unwrap(),
+        hash: ContentHash::from_bytes([1; 32]),
+        size: 0,
+        mtime: Timestamp::from_unix_millis(0),
+        observed_at: Timestamp::from_unix_millis(0),
+        denied: bytes.is_none(),
+        bytes: bytes.map(Bytes::from_static),
+    };
+    let delta = ScanDelta {
+        seq: 1,
+        base_root: None,
+        new_root: ContentHash::from_bytes([2; 32]),
+        entries: vec![
+            entry("a.yml", Some(b"abc")),
+            entry("b.env", None),
+            entry("c.yml", Some(b"de")),
+        ],
+        removed: vec![],
+        skipped: vec![],
+        during_job: None,
+        more: false,
+        part: 0,
+    };
+    assert_eq!(delta.payload_bytes(), 5);
+    assert_eq!(ScanDelta::MAX_BYTES, 3 * 1024 * 1024);
+}

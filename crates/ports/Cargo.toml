@@ -9,4 +9,33 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+# `Tx::from_pg` for the real (Postgres) implementations. Pulls sqlx without any TLS or runtime feature.
+postgres = ["dep:sqlx"]
+# Contract tests: `ports::conformance::<port>(impl)`, plus the route-guard harness (S4).
+conformance = ["dep:serde-saphyr"]
+# In-memory fakes for every port. Implies the conformance suites, which the fakes are tested with.
+fakes = ["conformance"]
+
 [dependencies]
+domain.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time", "sync"] }
+sqlx = { workspace = true, features = ["postgres"], optional = true }
+serde-saphyr = { workspace = true, optional = true }
+subtle.workspace = true
+
+[dev-dependencies]
+# Turns the fakes and conformance suites on for this crate's own tests.
+ports = { workspace = true, features = ["fakes"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time", "sync"] }
+proptest.workspace = true
+insta = { workspace = true, features = ["json"] }
+static_assertions.workspace = true
