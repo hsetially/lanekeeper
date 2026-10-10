@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="consequence.css">
+<link rel="stylesheet" href="lk-pages.css">
+<link rel="stylesheet" href="lk-appr.css">
+<style>
+*{box-sizing:border-box}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+</style>
+</helmet>
+<div class="lk pg" data-screen-label="Audit log">
+<div class="pg-in">
+  <div class="pg-h">
+    <div><h1>Audit log</h1><span class="sub">Every change to a config file: who made it, how, and what the file hash was before and after. Append-only and hash-chained.</span></div>
+    <span class="live" role="status"><i aria-hidden="true"></i>Live · last event 14:44:02</span>
+  </div>
+
+  <div class="ig {{ ig.cls }}" role="region" aria-label="Integrity">
+    <div class="ig-h">
+      <i class="ic ico {{ ig.icon }} {{ ig.spin }}" aria-hidden="true"></i>
+      <div class="ttl"><b>{{ ig.title }}</b><span>{{ ig.sub }}</span></div>
+      <sc-if value="{{ ig.isRun }}" hint-placeholder-val="{{ false }}"><div class="bar" aria-hidden="true"><i style="width:64%"></i></div></sc-if>
+      <div class="gp">
+        <sc-if value="{{ ig.showSig }}" hint-placeholder-val="{{ true }}"><span class="sg"><i class="ic s12 i-key"></i>{{ ig.sig }}</span></sc-if>
+        <button type="button" class="b sm {{ ig.vOff }}" disabled="{{ ig.isRun }}" onClick="{{ ig.verify }}"><i class="ic s12 i-refresh-cw"></i>{{ ig.vLabel }}</button>
+        <button type="button" class="b sm" aria-expanded="{{ ig.open }}" onClick="{{ ig.toggle }}">Details<i class="ic s12 {{ ig.chev }}"></i></button>
+      </div>
+    </div>
+    <sc-if value="{{ ig.open }}" hint-placeholder-val="{{ false }}"><div class="ig-d">
+      <sc-for list="{{ ig.cells }}" as="c" hint-placeholder-count="4"><div><span class="k">{{ c.k }}</span><span class="v">{{ c.v }}</span></div></sc-for>
+    </div></sc-if>
+    <sc-if value="{{ ig.openBad }}" hint-placeholder-val="{{ false }}"><div class="ig-x">
+      <span>Event 18,442 stores a previous hash that doesn’t match the hash of event 18,441, so the chain is broken there. Nothing from 18,442 onward can be verified until someone explains the difference. Events up to 18,441 are intact.</span>
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px"><button type="button" class="b dl" onClick="{{ ig.show }}"><i class="ic i-search"></i>Show event 18,442</button><span class="mut mono">Request ID req_8f3a21c9</span><button type="button" class="b g sm" onClick="{{ noop }}"><i class="ic s12 i-copy"></i>Copy</button></div>
+    </div></sc-if>
+  </div>
+
+  <div class="pg-box" aria-busy="{{ loading }}">
+    <div class="tbar">
+      <div class="seg" role="group" aria-label="Quick filter">
+        <button type="button" class="{{ q.allCls }}" aria-pressed="{{ q.allOn }}" onClick="{{ q.goAll }}">All events<span class="n">{{ q.nAll }}</span></button>
+        <button type="button" class="{{ q.curCls }}" aria-pressed="{{ q.curOn }}" onClick="{{ q.goCur }}"><i class="ic s12 i-zap"></i>Via Cursor<span class="n">{{ q.nCur }}</span></button>
+        <button type="button" class="{{ q.unkCls }}" aria-pressed="{{ q.unkOn }}" onClick="{{ q.goUnk }}"><i class="ic s12 i-circle-help"></i>Unknown author<span class="n">{{ q.nUnk }}</span></button>
+      </div>
+      <span class="sp">{{ shownText }}</span>
+    </div>
+    <div class="tbar" style="background:var(--background)">
+      <sc-for list="{{ filters }}" as="f" hint-placeholder-count="5">
+        <div style="position:relative">
+          <button type="button" class="fb {{ f.cls }}" aria-haspopup="menu" aria-expanded="{{ f.open }}" onClick="{{ f.tog }}"><i class="ic s12 i-plus"></i>{{ f.label }}<sc-if value="{{ f.has }}" hint-placeholder-val="{{ false }}"><span class="v">{{ f.text }}</span></sc-if></button>
+          <sc-if value="{{ f.open }}" hint-placeholder-val="{{ false }}"><div class="pop" role="menu" aria-label="{{ f.label }}" style="width:{{ f.w }}">
+            <sc-for list="{{ f.opts }}" as="o" hint-placeholder-count="4"><div class="it {{ o.itCls }}" role="menuitemcheckbox" aria-checked="{{ o.on }}" onClick="{{ o.click }}">
+              <sc-if value="{{ f.single }}" hint-placeholder-val="{{ false }}"><span class="rdo"></span></sc-if>
+              <sc-if value="{{ f.multi }}" hint-placeholder-val="{{ true }}"><span class="cb2 {{ o.cls }}"><i class="ic i-check" style="opacity:{{ o.chk }}"></i></span></sc-if>
+              <span>{{ o.label }}</span><span class="c">{{ o.n }}</span></div></sc-for>
+            <div class="ft"><span>{{ f.foot }}</span><a href="#" onClick="{{ f.clear }}">Clear</a></div>
+          </div></sc-if>
+        </div>
+      </sc-for>
+      <sc-if value="{{ hasFilters }}" hint-placeholder-val="{{ false }}"><button type="button" class="b g sm" onClick="{{ clrAll }}"><i class="ic s12 i-x"></i>Clear filters</button></sc-if>
+    </div>
+
+    <div class="ev hd" role="row"><span>Time</span><span>User</span><span>Via</span><span>Action</span><span>Swimlane</span><span>File</span><span>Hash before → after</span><span>Attribution</span><span>Approval</span></div>
+
+    <sc-if value="{{ loading }}" hint-placeholder-val="{{ false }}"><div role="status" aria-label="Loading events" style="flex:1;overflow:hidden">
+      <sc-for list="{{ skel }}" as="s" hint-placeholder-count="8"><div class="ev" style="cursor:default"><span class="skl" style="width:64px"></span><span class="skl" style="width:{{ s.a }}"></span><span class="skl" style="width:56px"></span><span class="skl" style="width:56px"></span><span class="skl" style="width:40px"></span><span class="skl" style="width:{{ s.b }}"></span><span class="skl" style="width:110px"></span><span class="skl" style="width:96px"></span><span class="skl" style="width:44px"></span></div></sc-for>
+    </div></sc-if>
+
+    <sc-if value="{{ noMatch }}" hint-placeholder-val="{{ false }}"><div class="empty"><i class="ic s16 i-search" style="color:var(--muted-foreground)"></i><strong>No events match these filters</strong><span class="m">Loosen a filter, or clear them all to see {{ total }} events.</span><button type="button" class="b" onClick="{{ clrAll }}">Clear filters</button></div></sc-if>
+
+    <sc-if value="{{ hasRows }}" hint-placeholder-val="{{ true }}"><div role="rowgroup" style="flex:1;min-height:0;overflow:hidden">
+      <sc-if value="{{ hiddenNewer }}" hint-placeholder-val="{{ false }}"><div class="ev fold"><i class="ic s12 i-chevron-up"></i><span>{{ hiddenNewer }} newer events hidden</span><a href="#" onClick="{{ showNewer }}">Show all</a></div></sc-if>
+      <sc-for list="{{ rows }}" as="r" hint-placeholder-count="8">
+        <div role="row" tabindex="0" class="ev {{ r.cls }}" aria-selected="{{ r.sel }}" onClick="{{ r.open }}" onKeyDown="{{ r.key }}">
+          <span class="tm"><b style="font-weight:500">{{ r.t }}</b><span>{{ r.d }} · #{{ r.num }}</span><sc-if value="{{ r.brk }}" hint-placeholder-val="{{ false }}"><span class="bd bd-bad brkb"><i class="ic s12 i-shield-alert"></i>Chain break</span></sc-if></span>
+          <span class="us">
+            <sc-if value="{{ r.unk }}" hint-placeholder-val="{{ false }}"><span class="bd bd-unk"><i class="ic s12 i-circle-help"></i>unknown author</span></sc-if>
+            <sc-if value="{{ r.named }}" hint-placeholder-val="{{ true }}"><b style="font-weight:500">{{ r.user }}</b></sc-if>
+            <sc-if value="{{ r.probable }}" hint-placeholder-val="{{ false }}"><small>probable</small></sc-if>
+            <sc-if value="{{ r.upg }}" hint-placeholder-val="{{ false }}"><small>now <a href="#" onClick="{{ r.goUpg }}">{{ r.upgName }}</a></small></sc-if>
+          </span>
+          <span><span class="bd {{ r.vcls }}"><i class="ic s12 {{ r.vicon }}"></i>{{ r.vlabel }}</span></span>
+          <span class="act"><i class="ic {{ r.aicon }}"></i>{{ r.alabel }}</span>
+          <span class="mono">{{ r.lane }}</span>
+          <span class="fl"><b>{{ r.file }}</b><span>{{ r.sub }}</span></span>
+          <span class="hs"><sc-if value="{{ r.hasHash }}" hint-placeholder-val="{{ true }}"><span class="{{ r.hbCls }}">{{ r.hb }}</span><i class="ic s12 i-arrow-right" style="color:var(--muted-foreground)"></i><span class="{{ r.haCls }}">{{ r.ha }}</span></sc-if><sc-if value="{{ r.noHash }}" hint-placeholder-val="{{ false }}"><span class="z">no file change</span></sc-if></span>
+          <span class="at"><span class="s {{ r.srcCls }}">{{ r.src }}</span>
+            <sc-if value="{{ r.hasConf }}" hint-placeholder-val="{{ true }}"><span class="cfm {{ r.lo }}"><i><b style="width:{{ r.conf }}%"></b></i>{{ r.conf }}%</span></sc-if></span>
+          <span><sc-if value="{{ r.appr }}" hint-placeholder-val="{{ false }}"><a class="ap" href="#" onClick="{{ r.goAppr }}">{{ r.apprId }}</a></sc-if><sc-if value="{{ r.noAppr }}" hint-placeholder-val="{{ true }}"><span class="mut">none</span></sc-if></span>
+        </div>
+      </sc-for>
+    </div></sc-if>
+
+    <div class="foot"><span style="font-variant-numeric:tabular-nums">{{ shownText }}</span><span>Attribution says how Lanekeeper identified the author, and how sure it is</span><span class="r">Click a row for the diff, evidence and chain hash</span></div>
+
+    <sc-if value="{{ drawerOn }}" hint-placeholder-val="{{ false }}">
+    <aside class="dr" role="dialog" aria-label="Event detail" style="width:600px">
+      <div class="dr-h">
+        <div class="t">
+          <div class="bs"><span class="bd {{ d.vcls }}"><i class="ic s12 {{ d.vicon }}"></i>{{ d.vlabel }}</span><span class="ch">Event {{ d.num }}</span><sc-if value="{{ d.brk }}" hint-placeholder-val="{{ false }}"><span class="bd bd-bad"><i class="ic s12 i-shield-alert"></i>Chain break</span></sc-if></div>
+          <h2>{{ d.title }}</h2>
+          <div class="sb"><span style="color:var(--foreground)">{{ d.lane }}</span><span>{{ d.path }}</span><span>{{ d.when }}</span></div>
+        </div>
+        <button type="button" class="b ib" aria-label="Close" onClick="{{ closeDrawer }}"><i class="ic i-x"></i></button>
+      </div>
+      <div class="dr-b">
+        <sc-if value="{{ d.hasBan }}" hint-placeholder-val="{{ false }}"><div class="fx {{ d.banCls }}" role="status"><i class="{{ d.banIcon }}"></i><span>{{ d.banHead }}<span class="x">{{ d.banBody }}</span></span></div></sc-if>
+        <div class="dr-sec"><span class="sec">Who</span><div class="codebox">
+          <div class="kvr"><span class="k">User</span><span class="v"><sc-if value="{{ d.unk }}" hint-placeholder-val="{{ false }}"><span class="bd bd-unk"><i class="ic s12 i-circle-help"></i>unknown author</span></sc-if><sc-if value="{{ d.named }}" hint-placeholder-val="{{ true }}"><b style="font-weight:500">{{ d.user }}</b></sc-if></span></div>
+          <div class="kvr"><span class="k">Attribution</span><span class="v">{{ d.src }}<sc-if value="{{ d.hasConf }}" hint-placeholder-val="{{ false }}"><span class="cfm {{ d.lo }}"><i><b style="width:{{ d.conf }}%"></b></i>{{ d.conf }}% confidence</span></sc-if></span></div>
+        </div></div>
+
+        <sc-if value="{{ d.hasLink }}" hint-placeholder-val="{{ false }}"><div class="dr-sec"><span class="sec">Linked entries</span>
+          <sc-for list="{{ d.links }}" as="l" hint-placeholder-count="1"><div class="lnk {{ l.cls }}"><i class="ic {{ l.icon }}"></i><span style="flex:1">{{ l.text }}</span><a href="#" onClick="{{ l.go }}">{{ l.label }}</a></div></sc-for>
+        </div></sc-if>
+
+        <sc-if value="{{ d.hasReveal }}" hint-placeholder-val="{{ false }}"><div class="dr-sec"><span class="sec">Reveal</span><div class="codebox">
+          <div class="kvr"><span class="k">File</span><span class="v mono">{{ d.path }}</span></div>
+          <div class="kvr"><span class="k">Line</span><span class="v mono">{{ d.line }}</span></div>
+          <div class="kvr"><span class="k">Reason</span><span class="v">{{ d.reason }}</span></div>
+          <div class="kvr"><span class="k">Value</span><span class="v mut">Not recorded. The log keeps only that it was shown.</span></div>
+        </div></div></sc-if>
+
+        <sc-if value="{{ d.hasChange }}" hint-placeholder-val="{{ false }}"><div class="dr-sec"><span class="sec">Change</span>
+          <div class="codebox"><div class="cap"><span class="mono">{{ d.hb }}</span><i class="ic s12 i-arrow-right"></i><span class="mono">{{ d.ha }}</span><span>{{ d.diffNote }}</span></div>
+            <sc-for list="{{ d.rows }}" as="r" hint-placeholder-count="4"><div class="dl dl-{{ r.k }}"><span class="n">{{ r.no }}</span><span class="m">{{ r.m }}</span><span>{{ r.tx }}</span></div></sc-for></div>
+        </div></sc-if>
+
+        <sc-if value="{{ d.hasEv }}" hint-placeholder-val="{{ false }}"><div class="dr-sec"><span class="sec">Attribution evidence</span>
+          <div class="codebox"><sc-for list="{{ d.ev }}" as="i" hint-placeholder-count="5"><div class="kvr" style="grid-template-columns:132px minmax(0,1fr)"><span class="k">{{ i.k }}</span><span class="v {{ i.cls }}">{{ i.v }}</span></div></sc-for></div>
+          <span class="cp">{{ d.evNote }}</span>
+        </div></sc-if>
+
+        <div class="dr-sec"><span class="sec">Chain</span>
+          <div class="codebox">
+            <div class="hx k"><span class="l">Status</span><span><span class="bd {{ d.chCls }}"><i class="ic s12 {{ d.chIcon }}"></i>{{ d.chLabel }}</span></span></div>
+            <div class="hx k"><span class="l">Chain hash</span><span>{{ d.hash }}</span></div>
+            <div class="hx k"><span class="l">Previous · {{ d.prevNum }}</span><span class="{{ d.prevCls }}">{{ d.prevStored }}</span></div>
+            <sc-if value="{{ d.brk }}" hint-placeholder-val="{{ false }}"><div class="hx k"><span class="l">Hash of {{ d.prevNum }}</span><span>{{ d.prevReal }}</span></div></sc-if>
+          </div>
+          <span class="cp">Chain hash = SHA-256 of the previous chain hash and this event’s record. Changing any old event changes every hash after it.</span>
+        </div>
+      </div>
+      <div class="dr-f"><div class="row"><button type="button" class="b" onClick="{{ noop }}"><i class="ic i-copy"></i>Copy chain hash</button><sc-if value="{{ d.hasFile }}" hint-placeholder-val="{{ true }}"><button type="button" class="b" onClick="{{ noop }}"><i class="ic i-file-code"></i>Open file at this version</button></sc-if></div></div>
+    </aside>
+    </sc-if>
+  </div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1216,&quot;height&quot;:856},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;results&quot;,&quot;loading&quot;,&quot;empty&quot;],&quot;default&quot;:&quot;results&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Audit&quot;},&quot;integ&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;ok&quot;,&quot;failed&quot;,&quot;running&quot;],&quot;default&quot;:&quot;ok&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Audit&quot;},&quot;igopen&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Audit&quot;},&quot;quick&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;all&quot;,&quot;cursor&quot;,&quot;unknown&quot;],&quot;default&quot;:&quot;all&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Audit&quot;},&quot;via&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Audit&quot;},&quot;act&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Audit&quot;},&quot;lanes&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Audit&quot;},&quot;src&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Audit&quot;},&quot;conf&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:0,&quot;min&quot;:0,&quot;max&quot;:100,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Audit&quot;},&quot;sel&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Audit&quot;},&quot;pop&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;via&quot;,&quot;act&quot;,&quot;lanes&quot;,&quot;src&quot;,&quot;conf&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Audit&quot;},&quot;jump&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:0,&quot;min&quot;:0,&quot;max&quot;:99999,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Audit&quot;}}">
+class Component extends DCLogic {
+  state = { o: {} };
+  componentWillUnmount() { clearTimeout(this._t); }
+  val(k, d) { const o = this.state.o; return k in o ? o[k] : (this.props[k] ?? d); }
+  arr(k) { const v = this.val(k, ''); return Array.isArray(v) ? v : String(v).split(',').map(s => s.trim()).filter(Boolean); }
+  set(k, v) { this.setState(s => ({ o: { ...s.o, [k]: v } })); }
+  many(x) { this.setState(s => ({ o: { ...s.o, ...x } })); }
+  tog(k, x) { const a = this.arr(k); this.set(k, a.includes(x) ? a.filter(i => i !== x) : [...a, x]); }
+  hx(n, salt = 0) { let h = (2166136261 ^ Math.imul(n, 2654435761)) >>> 0, s = ''; for (let i = 0; i < 8; i++) { h = Math.imul(h ^ (i + 1 + salt), 16777619) >>> 0; h = (h ^ (h >>> 13)) >>> 0; h = Math.imul(h, 0x85ebca6b) >>> 0; s += h.toString(16).padStart(8, '0'); } return s; }
+  events() {
+    const T = 'tx-infinity-api';
+    const E = (n, t, d, user, via, act, lane, file, dir, hb, ha, src, conf, appr, x = {}) => ({ n, t, d, user, via, act, lane, file, dir, hb, ha, src, conf, appr, ...x });
+    return [
+      E(18463, '14:44:02', 'Oct 9', 'Priya Shah', 'ui', 'reveal', 'sitc', 'tx-infinity-payments-sit9.yml', T, null, null, 'lk', 100, null, { line: 41, reason: 'Checking the callback signing key before the sit9 soak test (INC-2231)' }),
+      E(18462, '14:41:09', 'Oct 9', 'Ana Ruiz', 'ui', 'edit', 'sitb', 'account-sorting-config-sit7.yml', T, '3a77c1e0', '8b02d5f9', 'lk', 100, 'AP-2039'),
+      E(18461, '14:41:02', 'Oct 9', 'Priya Shah', 'ui', 'approve', 'sitb', 'account-sorting-config-sit7.yml', T, null, null, 'lk', 100, 'AP-2039'),
+      E(18460, '14:12:51', 'Oct 9', 'Wen Zhao', 'cursor', 'edit', 'sitc', 'gateway-routes-sit9.yml', T, '5b20e1aa', 'd84c07f3', 'lk', 100, 'AP-2038', { agent: 'cur_2e91bb' }),
+      E(18459, '13:58:20', 'Oct 9', null, 'detected', 'edit', 'sitb', 'tmp-hotfix.yml', T, null, 'e3b0c442', 'unk', null, null, { evk: 'none' }),
+      E(18458, '13:31:44', 'Oct 9', 'Dana Okoye', 'ui', 'restart', 'sitb', 'gateway, tx-infinity-core', 'services', null, null, 'lk', 100, 'AP-2036'),
+      E(18457, '13:12:10', 'Oct 9', 'Tomás Reyes', 'ui', 'upload', 'presita', 'kafka-topics-sit11.yml', 'kafka', 'a5d03c8e', '5b91e7c3', 'lk', 100, 'AP-2035'),
+      E(18456, '12:47:33', 'Oct 9', 'Lena Brandt', 'ui', 'delete', 'sit', 'retired-feeds-sit1.yml', 'batch', '2f6c90d1', null, 'lk', 100, 'AP-2034'),
+      E(18455, '12:20:05', 'Oct 9', 'Amir Haddad', 'ui', 'pr', 'sitb', 'tx-infinity-gateway-sit7.yml', T, null, null, 'lk', 100, 'AP-2031', { pr: 318 }),
+      E(18454, '11:09:30', 'Oct 9', 'Dana Okoye', 'detected', 'upgraded', 'sit', 'payment-limits-sit1.yml', T, null, null, 'vm', 92, null, { upgrades: 18453, evk: 'vm' }),
+      E(18453, '11:05:17', 'Oct 9', null, 'detected', 'edit', 'sit', 'payment-limits-sit1.yml', T, '77c0e1ab', '1d93aa07', 'unk', null, null, { upgradedBy: 18454, upgName: 'Dana Okoye', evk: 'late' }),
+      E(18452, '10:42:18', 'Oct 9', 'Tomás Reyes', 'detected', 'edit', 'sitc', 'receipt-templates-sit9.yml', 'resources', '5e07b2d4', '0f4a9c13', 'nfs', 64, null, { evk: 'nfs' }),
+      E(18451, '10:40:03', 'Oct 9', 'Priya Shah', 'sync', 'sync', 'sitb', 'tx-infinity-gateway-sit7.yml', T, '4c2d8e9f', '9a10b6c2', 'job', 100, null, { job: 'sit7-sync #7731' }),
+      E(18450, '10:12:40', 'Oct 9', 'Dana Okoye', 'ui', 'edit', 'sitb', 'tx-infinity-gateway-sit7.yml', T, '9a10b6c2', '4c2d8e9f', 'lk', 100, null),
+      E(18449, '09:30:12', 'Oct 9', 'Ana Ruiz', 'ui', 'edit', 'sitc', 'entryGroupConfig-sit9.yml', T, 'b71c04d9', 'e2a8f610', 'lk', 100, 'AP-2030'),
+      E(18448, '09:02:55', 'Oct 9', 'Wen Zhao', 'cursor', 'edit', 'sit', 'kafka-topics-sit1.yml', 'kafka', '61d0e5aa', 'c2f7b913', 'lk', 100, 'AP-2029', { agent: 'cur_91a0c7' }),
+      E(18447, '08:15:00', 'Oct 9', 'Priya Shah', 'sync', 'sync', 'sitc', 'tx-infinity-core-sit9.yml', T, '7d3e0a52', 'b480c1de', 'job', 100, null, { job: 'sit9-sync #7720' }),
+      E(18446, '02:05:31', 'Oct 9', 'Priya Shah', 'sync', 'sync', 'sit', 'tx-infinity-core-sit1.yml', T, 'e19b44c7', '2a6d80f3', 'job', 100, null, { job: 'nightly-sync #7714' }),
+      E(18445, '00:48:10', 'Oct 9', 'Amir Haddad', 'ui', 'edit', 'presita', 'tx-infinity-core-sit11.yml', T, '90c3a7e1', '4be5d268', 'lk', 100, 'AP-2028'),
+      E(18444, '23:55:40', 'Oct 8', 'Dana Okoye', 'ui', 'restart', 'presitb', 'payments-worker', 'services', null, null, 'lk', 100, 'AP-2027'),
+      E(18443, '23:51:02', 'Oct 8', 'Wen Zhao', 'cursor', 'edit', 'sitb', 'tx-infinity-payments-sit7.yml', T, '38e5b0d9', 'a17c4f62', 'lk', 100, 'AP-2026', { agent: 'cur_5d12e8' }),
+      E(18442, '23:48:17', 'Oct 8', 'Ana Ruiz', 'ui', 'edit', 'sitb', 'tx-infinity-core-sit7.yml', T, 'f40a1b7c', 'a91f3c0e', 'lk', 100, 'AP-2025'),
+      E(18441, '23:30:05', 'Oct 8', 'Tomás Reyes', 'ui', 'upload', 'presitc', 'receipt-templates-sit13.yml', 'resources', 'd2c8e419', '6f01a3b5', 'lk', 100, 'AP-2024'),
+      E(18440, '22:12:44', 'Oct 8', 'Lena Brandt', 'ui', 'edit', 'sitc', 'gateway-routes-sit9.yml', T, 'a3f9c21d', '5b20e1aa', 'lk', 100, 'AP-2023')
+    ];
+  }
+  diffs() {
+    const R = (no, tx, k = 'ctx') => ({ no, tx, k });
+    return {
+      18462: [R(3, 'accountSorting:'), R(4, '  enabled: false', 'del'), R(4, '  enabled: true', 'add'), R(5, '  sortOrder: asc')],
+      18460: [R(40, '  - id: accounts'), R(41, '→ path: /accounts/**', 'del'), R(41, '    path: /accounts/**', 'add'), R(42, '    uri: lb://accounts-api')],
+      18459: [R(1, '# TEMP hotfix INC-2210', 'add'), R(2, 'rateLimit:', 'add'), R(3, '  perClientPerMin: 1200', 'add'), R(4, '  burst: 80', 'add'), R('', '14 more lines', 'fold')],
+      18453: [R(12, 'limits:'), R(13, '  perTxCents: 1000000', 'del'), R(13, '  perTxCents: 1500000', 'add'), R(14, '  daily: 5')],
+      18451: [R(21, 'rateLimit:'), R(22, '  rateLimitPerMin: 1200', 'del'), R(22, '  rateLimitPerMin: 600', 'add'), R(23, '  burst: 40')],
+      18450: [R(21, 'rateLimit:'), R(22, '  rateLimitPerMin: 600', 'del'), R(22, '  rateLimitPerMin: 1200', 'add'), R(23, '  burst: 40')]
+    };
+  }
+  renderVals() {
+    const noop = e => e && e.preventDefault && e.preventDefault();
+    const st = this.val('state', 'results'), integ = this.val('integ', 'ok'), igp = this.val('igopen', undefined), igOpen = (igp === undefined || igp === '') ? integ === 'failed' : (igp === true || igp === 'true');
+    const quick = this.val('quick', 'all'), jump = Number(this.val('jump', 0)) || 0, showAll = !!this.state.o.showAll;
+    const pop = this.val('pop', 'none'), minConf = Number(this.val('conf', 0)) || 0;
+    const fv = this.arr('via'), fa = this.arr('act'), fl = this.arr('lanes'), fs = this.arr('src');
+    const sel = String(this.val('sel', ''));
+    const VIA = { ui: ['bd-ui', 'i-panel-left', 'UI'], cursor: ['bd-cursor', 'i-zap', 'Cursor'], sync: ['bd-sync', 'i-refresh-cw', 'Sync'], detected: ['bd-oob', 'i-eye', 'Detected'] };
+    const ACT = { edit: ['i-pencil', 'Edit'], upload: ['i-upload', 'Upload'], delete: ['i-trash-2', 'Delete'], restart: ['i-rotate-cw', 'Restart'], pr: ['i-git-pull-request', 'Pull request'], approve: ['i-circle-check', 'Approve'], reveal: ['i-eye', 'Reveal'], sync: ['i-refresh-cw', 'Sync'], upgraded: ['i-user', 'Attribution upgraded'] };
+    const SRC = { lk: 'Via Lanekeeper', vm: 'Edited on the NFS VM', job: 'Sync job', nfs: 'NFS client', unk: 'Unknown' };
+    const SRCS = { lk: 'via Lanekeeper', vm: 'edited on NFS VM', job: 'sync job', nfs: 'NFS client', unk: 'unknown' };
+    const LANES = ['sit', 'sitb', 'sitc', 'presita', 'presitb', 'presitc'];
+    const fmt = n => n.toLocaleString('en-US');
+    const all = st === 'empty' ? [] : this.events();
+    const m = (e, skip) => (skip === 'q' || quick === 'all' || (quick === 'cursor' ? e.via === 'cursor' : e.user === null)) && (skip === 'v' || !fv.length || fv.includes(e.via)) && (skip === 'a' || !fa.length || fa.includes(e.act)) && (skip === 'l' || !fl.length || fl.includes(e.lane)) && (skip === 's' || !fs.length || fs.includes(e.src)) && (skip === 'c' || minConf === 0 || (e.conf !== null && e.conf >= minConf));
+    const matched = all.filter(e => m(e));
+    const lim = jump && !showAll ? jump + 4 : 99999;
+    const shown = matched.filter(e => e.n <= lim), hiddenNewer = matched.length - shown.length;
+    const hasFilters = !!(fv.length || fa.length || fl.length || fs.length || minConf || quick !== 'all');
+    const brkN = 18442;
+    const rows = shown.map(e => {
+      const hasHash = ['edit', 'upload', 'delete', 'sync'].includes(e.act), unk = e.user === null, prob = !unk && e.conf !== null && e.conf < 70;
+      const open = () => this.many({ sel: String(e.n), pop: 'none' });
+      return { cls: (String(e.n) === sel ? 'sel' : '') + (integ === 'failed' && e.n === brkN ? ' brk' : ''), sel: String(e.n) === sel, brk: integ === 'failed' && e.n === brkN, t: e.t, d: e.d, num: fmt(e.n),
+        unk, named: !unk, user: e.user, probable: prob, upg: !!e.upgradedBy, upgName: e.upgName, goUpg: ev => { noop(ev); ev.stopPropagation(); this.many({ sel: String(e.upgradedBy) }); },
+        vcls: VIA[e.via][0], vicon: VIA[e.via][1], vlabel: VIA[e.via][2], aicon: ACT[e.act][0], alabel: ACT[e.act][1], lane: e.lane, file: e.file, sub: e.dir + (e.line ? ' · line ' + e.line : '') + '/',
+        hasHash, noHash: !hasHash, hb: e.hb || 'none', ha: e.ha || 'none', hbCls: e.hb ? '' : 'z', haCls: e.ha ? '' : 'z',
+        src: SRCS[e.src], srcCls: e.src === 'unk' ? 'mut' : '', hasConf: e.conf !== null, conf: e.conf, lo: e.conf !== null && e.conf < 70 ? 'lo' : '',
+        appr: !!e.appr, noAppr: !e.appr, apprId: e.appr, goAppr: ev => { noop(ev); ev.stopPropagation(); }, open, key: ev => { if (ev.key === 'Enter') open(); } };
+    });
+    rows.forEach((r, i) => { r.sub = r.sub.replace(/\/$/, '') + (shown[i].line ? '' : '/'); if (shown[i].act === 'reveal') r.sub = shown[i].dir + '/ · line ' + shown[i].line + ' · “' + shown[i].reason.slice(0, 28) + '…”'; });
+    const mk = (arrName, id, label, skip, extra) => { const on = this.arr(arrName).includes(id); return { on, itCls: on ? 'on' : '', cls: on ? 'on' : '', chk: on ? 1 : 0, label, click: () => this.tog(arrName, id), n: all.filter(e => m(e, skip) && extra(e) === id).length }; };
+    const shortList = a => a.slice(0, 2).join(', ') + (a.length > 2 ? ' +' + (a.length - 2) : '');
+    const F = (key, label, w, multi, opts, has, text, foot, clear) => ({ key, label, w: w + 'px', multi, single: !multi, opts, has, text, foot, clear: e => { noop(e); clear(); }, open: pop === key, cls: pop === key ? 'open' : (has ? 'on' : ''), tog: () => this.set('pop', pop === key ? 'none' : key) });
+    const CONF = [[0, 'Any'], [50, '50% or higher'], [70, '70% or higher'], [90, '90% or higher']];
+    const filters = [
+      F('via', 'Via', 240, true, ['ui', 'cursor', 'sync', 'detected'].map(k => mk('via', k, VIA[k][2], 'v', e => e.via)), !!fv.length, shortList(fv.map(k => VIA[k][2])), 'UI, Cursor, sync, or detected out of band', () => this.set('via', [])),
+      F('act', 'Action', 240, true, Object.keys(ACT).map(k => mk('act', k, ACT[k][1], 'a', e => e.act)), !!fa.length, shortList(fa.map(k => ACT[k][1])), 'Reveal and approval decisions are events too', () => this.set('act', [])),
+      F('lanes', 'Swimlane', 240, true, LANES.map(k => mk('lanes', k, k, 'l', e => e.lane)), !!fl.length, shortList(fl), 'Counts follow the other filters', () => this.set('lanes', [])),
+      F('src', 'Attribution source', 280, true, ['lk', 'vm', 'job', 'nfs', 'unk'].map(k => mk('src', k, SRC[k], 's', e => e.src)), !!fs.length, shortList(fs.map(k => SRCS[k])), 'How Lanekeeper identified the author', () => this.set('src', [])),
+      F('conf', 'Min confidence', 240, false, CONF.map(([v, l]) => ({ on: minConf === v, itCls: minConf === v ? 'on' : '', label: l, click: () => this.set('conf', v), n: all.filter(e => m(e, 'c') && (v === 0 || (e.conf !== null && e.conf >= v))).length })), minConf > 0, minConf + '%+', 'Unknown has no score and hides above Any', () => this.set('conf', 0))
+    ];
+    const nCur = all.filter(e => e.via === 'cursor').length, nUnk = all.filter(e => e.user === null).length;
+    const q = { allOn: quick === 'all', curOn: quick === 'cursor', unkOn: quick === 'unknown', allCls: quick === 'all' ? 'on' : '', curCls: quick === 'cursor' ? 'on' : '', unkCls: quick === 'unknown' ? 'on' : '', nAll: all.length, nCur, nUnk, goAll: () => this.set('quick', 'all'), goCur: () => this.set('quick', 'cursor'), goUnk: () => this.set('quick', 'unknown') };
+
+    // drawer
+    const selE = st === 'results' ? all.find(e => String(e.n) === sel) : null;
+    const APR = { 'AP-2039': 'Priya Shah', 'AP-2038': 'Amir Haddad', 'AP-2036': 'Amir Haddad', 'AP-2035': 'Priya Shah', 'AP-2034': 'Amir Haddad', 'AP-2031': 'Lena Brandt' };
+    let d = {};
+    if (selE) {
+      const e = selE, unk = e.user === null, hasHash = ['edit', 'upload', 'delete', 'sync'].includes(e.act);
+      const links = [];
+      if (e.upgradedBy) links.push({ cls: 'up', icon: 'i-arrow-up', text: 'Attribution upgraded to ' + e.upgName + ' (92%, edited on the NFS VM). This entry stays as recorded.', label: 'Event ' + fmt(e.upgradedBy), go: ev => { noop(ev); this.set('sel', String(e.upgradedBy)); } });
+      if (e.upgrades) links.push({ cls: 'up', icon: 'i-arrow-up', text: 'Upgrades event ' + fmt(e.upgrades) + ': unknown author → ' + e.user + '.', label: 'Event ' + fmt(e.upgrades), go: ev => { noop(ev); this.set('sel', String(e.upgrades)); } });
+      if (e.appr) links.push({ cls: '', icon: 'i-circle-check', text: 'Approval ' + e.appr + (APR[e.appr] ? ', approved by ' + APR[e.appr] : '') + '.', label: e.appr, go: noop });
+      if (e.act === 'pr') links.push({ cls: '', icon: 'i-git-pull-request', text: 'Pull request #' + e.pr + ' on csp-tenant-data.', label: '#' + e.pr, go: noop });
+      const EV = {
+        vm: { rows: [['Source', 'Edited on the NFS VM'], ['OS Login user', 'dana_okoye_corp_example', 'mono'], ['Command (exe)', '/usr/bin/vim.basic payment-limits-sit1.yml', 'mono'], ['Time', 'Process start 11:04:52 · write 11:05:17', 'mono'], ['Correlation window', '11:05:12 – 11:05:22 (±5 s) · 1 session', 'mono']], note: 'OS Login logs for this session arrived at 11:09, after the event. Lanekeeper matched the write to dana.okoye@corp.example and logged this upgrade instead of editing event 18,453.' },
+        late: { rows: [['Source', 'Unknown'], ['OS Login user', 'none matched yet', 'mut'], ['Command (exe)', 'none matched yet', 'mut'], ['Time', 'File changed 11:05:17', 'mono'], ['Correlation window', '11:04:47 – 11:05:47 (±30 s) · 0 sessions', 'mono']], note: 'The log is append-only, so this entry keeps “unknown author”. A later match is added as a linked entry.' },
+        nfs: { rows: [['Source', 'NFS client'], ['OS Login user', 'tomas_reyes_corp_example (uid 4021 from 10.20.4.31)', 'mono'], ['Command (exe)', 'not visible: the write came from an NFS client, not a process on the VM', ''], ['Time', 'File changed 10:42:18', 'mono'], ['Correlation window', '10:41:48 – 10:42:48 (±30 s) · 2 candidates', 'mono'], ['Candidates', 'Tomás Reyes 64% · Lena Brandt 31%', '']], note: 'Below 70%, Lanekeeper names the most likely user and marks it probable. Raise the minimum confidence filter to hide these.' },
+        none: { rows: [['Source', 'Unknown'], ['OS Login user', 'none matched', 'mut'], ['Command (exe)', 'none matched', 'mut'], ['Time', 'File created 13:58:20', 'mono'], ['Correlation window', '13:57:50 – 13:58:50 (±30 s) · 0 sessions', 'mono'], ['NFS server saw', 'write from 10.20.4.17, not a managed host', 'mono']], note: 'Lanekeeper keeps matching for 24 hours. If a session turns up, it adds a linked “Attribution upgraded” entry.' }
+      };
+      const ev = e.evk ? EV[e.evk] : null;
+      const DF = this.diffs(), M = { add: '+', del: '−', hit: '!', ctx: '', fold: '' };
+      const isBrk = integ === 'failed' && e.n === brkN, after = integ === 'failed' && e.n > brkN;
+      const status = isBrk ? ['bd-bad', 'i-shield-alert', 'Chain break'] : after ? ['bd-stale', 'i-triangle-alert', 'Can’t be verified'] : e.n <= 18459 ? ['bd-ok', 'i-shield-check', 'Verified · in the 14:00 checkpoint'] : ['bd-ok', 'i-shield-check', 'Linked · next checkpoint 18:00'];
+      const TITLE = { edit: 'Edit', upload: 'Upload', delete: 'Delete', restart: 'Restart', pr: 'Pull request for', approve: 'Approval decision for', reveal: 'Reveal a value in', sync: 'Sync', upgraded: 'Attribution upgraded for' };
+      let ban = null;
+      if (isBrk) ban = { cls: 'fx-danger', icon: 'ic i-shield-alert', head: 'The chain breaks at this event', body: 'The previous hash stored here doesn’t match the hash of event 18,441. Events from here on can’t be verified.' };
+      else if (unk) ban = { cls: 'fx-warn', icon: 'ic i-circle-help', head: 'Changed outside Lanekeeper, author unknown', body: 'Lanekeeper saw the file change but couldn’t tie it to a login. Review the change in the file history.' };
+      else if (e.via === 'cursor') ban = { cls: 'fx-info', icon: 'ic i-zap', head: 'Made by a Cursor agent for ' + e.user, body: 'Agent session ' + e.agent + '. The proposal needed another Admin’s approval before it was written.' };
+      const hash = this.hx(e.n), prevReal = this.hx(e.n - 1);
+      const noChange = !hasHash;
+      d = { num: fmt(e.n), brk: isBrk, vcls: VIA[e.via][0], vicon: VIA[e.via][1], vlabel: VIA[e.via][2], title: TITLE[e.act] + ' ' + e.file, lane: e.lane, path: e.dir + (e.dir === 'services' ? '' : '/' + e.file), when: e.d + ' ' + e.t,
+        hasBan: !!ban, banCls: ban && ban.cls, banIcon: ban && ban.icon, banHead: ban && ban.head, banBody: ban && ban.body,
+        unk, named: !unk, user: e.user, src: SRC[e.src] + (e.src === 'job' ? ' · ' + e.job : ''), hasConf: e.conf !== null, conf: e.conf, lo: e.conf !== null && e.conf < 70 ? 'lo' : '',
+        hasLink: links.length > 0, links, hasReveal: e.act === 'reveal', line: e.line, reason: e.reason,
+        hasChange: hasHash, hb: e.hb || 'none', ha: e.ha || 'none', rows: (DF[e.n] || []).map(r => ({ ...r, m: M[r.k] })), diffNote: DF[e.n] ? '' : 'Open the file at this version to see the lines.',
+        hasEv: !!ev, ev: ev ? ev.rows.map(r => ({ k: r[0], v: r[1], cls: r[2] || '' })) : [], evNote: ev ? ev.note : '',
+        chCls: status[0], chIcon: status[1], chLabel: status[2], hash, prevNum: fmt(e.n - 1), prevStored: isBrk ? this.hx(e.n - 1, 7) : prevReal, prevReal, prevCls: isBrk ? 'bad' : '', hasFile: !['restart', 'approve', 'reveal', 'upgraded', 'pr'].includes(e.act) };
+    }
+    const igCells = {
+      ok: [{ k: 'Last full verification', v: '02:00 today · 18,445 events · no breaks' }, { k: 'Last checkpoint', v: '14:00 · signed · through event 18,459' }, { k: 'Signature', v: 'ed25519 · key lk-audit-2026-q3 · valid' }, { k: 'Since the checkpoint', v: '4 events · next checkpoint 18:00' }],
+      failed: [{ k: 'Last verified event', v: '18,441 · Oct 8 23:30:05' }, { k: 'Break', v: 'Event 18,442 · Oct 8 23:48:17 · found at 02:00' }, { k: 'Last good checkpoint', v: 'Oct 8 14:00 · signed · through 18,401 · valid' }, { k: 'Can’t be verified', v: '22 events, 18,442 to 18,463' }],
+      running: [{ k: 'Progress', v: 'Event 11,820 of 18,463' }, { k: 'Last full verification', v: '02:00 today · no breaks' }, { k: 'Last checkpoint', v: '14:00 · signed' }, { k: 'Signature', v: 'ed25519 · valid' }]
+    };
+    const ig = {
+      ok: { cls: '', icon: 'i-shield-check', title: 'Chain verified at 02:00', sub: 'Last checkpoint 14:00, signed · 4 events since' },
+      failed: { cls: 'bad', icon: 'i-shield-alert', title: 'Chain verification failed at event 18,442', sub: 'Found at 02:00 · events from 18,442 on can’t be trusted until it is explained' },
+      running: { cls: 'run', icon: 'i-loader-circle', title: 'Verifying the chain…', sub: 'Event 11,820 of 18,463 · results replace this when done' }
+    }[integ];
+    const isRun = integ === 'running';
+    return {
+      loading: st === 'loading', skel: [0, 1, 2, 3, 4, 5, 6, 7, 8].map(i => ({ a: [96, 120, 80][i % 3] + 'px', b: [170, 210, 140][i % 3] + 'px' })),
+      ig: { ...ig, spin: isRun ? 'spin' : '', isRun, showSig: integ === 'ok', sig: 'Signed lk-audit-2026-q3', vLabel: isRun ? 'Verifying…' : 'Verify now', vOff: isRun ? 'off' : '', open: igOpen, openBad: igOpen && integ === 'failed', chev: igOpen ? 'i-chevron-up' : 'i-chevron-down', cells: igCells[integ],
+        toggle: () => this.set('igopen', !igOpen), show: () => this.many({ jump: brkN, showAll: false, sel: String(brkN) }), verify: () => { const prev = integ; this.set('integ', 'running'); this._t = setTimeout(() => this.set('integ', prev), 2500); } },
+      noop, q, filters, hasFilters, clrAll: () => this.many({ via: [], act: [], lanes: [], src: [], conf: 0, quick: 'all', pop: 'none' }),
+      shownText: st === 'loading' ? 'Loading…' : (all.length === 0 ? '0 events' : 'Showing ' + shown.length + ' of ' + all.length),
+      total: all.length, noMatch: st === 'results' && matched.length === 0, hasRows: st === 'results' && rows.length > 0, rows, hiddenNewer, showNewer: e => { noop(e); this.set('showAll', true); },
+      drawerOn: !!selE, d, closeDrawer: () => this.set('sel', '')
+    };
+  }
+}
+</script>
+</body>
+</html>

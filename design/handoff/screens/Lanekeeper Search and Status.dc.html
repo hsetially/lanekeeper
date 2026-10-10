@@ -1,0 +1,71 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="styles.css">
+<style>
+body{margin:0;background:#eceae5;font-family:'Inter',system-ui,sans-serif}
+.dv-turn{padding:40px 44px 32px;scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 8px}
+.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 15px/1.2 'Inter',system-ui,sans-serif;color:#1a1a1a}
+.dv-sub{margin:0 0 24px;font:13px/1.5 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.6);max-width:900px}
+.dv-opts{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start;max-width:2920px}
+.dv-grp{flex-basis:100%;margin:20px 0 -8px;padding-top:16px;border-top:1px solid rgba(0,0,0,.12);font:600 12px/1.3 'Inter',system-ui,sans-serif;letter-spacing:.04em;text-transform:uppercase;color:rgba(0,0,0,.6)}
+.dv-grp:first-child{margin-top:0;padding-top:0;border-top:0}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:12px/1.3 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.65)}
+.dv-card{max-width:100%;background:#fff;border:1px solid rgba(0,0,0,.12);border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.06);overflow:hidden}
+.dv-opt:target .dv-oid{background:#2a78d6;color:#fff}
+.dv-next{margin:28px 0 0;font:12px/1.5 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.6)}
+.dv-next a{color:inherit}
+</style>
+</helmet>
+<section class="dv-turn" id="t1" data-screen-label="Turn 1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Search and Feature status · Text, Settings, Docs, Feature status</span></div>
+<p class="dv-sub">One Search page with three tabs; “/” focuses the query on every tab. Every result is a link to its exact target: file at line, or doc at heading. Each board runs live, so you can type, toggle regex and case, and change swimlanes.</p>
+<div class="dv-opts">
+<div class="dv-grp">Text search · literal by default, grouped by swimlane then file</div>
+<div class="dv-opt" id="1a"><div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Light · “enableAccountSorting”, tenant and base files side by side, focused hit shows its target line</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="search" stab="text" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1b"><div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Light · swimlane multi-select open, with match counts per swimlane</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="search" stab="text" spop="lanes" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1c"><div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>Light · 1,000+ matches: banner at the top, stop row at the bottom</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="search" stab="text" sstate="truncated" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1d"><div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a>Light · invalid regex: error inline, nothing searched, one-click fallback to plain text</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="search" stab="text" sstate="invalid" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1e"><div class="dv-olabel"><a class="dv-oid" href="#1e">1e</a>Light · no results: suggestions are real searches, each with its match count</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="search" stab="text" sstate="noresults" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1f"><div class="dv-olabel"><a class="dv-oid" href="#1f">1f</a>Dark · results</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="dark" w="1440" h="900" page="search" stab="text" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Settings search · “enableAccountSorting”</div>
+<div class="dv-opt" id="1g"><div class="dv-olabel"><a class="dv-oid" href="#1g">1g</a>Light · swimlane, file, setting path, value, line, Open in grid</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="search" stab="settings" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1h"><div class="dv-olabel"><a class="dv-oid" href="#1h">1h</a>Light · no results: closest setting name, then a hop to file text</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="search" stab="settings" sstate="noresults" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1i"><div class="dv-olabel"><a class="dv-oid" href="#1i">1i</a>Dark · results</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="dark" w="1440" h="900" page="search" stab="settings" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Docs · search and reader</div>
+<div class="dv-opt" id="1j"><div class="dv-olabel"><a class="dv-oid" href="#1j">1j</a>Light · results: title, heading path, snippet, source, exact section anchor</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="search" stab="docs" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1k"><div class="dv-olabel"><a class="dv-oid" href="#1k">1k</a>Light · reader, Git doc: read-only banner, Replace disabled with the reason</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="search" stab="docs" sview="reader" stip="replace" role="Editor" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1l"><div class="dv-olabel"><a class="dv-oid" href="#1l">1l</a>Light · reader, uploaded doc: Replace enabled, version history with View and Restore</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="search" stab="docs" sview="reader" sdoc="instant" role="Editor" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1m"><div class="dv-olabel"><a class="dv-oid" href="#1m">1m</a>Dark · reader, Git doc</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="dark" w="1440" h="900" page="search" stab="docs" sview="reader" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1n"><div class="dv-olabel"><a class="dv-oid" href="#1n">1n</a>Light · no results: fewer words, or search file text</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="search" stab="docs" sstate="noresults" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1o"><div class="dv-olabel"><a class="dv-oid" href="#1o">1o</a>Light · Viewer: Upload disabled, requires Editor</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="search" stab="docs" role="Viewer" stip="upload" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Upload and replace · Editor and above</div>
+<div class="dv-opt" id="1p"><div class="dv-olabel"><a class="dv-oid" href="#1p">1p</a>Light · upload, drop zone ready</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="search" stab="docs" sdialog="empty" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1q"><div class="dv-olabel"><a class="dv-oid" href="#1q">1q</a>Light · wrong type: error names the problem and the next step</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="search" stab="docs" sdialog="wrongtype" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1r"><div class="dv-olabel"><a class="dv-oid" href="#1r">1r</a>Light · over 2 MB</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="search" stab="docs" sdialog="toolarge" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1s"><div class="dv-olabel"><a class="dv-oid" href="#1s">1s</a>Light · replace: consequences listed before the button</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="search" stab="docs" sview="reader" sdoc="instant" sdialog="replace" role="Editor" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1t"><div class="dv-olabel"><a class="dv-oid" href="#1t">1t</a>Dark · replace</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="dark" w="1440" h="900" page="search" stab="docs" sview="reader" sdoc="instant" sdialog="replace" role="Editor" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Feature status</div>
+<div class="dv-opt" id="1u"><div class="dv-olabel"><a class="dv-oid" href="#1u">1u</a>Light · Admin: first flag expanded to channels, differing values highlighted, unresolved note</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="status" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1v"><div class="dv-olabel"><a class="dv-oid" href="#1v">1v</a>Light · all channels open, cell tooltip names the file and line</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="status" fsexpand="all" fstip="cell" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1w"><div class="dv-olabel"><a class="dv-oid" href="#1w">1w</a>Light · Editor, only flags that differ: no admin note, one-line pointer at the foot</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="status" role="Editor" fsonlydiff="{{ true }}" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1x"><div class="dv-olabel"><a class="dv-oid" href="#1x">1x</a>Dark · Admin</div><div class="dv-card" style="width:1442px"><dc-import name="Lanekeeper Shell" theme="dark" w="1440" h="900" page="status" hint-size="1440px,900px"></dc-import></div></div>
+</div>
+<p class="dv-next">Try next: “show Feature status with 40 swimlanes” · “add a diff-to-default filter on the Settings tab” · “design the unresolved-flags mapping dialog”</p>
+</section>
+</x-dc>
+</body>
+</html>

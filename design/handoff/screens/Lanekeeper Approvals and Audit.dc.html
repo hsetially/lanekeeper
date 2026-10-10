@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="styles.css">
+<style>
+body{margin:0;background:#eceae5;font-family:'Inter',system-ui,sans-serif}
+.dv-turn{padding:40px 44px 32px;scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 8px}
+.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 15px/1.2 'Inter',system-ui,sans-serif;color:#1a1a1a}
+.dv-sub{margin:0 0 24px;font:13px/1.5 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.6);max-width:900px}
+.dv-opts{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start;max-width:2920px}
+.dv-grp{flex-basis:100%;margin:20px 0 -8px;padding-top:16px;border-top:1px solid rgba(0,0,0,.12);font:600 12px/1.3 'Inter',system-ui,sans-serif;letter-spacing:.04em;text-transform:uppercase;color:rgba(0,0,0,.6)}
+.dv-grp:first-child{margin-top:0;padding-top:0;border-top:0}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:12px/1.3 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.65)}
+.dv-card{max-width:100%;background:#fff;border:1px solid rgba(0,0,0,.12);border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.06);overflow:hidden;width:1442px}
+.dv-opt:target .dv-oid{background:#2a78d6;color:#fff}
+.dv-next{margin:28px 0 0;font:12px/1.5 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.6)}
+.dv-next a{color:inherit}
+</style>
+</helmet>
+<section class="dv-turn" id="t1" data-screen-label="Turn 1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Approvals and audit log</span></div>
+<p class="dv-sub">Both pages live in the Lanekeeper shell. Approvals: an Admin queue with Pending, Stale, Expired and Decided tabs, a detail drawer with consequence first, and live updates. Audit: a filterable, hash-chained log with attribution source and confidence, a detail drawer with evidence, and an integrity panel. Cursor-made changes are solid dark chips and unknown authors are dashed italic chips, so both stand out and filter in one click. Rows and filters in each frame are clickable.</p>
+<div class="dv-opts">
+<div class="dv-grp">Approvals · queue and tabs · Admin</div>
+<div class="dv-opt" id="1a"><div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Pending · six waiting, newest first · Cursor-made changes, your own proposal and the 5 h expiry are marked in the row</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1b"><div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Stale · the file changed after the proposal was made</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" aptab="stale" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1c"><div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>Expired · lapsed after 24 hours, nothing written</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" aptab="expired" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1d"><div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a>Decided · who decided and how</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" aptab="decided" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Approvals · detail by action</div>
+<div class="dv-opt" id="1e"><div class="dv-olabel"><a class="dv-oid" href="#1e">1e</a>Edit · consequence first, then the diff · Reject stays disabled until a reason is written</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" apsel="AP-2046" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1f"><div class="dv-olabel"><a class="dv-oid" href="#1f">1f</a>Reject · reason filled in, button enabled</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" apsel="AP-2046" apreason="Raise maxRetries to 4 first. 5 hits the downstream limit." hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1g"><div class="dv-olabel"><a class="dv-oid" href="#1g">1g</a>AI-made edit via Cursor · agent session and prompt shown with the diff</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" apsel="AP-2047" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1h"><div class="dv-olabel"><a class="dv-oid" href="#1h">1h</a>Upload · hashes of the upload and the file it replaces · degraded agent warned</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" apsel="AP-2040" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1i"><div class="dv-olabel"><a class="dv-oid" href="#1i">1i</a>Delete · file contents shown before it goes</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" apsel="AP-2045" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1j"><div class="dv-olabel"><a class="dv-oid" href="#1j">1j</a>Restart · services and order, no diff</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" apsel="AP-2043" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Approvals · blocked and edge states</div>
+<div class="dv-opt" id="1k"><div class="dv-olabel"><a class="dv-oid" href="#1k">1k</a>Your own proposal · “You can’t approve your own proposal” · Approve disabled, Withdraw offered</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" apsel="AP-2044" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1l"><div class="dv-olabel"><a class="dv-oid" href="#1l">1l</a>Stale · “The file changed since this was proposed” · what changed, what was proposed, Ask author to update</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" aptab="stale" apsel="AP-2041" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1m"><div class="dv-olabel"><a class="dv-oid" href="#1m">1m</a>Stale · the change came from outside Lanekeeper and links to the audit attribution</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" aptab="stale" apsel="AP-2042" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1n"><div class="dv-olabel"><a class="dv-oid" href="#1n">1n</a>Expired · read-only</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" aptab="expired" apsel="AP-2037" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1o"><div class="dv-olabel"><a class="dv-oid" href="#1o">1o</a>Decided · rejected with the reason shown</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" aptab="decided" apsel="AP-2032" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1p"><div class="dv-olabel"><a class="dv-oid" href="#1p">1p</a>Editor · Approvals needs Admin</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" role="Editor" nav-mode="disable" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1q"><div class="dv-olabel"><a class="dv-oid" href="#1q">1q</a>Loading</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" apstate="loading" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1r"><div class="dv-olabel"><a class="dv-oid" href="#1r">1r</a>Empty</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" apstate="empty" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Approvals · live updates</div>
+<div class="dv-opt" id="1s"><div class="dv-olabel"><a class="dv-oid" href="#1s">1s</a>A new proposal arrives at the top of Pending, tinted, with a New badge · tab counts and the live line update</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" aplive="arrived" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1t"><div class="dv-olabel"><a class="dv-oid" href="#1t">1t</a>Someone else approved the proposal you have open · banner explains, buttons gone, row has left Pending</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="approvals" aplive="decided" apsel="AP-2046" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1u"><div class="dv-olabel"><a class="dv-oid" href="#1u">1u</a>Dark · AI-made edit</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" w="1440" h="900" page="approvals" apsel="AP-2047" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Audit log · table, filters and integrity</div>
+<div class="dv-opt" id="1v"><div class="dv-olabel"><a class="dv-oid" href="#1v">1v</a>Default · chain verified, quick filters for Cursor and unknown author, attribution column</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1w"><div class="dv-olabel"><a class="dv-oid" href="#1w">1w</a>Integrity panel open · verification, checkpoint, signature, next run</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" auigopen="true" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1x"><div class="dv-olabel"><a class="dv-oid" href="#1x">1x</a>Integrity failed · “Chain verification failed at event 18,442” · jumps to the break, newer events folded</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" auinteg="failed" aujump="18442" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1y"><div class="dv-olabel"><a class="dv-oid" href="#1y">1y</a>Integrity failed · event 18,442 drawer shows stored vs real previous hash</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" auinteg="failed" aujump="18442" ausel="18442" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1z"><div class="dv-olabel"><a class="dv-oid" href="#1z">1z</a>Verifying now</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" auinteg="running" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1aa"><div class="dv-olabel"><a class="dv-oid" href="#1aa">1aa</a>Quick filter · Via Cursor</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" auquick="cursor" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1ab"><div class="dv-olabel"><a class="dv-oid" href="#1ab">1ab</a>Quick filter · Unknown author · dashed italic badge, Detected via</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" auquick="unknown" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1ac"><div class="dv-olabel"><a class="dv-oid" href="#1ac">1ac</a>Via filter open</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" aupop="via" auvia="cursor,detected" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Audit log · attribution</div>
+<div class="dv-opt" id="1ad"><div class="dv-olabel"><a class="dv-oid" href="#1ad">1ad</a>Attribution source filter · five sources with counts</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" aupop="src" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1ae"><div class="dv-olabel"><a class="dv-oid" href="#1ae">1ae</a>Minimum confidence filter · 70% or higher · unknown has no score and drops out</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" aupop="conf" auconf="70" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1af"><div class="dv-olabel"><a class="dv-oid" href="#1af">1af</a>Detected edits only, 70%+ · the 64% NFS client guess is hidden</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" auvia="detected" auconf="70" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1ag"><div class="dv-olabel"><a class="dv-oid" href="#1ag">1ag</a>Drawer · unknown author · no session matched, evidence says so</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" ausel="18459" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1ah"><div class="dv-olabel"><a class="dv-oid" href="#1ah">1ah</a>Drawer · the same change before upgrade · stays unknown, links forward to the upgrade</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" ausel="18453" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1ai"><div class="dv-olabel"><a class="dv-oid" href="#1ai">1ai</a>Drawer · “Attribution upgraded” · unknown → Dana Okoye with OS Login user, command, time and correlation window</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" ausel="18454" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1aj"><div class="dv-olabel"><a class="dv-oid" href="#1aj">1aj</a>Drawer · NFS client at 64% · probable user, two candidates, no command visible</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" ausel="18452" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Audit log · other drawers</div>
+<div class="dv-opt" id="1ak"><div class="dv-olabel"><a class="dv-oid" href="#1ak">1ak</a>Reveal · user, file, line and reason; the value is never stored</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" ausel="18463" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1al"><div class="dv-olabel"><a class="dv-oid" href="#1al">1al</a>Via Cursor · agent session and approval link</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" ausel="18460" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1am"><div class="dv-olabel"><a class="dv-oid" href="#1am">1am</a>Sync · the job that overwrote Dana Okoye’s 1200 with 600</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" ausel="18451" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1an"><div class="dv-olabel"><a class="dv-oid" href="#1an">1an</a>Dark · unknown author drawer</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" w="1440" h="900" page="audit" ausel="18459" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1ao"><div class="dv-olabel"><a class="dv-oid" href="#1ao">1ao</a>Dark · integrity failed</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" w="1440" h="900" page="audit" auinteg="failed" aujump="18442" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1ap"><div class="dv-olabel"><a class="dv-oid" href="#1ap">1ap</a>Loading</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="audit" austate="loading" hint-size="1440px,900px"></dc-import></div></div>
+</div>
+<p class="dv-next">Try next: “add a bulk approve for same-author proposals” · “show the correlation window as a timeline in the audit drawer”</p>
+</section>
+</x-dc>
+</body>
+</html>

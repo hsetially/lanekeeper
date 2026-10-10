@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="consequence.css">
+<style>
+body{margin:0;background:#eceae5;font-family:'Inter',system-ui,sans-serif}
+.dv-turn{padding:40px 44px 32px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 8px}
+.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 15px/1.2 'Inter',system-ui,sans-serif;color:#1a1a1a}
+.dv-sub{margin:0 0 24px;font:13px/1.5 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.6);max-width:900px}
+.dv-opts{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start;max-width:2400px}
+.dv-grp{flex-basis:100%;margin:20px 0 -8px;padding-top:16px;border-top:1px solid rgba(0,0,0,.12);font:600 12px/1.3 'Inter',system-ui,sans-serif;letter-spacing:.04em;text-transform:uppercase;color:rgba(0,0,0,.6)}
+.dv-grp:first-child{margin-top:0;padding-top:0;border-top:0}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:12px/1.3 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.65);max-width:640px}
+.dv-opt:target .dv-oid{background:#2a78d6;color:#fff}
+.dv-ctl{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;font:12px/16px 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.65)}
+.dv-seg{display:inline-flex;gap:0}
+.dv-seg button{height:24px;padding:0 10px;border:1px solid rgba(0,0,0,.25);background:#fff;color:#1a1a1a;font:500 12px/1 'Inter',system-ui,sans-serif;cursor:pointer;margin-left:-1px}
+.dv-seg button:first-child{border-radius:4px 0 0 4px;margin-left:0}.dv-seg button:last-child{border-radius:0 4px 4px 0}
+.dv-seg button.on{background:#1a1a1a;color:#fff;border-color:#1a1a1a;position:relative}
+</style>
+</helmet>
+<section class="dv-turn" id="t1" data-screen-label="Turn 1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Consequence dialogs · sitb / tx-infinity-api / tx-infinity-core-sit7.yml</span></div>
+<p class="dv-sub">Every dialog reads in the same order: the effect sentence first (coloured block), then the details, then the buttons. Dialogs with a warning put initial focus on Cancel. Destructive ones need the name typed. 1a is live: pick a target, create the PR, and reload mid-job to see it resume.</p>
+<div class="dv-opts">
+
+<div class="dv-grp">1 · Raise PR from sitb / tx-infinity-core-sit7.yml</div>
+<div class="dv-opt" id="1a"><div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Live flow. Choose a target, Continue, Create PR. Use the switches to try the new-file, error and existing-PR cases.</div>
+  <div class="dv-ctl">
+    <span>Tenant file on sit7</span><span class="dv-seg"><sc-for list="{{ freshOpts }}" as="o" hint-placeholder-count="2"><button type="button" class="{{ o.cls }}" onClick="{{ o.click }}">{{ o.label }}</button></sc-for></span>
+    <span>Simulate</span><span class="dv-seg"><sc-for list="{{ simOpts }}" as="o" hint-placeholder-count="4"><button type="button" class="{{ o.cls }}" onClick="{{ o.click }}">{{ o.label }}</button></sc-for></span>
+  </div>
+  <div class="stage" style="width:664px"><dc-import name="Lanekeeper PR Flow" live="{{ true }}" fresh="{{ fresh }}" sim="{{ sim }}" hint-size="600px,520px"></dc-import></div></div>
+<div class="dv-opt" id="1b"><div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Step 1 · tenant branch selected, file already exists on sit7</div><div class="stage" style="width:664px"><dc-import name="Lanekeeper PR Flow" view="target" target="tenant" hint-size="600px,420px"></dc-import></div></div>
+<div class="dv-opt" id="1c"><div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>Step 1 · Base selected: warning stays on the card, effect block names every swimlane</div><div class="stage" style="width:664px"><dc-import name="Lanekeeper PR Flow" view="target" target="base" hint-size="600px,420px"></dc-import></div></div>
+<div class="dv-opt" id="1d"><div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a>Step 1 · tenant file is new on sit7: fork warning on the card and in the effect block</div><div class="stage" style="width:664px"><dc-import name="Lanekeeper PR Flow" view="target" target="tenant" fresh="{{ true }}" hint-size="600px,460px"></dc-import></div></div>
+<div class="dv-opt" id="1e"><div class="dv-olabel"><a class="dv-oid" href="#1e">1e</a>Step 2 · title, description prefilled with swimlane, hashes and audit ID</div><div class="stage" style="width:664px"><dc-import name="Lanekeeper PR Flow" view="form" target="tenant" hint-size="600px,620px"></dc-import></div></div>
+<div class="dv-opt" id="1f"><div class="dv-olabel"><a class="dv-oid" href="#1f">1f</a>An open PR already exists for this exact change: link only, no create button</div><div class="stage" style="width:664px"><dc-import name="Lanekeeper PR Flow" view="exists" hint-size="600px,400px"></dc-import></div></div>
+<div class="dv-opt" id="1g"><div class="dv-olabel"><a class="dv-oid" href="#1g">1g</a>PR job · committing (step 2 of 4)</div><div class="stage" style="width:664px"><dc-import name="Lanekeeper PR Flow" view="job" job-step="{{ 1 }}" hint-size="600px,460px"></dc-import></div></div>
+<div class="dv-opt" id="1h"><div class="dv-olabel"><a class="dv-oid" href="#1h">1h</a>PR job · after a page reload, resumed at opening pull request (step 3 of 4)</div><div class="stage" style="width:664px"><dc-import name="Lanekeeper PR Flow" view="job" job-step="{{ 2 }}" resumed="{{ true }}" hint-size="600px,500px"></dc-import></div></div>
+<div class="dv-opt" id="1i"><div class="dv-olabel"><a class="dv-oid" href="#1i">1i</a>Success · links to the GitHub PR</div><div class="stage" style="width:664px"><dc-import name="Lanekeeper PR Flow" view="done" hint-size="600px,380px"></dc-import></div></div>
+<div class="dv-opt" id="1j"><div class="dv-olabel"><a class="dv-oid" href="#1j">1j</a>Error · GitHub token expired (links to My token)</div><div class="stage" style="width:664px"><dc-import name="Lanekeeper PR Flow" view="err-token" hint-size="600px,380px"></dc-import></div></div>
+<div class="dv-opt" id="1k"><div class="dv-olabel"><a class="dv-oid" href="#1k">1k</a>Error · no push access</div><div class="stage" style="width:664px"><dc-import name="Lanekeeper PR Flow" view="err-push" hint-size="600px,380px"></dc-import></div></div>
+<div class="dv-opt" id="1l"><div class="dv-olabel"><a class="dv-oid" href="#1l">1l</a>Drift list · PR badges sit beside the drift status and link to the PR</div>
+  <div class="lk card" style="width:880px">
+    <table class="tb"><thead><tr><th>File</th><th>Swimlane</th><th>Drift</th><th>Pull request</th></tr></thead><tbody>
+      <tr><td class="mono">tx-infinity-api/tx-infinity-core-sit7.yml</td><td class="mono">sitb</td><td><span class="bd bd-nfs"><i class="ic i-arrow-up-from-line"></i>NFS ahead</span></td><td><a href="#1f" style="text-decoration:none"><span class="bd bd-pr"><i class="ic i-git-pull-request"></i>PR #418 open</span></a></td></tr>
+      <tr><td class="mono">tx-infinity-api/application-sit7.properties</td><td class="mono">sitb</td><td><span class="bd bd-nfs"><i class="ic i-arrow-up-from-line"></i>NFS ahead</span></td><td><span class="bd bd-merged"><i class="ic i-hourglass"></i>Fix merged, awaiting sync</span></td></tr>
+      <tr><td class="mono">ui/remote-itm-teller/ui-common-config.yaml</td><td class="mono">sitb</td><td><span class="bd bd-nfs"><i class="ic i-arrow-up-from-line"></i>NFS ahead</span></td><td class="mut">No PR</td></tr>
+      <tr><td class="mono">tx-infinity-api/tx-infinity-gateway.yml</td><td class="mono">sitc</td><td><span class="bd bd-conflict"><i class="ic i-split"></i>Conflict</span></td><td><span class="bd bd-pr"><i class="ic i-git-pull-request"></i>PR #409 open</span></td></tr>
+    </tbody></table>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:10px;border-top:1px solid var(--border);background:var(--muted);font-size:12px;line-height:16px">
+      <span><span class="bd bd-pr"><i class="ic i-git-pull-request"></i>PR #418 open</span><br><span class="mut">An open PR carries this change. Clears when it merges or closes.</span></span>
+      <span><span class="bd bd-merged"><i class="ic i-hourglass"></i>Fix merged, awaiting sync</span><br><span class="mut">The PR merged but sitb hasn't synced yet. Clears on the next sync, no action needed.</span></span>
+    </div>
+  </div></div>
+
+<div class="dv-grp">2 · Delete tenant file tx-infinity-core-sit7.yml</div>
+<div class="dv-opt" id="2a"><div class="dv-olabel"><a class="dv-oid" href="#2a">2a</a>Destructive confirm · name not yet typed, Delete file disabled</div><div class="stage" style="width:612px"><dc-import name="Lanekeeper Delete" typed="tx-infinity-core-s" hint-size="548px,700px"></dc-import></div></div>
+<div class="dv-opt" id="2b"><div class="dv-olabel"><a class="dv-oid" href="#2b">2b</a>Name matches, Delete file enabled</div><div class="stage" style="width:612px"><dc-import name="Lanekeeper Delete" typed="tx-infinity-core-sit7.yml" hint-size="548px,700px"></dc-import></div></div>
+
+<div class="dv-grp">3 · Upload a new tenant file into ui/remote-itm-teller</div>
+<div class="dv-opt" id="3a"><div class="dv-olabel"><a class="dv-oid" href="#3a">3a</a>Consequence · the upload forks a base file</div><div class="stage" style="width:612px">
+<div class="lk cd" role="alertdialog" aria-labelledby="up1-t" style="width:548px">
+  <div class="cd-head"><div class="cd-ttl"><h3 id="up1-t">Upload ui-common-config-sit7.yaml to sitb?</h3><span class="cd-sub">sitb / ui / remote-itm-teller</span></div><button type="button" class="b ib" aria-label="Close"><i class="ic i-x"></i></button></div>
+  <div class="cd-body">
+    <div class="fx fx-warn" role="status"><i class="ic i-triangle-alert"></i><span>This forks ui-common-config.yaml from base.<span class="x">remote-itm-teller in sitb will read your file instead. Later base changes to it won't reach sit7.</span></span></div>
+    <div class="pr" style="align-items:center"><i class="ic s16 i-file-code mut"></i><div style="display:flex;flex-direction:column;min-width:0"><b class="mono" style="font-weight:600">ui-common-config-sit7.yaml</b><span class="mut" style="font-size:12px;line-height:16px">2.4 KB · YAML · UTF-8 · LF · valid</span></div></div>
+    <dl class="kv">
+      <dt>Suffix</dt><dd><span class="mono">sit7</span> matches the deployed branch <span class="ch">sit7</span><span class="bd bd-sync"><i class="ic i-check"></i>Match</span></dd>
+      <dt>Forks</dt><dd><span class="ch">ui/remote-itm-teller/ui-common-config.yaml</span><span class="mut">base v2.3.1</span></dd>
+      <dt>Differs from base</dt><dd>3 changed · 2 added · 1 removed <a href="#">View diff</a></dd>
+      <dt>Restart</dt><dd><span class="bd bd-restart"><i class="ic i-clock"></i>remote-itm-teller</span><span class="mut">needs a restart to read it</span></dd>
+      <dt>Git</dt><dd>New file. NFS ahead until a PR merges.</dd>
+    </dl>
+  </div>
+  <div class="cd-foot"><button type="button" class="b g foc">Cancel</button><button type="button" class="b p"><i class="ic i-upload"></i>Upload and fork</button></div>
+</div></div></div>
+<div class="dv-opt" id="3b"><div class="dv-olabel"><a class="dv-oid" href="#3b">3b</a>Consequence · suffix doesn't match the deployed branch. Upload anyway needs an explicit acknowledgement</div><div class="stage" style="width:612px">
+<div class="lk cd" role="alertdialog" aria-labelledby="up2-t" style="width:548px">
+  <div class="cd-head"><div class="cd-ttl"><h3 id="up2-t">Upload ui-common-config-sit3.yaml to sitb?</h3><span class="cd-sub">sitb / ui / remote-itm-teller</span></div><button type="button" class="b ib" aria-label="Close"><i class="ic i-x"></i></button></div>
+  <div class="cd-body">
+    <div class="fx fx-danger" role="alert"><i class="ic i-ban"></i><span>Suffix sit3 doesn't match the deployed branch sit7; this file will never be read in sitb.<span class="x">The upload would succeed, and nothing would change. No service picks it up.</span></span></div>
+    <div class="pr" style="align-items:center"><i class="ic s16 i-file-code mut"></i><div style="display:flex;flex-direction:column;min-width:0"><b class="mono" style="font-weight:600">ui-common-config-sit3.yaml</b><span class="mut" style="font-size:12px;line-height:16px">2.4 KB · YAML · UTF-8 · LF · valid</span></div></div>
+    <dl class="kv">
+      <dt>Deployed branch</dt><dd><span class="ch"><i class="ic s12 i-git-branch"></i>sit7</span><span class="mut">sitb reads files ending in -sit7</span></dd>
+      <dt>File suffix</dt><dd><span class="ch">sit3</span><span class="mut">no swimlane here runs sit3</span></dd>
+      <dt>Likely fix</dt><dd>Upload it as <span class="ch">ui-common-config-sit7.yaml</span> instead.</dd>
+    </dl>
+    <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px"><span class="cb" style="margin-top:1px"></span><span>I know this file will never be read in sitb.</span></label>
+  </div>
+  <div class="cd-foot"><button type="button" class="b g foc" style="margin-right:auto">Cancel</button><button type="button" class="b off" aria-disabled="true">Upload anyway</button><button type="button" class="b p"><i class="ic i-upload"></i>Upload as -sit7.yaml</button></div>
+</div></div></div>
+
+<div class="dv-grp">4 · Restart</div>
+<div class="dv-opt" id="4a"><div class="dv-olabel"><a class="dv-oid" href="#4a">4a</a>Restart one service · pods listed, other testers warned</div><div class="stage" style="width:612px">
+<div class="lk cd" role="alertdialog" aria-labelledby="rs1-t" style="width:548px">
+  <div class="cd-head"><div class="cd-ttl"><h3 id="rs1-t">Restart tx-infinity-core in sitb?</h3><span class="cd-sub">3 pods · namespace sitb</span></div><button type="button" class="b ib" aria-label="Close"><i class="ic i-x"></i></button></div>
+  <div class="cd-body">
+    <div class="fx fx-warn" role="status"><i class="ic i-triangle-alert"></i><span>Restart recreates 3 pods. Requests to tx-infinity-core fail for about 40 s.<span class="x">The restart picks up tx-infinity-core-sit7.yml, saved 12 min ago.</span></span></div>
+    <div class="wn"><i class="ic i-user"></i><span>Other people testing in sitb will be interrupted.</span><span style="margin-left:auto;font-weight:400;white-space:nowrap">2 active in the last 15 min</span></div>
+    <div style="display:flex;flex-direction:column;gap:6px"><span class="sec">Affected pods</span>
+      <ul class="card" style="font:400 12px/18px var(--font-mono)">
+        <li style="display:flex;gap:8px;align-items:center;height:28px;padding:0 10px;border-bottom:1px solid var(--border)"><i class="ic s12 i-circle-check" style="color:var(--success-fg)"></i>tx-infinity-core-7c9d8b6f5-4xk2p<span class="mut" style="margin-left:auto;font-family:var(--font-sans)">Running · 4 d</span></li>
+        <li style="display:flex;gap:8px;align-items:center;height:28px;padding:0 10px;border-bottom:1px solid var(--border)"><i class="ic s12 i-circle-check" style="color:var(--success-fg)"></i>tx-infinity-core-7c9d8b6f5-9tq7m<span class="mut" style="margin-left:auto;font-family:var(--font-sans)">Running · 4 d</span></li>
+        <li style="display:flex;gap:8px;align-items:center;height:28px;padding:0 10px"><i class="ic s12 i-circle-check" style="color:var(--success-fg)"></i>tx-infinity-core-7c9d8b6f5-lw6hd<span class="mut" style="margin-left:auto;font-family:var(--font-sans)">Running · 4 d</span></li>
+      </ul></div>
+  </div>
+  <div class="cd-foot"><button type="button" class="b g foc">Cancel</button><button type="button" class="b p"><i class="ic i-rotate-cw"></i>Restart tx-infinity-core</button></div>
+</div></div></div>
+<div class="dv-opt" id="4b"><div class="dv-olabel"><a class="dv-oid" href="#4b">4b</a>Restart from a root file · application.properties affects every service, checklist, Restart all</div><div class="stage" style="width:728px">
+<div class="lk cd" role="alertdialog" aria-labelledby="rs2-t" style="width:664px">
+  <div class="cd-head"><div class="cd-ttl"><h3 id="rs2-t">Restart services in sitb?</h3><span class="cd-sub">sitb / application.properties</span></div><button type="button" class="b ib" aria-label="Close"><i class="ic i-x"></i></button></div>
+  <div class="cd-body">
+    <div class="fx fx-warn" role="status"><i class="ic i-triangle-alert"></i><span>application.properties affects all 14 services.<span class="x">Restarting all of them recreates 29 pods. sitb is unavailable for a few minutes while they come back.</span></span></div>
+    <div class="wn"><i class="ic i-user"></i><span>Other people testing in sitb will be interrupted.</span></div>
+    <div><div class="cl-h"><span class="cb on"><i class="ic i-check"></i></span><strong>14 of 14 selected</strong><span class="mut" style="margin-left:auto">Services you skip keep running the old file and show Pending restart</span></div>
+      <ul class="cl"><sc-for list="{{ services }}" as="s" hint-placeholder-count="14"><li><span class="cb on"><i class="ic i-check"></i></span><span class="mono">{{ s.n }}</span><span class="m">{{ s.p }}</span></li></sc-for></ul></div>
+  </div>
+  <div class="cd-foot"><span class="l">Restarts run one service at a time</span><button type="button" class="b g foc">Cancel</button><button type="button" class="b p"><i class="ic i-rotate-cw"></i>Restart all 14</button></div>
+</div></div></div>
+<div class="dv-grp">5 · Conflict (409) while saving</div>
+<div class="dv-opt" id="5a"><div class="dv-olabel"><a class="dv-oid" href="#5a">5a</a>Three panes: your version, current NFS version, the base you started from</div><div class="stage" style="width:1164px">
+<div class="lk cd" role="alertdialog" aria-labelledby="cf-t" style="width:1100px">
+  <div class="cd-head"><i class="ic s16 i-split" style="margin-top:3px;color:var(--danger-fg)"></i><div class="cd-ttl"><h3 id="cf-t">This file changed on NFS since you opened it.</h3><span class="cd-sub">sitb / tx-infinity-api / tx-infinity-core-sit7.yml</span></div><button type="button" class="b ib" aria-label="Close"><i class="ic i-x"></i></button></div>
+  <div class="cd-body">
+    <div class="fx fx-warn" role="alert"><i class="ic i-triangle-alert"></i><span>Your save was not applied.<span class="x">Another save changed this file at 10:42; you opened it at 10:31. Nothing is written until you choose below.</span></span></div>
+    <div class="ps"><sc-for list="{{ panes }}" as="p" hint-placeholder-count="3"><div class="pn"><div class="pn-h"><b>{{ p.h }}</b><span>{{ p.s }}</span></div><div style="padding:4px 0"><sc-for list="{{ p.lines }}" as="l" hint-placeholder-count="9"><div class="{{ l.cls }}"><i>{{ l.n }}</i><span>{{ l.t }}</span><em>{{ l.tag }}</em></div></sc-for></div></div></sc-for></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12px"><span class="ln me" style="display:inline-flex;height:20px;padding:0 6px;border-radius:4px;font-family:var(--font-sans)">Your changes: 2</span><span class="ln th" style="display:inline-flex;height:20px;padding:0 6px;border-radius:4px;font-family:var(--font-sans)">NFS changes: 2</span><span class="ln cf" style="display:inline-flex;height:20px;padding:0 6px;border-radius:4px;font-family:var(--font-sans)">Overlap: 1 (tx.core.pool.maxSize)</span></div>
+    <div class="wn nf"><i class="ic i-info"></i><span>Re-apply keeps the NFS version and replays your changes on top. 1 line, pool.maxSize, needs your decision before you save again.</span></div>
+  </div>
+  <div class="cd-foot"><button type="button" class="b g" style="margin-right:auto">Keep editing<span class="kb" style="margin-left:4px">Esc</span></button><button type="button" class="b dl"><i class="ic i-trash-2"></i>Discard mine</button><button type="button" class="b p foc"><i class="ic i-rotate-cw"></i>Re-apply my changes on top</button></div>
+</div></div></div>
+
+<div class="dv-grp">6 · Sent for approval (202)</div>
+<div class="dv-opt" id="6a"><div class="dv-olabel"><a class="dv-oid" href="#6a">6a</a>Confirmation · proposal link and 72 h expiry</div><div class="stage" style="width:612px">
+<div class="lk cd" role="dialog" aria-labelledby="ap1-t" style="width:548px">
+  <div class="cd-head"><div class="cd-ttl"><h3 id="ap1-t">Sent for approval</h3><span class="cd-sub">sitb / tx-infinity-api / tx-infinity-core-sit7.yml</span></div><button type="button" class="b ib" aria-label="Close"><i class="ic i-x"></i></button></div>
+  <div class="cd-body">
+    <div class="fx fx-appr" role="status"><i class="ic i-hourglass"></i><span>Your change is not applied yet. Ana Ruiz must approve it first.<span class="x">sitb NFS is unchanged until then.</span></span></div>
+    <label class="fld"><span>Proposal link</span><span class="in mono" style="gap:8px"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">https://lanekeeper.internal/proposals/prp_7Q2K9X</span><button type="button" class="b ib" aria-label="Copy link"><i class="ic i-copy"></i></button></span></label>
+    <dl class="kv">
+      <dt>Status</dt><dd><span class="bd bd-appr"><i class="ic i-hourglass"></i>Pending approval</span></dd>
+      <dt>Expires</dt><dd><strong>Mon 12 Oct, 14:20</strong><span class="mut">in 72 hours</span></dd>
+      <dt>Change</dt><dd><span class="mono">pool.maxSize</span> <span class="mono" style="color:var(--diff-del-fg)">− 40</span> <span class="mono" style="color:var(--diff-add-fg)">+ 60</span> <span class="mut">and 1 more</span></dd>
+      <dt>Approver</dt><dd>Ana Ruiz <span class="mut">(Admin)</span></dd>
+    </dl>
+    <p class="mut" style="font-size:12px;line-height:16px">Send the link to Ana Ruiz. After it expires you need to propose the change again.</p>
+  </div>
+  <div class="cd-foot"><button type="button" class="b"><i class="ic i-copy"></i>Copy link</button><button type="button" class="b p foc">Done</button></div>
+</div></div></div>
+<div class="dv-opt" id="6b"><div class="dv-olabel"><a class="dv-oid" href="#6b">6b</a>Stale proposal, seen later: expired and the file changed on NFS</div><div class="stage" style="width:612px">
+<div class="lk cd" role="alertdialog" aria-labelledby="ap2-t" style="width:548px">
+  <div class="cd-head"><div class="cd-ttl"><h3 id="ap2-t">Proposal prp_7Q2K9X is stale</h3><span class="cd-sub">sitb / tx-infinity-api / tx-infinity-core-sit7.yml</span></div><button type="button" class="b ib" aria-label="Close"><i class="ic i-x"></i></button></div>
+  <div class="cd-body">
+    <div class="fx fx-warn" role="alert"><i class="ic i-triangle-alert"></i><span>Ana Ruiz can no longer approve this proposal.<span class="x">It expired on Mon 12 Oct, 14:20, and the file changed on NFS after you proposed.</span></span></div>
+    <dl class="kv">
+      <dt>Status</dt><dd><span class="bd bd-unknown"><i class="ic i-clock"></i>Expired 2 h ago</span></dd>
+      <dt>Why stale</dt><dd style="display:block"><ul style="display:flex;flex-direction:column;gap:4px"><li>Past the 72 hour limit.</li><li>NFS hash is now <span class="mono">7ad20c91e5f3</span>. You proposed against <span class="mono">9f3c1a7e42b0</span>.</li></ul></dd>
+      <dt>Your change</dt><dd><span class="mono">pool.maxSize</span> <span class="mono" style="color:var(--diff-del-fg)">− 40</span> <span class="mono" style="color:var(--diff-add-fg)">+ 60</span> <span class="mut">and 1 more</span></dd>
+    </dl>
+    <p class="mut" style="font-size:12px;line-height:16px">Re-proposing replays your change on the current file and asks Ana Ruiz again. If it overlaps with the NFS change you resolve that first.</p>
+  </div>
+  <div class="cd-foot"><button type="button" class="b g" style="margin-right:auto">Discard proposal</button><button type="button" class="b">Close</button><button type="button" class="b p foc"><i class="ic i-rotate-cw"></i>Re-propose on current version</button></div>
+</div></div></div>
+
+<div class="dv-grp">7 · Editing locked (423)</div>
+<div class="dv-opt" id="7a"><div class="dv-olabel"><a class="dv-oid" href="#7a">7a</a>Editor or Operator: explains adoption, links to Admin page</div><div class="stage" style="width:612px">
+<div class="lk cd" role="dialog" aria-labelledby="lk1-t" style="width:548px">
+  <div class="cd-head"><div class="cd-ttl"><h3 id="lk1-t">Editing is locked</h3><span class="cd-sub">sitb / tx-infinity-api / tx-infinity-core-sit7.yml</span></div><button type="button" class="b ib" aria-label="Close"><i class="ic i-x"></i></button></div>
+  <div class="cd-body">
+    <div class="fx fx-lock" role="alert"><i class="ic i-lock"></i><span>sitb must be adopted by an Admin before anyone can edit it.<span class="x">Its baseline isn't confirmed, so Lanekeeper can't tell your change from drift that is already there.</span></span></div>
+    <dl class="kv">
+      <dt>Swimlane</dt><dd><span class="mono">sitb</span><span class="bd bd-locked"><i class="ic i-lock"></i>Baseline not confirmed</span></dd>
+      <dt>Adopting</dt><dd>Confirms the current NFS files as the baseline. It doesn't change any file or restart a service.</dd>
+      <dt>Who can adopt</dt><dd>Admins, for example Priya Shah</dd>
+    </dl>
+    <p style="font-size:12px;line-height:16px"><a href="#">Admins: open Admin / Swimlanes to adopt sitb</a> · <a href="#">Adopting a swimlane baseline</a></p>
+  </div>
+  <div class="cd-foot"><button type="button" class="b p foc">Close</button></div>
+</div></div></div>
+<div class="dv-opt" id="7b"><div class="dv-olabel"><a class="dv-oid" href="#7b">7b</a>Same dialog for an Admin: the link becomes the action</div><div class="stage" style="width:612px">
+<div class="lk cd" role="dialog" aria-labelledby="lk2-t" style="width:548px">
+  <div class="cd-head"><div class="cd-ttl"><h3 id="lk2-t">Editing is locked</h3><span class="cd-sub">sitb / tx-infinity-api / tx-infinity-core-sit7.yml</span></div><button type="button" class="b ib" aria-label="Close"><i class="ic i-x"></i></button></div>
+  <div class="cd-body">
+    <div class="fx fx-lock" role="alert"><i class="ic i-lock"></i><span>sitb must be adopted before anyone can edit it.<span class="x">You are an Admin, so you can adopt it now.</span></span></div>
+    <dl class="kv">
+      <dt>Swimlane</dt><dd><span class="mono">sitb</span><span class="bd bd-locked"><i class="ic i-lock"></i>Baseline not confirmed</span></dd>
+      <dt>Adopting</dt><dd>Confirms the current NFS files as the baseline. It doesn't change any file or restart a service.</dd>
+    </dl>
+  </div>
+  <div class="cd-foot"><button type="button" class="b g">Close</button><a class="b p foc" href="#"><i class="ic i-shield-check"></i>Review and adopt sitb</a></div>
+</div></div></div>
+<div class="dv-grp">8 · Keyboard flow</div>
+<div class="dv-opt" id="8a"><div class="dv-olabel"><a class="dv-oid" href="#8a">8a</a>Tab order and initial focus (ringed). Focus stays inside the dialog and wraps; Close (×) is last</div><div class="stage" style="width:1240px;gap:20px">
+  <div class="lk cd" style="width:380px"><div class="cd-head"><div class="cd-ttl"><h3>Raise PR · choose target</h3><span class="cd-sub">no warning: focus starts on the choice</span></div><span style="position:relative"><button type="button" class="b ib" aria-label="Close"><i class="ic i-x"></i></button><span class="tn">4</span></span></div>
+    <div class="cd-body"><div style="position:relative"><div class="oc sel foc" style="outline-offset:2px"><div class="oc-h"><span class="rd"></span><div><b>Tenant branch sit7</b><span class="s">← → ↑ ↓ move the choice</span></div></div></div><span class="tn">1</span></div><div class="oc"><div class="oc-h"><span class="rd"></span><div><b>Base</b><span class="s">not a tab stop; arrow keys reach it</span></div></div></div></div>
+    <div class="cd-foot"><span style="position:relative"><button type="button" class="b g">Cancel</button><span class="tn">2</span></span><span style="position:relative"><button type="button" class="b p">Continue</button><span class="tn">3</span></span></div></div>
+  <div class="lk cd" style="width:380px"><div class="cd-head"><div class="cd-ttl"><h3>Delete file · destructive</h3><span class="cd-sub">focus starts on the name field</span></div><span style="position:relative"><button type="button" class="b ib" aria-label="Close"><i class="ic i-x"></i></button><span class="tn">4</span></span></div>
+    <div class="cd-body"><div style="position:relative"><span class="in mono foc" style="outline-offset:2px"><span class="mut">tx-infinity-core-sit7.yml</span></span><span class="tn">1</span></div><p class="mut" style="font-size:12px;line-height:16px">Delete file is skipped by Tab until the name matches. Enter in the field does nothing until then.</p></div>
+    <div class="cd-foot"><span style="position:relative"><button type="button" class="b g">Cancel</button><span class="tn">2</span></span><span style="position:relative"><button type="button" class="b d off">Delete file</button><span class="tn">3</span></span></div></div>
+  <div class="lk cd" style="width:380px"><div class="cd-head"><div class="cd-ttl"><h3>Restart · warning</h3><span class="cd-sub">focus starts on Cancel</span></div><span style="position:relative"><button type="button" class="b ib" aria-label="Close"><i class="ic i-x"></i></button><span class="tn">3</span></span></div>
+    <div class="cd-body"><div class="wn"><i class="ic i-triangle-alert"></i><span>Other people testing in sitb will be interrupted.</span></div><p class="mut" style="font-size:12px;line-height:16px">Enter presses the focused button only, so Enter right after opening cancels.</p></div>
+    <div class="cd-foot"><span style="position:relative"><button type="button" class="b g foc">Cancel</button><span class="tn">1</span></span><span style="position:relative"><button type="button" class="b p">Restart</button><span class="tn">2</span></span></div></div>
+</div></div>
+<div class="dv-opt" id="8b"><div class="dv-olabel"><a class="dv-oid" href="#8b">8b</a>Rules by dialog type</div>
+  <div class="lk card" style="width:1240px"><table class="tb"><thead><tr><th style="width:230px">Dialog</th><th style="width:300px">Initial focus</th><th>Enter</th><th style="width:300px">Escape</th></tr></thead><tbody>
+    <tr><td><strong>Safe</strong><br><span class="mut">Raise PR step 1 and 2 on tenant, sent for approval</span></td><td>The primary choice or first field</td><td>Confirms the primary action. Not inside the description field, where it adds a line; use <span class="kb">⌘</span> <span class="kb">↵</span> there.</td><td>Cancels. Typed text is kept for next open.</td></tr>
+    <tr><td><strong>Consequence with a warning</strong><br><span class="mut">Restart, upload fork or mismatch, Base target</span></td><td>Cancel</td><td>Activates the focused button only. It never confirms from elsewhere, so a reflex Enter cancels.</td><td>Cancels, same as Cancel.</td></tr>
+    <tr><td><strong>Destructive</strong><br><span class="mut">Delete file, Discard mine</span></td><td>The name field</td><td>Confirms only when the typed name matches exactly. Otherwise nothing happens and the hint says why.</td><td>Cancels. The typed name is cleared.</td></tr>
+    <tr><td><strong>Conflict (409)</strong></td><td>Re-apply my changes on top</td><td>Activates the focused button. <span class="kb">Tab</span> reaches Discard mine, which is destructive and never the default.</td><td>Keep editing. Nothing is discarded.</td></tr>
+    <tr><td><strong>Progress and result</strong><br><span class="mut">PR job, success, errors, locked</span></td><td>The primary action, or Close when there is none</td><td>Activates the focused button. Retry is never the default after an error.</td><td>Closes the dialog. A running job keeps running.</td></tr>
+  </tbody></table>
+  <div style="display:flex;gap:20px;flex-wrap:wrap;padding:10px;border-top:1px solid var(--border);background:var(--muted);font-size:12px;align-items:center"><span><span class="kb">Tab</span> <span class="kb">⇧</span><span class="kb">Tab</span> move and wrap inside the dialog</span><span><span class="kb">Space</span> toggles checkboxes and selects a card</span><span><span class="kb">←</span><span class="kb">→</span> move between target cards</span><span><span class="kb">Esc</span> always leaves safely</span></div></div></div>
+<div class="dv-grp">9 · Dark theme</div>
+<div class="dv-opt" id="9a"><div class="dv-olabel"><a class="dv-oid" href="#9a">9a</a>Raise PR · Base selected</div><div class="stage" data-theme="dark" style="width:664px;color:var(--foreground)"><dc-import name="Lanekeeper PR Flow" view="target" target="base" hint-size="600px,420px"></dc-import></div></div>
+<div class="dv-opt" id="9b"><div class="dv-olabel"><a class="dv-oid" href="#9b">9b</a>PR job · opening</div><div class="stage" data-theme="dark" style="width:664px;color:var(--foreground)"><dc-import name="Lanekeeper PR Flow" view="job" job-step="{{ 2 }}" hint-size="600px,460px"></dc-import></div></div>
+<div class="dv-opt" id="9c"><div class="dv-olabel"><a class="dv-oid" href="#9c">9c</a>Delete · name matches</div><div class="stage" data-theme="dark" style="width:612px;color:var(--foreground)"><dc-import name="Lanekeeper Delete" typed="tx-infinity-core-sit7.yml" hint-size="548px,700px"></dc-import></div></div>
+<div class="dv-opt" id="9d"><div class="dv-olabel"><a class="dv-oid" href="#9d">9d</a>PR error · no push access</div><div class="stage" data-theme="dark" style="width:664px;color:var(--foreground)"><dc-import name="Lanekeeper PR Flow" view="err-push" hint-size="600px,380px"></dc-import></div></div>
+</div>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { fresh: false, sim: 'ok' };
+  renderVals() {
+    const s = this.state, mk = (key, opts) => opts.map(([v, label]) => ({ label, cls: s[key] === v ? 'on' : '', click: () => this.setState({ [key]: v }) }));
+    const sv = [['tx-infinity-core',3],['tx-infinity-gateway',2],['ui-service',2],['remote-itm-teller',2],['document-service',2],['account-service',3],['payment-service',3],['notification-service',1],['auth-service',2],['customer-service',2],['ledger-service',3],['reporting-service',1],['scheduler-service',1],['audit-service',2]].map(([n,p]) => ({ n, p: p + (p > 1 ? ' pods' : ' pod') }));
+    const L = (n, t, c, g) => ({ n, t, cls: 'ln' + (c ? ' ' + c : ''), tag: g || '' });
+    const y = (a, b, c) => [L(1,'tx:'), L(2,'  core:'), L(3,'    pool:'), ...a, L(6,'    retry:'), ...c, L(8,'    features:'), L(9,'      fastSettle: true')].map((l, i) => l);
+    const panes = [
+      { h: 'Your version', s: 'Unsaved edits · 2 changes', lines: [L(1,'tx:'),L(2,'  core:'),L(3,'    pool:'),L(4,'      maxSize: 60','cf','you + NFS'),L(5,'      minIdle: 4'),L(6,'    retry:'),L(7,'      maxAttempts: 6','me','you'),L(8,'    features:'),L(9,'      fastSettle: true')] },
+      { h: 'Current NFS version', s: 'Saved 10:42 · hash 7ad20c91e5f3', lines: [L(1,'tx:'),L(2,'  core:'),L(3,'    pool:'),L(4,'      maxSize: 50','cf','you + NFS'),L(5,'      minIdle: 8','th','NFS'),L(6,'    retry:'),L(7,'      maxAttempts: 5'),L(8,'    features:'),L(9,'      fastSettle: true')] },
+      { h: 'Base you started from', s: 'Opened 10:31 · hash 9f3c1a7e42b0', lines: [L(1,'tx:'),L(2,'  core:'),L(3,'    pool:'),L(4,'      maxSize: 40'),L(5,'      minIdle: 4'),L(6,'    retry:'),L(7,'      maxAttempts: 5'),L(8,'    features:'),L(9,'      fastSettle: true')] },
+    ];
+    return { fresh: s.fresh, sim: s.sim, freshOpts: mk('fresh', [[false, 'Exists'], [true, 'New file']]), simOpts: mk('sim', [['ok', 'Success'], ['token', 'Token expired'], ['push', 'No push access'], ['exists', 'PR already open']]), services: sv, panes };
+  }
+}
+</script>
+</body>
+</html>

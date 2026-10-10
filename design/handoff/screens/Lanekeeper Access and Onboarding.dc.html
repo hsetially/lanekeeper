@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="styles.css">
+<style>
+body{margin:0;background:#eceae5;font-family:'Inter',system-ui,sans-serif}
+.dv-turn{padding:40px 44px 32px;scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 8px}
+.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 15px/1.2 'Inter',system-ui,sans-serif;color:#1a1a1a}
+.dv-sub{margin:0 0 24px;font:13px/1.5 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.6);max-width:900px}
+.dv-opts{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start;max-width:2640px}
+.dv-grp{flex-basis:100%;margin:20px 0 -8px;padding-top:16px;border-top:1px solid rgba(0,0,0,.12);font:600 12px/1.3 'Inter',system-ui,sans-serif;letter-spacing:.04em;text-transform:uppercase;color:rgba(0,0,0,.6)}
+.dv-grp:first-child{margin-top:0;padding-top:0;border-top:0}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:12px/1.3 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.65)}
+.dv-card{width:1282px;max-width:100%;background:#fff;border:1px solid rgba(0,0,0,.12);border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.06);overflow:hidden}
+.dv-opt:target .dv-oid{background:#2a78d6;color:#fff}
+.dv-next{margin:28px 0 0;font:12px/1.5 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.6)}
+.dv-next a{color:inherit}
+</style>
+</helmet>
+<section class="dv-turn" id="t1" data-screen-label="Turn 1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Access and onboarding · light and dark</span></div>
+<p class="dv-sub">Five screens built from the Lanekeeper tokens. Pre-sign-in screens have no navigation at all. The token is a masked field only while it's being entered; after saving, only the GitHub login and expiry date appear.</p>
+<div class="dv-opts">
+
+<div class="dv-grp">1 · Sign in</div>
+<div class="dv-opt" id="1a"><div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Light</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="light" screen="signin" w="1280" h="640" hint-size="1280px,640px"></dc-import></div></div>
+<div class="dv-opt" id="1b"><div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Dark</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="dark" screen="signin" w="1280" h="640" hint-size="1280px,640px"></dc-import></div></div>
+
+<div class="dv-grp">2 · Access requested · Sam Okafor, pending</div>
+<div class="dv-opt" id="1c"><div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>Light</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="light" screen="requested" w="1280" h="640" hint-size="1280px,640px"></dc-import></div></div>
+<div class="dv-opt" id="1d"><div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a>Dark</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="dark" screen="requested" w="1280" h="640" hint-size="1280px,640px"></dc-import></div></div>
+
+<div class="dv-grp">3 · Access disabled</div>
+<div class="dv-opt" id="1e"><div class="dv-olabel"><a class="dv-oid" href="#1e">1e</a>Light</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="light" screen="disabled" w="1280" h="640" hint-size="1280px,640px"></dc-import></div></div>
+<div class="dv-opt" id="1f"><div class="dv-olabel"><a class="dv-oid" href="#1f">1f</a>Dark</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="dark" screen="disabled" w="1280" h="640" hint-size="1280px,640px"></dc-import></div></div>
+
+<div class="dv-grp">4 · GitHub token onboarding · Marco Diaz, Editor · single focused page</div>
+<div class="dv-opt" id="1g"><div class="dv-olabel"><a class="dv-oid" href="#1g">1g</a>Light · empty</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="light" screen="token" state="idle" w="1280" h="760" hint-size="1280px,760px"></dc-import></div></div>
+<div class="dv-opt" id="1h"><div class="dv-olabel"><a class="dv-oid" href="#1h">1h</a>Dark · empty</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="dark" screen="token" state="idle" w="1280" h="760" hint-size="1280px,760px"></dc-import></div></div>
+<div class="dv-opt" id="1i"><div class="dv-olabel"><a class="dv-oid" href="#1i">1i</a>Light · verifying</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="light" screen="token" state="verifying" w="1280" h="760" hint-size="1280px,760px"></dc-import></div></div>
+<div class="dv-opt" id="1j"><div class="dv-olabel"><a class="dv-oid" href="#1j">1j</a>Dark · verifying</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="dark" screen="token" state="verifying" w="1280" h="760" hint-size="1280px,760px"></dc-import></div></div>
+<div class="dv-opt" id="1k"><div class="dv-olabel"><a class="dv-oid" href="#1k">1k</a>Light · success: login and expiry only</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="light" screen="token" state="ok" w="1280" h="760" hint-size="1280px,760px"></dc-import></div></div>
+<div class="dv-opt" id="1l"><div class="dv-olabel"><a class="dv-oid" href="#1l">1l</a>Dark · success</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="dark" screen="token" state="ok" w="1280" h="760" hint-size="1280px,760px"></dc-import></div></div>
+<div class="dv-opt" id="1m"><div class="dv-olabel"><a class="dv-oid" href="#1m">1m</a>Light · classic token rejected</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="light" screen="token" state="classic" w="1280" h="760" hint-size="1280px,760px"></dc-import></div></div>
+<div class="dv-opt" id="1n"><div class="dv-olabel"><a class="dv-oid" href="#1n">1n</a>Dark · classic token rejected</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="dark" screen="token" state="classic" w="1280" h="760" hint-size="1280px,760px"></dc-import></div></div>
+<div class="dv-opt" id="1o"><div class="dv-olabel"><a class="dv-oid" href="#1o">1o</a>Light · missing repository access</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="light" screen="token" state="repo" w="1280" h="760" hint-size="1280px,760px"></dc-import></div></div>
+<div class="dv-opt" id="1p"><div class="dv-olabel"><a class="dv-oid" href="#1p">1p</a>Dark · missing repository access</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="dark" screen="token" state="repo" w="1280" h="760" hint-size="1280px,760px"></dc-import></div></div>
+<div class="dv-opt" id="1q"><div class="dv-olabel"><a class="dv-oid" href="#1q">1q</a>Light · login mismatch</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="light" screen="token" state="mismatch" w="1280" h="760" hint-size="1280px,760px"></dc-import></div></div>
+<div class="dv-opt" id="1r"><div class="dv-olabel"><a class="dv-oid" href="#1r">1r</a>Dark · login mismatch</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="dark" screen="token" state="mismatch" w="1280" h="760" hint-size="1280px,760px"></dc-import></div></div>
+
+<div class="dv-grp">5 · My GitHub token · later visits, expires in 5 days</div>
+<div class="dv-opt" id="1s"><div class="dv-olabel"><a class="dv-oid" href="#1s">1s</a>Light</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="light" screen="mytoken" w="1280" h="640" hint-size="1280px,640px"></dc-import></div></div>
+<div class="dv-opt" id="1t"><div class="dv-olabel"><a class="dv-oid" href="#1t">1t</a>Dark</div><div class="dv-card"><dc-import name="Lanekeeper Access Screen" theme="dark" screen="mytoken" w="1280" h="640" hint-size="1280px,640px"></dc-import></div></div>
+
+</div>
+<p class="dv-next">Try next: “show the expiry warning as the app shell banner” · “add the Replace token flow as a dialog” · “show the delete confirmation”</p>
+</section>
+</x-dc>
+</body>
+</html>

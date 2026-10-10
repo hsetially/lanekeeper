@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="styles.css">
+<style>
+body{margin:0;background:#eceae5;font-family:'Inter',system-ui,sans-serif}
+.dv-turn{padding:40px 44px 32px;scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 8px}
+.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 15px/1.2 'Inter',system-ui,sans-serif;color:#1a1a1a}
+.dv-sub{margin:0 0 24px;font:13px/1.5 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.6);max-width:900px}
+.dv-opts{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start;max-width:2920px}
+.dv-grp{flex-basis:100%;margin:20px 0 -8px;padding-top:16px;border-top:1px solid rgba(0,0,0,.12);font:600 12px/1.3 'Inter',system-ui,sans-serif;letter-spacing:.04em;text-transform:uppercase;color:rgba(0,0,0,.6)}
+.dv-grp:first-child{margin-top:0;padding-top:0;border-top:0}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:12px/1.3 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.65)}
+.dv-card{width:1442px;max-width:100%;background:#fff;border:1px solid rgba(0,0,0,.12);border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.06);overflow:hidden}
+.dv-opt:target .dv-oid{background:#2a78d6;color:#fff}
+.dv-next{margin:28px 0 0;font:12px/1.5 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.6)}
+.dv-next a{color:inherit}
+</style>
+</helmet>
+<section class="dv-turn" id="t1" data-screen-label="Turn 1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Compare · grid across swimlanes and whole-swimlane compare</span></div>
+<p class="dv-sub">Both modes live in one page; the switch at top right is live. The grid is a real virtualised list: 5,000 settings generated in the page, about 40 rows in the DOM, sticky header and sticky path column (scroll sideways: the grid is 74px wider than the viewport on purpose). Click two cells in a row to open the diff drawer. Every column header names the file that swimlane reads: filled blue chip = tenant file, outlined chip = base file.</p>
+<div class="dv-opts">
+<div class="dv-grp">Grid · one logical file across six swimlanes</div>
+<div class="dv-opt" id="1a"><div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Light · only differing rows on (default) · all six agents online</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="light" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1b"><div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Dark</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="dark" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1c"><div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>Light · two cells picked (A sit, B sitb) → drawer shows both files at that setting’s lines · value vs value</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="light" cdrawer="{{ true }}" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1d"><div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a>Light · drawer · absent vs present (sitb has no such key, sit does)</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="light" cdrawer="{{ true }}" cpick="absent" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1e"><div class="dv-olabel"><a class="dv-oid" href="#1e">1e</a>Light · only differing off: all 5,000 rows, scrolled to row 2,140, ruler on the right shows where differences cluster</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="light" conlydiff="{{ false }}" crow="2140" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1f"><div class="dv-olabel"><a class="dv-oid" href="#1f">1f</a>Dark · drawer open</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="dark" cdrawer="{{ true }}" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Grid · states</div>
+<div class="dv-opt" id="1g"><div class="dv-olabel"><a class="dv-oid" href="#1g">1g</a>Light · loading: column names known, effective files and values pending</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="light" cstate="loading" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1h"><div class="dv-olabel"><a class="dv-oid" href="#1h">1h</a>Light · too many swimlanes (43 selected, limit 40): the grid is replaced by the fix</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="light" cstate="toomany" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1i"><div class="dv-olabel"><a class="dv-oid" href="#1i">1i</a>Light · presitb agent offline: dashed column, “as of 10:28” in the header, banner with retry</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="light" coffline="{{ true }}" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1j"><div class="dv-olabel"><a class="dv-oid" href="#1j">1j</a>Dark · offline</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="dark" coffline="{{ true }}" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1k"><div class="dv-olabel"><a class="dv-oid" href="#1k">1k</a>Light · search with no match</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="light" csearch="zzz.retry" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Whole swimlane · sitb against sitc, Git branch sit7, tag v2.3.1</div>
+<div class="dv-opt" id="2a"><div class="dv-olabel"><a class="dv-oid" href="#2a">2a</a>Light · sitb vs sitc · 38 identical directories skipped · core file selected</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="light" cmode="lanes" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="2b"><div class="dv-olabel"><a class="dv-oid" href="#2b">2b</a>Dark</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="dark" cmode="lanes" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="2c"><div class="dv-olabel"><a class="dv-oid" href="#2c">2c</a>Light · sitb vs Git branch sit7 (what NFS has that Git does not)</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="light" cmode="lanes" ctarget="branch" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="2d"><div class="dv-olabel"><a class="dv-oid" href="#2d">2d</a>Light · sitb vs tag v2.3.1 · a file only in the base tag is selected</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="light" cmode="lanes" ctarget="tag" cfile="resources/receipt-footer.txt" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="2e"><div class="dv-olabel"><a class="dv-oid" href="#2e">2e</a>Light · binary file selected (hash comparison)</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="light" cmode="lanes" cfile="resources/receipt-logo.jpeg" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Whole swimlane · states</div>
+<div class="dv-opt" id="2f"><div class="dv-olabel"><a class="dv-oid" href="#2f">2f</a>Light · identical: calm success, summary reads 0, nothing else competes</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="light" cmode="lanes" cstate="identical" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="2g"><div class="dv-olabel"><a class="dv-oid" href="#2g">2g</a>Dark · identical</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="dark" cmode="lanes" cstate="identical" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="2h"><div class="dv-olabel"><a class="dv-oid" href="#2h">2h</a>Light · loading</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="light" cmode="lanes" cstate="loading" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="2i"><div class="dv-olabel"><a class="dv-oid" href="#2i">2i</a>Light · right side offline (presitb, data as of 10:28)</div><div class="dv-card"><dc-import name="Lanekeeper Shell" page="compare" theme="light" cmode="lanes" coffline="{{ true }}" hint-size="1440px,900px"></dc-import></div></div>
+</div>
+<p class="dv-next">Try next: “add an ‘export this comparison as a link’ action; every compare state is a URL” · “make the grid keyboard navigable: arrows between cells, Enter opens the diff”</p>
+</section>
+</x-dc>
+</body>
+</html>

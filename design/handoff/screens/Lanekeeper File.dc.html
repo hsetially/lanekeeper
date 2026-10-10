@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<style>
+*{box-sizing:border-box}
+a{color:var(--link)}
+a:hover{color:var(--primary-hover)}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+</style>
+</helmet>
+<div style="position:relative;width:100%;height:100%;min-height:0;display:flex;flex-direction:column;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:13px;line-height:18px">
+
+<div style="flex:none;display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px 16px;padding:14px 24px 12px">
+  <div style="min-width:0;display:flex;flex-direction:column;gap:8px">
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+      <h1 style="margin:0;font-family:var(--font-mono);font-size:20px;line-height:26px;font-weight:500">{{ m.logical }}</h1>
+      <sc-if value="{{ m.hasMarker }}" hint-placeholder-val="{{ true }}"><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--info-border);background:var(--info-bg);color:var(--info-fg);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/layers.svg) center/contain no-repeat"></span>{{ m.marker }}</span></sc-if>
+      <sc-if value="{{ m.hasDrift }}" hint-placeholder-val="{{ true }}"><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;color:var(--status-{{ m.dr }}-fg);background:var(--status-{{ m.dr }}-bg);border:1px {{ m.drBs }} var(--status-{{ m.dr }}-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ m.drIcon }}.svg) center/contain no-repeat"></span>{{ m.drLabel }}</span></sc-if>
+      <sc-if value="{{ m.hasNote }}" hint-placeholder-val="{{ false }}"><span style="display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:4px;border:1px dashed var(--input);font-size:12px;font-weight:500">{{ m.note }}</span></sc-if>
+      <sc-if value="{{ editing }}" hint-placeholder-val="{{ false }}"><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--primary);color:var(--primary);font-size:12px;font-weight:600"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/pencil.svg) center/contain no-repeat"></span>Editing</span></sc-if>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px">
+      <span title="{{ m.path }}" style="display:inline-flex;align-items:center;gap:2px;height:22px;padding:0 2px 0 6px;border-radius:4px;border:1px solid var(--border);background:var(--muted);font-family:var(--font-mono);font-size:12px"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/file-code.svg) center/contain no-repeat;margin-right:4px"></span><span style="color:var(--muted-foreground)">{{ m.dir }}/</span>{{ m.name }}<span style="width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/copy.svg) center/contain no-repeat"></span></span></span>
+      <sc-for list="{{ m.facts }}" as="f" hint-placeholder-count="3"><span style="display:inline-flex;align-items:center;height:22px;padding:0 6px;border-radius:4px;border:1px {{ f.bs }} {{ f.bd }};background:{{ f.bg }};color:{{ f.fg }};font-family:var(--font-mono);font-size:12px">{{ f.t }}</span></sc-for>
+      <span style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 2px 0 6px;border-radius:4px;border:1px solid var(--border);font-family:var(--font-mono);font-size:12px"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/git-commit-horizontal.svg) center/contain no-repeat"></span>{{ m.hash }}<span style="width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/copy.svg) center/contain no-repeat"></span></span></span>
+    </div>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px">
+    <sc-if value="{{ m.actions }}" hint-placeholder-val="{{ true }}">
+      <button type="button" aria-disabled="{{ editDis }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid {{ editBd }};background:{{ editBg }};color:{{ editFg }};font-weight:500;opacity:{{ editOp }};cursor:{{ editCur }}"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/pencil.svg) center/contain no-repeat"></span>Edit</button>
+      <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-weight:500;cursor:pointer"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/git-pull-request.svg) center/contain no-repeat"></span>Raise PR</button>
+      <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-weight:500;cursor:pointer"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/upload.svg) center/contain no-repeat"></span>Upload</button>
+      <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--danger-border);background:transparent;color:var(--danger-fg);font-weight:500;cursor:pointer"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/trash-2.svg) center/contain no-repeat"></span>Delete</button>
+    </sc-if>
+    <button type="button" aria-pressed="{{ pHist }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid {{ histBd }};background:{{ histBg }};color:var(--secondary-foreground);font-weight:500;cursor:pointer"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/history.svg) center/contain no-repeat"></span>History</button>
+    <sc-if value="{{ m.docs }}" hint-placeholder-val="{{ true }}"><button type="button" aria-pressed="{{ pDocs }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid {{ docsBd }};background:{{ docsBg }};color:var(--secondary-foreground);font-weight:500;cursor:pointer"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/book-open.svg) center/contain no-repeat"></span>Docs for this file</button></sc-if>
+  </div>
+</div>
+
+<sc-if value="{{ m.withheld }}" hint-placeholder-val="{{ false }}">
+<div role="status" style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:40px;padding:6px 24px;background:var(--status-locked-bg);color:var(--status-locked-fg);border-top:1px solid var(--status-locked-border);border-bottom:1px solid var(--status-locked-border)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/lock.svg) center/contain no-repeat"></span><strong style="font-weight:600">Content withheld: sensitive file type</strong><span>Lanekeeper shows only the name, size, hash and who changed it. There is no edit, upload or download.</span></div>
+</sc-if>
+<sc-if value="{{ vLargeBanner }}" hint-placeholder-val="{{ false }}">
+<div role="note" style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:40px;padding:6px 24px;background:var(--warning-bg);color:var(--warning-fg);border-top:1px solid var(--warning-border)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/triangle-alert.svg) center/contain no-repeat"></span><strong style="font-weight:600">Large file · 6,140 lines</strong><span>Opened read-only first so the page stays fast.</span><button type="button" style="margin-left:auto;height:24px;padding:0 8px;border-radius:4px;border:1px solid currentColor;background:transparent;color:inherit;font-size:12px;font-weight:500;cursor:pointer">Enable editing</button></div>
+<div role="alert" style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:40px;padding:6px 24px;background:var(--danger-bg);color:var(--danger-fg);border-top:1px solid var(--danger-border)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/circle-x.svg) center/contain no-repeat"></span><strong style="font-weight:600">C8 · Duplicate key</strong><span style="color:var(--foreground)"><code style="font-family:var(--font-mono);font-size:12px">entryGroupConfigMap.atm-iso.DEPOSIT.transactionKey</code> is set on</span><a href="#" style="font-family:var(--font-mono);font-size:12px;font-weight:500">L5171</a><a href="#" style="font-family:var(--font-mono);font-size:12px;font-weight:500">L5643</a><a href="#" style="font-family:var(--font-mono);font-size:12px;font-weight:500">L6115</a><span style="margin-left:auto;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--danger-border);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/triangle-alert.svg) center/contain no-repeat"></span>High</span></div>
+</sc-if>
+
+<sc-if value="{{ showTabs }}" hint-placeholder-val="{{ true }}">
+<div role="tablist" style="position:relative;flex:none;display:flex;align-items:flex-end;gap:4px;height:36px;padding:0 20px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--background)">
+  <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="4"><button type="button" role="tab" aria-selected="{{ t.on }}" style="display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 8px;border:0;border-bottom:2px solid {{ t.bb }};margin-bottom:-1px;background:transparent;font-weight:{{ t.fw }};color:{{ t.fg }};cursor:pointer">{{ t.l }}<span style="color:var(--muted-foreground);font-weight:400">{{ t.s }}</span><sc-if value="{{ t.hasN }}" hint-placeholder-val="{{ false }}"><span style="min-width:18px;height:18px;padding:0 5px;display:inline-flex;align-items:center;justify-content:center;border-radius:4px;border:1px solid var(--border);background:var(--muted);font-size:12px;font-weight:500;color:var(--muted-foreground);font-variant-numeric:tabular-nums">{{ t.n }}</span></sc-if></button></sc-for>
+</div>
+</sc-if>
+<sc-if value="{{ editing }}" hint-placeholder-val="{{ false }}">
+<div style="flex:none;display:flex;align-items:center;gap:8px;height:36px;padding:0 24px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--muted)"><span style="font-weight:600">Editing NFS</span><span style="color:var(--muted-foreground)">sitb · tx-infinity-core-sit7.yml</span><span style="margin-left:auto;font-size:12px;color:var(--muted-foreground)">Saving writes straight to the sitb NFS share. Git changes only through a PR.</span></div>
+</sc-if>
+
+<div style="flex:1;min-height:0;display:flex">
+  <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+
+    <sc-if value="{{ vDiff }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;min-height:0;display:flex;flex-direction:column">
+      <div style="position:relative;z-index:5;flex:none;display:flex;align-items:center;gap:8px;height:40px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--muted)">
+        <div style="position:relative"><button type="button" aria-haspopup="listbox" aria-expanded="{{ refMenu }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:4px;border:1px solid {{ refBd }};background:var(--background);cursor:pointer"><span style="color:var(--muted-foreground)">Left</span><span style="font-weight:500">Git (sit7 head)</span><span aria-hidden="true" style="width:12px;height:12px;background:var(--muted-foreground);mask:url(assets/icons/chevron-down.svg) center/contain no-repeat"></span></button>
+          <sc-if value="{{ refMenu }}" hint-placeholder-val="{{ false }}"><div role="listbox" style="position:absolute;z-index:40;top:calc(100% + 4px);left:0;width:260px;padding:4px;border:1px solid var(--border);border-radius:6px;background:var(--popover);box-shadow:var(--shadow-popover)">
+            <sc-for list="{{ refGroups }}" as="g" hint-placeholder-count="3"><div><span style="height:24px;display:flex;align-items:flex-end;padding:0 8px 4px;font-size:12px;font-weight:500;color:var(--muted-foreground)">{{ g.g }}</span>
+              <sc-for list="{{ g.items }}" as="o" hint-placeholder-count="2"><div role="option" aria-selected="{{ o.on }}" style="display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:4px;background:{{ o.bg }}"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/{{ o.i }}.svg) center/contain no-repeat"></span><span style="flex:1;font-family:{{ o.ff }};font-size:{{ o.fs }}">{{ o.l }}</span><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/check.svg) center/contain no-repeat;opacity:{{ o.chk }}"></span></div></sc-for></div></sc-for>
+          </div></sc-if></div>
+        <button type="button" aria-label="Swap sides" style="width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:4px;background:transparent;cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;background:currentColor;mask:url(assets/icons/arrow-left-right.svg) center/contain no-repeat"></span></button>
+        <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:4px;border:1px solid var(--input);background:var(--background);cursor:pointer"><span style="color:var(--muted-foreground)">Right</span><span style="font-weight:500">NFS (current)</span><span aria-hidden="true" style="width:12px;height:12px;background:var(--muted-foreground);mask:url(assets/icons/chevron-down.svg) center/contain no-repeat"></span></button>
+        <div role="group" aria-label="Diff layout" style="display:inline-flex;border:1px solid var(--input);border-radius:4px;overflow:hidden;background:var(--background);margin-left:8px">
+          <button type="button" aria-pressed="{{ isSide }}" style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 8px;border:0;background:{{ sideBg }};font-weight:{{ sideFw }};cursor:pointer"><span aria-hidden="true" style="width:14px;height:14px;background:currentColor;mask:url(assets/icons/columns-2.svg) center/contain no-repeat"></span>Side by side</button>
+          <button type="button" aria-pressed="{{ isUni }}" style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 8px;border:0;border-left:1px solid var(--input);background:{{ uniBg }};font-weight:{{ uniFw }};cursor:pointer"><span aria-hidden="true" style="width:14px;height:14px;background:currentColor;mask:url(assets/icons/rows-2.svg) center/contain no-repeat"></span>Unified</button>
+        </div>
+        <sc-if value="{{ hasChanges }}" hint-placeholder-val="{{ true }}">
+        <span style="margin-left:auto;font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums">Change 1 of 3</span>
+        <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 6px 0 8px;border-radius:4px;border:1px solid transparent;background:transparent;cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;background:currentColor;mask:url(assets/icons/arrow-up.svg) center/contain no-repeat"></span>Previous<kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--background);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">p</kbd></button>
+        <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 6px 0 8px;border-radius:4px;border:1px solid transparent;background:transparent;cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;background:currentColor;mask:url(assets/icons/arrow-down.svg) center/contain no-repeat"></span>Next<kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--background);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">n</kbd></button>
+        </sc-if>
+      </div>
+
+      <sc-if value="{{ vLineNotice }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:1;display:flex;align-items:flex-start;justify-content:center;padding:48px 24px">
+        <div role="status" style="width:560px;display:flex;flex-direction:column;gap:12px;padding:16px;border-radius:6px;border:1px solid var(--info-border);background:var(--info-bg)">
+          <div style="display:flex;align-items:center;gap:8px;color:var(--info-fg)"><span aria-hidden="true" style="width:16px;height:16px;flex:none;background:currentColor;mask:url(assets/icons/info.svg) center/contain no-repeat"></span><strong style="font-size:14px;font-weight:600">Only line endings differ</strong></div>
+          <p style="margin:0;color:var(--foreground)">NFS uses <code style="font-family:var(--font-mono);font-size:12px">CRLF</code> and Git uses <code style="font-family:var(--font-mono);font-size:12px">LF</code>. All 214 lines have the same text, so the diff is hidden. This is why the file shows NFS ahead.</p>
+          <div style="display:flex;flex-wrap:wrap;gap:8px"><button type="button" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);font-weight:500;cursor:pointer">Show diff anyway</button><button type="button" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);font-weight:500;cursor:pointer">Convert NFS file to LF</button></div>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ vBinary }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:1;min-height:0;display:flex;flex-direction:column;gap:16px;padding:20px 24px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px"><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;font-weight:500;color:var(--status-nfs-fg);background:var(--status-nfs-bg);border:1px solid var(--status-nfs-border)">Different content</span><span style="color:var(--muted-foreground)">Same name, different hash. Binary files compare by image, not by line.</span></div>
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px">
+          <div style="display:flex;flex-direction:column;gap:8px"><div style="display:flex;align-items:center;gap:8px"><span style="font-weight:600">Git (sit7 head)</span><span style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 6px;border-radius:4px;border:1px solid var(--border);font-family:var(--font-mono);font-size:12px">3af02d8</span><span style="margin-left:auto;font-size:12px;color:var(--muted-foreground)">16 KB · 320×96</span></div>
+            <div role="img" aria-label="Placeholder: receipt-logo.jpeg from Git" style="height:240px;border:1px solid var(--border);border-radius:6px;background:repeating-linear-gradient(135deg,var(--muted) 0 8px,var(--accent) 8px 16px);display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">receipt-logo.jpeg · Git image</div></div>
+          <div style="display:flex;flex-direction:column;gap:8px"><div style="display:flex;align-items:center;gap:8px"><span style="font-weight:600">NFS (current)</span><span style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 6px;border-radius:4px;border:1px solid var(--border);font-family:var(--font-mono);font-size:12px">b71c4e9</span><span style="margin-left:auto;font-size:12px;color:var(--muted-foreground)">18 KB · 320×96</span></div>
+            <div role="img" aria-label="Placeholder: receipt-logo.jpeg on NFS" style="height:240px;border:1px solid var(--border);border-radius:6px;background:repeating-linear-gradient(135deg,var(--muted) 0 8px,var(--accent) 8px 16px);display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">receipt-logo.jpeg · NFS image</div></div>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ vDiffCode }}" hint-placeholder-val="{{ true }}">
+      <div style="flex:none;display:flex;flex-direction:column;gap:8px;padding:10px 16px;border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:8px"><span aria-hidden="true" style="width:14px;height:14px;background:var(--muted-foreground);mask:url(assets/icons/layers.svg) center/contain no-repeat"></span><strong style="font-weight:600">2 settings changed, 1 added</strong></div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          <sc-for list="{{ summary }}" as="s" hint-placeholder-count="3"><span style="display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 6px;border-radius:4px;border:1px solid var(--border);background:var(--muted);font-family:var(--font-mono);font-size:12px"><span style="color:var(--muted-foreground)">{{ s.pre }}</span><span style="font-weight:500">{{ s.key }}</span><span style="color:var(--muted-foreground)">{{ s.kind }}</span><span style="background:var(--diff-del-word);padding:0 2px;border-radius:2px;display:{{ s.fromD }}">{{ s.from }}</span><span style="background:var(--diff-add-word);padding:0 2px;border-radius:2px">{{ s.to }}</span></span></sc-for>
+        </div>
+      </div>
+      <div style="flex:1;min-height:0;display:flex">
+        <div style="flex:none;width:248px;display:flex;flex-direction:column;border-right:1px solid var(--border);background:var(--muted)">
+          <div style="display:flex;align-items:center;justify-content:space-between;height:32px;padding:0 12px;border-bottom:1px solid var(--border);font-weight:600"><span>3 changes</span></div>
+          <sc-for list="{{ changeList }}" as="c" hint-placeholder-count="3"><div style="display:flex;flex-direction:column;gap:2px;padding:8px 12px;border-bottom:1px solid var(--border);background:{{ c.bg }}"><span style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ c.key }}</span><span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted-foreground)"><span style="display:inline-flex;align-items:center;gap:4px;color:{{ c.fg }};font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/{{ c.i }}.svg) center/contain no-repeat"></span>{{ c.t }}</span><span>line {{ c.line }}</span></span></div></sc-for>
+        </div>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+          <sc-if value="{{ isSide }}" hint-placeholder-val="{{ true }}">
+          <div style="flex:none;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);height:28px;border-bottom:1px solid var(--border);font-size:12px">
+            <div style="display:flex;align-items:center;gap:6px;padding:0 12px;border-right:1px solid var(--border);color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/git-branch.svg) center/contain no-repeat"></span>Git <span style="font-family:var(--font-mono);color:var(--foreground)">csp-tenant-data@sit7</span></div>
+            <div style="display:flex;align-items:center;gap:6px;padding:0 12px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/server.svg) center/contain no-repeat"></span>NFS <span style="font-family:var(--font-mono);color:var(--foreground)">sitb</span></div></div>
+          <div style="flex:1;min-height:0;overflow:hidden;background:linear-gradient(to right,transparent calc(50% - 0.5px),var(--border) calc(50% - 0.5px),var(--border) calc(50% + 0.5px),transparent calc(50% + 0.5px))">
+            <sc-for list="{{ sideRows }}" as="r" hint-placeholder-count="12">
+              <sc-if value="{{ r.isFold }}" hint-placeholder-val="{{ false }}"><div style="display:flex;align-items:center;gap:6px;height:24px;padding:0 12px;background:var(--muted);border-top:1px solid var(--border);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/chevrons-up-down.svg) center/contain no-repeat"></span>{{ r.t }}</div></sc-if>
+              <sc-if value="{{ r.isHunk }}" hint-placeholder-val="{{ false }}"><div style="display:flex;align-items:center;height:20px;padding:0 12px;background:var(--diff-hunk-bg);color:var(--diff-hunk-fg);font-family:var(--font-mono);font-size:12px">{{ r.t }}</div></sc-if>
+              <sc-if value="{{ r.isCode }}" hint-placeholder-val="{{ true }}"><div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);height:18px;font-family:var(--font-mono);font-size:12px;line-height:18px">
+                <div style="display:flex;min-width:0;background:{{ r.lbg }}"><span style="width:40px;flex:none;text-align:right;padding-right:8px;color:var(--muted-foreground);background:{{ r.lgut }}">{{ r.lno }}</span><span style="width:16px;flex:none;text-align:center;color:{{ r.lmc }}">{{ r.lm }}</span><span style="min-width:0;white-space:pre;overflow:hidden">{{ r.la }}<span style="background:{{ r.lwb }}">{{ r.lw }}</span>{{ r.lb }}</span></div>
+                <div style="display:flex;min-width:0;background:{{ r.rbg }}"><span style="width:40px;flex:none;text-align:right;padding-right:8px;color:var(--muted-foreground);background:{{ r.rgut }}">{{ r.rno }}</span><span style="width:16px;flex:none;text-align:center;color:{{ r.rmc }}">{{ r.rm }}</span><span style="min-width:0;white-space:pre;overflow:hidden">{{ r.ra }}<span style="background:{{ r.rwb }}">{{ r.rw }}</span>{{ r.rb }}</span></div></div></sc-if>
+            </sc-for>
+          </div>
+          </sc-if>
+          <sc-if value="{{ isUni }}" hint-placeholder-val="{{ false }}">
+          <div style="flex:1;min-height:0;overflow:hidden">
+            <sc-for list="{{ uniRows }}" as="r" hint-placeholder-count="12">
+              <sc-if value="{{ r.isFold }}" hint-placeholder-val="{{ false }}"><div style="display:flex;align-items:center;gap:6px;height:24px;padding:0 12px;background:var(--muted);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/chevrons-up-down.svg) center/contain no-repeat"></span>{{ r.t }}</div></sc-if>
+              <sc-if value="{{ r.isHunk }}" hint-placeholder-val="{{ false }}"><div style="display:flex;align-items:center;height:20px;padding:0 12px;background:var(--diff-hunk-bg);color:var(--diff-hunk-fg);font-family:var(--font-mono);font-size:12px">{{ r.t }}</div></sc-if>
+              <sc-if value="{{ r.isCode }}" hint-placeholder-val="{{ true }}"><div style="display:flex;height:18px;background:{{ r.bg }};font-family:var(--font-mono);font-size:12px;line-height:18px"><span style="width:40px;flex:none;text-align:right;padding-right:8px;color:var(--muted-foreground);background:{{ r.gut }}">{{ r.ono }}</span><span style="width:40px;flex:none;text-align:right;padding-right:8px;color:var(--muted-foreground);background:{{ r.gut }}">{{ r.nno }}</span><span style="width:16px;flex:none;text-align:center;color:{{ r.mc }}">{{ r.m }}</span><span style="min-width:0;white-space:pre;overflow:hidden">{{ r.a }}<span style="background:{{ r.wb }}">{{ r.w }}</span>{{ r.b }}</span></div></sc-if>
+            </sc-for>
+          </div>
+          </sc-if>
+        </div>
+      </div>
+      </sc-if>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ vCode }}" hint-placeholder-val="{{ true }}">
+    <div style="flex:1;min-height:0;display:flex;flex-direction:column">
+      <div style="flex:1;min-height:0;display:flex">
+        <sc-if value="{{ vOutline }}" hint-placeholder-val="{{ false }}">
+        <nav aria-label="Outline" style="flex:none;width:200px;display:flex;flex-direction:column;border-right:1px solid var(--border);background:var(--muted)">
+          <div style="display:flex;align-items:center;height:32px;padding:0 12px;border-bottom:1px solid var(--border);font-weight:600">Outline</div>
+          <sc-for list="{{ outline }}" as="o" hint-placeholder-count="6"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px;height:28px;padding:0 12px;background:{{ o.bg }}"><span style="font-family:var(--font-mono);font-size:12px;font-weight:{{ o.fw }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ o.k }}</span><span style="font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums">{{ o.n }}</span></div></sc-for>
+        </nav>
+        </sc-if>
+        <div style="flex:1;min-width:0;overflow:hidden;background:var(--card);padding-top:4px">
+          <sc-for list="{{ lines }}" as="l" hint-placeholder-count="30">
+            <div style="display:flex;align-items:center;height:18px;background:{{ l.bg }};font-family:var(--font-mono);font-size:12px;line-height:18px">
+              <span style="width:20px;flex:none;display:flex;align-items:center;justify-content:center;color:{{ l.gfg }}"><sc-if value="{{ l.hasG }}" hint-placeholder-val="{{ false }}"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/{{ l.g }}.svg) center/contain no-repeat"></span></sc-if></span>
+              <span style="width:44px;flex:none;text-align:right;padding-right:12px;color:{{ l.nfg }}">{{ l.no }}</span>
+              <span style="white-space:pre;min-width:0;overflow:hidden">{{ l.ind }}<span style="color:{{ l.kfg }};text-decoration:{{ l.kdec }}">{{ l.key }}</span>{{ l.sep }}<span style="color:{{ l.vfg }};background:{{ l.vbg }};text-decoration:{{ l.vdec }}">{{ l.val }}</span><span style="text-decoration:{{ l.edec }}">{{ l.err }}</span></span>
+              <sc-if value="{{ l.caret }}" hint-placeholder-val="{{ false }}"><span style="width:2px;height:16px;background:var(--foreground)"></span></sc-if>
+              <sc-if value="{{ l.mask }}" hint-placeholder-val="{{ false }}"><button type="button" aria-disabled="{{ l.rvDis }}" title="{{ l.rvTitle }}" style="margin-left:8px;display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 6px;border-radius:4px;border:1px solid var(--input);background:var(--background);font-family:var(--font-sans);font-size:12px;font-weight:500;opacity:{{ l.rvOp }};cursor:{{ l.rvCur }}"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/eye.svg) center/contain no-repeat"></span>Reveal</button></sc-if>
+              <sc-if value="{{ l.shown }}" hint-placeholder-val="{{ false }}"><span style="margin-left:8px;display:inline-flex;align-items:center;gap:6px;font-family:var(--font-sans);font-size:12px;color:var(--muted-foreground)"><button type="button" style="height:18px;padding:0 6px;border-radius:4px;border:1px solid var(--input);background:var(--background);font-family:var(--font-sans);font-size:12px;font-weight:500;cursor:pointer">Hide</button>Revealed · recorded in the audit log</span></sc-if>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ vMinimap }}" hint-placeholder-val="{{ false }}">
+        <div aria-hidden="true" style="position:relative;flex:none;width:80px;border-left:1px solid var(--border);background:var(--muted);overflow:hidden">
+          <sc-for list="{{ minimap }}" as="mm" hint-placeholder-count="40"><div style="height:6px;margin:0 8px;display:flex;align-items:center"><span style="height:2px;width:{{ mm.w }}px;margin-left:{{ mm.x }}px;border-radius:1px;background:var(--input);opacity:{{ mm.op }}"></span></div></sc-for>
+          <div style="position:absolute;left:0;right:0;top:{{ mmViewTop }};height:44px;background:var(--selection);opacity:.7;border-top:1px solid var(--ring);border-bottom:1px solid var(--ring)"></div>
+          <sc-for list="{{ mmMarks }}" as="mk" hint-placeholder-count="3"><span style="position:absolute;right:0;top:{{ mk.top }};width:10px;height:4px;background:var(--danger-fg)"></span></sc-for>
+        </div>
+        </sc-if>
+      </div>
+
+      <sc-if value="{{ vProblems }}" hint-placeholder-val="{{ false }}">
+      <div role="region" aria-label="Problems" style="flex:none;border-top:1px solid var(--border);background:var(--muted)">
+        <div style="display:flex;align-items:center;gap:8px;height:28px;padding:0 12px;border-bottom:1px solid var(--border);font-weight:600">Problems<span style="min-width:18px;height:18px;padding:0 5px;display:inline-flex;align-items:center;justify-content:center;border-radius:4px;border:1px solid var(--border);background:var(--background);font-size:12px;color:var(--muted-foreground)">{{ problemCount }}</span></div>
+        <sc-for list="{{ problems }}" as="pr" hint-placeholder-count="2"><div style="display:flex;align-items:center;gap:8px;height:28px;padding:0 12px;border-bottom:1px solid var(--border)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:{{ pr.fg }};mask:url(assets/icons/{{ pr.i }}.svg) center/contain no-repeat"></span><span style="font-weight:500">{{ pr.t }}</span><span style="color:var(--muted-foreground)">{{ pr.msg }}</span><span style="margin-left:auto;font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">{{ pr.at }}</span></div></sc-for>
+      </div>
+      </sc-if>
+
+      <div style="flex:none;display:flex;align-items:center;gap:16px;height:24px;padding:0 12px;border-top:1px solid var(--border);background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">
+        <sc-if value="{{ editing }}" hint-placeholder-val="{{ false }}"><span style="font-variant-numeric:tabular-nums">Ln {{ cursor }}</span></sc-if>
+        <span style="color:var(--foreground);font-weight:500">{{ eol }}</span><span style="color:var(--foreground);font-weight:500">UTF-8</span><span>YAML</span><span>{{ lineCount }}</span>
+        <span style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-family:var(--font-sans);color:{{ valFg }};font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/{{ valIcon }}.svg) center/contain no-repeat"></span>{{ valText }}</span>
+      </div>
+
+      <sc-if value="{{ editing }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:none;display:flex;flex-direction:column;border-top:1px solid var(--border);background:var(--background)">
+        <sc-if value="{{ secretBlock }}" hint-placeholder-val="{{ false }}"><div role="alert" style="display:flex;align-items:center;gap:8px;padding:8px 16px;background:var(--danger-bg);color:var(--danger-fg);border-bottom:1px solid var(--danger-border)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/shield-alert.svg) center/contain no-repeat"></span><strong style="font-weight:600">Save blocked: line 120 looks like a private key</strong><span style="color:var(--foreground)">Remove it and keep secrets in the secret store. Lanekeeper never shows the flagged text.</span></div></sc-if>
+        <div style="display:flex;align-items:center;gap:12px;height:52px;padding:0 16px">
+          <span style="font-variant-numeric:tabular-nums">Changes: <strong style="font-weight:600">{{ changedLines }}</strong></span>
+          <sc-if value="{{ approval }}" hint-placeholder-val="{{ false }}"><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--status-approval-border);background:var(--status-approval-bg);color:var(--status-approval-fg);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/hourglass.svg) center/contain no-repeat"></span>Needs approval from Priya Shah</span></sc-if>
+          <sc-if value="{{ saveHint }}" hint-placeholder-val="{{ false }}"><span style="color:var(--muted-foreground)">{{ saveHintText }}</span></sc-if>
+          <button type="button" style="margin-left:auto;height:28px;padding:0 10px;border-radius:4px;border:1px solid transparent;background:transparent;font-weight:500;cursor:pointer" style-hover="background:var(--accent)">Cancel</button>
+          <button type="button" aria-disabled="{{ saveDis }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 12px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-weight:500;opacity:{{ saveOp }};cursor:{{ saveCur }}"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/{{ saveIcon }}.svg) center/contain no-repeat"></span>{{ saveLabel }}</button>
+        </div>
+      </div>
+      </sc-if>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ vDenied }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;display:flex;align-items:flex-start;justify-content:center;padding:40px 24px">
+      <dl style="width:560px;margin:0;display:grid;grid-template-columns:140px minmax(0,1fr);border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--card)">
+        <dt style="padding:8px 12px;color:var(--muted-foreground);border-bottom:1px solid var(--border)">Name</dt><dd style="margin:0;padding:8px 12px;border-bottom:1px solid var(--border);font-family:var(--font-mono);font-size:12px">keystore.jks</dd>
+        <dt style="padding:8px 12px;color:var(--muted-foreground);border-bottom:1px solid var(--border)">Size</dt><dd style="margin:0;padding:8px 12px;border-bottom:1px solid var(--border)">3.2 KB</dd>
+        <dt style="padding:8px 12px;color:var(--muted-foreground);border-bottom:1px solid var(--border)">Hash</dt><dd style="margin:0;padding:8px 12px;border-bottom:1px solid var(--border);font-family:var(--font-mono);font-size:12px">9d2c47e</dd>
+        <dt style="padding:8px 12px;color:var(--muted-foreground);border-bottom:1px solid var(--border)">Last changed</dt><dd style="margin:0;padding:8px 12px;border-bottom:1px solid var(--border)">Today 14:05</dd>
+        <dt style="padding:8px 12px;color:var(--muted-foreground)">Changed by</dt><dd style="margin:0;padding:8px 12px;display:flex;flex-wrap:wrap;align-items:center;gap:8px"><span style="font-weight:500">Unknown</span><span title="Attribution confidence: Unknown" style="display:inline-flex;align-items:center;gap:5px;height:18px;padding:0 6px;border-radius:4px;border:1px dashed var(--input);font-size:12px;line-height:16px"><span aria-hidden="true" style="display:inline-flex;gap:2px;align-items:flex-end"><span style="width:3px;height:8px;border-radius:1px;background:currentColor;opacity:.25"></span><span style="width:3px;height:8px;border-radius:1px;background:currentColor;opacity:.25"></span><span style="width:3px;height:8px;border-radius:1px;background:currentColor;opacity:.25"></span><span style="width:3px;height:8px;border-radius:1px;background:currentColor;opacity:.25"></span></span>Unknown</span><span style="color:var(--muted-foreground)">found by scan</span></dd>
+      </dl>
+    </div>
+    </sc-if>
+  </div>
+
+  <sc-if value="{{ pHist }}" hint-placeholder-val="{{ false }}">
+  <aside aria-label="History" style="flex:none;width:400px;display:flex;flex-direction:column;border-left:1px solid var(--border);background:var(--card)">
+    <div style="flex:none;display:flex;align-items:center;justify-content:space-between;height:40px;padding:0 12px 0 16px;border-bottom:1px solid var(--border)"><strong style="font-size:14px;font-weight:600">History</strong><button type="button" aria-label="Close" style="width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:4px;background:transparent;cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;background:currentColor;mask:url(assets/icons/x.svg) center/contain no-repeat"></span></button></div>
+    <div style="flex:1;min-height:0;overflow:hidden">
+      <sc-for list="{{ versions }}" as="v" hint-placeholder-count="5">
+        <div style="display:flex;flex-direction:column;gap:6px;padding:10px 16px;border-bottom:1px solid var(--border);background:{{ v.bg }}">
+          <div style="display:flex;align-items:center;gap:8px"><span style="font-variant-numeric:tabular-nums;font-weight:500">{{ v.time }}</span><span style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 6px;border-radius:4px;border:1px solid var(--border);font-family:var(--font-mono);font-size:12px"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/git-commit-horizontal.svg) center/contain no-repeat"></span>{{ v.hash }}</span>
+            <sc-if value="{{ v.cur }}" hint-placeholder-val="{{ false }}"><span style="font-size:12px;color:var(--muted-foreground)">Current</span></sc-if>
+            <span style="margin-left:auto;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;color:{{ v.sev.fg }};background:{{ v.sev.bg }};border:1px solid {{ v.sev.bd }}"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ v.sev.ic }}.svg) center/contain no-repeat"></span>{{ v.sev.l }}</span></div>
+          <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ v.srcIcon }}.svg) center/contain no-repeat"></span>{{ v.source }}</div>
+          <sc-if value="{{ v.recovered }}" hint-placeholder-val="{{ false }}"><span style="align-self:flex-start;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px dashed var(--input);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/inbox.svg) center/contain no-repeat"></span>Recovered from agent spool</span></sc-if>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px"><span style="font-size:12px"><span style="font-weight:500">{{ v.who }}</span> <span style="color:var(--muted-foreground)">{{ v.how }}</span></span>
+            <span title="Attribution confidence: {{ v.cl }}" style="display:inline-flex;align-items:center;gap:5px;height:18px;padding:0 6px;border-radius:4px;border:1px {{ v.cbs }} var(--input);font-size:12px;line-height:16px"><span aria-hidden="true" style="display:inline-flex;gap:2px;align-items:flex-end"><span style="width:3px;height:8px;border-radius:1px;background:currentColor;opacity:{{ v.b1 }}"></span><span style="width:3px;height:8px;border-radius:1px;background:currentColor;opacity:{{ v.b2 }}"></span><span style="width:3px;height:8px;border-radius:1px;background:currentColor;opacity:{{ v.b3 }}"></span><span style="width:3px;height:8px;border-radius:1px;background:currentColor;opacity:{{ v.b4 }}"></span></span>{{ v.cl }}</span>
+            <sc-if value="{{ v.canRevert }}" hint-placeholder-val="{{ false }}"><button type="button" style="margin-left:auto;height:22px;padding:0 8px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);font-size:12px;font-weight:500;cursor:pointer">Revert</button></sc-if></div>
+        </div>
+      </sc-for>
+    </div>
+  </aside>
+  </sc-if>
+
+  <sc-if value="{{ pDocs }}" hint-placeholder-val="{{ false }}">
+  <aside aria-label="Docs for this file" style="flex:none;width:400px;display:flex;flex-direction:column;border-left:1px solid var(--border);background:var(--card)">
+    <div style="flex:none;display:flex;align-items:center;justify-content:space-between;height:40px;padding:0 12px 0 16px;border-bottom:1px solid var(--border)"><strong style="font-size:14px;font-weight:600">Docs for this file</strong><button type="button" aria-label="Close" style="width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:4px;background:transparent;cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;background:currentColor;mask:url(assets/icons/x.svg) center/contain no-repeat"></span></button></div>
+    <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;gap:16px;padding:16px">
+      <div style="display:flex;flex-direction:column;gap:6px;padding:12px;border:1px solid var(--border);border-radius:6px"><div style="display:flex;align-items:center;gap:8px"><span aria-hidden="true" style="width:14px;height:14px;background:var(--muted-foreground);mask:url(assets/icons/book-open.svg) center/contain no-repeat"></span><strong style="font-weight:600">Account sorting</strong></div><span style="color:var(--muted-foreground)">Lets tellers sort an account list by balance or name. Turned on per swimlane with a feature flag in this file.</span><a href="#" style="font-weight:500">Open the doc</a></div>
+      <div style="display:flex;flex-direction:column;gap:6px"><strong style="font-weight:600">Feature Flags in this file</strong>
+        <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden">
+          <div style="display:grid;grid-template-columns:minmax(0,1fr) 64px 64px;gap:8px;height:28px;align-items:center;padding:0 10px;background:var(--muted);border-bottom:1px solid var(--border);font-size:12px;font-weight:500;color:var(--muted-foreground)"><span>Setting</span><span>This file</span><span>Default</span></div>
+          <sc-for list="{{ flags }}" as="fl" hint-placeholder-count="3"><div style="display:grid;grid-template-columns:minmax(0,1fr) 64px 64px;gap:8px;align-items:center;min-height:40px;padding:6px 10px;border-bottom:1px solid var(--border)"><span style="display:flex;flex-direction:column;gap:2px;min-width:0"><span style="font-family:var(--font-mono);font-size:12px;font-weight:500;overflow-wrap:anywhere">{{ fl.k }}</span><span style="font-size:12px;color:var(--muted-foreground)">{{ fl.d }}</span></span><span style="font-family:var(--font-mono);font-size:12px;font-weight:{{ fl.fw }}">{{ fl.v }}</span><span style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">{{ fl.def }}</span></div></sc-for>
+        </div>
+        <span style="font-size:12px;color:var(--muted-foreground)">Bold values differ from the default.</span></div>
+    </div>
+  </aside>
+  </sc-if>
+</div>
+
+<sc-if value="{{ dRevealOn }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;inset:0;z-index:50;background:var(--overlay);display:flex;align-items:center;justify-content:center">
+  <div role="alertdialog" aria-label="Reveal masked value" style="width:440px;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;background:var(--popover);color:var(--popover-foreground);box-shadow:var(--shadow-popover)">
+    <div style="padding:14px 16px 8px;display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Reveal masked value?</h2><span style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">txInfinityOptions.remote-itm-teller.clientSecret</span></div>
+    <div style="display:flex;flex-direction:column;gap:10px;padding:0 16px 16px">
+      <label style="display:flex;flex-direction:column;gap:4px"><span style="font-size:12px">Reason (required)</span><span style="display:flex;align-items:flex-start;min-height:56px;padding:6px 8px;border-radius:4px;border:1px solid var(--ring);box-shadow:0 0 0 1px var(--ring)">Teller login fails on sit7; checking the secret matches the vault entry (OPS-2291).<span style="display:inline-block;width:1px;height:16px;background:var(--foreground);margin-left:1px"></span></span></label>
+      <div role="note" style="display:flex;gap:8px;padding:8px 10px;border-radius:6px;border:1px solid var(--info-border);background:var(--info-bg);color:var(--info-fg)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;margin-top:2px;background:currentColor;mask:url(assets/icons/info.svg) center/contain no-repeat"></span><span style="color:var(--foreground)">This will be recorded in the audit log with your name, the setting and your reason. The value is not stored in the log.</span></div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--border)"><button type="button" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid transparent;background:transparent;font-weight:500;cursor:pointer">Cancel</button><button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-weight:500;cursor:pointer"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/eye.svg) center/contain no-repeat"></span>Reveal value</button></div>
+  </div>
+</div>
+</sc-if>
+<sc-if value="{{ dRevertOn }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;inset:0;z-index:50;background:var(--overlay);display:flex;align-items:center;justify-content:center">
+  <div role="alertdialog" aria-label="Revert version" style="width:480px;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;background:var(--popover);color:var(--popover-foreground);box-shadow:var(--shadow-popover)">
+    <div style="padding:14px 16px 8px;display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Revert to c19a4e2?</h2><span style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">tx-infinity-api/tx-infinity-core-sit7.yml</span></div>
+    <dl style="margin:0;padding:0 16px 12px;display:grid;grid-template-columns:96px minmax(0,1fr);gap:8px 12px">
+      <dt style="color:var(--muted-foreground)">Version</dt><dd style="margin:0">Tool write by Marco Diaz, today 13:58</dd>
+      <dt style="color:var(--muted-foreground)">Services</dt><dd style="margin:0;display:flex;flex-wrap:wrap;gap:4px;align-items:center"><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;font-weight:500;color:var(--status-restart-fg);background:var(--status-restart-bg);border:1px solid var(--status-restart-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/clock.svg) center/contain no-repeat"></span>tx-infinity-core</span><span style="font-size:12px;color:var(--muted-foreground)">needs restart</span></dd>
+      <dt style="color:var(--muted-foreground)">Change</dt><dd style="margin:0;font-family:var(--font-mono);font-size:12px;display:flex;flex-direction:column;gap:2px"><span>enableAccountSorting</span><span><span style="color:var(--diff-del-fg)">− true</span>  <span style="color:var(--diff-add-fg)">+ false</span></span></dd>
+      <dt style="color:var(--muted-foreground)">Git</dt><dd style="margin:0">The file stays <strong style="color:var(--status-nfs-fg)">NFS ahead</strong> or becomes in sync, depending on Git. Nothing is deleted from history.</dd>
+    </dl>
+    <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--border)"><button type="button" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid transparent;background:transparent;font-weight:500;cursor:pointer">Back</button><button type="button" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-weight:500;cursor:pointer">Revert to c19a4e2</button></div>
+  </div>
+</div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1216,&quot;height&quot;:856},&quot;file&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;core&quot;,&quot;lineending&quot;,&quot;large&quot;,&quot;binary&quot;,&quot;denied&quot;],&quot;default&quot;:&quot;core&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;mode&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;view&quot;,&quot;edit&quot;],&quot;default&quot;:&quot;view&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;tab&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;nfs&quot;,&quot;git&quot;,&quot;baseline&quot;,&quot;diff&quot;],&quot;default&quot;:&quot;nfs&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;view&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;side&quot;,&quot;unified&quot;],&quot;default&quot;:&quot;side&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;panel&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;history&quot;,&quot;docs&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;role&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Admin&quot;,&quot;Editor&quot;,&quot;Viewer&quot;],&quot;default&quot;:&quot;Admin&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;approval&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;estate&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;clean&quot;,&quot;error&quot;,&quot;secret&quot;],&quot;default&quot;:&quot;clean&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;reveal&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;masked&quot;,&quot;dialog&quot;,&quot;shown&quot;],&quot;default&quot;:&quot;masked&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;revert&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;refMenu&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const p = this.props, bool = v => v === true || v === 'true';
+    const file = p.file ?? 'core', mode = p.mode ?? 'view', tab = p.tab ?? 'nfs', view = p.view ?? 'side', panel = p.panel ?? 'none';
+    const role = p.role ?? 'Admin', approval = bool(p.approval), estate = p.estate ?? 'clean', reveal = p.reveal ?? 'masked', revert = bool(p.revert), refMenu = bool(p.refMenu);
+    const canEdit = role !== 'Viewer';
+    const DR = { nfs: ['arrow-up-from-line', 'NFS ahead', 'solid'], untracked: ['circle-dashed', 'Untracked', 'dashed'], sync: ['check', 'In sync', 'solid'] };
+    const plain = t => ({ t, bs: 'solid', bd: 'var(--border)', bg: 'transparent', fg: 'var(--foreground)' });
+    const hi = t => ({ t, bs: 'solid', bd: 'var(--info-border)', bg: 'var(--info-bg)', fg: 'var(--info-fg)' });
+    const FILES = {
+      core: { logical: 'tx-infinity-core.yml', dir: 'tx-infinity-api', name: 'tx-infinity-core-sit7.yml', marker: 'Effective file for tx-infinity-core', dr: 'nfs', facts: [plain('CRLF'), plain('UTF-8'), plain('412 lines')], hash: 'a3f9c21', docs: true, actions: true },
+      lineending: { logical: 'tx-infinity-gateway.yml', dir: 'tx-infinity-api', name: 'tx-infinity-gateway.yml', dr: 'nfs', note: 'Line endings only', facts: [hi('CRLF · Git has LF'), plain('UTF-8'), plain('214 lines')], hash: 'd41e07b', docs: false, actions: true },
+      large: { logical: 'security-roles.yml', dir: 'security', name: 'security-roles.yml', dr: 'sync', facts: [plain('CRLF'), plain('UTF-8'), plain('6,140 lines')], hash: '0be9c5a', docs: false, actions: true },
+      binary: { logical: 'receipt-logo.jpeg', dir: 'document-service/resources', name: 'receipt-logo.jpeg', dr: 'nfs', facts: [plain('Binary'), plain('JPEG'), plain('18 KB'), plain('320×96')], hash: 'b71c4e9', docs: false, actions: true },
+      denied: { logical: 'keystore.jks', dir: 'security', name: 'keystore.jks', dr: 'untracked', facts: [plain('Binary'), plain('3.2 KB')], hash: '9d2c47e', docs: false, actions: false, withheld: true }
+    };
+    const f = FILES[file], d = f.dr ? DR[f.dr] : null;
+    const m = { ...f, path: f.dir + '/' + f.name, hasMarker: !!f.marker, hasDrift: !!d, dr: f.dr, drIcon: d ? d[0] : '', drLabel: d ? d[1] : '', drBs: d ? d[2] : 'solid', hasNote: !!f.note, note: f.note, withheld: !!f.withheld };
+    const editing = mode === 'edit', isText = file === 'core' || file === 'lineending' || file === 'large';
+
+    const SEV = {
+      high: { l: 'High', ic: 'triangle-alert', fg: 'var(--danger-fg)', bg: 'var(--danger-bg)', bd: 'var(--danger-border)' },
+      medium: { l: 'Medium', ic: 'info', fg: 'var(--warning-fg)', bg: 'var(--warning-bg)', bd: 'var(--warning-border)' },
+      low: { l: 'Low', ic: 'arrow-down', fg: 'var(--status-unknown-fg)', bg: 'var(--status-unknown-bg)', bd: 'var(--status-unknown-border)' }
+    };
+    const CONF = { Certain: 4, High: 3, Medium: 2, Unknown: 0 };
+    const attr = (who, how, cl) => { const n = CONF[cl], o = i => (i < n ? 1 : 0.25); return { who, how, cl, b1: o(0), b2: o(1), b3: o(2), b4: o(3), cbs: cl === 'Unknown' ? 'dashed' : 'solid' }; };
+
+    // ---- YAML line helper
+    const KV = /^(\s*)(- )?([\w.\-]+)(:)(\s*)(.*)$/;
+    const parse = t => {
+      if (/^\s*#/.test(t)) return { ind: '', key: t, sep: '', val: '', kfg: 'var(--muted-foreground)', vfg: 'inherit' };
+      const mm = KV.exec(t);
+      if (!mm) return { ind: t.match(/^\s*/)[0], key: t.trim(), sep: '', val: '', kfg: 'var(--foreground)', vfg: 'inherit' };
+      const v = mm[6], num = /^(true|false|\d[\d.]*[a-zA-Z]*|asc|desc)$/.test(v);
+      return { ind: mm[1] + (mm[2] || ''), key: mm[3], sep: mm[4] + mm[5], val: v, kfg: 'var(--foreground)', vfg: num ? 'var(--info-fg)' : 'var(--foreground)' };
+    };
+    const mkLine = (no, t, o = {}) => ({ no, ...parse(t), bg: 'transparent', nfg: 'var(--muted-foreground)', gfg: 'inherit', hasG: false, g: '', kdec: 'none', vdec: 'none', vbg: 'transparent', edec: 'none', err: '', caret: false, mask: false, shown: false, rvDis: false, rvOp: 1, rvCur: 'pointer', rvTitle: '', ...o });
+
+    const CORE = ['# tx-infinity-core · tenant override for sit7', 'tenant: sit7', 'service:', '  name: tx-infinity-core', '  replicas: 2', '  resources:', '    requests:', '      cpu: 500m', '      memory: 1Gi', 'txInfinityOptions:', '  remote-itm-teller:', '    timeoutMs: 30000', '    enableAccountSorting: true', '    sortOrder: asc', '    pageSize: 50', '    retry:', '      attempts: 3', '      backoffMs: 250', '    clientSecret: MASK', '  remote-itm-vault:', '    timeoutMs: 30000', '    enableAccountSorting: false', '    pageSize: 25', 'kafka:', '  bootstrap: kafka-sit7:9092', '  consumerGroup: tx-core-sit7', '  autoOffsetReset: latest', '  maxPollRecords: 200', 'logging:', '  appender: json', '  level: INFO', '  maskPatterns:', '    - pan', '    - accountNumber', '  sampling: 0.1', 'featureFlags:', '  instantPayments: false', '  holdsV2: true', '  receiptsV3: true', '  auditTrail: true'];
+
+    // ---- code lines per case
+    let lines = [], lineCount = '412 lines', cursor = '', problems = [], eol = 'CRLF';
+    if (file === 'large') {
+      lineCount = '6,140 lines';
+      const T = ['  atm-iso:', '    DEPOSIT:', '      limitCents: 500000', '      currency: USD', '      entryGroup: atm-deposit', '      enabled: true', '      transactionKey: DEP-ATM', '      reversible: true', '    WITHDRAWAL:', '      limitCents: 200000', '      currency: USD', '      entryGroup: atm-withdrawal', '      enabled: true', '      reversible: false', '    BALANCE:', '      enabled: true', '      entryGroup: atm-balance', '  teller-ui:', '    DEPOSIT:', '      limitCents: 2500000', '      currency: USD', '      enabled: true', '      transactionKey: DEP-TELLER', '      reversible: true', '    WITHDRAWAL:', '      limitCents: 1000000', '      currency: USD', '      enabled: true', '      reversible: true', '    TRANSFER:', '      limitCents: 5000000'];
+      lines = T.map((t, i) => { const no = 5165 + i, dup = no === 5171; return mkLine(no, t, dup ? { bg: 'var(--diff-mod-bg)', hasG: true, g: 'triangle-alert', gfg: 'var(--warning-fg)', kdec: 'underline wavy var(--warning-fg)' } : {}); });
+    } else if (file === 'core' && editing) {
+      if (estate === 'secret') {
+        const S = ['tls:', '  enabled: true', '  protocols:', '    - TLSv1.3', '  keystore:', '    type: PEM', '    alias: core-sit7', '    certificate: sit7-core.crt', '    privateKey: FLAGGED', '    passphrase: ${KEYSTORE_PASS}', '  truststore:', '    type: PEM', '    path: /etc/lanekeeper/ca.crt', 'metrics:', '  enabled: true', '  port: 9102', 'tracing:', '  enabled: false', '  sampleRate: 0.05', 'health:', '  liveness: /live', '  readiness: /ready', '  startupProbeSeconds: 30', 'shutdown:', '  gracePeriodSeconds: 20'];
+        lines = S.map((t, i) => { const no = 112 + i; return no === 120 ? mkLine(no, '    privateKey: FLAGGED', { bg: 'var(--danger-bg)', hasG: true, g: 'shield-alert', gfg: 'var(--danger-fg)', val: '•••••••••• (flagged, hidden)', vfg: 'var(--danger-fg)', caret: true }) : mkLine(no, t); });
+        cursor = '120, Col 22'; problems = [{ i: 'shield-alert', fg: 'var(--danger-fg)', t: 'Secret detected', msg: 'Line 120 looks like a private key. Save is blocked.', at: 'L120' }];
+      } else {
+        const E = ['  remote-itm-atm:', '    timeoutMs: 45000', '    enableAccountSorting: false', '    pageSize: 100', '    retry:', '      attempts: 3', '      backoffMs: 250', '  remote-itm-cards:', '    timeoutMs: 20000', '    endpoints:', '      primary: https://cards-sit7:8443/v2: active', '      fallback: https://cards-sit7-b:8443/v2', '    timeoutMs: 25000', '    pageSize: 50', '  remote-itm-limits:', '    perTxnCents: 500000', '    dailyCents: 2000000', '    currency: USD', 'kafka:', '  bootstrap: kafka-sit7:9092', '  consumerGroup: tx-core-sit7', '  autoOffsetReset: latest', '  maxPollRecords: 200', 'logging:', '  appender: json', '  level: INFO', '  sampling: 0.1', 'featureFlags:', '  instantPayments: false', '  holdsV2: true', '  receiptsV3: true', '  auditTrail: true', 'metrics:', '  enabled: true'];
+        if (estate === 'error') {
+          lines = E.map((t, i) => { const no = 78 + i;
+            if (no === 88) { const mm = /^(\s*)(primary)(:)(\s*)(https:\/\/cards-sit7:8443\/v2)(: active)$/.exec(t); return mkLine(no, '      primary: https://cards-sit7:8443/v2', { bg: 'var(--danger-bg)', hasG: true, g: 'circle-x', gfg: 'var(--danger-fg)', err: ': active', edec: 'underline wavy var(--danger-fg)', caret: true }); }
+            if (no === 90) return mkLine(no, t, { bg: 'var(--warning-bg)', hasG: true, g: 'triangle-alert', gfg: 'var(--warning-fg)', kdec: 'underline wavy var(--warning-fg)' });
+            return mkLine(no, t); });
+          cursor = '88, Col 44';
+          problems = [{ i: 'circle-x', fg: 'var(--danger-fg)', t: 'Error', msg: 'mapping values are not allowed here', at: 'L88:44' }, { i: 'triangle-alert', fg: 'var(--warning-fg)', t: 'Warning', msg: "Duplicate key 'timeoutMs' (lines 86 and 90)", at: 'L90:5' }];
+        } else {
+          lines = CORE.map((t, i) => { const no = i + 1; if (t.endsWith('MASK')) return mkLine(no, '    clientSecret: •••••'); return mkLine(no, t, (no === 13 || no === 14) ? { bg: 'var(--diff-add-bg)', hasG: true, g: 'pencil', gfg: 'var(--diff-add-fg)' } : {}); });
+          cursor = '14, Col 20';
+        }
+      }
+    } else if (isText) {
+      lineCount = file === 'lineending' ? '214 lines' : '412 lines';
+      lines = CORE.map((t, i) => {
+        const no = i + 1;
+        if (t.endsWith('MASK')) {
+          const dis = !canEdit;
+          if (reveal === 'shown') return mkLine(no, '    clientSecret: tellerClient-9f2c71', { vbg: 'var(--warning-bg)', shown: true });
+          return mkLine(no, '    clientSecret: •••••', { mask: true, rvDis: dis, rvOp: dis ? 0.5 : 1, rvCur: dis ? 'not-allowed' : 'pointer', rvTitle: dis ? 'Requires Editor · Priya Shah can grant' : 'Reveal this value' });
+        }
+        return mkLine(no, t);
+      });
+    }
+    const valIcon = (estate === 'error' && editing) ? 'circle-x' : 'circle-check';
+    const valText = editing && file === 'core' ? (estate === 'error' ? '1 error, 1 warning' : 'Validates as YAML') : 'Valid YAML';
+    const valFg = (estate === 'error' && editing) ? 'var(--danger-fg)' : 'var(--success-fg)';
+
+    // ---- Diff
+    const ops = []; const O = o => ops.push(o);
+    O({ k: 'fold', t: '9 unchanged lines' });
+    O({ k: 'hunk', t: '@@ -10,9 +10,10 @@ txInfinityOptions' });
+    O({ k: 'ctx', l: 10, r: 10, t: 'txInfinityOptions:' }); O({ k: 'ctx', l: 11, r: 11, t: '  remote-itm-teller:' }); O({ k: 'ctx', l: 12, r: 12, t: '    timeoutMs: 30000' });
+    O({ k: 'mod', l: 13, r: 13, pre: '    enableAccountSorting: ', lw: 'false', rw: 'true', post: '' });
+    O({ k: 'add', r: 14, t: '    sortOrder: asc' });
+    O({ k: 'ctx', l: 14, r: 15, t: '    pageSize: 50' }); O({ k: 'ctx', l: 15, r: 16, t: '    retry:' }); O({ k: 'ctx', l: 16, r: 17, t: '      attempts: 3' }); O({ k: 'ctx', l: 17, r: 18, t: '      backoffMs: 250' });
+    O({ k: 'fold', t: '10 unchanged lines' });
+    O({ k: 'hunk', t: '@@ -28,6 +29,6 @@ logging' });
+    O({ k: 'ctx', l: 28, r: 29, t: 'logging:' }); O({ k: 'ctx', l: 29, r: 30, t: '  appender: json' });
+    O({ k: 'mod', l: 30, r: 31, pre: '  level: ', lw: 'WARN', rw: 'INFO', post: '' });
+    O({ k: 'ctx', l: 31, r: 32, t: '  maskPatterns:' }); O({ k: 'ctx', l: 32, r: 33, t: '    - pan' }); O({ k: 'ctx', l: 33, r: 34, t: '    - accountNumber' });
+    O({ k: 'fold', t: '378 unchanged lines' });
+    const S = {
+      ctx: { bg: 'var(--card)', gut: 'var(--muted)', m: '', mc: 'inherit', wb: 'transparent' },
+      del: { bg: 'var(--diff-del-bg)', gut: 'var(--diff-del-gutter)', m: '−', mc: 'var(--diff-del-fg)', wb: 'var(--diff-del-word)' },
+      add: { bg: 'var(--diff-add-bg)', gut: 'var(--diff-add-gutter)', m: '+', mc: 'var(--diff-add-fg)', wb: 'var(--diff-add-word)' },
+      empty: { bg: 'var(--diff-empty-bg)', gut: 'var(--diff-empty-bg)', m: '', mc: 'inherit', wb: 'transparent' }
+    };
+    const side = (k, no, a, w, b) => ({ ...S[k], no: k === 'empty' ? '' : no, a: a ?? '', w: w ?? '', b: b ?? '' });
+    const code = (l, r) => ({ isCode: true, lbg: l.bg, lgut: l.gut, lm: l.m, lmc: l.mc, lwb: l.wb, lno: l.no, la: l.a, lw: l.w, lb: l.b, rbg: r.bg, rgut: r.gut, rm: r.m, rmc: r.mc, rwb: r.wb, rno: r.no, ra: r.a, rw: r.w, rb: r.b });
+    const sideRows = [], uniRows = [];
+    const uni = (k, ono, nno, a, w, b) => ({ isCode: true, bg: S[k].bg, gut: S[k].gut, m: S[k].m, mc: S[k].mc, wb: S[k].wb, ono, nno, a, w: w ?? '', b: b ?? '' });
+    ops.forEach(o => {
+      if (o.k === 'fold') { sideRows.push({ isFold: true, t: o.t }); uniRows.push({ isFold: true, t: o.t }); }
+      else if (o.k === 'hunk') { sideRows.push({ isHunk: true, t: o.t }); uniRows.push({ isHunk: true, t: o.t }); }
+      else if (o.k === 'ctx') { sideRows.push(code(side('ctx', o.l, o.t), side('ctx', o.r, o.t))); uniRows.push(uni('ctx', o.l, o.r, o.t)); }
+      else if (o.k === 'mod') { sideRows.push(code(side('del', o.l, o.pre, o.lw, o.post), side('add', o.r, o.pre, o.rw, o.post))); uniRows.push(uni('del', o.l, '', o.pre, o.lw, o.post)); uniRows.push(uni('add', '', o.r, o.pre, o.rw, o.post)); }
+      else if (o.k === 'add') { sideRows.push(code(side('empty'), side('add', o.r, o.t))); uniRows.push(uni('add', '', o.r, o.t)); }
+    });
+    const summary = [
+      { pre: 'txInfinityOptions.remote-itm-teller.', key: 'enableAccountSorting', kind: 'changed', from: 'false', fromD: 'inline', to: 'true' },
+      { pre: 'txInfinityOptions.remote-itm-teller.', key: 'sortOrder', kind: 'added', from: '', fromD: 'none', to: 'asc' },
+      { pre: 'logging.', key: 'level', kind: 'changed', from: 'WARN', fromD: 'inline', to: 'INFO' }];
+    const changeList = [
+      { key: 'enableAccountSorting', t: 'Changed', i: 'pencil', fg: 'var(--diff-mod-fg)', line: 13, bg: 'var(--selection)' },
+      { key: 'sortOrder', t: 'Added', i: 'plus', fg: 'var(--diff-add-fg)', line: 14, bg: 'transparent' },
+      { key: 'logging.level', t: 'Changed', i: 'pencil', fg: 'var(--diff-mod-fg)', line: 31, bg: 'transparent' }];
+    const rg = (g, items) => ({ g, items: items.map(([l, i, on, ff]) => ({ l, i, on, bg: on ? 'var(--accent)' : 'transparent', chk: on ? 1 : 0, ff: ff ? 'var(--font-mono)' : 'var(--font-sans)', fs: ff ? '12px' : '13px' })) });
+    const refGroups = [rg('Sources', [['NFS (current)', 'server', false], ['Git (sit7 head)', 'git-branch', true], ['Baseline (v2.3.1 + 4)', 'shield-check', false]]), rg('Another swimlane', [['sit', 'layers', false, 1], ['sitc', 'layers', false, 1], ['presita', 'layers', false, 1]]), rg('Tags', [['v2.3.1', 'tag', false, 1], ['v2.3.0', 'tag', false, 1]])];
+
+    // ---- tabs
+    const tabs = [['nfs', 'NFS', '(current)'], ['git', 'Git', '(sit7 head)'], ['baseline', 'Baseline', ''], ['diff', 'Diff', '']].map(([k, l, s]) => ({ l, s, on: tab === k, bb: tab === k ? 'var(--primary)' : 'transparent', fw: tab === k ? 600 : 500, fg: tab === k ? 'var(--foreground)' : 'var(--muted-foreground)', hasN: k === 'diff' && file === 'core', n: 3 }));
+
+    // ---- outline / minimap
+    const outline = [['securityRoles', 1], ['entryGroupConfigMap', 4820], ['channelPolicies', 5780], ['auditSettings', 6020], ['limits', 6102]].map(([k, n]) => ({ k, n, bg: k === 'entryGroupConfigMap' ? 'var(--selection)' : 'transparent', fw: k === 'entryGroupConfigMap' ? 600 : 400 }));
+    const minimap = Array.from({ length: 56 }, (_, i) => ({ w: 10 + ((i * 37) % 44), x: (i % 5 === 0) ? 0 : 6 + (i % 3) * 5, op: 0.7 }));
+    const mmH = 56 * 6, mmMarks = [5171, 5643, 6115].map(n => ({ top: Math.round((n / 6140) * mmH) + 'px' }));
+
+    // ---- history
+    const mkV = (time, hash, source, srcIcon, a, sevK, o = {}) => ({ time, hash, source, srcIcon, ...a, sev: SEV[sevK], cur: false, recovered: false, canRevert: canEdit, bg: 'transparent', ...o });
+    const versions = [
+      mkV('Today 14:05', '7be41d0', 'Scan found a change', 'search', attr('Unknown', '', 'Unknown'), 'high', { cur: true, canRevert: false, bg: 'var(--muted)' }),
+      mkV('Today 13:58', 'c19a4e2', 'Tool write', 'pencil', attr('Marco Diaz', '· via Lanekeeper', 'Certain'), 'low'),
+      mkV('Today 13:12', '5d0f8aa', 'Sync from Git', 'git-branch', attr('Sync job csp-tenant-data-sit7', '· run 41', 'High'), 'low'),
+      mkV('Today 12:47', 'e02b937', 'Hub outage 12:31 to 12:46', 'wifi-off', attr('NFS client', '(no sync running)', 'Medium'), 'medium', { recovered: true }),
+      mkV('Yesterday 17:20', '90ac3b1', 'Tool write', 'pencil', attr('Priya Shah', '· via Lanekeeper', 'Certain'), 'low')
+    ];
+    const flags = [
+      { k: 'txInfinityOptions.remote-itm-teller.enableAccountSorting', d: 'Sort account lists in the teller UI', v: 'true', def: 'false', fw: 600 },
+      { k: 'txInfinityOptions.remote-itm-teller.sortOrder', d: 'asc or desc, used when sorting is on', v: 'asc', def: 'unset', fw: 600 },
+      { k: 'txInfinityOptions.remote-itm-teller.pageSize', d: 'Accounts per page', v: '50', def: '50', fw: 400 }];
+
+    const vDiff = tab === 'diff' && !editing && file !== 'large' && file !== 'denied';
+    const vCode = (editing && file === 'core') || (!editing && isText && (tab !== 'diff' || file === 'large'));
+    const hasChanges = file === 'core';
+    const approvalEdit = approval;
+    const saveDis = estate === 'error' || estate === 'secret';
+    const showTabs = !editing && file !== 'denied';
+    return {
+      m, editing, approval, tabs, showTabs,
+      pHist: panel === 'history', pDocs: panel === 'docs', histBd: panel === 'history' ? 'var(--ring)' : 'var(--border)', histBg: panel === 'history' ? 'var(--accent)' : 'var(--secondary)', docsBd: panel === 'docs' ? 'var(--ring)' : 'var(--border)', docsBg: panel === 'docs' ? 'var(--accent)' : 'var(--secondary)',
+      editDis: editing || !canEdit, editOp: (editing || !canEdit) ? 0.5 : 1, editCur: (editing || !canEdit) ? 'not-allowed' : 'pointer', editBg: 'var(--secondary)', editBd: 'var(--border)', editFg: 'var(--secondary-foreground)',
+      vDiff, vLineNotice: vDiff && file === 'lineending', vBinary: vDiff && file === 'binary', vDiffCode: vDiff && file === 'core', hasChanges,
+      isSide: view === 'side', isUni: view === 'unified', sideBg: view === 'side' ? 'var(--secondary)' : 'transparent', sideFw: view === 'side' ? 500 : 400, uniBg: view === 'unified' ? 'var(--secondary)' : 'transparent', uniFw: view === 'unified' ? 500 : 400,
+      refMenu, refBd: refMenu ? 'var(--ring)' : 'var(--input)', refGroups, summary, changeList, sideRows, uniRows,
+      vCode, vOutline: file === 'large', vMinimap: file === 'large', vLargeBanner: file === 'large' && !editing, vDenied: file === 'denied',
+      lines, outline, minimap, mmMarks, mmViewTop: Math.round((5165 / 6140) * mmH) + 'px',
+      vProblems: editing && problems.length > 0, problems, problemCount: problems.length,
+      cursor, eol, lineCount, valIcon, valText, valFg,
+      secretBlock: editing && estate === 'secret',
+      changedLines: estate === 'clean' ? '2 lines' : (estate === 'error' ? '3 lines' : '1 line'),
+      saveDis, saveOp: saveDis ? 0.5 : 1, saveCur: saveDis ? 'not-allowed' : 'pointer', saveIcon: approvalEdit ? 'hourglass' : 'upload', saveLabel: approvalEdit ? 'Submit for approval' : 'Save to sitb NFS',
+      saveHint: estate === 'error', saveHintText: 'Fix 1 error to save',
+      versions, flags,
+      dRevealOn: reveal === 'dialog', dRevertOn: revert
+    };
+  }
+}
+</script>
+</body>
+</html>

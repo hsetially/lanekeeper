@@ -1,0 +1,16 @@
+:root {
+  /* 4px grid — matches Tailwind spacing scale (1 = 4px) */
+  --space-0-5: 2px; --space-1: 4px; --space-1-5: 6px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-10: 40px; --space-12: 48px;
+  /* fixed rows for virtualisation */
+  --row-compact: 28px; --row-default: 32px; --row-tree: 28px; --row-diff: 18px;
+  --control-sm: 24px; --control-md: 28px; --control-lg: 32px;
+  --header-height: 44px; --toolbar-height: 40px;
+  /* radius */
+  --radius-sm: 4px;   /* controls, badges, chips */
+  --radius-md: 6px;   /* cards, popovers, dialogs */
+  --radius: 6px;      /* shadcn base */
+  /* elevation: borders first; one shadow for floating layers only */
+  --focus-ring-width: 2px; --focus-ring-offset: 2px;
+  --duration-fast: 100ms; --duration-base: 150ms; --ease-out: cubic-bezier(0.2, 0, 0, 1);
+}

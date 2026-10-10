@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<style>
+*{box-sizing:border-box}
+a{color:var(--link)}
+a:hover{color:var(--primary-hover)}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+</style>
+</helmet>
+<div onMouseEnter="{{ enter }}" onMouseLeave="{{ leave }}" style="position:relative;flex:1;min-width:0;width:100%;height:100%;min-height:0;display:flex;flex-direction:column;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:13px;line-height:18px;-webkit-font-smoothing:antialiased">
+<div style="flex:1;min-height:0;width:100%;max-width:1680px;margin:0 auto;display:flex;flex-direction:column;padding:16px 24px 0">
+
+  <div style="flex:none;display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px 16px;padding-bottom:8px">
+    <div style="display:flex;flex-direction:column;gap:4px"><h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600;letter-spacing:-0.01em">Search</h1><span style="color:var(--muted-foreground)">{{ subtitle }}</span></div>
+    <span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted-foreground)">Focus the query<kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">/</kbd></span>
+  </div>
+
+  <div role="tablist" aria-label="Search type" style="flex:none;display:flex;gap:4px;margin-bottom:12px;border-bottom:1px solid var(--border)">
+    <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="3">
+      <button type="button" role="tab" aria-selected="{{ t.on }}" onClick="{{ t.click }}" style="display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;margin-bottom:-1px;border:0;border-bottom:2px solid {{ t.bd }};background:transparent;font-family:inherit;font-size:13px;font-weight:{{ t.fw }};color:{{ t.fg }};cursor:pointer" style-hover="background:var(--accent);color:var(--foreground)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/{{ t.i }}.svg) center/contain no-repeat"></span>{{ t.l }}</button>
+    </sc-for>
+  </div>
+
+  <div style="position:relative;flex:1;min-height:0;margin-bottom:16px;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--card)">
+
+    <sc-if value="{{ isText }}" hint-placeholder-val="{{ true }}">
+    <div style="flex:none;display:flex;flex-direction:column;gap:6px;padding:8px;border-bottom:1px solid var(--border);background:var(--muted)">
+      <div style="display:flex;align-items:center;gap:8px">
+        <label style="flex:1;min-width:0;display:flex;align-items:center;gap:6px;height:28px;padding:0 4px 0 8px;border-radius:4px;border:1px solid {{ qBd }};background:var(--background)">
+          <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/search.svg) center/contain no-repeat"></span>
+          <input ref="{{ qRef }}" type="text" value="{{ tq }}" onChange="{{ onTq }}" placeholder="Find text in config files" aria-label="Query" aria-invalid="{{ invalid }}" aria-describedby="q-error" style="flex:1;min-width:0;height:26px;border:0;outline:0;background:transparent;font-family:var(--font-mono);font-size:12px;color:var(--foreground)">
+          <button type="button" aria-pressed="{{ tcs }}" aria-label="Match case" title="Match case" onClick="{{ toggleCs }}" style="flex:none;width:24px;height:22px;border-radius:4px;border:1px solid {{ csBd }};background:{{ csBg }};color:{{ csFg }};font-family:var(--font-mono);font-size:12px;font-weight:500;cursor:pointer" style-hover="background:var(--accent)">Aa</button>
+          <button type="button" aria-pressed="{{ trx }}" aria-label="Use regular expression" title="Use regular expression" onClick="{{ toggleRx }}" style="flex:none;width:24px;height:22px;border-radius:4px;border:1px solid {{ rxBd }};background:{{ rxBg }};color:{{ rxFg }};font-family:var(--font-mono);font-size:12px;font-weight:500;cursor:pointer" style-hover="background:var(--accent)">.*</button>
+          <kbd style="flex:none;display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">/</kbd>
+        </label>
+        <button type="button" role="combobox" aria-haspopup="listbox" aria-expanded="{{ popOpen }}" onClick="{{ togglePop }}" style="flex:none;width:208px;display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:4px;border:1px solid {{ popBd }};background:{{ popBg }};font-family:inherit;font-size:13px;cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/layers.svg) center/contain no-repeat"></span><span style="flex:1;min-width:0;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span style="color:var(--muted-foreground)">Swimlanes </span><span style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ laneLabel }}</span></span><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/chevron-down.svg) center/contain no-repeat"></span></button>
+        <label style="flex:none;width:264px;display:flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:4px;border:1px solid var(--input);background:var(--background)">
+          <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/folder-open.svg) center/contain no-repeat"></span>
+          <input type="text" value="{{ tglob }}" onChange="{{ onGlob }}" placeholder="Path glob, e.g. **/*-sit7.yml" aria-label="Path glob" style="flex:1;min-width:0;height:26px;border:0;outline:0;background:transparent;font-family:var(--font-mono);font-size:12px;color:var(--foreground)">
+        </label>
+      </div>
+      <sc-if value="{{ invalid }}" hint-placeholder-val="{{ false }}">
+      <div id="q-error" role="alert" style="display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;color:var(--danger-fg)">
+        <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/circle-x.svg) center/contain no-repeat"></span>
+        <strong style="font-weight:600">Invalid regular expression.</strong><span>{{ errReason }}. {{ errHint }}</span>
+        <button type="button" onClick="{{ toggleRx }}" style="margin-left:auto;display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;border:1px solid var(--danger-border);background:var(--background);color:var(--danger-fg);font-family:inherit;font-size:12px;font-weight:500;cursor:pointer" style-hover="background:var(--danger-bg)">Search as plain text</button>
+      </div>
+      </sc-if>
+    </div>
+
+    <sc-if value="{{ truncated }}" hint-placeholder-val="{{ false }}">
+    <div role="status" style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;min-height:36px;padding:4px 12px;background:var(--warning-bg);color:var(--warning-fg);border-bottom:1px solid var(--warning-border)">
+      <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/triangle-alert.svg) center/contain no-repeat"></span>
+      <strong style="font-weight:600">1,000+ matches, results truncated</strong>
+      <span>Showing the first 1,000 in swimlane order. Narrow the search to see the rest.</span>
+      <span style="margin-left:auto;display:inline-flex;gap:8px"><button type="button" style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;border:1px solid currentColor;background:transparent;color:inherit;font-family:inherit;font-size:12px;font-weight:500;cursor:pointer">Add a path glob</button><button type="button" style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;border:1px solid currentColor;background:transparent;color:inherit;font-family:inherit;font-size:12px;font-weight:500;cursor:pointer">Pick swimlanes</button></span>
+    </div>
+    </sc-if>
+
+    <div style="flex:none;display:flex;align-items:center;gap:12px;height:32px;padding:0 12px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted-foreground)">
+      <strong style="font-weight:600;color:var(--foreground);font-variant-numeric:tabular-nums">{{ tSummary }}</strong><span>{{ tMode }}</span>
+      <sc-if value="{{ tHasRows }}" hint-placeholder-val="{{ true }}"><span style="margin-left:auto;display:inline-flex;gap:4px"><button type="button" onClick="{{ collapseAll }}" style="height:24px;padding:0 8px;border-radius:4px;border:1px solid transparent;background:transparent;color:inherit;font-family:inherit;font-size:12px;cursor:pointer" style-hover="background:var(--accent)">Collapse all</button><button type="button" onClick="{{ expandAll }}" style="height:24px;padding:0 8px;border-radius:4px;border:1px solid transparent;background:transparent;color:inherit;font-family:inherit;font-size:12px;cursor:pointer" style-hover="background:var(--accent)">Expand all</button></span></sc-if>
+    </div>
+
+    <sc-if value="{{ tHasRows }}" hint-placeholder-val="{{ true }}">
+    <div role="tree" aria-label="Results by swimlane and file" style="flex:1;min-height:0;overflow:hidden">
+      <sc-for list="{{ rows }}" as="r" hint-placeholder-count="14">
+        <sc-if value="{{ r.isSw }}" hint-placeholder-val="{{ false }}"><div role="treeitem" aria-expanded="{{ r.open }}" style="display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;background:var(--muted);border-bottom:1px solid var(--border)">
+          <button type="button" aria-label="Toggle {{ r.name }}" onClick="{{ r.toggle }}" style="width:20px;height:20px;flex:none;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:4px;background:transparent;color:var(--muted-foreground);cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;background:currentColor;mask:url(assets/icons/{{ r.chev }}.svg) center/contain no-repeat"></span></button>
+          <span style="flex:none;display:inline-flex;align-items:center;height:18px;padding:0 4px;border-radius:4px;border:1px solid {{ r.tb }};background:{{ r.tbg }};color:{{ r.tfg }};font-family:var(--font-mono);font-size:12px;font-weight:500;letter-spacing:0.04em">{{ r.tier }}</span>
+          <span style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ r.name }}</span>
+          <span style="display:inline-flex;align-items:center;gap:4px;font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/git-branch.svg) center/contain no-repeat"></span>{{ r.branch }}</span>
+          <span style="margin-left:auto;font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums">{{ r.count }}</span>
+        </div></sc-if>
+        <sc-if value="{{ r.isFile }}" hint-placeholder-val="{{ false }}"><div role="treeitem" style="display:flex;align-items:center;gap:8px;height:28px;padding:0 12px 0 36px;border-bottom:1px solid var(--border)">
+          <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/file-code.svg) center/contain no-repeat"></span>
+          <span style="min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono);font-size:12px"><span style="color:var(--muted-foreground)">{{ r.dir }}/</span><span style="font-weight:500">{{ r.file }}</span></span>
+          <span style="flex:none;display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:4px;border:1px solid {{ r.kb }};background:{{ r.kbg }};color:{{ r.kfg }};font-size:12px;font-weight:500">{{ r.kind }}</span>
+          <span style="margin-left:auto;font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums">{{ r.count }}</span>
+        </div></sc-if>
+        <sc-if value="{{ r.isHit }}" hint-placeholder-val="{{ true }}"><a role="treeitem" href="{{ r.href }}" aria-label="{{ r.label }}" style="display:grid;grid-template-columns:48px minmax(0,1fr) auto;align-items:center;gap:12px;height:28px;padding:0 12px 0 52px;border-bottom:1px solid var(--border);color:var(--foreground);text-decoration:none;background:{{ r.bg }};box-shadow:{{ r.sh }}" style-hover="background:var(--accent)">
+          <span style="text-align:right;font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums">{{ r.line }}</span>
+          <span style="min-width:0;white-space:pre;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono);font-size:12px">{{ r.pre }}<span style="background:var(--selection);font-weight:600;border-radius:2px;box-shadow:inset 0 0 0 1px var(--info-border)">{{ r.m }}</span>{{ r.post }}</span>
+          <sc-if value="{{ r.sel }}" hint-placeholder-val="{{ false }}"><span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted-foreground)">Open at line {{ r.line }}<kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--background);font-family:var(--font-mono);font-size:12px">↵</kbd></span></sc-if>
+        </a></sc-if>
+        <sc-if value="{{ r.isTrunc }}" hint-placeholder-val="{{ false }}"><div role="status" style="display:flex;align-items:center;gap:8px;height:36px;padding:0 12px;background:var(--warning-bg);color:var(--warning-fg);border-bottom:1px solid var(--warning-border)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/triangle-alert.svg) center/contain no-repeat"></span><strong style="font-weight:600">Results stop here.</strong><span>1,000 matches are listed. Later swimlanes and files are not shown.</span></div></sc-if>
+      </sc-for>
+    </div>
+    <div style="flex:none;display:flex;align-items:center;gap:16px;height:32px;padding:0 12px;border-top:1px solid var(--border);background:var(--muted);font-size:12px;color:var(--muted-foreground)"><span>↑↓ move</span><span>↵ open file at line</span><span>⌘↵ new tab</span><span style="margin-left:auto">Every result opens its file at the matching line.</span></div>
+    </sc-if>
+    </sc-if>
+
+    <sc-if value="{{ isSettings }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:none;display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid var(--border);background:var(--muted)">
+      <label style="flex:1;min-width:0;display:flex;align-items:center;gap:6px;height:28px;padding:0 4px 0 8px;border-radius:4px;border:1px solid var(--input);background:var(--background)">
+        <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/search.svg) center/contain no-repeat"></span>
+        <input ref="{{ qRef }}" type="text" value="{{ sq }}" onChange="{{ onSq }}" placeholder="Setting name or value" aria-label="Setting query" style="flex:1;min-width:0;height:26px;border:0;outline:0;background:transparent;font-family:var(--font-mono);font-size:12px;color:var(--foreground)">
+        <kbd style="flex:none;display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">/</kbd>
+      </label>
+      <button type="button" role="combobox" aria-haspopup="listbox" aria-expanded="{{ popOpen }}" onClick="{{ togglePop }}" style="flex:none;width:208px;display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:4px;border:1px solid {{ popBd }};background:{{ popBg }};font-family:inherit;font-size:13px;cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/layers.svg) center/contain no-repeat"></span><span style="flex:1;min-width:0;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span style="color:var(--muted-foreground)">Swimlanes </span><span style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ sLaneLabel }}</span></span><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/chevron-down.svg) center/contain no-repeat"></span></button>
+    </div>
+    <div style="flex:none;display:flex;align-items:center;gap:12px;height:32px;padding:0 12px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted-foreground)"><strong style="font-weight:600;color:var(--foreground);font-variant-numeric:tabular-nums">{{ sSummary }}</strong><span>Matches setting path and value, ignoring case</span></div>
+    <sc-if value="{{ sHasRows }}" hint-placeholder-val="{{ true }}">
+    <div role="row" style="flex:none;display:grid;grid-template-columns:96px minmax(0,1.1fr) minmax(0,1.6fr) 96px 56px 116px;gap:12px;align-items:center;height:32px;padding:0 12px;border-bottom:1px solid var(--border);background:var(--muted);font-size:12px;font-weight:500;color:var(--muted-foreground)"><span>Swimlane</span><span>File</span><span>Setting path</span><span>Value</span><span style="text-align:right">Line</span><span></span></div>
+    <div role="rowgroup" style="flex:1;min-height:0;overflow:hidden">
+      <sc-for list="{{ sRows }}" as="r" hint-placeholder-count="12">
+        <div role="row" style="display:grid;grid-template-columns:96px minmax(0,1.1fr) minmax(0,1.6fr) 96px 56px 116px;gap:12px;align-items:center;height:28px;padding:0 12px;border-bottom:1px solid var(--border)" style-hover="background:var(--accent)">
+          <span style="display:flex;align-items:center;gap:6px;min-width:0"><span style="flex:none;display:inline-flex;align-items:center;height:18px;padding:0 4px;border-radius:4px;border:1px solid {{ r.tb }};background:{{ r.tbg }};color:{{ r.tfg }};font-family:var(--font-mono);font-size:12px;font-weight:500;letter-spacing:0.04em">{{ r.tier }}</span><span style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ r.lane }}</span></span>
+          <span style="display:flex;align-items:center;gap:6px;min-width:0"><span style="min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono);font-size:12px">{{ r.file }}</span><span style="flex:none;display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:4px;border:1px solid {{ r.kb }};background:{{ r.kbg }};color:{{ r.kfg }};font-size:12px;font-weight:500">{{ r.kind }}</span></span>
+          <span style="min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono);font-size:12px"><sc-for list="{{ r.segs }}" as="g" hint-placeholder-count="1"><span style="{{ g.st }}">{{ g.t }}</span></sc-for></span>
+          <span style="display:flex;align-items:center;gap:6px;min-width:0;font-family:var(--font-mono);font-size:12px;color:{{ r.vfg }}"><span style="text-decoration:{{ r.vdec }}">{{ r.value }}</span></span>
+          <a href="{{ r.href }}" aria-label="Open {{ r.file }} at line {{ r.line }}" style="text-align:right;font-family:var(--font-mono);font-size:12px;font-variant-numeric:tabular-nums">{{ r.line }}</a>
+          <a href="{{ r.grid }}" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:22px;padding:0 8px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-size:12px;font-weight:500;text-decoration:none;white-space:nowrap" style-hover="background:var(--secondary-hover)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/columns-2.svg) center/contain no-repeat"></span>Open in grid</a>
+        </div>
+      </sc-for>
+    </div>
+    <div style="flex:none;display:flex;align-items:center;gap:16px;height:32px;padding:0 12px;border-top:1px solid var(--border);background:var(--muted);font-size:12px;color:var(--muted-foreground)"><span>The tenant file wins over its base file. Overridden base values are struck through.</span><span style="margin-left:auto">Open in grid compares this setting across swimlanes.</span></div>
+    </sc-if>
+    </sc-if>
+
+    <sc-if value="{{ isDocs }}" hint-placeholder-val="{{ false }}">
+    <sc-if value="{{ isDocsResults }}" hint-placeholder-val="{{ true }}">
+    <div style="flex:none;display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid var(--border);background:var(--muted)">
+      <label style="flex:1;min-width:0;display:flex;align-items:center;gap:6px;height:28px;padding:0 4px 0 8px;border-radius:4px;border:1px solid var(--input);background:var(--background)">
+        <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/search.svg) center/contain no-repeat"></span>
+        <input ref="{{ qRef }}" type="text" value="{{ dq }}" onChange="{{ onDq }}" placeholder="Search docs" aria-label="Docs query" style="flex:1;min-width:0;height:26px;border:0;outline:0;background:transparent;font-family:var(--font-sans);font-size:13px;color:var(--foreground)">
+        <kbd style="flex:none;display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">/</kbd>
+      </label>
+      <div role="group" aria-label="Source" style="flex:none;display:inline-flex;border:1px solid var(--input);border-radius:4px;overflow:hidden;background:var(--background)">
+        <sc-for list="{{ srcs }}" as="sc" hint-placeholder-count="3"><button type="button" aria-pressed="{{ sc.on }}" onClick="{{ sc.click }}" style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border:0;border-left:{{ sc.bl }};background:{{ sc.bg }};font-family:inherit;font-size:13px;font-weight:{{ sc.fw }};color:var(--foreground);cursor:pointer" style-hover="background:var(--secondary-hover)">{{ sc.l }}</button></sc-for>
+      </div>
+      <span style="flex:none;position:relative;display:inline-flex">
+        <button type="button" aria-disabled="{{ viewer }}" onClick="{{ openUpload }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-family:inherit;font-size:13px;font-weight:500;opacity:{{ upOp }};cursor:{{ upCur }}"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/upload.svg) center/contain no-repeat"></span>Upload doc</button>
+        <sc-if value="{{ uploadTip }}" hint-placeholder-val="{{ false }}"><div role="tooltip" style="position:absolute;z-index:40;top:calc(100% + 6px);right:0;display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;background:var(--foreground);color:var(--background);font-size:12px;white-space:nowrap;box-shadow:var(--shadow-popover)">Requires Editor · Priya Shah can grant</div></sc-if>
+      </span>
+    </div>
+    <div style="flex:none;display:flex;align-items:center;gap:12px;height:32px;padding:0 12px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted-foreground)"><strong style="font-weight:600;color:var(--foreground);font-variant-numeric:tabular-nums">{{ dSummary }}</strong><span>All words must match the title, heading or text</span></div>
+    <sc-if value="{{ dHasRows }}" hint-placeholder-val="{{ true }}">
+    <div role="list" style="flex:1;min-height:0;overflow:hidden">
+      <sc-for list="{{ dRows }}" as="r" hint-placeholder-count="4">
+        <a role="listitem" href="{{ r.href }}" onClick="{{ r.open }}" aria-label="{{ r.label }}" style="display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-bottom:1px solid var(--border);color:var(--foreground);text-decoration:none" style-hover="background:var(--accent)">
+          <span style="display:flex;align-items:center;gap:8px"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/book-open.svg) center/contain no-repeat"></span><strong style="font-size:14px;line-height:20px;font-weight:600;color:var(--link)">{{ r.title }}</strong>
+            <span style="margin-left:auto;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--border);font-size:12px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ r.srcIcon }}.svg) center/contain no-repeat"></span><span style="font-family:{{ r.srcFont }};font-size:12px">{{ r.srcLabel }}</span></span></span>
+          <span style="display:flex;align-items:center;gap:4px;font-size:12px;font-weight:500;color:var(--muted-foreground)"><sc-for list="{{ r.path }}" as="h" hint-placeholder-count="2"><span style="color:{{ h.fg }}">{{ h.t }}</span><sc-if value="{{ h.sep }}" hint-placeholder-val="{{ false }}"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/chevron-right.svg) center/contain no-repeat"></span></sc-if></sc-for></span>
+          <span style="max-width:900px;line-height:20px;font-size:13px;text-wrap:pretty"><sc-for list="{{ r.segs }}" as="g" hint-placeholder-count="3"><span style="{{ g.st }}">{{ g.t }}</span></sc-for></span>
+          <span style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">{{ r.anchor }}</span>
+        </a>
+      </sc-for>
+    </div>
+    </sc-if>
+    </sc-if>
+
+    <sc-if value="{{ isDocsReader }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:none;display:flex;align-items:center;gap:8px;height:40px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--muted)">
+      <button type="button" onClick="{{ backToResults }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border:0;border-radius:4px;background:transparent;font-family:inherit;font-size:13px;color:var(--foreground);cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/arrow-left-right.svg) center/contain no-repeat"></span>Results for “{{ dq }}”</button>
+      <span style="color:var(--muted-foreground)">Docs</span><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/chevron-right.svg) center/contain no-repeat"></span><span style="font-weight:500">{{ doc.title }}</span>
+      <span style="margin-left:auto;position:relative;display:inline-flex">
+        <button type="button" aria-disabled="{{ replaceDis }}" onClick="{{ openReplace }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-family:inherit;font-size:13px;font-weight:500;opacity:{{ repOp }};cursor:{{ repCur }}"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/refresh-cw.svg) center/contain no-repeat"></span>Replace</button>
+        <sc-if value="{{ replaceTip }}" hint-placeholder-val="{{ false }}"><div role="tooltip" style="position:absolute;z-index:40;top:calc(100% + 6px);right:0;display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;background:var(--foreground);color:var(--background);font-size:12px;white-space:nowrap;box-shadow:var(--shadow-popover)">{{ replaceTipText }}</div></sc-if>
+      </span>
+    </div>
+    <div style="flex:1;min-height:0;display:grid;grid-template-columns:208px minmax(0,1fr) 296px;overflow:hidden">
+      <nav aria-label="Table of contents" style="min-width:0;overflow:hidden;padding:16px 8px;border-right:1px solid var(--border);background:var(--muted)">
+        <div style="padding:0 8px 8px;font-size:12px;font-weight:500;color:var(--muted-foreground)">On this page</div>
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <sc-for list="{{ toc }}" as="t" hint-placeholder-count="4"><a href="{{ t.href }}" aria-current="{{ t.cur }}" style="display:flex;align-items:center;height:28px;padding:0 8px;border-radius:4px;background:{{ t.bg }};font-weight:{{ t.fw }};color:var(--foreground);text-decoration:none" style-hover="background:var(--accent)">{{ t.l }}</a></sc-for>
+        </div>
+      </nav>
+      <article style="min-width:0;overflow:hidden;padding:24px 32px">
+        <div style="max-width:760px;display:flex;flex-direction:column;gap:12px">
+          <div style="display:flex;flex-direction:column;gap:6px"><h2 style="margin:0;font-size:24px;line-height:30px;font-weight:600;letter-spacing:-0.01em">{{ doc.title }}</h2><span style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">{{ doc.file }}</span></div>
+          <sc-if value="{{ readOnly }}" hint-placeholder-val="{{ true }}"><div role="note" style="display:flex;align-items:flex-start;gap:8px;padding:8px 12px;border-radius:6px;border:1px solid var(--status-locked-border);background:var(--status-locked-bg);color:var(--status-locked-fg)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;margin-top:2px;background:currentColor;mask:url(assets/icons/lock.svg) center/contain no-repeat"></span><span><strong style="font-weight:600">Read-only.</strong> This doc is managed in Git (<span style="font-family:var(--font-mono);font-size:12px">templates/common-docs</span>). Edit it in the repository; the change shows up here after the next sync.</span></div></sc-if>
+          <sc-for list="{{ blocks }}" as="b" hint-placeholder-count="6">
+            <sc-if value="{{ b.isH }}" hint-placeholder-val="{{ false }}"><h3 id="{{ b.id }}" style="margin:12px 0 0;padding:4px 8px;margin-left:-8px;display:flex;align-items:center;gap:8px;border-radius:4px;background:{{ b.bg }};font-size:16px;line-height:22px;font-weight:600">{{ b.t }}<sc-if value="{{ b.hit }}" hint-placeholder-val="{{ false }}"><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--info-border);background:var(--info-bg);color:var(--info-fg);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/search.svg) center/contain no-repeat"></span>Opened from search</span></sc-if></h3></sc-if>
+            <sc-if value="{{ b.isP }}" hint-placeholder-val="{{ false }}"><p style="margin:0;font-size:14px;line-height:22px;text-wrap:pretty"><sc-for list="{{ b.segs }}" as="g" hint-placeholder-count="2"><span style="{{ g.st }}">{{ g.t }}</span></sc-for></p></sc-if>
+            <sc-if value="{{ b.isUl }}" hint-placeholder-val="{{ false }}"><ul style="margin:0;padding:0 0 0 20px;display:flex;flex-direction:column;gap:4px;font-size:14px;line-height:22px"><sc-for list="{{ b.items }}" as="li" hint-placeholder-count="3"><li><sc-for list="{{ li.segs }}" as="g" hint-placeholder-count="2"><span style="{{ g.st }}">{{ g.t }}</span></sc-for></li></sc-for></ul></sc-if>
+            <sc-if value="{{ b.isTable }}" hint-placeholder-val="{{ false }}"><div role="table" style="border:1px solid var(--border);border-radius:6px;overflow:hidden">
+              <div role="row" style="display:grid;grid-template-columns:{{ b.cols }};gap:12px;align-items:center;min-height:28px;padding:0 12px;background:var(--muted);border-bottom:1px solid var(--border);font-size:12px;font-weight:500;color:var(--muted-foreground)"><sc-for list="{{ b.head }}" as="h" hint-placeholder-count="4"><span>{{ h.t }}</span></sc-for></div>
+              <sc-for list="{{ b.rows }}" as="tr" hint-placeholder-count="3"><div role="row" style="display:grid;grid-template-columns:{{ b.cols }};gap:12px;align-items:center;min-height:32px;padding:4px 12px;border-bottom:1px solid var(--border);font-size:13px"><sc-for list="{{ tr.cells }}" as="td" hint-placeholder-count="4"><span style="min-width:0"><sc-for list="{{ td.segs }}" as="g" hint-placeholder-count="1"><span style="{{ g.st }}">{{ g.t }}</span></sc-for></span></sc-for></div></sc-for>
+            </div></sc-if>
+            <sc-if value="{{ b.isCode }}" hint-placeholder-val="{{ false }}"><div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--muted)">
+              <div style="display:flex;align-items:center;justify-content:space-between;height:28px;padding:0 8px 0 12px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted-foreground)"><span style="font-family:var(--font-mono)">{{ b.lang }}</span><span style="display:inline-flex;align-items:center;gap:4px"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/copy.svg) center/contain no-repeat"></span>Copy</span></div>
+              <div style="padding:8px 12px;font-family:var(--font-mono);font-size:12px;line-height:18px;white-space:pre;overflow:hidden"><sc-for list="{{ b.lines }}" as="ln" hint-placeholder-count="3"><div>{{ ln.t }}</div></sc-for></div>
+            </div></sc-if>
+          </sc-for>
+        </div>
+      </article>
+      <aside aria-label="Doc details" style="min-width:0;overflow:hidden;display:flex;flex-direction:column;gap:20px;padding:16px;border-left:1px solid var(--border)">
+        <section style="display:flex;flex-direction:column;gap:6px"><span style="font-size:12px;font-weight:500;color:var(--muted-foreground)">Source</span>
+          <span style="display:flex;align-items:center;gap:6px;font-weight:500"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/{{ doc.srcIcon }}.svg) center/contain no-repeat"></span><span style="font-family:{{ doc.srcFont }};font-size:{{ doc.srcSize }}">{{ doc.srcLabel }}</span></span>
+          <span style="font-size:12px;color:var(--muted-foreground)">{{ doc.srcMeta }}</span>
+        </section>
+        <section style="display:flex;flex-direction:column;gap:6px"><span style="font-size:12px;font-weight:500;color:var(--muted-foreground)">Related files</span>
+          <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-start">
+            <sc-for list="{{ related }}" as="f" hint-placeholder-count="3"><a href="{{ f.href }}" title="{{ f.title }}" style="display:inline-flex;align-items:center;gap:6px;max-width:100%;height:24px;padding:0 8px;border-radius:4px;border:1px solid var(--border);background:var(--background);color:var(--foreground);font-family:var(--font-mono);font-size:12px;text-decoration:none" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/file-code.svg) center/contain no-repeat"></span><span style="min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ f.name }}</span><span style="color:var(--muted-foreground)">:{{ f.line }}</span></a></sc-for>
+          </div>
+          <span style="font-size:12px;color:var(--muted-foreground)">Each chip opens the file at the line that uses the flag.</span>
+        </section>
+        <section style="display:flex;flex-direction:column;gap:6px"><span style="font-size:12px;font-weight:500;color:var(--muted-foreground)">Version history</span>
+          <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+            <sc-for list="{{ versions }}" as="v" hint-placeholder-count="3"><div style="display:flex;flex-direction:column;gap:2px;padding:6px 8px;border-bottom:1px solid var(--border);background:{{ v.bg }}">
+              <span style="display:flex;align-items:center;gap:6px"><span style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ v.v }}</span><sc-if value="{{ v.cur }}" hint-placeholder-val="{{ false }}"><span style="display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:4px;border:1px solid var(--status-sync-border);background:var(--status-sync-bg);color:var(--status-sync-fg);font-size:12px;font-weight:500">Current</span></sc-if><span style="margin-left:auto;display:inline-flex;gap:4px"><sc-if value="{{ v.acts }}" hint-placeholder-val="{{ false }}"><a href="#" style="font-size:12px">View</a><a href="#" aria-disabled="{{ viewer }}" style="font-size:12px;opacity:{{ upOp }}">Restore</a></sc-if></span></span>
+              <span style="font-size:12px;color:var(--muted-foreground)">{{ v.meta }}</span>
+            </div></sc-for>
+          </div>
+          <sc-if value="{{ doc.git }}" hint-placeholder-val="{{ true }}"><span style="font-size:12px;color:var(--muted-foreground)">Full history is in Git. Uploaded docs keep every version here.</span></sc-if>
+        </section>
+      </aside>
+    </div>
+    </sc-if>
+    </sc-if>
+
+    <sc-if value="{{ showEmpty }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;align-items:center;gap:16px;padding:40px 24px">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center"><span aria-hidden="true" style="width:20px;height:20px;background:{{ empty.ic }};mask:url(assets/icons/{{ empty.icon }}.svg) center/contain no-repeat"></span><strong style="font-size:14px;line-height:20px;font-weight:600">{{ empty.title }}</strong><span style="max-width:520px;color:var(--muted-foreground);text-wrap:pretty">{{ empty.body }}</span></div>
+      <sc-if value="{{ empty.hasSugg }}" hint-placeholder-val="{{ false }}">
+      <div style="width:100%;max-width:600px;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--card)">
+        <div style="display:flex;align-items:center;height:28px;padding:0 12px;background:var(--muted);border-bottom:1px solid var(--border);font-size:12px;font-weight:500;color:var(--muted-foreground)">Try instead</div>
+        <sc-for list="{{ empty.sugg }}" as="sg" hint-placeholder-count="2"><div style="display:flex;align-items:center;gap:12px;min-height:40px;padding:6px 12px;border-bottom:1px solid var(--border)"><span style="flex:1;min-width:0;font-weight:500">{{ sg.label }}</span><span style="font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums;white-space:nowrap">{{ sg.n }}</span><button type="button" onClick="{{ sg.apply }}" style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-family:inherit;font-size:12px;font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)">{{ sg.btn }}</button></div></sc-for>
+      </div>
+      </sc-if>
+      <sc-if value="{{ empty.hasTip }}" hint-placeholder-val="{{ false }}"><span style="max-width:600px;text-align:center;font-size:12px;color:var(--muted-foreground)">{{ empty.tip }}</span></sc-if>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ popOpen }}" hint-placeholder-val="{{ false }}">
+    <div role="listbox" aria-multiselectable="true" aria-label="Swimlanes" style="position:absolute;z-index:40;top:42px;right:{{ popRight }};width:344px;border:1px solid var(--border);border-radius:6px;background:var(--popover);color:var(--popover-foreground);box-shadow:var(--shadow-popover);overflow:hidden">
+      <div style="display:flex;align-items:center;gap:8px;height:36px;padding:0 10px;border-bottom:1px solid var(--border)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/search.svg) center/contain no-repeat"></span><span style="flex:1;color:var(--muted-foreground)">Filter swimlanes</span><span style="font-size:12px;color:var(--muted-foreground)">{{ popCount }}</span></div>
+      <div style="padding:4px;display:flex;flex-direction:column">
+        <sc-for list="{{ popLanes }}" as="ln" hint-placeholder-count="6"><div role="option" aria-selected="{{ ln.on }}" onClick="{{ ln.click }}" style="display:grid;grid-template-columns:16px 60px minmax(0,1fr) auto;align-items:center;gap:8px;height:32px;padding:0 8px;border-radius:4px;cursor:pointer" style-hover="background:var(--accent)">
+          <span aria-hidden="true" style="width:14px;height:14px;border-radius:3px;border:1px solid {{ ln.cbb }};background:{{ ln.cbg }};color:var(--primary-foreground);display:inline-flex;align-items:center;justify-content:center"><span style="width:10px;height:10px;background:currentColor;mask:url(assets/icons/check.svg) center/contain no-repeat;opacity:{{ ln.chk }}"></span></span>
+          <span style="display:inline-flex;align-items:center;justify-content:center;height:20px;border-radius:4px;border:1px solid {{ ln.tb }};background:{{ ln.tbg }};color:{{ ln.tfg }};font-family:var(--font-mono);font-size:12px;font-weight:500;letter-spacing:0.04em">{{ ln.tier }}</span>
+          <span style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ ln.name }} <span style="font-weight:400;color:var(--muted-foreground)">{{ ln.branch }}</span></span>
+          <span style="font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums">{{ ln.n }}</span>
+        </div></sc-for>
+      </div>
+      <div style="display:flex;gap:16px;align-items:center;height:32px;padding:0 12px;border-top:1px solid var(--border);background:var(--muted);font-size:12px"><a href="#" onClick="{{ popAll }}">Select all</a><a href="#" onClick="{{ popNone }}">Clear</a><span style="margin-left:auto;color:var(--muted-foreground)">Counts are matches per swimlane</span></div>
+    </div>
+    </sc-if>
+  </div>
+</div>
+
+<sc-if value="{{ dlgOpen }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;inset:0;z-index:50;background:var(--overlay);display:flex;justify-content:center;align-items:flex-start;padding-top:72px">
+  <div role="dialog" aria-modal="true" aria-label="{{ dlg.title }}" style="width:520px;height:fit-content;border:1px solid var(--border);border-radius:6px;background:var(--popover);color:var(--popover-foreground);box-shadow:var(--shadow-popover)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">{{ dlg.title }}</h2><button type="button" aria-label="Close" onClick="{{ closeDlg }}" style="width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:4px;background:transparent;cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;background:currentColor;mask:url(assets/icons/x.svg) center/contain no-repeat"></span></button></div>
+    <div style="display:flex;flex-direction:column;gap:12px;padding:16px">
+      <sc-if value="{{ dlg.replace }}" hint-placeholder-val="{{ false }}"><span style="color:var(--muted-foreground)">Replaces the current version, <span style="font-family:var(--font-mono);font-size:12px;color:var(--foreground)">v3</span> by Priya Shah, 2 days ago. It stays in version history.</span></sc-if>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px;padding:{{ dlg.zonePad }};border:1px dashed var(--input);border-radius:6px;background:var(--muted);text-align:center"><span aria-hidden="true" style="width:20px;height:20px;background:var(--muted-foreground);mask:url(assets/icons/upload.svg) center/contain no-repeat"></span><strong style="font-weight:600">{{ dlg.zone }}</strong><span style="font-size:12px;color:var(--muted-foreground)">Markdown (.md) only, up to 2 MB</span><button type="button" style="margin-top:4px;display:inline-flex;align-items:center;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-family:inherit;font-size:13px;font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)">Choose a file</button></div>
+      <sc-if value="{{ dlg.hasFile }}" hint-placeholder-val="{{ false }}">
+      <div role="{{ dlg.role }}" style="display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-radius:6px;border:1px solid {{ dlg.bd }};background:{{ dlg.bg }};color:{{ dlg.fg }}">
+        <span style="display:flex;align-items:center;gap:8px"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/{{ dlg.icon }}.svg) center/contain no-repeat"></span><span style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ dlg.file }}</span><span style="margin-left:auto;font-size:12px;font-variant-numeric:tabular-nums">{{ dlg.size }}</span></span>
+        <span><strong style="font-weight:600">{{ dlg.msgHead }}</strong> {{ dlg.msg }}</span>
+      </div>
+      </sc-if>
+      <sc-if value="{{ dlg.ok }}" hint-placeholder-val="{{ false }}"><ul style="margin:0;padding:0 0 0 18px;display:flex;flex-direction:column;gap:2px;color:var(--muted-foreground)"><li>Saves as <span style="font-family:var(--font-mono);font-size:12px;color:var(--foreground)">v4</span>. <span style="font-family:var(--font-mono);font-size:12px">v3</span> stays in version history.</li><li>Title and 6 headings are read from the file. Anchors in existing links may change if a heading is renamed.</li><li>1 flag in the Feature Flags table, <span style="font-family:var(--font-mono);font-size:12px;color:var(--foreground)">enableInstantPayments</span>, still resolves.</li></ul></sc-if>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--border);background:var(--muted);border-radius:0 0 6px 6px">
+      <button type="button" onClick="{{ closeDlg }}" style="display:inline-flex;align-items:center;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-family:inherit;font-size:13px;font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)">Cancel</button>
+      <button type="button" aria-disabled="{{ dlg.primaryDis }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-family:inherit;font-size:13px;font-weight:500;opacity:{{ dlg.primaryOp }};cursor:{{ dlg.primaryCur }}"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/upload.svg) center/contain no-repeat"></span>{{ dlg.primary }}</button>
+    </div>
+  </div>
+</div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1216,&quot;height&quot;:856},&quot;tab&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;text&quot;,&quot;settings&quot;,&quot;docs&quot;],&quot;default&quot;:&quot;text&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;results&quot;,&quot;truncated&quot;,&quot;invalid&quot;,&quot;noresults&quot;],&quot;default&quot;:&quot;results&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;view&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;results&quot;,&quot;reader&quot;],&quot;default&quot;:&quot;results&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;doc&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;account&quot;,&quot;instant&quot;],&quot;default&quot;:&quot;account&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;dialog&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;empty&quot;,&quot;wrongtype&quot;,&quot;toolarge&quot;,&quot;replace&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;pop&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;lanes&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;tip&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;upload&quot;,&quot;replace&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;role&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Admin&quot;,&quot;Operator&quot;,&quot;Editor&quot;,&quot;Viewer&quot;],&quot;default&quot;:&quot;Admin&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  qRef = React.createRef();
+  hover = false;
+  state = (() => {
+    const p = this.props, st = p.state ?? 'results', tab = p.tab ?? 'text', all = this.D.LANES.map(l => l[1]);
+    const s = { tab, tq: 'enableAccountSorting', trx: false, tcs: false, tlanes: all, tglob: '', sq: 'enableAccountSorting', slanes: all, dq: 'account sorting', dsrc: 'all', dview: p.view ?? 'results', ddoc: p.doc ?? 'account', danchor: 'feature-flags', dialog: p.dialog ?? 'none', closed: {}, pop: p.pop ?? 'none', trunc: false };
+    if (tab === 'text') {
+      if (st === 'truncated') { s.tq = 'timeout'; s.trunc = true; }
+      if (st === 'invalid') { s.tq = 'enableAccount(Sort'; s.trx = true; }
+      if (st === 'noresults') { s.tq = 'enable.*Sorting'; s.tlanes = ['presita', 'presitc']; }
+    }
+    if (tab === 'settings' && st === 'noresults') s.sq = 'enableAccountSortng';
+    if (tab === 'docs' && st === 'noresults') s.dq = 'ledger sorting';
+    return s;
+  })();
+
+  get D() {
+    if (this._D) return this._D;
+    const LANES = [['SIT', 'sit', 'sit1'], ['SIT', 'sitb', 'sit7'], ['SIT', 'sitc', 'sit9'], ['PRESIT', 'presita', 'sit11'], ['PRESIT', 'presitb', 'sit12'], ['PRESIT', 'presitc', 'sit13']];
+    const BASE = [[12, 'remote-itm-teller.timeoutMs', '30000'], [13, 'remote-itm-teller.enableAccountSorting', 'false', '# sorts by display name when true'], [17, 'remote-itm-teller.retry.backoffMs', '250'], [24, 'atm-iso.timeoutMs', '45000'], [27, 'atm-iso.enableAccountSorting', 'false'], [34, 'logging.level', 'INFO'], [49, 'atm-iso.entryGroupConfigMap.DEPOSIT.limitCents', '500000']];
+    const TEN = { sit: [[12, 'remote-itm-teller.timeoutMs', '60000'], [13, 'remote-itm-teller.enableAccountSorting', 'true']], sitb: [[13, 'remote-itm-teller.enableAccountSorting', 'true']], sitc: [[12, 'remote-itm-teller.timeoutMs', '60000'], [13, 'remote-itm-teller.enableAccountSorting', 'true'], [27, 'atm-iso.enableAccountSorting', 'true']], presita: [], presitb: [[13, 'remote-itm-teller.enableAccountSorting', 'true']], presitc: [] };
+    const GW = [[18, 'timeoutMs: 15000'], [41, 'ACCOUNT_SORTING: ${enableAccountSorting}'], [57, 'upstreamTimeoutMs: 20000']];
+    const txt = r => r[1].split('.').pop() + ': ' + r[2] + (r[3] ? '  ' + r[3] : '');
+    const files = (lane, branch) => {
+      const out = [], ten = TEN[lane];
+      if (ten.length) out.push({ dir: 'tx-infinity-api', name: 'tx-infinity-core-' + branch + '.yml', kind: 'tenant', rows: ten, lines: ten.map(r => [r[0], txt(r)]) });
+      out.push({ dir: 'tx-infinity-api', name: 'tx-infinity-core.yml', kind: 'base', rows: BASE, lines: BASE.map(r => [r[0], txt(r)]).concat([[8, 'remote-itm-teller:'], [21, 'atm-iso:']]).sort((a, b) => a[0] - b[0]) });
+      out.push({ dir: 'tx-infinity-api', name: 'tx-infinity-gateway.yml', kind: 'base', rows: [], lines: GW });
+      return out;
+    };
+    const DOCS = {
+      account: { title: 'Account sorting', file: 'account-sorting.md', git: true, srcIcon: 'git-branch', srcFont: 'var(--font-mono)', srcSize: '12px', srcLabel: 'templates/common-docs', srcMeta: 'v2.3.1 · a3f9c21 · synced 3 weeks ago' },
+      instant: { title: 'Instant payments', file: 'instant-payments.md', git: false, srcIcon: 'user', srcFont: 'var(--font-sans)', srcSize: '13px', srcLabel: 'Uploaded by Priya Shah', srcMeta: '18 KB · 2 days ago' },
+      receipts: { title: 'Receipts v3', file: 'receipts-v3.md', git: true, srcIcon: 'git-branch', srcFont: 'var(--font-mono)', srcSize: '12px', srcLabel: 'templates/common-docs', srcMeta: 'v2.3.1' }
+    };
+    const SECS = [
+      { doc: 'account', path: ['Account sorting', 'Overview'], anchor: 'overview', text: 'Account sorting orders the account list returned to `remote-itm-teller` and `atm-iso` by display name. It changes ordering only, never balances or limits.' },
+      { doc: 'account', path: ['Account sorting', 'Feature Flags'], anchor: 'feature-flags', text: '`enableAccountSorting` turns on account sorting for a channel. The template default is `false`. Set it per channel in the tenant file; the tenant value wins over the base file.' },
+      { doc: 'account', path: ['Account sorting', 'Troubleshooting'], anchor: 'troubleshooting', text: 'If account sorting looks wrong after a change, check that the tenant file and the base file agree for the channel, then restart `tx-infinity-core`.' },
+      { doc: 'receipts', path: ['Receipts v3', 'Display order'], anchor: 'display-order', text: 'Receipt lines follow the account sorting set by `enableAccountSorting` for the same channel.' },
+      { doc: 'instant', path: ['Instant payments', 'Feature Flags'], anchor: 'feature-flags', text: '`enableInstantPayments` opens the instant rail for every channel. The template default is `false`. Pair it with the limits below before enabling.' },
+      { doc: 'instant', path: ['Instant payments', 'Limits'], anchor: 'limits', text: 'Limits are set per entry group in `atm-iso`. Account sorting does not affect them.' }
+    ];
+    const TBL = { cols: 'minmax(0,1.3fr) minmax(0,1.1fr) 112px minmax(0,1.6fr)', head: ['Flag', 'Channel', 'Template default', 'Effect'] };
+    const CONTENT = {
+      account: [
+        { h: 'Overview', id: 'overview', blocks: [{ p: 'Account sorting orders the account list returned to `remote-itm-teller` and `atm-iso` by display name. It changes ordering only, never balances, limits or entitlements.' }] },
+        { h: 'Feature Flags', id: 'feature-flags', blocks: [
+          { p: 'Each channel reads its own flag. When the tenant file and the base file both set a value, the tenant file wins.' },
+          { table: { ...TBL, rows: [['`enableAccountSorting`', '`remote-itm-teller`', '`false`', 'Sorts the account picker by display name.'], ['`enableAccountSorting`', '`atm-iso`', '`false`', 'Sorts accounts on the ATM account screen.'], ['`sortOrder`', '`remote-itm-teller`', '`asc`', 'Direction used when sorting is on.']] } },
+          { code: { lang: 'yaml', text: 'remote-itm-teller:\n  enableAccountSorting: true\n  sortOrder: asc' } }] },
+        { h: 'Rollout', id: 'rollout', blocks: [{ ul: ['Enable on `sit` first and compare it with `sitb` before widening.', 'Check Findings for ordering mismatches for one working day.', 'Raise a PR against `csp-tenant-data` once the swimlane is clean.'] }] },
+        { h: 'Troubleshooting', id: 'troubleshooting', blocks: [{ p: 'If account sorting looks wrong after a change, check that the tenant file and the base file agree for the channel, then restart `tx-infinity-core`.' }] }
+      ],
+      instant: [
+        { h: 'Overview', id: 'overview', blocks: [{ p: 'Instant payments settle through the instant rail instead of the nightly batch. The rail is off until `enableInstantPayments` is set.' }] },
+        { h: 'Feature Flags', id: 'feature-flags', blocks: [
+          { table: { ...TBL, rows: [['`enableInstantPayments`', 'all channels', '`false`', 'Turns on the instant rail.'], ['`instantLimitCents`', '`atm-iso`', '`250000`', 'Per-transaction ceiling.']] } },
+          { code: { lang: 'yaml', text: 'featureFlags:\n  instantPayments: true\natm-iso:\n  instantLimitCents: 250000' } }] },
+        { h: 'Limits', id: 'limits', blocks: [{ p: 'Limits are set per entry group in `atm-iso`. Raise them only after the swimlane has run a full batch cycle.' }] },
+        { h: 'Rollback', id: 'rollback', blocks: [{ ul: ['Set `enableInstantPayments` back to `false`.', 'Restart `tx-infinity-core` on the swimlane.', 'Pending instant payments finish; new ones use the batch.'] }] }
+      ]
+    };
+    const RELATED = { account: [['tx-infinity-core.yml', 'tx-infinity-api', 13], ['tx-infinity-core-sit7.yml', 'tx-infinity-api', 13], ['tx-infinity-gateway.yml', 'tx-infinity-api', 41]], instant: [['tx-infinity-core.yml', 'tx-infinity-api', 62], ['tx-infinity-gateway.yml', 'tx-infinity-api', 77]] };
+    const VERS = { account: [['v2.3.1', 'a3f9c21 · Git · 3 weeks ago', 1]], instant: [['v3', 'Priya Shah · 2 days ago · 18 KB', 1], ['v2', 'Marco Diaz · 3 weeks ago · 16 KB', 0], ['v1', 'Priya Shah · 2 months ago · 11 KB', 0]] };
+    return (this._D = { LANES, BASE, TEN, GW, files, DOCS, SECS, CONTENT, RELATED, VERS });
+  }
+
+  tierStyle(t) { return t === 'SIT' ? ['var(--input)', 'transparent', 'var(--foreground)'] : ['var(--muted-foreground)', 'var(--muted-foreground)', 'var(--background)']; }
+  kindStyle(k) { return k === 'tenant' ? ['var(--info-border)', 'var(--info-bg)', 'var(--info-fg)'] : ['var(--border)', 'transparent', 'var(--muted-foreground)']; }
+  seg(t, code, mark) { return { t, st: (code ? 'font-family:var(--font-mono);font-size:12px;padding:0 3px;border-radius:3px;background:var(--muted);border:1px solid var(--border);' : '') + (mark ? 'background:var(--selection);font-weight:600;box-shadow:inset 0 0 0 1px var(--info-border);border-radius:2px;' : '') }; }
+  hl(text, tokens) {
+    const out = [];
+    const re = tokens.length ? new RegExp('(' + tokens.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'ig') : null;
+    text.split(/(`[^`]+`)/).forEach(part => {
+      if (!part) return;
+      const code = part.length > 1 && part[0] === '`' && part.endsWith('`'), body = code ? part.slice(1, -1) : part;
+      if (!re) { out.push(this.seg(body, code, false)); return; }
+      body.split(re).forEach((b, i) => { if (b) out.push(this.seg(b, code, i % 2 === 1)); });
+    });
+    return out;
+  }
+  matcher(q, rx, cs) {
+    if (!q) return { fn: null };
+    if (rx) {
+      try { const re = new RegExp(q, cs ? '' : 'i'); return { fn: s => { const m = re.exec(s); return m && m[0] !== '' ? { i: m.index, l: m[0].length } : null; } }; } catch (e) { return { err: String(e.message || e) }; }
+    }
+    const nq = cs ? q : q.toLowerCase();
+    return { fn: s => { const i = (cs ? s : s.toLowerCase()).indexOf(nq); return i < 0 ? null : { i, l: q.length }; } };
+  }
+  globRe(g) {
+    g = (g || '').trim(); if (!g) return null;
+    let r = '';
+    for (let i = 0; i < g.length; i++) {
+      const c = g[i];
+      if (c === '*') { if (g[i + 1] === '*') { r += '.*'; i++; if (g[i + 1] === '/') i++; } else r += '[^/]*'; }
+      else if (c === '?') r += '[^/]';
+      else r += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    }
+    try { return new RegExp('^' + r + '$'); } catch (e) { return null; }
+  }
+  searchText(q, rx, cs, lanes, glob) {
+    const m = this.matcher(q, rx, cs); if (m.err || !m.fn) return { groups: [], err: m.err };
+    const gr = this.globRe(glob), groups = []; let total = 0, nfiles = 0;
+    this.D.LANES.forEach(([tier, name, branch]) => {
+      if (!lanes.includes(name)) return;
+      const files = [];
+      this.D.files(name, branch).forEach(f => {
+        if (gr && !gr.test(f.dir + '/' + f.name)) return;
+        const hits = [];
+        f.lines.forEach(([line, t]) => { const r = m.fn(t); if (r) hits.push({ line, pre: t.slice(0, r.i), m: t.slice(r.i, r.i + r.l), post: t.slice(r.i + r.l) }); });
+        if (hits.length) files.push({ dir: f.dir, name: f.name, kind: f.kind, hits });
+      });
+      if (files.length) { const n = files.reduce((a, f) => a + f.hits.length, 0); total += n; nfiles += files.length; groups.push({ tier, name, branch, files, n }); }
+    });
+    return { groups, total, nfiles };
+  }
+  lev(a, b) { const d = []; for (let i = 0; i <= a.length; i++) { d[i] = [i]; } for (let j = 1; j <= b.length; j++) d[0][j] = j; for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); return d[a.length][b.length]; }
+
+  enter = () => { this.hover = true; };
+  leave = () => { this.hover = false; };
+  componentDidMount() {
+    this._kd = e => {
+      if (!this.hover || e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target, tag = t && t.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (t && t.isContentEditable)) return;
+      const el = this.qRef.current; if (el) { e.preventDefault(); el.focus(); el.select && el.select(); }
+    };
+    document.addEventListener('keydown', this._kd);
+  }
+  componentWillUnmount() { document.removeEventListener('keydown', this._kd); }
+
+  renderVals() {
+    const p = this.props, s = this.state, D = this.D, set = o => this.setState(o), role = p.role ?? 'Admin', viewer = role === 'Viewer';
+    const all = D.LANES.map(l => l[1]), tab = s.tab;
+    const laneLabel = a => a.length === all.length ? 'All ' + all.length : a.length === 0 ? 'None' : a.length <= 2 ? a.join(', ') : a.slice(0, 2).join(', ') + ' +' + (a.length - 2);
+    const tabs = [['text', 'Text', 'file-text'], ['settings', 'Settings', 'settings'], ['docs', 'Docs', 'book-open']].map(([k, l, i]) => ({ l, i, on: tab === k, bd: tab === k ? 'var(--primary)' : 'transparent', fw: tab === k ? 600 : 400, fg: tab === k ? 'var(--foreground)' : 'var(--muted-foreground)', click: () => set({ tab: k, pop: 'none' }) }));
+    const subtitle = { text: 'Find text in config files across swimlanes. Literal by default.', settings: 'Find a setting by name or value, with its value in each swimlane.', docs: 'Search docs by title, heading and content.' }[tab];
+    const out = { tabs, subtitle, isText: tab === 'text', isSettings: tab === 'settings', isDocs: tab === 'docs', viewer, qRef: this.qRef, enter: this.enter, leave: this.leave };
+
+    /* ---- text ---- */
+    const m = this.matcher(s.tq, s.trx, s.tcs), invalid = !!m.err;
+    const res = invalid ? { groups: [], total: 0, nfiles: 0 } : this.searchText(s.tq, s.trx, s.tcs, s.tlanes, s.tglob);
+    const resAll = invalid ? null : this.searchText(s.tq, s.trx, s.tcs, all, s.tglob);
+    const rows = []; let selDone = false;
+    res.groups.forEach(g => {
+      const open = !s.closed[g.name], t = this.tierStyle(g.tier);
+      rows.push({ isSw: true, name: g.name, tier: g.tier, branch: g.branch, tb: t[0], tbg: t[1], tfg: t[2], open, chev: open ? 'chevron-down' : 'chevron-right', count: g.n + (g.n === 1 ? ' match' : ' matches') + ' · ' + g.files.length + (g.files.length === 1 ? ' file' : ' files'), toggle: () => set({ closed: { ...s.closed, [g.name]: open } }) });
+      if (!open) return;
+      g.files.forEach(f => {
+        const k = this.kindStyle(f.kind);
+        rows.push({ isFile: true, dir: f.dir, file: f.name, kind: f.kind, kb: k[0], kbg: k[1], kfg: k[2], count: f.hits.length });
+        f.hits.forEach(h => {
+          const sel = !selDone && g.name === 'sitb' && f.kind === 'tenant'; if (sel) selDone = true;
+          rows.push({ isHit: true, ...h, sel, bg: sel ? 'var(--selection)' : 'transparent', sh: sel ? 'inset 0 0 0 1px var(--info-border)' : 'none', href: '#/swimlanes/' + g.name + '/files/' + f.dir + '/' + f.name + '?line=' + h.line, label: g.name + ' ' + f.name + ' line ' + h.line });
+        });
+      });
+    });
+    const trunc = s.trunc && !invalid;
+    if (trunc) rows.push({ isTrunc: true });
+    const blank = !s.tq && !invalid, tNo = !invalid && !!s.tq && res.total === 0;
+    let reason = '', hint = '';
+    if (invalid) {
+      reason = (m.err.split(': ').pop() || m.err).replace(/^./, c => c.toUpperCase());
+      hint = /group|parenthe/i.test(m.err) ? 'Add a closing ) or escape the ( as \\(' : /nothing to repeat|quantifier/i.test(m.err) ? 'A *, + or ? needs something before it. Escape it as \\* to match it literally' : /class|bracket/i.test(m.err) ? 'Add a closing ] or escape the [ as \\[' : 'Fix the pattern, or search it as plain text';
+      hint += '.';
+    }
+    const csOn = s.tcs, rxOn = s.trx;
+    Object.assign(out, {
+      tq: s.tq, onTq: e => set({ tq: e.target.value }), tglob: s.tglob, onGlob: e => set({ tglob: e.target.value }), tcs: s.tcs, trx: s.trx,
+      toggleCs: () => set({ tcs: !s.tcs }), toggleRx: () => set({ trx: !s.trx }),
+      csBg: csOn ? 'var(--selection)' : 'transparent', csBd: csOn ? 'var(--primary)' : 'transparent', csFg: csOn ? 'var(--primary)' : 'var(--muted-foreground)',
+      rxBg: rxOn ? 'var(--selection)' : 'transparent', rxBd: rxOn ? 'var(--primary)' : 'transparent', rxFg: rxOn ? 'var(--primary)' : 'var(--muted-foreground)',
+      qBd: invalid ? 'var(--destructive)' : 'var(--input)', invalid, errReason: reason, errHint: hint, truncated: trunc,
+      laneLabel: laneLabel(s.tlanes), rows, tHasRows: res.total > 0,
+      tSummary: invalid ? 'Pattern not searched' : blank ? 'Type to search' : trunc ? '1,000+ matches' : res.total + (res.total === 1 ? ' match' : ' matches') + ' in ' + res.nfiles + (res.nfiles === 1 ? ' file' : ' files') + ' · ' + res.groups.length + (res.groups.length === 1 ? ' swimlane' : ' swimlanes'),
+      tMode: (s.trx ? 'Regex' : 'Literal') + ' · ' + (s.tcs ? 'case sensitive' : 'ignoring case') + ' · searching ' + s.tlanes.length + ' of ' + all.length + ' swimlanes' + (s.tglob.trim() ? ' · ' + s.tglob.trim() : ''),
+      collapseAll: () => { const c = {}; res.groups.forEach(g => c[g.name] = true); set({ closed: c }); }, expandAll: () => set({ closed: {} })
+    });
+    // suggestions
+    let tEmpty = null;
+    if (invalid) tEmpty = { icon: 'circle-x', ic: 'var(--danger-fg)', title: 'Pattern not searched', body: 'Results stay empty until the pattern is valid. Turn regex off to search for “' + s.tq + '” as plain text.', hasSugg: false, sugg: [], hasTip: false };
+    else if (blank) tEmpty = { icon: 'search', ic: 'var(--muted-foreground)', title: 'Search ' + s.tlanes.length + ' swimlanes', body: 'Type a query to find it in every config file. Matching is literal unless you turn on regex.', hasSugg: false, sugg: [], hasTip: false };
+    else if (tNo) {
+      const rels = [];
+      if (!s.trx) rels.push({ k: 'rx', l: 'Switch to regex' });
+      if (s.tcs) rels.push({ k: 'cs', l: 'ignore case' });
+      if (s.tlanes.length < all.length) rels.push({ k: 'ln', l: 'search all ' + all.length + ' swimlanes' });
+      if (s.tglob.trim()) rels.push({ k: 'gl', l: 'clear the path glob' });
+      const found = [];
+      for (let size = 1; size <= 2; size++) {
+        const combos = []; for (let i = 0; i < rels.length; i++) { if (size === 1) combos.push([i]); else for (let j = i + 1; j < rels.length; j++) combos.push([i, j]); }
+        combos.forEach(c => {
+          if (found.length >= 3 || found.some(f => f.c.every(x => c.includes(x)) && f.c.length < c.length)) return;
+          const ks = c.map(i => rels[i].k), rx = s.trx || ks.includes('rx'), cs = ks.includes('cs') ? false : s.tcs, lanes = ks.includes('ln') ? all : s.tlanes, glob = ks.includes('gl') ? '' : s.tglob;
+          const r = this.searchText(s.tq, rx, cs, lanes, glob); if (r.total > 0) found.push({ c, r, ks, rx, cs, lanes, glob });
+        });
+      }
+      const sugg = found.map(f => { const ls = f.c.map(i => rels[i].l); const label = ls.length === 1 ? ls[0].replace(/^./, ch => ch.toUpperCase()) : ls[0].replace(/^./, ch => ch.toUpperCase()) + ' and ' + ls.slice(1).join(' and '); return { label, n: f.r.total + (f.r.total === 1 ? ' match' : ' matches') + ' in ' + f.r.nfiles + ' files', btn: 'Try this', apply: () => set({ trx: f.rx, tcs: f.cs, tlanes: f.lanes, tglob: f.glob }) }; });
+      tEmpty = { icon: 'search', ic: 'var(--muted-foreground)', title: 'No matches for “' + s.tq + '”', body: 'Searched ' + s.tlanes.length + ' of ' + all.length + ' swimlanes. ' + (s.trx ? 'Regex' : 'Literal text') + ', ' + (s.tcs ? 'case sensitive' : 'ignoring case') + (s.tglob.trim() ? ', paths matching ' + s.tglob.trim() : '') + '.', hasSugg: sugg.length > 0, sugg, hasTip: true, tip: 'Search is literal by default, so “.” and “*” match themselves. Turn on regex for patterns.' };
+    }
+    // popover
+    const popTab = tab === 'text' || tab === 'settings';
+    const cur = tab === 'text' ? s.tlanes : s.slanes, setLanes = a => set(tab === 'text' ? { tlanes: a } : { slanes: a });
+    const cnt = {}; if (tab === 'text' && resAll) resAll.groups.forEach(g => cnt[g.name] = g.n);
+    if (tab === 'settings') D.LANES.forEach(([t, n, b]) => { const q = s.sq.trim().toLowerCase(); cnt[n] = !q ? 0 : D.files(n, b).reduce((a, f) => a + f.rows.filter(r => (r[1] + ' ' + r[2]).toLowerCase().includes(q)).length, 0); });
+    Object.assign(out, {
+      popOpen: popTab && s.pop === 'lanes', togglePop: () => set({ pop: s.pop === 'lanes' ? 'none' : 'lanes' }),
+      popBd: s.pop === 'lanes' ? 'var(--ring)' : 'var(--input)', popBg: s.pop === 'lanes' ? 'var(--accent)' : 'var(--background)', popRight: tab === 'text' ? '280px' : '8px',
+      popCount: cur.length + ' of ' + all.length + ' selected', popAll: e => { e.preventDefault(); setLanes(all); }, popNone: e => { e.preventDefault(); setLanes([]); },
+      popLanes: D.LANES.map(([tier, name, branch]) => { const on = cur.includes(name), t = this.tierStyle(tier); return { tier, name, branch, on, tb: t[0], tbg: t[1], tfg: t[2], cbb: on ? 'var(--primary)' : 'var(--input)', cbg: on ? 'var(--primary)' : 'var(--background)', chk: on ? 1 : 0, n: cnt[name] ?? 0, click: () => setLanes(on ? cur.filter(x => x !== name) : cur.concat(name)) }; })
+    });
+
+    /* ---- settings ---- */
+    const sq = s.sq.trim(), sql = sq.toLowerCase(), sRows = [];
+    D.LANES.forEach(([tier, lane, branch]) => {
+      if (!s.slanes.includes(lane) || !sq) return;
+      const t = this.tierStyle(tier), tpaths = D.TEN[lane].map(r => r[1]);
+      D.files(lane, branch).forEach(f => f.rows.forEach(r => {
+        if (!(r[1] + ' ' + r[2]).toLowerCase().includes(sql)) return;
+        const k = this.kindStyle(f.kind), over = f.kind === 'base' && tpaths.includes(r[1]);
+        const ch = r[1].split('.'), key = ch.pop(), head = ch.length ? ch.join('.') + '.' : '';
+        const segs = this.hl(head + key, [sq]).map(g => ({ ...g, st: g.st })); const lead = head && !sql.includes(head.slice(0, -1).toLowerCase()) ? 1 : 0; void lead;
+        sRows.push({ tier, lane, tb: t[0], tbg: t[1], tfg: t[2], file: f.name, kind: f.kind, kb: k[0], kbg: k[1], kfg: k[2], segs, value: r[2], vfg: over ? 'var(--muted-foreground)' : 'var(--foreground)', vdec: over ? 'line-through' : 'none', line: r[0], href: '#/swimlanes/' + lane + '/files/' + f.dir + '/' + f.name + '?line=' + r[0], grid: '#/compare?file=' + f.dir + '/tx-infinity-core.yml&q=' + r[1] });
+      }));
+    });
+    const uniq = {}; sRows.forEach(r => uniq[r.lane] = 1);
+    const keys = [...new Set(D.BASE.map(r => r[1].split('.').pop()))];
+    const near = sq ? keys.filter(k => this.lev(k.toLowerCase(), sql) <= 2 && k.toLowerCase() !== sql)[0] : null;
+    const sNo = !!sq && sRows.length === 0;
+    let sEmpty = null;
+    if (!sq) sEmpty = { icon: 'search', ic: 'var(--muted-foreground)', title: 'Search settings', body: 'Type a setting name or value to see it in every swimlane.', hasSugg: false, sugg: [], hasTip: false };
+    else if (sNo) sEmpty = { icon: 'search', ic: 'var(--muted-foreground)', title: 'No settings match “' + sq + '”', body: 'Searched ' + s.slanes.length + ' of ' + all.length + ' swimlanes. Settings search matches setting paths and values, not comments or other text.', hasSugg: true, hasTip: false,
+      sugg: (near ? [{ label: 'Search for “' + near + '”', n: 'Closest setting name', btn: 'Use', apply: () => set({ sq: near }) }] : []).concat([{ label: 'Search file text for “' + sq + '”', n: 'Finds comments and any other text', btn: 'Open Text', apply: () => set({ tab: 'text', tq: sq, pop: 'none' }) }]).concat(s.slanes.length < all.length ? [{ label: 'Search all ' + all.length + ' swimlanes', n: 'Currently ' + s.slanes.length, btn: 'Widen', apply: () => set({ slanes: all }) }] : []) };
+    Object.assign(out, { sq: s.sq, onSq: e => set({ sq: e.target.value }), sLaneLabel: laneLabel(s.slanes), sRows, sHasRows: sRows.length > 0,
+      sSummary: !sq ? 'Type to search' : sRows.length + (sRows.length === 1 ? ' setting' : ' settings') + ' in ' + Object.keys(uniq).length + (Object.keys(uniq).length === 1 ? ' swimlane' : ' swimlanes') });
+
+    /* ---- docs ---- */
+    const toks = s.dq.trim().split(/\s+/).filter(Boolean), tl = toks.map(t => t.toLowerCase());
+    const srcs = [['all', 'All sources'], ['git', 'Git'], ['upload', 'Uploaded']].map(([k, l], i) => ({ l, on: s.dsrc === k, bg: s.dsrc === k ? 'var(--secondary)' : 'transparent', fw: s.dsrc === k ? 500 : 400, bl: i ? '1px solid var(--input)' : '0', click: () => set({ dsrc: k }) }));
+    const hits = tl.length ? D.SECS.filter(x => { const d = D.DOCS[x.doc]; if (s.dsrc === 'git' && !d.git) return false; if (s.dsrc === 'upload' && d.git) return false; const hay = (x.path.join(' ') + ' ' + x.text).toLowerCase(); return tl.every(t => hay.includes(t)); }) : [];
+    const score = x => tl.reduce((a, t) => a + (x.path.join(' ').toLowerCase().includes(t) ? 2 : 0), 0);
+    hits.sort((a, b) => score(b) - score(a));
+    const open = (x) => (e) => { e.preventDefault(); set({ dview: 'reader', ddoc: x.doc === 'receipts' ? 'account' : x.doc, danchor: x.anchor }); };
+    const dRows = hits.map(x => { const d = D.DOCS[x.doc]; return { title: d.title, href: '#/docs/' + d.file.replace('.md', '') + '#' + x.anchor, label: x.path.join(' > '), open: open(x), srcIcon: d.srcIcon, srcFont: d.srcFont, srcLabel: d.srcLabel, path: x.path.map((t, i) => ({ t, sep: i < x.path.length - 1, fg: i === x.path.length - 1 ? 'var(--foreground)' : 'var(--muted-foreground)' })), segs: this.hl(x.text, toks), anchor: d.file + '#' + x.anchor }; });
+    const dNo = !!toks.length && dRows.length === 0;
+    let dEmpty = null;
+    if (!toks.length) dEmpty = { icon: 'book-open', ic: 'var(--muted-foreground)', title: 'Search docs', body: 'Type words from a title, heading or paragraph.', hasSugg: false, sugg: [], hasTip: false };
+    else if (dNo) dEmpty = { icon: 'book-open', ic: 'var(--muted-foreground)', title: 'No docs match “' + s.dq + '”', body: 'Every word must appear in a title, heading or paragraph' + (s.dsrc !== 'all' ? ', in ' + (s.dsrc === 'git' ? 'Git' : 'uploaded') + ' docs only' : '') + '.', hasSugg: true, hasTip: false,
+      sugg: [{ label: 'Use fewer words: “' + toks[0] + '”', n: D.SECS.filter(x => (x.path.join(' ') + ' ' + x.text).toLowerCase().includes(tl[0])).length + ' sections', btn: 'Search', apply: () => set({ dq: toks[0], dsrc: 'all' }) }, { label: 'Search file text for “' + s.dq + '”', n: 'Config files in every swimlane', btn: 'Open Text', apply: () => set({ tab: 'text', tq: s.dq, pop: 'none' }) }].concat(s.dsrc !== 'all' ? [{ label: 'Search all sources', n: 'Git and uploaded', btn: 'Widen', apply: () => set({ dsrc: 'all' }) }] : []) };
+    const ndocs = new Set(hits.map(x => x.doc)).size;
+    const doc = D.DOCS[s.ddoc], cont = D.CONTENT[s.ddoc], target = s.danchor;
+    const blocks = [];
+    cont.forEach(c => {
+      blocks.push({ isH: true, id: c.id, t: c.h, hit: c.id === target, bg: c.id === target ? 'var(--selection)' : 'transparent' });
+      c.blocks.forEach(b => {
+        if (b.p) blocks.push({ isP: true, segs: this.hl(b.p, c.id === target ? toks : []) });
+        if (b.ul) blocks.push({ isUl: true, items: b.ul.map(t => ({ segs: this.hl(t, []) })) });
+        if (b.table) blocks.push({ isTable: true, cols: b.table.cols, head: b.table.head.map(t => ({ t })), rows: b.table.rows.map(r => ({ cells: r.map(c2 => ({ segs: this.hl(c2, []) })) })) });
+        if (b.code) blocks.push({ isCode: true, lang: b.code.lang, lines: b.code.text.split('\n').map(t => ({ t })) });
+      });
+    });
+    const toc = cont.map(c => ({ l: c.h, href: '#' + c.id, cur: c.id === target ? 'location' : undefined, bg: c.id === target ? 'var(--selection)' : 'transparent', fw: c.id === target ? 500 : 400 }));
+    const rel = (D.RELATED[s.ddoc] || []).map(([name, dir, line]) => ({ name, line, title: dir + '/' + name + ' · opens at line ' + line, href: '#/swimlanes/sitb/files/' + dir + '/' + name + '?line=' + line }));
+    const vers = (D.VERS[s.ddoc] || []).map(([v, meta, cur]) => ({ v, meta, cur: !!cur, acts: !cur && !doc.git, bg: cur ? 'var(--background)' : 'var(--muted)' }));
+    const showDocsReader = tab === 'docs' && s.dview === 'reader';
+    const repDis = doc.git || viewer;
+    Object.assign(out, { dq: s.dq, onDq: e => set({ dq: e.target.value }), srcs, upOp: viewer ? 0.5 : 1, upCur: viewer ? 'not-allowed' : 'pointer', uploadTip: p.tip === 'upload' && viewer,
+      openUpload: () => { if (!viewer) set({ dialog: 'empty' }); }, dRows, dHasRows: dRows.length > 0,
+      dSummary: !toks.length ? 'Type to search' : dRows.length + (dRows.length === 1 ? ' section' : ' sections') + ' in ' + ndocs + (ndocs === 1 ? ' doc' : ' docs'),
+      isDocsResults: !showDocsReader, isDocsReader: showDocsReader, backToResults: () => set({ dview: 'results' }), doc, toc, blocks, related: rel, versions: vers, readOnly: doc.git,
+      replaceDis: repDis, repOp: repDis ? 0.5 : 1, repCur: repDis ? 'not-allowed' : 'pointer', replaceTip: p.tip === 'replace' && repDis, replaceTipText: doc.git ? 'Read-only · managed in Git (templates/common-docs)' : 'Requires Editor · Priya Shah can grant',
+      openReplace: () => { if (!repDis) set({ dialog: 'replace' }); } });
+    const showEmpty = (tab === 'text' && !!tEmpty) || (tab === 'settings' && !!sEmpty && !sRows.length) || (tab === 'docs' && !showDocsReader && !!dEmpty && !dRows.length);
+    out.showEmpty = showEmpty;
+    out.empty = (tab === 'text' ? tEmpty : tab === 'settings' ? sEmpty : dEmpty) || { icon: 'search', ic: 'var(--muted-foreground)', title: '', body: '', hasSugg: false, sugg: [], hasTip: false };
+    if (tab === 'text' && tEmpty) out.tHasRows = false;
+
+    /* ---- dialog ---- */
+    const dk = s.dialog, dopen = dk !== 'none' && tab === 'docs';
+    const F = { empty: null, wrongtype: ['retail-notes.pdf', '412 KB', 'circle-x', 'Only Markdown (.md) files are accepted.', 'Export the document as Markdown and choose it again.', 'err'], toolarge: ['export-all-flags.md', '3.4 MB', 'circle-x', 'File is over the 2 MB limit.', 'Split it into smaller docs, one per feature, and upload them separately.', 'err'], replace: ['instant-payments.md', '18 KB', 'circle-check', 'Ready to replace.', 'Valid Markdown, 1 table, 2 code blocks.', 'ok'] }[dk] || null;
+    const isRep = dk === 'replace', st = F ? F[5] : '';
+    out.dlgOpen = dopen; out.closeDlg = () => set({ dialog: 'none' });
+    out.dlg = { title: isRep ? 'Replace “Instant payments”' : 'Upload a doc', replace: isRep, zone: F ? 'Drop a different file' : 'Drop a Markdown file here', zonePad: F ? '12px' : '28px', hasFile: !!F, role: st === 'err' ? 'alert' : 'status',
+      bd: st === 'err' ? 'var(--danger-border)' : 'var(--success-border)', bg: st === 'err' ? 'var(--danger-bg)' : 'var(--success-bg)', fg: st === 'err' ? 'var(--danger-fg)' : 'var(--success-fg)',
+      icon: F ? F[2] : 'file-text', file: F ? F[0] : '', size: F ? F[1] : '', msgHead: F ? F[3] : '', msg: F ? F[4] : '', ok: st === 'ok',
+      primary: isRep ? 'Replace doc' : 'Upload doc', primaryDis: st !== 'ok', primaryOp: st === 'ok' ? 1 : 0.5, primaryCur: st === 'ok' ? 'pointer' : 'not-allowed' };
+    return out;
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:13px;line-height:18px;-webkit-font-smoothing:antialiased}
+a{color:var(--link)}
+a:hover{color:var(--primary-hover)}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+</style>
+</helmet>
+<div data-theme="{{ theme }}" style="min-height:100vh;background:var(--background);color:var(--foreground)">
+<div style="max-width:1100px;margin:0 auto;padding:32px 24px 64px">
+  <h1 style="margin:0;font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.01em">States index</h1>
+  <p style="margin:6px 0 16px;max-width:760px;font-size:14px;line-height:20px;color:var(--muted-foreground)">Each state, each screen it applies to, and where to see it in light and dark. <a href="Lanekeeper States.dc.html" style="font-weight:500">Open all specimens</a></p>
+  <div style="display:flex;flex-wrap:wrap;gap:6px 8px;margin-bottom:28px">
+    <sc-for list="{{ jump }}" as="j" hint-placeholder-count="11"><a href="{{ j.href }}" style="display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border:1px solid var(--border);border-radius:4px;text-decoration:none;color:var(--foreground);font-size:12px;font-weight:500" style-hover="background:var(--accent)">{{ j.t }}<span style="color:var(--muted-foreground);font-variant-numeric:tabular-nums">{{ j.n }}</span></a></sc-for>
+  </div>
+  <sc-for list="{{ sections }}" as="sec" hint-placeholder-count="4">
+    <section id="{{ sec.anchor }}" style="margin-bottom:28px;scroll-margin-top:16px">
+      <div style="display:flex;align-items:baseline;gap:10px;padding-bottom:6px"><span style="font:600 12px var(--font-mono);padding:1px 6px;border-radius:4px;background:var(--foreground);color:var(--background)">{{ sec.code }}</span><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">{{ sec.title }}</h2><a href="{{ sec.href }}" style="margin-left:auto;font-size:12px;font-weight:500">View section</a></div>
+      <p style="margin:0 0 8px;max-width:760px;color:var(--muted-foreground)">{{ sec.desc }}</p>
+      <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--card)">
+        <div style="display:grid;grid-template-columns:52px minmax(0,1.2fr) minmax(0,1fr) 150px 150px;gap:12px;align-items:center;height:32px;padding:0 12px;background:var(--muted);border-bottom:1px solid var(--border);font-size:12px;font-weight:500;color:var(--muted-foreground)"><span>ID</span><span>Screen</span><span>Variant</span><span>Specimen</span><span>In screen file</span></div>
+        <sc-for list="{{ sec.rows }}" as="r" hint-placeholder-count="5">
+          <div style="display:grid;grid-template-columns:52px minmax(0,1.2fr) minmax(0,1fr) 150px 150px;gap:12px;align-items:center;min-height:32px;padding:0 12px;border-bottom:1px solid var(--border)" style-hover="background:var(--accent)">
+            <span style="font:500 12px var(--font-mono);color:var(--muted-foreground)">{{ r.id }}</span>
+            <a href="{{ r.file }}" style="font-weight:500">{{ r.screen }}</a>
+            <span style="color:var(--muted-foreground)">{{ r.variant }}</span>
+            <span><a href="{{ r.href }}">Light and dark</a></span>
+            <span style="display:inline-flex;align-items:center;gap:6px;color:{{ r.wfg }}">{{ r.wired }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </section>
+  </sc-for>
+  <p style="margin:0;color:var(--muted-foreground)">“In screen file” means the screen's own file already has a prop for the state. Specimens are the shared reference for layout, copy and tokens; “Specimen only” states still need wiring in the screen.</p>
+</div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const G = 'Lanekeeper States.dc.html';
+    const N = { swimlanes: ['Swimlanes', 'Lanekeeper Shell.dc.html'], detail: ['Swimlane detail', 'Lanekeeper Detail.dc.html'], file: ['File', 'Lanekeeper File.dc.html'], compare: ['Compare', 'Lanekeeper Compare Page.dc.html'], search: ['Search', 'Lanekeeper Search Page.dc.html'], status: ['Feature status', 'Lanekeeper Feature Status.dc.html'], findings: ['Findings', 'Lanekeeper Findings Page.dc.html'], adopt: ['Adoption wizard', 'Lanekeeper Adoption Wizard.dc.html'], approvals: ['Approvals', 'Lanekeeper Approvals Page.dc.html'], audit: ['Audit', 'Lanekeeper Audit Page.dc.html'], admin: ['Admin', 'Lanekeeper Admin Page.dc.html'], access: ['Access screen', 'Lanekeeper Access Screen.dc.html'] };
+    const SK = ['swimlanes', 'detail', 'file', 'compare', 'search', 'status', 'findings', 'adopt', 'approvals', 'audit', 'admin'];
+    const P = [
+      ['L', 'loading', 'Loading', 'Skeletons match each screen\'s real grid.', SK.map(k => [k, ''])],
+      ['E', 'empty', 'Empty', 'What is missing, why, and the next step for the role.', SK.map(k => [k, ''])],
+      ['R', 'error', 'Error', 'Problem title, one-line explanation, request ID with copy.', SK.map(k => [k, ''])],
+      ['P', 'permission', 'Permission', 'Pending user, Viewer, Editor without Operator.', [['access', 'Pending user'], ['admin', 'Viewer'], ['file', 'Viewer'], ['detail', 'Editor without Operator'], ['approvals', 'Editor']]],
+      ['O', 'offline', 'Offline agent', 'Last known data stamped with a "data as of" time.', ['swimlanes', 'detail', 'file', 'compare', 'status', 'findings'].map(k => [k, ''])],
+      ['U', 'paused', 'Live updates paused', 'Connection dropped; retrying.', ['swimlanes', 'detail', 'status', 'findings', 'approvals', 'audit'].map(k => [k, ''])],
+      ['T', 'truncated', 'Truncated results', 'Capped result sets with shown and total counts.', ['search', 'audit', 'findings', 'compare', 'file'].map(k => [k, ''])],
+      ['C', 'c409', '409 Conflict', 'Someone else changed it first; nothing applied.', [['file', 'Save'], ['approvals', 'Decide'], ['admin', 'Save role']]],
+      ['K', 'c423', '423 Locked', 'Target is locked; names the holder.', [['detail', 'Restart'], ['file', 'Save'], ['adopt', 'Start']]],
+      ['A', 'c202', '202 Sent for approval', 'Accepted but not applied until an Admin approves.', [['file', 'Save to PRESIT'], ['detail', 'Restart on PRESIT'], ['adopt', 'Confirm adoption']]],
+      ['G', 'token', 'Expired GitHub token', 'Git-dependent actions off; NFS-only work continues.', [['file', 'Raise PR'], ['adopt', 'Create PR'], ['swimlanes', 'App-wide']]]
+    ];
+    const W = { loading: ['swimlanes', 'findings', 'approvals', 'audit', 'compare', 'admin'], empty: ['swimlanes', 'findings', 'approvals', 'audit', 'admin'], error: ['admin', 'file'], truncated: ['search'], offline: ['detail', 'compare'], permission: ['detail'] };
+    const sections = P.map(([code, st, title, desc, items]) => ({
+      code, title, desc, anchor: st, href: G + '#s-' + st,
+      rows: items.map(([k, v], i) => { const w = (W[st] || []).includes(k); return { id: code + String(i + 1).padStart(2, '0'), screen: N[k][0], file: N[k][1], variant: v || '—', href: G + '#s-' + st + '-' + k, wired: w ? 'Yes' : 'Specimen only', wfg: w ? 'var(--success-fg)' : 'var(--muted-foreground)' }; })
+    }));
+    return { theme: this.props.theme ?? 'light', sections, jump: sections.map(s => ({ t: s.title, n: s.rows.length, href: '#' + s.anchor })) };
+  }
+}
+
+</script>
+</body>
+</html>

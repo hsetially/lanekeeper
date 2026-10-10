@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="consequence.css">
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#eceae5;font-family:'Inter',system-ui,sans-serif}
+.gal a{color:#1d4fb0}
+.gal a:hover{color:#13213b}
+.fr{position:relative;flex:none;width:600px;height:380px;display:flex;overflow:hidden;border:1px solid var(--border);border-radius:6px;background:var(--background);color:var(--foreground)}
+.sb{flex:none;width:36px;border-right:1px solid var(--border);background:var(--muted);display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 0}
+.sb span{display:flex;width:26px;height:24px;align-items:center;justify-content:center;border-radius:4px;color:var(--muted-foreground)}
+.sb span.on{background:var(--selection);color:var(--foreground)}
+.mn{flex:1;min-width:0;display:flex;flex-direction:column}
+.hdr{flex:none;height:32px;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--border);font-size:12px}
+.hdr .cr{flex:1;min-width:0;color:var(--muted-foreground);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pill{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 7px;border-radius:999px;border:1px solid var(--border);font-size:12px;font-weight:500;white-space:nowrap}
+.pill.wr{border-color:var(--warning-border);background:var(--warning-bg);color:var(--warning-fg)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--agent-online)}
+.dot.pu{background:var(--warning-bg);border:2px solid var(--agent-degraded);animation:lkpulse 1.4s ease-in-out infinite}
+.rl{display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--input);font-size:12px;font-weight:500}
+.bn{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;padding:6px 12px;font-size:12px;line-height:16px;border-bottom:1px solid var(--fb);background:var(--fbg);color:var(--ff)}
+.bn strong{font-weight:600}
+.bn .b{margin-left:auto;height:22px;padding:0 8px;font-size:12px;background:transparent;color:inherit;border-color:currentColor}
+.pgx{flex:1;min-height:0;display:flex;flex-direction:column;padding:12px 14px 0}
+.th{flex:none;display:flex;align-items:flex-end;gap:8px;padding-bottom:8px}
+.th h1{margin:0;font-size:16px;line-height:22px;font-weight:600;letter-spacing:-.01em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.th .sub{display:block;font-size:12px;line-height:16px;color:var(--muted-foreground)}
+.th .ac{margin-left:auto;display:flex;gap:6px;align-items:center}
+.ac .b{height:26px;font-size:12px;padding:0 8px}
+.b.dis{opacity:.5;cursor:not-allowed}
+.tpw{position:relative;display:inline-flex}
+.tp{position:absolute;z-index:4;top:calc(100% + 5px);right:0;border:1px solid var(--background);height:22px;padding:0 8px;display:inline-flex;align-items:center;border-radius:4px;background:var(--foreground);color:var(--background);font-size:12px;white-space:nowrap;box-shadow:var(--shadow-popover)}
+.bx{flex:1;min-height:0;margin-bottom:12px;border:1px solid var(--border);border-radius:6px;background:var(--card);display:flex;flex-direction:column;overflow:hidden}
+.gr{flex:none;display:grid;gap:8px;align-items:center;height:28px;padding:0 10px;border-bottom:1px solid var(--border);font-size:12px}
+.gr>*{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gr.h2{background:var(--muted);color:var(--muted-foreground);font-weight:500}
+.m{font:12px/18px var(--font-mono)}
+.mu{color:var(--muted-foreground)}
+.skb{display:block;height:10px;border-radius:3px;background:var(--accent);animation:lkpulse 1.4s ease-in-out infinite}
+.ft{flex:none;margin-top:auto;display:flex;align-items:center;gap:8px;min-height:28px;padding:0 10px;border-top:1px solid var(--border);background:var(--muted);font-size:12px;color:var(--muted-foreground)}
+.ft .b{margin-left:auto;height:22px;font-size:12px;padding:0 8px}
+.ce{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;text-align:center;padding:16px}
+.ce strong{font-size:14px;line-height:20px;font-weight:600}
+.ce .mt{max-width:380px;color:var(--muted-foreground);text-wrap:pretty}
+.ce .cc-danger{color:var(--danger-fg)}.ce .cc-lock{color:var(--status-locked-fg)}.ce .cc-mu{color:var(--muted-foreground)}
+.rq{display:flex;align-items:center;gap:6px;margin-top:2px;font-size:12px;color:var(--muted-foreground)}
+.rq .b{height:22px;font-size:12px;padding:0 6px}
+.ov{position:absolute;inset:0;z-index:5;background:var(--overlay);display:flex;align-items:center;justify-content:center;padding:12px}
+.ov .cd{width:420px}
+.ov .cd-head{padding:12px 14px 8px}.ov .cd-body{padding:2px 14px 12px;gap:10px}.ov .cd-foot{padding:10px 14px}
+.ov .cd-ttl h3{font-size:14px;line-height:20px}
+.ov .kv{grid-template-columns:92px minmax(0,1fr);font-size:12px}
+.ov .b{height:26px;font-size:12px;padding:0 8px}
+.cdi{margin-top:2px}
+.cdi.warn{color:var(--warning-fg)}.cdi.danger{color:var(--danger-fg)}.cdi.lock{color:var(--status-locked-fg)}.cdi.appr{color:var(--status-approval-fg)}
+.tst{position:absolute;right:12px;bottom:12px;z-index:6;width:320px;display:flex;gap:8px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-radius:6px;background:var(--popover);color:var(--popover-foreground);box-shadow:var(--shadow-popover)}
+.pre{position:absolute;inset:0;background:var(--muted);display:flex;align-items:center;justify-content:center}
+.pre>div{width:340px;display:flex;flex-direction:column;gap:10px;padding:20px;border:1px solid var(--border);border-radius:6px;background:var(--card)}
+</style>
+</helmet>
+<div class="gal" style="padding:40px 44px 80px;color:#1a1a1a">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+    <h1 style="margin:0;font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.01em">Lanekeeper · states</h1>
+    <a href="Lanekeeper States Index.dc.html" style="font-size:13px;font-weight:500">States index →</a>
+  </div>
+  <p style="margin:8px 0 0;max-width:860px;font-size:13px;line-height:19px;color:rgba(0,0,0,.65)">Every screen, in every non-happy state, in light and dark. Frames are 600×380 specimens built from the product tokens. Row layouts and column widths match each screen's final layout. Anchors follow <code style="font:12px ui-monospace,Menlo,monospace">#s-{state}-{screen}</code>.</p>
+  <sc-for list="{{ sections }}" as="sec" hint-placeholder-count="3">
+    <section id="{{ sec.anchor }}" style="margin-top:56px;scroll-margin-top:16px">
+      <div style="display:flex;align-items:baseline;gap:10px"><span style="font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px">{{ sec.code }}</span><h2 style="margin:0;font-size:18px;line-height:24px;font-weight:600">{{ sec.title }}</h2></div>
+      <p style="margin:6px 0 20px;max-width:860px;font-size:13px;line-height:19px;color:rgba(0,0,0,.65)">{{ sec.desc }}</p>
+      <div style="display:flex;flex-wrap:wrap;gap:36px 44px;max-width:2600px">
+        <sc-for list="{{ sec.pairs }}" as="p" hint-placeholder-count="2">
+          <div id="{{ p.anchor }}" style="flex:none;display:flex;flex-direction:column;gap:8px;scroll-margin-top:16px">
+            <div style="display:flex;align-items:baseline;gap:8px;font-size:12px;line-height:16px"><span style="font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);border-radius:5px">{{ p.id }}</span><strong style="font-weight:600">{{ p.screen }}</strong><span style="color:rgba(0,0,0,.6)">{{ p.variant }}</span><a href="{{ p.file }}" style="margin-left:auto;font-weight:500">Open screen</a></div>
+            <div style="display:flex;gap:16px">
+              <sc-for list="{{ p.frames }}" as="f" hint-placeholder-count="2">
+                <div style="display:flex;flex-direction:column;gap:4px">
+                  <span style="font-size:11px;line-height:14px;color:rgba(0,0,0,.55);text-transform:uppercase;letter-spacing:.05em">{{ f.themeLabel }}</span>
+                  <div class="fr lk" data-theme="{{ f.theme }}" aria-busy="{{ f.busy }}">
+                    <sc-if value="{{ f.noShell }}" hint-placeholder-val="{{ false }}">
+                      <div class="pre"><div>
+                        <span class="bd bd-appr" style="align-self:flex-start"><span class="ic s12" style="-webkit-mask-image:url(assets/icons/hourglass.svg);mask-image:url(assets/icons/hourglass.svg)"></span>Pending approval</span>
+                        <h1 style="margin:0;font-size:18px;line-height:24px;font-weight:600">Access requested</h1>
+                        <p style="margin:0;font-size:13px;line-height:19px;color:var(--muted-foreground)">An admin must approve your access before you can use Lanekeeper. You'll be able to sign in as soon as they do.</p>
+                        <dl class="kv" style="padding:10px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);font-size:12px"><dt>Signed in as</dt><dd style="font-weight:500">Sam Okafor</dd><dt>Request sent</dt><dd>9 Oct 2026, 09:14 <span class="mut">· 2 hours ago</span></dd></dl>
+                        <a href="#" style="align-self:flex-start;font-weight:500">Sign out</a>
+                      </div></div>
+                    </sc-if>
+                    <sc-if value="{{ f.shell }}" hint-placeholder-val="{{ true }}">
+                      <aside class="sb"><sc-for list="{{ f.nav }}" as="n" hint-placeholder-count="8"><span class="{{ n.cls }}"><span class="ic" style="{{ n.ms }}"></span></span></sc-for></aside>
+                      <div class="mn">
+                        <header class="hdr"><span class="cr">{{ f.crumb }}</span><sc-if value="{{ f.hasRole }}" hint-placeholder-val="{{ false }}"><span class="rl">{{ f.role }}</span></sc-if><span class="{{ f.pillCls }}" role="status"><span class="{{ f.dotCls }}"></span>{{ f.pillT }}</span></header>
+                        <sc-if value="{{ f.hasBanner }}" hint-placeholder-val="{{ false }}"><div class="bn {{ f.bnCls }}" role="status"><span class="ic" style="{{ f.bnMs }}"></span><strong>{{ f.bnT }}</strong><span>{{ f.bnX }}</span><sc-if value="{{ f.bnBtn }}" hint-placeholder-val="{{ false }}"><button type="button" class="b">{{ f.bnBtn }}</button></sc-if></div></sc-if>
+                        <div class="pgx">
+                          <div class="th"><div style="min-width:0"><h1 style="{{ f.h1 }}">{{ f.title }}</h1><span class="sub">{{ f.sub }}</span></div>
+                            <div class="ac"><sc-for list="{{ f.acts }}" as="a" hint-placeholder-count="2"><span class="tpw"><button type="button" class="{{ a.cls }}" aria-disabled="{{ a.dis }}"><span class="ic s12" style="{{ a.ms }}"></span>{{ a.t }}</button><sc-if value="{{ a.tip }}" hint-placeholder-val="{{ false }}"><span class="tp" role="tooltip">{{ a.tip }}</span></sc-if></span></sc-for></div>
+                          </div>
+                          <div class="bx">
+                            <sc-if value="{{ f.showTable }}" hint-placeholder-val="{{ true }}">
+                              <div class="gr h2" style="grid-template-columns:{{ f.g }}"><sc-for list="{{ f.cols }}" as="c" hint-placeholder-count="4"><span>{{ c.t }}</span></sc-for></div>
+                              <sc-for list="{{ f.rows }}" as="r" hint-placeholder-count="6"><div class="gr" style="grid-template-columns:{{ f.g }}"><sc-for list="{{ r }}" as="c" hint-placeholder-count="4"><sc-if value="{{ c.sk }}" hint-placeholder-val="{{ false }}"><span class="skb" style="width:{{ c.w }}"></span></sc-if><sc-if value="{{ c.ok }}" hint-placeholder-val="{{ true }}"><span class="{{ c.cls }}"><sc-if value="{{ c.hasMs }}" hint-placeholder-val="{{ false }}"><span class="ic s12" style="{{ c.ms }}"></span></sc-if>{{ c.t }}</span></sc-if></sc-for></div></sc-for>
+                            </sc-if>
+                            <sc-if value="{{ f.hasCenter }}" hint-placeholder-val="{{ false }}">
+                              <div class="ce"><span class="ic s16 {{ f.ce.cc }}" style="{{ f.ce.ms }};width:20px;height:20px"></span><strong>{{ f.ce.t }}</strong><span class="mt">{{ f.ce.x }}</span>
+                                <sc-if value="{{ f.ce.rid }}" hint-placeholder-val="{{ false }}"><div class="rq">Request ID <span class="ch">{{ f.ce.rid }}</span><button type="button" class="b"><span class="ic s12" style="-webkit-mask-image:url(assets/icons/copy.svg);mask-image:url(assets/icons/copy.svg)"></span>Copy</button></div></sc-if>
+                                <sc-if value="{{ f.ce.btn }}" hint-placeholder-val="{{ false }}"><button type="button" class="b {{ f.ce.bcls }}" style="margin-top:4px;height:26px;font-size:12px">{{ f.ce.btn }}</button></sc-if>
+                              </div>
+                            </sc-if>
+                            <sc-if value="{{ f.hasFoot }}" hint-placeholder-val="{{ false }}"><div class="ft"><span class="ic s12 {{ f.ftSp }}" style="{{ f.ftMs }}"></span><span>{{ f.ftT }}</span><sc-if value="{{ f.ftBtn }}" hint-placeholder-val="{{ false }}"><button type="button" class="b">{{ f.ftBtn }}</button></sc-if></div></sc-if>
+                          </div>
+                        </div>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{ f.hasDlg }}" hint-placeholder-val="{{ false }}">
+                      <div class="ov"><div class="cd" role="alertdialog" aria-label="{{ f.d.title }}">
+                        <div class="cd-head"><span class="ic s16 cdi {{ f.d.cc }}" style="{{ f.d.ms }}"></span><div class="cd-ttl"><h3>{{ f.d.title }}</h3><span class="cd-sub">{{ f.d.sub }}</span></div><sc-if value="{{ f.d.code }}" hint-placeholder-val="{{ false }}"><span class="{{ f.d.codeCls }}">{{ f.d.code }}</span></sc-if></div>
+                        <div class="cd-body"><p style="font-size:13px;line-height:19px;text-wrap:pretty">{{ f.d.lead }}</p>
+                          <dl class="kv"><sc-for list="{{ f.d.kv }}" as="k" hint-placeholder-count="2"><dt>{{ k.k }}</dt><dd><span class="{{ k.cls }}">{{ k.v }}</span></dd></sc-for></dl>
+                          <sc-if value="{{ f.d.rid }}" hint-placeholder-val="{{ false }}"><div class="rq" style="margin:0">Request ID <span class="ch">{{ f.d.rid }}</span><button type="button" class="b"><span class="ic s12" style="-webkit-mask-image:url(assets/icons/copy.svg);mask-image:url(assets/icons/copy.svg)"></span>Copy</button></div></sc-if>
+                        </div>
+                        <div class="cd-foot"><sc-for list="{{ f.d.foot }}" as="b" hint-placeholder-count="2"><button type="button" class="b {{ b.cls }}">{{ b.t }}</button></sc-for></div>
+                      </div></div>
+                    </sc-if>
+                    <sc-if value="{{ f.hasToast }}" hint-placeholder-val="{{ false }}">
+                      <div class="tst" role="status"><span class="ic s16 cdi appr" style="{{ f.toast.ms }}"></span><div style="flex:1;display:flex;flex-direction:column;gap:2px;font-size:12px;line-height:16px"><strong style="font-size:13px;line-height:18px">{{ f.toast.t }}</strong><span class="mut">{{ f.toast.x }}</span><a href="#" style="font-weight:500;margin-top:2px">{{ f.toast.a }}</a></div></div>
+                    </sc-if>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </section>
+  </sc-for>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const ms = n => `-webkit-mask-image:url(assets/icons/${n}.svg);mask-image:url(assets/icons/${n}.svg)`;
+    const NAV = ['layers', 'columns-2', 'search', 'zap', 'shield-alert', 'circle-check', 'history', 'settings'];
+    const SC = {
+      swimlanes: { n: 'Swimlanes', file: 'Lanekeeper Shell.dc.html', nav: 0, t: 'Swimlanes', sub: '6 swimlanes · 4 of 6 agents online · 1 needs adoption', crumb: 'Swimlanes', noun: 'swimlanes', src: 'agent state', sub0: 'No agents registered', em: ['No swimlanes registered yet', 'A swimlane appears here once an agent registers for its Kubernetes namespace.', 'Add a swimlane'], act: [['Add a swimlane', 'plus']],
+        cols: ['Swimlane', 'Branch', 'Base version', 'Agent', 'Drift', 'Last change'], g: '1fr 56px 96px 104px 128px 76px',
+        rows: [['m:sitb', 'm:sit7', 'm:v2.3.1 + 4', 'Online', 'b:nfs|arrow-up-from-line|4 drift', 'just now'], ['m:sit', 'm:sit1', 'm:v2.3.1', 'Online', 'b:sync|check|In sync', '2 h ago'], ['m:sitc', 'm:sit9', 'm:v2.3.1 + 4', 'Online', 'b:nfs|arrow-up-from-line|1 drift', '31 min ago'], ['m:presita', 'm:sit11', 'm:v2.3.0', 'Degraded', 'b:git|arrow-down-to-line|2 Git ahead', '1 d ago'], ['m:presitb', 'm:sit12', 'm:v2.3.1 + 2', 'Offline · 14m', 'u:Stale · last known', '3 h ago'], ['m:presitc', 'm:sit13', 'u:unconfirmed', 'Online', 'b:unknown|circle-help|412 unknown', '6 d ago']] },
+      detail: { n: 'Swimlane detail', file: 'Lanekeeper Detail.dc.html', nav: 0, t: 'sitb', sub: 'sit7 · v2.3.1 + 4 · agent online', crumb: 'Swimlanes › sitb', noun: 'services', src: 'sitb services', sub0: 'No services reported', em: ['No services reported', 'The sitb agent has not reported any services yet. Check that it is running in the sit7 namespace.'], act: [['Restart services', 'rotate-cw', 'p']],
+        cols: ['Service', 'Version', 'Pending', 'Status'], g: '1.4fr 64px 132px 80px',
+        rows: [['m:tx-infinity-core', 'm:2.3.1', 'b:restart|clock|restart needed', 'Running'], ['m:tx-infinity-api', 'm:2.3.1', 'b:restart|clock|restart needed', 'Running'], ['m:tx-infinity-gateway', 'm:2.3.1', 'u:None', 'Running'], ['m:remote-itm-teller', 'm:1.9.4', 'u:None', 'Running'], ['m:remote-itm-vault', 'm:1.9.4', 'u:None', 'Running'], ['m:kafka-bridge', 'm:0.8.2', 'u:None', 'Running']] },
+      file: { n: 'File', file: 'Lanekeeper File.dc.html', nav: 0, t: 'tx-infinity-core-sit1.yml', h1: 'font-family:var(--font-mono);font-size:14px', sub: 'NFS ahead · 3 hunks · saved 14 min ago by Dana Okoye', crumb: 'Swimlanes › sitb › tx-infinity-api › tx-infinity-core-sit1.yml', noun: 'file', src: 'the file from NFS', sub0: 'sitb · 0 bytes', em: ['tx-infinity-core-sit1.yml is empty on NFS', 'The file exists but has 0 bytes. Compare it with Git, or restore the Git version.', 'Compare with Git'], act: [['Raise PR', 'git-pull-request'], ['Save to sitb', 'upload', 'p']],
+        cols: ['Line', 'Git · csp-tenant-data@sit7', 'NFS · sitb'], g: '40px 1fr 1fr',
+        rows: [['m:13', 'm:enableAccountSorting: false', 'm:enableAccountSorting: true'], ['m:14', 'u:(none)', 'm:sortOrder: asc'], ['m:34', 'm:level: WARN', 'm:level: INFO'], ['m:35', 'm:legacyAdapter: true', 'u:(removed)'], ['m:49', 'm:limitCents: 500000', 'm:limitCents: 750000']] },
+      compare: { n: 'Compare', file: 'Lanekeeper Compare Page.dc.html', nav: 1, t: 'Compare sitb with sitc', sub: '4 of 212 files differ', crumb: 'Compare', noun: 'comparison', src: 'both swimlanes', sub0: 'Choose two swimlanes', em: ['Choose two swimlanes to compare', 'Pick a left and a right swimlane. Files that differ are listed here.', 'Choose swimlanes'], act: [],
+        cols: ['File', 'sitb', 'sitc', 'Result'], g: '1.6fr 68px 68px 104px',
+        rows: [['m:tx-infinity-core-sit1.yml', 'm:a3f9c21', 'm:7d20e8b', 'b:nfs|arrow-up-from-line|differs'], ['m:tx-infinity-api.yml', 'm:2e91b04', 'm:2e91b04', 'b:sync|check|same'], ['m:security-roles.yml', 'm:c10a7f3', 'm:55de012', 'b:conflict|split|conflict'], ['m:receipt-logo.jpeg', 'u:binary', 'u:binary', 'b:unknown|circle-help|unknown'], ['m:tx-infinity-gateway.yml', 'm:91bb3e0', 'm:91bb3e0', 'b:sync|check|same']] },
+      search: { n: 'Search', file: 'Lanekeeper Search Page.dc.html', nav: 2, t: 'Search text', sub: 'enableAccountSorting · all swimlanes', crumb: 'Search › Text', noun: 'search results', src: 'the search index', sub0: 'Type to search', em: ['Search configuration text', 'Type at least 2 characters. Search covers files on all six swimlanes.'], act: [],
+        cols: ['Match', 'File', 'Swimlane', 'Line'], g: '1.3fr 1.5fr 64px 36px',
+        rows: [['m:enableAccountSorting', 'm:tx-infinity-core-sit1.yml', 'm:sitb', 'm:13'], ['m:enableAccountSorting', 'm:tx-infinity-core-sit1.yml', 'm:sitc', 'm:13'], ['m:enableAccountSorting', 'm:tx-infinity-core-sit9.yml', 'm:sitc', 'm:21'], ['m:enableAccountSorting', 'm:remote-itm-vault.yml', 'm:presita', 'm:8'], ['m:enableAccountSorting', 'm:remote-itm-teller.yml', 'm:sit', 'm:12']] },
+      status: { n: 'Feature status', file: 'Lanekeeper Feature Status.dc.html', nav: 3, t: 'Feature status', sub: '9 flags · 3 differ across swimlanes', crumb: 'Feature status', noun: 'feature flags', src: 'feature flags', sub0: 'No flags', em: ['No feature flags found', 'No file on sit, sitb or sitc defines featureFlags.'], act: [],
+        cols: ['Feature flag', 'sit', 'sitb', 'sitc', 'presita'], g: '1.5fr 56px 56px 56px 64px',
+        rows: [['m:instantPayments', 'off', 'off', 'on', 'off'], ['m:holdsV2', 'on', 'on', 'on', 'on'], ['m:receiptsV3', 'on', 'on', 'off', 'on'], ['m:legacyBatch', 'off', 'off', 'off', 'off'], ['m:auditTrail', 'on', 'on', 'on', 'on'], ['m:rateLimiter', 'on', 'off', 'on', 'on']] },
+      findings: { n: 'Findings', file: 'Lanekeeper Findings Page.dc.html', nav: 4, t: 'Findings', sub: '11 open · 3 high', crumb: 'Findings', noun: 'findings', src: 'the findings list', sub0: 'No open findings', em: ['No open findings', 'Every check passes on all six swimlanes.'], act: [],
+        cols: ['Check', 'File', 'Severity', 'Lane'], g: '56px 1.6fr 80px 56px',
+        rows: [['m:C-104', 'm:tx-infinity-core-sit1.yml', 'b:conflict|shield-alert|high', 'm:sitb'], ['m:C-212', 'm:security-roles.yml', 'b:conflict|shield-alert|high', 'm:presitb'], ['m:C-087', 'm:remote-itm-vault.yml', 'b:nfs|triangle-alert|medium', 'm:sitc'], ['m:C-033', 'm:tx-infinity-gateway.yml', 'b:git|info|low', 'm:sitb'], ['m:C-087', 'm:remote-itm-teller.yml', 'b:nfs|triangle-alert|medium', 'm:sit']] },
+      adopt: { n: 'Adoption wizard', file: 'Lanekeeper Adoption Wizard.dc.html', nav: 0, t: 'Adopt presitc', sub: 'Step 2 of 4 · choose a base version · 412 unknown files', crumb: 'Swimlanes › presitc › Adopt', noun: 'adoption scan', src: 'the scan results', sub0: 'Step 2 of 4', em: ['Nothing to adopt', 'Every file on presitc already matches a base version.'], act: [['Create PR', 'git-pull-request', 'p']],
+        cols: ['File', 'Candidate base', 'Match', 'Decision'], g: '1.6fr 92px 52px 88px',
+        rows: [['m:tx-infinity-core.yml', 'm:v2.3.1', '98%', 'Base'], ['m:tx-infinity-api.yml', 'm:v2.3.1', '96%', 'Base'], ['m:security-roles.yml', 'm:v2.3.0', '71%', 'u:Undecided'], ['m:receipt-logo.jpeg', 'u:none', '—', 'u:Undecided'], ['m:kafka-bridge.yml', 'm:v2.3.1', '99%', 'Base']] },
+      approvals: { n: 'Approvals', file: 'Lanekeeper Approvals Page.dc.html', nav: 5, t: 'Approvals', sub: '6 pending', crumb: 'Approvals', noun: 'approvals', src: 'the approval queue', sub0: 'No pending requests', em: ['No requests waiting', 'Requests appear here when an Editor saves to a PRESIT swimlane.'], act: [],
+        cols: ['Request', 'Requested by', 'Files', 'Age'], g: '72px 1fr 56px 64px',
+        rows: [['m:AP-2041', 'Marco Diaz', 'u:1 file', '4 min'], ['m:AP-2040', 'Dana Okoye', 'u:3 files', '22 min'], ['m:AP-2038', 'Marco Diaz', 'u:1 file', '1 h'], ['m:AP-2036', 'Lena Park', 'u:2 files', '3 h'], ['m:AP-2031', 'Dana Okoye', 'u:1 file', '1 d']] },
+      audit: { n: 'Audit', file: 'Lanekeeper Audit Page.dc.html', nav: 6, t: 'Audit', sub: 'Last 7 days · chain intact', crumb: 'Audit', noun: 'audit events', src: 'the audit log', sub0: 'No events', em: ['No audit events match', 'Widen the date range or clear the filters.', 'Clear filters'], act: [],
+        cols: ['Time', 'Actor', 'Action', 'Target'], g: '64px 1fr 1fr 1.4fr',
+        rows: [['m:10:44:12', 'Dana Okoye', 'Saved file', 'm:tx-infinity-core-sit1.yml'], ['m:10:41:03', 'Marco Diaz', 'Restarted services', 'm:sitb'], ['m:10:36:48', 'Priya Shah', 'Approved AP-2038', 'm:presita'], ['m:10:12:20', 'Lena Park', 'Raised PR', 'm:sit7 → main'], ['m:09:58:31', 'Priya Shah', 'Changed role', 'Marco Diaz']] },
+      admin: { n: 'Admin', file: 'Lanekeeper Admin Page.dc.html', nav: 7, t: 'Users and access requests', sub: '14 users · 2 requests', crumb: 'Admin › Users and access requests', noun: 'users', src: 'the user list', sub0: 'No users', em: ['No access requests', 'New sign-ins that need approval appear here.'], act: [['Add user', 'plus']],
+        cols: ['User', 'Role', 'Requested', 'Last seen'], g: '1.2fr 76px 84px 84px',
+        rows: [['Sam Okafor', 'b:appr|hourglass|Pending', '2 h ago', 'u:never'], ['Marco Diaz', 'Editor', '3 mo ago', 'today'], ['Dana Okoye', 'Editor', '5 mo ago', 'today'], ['Lena Park', 'Viewer', '1 mo ago', '2 d ago'], ['Priya Shah', 'Admin', '1 y ago', 'today']] },
+      access: { n: 'Access screen', file: 'Lanekeeper Access Screen.dc.html' }
+    };
+    let seq = 0;
+    const rid = () => 'req_' + ((++seq * 2654435761) >>> 0).toString(16).padStart(8, '0');
+    const cell = s => { let cls = '', t = s, i = ''; if (s.startsWith('m:')) { cls = 'm'; t = s.slice(2); } else if (s.startsWith('u:')) { cls = 'mu'; t = s.slice(2); } else if (s.startsWith('b:')) { const [k, ic, tx] = s.slice(2).split('|'); cls = 'bd bd-' + k; i = ic; t = tx; } return { ok: true, sk: false, cls, t, ms: i ? ms(i) : '', hasMs: !!i }; };
+    const skw = ['62%', '44%', '72%', '52%', '38%', '66%'];
+    const WARN = 'fx-warn', INFO = 'fx-info', DANGER = 'fx-danger', LOCK = 'fx-lock';
+    const mk = (key, theme) => {
+      const s = SC[key];
+      if (key === 'access') return { theme, themeLabel: theme === 'dark' ? 'Dark' : 'Light', noShell: true, shell: false, hasDlg: false, hasToast: false };
+      const f = { theme, themeLabel: theme === 'dark' ? 'Dark' : 'Light', noShell: false, shell: true, nav: NAV.map((n, i) => ({ ms: ms(n), cls: i === s.nav ? 'on' : '' })), crumb: s.crumb, title: s.t, h1: s.h1 || '', sub: s.sub, g: s.g, cols: s.cols.map(t => ({ t })), rows: s.rows.map(r => r.map(cell)), showTable: true, hasCenter: false, ce: {}, pillCls: 'pill', dotCls: 'dot', pillT: 'Live', hasRole: false, role: '', hasBanner: false, bnCls: '', bnMs: '', bnT: '', bnX: '', bnBtn: '', acts: s.act.map(a => ({ t: a[0], ms: ms(a[1]), cls: 'b' + (a[2] ? ' p' : ''), dis: false, tip: '' })), hasFoot: false, ftMs: '', ftSp: '', ftT: '', ftBtn: '', hasDlg: false, d: {}, hasToast: false, toast: {}, busy: false };
+      return f;
+    };
+    const banner = (f, cls, icon, t, x, btn) => Object.assign(f, { hasBanner: true, bnCls: cls, bnMs: ms(icon), bnT: t, bnX: x, bnBtn: btn || '' });
+    const foot = (f, icon, t, btn, sp) => Object.assign(f, { hasFoot: true, ftMs: ms(icon), ftT: t, ftBtn: btn || '', ftSp: sp || '' });
+    const center = (f, o) => Object.assign(f, { showTable: false, hasCenter: true, ce: Object.assign({ cc: 'cc-mu', rid: '', btn: '', bcls: '' }, o, { ms: ms(o.icon) }) });
+    const disable = (f, tip, which) => f.acts.forEach((a, i) => { if (which == null || which === i) { a.cls += ' dis'; a.dis = true; if (tip && (which != null || i === f.acts.length - 1)) a.tip = tip; } });
+    const dlg = (f, d) => Object.assign(f, { hasDlg: true, d: Object.assign({ code: '', codeCls: '', rid: '', kv: [] }, d, { ms: ms(d.icon) }) });
+    const kv = (k, v, m) => ({ k, v, cls: m ? 'm' : '' });
+    const btn = (t, cls) => ({ t, cls: cls || '' });
+
+    const V = {
+      loading: (f, s) => { f.rows = [0, 1, 2, 3, 4, 5, 6].map(i => s.cols.map((c, j) => ({ sk: true, ok: false, w: skw[(i + j) % 6] }))); f.sub = 'Loading…'; f.busy = true; foot(f, 'loader-circle', 'Loading ' + s.noun + '…', '', 'spin'); disable(f); },
+      empty: (f, s) => { f.sub = s.sub0; center(f, { icon: 'inbox', t: s.em[0], x: s.em[1], btn: s.em[2] || '', bcls: 'p' }); if (!s.em[2]) f.ce.btn = ''; },
+      error: (f, s) => { f.sub = 'Error'; center(f, { icon: 'triangle-alert', cc: 'cc-danger', t: 'Couldn\'t load ' + s.noun, x: 'The server returned an error while reading ' + s.src + '. Retry, or send the request ID to the platform team.', rid: rid(), btn: 'Retry', bcls: 'p' }); disable(f); }
+    };
+    const SK = ['swimlanes', 'detail', 'file', 'compare', 'search', 'status', 'findings', 'adopt', 'approvals', 'audit', 'admin'];
+    const all = k => ['', k];
+    const PLAN = [
+      { code: 'L', st: 'loading', title: 'Loading', desc: 'Skeletons reuse each screen\'s real column grid and row height, so nothing shifts when data arrives. Actions are disabled and the footer names what is loading.', items: SK.map(k => [k, '', V.loading]) },
+      { code: 'E', st: 'empty', title: 'Empty', desc: 'Says what is missing and why, then offers the one next step if the role can take it.', items: SK.map(k => [k, '', V.empty]) },
+      { code: 'R', st: 'error', title: 'Error', desc: 'Problem title, a one-line explanation, and a request ID with a copy button. Retry is the only action.', items: SK.map(k => [k, '', V.error]) },
+      { code: 'P', st: 'permission', title: 'Permission', desc: 'Pending user, Viewer, and Editor without Operator. Disabled controls stay visible with a tooltip naming the role needed and who can grant it. Operator is the extra permission for restarts and locks.', items: [
+        ['access', 'Pending user', null],
+        ['admin', 'Viewer', (f) => { f.hasRole = true; f.role = 'Viewer'; f.sub = 'Admin only'; center(f, { icon: 'lock', cc: 'cc-lock', t: 'Admin needs the Admin role', x: 'You are signed in as Viewer. Ask Priya Shah to change your role.', btn: 'Request a role change', bcls: '' }); disable(f); }],
+        ['file', 'Viewer', (f) => { f.hasRole = true; f.role = 'Viewer'; banner(f, INFO, 'eye', 'Read-only', 'Viewers can compare and download. Saving and raising PRs need Editor.'); disable(f, 'Requires Editor · Priya Shah can grant'); }],
+        ['detail', 'Editor without Operator', (f) => { f.hasRole = true; f.role = 'Editor'; banner(f, INFO, 'info', 'Restart needs Operator', 'You can edit files here, but restarting services needs the Operator permission.'); disable(f, 'Requires Operator · Priya Shah can grant'); }],
+        ['approvals', 'Editor', (f) => { f.hasRole = true; f.role = 'Editor'; f.sub = 'Admin only'; center(f, { icon: 'lock', cc: 'cc-lock', t: 'Approvals needs the Admin role', x: 'Editors can follow their own requests in Audit. Approving or rejecting is Admin-only.' }); }]
+      ] },
+      { code: 'O', st: 'offline', title: 'Offline agent', desc: 'The swimlane agent stopped reporting. Last known data stays visible, stamped with the time it was read. Anything that writes to that swimlane is off.', items: ['swimlanes', 'detail', 'file', 'compare', 'status', 'findings'].map(k => [k, '', (f, s) => { const lane = k === 'swimlanes' ? 'presitb' : 'sitb'; banner(f, WARN, 'wifi-off', 'Agent for ' + lane + ' is offline', 'Showing data as of 10:28 (14 min ago). Saving and restarts on ' + lane + ' are off.', 'Check agent'); f.sub = 'Data as of 10:28 · ' + s.sub; if (k === 'detail' || k === 'file') disable(f, 'Unavailable while the agent is offline', f.acts.length - 1); if (k === 'detail') f.acts[0].dis = true; }]) },
+      { code: 'U', st: 'paused', title: 'Live updates paused', desc: 'The live connection dropped and is retrying. The header pill and a banner say so; the page keeps showing data from the last update.', items: ['swimlanes', 'detail', 'status', 'findings', 'approvals', 'audit'].map(k => [k, '', (f, s) => { Object.assign(f, { pillCls: 'pill wr', dotCls: 'dot pu', pillT: 'Reconnecting… 12s' }); banner(f, WARN, 'wifi-off', 'Live updates paused, retrying', 'Showing data from 10:42. Saving and restarts are off until the connection returns.', 'Retry now'); if (k === 'detail') disable(f, 'Unavailable while updates are paused'); }]) },
+      { code: 'T', st: 'truncated', title: 'Truncated results', desc: 'Large result sets stop at a cap. The banner and the footer give the shown and total counts, and point to the filters that narrow it.', items: [
+        ['search', '', (f) => { banner(f, INFO, 'info', 'Results truncated', 'Showing the first 200 of 1,284 matches. Filter by swimlane or path to see the rest.', 'Add filter'); foot(f, 'info', 'Showing 200 of 1,284 matches', 'Narrow results'); }],
+        ['audit', '', (f) => { banner(f, INFO, 'info', 'Results truncated', 'Showing the 500 most recent of 9,310 events. Narrow the date range to see older ones.', 'Set date range'); foot(f, 'info', 'Showing 500 of 9,310 events', 'Narrow results'); }],
+        ['findings', '', (f) => { banner(f, INFO, 'info', 'Results truncated', 'Showing the first 100 of 412 findings, highest severity first.', 'Filter by severity'); foot(f, 'info', 'Showing 100 of 412 findings', 'Narrow results'); }],
+        ['compare', '', (f) => { banner(f, INFO, 'info', 'Results truncated', 'Showing the first 1,000 of 4,812 files that differ. Turn on "Only differences" or pick a folder.', 'Pick a folder'); foot(f, 'info', 'Showing 1,000 of 4,812 files', 'Narrow results'); }],
+        ['file', '', (f) => { banner(f, INFO, 'info', 'Diff truncated at 5,000 lines', '18,204 lines differ in total. Save and Raise PR still use the whole file.', 'Download full diff'); foot(f, 'info', 'Showing lines 1–5,000 of 18,204', ''); }]
+      ] },
+      { code: 'C', st: 'c409', title: '409 Conflict', desc: 'Someone else changed the same thing first. Nothing was applied, and the dialog shows both versions and the way forward.', items: [
+        ['file', 'Save', (f) => dlg(f, { cc: 'warn', icon: 'triangle-alert', title: 'File changed on NFS while you were editing', sub: 'tx-infinity-core-sit1.yml · sitb', code: '409', codeCls: 'bd bd-nfs', lead: 'Your save was not applied. Nothing on NFS changed.', kv: [kv('Your base', 'a3f9c21', 1), kv('On NFS now', 'b81e0d4 · Dana Okoye · 2 min ago', 1)], rid: rid(), foot: [btn('Discard my changes', 'g'), btn('View diff'), btn('Reload and re-apply', 'p')] })],
+        ['approvals', 'Decide', (f) => dlg(f, { cc: 'warn', icon: 'triangle-alert', title: 'Already decided', sub: 'AP-2038 · presita', code: '409', codeCls: 'bd bd-nfs', lead: 'Priya Shah approved this request 1 min ago. Your decision was not recorded.', kv: [kv('Decision', 'Approved'), kv('Decided', '10:43 · Priya Shah')], rid: rid(), foot: [btn('Close'), btn('View in Audit', 'p')] })],
+        ['admin', 'Save role', (f) => dlg(f, { cc: 'warn', icon: 'triangle-alert', title: 'This user changed while you were editing', sub: 'Marco Diaz', code: '409', codeCls: 'bd bd-nfs', lead: 'Another admin set the role to Viewer at 10:44. Reload to see it before you change it again.', kv: [kv('Your change', 'Editor → Admin'), kv('Now', 'Viewer · Priya Shah')], rid: rid(), foot: [btn('Keep editing', 'g'), btn('Reload user', 'p')] })]
+      ] },
+      { code: 'K', st: 'c423', title: '423 Locked', desc: 'The target is locked by another operation or by an unconfirmed baseline. The dialog names who or what holds the lock and what unlocks it.', items: [
+        ['detail', 'Restart', (f) => dlg(f, { cc: 'lock', icon: 'lock', title: 'sitb is locked', sub: 'Restart services · sitb', code: '423', codeCls: 'bd bd-locked', lead: 'Marco Diaz started a restart at 10:41. Another restart can\'t begin until it finishes.', kv: [kv('Locked by', 'Marco Diaz'), kv('Since', '10:41 · 3 min ago'), kv('Services', 'tx-infinity-core, tx-infinity-api', 1)], rid: rid(), foot: [btn('Close'), btn('Watch progress', 'p')] })],
+        ['file', 'Save', (f) => dlg(f, { cc: 'lock', icon: 'lock', title: 'presitc is locked until it is adopted', sub: 'Save to presitc', code: '423', codeCls: 'bd bd-locked', lead: 'Its baseline is unconfirmed, so edits are blocked. An admin needs to adopt 412 unknown files first.', kv: [kv('Baseline', 'Unconfirmed'), kv('Unknown files', '412')], rid: rid(), foot: [btn('Close'), btn('Start adoption', 'p')] })],
+        ['adopt', 'Start', (f) => dlg(f, { cc: 'lock', icon: 'lock', title: 'Adoption already in progress', sub: 'presitc', code: '423', codeCls: 'bd bd-locked', lead: 'Dana Okoye opened an adoption for presitc 6 min ago. Only one can run at a time.', kv: [kv('Started by', 'Dana Okoye'), kv('Step', '3 of 4 · 38 decided')], rid: rid(), foot: [btn('Close'), btn('View their draft', 'p')] })]
+      ] },
+      { code: 'A', st: 'c202', title: '202 Sent for approval', desc: 'The change was accepted but not applied. It waits for an Admin; nothing on NFS or in the cluster changes until then.', items: [
+        ['file', 'Save to PRESIT', (f) => dlg(f, { cc: 'appr', icon: 'hourglass', title: 'Sent for approval', sub: 'tx-infinity-core-sit11.yml · presita', code: '202', codeCls: 'bd bd-appr', lead: 'Saving to PRESIT needs an Admin. Nothing has changed on NFS yet.', kv: [kv('Request', 'AP-2041', 1), kv('Waiting on', 'Any Admin · 6 pending'), kv('You\'ll hear', 'In the bell and by email')], foot: [btn('Stay on file'), btn('View request', 'p')] })],
+        ['detail', 'Restart on PRESIT', (f) => { Object.assign(f, { hasToast: true, toast: { ms: ms('hourglass'), t: 'Restart sent for approval', x: 'AP-2042 · presita · 2 services. Nothing restarts until an Admin approves.', a: 'View request' } }); }],
+        ['adopt', 'Confirm adoption', (f) => dlg(f, { cc: 'appr', icon: 'hourglass', title: 'Adoption sent for approval', sub: 'presitc', code: '202', codeCls: 'bd bd-appr', lead: 'presitc stays locked until an Admin approves. 38 files will be recorded as the baseline.', kv: [kv('Request', 'AP-2043', 1), kv('Files', '38 base · 4 intentional')], foot: [btn('Back to swimlanes'), btn('View request', 'p')] })]
+      ] },
+      { code: 'G', st: 'token', title: 'Expired GitHub token', desc: 'Anything that reads or writes Git needs a valid personal token. NFS-only work continues; Git-dependent actions are disabled and link straight to "My GitHub token".', items: [
+        ['file', 'Raise PR', (f) => dlg(f, { cc: 'danger', icon: 'key', title: 'Your GitHub token expired', sub: 'Raise PR · sitb', lead: 'It expired on 8 Oct 2026. Raising a PR needs a valid token. Saving to NFS still works.', kv: [kv('Token', 'ghp_…4k2f', 1), kv('Expired', '8 Oct 2026, 09:00')], rid: rid(), foot: [btn('Not now'), btn('Update token', 'p')] })],
+        ['adopt', 'Create PR', (f) => { banner(f, DANGER, 'key', 'GitHub token expired', 'You can scan and decide, but Create PR is off until you update your token.', 'Update token'); disable(f, 'Requires a valid GitHub token'); }],
+        ['swimlanes', 'App-wide', (f) => { banner(f, WARN, 'key', 'Your GitHub token expired on 8 Oct', 'Branches and base versions show the last cached values.', 'Update token'); }]
+      ] }
+    ];
+    const sections = PLAN.map(P => ({
+      code: P.code, title: P.title, desc: P.desc, anchor: 's-' + P.st,
+      pairs: P.items.map(([k, variant, fn], i) => {
+        const s = SC[k];
+        const frames = ['light', 'dark'].map(th => { const f = mk(k, th); if (fn) fn(f, s); return f; });
+        return { anchor: 's-' + P.st + '-' + k, id: P.code + String(i + 1).padStart(2, '0'), screen: s.n, variant, file: s.file, frames };
+      })
+    }));
+    return { sections };
+  }
+}
+
+</script>
+</body>
+</html>

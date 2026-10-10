@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<style>
+*{box-sizing:border-box}
+a{color:var(--link)}
+a:hover{color:var(--primary-hover)}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+</style>
+</helmet>
+<div onMouseEnter="{{ enter }}" onMouseLeave="{{ leave }}" style="position:relative;flex:1;min-width:0;width:100%;height:100%;min-height:0;display:flex;flex-direction:column;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:13px;line-height:18px;-webkit-font-smoothing:antialiased">
+<div style="flex:1;min-height:0;width:100%;max-width:1680px;margin:0 auto;display:flex;flex-direction:column;padding:16px 24px 0">
+
+  <div style="flex:none;display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px 16px;padding-bottom:12px">
+    <div style="display:flex;flex-direction:column;gap:4px"><h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600;letter-spacing:-0.01em">Feature status</h1><span style="color:var(--muted-foreground)">{{ subtitle }}</span></div>
+    <span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/tag.svg) center/contain no-repeat"></span>Template defaults from <span style="font-family:var(--font-mono)">configuration-base-saas</span> <span style="font-family:var(--font-mono)">v2.3.1</span></span>
+  </div>
+
+  <div style="flex:1;min-height:0;margin-bottom:16px;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--card)">
+    <div style="position:relative;z-index:3;flex:none;display:flex;align-items:center;gap:8px;height:40px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--muted)">
+      <label style="display:flex;align-items:center;gap:6px;height:28px;width:240px;padding:0 4px 0 8px;border-radius:4px;border:1px solid var(--input);background:var(--background)">
+        <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/search.svg) center/contain no-repeat"></span>
+        <input ref="{{ qRef }}" type="text" value="{{ q }}" onChange="{{ onQ }}" placeholder="Filter flags" aria-label="Filter flags" style="flex:1;min-width:0;height:26px;border:0;outline:0;background:transparent;font-family:var(--font-mono);font-size:12px;color:var(--foreground)">
+        <kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">/</kbd>
+      </label>
+      <button type="button" role="switch" aria-checked="{{ onlyDiff }}" onClick="{{ toggleOD }}" style="display:inline-flex;align-items:center;gap:8px;height:28px;padding:0 6px;border:0;border-radius:4px;background:transparent;font-family:inherit;font-size:13px;color:var(--foreground);cursor:pointer" style-hover="background:var(--accent)">
+        <span aria-hidden="true" style="position:relative;width:28px;height:16px;flex:none;border-radius:999px;background:{{ odTrack }};border:1px solid {{ odBd }}"><span style="position:absolute;top:1px;left:{{ odLeft }};width:12px;height:12px;border-radius:999px;background:{{ odThumb }};transition:left 100ms cubic-bezier(0.2,0,0,1)"></span></span>Only flags that differ
+      </button>
+      <span aria-hidden="true" style="width:1px;height:20px;background:var(--border)"></span>
+      <button type="button" onClick="{{ expandAll }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border:0;border-radius:4px;background:transparent;font-family:inherit;font-size:13px;color:var(--foreground);cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/chevrons-up-down.svg) center/contain no-repeat"></span>Show channels</button>
+      <button type="button" onClick="{{ collapseAll }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border:0;border-radius:4px;background:transparent;font-family:inherit;font-size:13px;color:var(--foreground);cursor:pointer" style-hover="background:var(--accent)">Hide channels</button>
+      <span style="margin-left:auto;font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums">{{ shownText }}</span>
+    </div>
+
+    <sc-if value="{{ showNote }}" hint-placeholder-val="{{ true }}">
+    <div role="note" style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;min-height:40px;padding:6px 12px;background:var(--info-bg);color:var(--info-fg);border-bottom:1px solid var(--info-border)">
+      <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/circle-help.svg) center/contain no-repeat"></span>
+      <strong style="font-weight:600">{{ unresolvedCount }} unresolved flags</strong>
+      <span><span style="font-family:var(--font-mono);font-size:12px">{{ unresolvedNames }}</span> appear in a doc’s flag table, but no config key with that name exists in any swimlane. Map each to a key, or remove it from the doc.</span>
+      <span style="margin-left:auto;display:inline-flex;align-items:center;gap:8px"><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid currentColor;font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/shield-check.svg) center/contain no-repeat"></span>Admins only</span><button type="button" style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;border:1px solid currentColor;background:transparent;color:inherit;font-family:inherit;font-size:12px;font-weight:500;cursor:pointer">Review unresolved flags</button></span>
+    </div>
+    </sc-if>
+
+    <div role="row" style="flex:none;display:grid;grid-template-columns:minmax(220px,1.4fr) 168px 80px repeat(6,84px);gap:8px;align-items:center;height:44px;padding:0 12px;border-bottom:1px solid var(--border);background:var(--muted);font-size:12px;font-weight:500;color:var(--muted-foreground)">
+      <span>Flag</span><span>Doc</span><span>Template default</span>
+      <sc-for list="{{ lanes }}" as="ln" hint-placeholder-count="6"><span style="display:flex;flex-direction:column;gap:2px;min-width:0;color:var(--foreground)">
+        <span style="display:inline-flex;align-items:center;gap:5px"><sc-if value="{{ ln.aOn }}" hint-placeholder-val="{{ true }}"><span title="Agent online" style="width:8px;height:8px;flex:none;border-radius:999px;background:var(--agent-online)"></span></sc-if><sc-if value="{{ ln.aDeg }}" hint-placeholder-val="{{ false }}"><span title="Agent degraded" style="width:8px;height:8px;flex:none;border-radius:999px;background:var(--background);border:2px solid var(--agent-degraded)"></span></sc-if><sc-if value="{{ ln.aOff }}" hint-placeholder-val="{{ false }}"><span title="Agent offline" style="width:8px;height:8px;flex:none;border-radius:2px;background:var(--agent-offline);transform:rotate(45deg)"></span></sc-if><span style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ ln.name }}</span></span>
+        <span style="font-size:12px;font-weight:400;color:{{ ln.fg }};white-space:nowrap">{{ ln.sub }}</span>
+      </span></sc-for>
+    </div>
+
+    <div role="rowgroup" style="flex:1;min-height:0;overflow:hidden">
+      <sc-for list="{{ rows }}" as="r" hint-placeholder-count="12">
+        <div role="row" style="display:grid;grid-template-columns:minmax(220px,1.4fr) 168px 80px repeat(6,84px);gap:8px;align-items:center;height:28px;padding:0 12px;border-bottom:1px solid var(--border);background:{{ r.bg }}" style-hover="background:var(--accent)">
+          <span style="display:flex;align-items:center;gap:6px;min-width:0;padding-left:{{ r.indent }}">
+            <sc-if value="{{ r.isFlag }}" hint-placeholder-val="{{ true }}">
+              <sc-if value="{{ r.hasCh }}" hint-placeholder-val="{{ true }}"><button type="button" aria-label="Toggle channels of {{ r.name }}" aria-expanded="{{ r.open }}" onClick="{{ r.toggle }}" style="width:20px;height:20px;flex:none;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:4px;background:transparent;color:var(--muted-foreground);cursor:pointer" style-hover="background:var(--secondary-hover)"><span aria-hidden="true" style="width:14px;height:14px;background:currentColor;mask:url(assets/icons/{{ r.chev }}.svg) center/contain no-repeat"></span></button></sc-if>
+              <sc-if value="{{ r.noCh }}" hint-placeholder-val="{{ false }}"><span style="width:20px;flex:none"></span></sc-if>
+              <span style="min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono);font-size:12px;font-weight:500">{{ r.name }}</span>
+              <sc-if value="{{ r.unres }}" hint-placeholder-val="{{ false }}"><span style="flex:none;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px dashed var(--status-untracked-border);background:var(--status-untracked-bg);color:var(--status-untracked-fg);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/circle-dashed.svg) center/contain no-repeat"></span>Unresolved</span></sc-if>
+            </sc-if>
+            <sc-if value="{{ r.isChan }}" hint-placeholder-val="{{ false }}"><span style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">{{ r.name }}</span></sc-if>
+          </span>
+          <span style="min-width:0">
+            <sc-if value="{{ r.isFlag }}" hint-placeholder-val="{{ true }}"><a href="{{ r.docHref }}" title="{{ r.docTitle }}" style="display:inline-flex;align-items:center;gap:6px;max-width:100%;text-decoration:none"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/book-open.svg) center/contain no-repeat"></span><span style="min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" >{{ r.doc }}</span></a></sc-if>
+          </span>
+          <span style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">{{ r.def }}</span>
+          <sc-for list="{{ r.cells }}" as="c" hint-placeholder-count="6">
+            <span style="position:relative;display:flex;align-items:center;min-width:0;opacity:{{ c.op }}">
+              <sc-if value="{{ c.isSame }}" hint-placeholder-val="{{ true }}"><a href="{{ c.href }}" title="{{ c.title }}" style="padding-left:7px;font-family:var(--font-mono);font-size:12px;color:var(--foreground);text-decoration:none" style-hover="text-decoration:underline">{{ c.t }}</a></sc-if>
+              <sc-if value="{{ c.isDiff }}" hint-placeholder-val="{{ false }}"><a href="{{ c.href }}" title="{{ c.title }}" style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--warning-border);background:var(--diff-mod-bg);color:var(--diff-mod-fg);font-family:var(--font-mono);font-size:12px;font-weight:600;text-decoration:none" style-hover="background:var(--diff-mod-gutter)"><span aria-hidden="true" style="width:10px;height:10px;flex:none;background:currentColor;mask:url(assets/icons/{{ c.icon }}.svg) center/contain no-repeat"></span>{{ c.t }}</a></sc-if>
+              <sc-if value="{{ c.isUnres }}" hint-placeholder-val="{{ false }}"><span title="Key not found in this swimlane" style="padding-left:7px;color:var(--muted-foreground)">—</span></sc-if>
+              <sc-if value="{{ c.tip }}" hint-placeholder-val="{{ false }}"><div role="tooltip" style="position:absolute;z-index:40;top:calc(100% + 4px);left:0;display:flex;flex-direction:column;gap:2px;padding:6px 8px;border-radius:4px;background:var(--foreground);color:var(--background);font-size:12px;line-height:16px;white-space:nowrap;box-shadow:var(--shadow-popover)"><span><strong style="font-weight:600">remote-itm-teller</strong> · sitb</span><span style="font-family:var(--font-mono)">tx-infinity-core-sit7.yml:13</span><span>true · template default false</span><span style="opacity:0.8">Opens the file at line 13</span></div></sc-if>
+            </span>
+          </sc-for>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:4px 20px;min-height:32px;padding:4px 12px;border-top:1px solid var(--border);background:var(--muted);font-size:12px;color:var(--muted-foreground)">
+      <span style="display:inline-flex;align-items:center;gap:6px"><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--warning-border);background:var(--diff-mod-bg);color:var(--diff-mod-fg);font-family:var(--font-mono);font-weight:600"><span aria-hidden="true" style="width:10px;height:10px;flex:none;background:currentColor;mask:url(assets/icons/arrow-left-right.svg) center/contain no-repeat"></span>true</span>Differs from the template default</span>
+      <span style="display:inline-flex;align-items:center;gap:6px"><span style="font-family:var(--font-mono);color:var(--foreground)">false</span>Same as the default</span>
+      <span style="display:inline-flex;align-items:center;gap:6px"><span>—</span>Key not found</span>
+      <span style="display:inline-flex;align-items:center;gap:6px"><span aria-hidden="true" style="width:8px;height:8px;flex:none;border-radius:2px;background:var(--agent-offline);transform:rotate(45deg)"></span>Offline: last known values, dimmed</span>
+      <span style="margin-left:auto">{{ footNote }} Click a value to open its file at the line.</span>
+    </div>
+  </div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1216,&quot;height&quot;:856},&quot;expand&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;first&quot;,&quot;all&quot;,&quot;none&quot;],&quot;default&quot;:&quot;first&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;onlydiff&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;tip&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;cell&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;role&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Admin&quot;,&quot;Operator&quot;,&quot;Editor&quot;,&quot;Viewer&quot;],&quot;default&quot;:&quot;Admin&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  qRef = React.createRef();
+  state = { q: '', onlyDiff: this.props.onlydiff === true || this.props.onlydiff === 'true', open: (() => { const e = this.props.expand ?? 'first'; const o = {}; if (e === 'all') this.D.FLAGS.forEach(f => o[f.name] = true); if (e === 'first') o.enableAccountSorting = true; return o; })() };
+
+  get D() {
+    if (this._D) return this._D;
+    const LANES = [['SIT', 'sit', 'sit1', 'on'], ['SIT', 'sitb', 'sit7', 'on'], ['SIT', 'sitc', 'sit9', 'on'], ['PRESIT', 'presita', 'sit11', 'deg'], ['PRESIT', 'presitb', 'sit12', 'off'], ['PRESIT', 'presitc', 'sit13', 'on']];
+    const T = 'remote-itm-teller', A = 'atm-iso';
+    const FLAGS = [
+      { name: 'enableAccountSorting', doc: 'Account sorting', anchor: 'account-sorting#feature-flags', section: 'Feature Flags', def: 'false', ch: [[T, 13], [A, 27]], v: { sit: { [T]: 'true' }, sitb: { [T]: 'true' }, sitc: { [T]: 'true', [A]: 'true' }, presitb: { [T]: 'true' } } },
+      { name: 'enableInstantPayments', doc: 'Instant payments', anchor: 'instant-payments#feature-flags', section: 'Feature Flags', def: 'false', ch: [['*', 62]], v: { sitb: { '*': 'true' } } },
+      { name: 'enableHoldsV2', doc: 'Holds', anchor: 'holds#feature-flags', section: 'Feature Flags', def: 'true', ch: [['*', 63]], v: { presita: { '*': 'false' } } },
+      { name: 'enableReceiptsV3', doc: 'Receipts v3', anchor: 'receipts-v3#feature-flags', section: 'Feature Flags', def: 'true', ch: [[T, 64], [A, 65]], v: { presitc: { [A]: 'false' } } },
+      { name: 'enableLegacyBatch', doc: 'Batch processing', anchor: 'batch-processing#legacy', section: 'Legacy', def: 'false', ch: [['*', 66]], v: { presita: { '*': 'true' } } },
+      { name: 'enableAuditTrail', doc: 'Audit trail', anchor: 'audit-trail#feature-flags', section: 'Feature Flags', def: 'true', ch: [['*', 67]], v: {} },
+      { name: 'enableRateLimiter', doc: 'Rate limiting', anchor: 'rate-limiting#feature-flags', section: 'Feature Flags', def: 'true', ch: [[T, 68], [A, 69]], v: { sitb: { [A]: 'false' } } },
+      { name: 'enableCashRecycling', doc: 'ATM cash recycling', anchor: 'atm-cash-recycling#feature-flags', section: 'Feature Flags', def: 'false', ch: [[A, 70]], v: { presita: { [A]: 'true' } } },
+      { name: 'enableLegacyReceipts', doc: 'Receipts v3', anchor: 'receipts-v3#migration', section: 'Migration', def: 'false', ch: [], unres: true },
+      { name: 'enableHoldsV3', doc: 'Holds', anchor: 'holds#roadmap', section: 'Roadmap', def: 'false', ch: [], unres: true }
+    ];
+    return (this._D = { LANES, FLAGS });
+  }
+  enter = () => { this.hover = true; };
+  leave = () => { this.hover = false; };
+  componentDidMount() {
+    this.hover = false;
+    this._kd = e => { if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey || !this.hover) return; const t = e.target; if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return; const el = this.qRef.current; if (el) { e.preventDefault(); el.focus(); } };
+    document.addEventListener('keydown', this._kd);
+  }
+  componentWillUnmount() { document.removeEventListener('keydown', this._kd); }
+
+  renderVals() {
+    const p = this.props, s = this.state, D = this.D, set = o => this.setState(o), role = p.role ?? 'Admin', isAdmin = role === 'Admin';
+    const q = s.q.trim().toLowerCase();
+    const val = (f, lane, ch) => (f.v[lane] && f.v[lane][ch]) ?? f.def;
+    const file = (lane, branch, differs) => differs ? 'tx-infinity-core-' + branch + '.yml' : 'tx-infinity-core.yml';
+    const cellFor = (f, lane, branch, off, chans) => {
+      if (f.unres) return { isUnres: true, op: 1 };
+      const vs = chans.map(([c, line]) => ({ v: val(f, lane, c), line, c }));
+      const mixed = new Set(vs.map(x => x.v)).size > 1, first = vs[0];
+      const diff = vs.some(x => x.v !== f.def), dv = vs.find(x => x.v !== f.def) || first;
+      const fl = file(lane, branch, dv.v !== f.def);
+      return { isSame: !diff, isDiff: diff, t: mixed ? 'mixed' : first.v, icon: mixed ? 'split' : 'arrow-left-right', href: '#/swimlanes/' + lane + '/files/tx-infinity-api/' + fl + '?line=' + dv.line, title: lane + ' · ' + fl + ':' + dv.line + (diff ? ' · template default ' + f.def : ''), op: off ? 0.6 : 1, diffs: diff };
+    };
+    const diffByLane = {}; let diffFlags = 0;
+    const flagInfo = D.FLAGS.map(f => { const cells = D.LANES.map(([t, n, b, a]) => cellFor(f, n, b, a === 'off', f.ch)); const any = cells.some(c => c.diffs); if (any) diffFlags++; cells.forEach((c, i) => { if (c.diffs) diffByLane[D.LANES[i][1]] = (diffByLane[D.LANES[i][1]] || 0) + 1; }); return { f, cells, any }; });
+    const unresolved = D.FLAGS.filter(f => f.unres);
+    const rows = []; let shown = 0;
+    flagInfo.forEach(({ f, cells, any }) => {
+      if (q && !f.name.toLowerCase().includes(q) && !f.doc.toLowerCase().includes(q)) return;
+      if (s.onlyDiff && !any) return;
+      shown++;
+      const open = !!s.open[f.name], chans = f.ch.filter(c => c[0] !== '*'), has = chans.length > 0;
+      rows.push({ isFlag: true, isChan: false, name: f.name, indent: '0', hasCh: has, noCh: !has, open, chev: open ? 'chevron-down' : 'chevron-right', unres: !!f.unres, bg: 'transparent', toggle: () => set({ open: { ...s.open, [f.name]: !open } }),
+        doc: f.doc, docTitle: f.doc + ' › ' + f.section, docHref: '#/docs/' + f.anchor, def: f.def,
+        cells: cells.map((c, i) => ({ isSame: !!c.isSame, isDiff: !!c.isDiff, isUnres: !!c.isUnres, t: c.t, icon: c.icon, href: c.href, title: c.title, op: c.op, tip: false })) });
+      if (open && has) chans.forEach(([c, line]) => {
+        const cc = D.LANES.map(([t, n, b, a]) => cellFor(f, n, b, a === 'off', [[c, line]]));
+        rows.push({ isFlag: false, isChan: true, name: c, indent: '26px', bg: 'var(--muted)', hasCh: false, noCh: false, doc: '', def: f.def,
+          cells: cc.map((x, i) => ({ isSame: !!x.isSame, isDiff: !!x.isDiff, isUnres: !!x.isUnres, t: x.t, icon: x.icon, href: x.href, title: x.title, op: x.op, tip: p.tip === 'cell' && f.name === 'enableAccountSorting' && c === 'remote-itm-teller' && D.LANES[i][1] === 'sitb' })) });
+      });
+    });
+    const lanes = D.LANES.map(([tier, name, b, a]) => { const n = diffByLane[name] || 0; return { name, aOn: a === 'on', aDeg: a === 'deg', aOff: a === 'off', sub: a === 'off' ? 'last known' : n + ' differ', fg: n ? 'var(--diff-mod-fg)' : 'var(--muted-foreground)' }; });
+    const od = s.onlyDiff, tot = D.FLAGS.length;
+    return {
+      qRef: this.qRef, enter: this.enter, leave: this.leave, q: s.q, onQ: e => set({ q: e.target.value }), onlyDiff: od, toggleOD: () => set({ onlyDiff: !od }),
+      odTrack: od ? 'var(--primary)' : 'var(--secondary)', odBd: od ? 'var(--primary)' : 'var(--input)', odLeft: od ? '13px' : '1px', odThumb: od ? 'var(--primary-foreground)' : 'var(--muted-foreground)',
+      expandAll: () => { const o = {}; D.FLAGS.forEach(f => o[f.name] = true); set({ open: o }); }, collapseAll: () => set({ open: {} }),
+      subtitle: (tot - unresolved.length) + ' documented flags across ' + D.LANES.length + ' swimlanes · ' + diffFlags + ' differ from the template default in at least one swimlane · ' + unresolved.length + ' unresolved',
+      shownText: 'Showing ' + shown + ' of ' + tot + ' flags', lanes, rows,
+      showNote: isAdmin && unresolved.length > 0, unresolvedCount: unresolved.length, unresolvedNames: unresolved.map(f => f.name).join(' and '),
+      footNote: !isAdmin && unresolved.length ? unresolved.length + ' flags are unresolved. An admin can map them.' : ''
+    };
+  }
+}
+</script>
+</body>
+</html>

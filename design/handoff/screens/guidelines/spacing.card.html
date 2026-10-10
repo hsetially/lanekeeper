@@ -1,0 +1,11 @@
+<!-- @dsCard group="Spacing" viewport="700x150" name="Spacing, radius, rows" subtitle="4px grid; 28/32px fixed rows; 4/6px radius" -->
+<link rel="stylesheet" href="../styles.css">
+<body style="margin:0;padding:12px 16px;font:12px/16px var(--font-sans);color:var(--foreground);background:var(--background);display:grid;grid-template-columns:1fr 1fr;gap:16px">
+<div id="s" style="display:flex;flex-direction:column;gap:3px"></div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<div style="height:28px;border:1px solid var(--border);border-radius:4px;display:flex;align-items:center;padding:0 8px">Compact row 28 · radius-sm 4</div>
+<div style="height:32px;border:1px solid var(--border);border-radius:6px;display:flex;align-items:center;padding:0 8px">Default row 32 · radius-md 6</div>
+<div style="height:32px;border-radius:6px;box-shadow:var(--shadow-popover);display:flex;align-items:center;padding:0 8px">shadow-popover (floating only)</div>
+</div>
+<script>document.getElementById('s').innerHTML=[1,2,3,4,6,8,12].map(n=>`<div style="display:flex;align-items:center;gap:8px"><code style="font-family:var(--font-mono);width:60px">${n*4}px</code><span style="height:8px;width:${n*4}px;background:var(--primary);border-radius:2px"></span></div>`).join('')</script>
+</body>

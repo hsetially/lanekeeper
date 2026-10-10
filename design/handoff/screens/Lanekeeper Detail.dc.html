@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<style>
+*{box-sizing:border-box}
+a{color:var(--link)}
+a:hover{color:var(--primary-hover)}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+</style>
+</helmet>
+<div style="width:100%;height:100%;min-height:0;display:flex;flex-direction:column;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:13px;line-height:18px">
+
+<sc-if value="{{ locked }}" hint-placeholder-val="{{ false }}">
+<div role="status" style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:40px;padding:6px 16px;background:var(--status-locked-bg);color:var(--status-locked-fg);border-bottom:1px solid var(--status-locked-border)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/lock.svg) center/contain no-repeat"></span><strong style="font-weight:600">Editing locked</strong><span>presitc has no confirmed baseline. An admin must finish adoption first.</span>
+  <sc-if value="{{ isAdmin }}" hint-placeholder-val="{{ true }}"><button type="button" style="margin-left:auto;height:24px;padding:0 8px;border-radius:4px;border:1px solid currentColor;background:transparent;color:inherit;font-size:12px;font-weight:500;cursor:pointer">Start adoption</button></sc-if>
+  <sc-if value="{{ notAdmin }}" hint-placeholder-val="{{ false }}"><span style="margin-left:auto;font-size:12px">Ask an admin: Priya Shah</span></sc-if></div>
+</sc-if>
+<sc-if value="{{ agentOff }}" hint-placeholder-val="{{ false }}">
+<div role="status" style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:40px;padding:6px 16px;background:var(--warning-bg);color:var(--warning-fg);border-bottom:1px solid var(--warning-border)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/wifi-off.svg) center/contain no-repeat"></span><strong style="font-weight:600">Agent offline since 14:05</strong><span>Showing data as of 14:05. Restarts are off until the agent reconnects.</span><button type="button" style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:4px;border:1px solid currentColor;background:transparent;color:inherit;font-size:12px;font-weight:500;cursor:pointer"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/refresh-cw.svg) center/contain no-repeat"></span>Check agent</button></div>
+</sc-if>
+<sc-if value="{{ syncing }}" hint-placeholder-val="{{ false }}">
+<div role="status" style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:40px;padding:6px 16px;background:var(--info-bg);color:var(--info-fg);border-bottom:1px solid var(--info-border)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/loader-circle.svg) center/contain no-repeat"></span><strong style="font-weight:600">Sync in progress</strong><span style="color:var(--foreground)">Alerts held until sync completes; <span style="font-variant-numeric:tabular-nums">412</span> files updated so far.</span><span style="margin-left:auto;font-family:var(--font-mono);font-size:12px">csp-tenant-data-sit7 · run 42</span></div>
+</sc-if>
+
+<div style="flex:none;display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px 16px;padding:14px 24px 12px">
+  <div style="min-width:0;display:flex;flex-direction:column;gap:8px">
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+      <span style="display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:4px;border:1px solid {{ lane.tb }};background:{{ lane.tbg }};color:{{ lane.tfg }};font-family:var(--font-mono);font-size:12px;font-weight:500;letter-spacing:0.04em">{{ lane.tier }}</span>
+      <h1 style="margin:0;font-family:var(--font-mono);font-size:20px;line-height:26px;font-weight:500">{{ lane.name }}</h1>
+      <span style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 6px;border-radius:4px;border:1px solid var(--info-border);background:var(--info-bg);color:var(--info-fg);font-family:var(--font-mono);font-size:12px"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/git-branch.svg) center/contain no-repeat"></span>{{ lane.branch }}</span>
+      <span style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 6px;border-radius:4px;border:1px solid var(--border);font-family:var(--font-mono);font-size:12px;color:{{ lane.verFg }}"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/tag.svg) center/contain no-repeat"></span>{{ lane.ver }}</span>
+      <span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:{{ agentFg }}">
+        <sc-if value="{{ agentOn }}" hint-placeholder-val="{{ true }}"><span style="width:8px;height:8px;border-radius:999px;background:var(--agent-online)"></span></sc-if>
+        <sc-if value="{{ agentOff }}" hint-placeholder-val="{{ false }}"><span style="width:8px;height:8px;border-radius:2px;background:var(--agent-offline);transform:rotate(45deg)"></span></sc-if>{{ agentText }}</span>
+      <sc-if value="{{ baseOk }}" hint-placeholder-val="{{ true }}"><span style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/shield-check.svg) center/contain no-repeat"></span>Baseline confirmed</span></sc-if>
+      <sc-if value="{{ locked }}" hint-placeholder-val="{{ false }}"><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;color:var(--status-locked-fg);background:var(--status-locked-bg);border:1px solid var(--status-locked-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/lock.svg) center/contain no-repeat"></span>Adoption needed</span></sc-if>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px">
+      <span style="color:var(--muted-foreground);font-variant-numeric:tabular-nums;margin-right:4px">412 files</span>
+      <sc-for list="{{ headChips }}" as="c" hint-placeholder-count="4"><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;white-space:nowrap;color:var(--status-{{ c.key }}-fg);background:var(--status-{{ c.key }}-bg);border:1px {{ c.bs }} var(--status-{{ c.key }}-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ c.icon }}.svg) center/contain no-repeat"></span><span style="font-variant-numeric:tabular-nums">{{ c.n }}</span> {{ c.label }}</span></sc-for>
+    </div>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+    <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px 0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/columns-2.svg) center/contain no-repeat"></span>Compare with…<span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/chevron-down.svg) center/contain no-repeat"></span></button>
+    <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 6px 0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/search.svg) center/contain no-repeat"></span>Search in {{ lane.name }}<kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--background);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">/</kbd></button>
+  </div>
+</div>
+
+<div style="flex:1;min-height:0;display:flex;border-top:1px solid var(--border)">
+  <section aria-label="Files" style="flex:none;width:{{ treeW }};display:flex;flex-direction:column;background:var(--muted)">
+    <div style="flex:none;display:flex;flex-direction:column;gap:8px;padding:8px;border-bottom:1px solid var(--border)">
+      <span style="display:flex;align-items:center;gap:6px;height:28px;padding:0 4px 0 8px;border-radius:4px;border:1px solid var(--input);background:var(--background)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/search.svg) center/contain no-repeat"></span><span style="flex:1;color:var(--muted-foreground)">Filter files…</span><kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">f</kbd></span>
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px">
+        <button type="button" style="display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 6px;border-radius:4px;border:1px dashed var(--input);background:transparent;font-size:12px;cursor:pointer"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/plus.svg) center/contain no-repeat"></span>Drift state</button>
+        <button type="button" style="display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 6px;border-radius:4px;border:1px dashed var(--input);background:transparent;font-size:12px;cursor:pointer"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/plus.svg) center/contain no-repeat"></span>File class</button>
+        <label style="margin-left:auto;display:inline-flex;align-items:center;gap:8px;font-size:12px;cursor:pointer"><span role="switch" aria-checked="{{ logical }}" style="position:relative;width:28px;height:16px;flex:none;border-radius:999px;border:1px solid {{ swBorder }};background:{{ swBg }}"><span style="position:absolute;top:1px;left:{{ swLeft }};width:12px;height:12px;border-radius:999px;background:{{ swKnob }}"></span></span>Show logical files</label>
+      </div>
+    </div>
+    <div role="tree" aria-label="Files in {{ lane.name }}" style="flex:1;min-height:0;overflow:hidden;padding:4px 0">
+      <sc-for list="{{ rows }}" as="r" hint-placeholder-count="12">
+        <div role="treeitem" aria-selected="{{ r.sel }}" aria-expanded="{{ r.exp }}" style="display:flex;align-items:center;gap:6px;height:28px;padding:0 10px 0 {{ r.pl }};background:{{ r.bg }}" style-hover="background:var(--accent)">
+          <span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/{{ r.chev }}.svg) center/contain no-repeat;opacity:{{ r.chevOp }}"></span>
+          <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/{{ r.icon }}.svg) center/contain no-repeat"></span>
+          <span title="{{ r.title }}" style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono);font-size:12px;font-weight:{{ r.fw }}">{{ r.name }}</span>
+          <sc-if value="{{ r.tenant }}" hint-placeholder-val="{{ false }}"><span title="Reads tx-infinity-core-sit7.yml beside the base file" style="flex:none;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 5px;border-radius:4px;border:1px solid var(--input);background:var(--background);font-size:12px;white-space:nowrap"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/layers.svg) center/contain no-repeat"></span>Uses tenant file</span></sc-if>
+          <sc-if value="{{ r.restart }}" hint-placeholder-val="{{ false }}"><span title="{{ r.restartTitle }}" aria-label="{{ r.restartTitle }}" style="flex:none;display:inline-flex;color:var(--status-restart-fg)"><span aria-hidden="true" style="width:14px;height:14px;background:currentColor;mask:url(assets/icons/clock.svg) center/contain no-repeat"></span></span></sc-if>
+          <sc-if value="{{ r.hasDr }}" hint-placeholder-val="{{ false }}"><span title="{{ r.drTitle }}" style="flex:none;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 5px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;white-space:nowrap;color:var(--status-{{ r.dr }}-fg);background:var(--status-{{ r.dr }}-bg);border:1px {{ r.bs }} var(--status-{{ r.dr }}-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ r.drIcon }}.svg) center/contain no-repeat"></span>{{ r.drLabel }}</span></sc-if>
+          <sc-if value="{{ r.count }}" hint-placeholder-val="{{ false }}"><span title="{{ r.countTitle }}" style="flex:none;min-width:18px;height:18px;padding:0 4px;display:inline-flex;align-items:center;justify-content:center;border-radius:4px;border:1px solid var(--border);background:var(--background);font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums">{{ r.countN }}</span></sc-if>
+        </div>
+      </sc-for>
+    </div>
+  </section>
+
+  <div role="separator" aria-orientation="vertical" aria-label="Resize file tree" aria-valuenow="460" tabindex="0" style="flex:none;width:7px;display:flex;align-items:center;justify-content:center;border-left:1px solid var(--border);border-right:1px solid var(--border);background:var(--muted);cursor:col-resize"><span style="width:3px;height:28px;border-radius:2px;background:var(--input)"></span></div>
+
+  <section aria-label="Details" style="flex:1;min-width:0;display:flex;flex-direction:column">
+    <div role="tablist" style="flex:none;display:flex;align-items:flex-end;gap:4px;height:36px;padding:0 12px;border-bottom:1px solid var(--border)">
+      <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="4"><button type="button" role="tab" aria-selected="{{ t.on }}" style="display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 8px;border:0;border-bottom:2px solid {{ t.bb }};margin-bottom:-1px;background:transparent;font-weight:{{ t.fw }};color:{{ t.fg }};cursor:pointer">{{ t.l }}<sc-if value="{{ t.hasN }}" hint-placeholder-val="{{ true }}"><span style="min-width:18px;height:18px;padding:0 5px;display:inline-flex;align-items:center;justify-content:center;border-radius:4px;border:1px solid var(--border);background:var(--muted);font-size:12px;font-weight:500;color:var(--muted-foreground);font-variant-numeric:tabular-nums">{{ t.n }}</span></sc-if><sc-if value="{{ t.live }}" hint-placeholder-val="{{ false }}"><span style="width:8px;height:8px;border-radius:999px;background:var(--agent-online)"></span></sc-if></button></sc-for>
+      <sc-if value="{{ agentOff }}" hint-placeholder-val="{{ false }}"><span style="margin-left:auto;align-self:center;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px dashed var(--input);font-size:12px;font-weight:500;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/clock.svg) center/contain no-repeat"></span>as of 14:05</span></sc-if>
+    </div>
+
+    <sc-if value="{{ tServices }}" hint-placeholder-val="{{ true }}">
+    <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column">
+      <div style="flex:none;display:flex;align-items:center;gap:8px;height:32px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--muted);font-size:12px;color:{{ sentFg }}"><span style="width:8px;height:8px;flex:none;border-radius:{{ sentRad }};background:{{ sentDot }};transform:{{ sentRot }}"></span><span style="font-weight:500;color:var(--foreground)">NFS VM sentinel:</span><span>{{ sentText }}</span></div>
+      <div style="flex:none;display:grid;grid-template-columns:150px 64px 104px minmax(0,1fr) 112px;gap:12px;align-items:center;height:32px;padding:0 16px;border-bottom:1px solid var(--border);font-size:12px;font-weight:500;color:var(--muted-foreground)"><span>Service</span><span>Pods ready</span><span>Started</span><span>Config status</span><span style="text-align:right">Action</span></div>
+      <sc-for list="{{ services }}" as="s" hint-placeholder-count="4">
+        <div style="display:grid;grid-template-columns:150px 64px 104px minmax(0,1fr) 112px;gap:12px;align-items:center;min-height:52px;padding:6px 16px;border-bottom:1px solid var(--border)">
+          <span style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ s.name }}</span>
+          <span style="font-variant-numeric:tabular-nums">{{ s.pods }}</span>
+          <span style="font-variant-numeric:tabular-nums;color:var(--muted-foreground)">{{ s.started }}</span>
+          <span style="display:flex;flex-direction:column;gap:3px;min-width:0">
+            <sc-if value="{{ s.pending }}" hint-placeholder-val="{{ true }}"><span style="align-self:flex-start;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;white-space:nowrap;color:var(--status-restart-fg);background:var(--status-restart-bg);border:1px solid var(--status-restart-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/clock.svg) center/contain no-repeat"></span>Pending restart since {{ s.since }}</span></sc-if>
+            <sc-if value="{{ s.ok }}" hint-placeholder-val="{{ false }}"><span style="display:inline-flex;align-items:center;gap:4px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/check.svg) center/contain no-repeat"></span>Up to date</span></sc-if>
+            <span style="font-size:12px;color:var(--muted-foreground);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ s.cause }}</span>
+          </span>
+          <span style="position:relative;display:flex;justify-content:flex-end">
+            <button type="button" aria-disabled="{{ s.dis }}" style="display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:4px;border:1px solid var(--border);background:{{ s.btnBg }};color:var(--secondary-foreground);font-size:12px;font-weight:500;opacity:{{ s.op }};cursor:{{ s.cur }}"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/rotate-cw.svg) center/contain no-repeat"></span>Restart</button>
+            <sc-if value="{{ s.tip }}" hint-placeholder-val="{{ false }}"><div role="tooltip" style="position:absolute;z-index:20;bottom:calc(100% + 4px);right:0;display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;background:var(--foreground);color:var(--background);font-size:12px;white-space:nowrap;box-shadow:var(--shadow-popover)">{{ tipText }}</div></sc-if>
+          </span>
+        </div>
+      </sc-for>
+      <div style="padding:10px 16px;font-size:12px;color:var(--muted-foreground)">Restart needs Operator or above. A file that applies to all services, like application.properties, marks every service started before the change.</div>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ tDrift }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column">
+      <div style="flex:none;display:flex;align-items:center;gap:12px;height:32px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--muted);font-size:12px;color:var(--muted-foreground)"><span>Files not in sync, grouped by state</span><span style="margin-left:auto;display:inline-flex;align-items:center;gap:4px;color:var(--foreground);font-weight:500">Sort: Severity<span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/arrow-down.svg) center/contain no-repeat"></span></span></div>
+      <sc-if value="{{ locked }}" hint-placeholder-val="{{ false }}"><div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center;padding:24px"><span aria-hidden="true" style="width:20px;height:20px;background:var(--muted-foreground);mask:url(assets/icons/circle-help.svg) center/contain no-repeat"></span><strong style="font-size:14px;font-weight:600">Drift is unknown without a baseline</strong><span style="max-width:380px;color:var(--muted-foreground)">Lanekeeper can't say which files differ until an admin confirms what presitc is running.</span></div></sc-if>
+      <sc-if value="{{ notLocked }}" hint-placeholder-val="{{ true }}">
+      <sc-for list="{{ driftGroups }}" as="g" hint-placeholder-count="3">
+        <div style="display:flex;flex-direction:column">
+          <div style="display:flex;align-items:center;gap:8px;height:32px;padding:0 16px;border-bottom:1px solid var(--border)"><span aria-hidden="true" style="width:12px;height:12px;background:var(--muted-foreground);mask:url(assets/icons/chevron-down.svg) center/contain no-repeat"></span><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;color:var(--status-{{ g.key }}-fg);background:var(--status-{{ g.key }}-bg);border:1px {{ g.bs }} var(--status-{{ g.key }}-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ g.icon }}.svg) center/contain no-repeat"></span>{{ g.label }}</span><span style="color:var(--muted-foreground);font-variant-numeric:tabular-nums">{{ g.n }}</span></div>
+          <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="1">
+            <div style="display:flex;flex-direction:column;gap:4px;padding:8px 16px 8px 36px;border-bottom:1px solid var(--border)">
+              <div style="display:flex;align-items:center;gap:8px"><span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono);font-size:12px;font-weight:500">{{ it.path }}</span>
+                <span style="flex:none;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;color:{{ it.sev.fg }};background:{{ it.sev.bg }};border:1px solid {{ it.sev.bd }}"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ it.sev.ic }}.svg) center/contain no-repeat"></span>{{ it.sev.l }}</span>
+                <span style="flex:none;width:44px;text-align:right;font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums">{{ it.time }}</span></div>
+              <span style="color:var(--muted-foreground)">{{ it.reason }}</span>
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px">
+                <span style="display:inline-flex;align-items:center;gap:6px;font-size:12px"><span style="font-weight:500">{{ it.who }}</span><span style="color:var(--muted-foreground)">{{ it.how }}</span></span>
+                <span title="Attribution confidence: {{ it.cl }}" style="display:inline-flex;align-items:center;gap:5px;height:18px;padding:0 6px;border-radius:4px;border:1px {{ it.cbs }} var(--input);font-size:12px;line-height:16px"><span aria-hidden="true" style="display:inline-flex;gap:2px;align-items:flex-end"><span style="width:3px;height:8px;border-radius:1px;background:currentColor;opacity:{{ it.b1 }}"></span><span style="width:3px;height:8px;border-radius:1px;background:currentColor;opacity:{{ it.b2 }}"></span><span style="width:3px;height:8px;border-radius:1px;background:currentColor;opacity:{{ it.b3 }}"></span><span style="width:3px;height:8px;border-radius:1px;background:currentColor;opacity:{{ it.b4 }}"></span></span>{{ it.cl }}</span>
+                <span style="margin-left:auto;display:inline-flex;gap:12px;font-size:12px;font-weight:500"><a href="#">{{ it.l1 }}</a><a href="#">{{ it.l2 }}</a></span></div>
+            </div>
+          </sc-for>
+        </div>
+      </sc-for>
+      </sc-if>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ tFindings }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column">
+      <div style="flex:none;display:grid;grid-template-columns:44px 90px minmax(0,1fr) 140px;gap:12px;align-items:center;height:32px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--muted);font-size:12px;font-weight:500;color:var(--muted-foreground)"><span>Rule</span><span style="display:inline-flex;align-items:center;gap:4px;color:var(--foreground)">Severity<span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/arrow-down.svg) center/contain no-repeat"></span></span><span>Finding</span><span>Lines</span></div>
+      <sc-for list="{{ findings }}" as="f" hint-placeholder-count="2">
+        <div style="display:grid;grid-template-columns:44px 90px minmax(0,1fr) 140px;gap:12px;align-items:flex-start;padding:10px 16px;border-bottom:1px solid var(--border)">
+          <span style="font-family:var(--font-mono);font-size:12px;font-weight:500;padding-top:1px">{{ f.id }}</span>
+          <span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;justify-self:start;color:{{ f.sev.fg }};background:{{ f.sev.bg }};border:1px solid {{ f.sev.bd }}"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ f.sev.ic }}.svg) center/contain no-repeat"></span>{{ f.sev.l }}</span>
+          <span style="display:flex;flex-direction:column;gap:2px;min-width:0"><strong style="font-weight:600">{{ f.title }}</strong><span style="font-family:var(--font-mono);font-size:12px">{{ f.file }}</span><span style="color:var(--muted-foreground)">{{ f.why }}</span></span>
+          <span style="display:flex;flex-wrap:wrap;gap:6px">
+            <sc-for list="{{ f.lines }}" as="ln" hint-placeholder-count="2"><a href="#" style="display:inline-flex;align-items:center;height:22px;padding:0 6px;border-radius:4px;border:1px solid var(--border);background:var(--muted);font-family:var(--font-mono);font-size:12px;text-decoration:none">{{ ln }}</a></sc-for>
+          </span>
+        </div>
+      </sc-for>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ tActivity }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column">
+      <div style="flex:none;display:flex;align-items:center;gap:12px;height:32px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--muted);font-size:12px;color:var(--muted-foreground)"><span style="display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 8px;border-radius:999px;border:1px solid var(--border);background:var(--background);color:var(--foreground);font-weight:500"><span style="width:8px;height:8px;border-radius:999px;background:var(--agent-online)"></span>Live feed</span><span>Changes and audit events for {{ lane.name }}</span><span style="margin-left:auto;display:inline-flex;align-items:center;gap:4px;color:var(--foreground);font-weight:500">Sort: Newest<span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/arrow-down.svg) center/contain no-repeat"></span></span></div>
+      <sc-for list="{{ activity }}" as="a" hint-placeholder-count="6">
+        <div style="display:grid;grid-template-columns:44px 64px minmax(0,1fr) auto;gap:12px;align-items:flex-start;padding:8px 16px;border-bottom:1px solid var(--border);background:{{ a.bg }}">
+          <span style="font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums;padding-top:1px">{{ a.time }}</span>
+          <span style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ a.icon }}.svg) center/contain no-repeat"></span>{{ a.type }}</span>
+          <span style="display:flex;flex-direction:column;gap:4px;min-width:0">
+            <span>{{ a.pre }}<span style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ a.file }}</span>{{ a.post }}</span>
+            <span style="display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px"><span style="font-size:12px"><span style="font-weight:500">{{ a.who }}</span> <span style="color:var(--muted-foreground)">{{ a.how }}</span></span>
+              <span title="Attribution confidence: {{ a.cl }}" style="display:inline-flex;align-items:center;gap:5px;height:18px;padding:0 6px;border-radius:4px;border:1px {{ a.cbs }} var(--input);font-size:12px;line-height:16px"><span aria-hidden="true" style="display:inline-flex;gap:2px;align-items:flex-end"><span style="width:3px;height:8px;border-radius:1px;background:currentColor;opacity:{{ a.b1 }}"></span><span style="width:3px;height:8px;border-radius:1px;background:currentColor;opacity:{{ a.b2 }}"></span><span style="width:3px;height:8px;border-radius:1px;background:currentColor;opacity:{{ a.b3 }}"></span><span style="width:3px;height:8px;border-radius:1px;background:currentColor;opacity:{{ a.b4 }}"></span></span>{{ a.cl }}</span></span>
+          </span>
+          <sc-if value="{{ a.hasSev }}" hint-placeholder-val="{{ true }}"><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;color:{{ a.sev.fg }};background:{{ a.sev.bg }};border:1px solid {{ a.sev.bd }}"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ a.sev.ic }}.svg) center/contain no-repeat"></span>{{ a.sev.l }}</span></sc-if>
+          <sc-if value="{{ a.noSev }}" hint-placeholder-val="{{ false }}"><span style="font-size:12px;color:var(--muted-foreground)">Audit</span></sc-if>
+        </div>
+      </sc-for>
+    </div>
+    </sc-if>
+  </section>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1216,&quot;height&quot;:856},&quot;tab&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;services&quot;,&quot;drift&quot;,&quot;findings&quot;,&quot;activity&quot;],&quot;default&quot;:&quot;services&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;logical&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;role&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Admin&quot;,&quot;Viewer&quot;],&quot;default&quot;:&quot;Admin&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;locked&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;agentOff&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;syncing&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;restartTip&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const p = this.props, bool = v => v === true || v === 'true';
+    const tab = p.tab ?? 'services', logical = bool(p.logical), role = p.role ?? 'Admin', isAdmin = role === 'Admin';
+    const locked = bool(p.locked), agentOff = bool(p.agentOff), syncing = bool(p.syncing), tipOn = bool(p.restartTip);
+    const lane = locked
+      ? { tier: 'PRESIT', name: 'presitc', branch: 'sit13', ver: 'unconfirmed', verFg: 'var(--muted-foreground)', tb: 'var(--muted-foreground)', tbg: 'var(--muted-foreground)', tfg: 'var(--background)' }
+      : { tier: 'SIT', name: 'sitb', branch: 'sit7', ver: 'v2.3.1 + 4', verFg: 'var(--foreground)', tb: 'var(--input)', tbg: 'transparent', tfg: 'var(--foreground)' };
+    const SEV = {
+      critical: { l: 'Critical', ic: 'shield-alert', fg: 'var(--status-conflict-fg)', bg: 'var(--status-conflict-bg)', bd: 'var(--status-conflict-border)' },
+      high: { l: 'High', ic: 'triangle-alert', fg: 'var(--danger-fg)', bg: 'var(--danger-bg)', bd: 'var(--danger-border)' },
+      medium: { l: 'Medium', ic: 'info', fg: 'var(--warning-fg)', bg: 'var(--warning-bg)', bd: 'var(--warning-border)' },
+      low: { l: 'Low', ic: 'arrow-down', fg: 'var(--status-unknown-fg)', bg: 'var(--status-unknown-bg)', bd: 'var(--status-unknown-border)' }
+    };
+    const CONF = { Certain: 4, High: 3, Medium: 2, Unknown: 0 };
+    const attr = (who, how, cl) => { const n = CONF[cl], o = i => (i < n ? 1 : 0.25); return { who, how, cl, b1: o(0), b2: o(1), b3: o(2), b4: o(3), cbs: cl === 'Unknown' ? 'dashed' : 'solid' }; };
+    const A = {
+      marco: attr('Marco Diaz', '· via Lanekeeper', 'Certain'),
+      lk: attr('lkowalski', '· edited on NFS VM via sudo vi', 'High'),
+      sync: attr('Sync job csp-tenant-data-sit7', '· run 42', 'High'),
+      nfs: attr('NFS client', '(no sync running)', 'Medium'),
+      unk: attr('Unknown', '', 'Unknown')
+    };
+    const DR = {
+      conflict: ['split', 'Conflict', 'solid'], nfs: ['arrow-up-from-line', 'NFS ahead', 'solid'], git: ['arrow-down-to-line', 'Git ahead', 'solid'], untracked: ['circle-dashed', 'Untracked', 'dashed']
+    };
+
+    // tree model: [depth, kind, name, icon, drift, restart, open, children-count-key]
+    const F = (d, name, icon, dr, rs, extra) => ({ d, name, icon, dr, rs, ...extra });
+    const D = (d, name, open) => ({ d, name, folder: true, open });
+    const phys = [
+      D(0, 'tx-infinity-api', true),
+      F(1, 'tx-infinity-core.yml', 'file-code', null, null),
+      F(1, 'tx-infinity-core-sit7.yml', 'file-code', 'nfs', 'tx-infinity-core: restart pending since 14:02', { sel: true }),
+      F(1, 'tx-infinity-gateway.yml', 'file-code', null, null),
+      F(1, 'account-sorting-config.yml', 'file-code', null, null),
+      F(1, 'account-sorting-config-sit7.yml', 'file-code', null, null),
+      D(0, 'ui/remote-itm-teller', true),
+      F(1, 'teller-ui.yml', 'file-code', 'git', null),
+      F(1, 'teller-labels.json', 'file-code', null, null),
+      D(0, 'limits', true),
+      F(1, 'limits.yml', 'file-code', 'conflict', null),
+      F(1, 'channel-limits.yml', 'file-code', null, null),
+      D(0, 'security', true),
+      F(1, 'security-roles.yml', 'file-code', null, null),
+      F(1, 'security-policy.yml', 'file-code', null, null),
+      D(0, 'document-service/resources', false, { cnt: 1 }),
+      D(0, 'ej-templates', false),
+      F(0, 'application.properties', 'file-text', 'nfs', 'Affects all services · restart pending since 13:40'),
+      F(0, 'channels.yml', 'file-code', null, null)
+    ];
+    phys[15].cnt = 1;
+    // fix sel on logical
+    let model;
+    if (!logical) model = phys;
+    else {
+      model = [];
+      phys.forEach(r => {
+        if (r.name === 'tx-infinity-core.yml') model.push(F(1, 'tx-infinity-core.yml', 'file-code', 'nfs', 'tx-infinity-core: restart pending since 14:02', { sel: true, tenant: true }));
+        else if (r.name === 'tx-infinity-core-sit7.yml') return;
+        else if (r.name === 'account-sorting-config.yml') model.push(F(1, 'account-sorting-config.yml', 'file-code', null, null, { tenant: true }));
+        else if (r.name === 'account-sorting-config-sit7.yml') return;
+        else model.push(r);
+      });
+    }
+    // counts for folders
+    const counts = {}; let cur = null;
+    model.forEach(r => { if (r.folder) { cur = r.name; counts[cur] = locked ? 0 : (r.cnt || 0); } else if (r.d === 1 && r.dr && cur && !locked) counts[cur]++; else if (r.d === 0) cur = null; });
+    const rows = model.map(r => {
+      if (r.folder) {
+        const n = counts[r.name] || 0;
+        return { pl: (10 + r.d * 16) + 'px', sel: false, exp: r.open, bg: 'transparent', chev: r.open ? 'chevron-down' : 'chevron-right', chevOp: 1, icon: r.open ? 'folder-open' : 'folder', name: r.name + '/', title: r.name, fw: 500, tenant: false, restart: false, hasDr: false, count: n > 0, countN: n, countTitle: n + ' files not in sync' };
+      }
+      const d = locked ? null : r.dr, c = d ? DR[d] : null;
+      return { pl: (10 + r.d * 16) + 'px', sel: !!r.sel, exp: undefined, bg: r.sel ? 'var(--selection)' : 'transparent', chev: 'chevron-right', chevOp: 0, icon: r.icon, name: r.name, title: r.name, fw: r.sel ? 600 : 400, tenant: !!r.tenant, restart: !!r.rs && !locked, restartTitle: r.rs || '', hasDr: !!d, dr: d, drIcon: c ? c[0] : '', drLabel: c ? (r.tenant ? '' : c[1]) : '', drTitle: c ? c[1] : '', bs: c ? c[2] : 'solid', count: false };
+    });
+
+    const tabsDef = [['services', 'Services', 4], ['drift', 'Drift', locked ? 0 : 5], ['findings', 'Findings', 2], ['activity', 'Activity', null]];
+    const tabs = tabsDef.map(([k, l, n]) => ({ l, on: tab === k, bb: tab === k ? 'var(--primary)' : 'transparent', fw: tab === k ? 600 : 500, fg: tab === k ? 'var(--foreground)' : 'var(--muted-foreground)', hasN: n !== null && !(k === 'drift' && locked), n, live: k === 'activity' && !agentOff }));
+
+    const viewer = !isAdmin;
+    const restartDisabled = viewer || agentOff;
+    const tipText = agentOff ? 'Agent offline · restarts resume when it reconnects' : 'Requires Operator · Priya Shah can grant';
+    const svc = [
+      { name: 'tx-infinity-core', pods: '2/2', started: '08:41', pending: true, since: '14:02', cause: 'tx-infinity-core-sit7.yml changed; also application.properties (all services) at 13:40' },
+      { name: 'ui-service', pods: '3/3', started: '08:41', pending: true, since: '13:40', cause: 'Affected by application.properties (all services)' },
+      { name: 'document-service', pods: '1/1', started: '13:52', pending: false, cause: 'Started after the last config change' },
+      { name: 'holds-service', pods: '2/2', started: '14:21', pending: false, cause: 'Started after the last config change' }
+    ].map((s, i) => ({ ...s, ok: !s.pending, dis: restartDisabled, op: restartDisabled ? 0.5 : 1, cur: restartDisabled ? 'not-allowed' : 'pointer', btnBg: s.pending ? 'var(--secondary)' : 'transparent', tip: tipOn && i === 0 }));
+
+    const dg = (key, items) => ({ key, icon: DR[key][0], label: DR[key][1], bs: DR[key][2], n: items.length, items });
+    const it = (path, sev, time, reason, a, l1, l2) => ({ path, sev: SEV[sev], time, reason, ...a, l1, l2 });
+    const driftGroups = [
+      dg('conflict', [it('limits/limits.yml', 'critical', '13:58', 'Changed on NFS and in Git since v2.3.1 + 4; Git PR #471 merged at 13:20.', A.marco, 'Resolve', 'Diff')]),
+      dg('nfs', [
+        it('application.properties', 'high', '13:40', 'Changed on NFS; applies to all services, so every service started before 13:40 needs a restart.', A.nfs, 'Raise PR', 'Diff'),
+        it('tx-infinity-api/tx-infinity-core-sit7.yml', 'high', '14:02', 'enableAccountSorting changed false → true; not in Git. tx-infinity-core needs a restart.', A.lk, 'Raise PR', 'Diff')]),
+      dg('git', [it('ui/remote-itm-teller/teller-ui.yml', 'low', '13:12', 'Git has one newer commit (a3f9c21) that NFS does not have yet.', A.sync, 'Open', 'Diff')]),
+      dg('untracked', [it('document-service/resources/receipt-logo.jpeg', 'medium', '09:03', 'On NFS and in no repository, so there is no copy to restore.', A.unk, 'Open', 'Track in Git')])
+    ];
+    const findings = [
+      { id: 'C8', sev: SEV.high, title: 'Duplicate keys', file: 'security/security-roles.yml', why: 'entryGroupConfigMap.atm-iso.DEPOSIT.transactionKey is set twice; the second value wins.', lines: ['L212', 'L488'] },
+      { id: 'C2', sev: SEV.low, title: 'Redundant tenant file', file: 'tx-infinity-api/account-sorting-config-sit7.yml', why: 'Identical to account-sorting-config.yml, so the tenant file changes nothing.', lines: ['Whole file'] }
+    ];
+    const act = (time, type, icon, pre, file, post, a, sev, live) => ({ time, type, icon, pre, file, post, ...a, sev: sev ? SEV[sev] : SEV.low, hasSev: !!sev, noSev: !sev, bg: live ? 'var(--info-bg)' : 'transparent' });
+    const activity = [
+      act('14:05', 'Change', 'file-code', '', 'limits/limits.yml', ' changed on NFS', A.unk, 'critical', true),
+      act('14:02', 'Change', 'file-code', '', 'tx-infinity-core-sit7.yml', ' changed on NFS', A.lk, 'high'),
+      act('13:58', 'Change', 'file-code', '', 'limits/limits.yml', ' saved to NFS', A.marco, 'medium'),
+      act('13:40', 'Change', 'file-code', '', 'application.properties', ' changed on NFS', A.nfs, 'high'),
+      act('13:12', 'Change', 'file-code', 'Sync updated ', 'teller-ui.yml', ' from Git (3 files)', attr('Sync job csp-tenant-data-sit7', '· run 41', 'High'), 'low'),
+      act('12:30', 'Audit', 'history', 'Baseline confirmed at ', 'v2.3.1 + 4', '', attr('Priya Shah', '· via Lanekeeper', 'Certain'), null)
+    ];
+
+    const sentText = agentOff ? 'not reporting, last record 14:05' : 'reporting, last record 14:05';
+    return {
+      locked, notLocked: !locked, agentOff, agentOn: !agentOff, syncing, isAdmin, notAdmin: !isAdmin, lane, baseOk: !locked,
+      agentText: agentOff ? 'Offline · last seen 14:05' : 'Agent online', agentFg: agentOff ? 'var(--muted-foreground)' : 'var(--foreground)',
+      headChips: locked ? [{ key: 'unknown', icon: 'circle-help', n: 412, label: 'Unknown', bs: 'solid' }] : [
+        { key: 'conflict', icon: 'split', n: 1, label: 'Conflict', bs: 'solid' }, { key: 'nfs', icon: 'arrow-up-from-line', n: 2, label: 'NFS ahead', bs: 'solid' },
+        { key: 'git', icon: 'arrow-down-to-line', n: 1, label: 'Git ahead', bs: 'solid' }, { key: 'untracked', icon: 'circle-dashed', n: 1, label: 'Untracked', bs: 'dashed' },
+        { key: 'restart', icon: 'clock', n: 2, label: 'services need restart', bs: 'solid' }],
+      treeW: '460px', logical, swBg: logical ? 'var(--primary)' : 'var(--secondary)', swBorder: logical ? 'var(--primary)' : 'var(--input)', swLeft: logical ? '13px' : '1px', swKnob: logical ? 'var(--primary-foreground)' : 'var(--muted-foreground)',
+      rows, tabs, tServices: tab === 'services', tDrift: tab === 'drift', tFindings: tab === 'findings', tActivity: tab === 'activity',
+      sentText, sentFg: agentOff ? 'var(--warning-fg)' : 'var(--muted-foreground)', sentDot: agentOff ? 'var(--agent-offline)' : 'var(--agent-online)', sentRad: agentOff ? '2px' : '999px', sentRot: agentOff ? 'rotate(45deg)' : 'none',
+      services: svc, tipText, driftGroups, findings, activity
+    };
+  }
+}
+</script>
+</body>
+</html>

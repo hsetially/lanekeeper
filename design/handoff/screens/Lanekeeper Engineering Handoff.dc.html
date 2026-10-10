@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:13px;line-height:18px;-webkit-font-smoothing:antialiased}
+a{color:var(--link)}
+a:hover{color:var(--primary-hover)}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+</style>
+</helmet>
+<div data-theme="light" style="min-height:100vh;background:var(--background);color:var(--foreground)">
+<div style="max-width:1320px;margin:0 auto;padding:32px 24px 80px">
+  <h1 style="margin:0;font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.01em">Lanekeeper · engineering handoff</h1>
+  <p style="margin:6px 0 16px;max-width:820px;font-size:14px;line-height:20px;color:var(--muted-foreground)">Everything needed to build the UI with React, Tailwind and shadcn/ui under a strict CSP. Token values are copied from <code style="font-family:var(--font-mono);font-size:12px">tokens/*.css</code>. Routes are proposed from the screen files; confirm them before wiring the router.</p>
+  <div style="display:flex;flex-wrap:wrap;gap:6px 8px;margin-bottom:12px">
+    <sc-for list="{{ navs }}" as="s" hint-placeholder-count="9"><a href="#{{ s.id }}" style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border:1px solid var(--border);border-radius:4px;text-decoration:none;color:var(--foreground);font-size:12px;font-weight:500" style-hover="background:var(--accent)">{{ s.nav }}</a></sc-for>
+  </div>
+  <sc-for list="{{ sections }}" as="s" hint-placeholder-count="14">
+    <section id="{{ s.id }}" style="padding:28px 0 0;scroll-margin-top:12px">
+      <div style="display:flex;align-items:baseline;gap:10px;border-top:1px solid var(--border);padding-top:16px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">{{ s.title }}</h2></div>
+      <p style="margin:2px 0 10px;max-width:900px;color:var(--muted-foreground)">{{ s.lead }}</p>
+      <div style="border:1px solid var(--border);border-radius:6px;overflow-x:auto;background:var(--card)">
+        <div style="min-width:{{ s.min }}px">
+        <div style="display:grid;grid-template-columns:{{ s.cols }};gap:12px;align-items:center;min-height:32px;padding:0 12px;background:var(--muted);border-bottom:1px solid var(--border);font-size:12px;font-weight:500;color:var(--muted-foreground)">
+          <sc-for list="{{ s.head }}" as="h" hint-placeholder-count="5"><span>{{ h }}</span></sc-for>
+        </div>
+        <sc-for list="{{ s.rows }}" as="r" hint-placeholder-count="6">
+          <div style="display:grid;grid-template-columns:{{ s.cols }};gap:12px;align-items:start;padding:7px 12px;border-bottom:1px solid var(--border)">
+            <sc-for list="{{ r }}" as="c" hint-placeholder-count="5"><span style="min-width:0;font-family:{{ c.ff }};font-size:{{ c.fs }};font-weight:{{ c.fw }};color:{{ c.fg }};word-break:break-word;display:{{ c.disp }}"><span style="display:{{ c.swd }};width:20px;height:16px;border-radius:3px;border:1px solid var(--border);background:{{ c.sw }}"></span>{{ c.t }}</span></sc-for>
+          </div>
+        </sc-for>
+        </div>
+      </div>
+      <sc-if value="{{ s.hasNote }}" hint-placeholder-val="{{ false }}"><p style="margin:8px 0 0;max-width:900px;color:var(--muted-foreground)">{{ s.note }}</p></sc-if>
+    </section>
+  </sc-for>
+</div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const MONO = 'var(--font-mono)', SANS = 'var(--font-sans)';
+    const cell = (x) => {
+      let o = typeof x === 'string' ? { t: x } : x;
+      let t = o.t, m = o.m, fg = 'var(--foreground)', fw = 400;
+      if (t.startsWith('`')) { t = t.slice(1); m = true; }
+      if (t.startsWith('!')) { t = t.slice(1); fg = 'var(--danger-fg)'; fw = 600; }
+      else if (t.startsWith('~')) { t = t.slice(1); fg = 'var(--warning-fg)'; fw = 600; }
+      else if (t.startsWith('+')) { t = t.slice(1); fg = 'var(--success-fg)'; fw = 600; }
+      else if (t.startsWith('^')) { t = t.slice(1); fw = 600; }
+      else if (t.startsWith('_')) { t = t.slice(1); fg = 'var(--muted-foreground)'; }
+      return { t, ff: m ? MONO : SANS, fs: m ? '12px' : '13px', fw, fg, sw: o.sw || 'transparent', swd: o.sw ? 'inline-block' : 'none', disp: o.sw ? 'block' : 'block' };
+    };
+    const sec = (id, nav, title, lead, head, cols, min, rows, note) => ({ id, nav, title, lead, head, cols, min, rows: rows.map(r => r.map(cell)), note, hasNote: !!note });
+
+    // ---- tokens
+    const tw = (n) => /-(foreground|fg)$/.test(n) || n === 'foreground' || n === 'link' ? 'text-' + n : /-bg$/.test(n) ? 'bg-' + n : n === 'input' ? 'border-input' : n === 'ring' ? 'ring-ring' : n === 'border' || /-border$/.test(n) ? 'border-' + n : 'bg-' + n;
+    const G = {
+      'Surface and text': `background|#ffffff|#0e1116
+foreground|#14181f|#e6e9ee
+card|#ffffff|#151a21
+card-foreground|#14181f|#e6e9ee
+popover|#ffffff|#1a2028
+popover-foreground|#14181f|#e6e9ee
+muted|#f5f6f8|#151a21
+muted-foreground|#545e6c|#9aa3b0
+accent|#eef0f3|#222934
+accent-foreground|#14181f|#e6e9ee
+selection|#e3ebfc|#1b2a47
+link|#1d4fb0|#8fb0f2`,
+      'Actions and borders': `primary|#2457c5|#3a6fd9
+primary-hover|#1d49a8|#3061c6
+primary-foreground|#ffffff|#ffffff
+secondary|#eef0f3|#222934
+secondary-hover|#dde1e6|#2c3440
+secondary-foreground|#14181f|#e6e9ee
+destructive|#c4291c|#c8372b
+destructive-hover|#a8221a|#d64a3e
+destructive-foreground|#ffffff|#ffffff
+border|#dde1e6|#2a313c
+input|#858f9f|#6b7588
+ring|#2563eb|#6e9bf2`,
+      'Feedback': `danger-fg|#b0241a|#f4948a
+danger-bg|#fdeceb|#2c1513
+danger-border|#f1b9b3|#6b2a24
+warning-fg|#8a4b00|#f2b551
+warning-bg|#fff4dc|#2a1f0e
+warning-border|#eecf92|#5c4317
+success-fg|#1c6b37|#6fcf8e
+success-bg|#e8f4ec|#11251a
+success-border|#b3dbc1|#24533a
+info-fg|#1d4fb0|#8fb0f2
+info-bg|#ebf1fd|#13203a
+info-border|#bccff5|#2a4478`,
+      'Drift and operational status': `status-sync-fg|#1c6b37|#6fcf8e
+status-sync-bg|#e8f4ec|#11251a
+status-sync-border|#b3dbc1|#24533a
+status-git-fg|#1d4fb0|#8fb0f2
+status-git-bg|#ebf1fd|#13203a
+status-git-border|#bccff5|#2a4478
+status-nfs-fg|#8a4b00|#f2b551
+status-nfs-bg|#fff4dc|#2a1f0e
+status-nfs-border|#eecf92|#5c4317
+status-conflict-fg|#ffffff|#ffffff
+status-conflict-bg|#b9261b|#b52d22
+status-conflict-border|#b9261b|#d0483c
+status-intentional-fg|#6b3fb8|#c3a6f6
+status-intentional-bg|#f3edfc|#231a37
+status-intentional-border|#d4c3f1|#4a3778
+status-unknown-fg|#545e6c|#a3acb8
+status-unknown-bg|#f1f3f5|#1c2129
+status-unknown-border|#d3d8df|#39414d
+status-untracked-fg|#3f4f66|#a9bad0
+status-untracked-bg|#ffffff|#0e1116
+status-untracked-border|#8f99a8|#6b7588
+status-restart-fg|#a3420c|#f6a26b
+status-restart-bg|#ffeee4|#2c1a0f
+status-restart-border|#f2bf9f|#66381c
+status-locked-fg|#3c4450|#c9cfd8
+status-locked-bg|#e6e9ed|#2a313c
+status-locked-border|#c5cbd3|#3c4450
+status-approval-fg|#6b3fb8|#c3a6f6
+status-approval-bg|#ffffff|#0e1116
+status-approval-border|#a98ae0|#7a5fb8
+agent-online|#1e8a45|#4cc274
+agent-degraded|#c27803|#f2b551
+agent-offline|#6b7584|#8f99a8`,
+      'Diff': `diff-add-bg|#e7f5ec|#10271a
+diff-add-gutter|#c9ebd4|#173a25
+diff-add-word|#a9dcb9|#1f5a36
+diff-add-fg|#1c6b37|#6fcf8e
+diff-del-bg|#fdeeed|#2c1513
+diff-del-gutter|#f6d0cc|#44201c
+diff-del-word|#f0b0a9|#6b2a24
+diff-del-fg|#b0241a|#f4948a
+diff-mod-bg|#fff6df|#2a200e
+diff-mod-gutter|#f6e2ac|#3e2f12
+diff-mod-fg|#8a4b00|#f2b551
+diff-hunk-bg|#ebf1fd|#13203a
+diff-hunk-fg|#1d4fb0|#8fb0f2`,
+      'Ramps (same in both themes; not used directly in components)': `gray-0|#ffffff|#ffffff
+gray-25|#f9fafb|#f9fafb
+gray-50|#f5f6f8|#f5f6f8
+gray-100|#eef0f3|#eef0f3
+gray-200|#dde1e6|#dde1e6
+gray-300|#c5cbd3|#c5cbd3
+gray-400|#8f99a8|#8f99a8
+gray-500|#6b7584|#6b7584
+gray-600|#545e6c|#545e6c
+gray-700|#3c4450|#3c4450
+gray-800|#262c35|#262c35
+gray-850|#1c2129|#1c2129
+gray-900|#151a21|#151a21
+gray-950|#0e1116|#0e1116
+blue-50|#ecf2fd|#ecf2fd
+blue-100|#d8e4fb|#d8e4fb
+blue-300|#8fb0f2|#8fb0f2
+blue-400|#6e9bf2|#6e9bf2
+blue-500|#3a6fd9|#3a6fd9
+blue-600|#2457c5|#2457c5
+blue-700|#1d49a8|#1d49a8
+blue-900|#13213b|#13213b`
+    };
+    const tokenSecs = Object.entries(G).map(([g, txt], i) => sec('tok' + i, i === 0 ? 'Tokens' : '', 'Colour tokens · ' + g, i === 0 ? 'CSS variable = shadcn/ui name. Light is :root; dark is .dark on <html> (also [data-theme="dark"]). Tailwind column is the utility to use; the colour key is the same string minus its prefix. Map every key in tailwind.config as var(--name) so a theme switch needs no rebuild.' : '', ['Light', 'Dark', 'CSS variable', 'Tailwind', 'Light value', 'Dark value'], '28px 28px 230px 250px 90px 90px', 900,
+      txt.split('\n').map(l => { const [n, a, b] = l.split('|'); return [{ t: '', sw: a }, { t: '', sw: b }, '`--' + n, '`' + tw(n), '`' + a, '`' + b]; }),
+      i === 3 ? 'Conflict is the only solid status; Untracked is dashed; Approval is an outline. Keep border-style and fill weight, not just hue: they carry the greyscale distinction. Tailwind nesting status.sync.fg yields the same class strings.' : ''));
+    tokenSecs.forEach(s => { if (s.id !== 'tok0') s.nav = ''; });
+
+    const other = sec('tok-other', '', 'Non-colour tokens', 'Same in light and dark unless noted.', ['CSS variable', 'Tailwind', 'Value', 'Use'], '230px 250px 260px minmax(0,1fr)', 900, [
+      ['`--font-sans', '`font-sans', '`Inter, ui-sans-serif, system-ui', 'Self-hosted woff2, weights 400/500/600'],
+      ['`--font-mono', '`font-mono', '`JetBrains Mono, ui-monospace, Menlo', 'Weights 400/500. Every path, key, value, hash, branch'],
+      ['`--text-xs / sm / base / lg / xl / 2xl', '`text-xs … text-2xl', '`12/16 · 13/18 · 14/20 · 16/22 · 20/26 · 24/30', 'Body is text-sm (13/18). Mono is 12/18'],
+      ['`--weight-*', '`font-normal / medium / semibold', '`400 · 500 · 600', 'No bold 700'],
+      ['`--tracking-tight / caps', '`tracking-tight', '`-0.01em · 0.04em', 'Headings 20 and up · uppercase labels'],
+      ['`--numeric', '`tabular-nums', '`tabular-nums', 'All tables, counts, line numbers'],
+      ['`--space-1 … 12', '`p-1 … p-12 (1 = 4px)', '`4 6 8 12 16 20 24 32 40 48', '4px grid; also 2px (0.5) and 6px (1.5)'],
+      ['`--radius-sm / md / --radius', '`rounded-sm / rounded-md / rounded', '`4px · 6px · 6px', '4 controls, badges, chips · 6 cards, popovers, dialogs'],
+      ['`--control-sm / md / lg', '`h-6 / h-7 / h-8', '`24 · 28 · 32', 'Default control is h-7'],
+      ['`--header-height / --toolbar-height', '`h-11 / h-10', '`44 · 40', 'App header, page toolbar'],
+      ['`--row-compact / default / tree / diff', '`h-7 / h-8 / h-7 / h-[18px]', '`28 · 32 · 28 · 18', 'See Fixed row heights'],
+      ['`--shadow-popover', '`shadow-popover', 'L: 0 8px 24px /12%, 0 1px 2px /8% · D: 0 8px 24px /50%, 0 0 0 1px #2a313c', 'Only floating layers. Add under boxShadow'],
+      ['`--overlay', '`bg-overlay', 'L rgba(14,17,22,.45) · D rgba(0,0,0,.6)', 'Dialog scrim'],
+      ['`--diff-empty-bg', '`bg-diff-empty (backgroundImage)', 'repeating-linear-gradient(135deg, #f5f6f8 0 4px, #eef0f3 4px 8px) · D #12161c / #171c23', 'Hatch on the empty side of a diff. A gradient, so register under backgroundImage, not colors'],
+      ['`--focus-ring-width / offset', '`focus-visible:ring-2 ring-offset-2', '`2px · 2px', 'ring-offset uses --background'],
+      ['`--duration-fast / base / --ease-out', '`duration-100 / duration-150, ease-out', '`100ms · 150ms · cubic-bezier(.2,0,0,1)', 'State changes only. No bounce']
+    ]);
+
+    // ---- CSP
+    const csp = sec('csp', 'CSP flags', 'CSP review: what must be redesigned', 'Assumes default-src \'self\' with no unsafe-inline and no third-party origins. A search of every design file found no external URLs, web-font links, CDN scripts or remote images, so there are no third-party assets to replace. The items below are what still conflicts.', ['Verdict', 'Item', 'Where', 'Required change'], '90px 260px 300px minmax(0,1fr)', 1000, [
+      ['!Redesign', 'Inline style="" attributes on every element', 'All .dc.html files (the mock-ups are authored inline)', 'Not shippable as markup under style-src without unsafe-inline. Build with Tailwind classes against the tokens. Runtime-dynamic values (virtual row offset, split-pane width, popover position) go through React\'s style prop or setProperty, which use CSSOM and are allowed. Never emit style="" in server-rendered HTML.'],
+      ['!Redesign', 'Theme flash-prevention inline script', 'Not in the mocks; the usual fix for dark mode', 'Do not add one. Store the theme in a cookie and have the server write class="dark" on <html>. For "system", ship the init logic as a same-origin /theme-init.js with a script-src \'self\' tag, or use a nonce.'],
+      ['~Verify', 'Runtime-injected <style> elements', 'sonner (toasts); Radix ScrollArea', 'Both are known to inject a style element at runtime. Pass a nonce or pick CSS-only replacements (native overflow scroll with a styled scrollbar). Test with the real CSP header before sign-off.'],
+      ['~Verify', 'Live updates transport', 'LiveIndicator, Approvals "Live"', 'EventSource or WebSocket needs connect-src for the API origin (\'self\' covers same-origin SSE). Prefer SSE on the same origin.'],
+      ['~Verify', 'Icons through CSS mask: url(assets/icons/*.svg)', 'All screens', 'Same-origin, so it passes img-src \'self\'. About 80 requests though. Ship Lucide as inline React SVG components (lucide-react) and tree-shake; this also lets icons colour with currentColor without masks.'],
+      ['+OK', 'Fonts', 'tokens/fonts.css', 'Inter 400/500/600 and JetBrains Mono 400/500, self-hosted woff2 with font-display: swap. Needs font-src \'self\'. No Google Fonts link anywhere. Keep the OFL licence files in the repo.'],
+      ['+OK', 'Hatch pattern, spinner, pulse', 'Diff empty side, loader-circle, Reconnecting dot', 'Pure CSS (gradient and @keyframes in the compiled stylesheet). No assets. Add motion-reduce: variants.'],
+      ['+OK', 'Third-party UI code', 'shadcn/ui (Radix), cmdk, sonner, TanStack Table and Virtual, react-resizable-panels, lucide-react', 'All bundled from npm into first-party scripts, so script-src \'self\' is enough. Licence notices go in the build output.'],
+      ['_Not shipped', 'DC runtime scripts (support.js, x-dc script blocks)', 'Mock-up tooling only', 'Prototype and style guide use inline scripts for demo state and the live contrast check. Do not port them; the contrast check becomes a unit test.'],
+      ['_Not shipped', 'Clipboard, images', 'Copy chips', 'navigator.clipboard.writeText is not CSP-governed. The designs contain no photographs or logos; the product name is plain Inter text.']
+    ]);
+
+    // ---- components
+    const S = 'Default, hover, focus-visible, disabled';
+    const comp = sec('components', 'Components', 'Component inventory → shadcn/ui', 'Every component in the Style Guide, with every variant and state shown in the designs. “Custom” has no shadcn primitive. All sizes are in px.', ['Component', 'shadcn/ui base', 'Variants and sizes', 'States', 'Notes'], '190px 200px minmax(0,1.2fr) minmax(0,1.2fr) minmax(0,1fr)', 1100, [
+      ['^Button', 'button', 'default (primary), secondary, ghost, destructive · sizes sm 24, default 28 · icon 28×28', 'Default, hover, focus-visible, active (1px drop plus inset shadow), disabled (50%), loading (spinner, aria-busy, label becomes a verb: “Working…”)', 'Disabled with a reason: use aria-disabled plus a tooltip on a wrapper; native disabled buttons cannot take focus or a tooltip. Reason names the role needed and who can grant it.'],
+      ['^IconButton', 'button + tooltip', 'ghost 24 and 28, secondary 28. Always aria-label and tooltip, with shortcut hint', S + ', active, pressed (toggle)', 'Row actions appear on row hover or selection (opacity), never display:none, so keyboard focus still reaches them.'],
+      ['^Input, SearchInput', 'input (+ kbd)', 'h-7 text input · with leading icon · with trailing kbd (/) · with toggles Match case and Regex (24×22, aria-pressed)', 'Default, hover (border → muted-foreground), focus (ring plus 1px inner ring), disabled (muted bg, 55%), loading (“Checking…”), invalid (destructive border plus message, aria-invalid, aria-describedby)', 'Path-glob and setting-query inputs use the same shell.'],
+      ['^Select', 'select (Radix)', 'Trigger matches Input; sizes 28', 'Default, open, focus, disabled', 'Combobox trigger (swimlane filter, 208px) is the same trigger with role=combobox.'],
+      ['^Combobox, MultiSelect', 'popover + command', 'Single, multi with removable chips (badge outline + remove button), “All 6 / None / sitb, presita +1” summary label', 'Closed, open, empty results, selected, chip hover/remove', 'Chips are badge variant=outline.'],
+      ['^Toggle', 'switch', '28×14 track', 'Off, on, focus, disabled', ''],
+      ['^Checkbox', 'checkbox', '14px box', 'Unchecked, checked, indeterminate (select-all), focus, disabled', 'Header checkbox aria-checked true / mixed / false.'],
+      ['^Radio', 'radio-group', 'Vertical list: Keep NFS version, Take Git version, Merge manually', 'Unselected, selected, focus, disabled', ''],
+      ['^SegmentedControl', 'toggle-group type=single', 'Diff view (Split, Unified) · filter (Drift, All, Tenant) · approval status tabs', 'Selected (background plus 1px border), hover, focus, disabled', 'aria-pressed per item.'],
+      ['^StatusBadge', 'badge (cva variant per status)', 'sync, git, nfs, conflict (solid), intentional, unknown, untracked (dashed), restart, locked, approval (outline). Labels: In sync, Git ahead, NFS ahead, Conflict, Intentional, Unknown, Untracked, Pending restart, Locked, Pending approval. PR open reuses git; Adopted reuses sync. Height 20, icon 12', 'Static; in a table row (32), tree row (28), file header; count suffix “4 drift”', 'Always icon + label + colour. Never colour alone.'],
+      ['^RoleBadge, TierBadge', 'badge outline', 'Role: Viewer, Editor, Operator, Admin, No role · Tier: SIT (outlined), PRESIT (filled muted)', 'Static', 'Admin-only badge uses the approval outline style.'],
+      ['^Path, Setting, Hash, Branch chip; VersionLabel', 'badge + button + tooltip', 'Mono 12. Path truncates in the middle. Hash 7 chars. Version e.g. v2.3.1', 'Default, hover, focus, copied (check icon, label “Copied”, announced via aria-live), truncated (full value in tooltip)', 'Copy buttons for path, hash, request ID, setting path.'],
+      ['^LiveIndicator, AgentDot', 'Custom (badge shell)', 'Pill 24: Live (filled green dot), Reconnecting… retry in 3s (ring dot, warning tint, pulse), Offline · data from 10:42 (dashed pill, wifi-off). Agent dot: online filled, degraded ring, offline diamond', 'Three connection states; role=status', 'Offline adds a banner and disables writes.'],
+      ['^DataTable', 'table + TanStack Table + TanStack Virtual', 'Row 28 compact or 32 default; header 32; toolbar min 40; footer 36. Columns: select, path, drift, swimlane, branch, lines (right), modified, actions', 'Row default, hover (accent), selected (selection), focus; header sort none/asc/desc (aria-sort), unsortable disabled; loading skeleton, empty, error, bulk selection bar (“n selected”, Compare, Raise PR)', 'Cursor pagination: “Showing 100 of 5,000”, cursor token, Load 100 more / Show fewer. Div grid, role=grid, aria-rowcount, aria-rowindex.'],
+      ['^TreeView', 'Custom role=tree + scroll-area', 'Row 28, indent 16 per level, chevron, folder or file-class icon, status badge at the end', 'Collapsed, expanded, selected, focused (inset 2px ring), leaf; aria-level, aria-expanded, aria-activedescendant', 'Same row shell is used by search results (swimlane, file, hit rows).'],
+      ['^Tabs', 'tabs', 'Underline (primary 2px). With count (Files 412, Findings 8). Search type: Text, Settings, Docs', 'Selected, hover, focus, disabled', 'Detail tabs are routes, not local state.'],
+      ['^Breadcrumb', 'breadcrumb', 'ops-sit › sitb › path', 'Link, current page, truncated', ''],
+      ['^SplitPane', 'resizable (react-resizable-panels)', 'Horizontal, withHandle', 'Default, hover, dragging, keyboard-resizing', 'Handle takes ←/→; width persists per user.'],
+      ['^DiffHeader, DiffView', 'Custom + toggle-group + button', 'Split and unified. Line kinds: context, changed (del plus add), modified (~), added (empty hatched left), deleted (empty hatched right), hunk header (@@), fold row (“12 unchanged lines”, click to expand), word-level highlight. Line 18', 'Default, loading skeleton, binary or too large, identical (“No differences”), selected line (selection), previous/next change', 'Header: left and right source chips, +n −n counts, NFS-ahead badge, Raise PR…'],
+      ['^CommandPalette', 'command inside dialog (CommandDialog)', 'Groups: Swimlanes, Files, Services, Docs, Users, Actions. Item: icon, mono name with match emphasis, muted meta, optional lane chip, key hint', 'Empty query, results, active item (accent), no results, loading', 'Width 640, input 44, opens with ⌘K.'],
+      ['^Dialog', 'dialog', 'Standard · ShortcutsSheet (760, two columns)', 'Open, closing, scroll body', 'Focus trap, Esc closes, focus returns to trigger.'],
+      ['^ConsequenceDialog', 'alert-dialog', 'Raise PR, Restart services, Adopt swimlane, Save with impact. States the consequence first (“2 services need restart”)', 'Idle, working (buttons disabled, spinner), error (inline alert with request ID), success (closes, then toast or banner)', 'Primary button label is the action verb, never “OK”.'],
+      ['^DestructiveConfirm', 'alert-dialog', 'Delete file and similar. Destructive button', 'Confirm disabled until the name is typed; working; error', 'Initial focus on Cancel.'],
+      ['^Toast', 'sonner', 'Info, success, warning, error · with action (e.g. “View swimlane”)', 'Enter, hover (pause), dismiss', 'Bottom-right, max 3. See Interaction notes for what may and may not be a toast.'],
+      ['^Alert, Banner', 'alert', 'info, success, warning, danger. Banner = full width. Instances: NFS ahead, PR open, Pending approval, Conflict, Saved (restart needed), Restarted, Offline, Adopted, Locked / untracked', 'Static; with action buttons; dismissible only for success', 'role=status, or role=alert for danger.'],
+      ['^Tooltip, Kbd', 'tooltip, kbd', 'Tooltip 12px. Kbd 18px min, 2px bottom border; glyphs ↑↓↵⌘⇧ are the only glyph “icons”', 'Hover and focus open (500ms), Esc closes', ''],
+      ['^Skeleton, Spinner', 'skeleton; Lucide loader-circle animate-spin', 'Skeleton matches each screen\'s real grid. Spinner 12, 14, 16', 'Loading; aria-busy on the region', 'No full-page spinners.'],
+      ['^Sidebar', 'sidebar', '224 expanded, 48 collapsed (icon rail with count badges and tooltips). Items: Swimlanes, Compare, Feature status, Findings, Approvals, Audit, Admin (Admin role only)', 'Default, hover, current (accent, 600), collapsed + tooltip, hidden-by-role', 'Viewer: hide destinations; disable actions with a reason.'],
+      ['^UserMenu, SwimlaneSwitcher', 'dropdown-menu; popover + command', 'Menu items 32. Switcher rows: tier, branch, drift count', 'Closed, open, active item', ''],
+      ['^EmptyState, ErrorState, PermissionState', 'Custom (alert, button)', 'Per screen. Error: title, one line, request ID with copy. Permission: Pending user, Viewer, Editor without Operator', 'Specimens in Lanekeeper States', 'Say what is missing, why, and the next step for the role.']
+    ]);
+
+    // ---- screens
+    const R = '`';
+    const screens = sec('screens', 'Screens and routes', 'Screen inventory and routes', 'Proposed from the screen files. Filters, selection and the file or diff being viewed live in the URL so any state can be shared. Edit mode, open dialogs and unsaved text do not. The prototype\'s hash links use path segments (…/files/dir/name); the brief\'s ?path= form is canonical, with the value URL-encoded.', ['Screen', 'Route', 'Query', 'Role', 'Source file'], '170px 300px minmax(0,1fr) 130px 230px', 1100, [
+      ['^Sign in', R + '/signin', R + 'next', 'Anyone', 'Access Screen'],
+      ['^Access pending', R + '/access/pending', '', 'No role', 'Access Screen'],
+      ['^Onboarding (token verify)', R + '/access/onboarding', '', 'Editor+ (new)', 'Access and Onboarding'],
+      ['^Swimlanes', R + '/swimlanes', R + 'tier=sit|presit · state=drift|all · q', 'Viewer+', 'Shell, Swimlanes'],
+      ['^Swimlane overview', R + '/swimlanes/:id', '', 'Viewer+', 'Detail, Swimlane Detail'],
+      ['^Files (tree and table)', R + '/swimlanes/:id/files', R + 'path= · line= · diff=git|<otherLaneId> · sort= · cursor=', 'Viewer+', 'File View, File, Detail'],
+      ['^File viewer', R + '/swimlanes/:id/files', R + '?path=tx-infinity-api%2Ftx-infinity-core-sit1.yml&line=42', 'Viewer+ (edit: Editor)', 'File'],
+      ['^Diff', R + '/swimlanes/:id/files', R + '?path=…&diff=git (Git vs NFS) or &diff=presita (this lane vs that lane)', 'Viewer+', 'File, Compare'],
+      ['^Services', R + '/swimlanes/:id/services', R + 'q', 'Viewer+ (restart: Operator)', 'Swimlane Detail'],
+      ['^Swimlane findings', R + '/swimlanes/:id/findings', R + 'code=C1…C8 · severity', 'Viewer+', 'Findings Page'],
+      ['^Swimlane audit', R + '/swimlanes/:id/audit', 'as Audit', 'Viewer+', 'Swimlane Detail'],
+      ['^Adoption wizard', R + '/swimlanes/:id/adopt', R + 'step=scan|source|confirm', 'Admin', 'Adoption Wizard'],
+      ['^Compare', R + '/compare', R + 'lanes=sit,sitb,… · file= · only=diff', 'Viewer+', 'Compare Page'],
+      ['^Feature status', R + '/status', R + 'setting= · lane= (opens the side panel)', 'Viewer+', 'Feature Status'],
+      ['^Search', R + '/search', R + 'type=text|settings|docs · q · cs=1 · rx=1 · lanes=sit,sitb · glob=', 'Viewer+', 'Search Page'],
+      ['^Doc reader', R + '/docs/:slug', R + '#anchor · version', 'Viewer+', 'Search Page (docs)'],
+      ['^Findings (all swimlanes)', R + '/findings', R + 'code · severity · lanes', 'Viewer+', 'Findings and Adoption'],
+      ['^Approvals', R + '/approvals', R + 'state=pending|approved|rejected|withdrawn', 'Editor+ (decide: Admin)', 'Approvals Page'],
+      ['^Approval detail (drawer, 600)', R + '/approvals/:id', '', 'Editor+', 'Approvals Page'],
+      ['^Audit', R + '/audit', R + 'actor · swimlane · type · from · to · cursor', 'Viewer+', 'Audit Page'],
+      ['^Admin: users and access requests', R + '/admin/users', R + 'q · role', 'Admin', 'Admin Page'],
+      ['^Admin: swimlanes and agents', R + '/admin/swimlanes', '', 'Admin', 'Admin Page'],
+      ['^Admin: paths, merge, tiers, folders, notify', R + '/admin/:section', R + 'section = paths | merge | tiers | folders | notify (confirm the full list with the Admin page)', 'Admin', 'Admin Page'],
+      ['^Command palette, Shortcuts sheet', 'Overlays on any route, no URL', '', 'Viewer+', 'Shell'],
+      ['^Not found, error, forbidden', R + '/404 · /error · /403', R + 'req=<requestId>', 'Anyone', 'States']
+    ], 'A direct link a role cannot open lands on the permission screen, not a redirect. Hidden destinations (Admin, Approvals for Viewers) still resolve to that screen.');
+
+    // ---- keyboard
+    const kbd = sec('keys', 'Keyboard', 'Keyboard map per screen', 'The Shell shortcuts sheet is the source of truth. Sequences (g then s) time out after 1.2s. Single-key shortcuts are off while an input, editor or dialog has focus. Every shortcut must also be reachable by pointer.', ['Scope', 'Keys', 'Action'], '230px 280px minmax(0,1fr)', 800, [
+      ['^Global', '`⌘K', 'Command palette'], ['', '`/', 'Search text (focus query)'], ['', '`?', 'Shortcuts sheet'], ['', '`⌘B', 'Toggle sidebar'], ['', '`Esc', 'Close dialog, menu or palette; cancel inline edit'],
+      ['^Go to', '`g then s / c / f / i / a', 'Swimlanes / Compare / Feature status / Findings / Audit'],
+      ['^Lists, tables, trees', '`↑ ↓', 'Move selection'], ['', '`↵', 'Open'], ['', '`⌘↵', 'Open in new tab'], ['', '`Space or x', 'Select row; ⇧ extends the range'], ['', '`c', 'Compare the selected rows (row action “Compare  C”)'],
+      ['^Tree only', '`→ / ←', 'Expand or move to first child / collapse or move to parent'], ['', '`Home / End', 'First / last row'], ['', '_type-ahead', 'Jump to the next row starting with the typed characters'],
+      ['^Swimlanes', '`↑ ↓ ↵', 'Move and open a swimlane; adopt is a button, not a shortcut'],
+      ['^File viewer', '`e', 'Edit'], ['', '`⌘S', 'Review and save (opens the consequence dialog; never saves silently)'], ['', '`Esc', 'Cancel edit (asks if there are unsaved changes)'],
+      ['^Diff', '`n / p', 'Next / previous change'], ['', '`u', 'Toggle split and unified'], ['', '`↵ on fold row', 'Expand unchanged lines'],
+      ['^Command palette', '`↑ ↓ ↵', 'Move and run'], ['', '`⌘1 … ⌘9', 'Run the nth result'], ['', '`Backspace on empty', 'Clear the group filter'],
+      ['^Search', '`/', 'Focus query'], ['', '_Match case, Regex', 'Toggle buttons; no shortcut assigned yet. Assign ⌥C and ⌥R if wanted'],
+      ['^Approvals', '`↑ ↓ ↵', 'Move and open the drawer'], ['', '`Esc', 'Close drawer; Reject needs a reason first'],
+      ['^Dialogs', '`Tab, ⇧Tab', 'Trapped inside; initial focus on the least destructive control'], ['', '`↵', 'Confirms only when the primary action is enabled; never in DestructiveConfirm'],
+      ['^Split pane handle', '`← →', 'Resize 16px; ⇧ = 64px; Home/End collapse']
+    ], '!Conflict to resolve: the Style Guide shortcuts sheet shows J/K, X, [ and ] , E and ⌘S, while the Shell sheet shows ↑↓, n/p and u. This page follows the Shell sheet. Pick one set and update the other.');
+
+    // ---- interaction
+    const inter = sec('interaction', 'Interaction notes', 'Interaction notes', 'Behaviour that is not visible in the static boards.', ['Topic', 'Rule'], '220px minmax(0,1fr)', 800, [
+      ['^Writes are not optimistic', 'Save, Raise PR, Submit for approval, Approve, Reject, Restart, Adopt, role changes and deletes all wait for the server. On click: the button goes to loading (spinner, aria-busy, verb label), the form and dialog controls disable, nothing in the page changes. On 2xx: update from the response (or the live event), then close the dialog and show the result. Do not use onMutate or setQueryData before the response. Reads may use stale-while-revalidate.'],
+      ['^Write failure', 'Keep the dialog open and the user\'s input intact. Show an inline alert: what happened, why, next step, copyable request ID. Never a toast for a failed write, because it disappears. 409 on save shows the Conflict banner with “Re-apply your change on top”.'],
+      ['^Double submit', 'Disable after the first click and send an Idempotency-Key per attempt. Status badges such as Pending approval and PR open appear only after the server confirms.'],
+      ['^Live updates', 'One SSE stream per session carries swimlane drift, file changes, approvals and restarts. Update visible rows in place (badge, counts, modified time). Do not re-sort or insert rows under the cursor or selection; show an “n updates” chip that applies on click. On reconnect, refetch the visible queries instead of replaying missed events. Backoff 1, 2, 4, 8, 15s capped; the pill shows “Reconnecting… retry in 3s”. After 3 failed attempts go Offline: banner “Live updates paused, retrying”, writes disabled with reason “Unavailable offline”, reads stay open.'],
+      ['^Toasts', 'Only for events the user did not cause or that finished in the background: an out-of-band NFS change (action “View swimlane”), an approval decision on your proposal, an async restart finishing. Bottom-right, max 3, 6s, pause on hover, aria-live polite. Errors that need a decision, and every write result in a dialog, are inline.'],
+      ['^Restart', 'Services restart from a banner action after a save. The confirm dialog lists services and swimlane. Progress shows in the banner (“Restarting 2 services…”) driven by live events; it never fakes completion.'],
+      ['^Approvals', 'You cannot approve your own proposal (button disabled with the reason and who the other Admins are). Reject requires a reason. A proposal whose base changed shows Stale with Reject only.'],
+      ['^Forms and focus', 'Validate on blur and on submit; invalid sets aria-invalid and points aria-describedby at the message. After a dialog closes, focus returns to the trigger. After navigation, focus moves to the page h1.'],
+      ['^Pagination', 'Cursor-based (opaque token). “Load 100 more” appends and keeps focus on the first new row. Search truncates at 1,000 matches with a warning row; never silently.'],
+      ['^Motion', '100 to 150ms ease-out for state changes only. Pulse (Reconnecting) and spinner stop or slow under prefers-reduced-motion. No bounces, no page transitions.'],
+      ['^Theme', 'Light, dark, system. Stored in a cookie and applied by the server as class="dark" on <html> (see CSP flags). All components read tokens only; no hard-coded hex.'],
+      ['^Copy buttons', 'Copy the exact path, hash, setting path or request ID. The icon switches to a check and the label to “Copied” for 1.5s, announced politely.']
+    ]);
+
+    // ---- rows
+    const rows = sec('rows', 'Row heights', 'Fixed row heights for virtualised lists', 'Rows are fixed so estimateSize is a constant and scroll position never drifts. One line per row: no wrapping. Long paths truncate in the middle with the full value in a tooltip; long diff lines scroll horizontally (white-space: pre).', ['List', 'Row height', 'Tailwind', 'TanStack Virtual', 'Notes'], '230px 100px 160px 220px minmax(0,1fr)', 950, [
+      ['^DataTable, default', '`32px', '`h-8', '`estimateSize: () => 32', 'Header 32. Default density. 24 rows visible at 1440×900'],
+      ['^DataTable, compact', '`28px', '`h-7', '`estimateSize: () => 28', 'Header 28. 28 rows visible at 1440×900'],
+      ['^TreeView', '`28px', '`h-7', '`estimateSize: () => 28', 'Indent 16 per level'],
+      ['^Search results', '`28px', '`h-7', '`estimateSize: () => 28', 'Swimlane, file and hit rows. Truncation warning row is 36'],
+      ['^Diff line', '`18px', '`h-[18px]', '`estimateSize: () => 18', 'Mono 12/18. Hunk header and fold row also 18 (confirm in build). Split view: two panes share one virtualiser, so rows stay aligned'],
+      ['^Menus, switcher', '`32px', '`h-8', 'Not virtualised under 50', 'Palette items 32 (proposed)'],
+      ['^Shortcut sheet rows', '`28px', '`h-7', 'Not virtualised', ''],
+      ['^Fixed chrome', '`44 · 40 · 36', '`h-11 · h-10 · h-9', '—', 'App header 44, page toolbar 40, table footer 36'],
+      ['^Setup', '`overscan: 10', '', '`getScrollElement = scroll container', 'Set aria-rowcount to the total and aria-rowindex on each rendered row. Keep the focused or selected row rendered while scrolled away. Virtualise above 100 rows; below that, render all.']
+    ]);
+
+    const sections = [csp, ...tokenSecs, other, comp, screens, kbd, inter, rows].map(s => s);
+    return { sections, navs: sections.filter(s => s.nav) };
+  }
+}
+
+</script>
+</body>
+</html>

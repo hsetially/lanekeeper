@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="consequence.css">
+</helmet>
+<div class="lk cd" role="alertdialog" aria-labelledby="del-t" style="width:548px;max-width:100%">
+  <div class="cd-head">
+    <i class="ic s16 i-triangle-alert" style="color:var(--danger-fg);margin-top:3px"></i>
+    <div class="cd-ttl"><h3 id="del-t">Delete tx-infinity-core-sit7.yml from sitb?</h3><span class="cd-sub">sitb / tx-infinity-api / tx-infinity-core-sit7.yml</span></div>
+    <button type="button" class="b ib" aria-label="Close"><i class="ic i-x"></i></button>
+  </div>
+  <div class="cd-body">
+    <div class="fx fx-danger" role="alert"><i class="ic i-triangle-alert"></i><span>After the next restart, tx-infinity-core in sitb will use tx-infinity-core.yml.<span class="x">The tenant override leaves NFS now. Running pods keep using it until they restart.</span></span></div>
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <span class="sec">What changes in the effective config</span>
+      <div class="sd">
+        <div class="sd-r h"><span></span><span>Key</span><span>Now (sit7 file)</span><span>After (base v2.3.1)</span></div>
+        <div class="sd-r mod"><span class="t">Changed</span><span>tx.core.pool.maxSize</span><span class="o">40</span><span class="n">25</span></div>
+        <div class="sd-r mod"><span class="t">Changed</span><span>tx.core.retry.maxAttempts</span><span class="o">5</span><span class="n">3</span></div>
+        <div class="sd-r del"><span class="t">Removed</span><span>tx.core.features.fastSettle</span><span class="o">true</span><span class="u">not set (default false)</span></div>
+        <div class="sd-r add"><span class="t">Added</span><span>tx.core.metrics.enabled</span><span class="u">not set</span><span class="n">true</span></div>
+        <div class="sd-r" style="grid-template-columns:1fr;font:400 12px/18px var(--font-sans);color:var(--muted-foreground)"><span>14 other keys are identical in both files.</span></div>
+      </div>
+    </div>
+    <dl class="kv">
+      <dt>Restart</dt><dd><span class="bd bd-restart"><i class="ic i-clock"></i>tx-infinity-core</span><span class="mut">3 pods in sitb need a restart to apply this</span></dd>
+      <dt>Git</dt><dd>The file stays on <span class="ch">csp-tenant-data@sit7</span>. sitb shows <span class="bd bd-git"><i class="ic i-arrow-down-to-line"></i>Git ahead</span> until a PR removes it there.</dd>
+    </dl>
+    <label class="fld"><span>Type <b>tx-infinity-core-sit7.yml</b> to confirm</span><span class="{{ inCls }}"><span class="mono">{{ typed }}</span><sc-if value="{{ notMatch }}" hint-placeholder-val="{{ true }}"><span class="caret"></span></sc-if><sc-if value="{{ match }}" hint-placeholder-val="{{ false }}"><i class="ic i-check" style="margin-left:auto;color:var(--success-fg)"></i></sc-if></span></label>
+  </div>
+  <div class="cd-foot"><span class="l">{{ hint }}</span><button type="button" class="b g">Cancel</button><button type="button" class="{{ btnCls }}" aria-disabled="{{ notMatch }}"><i class="ic i-trash-2"></i>Delete file</button></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:580,&quot;height&quot;:700},&quot;typed&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;tx-infinity-core-s&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const typed = this.props.typed ?? '', match = typed === 'tx-infinity-core-sit7.yml';
+    return { typed, match, notMatch: !match, inCls: 'in' + (match ? ' ok' : ' fcs'), btnCls: 'b d' + (match ? '' : ' off'), hint: match ? 'Name matches' : 'Enter does nothing until the name matches' };
+  }
+}
+</script>
+</body>
+</html>
