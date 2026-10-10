@@ -2,7 +2,7 @@
 
 Status: APPROVED
 Contract-change: APPROVED
-Extra-paths: `deny.toml`, `docs/decisions.md`
+Extra-paths: `deny.toml`, `docs/decisions.md`, `crates/xtask/tests/budgets_registry.rs`, `docs/performance.md`
 Prompt: prompts/02-agent.md
 Branch: agent/02-agent
 
