@@ -6,7 +6,7 @@ pub mod idtoken;
 pub mod joiner;
 pub mod jointoken;
 pub mod key;
-mod kubecall;
+pub(crate) mod kubecall;
 pub mod schedule;
 pub mod store;
 

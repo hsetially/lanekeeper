@@ -13,6 +13,7 @@
 //! - [`transport`]: TLS 1.3 to the hub, the gRPC stream, the bounded outbox, and the session that reconnects (T3, S6).
 //! - [`fileops`]: reading, writing and deleting files, byte-exact and never blind (T5, S11, S17).
 //! - [`dispatch`]: the hub's commands, and the mapping from their outcomes to answers (T5).
+//! - [`kube`]: the Deployment, Pod and Job watchers, cluster reports and restarts (T6, S17).
 //! - [`scan`]: the scan loop that keeps the tree current, pushes deltas and answers the hub (T4, D63, P1).
 //! - [`tree`]: the Merkle tree of the NFS root, its diffs and the ring of recent roots (T4, D63).
 #![forbid(unsafe_code)]
@@ -30,6 +31,7 @@ pub mod dispatch;
 pub mod fileops;
 pub mod http;
 pub mod identity;
+pub mod kube;
 pub mod root;
 pub mod scan;
 pub mod transport;

@@ -16,19 +16,25 @@
 //! | a symbolic link, a reserved name, a path that failed validation | `DENIED` |
 //! | not a regular file, over 2 MiB, a command this build does not carry out | `UNSUPPORTED` |
 //! | anything else from the file system, a timeout, too many requests at once | `IO` |
+//! | a restart in a namespace the agent was not given | `DENIED` |
+//! | a restart of a Deployment that does not exist | `NOT_FOUND` |
+//! | the Kubernetes API refused, timed out, or the watchers have not listed yet | `IO` |
 //!
 //! Commands whose part of the agent is not built yet are answered `UNSUPPORTED` at once rather than left to time out
-//! at the hub; each task that adds one (cluster, restart, config-server) takes it out of [`Dispatcher::handle`]'s
-//! catch-all.
+//! at the hub; each task that adds one (config-server) takes it out of [`Dispatcher::handle`]'s catch-all. The cluster
+//! commands (`RequestClusterReport`, `RestartDeployment`) are carried out by a [`ClusterOps`] given to
+//! [`Dispatcher::with_cluster`]; without one they are `UNSUPPORTED` too.
 
 use std::fmt;
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use domain::{AgentReply, ContentHash, HubCommand, NfsPath, OpError, OpResult, RequestId};
+use domain::{AgentReply, ContentHash, HubCommand, NfsPath, OpError, OpResult, RequestId, ServiceRef};
 use proto::convert::FromAgent;
 use tracing::{debug, info, warn};
 
 use crate::fileops::{FileContent, FileError, FileOps, OpOutcome, WriteHooks};
+use crate::kube::ClusterOps;
 
 /// What a command may do, from the hub's settings as they are now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,17 +104,61 @@ pub fn read_reply(request_id: RequestId, path: NfsPath, result: Result<FileConte
 /// Carries out the file commands with [`FileOps`].
 pub struct Dispatcher<H: WriteHooks = crate::fileops::NoHooks> {
     ops: FileOps<H>,
+    cluster: Option<Arc<dyn ClusterOps>>,
 }
 
 impl<H: WriteHooks> fmt::Debug for Dispatcher<H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Dispatcher").field("ops", &self.ops).finish()
+        f.debug_struct("Dispatcher")
+            .field("ops", &self.ops)
+            .field("cluster", &self.cluster.is_some())
+            .finish()
     }
 }
 
 impl<H: WriteHooks> Dispatcher<H> {
     pub fn new(ops: FileOps<H>) -> Self {
-        Self { ops }
+        Self { ops, cluster: None }
+    }
+
+    /// Let the dispatcher answer `RequestClusterReport` and `RestartDeployment` (T6).
+    #[must_use]
+    pub fn with_cluster(mut self, cluster: Arc<dyn ClusterOps>) -> Self {
+        self.cluster = Some(cluster);
+        self
+    }
+
+    async fn cluster_report(&self, cluster: &dyn ClusterOps, request_id: RequestId) -> FromAgent {
+        match cluster.full_report().await {
+            Ok(report) => {
+                debug!(%request_id, deployments = report.deployments.len(), "cluster report answered");
+                FromAgent::Reply(AgentReply::Cluster { request_id, report })
+            }
+            Err(error) => {
+                warn!(%request_id, %error, "cluster report refused");
+                failure(request_id, error.code(), None)
+            }
+        }
+    }
+
+    async fn restart(
+        &self,
+        cluster: &dyn ClusterOps,
+        request_id: RequestId,
+        service: &ServiceRef,
+    ) -> FromAgent {
+        match cluster.restart(service).await {
+            Ok(()) => FromAgent::Reply(AgentReply::Op(OpResult {
+                request_id,
+                ok: true,
+                error: None,
+                current_hash: None,
+            })),
+            Err(error) => {
+                info!(%request_id, namespace = service.namespace(), name = service.name(), code = ?error.code(), %error, "restart refused");
+                failure(request_id, error.code(), None)
+            }
+        }
     }
 }
 
@@ -160,17 +210,26 @@ impl<H: WriteHooks> CommandHandler for Dispatcher<H> {
                 log_outcome("delete", &request_id, &path, &result);
                 Some(op_reply(request_id, result))
             }
-            // Cluster reports, restarts and the config-server calls arrive with T6 and T12. Until then the hub is told
-            // so at once instead of waiting for a timeout.
-            HubCommand::RestartDeployment { request_id, .. }
-            | HubCommand::RequestClusterReport { request_id }
-            | HubCommand::NotifyConfigServer { request_id, .. }
-            | HubCommand::FetchServed { request_id, .. } => {
-                info!(%request_id, "a command this build does not carry out; answered UNSUPPORTED");
-                Some(failure(request_id, OpError::Unsupported, None))
-            }
+            HubCommand::RequestClusterReport { request_id } => match &self.cluster {
+                Some(cluster) => Some(self.cluster_report(cluster.as_ref(), request_id).await),
+                None => Some(unsupported(request_id)),
+            },
+            HubCommand::RestartDeployment { request_id, service } => match &self.cluster {
+                Some(cluster) => Some(self.restart(cluster.as_ref(), request_id, &service).await),
+                None => Some(unsupported(request_id)),
+            },
+            // The config-server calls arrive with T12. Until then the hub is told so at once instead of waiting for a
+            // timeout.
+            HubCommand::NotifyConfigServer { request_id, .. }
+            | HubCommand::FetchServed { request_id, .. } => Some(unsupported(request_id)),
         }
     }
+}
+
+/// The answer to a command this build does not carry out.
+fn unsupported(request_id: RequestId) -> FromAgent {
+    info!(%request_id, "a command this build does not carry out; answered UNSUPPORTED");
+    failure(request_id, OpError::Unsupported, None)
 }
 
 #[cfg(test)]

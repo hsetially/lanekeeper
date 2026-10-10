@@ -29,6 +29,8 @@ prost.workspace = true
 rayon.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
@@ -46,10 +48,10 @@ zeroize.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+http-body.workspace = true
 insta.workspace = true
 proptest.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+serde-saphyr.workspace = true
 tempfile.workspace = true
 time = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }

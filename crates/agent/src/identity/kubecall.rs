@@ -6,10 +6,10 @@ use std::time::Duration;
 use super::error::KubeError;
 
 /// Every call to the API server gets this long (rule 5). The server is in the cluster, so a slow answer means trouble.
-pub(super) const CALL_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Run `call`, and turn a failure into a [`KubeError`] that names `op` and the HTTP status, never the server's message.
-pub(super) async fn kube_call<T>(
+pub(crate) async fn kube_call<T>(
     op: &'static str,
     call: impl Future<Output = Result<T, kube::Error>>,
 ) -> Result<T, KubeError> {
