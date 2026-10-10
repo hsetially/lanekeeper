@@ -19,6 +19,7 @@ rust-version = "1.88"
 # Workspace crates. The version keeps `cargo deny` from flagging them as wildcard dependencies.
 domain = { path = "crates/domain", version = "0.1.0" }
 ports = { path = "crates/ports", version = "0.1.0" }
+proto = { path = "crates/proto", version = "0.1.0" }
 # Every version is an exact pin, at least 14 days old when chosen (S19). Default features are off; member crates enable what they use.
 # Data and errors
 serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }
@@ -52,10 +53,17 @@ protox = "=0.9.1"
 tokio-stream = { version = "=0.1.19", default-features = false }
 hyper-util = { version = "=0.1.21", default-features = false }
 tower = { version = "=0.5.3", default-features = false }
+# Agent (prompt 02). cap-std keeps every agent file access inside the NFS root (S17); `http` validates the hub,
+# config-server and metadata URLs at startup (it is already in the graph through tonic); `globset` validates the ignore,
+# sync-Job and Helm-hint globs at startup and matches them in the walker (decision A1).
+cap-std = { version = "=4.0.3", default-features = false }
+http = { version = "=1.5.0", default-features = false, features = ["std"] }
+globset = { version = "=0.4.20", default-features = false }
 # Test tooling
 proptest = "=1.11.0"
 insta = "=1.48.0"
 static_assertions = "=1.1.0"
+tempfile = "=3.27.0"
 testcontainers = { version = "=0.28.0", default-features = false }
 
 [workspace.lints.rust]
