@@ -247,3 +247,29 @@ fn no_unbounded_channels() {
         }
     }
 }
+
+/// Decision A1 / D89: the walker is the agent's own, over cap-std. The `ignore` crate walks by path and would follow a
+/// directory swapped for a symlink, so it must not come back as a dependency.
+#[test]
+fn the_agent_does_not_depend_on_the_ignore_crate() {
+    let manifest = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap();
+    for line in manifest.lines().filter(|l| !l.trim_start().starts_with('#')) {
+        let name = line.split(['=', '.']).next().unwrap_or("").trim();
+        assert_ne!(
+            name, "ignore",
+            "the agent walks with its own cap-std walker (D89): {line}"
+        );
+    }
+    for (rel, source) in sources(&src_dir()) {
+        for (n, line) in source.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            assert!(
+                !line.contains("WalkParallel") && !line.contains("ignore::"),
+                "{rel}:{}: the `ignore` crate's walker (D89)",
+                n + 1
+            );
+        }
+    }
+}

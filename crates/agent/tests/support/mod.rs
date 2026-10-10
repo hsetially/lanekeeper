@@ -2,17 +2,23 @@
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 pub mod clock;
+pub mod collect_sink;
 pub mod fake_hub;
 pub mod fake_kube;
 pub mod fake_metadata;
 pub mod fake_net;
 pub mod log_capture;
+pub mod oob;
+pub mod perf;
 pub mod raw_server;
 pub mod restarts;
 pub mod rig;
+pub mod scripted_source;
 pub mod scripted_transport;
 pub mod test_ca;
 pub mod tls;
+pub mod tree;
+pub mod workload;
 
 use std::collections::HashMap;
 use std::path::Path;

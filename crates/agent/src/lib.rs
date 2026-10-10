@@ -11,6 +11,8 @@
 //! - [`http`]: the plain-HTTP client for the metadata server and the config-server (T2, T12).
 //! - [`identity`]: the key, the certificate, joining the hub and renewing (T2, S5).
 //! - [`transport`]: TLS 1.3 to the hub, the gRPC stream, the bounded outbox, and the session that reconnects (T3, S6).
+//! - [`scan`]: the scan loop that keeps the tree current, pushes deltas and answers the hub (T4, D63, P1).
+//! - [`tree`]: the Merkle tree of the NFS root, its diffs and the ring of recent roots (T4, D63).
 #![forbid(unsafe_code)]
 // The error enums document themselves, and a one-line accessor does not need `#[must_use]`.
 #![allow(
@@ -25,7 +27,9 @@ pub mod config;
 pub mod http;
 pub mod identity;
 pub mod root;
+pub mod scan;
 pub mod transport;
+pub mod tree;
 
 pub use root::{NfsRoot, StartupError};
 

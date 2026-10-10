@@ -300,3 +300,4 @@ The team made every decision below explicitly during product design. Agents: tre
   - **Values,** for an allowlist only: `SPRING_APPLICATION_NAME`, `SPRING_PROFILES_ACTIVE`, `CONFIG_CLIENT_CACHE_TTL`, `CONFIG_CLIENT_MONITOR_ACTIVEMQ_ENABLED`.
   - **Names only** for every other environment variable, never their values. This feeds C10.
   - **The config-server pod's start time,** which feeds C11.
+- **D89** (2026-10-10) The agent's directory walk is an own parallel walker over the cap-std `Dir`, not `ignore::WalkParallel`. S17 requires every agent file access to go through cap-std, and `ignore` walks by path, so a directory swapped for a symlink during the walk would be followed. `globset` still matches the ignore and deny globs. This narrows D54 for the agent only; the `ignore` crate is not an agent dependency.

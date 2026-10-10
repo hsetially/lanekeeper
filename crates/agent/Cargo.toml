@@ -26,8 +26,10 @@ k8s-openapi.workspace = true
 kube.workspace = true
 pem.workspace = true
 prost.workspace = true
+rayon.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-rustls.workspace = true
@@ -42,6 +44,8 @@ x509-parser.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
+insta.workspace = true
 proptest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -54,3 +58,21 @@ rcgen = { workspace = true, features = ["x509-parser"] }
 # The fake hub is a real tonic server behind a real TLS acceptor, and one test needs a TLS 1.2-only server.
 rustls = { workspace = true, features = ["tls12"] }
 tonic = { workspace = true, features = ["server"] }
+
+# Benchmarks (T4, rule 14). Two criterion benchmarks for the walker, and two harnesses that write
+# `target/perf-results/*.json` for the numbers criterion cannot take (a latency over a connection, bytes on a wire).
+[[bench]]
+name = "full_rehash"
+harness = false
+
+[[bench]]
+name = "stat_walk"
+harness = false
+
+[[bench]]
+name = "oob_change"
+harness = false
+
+[[bench]]
+name = "idle_traffic"
+harness = false

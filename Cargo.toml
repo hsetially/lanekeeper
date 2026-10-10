@@ -83,12 +83,18 @@ time = { version = "=0.3.55", default-features = false }
 # dev-dependencies alone, for the tests that prove a TLS 1.2 hub is refused.
 rustls = { version = "=0.23.45", default-features = false, features = ["std", "aws_lc_rs"] }
 tokio-rustls = { version = "=0.26.5", default-features = false, features = ["aws_lc_rs"] }
+# Agent scanning (T4, P1, P4). rayon runs the walk and the hashing on a dedicated pool of the configured size, never the
+# global pool, and always inside `spawn_blocking` (code rule 4). sha2 is the Merkle and content hash (already pinned).
+rayon = "=1.12.0"
 # Test tooling
 proptest = "=1.11.0"
 insta = "=1.48.0"
 static_assertions = "=1.1.0"
 tempfile = "=3.27.0"
 testcontainers = { version = "=0.28.0", default-features = false }
+# Agent benchmarks (T4, P4, rule 14). Without the HTML report (plotters) and the global rayon feature: `cargo bench` only
+# needs the harness and the `sample.json` files that `cargo xtask bench-check` reads.
+criterion = { version = "=0.8.2", default-features = false, features = ["cargo_bench_support"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
