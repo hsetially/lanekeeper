@@ -10,6 +10,7 @@ use rcgen::{
     BasicConstraints, CertificateParams, CertificateSigningRequestParams, CertifiedIssuer, DistinguishedName,
     DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PublicKeyData, SanType,
 };
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use time::OffsetDateTime;
 
 /// The moment tests treat as "now": 2027-01-15T08:00:00Z, in Unix milliseconds. Any fixed instant would do.
@@ -105,6 +106,41 @@ impl TestCa {
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
         let leaf = params.signed_by(key, &self.issuer).unwrap();
         vec![Bytes::copy_from_slice(leaf.der()), self.der()]
+    }
+}
+
+/// A TLS server identity: the chain (leaf first) and the key of the leaf.
+pub struct ServerCert {
+    pub chain: Vec<CertificateDer<'static>>,
+    pub key: PrivateKeyDer<'static>,
+}
+
+impl TestCa {
+    /// The CA certificate as PEM: the content of `LK_HUB_CA_FILE`.
+    pub fn pem(&self) -> String {
+        pem::encode(&pem::Pem::new("CERTIFICATE", self.der().to_vec()))
+    }
+
+    /// A TLS server certificate for `names` (DNS), signed by this CA. Valid from 1975 to 4096 (rcgen's default), so
+    /// the agent's check against the real clock never depends on when the test runs.
+    pub fn issue_server(&self, names: &[&str]) -> ServerCert {
+        let mut params =
+            CertificateParams::new(names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>()).unwrap();
+        params.distinguished_name = DistinguishedName::new();
+        params
+            .distinguished_name
+            .push(DnType::CommonName, "lanekeeper hub");
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        let key = KeyPair::generate().unwrap();
+        let leaf = params.signed_by(&key, &self.issuer).unwrap();
+        ServerCert {
+            chain: vec![
+                CertificateDer::from(leaf.der().to_vec()),
+                CertificateDer::from(self.der().to_vec()),
+            ],
+            key: PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
+        }
     }
 }
 

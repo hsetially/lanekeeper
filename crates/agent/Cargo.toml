@@ -16,17 +16,27 @@ async-trait.workspace = true
 bytes.workspace = true
 cap-std.workspace = true
 fastrand.workspace = true
+futures.workspace = true
 globset.workspace = true
 http.workspace = true
 http-body-util.workspace = true
-hyper = { workspace = true, features = ["client", "http1"] }
+hyper = { workspace = true, features = ["client", "http1", "http2"] }
 hyper-util = { workspace = true, features = ["tokio"] }
 k8s-openapi.workspace = true
 kube.workspace = true
 pem.workspace = true
+prost.workspace = true
 rcgen.workspace = true
+rustls.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["net", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio-rustls.workspace = true
+tokio-stream.workspace = true
+# The generated gRPC client runs over the agent's own HTTP/2 connection (`transport::grpc`), not tonic's `Channel`, so
+# that the TLS settings, the URI scheme and the keepalive are all set in one place that no feature flag elsewhere in the
+# workspace can change.
+tonic = { workspace = true, features = ["codegen"] }
+tower.workspace = true
 tracing.workspace = true
 x509-parser.workspace = true
 zeroize.workspace = true
@@ -38,7 +48,9 @@ serde_json.workspace = true
 tempfile.workspace = true
 time = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
-tower.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "std"] }
 # The fake hub issues certificates from the agent's CSR, which needs rcgen's CSR parser.
 rcgen = { workspace = true, features = ["x509-parser"] }
+# The fake hub is a real tonic server behind a real TLS acceptor, and one test needs a TLS 1.2-only server.
+rustls = { workspace = true, features = ["tls12"] }
+tonic = { workspace = true, features = ["server"] }

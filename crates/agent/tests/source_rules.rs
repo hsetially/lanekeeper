@@ -8,8 +8,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Files that may open something with ambient authority. Each is a startup reader that runs before any hub command:
-/// the NFS root (`root.rs`). T3 adds the hub CA file and T9 the spool directory.
-const AMBIENT_ALLOWED: &[&str] = &["root.rs"];
+/// the NFS root (`root.rs`) and the pinned hub CA file (`tls.rs`, read once, with a size limit, through a cap-std `Dir`
+/// opened on its directory). T9 adds the spool directory.
+const AMBIENT_ALLOWED: &[&str] = &["root.rs", "tls.rs"];
 
 /// APIs that reach the filesystem without a cap-std `Dir`.
 const FORBIDDEN_ALWAYS: &[&str] = &[
@@ -182,4 +183,67 @@ fn agent_san_defined_in_one_constant() {
     // And the one place that checks a certificate uses the constant.
     let cert = files.iter().find(|(rel, _)| rel == "identity/cert.rs").unwrap();
     assert!(cert.1.contains("strip_prefix(AGENT_SAN_PREFIX)"));
+}
+
+/// Lines that name the generated wire types outside the transport directory. Comments are skipped.
+fn generated_type_uses(rel: &str, source: &str) -> Vec<String> {
+    if rel.starts_with("transport/") {
+        return Vec::new();
+    }
+    source
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim_start().starts_with("//"))
+        .filter(|(_, line)| has_token(line, "proto::pb") || has_token(line, "pb::"))
+        .map(|(n, line)| format!("{rel}:{}: {}", n + 1, line.trim()))
+        .collect()
+}
+
+/// S11: everything the hub sends is validated by `proto::convert` before the agent acts on it. The generated messages
+/// are used in `transport/` only, so no other module can read an unvalidated path, hash or length.
+#[test]
+fn generated_wire_types_stay_in_the_transport_directory() {
+    let files = sources(&src_dir());
+    let violations: Vec<String> = files
+        .iter()
+        .flat_map(|(rel, source)| generated_type_uses(rel, source))
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "generated wire types outside transport/:\n{}",
+        violations.join("\n")
+    );
+    // The scan is not blind: the transport does use them.
+    assert!(
+        files
+            .iter()
+            .any(|(rel, source)| rel.starts_with("transport/") && has_token(source, "pb::HubMessage"))
+    );
+    // And it catches a planted use.
+    assert_eq!(
+        generated_type_uses("scan.rs", "fn f(m: proto::pb::HubMessage) {}").len(),
+        1
+    );
+    assert_eq!(
+        generated_type_uses("dispatch.rs", "use proto::pb;\nlet m: pb::ReadFile = x;").len(),
+        2
+    );
+    assert!(generated_type_uses("transport/wire.rs", "use proto::pb;").is_empty());
+}
+
+/// Rule 5: every channel is bounded.
+#[test]
+fn no_unbounded_channels() {
+    for (rel, source) in sources(&src_dir()) {
+        for (n, line) in source.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            assert!(
+                !line.contains("unbounded_channel") && !line.contains("UnboundedSender"),
+                "{rel}:{}: an unbounded channel (code rule 5)",
+                n + 1
+            );
+        }
+    }
 }

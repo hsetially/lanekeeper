@@ -1,13 +1,18 @@
 //! Helpers shared by the integration tests.
-#![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
+#![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 pub mod clock;
 pub mod fake_hub;
 pub mod fake_kube;
 pub mod fake_metadata;
+pub mod fake_net;
 pub mod log_capture;
 pub mod raw_server;
+pub mod restarts;
+pub mod rig;
+pub mod scripted_transport;
 pub mod test_ca;
+pub mod tls;
 
 use std::collections::HashMap;
 use std::path::Path;

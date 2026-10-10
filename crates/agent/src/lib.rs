@@ -10,6 +10,7 @@
 //! - [`clock`], [`backoff`]: injectable time, and retry delays with full jitter.
 //! - [`http`]: the plain-HTTP client for the metadata server and the config-server (T2, T12).
 //! - [`identity`]: the key, the certificate, joining the hub and renewing (T2, S5).
+//! - [`transport`]: TLS 1.3 to the hub, the gRPC stream, the bounded outbox, and the session that reconnects (T3, S6).
 #![forbid(unsafe_code)]
 // The error enums document themselves, and a one-line accessor does not need `#[must_use]`.
 #![allow(
@@ -24,6 +25,7 @@ pub mod config;
 pub mod http;
 pub mod identity;
 pub mod root;
+pub mod transport;
 
 pub use root::{NfsRoot, StartupError};
 

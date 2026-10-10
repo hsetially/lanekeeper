@@ -83,7 +83,7 @@ impl KeyMaterial {
         &self.spki
     }
 
-    /// A PKCS#10 request for this key, self-signed to prove we hold it. See [`super::csr`].
+    /// A PKCS#10 request for this key, self-signed to prove we hold it. See `csr.rs`.
     pub fn csr_der(&self) -> Result<Bytes, KeyError> {
         super::csr::build(self)
     }
