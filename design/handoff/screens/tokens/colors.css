@@ -1,0 +1,116 @@
+/* Lanekeeper colour tokens. Names follow shadcn/ui CSS variables.
+   Light = :root, Dark = .dark or [data-theme="dark"]. Hex for direct Tailwind config use. */
+:root {
+  /* Neutral ramp (cool grey) */
+  --gray-0: #ffffff; --gray-25: #f9fafb; --gray-50: #f5f6f8; --gray-100: #eef0f3; --gray-200: #dde1e6;
+  --gray-300: #c5cbd3; --gray-400: #8f99a8; --gray-500: #6b7584; --gray-600: #545e6c; --gray-700: #3c4450;
+  --gray-800: #262c35; --gray-850: #1c2129; --gray-900: #151a21; --gray-950: #0e1116;
+  /* Brand ramp (calm blue) */
+  --blue-50: #ecf2fd; --blue-100: #d8e4fb; --blue-300: #8fb0f2; --blue-400: #6e9bf2; --blue-500: #3a6fd9;
+  --blue-600: #2457c5; --blue-700: #1d49a8; --blue-900: #13213b;
+
+  /* Semantic — shadcn/ui names */
+  --background: #ffffff;
+  --foreground: #14181f;
+  --card: #ffffff;               /* = surface */
+  --card-foreground: #14181f;
+  --popover: #ffffff;
+  --popover-foreground: #14181f;
+  --muted: #f5f6f8;              /* subtle surface: toolbars, table header */
+  --muted-foreground: #545e6c;   /* secondary text */
+  --accent: #eef0f3;             /* shadcn "accent" = hover / selected surface (NOT brand) */
+  --accent-foreground: #14181f;
+  --primary: #2457c5;            /* brand accent (calm blue) */
+  --primary-hover: #1d49a8;
+  --primary-foreground: #ffffff;
+  --secondary: #eef0f3;
+  --secondary-hover: #dde1e6;
+  --secondary-foreground: #14181f;
+  --border: #dde1e6;             /* decorative separation */
+  --input: #858f9f;              /* control boundary, ≥3:1 */
+  --ring: #2563eb;               /* focus ring, ≥3:1 on every surface */
+  --selection: #e3ebfc;          /* selected row */
+  --link: #1d4fb0;
+  --destructive: #c4291c;
+  --destructive-hover: #a8221a;
+  --destructive-foreground: #ffffff;
+  --danger-fg: #b0241a; --danger-bg: #fdeceb; --danger-border: #f1b9b3;
+  --warning-fg: #8a4b00; --warning-bg: #fff4dc; --warning-border: #eecf92;
+  --success-fg: #1c6b37; --success-bg: #e8f4ec; --success-border: #b3dbc1;
+  --info-fg: #1d4fb0; --info-bg: #ebf1fd; --info-border: #bccff5;
+
+  /* Drift + operational status (fg = text & icon, bg = tint, border) */
+  --status-sync-fg: #1c6b37; --status-sync-bg: #e8f4ec; --status-sync-border: #b3dbc1;
+  --status-git-fg: #1d4fb0; --status-git-bg: #ebf1fd; --status-git-border: #bccff5;
+  --status-nfs-fg: #8a4b00; --status-nfs-bg: #fff4dc; --status-nfs-border: #eecf92;
+  --status-conflict-fg: #ffffff; --status-conflict-bg: #b9261b; --status-conflict-border: #b9261b; /* solid: strongest in greyscale */
+  --status-intentional-fg: #6b3fb8; --status-intentional-bg: #f3edfc; --status-intentional-border: #d4c3f1;
+  --status-unknown-fg: #545e6c; --status-unknown-bg: #f1f3f5; --status-unknown-border: #d3d8df;
+  --status-untracked-fg: #3f4f66; --status-untracked-bg: #ffffff; --status-untracked-border: #8f99a8; /* dashed */
+  --status-restart-fg: #a3420c; --status-restart-bg: #ffeee4; --status-restart-border: #f2bf9f;
+  --status-locked-fg: #3c4450; --status-locked-bg: #e6e9ed; --status-locked-border: #c5cbd3;
+  --status-approval-fg: #6b3fb8; --status-approval-bg: #ffffff; --status-approval-border: #a98ae0; /* outline variant of violet */
+  --agent-online: #1e8a45; --agent-degraded: #c27803; --agent-offline: #6b7584;
+
+  /* Diff body */
+  --diff-add-bg: #e7f5ec; --diff-add-gutter: #c9ebd4; --diff-add-word: #a9dcb9; --diff-add-fg: #1c6b37;
+  --diff-del-bg: #fdeeed; --diff-del-gutter: #f6d0cc; --diff-del-word: #f0b0a9; --diff-del-fg: #b0241a;
+  --diff-mod-bg: #fff6df; --diff-mod-gutter: #f6e2ac; --diff-mod-fg: #8a4b00;
+  --diff-empty-bg: repeating-linear-gradient(135deg, #f5f6f8 0 4px, #eef0f3 4px 8px);
+  --diff-hunk-bg: #ebf1fd; --diff-hunk-fg: #1d4fb0;
+  --overlay: rgba(14, 17, 22, 0.45);
+  --shadow-popover: 0 8px 24px rgba(14,17,22,0.12), 0 1px 2px rgba(14,17,22,0.08);
+  color-scheme: light;
+}
+
+.dark, [data-theme="dark"] {
+  --background: #0e1116;
+  --foreground: #e6e9ee;
+  --card: #151a21;
+  --card-foreground: #e6e9ee;
+  --popover: #1a2028;
+  --popover-foreground: #e6e9ee;
+  --muted: #151a21;
+  --muted-foreground: #9aa3b0;
+  --accent: #222934;
+  --accent-foreground: #e6e9ee;
+  --primary: #3a6fd9;
+  --primary-hover: #3061c6;
+  --primary-foreground: #ffffff;
+  --secondary: #222934;
+  --secondary-hover: #2c3440;
+  --secondary-foreground: #e6e9ee;
+  --border: #2a313c;
+  --input: #6b7588;
+  --ring: #6e9bf2;
+  --selection: #1b2a47;
+  --link: #8fb0f2;
+  --destructive: #c8372b;
+  --destructive-hover: #d64a3e;
+  --destructive-foreground: #ffffff;
+  --danger-fg: #f4948a; --danger-bg: #2c1513; --danger-border: #6b2a24;
+  --warning-fg: #f2b551; --warning-bg: #2a1f0e; --warning-border: #5c4317;
+  --success-fg: #6fcf8e; --success-bg: #11251a; --success-border: #24533a;
+  --info-fg: #8fb0f2; --info-bg: #13203a; --info-border: #2a4478;
+
+  --status-sync-fg: #6fcf8e; --status-sync-bg: #11251a; --status-sync-border: #24533a;
+  --status-git-fg: #8fb0f2; --status-git-bg: #13203a; --status-git-border: #2a4478;
+  --status-nfs-fg: #f2b551; --status-nfs-bg: #2a1f0e; --status-nfs-border: #5c4317;
+  --status-conflict-fg: #ffffff; --status-conflict-bg: #b52d22; --status-conflict-border: #d0483c;
+  --status-intentional-fg: #c3a6f6; --status-intentional-bg: #231a37; --status-intentional-border: #4a3778;
+  --status-unknown-fg: #a3acb8; --status-unknown-bg: #1c2129; --status-unknown-border: #39414d;
+  --status-untracked-fg: #a9bad0; --status-untracked-bg: #0e1116; --status-untracked-border: #6b7588;
+  --status-restart-fg: #f6a26b; --status-restart-bg: #2c1a0f; --status-restart-border: #66381c;
+  --status-locked-fg: #c9cfd8; --status-locked-bg: #2a313c; --status-locked-border: #3c4450;
+  --status-approval-fg: #c3a6f6; --status-approval-bg: #0e1116; --status-approval-border: #7a5fb8;
+  --agent-online: #4cc274; --agent-degraded: #f2b551; --agent-offline: #8f99a8;
+
+  --diff-add-bg: #10271a; --diff-add-gutter: #173a25; --diff-add-word: #1f5a36; --diff-add-fg: #6fcf8e;
+  --diff-del-bg: #2c1513; --diff-del-gutter: #44201c; --diff-del-word: #6b2a24; --diff-del-fg: #f4948a;
+  --diff-mod-bg: #2a200e; --diff-mod-gutter: #3e2f12; --diff-mod-fg: #f2b551;
+  --diff-empty-bg: repeating-linear-gradient(135deg, #12161c 0 4px, #171c23 4px 8px);
+  --diff-hunk-bg: #13203a; --diff-hunk-fg: #8fb0f2;
+  --overlay: rgba(0, 0, 0, 0.6);
+  --shadow-popover: 0 8px 24px rgba(0,0,0,0.5), 0 0 0 1px #2a313c;
+  color-scheme: dark;
+}

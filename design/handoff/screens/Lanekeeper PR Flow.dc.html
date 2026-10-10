@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="consequence.css">
+</helmet>
+<div class="lk cd" role="dialog" aria-labelledby="prf-t" style="width:600px;max-width:100%">
+  <div class="cd-head">
+    <div class="cd-ttl"><h3 id="prf-t">{{ title }}</h3><span class="cd-sub">sitb / tx-infinity-api / tx-infinity-core-sit7.yml</span></div>
+    <sc-if value="{{ showSteps }}" hint-placeholder-val="{{ true }}"><span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted-foreground);margin-top:3px"><span style="display:flex;gap:2px"><span style="width:20px;height:4px;border-radius:2px;background:var(--primary)"></span><span style="width:20px;height:4px;border-radius:2px;background:{{ bar2 }}"></span></span>{{ stepLabel }}</span></sc-if>
+    <button type="button" class="b ib" aria-label="Close" onClick="{{ close }}"><i class="ic i-x"></i></button>
+  </div>
+
+  <sc-if value="{{ isTarget }}" hint-placeholder-val="{{ true }}">
+    <div class="cd-body">
+      <div role="radiogroup" aria-label="Target of the pull request" class="oc-grid">
+        <div role="radio" aria-checked="{{ tenant }}" tabindex="{{ tiT }}" class="{{ ocT }}" onClick="{{ pickT }}" onKeyDown="{{ kdT }}">
+          <div class="oc-h"><span class="rd"></span><div><b>Tenant branch sit7</b><span class="s">(this branch only)</span></div></div>
+          <dl class="kv" style="grid-template-columns:52px minmax(0,1fr);gap:6px 8px;font-size:12px;line-height:16px">
+            <dt>Repo</dt><dd><span class="ch">csp-tenant-data</span></dd>
+            <dt>Branch</dt><dd><span class="ch"><i class="ic s12 i-git-branch"></i>sit7</span></dd>
+            <dt>Writes</dt><dd><span class="ch">data/config/tx-infinity-api/tx-infinity-core.yml</span></dd>
+          </dl>
+          <p style="font-size:12px;line-height:16px;display:flex;gap:6px;align-items:flex-start"><i class="ic s12 i-layers" style="margin-top:2px"></i><span>Affects swimlanes running sit7: <strong class="mono">sitb</strong></span></p>
+          <sc-if value="{{ fresh }}" hint-placeholder-val="{{ false }}">
+            <div class="wn"><i class="ic i-triangle-alert"></i><span>New file on sit7. Future base changes won't reach sit7 for this file.</span></div>
+          </sc-if>
+        </div>
+        <div role="radio" aria-checked="{{ base }}" tabindex="{{ tiB }}" class="{{ ocB }}" onClick="{{ pickB }}" onKeyDown="{{ kdB }}">
+          <div class="oc-h"><span class="rd"></span><div><b>Base</b><span class="s">(all swimlanes)</span></div></div>
+          <dl class="kv" style="grid-template-columns:52px minmax(0,1fr);gap:6px 8px;font-size:12px;line-height:16px">
+            <dt>Repo</dt><dd><span class="ch">configuration-base-saas</span></dd>
+            <dt>Branch</dt><dd><span class="ch"><i class="ic s12 i-git-branch"></i>main (default)</span></dd>
+            <dt>Writes</dt><dd><span class="ch">config/tx-infinity-api/tx-infinity-core.yml</span></dd>
+          </dl>
+          <div class="wn"><i class="ic i-triangle-alert"></i><span>This copies one tenant's content into base and affects every swimlane on its next sync.</span></div>
+        </div>
+      </div>
+      <div class="{{ fxCls }}" role="status"><i class="{{ fxIcon }}"></i><span>{{ fxText }}<span class="x">{{ fxX }}</span></span></div>
+    </div>
+    <div class="cd-foot"><span class="l">Step 1 of 2</span><button type="button" class="b g" onClick="{{ close }}">Cancel</button><button type="button" class="b p" onClick="{{ next }}">Continue</button></div>
+  </sc-if>
+
+  <sc-if value="{{ isForm }}" hint-placeholder-val="{{ false }}">
+    <div class="cd-body">
+      <div class="{{ fxCls }}" role="status"><i class="{{ fxIcon }}"></i><span>{{ fxText }}<span class="x">{{ fxX }}</span></span></div>
+      <div class="sumry">
+        <div class="r"><span>Target</span><span class="ch">{{ repo }}</span><span class="ch"><i class="ic s12 i-git-branch"></i>{{ baseBranch }}</span><button type="button" class="b g sm" onClick="{{ back }}" style="margin-left:auto">Change</button></div>
+        <div class="r"><span>Writes</span><span class="ch">{{ writes }}</span></div>
+        <div class="r"><span>From</span><span class="ch"><i class="ic s12 i-git-branch"></i>{{ prBranch }}</span></div>
+      </div>
+      <label class="fld"><span>Title</span><input class="in" type="text" value="{{ titleVal }}" onChange="{{ setTitle }}"></label>
+      <label class="fld"><span>Description</span><textarea class="ta" value="{{ descVal }}" onChange="{{ setDesc }}"></textarea></label>
+    </div>
+    <div class="cd-foot"><button type="button" class="b g" onClick="{{ back }}" style="margin-right:auto">Back</button><button type="button" class="b g" onClick="{{ close }}">Cancel</button><button type="button" class="b p" onClick="{{ create }}"><i class="ic i-git-pull-request"></i>Create PR</button></div>
+  </sc-if>
+
+  <sc-if value="{{ isExists }}" hint-placeholder-val="{{ false }}">
+    <div class="cd-body">
+      <div class="fx fx-info" role="status"><i class="ic i-info"></i><span>PR #418 is already open for this change.<span class="x">Same target and same content (NFS hash <span class="mono">9f3c1a7e42b0</span>), so there is nothing new to create.</span></span></div>
+      <div class="pr">
+        <i class="ic s16 i-git-pull-request" style="margin-top:3px;color:var(--info-fg)"></i>
+        <div style="display:flex;flex-direction:column;gap:4px;min-width:0">
+          <b>Update tx-infinity-core for sit7 (from sitb)</b>
+          <span class="mut" style="font-size:12px;line-height:16px">#418 · opened by you 2 h ago · 3 of 3 checks passed · waiting for review</span>
+          <span style="display:flex;gap:4px;flex-wrap:wrap;align-items:center"><span class="ch">lk/sitb-tx-infinity-core-sit7</span><i class="ic s12 i-chevron-right mut"></i><span class="ch">sit7</span></span>
+        </div>
+      </div>
+      <p><a href="https://github.com/csp-tenant/csp-tenant-data/pull/418" style="font-size:13px">github.com/csp-tenant/csp-tenant-data/pull/418</a></p>
+    </div>
+    <div class="cd-foot"><button type="button" class="b g" onClick="{{ close }}">Close</button><a class="b" href="https://github.com/csp-tenant/csp-tenant-data/pull/418"><i class="ic i-git-pull-request"></i>Open PR #418</a></div>
+  </sc-if>
+
+  <sc-if value="{{ isJob }}" hint-placeholder-val="{{ false }}">
+    <div class="cd-body">
+      <sc-if value="{{ resumed }}" hint-placeholder-val="{{ false }}"><div class="wn nf" role="status"><i class="ic i-refresh-cw"></i><span>Page reloaded. Resumed job <span class="mono">prj_5d21c8</span> from where it was.</span></div></sc-if>
+      <div class="fx fx-info" role="status"><i class="ic i-loader-circle spin"></i><span>Creating your pull request.<span class="x">You can close this dialog. The job keeps running and the file's drift badge updates when it finishes.</span></span></div>
+      <ol class="jb" aria-live="polite">
+        <sc-for list="{{ steps }}" as="s" hint-placeholder-count="4">
+          <li class="{{ s.cls }}">
+            <sc-if value="{{ s.done }}" hint-placeholder-val="{{ false }}"><i class="ic i-circle-check" style="color:var(--success-fg);margin-top:2px"></i></sc-if>
+            <sc-if value="{{ s.active }}" hint-placeholder-val="{{ false }}"><i class="ic i-loader-circle spin" style="color:var(--info-fg);margin-top:2px"></i></sc-if>
+            <sc-if value="{{ s.pending }}" hint-placeholder-val="{{ true }}"><i class="ic i-circle-dashed mut" style="margin-top:2px"></i></sc-if>
+            <span><b style="color:{{ s.fg }}">{{ s.label }}</b><span class="mut" style="display:block;font-size:12px;line-height:16px">{{ s.detail }}</span></span>
+            <span class="t">{{ s.time }}</span>
+          </li>
+        </sc-for>
+      </ol>
+      <p class="mut" style="font-size:12px;line-height:16px">Job <span class="mono">prj_5d21c8</span> · started by you · stored on the server, so it survives a reload.</p>
+    </div>
+    <div class="cd-foot"><span class="l">Esc closes this dialog, not the job</span><button type="button" class="b" onClick="{{ close }}">Close</button></div>
+  </sc-if>
+
+  <sc-if value="{{ isDone }}" hint-placeholder-val="{{ false }}">
+    <div class="cd-body">
+      <div class="fx fx-ok" role="status"><i class="ic i-circle-check"></i><span>PR #419 created.<span class="x">{{ doneX }}</span></span></div>
+      <div class="pr">
+        <i class="ic s16 i-git-pull-request" style="margin-top:3px;color:var(--info-fg)"></i>
+        <div style="display:flex;flex-direction:column;gap:4px;min-width:0">
+          <b>{{ titleVal }}</b>
+          <span style="display:flex;gap:4px;flex-wrap:wrap;align-items:center"><span class="ch">{{ prBranch }}</span><i class="ic s12 i-chevron-right mut"></i><span class="ch">{{ baseBranch }}</span></span>
+          <a href="https://github.com/csp-tenant/csp-tenant-data/pull/419" style="font-size:13px">github.com/csp-tenant/{{ repo }}/pull/419</a>
+        </div>
+      </div>
+      <p style="display:flex;gap:8px;align-items:center;font-size:12px" class="mut">Drift list now shows <span class="bd bd-pr"><i class="ic i-git-pull-request"></i>PR #419 open</span> on this file.</p>
+    </div>
+    <div class="cd-foot"><button type="button" class="b g" onClick="{{ restart }}" style="margin-right:auto">{{ restartLabel }}</button><button type="button" class="b" onClick="{{ close }}">Close</button><a class="b p" href="https://github.com/csp-tenant/csp-tenant-data/pull/419"><i class="ic i-git-pull-request"></i>Open PR #419 on GitHub</a></div>
+  </sc-if>
+
+  <sc-if value="{{ isErrToken }}" hint-placeholder-val="{{ false }}">
+    <div class="cd-body">
+      <div class="fx fx-danger" role="alert"><i class="ic i-key"></i><span>Your GitHub token expired, so the PR was not created.<span class="x">Renew it in My token, then retry. Your title and description are kept.</span></span></div>
+      <dl class="kv">
+        <dt>What happened</dt><dd>GitHub answered 401 Bad credentials for <span class="ch">csp-tenant-data</span></dd>
+        <dt>Why</dt><dd>The token saved in My token expired on 8 Oct 2026.</dd>
+        <dt>Written to Git</dt><dd>Nothing. No branch or commit was created.</dd>
+        <dt>Request ID</dt><dd><span class="ch">req_8c41f0a2e7</span><button type="button" class="b ib" aria-label="Copy request ID"><i class="ic i-copy"></i></button></dd>
+      </dl>
+    </div>
+    <div class="cd-foot"><button type="button" class="b g" onClick="{{ close }}" style="margin-right:auto">Close</button><button type="button" class="b" onClick="{{ retry }}"><i class="ic i-rotate-cw"></i>Retry</button><a class="b p" href="#my-token"><i class="ic i-key"></i>Go to My token</a></div>
+  </sc-if>
+
+  <sc-if value="{{ isErrPush }}" hint-placeholder-val="{{ false }}">
+    <div class="cd-body">
+      <div class="fx fx-danger" role="alert"><i class="ic i-ban"></i><span>You don't have push access to {{ repo }}, so the PR was not created.<span class="x">Ask a maintainer for Write access, then retry. Nothing was written to Git.</span></span></div>
+      <dl class="kv">
+        <dt>What happened</dt><dd>GitHub answered 403 when creating <span class="ch">{{ prBranch }}</span></dd>
+        <dt>Why</dt><dd>Your GitHub account is signed in and the token is valid, but it has Read access to this repo only.</dd>
+        <dt>Next step</dt><dd>Ask a maintainer of <span class="ch">{{ repo }}</span> to add you with Write access. {{ pushAlt }}</dd>
+        <dt>Request ID</dt><dd><span class="ch">req_2f90b7d6c1</span><button type="button" class="b ib" aria-label="Copy request ID"><i class="ic i-copy"></i></button></dd>
+      </dl>
+    </div>
+    <div class="cd-foot"><button type="button" class="b g" onClick="{{ close }}" style="margin-right:auto">Close</button><button type="button" class="b" onClick="{{ back }}">Choose another target</button><button type="button" class="b p" onClick="{{ retry }}"><i class="ic i-rotate-cw"></i>Retry</button></div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:640,&quot;height&quot;:560},&quot;view&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;target&quot;,&quot;form&quot;,&quot;exists&quot;,&quot;job&quot;,&quot;done&quot;,&quot;err-token&quot;,&quot;err-push&quot;],&quot;default&quot;:&quot;target&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;target&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;tenant&quot;,&quot;base&quot;],&quot;default&quot;:&quot;tenant&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;fresh&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;jobStep&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:1,&quot;min&quot;:0,&quot;max&quot;:2,&quot;tsType&quot;:&quot;number&quot;},&quot;resumed&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;live&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;sim&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;ok&quot;,&quot;token&quot;,&quot;push&quot;,&quot;exists&quot;],&quot;default&quot;:&quot;ok&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  state = { view: 'target', target: 'tenant', step: 0, resumed: false, title: null, desc: null, tick: 0 };
+  KEY = 'lk.prjob';
+  componentDidMount() {
+    if (!this.props.live) return;
+    try {
+      const j = JSON.parse(localStorage.getItem(this.KEY) || 'null');
+      if (j) { this.job = j; this.setState({ target: j.target, view: 'job', resumed: true }); this.run(); }
+    } catch (e) {}
+  }
+  componentWillUnmount() { clearInterval(this.iv); }
+  run() {
+    clearInterval(this.iv);
+    const go = () => {
+      const j = this.job; if (!j) return;
+      const step = Math.floor((Date.now() - j.start) / 1500);
+      const sim = this.props.sim || 'ok';
+      if ((sim === 'token' || sim === 'push') && step >= 1) {
+        clearInterval(this.iv); localStorage.removeItem(this.KEY); this.job = null;
+        return this.setState({ view: sim === 'token' ? 'err-token' : 'err-push', resumed: false });
+      }
+      if (step >= 3) { clearInterval(this.iv); return this.setState({ view: 'done', step: 3 }); }
+      this.setState({ step });
+    };
+    go(); this.iv = setInterval(go, 250);
+  }
+  renderVals() {
+    const p = this.props, st = this.state, live = !!p.live;
+    const view = live ? st.view : (p.view || 'target');
+    const target = live ? st.target : (p.target || 'tenant');
+    const fresh = !!p.fresh, tenant = target === 'tenant';
+    const js = live ? st.step : (p.jobStep ?? 1);
+    const resumed = live ? st.resumed : !!p.resumed;
+    const R = tenant ? { repo: 'csp-tenant-data', baseBranch: 'sit7', writes: 'data/config/tx-infinity-api/tx-infinity-core.yml', prBranch: 'lk/sitb-tx-infinity-core-sit7' }
+      : { repo: 'configuration-base-saas', baseBranch: 'main', writes: 'config/tx-infinity-api/tx-infinity-core.yml', prBranch: 'lk/sitb-tx-infinity-core-base' };
+    let fx;
+    if (tenant && fresh) fx = ['fx fx-warn', 'ic s16 i-triangle-alert', 'This PR adds a new file on sit7 and forks it from base.', "tx-infinity-core.yml doesn't exist on sit7 yet. Future base changes won't reach sit7 for this file."];
+    else if (tenant) fx = ['fx fx-info', 'ic s16 i-info', 'This PR changes sit7 only.', 'sitb picks it up after the PR merges and the swimlane syncs.'];
+    else fx = ['fx fx-warn', 'ic s16 i-triangle-alert', 'Every swimlane gets this change on its next sync.', 'Swimlanes with their own tenant file for it keep that file.'];
+    const defTitle = tenant ? 'Update tx-infinity-core for sit7 (from sitb)' : 'Promote tx-infinity-core from sit7 to base';
+    const titleVal = st.title ?? defTitle;
+    const gitHash = tenant ? (fresh ? 'none (new file on sit7)' : '41be07d2c9a8') : 'b7e5a03c11d9';
+    const defDesc = 'Raised from Lanekeeper on swimlane sitb.\n\nSwimlane: sitb (csp-tenant-data@sit7)\nFile: tx-infinity-api/tx-infinity-core-sit7.yml\nTarget: ' + R.repo + ' / ' + R.writes + '\nNFS hash: 9f3c1a7e42b0\nGit hash: ' + gitHash + '\nAudit ID: aud_01HV8K3QZ7';
+    const names = [['Preparing', 'Checking out ' + R.repo + '@' + R.baseBranch + ' and creating ' + R.prBranch, '1.2 s'], ['Committing', 'Writing ' + R.writes + ' · 1 file', '0.8 s'], ['Opening pull request', 'Pushing the branch and opening the PR against ' + R.baseBranch, '1.1 s'], ['Done', 'The PR link appears here', '']];
+    const steps = names.map((n, i) => {
+      const d = view === 'done' || i < js, a = !d && i === js;
+      return { label: n[0], detail: n[1], time: d ? n[2] : (a ? 'working' : ''), done: d, active: a, pending: !d && !a, cls: a ? 'act' : '', fg: !d && !a ? 'var(--muted-foreground)' : 'var(--foreground)' };
+    });
+    const titles = { target: 'Raise pull request', form: 'Raise pull request', exists: 'Raise pull request', job: 'Creating pull request', done: 'Pull request created', 'err-token': 'Pull request not created', 'err-push': 'Pull request not created' };
+    const noop = () => {}, L = (f) => live ? f : noop;
+    const setT = (t) => L(() => this.setState({ target: t }))();
+    const kd = (me, other) => L((e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.setState({ target: me }); }
+      if (['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'].includes(e.key)) { e.preventDefault(); this.setState({ target: other }); }
+    });
+    const reset = () => { localStorage.removeItem(this.KEY); clearInterval(this.iv); this.job = null; this.setState({ view: 'target', step: 0, resumed: false, title: null, desc: null }); };
+    return {
+      title: titles[view], showSteps: view === 'target' || view === 'form', bar2: view === 'form' ? 'var(--primary)' : 'var(--border)', stepLabel: view === 'form' ? 'Step 2 of 2' : 'Step 1 of 2',
+      isTarget: view === 'target', isForm: view === 'form', isExists: view === 'exists', isJob: view === 'job', isDone: view === 'done', isErrToken: view === 'err-token', isErrPush: view === 'err-push',
+      tenant, base: !tenant, fresh, tiT: tenant ? 0 : -1, tiB: tenant ? -1 : 0, ocT: 'oc' + (tenant ? ' sel' : ''), ocB: 'oc' + (tenant ? '' : ' sel'),
+      pickT: L(() => this.setState({ target: 'tenant' })), pickB: L(() => this.setState({ target: 'base' })), kdT: kd('tenant', 'base'), kdB: kd('base', 'tenant'),
+      fxCls: fx[0], fxIcon: fx[1], fxText: fx[2], fxX: fx[3], ...R, titleVal, descVal: st.desc ?? defDesc,
+      setTitle: (e) => live && this.setState({ title: e.target.value }), setDesc: (e) => live && this.setState({ desc: e.target.value }),
+      steps, resumed, restartLabel: live ? 'Start over' : '', 
+      doneX: tenant ? 'The file stays NFS ahead until the PR merges and sitb syncs.' : 'Base changes reach every swimlane on its next sync after the PR merges.',
+      pushAlt: tenant ? '' : 'Or choose the tenant branch.',
+      close: L(reset), back: L(() => this.setState({ view: 'target' })), restart: L(reset), retry: L(() => this.setState({ view: 'form' })),
+      next: L(() => this.setState({ view: p.sim === 'exists' ? 'exists' : 'form', title: null, desc: null })),
+      create: L(() => { this.job = { start: Date.now(), target }; localStorage.setItem(this.KEY, JSON.stringify(this.job)); this.setState({ view: 'job', step: 0, resumed: false }); this.run(); }),
+    };
+  }
+}
+</script>
+</body>
+</html>

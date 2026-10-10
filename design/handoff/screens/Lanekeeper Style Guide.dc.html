@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:13px;line-height:18px;-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:var(--link);text-underline-offset:2px}
+a:hover{color:var(--primary-hover)}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+@keyframes lk-spin{to{transform:rotate(360deg)}}
+@keyframes lk-pulse{0%,100%{opacity:1}50%{opacity:.3}}
+</style>
+</helmet>
+<div data-measure="light" data-theme="light" style="display:none"></div>
+<div data-measure="dark" data-theme="dark" style="display:none"></div>
+<header style="display:flex;flex-wrap:wrap;align-items:center;gap:16px;padding:20px 32px;border-bottom:1px solid var(--border);background:var(--background)">
+  <div style="display:flex;flex-direction:column;gap:2px">
+    <h1 style="margin:0;font-size:24px;line-height:30px;font-weight:600;letter-spacing:-0.01em">Lanekeeper design system</h1>
+    <p style="margin:0;color:var(--muted-foreground)">Living style guide · tokens, statuses and components in light and dark · shadcn/ui + Tailwind · Inter + JetBrains Mono, self-hosted</p>
+  </div>
+  <div style="margin-left:auto;display:flex;gap:8px;align-items:center;color:var(--muted-foreground);font-size:12px">
+    <span style="font-family:var(--font-mono)">v0.1 · 2026-10-09</span>
+    <a href="#handoff">Engineer handoff ↓</a>
+  </div>
+</header>
+<sc-for list="{{ themes }}" as="t" hint-placeholder-count="1">
+<div data-theme="{{ t.id }}" style="background:var(--background);color:var(--foreground);filter:{{ filter }};border-bottom:1px solid var(--border)">
+<div style="max-width:1320px;margin:0 auto;padding:24px 32px 48px;display:flex;flex-direction:column">
+  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding-bottom:16px">
+    <span style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:4px;background:var(--foreground);color:var(--background);font-size:12px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase">{{ t.label }}</span>
+    <nav aria-label="{{ t.label }} sections" style="display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px">
+      <sc-for list="{{ t.nav }}" as="n" hint-placeholder-count="6"><a href="{{ n.href }}">{{ n.label }}</a></sc-for>
+    </nav>
+  </div>
+<section id="{{ t.a.colours }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Colour tokens</h2><p style="margin:0;color:var(--muted-foreground)">Neutral cool grey plus one calm-blue brand accent. Names are the shadcn/ui CSS variables; shadcn's <code style="font-family:var(--font-mono);font-size:12px">--accent</code> is the hover surface, the brand blue is <code style="font-family:var(--font-mono);font-size:12px">--primary</code>.</p></div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px">
+    <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden"><div style="height:40px;background:var(--background);border-bottom:1px solid var(--border)"></div><div style="padding:6px 8px;display:flex;flex-direction:column;gap:2px"><span style="font-weight:500">Background</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">bg-background</code></div></div>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden"><div style="height:40px;background:var(--card);border-bottom:1px solid var(--border)"></div><div style="padding:6px 8px;display:flex;flex-direction:column;gap:2px"><span style="font-weight:500">Surface</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">bg-card</code></div></div>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden"><div style="height:40px;background:var(--muted);border-bottom:1px solid var(--border)"></div><div style="padding:6px 8px;display:flex;flex-direction:column;gap:2px"><span style="font-weight:500">Muted surface</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">bg-muted</code></div></div>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden"><div style="height:40px;background:var(--accent);border-bottom:1px solid var(--border)"></div><div style="padding:6px 8px;display:flex;flex-direction:column;gap:2px"><span style="font-weight:500">Hover surface</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">bg-accent</code></div></div>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden"><div style="height:40px;background:var(--selection);border-bottom:1px solid var(--border)"></div><div style="padding:6px 8px;display:flex;flex-direction:column;gap:2px"><span style="font-weight:500">Selected row</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">bg-selection</code></div></div>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden"><div style="height:40px;background:var(--border)"></div><div style="padding:6px 8px;display:flex;flex-direction:column;gap:2px"><span style="font-weight:500">Border</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">border-border</code></div></div>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden"><div style="height:40px;background:var(--input)"></div><div style="padding:6px 8px;display:flex;flex-direction:column;gap:2px"><span style="font-weight:500">Control border</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">border-input</code></div></div>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden"><div style="height:40px;background:var(--foreground)"></div><div style="padding:6px 8px;display:flex;flex-direction:column;gap:2px"><span style="font-weight:500">Text</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">text-foreground</code></div></div>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden"><div style="height:40px;background:var(--muted-foreground)"></div><div style="padding:6px 8px;display:flex;flex-direction:column;gap:2px"><span style="font-weight:500">Muted text</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">text-muted-foreground</code></div></div>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden"><div style="height:40px;background:var(--primary)"></div><div style="padding:6px 8px;display:flex;flex-direction:column;gap:2px"><span style="font-weight:500">Accent (brand)</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">bg-primary</code></div></div>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden"><div style="height:40px;background:var(--background);display:flex;align-items:center;justify-content:center"><span style="width:56px;height:20px;border-radius:4px;box-shadow:0 0 0 2px var(--background),0 0 0 4px var(--ring)"></span></div><div style="padding:6px 8px;display:flex;flex-direction:column;gap:2px"><span style="font-weight:500">Focus ring</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">ring-ring</code></div></div>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden"><div style="height:40px;background:var(--destructive)"></div><div style="padding:6px 8px;display:flex;flex-direction:column;gap:2px"><span style="font-weight:500">Danger</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">bg-destructive</code></div></div>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden"><div style="height:40px;background:var(--warning-bg);color:var(--warning-fg);display:flex;align-items:center;padding:0 8px;font-weight:500">Aa</div><div style="padding:6px 8px;display:flex;flex-direction:column;gap:2px"><span style="font-weight:500">Warning</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">warning-fg / -bg</code></div></div>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden"><div style="height:40px;background:var(--success-bg);color:var(--success-fg);display:flex;align-items:center;padding:0 8px;font-weight:500">Aa</div><div style="padding:6px 8px;display:flex;flex-direction:column;gap:2px"><span style="font-weight:500">Success</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">success-fg / -bg</code></div></div>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden"><div style="height:40px;background:var(--info-bg);color:var(--info-fg);display:flex;align-items:center;padding:0 8px;font-weight:500">Aa</div><div style="padding:6px 8px;display:flex;flex-direction:column;gap:2px"><span style="font-weight:500">Info</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">info-fg / -bg</code></div></div>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden"><div style="height:40px;background:var(--danger-bg);color:var(--danger-fg);display:flex;align-items:center;padding:0 8px;font-weight:500">Aa</div><div style="padding:6px 8px;display:flex;flex-direction:column;gap:2px"><span style="font-weight:500">Error</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">danger-fg / -bg</code></div></div>
+  </div>
+</section>
+<section id="{{ t.a.contrast }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:8px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Contrast check · WCAG 2.2 AA</h2><span style="color:var(--muted-foreground)">Measured live from styles.css: <strong style="color:var(--foreground);font-variant-numeric:tabular-nums">{{ t.passCount }} / {{ t.total }}</strong> pairs pass. Text 4.5:1, control borders, focus ring and status dots 3:1.</span></div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:0 24px;border-top:1px solid var(--border)">
+    <sc-for list="{{ t.pairs }}" as="c" hint-placeholder-count="12">
+      <div style="display:grid;grid-template-columns:28px minmax(0,1fr) 64px 96px;align-items:center;gap:8px;height:28px;border-bottom:1px solid var(--border);font-size:12px">
+        <span style="width:24px;height:18px;border-radius:4px;background:var({{ c.bg }});color:var({{ c.fg }});border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-weight:600">Aa</span>
+        <code style="font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ c.fg }} on {{ c.bg }}">{{ c.fg }} / {{ c.bg }}</code>
+        <span style="font-family:var(--font-mono);font-variant-numeric:tabular-nums;text-align:right">{{ c.r }}</span>
+        <span style="display:inline-flex;align-items:center;gap:4px;color:{{ c.vc }};font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ c.ic }}.svg) center/contain no-repeat"></span>{{ c.verdict }}</span>
+      </div>
+    </sc-for>
+  </div>
+</section>
+<section id="{{ t.a.type }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Typography</h2><p style="margin:0;color:var(--muted-foreground)">Inter for UI (400 / 500 / 600). JetBrains Mono for paths, setting keys, values, hashes and code. 13px is body. Numbers in tables are tabular.</p></div>
+  <div style="display:flex;flex-direction:column;border-top:1px solid var(--border)">
+    <sc-for list="{{ typeScale }}" as="ty" hint-placeholder-count="6">
+      <div style="display:grid;grid-template-columns:120px 200px minmax(0,1fr);align-items:baseline;gap:16px;padding:10px 0;border-bottom:1px solid var(--border)">
+        <code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">{{ ty.tw }} · {{ ty.px }}/{{ ty.lh }}</code>
+        <span style="font-size:12px;color:var(--muted-foreground)">{{ ty.use }}</span>
+        <span style="font-size:{{ ty.px }}px;line-height:{{ ty.lh }}px;font-weight:{{ ty.w }}">{{ ty.sample }}</span>
+      </div>
+    </sc-for>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">
+    <div style="border:1px solid var(--border);border-radius:6px;padding:12px;display:flex;flex-direction:column;gap:6px;background:var(--card)">
+      <span style="font-size:12px;color:var(--muted-foreground)">Mono · 12/18 · font-mono</span>
+      <code style="font-family:var(--font-mono);font-size:12px;line-height:18px">tx-infinity-api/tx-infinity-core-sit1.yml</code>
+      <code style="font-family:var(--font-mono);font-size:12px;line-height:18px">txInfinityOptions.remote-itm-teller.enableAccountSorting = true</code>
+      <code style="font-family:var(--font-mono);font-size:12px;line-height:18px">a3f9c21 · sit7 · v2.3.1 + 4</code>
+    </div>
+    <div style="border:1px solid var(--border);border-radius:6px;padding:12px;display:flex;flex-direction:column;gap:6px;background:var(--card)">
+      <span style="font-size:12px;color:var(--muted-foreground)">Tabular numbers · tabular-nums</span>
+      <div style="display:grid;grid-template-columns:auto auto;justify-content:start;gap:2px 24px;font-variant-numeric:tabular-nums"><span>security-roles.yml</span><span style="text-align:right">6,100</span><span>entryGroupConfig.yml</span><span style="text-align:right">1,284</span><span>tx-infinity-core-sit1.yml</span><span style="text-align:right">38</span></div>
+    </div>
+  </div>
+</section>
+<section id="{{ t.a.spacing }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Spacing, radius, rows, elevation</h2><p style="margin:0;color:var(--muted-foreground)">4px grid (Tailwind 1 = 4px). Fixed row heights so every list can be virtualised. Borders separate; one shadow for floating layers only.</p></div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">
+    <div style="border:1px solid var(--border);border-radius:6px;padding:12px;display:flex;flex-direction:column;gap:4px;background:var(--card)">
+      <sc-for list="{{ space }}" as="sp" hint-placeholder-count="9">
+        <div style="display:grid;grid-template-columns:64px 40px 1fr;align-items:center;gap:8px;height:20px"><code style="font-family:var(--font-mono);font-size:12px">space-{{ sp.n }}</code><span style="font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums">{{ sp.px }}px</span><span style="height:8px;width:{{ sp.px }}px;background:var(--primary);border-radius:2px"></span></div>
+      </sc-for>
+    </div>
+    <div style="border:1px solid var(--border);border-radius:6px;padding:12px;display:flex;flex-direction:column;gap:12px;background:var(--card)">
+      <div style="display:flex;gap:16px;align-items:center"><span style="width:56px;height:28px;border:1px solid var(--input);border-radius:4px"></span><span style="font-size:12px"><code style="font-family:var(--font-mono)">rounded-sm</code> 4px · controls, badges, chips</span></div>
+      <div style="display:flex;gap:16px;align-items:center"><span style="width:56px;height:40px;border:1px solid var(--border);border-radius:6px;background:var(--card)"></span><span style="font-size:12px"><code style="font-family:var(--font-mono)">rounded-md</code> 6px · cards, popovers, dialogs</span></div>
+      <div style="display:flex;gap:16px;align-items:center"><span style="width:56px;height:40px;border-radius:6px;background:var(--popover);box-shadow:var(--shadow-popover)"></span><span style="font-size:12px"><code style="font-family:var(--font-mono)">shadow-popover</code> · menus, palette, dialogs, toasts only</span></div>
+    </div>
+    <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;background:var(--card)">
+      <div style="display:flex;align-items:center;justify-content:space-between;height:28px;padding:0 12px;border-bottom:1px solid var(--border)"><span>Compact row</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">h-7 · 28px</code></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;height:32px;padding:0 12px;border-bottom:1px solid var(--border)"><span>Default row</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">h-8 · 32px</code></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;height:28px;padding:0 12px;border-bottom:1px solid var(--border)"><span>Tree row</span><code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">h-7 · 28px</code></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;height:18px;padding:0 12px;font-family:var(--font-mono);font-size:12px"><span>diff / code line</span><span style="color:var(--muted-foreground)">18px</span></div>
+      <p style="margin:0;padding:8px 12px;font-size:12px;color:var(--muted-foreground);border-top:1px solid var(--border)">At 1440×900 with 44px header, 40px toolbar and 32px table header: compact shows 28 rows, default 24.</p>
+    </div>
+  </div>
+</section>
+<section id="{{ t.a.status }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Status palette</h2><p style="margin:0;color:var(--muted-foreground)">Always colour + icon + label. Fill weight also differs (Conflict solid, Untracked dashed, Pending approval outline) so states separate in greyscale. Right column is the same badge with colour removed.</p></div>
+  <div style="display:flex;flex-direction:column;border-top:1px solid var(--border)">
+    <div style="display:grid;grid-template-columns:200px 200px minmax(0,1fr) 200px;gap:12px;height:28px;align-items:center;font-size:12px;color:var(--muted-foreground);border-bottom:1px solid var(--border)"><span>Badge</span><span>Variant · token</span><span>Meaning</span><span>Greyscale check</span></div>
+    <sc-for list="{{ statuses }}" as="s" hint-placeholder-count="10">
+      <div style="display:grid;grid-template-columns:200px 200px minmax(0,1fr) 200px;gap:12px;height:32px;align-items:center;border-bottom:1px solid var(--border)">
+        <span><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;white-space:nowrap;color:var(--status-{{ s.key }}-fg);background:var(--status-{{ s.key }}-bg);border:1px {{ s.bs }} var(--status-{{ s.key }}-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ s.icon }}.svg) center/contain no-repeat"></span>{{ s.label }}</span></span>
+        <code style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">status-{{ s.key }}</code>
+        <span style="color:var(--muted-foreground)">{{ s.desc }}</span>
+        <span style="filter:grayscale(1)"><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;white-space:nowrap;color:var(--status-{{ s.key }}-fg);background:var(--status-{{ s.key }}-bg);border:1px {{ s.bs }} var(--status-{{ s.key }}-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ s.icon }}.svg) center/contain no-repeat"></span>{{ s.label }}</span></span>
+      </div>
+    </sc-for>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:24px;align-items:center;padding-top:4px">
+    <span style="font-size:12px;color:var(--muted-foreground)">Agent</span>
+    <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:999px;background:var(--agent-online)"></span>Online</span>
+    <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:999px;background:var(--background);border:2px solid var(--agent-degraded)"></span>Degraded</span>
+    <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:2px;background:var(--agent-offline);transform:rotate(45deg)"></span>Offline</span>
+    <span style="font-size:12px;color:var(--muted-foreground)">Dot shape differs too: filled, ring, diamond.</span>
+  </div>
+</section>
+<section id="{{ t.a.context }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Drift states in context</h2><p style="margin:0;color:var(--muted-foreground)">Each drift badge as it appears in a table row, a tree row and a diff header. Use the Greyscale tweak to check the whole page.</p></div>
+  <div style="display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) minmax(0,1.2fr);gap:12px;font-size:12px;color:var(--muted-foreground)"><span>Table row (32px)</span><span>Tree row (28px)</span><span>Diff header</span></div>
+  <sc-for list="{{ drift }}" as="s" hint-placeholder-count="7">
+    <div style="display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) minmax(0,1.2fr);gap:12px;align-items:center">
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) 120px 64px;align-items:center;gap:8px;height:32px;padding:0 8px;border:1px solid var(--border);border-radius:4px;background:var(--card)"><code style="font-family:var(--font-mono);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">tx-infinity-api/tx-infinity-core.yml</code><span><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;font-weight:500;white-space:nowrap;color:var(--status-{{ s.key }}-fg);background:var(--status-{{ s.key }}-bg);border:1px {{ s.bs }} var(--status-{{ s.key }}-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ s.icon }}.svg) center/contain no-repeat"></span>{{ s.label }}</span></span><span style="font-size:12px;color:var(--muted-foreground)">sitb</span></div>
+      <div style="display:flex;align-items:center;gap:6px;height:28px;padding:0 8px 0 24px;border:1px solid var(--border);border-radius:4px;background:var(--card)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--info-fg);mask:url(assets/icons/file-code.svg) center/contain no-repeat"></span><span style="font-family:var(--font-mono);font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">tx-infinity-core.yml</span><span style="display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 4px;border-radius:4px;font-size:12px;font-weight:500;white-space:nowrap;color:var(--status-{{ s.key }}-fg);background:var(--status-{{ s.key }}-bg);border:1px {{ s.bs }} var(--status-{{ s.key }}-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ s.icon }}.svg) center/contain no-repeat"></span>{{ s.label }}</span></div>
+      <div style="display:flex;align-items:center;gap:8px;height:36px;padding:0 10px;border:1px solid var(--border);border-radius:4px;background:var(--muted)"><code style="font-family:var(--font-mono);font-size:12px">sitb · NFS</code><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/arrow-left-right.svg) center/contain no-repeat"></span><code style="font-family:var(--font-mono);font-size:12px">Git @ sit7</code><span style="margin-left:auto;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;font-weight:500;white-space:nowrap;color:var(--status-{{ s.key }}-fg);background:var(--status-{{ s.key }}-bg);border:1px {{ s.bs }} var(--status-{{ s.key }}-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ s.icon }}.svg) center/contain no-repeat"></span>{{ s.label }}</span></div>
+    </div>
+  </sc-for>
+</section>
+<section id="{{ t.a.icons }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Icons</h2><p style="margin:0;color:var(--muted-foreground)">Lucide (shadcn/ui default), self-hosted SVGs in assets/icons. 2px stroke; 12px in badges, 14px in rows and buttons, 16px in headers. Never used without a label or tooltip.</p></div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:4px">
+    <sc-for list="{{ iconList }}" as="ic" hint-placeholder-count="12">
+      <div style="display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:4px;background:var(--muted)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/{{ ic.i }}.svg) center/contain no-repeat"></span><span style="font-size:12px">{{ ic.l }}</span></div>
+    </sc-for>
+  </div>
+</section>
+<section id="{{ t.a.buttons }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Buttons <code style="font-family:var(--font-mono);font-size:12px;font-weight:400;color:var(--muted-foreground)">&lt;Button&gt;</code></h2><p style="margin:0;color:var(--muted-foreground)">Height 28 (default), 24 (sm). One primary per view. Destructive only for irreversible actions, always behind a confirmation.</p></div>
+  <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px;background:var(--card)">
+    <div style="display:grid;grid-template-columns:96px repeat(6,minmax(120px,1fr));min-width:820px">
+      <span style="height:28px;padding:0 12px;display:flex;align-items:center;font-size:12px;color:var(--muted-foreground);border-bottom:1px solid var(--border);background:var(--muted)"></span>
+      <sc-for list="{{ states }}" as="sn" hint-placeholder-count="6"><span style="height:28px;padding:0 12px;display:flex;align-items:center;font-size:12px;color:var(--muted-foreground);border-bottom:1px solid var(--border);background:var(--muted)">{{ sn }}</span></sc-for>
+    </div>
+    <sc-for list="{{ btnMatrix }}" as="bv" hint-placeholder-count="4">
+      <div style="display:grid;grid-template-columns:96px repeat(6,minmax(120px,1fr));min-width:820px;border-bottom:1px solid var(--border)">
+        <span style="padding:0 12px;display:flex;align-items:center;font-size:12px;color:var(--muted-foreground)">{{ bv.name }}</span>
+        <sc-for list="{{ bv.cells }}" as="cell" hint-placeholder-count="6">
+          <div style="padding:10px 12px;display:flex;align-items:center"><button type="button" style="{{ cell.style }}" disabled="{{ cell.disabled }}" aria-busy="{{ cell.busy }}" tabindex="-1"><sc-if value="{{ cell.loading }}">{{ spin14 }}</sc-if>{{ cell.label }}</button></div>
+        </sc-for>
+      </div>
+    </sc-for>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+    <span style="font-size:12px;color:var(--muted-foreground);width:96px">Live (try Tab)</span>
+    <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-weight:500;cursor:pointer" style-hover="background:var(--primary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/git-pull-request.svg) center/contain no-repeat"></span>Raise PR</button>
+    <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/arrow-left-right.svg) center/contain no-repeat"></span>Compare</button>
+    <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid transparent;background:transparent;color:var(--foreground);font-weight:500;cursor:pointer" style-hover="background:var(--accent)">Cancel</button>
+    <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--destructive);background:var(--destructive);color:var(--destructive-foreground);font-weight:500;cursor:pointer" style-hover="background:var(--destructive-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/trash-2.svg) center/contain no-repeat"></span>Delete file</button>
+    <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-size:12px;font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)">Small · 24</button>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:24px;padding-top:8px">
+    <span style="font-size:12px;color:var(--muted-foreground);width:96px;align-self:center">Icon buttons</span>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
+      <div role="tooltip" style="display:inline-flex;align-items:center;gap:8px;height:24px;padding:0 8px;border-radius:4px;background:var(--foreground);color:var(--background);font-size:12px;white-space:nowrap">Copy path <kbd style="font-family:var(--font-mono);font-size:12px;opacity:.8">⌘⇧C</kbd></div>
+      <button type="button" aria-label="Copy path" style="width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border-radius:4px;border:1px solid transparent;background:var(--accent);color:var(--foreground);box-shadow:0 0 0 2px var(--background),0 0 0 4px var(--ring)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/copy.svg) center/contain no-repeat"></span></button>
+      <span style="font-size:12px;color:var(--muted-foreground)">Focus + tooltip</span>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:6px"><button type="button" aria-label="Edit file" style="width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border-radius:4px;border:1px solid transparent;background:transparent;color:var(--foreground);cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/pencil.svg) center/contain no-repeat"></span></button><span style="font-size:12px;color:var(--muted-foreground)">Default</span></div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:6px"><button type="button" aria-label="Restart service" style="width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border-radius:4px;border:1px solid transparent;background:var(--accent);color:var(--foreground)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/rotate-cw.svg) center/contain no-repeat"></span></button><span style="font-size:12px;color:var(--muted-foreground)">Hover</span></div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:6px"><button type="button" aria-label="Pin as intentional" aria-pressed="true" style="width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border-radius:4px;border:1px solid var(--border);background:var(--secondary-hover);color:var(--foreground)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/pin.svg) center/contain no-repeat"></span></button><span style="font-size:12px;color:var(--muted-foreground)">Active</span></div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:6px"><button type="button" aria-label="Delete" disabled="{{ true }}" style="width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border-radius:4px;border:1px solid transparent;background:transparent;color:var(--foreground);opacity:.45;cursor:not-allowed"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/trash-2.svg) center/contain no-repeat"></span></button><span style="font-size:12px;color:var(--muted-foreground)">Disabled</span></div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:6px"><button type="button" aria-label="Refreshing" aria-busy="true" style="width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border-radius:4px;border:1px solid transparent;background:transparent;color:var(--muted-foreground);cursor:progress">{{ spin14 }}</button><span style="font-size:12px;color:var(--muted-foreground)">Loading</span></div>
+  </div>
+</section>
+<section id="{{ t.a.inputs }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Inputs</h2><p style="margin:0;color:var(--muted-foreground)">28px controls. Border uses <code style="font-family:var(--font-mono);font-size:12px">--input</code> (3:1). Focus adds a 1px ring inside the 2px outline. Labels sit above, 12px, never placeholder-only.</p></div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">
+    <sc-for list="{{ inputStates }}" as="is" hint-placeholder-count="6">
+      <div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:12px;color:var(--muted-foreground)">Text · {{ is.name }}</span><div style="{{ is.style }}"><span style="flex:1;color:{{ is.fg }};font-family:var(--font-mono);font-size:12px">{{ is.text }}</span><sc-if value="{{ is.loading }}"><span style="color:var(--muted-foreground);display:flex">{{ spin14 }}</span></sc-if></div><sc-if value="{{ is.err }}"><span style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--danger-fg)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/circle-x.svg) center/contain no-repeat"></span>{{ is.err }}</span></sc-if></div>
+    </sc-for>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;align-items:start;padding-top:8px">
+    <label style="display:flex;flex-direction:column;gap:4px"><span style="font-size:12px;color:var(--muted-foreground)">Search</span>
+      <span style="display:flex;align-items:center;gap:6px;height:28px;padding:0 4px 0 8px;border-radius:4px;border:1px solid var(--input);background:var(--background)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/search.svg) center/contain no-repeat"></span><input type="search" placeholder="Search config, docs…" style="flex:1;min-width:0;border:0;outline:none;background:transparent;height:26px;font-size:13px"><kbd style="display:inline-flex;align-items:center;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">/</kbd></span></label>
+    <div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:12px;color:var(--muted-foreground)">Select (open)</span>
+      <button type="button" aria-haspopup="listbox" aria-expanded="true" style="display:flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:4px;border:1px solid var(--ring);box-shadow:0 0 0 1px var(--ring);background:var(--background);text-align:left"><span style="flex:1">ops-sit</span><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/chevrons-up-down.svg) center/contain no-repeat"></span></button>
+      <div role="listbox" style="display:flex;flex-direction:column;padding:4px;border:1px solid var(--border);border-radius:6px;background:var(--popover);box-shadow:var(--shadow-popover)">
+        <div role="option" aria-selected="true" style="display:flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:4px;background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/check.svg) center/contain no-repeat"></span>ops-sit</div>
+        <div role="option" aria-selected="false" style="display:flex;align-items:center;gap:6px;height:28px;padding:0 8px 0 28px;border-radius:4px">ops-presit</div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:12px;color:var(--muted-foreground)">Combobox · branch</span>
+      <span style="display:flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:4px;border:1px solid var(--ring);box-shadow:0 0 0 1px var(--ring);background:var(--background)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/git-branch.svg) center/contain no-repeat"></span><span style="flex:1;font-family:var(--font-mono);font-size:12px">sit1</span><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/chevrons-up-down.svg) center/contain no-repeat"></span></span>
+      <div role="listbox" style="display:flex;flex-direction:column;padding:4px;border:1px solid var(--border);border-radius:6px;background:var(--popover);box-shadow:var(--shadow-popover);font-family:var(--font-mono);font-size:12px">
+        <div role="option" aria-selected="true" style="display:flex;align-items:center;justify-content:space-between;height:28px;padding:0 8px;border-radius:4px;background:var(--accent)"><span><strong>sit1</strong></span><span style="font-family:var(--font-sans);color:var(--muted-foreground)">sitc</span></div>
+        <div role="option" aria-selected="false" style="display:flex;align-items:center;justify-content:space-between;height:28px;padding:0 8px;border-radius:4px"><span><strong>sit1</strong>2</span><span style="font-family:var(--font-sans);color:var(--muted-foreground)">presita</span></div>
+        <div role="option" aria-selected="false" style="display:flex;align-items:center;justify-content:space-between;height:28px;padding:0 8px;border-radius:4px"><span><strong>sit1</strong>3</span><span style="font-family:var(--font-sans);color:var(--muted-foreground)">not deployed</span></div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:12px;color:var(--muted-foreground)">Multi-select · swimlanes</span>
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-height:28px;padding:3px 4px;border-radius:4px;border:1px solid var(--input);background:var(--background)">
+        <sc-for list="{{ chips }}" as="ch" hint-placeholder-count="2"><span style="display:inline-flex;align-items:center;gap:2px;height:20px;padding:0 2px 0 6px;border-radius:4px;border:1px solid var(--border);background:var(--muted);font-family:var(--font-mono);font-size:12px">{{ ch.c }}<button type="button" aria-label="Remove {{ ch.c }}" onClick="{{ ch.remove }}" style="width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:2px;background:transparent;cursor:pointer;color:var(--muted-foreground)" style-hover="background:var(--accent);color:var(--foreground)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/x.svg) center/contain no-repeat"></span></button></span></sc-for>
+        <button type="button" onClick="{{ resetChips }}" style="height:20px;padding:0 6px;border:0;background:transparent;color:var(--muted-foreground);font-size:12px;cursor:pointer">Add swimlane…</button>
+      </div>
+    </div>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:32px;align-items:flex-start;padding-top:8px">
+    <div style="display:flex;flex-direction:column;gap:8px"><span style="font-size:12px;color:var(--muted-foreground)">Toggle (switch)</span>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><button type="button" role="switch" aria-checked="{{ sw1 }}" onClick="{{ tSw1 }}" style="position:relative;width:28px;height:16px;border-radius:999px;border:0;padding:0;background:{{ sw1Bg }};cursor:pointer"><span style="position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:999px;background:#fff;transform:translateX({{ sw1X }}px);transition:transform 150ms"></span></button>Live updates</label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><button type="button" role="switch" aria-checked="{{ sw2 }}" onClick="{{ tSw2 }}" style="position:relative;width:28px;height:16px;border-radius:999px;border:0;padding:0;background:{{ sw2Bg }};cursor:pointer"><span style="position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:999px;background:#fff;transform:translateX({{ sw2X }}px);transition:transform 150ms"></span></button>Show line endings</label>
+      <label style="display:flex;align-items:center;gap:8px;opacity:.5;cursor:not-allowed"><span role="switch" aria-checked="true" aria-disabled="true" style="position:relative;width:28px;height:16px;border-radius:999px;background:var(--primary)"><span style="position:absolute;top:2px;left:16px;width:12px;height:12px;border-radius:999px;background:#fff"></span></span>Auto-restart (Admin)</label>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px"><span style="font-size:12px;color:var(--muted-foreground)">Checkbox</span>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><button type="button" role="checkbox" aria-checked="{{ cb1 }}" onClick="{{ tCb1 }}" style="width:14px;height:14px;padding:0;border-radius:3px;border:1px solid {{ cb1Bd }};background:{{ cb1Bg }};display:inline-flex;align-items:center;justify-content:center;color:var(--primary-foreground);cursor:pointer"><span aria-hidden="true" style="width:10px;height:10px;flex:none;background:currentColor;opacity:{{ cb1Op }};mask:url(assets/icons/check.svg) center/contain no-repeat"></span></button>Include tenant files</label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><button type="button" role="checkbox" aria-checked="{{ cb2 }}" onClick="{{ tCb2 }}" style="width:14px;height:14px;padding:0;border-radius:3px;border:1px solid {{ cb2Bd }};background:{{ cb2Bg }};display:inline-flex;align-items:center;justify-content:center;color:var(--primary-foreground);cursor:pointer"><span aria-hidden="true" style="width:10px;height:10px;flex:none;background:currentColor;opacity:{{ cb2Op }};mask:url(assets/icons/check.svg) center/contain no-repeat"></span></button>Hide intentional</label>
+      <label style="display:flex;align-items:center;gap:8px"><span role="checkbox" aria-checked="mixed" style="width:14px;height:14px;border-radius:3px;background:var(--primary);display:inline-flex;align-items:center;justify-content:center;color:var(--primary-foreground)"><span aria-hidden="true" style="width:10px;height:10px;flex:none;background:currentColor;mask:url(assets/icons/minus.svg) center/contain no-repeat"></span></span>Indeterminate</label>
+      <label style="display:flex;align-items:center;gap:8px;opacity:.5;cursor:not-allowed"><span role="checkbox" aria-checked="false" aria-disabled="true" style="width:14px;height:14px;border-radius:3px;border:1px solid var(--input);background:var(--muted)"></span>Disabled</label>
+    </div>
+    <div role="radiogroup" aria-label="Resolve conflict" style="display:flex;flex-direction:column;gap:8px"><span style="font-size:12px;color:var(--muted-foreground)">Radio</span>
+      <sc-for list="{{ radios }}" as="rd" hint-placeholder-count="3"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><button type="button" role="radio" aria-checked="{{ rd.on }}" onClick="{{ rd.pick }}" style="width:14px;height:14px;padding:0;border-radius:999px;border:1px solid {{ rd.bd }};background:var(--background);display:inline-flex;align-items:center;justify-content:center;cursor:pointer"><span style="width:6px;height:6px;border-radius:999px;background:var(--primary);opacity:{{ rd.dot }}"></span></button>{{ rd.l }}</label></sc-for>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px"><span style="font-size:12px;color:var(--muted-foreground)">Segmented control</span>
+      <div role="group" aria-label="File filter" style="display:inline-flex;gap:2px;padding:2px;border-radius:4px;background:var(--muted);border:1px solid var(--border)">
+        <button type="button" aria-pressed="{{ sg1.pressed }}" onClick="{{ setSg1 }}" style="height:22px;padding:0 10px;border:0;border-radius:3px;font-size:12px;font-weight:500;cursor:pointer;background:{{ sg1.bg }};color:{{ sg1.fg }};box-shadow:{{ sg1.sh }}">Drifted</button>
+        <button type="button" aria-pressed="{{ sg2.pressed }}" onClick="{{ setSg2 }}" style="height:22px;padding:0 10px;border:0;border-radius:3px;font-size:12px;font-weight:500;cursor:pointer;background:{{ sg2.bg }};color:{{ sg2.fg }};box-shadow:{{ sg2.sh }}">All files</button>
+        <button type="button" aria-pressed="{{ sg3.pressed }}" onClick="{{ setSg3 }}" style="height:22px;padding:0 10px;border:0;border-radius:3px;font-size:12px;font-weight:500;cursor:pointer;background:{{ sg3.bg }};color:{{ sg3.fg }};box-shadow:{{ sg3.sh }}">Tenant only</button>
+      </div>
+    </div>
+  </div>
+</section>
+<section id="{{ t.a.badges }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Badges and monospace chips</h2><p style="margin:0;color:var(--muted-foreground)">Role and tier badges are neutral so they never compete with status colour. Chips are mono, 20px, with copy on hover or focus.</p></div>
+  <div style="display:flex;flex-wrap:wrap;gap:24px;align-items:center">
+    <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><span style="font-size:12px;color:var(--muted-foreground);margin-right:4px">Role</span>
+      <span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--border);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/eye.svg) center/contain no-repeat"></span>Viewer</span>
+      <span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--border);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/pencil.svg) center/contain no-repeat"></span>Editor</span>
+      <span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--border);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/rotate-cw.svg) center/contain no-repeat"></span>Operator</span>
+      <span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--foreground);background:var(--foreground);color:var(--background);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/shield-check.svg) center/contain no-repeat"></span>Admin</span>
+      <span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px dashed var(--status-approval-border);color:var(--status-approval-fg);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/hourglass.svg) center/contain no-repeat"></span>Requires approval</span>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center"><span style="font-size:12px;color:var(--muted-foreground);margin-right:4px">Tier</span>
+      <span style="display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--input);font-family:var(--font-mono);font-size:12px;font-weight:500;letter-spacing:0.04em">SIT</span>
+      <span style="display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--muted-foreground);background:var(--muted-foreground);color:var(--background);font-family:var(--font-mono);font-size:12px;font-weight:500;letter-spacing:0.04em">PRESIT</span>
+    </div>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center">
+    <span title="tx-infinity-api/tx-infinity-core-sit1.yml" style="display:inline-flex;align-items:center;gap:2px;max-width:240px;height:22px;padding:0 2px 0 6px;border-radius:4px;border:1px solid var(--border);background:var(--muted);font-family:var(--font-mono);font-size:12px"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/file-code.svg) center/contain no-repeat;margin-right:4px"></span><span style="white-space:nowrap">tx-infin…core-sit1.yml</span><button type="button" aria-label="{{ cPathL }}" title="{{ cPathL }}" onClick="{{ copyPath }}" style="width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:3px;background:transparent;color:var(--muted-foreground);cursor:pointer" style-hover="background:var(--accent);color:var(--foreground)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ cPath }}.svg) center/contain no-repeat"></span></button></span>
+    <span style="display:inline-flex;align-items:center;gap:2px;height:22px;padding:0 2px 0 6px;border-radius:4px;border:1px solid var(--border);background:var(--muted);font-family:var(--font-mono);font-size:12px"><span style="color:var(--muted-foreground)">txInfinityOptions.remote-itm-teller.</span>enableAccountSorting<span style="color:var(--muted-foreground);margin:0 4px">=</span><span style="color:var(--info-fg)">true</span><button type="button" aria-label="{{ cSetL }}" title="{{ cSetL }}" onClick="{{ copySet }}" style="width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:3px;background:transparent;color:var(--muted-foreground);cursor:pointer" style-hover="background:var(--accent);color:var(--foreground)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ cSet }}.svg) center/contain no-repeat"></span></button></span>
+    <span style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 2px 0 6px;border-radius:4px;border:1px solid var(--border);font-family:var(--font-mono);font-size:12px"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/git-commit-horizontal.svg) center/contain no-repeat"></span>a3f9c21<button type="button" aria-label="{{ cHashL }}" title="{{ cHashL }}" onClick="{{ copyHash }}" style="width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:3px;background:transparent;color:var(--muted-foreground);cursor:pointer" style-hover="background:var(--accent);color:var(--foreground)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ cHash }}.svg) center/contain no-repeat"></span></button></span>
+    <span style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 6px;border-radius:4px;border:1px solid var(--info-border);background:var(--info-bg);color:var(--info-fg);font-family:var(--font-mono);font-size:12px"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/git-branch.svg) center/contain no-repeat"></span>sit7</span>
+    <span style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 6px;border-radius:4px;border:1px solid var(--border);font-family:var(--font-mono);font-size:12px"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/tag.svg) center/contain no-repeat"></span>v2.3.1<span style="color:var(--muted-foreground)">+ 4</span></span>
+  </div>
+  <p style="margin:0;font-size:12px;color:var(--muted-foreground)">Path chip truncates in the middle (keeps folder start and file name), full path in a tooltip and <code style="font-family:var(--font-mono)">title</code>. Hash always 7 chars. Version label shows tag + commits since.</p>
+</section>
+<section id="{{ t.a.table }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Data table <code style="font-family:var(--font-mono);font-size:12px;font-weight:400;color:var(--muted-foreground)">&lt;DataTable&gt;</code></h2><p style="margin:0;color:var(--muted-foreground)">Fixed rows (Density tweak: 32 / 28), sticky header, sortable columns with aria-sort, row selection, row actions on hover or focus, cursor-based "load more".</p></div>
+  <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--card)">
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:40px;padding:6px 8px;border-bottom:1px solid var(--border)">
+      <span style="display:flex;align-items:center;gap:6px;height:28px;width:240px;padding:0 8px;border-radius:4px;border:1px solid var(--input);background:var(--background)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/search.svg) center/contain no-repeat"></span><span style="flex:1;color:var(--muted-foreground)">Filter files…</span><kbd style="display:inline-flex;align-items:center;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">/</kbd></span>
+      <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:4px;border:1px dashed var(--input);background:transparent;cursor:pointer"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/plus.svg) center/contain no-repeat"></span>Drift</button>
+      <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:4px;border:1px dashed var(--input);background:transparent;cursor:pointer"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/plus.svg) center/contain no-repeat"></span>Swimlane</button>
+      <sc-if value="{{ hasSel }}"><div style="display:flex;align-items:center;gap:6px;margin-left:auto"><span style="font-size:12px;font-variant-numeric:tabular-nums">{{ selCount }} selected</span><button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/arrow-left-right.svg) center/contain no-repeat"></span>Compare</button><button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-weight:500;cursor:pointer" style-hover="background:var(--primary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/git-pull-request.svg) center/contain no-repeat"></span>Raise PR</button></div></sc-if>
+      <sc-if value="{{ noSel }}"><span style="margin-left:auto;font-size:12px;color:var(--muted-foreground)">Select rows to compare or raise a PR</span></sc-if>
+    </div>
+    <div role="grid" aria-label="Files across swimlanes" aria-rowcount="5000" style="max-height:300px;overflow:auto">
+      <div role="row" style="position:sticky;top:0;z-index:1;display:grid;grid-template-columns:36px minmax(260px,2.4fr) 140px 90px 80px 76px 136px 100px;min-width:960px;height:{{ headRowH }}px;align-items:center;background:var(--muted);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted-foreground)">
+        <span role="columnheader" style="display:flex;justify-content:center"><button type="button" role="checkbox" aria-checked="{{ allChecked }}" aria-label="Select all" onClick="{{ selectAll }}" style="width:14px;height:14px;padding:0;border-radius:3px;border:1px solid {{ allCbBorder }};background:{{ allCbBg }};display:inline-flex;align-items:center;justify-content:center;color:var(--primary-foreground);cursor:pointer"><span aria-hidden="true" style="width:10px;height:10px;flex:none;background:currentColor;opacity:{{ allCbOp }};mask:url(assets/icons/{{ allCbIcon }}.svg) center/contain no-repeat"></span></button></span>
+        <sc-for list="{{ headers }}" as="h" hint-placeholder-count="6"><span role="columnheader" aria-sort="{{ h.ariaSort }}" style="display:flex;justify-content:{{ h.align }};padding:0 8px"><button type="button" onClick="{{ h.onSort }}" disabled="{{ h.disabled }}" style="display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 4px;margin:0 -4px;border:0;border-radius:4px;background:transparent;color:inherit;font-size:12px;font-weight:500;cursor:pointer" style-hover="background:var(--accent);color:var(--foreground)">{{ h.label }}<span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;opacity:{{ h.op }};mask:url(assets/icons/{{ h.ic }}.svg) center/contain no-repeat"></span></button></span></sc-for>
+        <span role="columnheader" style="padding:0 8px"><span style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Actions</span></span>
+      </div>
+      <sc-for list="{{ rows }}" as="r" hint-placeholder-count="9">
+        <div role="row" aria-selected="{{ r.sel }}" tabindex="0" onMouseEnter="{{ r.enter }}" onMouseLeave="{{ r.leave }}" onFocus="{{ r.enter }}" style="display:grid;grid-template-columns:36px minmax(260px,2.4fr) 140px 90px 80px 76px 136px 100px;min-width:960px;height:{{ rowH }}px;align-items:center;border-bottom:1px solid var(--border);background:{{ r.bg }}">
+          <span role="gridcell" style="display:flex;justify-content:center"><button type="button" role="checkbox" aria-checked="{{ r.sel }}" aria-label="Select {{ r.path }} in {{ r.lane }}" onClick="{{ r.toggle }}" style="width:14px;height:14px;padding:0;border-radius:3px;border:1px solid {{ r.cbBorder }};background:{{ r.cbBg }};display:inline-flex;align-items:center;justify-content:center;color:var(--primary-foreground);cursor:pointer"><span aria-hidden="true" style="width:10px;height:10px;flex:none;background:currentColor;opacity:{{ r.cbOp }};mask:url(assets/icons/check.svg) center/contain no-repeat"></span></button></span>
+          <span role="gridcell" title="{{ r.path }}" style="padding:0 8px;font-family:var(--font-mono);font-size:12px;white-space:nowrap;overflow:hidden">{{ r.short }}</span>
+          <span role="gridcell" style="padding:0 8px;display:flex;gap:4px;align-items:center"><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;font-weight:500;white-space:nowrap;color:var(--status-{{ r.st }}-fg);background:var(--status-{{ r.st }}-bg);border:1px {{ r.s.bs }} var(--status-{{ r.st }}-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ r.s.icon }}.svg) center/contain no-repeat"></span>{{ r.s.label }}</span><sc-if value="{{ r.restart }}"><span title="Pending restart" aria-label="Pending restart" style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:4px;color:var(--status-restart-fg);background:var(--status-restart-bg);border:1px solid var(--status-restart-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/clock.svg) center/contain no-repeat"></span></span></sc-if></span>
+          <span role="gridcell" style="padding:0 8px;font-family:var(--font-mono);font-size:12px">{{ r.lane }}</span>
+          <span role="gridcell" style="padding:0 8px;font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">{{ r.branch }}</span>
+          <span role="gridcell" style="padding:0 8px;text-align:right;font-variant-numeric:tabular-nums">{{ r.linesFmt }}</span>
+          <span role="gridcell" style="padding:0 8px;font-variant-numeric:tabular-nums;font-size:12px;color:var(--muted-foreground)">{{ r.mod }}</span>
+          <span role="gridcell" style="padding:0 6px;display:flex;justify-content:flex-end;gap:2px;opacity:{{ r.act }}">
+            <button type="button" aria-label="Compare" title="Compare  C" style="width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:4px;background:transparent;cursor:pointer" style-hover="background:var(--secondary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/arrow-left-right.svg) center/contain no-repeat"></span></button>
+            <button type="button" aria-label="Edit" title="Edit  E" style="width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:4px;background:transparent;cursor:pointer" style-hover="background:var(--secondary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/pencil.svg) center/contain no-repeat"></span></button>
+            <button type="button" aria-label="More actions" title="More" style="width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:4px;background:transparent;cursor:pointer" style-hover="background:var(--secondary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/ellipsis.svg) center/contain no-repeat"></span></button>
+          </span>
+        </div>
+      </sc-for>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;height:36px;padding:0 8px;border-top:1px solid var(--border);background:var(--muted);font-size:12px">
+      <span style="font-variant-numeric:tabular-nums">Showing {{ shownCount }} of 5,000</span>
+      <code style="font-family:var(--font-mono);color:var(--muted-foreground)">cursor=eyJpZCI6MTJ9</code>
+      <button type="button" onClick="{{ loadMore }}" style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);font-size:12px;font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)">{{ loadLabel }}</button>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:12px">
+    <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--card)">
+      <div style="display:flex;align-items:center;height:32px;padding:0 12px;background:var(--muted);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted-foreground)">Loading skeleton · aria-busy</div>
+      <div aria-busy="true" style="display:flex;flex-direction:column">
+        <div style="display:flex;gap:16px;align-items:center;height:32px;padding:0 12px;border-bottom:1px solid var(--border)"><span style="width:14px;height:14px;border-radius:3px;background:var(--accent)"></span><span style="width:46%;height:10px;border-radius:2px;background:var(--accent)"></span><span style="width:64px;height:14px;border-radius:4px;background:var(--accent)"></span><span style="width:40px;height:10px;border-radius:2px;background:var(--accent)"></span></div>
+        <div style="display:flex;gap:16px;align-items:center;height:32px;padding:0 12px;border-bottom:1px solid var(--border)"><span style="width:14px;height:14px;border-radius:3px;background:var(--accent)"></span><span style="width:36%;height:10px;border-radius:2px;background:var(--accent)"></span><span style="width:64px;height:14px;border-radius:4px;background:var(--accent)"></span><span style="width:52px;height:10px;border-radius:2px;background:var(--accent)"></span></div>
+        <div style="display:flex;gap:16px;align-items:center;height:32px;padding:0 12px"><span style="width:14px;height:14px;border-radius:3px;background:var(--accent)"></span><span style="width:52%;height:10px;border-radius:2px;background:var(--accent)"></span><span style="width:64px;height:14px;border-radius:4px;background:var(--accent)"></span><span style="width:36px;height:10px;border-radius:2px;background:var(--accent)"></span></div>
+      </div>
+    </div>
+    <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--card)">
+      <div style="display:flex;align-items:center;height:32px;padding:0 12px;background:var(--muted);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted-foreground)">Empty (filtered)</div>
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;height:96px;text-align:center"><span style="font-weight:500">No files match "Conflict" in sitb</span><button type="button" style="height:24px;padding:0 8px;border:0;border-radius:4px;background:transparent;color:var(--link);font-size:12px;font-weight:500;cursor:pointer;text-decoration:underline;text-underline-offset:2px">Clear filters</button></div>
+    </div>
+  </div>
+</section>
+<section id="{{ t.a.tree }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Tree view <code style="font-family:var(--font-mono);font-size:12px;font-weight:400;color:var(--muted-foreground)">&lt;TreeView&gt;</code></h2><p style="margin:0;color:var(--muted-foreground)">Click into the tree, then ↑ ↓ to move, → to expand, ← to collapse or jump to parent, Enter to open. File class icon: structured (blue), text (grey), binary (violet).</p></div>
+  <div style="display:grid;grid-template-columns:minmax(0,420px) minmax(0,1fr);gap:16px;align-items:start">
+    <div role="tree" aria-label="sitb files" tabindex="0" aria-activedescendant="{{ t.treeActive }}" onKeyDown="{{ treeKey }}" onFocus="{{ treeFocusIn }}" onBlur="{{ treeFocusOut }}" style="border:1px solid var(--border);border-radius:6px;padding:4px 0;background:var(--card);outline:none">
+      <sc-for list="{{ tree }}" as="n" hint-placeholder-count="10">
+        <div role="treeitem" id="{{ t.id }}-tree-{{ n.id }}" aria-level="{{ n.level }}" aria-expanded="{{ n.expanded }}" aria-selected="{{ n.selected }}" onClick="{{ n.click }}" style="display:flex;align-items:center;gap:6px;height:28px;padding:0 8px 0 {{ n.pad }}px;background:{{ n.bg }};box-shadow:{{ n.ring }};cursor:pointer" style-hover="background:var(--accent)">
+          <span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);opacity:{{ n.chevOp }};mask:url(assets/icons/{{ n.chev }}.svg) center/contain no-repeat"></span>
+          <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:{{ n.icColor }};mask:url(assets/icons/{{ n.ic }}.svg) center/contain no-repeat"></span>
+          <span style="flex:1;min-width:0;font-family:var(--font-mono);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.name }}</span>
+          <sc-if value="{{ n.restart }}"><span title="Pending restart" aria-label="Pending restart" style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:4px;color:var(--status-restart-fg);background:var(--status-restart-bg);border:1px solid var(--status-restart-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/clock.svg) center/contain no-repeat"></span></span></sc-if>
+          <sc-if value="{{ n.s }}"><span style="display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 4px;border-radius:4px;font-size:12px;font-weight:500;white-space:nowrap;color:var(--status-{{ n.st }}-fg);background:var(--status-{{ n.st }}-bg);border:1px {{ n.s.bs }} var(--status-{{ n.st }}-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ n.s.icon }}.svg) center/contain no-repeat"></span>{{ n.s.label }}</span></sc-if>
+        </div>
+      </sc-for>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px;font-size:12px;color:var(--muted-foreground)">
+      <span>Tenant files sit beside their base file and win when present:</span>
+      <div style="display:flex;flex-direction:column;gap:4px;font-family:var(--font-mono);color:var(--foreground)"><span>tx-infinity-core.yml <span style="font-family:var(--font-sans);color:var(--muted-foreground)">· base, configuration-base-saas</span></span><span>tx-infinity-core-sit1.yml <span style="font-family:var(--font-sans);color:var(--muted-foreground)">· tenant, csp-tenant-data@sit1 — used</span></span></div>
+    </div>
+  </div>
+</section>
+<section id="{{ t.a.nav }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Breadcrumbs, tabs, split pane</h2><p style="margin:0;color:var(--muted-foreground)">Breadcrumb mirrors the URL. Tabs carry counts. The pane divider drags or takes ← → when focused.</p></div>
+  <nav aria-label="Breadcrumb"><ol style="display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin:0;padding:0;list-style:none;font-size:13px">
+    <li><a href="#" style="color:var(--muted-foreground);text-decoration:none">ops-sit</a></li><li aria-hidden="true" style="display:flex"><span style="width:12px;height:12px;background:var(--muted-foreground);mask:url(assets/icons/chevron-right.svg) center/contain no-repeat"></span></li>
+    <li><a href="#" style="color:var(--muted-foreground);text-decoration:none;font-family:var(--font-mono);font-size:12px">sitb</a></li><li aria-hidden="true" style="display:flex"><span style="width:12px;height:12px;background:var(--muted-foreground);mask:url(assets/icons/chevron-right.svg) center/contain no-repeat"></span></li>
+    <li><a href="#" style="color:var(--muted-foreground);text-decoration:none;font-family:var(--font-mono);font-size:12px">tx-infinity-api</a></li><li aria-hidden="true" style="display:flex"><span style="width:12px;height:12px;background:var(--muted-foreground);mask:url(assets/icons/chevron-right.svg) center/contain no-repeat"></span></li>
+    <li aria-current="page" style="font-family:var(--font-mono);font-size:12px;font-weight:500">tx-infinity-core-sit1.yml</li>
+  </ol></nav>
+  <div>
+    <div role="tablist" aria-label="Swimlane" style="display:flex;gap:16px;border-bottom:1px solid var(--border)">
+      <sc-for list="{{ tabs }}" as="tb" hint-placeholder-count="5"><button type="button" role="tab" aria-selected="{{ tb.on }}" onClick="{{ tb.click }}" style="display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 2px;border:0;border-bottom:2px solid {{ tb.bar }};margin-bottom:-1px;background:transparent;color:{{ tb.fg }};font-size:14px;font-weight:500;cursor:pointer" style-hover="color:var(--foreground)">{{ tb.l }}<sc-if value="{{ tb.hasC }}"><span style="height:18px;padding:0 6px;border-radius:999px;background:var(--accent);font-size:12px;line-height:18px;font-variant-numeric:tabular-nums;color:var(--foreground)">{{ tb.c }}</span></sc-if></button></sc-for>
+    </div>
+    <div role="tabpanel" style="padding-top:8px">
+      <sc-if value="{{ tabOther }}"><p style="margin:0;padding:8px 0;color:var(--muted-foreground)">{{ tabText }}</p></sc-if>
+      <sc-if value="{{ tabFindings }}"><div style="display:flex;flex-direction:column">
+        <sc-for list="{{ findings }}" as="f" hint-placeholder-count="8"><div style="display:grid;grid-template-columns:44px 92px 200px minmax(0,1fr) 40px;align-items:center;gap:8px;height:32px;border-bottom:1px solid var(--border)">
+          <code style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ f.code }}</code>
+          <span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;justify-self:start;border-radius:4px;font-size:12px;font-weight:500;color:{{ f.fg }};background:{{ f.bg }};border:1px solid {{ f.bd }}"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ f.ic }}.svg) center/contain no-repeat"></span>{{ f.sev }}</span>
+          <span style="font-weight:500">{{ f.title }}</span>
+          <span style="color:var(--muted-foreground);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ f.ex }}</span>
+          <span style="text-align:right;font-variant-numeric:tabular-nums">{{ f.n }}</span>
+        </div></sc-for>
+      </div></sc-if>
+    </div>
+  </div>
+  <div style="display:flex;height:200px;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--card)">
+    <div style="width:{{ paneW }}px;flex:none;display:flex;flex-direction:column;padding:4px 0;overflow:hidden">
+      <span style="height:28px;display:flex;align-items:center;padding:0 12px;font-size:12px;color:var(--muted-foreground)">sitb · tx-infinity-api</span>
+      <span style="height:28px;display:flex;align-items:center;padding:0 12px;font-family:var(--font-mono);font-size:12px">tx-infinity-core.yml</span>
+      <span style="height:28px;display:flex;align-items:center;padding:0 12px;font-family:var(--font-mono);font-size:12px;background:var(--selection)">tx-infinity-core-sit1.yml</span>
+      <span style="height:28px;display:flex;align-items:center;padding:0 12px;font-family:var(--font-mono);font-size:12px">entryGroupConfig.yml</span>
+    </div>
+    <div role="separator" aria-orientation="vertical" aria-label="Resize file list" aria-valuenow="{{ paneW }}" aria-valuemin="160" aria-valuemax="480" tabindex="0" onMouseDown="{{ startDrag }}" onKeyDown="{{ paneKey }}" style="position:relative;width:9px;flex:none;cursor:col-resize;display:flex;justify-content:center;align-items:center;background:transparent" style-hover="background:var(--accent)"><span style="width:1px;height:100%;background:var(--border)"></span><span style="position:absolute;width:6px;height:24px;border-radius:3px;border:1px solid var(--input);background:var(--card)"></span></div>
+    <div style="flex:1;min-width:0;padding:8px 0;font-family:var(--font-mono);font-size:12px;line-height:18px;overflow:auto">
+      <div style="display:grid;grid-template-columns:44px 1fr"><span style="text-align:right;padding-right:12px;color:var(--muted-foreground)">1</span><span>txInfinityOptions:</span><span style="text-align:right;padding-right:12px;color:var(--muted-foreground)">2</span><span>  remote-itm-teller:</span><span style="text-align:right;padding-right:12px;color:var(--muted-foreground)">3</span><span style="white-space:pre">    enableAccountSorting: <span style="color:var(--info-fg)">true</span></span><span style="text-align:right;padding-right:12px;color:var(--muted-foreground)">4</span><span style="white-space:pre">    maxHoldDays: <span style="color:var(--status-intentional-fg)">5</span></span><span style="text-align:right;padding-right:12px;color:var(--muted-foreground)">5</span><span style="white-space:pre">  atm-iso:</span></div>
+    </div>
+  </div>
+</section>
+<section id="{{ t.a.diff }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Diff <code style="font-family:var(--font-mono);font-size:12px;font-weight:400;color:var(--muted-foreground)">&lt;DiffHeader&gt; &lt;DiffView&gt;</code></h2><p style="margin:0;color:var(--muted-foreground)">Lines are 18px mono. Every changed line carries a sign (+ − ~) in the gutter, so meaning survives without colour.</p></div>
+  <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--card)">
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;min-height:44px;padding:6px 10px;background:var(--muted);border-bottom:1px solid var(--border)">
+      <span style="display:inline-flex;align-items:center;gap:6px"><span style="font-size:12px;color:var(--muted-foreground)">Left</span><code style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 6px;border-radius:4px;border:1px solid var(--border);background:var(--card);font-family:var(--font-mono);font-size:12px"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/server.svg) center/contain no-repeat"></span>sitc · NFS</code></span>
+      <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/arrow-left-right.svg) center/contain no-repeat"></span>
+      <span style="display:inline-flex;align-items:center;gap:6px"><span style="font-size:12px;color:var(--muted-foreground)">Right</span><code style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 6px;border-radius:4px;border:1px solid var(--border);background:var(--card);font-family:var(--font-mono);font-size:12px"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/git-branch.svg) center/contain no-repeat"></span>csp-tenant-data@sit1 · a3f9c21</code></span>
+      <span style="display:inline-flex;gap:8px;font-family:var(--font-mono);font-size:12px;font-variant-numeric:tabular-nums"><span style="color:var(--diff-add-fg)">+2</span><span style="color:var(--diff-del-fg)">−2</span><span style="color:var(--diff-mod-fg)">~1</span></span>
+      <span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;font-weight:500;color:var(--warning-fg);background:var(--warning-bg);border:1px solid var(--warning-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/triangle-alert.svg) center/contain no-repeat"></span>Line endings also differ (CRLF → LF)</span>
+      <span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;font-weight:500;color:var(--status-nfs-fg);background:var(--status-nfs-bg);border:1px solid var(--status-nfs-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/arrow-up-from-line.svg) center/contain no-repeat"></span>NFS ahead</span>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+        <div style="display:inline-flex;align-items:center;gap:2px"><button type="button" aria-label="Previous change" title="Previous change  [" style="width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:4px;background:var(--card);cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/chevron-up.svg) center/contain no-repeat"></span></button><span style="min-width:48px;text-align:center;font-size:12px;font-variant-numeric:tabular-nums">2 of 4</span><button type="button" aria-label="Next change" title="Next change  ]" style="width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:4px;background:var(--card);cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/chevron-down.svg) center/contain no-repeat"></span></button></div>
+        <div role="group" aria-label="Diff view" style="display:inline-flex;gap:2px;padding:2px;border-radius:4px;background:var(--background);border:1px solid var(--border)">
+          <button type="button" aria-pressed="{{ vSplit.pressed }}" onClick="{{ setSplit }}" style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;border:0;border-radius:3px;font-size:12px;font-weight:500;cursor:pointer;background:{{ vSplit.bg }};color:{{ vSplit.fg }};box-shadow:{{ vSplit.sh }}"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/columns-2.svg) center/contain no-repeat"></span>Side by side</button>
+          <button type="button" aria-pressed="{{ vUni.pressed }}" onClick="{{ setUni }}" style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;border:0;border-radius:3px;font-size:12px;font-weight:500;cursor:pointer;background:{{ vUni.bg }};color:{{ vUni.fg }};box-shadow:{{ vUni.sh }}"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/rows-2.svg) center/contain no-repeat"></span>Unified</button>
+        </div>
+      </div>
+    </div>
+    <div style="height:18px;display:flex;align-items:center;padding:0 10px;background:var(--diff-hunk-bg);color:var(--diff-hunk-fg);font-family:var(--font-mono);font-size:12px">@@ -1,8 +1,8 @@ txInfinityOptions</div>
+    <sc-if value="{{ isSplit }}"><div style="font-family:var(--font-mono);font-size:12px;line-height:18px;overflow-x:auto">
+      <sc-for list="{{ diffSplit }}" as="d" hint-placeholder-count="9"><div style="display:grid;grid-template-columns:40px 16px minmax(0,1fr) 40px 16px minmax(0,1fr);min-width:720px;height:18px">
+        <span style="text-align:right;padding-right:6px;background:{{ d.lg }};color:var(--muted-foreground)">{{ d.ln }}</span><span style="text-align:center;background:{{ d.lbg }};color:{{ d.lsc }};font-weight:500">{{ d.ls }}</span><span style="white-space:pre;overflow:hidden;background:{{ d.lbg }};border-right:1px solid var(--border)">{{ d.lt }}</span>
+        <span style="text-align:right;padding-right:6px;background:{{ d.rg }};color:var(--muted-foreground)">{{ d.rn }}</span><span style="text-align:center;background:{{ d.rbg }};color:{{ d.rsc }};font-weight:500">{{ d.rs }}</span><span style="white-space:pre;overflow:hidden;background:{{ d.rbg }}">{{ d.rt }}</span>
+      </div></sc-for>
+    </div></sc-if>
+    <sc-if value="{{ isUni }}"><div style="font-family:var(--font-mono);font-size:12px;line-height:18px;overflow-x:auto">
+      <sc-for list="{{ diffUni }}" as="d" hint-placeholder-count="11"><div style="display:grid;grid-template-columns:40px 40px 16px minmax(0,1fr);height:18px;background:{{ d.bg }}">
+        <span style="text-align:right;padding-right:6px;background:{{ d.g }};color:var(--muted-foreground)">{{ d.ln }}</span><span style="text-align:right;padding-right:6px;background:{{ d.g }};color:var(--muted-foreground)">{{ d.rn }}</span><span style="text-align:center;color:{{ d.sc }};font-weight:500">{{ d.sign }}</span><span style="white-space:pre">{{ d.text }}</span>
+      </div></sc-for>
+    </div></sc-if>
+  </div>
+</section>
+<section id="{{ t.a.palette }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Command palette <code style="font-family:var(--font-mono);font-size:12px;font-weight:400;color:var(--muted-foreground)">⌘K</code></h2><p style="margin:0;color:var(--muted-foreground)">Grouped results in a fixed order. Every action shows its shortcut; role-gated actions show the role they need.</p></div>
+  <div style="max-width:640px;border:1px solid var(--border);border-radius:6px;background:var(--popover);box-shadow:var(--shadow-popover);overflow:hidden">
+    <div style="display:flex;align-items:center;gap:8px;height:44px;padding:0 12px;border-bottom:1px solid var(--border)"><span aria-hidden="true" style="width:16px;height:16px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/search.svg) center/contain no-repeat"></span><span style="flex:1;font-size:14px">sit<span style="display:inline-block;width:1px;height:16px;background:var(--foreground);vertical-align:middle;margin-left:1px"></span></span><kbd style="display:inline-flex;align-items:center;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">Esc</kbd></div>
+    <div role="listbox" style="display:flex;flex-direction:column;padding:4px;max-height:360px;overflow:auto">
+      <sc-for list="{{ palette }}" as="pg" hint-placeholder-count="4">
+        <div role="group" aria-label="{{ pg.g }}" style="display:flex;flex-direction:column">
+          <span style="height:24px;display:flex;align-items:flex-end;padding:0 8px 4px;font-size:12px;font-weight:500;color:var(--muted-foreground)">{{ pg.g }}</span>
+          <sc-for list="{{ pg.items }}" as="pi" hint-placeholder-count="2"><div role="option" aria-selected="{{ pi.on }}" style="display:flex;align-items:center;gap:8px;height:32px;padding:0 8px;border-radius:4px;background:{{ pi.bg }}" style-hover="background:var(--accent)">
+            <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/{{ pi.i }}.svg) center/contain no-repeat"></span>
+            <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ pi.t }}</span>
+            <sc-if value="{{ pi.hasM }}"><span style="font-size:12px;color:var(--muted-foreground)">{{ pi.m }}</span></sc-if>
+            <sc-if value="{{ pi.hasK }}"><kbd style="display:inline-flex;align-items:center;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">{{ pi.k }}</kbd></sc-if>
+          </div></sc-for>
+        </div>
+      </sc-for>
+    </div>
+    <div style="display:flex;gap:16px;align-items:center;height:32px;padding:0 12px;border-top:1px solid var(--border);background:var(--muted);font-size:12px;color:var(--muted-foreground)"><span>↑↓ navigate</span><span>↵ open</span><span>⌘↵ open in new tab</span><span style="margin-left:auto">Prefix &gt; for actions</span></div>
+  </div>
+</section>
+<section id="{{ t.a.dialogs }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Dialogs</h2><p style="margin:0;color:var(--muted-foreground)">Standard, consequence confirmation (effects listed above the confirm button), and destructive confirmation that needs the name typed.</p></div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;padding:20px;border-radius:6px;background:var(--overlay)">
+    <div role="dialog" aria-labelledby="{{ t.id }}-dlg1" style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;background:var(--popover);box-shadow:var(--shadow-popover)">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px 8px"><h3 id="{{ t.id }}-dlg1" style="margin:0;font-size:16px;line-height:22px;font-weight:600">Raise pull request</h3><button type="button" aria-label="Close" style="width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:4px;background:transparent;cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/x.svg) center/contain no-repeat"></span></button></div>
+      <div style="display:flex;flex-direction:column;gap:12px;padding:0 16px 16px">
+        <label style="display:flex;flex-direction:column;gap:4px"><span style="font-size:12px;color:var(--muted-foreground)">Target</span><span style="display:flex;align-items:center;height:28px;padding:0 8px;border-radius:4px;border:1px solid var(--input);font-family:var(--font-mono);font-size:12px">csp-tenant-data ← lk/sitc-enable-sorting</span></label>
+        <label style="display:flex;flex-direction:column;gap:4px"><span style="font-size:12px;color:var(--muted-foreground)">Title</span><span style="display:flex;align-items:center;height:28px;padding:0 8px;border-radius:4px;border:1px solid var(--input)">Enable account sorting for remote-itm-teller (sit1)</span></label>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--border)"><button type="button" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid transparent;background:transparent;font-weight:500;cursor:pointer" style-hover="background:var(--accent)">Cancel</button><button type="button" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-weight:500;cursor:pointer" style-hover="background:var(--primary-hover)">Raise PR</button></div>
+    </div>
+    <div role="alertdialog" aria-labelledby="{{ t.id }}-dlg2" style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;background:var(--popover);box-shadow:var(--shadow-popover)">
+      <div style="padding:14px 16px 8px;display:flex;flex-direction:column;gap:2px"><h3 id="{{ t.id }}-dlg2" style="margin:0;font-size:16px;line-height:22px;font-weight:600">Save to sitc NFS?</h3><span style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">tx-infinity-api/tx-infinity-core-sit1.yml</span></div>
+      <dl style="margin:0;padding:0 16px 12px;display:grid;grid-template-columns:96px minmax(0,1fr);gap:8px 12px;font-size:13px">
+        <dt style="color:var(--muted-foreground)">Swimlanes</dt><dd style="margin:0;font-family:var(--font-mono);font-size:12px">sitc <span style="font-family:var(--font-sans);color:var(--muted-foreground)">(1 of 6)</span></dd>
+        <dt style="color:var(--muted-foreground)">Services</dt><dd style="margin:0;display:flex;flex-wrap:wrap;gap:4px"><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;font-weight:500;color:var(--status-restart-fg);background:var(--status-restart-bg);border:1px solid var(--status-restart-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/clock.svg) center/contain no-repeat"></span>tx-infinity-core</span><span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;font-weight:500;color:var(--status-restart-fg);background:var(--status-restart-bg);border:1px solid var(--status-restart-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/clock.svg) center/contain no-repeat"></span>ui-service</span><span style="font-size:12px;color:var(--muted-foreground)">need restart</span></dd>
+        <dt style="color:var(--muted-foreground)">Change</dt><dd style="margin:0;font-family:var(--font-mono);font-size:12px;display:flex;flex-direction:column;gap:2px"><span>…remote-itm-teller.enableAccountSorting</span><span><span style="color:var(--diff-del-fg)">− false</span>  <span style="color:var(--diff-add-fg)">+ true</span></span></dd>
+        <dt style="color:var(--muted-foreground)">Git</dt><dd style="margin:0">File becomes <strong style="color:var(--status-nfs-fg)">NFS ahead</strong> of csp-tenant-data@sit1 until a PR merges.</dd>
+      </dl>
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--border)"><button type="button" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid transparent;background:transparent;font-weight:500;cursor:pointer" style-hover="background:var(--accent)">Back to edit</button><button type="button" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-weight:500;cursor:pointer" style-hover="background:var(--primary-hover)">Save to sitc</button></div>
+    </div>
+    <div role="alertdialog" aria-labelledby="{{ t.id }}-dlg3" style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;background:var(--popover);box-shadow:var(--shadow-popover)">
+      <div style="padding:14px 16px 8px;display:flex;gap:10px;align-items:flex-start"><span aria-hidden="true" style="width:16px;height:16px;flex:none;margin-top:3px;background:var(--danger-fg);mask:url(assets/icons/triangle-alert.svg) center/contain no-repeat"></span><div style="display:flex;flex-direction:column;gap:4px"><h3 id="{{ t.id }}-dlg3" style="margin:0;font-size:16px;line-height:22px;font-weight:600">Delete receipt-logo.jpeg from presita?</h3><p style="margin:0;color:var(--muted-foreground)">Untracked, so there is no copy in Git. document-service will fail to render receipts until a replacement is uploaded.</p></div></div>
+      <label style="display:flex;flex-direction:column;gap:4px;padding:0 16px 16px"><span style="font-size:12px">Type <code style="font-family:var(--font-mono);font-weight:600">receipt-logo.jpeg</code> to confirm</span><span style="display:flex;align-items:center;height:28px;padding:0 8px;border-radius:4px;border:1px solid var(--ring);box-shadow:0 0 0 1px var(--ring);font-family:var(--font-mono);font-size:12px">receipt-lo|</span></label>
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--border)"><button type="button" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid transparent;background:transparent;font-weight:500;cursor:pointer" style-hover="background:var(--accent)">Cancel</button><button type="button" disabled="{{ true }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--destructive);background:var(--destructive);color:var(--destructive-foreground);font-weight:500;opacity:.5;cursor:not-allowed"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/trash-2.svg) center/contain no-repeat"></span>Delete file</button></div>
+    </div>
+  </div>
+</section>
+<section id="{{ t.a.feedback }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Banners, alerts, toasts, live indicator</h2><p style="margin:0;color:var(--muted-foreground)">Banners are page-level and sit under the header. Alerts sit inline with the thing they describe. Toasts confirm and fade after 6s; errors stay.</p></div>
+  <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+    <div role="status" style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:40px;padding:6px 12px;background:var(--status-locked-bg);color:var(--status-locked-fg);border-bottom:1px solid var(--status-locked-border)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/lock.svg) center/contain no-repeat"></span><strong style="font-weight:600">Editing locked</strong><span>presitb has no confirmed baseline. An admin must finish adoption first.</span><button type="button" style="margin-left:auto;height:24px;padding:0 8px;border-radius:4px;border:1px solid currentColor;background:transparent;font-size:12px;font-weight:500;cursor:pointer">Request adoption</button></div>
+    <div role="status" style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:40px;padding:6px 12px;background:var(--status-restart-bg);color:var(--status-restart-fg);border-bottom:1px solid var(--status-restart-border)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/clock.svg) center/contain no-repeat"></span><strong style="font-weight:600">2 services running old config</strong><span>tx-infinity-core and ui-service in sitc changed 14 min ago.</span><button type="button" style="margin-left:auto;height:24px;padding:0 8px;border-radius:4px;border:1px solid currentColor;background:transparent;font-size:12px;font-weight:500;cursor:pointer">Review restarts</button></div>
+    <div role="status" style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:40px;padding:6px 12px;background:var(--status-approval-bg);color:var(--status-approval-fg)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/hourglass.svg) center/contain no-repeat"></span><strong style="font-weight:600">Your changes need approval</strong><span>Saving creates a proposal for Priya Shah.</span></div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px">
+    <div role="note" style="display:flex;gap:8px;padding:10px 12px;border-radius:6px;border:1px solid var(--info-border);background:var(--info-bg);color:var(--info-fg)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;margin-top:2px;background:currentColor;mask:url(assets/icons/info.svg) center/contain no-repeat"></span><div style="display:flex;flex-direction:column;gap:2px"><strong style="font-weight:600">Tenant file in use</strong><span style="color:var(--foreground)">sitc reads tx-infinity-core-sit1.yml, not the base file.</span></div></div>
+    <div role="note" style="display:flex;gap:8px;padding:10px 12px;border-radius:6px;border:1px solid var(--warning-border);background:var(--warning-bg);color:var(--warning-fg)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;margin-top:2px;background:currentColor;mask:url(assets/icons/triangle-alert.svg) center/contain no-repeat"></span><div style="display:flex;flex-direction:column;gap:2px"><strong style="font-weight:600">Large file · 6,100 lines</strong><span style="color:var(--foreground)">security-roles.yml opens in read-only mode first.</span></div></div>
+    <div role="alert" style="display:flex;gap:8px;padding:10px 12px;border-radius:6px;border:1px solid var(--danger-border);background:var(--danger-bg);color:var(--danger-fg)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;margin-top:2px;background:currentColor;mask:url(assets/icons/circle-x.svg) center/contain no-repeat"></span><div style="display:flex;flex-direction:column;gap:2px"><strong style="font-weight:600">Duplicate key (C8)</strong><span style="color:var(--foreground)">entryGroupConfigMap.atm-iso.DEPOSIT.transactionKey on lines 212 and 488.</span></div></div>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start">
+    <div style="display:flex;flex-direction:column;gap:8px;width:360px;max-width:100%">
+      <div role="status" style="display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border-radius:6px;border:1px solid var(--border);background:var(--popover);box-shadow:var(--shadow-popover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;margin-top:2px;background:var(--success-fg);mask:url(assets/icons/circle-check.svg) center/contain no-repeat"></span><div style="flex:1;display:flex;flex-direction:column;gap:2px"><strong style="font-weight:600">PR #482 opened</strong><span style="color:var(--muted-foreground)">csp-tenant-data · sit1</span></div><a href="#" style="font-size:12px;font-weight:500">View</a></div>
+      <div role="alert" style="display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border-radius:6px;border:1px solid var(--danger-border);background:var(--popover);box-shadow:var(--shadow-popover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;margin-top:2px;background:var(--danger-fg);mask:url(assets/icons/circle-x.svg) center/contain no-repeat"></span><div style="flex:1;display:flex;flex-direction:column;gap:2px"><strong style="font-weight:600">Restart failed · holds-service</strong><span style="color:var(--muted-foreground);font-family:var(--font-mono);font-size:12px">req_7f3a9c21e04b</span></div><button type="button" aria-label="Dismiss" style="width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:4px;background:transparent;cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/x.svg) center/contain no-repeat"></span></button></div>
+      <div role="status" style="display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border-radius:6px;border:1px solid var(--border);background:var(--popover);box-shadow:var(--shadow-popover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;margin-top:2px;background:var(--info-fg);mask:url(assets/icons/radio.svg) center/contain no-repeat"></span><div style="flex:1;display:flex;flex-direction:column;gap:2px"><strong style="font-weight:600">sitb updated live</strong><span style="color:var(--muted-foreground)">Marco Diaz saved entryGroupConfig.yml</span></div></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <span style="font-size:12px;color:var(--muted-foreground)">Live indicator (header)</span>
+      <span role="status" style="display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:999px;border:1px solid var(--border);font-size:12px;font-weight:500"><span style="width:8px;height:8px;border-radius:999px;background:var(--agent-online)"></span>Live</span>
+      <span role="status" style="display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:999px;border:1px solid var(--warning-border);background:var(--warning-bg);color:var(--warning-fg);font-size:12px;font-weight:500">{{ pulse }}Reconnecting… retry in 3s</span>
+      <span role="status" style="display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:999px;border:1px dashed var(--input);color:var(--muted-foreground);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/wifi-off.svg) center/contain no-repeat"></span>Offline · data from 10:42</span>
+    </div>
+  </div>
+</section>
+<section id="{{ t.a.states }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Empty, error and permission states</h2><p style="margin:0;color:var(--muted-foreground)">Say what happened, why, and the one next step. Errors always show a copyable request ID.</p></div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:28px 20px;border:1px solid var(--border);border-radius:6px;background:var(--card);text-align:center"><span aria-hidden="true" style="width:20px;height:20px;background:var(--muted-foreground);mask:url(assets/icons/check.svg) center/contain no-repeat"></span><strong style="font-size:14px;font-weight:600">No drift in sitb</strong><span style="color:var(--muted-foreground)">All 412 files match csp-tenant-data@sit7 and v2.3.1 + 4.</span><button type="button" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)">Compare with another swimlane</button></div>
+    <div role="alert" style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:28px 20px;border:1px solid var(--border);border-radius:6px;background:var(--card);text-align:center"><span aria-hidden="true" style="width:20px;height:20px;background:var(--danger-fg);mask:url(assets/icons/circle-x.svg) center/contain no-repeat"></span><strong style="font-size:14px;font-weight:600">Couldn't read presitb NFS</strong><span style="color:var(--muted-foreground)">The agent timed out after 30s.</span><span style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 2px 0 6px;border-radius:4px;border:1px solid var(--border);background:var(--muted);font-family:var(--font-mono);font-size:12px">req_7f3a9c21e04b<button type="button" aria-label="{{ cReqL }}" title="{{ cReqL }}" onClick="{{ copyReq }}" style="width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:3px;background:transparent;color:var(--muted-foreground);cursor:pointer" style-hover="background:var(--accent);color:var(--foreground)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ cReq }}.svg) center/contain no-repeat"></span></button></span><button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/refresh-cw.svg) center/contain no-repeat"></span>Retry</button></div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:28px 20px;border:1px solid var(--border);border-radius:6px;background:var(--card);text-align:center"><span aria-hidden="true" style="width:20px;height:20px;background:var(--muted-foreground);mask:url(assets/icons/lock.svg) center/contain no-repeat"></span><strong style="font-size:14px;font-weight:600">You need Editor access</strong><span style="color:var(--muted-foreground)">You're a Viewer. Admins who can grant this: Priya Shah.</span><button type="button" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-weight:500;cursor:pointer" style-hover="background:var(--primary-hover)">Request Editor access</button></div>
+  </div>
+</section>
+<section id="{{ t.a.keys }}" style="display:flex;flex-direction:column;gap:12px;padding:24px 0;border-top:1px solid var(--border)">
+  <div style="display:flex;flex-direction:column;gap:2px"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Keyboard hints and shortcuts sheet <code style="font-family:var(--font-mono);font-size:12px;font-weight:400;color:var(--muted-foreground)">?</code></h2><p style="margin:0;color:var(--muted-foreground)">Kbd is mono 12px with a 2px bottom border. Sequences (G then S) are shown with "then".</p></div>
+  <div style="border:1px solid var(--border);border-radius:6px;background:var(--popover);box-shadow:var(--shadow-popover);max-width:880px">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><h3 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Keyboard shortcuts</h3><kbd style="display:inline-flex;align-items:center;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">Esc</kbd></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;padding:12px 16px 16px">
+      <sc-for list="{{ shortcuts }}" as="sg" hint-placeholder-count="4"><div style="display:flex;flex-direction:column;gap:2px"><span style="font-size:12px;font-weight:500;color:var(--muted-foreground);height:24px;display:flex;align-items:center">{{ sg.g }}</span>
+        <sc-for list="{{ sg.items }}" as="sk" hint-placeholder-count="4"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px;height:28px"><span>{{ sk.l }}</span><span style="display:inline-flex;gap:2px"><sc-for list="{{ sk.keys }}" as="kk" hint-placeholder-count="1"><kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--foreground)">{{ kk.k }}</kbd></sc-for></span></div></sc-for>
+      </div></sc-for>
+    </div>
+  </div>
+</section>
+</div>
+</div>
+</sc-for>
+<section id="handoff" data-theme="light" style="background:var(--background);color:var(--foreground)"><div style="max-width:1320px;margin:0 auto;padding:32px;display:flex;flex-direction:column;gap:16px">
+  <h2 style="margin:0;font-size:20px;line-height:26px;font-weight:600">Engineer handoff</h2>
+  <h3 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Component → shadcn/ui mapping</h3>
+  <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden">
+    <div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1.4fr);gap:12px;height:32px;align-items:center;padding:0 12px;background:var(--muted);font-size:12px;color:var(--muted-foreground);border-bottom:1px solid var(--border)"><span>Lanekeeper</span><span>shadcn/ui</span><span>Notes</span></div>
+    <sc-for list="{{ mapping }}" as="m" hint-placeholder-count="12"><div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1.4fr);gap:12px;min-height:32px;align-items:center;padding:4px 12px;border-bottom:1px solid var(--border)"><span style="font-weight:500">{{ m.a }}</span><code style="font-family:var(--font-mono);font-size:12px">{{ m.b }}</code><span style="color:var(--muted-foreground);font-size:12px">{{ m.c }}</span></div></sc-for>
+  </div>
+  <h3 style="margin:8px 0 0;font-size:16px;line-height:22px;font-weight:600">Colour tokens (tokens/colors.css)</h3>
+  <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden">
+    <div style="display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1.3fr) minmax(0,1fr) minmax(0,1fr);gap:12px;height:32px;align-items:center;padding:0 12px;background:var(--muted);font-size:12px;color:var(--muted-foreground);border-bottom:1px solid var(--border)"><span>CSS variable</span><span>Tailwind</span><span>Light</span><span>Dark</span></div>
+    <sc-for list="{{ tokenRows }}" as="tk" hint-placeholder-count="12"><div style="display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1.3fr) minmax(0,1fr) minmax(0,1fr);gap:12px;height:28px;align-items:center;padding:0 12px;border-bottom:1px solid var(--border);font-family:var(--font-mono);font-size:12px"><span>{{ tk.v }}</span><span style="color:var(--muted-foreground)">{{ tk.tw }}</span><span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:14px;border-radius:3px;border:1px solid var(--border);background:{{ tk.l }}"></span>{{ tk.l }}</span><span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:14px;border-radius:3px;border:1px solid var(--border);background:{{ tk.d }}"></span>{{ tk.d }}</span></div></sc-for>
+  </div>
+  <h3 style="margin:8px 0 0;font-size:16px;line-height:22px;font-weight:600">Tailwind config</h3>
+  <pre style="margin:0;padding:12px 16px;border:1px solid var(--border);border-radius:6px;background:var(--muted);font-family:var(--font-mono);font-size:12px;line-height:18px;overflow:auto">{{ twConfig }}</pre>
+</div></section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;themes&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;both&quot;,&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;both&quot;,&quot;tsType&quot;:&quot;'both'|'light'|'dark'&quot;},&quot;greyscale&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;default&quot;,&quot;compact&quot;],&quot;default&quot;:&quot;default&quot;,&quot;tsType&quot;:&quot;'default'|'compact'&quot;}}">
+const STATUS = [
+  { key: 'sync', label: 'In sync', icon: 'check', desc: 'NFS matches the Git baseline', bs: 'solid', kind: 'Drift' },
+  { key: 'git', label: 'Git ahead', icon: 'arrow-down-to-line', desc: 'New in Git, not yet on NFS', bs: 'solid', kind: 'Drift' },
+  { key: 'nfs', label: 'NFS ahead', icon: 'arrow-up-from-line', desc: 'Changed on NFS, not in Git', bs: 'solid', kind: 'Drift' },
+  { key: 'conflict', label: 'Conflict', icon: 'split', desc: 'Changed on both sides', bs: 'solid', kind: 'Drift' },
+  { key: 'intentional', label: 'Intentional', icon: 'pin', desc: 'Drift accepted and pinned', bs: 'solid', kind: 'Drift' },
+  { key: 'unknown', label: 'Unknown', icon: 'circle-help', desc: 'No baseline yet', bs: 'solid', kind: 'Drift' },
+  { key: 'untracked', label: 'Untracked', icon: 'circle-dashed', desc: 'On NFS, in no repo', bs: 'dashed', kind: 'Drift' },
+  { key: 'restart', label: 'Pending restart', icon: 'clock', desc: 'Service runs old config', bs: 'solid', kind: 'Ops' },
+  { key: 'locked', label: 'Locked', icon: 'lock', desc: 'Baseline not confirmed', bs: 'solid', kind: 'Ops' },
+  { key: 'approval', label: 'Pending approval', icon: 'hourglass', desc: 'Proposal waits for an admin', bs: 'solid', kind: 'Ops' },
+];
+const S = Object.fromEntries(STATUS.map(s => [s.key, s]));
+const LANES = { sit: 'sit7', sitb: 'sit7', sitc: 'sit1', presita: 'sit12', presitb: '—', presitc: 'sit12' };
+const BASE_ROWS = [
+  { id: 1, path: 'tx-infinity-api/tx-infinity-core.yml', st: 'sync', lane: 'sitb', lines: 412, mod: '2026-10-08 14:02' },
+  { id: 2, path: 'tx-infinity-api/tx-infinity-core-sit1.yml', st: 'nfs', lane: 'sitc', lines: 38, mod: '2026-10-09 08:14', restart: true },
+  { id: 3, path: 'tx-infinity-api/entryGroupConfig.yml', st: 'git', lane: 'presita', lines: 1284, mod: '2026-10-07 17:40' },
+  { id: 4, path: 'ui/remote-itm-teller/ui-common-config.yaml', st: 'intentional', lane: 'sitb', lines: 226, mod: '2026-10-02 11:05' },
+  { id: 5, path: 'limits/limit-profiles.yml', st: 'conflict', lane: 'sitc', lines: 590, mod: '2026-10-09 09:31' },
+  { id: 6, path: 'security/security-roles.yml', st: 'unknown', lane: 'presitb', lines: 6100, mod: '2026-09-30 16:22' },
+  { id: 7, path: 'document-service/resources/receipt-logo.jpeg', st: 'untracked', lane: 'presita', lines: null, mod: '2026-10-01 10:10' },
+  { id: 8, path: 'ej-templates/deposit-receipt.xsl', st: 'sync', lane: 'sit', lines: 312, mod: '2026-10-06 13:48' },
+  { id: 9, path: 'application.properties', st: 'sync', lane: 'sitb', lines: 174, mod: '2026-10-09 07:55', restart: true },
+];
+const MORE_ROWS = [
+  { id: 10, path: 'tx-infinity-api/tx-infinity-core.yml', st: 'git', lane: 'presitc', lines: 412, mod: '2026-10-05 09:12' },
+  { id: 11, path: 'limits/limit-profiles.yml', st: 'sync', lane: 'presita', lines: 590, mod: '2026-10-04 15:30' },
+  { id: 12, path: 'ui/remote-itm-teller/ui-common-config.yaml', st: 'nfs', lane: 'sitc', lines: 229, mod: '2026-10-09 10:02' },
+];
+const TREE = [
+  { id: 'tx', name: 'tx-infinity-api', children: [
+    { id: 'core', name: 'tx-infinity-core.yml', cls: 'structured', st: 'sync' },
+    { id: 'core1', name: 'tx-infinity-core-sit1.yml', cls: 'structured', st: 'nfs', restart: true },
+    { id: 'egc', name: 'entryGroupConfig.yml', cls: 'structured', st: 'git' }] },
+  { id: 'ui', name: 'ui', children: [{ id: 'rit', name: 'remote-itm-teller', children: [
+    { id: 'ucc', name: 'ui-common-config.yaml', cls: 'structured', st: 'intentional' }] }] },
+  { id: 'lim', name: 'limits', children: [{ id: 'lp', name: 'limit-profiles.yml', cls: 'structured', st: 'conflict' }] },
+  { id: 'sec', name: 'security', children: [{ id: 'sr', name: 'security-roles.yml', cls: 'structured', st: 'unknown' }] },
+  { id: 'doc', name: 'document-service', children: [{ id: 'res', name: 'resources', children: [
+    { id: 'logo', name: 'receipt-logo.jpeg', cls: 'binary', st: 'untracked' }] }] },
+  { id: 'ej', name: 'ej-templates', children: [{ id: 'xsl', name: 'deposit-receipt.xsl', cls: 'text', st: 'sync' }] },
+  { id: 'app', name: 'application.properties', cls: 'text', st: 'sync', restart: true },
+];
+const CLS_ICON = { structured: 'file-code', text: 'file-text', binary: 'file-image' };
+const DIFF = [
+  { l: 1, lt: 'txInfinityOptions:', r: 1, rt: 'txInfinityOptions:', k: 'ctx' },
+  { l: 2, lt: '  remote-itm-teller:', r: 2, rt: '  remote-itm-teller:', k: 'ctx' },
+  { l: 3, lt: '    enableAccountSorting: false', r: 3, rt: '    enableAccountSorting: true', k: 'chg' },
+  { l: 4, lt: '    maxHoldDays: 5', r: 4, rt: '    maxHoldDays: 5', k: 'ctx' },
+  { l: 5, lt: '    receiptTemplate: deposit-receipt.xsl', r: 5, rt: '    receiptTemplate: deposit-receipt-v2.xsl', k: 'mod' },
+  { l: 6, lt: '  atm-iso:', r: 6, rt: '  atm-iso:', k: 'ctx' },
+  { l: null, lt: '', r: 7, rt: '    enableCardlessDeposit: true', k: 'add' },
+  { l: 7, lt: '    legacyHostAlias: atm-host-01', r: null, rt: '', k: 'del' },
+  { l: 8, lt: 'entryGroupConfigMap:', r: 8, rt: 'entryGroupConfigMap:', k: 'ctx' },
+];
+const TOKENS = ['--background','--foreground','--card','--card-foreground','--popover','--popover-foreground','--muted','--muted-foreground','--accent','--accent-foreground','--primary','--primary-hover','--primary-foreground','--secondary','--secondary-hover','--secondary-foreground','--border','--input','--ring','--selection','--link','--destructive','--destructive-hover','--destructive-foreground',
+  '--danger-fg','--danger-bg','--danger-border','--warning-fg','--warning-bg','--warning-border','--success-fg','--success-bg','--success-border','--info-fg','--info-bg','--info-border',
+  ...STATUS.flatMap(s => ['fg','bg','border'].map(p => `--status-${s.key}-${p}`)),
+  '--agent-online','--agent-degraded','--agent-offline',
+  '--diff-add-bg','--diff-add-gutter','--diff-add-word','--diff-add-fg','--diff-del-bg','--diff-del-gutter','--diff-del-word','--diff-del-fg','--diff-mod-bg','--diff-mod-gutter','--diff-mod-fg','--diff-hunk-bg','--diff-hunk-fg'];
+const twClass = v => {
+  const n = v.slice(2);
+  if (/(^|-)(fg|foreground)$/.test(n) || n === 'link') return 'text-' + n;
+  if (/border$/.test(n) || n === 'input') return 'border-' + n;
+  if (n === 'ring') return 'ring-ring';
+  return 'bg-' + n;
+};
+const PAIRS = [
+  ['--foreground','--background',4.5],['--foreground','--card',4.5],['--foreground','--popover',4.5],['--foreground','--accent',4.5],['--foreground','--selection',4.5],
+  ['--muted-foreground','--background',4.5],['--muted-foreground','--muted',4.5],['--muted-foreground','--accent',4.5],
+  ['--primary-foreground','--primary',4.5],['--primary-foreground','--primary-hover',4.5],['--secondary-foreground','--secondary',4.5],['--link','--background',4.5],['--destructive-foreground','--destructive',4.5],
+  ['--danger-fg','--danger-bg',4.5],['--warning-fg','--warning-bg',4.5],['--success-fg','--success-bg',4.5],['--info-fg','--info-bg',4.5],
+  ...STATUS.map(s => [`--status-${s.key}-fg`, `--status-${s.key}-bg`, 4.5]),
+  ['--foreground','--diff-add-bg',4.5],['--foreground','--diff-del-bg',4.5],['--foreground','--diff-mod-bg',4.5],['--foreground','--diff-add-word',4.5],['--foreground','--diff-del-word',4.5],
+  ['--diff-add-fg','--diff-add-bg',4.5],['--diff-del-fg','--diff-del-bg',4.5],['--diff-mod-fg','--diff-mod-bg',4.5],
+  ['--input','--background',3],['--input','--card',3],['--ring','--background',3],['--ring','--card',3],['--ring','--muted',3],['--ring','--selection',3],['--primary','--background',3],
+  ['--agent-online','--background',3],['--agent-degraded','--background',3],['--agent-offline','--background',3],
+];
+const lum = hex => {
+  let h = hex.replace('#', ''); if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  const c = [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16) / 255).map(v => v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+};
+const ratio = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+const trunc = (p, n) => p.length <= n ? p : p.slice(0, Math.ceil((n - 1) * 0.4)) + '…' + p.slice(p.length - Math.floor((n - 1) * 0.6));
+const NAV = [['colours','Colours'],['contrast','Contrast'],['type','Type'],['spacing','Spacing & radius'],['status','Status'],['context','Status in context'],['icons','Icons'],['buttons','Buttons'],['inputs','Inputs'],['badges','Badges & chips'],['table','Data table'],['tree','Tree'],['nav','Tabs & panes'],['diff','Diff'],['palette','Command palette'],['dialogs','Dialogs'],['feedback','Feedback'],['states','Page states'],['keys','Keyboard']];
+
+class Component extends DCLogic {
+  state = { sort: { key: 'path', dir: 1 }, sel: { 2: true }, hover: null, more: false, expanded: { tx: 1, ui: 1, rit: 1, lim: 1 }, treeSel: 'core1', treeFocus: 2, treeFocused: false,
+    tab: 'findings', diffView: 'split', seg: 'drift', sw1: true, sw2: false, cb1: true, cb2: false, radio: 'nfs', paneW: 260, copied: null, vals: null, contrast: null, chips: ['sitb', 'presita'] };
+
+  componentDidMount() { this.measure(); }
+  componentWillUnmount() { clearTimeout(this._t); clearTimeout(this._mt); }
+  measure = () => {
+    const out = {}, vals = {};
+    for (const id of ['light', 'dark']) {
+      const el = document.querySelector(`[data-measure="${id}"]`);
+      if (!el) { this._mt = setTimeout(this.measure, 150); return; }
+      const cs = getComputedStyle(el), g = n => cs.getPropertyValue(n).trim();
+      if (!g('--background')) { this._mt = setTimeout(this.measure, 150); return; }
+      vals[id] = Object.fromEntries(TOKENS.map(v => [v, g(v)]));
+      out[id] = PAIRS.map(([fg, bg, min]) => { const r = ratio(g(fg), g(bg)); return { fg, bg, min, r: r.toFixed(2) + ':1', pass: r >= min }; });
+    }
+    this.setState({ vals, contrast: out });
+  };
+  copy = (key, text) => { try { navigator.clipboard && navigator.clipboard.writeText(text); } catch (e) {} this.setState({ copied: key }); clearTimeout(this._t); this._t = setTimeout(() => this.setState({ copied: null }), 1400); };
+  flatTree() {
+    const out = [], ex = this.state.expanded;
+    const walk = (nodes, depth, parent) => nodes.forEach(n => {
+      const dir = !!n.children; out.push({ ...n, dir, depth, parent, open: dir && !!ex[n.id] });
+      if (dir && ex[n.id]) walk(n.children, depth + 1, n.id);
+    });
+    walk(TREE, 0, null); return out;
+  }
+  toggle = id => this.setState(s => ({ expanded: { ...s.expanded, [id]: !s.expanded[id] } }));
+  treeKey = e => {
+    const rows = this.flatTree(); let i = Math.min(this.state.treeFocus, rows.length - 1); const r = rows[i];
+    switch (e.key) {
+      case 'ArrowDown': i = Math.min(rows.length - 1, i + 1); break;
+      case 'ArrowUp': i = Math.max(0, i - 1); break;
+      case 'Home': i = 0; break;
+      case 'End': i = rows.length - 1; break;
+      case 'ArrowRight': if (r.dir && !r.open) { e.preventDefault(); return this.toggle(r.id); } if (r.dir) i = i + 1; break;
+      case 'ArrowLeft': if (r.dir && r.open) { e.preventDefault(); return this.toggle(r.id); } if (r.parent) i = rows.findIndex(x => x.id === r.parent); break;
+      case 'Enter': case ' ': e.preventDefault(); return r.dir ? this.toggle(r.id) : this.setState({ treeSel: r.id });
+      default: return;
+    }
+    e.preventDefault(); this.setState({ treeFocus: i });
+  };
+  startDrag = e => {
+    e.preventDefault(); const x0 = e.clientX, w0 = this.state.paneW;
+    const mv = ev => this.setState({ paneW: Math.max(160, Math.min(480, w0 + ev.clientX - x0)) });
+    const up = () => { window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); };
+    window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up);
+  };
+  paneKey = e => { const d = e.key === 'ArrowLeft' ? -16 : e.key === 'ArrowRight' ? 16 : 0; if (d) { e.preventDefault(); this.setState(s => ({ paneW: Math.max(160, Math.min(480, s.paneW + d)) })); } };
+
+  renderVals() {
+    const st = this.state, p = this.props;
+    const which = p.themes ?? 'both';
+    const rowH = (p.density ?? 'default') === 'compact' ? 28 : 32;
+    const icon = (name, size) => React.createElement('span', { 'aria-hidden': true, style: { width: size, height: size, flex: 'none', display: 'inline-block', background: 'currentColor', mask: `url(assets/icons/${name}.svg) center/contain no-repeat` } });
+    const spin = size => React.createElement('span', { 'aria-hidden': true, style: { width: size, height: size, flex: 'none', display: 'inline-block', background: 'currentColor', mask: 'url(assets/icons/loader-circle.svg) center/contain no-repeat', animation: 'lk-spin .8s linear infinite' } });
+    const pulse = React.createElement('span', { 'aria-hidden': true, style: { width: 8, height: 8, borderRadius: 999, flex: 'none', background: 'var(--agent-degraded)', animation: 'lk-pulse 1.2s ease-in-out infinite' } });
+
+    // table
+    const rowsAll = st.more ? BASE_ROWS.concat(MORE_ROWS) : BASE_ROWS;
+    const { key, dir } = st.sort;
+    const sorted = rowsAll.slice().sort((a, b) => { const x = a[key] ?? -1, y = b[key] ?? -1; return (x > y ? 1 : x < y ? -1 : 0) * dir; });
+    const selCount = Object.values(st.sel).filter(Boolean).length;
+    const rows = sorted.map(r => {
+      const sel = !!st.sel[r.id], hov = st.hover === r.id;
+      return { ...r, s: S[r.st], short: trunc(r.path, 44), branch: LANES[r.lane], linesFmt: r.lines == null ? '48 KB' : r.lines.toLocaleString('en-GB'),
+        sel, bg: sel ? 'var(--selection)' : hov ? 'var(--accent)' : 'transparent', act: hov || sel ? 1 : 0,
+        toggle: () => this.setState(s => ({ sel: { ...s.sel, [r.id]: !s.sel[r.id] } })),
+        enter: () => this.setState({ hover: r.id }), leave: () => this.setState(s => s.hover === r.id ? { hover: null } : null),
+        cbBg: sel ? 'var(--primary)' : 'var(--background)', cbBorder: sel ? 'var(--primary)' : 'var(--input)', cbOp: sel ? 1 : 0 };
+    });
+    const allSel = selCount === rowsAll.length;
+    const headers = [['path', 'Path', 'left'], ['st', 'Drift', 'left'], ['lane', 'Swimlane', 'left'], ['branch', 'Branch', 'left'], ['lines', 'Lines', 'right'], ['mod', 'Modified', 'left']].map(([k, label, align]) => {
+      const on = key === k;
+      return { label, align: align === 'right' ? 'flex-end' : 'flex-start', ariaSort: on ? (dir === 1 ? 'ascending' : 'descending') : 'none',
+        ic: on ? (dir === 1 ? 'arrow-up' : 'arrow-down') : 'arrow-up-down', op: on ? 1 : 0.45, sortable: k !== 'branch', disabled: k === 'branch',
+        onSort: () => k !== 'branch' && this.setState(s => ({ sort: { key: k, dir: s.sort.key === k ? -s.sort.dir : 1 } })) };
+    });
+
+    // tree
+    const flat = this.flatTree();
+    const tf = Math.min(st.treeFocus, flat.length - 1);
+    const tree = flat.map((r, i) => ({ ...r, s: r.st ? S[r.st] : null, ic: r.dir ? (r.open ? 'folder-open' : 'folder') : CLS_ICON[r.cls], chev: r.dir ? (r.open ? 'chevron-down' : 'chevron-right') : 'none',
+      chevOp: r.dir ? 1 : 0, pad: 8 + r.depth * 16, level: r.depth + 1, expanded: r.dir ? r.open : undefined, selected: st.treeSel === r.id,
+      bg: st.treeSel === r.id ? 'var(--selection)' : 'transparent', ring: st.treeFocused && i === tf ? 'inset 0 0 0 2px var(--ring)' : 'none',
+      icColor: r.dir ? 'var(--muted-foreground)' : r.cls === 'binary' ? 'var(--status-intentional-fg)' : r.cls === 'text' ? 'var(--muted-foreground)' : 'var(--info-fg)',
+      click: () => { this.setState({ treeFocus: i }); r.dir ? this.toggle(r.id) : this.setState({ treeSel: r.id }); } }));
+
+    // diff
+    const dk = { ctx: ['transparent', 'transparent', ' ', 'transparent', 'transparent', ' '], chg: ['var(--diff-del-bg)', 'var(--diff-del-gutter)', '−', 'var(--diff-add-bg)', 'var(--diff-add-gutter)', '+'],
+      mod: ['var(--diff-mod-bg)', 'var(--diff-mod-gutter)', '~', 'var(--diff-mod-bg)', 'var(--diff-mod-gutter)', '~'], add: ['var(--diff-empty-bg)', 'var(--diff-empty-bg)', ' ', 'var(--diff-add-bg)', 'var(--diff-add-gutter)', '+'],
+      del: ['var(--diff-del-bg)', 'var(--diff-del-gutter)', '−', 'var(--diff-empty-bg)', 'var(--diff-empty-bg)', ' '] };
+    const diffSplit = DIFF.map(d => { const c = dk[d.k]; return { ...d, ln: d.l ?? '', rn: d.r ?? '', lbg: c[0], lg: c[1], ls: c[2], rbg: c[3], rg: c[4], rs: c[5],
+      lsc: d.k === 'mod' ? 'var(--diff-mod-fg)' : 'var(--diff-del-fg)', rsc: d.k === 'mod' ? 'var(--diff-mod-fg)' : 'var(--diff-add-fg)' }; });
+    const diffUni = [];
+    DIFF.forEach(d => {
+      if (d.k === 'ctx') diffUni.push({ ln: d.l, rn: d.r, sign: ' ', text: d.lt, bg: 'transparent', g: 'transparent', sc: 'var(--muted-foreground)' });
+      if (d.k === 'chg' || d.k === 'del' || d.k === 'mod') diffUni.push({ ln: d.l, rn: '', sign: '−', text: d.lt, bg: 'var(--diff-del-bg)', g: 'var(--diff-del-gutter)', sc: 'var(--diff-del-fg)' });
+      if (d.k === 'chg' || d.k === 'add' || d.k === 'mod') diffUni.push({ ln: '', rn: d.r, sign: '+', text: d.rt, bg: 'var(--diff-add-bg)', g: 'var(--diff-add-gutter)', sc: 'var(--diff-add-fg)' });
+    });
+    const seg = (cur, val) => ({ bg: cur === val ? 'var(--background)' : 'transparent', fg: cur === val ? 'var(--foreground)' : 'var(--muted-foreground)', sh: cur === val ? '0 0 0 1px var(--border)' : 'none', pressed: cur === val });
+
+    // buttons
+    const VARS = [
+      { name: 'Primary', label: 'Raise PR', bg: 'var(--primary)', hov: 'var(--primary-hover)', fg: 'var(--primary-foreground)', bd: 'var(--primary)' },
+      { name: 'Secondary', label: 'Compare', bg: 'var(--secondary)', hov: 'var(--secondary-hover)', fg: 'var(--secondary-foreground)', bd: 'var(--border)' },
+      { name: 'Ghost', label: 'Cancel', bg: 'transparent', hov: 'var(--accent)', fg: 'var(--foreground)', bd: 'transparent' },
+      { name: 'Destructive', label: 'Delete file', bg: 'var(--destructive)', hov: 'var(--destructive-hover)', fg: 'var(--destructive-foreground)', bd: 'var(--destructive)' },
+    ];
+    const STATES = ['Default', 'Hover', 'Focus', 'Active', 'Disabled', 'Loading'];
+    const base = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, height: 28, padding: '0 10px', borderRadius: 4, fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap', cursor: 'pointer' };
+    const btnMatrix = VARS.map(v => ({ name: v.name, cells: STATES.map(sn => {
+      const bg = sn === 'Hover' || sn === 'Active' ? v.hov : v.bg;
+      const style = { ...base, background: bg, color: v.fg, border: `1px solid ${v.bd}`,
+        boxShadow: sn === 'Focus' ? '0 0 0 2px var(--background), 0 0 0 4px var(--ring)' : sn === 'Active' ? 'inset 0 1px 2px rgba(0,0,0,.25)' : 'none',
+        transform: sn === 'Active' ? 'translateY(1px)' : 'none', opacity: sn === 'Disabled' ? 0.5 : 1, cursor: sn === 'Disabled' ? 'not-allowed' : sn === 'Loading' ? 'progress' : 'pointer' };
+      return { style, loading: sn === 'Loading', label: sn === 'Loading' ? 'Working…' : v.label, disabled: sn === 'Disabled', busy: sn === 'Loading' };
+    }) }));
+    const inBase = { display: 'flex', alignItems: 'center', gap: 6, height: 28, padding: '0 8px', borderRadius: 4, background: 'var(--background)', border: '1px solid var(--input)', fontSize: 13, width: '100%' };
+    const inputStates = [
+      { name: 'Default', style: inBase, text: 'sitb', fg: 'var(--foreground)' },
+      { name: 'Hover', style: { ...inBase, borderColor: 'var(--muted-foreground)' }, text: 'sitb', fg: 'var(--foreground)' },
+      { name: 'Focus', style: { ...inBase, borderColor: 'var(--ring)', boxShadow: '0 0 0 1px var(--ring)' }, text: 'sitb|', fg: 'var(--foreground)' },
+      { name: 'Disabled', style: { ...inBase, background: 'var(--muted)', opacity: 0.55, cursor: 'not-allowed' }, text: 'sitb', fg: 'var(--muted-foreground)' },
+      { name: 'Loading', style: inBase, text: 'Checking…', fg: 'var(--muted-foreground)', loading: true },
+      { name: 'Invalid', style: { ...inBase, borderColor: 'var(--destructive)', boxShadow: '0 0 0 1px var(--destructive)' }, text: 'sit 7', fg: 'var(--foreground)', err: 'Branch names have no spaces' },
+    ];
+
+    const contrast = st.contrast;
+    const mk = id => ({ id, label: id === 'light' ? 'Light theme' : 'Dark theme', nav: NAV.map(([h, l]) => ({ href: `#${id}-${h}`, label: l })),
+      a: Object.fromEntries(NAV.map(([h]) => [h, `${id}-${h}`])),
+      pairs: contrast ? contrast[id].map(x => ({ ...x, ic: x.pass ? 'check' : 'x', verdict: x.pass ? (x.min === 3 ? 'AA (UI 3:1)' : 'AA') : 'Fail', vc: x.pass ? 'var(--success-fg)' : 'var(--danger-fg)' })) : null,
+      passCount: contrast ? contrast[id].filter(x => x.pass).length : '…', total: PAIRS.length,
+      treeActive: `${id}-tree-${flat[tf] ? flat[tf].id : ''}` });
+    const themes = which === 'both' ? [mk('light'), mk('dark')] : [mk(which)];
+
+    const vals = st.vals;
+    const tokenRows = TOKENS.map(v => ({ v, tw: twClass(v), l: vals ? vals.light[v] : '', d: vals ? vals.dark[v] : '' }));
+
+    return {
+      themes, filter: p.greyscale ? 'grayscale(1)' : 'none', rowH, headRowH: rowH,
+      statuses: STATUS, drift: STATUS.filter(s => s.kind === 'Drift'), ops: STATUS.filter(s => s.kind === 'Ops'),
+      icon, spin14: spin(14), spin12: spin(12), spin16: spin(16), pulse,
+      rows, headers, selCount, hasSel: selCount > 0, noSel: selCount === 0, shownCount: rowsAll.length, more: st.more,
+      loadMore: () => this.setState(s => ({ more: !s.more })), loadLabel: st.more ? 'Show fewer' : 'Load 100 more',
+      selectAll: () => this.setState({ sel: allSel ? {} : Object.fromEntries(rowsAll.map(r => [r.id, true])) }),
+      allCbBg: allSel ? 'var(--primary)' : selCount ? 'var(--primary)' : 'var(--background)', allCbBorder: selCount ? 'var(--primary)' : 'var(--input)',
+      allCbIcon: allSel ? 'check' : 'minus', allCbOp: selCount ? 1 : 0, allChecked: allSel ? 'true' : selCount ? 'mixed' : 'false',
+      tree, treeKey: this.treeKey, treeFocusIn: () => this.setState({ treeFocused: true }), treeFocusOut: () => this.setState({ treeFocused: false }),
+      tabs: [['overview', 'Overview', null], ['files', 'Files', '412'], ['services', 'Services', '5'], ['findings', 'Findings', '8'], ['audit', 'Audit', null]].map(([k, l, c]) => ({ k, l, c, hasC: !!c, on: st.tab === k,
+        fg: st.tab === k ? 'var(--foreground)' : 'var(--muted-foreground)', bar: st.tab === k ? 'var(--primary)' : 'transparent', click: () => this.setState({ tab: k }) })),
+      tabFindings: st.tab === 'findings', tabOther: st.tab !== 'findings', tabText: { overview: 'sitb runs csp-tenant-data@sit7 on base v2.3.1 + 4. 3 services pending restart.', files: '412 files on NFS · 9 drifted · 1 conflict.', services: 'tx-infinity-core, ui-service, limits-service, document-service, holds-service.', audit: 'Every edit, PR, restart and approval, newest first.' }[st.tab] || '',
+      paneW: st.paneW, startDrag: this.startDrag, paneKey: this.paneKey,
+      diffSplit, diffUni, isSplit: st.diffView === 'split', isUni: st.diffView !== 'split',
+      vSplit: seg(st.diffView, 'split'), vUni: seg(st.diffView, 'unified'), setSplit: () => this.setState({ diffView: 'split' }), setUni: () => this.setState({ diffView: 'unified' }),
+      sg1: seg(st.seg, 'drift'), sg2: seg(st.seg, 'all'), sg3: seg(st.seg, 'tenant'), setSg1: () => this.setState({ seg: 'drift' }), setSg2: () => this.setState({ seg: 'all' }), setSg3: () => this.setState({ seg: 'tenant' }),
+      sw1: st.sw1, sw1Bg: st.sw1 ? 'var(--primary)' : 'var(--input)', sw1X: st.sw1 ? 14 : 0, tSw1: () => this.setState(s => ({ sw1: !s.sw1 })),
+      sw2: st.sw2, sw2Bg: st.sw2 ? 'var(--primary)' : 'var(--input)', sw2X: st.sw2 ? 14 : 0, tSw2: () => this.setState(s => ({ sw2: !s.sw2 })),
+      cb1: st.cb1, cb1Bg: st.cb1 ? 'var(--primary)' : 'var(--background)', cb1Bd: st.cb1 ? 'var(--primary)' : 'var(--input)', cb1Op: st.cb1 ? 1 : 0, tCb1: () => this.setState(s => ({ cb1: !s.cb1 })),
+      cb2: st.cb2, cb2Bg: st.cb2 ? 'var(--primary)' : 'var(--background)', cb2Bd: st.cb2 ? 'var(--primary)' : 'var(--input)', cb2Op: st.cb2 ? 1 : 0, tCb2: () => this.setState(s => ({ cb2: !s.cb2 })),
+      radios: [['nfs', 'Keep NFS version'], ['git', 'Take Git version'], ['merge', 'Merge manually']].map(([k, l]) => ({ k, l, on: st.radio === k, dot: st.radio === k ? 1 : 0, bd: st.radio === k ? 'var(--primary)' : 'var(--input)', pick: () => this.setState({ radio: k }) })),
+      chips: st.chips.map(c => ({ c, remove: () => this.setState(s => ({ chips: s.chips.filter(x => x !== c) })) })), resetChips: () => this.setState({ chips: ['sitb', 'presita', 'presitc'] }),
+      btnMatrix, states: STATES, inputStates,
+      copyPath: () => this.copy('path', 'tx-infinity-api/tx-infinity-core-sit1.yml'), copyHash: () => this.copy('hash', 'a3f9c21'), copyReq: () => this.copy('req', 'req_7f3a9c21e04b'), copySet: () => this.copy('set', 'txInfinityOptions.remote-itm-teller.enableAccountSorting'),
+      cPath: st.copied === 'path' ? 'check' : 'copy', cHash: st.copied === 'hash' ? 'check' : 'copy', cReq: st.copied === 'req' ? 'check' : 'copy', cSet: st.copied === 'set' ? 'check' : 'copy',
+      cPathL: st.copied === 'path' ? 'Copied' : 'Copy path', cHashL: st.copied === 'hash' ? 'Copied' : 'Copy hash', cReqL: st.copied === 'req' ? 'Copied' : 'Copy request ID', cSetL: st.copied === 'set' ? 'Copied' : 'Copy setting path',
+      tokenRows, measured: !!vals,
+      typeScale: [
+        { px: 24, lh: 30, w: 600, tw: 'text-2xl', use: 'Page title', sample: 'Swimlanes' },
+        { px: 20, lh: 26, w: 600, tw: 'text-xl', use: 'Section title', sample: 'sitb · ops-sit · SIT' },
+        { px: 16, lh: 22, w: 600, tw: 'text-lg', use: 'Panel and dialog title', sample: 'Compare swimlanes' },
+        { px: 14, lh: 20, w: 500, tw: 'text-base', use: 'Emphasis, tabs', sample: 'tx-infinity-core is pending restart' },
+        { px: 13, lh: 18, w: 400, tw: 'text-sm', use: 'Body — default for all UI', sample: 'A service uses the tenant file if it exists, otherwise the base file.' },
+        { px: 12, lh: 16, w: 400, tw: 'text-xs', use: 'Meta, badges, table header', sample: 'Updated 2 min ago by Marco Diaz' },
+      ],
+      space: [1, 2, 3, 4, 5, 6, 8, 10, 12].map(n => ({ n, px: n * 4 })),
+      iconList: [['check', 'In sync'], ['arrow-down-to-line', 'Git ahead'], ['arrow-up-from-line', 'NFS ahead'], ['split', 'Conflict'], ['pin', 'Intentional'], ['circle-help', 'Unknown'], ['circle-dashed', 'Untracked'], ['clock', 'Pending restart'], ['lock', 'Locked'], ['hourglass', 'Pending approval'],
+        ['file-code', 'Structured file'], ['file-text', 'Text file'], ['file-image', 'Binary file'], ['folder', 'Folder'], ['git-branch', 'Branch'], ['git-commit-horizontal', 'Commit'], ['tag', 'Base version'], ['git-pull-request', 'Pull request'], ['rotate-cw', 'Restart'], ['arrow-left-right', 'Compare'],
+        ['server', 'Swimlane'], ['layers', 'Service'], ['book-open', 'Docs'], ['user', 'User'], ['shield-check', 'Approve'], ['history', 'Audit'], ['search', 'Search'], ['copy', 'Copy'], ['pencil', 'Edit'], ['trash-2', 'Delete']].map(([i, l]) => ({ i, l })),
+      findings: [
+        ['C1', 'Missed base change', 'tx-infinity-core-sit1.yml omits 2 keys added in v2.3.1 + 3', 'warning', 'triangle-alert', 3],
+        ['C2', 'Redundant tenant file', 'ui-common-config-sit7.yaml is identical to base', 'info', 'info', 1],
+        ['C3', 'Uneven tenant files', 'limit-profiles has tenant files in sit1, sit7, not sit12', 'info', 'info', 2],
+        ['C4', 'Orphan file', 'receipt-logo.jpeg is in no repo', 'info', 'info', 1],
+        ['C5', 'Drift', 'limits/limit-profiles.yml changed on both sides', 'danger', 'circle-x', 4],
+        ['C6', 'Environment host mismatch', 'presita points at a sitb host in application.properties', 'danger', 'circle-x', 1],
+        ['C7', 'Overwritten NFS change', 'Deploy at 08:10 replaced a manual edit by Lena Kowalski', 'warning', 'triangle-alert', 1],
+        ['C8', 'Duplicate keys', 'entryGroupConfigMap.atm-iso.DEPOSIT.transactionKey appears twice', 'danger', 'circle-x', 1],
+      ].map(([code, title, ex, sev, ic, n]) => ({ code, title, ex, ic, n, fg: `var(--${sev}-fg)`, bg: `var(--${sev}-bg)`, bd: `var(--${sev}-border)`, sev: sev === 'danger' ? 'Error' : sev === 'warning' ? 'Warning' : 'Info' })),
+      palette: [
+        { g: 'Swimlanes', items: [{ i: 'server', t: 'sitb', m: 'sit7 · ops-sit', k: '', on: true }, { i: 'server', t: 'presita', m: 'sit12 · ops-presit', k: '' }] },
+        { g: 'Files', items: [{ i: 'file-code', t: 'tx-infinity-api/tx-infinity-core-sit1.yml', m: 'NFS ahead in sitc', k: '' }] },
+        { g: 'Services', items: [{ i: 'layers', t: 'tx-infinity-core', m: 'Pending restart in sitc', k: '' }] },
+        { g: 'Docs', items: [{ i: 'book-open', t: 'Adopting a swimlane baseline', m: 'Runbook', k: '' }] },
+        { g: 'Users', items: [{ i: 'user', t: 'Sam Okafor', m: 'Pending access', k: '' }] },
+        { g: 'Actions', items: [{ i: 'arrow-left-right', t: 'Compare sitb with sitc…', m: '', k: '⌘⇧C' }, { i: 'rotate-cw', t: 'Restart service in sitb…', m: 'Operator', k: '⌘⇧R' }] },
+      ].map(g => ({ ...g, items: g.items.map(x => ({ ...x, bg: x.on ? 'var(--accent)' : 'transparent', hasK: !!x.k, hasM: !!x.m })) })),
+      shortcuts: [
+        ['Navigation', [['⌘', 'K'], 'Command palette'], [['/'], 'Search in view'], [['G', 'S'], 'Go to swimlanes'], [['G', 'F'], 'Go to files'], [['G', 'A'], 'Go to approvals']],
+        ['Lists and tables', [['J'], 'Next row'], [['K'], 'Previous row'], [['X'], 'Select row'], [['↵'], 'Open'], [['⇧', 'X'], 'Select range']],
+        ['Diff and editor', [['['], 'Previous change'], [[']'], 'Next change'], [['U'], 'Toggle unified view'], [['E'], 'Edit file'], [['⌘', 'S'], 'Review and save']],
+        ['General', [['?'], 'Shortcuts'], [['Esc'], 'Close or cancel'], [['⌘', '⇧', 'C'], 'Copy current URL']],
+      ].map(([g, ...items]) => ({ g, items: items.map(([keys, l]) => ({ keys: keys.map(k => ({ k })), l })) })),
+      mapping: [
+        ['Button / IconButton', 'button (+ tooltip)', 'variants: default→primary, secondary, ghost, destructive; size: sm 24 · default 28 · icon 28'],
+        ['Input, SearchInput', 'input (+ kbd)', 'h-7, border-input, focus-visible:ring-2 ring-ring'],
+        ['Select', 'select', 'Radix Select; trigger matches Input'],
+        ['Combobox, MultiSelect', 'popover + command', 'chips use badge variant="outline" with remove button'],
+        ['Toggle (switch)', 'switch', '28×14 track'],
+        ['Checkbox, Radio', 'checkbox, radio-group', '14px box; indeterminate supported'],
+        ['SegmentedControl', 'toggle-group type="single"', 'aria-pressed per item'],
+        ['StatusBadge', 'badge (cva variant per status)', 'variant = sync | git | nfs | conflict | intentional | unknown | untracked | restart | locked | approval'],
+        ['RoleBadge, TierBadge', 'badge variant="outline"', 'Viewer, Editor, Operator, Admin · SIT, PRESIT'],
+        ['PathChip, SettingChip, HashChip, BranchChip, VersionLabel', 'badge + button + tooltip', 'font-mono; middle truncation; copy'],
+        ['DataTable', 'table + @tanstack/react-table + @tanstack/react-virtual', 'div grid rows, fixed h-7 / h-8'],
+        ['TreeView', 'custom (role=tree) + scroll-area', 'no shadcn primitive; fixed 28px rows'],
+        ['Tabs, Breadcrumbs', 'tabs, breadcrumb', ''],
+        ['SplitPane', 'resizable', 'react-resizable-panels; handle withHandle'],
+        ['DiffHeader / DiffView', 'custom + toggle-group + button', 'body virtualised, 18px lines'],
+        ['CommandPalette', 'command inside dialog (CommandDialog)', 'cmdk groups'],
+        ['Dialog', 'dialog', ''],
+        ['ConsequenceDialog, DestructiveConfirm', 'alert-dialog', 'confirm disabled until name typed'],
+        ['Toast', 'sonner', 'bottom-right, max 3'],
+        ['Alert, Banner', 'alert', 'Banner = full-width alert variant'],
+        ['Tooltip, Kbd', 'tooltip, kbd', ''],
+        ['Skeleton, Spinner', 'skeleton', 'spinner = lucide loader-circle animate-spin'],
+        ['ShortcutsSheet', 'dialog (or sheet)', 'opened with ?'],
+        ['LiveIndicator, EmptyState, ErrorState, PermissionState', 'custom', 'compose from badge, button, alert'],
+      ].map(([a, b, c]) => ({ a, b, c })),
+      twConfig: `// tailwind.config.ts (excerpt) — values live in styles.css
+theme: {
+  extend: {
+    colors: {
+      background: 'var(--background)', foreground: 'var(--foreground)',
+      card: { DEFAULT: 'var(--card)', foreground: 'var(--card-foreground)' },
+      muted: { DEFAULT: 'var(--muted)', foreground: 'var(--muted-foreground)' },
+      accent: { DEFAULT: 'var(--accent)', foreground: 'var(--accent-foreground)' },
+      primary: { DEFAULT: 'var(--primary)', hover: 'var(--primary-hover)', foreground: 'var(--primary-foreground)' },
+      border: 'var(--border)', input: 'var(--input)', ring: 'var(--ring)',
+      status: { sync: { fg: 'var(--status-sync-fg)', bg: 'var(--status-sync-bg)', border: 'var(--status-sync-border)' } /* …one per status */ },
+    },
+    fontFamily: { sans: ['Inter', ...], mono: ['JetBrains Mono', ...] },
+    fontSize: { xs: ['12px','16px'], sm: ['13px','18px'], base: ['14px','20px'], lg: ['16px','22px'], xl: ['20px','26px'], '2xl': ['24px','30px'] },
+    borderRadius: { sm: '4px', md: '6px', DEFAULT: '6px' },
+    height: { row: '32px', 'row-compact': '28px' },
+  },
+},
+darkMode: ['class'], // .dark on <html>`,
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="styles.css">
+<style>
+body{margin:0;background:#eceae5;font-family:'Inter',system-ui,sans-serif}
+.dv-turn{padding:40px 44px 32px;scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 8px}
+.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 15px/1.2 'Inter',system-ui,sans-serif;color:#1a1a1a}
+.dv-sub{margin:0 0 24px;font:13px/1.5 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.6);max-width:900px}
+.dv-opts{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start;max-width:2920px}
+.dv-grp{flex-basis:100%;margin:20px 0 -8px;padding-top:16px;border-top:1px solid rgba(0,0,0,.12);font:600 12px/1.3 'Inter',system-ui,sans-serif;letter-spacing:.04em;text-transform:uppercase;color:rgba(0,0,0,.6)}
+.dv-grp:first-child{margin-top:0;padding-top:0;border-top:0}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:12px/1.3 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.65)}
+.dv-card{width:1442px;max-width:100%;background:#fff;border:1px solid rgba(0,0,0,.12);border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.06);overflow:hidden}
+.dv-opt:target .dv-oid{background:#2a78d6;color:#fff}
+.dv-next{margin:28px 0 0;font:12px/1.5 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.6)}
+.dv-next a{color:inherit}
+</style>
+</helmet>
+<section class="dv-turn" id="t1" data-screen-label="Turn 1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Swimlane detail · sitb</span></div>
+<p class="dv-sub">File tree on the left (resizable, 28px rows), four tabs on the right. Attribution shows who changed a file and how sure we are: confidence is a word plus a 4-bar meter (Certain 4, High 3, Medium 2, Unknown 0 with a dashed outline), so it reads in greyscale. Severity is a label plus a distinct icon, and sortable in each list. The restart cause is named on each service row; a clock in the tree marks the files that cause it.</p>
+<div class="dv-opts">
+
+<div class="dv-grp">Services tab · tree in both modes</div>
+<div class="dv-opt" id="1a"><div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Light · base and tenant files side by side · “Show logical files” off</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="detail" dtab="services" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1b"><div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Light · “Show logical files” on · merged rows with “Uses tenant file”</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="detail" dtab="services" logical="{{ true }}" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1c"><div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>Dark · physical</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" page="detail" dtab="services" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1d"><div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a>Dark · logical</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" page="detail" dtab="services" logical="{{ true }}" hint-size="1440px,900px"></dc-import></div></div>
+
+<div class="dv-grp">Drift tab</div>
+<div class="dv-opt" id="1e"><div class="dv-olabel"><a class="dv-oid" href="#1e">1e</a>Light · grouped by state, severity-sorted, attribution with confidence</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="detail" dtab="drift" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1f"><div class="dv-olabel"><a class="dv-oid" href="#1f">1f</a>Dark</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" page="detail" dtab="drift" hint-size="1440px,900px"></dc-import></div></div>
+
+<div class="dv-grp">Findings tab</div>
+<div class="dv-opt" id="1g"><div class="dv-olabel"><a class="dv-oid" href="#1g">1g</a>Light · C8 duplicate keys (L212, L488) and C2 redundant tenant file</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="detail" dtab="findings" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1h"><div class="dv-olabel"><a class="dv-oid" href="#1h">1h</a>Dark</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" page="detail" dtab="findings" hint-size="1440px,900px"></dc-import></div></div>
+
+<div class="dv-grp">Activity tab</div>
+<div class="dv-opt" id="1i"><div class="dv-olabel"><a class="dv-oid" href="#1i">1i</a>Light · live feed, newest change highlighted, audit event labelled</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="detail" dtab="activity" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1j"><div class="dv-olabel"><a class="dv-oid" href="#1j">1j</a>Dark</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" page="detail" dtab="activity" hint-size="1440px,900px"></dc-import></div></div>
+
+<div class="dv-grp">States</div>
+<div class="dv-opt" id="1k"><div class="dv-olabel"><a class="dv-oid" href="#1k">1k</a>Light · Editing locked (shown on presitc) · Admin gets “Start adoption” · drift unknown</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="detail" dtab="drift" locked="{{ true }}" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1l"><div class="dv-olabel"><a class="dv-oid" href="#1l">1l</a>Dark · Agent offline · data “as of 14:05” · sentinel not reporting · restarts off</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" page="detail" dtab="services" agent-off="{{ true }}" restart-tip="{{ true }}" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1m"><div class="dv-olabel"><a class="dv-oid" href="#1m">1m</a>Light · Viewer · Restart disabled with a tooltip</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="detail" dtab="services" role="Viewer" restart-tip="{{ true }}" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1n"><div class="dv-olabel"><a class="dv-oid" href="#1n">1n</a>Light · Sync in progress · alerts held · Git-ahead file attributed to the sync job</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="detail" dtab="drift" syncing="{{ true }}" hint-size="1440px,900px"></dc-import></div></div>
+
+</div>
+<p class="dv-next">Try next: “make the tree keyboard navigable and show the focused row” · “show the tree with 2,000 files and a filter applied” · “show <a class="dv-oid" href="#1a">1a</a> at 1280 and 2560”</p>
+</section>
+</x-dc>
+</body>
+</html>

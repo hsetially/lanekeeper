@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="styles.css">
+<style>
+body{margin:0;background:#eceae5;font-family:'Inter',system-ui,sans-serif}
+.dv-turn{padding:40px 44px 32px;scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 8px}
+.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 15px/1.2 'Inter',system-ui,sans-serif;color:#1a1a1a}
+.dv-sub{margin:0 0 24px;font:13px/1.5 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.6);max-width:900px}
+.dv-opts{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start;max-width:2920px}
+.dv-grp{flex-basis:100%;margin:20px 0 -8px;padding-top:16px;border-top:1px solid rgba(0,0,0,.12);font:600 12px/1.3 'Inter',system-ui,sans-serif;letter-spacing:.04em;text-transform:uppercase;color:rgba(0,0,0,.6)}
+.dv-grp:first-child{margin-top:0;padding-top:0;border-top:0}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:12px/1.3 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.65)}
+.dv-card{width:1442px;max-width:100%;background:#fff;border:1px solid rgba(0,0,0,.12);border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.06);overflow:hidden}
+.dv-opt:target .dv-oid{background:#2a78d6;color:#fff}
+.dv-next{margin:28px 0 0;font:12px/1.5 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.6)}
+.dv-next a{color:inherit}
+</style>
+</helmet>
+<section class="dv-turn" id="t1" data-screen-label="Turn 1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Swimlanes overview · home page</span></div>
+<p class="dv-sub">Compact 28px rows, ten columns, no horizontal scroll at 1440. Healthy cells stay quiet (plain text, no badge) so drift, offline agents and adoption stand out. Drift is shown as icon + count badges; the legend sits in the table footer and each badge has a tooltip name.</p>
+<div class="dv-opts">
+
+<div class="dv-grp">Six swimlanes · live change, offline agent, adoption needed</div>
+<div class="dv-opt" id="1a"><div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Light · Admin · sitb just changed (highlight + toast) · presitb offline · presitc adoption needed · two rows selected</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="swimlanes" dataset="six" selection="two" toast="{{ true }}" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1b"><div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Dark</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" page="swimlanes" dataset="six" selection="two" toast="{{ true }}" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1c"><div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>Light · Viewer · no “Add a swimlane”, no “Adopt” button, Compare disabled</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="swimlanes" dataset="six" role="Viewer" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1d"><div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a>Light · column chooser open</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="swimlanes" dataset="six" popover="columns" hint-size="1440px,900px"></dc-import></div></div>
+
+<div class="dv-grp">Density test · 40 swimlanes at 1440×900</div>
+<div class="dv-opt" id="1e"><div class="dv-olabel"><a class="dv-oid" href="#1e">1e</a>Light · 30 rows visible, rows scroll inside the table, header stays</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="swimlanes" dataset="forty" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1f"><div class="dv-olabel"><a class="dv-oid" href="#1f">1f</a>Dark</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" page="swimlanes" dataset="forty" hint-size="1440px,900px"></dc-import></div></div>
+
+<div class="dv-grp">Loading and empty</div>
+<div class="dv-opt" id="1g"><div class="dv-olabel"><a class="dv-oid" href="#1g">1g</a>Light · loading skeleton (same grid, controls dimmed)</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="swimlanes" dataset="loading" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1h"><div class="dv-olabel"><a class="dv-oid" href="#1h">1h</a>Dark · loading</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" page="swimlanes" dataset="loading" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1i"><div class="dv-olabel"><a class="dv-oid" href="#1i">1i</a>Light · empty, Admin sees “Add a swimlane”</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="swimlanes" dataset="empty" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1j"><div class="dv-olabel"><a class="dv-oid" href="#1j">1j</a>Dark · empty, Viewer is told to ask an admin</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" page="swimlanes" dataset="empty" role="Viewer" hint-size="1440px,900px"></dc-import></div></div>
+
+</div>
+<p class="dv-next">Try next: “add the totals strip: swimlanes, agents online, files in conflict, pending approvals” · “add row hover actions” · “show the filters applied”</p>
+</section>
+</x-dc>
+</body>
+</html>

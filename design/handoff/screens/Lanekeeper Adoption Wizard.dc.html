@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="consequence.css">
+<link rel="stylesheet" href="lk-pages.css">
+<style>
+*{box-sizing:border-box}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+</style>
+</helmet>
+<div class="lk pg" data-screen-label="Adoption wizard">
+<div class="pg-in">
+  <div class="pg-h">
+    <div><h1>Adopt <span class="mono" style="font-size:18px">presitb</span></h1><span class="sub">{{ subtitle }}</span></div>
+    <sc-if value="{{ isAdmin }}" hint-placeholder-val="{{ true }}"><span class="bd bd-locked"><i class="ic i-lock"></i>{{ lockText }}</span></sc-if>
+  </div>
+
+  <sc-if value="{{ notAdmin }}" hint-placeholder-val="{{ false }}"><div class="pg-box"><div class="empty"><i class="ic s16 i-lock" style="color:var(--muted-foreground)"></i><strong>Adoption needs an Admin</strong><span class="m">presitb has no baseline, so editing is locked. An Admin picks the branch and base version. Ask Priya Shah.</span></div></div></sc-if>
+
+  <sc-if value="{{ isAdmin }}" hint-placeholder-val="{{ true }}">
+  <sc-if value="{{ showStepper }}" hint-placeholder-val="{{ true }}"><div class="st" role="list" aria-label="Adoption steps">
+    <sc-for list="{{ steps }}" as="s" hint-placeholder-count="5">
+      <sc-if value="{{ s.line }}" hint-placeholder-val="{{ false }}"><span class="st-l {{ s.lcls }}"></span></sc-if>
+      <button type="button" class="st-i {{ s.cls }}" aria-current="{{ s.cur }}" onClick="{{ s.go }}" disabled="{{ s.dis }}"><span class="nn"><sc-if value="{{ s.isDone }}" hint-placeholder-val="{{ false }}"><i class="ic s12 i-check"></i></sc-if><sc-if value="{{ s.notDone }}" hint-placeholder-val="{{ true }}">{{ s.n }}</sc-if></span><span>{{ s.label }}</span><sc-if value="{{ s.hasSub }}" hint-placeholder-val="{{ false }}"><span class="sb mono">{{ s.sub }}</span></sc-if></button>
+    </sc-for>
+  </div></sc-if>
+
+  <div class="pg-box">
+    <sc-if value="{{ showResume }}" hint-placeholder-val="{{ false }}"><div class="fx {{ resumeCls }}" style="margin:12px 20px 0;flex:none"><i class="ic {{ resumeIcon }}"></i><span>{{ resumeTitle }}<span class="x">{{ resumeBody }}</span></span><button type="button" class="b sm" style="margin-left:auto;flex:none">{{ resumeBtn }}</button></div></sc-if>
+    <sc-if value="{{ showSummary }}" hint-placeholder-val="{{ false }}"><div class="ss" style="margin-top:{{ ssTop }}"><span class="i"><i class="ic s12 i-git-branch"></i>Branch <b class="mono">{{ branch }}</b></span><span class="i"><i class="ic s12 i-tag"></i>Base <b class="mono">{{ baseLabel }}</b></span><sc-if value="{{ ssFiles }}" hint-placeholder-val="{{ false }}"><span class="i"><i class="ic s12 i-file-code"></i>Files <b>{{ decidedText }}</b></span></sc-if><sc-if value="{{ ssSec }}" hint-placeholder-val="{{ false }}"><span class="i"><i class="ic s12 i-shield-alert"></i>Secrets <b>{{ secText }}</b></span></sc-if></div></sc-if>
+
+    <!-- STEP 1 -->
+    <sc-if value="{{ s1 }}" hint-placeholder-val="{{ true }}"><div class="wb">
+      <div><h2>Which Git branch does presitb follow?</h2><p class="lead">Lanekeeper compared the files on presitb’s NFS with every branch of csp-tenant-data. Identical means the same path and the same content once line endings are ignored.</p></div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <sc-for list="{{ cands }}" as="c" hint-placeholder-count="3">
+          <div class="cand {{ c.cls }}" role="radio" aria-checked="{{ c.on }}" tabindex="0" onClick="{{ c.pick }}">
+            <span class="rdo"></span><span class="rk">#{{ c.rank }}</span>
+            <div><div class="nm" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><i class="ic i-git-branch" style="color:var(--muted-foreground)"></i>{{ c.id }}<sc-if value="{{ c.best }}" hint-placeholder-val="{{ false }}"><span class="bd bd-sync"><i class="ic i-check"></i>Best match</span></sc-if></div><div class="mut" style="font-size:12px;line-height:16px;margin-top:4px">Last commit {{ c.last }}</div></div>
+            <div><span class="pc">{{ c.pct }}%</span> <span class="mut">identical</span><div class="bar"><i style="width:{{ c.pct }}%"></i></div><span class="mut" style="font-size:12px">{{ c.files }}</span></div>
+            <div class="hn"><span><i class="ic s12 i-server"></i><span>{{ c.env }}</span></span><span><i class="ic s12 i-tag"></i><span>{{ c.rel }}</span></span>
+              <span><sc-if value="{{ c.used }}" hint-placeholder-val="{{ false }}"><span class="bd bd-nfs"><i class="ic i-triangle-alert"></i>Already followed by {{ c.usedBy }}</span></sc-if><sc-if value="{{ c.free }}" hint-placeholder-val="{{ true }}"><span class="bd bd-unknown">No swimlane follows it</span></sc-if></span></div>
+          </div>
+        </sc-for>
+      </div>
+      <sc-if value="{{ branchWarn }}" hint-placeholder-val="{{ false }}"><div class="wn"><i class="ic i-triangle-alert"></i><span>{{ branchWarnText }}</span></div></sc-if>
+      <div style="display:flex;align-items:center;gap:8px;color:var(--muted-foreground)"><span>10 other branches match less than 40%.</span><button type="button" class="b sm">Choose another branch<i class="ic s12 i-chevron-down"></i></button></div>
+    </div></sc-if>
+
+    <!-- STEP 2 -->
+    <sc-if value="{{ s2 }}" hint-placeholder-val="{{ false }}"><div class="wb">
+      <div><h2>Which base version is presitb running?</h2><p class="lead">Base files come from configuration-base-saas. Where presitb has no tenant file, its NFS copy should equal base at one exact commit. Lanekeeper found the closest one.</p></div>
+      <div style="display:flex;gap:16px;align-items:flex-start;min-height:0">
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:8px">
+          <sc-for list="{{ vers }}" as="v" hint-placeholder-count="3">
+            <div class="cand {{ v.cls }}" role="radio" aria-checked="{{ v.on }}" tabindex="0" style="grid-template-columns:20px minmax(0,1fr) 190px" onClick="{{ v.pick }}">
+              <span class="rdo"></span>
+              <div><div class="nm" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><i class="ic i-tag" style="color:var(--muted-foreground)"></i>{{ v.label }}<sc-if value="{{ v.best }}" hint-placeholder-val="{{ false }}"><span class="bd bd-sync"><i class="ic i-check"></i>Best match</span></sc-if></div><div class="mut" style="font-size:12px;line-height:16px;margin-top:4px">{{ v.sub }}</div></div>
+              <div><span class="pc">{{ v.pct }}%</span> <span class="mut">of base files match</span><div class="bar"><i style="width:{{ v.pct }}%"></i></div></div>
+            </div>
+          </sc-for>
+        </div>
+        <div class="card2" style="width:440px;flex:none">
+          <div class="hd"><i class="ic s12 i-git-commit"></i>{{ commitsTitle }}</div>
+          <sc-for list="{{ commits }}" as="c" hint-placeholder-count="4"><div class="cm"><span class="h">{{ c.h }}</span><span>{{ c.msg }}</span><span class="w">{{ c.w }}</span></div></sc-for>
+          <div style="padding:8px 12px;border-top:1px solid var(--border);background:var(--muted);font-size:12px;line-height:16px;color:var(--muted-foreground)">{{ commitsNote }}</div>
+        </div>
+      </div>
+    </div></sc-if>
+
+    <!-- STEP 3 -->
+    <sc-if value="{{ s3 }}" hint-placeholder-val="{{ false }}"><div class="wb" style="flex-direction:row;gap:16px;padding-bottom:12px">
+      <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:10px;min-height:0">
+        <div><h2>{{ s3Title }}</h2><p class="lead">For each file, say which side is right. Nothing is written to NFS or Git when you confirm. Your choice only sets what the baseline expects.</p></div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <div class="seg" role="group" aria-label="Show files"><sc-for list="{{ ftabs }}" as="t" hint-placeholder-count="5"><button type="button" class="{{ t.cls }}" onClick="{{ t.go }}">{{ t.label }}<span class="n">{{ t.n }}</span></button></sc-for></div>
+          <a href="#" style="font-size:12px" onClick="{{ selEol }}">{{ eolText }}</a>
+        </div>
+        <sc-if value="{{ hasBulk }}" hint-placeholder-val="{{ false }}"><div class="bulk" style="padding:6px 8px;border:1px solid var(--primary);border-radius:6px;background:var(--selection)" role="toolbar" aria-label="Bulk actions">
+          <strong style="font-weight:600">{{ bulkText }}</strong><span class="mut">Set to</span>
+          <div class="dseg lg"><button type="button" class="n" onClick="{{ bulkN }}">NFS is right</button><button type="button" class="g" onClick="{{ bulkG }}">Git is right</button><button type="button" class="i {{ bulkIcls }}" onClick="{{ bulkI }}">Intentional…</button></div>
+          <sc-if value="{{ bulkIntent }}" hint-placeholder-val="{{ false }}"><input class="in" type="text" value="{{ bulkReason }}" onChange="{{ onBulkReason }}" placeholder="Reason for all {{ bulkCount }} files" aria-label="Reason" style="width:240px"><button type="button" class="b p sm" disabled="{{ bulkApplyDis }}" onClick="{{ bulkApply }}">Apply</button></sc-if>
+          <button type="button" class="b g sm" style="margin-left:auto" onClick="{{ clearSel }}">Clear selection</button>
+        </div></sc-if>
+        <div class="card2" style="flex:1;min-height:0;display:flex;flex-direction:column">
+          <div class="dg hd" role="row"><span class="cb2 {{ allCls }}" role="checkbox" aria-checked="{{ allOn }}" onClick="{{ togAll }}"><i class="ic i-{{ allIcon }}" style="opacity:{{ allChk }}"></i></span><span>File</span><span>Difference</span><span>Which side is right</span></div>
+          <div role="rowgroup" style="flex:1;min-height:0;overflow:hidden">
+            <sc-for list="{{ frows }}" as="r" hint-placeholder-count="10">
+              <div class="dg {{ r.cls }}" role="row" tabindex="0" onClick="{{ r.focus }}">
+                <span class="cb2 {{ r.cb }}" role="checkbox" aria-checked="{{ r.sel }}" onClick="{{ r.toggle }}"><i class="ic i-check" style="opacity:{{ r.chk }}"></i></span>
+                <span class="fl"><b>{{ r.file }}</b><span>{{ r.dir }}</span></span>
+                <span class="df">{{ r.diff }}<sc-if value="{{ r.chg }}" hint-placeholder-val="{{ false }}"><span class="chg"><i class="ic s12 i-triangle-alert"></i>Changed since saved</span></sc-if><sc-if value="{{ r.noChg }}" hint-placeholder-val="{{ true }}"><span>{{ r.sub }}</span></sc-if></span>
+                <span><div class="dseg" role="group" aria-label="Decision"><button type="button" class="n {{ r.cn }}" onClick="{{ r.setN }}">NFS is right</button><button type="button" class="g {{ r.cg }}" onClick="{{ r.setG }}">Git is right</button><button type="button" class="i {{ r.ci }}" onClick="{{ r.setI }}">Intentional<sc-if value="{{ r.iw }}" hint-placeholder-val="{{ false }}"><i class="ic s12 i-triangle-alert w"></i></sc-if></button></div></span>
+              </div>
+            </sc-for>
+          </div>
+          <div class="foot"><span>{{ rowsText }}</span><span class="r">Arrow keys move between files · 1 NFS · 2 Git · 3 Intentional</span></div>
+        </div>
+      </div>
+      <div class="pv" style="margin-top:2px">
+        <div class="ph">
+          <div style="display:flex;align-items:center;gap:8px"><i class="ic i-file-code" style="color:var(--muted-foreground)"></i><span class="mono" style="font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ pv.path }}</span><span style="margin-left:auto;display:inline-flex;gap:2px"><button type="button" class="b ib" aria-label="Previous file" onClick="{{ prevFile }}"><i class="ic i-arrow-up"></i></button><button type="button" class="b ib" aria-label="Next file" onClick="{{ nextFile }}"><i class="ic i-arrow-down"></i></button></span></div>
+          <div class="dseg lg" style="align-self:flex-start"><button type="button" class="n {{ pv.cn }}" onClick="{{ pv.setN }}">NFS is right</button><button type="button" class="g {{ pv.cg }}" onClick="{{ pv.setG }}">Git is right</button><button type="button" class="i {{ pv.ci }}" onClick="{{ pv.setI }}">Intentional</button></div>
+          <span class="mut" style="font-size:12px;line-height:16px">{{ pv.effect }}</span>
+          <sc-if value="{{ pv.isInt }}" hint-placeholder-val="{{ false }}"><label class="fld"><span>Reason (required)</span><input class="in" type="text" value="{{ pv.reason }}" onChange="{{ pv.onReason }}" placeholder="Why is this difference on purpose?" aria-label="Reason"></label></sc-if>
+        </div>
+        <div class="cap" style="display:flex;gap:10px;align-items:center;min-height:28px;padding:4px 12px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted-foreground)"><span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;background:var(--diff-del-word);border-radius:2px"></span>Git {{ branch }}</span><span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;background:var(--diff-add-word);border-radius:2px"></span>NFS presitb</span><span style="margin-left:auto">{{ pv.note }}</span></div>
+        <div style="flex:1;min-height:0;overflow:hidden"><sc-for list="{{ pv.rows }}" as="r" hint-placeholder-count="8"><div class="dl dl-{{ r.k }}" style="grid-template-columns:40px 16px minmax(0,1fr)"><span class="n">{{ r.no }}</span><span class="m">{{ r.m }}</span><span>{{ r.tx }}</span></div></sc-for></div>
+      </div>
+    </div></sc-if>
+
+    <!-- STEP 4 -->
+    <sc-if value="{{ s4 }}" hint-placeholder-val="{{ false }}"><div class="wb">
+      <div><h2>{{ s4Title }}</h2><p class="lead">Lanekeeper scanned {{ scanTotal }} files for values that look like passwords, tokens or keys. Values are never shown here, only the line and the length.</p></div>
+      <sc-if value="{{ scanRunning }}" hint-placeholder-val="{{ false }}"><div class="card2" style="padding:20px;display:flex;flex-direction:column;gap:10px;max-width:640px" role="status"><div style="display:flex;align-items:center;gap:8px"><i class="ic s16 i-loader-circle spin"></i><strong style="font-weight:600">Scanning 434 files… 286 done</strong></div><div class="bar" style="height:8px"><i style="width:66%"></i></div><span class="mut">You can leave this page. The scan keeps running and your progress is saved.</span></div></sc-if>
+      <sc-if value="{{ scanClean }}" hint-placeholder-val="{{ false }}"><div class="fx fx-ok" style="max-width:760px"><i class="ic i-circle-check"></i><span>No file has a value that looks like a secret<span class="x">434 files scanned at 10:44. Nothing to mask. If you add a secret later, saving is blocked until you move it out.</span></span></div></sc-if>
+      <sc-if value="{{ scanHits }}" hint-placeholder-val="{{ false }}"><div class="card2">
+        <div class="sc hd"><span>File</span><span style="text-align:right">Line</span><span style="text-align:right">Length</span><span>Why it was flagged</span><span>What should Lanekeeper do?</span></div>
+        <sc-for list="{{ hits }}" as="h" hint-placeholder-count="3"><div class="sc"><span class="fl"><b>{{ h.file }}</b><span>{{ h.dir }}</span></span><span class="num">{{ h.line }}</span><span class="num">{{ h.len }} chars</span><span>{{ h.why }}</span><span><div class="dseg lg"><button type="button" class="k {{ h.cm }}" onClick="{{ h.setM }}"><i class="ic s12 i-eye"></i>Mask the value</button><button type="button" class="k {{ h.cn }}" onClick="{{ h.setN }}">Not a secret</button></div></span></div></sc-for>
+      </div>
+      <div class="fx fx-info" style="max-width:760px"><i class="ic i-info"></i><span>Masked values show as ••••• in Lanekeeper<span class="x">Editors can reveal one with a reason, and each reveal is audited. Marking “Not a secret” shows the value to every viewer.</span></span></div></sc-if>
+    </div></sc-if>
+
+    <!-- STEP 5 -->
+    <sc-if value="{{ s5 }}" hint-placeholder-val="{{ false }}"><div class="wb">
+      <div><h2>Confirm the baseline for presitb</h2><p class="lead">Check the summary. After you confirm, Editors and Admins can change files on presitb.</p></div>
+      <div style="display:flex;gap:16px;align-items:flex-start">
+        <div class="card2" style="flex:1;min-width:0"><div class="hd">What you chose</div>
+          <sc-for list="{{ sumRows }}" as="r" hint-placeholder-count="4"><div class="kvr"><span class="k">{{ r.k }}</span><span class="v">{{ r.v }}<sc-if value="{{ r.hasV2 }}" hint-placeholder-val="{{ false }}"><span class="mut">{{ r.v2 }}</span></sc-if></span><a href="#" onClick="{{ r.go }}">Change</a></div></sc-for>
+        </div>
+        <div style="width:420px;flex:none;display:flex;flex-direction:column;gap:8px">
+          <div class="fx fx-info"><i class="ic i-info"></i><span>Nothing is written to NFS or Git<span class="x">Confirming records the baseline only. No service restarts.</span></span></div>
+          <div class="fx fx-lock" style="font-weight:400"><i class="ic i-lock"></i><span style="font-weight:500">Editing unlocks on presitb<span class="x">Save, Raise PR and Restore turn on for Editors and Admins.</span></span></div>
+          <sc-if value="{{ blockers }}" hint-placeholder-val="{{ false }}"><div class="fx fx-warn"><i class="ic i-triangle-alert"></i><span>{{ undecided }} files still need a decision<span class="x"><a href="#" onClick="{{ goStep3 }}">Go back to differing files</a></span></span></div></sc-if>
+        </div>
+      </div>
+    </div></sc-if>
+
+    <!-- DONE -->
+    <sc-if value="{{ sDone }}" hint-placeholder-val="{{ false }}"><div class="wb" style="align-items:center;overflow:hidden"><div style="width:100%;max-width:860px;display:flex;flex-direction:column;gap:14px">
+      <div class="fx fx-ok" role="status"><i class="ic i-circle-check"></i><span>Baseline confirmed. Editing is unlocked on presitb<span class="x">Confirmed by Priya Shah at 10:52. Audit entry #8841.</span></span></div>
+      <div class="card2"><div class="hd">What changed</div>
+        <sc-for list="{{ changes }}" as="r" hint-placeholder-count="5"><div class="ba"><span class="k">{{ r.k }}</span><span style="color:var(--muted-foreground)">{{ r.a }}</span><i class="ic s12 i-chevron-right ar"></i><span class="af">{{ r.b }}</span></div></sc-for>
+      </div>
+      <div class="mut" style="font-size:12px">Nothing was written to NFS or Git, and no service restarted. An Admin can re-adopt later from the swimlane page.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="b p"><i class="ic i-layers"></i>Open presitb</button><button type="button" class="b"><i class="ic i-git-pull-request"></i>Raise a PR for {{ nfsCount }} NFS-ahead files</button><button type="button" class="b g"><i class="ic i-history"></i>View audit entry</button></div>
+    </div></div></sc-if>
+
+    <sc-if value="{{ showFooter }}" hint-placeholder-val="{{ true }}"><div class="wf">
+      <button type="button" class="b" disabled="{{ backDis }}" onClick="{{ back }}">Back</button>
+      <span class="sv"><i class="ic s12 i-circle-check" style="color:var(--success-fg)"></i>{{ savedText }}</span>
+      <sc-if value="{{ hasHint }}" hint-placeholder-val="{{ false }}"><span class="mut" style="font-size:12px">{{ hint }}</span></sc-if>
+      <button type="button" class="b p" disabled="{{ nextDis }}" onClick="{{ next }}">{{ nextLabel }}<i class="ic s12 {{ nextIcon }}"></i></button>
+    </div></sc-if>
+  </div>
+  </sc-if>
+</div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1216,&quot;height&quot;:856},&quot;step&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;1&quot;,&quot;2&quot;,&quot;3&quot;,&quot;4&quot;,&quot;5&quot;,&quot;done&quot;],&quot;default&quot;:&quot;1&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Wizard&quot;},&quot;role&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Admin&quot;,&quot;Editor&quot;,&quot;Viewer&quot;],&quot;default&quot;:&quot;Admin&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Wizard&quot;},&quot;resume&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;same&quot;,&quot;changed&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Wizard&quot;},&quot;scan&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;results&quot;,&quot;clean&quot;,&quot;running&quot;],&quot;default&quot;:&quot;results&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Wizard&quot;},&quot;live&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Wizard&quot;},&quot;decided&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:17,&quot;min&quot;:0,&quot;max&quot;:26,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Wizard&quot;},&quot;selected&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Wizard&quot;},&quot;bulk&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;intent&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Wizard&quot;},&quot;branch&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;sit12&quot;,&quot;sit11&quot;,&quot;sit9&quot;],&quot;default&quot;:&quot;sit12&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Wizard&quot;},&quot;base&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;v2.3.1+4&quot;,&quot;v2.3.1&quot;,&quot;v2.3.0&quot;],&quot;default&quot;:&quot;v2.3.1+4&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Wizard&quot;},&quot;focus&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:0,&quot;min&quot;:0,&quot;max&quot;:25,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Wizard&quot;},&quot;ftab&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;all&quot;,&quot;u&quot;,&quot;n&quot;,&quot;g&quot;,&quot;i&quot;],&quot;default&quot;:&quot;all&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Wizard&quot;}}">
+class Component extends DCLogic {
+  state = { o: {} };
+  componentDidMount() { if (this.live()) { try { const s = JSON.parse(localStorage.getItem('lk-adopt-presitb') || 'null'); if (s) this.setState({ o: s }); } catch (e) {} } }
+  live() { return this.props.live === true || this.props.live === 'true'; }
+  val(k, d) { const o = this.state.o; return k in o ? o[k] : (this.props[k] ?? d); }
+  many(x) { this.setState(s => { const o = { ...s.o, ...x, savedAt: this.live() ? new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : s.o.savedAt }; if (this.live()) { try { localStorage.setItem('lk-adopt-presitb', JSON.stringify(o)); } catch (e) {} } return { o }; }); }
+  set(k, v) { this.many({ [k]: v }); }
+  files() {
+    const F = [['tx-infinity-api', 'tx-infinity-core-sit12.yml', 'v', 3, 'n'], ['tx-infinity-api', 'tx-infinity-gateway-sit12.yml', 'v', 1, 'g'], ['tx-infinity-api', 'entryGroupConfig-sit12.yml', 'v', 2, 'n'], ['tx-infinity-api', 'account-sorting-config-sit12.yml', 'v', 1, 'g'],
+      ['security', 'security-roles-sit12.yml', 'v', 4, 'i', 'Audit-approved role changes, not in Git yet.'], ['security', 'keystore-config-sit12.yml', 'v', 2, 'g'],
+      ['resources', 'receipt-templates-sit12.yml', 'e', 0, 'g'], ['resources', 'receipt-labels-sit12.yml', 'e', 0, 'g'], ['resources', 'statement-fonts.yml', 'e', 0, 'g'], ['resources', 'branding-sit12.yml', 'e', 0, 'g'], ['resources', 'locale-en.yml', 'e', 0, 'g'], ['resources', 'locale-fr.yml', 'e', 0, 'g'],
+      ['tx-infinity-api', 'tmp-hotfix.yml', 'N', 18, 'n'], ['tx-infinity-api', 'rate-limits-hotfix.yml', 'N', 9, 'n'], ['batch', 'legacy-batch-sit12.yml', 'G', 38, 'g'], ['batch', 'batch-schedule-sit12.yml', 'v', 2, 'n'],
+      ['kafka', 'kafka-topics-sit12.yml', 'v', 1, 'g'], ['kafka', 'kafka-consumers-sit12.yml', 'v', 2, 'n'], ['kafka', 'kafka-acl-sit12.yml', 'w', 0, 'i', 'Managed by the security team. Differs by design.'],
+      ['teller-ui', 'teller-ui-sit12.yml', 'v', 3, 'g'], ['teller-ui', 'feature-flags-sit12.yml', 'v', 2, 'n'], ['teller-ui', 'menu-config.yml', 'v', 1, 'g'],
+      ['monitoring', 'alert-rules-sit12.yml', 'v', 2, 'n'], ['monitoring', 'dashboards-sit12.yml', 'w', 0, 'n'], ['monitoring', 'log-levels-sit12.yml', 'v', 1, 'g'], ['db', 'datasource-sit12.yml', 'v', 1, 'i', 'The presit database host differs on purpose.']];
+    return F.map((f, i) => ({ i, dir: f[0] + '/', file: f[1], p: f[0] + '/' + f[1], t: f[2], n: f[3], d: f[4], r: f[5] || '' }));
+  }
+  diffRows(f) {
+    const R = (no, tx, k = 'ctx') => ({ no, tx, k, m: { add: '+', del: '−', ctx: '', fold: '', hunk: '' }[k] });
+    const pool = [['timeoutMs', '45000', '30000'], ['pageSize', '100', '50'], ['retry.attempts', '5', '3'], ['enableAccountSorting', 'true', 'false'], ['limitCents', '750000', '500000'], ['level', 'INFO', 'WARN'], ['replicas', '3', '2'], ['maxPollRecords', '500', '200'], ['cpu', '1000m', '500m'], ['heapMb', '2048', '1024']];
+    let rows = [], note = '';
+    if (f.t === 'v') { rows.push(R('', '@@ ' + f.file + ' @@', 'hunk')); for (let k = 0; k < Math.min(f.n, 3); k++) { const [key, a, b] = pool[(f.i + k * 3) % 10], n0 = 12 + f.i * 3 + k * 9; rows.push(R(n0 - 1, '  # ' + key.split('.')[0] + ' settings'), R(n0, '  ' + key + ': ' + b, 'del'), R(n0, '  ' + key + ': ' + a, 'add'), R(n0 + 1, '  # next key')); if (k < 2 && k < f.n - 1) rows.push(R('', '… 6 unchanged lines', 'fold')); } note = f.n + ' value' + (f.n > 1 ? 's' : '') + ' differ'; }
+    else if (f.t === 'e') { rows = [R(1, '# ' + f.file), R(2, 'tenant: sit12'), R(3, 'version: 2.3.1'), R('', 'No text changes. NFS uses CRLF line endings, Git uses LF.', 'fold')]; note = 'Line endings only'; }
+    else if (f.t === 'N') { rows = [R(1, '# TEMP ' + f.file, 'add'), R(2, 'rateLimit:', 'add'), R(3, '  perClientPerMin: 1200', 'add'), R(4, '  burst: 80', 'add'), R('', '… ' + (f.n - 4) + ' more lines', 'fold')]; note = 'Only on NFS'; }
+    else if (f.t === 'G') { rows = [R(1, '# legacy batch schedule', 'del'), R(2, 'jobs:', 'del'), R(3, '  nightlyLedger: "0 2 * * *"', 'del'), R(4, '  eodReport: "0 5 * * *"', 'del'), R('', '… ' + (f.n - 4) + ' more lines', 'fold')]; note = 'Only in Git'; }
+    else { rows = [R(1, 'acl:', 'del'), R(2, '  - principal: svc-core', 'del'), R(3, '    ops: [read, write]', 'del'), R(1, 'acls:', 'add'), R(2, '  - who: svc-core', 'add'), R(3, '    allow: [read, write, admin]', 'add'), R('', '… 41 more lines differ', 'fold')]; note = 'Whole file differs'; }
+    return { rows, note };
+  }
+  renderVals() {
+    const bool = v => v === true || v === 'true', P = this.props, noop = e => e && e.preventDefault && e.preventDefault();
+    const role = this.val('role', 'Admin'), isAdmin = role === 'Admin';
+    const stepV = String(this.val('step', '1')), done = stepV === 'done', stepN = done ? 6 : Number(stepV), o = this.state.o;
+    const decidedN = Number(this.val('decided', stepN >= 4 ? 26 : (stepN === 3 ? 17 : 0)));
+    const F = this.files(), dec = o.dec || {}, rs = o.rs || {};
+    const D = i => (i in dec ? dec[i] : (i < decidedN ? F[i].d : null));
+    const RS = i => (i in rs ? rs[i] : (i < decidedN && F[i].d === 'i' ? F[i].r : ''));
+    const resume = this.val('resume', 'none'), chgSet = resume === 'changed' ? [2, 20] : [];
+    const decided = F.filter(f => D(f.i)).length, undecided = F.length - decided;
+    const cnt = k => F.filter(f => D(f.i) === k).length;
+    const branch = this.val('branch', 'sit12'), baseId = this.val('base', 'v2.3.1+4'), tab = this.val('ftab', 'all');
+    const sel = (o.sel !== undefined ? o.sel : String(P.selected || '').split(',').filter(Boolean).map(Number));
+    const focus = Number(this.val('focus', 0)), scan = this.val('scan', 'results');
+    const go = n => () => this.set('step', String(n));
+    const BR = { sit12: ['sit12', 94, '408 of 434 files', 'Hosts say presit (kafka-presit.corp.internal)', 'Version strings say 2.3.1', '', '2 days ago · Priya Shah'], sit11: ['sit11', 81, '352 of 434 files', 'Hosts say presit (kafka-presit.corp.internal)', 'Version strings say 2.3.0', 'presita', '1 day ago · Dana Okoye'], sit9: ['sit9', 60, '260 of 434 files', 'Hosts say sit (kafka-sit.corp.internal)', 'Version strings say 2.3.1', 'sitc', '31 min ago · Marco Diaz'] };
+    const cands = Object.keys(BR).map((k, i) => { const b = BR[k]; return { id: b[0], rank: i + 1, pct: b[1], files: b[2], env: b[3], rel: b[4], used: !!b[5], usedBy: b[5], free: !b[5], last: b[6], best: i === 0, on: branch === k, cls: branch === k ? 'sel' : '', pick: () => this.set('branch', k) }; });
+    const BV = { 'v2.3.1+4': ['v2.3.1 + 4 commits', 'tag v2.3.1, then 4 commits on main · 9ae3d17', 98], 'v2.3.1': ['v2.3.1', 'tag only · 6c1f0b4', 96], 'v2.3.0': ['v2.3.0', 'tag only · 1d7a9e2', 84] };
+    const vers = Object.keys(BV).map((k, i) => ({ label: BV[k][0], sub: BV[k][1], pct: BV[k][2], best: i === 0, on: baseId === k, cls: baseId === k ? 'sel' : '', pick: () => this.set('base', k) }));
+    const C4 = [{ h: '9ae3d17', msg: 'Fix datasource pool size default', w: 'Oct 6' }, { h: '0c8d4e1', msg: 'Add sortOrder option', w: 'Oct 2' }, { h: 'f12ab77', msg: 'Default enableAccountSorting to true', w: 'Sep 30' }, { h: '3be71d0', msg: 'Tidy kafka consumer docs', w: 'Sep 28' }];
+    const commits = baseId === 'v2.3.1+4' ? C4 : (baseId === 'v2.3.1' ? [] : [{ h: '6c1f0b4', msg: 'Release v2.3.1', w: 'Sep 24' }]);
+    const baseLabel = BV[baseId][0].replace(' commits', '');
+    const shortP = baseId === 'v2.3.1+4';
+    // files
+    const sel0 = new Set(sel);
+    const eolIdx = F.filter(f => f.t === 'e').map(f => f.i);
+    const vis = F.filter(f => tab === 'all' || (tab === 'u' ? !D(f.i) : D(f.i) === tab));
+    const lab = f => f.t === 'v' ? [f.n + ' value' + (f.n > 1 ? 's' : '') + ' differ', '+' + f.n + ' −' + f.n + ' lines'] : f.t === 'e' ? ['Line endings only', 'No text changes'] : f.t === 'N' ? ['Only on NFS', f.n + ' lines'] : f.t === 'G' ? ['Only in Git', f.n + ' lines'] : ['Whole file differs', '212 of 214 lines'];
+    const setD = (i, v) => this.many({ dec: { ...dec, [i]: v } });
+    const frows = vis.map(f => { const d = D(f.i), l = lab(f), s = sel0.has(f.i), noR = d === 'i' && !RS(f.i);
+      return { cls: (s ? 'sel ' : '') + (f.i === focus ? 'foc' : ''), cb: s ? 'on' : '', sel: s, chk: s ? 1 : 0, file: f.file, dir: f.dir, diff: l[0], sub: l[1], chg: chgSet.includes(f.i), noChg: !chgSet.includes(f.i),
+        cn: d === 'n' ? 'on' : '', cg: d === 'g' ? 'on' : '', ci: d === 'i' ? 'on' : '', iw: noR,
+        focus: () => this.set('focus', f.i), toggle: e => { e.stopPropagation(); this.set('sel', s ? sel.filter(x => x !== f.i) : [...sel, f.i]); },
+        setN: e => { e.stopPropagation(); setD(f.i, 'n'); }, setG: e => { e.stopPropagation(); setD(f.i, 'g'); }, setI: e => { e.stopPropagation(); setD(f.i, 'i'); } }; });
+    const ff = F[focus] || F[0], fd = D(ff.i), fdf = this.diffRows(ff);
+    const EFF = { n: 'Baseline records the NFS version. Git shows as behind until a PR merges.', g: 'Baseline records the Git version. NFS shows as behind until you sync.', i: 'Baseline records both as intentionally different. No finding is raised.', none: 'Choose a side. Nothing is written to NFS or Git.' };
+    const pv = { path: ff.p, cn: fd === 'n' ? 'on' : '', cg: fd === 'g' ? 'on' : '', ci: fd === 'i' ? 'on' : '', setN: () => setD(ff.i, 'n'), setG: () => setD(ff.i, 'g'), setI: () => setD(ff.i, 'i'), effect: EFF[fd || 'none'], isInt: fd === 'i', reason: RS(ff.i), onReason: e => this.many({ rs: { ...rs, [ff.i]: e.target.value } }), rows: fdf.rows, note: fdf.note };
+    const bulkMode = this.val('bulk', 'none'), bulkReason = this.val('bulkReason', '');
+    const applyBulk = v => this.many({ dec: { ...dec, ...Object.fromEntries(sel.map(i => [i, v])) } });
+    const mv = (d) => { const n = Math.max(0, Math.min(F.length - 1, focus + d)); this.set('focus', n); };
+    const ftabs = [['all', 'All', F.length], ['u', 'Undecided', undecided], ['n', 'NFS is right', cnt('n')], ['g', 'Git is right', cnt('g')], ['i', 'Intentional', cnt('i')]].map(([k, l, n]) => ({ label: l, n, cls: tab === k ? 'on' : '', go: () => this.set('ftab', k) }));
+    const allSel = vis.length > 0 && vis.every(f => sel0.has(f.i)), someSel = vis.some(f => sel0.has(f.i));
+    // secrets
+    const HITS = [['db', 'datasource-sit12.yml', 14, 24, 'Key name looks like a password'], ['security', 'keystore-config-sit12.yml', 31, 1704, 'Looks like a private key block (PEM)'], ['kafka', 'kafka-acl-sit12.yml', 8, 40, 'High-entropy string next to a token key']];
+    const sec = o.sec || {};
+    const hits = HITS.map((h, i) => { const v = sec[i] || 'mask'; return { dir: h[0] + '/', file: h[1], line: 'L' + h[2], len: h[3].toLocaleString('en-US'), why: h[4], cm: v === 'mask' ? 'on' : '', cn: v === 'not' ? 'on' : '', setM: () => this.many({ sec: { ...sec, [i]: 'mask' } }), setN: () => this.many({ sec: { ...sec, [i]: 'not' } }) }; });
+    const maskedN = scan === 'results' ? HITS.filter((h, i) => (sec[i] || 'mask') === 'mask').length : 0;
+    const secText = scan === 'results' ? HITS.length + ' flagged · ' + maskedN + ' masked' : (scan === 'running' ? 'scanning…' : 'none flagged');
+    // summary
+    const nC = cnt('n'), gC = cnt('g'), iC = cnt('i');
+    const sumRows = [{ k: 'Branch', v: branch, v2: 'csp-tenant-data · 94% identical', hasV2: true, go: e => { noop(e); this.set('step', '1'); } }, { k: 'Base version', v: baseLabel, v2: 'configuration-base-saas', hasV2: true, go: e => { noop(e); this.set('step', '2'); } },
+      { k: 'Differing files', v: F.length + ' decided', v2: nC + ' NFS is right · ' + gC + ' Git is right · ' + iC + ' intentional', hasV2: true, go: e => { noop(e); this.set('step', '3'); } },
+      { k: 'Secrets', v: maskedN + ' masked', v2: (HITS.length - maskedN) + ' marked not a secret', hasV2: true, go: e => { noop(e); this.set('step', '4'); } }];
+    const changes = [{ k: 'Baseline', a: 'None', b: branch + ' @ ' + baseLabel }, { k: 'Editing', a: 'Locked', b: 'Unlocked for Editors and Admins' }, { k: 'Drift view', a: F.length + ' files unknown', b: nC + ' NFS ahead · ' + gC + ' Git ahead · ' + iC + ' intentional' }, { k: 'Secrets', a: 'Not scanned', b: maskedN + ' values masked' }, { k: 'Findings', a: 'Not tracked', b: 'Checks C1 to C8 now run on presitb' }];
+    // steps
+    const names = ['Branch', 'Base version', 'Differing files', 'Secret scan', 'Confirm'];
+    const subs = [branch, baseLabel, decided + ' of ' + F.length, secText.split(' · ')[0], ''];
+    const steps = names.map((l, i) => { const n = i + 1, isDone = stepN > n; return { line: i > 0, lcls: stepN > n - 1 + 0 && stepN >= n ? 'on' : '', n, label: l, isDone, notDone: !isDone, cur: stepN === n ? 'step' : undefined, cls: isDone ? 'done' : (stepN === n ? 'cur' : ''), dis: !isDone, go: go(n), hasSub: isDone, sub: subs[i] }; });
+    const nextLabels = ['Continue to base version', 'Continue to differing files', undecided > 0 ? 'Decide ' + undecided + ' more file' + (undecided > 1 ? 's' : '') : 'Continue to secret scan', scan === 'running' ? 'Scan running…' : 'Continue to confirm', 'Confirm baseline and enable editing'];
+    const nextDis = (stepN === 3 && undecided > 0) || (stepN === 4 && scan === 'running') || (stepN === 5 && undecided > 0);
+    const savedAt = o.savedAt || '10:42';
+    const resumeMap = { same: ['fx-info', 'i-history', 'Resuming at step 3 of 5', 'You saved this draft 14 min ago. Your choices are unchanged.', 'Start over'], changed: ['fx-warn', 'i-triangle-alert', 'Resuming at step 3 of 5, but 2 files changed on NFS since you saved', 'entryGroupConfig-sit12.yml and kafka-acl-sit12.yml changed 6 min ago. Their rows are marked, and your earlier choices for them are kept until you review.', 'Review changed files'] };
+    const rr = resumeMap[resume] || resumeMap.same;
+    return {
+      subtitle: done ? 'Baseline confirmed' : 'No baseline yet. Editing is locked until you confirm one.', lockText: done ? 'Editing unlocked' : 'Editing locked', isAdmin, notAdmin: !isAdmin,
+      showStepper: !done, steps, showResume: resume !== 'none' && !done && stepN === 3, resumeCls: rr[0], resumeIcon: rr[1], resumeTitle: rr[2], resumeBody: rr[3], resumeBtn: rr[4],
+      showSummary: stepN >= 2 && !done && !(stepN === 2 && false), ssTop: (resume !== 'none' && stepN === 3) ? '12px' : '0', branch, baseLabel, ssFiles: stepN >= 4, decidedText: decided + ' of ' + F.length + ' decided', ssSec: stepN >= 5, secText,
+      s1: stepN === 1, s2: stepN === 2, s3: stepN === 3, s4: stepN === 4, s5: stepN === 5, sDone: done,
+      cands, branchWarn: branch !== 'sit12', branchWarnText: branch === 'sit12' ? '' : BR[branch][5] + ' already follows ' + branch + '. Two swimlanes on one branch receive each other’s tenant changes.',
+      vers, commits, commitsTitle: baseId === 'v2.3.1+4' ? '4 commits after v2.3.1 that presitb already has' : (baseId === 'v2.3.1' ? 'No commits after the tag' : 'Release commit'),
+      commitsNote: baseId === 'v2.3.1+4' ? 'Plain v2.3.1 would miss these. 11 base files on presitb contain changes from these commits.' : (baseId === 'v2.3.1' ? 'Choosing the plain tag means 11 base files on presitb will show as different.' : 'v2.3.0 is older than the files on presitb. 70 base files will show as different.'),
+      s3Title: F.length + ' files differ between presitb and ' + branch + ' @ ' + baseLabel, ftabs, eolText: 'Select the ' + eolIdx.length + ' files that differ only by line endings', selEol: e => { noop(e); this.set('sel', eolIdx); },
+      hasBulk: sel.length > 0, bulkText: sel.length + ' selected', bulkN: () => applyBulk('n'), bulkG: () => applyBulk('g'), bulkI: () => this.set('bulk', 'intent'), bulkIntent: bulkMode === 'intent' && sel.length > 0, bulkIcls: bulkMode === 'intent' ? 'on' : '', bulkCount: sel.length, bulkReason, onBulkReason: e => this.set('bulkReason', e.target.value), bulkApplyDis: bulkReason.trim().length < 3,
+      bulkApply: () => { if (bulkReason.trim().length < 3) return; this.many({ dec: { ...dec, ...Object.fromEntries(sel.map(i => [i, 'i'])) }, rs: { ...rs, ...Object.fromEntries(sel.map(i => [i, bulkReason.trim()])) }, bulk: 'none', sel: [] }); }, clearSel: () => this.many({ sel: [], bulk: 'none' }),
+      allCls: allSel ? 'on' : (someSel ? 'mix' : ''), allOn: allSel, allIcon: allSel ? 'check' : 'minus', allChk: allSel || someSel ? 1 : 0, togAll: () => this.set('sel', allSel ? sel.filter(i => !vis.some(f => f.i === i)) : [...new Set([...sel, ...vis.map(f => f.i)])]),
+      frows, rowsText: vis.length + ' of ' + F.length + ' files · ' + decided + ' decided', pv, prevFile: () => mv(-1), nextFile: () => mv(1),
+      s4Title: scan === 'results' ? HITS.length + ' files have values that look like secrets' : (scan === 'clean' ? 'No secrets found' : 'Scanning for secrets'), scanTotal: '434', scanRunning: scan === 'running', scanClean: scan === 'clean', scanHits: scan === 'results', hits,
+      sumRows, nfsCount: nC, undecided, blockers: undecided > 0, goStep3: e => { noop(e); this.set('step', '3'); }, changes,
+      showFooter: !done, backDis: stepN === 1, back: () => stepN > 1 && this.set('step', String(stepN - 1)),
+      next: () => { if (nextDis) return; this.set('step', stepN === 5 ? 'done' : String(stepN + 1)); }, nextDis, nextLabel: nextLabels[Math.min(stepN, 5) - 1], nextIcon: stepN === 5 ? 'i-lock' : 'i-chevron-right',
+      savedText: 'Progress saved ' + savedAt + '. You can leave and resume.', hasHint: stepN === 3 && undecided > 0, hint: undecided + ' files have no decision yet'
+    };
+  }
+}
+</script>
+</body>
+</html>

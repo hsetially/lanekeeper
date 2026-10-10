@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="styles.css">
+<style>
+body{margin:0;background:#eceae5;font-family:'Inter',system-ui,sans-serif}
+.dv-turn{padding:40px 44px 32px;scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 8px}
+.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 15px/1.2 'Inter',system-ui,sans-serif;color:#1a1a1a}
+.dv-sub{margin:0 0 24px;font:13px/1.5 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.6);max-width:900px}
+.dv-opts{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start;max-width:2920px}
+.dv-grp{flex-basis:100%;margin:20px 0 -8px;padding-top:16px;border-top:1px solid rgba(0,0,0,.12);font:600 12px/1.3 'Inter',system-ui,sans-serif;letter-spacing:.04em;text-transform:uppercase;color:rgba(0,0,0,.6)}
+.dv-grp:first-child{margin-top:0;padding-top:0;border-top:0}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:12px/1.3 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.65)}
+.dv-card{max-width:100%;background:#fff;border:1px solid rgba(0,0,0,.12);border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.06);overflow:hidden;width:1442px}
+.dv-opt:target .dv-oid{background:#2a78d6;color:#fff}
+.dv-next{margin:28px 0 0;font:12px/1.5 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.6)}
+.dv-next a{color:inherit}
+</style>
+</helmet>
+<section class="dv-turn" id="t1" data-screen-label="Turn 1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Findings and adoption wizard</span></div>
+<p class="dv-sub">Both pages live in the Lanekeeper shell. Findings: a filterable table of eight checks (C1 to C8) with a detail drawer. Adoption: a five-step wizard for presitb, which has no baseline yet. Wizard progress is saved on every change.</p>
+<div class="dv-opts">
+<div class="dv-grp">Findings · table, filters, empty states</div>
+<div class="dv-opt" id="1a"><div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Default · Admin · open findings sorted by severity, then swimlane</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings"  hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1b"><div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Filter popovers · Swimlane menu open with counts that follow the other filters</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fnpop="lanes" fnchecks="C1,C2" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1c"><div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>Filters applied · sitb + sitc, Medium only · chips show first two values</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fnlanes="sitb,sitc" fnsev="med" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1d"><div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a>No match · filters exclude everything, one-click clear</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fnlanes="sit" fnchecks="C8" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1e"><div class="dv-olabel"><a class="dv-oid" href="#1e">1e</a>Intentional tab · reason, who and when shown in the drawer</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fntab="int" fnsel="i1" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1f"><div class="dv-olabel"><a class="dv-oid" href="#1f">1f</a>Loading</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fnstate="loading" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1g"><div class="dv-olabel"><a class="dv-oid" href="#1g">1g</a>Empty · nothing open</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fnstate="empty" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Detail drawer · one example per check, C1 to C8</div>
+<div class="dv-opt" id="1h"><div class="dv-olabel"><a class="dv-oid" href="#1h">1h</a>C1 · tenant copy is behind base · evidence is the base commits since the copy was made</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fnsel="f1" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1i"><div class="dv-olabel"><a class="dv-oid" href="#1i">1i</a>C2 · override identical to base · hashes and the newer base commits it blocks</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fnsel="f3" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1j"><div class="dv-olabel"><a class="dv-oid" href="#1j">1j</a>C3 · override has no base file</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fnsel="f5" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1k"><div class="dv-olabel"><a class="dv-oid" href="#1k">1k</a>C4 · file only on NFS</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fnsel="f6" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1l"><div class="dv-olabel"><a class="dv-oid" href="#1l">1l</a>C5 · file does not parse · Mark intentional disabled with the reason</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fnsel="f7" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1m"><div class="dv-olabel"><a class="dv-oid" href="#1m">1m</a>C6 · presita references a dev host</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fnsel="f8" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1n"><div class="dv-olabel"><a class="dv-oid" href="#1n">1n</a>C6 · presitb · editing is locked until adoption is confirmed</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fnsel="f9" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1o"><div class="dv-olabel"><a class="dv-oid" href="#1o">1o</a>C7 · a sync overwrote an NFS change · timeline plus Restore lost version</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fnsel="f10" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1p"><div class="dv-olabel"><a class="dv-oid" href="#1p">1p</a>C8 · duplicate keys at lines 5171, 5643 and 6115</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fnsel="f11" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Drawer actions</div>
+<div class="dv-opt" id="1q"><div class="dv-olabel"><a class="dv-oid" href="#1q">1q</a>Mark intentional · reason required</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fnsel="f1" fnconfirm="intent" fnreason="Pinned until the Q4 base review." hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1r"><div class="dv-olabel"><a class="dv-oid" href="#1r">1r</a>Restore lost version · consequence shown before writing</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fnsel="f10" fnconfirm="restore" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1s"><div class="dv-olabel"><a class="dv-oid" href="#1s">1s</a>Viewer · actions disabled with the role needed and who can grant it</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="findings" fnsel="f3" role="Viewer" nav-mode="hide" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1t"><div class="dv-olabel"><a class="dv-oid" href="#1t">1t</a>Dark · C7 detail</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" w="1440" h="900" page="findings" fnsel="f10" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Adoption wizard · presitb · steps 1 and 2</div>
+<div class="dv-opt" id="1u"><div class="dv-olabel"><a class="dv-oid" href="#1u">1u</a>Step 1 · branch · ranked candidates with env and release hints</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="adopt"  hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1v"><div class="dv-olabel"><a class="dv-oid" href="#1v">1v</a>Step 1 · picking sit11 warns that presita already follows it</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="adopt" adbranch="sit11" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1w"><div class="dv-olabel"><a class="dv-oid" href="#1w">1w</a>Step 2 · base version · “v2.3.1 + 4 commits” with the commits it covers</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="adopt" adstep="2" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1x"><div class="dv-olabel"><a class="dv-oid" href="#1x">1x</a>Step 2 · plain tag chosen · shows what will look different</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="adopt" adstep="2" adbase="v2.3.1" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Step 3 · differing files</div>
+<div class="dv-opt" id="1y"><div class="dv-olabel"><a class="dv-oid" href="#1y">1y</a>Step 3 · 17 of 26 decided · progress saved</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="adopt" adstep="3" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1z"><div class="dv-olabel"><a class="dv-oid" href="#1z">1z</a>Step 3 · bulk · 6 line-ending-only files selected</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="adopt" adstep="3" adselected="6,7,8,9,10,11" adfocus="6" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1aa"><div class="dv-olabel"><a class="dv-oid" href="#1aa">1aa</a>Step 3 · bulk Intentional asks for one reason for all selected files</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="adopt" adstep="3" adselected="6,7,8,9,10,11" adfocus="6" adbulk="intent" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1ab"><div class="dv-olabel"><a class="dv-oid" href="#1ab">1ab</a>Step 3 · Undecided filter · NFS-only file in the diff preview</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="adopt" adstep="3" adftab="u" adfocus="18" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1ac"><div class="dv-olabel"><a class="dv-oid" href="#1ac">1ac</a>Resumed · same draft, nothing changed since it was saved</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="adopt" adstep="3" adresume="same" adfocus="4" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1ad"><div class="dv-olabel"><a class="dv-oid" href="#1ad">1ad</a>Resumed · 2 files changed on NFS since saving, rows marked</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="adopt" adstep="3" adresume="changed" adfocus="2" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">Steps 4 and 5</div>
+<div class="dv-opt" id="1ae"><div class="dv-olabel"><a class="dv-oid" href="#1ae">1ae</a>Step 4 · secret scan results · line and length only, never the value</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="adopt" adstep="4" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1af"><div class="dv-olabel"><a class="dv-oid" href="#1af">1af</a>Step 4 · scan running</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="adopt" adstep="4" adscan="running" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1ag"><div class="dv-olabel"><a class="dv-oid" href="#1ag">1ag</a>Step 4 · clean</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="adopt" adstep="4" adscan="clean" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1ah"><div class="dv-olabel"><a class="dv-oid" href="#1ah">1ah</a>Step 5 · confirm · summary with Change links</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="adopt" adstep="5" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1ai"><div class="dv-olabel"><a class="dv-oid" href="#1ai">1ai</a>Step 5 · blocked · 9 files still undecided</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="adopt" adstep="5" addecided="17" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-grp">After confirmation</div>
+<div class="dv-opt" id="1aj"><div class="dv-olabel"><a class="dv-oid" href="#1aj">1aj</a>Success · what changed, editing unlocked</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="adopt" adstep="done" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1ak"><div class="dv-olabel"><a class="dv-oid" href="#1ak">1ak</a>Dark · success</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" w="1440" h="900" page="adopt" adstep="done" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1al"><div class="dv-olabel"><a class="dv-oid" href="#1al">1al</a>Editor opens the wizard · Admin only</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" w="1440" h="900" page="adopt" role="Editor" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1am"><div class="dv-olabel"><a class="dv-oid" href="#1am">1am</a>Dark · step 3</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" w="1440" h="900" page="adopt" adstep="3" adselected="6,7,8,9,10,11" adfocus="6" hint-size="1440px,900px"></dc-import></div></div>
+</div>
+<p class="dv-next">Try next: “make findings explanations readable by someone new: one sentence, then the evidence” · “add a bulk Mark intentional to the table”</p>
+</section>
+</x-dc>
+</body>
+</html>

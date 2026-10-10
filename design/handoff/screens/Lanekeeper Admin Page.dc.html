@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="consequence.css">
+<link rel="stylesheet" href="lk-pages.css">
+<link rel="stylesheet" href="lk-appr.css">
+<link rel="stylesheet" href="lk-admin.css">
+<style>
+*{box-sizing:border-box}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+</style>
+</helmet>
+<div class="lk pg" data-screen-label="Admin">
+<div class="pg-in">
+  <div class="pg-h">
+    <div><h1>Admin</h1><span class="sub">Users, swimlanes, mapping rules and retention. Only Admins can open this area.</span></div>
+    <span class="bd bd-appr"><i class="ic i-shield-check"></i>Admin only</span>
+  </div>
+
+  <sc-if value="{{ locked }}" hint-placeholder-val="{{ false }}">
+    <div class="pg-box"><div class="empty"><i class="ic s16 i-lock"></i><strong>Admin needs the Admin role</strong><span class="m">You’re signed in as {{ role }}. Ask an Admin such as Priya Shah to change your role.</span></div></div>
+  </sc-if>
+
+  <sc-if value="{{ allowed }}" hint-placeholder-val="{{ true }}">
+  <div class="ad">
+    <nav class="an" aria-label="Admin sections">
+      <sc-for list="{{ nav }}" as="g" hint-placeholder-count="4">
+        <div class="sec gl">{{ g.label }}</div>
+        <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="3">
+          <button type="button" class="nv {{ it.cls }}" aria-current="{{ it.cur }}" onClick="{{ it.go }}"><i class="ic {{ it.icon }}"></i><span class="t">{{ it.label }}</span><sc-if value="{{ it.n }}" hint-placeholder-val="{{ false }}"><span class="nb {{ it.nbCls }}">{{ it.n }}</span></sc-if></button>
+        </sc-for>
+      </sc-for>
+      <div class="ft">Every change on these pages is written to the audit log.</div>
+    </nav>
+
+    <main class="ac" aria-busy="{{ loading }}"><div class="ac-in">
+      <div class="ah"><div><h2>{{ h.title }}</h2><p>{{ h.lead }}</p></div></div>
+
+      <sc-if value="{{ loading }}" hint-placeholder-val="{{ false }}"><div class="card2" aria-hidden="true">
+        <sc-for list="{{ skel }}" as="s" hint-placeholder-count="6"><div class="skrow"><span class="skl" style="width:{{ s.a }}"></span><span class="skl" style="width:{{ s.b }}"></span><span class="skl" style="width:{{ s.c }}"></span></div></sc-for>
+      </div></sc-if>
+
+      <sc-if value="{{ is.users }}" hint-placeholder-val="{{ false }}">
+        <sc-if value="{{ u.hasErr }}" hint-placeholder-val="{{ false }}"><div class="fx fx-danger" role="alert"><i class="ic i-circle-x"></i><div>{{ u.errHead }}<ul class="x"><sc-for list="{{ u.errLines }}" as="l" hint-placeholder-count="2"><li>{{ l }}</li></sc-for></ul></div></div></sc-if>
+        <sc-if value="{{ u.guard }}" hint-placeholder-val="{{ false }}"><div class="fx fx-danger" role="alert"><i class="ic i-shield-alert"></i><div>At least one active admin is required<span class="x">That change would leave no active Admin, so it wasn’t made. Promote someone else first.</span></div></div></sc-if>
+        <section class="blk" aria-label="Pending requests">
+          <div class="bh"><h3>Pending requests</h3><span class="bd bd-appr">{{ u.pendLabel }}</span></div>
+          <sc-if value="{{ u.noReq }}" hint-placeholder-val="{{ false }}"><div class="card2"><div class="empty" style="padding:24px"><i class="ic s16 i-inbox"></i><strong>No pending requests</strong><span class="m">People who sign in with your Google Workspace account wait here until an Admin approves them.</span></div></div></sc-if>
+          <sc-if value="{{ u.reqRej }}" hint-placeholder-val="{{ false }}"><div class="fx fx-lock"><i class="ic i-ban"></i><div>Request from Sam Okafor rejected<span class="x">They stay signed out and can request access again. Audit event 18,471.</span></div></div></sc-if>
+          <sc-if value="{{ u.reqOk }}" hint-placeholder-val="{{ false }}"><div class="fx fx-ok"><i class="ic i-circle-check"></i><div>Sam Okafor approved as {{ u.req.role }}<span class="x">They can sign in now. Audit event 18,471.</span></div></div></sc-if>
+          <sc-if value="{{ u.reqOpen }}" hint-placeholder-val="{{ false }}"><div class="card2"><div class="rq">
+            <div>
+              <div class="rq-n"><span class="av" aria-hidden="true">SO</span><div><b>Sam Okafor</b><span class="mn mut">sam.okafor@corp.example</span></div></div>
+              <div class="rq-m"><span class="ch">@samokafor</span><span class="mut">Signed in with Google · requested 2 h ago · asked for Editor</span></div>
+              <p class="rq-q">“Joining the sit swimlane team. I need to edit sitb configs.”</p>
+            </div>
+            <div class="rq-a">
+              <div class="row"><span class="mut">Approve as</span>
+                <span class="selw"><select class="in {{ u.req.roleErrCls }}" aria-label="Approve Sam Okafor as" value="{{ u.req.role }}" onChange="{{ u.req.setRole }}"><option value="">Choose a role</option><option value="Viewer">Viewer</option><option value="Editor">Editor</option><option value="Admin">Admin</option></select></span>
+                <button type="button" class="b p" onClick="{{ u.req.approve }}"><i class="ic i-check"></i>Approve</button>
+                <button type="button" class="b dl" onClick="{{ u.req.reject }}">Reject</button>
+              </div>
+              <sc-if value="{{ u.req.roleErr }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ u.req.roleErr }}</span></sc-if>
+              <sc-if value="{{ u.req.note }}" hint-placeholder-val="{{ false }}"><div class="{{ u.req.noteCls }}" style="max-width:420px"><i class="ic i-info"></i><span>{{ u.req.note }}</span></div></sc-if>
+            </div>
+          </div></div></sc-if>
+        </section>
+
+        <section class="blk" aria-label="Users">
+          <div class="bh"><h3>Users</h3><span class="c mut">{{ u.countText }}</span></div>
+          <div class="card2"><table class="at">
+            <thead><tr><th style="width:204px">User</th><th style="width:112px">Role</th><th style="width:112px">Requires approval</th><th style="width:92px">Status</th><th style="width:116px">Last seen</th><th>GitHub login</th></tr></thead>
+            <tbody>
+              <sc-for list="{{ u.rows }}" as="r" hint-placeholder-count="7"><tr class="{{ r.cls }}">
+                <td><div class="pu"><b>{{ r.name }}<sc-if value="{{ r.you }}" hint-placeholder-val="{{ false }}"> <span class="you">You</span></sc-if></b><small>{{ r.email }}</small></div></td>
+                <td>
+                  <sc-if value="{{ r.locked }}" hint-placeholder-val="{{ false }}"><span class="rlk"><span class="rlc" tabindex="0"><i class="ic s12 i-lock"></i>{{ r.role }}</span><span class="tp {{ r.tipCls }}" role="tooltip">You can’t change your own role</span></span></sc-if>
+                  <sc-if value="{{ r.editable }}" hint-placeholder-val="{{ true }}"><span class="selw" style="width:92px"><select class="in sm" aria-label="Role for {{ r.name }}" value="{{ r.role }}" onChange="{{ r.setRole }}"><option value="Viewer">Viewer</option><option value="Editor">Editor</option><option value="Admin">Admin</option></select></span></sc-if>
+                </td>
+                <td>
+                  <sc-if value="{{ r.apprNA }}" hint-placeholder-val="{{ false }}"><span class="mut">Not needed</span></sc-if>
+                  <sc-if value="{{ r.apprOn }}" hint-placeholder-val="{{ true }}"><button type="button" class="sw" role="switch" aria-checked="{{ r.appr }}" aria-label="Requires approval for {{ r.name }}" onClick="{{ r.toggle }}"></button></sc-if>
+                </td>
+                <td><span class="bd {{ r.stCls }}"><i class="ic {{ r.stIcon }}"></i>{{ r.stLabel }}</span></td>
+                <td class="mn">{{ r.seen }}</td>
+                <td>
+                  <sc-if value="{{ r.ghLinked }}" hint-placeholder-val="{{ false }}"><div class="row" style="flex-wrap:nowrap"><span class="mn">@{{ r.gh }}</span><button type="button" class="b ib" aria-label="Edit GitHub login for {{ r.name }}" onClick="{{ r.startEdit }}"><i class="ic s12 i-pencil"></i></button></div></sc-if>
+                  <sc-if value="{{ r.ghNone }}" hint-placeholder-val="{{ false }}"><div class="row" style="flex-wrap:nowrap"><span class="bd bd-exp">Not linked</span><button type="button" class="b sm g" onClick="{{ r.startEdit }}">Link</button></div></sc-if>
+                  <sc-if value="{{ r.ghEdit }}" hint-placeholder-val="{{ false }}"><div class="ghe">
+                    <div class="ghe-r"><input class="in mono sm {{ r.ghErrCls }}" aria-label="GitHub login for {{ r.name }}" value="{{ r.draft }}" onChange="{{ r.setDraft }}"><button type="button" class="b sm p" onClick="{{ r.ghSave }}">Save</button><button type="button" class="b ib" aria-label="Cancel" onClick="{{ r.ghCancel }}"><i class="ic s12 i-x"></i></button></div>
+                    <sc-if value="{{ r.ghErr }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ r.ghErr }}</span></sc-if>
+                    <sc-if value="{{ r.ghOk }}" hint-placeholder-val="{{ false }}"><span class="okm"><i class="ic i-circle-check"></i>Available</span></sc-if>
+                  </div></sc-if>
+                </td>
+              </tr></sc-for>
+            </tbody>
+          </table></div>
+          <div class="sgs"><span class="sgi"><i class="ic s12 i-lock"></i>You can’t change your own role</span><span class="sgi"><i class="ic s12 i-shield-check"></i>At least one active admin is required · <b>{{ u.admins }}</b></span><span class="sgi"><i class="ic s12 i-info"></i>Editors with “Requires approval” on need an Admin to approve each change</span></div>
+        </section>
+      </sc-if>
+
+      <sc-if value="{{ is.swimlanes }}" hint-placeholder-val="{{ false }}">
+        <sc-if value="{{ sw.showReveal }}" hint-placeholder-val="{{ false }}"><div class="once" role="status">
+          <div class="hd"><i class="ic s16 i-key"></i>Join token created · shown once</div>
+          <p class="pl">Copy it now. Lanekeeper keeps only a hash, so this token can’t be shown again. It works for one agent in <b class="mn">{{ sw.tokLane }}</b> and expires {{ sw.expAt }}.</p>
+          <div class="tv"><span>{{ sw.token }}</span><button type="button" class="b sm" onClick="{{ sw.copy }}"><i class="ic s12 i-copy"></i>{{ sw.copyLabel }}</button></div>
+          <div class="row"><span class="hint">Expires in {{ sw.exp }} · {{ sw.expAt }}</span><button type="button" class="b sm p mla" onClick="{{ sw.dismiss }}">I’ve copied it</button></div>
+        </div></sc-if>
+
+        <sc-if value="{{ sw.open }}" hint-placeholder-val="{{ false }}"><div class="card2">
+          <div class="hd">Register a swimlane</div>
+          <sc-if value="{{ sw.hasErr }}" hint-placeholder-val="{{ false }}"><div style="padding:12px 12px 0"><div class="fx fx-danger" role="alert"><i class="ic i-circle-x"></i><div>{{ sw.errHead }}<span class="x">Fix the highlighted fields. Nothing is registered until they’re valid.</span></div></div></div></sc-if>
+          <div class="split2">
+            <div class="fgrid">
+              <label class="fld"><span>Name</span><input class="in mono {{ sw.nameCls }}" value="{{ sw.name }}" onChange="{{ sw.setName }}" placeholder="sitd"><sc-if value="{{ sw.nameErr }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ sw.nameErr }}</span></sc-if></label>
+              <div class="fld"><span>Tier</span><div class="seg" role="group" aria-label="Tier"><button type="button" class="{{ sw.tSIT }}" onClick="{{ sw.setSIT }}">SIT</button><button type="button" class="{{ sw.tPRE }}" onClick="{{ sw.setPRE }}">PRESIT</button></div></div>
+              <label class="fld"><span>GCP project</span><input class="in mono {{ sw.projCls }}" value="{{ sw.proj }}" onChange="{{ sw.setProj }}" placeholder="dfb-nonprod-sit"><sc-if value="{{ sw.projErr }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ sw.projErr }}</span></sc-if></label>
+              <label class="fld"><span>GKE cluster</span><input class="in mono {{ sw.clCls }}" value="{{ sw.cl }}" onChange="{{ sw.setCl }}" placeholder="gke-sit-euw1"><sc-if value="{{ sw.clErr }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ sw.clErr }}</span></sc-if></label>
+              <label class="fld full"><span>Workload Identity service account</span><input class="in mono {{ sw.saCls }}" value="{{ sw.sa }}" onChange="{{ sw.setSa }}" placeholder="lanekeeper-agent@project.iam.gserviceaccount.com"><sc-if value="{{ sw.saErr }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ sw.saErr }}</span></sc-if><sc-if value="{{ sw.saWarn }}" hint-placeholder-val="{{ false }}"><div class="wn"><i class="ic i-triangle-alert"></i><span>{{ sw.saWarn }}</span></div></sc-if></label>
+            </div>
+            <aside class="lp" aria-label="Live preview"><div class="lp-h"><i class="d"></i>Live preview<span class="r">updates as you type</span></div><div class="lp-b">
+              <div class="mp"><span>Swimlane</span><span class="mn">{{ sw.pvName }} · {{ sw.pvTier }}</span></div>
+              <div class="mp"><span>Agent runs as</span><span class="mn">{{ sw.pvSa }}</span></div>
+              <div class="mp"><span>Identity binding</span><span class="mn">{{ sw.pvWi }}</span></div>
+              <div class="mp"><span>Grant needed</span><span>roles/iam.workloadIdentityUser on that service account</span></div>
+              <div class="mp"><span>Agents appear</span><span>after their first heartbeat</span></div>
+            </div></aside>
+          </div>
+          <div class="cfoot"><span class="hint">Registering is written to the audit log.</span><button type="button" class="b" onClick="{{ sw.cancel }}">Cancel</button><button type="button" class="b p" onClick="{{ sw.register }}">Register swimlane</button></div>
+        </div></sc-if>
+
+        <sc-if value="{{ sw.empty }}" hint-placeholder-val="{{ false }}"><div class="card2"><div class="empty" style="padding:32px"><i class="ic s16 i-layers"></i><strong>No swimlanes registered</strong><span class="m">Register a swimlane so its agent can connect. If the agent can’t use Workload Identity, create a join token instead.</span><div class="row"><button type="button" class="b p" onClick="{{ sw.openReg }}"><i class="ic i-plus"></i>Register swimlane</button></div></div></div></sc-if>
+
+        <sc-if value="{{ sw.hasLanes }}" hint-placeholder-val="{{ true }}">
+        <section class="blk"><div class="bh"><h3>Swimlanes</h3><span class="c mut">{{ sw.laneCount }}</span><button type="button" class="b mla" onClick="{{ sw.openReg }}"><i class="ic i-plus"></i>Register swimlane</button></div>
+          <div class="card2"><table class="at"><thead><tr><th>Swimlane</th><th>Project</th><th>Cluster</th><th>Tier</th><th>Workload Identity service account</th><th>Agents</th></tr></thead><tbody>
+            <sc-for list="{{ sw.lanes }}" as="l" hint-placeholder-count="6"><tr class="{{ l.cls }}"><td class="mn"><b>{{ l.name }}</b></td><td class="mn">{{ l.proj }}</td><td class="mn">{{ l.cl }}</td><td><span class="{{ l.tierCls }}">{{ l.tier }}</span></td><td class="mn"><span class="trunc" title="{{ l.sa }}">{{ l.sa }}</span></td><td>{{ l.agents }}</td></tr></sc-for>
+          </tbody></table></div>
+        </section>
+        <section class="blk"><div class="bh"><h3>Agents</h3><span class="c mut">{{ sw.agentCount }}</span></div>
+          <div class="card2"><table class="at"><thead><tr><th>Agent</th><th>Swimlane</th><th>Version</th><th>Replica</th><th>Status</th><th>Last heartbeat</th><th>Certificate expires</th></tr></thead><tbody>
+            <sc-for list="{{ sw.agents }}" as="a" hint-placeholder-count="8"><tr class="{{ a.cls }}">
+              <td class="mn">{{ a.pod }}</td><td class="mn">{{ a.lane }}</td>
+              <td class="mn">{{ a.ver }}<sc-if value="{{ a.old }}" hint-placeholder-val="{{ false }}"> <span class="warn-t">· update</span></sc-if></td>
+              <td><span class="mn">{{ a.rep }}</span><sc-if value="{{ a.leader }}" hint-placeholder-val="{{ false }}"> <span class="ch">leader</span></sc-if></td>
+              <td><span class="stt"><i class="dsh {{ a.dot }}"></i>{{ a.status }}</span></td>
+              <td class="mn">{{ a.hb }}</td>
+              <td><span class="mn">{{ a.cert }}</span> <span class="{{ a.certCls }}">{{ a.certIn }}</span></td>
+            </tr></sc-for>
+          </tbody></table></div>
+        </section>
+        </sc-if>
+
+        <section class="blk"><div class="bh"><h3>Fallback join token</h3></div>
+          <div class="card2">
+            <div style="padding:12px;display:flex;flex-direction:column;gap:10px">
+              <p class="pl mut">Agents normally join with Workload Identity. A join token is the fallback: it works for one agent, shows once and expires.</p>
+              <div class="row" style="align-items:flex-end">
+                <label class="fld" style="width:160px"><span>Swimlane</span><span class="selw"><select class="in" value="{{ sw.jtLane }}" onChange="{{ sw.setJtLane }}"><sc-for list="{{ sw.laneOpts }}" as="op" hint-placeholder-count="6"><option value="{{ op }}">{{ op }}</option></sc-for></select></span></label>
+                <label class="fld" style="width:140px"><span>Expires in</span><span class="selw"><select class="in" value="{{ sw.exp }}" onChange="{{ sw.setExp }}"><option value="1 hour">1 hour</option><option value="24 hours">24 hours</option><option value="7 days">7 days</option></select></span></label>
+                <button type="button" class="b" onClick="{{ sw.createJt }}"><i class="ic i-key"></i>Create join token</button>
+              </div>
+            </div>
+            <sc-if value="{{ sw.hasTokens }}" hint-placeholder-val="{{ true }}"><table class="at" style="border-top:1px solid var(--border)"><thead><tr><th>Token</th><th>Swimlane</th><th>Created by</th><th>Created</th><th>Expires</th><th>Status</th></tr></thead><tbody>
+              <sc-for list="{{ sw.tokens }}" as="t" hint-placeholder-count="3"><tr class="{{ t.cls }}"><td class="mk">{{ t.mask }}</td><td class="mn">{{ t.lane }}</td><td>{{ t.by }}</td><td class="mn">{{ t.created }}</td><td class="mn">{{ t.expires }}</td><td><span class="bd {{ t.stCls }}"><i class="ic s12 {{ t.stIcon }}"></i>{{ t.status }}</span></td></tr></sc-for>
+            </tbody></table></sc-if>
+          </div>
+        </section>
+      </sc-if>
+
+      <sc-if value="{{ is.paths }}" hint-placeholder-val="{{ false }}">
+        <section class="blk"><div class="bh"><h3>Rules</h3><span class="c mut">{{ p.countText }}</span><button type="button" class="b mla" onClick="{{ p.newRule }}"><i class="ic i-plus"></i>New rule</button></div>
+          <sc-if value="{{ p.none }}" hint-placeholder-val="{{ false }}"><div class="card2"><div class="empty" style="padding:28px"><i class="ic s16 i-arrow-left-right"></i><strong>No path mappings</strong><span class="m">Without a rule, Lanekeeper can’t tell which Git file belongs to which NFS file. Every file shows as Untracked.</span></div></div></sc-if>
+          <sc-if value="{{ p.hasRules }}" hint-placeholder-val="{{ true }}"><div class="card2"><ul class="rl rl-pm">
+            <li class="hd"><span></span><span>Repository</span><span>Repo prefix → NFS prefix</span><span>Branch rename</span></li>
+            <sc-for list="{{ p.rules }}" as="r" hint-placeholder-count="3"><li class="pk {{ r.cls }}" onClick="{{ r.go }}"><span class="ix">{{ r.n }}</span><div class="rc"><span class="mn"><b>{{ r.repo }}</b></span><sc-if value="{{ r.saved }}" hint-placeholder-val="{{ false }}"><span class="okm"><i class="ic i-circle-check"></i>Saved</span></sc-if></div><span class="mn">{{ r.rp }} → {{ r.np }}</span><span>{{ r.ren }}</span></li></sc-for>
+          </ul></div></sc-if>
+        </section>
+        <sc-if value="{{ p.editor }}" hint-placeholder-val="{{ false }}">
+        <div class="card2">
+          <div class="hd">{{ p.edTitle }}</div>
+          <sc-if value="{{ p.hasErr }}" hint-placeholder-val="{{ false }}"><div style="padding:12px 12px 0"><div class="fx fx-danger" role="alert"><i class="ic i-circle-x"></i><div>{{ p.errHead }}<span class="x">The preview below can’t map paths until the prefixes are valid.</span></div></div></div></sc-if>
+          <div class="split2">
+            <div class="fgrid">
+              <label class="fld full"><span>Repository</span><span class="selw"><select class="in" value="{{ p.repo }}" onChange="{{ p.setRepo }}"><option value="configuration-base-saas">configuration-base-saas</option><option value="csp-tenant-data">csp-tenant-data</option></select></span></label>
+              <label class="fld"><span>Repo prefix</span><input class="in mono {{ p.rpCls }}" value="{{ p.rpV }}" onChange="{{ p.setRp }}" placeholder="services/"><sc-if value="{{ p.rpErr }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ p.rpErr }}</span></sc-if></label>
+              <label class="fld"><span>NFS prefix</span><input class="in mono {{ p.npCls }}" value="{{ p.npV }}" onChange="{{ p.setNp }}" placeholder="/nfs/config/services/"><sc-if value="{{ p.npErr }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ p.npErr }}</span></sc-if></label>
+              <div class="fld full"><span>Rename by branch suffix</span>
+                <div class="row"><button type="button" class="sw" role="switch" aria-checked="{{ p.ren }}" aria-label="Rename by branch suffix" onClick="{{ p.toggleRen }}"></button><span class="mut">{{ p.renText }}</span></div>
+              </div>
+              <label class="fld full"><span>Suffix template</span><input class="in mono {{ p.tplCls }}" value="{{ p.tpl }}" disabled="{{ p.tplOff }}" onChange="{{ p.setTpl }}" placeholder="-{branch}"><sc-if value="{{ p.tplErr }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ p.tplErr }}</span></sc-if><span class="hint">Inserted before the file extension, so tx-infinity-core.yml on branch sit1 becomes tx-infinity-core-sit1.yml.</span></label>
+              <sc-if value="{{ p.affect }}" hint-placeholder-val="{{ false }}"><div class="wn full" style="grid-column:1/-1"><i class="ic i-triangle-alert"></i><span>{{ p.affect }}</span></div></sc-if>
+            </div>
+            <aside class="lp" aria-label="Live preview"><div class="lp-h"><i class="d"></i>Live preview<span class="r">uses unsaved values</span></div><div class="lp-b">
+              <span class="sec">Git → NFS</span>
+              <label class="fld"><span>Repo path</span><input class="in mono sm" value="{{ p.gp }}" onChange="{{ p.setGp }}"></label>
+              <label class="fld"><span>Branch</span><input class="in mono sm" style="width:120px" value="{{ p.br }}" onChange="{{ p.setBr }}"></label>
+              <div class="pth {{ p.fwdCls }}"><sc-if value="{{ p.fwd.ok }}" hint-placeholder-val="{{ false }}"><i class="ic s12 i-arrow-right"></i>{{ p.fwd.out }}</sc-if><sc-if value="{{ p.fwd.err }}" hint-placeholder-val="{{ false }}">{{ p.fwd.err }}</sc-if></div>
+              <span class="sec" style="margin-top:6px">NFS → Git</span>
+              <label class="fld"><span>NFS path</span><input class="in mono sm" value="{{ p.nf }}" onChange="{{ p.setNf }}"></label>
+              <div class="pth {{ p.revCls }}"><sc-if value="{{ p.rev.ok }}" hint-placeholder-val="{{ false }}"><i class="ic s12 i-arrow-right"></i><span class="ch">{{ p.repoLabel }}</span>{{ p.rev.out }}<sc-if value="{{ p.rev.branch }}" hint-placeholder-val="{{ false }}"><span class="ch">branch {{ p.rev.branch }}</span></sc-if></sc-if><sc-if value="{{ p.rev.err }}" hint-placeholder-val="{{ false }}">{{ p.rev.err }}</sc-if></div>
+              <sc-if value="{{ p.rt.show }}" hint-placeholder-val="{{ false }}"><span class="{{ p.rt.cls }}"><i class="ic i-circle-check"></i>{{ p.rt.text }}</span></sc-if>
+            </div></aside>
+          </div>
+          <div class="cfoot"><span class="hint">Takes effect on the next sync of this repo.</span><button type="button" class="b" onClick="{{ p.revert }}">Revert</button><button type="button" class="b p" onClick="{{ p.save }}">Save rule</button></div>
+        </div>
+        </sc-if>
+      </sc-if>
+
+      <sc-if value="{{ is.merge }}" hint-placeholder-val="{{ false }}">
+        <section class="blk"><div class="bh"><h3>Rules</h3><span class="c mut">{{ m.countText }}</span><button type="button" class="b mla" onClick="{{ m.add }}"><i class="ic i-plus"></i>Add rule</button></div>
+          <sc-if value="{{ m.hasErr }}" hint-placeholder-val="{{ false }}"><div class="fx fx-danger" role="alert"><i class="ic i-circle-x"></i><div>{{ m.errHead }}<span class="x">Rules with an invalid glob are skipped in the preview and can’t be saved.</span></div></div></sc-if>
+          <sc-if value="{{ m.none }}" hint-placeholder-val="{{ false }}"><div class="card2"><div class="empty" style="padding:24px"><i class="ic s16 i-split"></i><strong>No merge rules</strong><span class="m">Every tenant file replaces its base file (whole_file). Add a rule to merge keys instead.</span></div></div></sc-if>
+          <sc-if value="{{ m.hasRules }}" hint-placeholder-val="{{ true }}"><div class="card2"><ul class="rl rl-mg">
+            <li class="hd"><span>#</span><span>Path glob</span><span>Mode</span><span></span></li>
+            <sc-for list="{{ m.rules }}" as="r" hint-placeholder-count="5"><li class="{{ r.cls }}"><span class="ix">{{ r.n }}</span>
+              <div class="rc"><input class="in mono sm {{ r.errCls }}" aria-label="Glob for rule {{ r.n }}" value="{{ r.g }}" onChange="{{ r.setG }}">
+                <sc-if value="{{ r.err }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ r.err }}</span></sc-if>
+                <sc-if value="{{ r.shadow }}" hint-placeholder-val="{{ false }}"><span class="hint warn-t"><i class="ic s12 i-triangle-alert"></i> {{ r.shadow }}</span></sc-if>
+                <sc-if value="{{ r.hit }}" hint-placeholder-val="{{ false }}"><span class="hint" style="color:var(--info-fg)">Matches the sample file</span></sc-if></div>
+              <div class="seg sm" role="group" aria-label="Mode for rule {{ r.n }}"><button type="button" class="{{ r.wf }}" onClick="{{ r.setWf }}">whole_file</button><button type="button" class="{{ r.sm }}" onClick="{{ r.setSm }}">spring_merge</button></div>
+              <div class="ra"><button type="button" class="b ib" aria-label="Move up" onClick="{{ r.up }}"><i class="ic s12 i-chevron-up"></i></button><button type="button" class="b ib" aria-label="Move down" onClick="{{ r.down }}"><i class="ic s12 i-chevron-down"></i></button><button type="button" class="b ib" aria-label="Delete rule" onClick="{{ r.del }}"><i class="ic s12 i-trash-2"></i></button></div>
+            </li></sc-for>
+          </ul>
+          <div class="cfoot"><span class="hint">First match wins. Files that match no rule use whole_file.</span><button type="button" class="b" onClick="{{ m.revert }}">Revert</button><button type="button" class="b p" onClick="{{ m.save }}">Save rules</button></div></div></sc-if>
+        </section>
+        <div class="lp" aria-label="Live preview"><div class="lp-h"><i class="d"></i>Live preview · effective result for a sample file<span class="r">tenant sit1 over base v2.3.1</span></div><div class="lp-b">
+          <label class="fld"><span>Sample file</span><input class="in mono sm" value="{{ m.file }}" onChange="{{ m.setFile }}"></label>
+          <div class="row"><span class="bd {{ m.pv.modeCls }}">{{ m.pv.mode }}</span><span>{{ m.pv.why }}</span></div>
+          <table class="at ef"><thead><tr><th>Key</th><th>Base</th><th>Tenant (sit1)</th><th>Effective</th><th>From</th></tr></thead><tbody>
+            <sc-for list="{{ m.pv.rows }}" as="k" hint-placeholder-count="5"><tr class="{{ k.cls }}"><td class="mn">{{ k.key }}</td><td class="mn">{{ k.base }}</td><td class="mn">{{ k.ten }}</td><td class="mn"><b class="{{ k.effCls }}">{{ k.eff }}</b></td><td>{{ k.from }}</td></tr></sc-for>
+          </tbody></table>
+          <span class="hint">{{ m.pv.sum }}</span>
+        </div></div>
+      </sc-if>
+
+      <sc-if value="{{ is.tiers }}" hint-placeholder-val="{{ false }}">
+        <sc-if value="{{ t.hasErr }}" hint-placeholder-val="{{ false }}"><div class="fx fx-danger" role="alert"><i class="ic i-circle-x"></i><div>{{ t.errHead }}<span class="x">A host can belong to one tier. Narrow the pattern, then save.</span></div></div></sc-if>
+        <sc-if value="{{ t.none }}" hint-placeholder-val="{{ false }}"><div class="fx fx-warn"><i class="ic i-triangle-alert"></i><div>No host patterns<span class="x">Every hostname is unclassified, so findings can’t flag a prod host in a SIT file.</span></div></div></sc-if>
+        <section class="blk"><div class="bh"><h3>Patterns</h3><span class="c mut">Comma-separated · * matches any characters · not case-sensitive</span></div>
+          <div class="card2"><ul class="rl" style="--g:1">
+            <sc-for list="{{ t.tiers }}" as="x" hint-placeholder-count="3"><li style="grid-template-columns:72px minmax(0,1fr) 150px;align-items:start;padding:10px 12px"><span class="bd {{ x.cls }}" style="margin-top:3px">{{ x.tier }}</span>
+              <div class="rc"><input class="in mono sm {{ x.errCls }}" aria-label="Patterns for {{ x.tier }}" value="{{ x.pats }}" onChange="{{ x.setPats }}" placeholder="*-{{ x.tier }}.example.net"><sc-if value="{{ x.err }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ x.err }}</span></sc-if></div>
+              <span class="mut" style="padding-top:3px">{{ x.count }}</span></li></sc-for>
+            <li style="grid-template-columns:72px minmax(0,1fr);padding:10px 12px"><span class="bd ht-none">unknown</span><span class="mut">Hosts that match no pattern. Findings treat them as prod until you classify them.</span></li>
+          </ul>
+          <div class="cfoot"><span class="hint">Applies to the next scan.</span><button type="button" class="b" onClick="{{ t.revert }}">Revert</button><button type="button" class="b p" onClick="{{ t.save }}">Save patterns</button></div></div>
+        </section>
+        <div class="lp" aria-label="Live preview"><div class="lp-h"><i class="d"></i>Live preview · test a hostname</div><div class="lp-b">
+          <div class="row"><label class="fld" style="flex:1;max-width:440px"><span>Hostname</span><input class="in mono" value="{{ t.test }}" onChange="{{ t.setTest }}"></label>
+            <div class="ttres" style="padding-top:18px"><span>→</span><span class="bd {{ t.res.cls }}">{{ t.res.label }}</span><span class="mut" style="font:400 12px/16px var(--font-sans)">{{ t.res.why }}</span></div></div>
+          <div class="chips"><span class="mut" style="font-size:12px">Try</span><sc-for list="{{ t.samples }}" as="s" hint-placeholder-count="4"><button type="button" class="ch" onClick="{{ s.go }}">{{ s.h }}</button></sc-for></div>
+          <table class="at ef"><thead><tr><th>Hostnames found in config</th><th>Used in</th><th>Tier</th></tr></thead><tbody>
+            <sc-for list="{{ t.hosts }}" as="h" hint-placeholder-count="6"><tr><td class="mn">{{ h.h }}</td><td class="mut">{{ h.n }}</td><td><span class="bd {{ h.cls }}">{{ h.label }}</span></td></tr></sc-for>
+          </tbody></table>
+        </div></div>
+      </sc-if>
+
+      <sc-if value="{{ is.folders }}" hint-placeholder-val="{{ false }}">
+        <sc-if value="{{ f.none }}" hint-placeholder-val="{{ false }}"><div class="card2"><div class="empty" style="padding:32px"><i class="ic s16 i-folder"></i><strong>No suggestions yet</strong><span class="m">Scan the NFS folders. Lanekeeper compares each folder name with the Deployments in every swimlane and suggests a match.</span><div class="row"><button type="button" class="b p"><i class="ic i-refresh-cw"></i>Scan folders</button></div></div></div></sc-if>
+        <sc-if value="{{ f.has }}" hint-placeholder-val="{{ true }}">
+        <section class="blk"><div class="bh"><h3>Suggested mappings</h3><span class="c mut">{{ f.countText }}</span><button type="button" class="b mla" disabled="{{ f.bulkOff }}" onClick="{{ f.bulk }}"><i class="ic i-check"></i>{{ f.bulkLabel }}</button></div>
+          <div class="card2"><table class="at"><thead><tr><th>NFS folder</th><th style="width:132px">Similarity</th><th>Deployment</th><th style="width:96px">Status</th><th style="width:230px"></th></tr></thead><tbody>
+            <sc-for list="{{ f.rows }}" as="r" hint-placeholder-count="7"><tr class="{{ r.cls }}" onClick="{{ r.pick }}">
+              <td><div class="fe"><span class="mn"><b>{{ r.folder }}</b></span><span class="hint">{{ r.files }} files</span></div></td>
+              <td><span class="cfm {{ r.lo }}"><i><b style="width:{{ r.pct }}"></b></i>{{ r.score }}%</span></td>
+              <td><sc-if value="{{ r.view }}" hint-placeholder-val="{{ true }}"><span class="mn">{{ r.dep }}</span></sc-if>
+                <sc-if value="{{ r.correcting }}" hint-placeholder-val="{{ false }}"><div class="fe"><span class="selw" style="width:220px"><select class="in sm {{ r.errCls }}" aria-label="Correct Deployment for {{ r.folder }}" value="{{ r.pickVal }}" onChange="{{ r.setPick }}"><sc-for list="{{ f.deps }}" as="d" hint-placeholder-count="9"><option value="{{ d }}">{{ d }}</option></sc-for></select></span><sc-if value="{{ r.err }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ r.err }}</span></sc-if></div></sc-if></td>
+              <td><span class="bd {{ r.stCls }}">{{ r.stLabel }}</span></td>
+              <td><div class="acts">
+                <sc-if value="{{ r.canAct }}" hint-placeholder-val="{{ true }}"><button type="button" class="b sm p" onClick="{{ r.confirm }}"><i class="ic s12 i-check"></i>Confirm</button><button type="button" class="b sm" onClick="{{ r.startCorr }}">Correct</button></sc-if>
+                <sc-if value="{{ r.correcting }}" hint-placeholder-val="{{ false }}"><button type="button" class="b sm p {{ r.applyOff }}" onClick="{{ r.apply }}">Apply</button><button type="button" class="b sm" onClick="{{ r.cancel }}">Cancel</button></sc-if>
+                <sc-if value="{{ r.done }}" hint-placeholder-val="{{ false }}"><button type="button" class="b sm g" onClick="{{ r.undo }}">Undo</button></sc-if>
+              </div></td>
+            </tr></sc-for>
+          </tbody></table></div>
+        </section>
+        <div class="lp" aria-label="Live preview"><div class="lp-h"><i class="d"></i>Live preview · what {{ f.fx.action }} does<span class="r">{{ f.fx.folder }}</span></div><div class="lp-b">
+          <div class="mp"><span>Folder</span><span class="mn">{{ f.fx.path }}</span></div>
+          <div class="mp"><span>Deployment</span><span class="mn">{{ f.fx.dep }}</span></div>
+          <div class="mp"><span>Restarts</span><span>{{ f.fx.restart }}</span></div>
+          <sc-if value="{{ f.fx.warn }}" hint-placeholder-val="{{ false }}"><div class="wn"><i class="ic i-triangle-alert"></i><span>{{ f.fx.warn }}</span></div></sc-if>
+        </div></div>
+        </sc-if>
+      </sc-if>
+
+      <sc-if value="{{ is.notify }}" hint-placeholder-val="{{ false }}">
+        <sc-if value="{{ n.none }}" hint-placeholder-val="{{ false }}"><div class="fx fx-info"><i class="ic i-info"></i><div>Notifications are off<span class="x">No Teams webhook is set. Events show in Lanekeeper only.</span></div></div></sc-if>
+        <section class="blk"><div class="bh"><h3>Teams webhooks</h3><span class="c mut">One per notification type · {{ n.setCount }}</span></div>
+          <div class="card2">
+            <sc-for list="{{ n.rows }}" as="r" hint-placeholder-count="6"><div class="nt">
+              <div class="tn2"><button type="button" class="sw" role="switch" aria-checked="{{ r.on }}" disabled="{{ r.swOff }}" aria-label="Send {{ r.name }}" onClick="{{ r.toggle }}"></button><div><b>{{ r.name }}</b><small>{{ r.desc }}</small></div></div>
+              <div class="wh">
+                <sc-if value="{{ r.masked }}" hint-placeholder-val="{{ false }}"><span class="mk">{{ r.mask }}</span><span class="hint">Saved {{ r.when }} by {{ r.by }} · {{ r.label }} · can’t be shown again</span></sc-if>
+                <sc-if value="{{ r.unset }}" hint-placeholder-val="{{ false }}"><span><span class="bd bd-exp">Not set</span></span></sc-if>
+                <sc-if value="{{ r.editing }}" hint-placeholder-val="{{ false }}">
+                  <input class="in mono sm {{ r.errCls }}" aria-label="Webhook URL for {{ r.name }}" value="{{ r.draft }}" onChange="{{ r.setDraft }}" placeholder="https://…webhook.office.com/webhookb2/…">
+                  <sc-if value="{{ r.err }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ r.err }}</span></sc-if>
+                  <span class="hint">Shown in full only while you type. After you save it, it’s masked and can’t be revealed.</span>
+                </sc-if>
+                <sc-if value="{{ r.hasT }}" hint-placeholder-val="{{ false }}"><span class="trs {{ r.tCls }}"><i class="ic {{ r.tIcon }} {{ r.tSpin }}"></i>{{ r.tText }}</span></sc-if>
+              </div>
+              <div class="act2">
+                <sc-if value="{{ r.showTest }}" hint-placeholder-val="{{ false }}"><button type="button" class="b sm" disabled="{{ r.testOff }}" onClick="{{ r.test }}"><i class="ic s12 i-zap"></i>Send test</button></sc-if>
+                <sc-if value="{{ r.showSet }}" hint-placeholder-val="{{ false }}"><button type="button" class="b sm" onClick="{{ r.startEdit }}">{{ r.setLabel }}</button></sc-if>
+                <sc-if value="{{ r.editing }}" hint-placeholder-val="{{ false }}"><button type="button" class="b sm p" onClick="{{ r.save }}">Save</button><button type="button" class="b sm" onClick="{{ r.cancel }}">Cancel</button></sc-if>
+              </div>
+            </div></sc-for>
+          </div>
+        </section>
+      </sc-if>
+
+      <sc-if value="{{ is.mcp }}" hint-placeholder-val="{{ false }}">
+        <sc-if value="{{ mc.off }}" hint-placeholder-val="{{ false }}"><div class="card2"><div class="empty" style="padding:40px"><i class="ic s16 i-zap"></i><strong>MCP mode is off</strong><span class="m">Personal tokens only exist while MCP mode is on. Turn it on in the environment config to let Cursor agents propose changes.</span></div></div></sc-if>
+        <sc-if value="{{ mc.on }}" hint-placeholder-val="{{ true }}">
+          <sc-if value="{{ mc.showReveal }}" hint-placeholder-val="{{ false }}"><div class="once" role="status">
+            <div class="hd"><i class="ic s16 i-key"></i>Token for {{ mc.pvUser }} created · shown once</div>
+            <p class="pl">Copy it into Cursor now. Lanekeeper keeps only a hash, so it can’t be shown again. Expires {{ mc.expAt }}.</p>
+            <div class="tv"><span>{{ mc.token }}</span><button type="button" class="b sm" onClick="{{ mc.copy }}"><i class="ic s12 i-copy"></i>{{ mc.copyLabel }}</button></div>
+            <div class="row"><button type="button" class="b sm p mla" onClick="{{ mc.dismiss }}">I’ve copied it</button></div>
+          </div></sc-if>
+          <div class="row"><span class="bd bd-ok"><i class="ic i-circle-check"></i>MCP mode on</span><span class="mut">Cursor agents can propose changes as the token’s owner. An Admin other than the owner approves each one.</span></div>
+          <sc-if value="{{ mc.open }}" hint-placeholder-val="{{ false }}"><div class="card2"><div class="hd">Issue a token</div>
+            <sc-if value="{{ mc.hasErr }}" hint-placeholder-val="{{ false }}"><div style="padding:12px 12px 0"><div class="fx fx-danger" role="alert"><i class="ic i-circle-x"></i><div>{{ mc.errHead }}<span class="x">No token is issued until they’re fixed.</span></div></div></div></sc-if>
+            <div class="split2"><div class="fgrid">
+              <label class="fld"><span>User</span><span class="selw"><select class="in {{ mc.userCls }}" value="{{ mc.user }}" onChange="{{ mc.setUser }}"><sc-for list="{{ mc.userOpts }}" as="op" hint-placeholder-count="6"><option value="{{ op.v }}">{{ op.l }}</option></sc-for></select></span><sc-if value="{{ mc.userErr }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ mc.userErr }}</span></sc-if></label>
+              <label class="fld"><span>Expires in</span><span class="selw"><select class="in {{ mc.expCls }}" value="{{ mc.exp }}" onChange="{{ mc.setExp }}"><option value="30">30 days</option><option value="60">60 days</option><option value="90">90 days</option><option value="180">180 days</option></select></span><sc-if value="{{ mc.expErr }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ mc.expErr }}</span></sc-if></label>
+              <label class="fld full"><span>Token name</span><input class="in mono {{ mc.nameCls }}" value="{{ mc.name }}" onChange="{{ mc.setName }}" placeholder="cursor-dana"><sc-if value="{{ mc.nameErr }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ mc.nameErr }}</span></sc-if></label>
+            </div>
+            <aside class="lp" aria-label="Live preview"><div class="lp-h"><i class="d"></i>Live preview<span class="r">what this token allows</span></div><div class="lp-b">
+              <div class="mp"><span>Acts as</span><span>{{ mc.pvUser }} · {{ mc.pvRole }}</span></div>
+              <div class="mp"><span>Can</span><span>{{ mc.pvCan }}</span></div>
+              <div class="mp"><span>Can’t</span><span>Approve its own proposals, reveal secret values, change users</span></div>
+              <div class="mp"><span>Approval</span><span>Every proposal waits for an Admin other than {{ mc.pvUser }}</span></div>
+              <div class="mp"><span>Expires</span><span class="mn">{{ mc.pvExp }}</span></div>
+            </div></aside></div>
+            <div class="cfoot"><span class="hint">Maximum lifetime is 90 days.</span><button type="button" class="b" onClick="{{ mc.cancel }}">Cancel</button><button type="button" class="b p" onClick="{{ mc.issue }}">Issue token</button></div>
+          </div></sc-if>
+          <section class="blk"><div class="bh"><h3>Tokens</h3><span class="c mut">{{ mc.countText }}</span><button type="button" class="b mla" onClick="{{ mc.openForm }}"><i class="ic i-plus"></i>Issue token</button></div>
+            <sc-if value="{{ mc.none }}" hint-placeholder-val="{{ false }}"><div class="card2"><div class="empty" style="padding:28px"><i class="ic s16 i-key"></i><strong>No tokens issued</strong><span class="m">Nobody has connected Cursor yet. Issue a token for an Editor or Admin to start.</span></div></div></sc-if>
+            <sc-if value="{{ mc.has }}" hint-placeholder-val="{{ true }}"><div class="card2"><table class="at"><thead><tr><th>Token</th><th>Owner</th><th>Scopes</th><th>Created</th><th>Expires</th><th>Last used</th><th>Status</th><th></th></tr></thead><tbody>
+              <sc-for list="{{ mc.rows }}" as="r" hint-placeholder-count="5"><tr class="{{ r.cls }}"><td><div class="pu"><span class="mn"><b>{{ r.name }}</b></span><small class="mk">{{ r.mask }}</small></div></td><td>{{ r.owner }}</td><td class="mn">{{ r.scopes }}</td><td class="mn">{{ r.created }}</td><td class="mn">{{ r.expires }}</td><td class="mn">{{ r.used }}</td><td><span class="bd {{ r.stCls }}">{{ r.status }}</span></td><td><sc-if value="{{ r.canRevoke }}" hint-placeholder-val="{{ false }}"><button type="button" class="b sm dl" onClick="{{ r.revoke }}">Revoke</button></sc-if></td></tr></sc-for>
+            </tbody></table></div></sc-if>
+          </section>
+        </sc-if>
+      </sc-if>
+
+      <sc-if value="{{ is.sentinels }}" hint-placeholder-val="{{ false }}">
+        <sc-if value="{{ se.alert }}" hint-placeholder-val="{{ false }}"><div class="fx fx-danger" role="alert"><i class="ic i-shield-alert"></i><div><span class="row"><span class="bd sv sv-high"><i class="ic i-shield-alert"></i>High</span>{{ se.alertHead }}</span><span class="x">{{ se.alertBody }}</span></div></div></sc-if>
+        <sc-if value="{{ se.none }}" hint-placeholder-val="{{ false }}"><div class="card2"><div class="empty" style="padding:32px"><i class="ic s16 i-radio"></i><strong>No sentinels connected</strong><span class="m">Install a sentinel on each NFS VM. Until one reports, edits made on the VM show as unknown author.</span></div></div></sc-if>
+        <sc-if value="{{ se.has }}" hint-placeholder-val="{{ true }}">
+        <section class="blk"><div class="bh"><h3>Sentinels</h3><span class="c mut">{{ se.countText }}</span></div>
+          <div class="card2"><table class="at"><thead><tr><th>VM</th><th>Swimlane</th><th>Version</th><th>Last heartbeat</th><th>Last record</th><th>Status</th></tr></thead><tbody>
+            <sc-for list="{{ se.rows }}" as="r" hint-placeholder-count="6"><tr class="{{ r.cls }}"><td class="mn"><b>{{ r.vm }}</b></td><td class="mn">{{ r.lane }}</td><td class="mn">{{ r.ver }}<sc-if value="{{ r.old }}" hint-placeholder-val="{{ false }}"> <span class="warn-t">· update</span></sc-if></td><td class="mn {{ r.hbCls }}">{{ r.hb }}</td><td class="mn">{{ r.rec }}</td><td><span class="stt {{ r.stCls }}"><i class="dsh {{ r.dot }}"></i>{{ r.status }}</span></td></tr></sc-for>
+          </tbody></table></div>
+        </section>
+        <div class="card2"><div class="hd">Heartbeat gap</div>
+          <div class="split2"><div class="fgrid">
+            <label class="fld full"><span>Raise a high-severity alert when a sentinel is silent for</span><div class="numf"><input class="in mono {{ se.thrCls }}" inputmode="numeric" aria-label="Minutes" value="{{ se.thr }}" onChange="{{ se.setThr }}"><span class="mut">minutes</span></div><sc-if value="{{ se.thrErr }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ se.thrErr }}</span></sc-if><span class="hint">Sentinels report every 30 seconds. Allowed: 1 to 60 minutes.</span></label>
+          </div>
+          <aside class="lp" aria-label="Live preview"><div class="lp-h"><i class="d"></i>Live preview<span class="r">against current heartbeats</span></div><div class="lp-b">
+            <div class="mp"><span>Today ({{ se.baseThr }} min)</span><span>{{ se.pvNow }}</span></div>
+            <div class="mp"><span>With {{ se.pvThr }} min</span><span><b>{{ se.pvNew }}</b></span></div>
+            <sc-if value="{{ se.pvNames }}" hint-placeholder-val="{{ false }}"><div class="mp"><span>Would alert</span><span class="mn">{{ se.pvNames }}</span></div></sc-if>
+          </div></aside></div>
+          <div class="cfoot"><span class="hint">Edits made during a gap are recorded as unknown author.</span><button type="button" class="b" onClick="{{ se.revert }}">Revert</button><button type="button" class="b p" onClick="{{ se.save }}">Save</button></div>
+        </div>
+        </sc-if>
+      </sc-if>
+
+      <sc-if value="{{ is.oslogin }}" hint-placeholder-val="{{ false }}">
+        <sc-if value="{{ os.hasErr }}" hint-placeholder-val="{{ false }}"><div class="fx fx-danger" role="alert"><i class="ic i-circle-x"></i><div>{{ os.errHead }}<span class="x">Fix it before saving.</span></div></div></sc-if>
+        <sc-if value="{{ os.none }}" hint-placeholder-val="{{ false }}"><div class="card2"><div class="empty" style="padding:32px"><i class="ic s16 i-server"></i><strong>No OS Login sessions seen yet</strong><span class="m">When someone logs in to an NFS VM, their OS Login username appears here and is matched to a user by email.</span></div></div></sc-if>
+        <sc-if value="{{ os.has }}" hint-placeholder-val="{{ true }}">
+        <div class="lp" aria-label="Live preview"><div class="lp-h"><i class="d"></i>Live preview · who would the audit log name?</div><div class="lp-b">
+          <div class="row"><label class="fld" style="flex:1;max-width:440px"><span>OS Login username</span><input class="in mono" value="{{ os.try }}" onChange="{{ os.setTry }}"></label>
+            <div class="ttres" style="padding-top:18px"><span>→</span><span class="bd {{ os.res.cls }}">{{ os.res.label }}</span><span class="mut" style="font:400 12px/16px var(--font-sans)">{{ os.res.why }}</span></div></div>
+        </div></div>
+        <section class="blk"><div class="bh"><h3>OS Login users</h3><span class="c mut">{{ os.countText }}</span><button type="button" class="b p mla" disabled="{{ os.saveOff }}" onClick="{{ os.save }}">{{ os.saveLabel }}</button></div>
+          <div class="card2"><table class="at"><thead><tr><th>OS Login username</th><th style="width:220px">Lanekeeper user</th><th>Match</th><th>Last session</th></tr></thead><tbody>
+            <sc-for list="{{ os.rows }}" as="r" hint-placeholder-count="6"><tr class="{{ r.cls }}">
+              <td><div class="pu"><span class="mn">{{ r.os }}</span><sc-if value="{{ r.warn }}" hint-placeholder-val="{{ false }}"><small class="warn-t">{{ r.warn }}</small></sc-if></div></td>
+              <td><div class="pu" style="width:100%"><span class="selw"><select class="in sm {{ r.errCls }}" aria-label="User for {{ r.os }}" value="{{ r.user }}" onChange="{{ r.setUser }}"><sc-for list="{{ os.opts }}" as="op" hint-placeholder-count="8"><option value="{{ op.v }}">{{ op.l }}</option></sc-for></select></span><sc-if value="{{ r.err }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ r.err }}</span></sc-if></div></td>
+              <td><span class="bd {{ r.howCls }}">{{ r.how }}</span><sc-if value="{{ r.pending }}" hint-placeholder-val="{{ false }}"> <span class="hint">Unsaved</span></sc-if></td>
+              <td class="mn">{{ r.seen }}</td>
+            </tr></sc-for>
+          </tbody></table></div>
+          <div class="sgs"><span class="sgi"><i class="ic s12 i-info"></i>Auto-match derives a username from each user’s email: dana.okoye@corp.example becomes dana_okoye_corp_example.</span></div>
+        </section>
+        </sc-if>
+      </sc-if>
+
+      <sc-if value="{{ is.severity }}" hint-placeholder-val="{{ false }}">
+        <sc-if value="{{ sv.hasErr }}" hint-placeholder-val="{{ false }}"><div class="fx fx-danger" role="alert"><i class="ic i-circle-x"></i><div>{{ sv.errHead }}<span class="x">Rules with an error are skipped in the preview and can’t be saved.</span></div></div></sc-if>
+        <section class="blk"><div class="bh"><h3>Rules</h3><span class="c mut">{{ sv.countText }}</span><button type="button" class="b mla" onClick="{{ sv.add }}"><i class="ic i-plus"></i>Add rule</button></div>
+          <sc-if value="{{ sv.none }}" hint-placeholder-val="{{ false }}"><div class="card2"><div class="empty" style="padding:24px"><i class="ic s16 i-shield-alert"></i><strong>No severity rules</strong><span class="m">Every finding is Medium. Add a rule to raise or lower it by path, change type or finding type.</span></div></div></sc-if>
+          <sc-if value="{{ sv.has }}" hint-placeholder-val="{{ true }}"><div class="card2"><ul class="rl rl-sv">
+            <li class="hd"><span>#</span><span>Path glob</span><span>Change type</span><span>Finding type</span><span>Severity</span><span></span></li>
+            <sc-for list="{{ sv.rules }}" as="r" hint-placeholder-count="7"><li class="{{ r.cls }}"><span class="ix">{{ r.n }}</span>
+              <div class="rc"><input class="in mono sm {{ r.errCls }}" aria-label="Glob for rule {{ r.n }}" value="{{ r.g }}" onChange="{{ r.setG }}"><sc-if value="{{ r.err }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ r.err }}</span></sc-if><sc-if value="{{ r.shadow }}" hint-placeholder-val="{{ false }}"><span class="hint warn-t"><i class="ic s12 i-triangle-alert"></i> {{ r.shadow }}</span></sc-if></div>
+              <span class="selw"><select class="in sm" aria-label="Change type for rule {{ r.n }}" value="{{ r.c }}" onChange="{{ r.setC }}"><sc-for list="{{ sv.changeOpts }}" as="op" hint-placeholder-count="4"><option value="{{ op }}">{{ op }}</option></sc-for></select></span>
+              <span class="selw"><select class="in sm" aria-label="Finding type for rule {{ r.n }}" value="{{ r.f }}" onChange="{{ r.setF }}"><sc-for list="{{ sv.findOpts }}" as="op" hint-placeholder-count="7"><option value="{{ op }}">{{ op }}</option></sc-for></select></span>
+              <span class="selw"><select class="in sm" aria-label="Severity for rule {{ r.n }}" value="{{ r.s }}" onChange="{{ r.setS }}"><option value="High">High</option><option value="Medium">Medium</option><option value="Low">Low</option></select></span>
+              <div class="ra"><button type="button" class="b ib" aria-label="Move up" onClick="{{ r.up }}"><i class="ic s12 i-chevron-up"></i></button><button type="button" class="b ib" aria-label="Move down" onClick="{{ r.down }}"><i class="ic s12 i-chevron-down"></i></button><button type="button" class="b ib" aria-label="Delete rule" onClick="{{ r.del }}"><i class="ic s12 i-trash-2"></i></button></div>
+            </li></sc-for>
+          </ul>
+          <div class="cfoot"><span class="hint">First match wins. Findings that match no rule are Medium.</span><button type="button" class="b" onClick="{{ sv.revert }}">Revert</button><button type="button" class="b p" onClick="{{ sv.save }}">Save rules</button></div></div></sc-if>
+        </section>
+        <div class="lp" aria-label="Live preview"><div class="lp-h"><i class="d"></i>Live preview · recent changes<span class="r">{{ sv.pvSum }}</span></div>
+          <table class="at ef"><thead><tr><th>File</th><th>Change</th><th>Finding</th><th>Rule</th><th>Severity</th></tr></thead><tbody>
+            <sc-for list="{{ sv.recent }}" as="c" hint-placeholder-count="8"><tr class="{{ c.cls }}"><td class="mn">{{ c.path }}</td><td>{{ c.chg }}</td><td>{{ c.find }}</td><td class="mn">{{ c.rule }}</td><td><span class="svd"><span class="bd sv {{ c.sevCls }}"><i class="ic {{ c.sevIcon }}"></i>{{ c.sev }}</span><sc-if value="{{ c.changed }}" hint-placeholder-val="{{ false }}"><span class="ar2 hint">was {{ c.was }}</span></sc-if></span></td></tr></sc-for>
+          </tbody></table>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ is.retention }}" hint-placeholder-val="{{ false }}">
+        <sc-if value="{{ r.unset }}" hint-placeholder-val="{{ false }}"><div class="fx fx-warn"><i class="ic i-triangle-alert"></i><div>No retention policy<span class="x">Nothing is ever deleted. {{ r.usage }} are stored and the total grows by about 0.9 GB a week.</span></div></div></sc-if>
+        <sc-if value="{{ r.hasErr }}" hint-placeholder-val="{{ false }}"><div class="fx fx-danger" role="alert"><i class="ic i-circle-x"></i><div>{{ r.errHead }}<span class="x">The dry run below keeps showing the saved policy until the values are valid.</span></div></div></sc-if>
+        <div class="card2"><div class="hd">Versions kept</div>
+          <div class="split2"><div class="fgrid">
+            <label class="fld"><span>Keep versions for</span><div class="numf"><input class="in mono {{ r.dCls }}" inputmode="numeric" aria-label="Days" value="{{ r.days }}" onChange="{{ r.setDays }}"><span class="mut">days</span></div><sc-if value="{{ r.dErr }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ r.dErr }}</span></sc-if></label>
+            <label class="fld"><span>Always keep the last</span><div class="numf"><input class="in mono {{ r.lCls }}" inputmode="numeric" aria-label="Versions per file" value="{{ r.last }}" onChange="{{ r.setLast }}"><span class="mut">versions per file</span></div><sc-if value="{{ r.lErr }}" hint-placeholder-val="{{ false }}"><span class="em"><i class="ic i-circle-x"></i>{{ r.lErr }}</span></sc-if></label>
+            <p class="pl mut full" style="grid-column:1/-1">A version is deleted only when it is older than the day limit and is not one of the last versions of its file. A stored blob is deleted only when no version, baseline, approval or audit event refers to it.</p>
+          </div>
+          <aside class="lp" aria-label="Dry run"><div class="lp-h"><i class="d"></i>Dry run · nothing is deleted<span class="r">{{ r.pvFor }}</span></div><div class="lp-b">
+            <div class="stat"><div class="good"><span class="k">Would free</span><span class="v">{{ r.gb }}<small>GB</small></span><span class="s">{{ r.was }}</span></div><div><span class="k">Versions deleted</span><span class="v">{{ r.vers }}</span><span class="s">of 412,806 · {{ r.files }}</span></div><div class="good"><span class="k">Referenced blobs affected</span><span class="v">0</span><span class="s">{{ r.kept }} kept because referenced</span></div></div>
+          </div></aside></div>
+          <div class="cfoot"><span class="hint">Next purge {{ r.next }}. Purges are written to the audit log.</span><button type="button" class="b" onClick="{{ r.revert }}">Revert</button><button type="button" class="b p" onClick="{{ r.save }}">Save policy</button></div>
+        </div>
+        <section class="blk"><div class="bh"><h3>Recent purges</h3></div>
+          <div class="card2"><table class="at"><thead><tr><th>Ran</th><th>Policy</th><th>Versions deleted</th><th>Freed</th><th>Referenced blobs affected</th></tr></thead><tbody>
+            <sc-for list="{{ r.hist }}" as="h" hint-placeholder-count="3"><tr><td class="mn">{{ h.at }}</td><td class="mn">{{ h.pol }}</td><td class="mn">{{ h.v }}</td><td class="mn">{{ h.gb }}</td><td class="mn">0</td></tr></sc-for>
+            <sc-if value="{{ r.noHist }}" hint-placeholder-val="{{ false }}"><tr><td colspan="5" class="mut">No purges have run.</td></tr></sc-if>
+          </tbody></table></div>
+        </section>
+      </sc-if>
+    </div></main>
+  </div>
+  </sc-if>
+</div>
+<sc-if value="{{ toastOn }}" hint-placeholder-val="{{ false }}"><div class="toast" role="status"><i class="ic i-circle-check" style="color:var(--success-fg)"></i><span>{{ toastText }}</span></div></sc-if>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1216,&quot;height&quot;:856},&quot;section&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;users&quot;,&quot;swimlanes&quot;,&quot;paths&quot;,&quot;merge&quot;,&quot;tiers&quot;,&quot;folders&quot;,&quot;notify&quot;,&quot;mcp&quot;,&quot;sentinels&quot;,&quot;oslogin&quot;,&quot;severity&quot;,&quot;retention&quot;],&quot;default&quot;:&quot;users&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;view&quot;,&quot;empty&quot;,&quot;editing&quot;,&quot;error&quot;,&quot;saved&quot;,&quot;loading&quot;],&quot;default&quot;:&quot;view&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;role&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Admin&quot;,&quot;Editor&quot;,&quot;Viewer&quot;],&quot;default&quot;:&quot;Admin&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;mcp&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;sel&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  state = { o: {} };
+  _ts = [];
+  componentWillUnmount() { this._ts.forEach(clearTimeout); }
+  P(k, d) { const o = this.state.o; return k in o ? o[k] : (this.props[k] ?? d); }
+  V(k, d) { const o = this.state.o; return k in o ? o[k] : d; }
+  set(k, v) { this.setState(s => ({ o: { ...s.o, [k]: v } })); }
+  many(x) { this.setState(s => ({ o: { ...s.o, ...x } })); }
+  later(fn, ms) { this._ts.push(setTimeout(fn, ms)); }
+  say(m) { this.set('toast', m); this.later(() => this.set('toast', ''), 4200); }
+  clear(prefix) { this.setState(s => { const o = { ...s.o }; Object.keys(o).forEach(k => { if (k.startsWith(prefix)) delete o[k]; }); return { o }; }); }
+  gre(g) { let r = '', i = 0; while (i < g.length) { const c = g[i]; if (c === '*') { if (g[i + 1] === '*') { if (g[i + 2] === '/') { r += '(?:.*/)?'; i += 3; } else { r += '.*'; i += 2; } } else { r += '[^/]*'; i++; } } else if (c === '?') { r += '[^/]'; i++; } else { r += c.replace(/[.+^${}()|\\[\]]/g, '\\$&'); i++; } } return new RegExp('^' + r + '$'); }
+  gm(g, s) { return !!g && this.gre(g).test(s); }
+  gbad(g) { if (!g.trim()) return 'Enter a path glob'; if ((g.match(/\[/g) || []).length !== (g.match(/\]/g) || []).length) return 'Invalid glob: unclosed ['; if (/\s/.test(g)) return 'Globs can’t contain spaces'; return ''; }
+  hm(p, h) { return !!p && new RegExp('^' + p.split('*').map(x => x.replace(/[.+?^${}()|\\[\]]/g, '\\$&')).join('.*') + '$', 'i').test(h); }
+  mv(arr, i, d) { const j = i + d; if (j < 0 || j >= arr.length) return arr; const a = arr.slice(); [a[i], a[j]] = [a[j], a[i]]; return a; }
+  USERS() { return [
+    { id: 'priya', name: 'Priya Shah', email: 'priya.shah@corp.example', role: 'Admin', appr: false, status: 'active', seen: 'Active now', gh: 'priyashah', you: true },
+    { id: 'amir', name: 'Amir Haddad', email: 'amir.haddad@corp.example', role: 'Admin', appr: false, status: 'active', seen: '14 min ago', gh: 'ahaddad' },
+    { id: 'lena', name: 'Lena Brandt', email: 'lena.brandt@corp.example', role: 'Editor', appr: false, status: 'active', seen: '2 h ago', gh: 'lbrandt' },
+    { id: 'dana', name: 'Dana Okoye', email: 'dana.okoye@corp.example', role: 'Editor', appr: true, status: 'active', seen: 'Yesterday 17:48', gh: 'dokoye' },
+    { id: 'marco', name: 'Marco Diaz', email: 'marco.diaz@corp.example', role: 'Editor', appr: true, status: 'active', seen: 'Oct 7 09:12', gh: 'mdiaz-c' },
+    { id: 'tomas', name: 'Tomás Reyes', email: 'tomas.reyes@corp.example', role: 'Viewer', appr: false, status: 'active', seen: 'Oct 6 16:30', gh: null },
+    { id: 'ines', name: 'Ines Costa', email: 'ines.costa@corp.example', role: 'Viewer', appr: false, status: 'disabled', seen: 'Sep 12', gh: 'icosta' }
+  ]; }
+
+  v_users(st) {
+    const U = this.USERS(), tried = this.V('u.tried', false) || st === 'error';
+    const dec = this.V('u.dec', st === 'saved' ? 'approved' : st === 'empty' ? 'none' : null);
+    const reqRole = this.V('u.reqRole', st === 'editing' ? 'Admin' : st === 'error' ? '' : 'Editor');
+    const ghEditId = this.V('u.ghEdit', (st === 'editing' || st === 'error') ? 'tomas' : null);
+    const draft = this.V('u.draft', st === 'editing' ? 'treyes' : st === 'error' ? 'lbrandt' : '');
+    const all = U.map(x => ({ ...x }));
+    if (dec === 'approved') all.push({ id: 'sam', name: 'Sam Okafor', email: 'sam.okafor@corp.example', role: reqRole || 'Editor', appr: false, status: 'active', seen: 'Just now', gh: 'samokafor', isNew: true });
+    const gh = x => this.V('u.gh.' + x.id, x.gh);
+    const roleOf = x => this.V('u.role.' + x.id, x.role), apprOf = x => this.V('u.appr.' + x.id, x.appr);
+    const ghErr = v => { v = v.trim().replace(/^@/, ''); if (!v) return 'Enter a GitHub login'; if (!/^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i.test(v)) return 'Use letters, digits and single hyphens'; const o = all.find(x => x.id !== ghEditId && (gh(x) || '').toLowerCase() === v.toLowerCase()); return o ? '@' + v + ' is already linked to ' + o.name + '. A GitHub login links to one user.' : ''; };
+    const rows = all.map(x => {
+      const role = roleOf(x), you = !!x.you, ed = ghEditId === x.id, g = gh(x);
+      const e = ed ? ghErr(draft) : '', showE = ed && e && (draft || tried);
+      return { name: x.name, email: x.email, you, cls: x.isNew ? 'new' : x.status === 'disabled' ? 'dim' : '', locked: you, editable: !you, role, tipCls: you && st === 'editing' ? 'on' : '',
+        setRole: ev => { const v = ev.target.value; const after = all.filter(y => y.status === 'active' && (y.id === x.id ? v : roleOf(y)) === 'Admin').length; if (after < 1) this.set('u.guard', true); else this.many({ ['u.role.' + x.id]: v, 'u.guard': false }); },
+        apprNA: role === 'Viewer', apprOn: role !== 'Viewer', appr: apprOf(x), toggle: () => this.set('u.appr.' + x.id, !apprOf(x)),
+        stCls: x.status === 'active' ? 'bd-sync' : 'bd-locked', stIcon: x.status === 'active' ? 'i-circle-check' : 'i-ban', stLabel: x.status === 'active' ? 'Active' : 'Disabled', seen: x.seen,
+        gh: g, ghLinked: !ed && !!g, ghNone: !ed && !g, ghEdit: ed, draft, ghErr: showE ? e : '', ghErrCls: showE ? 'err' : '', ghOk: ed && !e && !!draft.trim(),
+        setDraft: ev => this.set('u.draft', ev.target.value),
+        startEdit: () => this.many({ 'u.ghEdit': x.id, 'u.draft': g || '' }),
+        ghSave: () => { if (ghErr(draft)) { this.set('u.tried', true); return; } this.many({ ['u.gh.' + x.id]: draft.trim().replace(/^@/, ''), 'u.ghEdit': null, 'u.tried': false }); this.say('GitHub login linked for ' + x.name); },
+        ghCancel: () => this.many({ 'u.ghEdit': null, 'u.tried': false }) };
+    });
+    const roleErr = dec === null && tried && !reqRole ? 'Choose a role before approving' : '';
+    const ghE = ghEditId ? ghErr(draft) : '', ghName = (all.find(x => x.id === ghEditId) || {}).name;
+    const errLines = [];
+    if (roleErr) errLines.push('Sam Okafor: ' + roleErr.toLowerCase() + '.');
+    if (ghEditId && ghE && tried) errLines.push(ghName + ': ' + ghE);
+    const NOTE = { Admin: 'Admin can approve proposals, change roles and edit every swimlane. Sam would also approve your proposals.', Editor: 'Editor can propose changes to config files. An Admin approves each one.', Viewer: 'Viewer can read files and findings but can’t propose changes.' };
+    const admins = all.filter(x => x.status === 'active' && roleOf(x) === 'Admin').length;
+    return { hasErr: errLines.length > 0, errHead: errLines.length + (errLines.length === 1 ? ' thing' : ' things') + ' to fix before saving', errLines, guard: !!this.V('u.guard', false),
+      pendLabel: dec === null ? '1 waiting' : 'None waiting', noReq: dec === 'none', reqOpen: dec === null, reqOk: dec === 'approved', reqRej: dec === 'rejected',
+      req: { role: reqRole, roleErr, roleErrCls: roleErr ? 'err' : '', note: reqRole ? NOTE[reqRole] : '', noteCls: reqRole === 'Admin' ? 'wn' : 'wn nf',
+        setRole: ev => this.set('u.reqRole', ev.target.value),
+        approve: () => { if (!reqRole) { this.set('u.tried', true); return; } this.many({ 'u.dec': 'approved', 'u.tried': false }); this.say('Sam Okafor can sign in as ' + reqRole + ' · audit event 18,471'); },
+        reject: () => this.many({ 'u.dec': 'rejected', 'u.tried': false }) },
+      rows, countText: rows.length + ' users', admins: admins + (admins === 1 ? ' active admin' : ' active admins') };
+  }
+
+  v_swimlanes(st) {
+    const done = this.V('sw.done', st === 'saved');
+    const LN = [['sit', 'dfb-nonprod-sit', 'gke-sit-euw1', 'SIT', '2 of 2'], ['sitb', 'dfb-nonprod-sit', 'gke-sit-euw1', 'SIT', '2 of 2'], ['sitc', 'dfb-nonprod-sit', 'gke-sit-euw1', 'SIT', '1 of 2'], ['presita', 'dfb-nonprod-presit', 'gke-presit-euw1', 'PRESIT', '1 of 1'], ['presitb', 'dfb-nonprod-presit', 'gke-presit-euw1', 'PRESIT', '1 of 1'], ['presitc', 'dfb-nonprod-presit', 'gke-presit-euw1', 'PRESIT', '1 of 1']];
+    const ed = st === 'editing', er = st === 'error';
+    const fd = { name: ed ? 'sitd' : er ? 'SIT D' : '', proj: ed ? 'dfb-nonprod-sit' : '', cl: ed || er ? 'gke-sit-euw1' : '', tier: 'SIT', sa: ed ? 'lanekeeper-agent@dfb-nonprod-sit.iam.gserviceaccount.com' : er ? 'lanekeeper-agent@dfb-nonprod-sit.iam.gcp' : '' };
+    if (er) fd.proj = '';
+    const f = k => this.V('sw.f.' + k, fd[k]);
+    const open = this.V('sw.open', ed || er);
+    const E = {};
+    if (!/^[a-z][a-z0-9]{1,15}$/.test(f('name'))) E.name = f('name') ? 'Use 2–16 lowercase letters or digits, starting with a letter' : 'Enter a swimlane name'; else if (LN.some(x => x[0] === f('name'))) E.name = f('name') + ' is already registered';
+    if (!f('proj')) E.proj = 'Enter the GCP project ID'; else if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(f('proj'))) E.proj = 'Project IDs are 6–30 lowercase letters, digits and hyphens';
+    if (!f('cl')) E.cl = 'Enter the GKE cluster name';
+    if (!/^[a-z][a-z0-9-]*@[a-z][a-z0-9-]*\.iam\.gserviceaccount\.com$/.test(f('sa'))) E.sa = f('sa') ? 'Must look like name@project.iam.gserviceaccount.com' : 'Enter the service account';
+    const tried = this.V('sw.tried', false) || er;
+    const sh = k => (tried && E[k]) ? E[k] : '';
+    const saProj = (f('sa').split('@')[1] || '').replace('.iam.gserviceaccount.com', '');
+    const nerr = ['name', 'proj', 'cl', 'sa'].filter(k => sh(k)).length;
+    const regName = this.V('sw.reg', f('name'));
+    const lanes = LN.map(x => ({ name: x[0], proj: x[1], cl: x[2], tier: x[3], tierCls: 'tier t-' + x[3], sa: 'lanekeeper-agent@' + x[1] + '.iam.gserviceaccount.com', agents: x[4], cls: '' }));
+    if (done) lanes.push({ name: regName || 'sitd', proj: 'dfb-nonprod-sit', cl: 'gke-sit-euw1', tier: 'SIT', tierCls: 'tier t-SIT', sa: 'lanekeeper-agent@dfb-nonprod-sit.iam.gserviceaccount.com', agents: 'Waiting for first heartbeat', cls: 'new' });
+    const AG = [['lk-agent-6d8f4-x2kqz', 'sit', 'v0.14.2', '1 of 2', 1, 'on', 'Online', '4 s ago', 'Nov 20', 42], ['lk-agent-6d8f4-p9w7m', 'sit', 'v0.14.2', '2 of 2', 0, 'on', 'Online', '6 s ago', 'Nov 20', 42], ['lk-agent-5b7c9-k4hdn', 'sitb', 'v0.14.2', '1 of 2', 1, 'on', 'Online', '3 s ago', 'Nov 18', 40], ['lk-agent-5b7c9-t8vxl', 'sitb', 'v0.14.2', '2 of 2', 0, 'deg', 'Delayed', '52 s ago', 'Nov 18', 40], ['lk-agent-9a2e1-m3rqc', 'sitc', 'v0.14.2', '1 of 2', 1, 'on', 'Online', '8 s ago', 'Nov 21', 43], ['lk-agent-9a2e1-z6pwj', 'sitc', 'v0.14.1', '2 of 2', 0, 'off', 'Offline', '2 h 14 min ago', 'Oct 19', 10], ['lk-agent-3f6d8-c7bnh', 'presita', 'v0.14.2', '1 of 1', 1, 'on', 'Online', '5 s ago', 'Oct 17', 8], ['lk-agent-7e1b4-w2sfk', 'presitb', 'v0.14.2', '1 of 1', 1, 'on', 'Online', '2 s ago', 'Nov 3', 25], ['lk-agent-2c9a5-h5ydv', 'presitc', 'v0.14.2', '1 of 1', 1, 'on', 'Online', '7 s ago', 'Nov 3', 25]];
+    const agents = AG.map(a => ({ pod: a[0], lane: a[1], ver: a[2], old: a[2] === 'v0.14.1', rep: a[3], leader: !!a[4], dot: a[5], status: a[6], hb: a[7], cert: a[8], certIn: 'in ' + a[9] + ' days', certCls: a[9] < 14 ? 'warn-t' : 'mut', cls: a[5] === 'off' ? 'dim' : '' }));
+    const exp = this.V('jt.exp', '24 hours'), EXA = { '1 hour': 'today 16:02', '24 hours': 'Oct 10, 15:02', '7 days': 'Oct 16, 15:02' };
+    const show = this.V('jt.show', st === 'saved'), made = this.V('jt.made', st === 'saved');
+    const laneOpts = LN.map(x => x[0]).concat(done ? [regName || 'sitd'] : []);
+    const jtLane = this.V('jt.lane', done ? (regName || 'sitd') : 'sitc');
+    const tokens = [{ mask: 'lkjt_••••••••••••c41e', lane: 'sitc', by: 'Amir Haddad', created: 'Oct 9, 11:20', expires: 'Today 16:20', status: 'Unused', stCls: 'bd-git', stIcon: 'i-clock' }, { mask: 'lkjt_••••••••••••02ab', lane: 'presitc', by: 'Priya Shah', created: 'Oct 2, 09:41', expires: 'Oct 3, 09:41', status: 'Used', stCls: 'bd-sync', stIcon: 'i-circle-check' }, { mask: 'lkjt_••••••••••••9d70', lane: 'sitb', by: 'Amir Haddad', created: 'Sep 28, 14:05', expires: 'Sep 29, 14:05', status: 'Expired', stCls: 'bd-exp', stIcon: 'i-hourglass' }].map(t => ({ ...t, cls: 'dim' === t.status ? 'dim' : '' }));
+    if (made) tokens.unshift({ mask: 'lkjt_••••••••••••d4a5', lane: jtLane, by: 'Priya Shah', created: 'Oct 9, 15:02', expires: EXA[exp].replace('today', 'Today'), status: 'Unused', stCls: 'bd-git', stIcon: 'i-clock', cls: 'new' });
+    const emptySl = st === 'empty' && !done;
+    return { empty: emptySl, hasLanes: !emptySl, hasTokens: !emptySl || made, lanes, laneCount: lanes.length + ' registered', agents, agentCount: agents.length + ' agents · 1 offline', tokens, laneOpts, jtLane, exp,
+      setJtLane: ev => this.set('jt.lane', ev.target.value), setExp: ev => this.set('jt.exp', ev.target.value),
+      createJt: () => { this.many({ 'jt.show': true, 'jt.made': true, 'jt.copied': false }); this.say('Join token created. It’s shown once.'); },
+      showReveal: show, token: 'lkjt_7f3a9c21e8b04d5a96c1f2e07b38d4a5', tokLane: jtLane, expAt: EXA[exp], copyLabel: this.V('jt.copied', false) ? 'Copied' : 'Copy',
+      copy: () => this.set('jt.copied', true), dismiss: () => this.set('jt.show', false),
+      open, openReg: () => this.set('sw.open', true), cancel: () => { this.clear('sw.f.'); this.many({ 'sw.open': false, 'sw.tried': false }); },
+      name: f('name'), proj: f('proj'), cl: f('cl'), sa: f('sa'), nameErr: sh('name'), projErr: sh('proj'), clErr: sh('cl'), saErr: sh('sa'),
+      nameCls: sh('name') ? 'err' : '', projCls: sh('proj') ? 'err' : '', clCls: sh('cl') ? 'err' : '', saCls: sh('sa') ? 'err' : '',
+      saWarn: !E.sa && f('proj') && saProj !== f('proj') ? 'This service account is in project ' + saProj + ', not ' + f('proj') + '. Check that’s intended.' : '',
+      hasErr: nerr > 0, errHead: nerr + (nerr === 1 ? ' field needs' : ' fields need') + ' attention',
+      setName: ev => this.set('sw.f.name', ev.target.value), setProj: ev => this.set('sw.f.proj', ev.target.value), setCl: ev => this.set('sw.f.cl', ev.target.value), setSa: ev => this.set('sw.f.sa', ev.target.value),
+      tSIT: f('tier') === 'SIT' ? 'on' : '', tPRE: f('tier') === 'PRESIT' ? 'on' : '', setSIT: () => this.set('sw.f.tier', 'SIT'), setPRE: () => this.set('sw.f.tier', 'PRESIT'),
+      pvName: f('name') || '—', pvTier: f('tier'), pvSa: f('sa') || '—', pvWi: f('proj') ? f('proj') + '.svc.id.goog[lanekeeper/agent]' : '—',
+      register: () => { if (Object.keys(E).length) { this.set('sw.tried', true); return; } this.many({ 'sw.done': true, 'sw.open': false, 'sw.tried': false, 'sw.reg': f('name'), 'jt.lane': f('name') }); this.say(f('name') + ' registered. Create a join token if its agent can’t use Workload Identity.'); } };
+  }
+
+  fwd(r, p, br) {
+    if (!r.rp || !p.startsWith(r.rp)) return { err: 'No match: the path doesn’t start with ' + (r.rp || 'a repo prefix') };
+    let rest = p.slice(r.rp.length);
+    if (r.ren) { const i = rest.lastIndexOf('/'), dir = rest.slice(0, i + 1), fl = rest.slice(i + 1), d = fl.lastIndexOf('.'), stem = d > 0 ? fl.slice(0, d) : fl, ext = d > 0 ? fl.slice(d) : ''; rest = dir + stem + (r.tpl || '-{branch}').replace('{branch}', br || 'branch') + ext; }
+    if (!r.np) return { err: 'No match: enter an NFS prefix' };
+    return { ok: true, out: r.np + rest };
+  }
+  rev(r, n) {
+    if (!r.np || !n.startsWith(r.np)) return { err: 'No match: the path doesn’t start with ' + (r.np || 'an NFS prefix') };
+    let rest = n.slice(r.np.length), br = null;
+    if (r.ren) { const i = rest.lastIndexOf('/'), dir = rest.slice(0, i + 1), fl = rest.slice(i + 1), d = fl.lastIndexOf('.'), stem = d > 0 ? fl.slice(0, d) : fl, ext = d > 0 ? fl.slice(d) : ''; const re = new RegExp((r.tpl || '-{branch}').split('{branch}').map(x => x.replace(/[.+?^${}()|\\[\]]/g, '\\$&')).join('([a-z]+\\d+)') + '$'); const m = stem.match(re); if (m) { br = m[1]; rest = dir + stem.slice(0, m.index) + ext; } }
+    if (!r.rp) return { err: 'No match: enter a repo prefix' };
+    return { ok: true, out: r.rp + rest, branch: br };
+  }
+
+  v_paths(st) {
+    const R = [{ id: 'r1', repo: 'configuration-base-saas', rp: 'services/', np: '/nfs/config/services/', ren: false, tpl: '-{branch}', files: '1,206' }, { id: 'r2', repo: 'csp-tenant-data', rp: 'services/', np: '/nfs/config/services/', ren: true, tpl: '-{branch}', files: '1,206' }, { id: 'r3', repo: 'configuration-base-saas', rp: 'security/', np: '/nfs/config/security/', ren: false, tpl: '-{branch}', files: '6' }];
+    const rules0 = st === 'empty' ? [] : R;
+    const sel = this.V('p.sel', st === 'empty' ? 'none' : st === 'editing' ? 'r3' : (this.P('sel', '') || 'r2'));
+    const isNew = sel === 'new', saved0 = R.find(x => x.id === sel);
+    const init = isNew ? { repo: 'csp-tenant-data', rp: '', np: '', ren: false, tpl: '-{branch}' } : { ...(saved0 || R[1]) };
+    if (sel === 'r2' && st === 'error') { init.rp = 'services'; init.np = 'nfs/config/services/'; }
+    if (sel === 'r3' && st === 'editing') init.np = '/nfs/config/security-config/';
+    const fk = k => 'p.' + sel + '.' + k, fv = k => this.V(fk(k), init[k]);
+    const rule = { repo: fv('repo'), rp: fv('rp'), np: fv('np'), ren: fv('ren'), tpl: fv('tpl') };
+    const E = {};
+    if (!rule.rp) E.rp = 'Enter the repo prefix'; else if (rule.rp.startsWith('/')) E.rp = 'Repo prefixes are relative. Remove the leading /'; else if (!rule.rp.endsWith('/')) E.rp = 'End the prefix with / so services doesn’t match services-old/';
+    if (!rule.np) E.np = 'Enter the NFS prefix'; else if (!rule.np.startsWith('/nfs/')) E.np = 'Start with /nfs/ (an absolute path on the NFS server)'; else if (!rule.np.endsWith('/')) E.np = 'End the prefix with /';
+    const dup = R.findIndex(x => x.id !== sel && x.repo === rule.repo && x.rp === rule.rp);
+    if (!E.rp && dup > -1) E.rp = 'Rule ' + (dup + 1) + ' already maps ' + rule.rp + ' for ' + rule.repo;
+    if (rule.ren && !rule.tpl.includes('{branch}')) E.tpl = 'Include {branch} in the suffix';
+    const tried = this.V('p.tried', false) || st === 'error';
+    const sh = k => E[k] && (tried || fv(k) !== '') ? E[k] : '';
+    const nerr = ['rp', 'np', 'tpl'].filter(k => sh(k)).length;
+    const gpD = sel === 'r3' ? 'security/security-roles.yml' : 'services/tx-infinity-api/tx-infinity-core.yml';
+    const gp = this.V(fk('gp'), gpD), br = this.V(fk('br'), 'sit1');
+    const base = saved0 || R[1];
+    const nfD = (this.fwd(base, gp, br).out) || '';
+    const nf = this.V(fk('nf'), nfD);
+    const clean = Object.keys(E).length === 0 || !!(E.tpl && !E.rp && !E.np);
+    const fwdR = this.fwd(rule, gp, br), revR = this.rev(rule, nf);
+    let rt = { show: false };
+    if (fwdR.ok && !Object.keys(E).length) { const back = this.rev(rule, fwdR.out); const same = back.ok && back.out === gp && (!rule.ren || back.branch === br); rt = { show: true, cls: same ? 'okm' : 'em', text: same ? 'Round-trips: the NFS path maps back to the same repo path' + (rule.ren ? ' and branch' : '') : 'Doesn’t round-trip: the NFS path maps back to ' + (back.out || 'nothing') }; }
+    const savedId = this.V('p.savedId', st === 'saved' ? 'r2' : '');
+    const list = rules0.map((x, i) => { const cur = x.id === sel; const v = cur ? rule : x; return { n: i + 1, repo: v.repo, rp: v.rp, np: v.np, ren: v.ren ? 'Suffix ' + v.tpl : 'None', cls: cur ? 'on' : '', saved: savedId === x.id && cur, go: () => this.set('p.sel', x.id) }; });
+    if (isNew) list.push({ n: list.length + 1, repo: rule.repo, rp: rule.rp || '…', np: rule.np || '…', ren: rule.ren ? 'Suffix ' + rule.tpl : 'None', cls: 'on', saved: false, go: () => {} });
+    const changed = saved0 && (rule.rp !== saved0.rp || rule.np !== saved0.np) && savedId !== sel;
+    return { rules: list, hasRules: list.length > 0, none: list.length === 0 && sel !== 'new', countText: list.length + (list.length === 1 ? ' rule' : ' rules'), editor: sel !== 'none',
+      edTitle: isNew ? 'New path mapping' : 'Edit rule ' + (R.findIndex(x => x.id === sel) + 1) + ' · ' + rule.repo,
+      newRule: () => this.set('p.sel', 'new'),
+      repo: rule.repo, rpV: rule.rp, npV: rule.np, tpl: rule.tpl, ren: rule.ren, renText: rule.ren ? 'On: tenant files get the branch name added to their file name' : 'Off: the NFS file keeps the repo file name',
+      rpErr: sh('rp'), npErr: sh('np'), tplErr: sh('tpl'), rpCls: sh('rp') ? 'err' : '', npCls: sh('np') ? 'err' : '', tplCls: sh('tpl') ? 'err' : '', tplOff: !rule.ren,
+      hasErr: nerr > 0, errHead: nerr + (nerr === 1 ? ' field needs' : ' fields need') + ' attention',
+      affect: changed ? saved0.files + ' files use this rule. Saving remaps them, and files that no longer match become Untracked until a rule covers them.' : '',
+      setRepo: ev => this.set(fk('repo'), ev.target.value), setRp: ev => this.set(fk('rp'), ev.target.value), setNp: ev => this.set(fk('np'), ev.target.value), setTpl: ev => this.set(fk('tpl'), ev.target.value), toggleRen: () => this.set(fk('ren'), !rule.ren),
+      gp, br, nf, setGp: ev => this.set(fk('gp'), ev.target.value), setBr: ev => this.set(fk('br'), ev.target.value), setNf: ev => this.set(fk('nf'), ev.target.value),
+      fwd: fwdR, rev: revR, fwdCls: fwdR.ok ? 'ok' : 'no', revCls: revR.ok ? 'ok' : 'no', repoLabel: rule.repo, rt,
+      revert: () => { this.clear('p.' + sel + '.'); this.many({ 'p.tried': false }); },
+      save: () => { if (Object.keys(E).length) { this.set('p.tried', true); return; } this.many({ 'p.savedId': sel, 'p.tried': false }); this.say('Path mapping saved · applies on the next sync of ' + rule.repo); } };
+  }
+
+  v_merge(st) {
+    const BASE = [{ id: 'm1', g: 'services/**/application-*.yml', m: 'spring_merge' }, { id: 'm2', g: 'security/**', m: 'whole_file' }, { id: 'm3', g: '**/*.properties', m: 'whole_file' }, { id: 'm4', g: 'services/**/tx-infinity-*.yml', m: 'spring_merge' }, { id: 'm5', g: '**', m: 'whole_file' }];
+    let init = st === 'empty' ? [] : BASE.map(x => ({ ...x }));
+    if (st === 'editing') init[1] = { ...init[1], m: 'spring_merge' };
+    if (st === 'error') { init[0] = { ...init[0], g: 'services/**' }; init[2] = { ...init[2], g: '**/*.properties[' }; }
+    const rules = this.V('m.rules', init), setR = a => this.set('m.rules', a);
+    const file = this.V('m.file', st === 'editing' ? 'security/security-roles.yml' : 'services/tx-infinity-api/tx-infinity-core.yml');
+    const bad = rules.map(r => this.gbad(r.g));
+    const hitI = rules.findIndex((r, i) => !bad[i] && this.gm(r.g, file));
+    const cover = (a, b) => a === '**' || a === b || (a.endsWith('/**') && b.startsWith(a.slice(0, -2)));
+    const shadow = rules.map((r, j) => { if (bad[j]) return ''; const i = rules.findIndex((x, k) => k < j && !bad[k] && cover(x.g, r.g)); return i > -1 ? 'Never reached: rule ' + (i + 1) + ' already matches every file this one does' : ''; });
+    const nbad = bad.filter(Boolean).length;
+    const rows0 = [['payments.maxRetries', '3', '5'], ['payments.timeoutMs', '3000', null], ['payments.currency', 'EUR', null], ['feature.newLimits', 'false', 'true'], ['payments.region', null, 'eu-west']];
+    const mode = hitI > -1 ? rules[hitI].m : 'whole_file';
+    const pvRows = rows0.map(([k, b, t]) => {
+      const dash = '—';
+      if (mode === 'spring_merge') { const eff = t !== null ? t : b; return { key: k, base: b ?? dash, ten: t ?? dash, eff, effCls: '', from: t !== null ? (b !== null ? 'sit1 overrides base' : 'sit1 only') : 'base', cls: t !== null ? (b !== null ? 'chg' : 'add') : '' }; }
+      return t !== null ? { key: k, base: b ?? dash, ten: t, eff: t, effCls: '', from: 'sit1 file', cls: '' } : { key: k, base: b, ten: dash, eff: 'dropped', effCls: 'gone', from: 'not in the sit1 file', cls: 'drop' };
+    });
+    const why = hitI > -1 ? 'Rule ' + (hitI + 1) + ' (' + rules[hitI].g + ') matches, so ' + mode + ' applies.' : rules.length ? 'No rule matches this file, so whole_file applies.' : 'No rules, so whole_file applies to every file.';
+    const dropped = pvRows.filter(r => r.cls === 'drop').length, eff = pvRows.length - dropped;
+    return { rules: rules.map((r, i) => { const b = BASE.find(x => x.id === r.id); const edited = !b || b.g !== r.g || b.m !== r.m; return { n: i + 1, g: r.g, err: bad[i], errCls: bad[i] ? 'err' : '', shadow: shadow[i], hit: i === hitI, cls: bad[i] ? 'er' : i === hitI ? 'mt' : '', wf: r.m === 'whole_file' ? 'on' : '', sm: r.m === 'spring_merge' ? 'on' : '',
+        setG: ev => setR(rules.map((x, j) => j === i ? { ...x, g: ev.target.value } : x)), setWf: () => setR(rules.map((x, j) => j === i ? { ...x, m: 'whole_file' } : x)), setSm: () => setR(rules.map((x, j) => j === i ? { ...x, m: 'spring_merge' } : x)),
+        up: () => setR(this.mv(rules, i, -1)), down: () => setR(this.mv(rules, i, 1)), del: () => setR(rules.filter((x, j) => j !== i)) }; }),
+      hasRules: rules.length > 0, none: rules.length === 0, countText: rules.length + (rules.length === 1 ? ' rule' : ' rules'), hasErr: nbad > 0, errHead: nbad + (nbad === 1 ? ' rule has' : ' rules have') + ' an invalid glob',
+      add: () => setR(rules.concat([{ id: 'mn' + rules.length, g: '', m: 'whole_file' }])), revert: () => this.set('m.rules', init),
+      save: () => { if (nbad || rules.some(r => !r.g.trim())) { this.say('Fix the invalid globs first'); return; } this.say('Merge modes saved · applies to the next sync'); },
+      file, setFile: ev => this.set('m.file', ev.target.value),
+      pv: { mode, modeCls: mode === 'spring_merge' ? 'bd-int' : 'bd-locked', why, rows: pvRows, sum: mode === 'spring_merge' ? eff + ' keys in the effective file: ' + pvRows.filter(r => r.cls === '' ).length + ' from base, ' + pvRows.filter(r => r.cls !== '').length + ' from the sit1 file.' : eff + ' keys in the effective file, all from the sit1 file. ' + dropped + ' base keys are dropped.' } };
+  }
+
+  v_tiers(st) {
+    const TI = ['dev', 'uat', 'prod'];
+    const init = st === 'empty' ? { dev: '', uat: '', prod: '' } : { dev: st === 'error' ? '*-dev.example.net, *.example.net' : '*-dev.example.net, *.dev.example.net', uat: st === 'editing' ? '*-uat.example.net, *-pre.example.net' : '*-uat.example.net', prod: '*-prod.example.net' };
+    const pats = t => this.V('t.p.' + t, init[t]), pl = t => pats(t).split(',').map(s => s.trim()).filter(Boolean);
+    const HOSTS = [['video.dfbsaas-dev.example.net', 12], ['pay.dfbsaas-dev.example.net', 9], ['pay.dfbsaas-uat.example.net', 14], ['video.dfbsaas-prod.example.net', 11], ['pay.dfbsaas-prod.example.net', 9], ['auth.dfbsaas.example.net', 3]];
+    const tiersOf = h => TI.filter(t => pl(t).some(p => this.hm(p, h)));
+    const hr = HOSTS.map(([h, n]) => ({ h, n, ts: tiersOf(h) }));
+    const culprit = {}; let nc = 0;
+    TI.forEach(t => { const bh = hr.filter(r => r.ts.length > 1 && r.ts.includes(t) && !r.h.includes('-' + t)); if (bh.length) { const p = pl(t).find(p => bh.some(r => this.hm(p, r.h))); culprit[t] = p + ' also matches ' + bh.length + ' hosts in other tiers, for example ' + bh[0].h; nc++; } });
+    const lab = ts => ts.length === 1 ? ts[0] : ts.length ? 'conflict' : 'unknown', clsOf = ts => ts.length === 1 ? 'ht-' + ts[0] : ts.length ? 'ht-conf' : 'ht-none';
+    const test = this.V('t.test', st === 'editing' ? 'cache.dfbsaas-pre.example.net' : 'video.dfbsaas-dev.example.net');
+    const tt = tiersOf(test), mp = tt.length ? pl(tt[0]).find(p => this.hm(p, test)) : '';
+    const total = TI.reduce((a, t) => a + pl(t).length, 0);
+    return { hasErr: nc > 0, errHead: nc + (nc === 1 ? ' tier has' : ' tiers have') + ' a pattern that’s too broad', none: total === 0,
+      tiers: TI.map(t => ({ tier: t, cls: 'ht-' + t, pats: pats(t), setPats: ev => this.set('t.p.' + t, ev.target.value), err: culprit[t] || '', errCls: culprit[t] ? 'err' : '', count: hr.filter(r => r.ts.length === 1 && r.ts[0] === t).length + ' known hosts' })),
+      revert: () => this.clear('t.p.'), save: () => { if (nc) { this.say('Narrow the broad patterns first'); return; } this.say('Host tiers saved · applies to the next scan'); },
+      test, setTest: ev => this.set('t.test', ev.target.value),
+      res: { cls: clsOf(tt), label: lab(tt), why: tt.length === 1 ? 'Matched by ' + mp : tt.length > 1 ? 'Matches ' + tt.join(' and ') + '. A host can have one tier.' : 'No pattern matches' },
+      samples: ['pay.dfbsaas-uat.example.net', 'auth.dfbsaas.example.net', 'video.dfbsaas-prod.example.net', 'cache.dfbsaas-pre.example.net'].map(h => ({ h, go: () => this.set('t.test', h) })),
+      hosts: hr.map(r => ({ h: r.h, n: r.n + ' files', cls: clsOf(r.ts), label: lab(r.ts) })) };
+  }
+
+  v_folders(st) {
+    const FR = [['tx-infinity-core', 'tx-infinity-core', 100, 38], ['tx-infinity-api', 'tx-infinity-api', 98, 22], ['tx-infinity-gateway', 'tx-infinity-gateway', 96, 17], ['notification', 'notification-worker', 88, 9], ['payment-limits', 'payments-limits-svc', 81, 14], ['video', 'video-dfb-saas', 72, 11], ['security', 'auth-proxy', 38, 6]];
+    const DEPS = ['tx-infinity-api', 'tx-infinity-core', 'tx-infinity-gateway', 'payments-limits-svc', 'video-dfb-saas', 'video-dfbsaas-api', 'video-dfbsaas-worker', 'notification-worker', 'auth-proxy'];
+    const stOf = r => this.V('f.st.' + r[0], r[0] === 'tx-infinity-core' || (st === 'saved' && (r[0] === 'tx-infinity-api' || r[0] === 'tx-infinity-gateway')) ? 'confirmed' : 'suggested');
+    const depOf = r => this.V('f.dep.' + r[0], r[1]);
+    const corr = this.V('f.corr', st === 'editing' || st === 'error' ? 'video' : null);
+    const pickV = this.V('f.pick', st === 'editing' ? 'video-dfbsaas-api' : st === 'error' ? 'tx-infinity-core' : '');
+    const selId = this.V('f.sel', corr || 'payment-limits');
+    const owner = d => FR.find(r => r[0] !== corr && stOf(r) !== 'suggested' && depOf(r) === d);
+    const none = st === 'empty';
+    const rows = none ? [] : FR.map(r => {
+      const s = stOf(r), isC = corr === r[0], dep = depOf(r), pv = isC ? (pickV || dep) : dep, ow = isC ? owner(pv) : null;
+      const err = ow ? pv + ' is already mapped from /nfs/config/services/' + ow[0] + '. A Deployment maps to one folder.' : '';
+      return { folder: '/nfs/config/services/' + r[0], files: r[3], score: r[2], pct: r[2] + '%', lo: r[2] < 80 ? 'lo' : '', dep, view: !isC, correcting: isC, pickVal: pv, err, errCls: err ? 'err' : '', applyOff: err ? 'off' : '',
+        stCls: s === 'confirmed' ? 'bd-ok' : s === 'corrected' ? 'bd-int' : 'bd-exp', stLabel: s === 'confirmed' ? 'Confirmed' : s === 'corrected' ? 'Corrected' : 'Suggested',
+        canAct: s === 'suggested' && !isC, done: s !== 'suggested' && !isC, cls: selId === r[0] ? 'sel' : '', pick: () => this.set('f.sel', r[0]),
+        confirm: () => { this.set('f.st.' + r[0], 'confirmed'); this.say(r[0] + ' confirmed → ' + dep); },
+        startCorr: () => this.many({ 'f.corr': r[0], 'f.pick': dep, 'f.sel': r[0] }),
+        setPick: ev => this.many({ 'f.pick': ev.target.value, 'f.sel': r[0] }),
+        apply: () => { if (err) return; this.many({ ['f.st.' + r[0]]: 'corrected', ['f.dep.' + r[0]]: pv, 'f.corr': null }); this.say(r[0] + ' corrected → ' + pv); },
+        cancel: () => this.set('f.corr', null),
+        undo: () => this.many({ ['f.st.' + r[0]]: 'suggested', ['f.dep.' + r[0]]: r[1] }) };
+    });
+    const sug = FR.filter(r => stOf(r) === 'suggested'), bulkIds = sug.filter(r => r[2] >= 90);
+    const sr = FR.find(r => r[0] === selId) || FR[4], sIsC = corr === sr[0], sDep = sIsC ? (pickV || depOf(sr)) : depOf(sr), sSt = stOf(sr);
+    return { none, has: !none, rows, deps: DEPS, countText: sug.length + ' to review · ' + (FR.length - sug.length) + ' mapped',
+      bulkOff: bulkIds.length === 0, bulkLabel: bulkIds.length ? 'Confirm ' + bulkIds.length + ' suggestions at 90% or more' : 'Nothing at 90% or more', bulk: () => { const x = {}; bulkIds.forEach(r => { x['f.st.' + r[0]] = 'confirmed'; }); this.many(x); this.say(bulkIds.length + ' folders confirmed'); },
+      fx: { action: sIsC ? 'correcting' : sSt === 'suggested' ? 'confirming' : 'this mapping', folder: sr[0], path: '/nfs/config/services/' + sr[0] + ' · ' + sr[3] + ' files', dep: sDep, restart: 'Restart on these files targets Deployment ' + sDep + ' in sit, sitb and sitc.',
+        warn: sr[2] < 80 && sSt === 'suggested' && !sIsC ? 'Similarity is only ' + sr[2] + '%. Check the folder holds this Deployment’s config before confirming.' : '' } };
+  }
+
+  v_notify(st) {
+    const T = [['appr', 'Approval requested', 'A proposal needs an Admin’s decision.'], ['find', 'High severity finding', 'A finding is raised at High severity.'], ['gap', 'Heartbeat gap', 'A sentinel stopped reporting.'], ['cert', 'Certificate expiring', 'An agent certificate expires within 14 days.'], ['aud', 'Audit chain failure', 'Chain verification fails.'], ['rst', 'Restart pending', 'A merged change needs services restarted.']];
+    const C0 = { appr: { d: 'Sep 22', by: 'Priya Shah', l4: 'a91f', label: 'SIT approvals' }, find: { d: 'Sep 22', by: 'Priya Shah', l4: 'c07e', label: 'SIT findings' }, gap: { d: 'Oct 1', by: 'Amir Haddad', l4: '3b52', label: 'SIT on-call' }, aud: { d: 'Sep 22', by: 'Priya Shah', l4: 'e418', label: 'Security' } };
+    if (st === 'saved') C0.cert = { d: 'Just now', by: 'Priya Shah', l4: '9a41', label: 'Platform alerts' };
+    const cfg = id => this.V('n.cfg.' + id, st === 'empty' ? null : (C0[id] || null));
+    const edit = this.V('n.edit', st === 'editing' || st === 'error' ? 'cert' : null);
+    const draft = this.V('n.draft', st === 'editing' ? 'https://dfb.webhook.office.com/webhookb2/3c1e7a52-0b94@8f2d41c7/IncomingWebhook/9a41c2e07d/5be3' : st === 'error' ? 'https://hooks.slack.com/services/T04K2/B07QX/Zk3mP9' : '');
+    const tried = this.V('n.tried', false) || st === 'error';
+    const vUrl = u => { u = u.trim(); if (!u) return 'Paste the webhook URL from Teams'; let h = ''; try { h = new URL(u).hostname; } catch (e) { return 'That isn’t a valid URL'; } if (!/^https:/.test(u)) return 'Teams webhooks use https'; if (!/(\.webhook\.office\.com|\.logic\.azure\.com|\.powerplatform\.com)$/.test(h)) return 'This isn’t a Teams webhook. Expected a URL on webhook.office.com, logic.azure.com or powerplatform.com'; return ''; };
+    const rows = T.map(([id, name, desc]) => {
+      const c = cfg(id), isE = edit === id, err = isE ? vUrl(draft) : '';
+      const t = this.V('n.t.' + id, st === 'error' && id === 'find' ? 'fail' : st === 'saved' && id === 'appr' ? 'ok' : '');
+      const TX = { run: 'Sending a test message…', ok: 'Test message delivered · 200 OK · 0.4 s', fail: 'Teams returned 410 Gone. The webhook was removed from the channel. Replace it, then send a test again.' };
+      return { name, desc, on: this.V('n.on.' + id, !!c), swOff: !c, toggle: () => this.set('n.on.' + id, !this.V('n.on.' + id, !!c)),
+        masked: !!c && !isE, mask: c ? '••••••••••••••••••••••••••••••••••••' + c.l4 : '', when: c ? c.d : '', by: c ? c.by : '', label: c ? c.label : '',
+        unset: !c && !isE, editing: isE, draft, setDraft: ev => this.set('n.draft', ev.target.value), err: err && (tried || draft) ? err : '', errCls: err && (tried || draft) ? 'err' : '',
+        hasT: !!t && !isE, tCls: t === 'ok' ? 'ok' : t === 'fail' ? 'er' : 'run', tIcon: t === 'ok' ? 'i-circle-check' : t === 'fail' ? 'i-circle-x' : 'i-loader-circle', tSpin: t === 'run' ? 'spin' : '', tText: TX[t] || '',
+        showTest: !!c && !isE, testOff: t === 'run', test: () => { this.set('n.t.' + id, 'run'); this.later(() => this.set('n.t.' + id, st === 'error' && id === 'find' ? 'fail' : 'ok'), 900); },
+        showSet: !isE, setLabel: c ? 'Replace' : 'Set webhook', startEdit: () => this.many({ 'n.edit': id, 'n.draft': '', 'n.tried': false }),
+        save: () => { if (err) { this.set('n.tried', true); return; } this.many({ ['n.cfg.' + id]: { d: 'Just now', by: 'Priya Shah', l4: draft.trim().slice(-4), label: 'Teams channel' }, 'n.edit': null, 'n.tried': false, ['n.on.' + id]: true }); this.say('Webhook saved for ' + name + '. It’s masked from now on.'); },
+        cancel: () => this.many({ 'n.edit': null, 'n.tried': false }) };
+    });
+    const n = T.filter(([id]) => cfg(id)).length;
+    return { none: n === 0, rows, setCount: n + ' of ' + T.length + ' set' };
+  }
+
+  v_mcp(st) {
+    const on = String(this.P('mcp', 'true')) !== 'false';
+    const U = this.USERS().filter(u => u.id !== 'sam');
+    const ed = st === 'editing', er = st === 'error', sv = st === 'saved';
+    const open = this.V('mc.open', ed || er), user = this.V('mc.user', ed || sv ? 'dana' : er ? 'tomas' : 'dana');
+    const name = this.V('mc.name', ed || sv ? 'cursor-dana' : er ? 'Cursor Tomas' : ''), exp = this.V('mc.exp', er ? '180' : '90');
+    const T0 = [['cursor-priya-laptop', 'Priya Shah', 'read, propose', 'Sep 30', 'Dec 29', '4 min ago', 'Active', 'a3c8'], ['cursor-lena', 'Lena Brandt', 'read, propose', 'Oct 2', 'Dec 31', 'Yesterday', 'Active', '71e0'], ['cursor-marco', 'Marco Diaz', 'read, propose', 'Aug 12', 'Nov 10', 'Oct 7', 'Active', 'd92b'], ['cursor-tomas-ro', 'Tomás Reyes', 'read', 'Sep 3', 'Dec 2', 'Oct 6', 'Active', '0f64'], ['cursor-amir-old', 'Amir Haddad', 'read, propose', 'Jun 1', 'Aug 30', 'Aug 21', 'Expired', 'b715'], ['cursor-ines', 'Ines Costa', 'read', 'Jul 8', 'Oct 6', 'Sep 12', 'Revoked', '5e2a']];
+    const made = this.V('mc.made', sv), revoked = this.V('mc.rev', {});
+    const rows0 = (st === 'empty' ? [] : T0).map(t => ({ ...t }));
+    const u = U.find(x => x.id === user) || U[0], dis = u.status === 'disabled';
+    const E = {};
+    if (u.role === 'Viewer' || dis) E.user = u.name + (dis ? ' is disabled. ' : ' is a Viewer. ') + 'Tokens need an active Editor or Admin so the agent can propose edits.';
+    if (!/^[a-z][a-z0-9-]{2,39}$/.test(name)) E.name = name ? 'Use lowercase letters, digits and hyphens, starting with a letter' : 'Enter a token name'; else if (T0.some(t => t[0] === name)) E.name = name + ' already exists';
+    if (Number(exp) > 90) E.exp = 'The maximum lifetime is 90 days';
+    const tried = this.V('mc.tried', false) || er, sh = k => tried && E[k] ? E[k] : '';
+    const nerr = ['user', 'name', 'exp'].filter(k => sh(k)).length;
+    const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'], d = new Date(2026, 9, 9 + Number(exp)), expAt = MON[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
+    const rows = rows0.map(t => ({ name: t[0], mask: 'lkmcp_••••••••' + t[7], owner: t[1], scopes: t[2], created: t[3], expires: t[4], used: t[5], status: revoked[t[0]] ? 'Revoked' : t[6], stCls: (revoked[t[0]] ? 'Revoked' : t[6]) === 'Active' ? 'bd-sync' : (revoked[t[0]] ? 'Revoked' : t[6]) === 'Expired' ? 'bd-exp' : 'bd-locked', cls: (revoked[t[0]] || t[6] !== 'Active') ? 'dim' : '', canRevoke: !revoked[t[0]] && t[6] === 'Active', revoke: () => { this.set('mc.rev', { ...revoked, [t[0]]: true }); this.say(t[0] + ' revoked. It stops working now.'); } }));
+    if (made) rows.unshift({ name: name || 'cursor-dana', mask: 'lkmcp_••••••••f385', owner: u.name, scopes: u.role === 'Viewer' ? 'read' : 'read, propose', created: 'Today', expires: expAt, used: 'Never', status: 'Active', stCls: 'bd-sync', cls: 'new', canRevoke: true, revoke: () => {} });
+    return { on, off: !on, open, showReveal: this.V('mc.show', sv), token: 'lkmcp_4c91e0a7b23d58f6a1c9e7d02b64f385', copyLabel: this.V('mc.copied', false) ? 'Copied' : 'Copy', copy: () => this.set('mc.copied', true), dismiss: () => this.set('mc.show', false), expAt,
+      userOpts: U.map(x => ({ v: x.id, l: x.name + ' · ' + x.role + (x.status === 'disabled' ? ' (disabled)' : '') })), user, name, exp, setUser: ev => this.set('mc.user', ev.target.value), setName: ev => this.set('mc.name', ev.target.value), setExp: ev => this.set('mc.exp', ev.target.value),
+      userErr: sh('user'), nameErr: sh('name'), expErr: sh('exp'), userCls: sh('user') ? 'err' : '', nameCls: sh('name') ? 'err' : '', expCls: sh('exp') ? 'err' : '', hasErr: nerr > 0, errHead: nerr + (nerr === 1 ? ' field needs' : ' fields need') + ' attention',
+      pvUser: u.name, pvRole: u.role, pvCan: u.role === 'Viewer' ? 'Read files and findings only. Proposing needs Editor or Admin.' : 'Read files in every swimlane, propose edits, uploads and deletes', pvExp: expAt + ' (' + exp + ' days)',
+      openForm: () => this.set('mc.open', true), cancel: () => { this.clear('mc.'); this.many({ 'mc.open': false }); },
+      issue: () => { if (Object.keys(E).length) { this.set('mc.tried', true); return; } this.many({ 'mc.show': true, 'mc.made': true, 'mc.open': false, 'mc.tried': false, 'mc.copied': false }); this.say('Token created for ' + u.name + '. It’s shown once.'); },
+      rows, has: rows.length > 0, none: rows.length === 0, countText: rows.filter(r => r.status === 'Active').length + ' active' };
+  }
+
+  v_sentinels(st) {
+    const SN = [['nfs-sit-01', 'sit', 'v0.9.4', 4, '14:44:02'], ['nfs-sitb-01', 'sitb', 'v0.9.4', 11, '14:31:40'], ['nfs-sitc-01', 'sitc', 'v0.9.3', 190, '13:58:20'], ['nfs-presita-01', 'presita', 'v0.9.4', 6, '09:12:07'], ['nfs-presitb-01', 'presitb', 'v0.9.4', 840, '14:29:55'], ['nfs-presitc-01', 'presitc', 'v0.9.4', 3, '12:40:18']];
+    const thrS = this.V('se.thr', st === 'editing' ? '3' : st === 'error' ? '0' : st === 'saved' ? '3' : '5');
+    const baseThr = this.V('se.saved', st === 'saved' ? 3 : 5), n = Number(thrS), valid = /^\d+$/.test(thrS.trim()) && n >= 1 && n <= 60, pvThr = valid ? n : baseThr;
+    const stat = (sec, t) => sec > t * 60 ? 'gap' : sec > 45 ? 'delayed' : 'ok';
+    const age = s => s < 60 ? s + ' s ago' : Math.floor(s / 60) + ' min ago';
+    const rows = st === 'empty' ? [] : SN.map(r => { const s = stat(r[3], baseThr); return { vm: r[0], lane: r[1], ver: r[2], old: r[2] === 'v0.9.3', hb: age(r[3]), hbCls: s === 'gap' ? 'bad-t' : '', rec: r[4], status: s === 'gap' ? 'Heartbeat gap' : s === 'delayed' ? 'Delayed' : 'Online', dot: s === 'gap' ? 'gap' : s === 'delayed' ? 'deg' : 'on', stCls: s === 'gap' ? 'bad' : '', cls: s === 'gap' ? 'dim' : '' }; });
+    const gaps = rows.filter(r => r.status === 'Heartbeat gap'), pvG = st === 'empty' ? [] : SN.filter(r => stat(r[3], pvThr) === 'gap'), nowG = gaps.length;
+    const ev = x => x + (x === 1 ? ' sentinel' : ' sentinels');
+    const err = valid ? '' : (thrS.trim() ? 'Enter a whole number from 1 to 60' : 'Enter the number of minutes');
+    return { alert: nowG > 0, alertHead: nowG === 1 ? 'Heartbeat gap on ' + gaps[0].vm : 'Heartbeat gap on ' + nowG + ' sentinels',
+      alertBody: nowG === 1 ? 'No heartbeat for ' + gaps[0].hb.replace(' ago', '') + ' (limit ' + baseThr + ' min). Last record ' + gaps[0].rec + '. Edits made on this VM aren’t being recorded and will show as unknown author.' : gaps.map(g => g.vm).join(', ') + ' have been silent longer than ' + baseThr + ' min. Edits made on these VMs aren’t being recorded and will show as unknown author.',
+      none: st === 'empty', has: st !== 'empty', rows, countText: rows.length + ' VMs · ' + nowG + (nowG === 1 ? ' alert' : ' alerts'),
+      thr: thrS, thrErr: err, thrCls: err ? 'err' : '', setThr: ev => this.set('se.thr', ev.target.value), baseThr, pvThr,
+      pvNow: ev(nowG).replace(/^0/, 'No') + ' alerting', pvNew: err ? 'Showing the saved limit until the value is valid' : (pvG.length ? ev(pvG.length) + ' would alert' : 'No sentinels would alert'), pvNames: err ? '' : pvG.map(r => r[0]).join(', '),
+      revert: () => this.set('se.thr', String(baseThr)), save: () => { if (err) return; this.many({ 'se.saved': n }); this.say('Heartbeat gap limit saved: ' + n + ' min'); } };
+  }
+
+  v_oslogin(st) {
+    const U = this.USERS(), norm = e => e.replace(/[@.]/g, '_');
+    const OS = [['dana_okoye_corp_example', '11:04 today'], ['tomas_reyes_corp_example', '10:42 today'], ['lena_brandt_corp_example', '09:58 today'], ['marco_diaz_contractor_example', 'Oct 7 14:10'], ['ines_costa_corp_example', 'Sep 12 16:20'], ['lena_b_corp_example', '13:57 today']];
+    const base = this.V('o.base', { marco_diaz_contractor_example: 'marco', ...(st === 'saved' ? { lena_b_corp_example: 'lena' } : {}) });
+    const auto = os => (U.find(u => norm(u.email) === os) || {}).id || '';
+    const sv = os => base[os] !== undefined ? base[os] : auto(os);
+    const asg = os => this.V('o.map.' + os, os === 'lena_b_corp_example' && st === 'editing' ? 'lena' : os === 'lena_b_corp_example' && st === 'error' ? 'ines' : sv(os));
+    const name = id => (U.find(u => u.id === id) || {}).name;
+    const opts = [{ v: '', l: 'No user (unknown author)' }].concat(U.map(u => ({ v: u.id, l: u.name + (u.status === 'disabled' ? ' (disabled)' : '') })));
+    const rows = st === 'empty' ? [] : OS.map(([os, seen]) => {
+      const a = asg(os), u = U.find(x => x.id === a), dis = u && u.status === 'disabled', pending = a !== sv(os);
+      const err = pending && dis ? u.name + ' is disabled. Map to an active user.' : '';
+      const how = !a ? 'Unmatched' : (a === auto(os) && base[os] === undefined) ? 'Auto · email' : 'Manual override';
+      return { os, seen, user: a, setUser: ev => this.set('o.map.' + os, ev.target.value), err, errCls: err ? 'err' : '', pending: pending && !err, how, howCls: !a ? 'bd-unk' : how === 'Manual override' ? 'bd-int' : 'bd-sync', warn: !pending && dis ? 'Matches a disabled user. Sessions are attributed to ' + u.name + '.' : '', cls: !a ? 'dim' : '' };
+    });
+    const pend = rows.filter(r => r.pending), errs = rows.filter(r => r.err);
+    const tryOs = this.V('o.try', 'dana_okoye_corp_example').trim(), known = OS.some(x => x[0] === tryOs), ta = known ? asg(tryOs) : auto(tryOs), tu = U.find(x => x.id === ta);
+    const res = tu ? { cls: tu.status === 'disabled' ? 'bd-locked' : 'bd-sync', label: tu.name, why: (known && base[tryOs] !== undefined ? 'Manual override' : 'Auto-matched by email ' + tu.email) + '. The audit log names this user.' } : { cls: 'bd-unk', label: 'Unknown author', why: tryOs ? 'No user’s email maps to this username. The audit log shows a dashed Unknown author badge.' : 'Enter a username' };
+    return { none: st === 'empty', has: st !== 'empty', rows, opts, countText: rows.length + ' accounts · ' + rows.filter(r => !r.user).length + ' unmatched', try: tryOs, setTry: ev => this.set('o.try', ev.target.value), res,
+      hasErr: errs.length > 0, errHead: errs[0] ? errs[0].err.replace(/\.[^.]*$/, '') + ' can’t be an author' : '',
+      saveOff: pend.length === 0 || errs.length > 0, saveLabel: pend.length ? 'Save ' + pend.length + (pend.length === 1 ? ' change' : ' changes') : 'No changes',
+      save: () => { const b = { ...base }; pend.forEach(r => { b[r.os] = r.user; }); this.set('o.base', b); this.say(pend.length + (pend.length === 1 ? ' mapping' : ' mappings') + ' saved · applies to new audit events'); } };
+  }
+
+  v_severity(st) {
+    const BASE = [{ g: 'security/**', c: 'Any', f: 'Any', s: 'High' }, { g: '**', c: 'Any', f: 'Unknown author', s: 'High' }, { g: 'services/**', c: 'Any', f: 'Prod host in SIT file', s: 'High' }, { g: 'services/**', c: 'Any', f: 'NFS ahead of Git', s: 'Medium' }, { g: '**', c: 'Deleted', f: 'Any', s: 'Medium' }, { g: '**', c: 'Any', f: 'Line endings changed', s: 'Low' }, { g: '**', c: 'Any', f: 'Any', s: 'Low' }].map((x, i) => ({ id: 's' + (i + 1), ...x }));
+    let init = st === 'empty' ? [] : BASE.map(x => ({ ...x }));
+    if (st === 'editing' || st === 'saved') init[3] = { ...init[3], s: 'High' };
+    if (st === 'error') { init[1] = { ...init[1], g: '' }; init[2] = { ...init[2], c: 'Any', f: 'Any', g: 'services/**' }; }
+    const rules = this.V('s.rules', init), setR = a => this.set('s.rules', a);
+    const saved = this.V('s.base', st === 'saved' ? init : (st === 'empty' ? [] : BASE));
+    const CH = ['Any', 'Added', 'Modified', 'Deleted'], FT = ['Any', 'Unknown author', 'Prod host in SIT file', 'NFS ahead of Git', 'Untracked file', 'Value differs from base', 'Line endings changed'];
+    const RC = [['security/security-roles.yml', 'Modified', 'Value differs from base'], ['services/tx-infinity-api/tx-infinity-core-sit7.yml', 'Modified', 'Prod host in SIT file'], ['services/payment-limits/payment-limits-sit1.yml', 'Modified', 'Unknown author'], ['services/tx-infinity-gateway.yml', 'Modified', 'NFS ahead of Git'], ['services/video/video-sit3.yml', 'Added', 'Untracked file'], ['services/notification/notification.properties', 'Deleted', 'NFS ahead of Git'], ['services/tx-infinity-api/application-sit2.yml', 'Modified', 'Line endings changed'], ['security/ssl-config.yml', 'Added', 'Unknown author']];
+    const bad = rules.map(r => this.gbad(r.g));
+    const matchOf = (list, ch) => list.findIndex((r, i) => !this.gbad(r.g) && this.gm(r.g, ch[0]) && (r.c === 'Any' || r.c === ch[1]) && (r.f === 'Any' || r.f === ch[2]));
+    const cov = (a, b) => a === '**' || a === b || (a.endsWith('/**') && b.startsWith(a.slice(0, -2)));
+    const shadow = rules.map((r, j) => { if (bad[j]) return ''; const i = rules.findIndex((x, k) => k < j && !bad[k] && cov(x.g, r.g) && (x.c === 'Any' || x.c === r.c) && (x.f === 'Any' || x.f === r.f)); return i > -1 ? 'Never reached: rule ' + (i + 1) + ' already matches everything this one does' : ''; });
+    const sevOf = (list, ch) => { const i = matchOf(list, ch); return i > -1 ? list[i].s : 'Medium'; };
+    const SC = { High: ['sv-high', 'i-shield-alert'], Medium: ['sv-med', 'i-triangle-alert'], Low: ['sv-low', 'i-info'] };
+    let nchg = 0;
+    const recent = RC.map(ch => { const i = matchOf(rules, ch), s = i > -1 ? rules[i].s : 'Medium', was = sevOf(saved, ch), changed = s !== was; if (changed) nchg++; return { path: ch[0], chg: ch[1], find: ch[2], rule: i > -1 ? 'Rule ' + (i + 1) : 'Default', sev: s, sevCls: SC[s][0], sevIcon: SC[s][1], changed, was, cls: changed ? 'chg' : '' }; });
+    const nbad = bad.filter(Boolean).length;
+    return { hasErr: nbad > 0, errHead: nbad + (nbad === 1 ? ' rule needs' : ' rules need') + ' a path glob', has: rules.length > 0, none: rules.length === 0, countText: rules.length + (rules.length === 1 ? ' rule' : ' rules'), changeOpts: CH, findOpts: FT,
+      rules: rules.map((r, i) => ({ n: i + 1, g: r.g, c: r.c, f: r.f, s: r.s, err: bad[i], errCls: bad[i] ? 'err' : '', shadow: shadow[i], cls: bad[i] ? 'er' : '',
+        setG: ev => setR(rules.map((x, j) => j === i ? { ...x, g: ev.target.value } : x)), setC: ev => setR(rules.map((x, j) => j === i ? { ...x, c: ev.target.value } : x)), setF: ev => setR(rules.map((x, j) => j === i ? { ...x, f: ev.target.value } : x)), setS: ev => setR(rules.map((x, j) => j === i ? { ...x, s: ev.target.value } : x)),
+        up: () => setR(this.mv(rules, i, -1)), down: () => setR(this.mv(rules, i, 1)), del: () => setR(rules.filter((x, j) => j !== i)) })),
+      add: () => setR(rules.concat([{ id: 'sn' + rules.length, g: '', c: 'Any', f: 'Any', s: 'Medium' }])), revert: () => this.set('s.rules', saved.map(x => ({ ...x }))),
+      save: () => { if (nbad) { this.say('Fix the empty globs first'); return; } this.set('s.base', rules.map(x => ({ ...x }))); this.say('Severity rules saved · applies to new findings'); },
+      recent, pvSum: nchg ? nchg + (nchg === 1 ? ' change' : ' changes') + ' of severity against the saved rules' : 'Same severities as the saved rules' };
+  }
+
+  v_retention(st) {
+    const D0 = st === 'editing' ? '90' : st === 'error' ? '14' : st === 'empty' ? '' : '180', L0 = st === 'error' ? '' : st === 'empty' ? '' : '50';
+    const ds = this.V('r.days', D0), ls = this.V('r.last', L0);
+    const savedD = this.V('r.sd', st === 'empty' ? 0 : 180), savedL = this.V('r.sl', st === 'empty' ? 0 : 50);
+    const D = Number(ds), L = Number(ls);
+    const dErr = /^\d+$/.test(ds.trim()) ? (D < 30 ? 'Minimum is 30 days. The audit hash chain is verified every day against older versions.' : D > 3650 ? 'Maximum is 3,650 days' : '') : (ds.trim() ? 'Enter a whole number of days' : 'Enter the number of days');
+    const lErr = /^\d+$/.test(ls.trim()) ? (L < 5 ? 'Keep at least 5 versions per file' : L > 1000 ? 'Maximum is 1,000 versions' : '') : (ls.trim() ? 'Enter a whole number' : 'Enter the number of versions');
+    const unset = savedD === 0, touched = st !== 'empty' || ds !== '' || ls !== '';
+    const dOk = !dErr, lOk = !lErr;
+    const useD = dOk ? D : (savedD || 180), useL = lOk ? L : (savedL || 50);
+    const mdl = (d, l) => { const v = Math.min(380000, Math.round(41208 * Math.pow(180 / d, 0.9) * Math.pow(50 / l, 0.5))); return { v, gb: 3.2 * v / 41208, files: Math.min(1942, Math.round(1942 * Math.pow(Math.min(1, v / 41208), 0.35))), kept: Math.round(318 * Math.pow(180 / d, 0.5)) }; };
+    const cur = mdl(useD, useL), prev = savedD ? mdl(savedD, savedL) : null;
+    const fm = n => n.toLocaleString('en-US');
+    const showErr = (st === 'error' || this.V('r.tried', false));
+    const nerr = (dErr && (showErr || ds) ? 1 : 0) + (lErr && (showErr || ls) ? 1 : 0);
+    const hist = st === 'empty' ? [] : [['Oct 9 03:00', '180 d · 50', '3,402', '0.4 GB'], ['Oct 8 03:00', '180 d · 50', '2,911', '0.3 GB'], ['Oct 7 03:00', '180 d · 50', '3,118', '0.4 GB']];
+    return { unset: unset && st === 'empty', usage: '41.6 GB across 412,806 versions', hasErr: nerr > 0, errHead: nerr + (nerr === 1 ? ' field needs' : ' fields need') + ' attention',
+      days: ds, last: ls, dErr: dErr && (showErr || ds) ? dErr : '', lErr: lErr && (showErr || ls) ? lErr : '', dCls: dErr && (showErr || ds) ? 'err' : '', lCls: lErr && (showErr || ls) ? 'err' : '',
+      setDays: ev => this.set('r.days', ev.target.value), setLast: ev => this.set('r.last', ev.target.value),
+      pvFor: useD + ' days · last ' + useL, gb: cur.gb.toFixed(1), was: prev && Math.abs(prev.gb - cur.gb) >= 0.05 ? 'was ' + prev.gb.toFixed(1) + ' GB at ' + savedD + ' days' : (prev ? 'same as the saved policy' : 'no policy saved'), vers: fm(cur.v), files: 'across ' + fm(cur.files) + ' files', kept: fm(cur.kept) + ' blobs',
+      next: 'Oct 10, 03:00', hist, noHist: hist.length === 0,
+      revert: () => { this.clear('r.d'); this.clear('r.l'); this.many({ 'r.tried': false }); this.setState(s => { const o = { ...s.o }; delete o['r.days']; delete o['r.last']; return { o }; }); },
+      save: () => { if (dErr || lErr) { this.set('r.tried', true); return; } this.many({ 'r.sd': D, 'r.sl': L, 'r.tried': false }); this.say('Retention saved · next purge Oct 10 03:00 frees about ' + cur.gb.toFixed(1) + ' GB'); } };
+  }
+
+  renderVals() {
+    const sec = this.P('section', 'users'), st = this.P('state', 'view'), role = this.P('role', 'Admin');
+    const mcpOn = String(this.P('mcp', 'true')) !== 'false', loading = st === 'loading', allowed = role === 'Admin';
+    const V = { users: this.v_users(st), swimlanes: this.v_swimlanes(st), paths: this.v_paths(st), merge: this.v_merge(st), tiers: this.v_tiers(st), folders: this.v_folders(st), notify: this.v_notify(st), mcp: this.v_mcp(st), sentinels: this.v_sentinels(st), oslogin: this.v_oslogin(st), severity: this.v_severity(st), retention: this.v_retention(st) };
+    const H = { users: ['Users and access requests', 'Approve new sign-ins, set roles, and choose whose changes need an Admin’s approval.'], swimlanes: ['Swimlanes and agents', 'Register the swimlanes Lanekeeper manages and check that each agent is healthy.'], paths: ['Path mappings', 'How a file in a Git repo maps to its place on the NFS server, and back.'], merge: ['Merge modes', 'Whether a tenant file replaces its base file or merges into it, decided by file path. The first matching rule wins.'], tiers: ['Host tiers', 'Classify hostnames found in config values as dev, uat or prod, so findings can flag a prod host in a SIT file.'], folders: ['Folder mappings', 'Link each NFS folder to the Deployment that reads it, so a restart targets the right service.'], notify: ['Notifications', 'Send events to Microsoft Teams, one webhook per notification type.'], mcp: ['MCP personal tokens', 'Tokens that let a Cursor agent act as a user. The agent proposes changes; an Admin still approves them.'], sentinels: ['Sentinels', 'The agent on each NFS VM that records who edits files. A missing heartbeat means edits go unrecorded.'], oslogin: ['OS Login user mapping', 'Match the Linux account that edited a file on a VM to a Lanekeeper user. Matched by email, with manual overrides.'], severity: ['Severity rules', 'Set a finding’s severity by path, change type and finding type. The first matching rule wins.'], retention: ['Retention', 'How long file versions are kept, and what a purge would delete before it runs.'] }[sec];
+    const grp = [['Access', [['users', 'Users and access requests', 'i-user', V.users.reqOpen ? '1' : '', 'wa']]], ['Infrastructure', [['swimlanes', 'Swimlanes and agents', 'i-layers', '', ''], ['sentinels', 'Sentinels', 'i-radio', V.sentinels.alert ? String(V.sentinels.rows.filter(r => r.status === 'Heartbeat gap').length) : '', 'hi'], ['tiers', 'Host tiers', 'i-tag', '', '']]], ['Mapping and rules', [['paths', 'Path mappings', 'i-arrow-left-right', '', ''], ['merge', 'Merge modes', 'i-split', '', ''], ['severity', 'Severity rules', 'i-shield-alert', '', ''], ['folders', 'Folder mappings', 'i-folder', V.folders.has ? String(V.folders.rows.filter(r => r.canAct).length) : '', 'wa'], ['oslogin', 'OS Login users', 'i-server', V.oslogin.has ? String(V.oslogin.rows.filter(r => !r.user).length || '') : '', 'wa']]], ['Data and alerts', [['retention', 'Retention', 'i-hourglass', '', ''], ['notify', 'Notifications', 'i-bell', '', '']].concat(mcpOn ? [['mcp', 'MCP personal tokens', 'i-zap', '', '']] : [])]];
+    const nav = grp.map(([label, items]) => ({ label, items: items.map(([id, l, icon, n, nb]) => ({ label: l, icon, n, nbCls: nb, cur: id === sec ? 'page' : undefined, cls: id === sec ? 'cur' : '', go: () => this.many({ section: id, state: 'view' }) })) }));
+    const is = {}; Object.keys(V).forEach(k => { is[k] = sec === k && !loading; });
+    const TOAST = { users: 'Sam Okafor can sign in as Editor · audit event 18,471', swimlanes: 'sitd registered. Its join token is shown once below.', paths: 'Path mapping saved · applies on the next sync', merge: 'Merge modes saved · applies to the next sync', tiers: 'Host tiers saved · applies to the next scan', folders: '2 folders confirmed', notify: 'Webhook saved for Certificate expiring. It’s masked from now on.', mcp: 'Token created for Dana Okoye. It’s shown once.', sentinels: 'Heartbeat gap limit saved: 3 min', oslogin: '1 mapping saved · applies to new audit events', severity: 'Severity rules saved · applies to new findings', retention: 'Retention saved · next purge Oct 10, 03:00' };
+    const tOpen = this.V('toast', ''), toastText = tOpen || (st === 'saved' && this.V('toastShown', true) ? TOAST[sec] : '');
+    return { locked: !allowed, allowed, role, nav, loading, is, h: { title: H[0], lead: H[1] }, skel: [0, 1, 2, 3, 4, 5].map(i => ({ a: [120, 160, 96][i % 3] + 'px', b: [220, 180, 260][i % 3] + 'px', c: [80, 64, 100][i % 3] + 'px' })),
+      u: V.users, sw: V.swimlanes, p: V.paths, m: V.merge, t: V.tiers, f: V.folders, n: V.notify, mc: V.mcp, se: V.sentinels, os: V.oslogin, sv: V.severity, r: V.retention, toastOn: !!toastText, toastText };
+  }
+}
+
+</script>
+</body>
+</html>

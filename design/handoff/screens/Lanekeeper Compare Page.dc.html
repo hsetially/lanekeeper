@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<style>
+*{box-sizing:border-box}
+a{color:var(--link)}
+a:hover{color:var(--primary-hover)}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+@keyframes lk-spin{to{transform:rotate(360deg)}}
+@keyframes lk-pulse{0%,100%{opacity:1}50%{opacity:.3}}
+</style>
+</helmet>
+<div style="position:relative;flex:1;min-width:0;width:100%;height:100%;min-height:0;display:flex;flex-direction:column;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:13px;line-height:18px;-webkit-font-smoothing:antialiased">
+<div style="flex:1;min-height:0;width:100%;max-width:1680px;margin:0 auto;display:flex;flex-direction:column;padding:16px 24px 0">
+
+  <div style="flex:none;display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px 16px;padding-bottom:12px">
+    <div style="display:flex;flex-direction:column;gap:4px"><h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600;letter-spacing:-0.01em">Compare</h1><span style="color:var(--muted-foreground)">{{ subtitle }}</span></div>
+    <div role="group" aria-label="Compare mode" style="display:inline-flex;border:1px solid var(--input);border-radius:4px;overflow:hidden;background:var(--background)">
+      <button type="button" aria-pressed="{{ isGrid }}" onClick="{{ setGrid }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:0;background:{{ mgBg }};font-family:inherit;font-size:13px;font-weight:{{ mgFw }};color:var(--foreground);cursor:pointer" style-hover="background:var(--secondary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/layers.svg) center/contain no-repeat"></span>One file across swimlanes</button>
+      <button type="button" aria-pressed="{{ isLanes }}" onClick="{{ setLanes }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:0;border-left:1px solid var(--input);background:{{ mlBg }};font-family:inherit;font-size:13px;font-weight:{{ mlFw }};color:var(--foreground);cursor:pointer" style-hover="background:var(--secondary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/folder-open.svg) center/contain no-repeat"></span>Whole swimlane</button>
+    </div>
+  </div>
+
+  <sc-if value="{{ isGrid }}" hint-placeholder-val="{{ true }}">
+  <div style="position:relative;flex:1;min-height:0;margin-bottom:16px;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--card)" aria-busy="{{ loading }}">
+
+    <div style="position:relative;z-index:6;flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:40px;padding:6px 8px;border-bottom:1px solid var(--border);background:var(--muted)">
+      <button type="button" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-label="Logical file: tx-infinity-api/tx-infinity-core.yml" style="display:inline-flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:4px;border:1px solid var(--input);background:var(--background);cursor:pointer;opacity:{{ tbOp }}" style-hover="background:var(--accent)">
+        <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/file-code.svg) center/contain no-repeat"></span>
+        <span style="font-family:var(--font-mono);font-size:12px;font-weight:500">tx-infinity-api/tx-infinity-core.yml</span>
+        <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/chevrons-up-down.svg) center/contain no-repeat"></span>
+      </button>
+      <button type="button" aria-haspopup="dialog" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:4px;border:1px solid {{ laneBd }};background:{{ laneBg }};color:{{ laneFg }};font-weight:500;cursor:pointer;opacity:{{ tbOp }}" style-hover="background:var(--accent)">
+        <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/server.svg) center/contain no-repeat"></span>{{ laneText }}
+        <span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/chevron-down.svg) center/contain no-repeat"></span>
+      </button>
+      <span aria-hidden="true" style="width:1px;height:20px;background:var(--border)"></span>
+      <button type="button" role="switch" aria-checked="{{ onlyDiff }}" onClick="{{ toggleOD }}" style="display:inline-flex;align-items:center;gap:8px;height:28px;padding:0 6px;border:0;border-radius:4px;background:transparent;font-family:inherit;font-size:13px;color:var(--foreground);cursor:pointer;opacity:{{ tbOp }}" style-hover="background:var(--accent)">
+        <span aria-hidden="true" style="position:relative;width:28px;height:16px;flex:none;border-radius:999px;background:{{ odTrack }};border:1px solid {{ odBd }}"><span style="position:absolute;top:1px;left:{{ odLeft }};width:12px;height:12px;border-radius:999px;background:{{ odThumb }};transition:left 100ms cubic-bezier(0.2,0,0,1)"></span></span>Only differing rows
+      </button>
+      <div role="group" aria-label="Channel filter" style="display:inline-flex;align-items:center;gap:4px;opacity:{{ tbOp }}">
+        <span style="font-size:12px;color:var(--muted-foreground);padding:0 4px">Channel</span>
+        <sc-for list="{{ chList }}" as="ch" hint-placeholder-count="3">
+          <button type="button" aria-pressed="{{ ch.on }}" onClick="{{ ch.click }}" style="display:inline-flex;align-items:center;gap:4px;height:28px;padding:0 8px;border-radius:4px;border:1px {{ ch.bs }} {{ ch.bd }};background:{{ ch.bg }};color:{{ ch.fg }};font-family:var(--font-mono);font-size:12px;cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ ch.icon }}.svg) center/contain no-repeat"></span>{{ ch.name }}</button>
+        </sc-for>
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;height:28px;width:240px;padding:0 4px 0 8px;border-radius:4px;border:1px solid var(--input);background:var(--background);opacity:{{ tbOp }}">
+        <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/search.svg) center/contain no-repeat"></span>
+        <input type="text" value="{{ q }}" onInput="{{ onQ }}" placeholder="Search settings in this file…" aria-label="Search settings" style="flex:1;min-width:0;height:26px;border:0;outline:0;background:transparent;font-family:var(--font-mono);font-size:12px;color:var(--foreground)">
+        <kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">/</kbd>
+      </label>
+      <span style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums">
+        <sc-if value="{{ loading }}" hint-placeholder-val="{{ false }}"><span role="status" style="display:inline-flex;align-items:center;gap:6px;color:var(--foreground)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/loader-circle.svg) center/contain no-repeat;animation:lk-spin 900ms linear infinite"></span>Reading effective files · 4 of 6 swimlanes</span></sc-if>
+        <sc-if value="{{ showCount }}" hint-placeholder-val="{{ true }}"><span>{{ countText }}</span></sc-if>
+      </span>
+    </div>
+
+    <sc-if value="{{ hasPicks }}" hint-placeholder-val="{{ false }}">
+    <div role="status" style="position:relative;z-index:5;flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:36px;padding:4px 12px;background:var(--info-bg);color:var(--info-fg);border-bottom:1px solid var(--info-border)">
+      <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:16px;height:16px;border-radius:4px;background:var(--primary);color:var(--primary-foreground);font-size:12px;line-height:16px;font-weight:600;text-align:center">A</span><span style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ pickLaneA }}</span><span style="font-family:var(--font-mono);font-size:12px">{{ pickValA }}</span></span>
+      <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/arrow-left-right.svg) center/contain no-repeat"></span>
+      <sc-if value="{{ hasB }}" hint-placeholder-val="{{ false }}"><span style="display:inline-flex;align-items:center;gap:6px"><span style="width:16px;height:16px;border-radius:4px;background:var(--primary);color:var(--primary-foreground);font-size:12px;line-height:16px;font-weight:600;text-align:center">B</span><span style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ pickLaneB }}</span><span style="font-family:var(--font-mono);font-size:12px">{{ pickValB }}</span></span></sc-if>
+      <sc-if value="{{ noB }}" hint-placeholder-val="{{ true }}"><span>Click another cell in the same row</span></sc-if>
+      <span style="margin-left:auto;display:inline-flex;align-items:center;gap:8px">
+        <sc-if value="{{ hasB }}" hint-placeholder-val="{{ false }}"><button type="button" onClick="{{ toggleDrawer }}" style="display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-family:inherit;font-size:12px;font-weight:500;cursor:pointer" style-hover="background:var(--primary-hover)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/columns-2.svg) center/contain no-repeat"></span>{{ drawerBtn }}</button></sc-if>
+        <button type="button" onClick="{{ clearPicks }}" style="display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 8px;border-radius:4px;border:1px solid transparent;background:transparent;color:inherit;font-family:inherit;font-size:12px;cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/x.svg) center/contain no-repeat"></span>Clear</button>
+      </span>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ showOffBanner }}" hint-placeholder-val="{{ false }}">
+    <div role="status" style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:36px;padding:4px 12px;background:var(--warning-bg);color:var(--warning-fg);border-bottom:1px solid var(--warning-border)">
+      <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/wifi-off.svg) center/contain no-repeat"></span>
+      <strong style="font-weight:600">presitb agent is offline</strong>
+      <span>Its column shows the NFS files as of 10:28, 14 min ago. The other five columns are live.</span>
+      <button type="button" style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:4px;border:1px solid currentColor;background:transparent;color:inherit;font-family:inherit;font-size:12px;font-weight:500;cursor:pointer"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/refresh-cw.svg) center/contain no-repeat"></span>Retry presitb</button>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ tooMany }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;min-height:0;overflow:auto;display:flex;justify-content:center;padding:32px 24px">
+      <div role="alert" style="width:100%;max-width:680px;height:fit-content;display:flex;flex-direction:column;gap:16px;padding:16px;border:1px solid var(--danger-border);border-radius:6px;background:var(--card)">
+        <div style="display:flex;gap:12px;align-items:flex-start">
+          <span aria-hidden="true" style="width:28px;height:28px;flex:none;border-radius:4px;border:1px solid var(--danger-border);background:var(--danger-bg);color:var(--danger-fg);display:inline-flex;align-items:center;justify-content:center"><span style="width:16px;height:16px;background:currentColor;mask:url(assets/icons/triangle-alert.svg) center/contain no-repeat"></span></span>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <strong style="font-size:16px;line-height:22px;font-weight:600">Compare up to 40 swimlanes at a time</strong>
+            <span style="color:var(--muted-foreground)">You selected 43. Each swimlane is one column, and past 40 the values stop being readable. Remove 3 to continue, or keep the first 40.</span>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <span style="font-size:12px;font-weight:500;color:var(--muted-foreground)">Selected swimlanes · <span style="color:var(--danger-fg)">3 over the limit</span></span>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">
+            <sc-for list="{{ tmChips }}" as="c" hint-placeholder-count="12">
+              <span style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 6px;border-radius:4px;border:1px solid {{ c.bd }};background:{{ c.bg }};color:{{ c.fg }};font-family:var(--font-mono);font-size:12px">{{ c.n }}<sc-if value="{{ c.over }}" hint-placeholder-val="{{ false }}"><span aria-hidden="true" style="width:10px;height:10px;flex:none;background:currentColor;mask:url(assets/icons/x.svg) center/contain no-repeat"></span></sc-if></span>
+            </sc-for>
+          </div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+          <button type="button" onClick="{{ fixTM }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-family:inherit;font-size:13px;font-weight:500;cursor:pointer" style-hover="background:var(--primary-hover)">Keep the first 40</button>
+          <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-family:inherit;font-size:13px;font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)">Choose swimlanes…</button>
+          <span style="margin-left:auto;font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums">43 / 40</span>
+        </div>
+      </div>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ showGrid }}" hint-placeholder-val="{{ true }}">
+    <div style="flex:1;min-height:0;display:flex">
+      <div role="grid" aria-label="tx-infinity-core.yml across swimlanes" aria-rowcount="{{ rowCount }}" aria-colcount="7" ref="{{ setSc }}" onScroll="{{ onScroll }}" style="position:relative;flex:1;min-width:0;overflow:auto">
+        <div style="position:relative;width:1240px;min-width:100%">
+          <div role="row" style="position:sticky;top:0;z-index:4;display:grid;grid-template-columns:340px repeat(6,150px);width:100%;border-bottom:1px solid var(--border);background:var(--muted)">
+            <div role="columnheader" style="position:sticky;left:0;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:8px;height:68px;padding:0 10px 0 12px;background:var(--muted);box-shadow:inset -1px 0 0 var(--border);font-size:12px;font-weight:500;color:var(--muted-foreground)"><span>Setting path</span><span>Line</span></div>
+            <sc-for list="{{ heads }}" as="h" hint-placeholder-count="6">
+              <div role="columnheader" title="{{ h.tip }}" style="display:flex;flex-direction:column;justify-content:center;gap:4px;min-width:0;height:68px;padding:0 10px;border-left:1px {{ h.bs }} var(--border);background:var(--muted)">
+                <span style="display:flex;align-items:center;gap:6px;min-width:0">
+                  <span style="flex:none;display:inline-flex;align-items:center;height:18px;padding:0 4px;border-radius:4px;border:1px solid {{ h.tb }};background:{{ h.tbg }};color:{{ h.tfg }};font-family:var(--font-mono);font-size:12px;font-weight:500;letter-spacing:0.04em">{{ h.tier }}</span>
+                  <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono);font-size:12px;font-weight:500">{{ h.n }}</span>
+                  <sc-if value="{{ h.dotOn }}" hint-placeholder-val="{{ true }}"><span title="Agent online" style="width:8px;height:8px;flex:none;border-radius:999px;background:var(--agent-online)"></span></sc-if>
+                  <sc-if value="{{ h.dotOff }}" hint-placeholder-val="{{ false }}"><span title="Agent offline" style="width:8px;height:8px;flex:none;border-radius:2px;background:var(--agent-offline);transform:rotate(45deg)"></span></sc-if>
+                </span>
+                <sc-if value="{{ h.hasEff }}" hint-placeholder-val="{{ true }}"><span style="align-self:flex-start;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid {{ h.cbd }};background:{{ h.cbg }};color:{{ h.cfg }};font-family:var(--font-mono);font-size:12px;font-weight:500;white-space:nowrap"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ h.effIcon }}.svg) center/contain no-repeat"></span>{{ h.effText }}</span></sc-if>
+                <sc-if value="{{ h.sk }}" hint-placeholder-val="{{ false }}"><span style="height:20px;width:88px;border-radius:4px;background:var(--accent)"></span></sc-if>
+                <sc-if value="{{ h.isOff }}" hint-placeholder-val="{{ false }}"><span role="status" style="align-self:flex-start;display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 6px;border-radius:999px;border:1px dashed var(--input);color:var(--muted-foreground);font-size:12px;font-weight:500;white-space:nowrap"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/wifi-off.svg) center/contain no-repeat"></span>as of 10:28</span></sc-if>
+                <sc-if value="{{ h.showNote }}" hint-placeholder-val="{{ true }}"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:16px;color:var(--muted-foreground)">{{ h.note }}</span></sc-if>
+              </div>
+            </sc-for>
+          </div>
+
+          <sc-if value="{{ loading }}" hint-placeholder-val="{{ false }}">
+          <div role="status" aria-label="Loading settings" style="width:100%">
+            <sc-for list="{{ skRows }}" as="sk" hint-placeholder-count="18">
+              <div style="display:grid;grid-template-columns:340px repeat(6,150px);width:100%;height:28px;border-bottom:1px solid var(--border)">
+                <div style="position:sticky;left:0;z-index:2;display:flex;align-items:center;padding:0 12px;background:var(--card)"><span style="height:10px;width:{{ sk.a }};border-radius:3px;background:var(--accent)"></span></div>
+                <div style="display:flex;align-items:center;padding:0 10px"><span style="height:10px;width:{{ sk.b }};border-radius:3px;background:var(--accent)"></span></div>
+                <div style="display:flex;align-items:center;padding:0 10px"><span style="height:10px;width:{{ sk.c }};border-radius:3px;background:var(--accent)"></span></div>
+                <div style="display:flex;align-items:center;padding:0 10px"><span style="height:10px;width:{{ sk.b }};border-radius:3px;background:var(--accent)"></span></div>
+                <div style="display:flex;align-items:center;padding:0 10px"><span style="height:10px;width:{{ sk.d }};border-radius:3px;background:var(--accent)"></span></div>
+                <div style="display:flex;align-items:center;padding:0 10px"><span style="height:10px;width:{{ sk.c }};border-radius:3px;background:var(--accent)"></span></div>
+                <div style="display:flex;align-items:center;padding:0 10px"><span style="height:10px;width:{{ sk.b }};border-radius:3px;background:var(--accent)"></span></div>
+              </div>
+            </sc-for>
+          </div>
+          </sc-if>
+
+          <sc-if value="{{ noRows }}" hint-placeholder-val="{{ false }}">
+          <div style="position:sticky;left:0;width:100%;max-width:{{ emptyW }};display:flex;flex-direction:column;align-items:center;gap:8px;padding:56px 24px;text-align:center">
+            <span aria-hidden="true" style="width:36px;height:36px;border-radius:999px;border:1px solid {{ emptyBd }};background:{{ emptyBg }};color:{{ emptyFg }};display:inline-flex;align-items:center;justify-content:center"><span style="width:18px;height:18px;background:currentColor;mask:url(assets/icons/{{ emptyIcon }}.svg) center/contain no-repeat"></span></span>
+            <strong style="font-size:14px;line-height:20px;font-weight:600">{{ emptyTitle }}</strong>
+            <span style="max-width:420px;color:var(--muted-foreground)">{{ emptyText }}</span>
+            <button type="button" onClick="{{ resetFilters }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-family:inherit;font-size:13px;font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)">{{ emptyBtn }}</button>
+          </div>
+          </sc-if>
+
+          <sc-if value="{{ hasRows }}" hint-placeholder-val="{{ true }}">
+          <div role="rowgroup" style="position:relative;width:100%;height:{{ bodyH }}px">
+            <sc-for list="{{ vrows }}" as="r" hint-placeholder-count="22">
+              <div role="row" style="position:absolute;left:0;right:0;top:{{ r.top }}px;height:28px;display:grid;grid-template-columns:340px repeat(6,150px);border-bottom:1px solid var(--border)">
+                <div role="rowheader" style="position:sticky;left:0;z-index:2;display:flex;align-items:center;gap:8px;min-width:0;height:27px;padding:0 10px 0 12px;background:var(--card);box-shadow:inset -1px 0 0 var(--border)">
+                  <span style="display:flex;flex:1;min-width:0;font-family:var(--font-mono);font-size:12px;line-height:18px"><span style="flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted-foreground)">{{ r.parent }}</span><span style="flex:none;white-space:nowrap;font-weight:{{ r.lfw }};color:{{ r.lc }}">{{ r.leaf }}</span></span>
+                  <span style="flex:none;font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums">L{{ r.line }}</span>
+                </div>
+                <sc-for list="{{ r.cells }}" as="c" hint-placeholder-count="6">
+                  <div role="gridcell" aria-selected="{{ c.sel }}" title="{{ c.title }}" onClick="{{ c.click }}" style="position:relative;display:flex;align-items:center;min-width:0;height:27px;padding:0 10px;border-left:1px {{ c.bs }} var(--border);background:{{ c.bg }};box-shadow:{{ c.sh }};cursor:pointer" style-hover="box-shadow:inset 0 0 0 1px var(--input)">
+                    <sc-if value="{{ c.isVal }}" hint-placeholder-val="{{ true }}"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);font-size:12px;font-weight:{{ c.fw }};color:{{ c.fg }}">{{ c.t }}</span></sc-if>
+                    <sc-if value="{{ c.isAbs }}" hint-placeholder-val="{{ false }}"><span style="font-size:12px;font-style:italic;color:var(--muted-foreground)">absent</span></sc-if>
+                    <sc-if value="{{ c.mark }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;top:5px;right:5px;width:16px;height:16px;border-radius:4px;background:var(--primary);color:var(--primary-foreground);font-size:12px;line-height:16px;font-weight:600;text-align:center">{{ c.letter }}</span></sc-if>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-for>
+          </div>
+          </sc-if>
+        </div>
+      </div>
+      <sc-if value="{{ showRuler }}" hint-placeholder-val="{{ false }}">
+      <div role="presentation" title="Where the differing rows are. Click to jump." onClick="{{ onRuler }}" style="position:relative;flex:none;width:16px;display:flex;flex-direction:column;border-left:1px solid var(--border);background:var(--muted);cursor:pointer">
+        <sc-for list="{{ ruler }}" as="rb" hint-placeholder-count="100"><span style="flex:1;min-height:0;background:var(--diff-mod-fg);opacity:{{ rb.o }}"></span></sc-for>
+        <span style="position:absolute;left:0;right:0;top:{{ thumbTop }}%;height:{{ thumbH }}%;min-height:6px;border:1px solid var(--foreground);background:transparent"></span>
+      </div>
+      </sc-if>
+    </div>
+    </sc-if>
+
+    <div style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:4px 16px;min-height:28px;padding:0 12px;border-top:1px solid var(--border);background:var(--muted);font-size:12px;color:var(--muted-foreground)">
+      <span style="font-variant-numeric:tabular-nums">{{ rangeText }}</span>
+      <span style="display:inline-flex;align-items:center;gap:6px"><span aria-hidden="true" style="width:14px;height:12px;border-radius:2px;background:var(--diff-mod-bg);border:1px solid var(--warning-border)"></span>Value differs</span>
+      <span style="display:inline-flex;align-items:center;gap:6px"><span aria-hidden="true" style="width:14px;height:12px;border-radius:2px;background:var(--diff-empty-bg);border:1px solid var(--border)"></span><em>absent</em> = key is not in the file</span>
+      <span style="display:inline-flex;align-items:center;gap:6px"><span style="font-family:var(--font-mono);color:var(--foreground)">""</span>empty = key is there, value is blank</span>
+      <span style="margin-left:auto">Shared settings always show. Channel filter applies to channels.*</span>
+    </div>
+
+    <sc-if value="{{ drawerOpen }}" hint-placeholder-val="{{ false }}">
+    <aside role="dialog" aria-label="Diff at setting" style="position:absolute;z-index:30;top:0;right:0;bottom:0;width:640px;max-width:100%;display:flex;flex-direction:column;background:var(--popover);color:var(--popover-foreground);border-left:1px solid var(--border);box-shadow:var(--shadow-popover)">
+      <div style="flex:none;display:flex;align-items:flex-start;gap:8px;padding:12px 12px 10px 16px;border-bottom:1px solid var(--border)">
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px">
+          <span style="font-size:16px;line-height:22px;font-weight:600">Diff at setting</span>
+          <span style="font-family:var(--font-mono);font-size:12px;line-height:18px;overflow-wrap:anywhere">{{ dPath }}</span>
+          <span style="display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;font-size:12px;color:var(--muted-foreground)"><span style="display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--border);font-family:var(--font-mono);color:var(--foreground)">{{ dLines }}</span>{{ dSummary }}</span>
+        </div>
+        <button type="button" aria-label="Close diff" onClick="{{ toggleDrawer }}" style="flex:none;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:4px;background:transparent;color:var(--muted-foreground);cursor:pointer" style-hover="background:var(--accent);color:var(--foreground)"><span aria-hidden="true" style="width:16px;height:16px;background:currentColor;mask:url(assets/icons/x.svg) center/contain no-repeat"></span></button>
+      </div>
+      <sc-if value="{{ dSame }}" hint-placeholder-val="{{ false }}">
+      <div role="status" style="flex:none;display:flex;align-items:center;gap:8px;padding:8px 16px;background:var(--info-bg);color:var(--info-fg);border-bottom:1px solid var(--info-border)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/info.svg) center/contain no-repeat"></span><span>{{ dSameText }}</span></div>
+      </sc-if>
+      <div style="flex:none;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);border-bottom:1px solid var(--border)">
+        <sc-for list="{{ dSides }}" as="sd" hint-placeholder-count="2">
+          <div style="min-width:0;display:flex;flex-direction:column;gap:4px;padding:8px 12px;border-right:{{ sd.br }}">
+            <span style="display:flex;align-items:center;gap:6px;min-width:0"><span style="width:16px;height:16px;flex:none;border-radius:4px;background:var(--primary);color:var(--primary-foreground);font-size:12px;line-height:16px;font-weight:600;text-align:center">{{ sd.letter }}</span><span style="flex:none;display:inline-flex;align-items:center;height:18px;padding:0 4px;border-radius:4px;border:1px solid {{ sd.tb }};background:{{ sd.tbg }};color:{{ sd.tfg }};font-family:var(--font-mono);font-size:12px;font-weight:500;letter-spacing:0.04em">{{ sd.tier }}</span><span style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ sd.n }}</span>
+              <span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid {{ sd.cbd }};background:{{ sd.cbg }};color:{{ sd.cfg }};font-family:var(--font-mono);font-size:12px;font-weight:500;white-space:nowrap"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ sd.effIcon }}.svg) center/contain no-repeat"></span>{{ sd.effText }}</span></span>
+            <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">{{ sd.file }}</span>
+          </div>
+        </sc-for>
+      </div>
+      <div style="flex:1;min-height:0;overflow:auto;background:linear-gradient(to right,transparent calc(50% - 0.5px),var(--border) calc(50% - 0.5px),var(--border) calc(50% + 0.5px),transparent calc(50% + 0.5px))">
+        <sc-for list="{{ dRows }}" as="r" hint-placeholder-count="8">
+          <sc-if value="{{ r.isHunk }}" hint-placeholder-val="{{ false }}"><div style="display:flex;align-items:center;height:20px;padding:0 12px;background:var(--diff-hunk-bg);color:var(--diff-hunk-fg);font-family:var(--font-mono);font-size:12px">{{ r.t }}</div></sc-if>
+          <sc-if value="{{ r.isCode }}" hint-placeholder-val="{{ true }}"><div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);height:18px;font-family:var(--font-mono);font-size:12px;line-height:18px">
+            <div style="display:flex;min-width:0;background:{{ r.lbg }}"><span style="width:44px;flex:none;text-align:right;padding-right:8px;color:var(--muted-foreground);background:{{ r.lgut }}">{{ r.lno }}</span><span style="width:16px;flex:none;text-align:center;color:{{ r.lmc }}">{{ r.lm }}</span><span style="min-width:0;white-space:pre;overflow:hidden">{{ r.la }}<span style="background:{{ r.lwb }}">{{ r.lw }}</span>{{ r.lb }}</span></div>
+            <div style="display:flex;min-width:0;background:{{ r.rbg }}"><span style="width:44px;flex:none;text-align:right;padding-right:8px;color:var(--muted-foreground);background:{{ r.rgut }}">{{ r.rno }}</span><span style="width:16px;flex:none;text-align:center;color:{{ r.rmc }}">{{ r.rm }}</span><span style="min-width:0;white-space:pre;overflow:hidden">{{ r.ra }}<span style="background:{{ r.rwb }}">{{ r.rw }}</span>{{ r.rb }}</span></div>
+          </div></sc-if>
+        </sc-for>
+      </div>
+      <div style="flex:none;display:flex;align-items:center;gap:8px;min-height:44px;padding:8px 12px;border-top:1px solid var(--border);background:var(--muted)">
+        <button type="button" onClick="{{ swapPicks }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:4px;border:1px solid transparent;background:transparent;font-family:inherit;font-size:13px;cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/arrow-left-right.svg) center/contain no-repeat"></span>Swap A and B</button>
+        <span style="margin-left:auto;font-size:12px;color:var(--muted-foreground)">Read only. Edit from a file view.</span>
+        <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-family:inherit;font-size:13px;font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/file-code.svg) center/contain no-repeat"></span>Open file view</button>
+      </div>
+    </aside>
+    </sc-if>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ isLanes }}" hint-placeholder-val="{{ false }}">
+  <div style="flex:1;min-height:0;display:flex;flex-direction:column">
+    <div style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding-bottom:12px">
+      <button type="button" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-label="Left side: sitb" style="display:inline-flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:4px;border:1px solid var(--input);background:var(--background);cursor:pointer" style-hover="background:var(--accent)"><span style="display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--input);font-family:var(--font-mono);font-size:12px;font-weight:500;letter-spacing:0.04em">SIT</span><span style="font-family:var(--font-mono);font-size:12px;font-weight:500">sitb</span><span style="display:inline-flex;align-items:center;gap:4px;font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/git-branch.svg) center/contain no-repeat"></span>sit7</span><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/chevrons-up-down.svg) center/contain no-repeat"></span></button>
+      <button type="button" aria-label="Swap sides" title="Swap sides" onClick="{{ noop }}" style="width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--muted-foreground);cursor:pointer" style-hover="background:var(--accent);color:var(--foreground)"><span aria-hidden="true" style="width:16px;height:16px;background:currentColor;mask:url(assets/icons/arrow-left-right.svg) center/contain no-repeat"></span></button>
+      <div role="group" aria-label="Compare against" style="display:inline-flex;border:1px solid var(--input);border-radius:4px;overflow:hidden;background:var(--background)">
+        <sc-for list="{{ tgts }}" as="t" hint-placeholder-count="3">
+          <button type="button" aria-pressed="{{ t.on }}" onClick="{{ t.click }}" style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 8px;border:0;border-left:{{ t.bl }};background:{{ t.bg }};font-family:inherit;font-size:13px;font-weight:{{ t.fw }};color:var(--foreground);cursor:pointer" style-hover="background:var(--secondary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/{{ t.icon }}.svg) center/contain no-repeat"></span>{{ t.label }}</button>
+        </sc-for>
+      </div>
+      <button type="button" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-label="Right side: {{ rightVal }}" style="display:inline-flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:4px;border:1px solid var(--input);background:var(--background);cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/{{ rightIcon }}.svg) center/contain no-repeat"></span><span style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ rightVal }}</span><span style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">{{ rightSub }}</span><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/chevrons-up-down.svg) center/contain no-repeat"></span></button>
+      <span style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums">
+        <sc-if value="{{ lLoading }}" hint-placeholder-val="{{ false }}"><span role="status" style="display:inline-flex;align-items:center;gap:6px;color:var(--foreground)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/loader-circle.svg) center/contain no-repeat;animation:lk-spin 900ms linear infinite"></span>Reading directories · 31 of 43</span></sc-if>
+        <sc-if value="{{ lReady }}" hint-placeholder-val="{{ true }}"><span>{{ lStatus }}</span></sc-if>
+      </span>
+      <button type="button" aria-label="Compare again" title="Compare again" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;opacity:{{ lBtnOp }}" style-hover="background:var(--secondary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/refresh-cw.svg) center/contain no-repeat"></span>Compare again</button>
+    </div>
+
+    <sc-if value="{{ lOffline }}" hint-placeholder-val="{{ false }}">
+    <div role="status" style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:36px;margin-bottom:12px;padding:4px 12px;border:1px solid var(--warning-border);border-radius:6px;background:var(--warning-bg);color:var(--warning-fg)">
+      <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/wifi-off.svg) center/contain no-repeat"></span>
+      <strong style="font-weight:600">presitb agent is offline</strong>
+      <span>The right side shows its NFS files as of 10:28, 14 min ago. Differences made since then are not included.</span>
+      <button type="button" style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:4px;border:1px solid currentColor;background:transparent;color:inherit;font-family:inherit;font-size:12px;font-weight:500;cursor:pointer"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/refresh-cw.svg) center/contain no-repeat"></span>Retry presitb</button>
+    </div>
+    </sc-if>
+
+    <div style="flex:none;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;padding-bottom:12px">
+      <sc-for list="{{ cards }}" as="c" hint-placeholder-count="4">
+        <button type="button" aria-pressed="{{ c.pressed }}" onClick="{{ c.click }}" style="display:flex;align-items:center;gap:12px;min-width:0;height:56px;padding:0 12px;text-align:left;border:1px solid var(--border);border-radius:6px;background:{{ c.cbg }};box-shadow:{{ c.sh }};font-family:inherit;color:var(--foreground);cursor:{{ c.cur }}" style-hover="background:var(--accent)">
+          <span aria-hidden="true" style="width:28px;height:28px;flex:none;border-radius:4px;border:1px solid {{ c.bd }};background:{{ c.bg }};color:{{ c.fg }};display:inline-flex;align-items:center;justify-content:center"><span style="width:14px;height:14px;background:currentColor;mask:url(assets/icons/{{ c.icon }}.svg) center/contain no-repeat"></span></span>
+          <sc-if value="{{ lLoading }}" hint-placeholder-val="{{ false }}"><span style="display:flex;flex-direction:column;gap:6px"><span style="height:14px;width:28px;border-radius:3px;background:var(--accent)"></span><span style="height:10px;width:110px;border-radius:3px;background:var(--accent)"></span></span></sc-if>
+          <sc-if value="{{ lReady }}" hint-placeholder-val="{{ true }}"><span style="min-width:0;display:flex;align-items:baseline;gap:8px"><span style="font-size:20px;line-height:26px;font-weight:600;font-variant-numeric:tabular-nums">{{ c.n }}</span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted-foreground)">{{ c.label }}</span></span></sc-if>
+        </button>
+      </sc-for>
+    </div>
+
+    <sc-if value="{{ lIdentical }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;min-height:0;margin-bottom:16px;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:6px;background:var(--card)">
+      <div role="status" style="display:flex;flex-direction:column;align-items:center;gap:12px;max-width:480px;padding:24px;text-align:center">
+        <span aria-hidden="true" style="width:64px;height:64px;border-radius:999px;border:1px solid var(--success-border);background:var(--success-bg);color:var(--success-fg);display:inline-flex;align-items:center;justify-content:center"><span style="width:32px;height:32px;background:currentColor;mask:url(assets/icons/check.svg) center/contain no-repeat"></span></span>
+        <h2 style="margin:0;font-size:20px;line-height:26px;font-weight:600;letter-spacing:-0.01em">{{ idTitle }}</h2>
+        <p style="margin:0;color:var(--muted-foreground)">{{ idText }}</p>
+        <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:8px;padding-top:4px">
+          <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-family:inherit;font-size:13px;font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)">Compare with something else</button>
+          <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid transparent;background:transparent;font-family:inherit;font-size:13px;cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/refresh-cw.svg) center/contain no-repeat"></span>Compare again</button>
+        </div>
+        <span style="font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">{{ idMeta }}</span>
+      </div>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ lSplit }}" hint-placeholder-val="{{ true }}">
+    <div style="flex:1;min-height:0;margin-bottom:16px;display:grid;grid-template-columns:420px minmax(0,1fr);border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--card)" aria-busy="{{ lLoading }}">
+
+      <div style="min-width:0;min-height:0;display:flex;flex-direction:column;border-right:1px solid var(--border)">
+        <div style="flex:none;display:flex;align-items:center;gap:8px;height:40px;padding:0 8px 0 12px;border-bottom:1px solid var(--border);background:var(--muted)">
+          <span style="font-weight:500">Differing directories</span>
+          <span style="color:var(--muted-foreground);font-variant-numeric:tabular-nums">{{ treeSum }}</span>
+          <span style="margin-left:auto;display:inline-flex;gap:2px">
+            <button type="button" onClick="{{ expandAll }}" style="height:24px;padding:0 6px;border-radius:4px;border:1px solid transparent;background:transparent;font-family:inherit;font-size:12px;cursor:pointer" style-hover="background:var(--accent)">Expand</button>
+            <button type="button" onClick="{{ collapseAll }}" style="height:24px;padding:0 6px;border-radius:4px;border:1px solid transparent;background:transparent;font-family:inherit;font-size:12px;cursor:pointer" style-hover="background:var(--accent)">Collapse</button>
+          </span>
+        </div>
+        <div role="tree" aria-label="Differing files" style="flex:1;min-height:0;overflow:auto">
+          <sc-if value="{{ lLoading }}" hint-placeholder-val="{{ false }}">
+          <div role="status" aria-label="Loading directories">
+            <sc-for list="{{ skTree }}" as="sk" hint-placeholder-count="14"><div style="display:flex;align-items:center;gap:8px;height:28px;padding:0 12px 0 {{ sk.ind }}px"><span style="width:14px;height:14px;flex:none;border-radius:3px;background:var(--accent)"></span><span style="height:10px;width:{{ sk.w }};border-radius:3px;background:var(--accent)"></span></div></sc-for>
+          </div>
+          </sc-if>
+          <sc-for list="{{ trows }}" as="t" hint-placeholder-count="14">
+            <sc-if value="{{ t.isDir }}" hint-placeholder-val="{{ false }}">
+              <div role="treeitem" aria-expanded="{{ t.open }}" onClick="{{ t.click }}" style="display:flex;align-items:center;gap:6px;height:28px;padding:0 12px 0 {{ t.ind }}px;cursor:pointer" style-hover="background:var(--accent)">
+                <span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/{{ t.chev }}.svg) center/contain no-repeat"></span>
+                <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/{{ t.fico }}.svg) center/contain no-repeat"></span>
+                <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);font-size:12px;font-weight:500">{{ t.name }}</span>
+                <span title="{{ t.count }} differing files" style="min-width:20px;height:18px;padding:0 5px;display:inline-flex;align-items:center;justify-content:center;border-radius:4px;border:1px solid var(--input);background:var(--background);font-size:12px;font-weight:500;font-variant-numeric:tabular-nums">{{ t.count }}</span>
+              </div>
+            </sc-if>
+            <sc-if value="{{ t.isFile }}" hint-placeholder-val="{{ true }}">
+              <div role="treeitem" aria-selected="{{ t.sel }}" onClick="{{ t.click }}" style="display:flex;align-items:center;gap:6px;height:28px;padding:0 12px 0 {{ t.ind }}px;background:{{ t.bg }};box-shadow:{{ t.sh }};cursor:pointer" style-hover="background:var(--accent)">
+                <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/{{ t.fico }}.svg) center/contain no-repeat"></span>
+                <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);font-size:12px;font-weight:{{ t.fw }}">{{ t.name }}</span>
+                <sc-if value="{{ t.hasStat }}" hint-placeholder-val="{{ false }}"><span style="flex:none;font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums">{{ t.stat }}</span></sc-if>
+                <span style="flex:none;display:inline-flex;align-items:center;gap:3px;height:20px;padding:0 5px;border-radius:4px;border:1px solid {{ t.kbd }};background:{{ t.kbg }};color:{{ t.kfg }};font-size:12px;line-height:16px;font-weight:500;white-space:nowrap"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ t.kicon }}.svg) center/contain no-repeat"></span>{{ t.klabel }}</span>
+              </div>
+            </sc-if>
+          </sc-for>
+        </div>
+        <div style="flex:none;display:flex;align-items:center;gap:6px;min-height:28px;padding:0 12px;border-top:1px solid var(--border);background:var(--muted);font-size:12px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--success-fg);mask:url(assets/icons/circle-check.svg) center/contain no-repeat"></span><span style="font-variant-numeric:tabular-nums">{{ treeFoot }}</span></div>
+      </div>
+
+      <div style="min-width:0;min-height:0;display:flex;flex-direction:column">
+        <sc-if value="{{ pNone }}" hint-placeholder-val="{{ false }}">
+        <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:24px;text-align:center"><span aria-hidden="true" style="width:20px;height:20px;background:var(--muted-foreground);mask:url(assets/icons/columns-2.svg) center/contain no-repeat"></span><strong style="font-size:14px;font-weight:600">{{ pNoneTitle }}</strong><span style="max-width:320px;color:var(--muted-foreground)">{{ pNoneText }}</span></div>
+        </sc-if>
+        <sc-if value="{{ pHas }}" hint-placeholder-val="{{ true }}">
+        <div style="flex:none;display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-bottom:1px solid var(--border)">
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px">
+            <span aria-hidden="true" style="width:16px;height:16px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/{{ pIcon }}.svg) center/contain no-repeat"></span>
+            <h2 style="margin:0;font-family:var(--font-mono);font-size:14px;line-height:20px;font-weight:500;overflow-wrap:anywhere">{{ pPath }}</h2>
+            <span style="display:inline-flex;align-items:center;gap:3px;height:20px;padding:0 5px;border-radius:4px;border:1px solid {{ pKbd }};background:{{ pKbg }};color:{{ pKfg }};font-size:12px;line-height:16px;font-weight:500;white-space:nowrap"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ pKicon }}.svg) center/contain no-repeat"></span>{{ pKlabel }}</span>
+            <span style="color:var(--muted-foreground);font-variant-numeric:tabular-nums">{{ pStat }}</span>
+          </div>
+        </div>
+        <div style="flex:none;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);border-bottom:1px solid var(--border)">
+          <sc-for list="{{ pSides }}" as="sd" hint-placeholder-count="2">
+            <div style="min-width:0;display:flex;flex-direction:column;gap:2px;padding:6px 12px;border-right:{{ sd.br }};background:{{ sd.bg }}">
+              <span style="display:flex;align-items:center;gap:6px;min-width:0;font-size:12px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ sd.icon }}.svg) center/contain no-repeat"></span><span>{{ sd.kind }}</span><span style="font-family:var(--font-mono);color:var(--foreground)">{{ sd.where }}</span>
+                <sc-if value="{{ sd.isOff }}" hint-placeholder-val="{{ false }}"><span style="display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 6px;border-radius:999px;border:1px dashed var(--input);white-space:nowrap"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/wifi-off.svg) center/contain no-repeat"></span>as of 10:28</span></sc-if></span>
+              <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);font-size:12px;color:{{ sd.fc }}">{{ sd.file }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ pBinary }}" hint-placeholder-val="{{ false }}">
+        <div style="flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:24px;text-align:center">
+          <span aria-hidden="true" style="width:20px;height:20px;background:var(--muted-foreground);mask:url(assets/icons/file-image.svg) center/contain no-repeat"></span>
+          <strong style="font-size:14px;font-weight:600">Binary files differ</strong>
+          <span style="max-width:360px;color:var(--muted-foreground)">Binary content is compared by hash, not line by line.</span>
+          <div style="display:grid;grid-template-columns:auto auto;gap:4px 16px;font-family:var(--font-mono);font-size:12px;text-align:left">
+            <span style="color:var(--muted-foreground)">{{ pHashL }}</span><span>{{ pHashLv }}</span>
+            <span style="color:var(--muted-foreground)">{{ pHashR }}</span><span>{{ pHashRv }}</span>
+          </div>
+        </div>
+        </sc-if>
+        <sc-if value="{{ pText }}" hint-placeholder-val="{{ true }}">
+        <div style="flex:1;min-height:0;overflow:auto;background:linear-gradient(to right,transparent calc(50% - 0.5px),var(--border) calc(50% - 0.5px),var(--border) calc(50% + 0.5px),transparent calc(50% + 0.5px))">
+          <sc-for list="{{ pRows }}" as="r" hint-placeholder-count="20">
+            <sc-if value="{{ r.isFold }}" hint-placeholder-val="{{ false }}"><div style="display:flex;align-items:center;gap:6px;height:24px;padding:0 12px;background:var(--muted);border-top:1px solid var(--border);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/chevrons-up-down.svg) center/contain no-repeat"></span>{{ r.t }}</div></sc-if>
+            <sc-if value="{{ r.isHunk }}" hint-placeholder-val="{{ false }}"><div style="display:flex;align-items:center;height:20px;padding:0 12px;background:var(--diff-hunk-bg);color:var(--diff-hunk-fg);font-family:var(--font-mono);font-size:12px">{{ r.t }}</div></sc-if>
+            <sc-if value="{{ r.isCode }}" hint-placeholder-val="{{ true }}"><div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);height:18px;font-family:var(--font-mono);font-size:12px;line-height:18px">
+              <div style="display:flex;min-width:0;background:{{ r.lbg }}"><span style="width:44px;flex:none;text-align:right;padding-right:8px;color:var(--muted-foreground);background:{{ r.lgut }}">{{ r.lno }}</span><span style="width:16px;flex:none;text-align:center;color:{{ r.lmc }}">{{ r.lm }}</span><span style="min-width:0;white-space:pre;overflow:hidden">{{ r.la }}<span style="background:{{ r.lwb }}">{{ r.lw }}</span>{{ r.lb }}</span></div>
+              <div style="display:flex;min-width:0;background:{{ r.rbg }}"><span style="width:44px;flex:none;text-align:right;padding-right:8px;color:var(--muted-foreground);background:{{ r.rgut }}">{{ r.rno }}</span><span style="width:16px;flex:none;text-align:center;color:{{ r.rmc }}">{{ r.rm }}</span><span style="min-width:0;white-space:pre;overflow:hidden">{{ r.ra }}<span style="background:{{ r.rwb }}">{{ r.rw }}</span>{{ r.rb }}</span></div>
+            </div></sc-if>
+          </sc-for>
+        </div>
+        </sc-if>
+        </sc-if>
+      </div>
+    </div>
+    </sc-if>
+  </div>
+  </sc-if>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;mode&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;grid&quot;,&quot;options&quot;:[&quot;grid&quot;,&quot;lanes&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Compare&quot;},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;default&quot;,&quot;options&quot;:[&quot;default&quot;,&quot;loading&quot;,&quot;toomany&quot;,&quot;identical&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Compare&quot;},&quot;offline&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Compare&quot;},&quot;onlydiff&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Grid&quot;},&quot;drawer&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Grid&quot;},&quot;target&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;lane&quot;,&quot;options&quot;:[&quot;lane&quot;,&quot;branch&quot;,&quot;tag&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Whole swimlane&quot;}}">
+const LANES = [
+  { n: 'sit', tier: 'SIT', kind: 'tenant', br: 'sit1', base: 'v2.3.1', rate: [0.045, 0.006, 0.003] },
+  { n: 'sitb', tier: 'SIT', kind: 'tenant', br: 'sit7', base: 'v2.3.1', rate: [0.07, 0.01, 0.004] },
+  { n: 'sitc', tier: 'SIT', kind: 'base', br: 'sit9', ver: 'v2.3.1', rate: [0, 0, 0] },
+  { n: 'presita', tier: 'PRESIT', kind: 'tenant', br: 'sit11', base: 'v2.3.0', rate: [0.09, 0.02, 0.006] },
+  { n: 'presitb', tier: 'PRESIT', kind: 'tenant', br: 'sit12', base: 'v2.3.1', rate: [0.05, 0.008, 0.004] },
+  { n: 'presitc', tier: 'PRESIT', kind: 'base', br: 'sit13', ver: 'v2.3.1', rate: [0, 0, 0] }
+];
+const TIER = { SIT: ['var(--input)', 'transparent', 'var(--foreground)'], PRESIT: ['var(--muted-foreground)', 'var(--muted-foreground)', 'var(--background)'] };
+const CHS = ['remote-itm-teller', 'atm-iso', 'atm'];
+const SHIFT = [-12, -37, 0, 112, 8, 0];
+const H = (a, b) => { let x = Math.imul(a + 1, 374761393) ^ Math.imul(b + 7, 668265263); x = Math.imul(x ^ (x >>> 13), 1274126177); x ^= x >>> 16; return (x >>> 0) / 4294967296; };
+const fmt = n => Number(n).toLocaleString('en-US');
+const fileOf = j => LANES[j].kind === 'tenant' ? 'tx-infinity-core-' + LANES[j].br + '.yml' : 'tx-infinity-core.yml';
+const CHSPEC = [
+  { s: 'limits', g: ['withdrawal', 'deposit', 'transfer', 'balance-inquiry', 'bill-pay', 'cash-advance'], k: [['max', 'n', [5000, 10000, 20000, 50000, 100000]], ['min', 'n', [1, 5, 10, 20]], ['daily-max', 'n', [20000, 50000, 100000, 250000]], ['per-txn-max', 'n', [2000, 5000, 10000]], ['currency', 's', ['USD', 'EUR', 'GBP', 'CAD', 'MXN']], ['velocity-window-sec', 'n', [60, 300, 900, 3600]]] },
+  { s: 'timeouts', g: ['host', 'dispenser', 'card-reader', 'pin-pad', 'session', 'printer'], k: [['connect-ms', 'n', [500, 1000, 1500, 3000]], ['read-ms', 'n', [2000, 5000, 10000, 30000]], ['idle-ms', 'n', [15000, 30000, 60000]], ['retries', 'n', [0, 1, 2, 3, 5]], ['backoff-ms', 'n', [100, 250, 500, 1000]]] },
+  { s: 'routing', g: ['primary', 'secondary', 'fallback-1', 'fallback-2'], k: [['host', 's', ['hsm-sit-01.itm.internal', 'hsm-sit-02.itm.internal', 'auth-gw.sit.internal', 'iso-switch-b.sit.internal']], ['port', 'n', [8443, 9443, 7001, 5672]], ['tls', 'b'], ['weight', 'n', [10, 25, 50, 100]], ['priority', 'n', [1, 2, 3, 4, 5]]] },
+  { s: 'receipts', g: ['customer', 'merchant'], k: [['enabled', 'b'], ['template', 's', ['receipt-v2', 'receipt-v3', 'receipt-compact']], ['copies', 'n', [1, 2]], ['footer', 's', ['Thank you', 'Keep this receipt', 'Call 1-800-555-0142']]] },
+  { s: 'iso8583', g: ['field-2', 'field-3', 'field-4', 'field-11', 'field-37', 'field-39', 'field-41', 'field-52'], k: [['length', 'n', [8, 12, 16, 19]], ['encoding', 's', ['ASCII', 'EBCDIC', 'BCD']], ['required', 'b'], ['mask', 's', ['none', 'pan-6-4', 'full']]] },
+  { s: 'features', g: ['cardless-withdrawal', 'balance-after-withdrawal', 'multi-currency', 'quick-cash', 'deposit-escrow'], k: [['enabled', 'b'], ['rollout-pct', 'n', [0, 10, 25, 50, 100]], ['min-app-version', 's', ['4.2.0', '4.3.1', '4.4.0', '5.0.0']]] }
+];
+const SHSPEC = [
+  { s: 'pool', g: ['db', 'host-conn', 'cache'], k: [['max-size', 'n', [20, 50, 100]], ['min-idle', 'n', [2, 5, 10]], ['validate', 'b'], ['timeout-ms', 'n', [1000, 3000, 5000]]] },
+  { s: 'logging', g: ['audit', 'app', 'trace'], k: [['level', 's', ['INFO', 'WARN', 'DEBUG']], ['retention-days', 'n', [7, 14, 30, 90]], ['json', 'b']] },
+  { s: 'metrics', g: ['jvm', 'http', 'queue'], k: [['enabled', 'b'], ['interval-sec', 'n', [10, 15, 30, 60]], ['prefix', 's', ['tx.core', 'tx.itm', 'tx.sit']]] }
+];
+let ROWS = null;
+function rows() {
+  if (ROWS) return ROWS;
+  const out = []; let line = 26;
+  const mk = (ch, prefix, S, gn, k) => {
+    const i = out.length, kind = k[1], opts = kind === 'b' ? ['true', 'false'] : k[2];
+    const bi = kind === 'b' ? (H(i, 1) < 0.7 ? 0 : 1) : Math.floor(H(i, 1) * opts.length);
+    const base = String(opts[bi]), alt = String(opts[(bi + 1 + Math.floor(H(i, 2) * (opts.length - 1))) % opts.length]);
+    const extra = H(i, 3) < 0.02;
+    const cells = LANES.map((L, j) => {
+      const u = H(i, 10 + j);
+      if (L.kind === 'base') return extra ? { k: 'a' } : { k: 'v', t: base };
+      if (extra) return u < 0.6 ? { k: 'v', t: H(i, 30 + j) < 0.5 ? base : alt } : { k: 'a' };
+      const r = L.rate;
+      if (u < r[0]) return { k: 'v', t: alt };
+      if (u < r[0] + r[1]) return { k: 'a' };
+      if (u < r[0] + r[1] + r[2]) return kind === 's' ? { k: 'e' } : { k: 'v', t: alt };
+      return { k: 'v', t: base };
+    });
+    const key = c => c.k === 'a' ? '\u0000a' : c.k === 'e' ? '\u0000e' : c.t;
+    const cnt = {}; cells.forEach(c => { const x = key(c); cnt[x] = (cnt[x] || 0) + 1; });
+    let modal = null, mc = 0; cells.forEach(c => { const x = key(c); if (cnt[x] > mc) { mc = cnt[x]; modal = x; } });
+    const dc = cells.map(c => key(c) !== modal);
+    line += 1 + Math.floor(H(i, 4) * 3);
+    const path = prefix + S.s + '.' + gn + '.' + k[0];
+    out.push({ i, path, parent: path.slice(0, path.lastIndexOf('.') + 1), leaf: k[0], ch, line, cells, dc, differ: dc.some(Boolean) });
+  };
+  const gen = (quota, ch, specs) => {
+    let c = 0, r = 0; const prefix = ch ? 'channels.' + ch + '.' : 'core.';
+    while (c < quota) { for (const S of specs) for (const g of S.g) { const gn = r ? g + '-' + (r + 1) : g; for (const k of S.k) { if (c++ >= quota) return; mk(ch, prefix, S, gn, k); } } r++; }
+  };
+  gen(440, null, SHSPEC);
+  CHS.forEach(ch => gen(1520, ch, CHSPEC));
+  ROWS = out; return out;
+}
+const ALL = [
+  ['tx-infinity-api/tx-infinity-core.yml', 'c', 7, 5], ['tx-infinity-api/tx-infinity-gateway.yml', 'c', 3, 3], ['tx-infinity-api/tx-infinity-ledger.yml', 'c', 1, 1],
+  ['tx-infinity-api/tx-infinity-limits.yml', 'l', 42, 0], ['security/security-roles.yml', 'c', 4, 1], ['security/keystore.jks', 'b'],
+  ['resources/receipt-logo.jpeg', 'b'], ['resources/receipt-footer.txt', 'r', 6, 0], ['messaging/queues/queue-routes.yml', 'c', 5, 2],
+  ['messaging/queues/dlq-policy.yml', 'r', 18, 0], ['ops/batch/batch-schedule.yml', 'c', 2, 2], ['ops/batch/nightly-jobs.yml', 'l', 31, 0], ['ops/batch/retry-policy.yml', 'l', 12, 0]
+];
+const SUBSET = {
+  lane: null,
+  branch: ['tx-infinity-api/tx-infinity-core.yml', 'tx-infinity-api/tx-infinity-ledger.yml', 'messaging/queues/queue-routes.yml', 'ops/batch/nightly-jobs.yml'],
+  tag: ['tx-infinity-api/tx-infinity-core.yml', 'tx-infinity-api/tx-infinity-gateway.yml', 'security/security-roles.yml', 'tx-infinity-api/tx-infinity-limits.yml', 'resources/receipt-footer.txt', 'messaging/queues/dlq-policy.yml']
+};
+const TGT = {
+  lane: { icon: 'server', label: 'Swimlane' },
+  branch: { icon: 'git-branch', label: 'Git branch' },
+  tag: { icon: 'tag', label: 'Git tag' }
+};
+const SKIND = {
+  c: { icon: 'arrow-left-right', fg: 'var(--diff-mod-fg)', bg: 'var(--diff-mod-bg)', bd: 'var(--warning-border)' },
+  l: { icon: 'minus', fg: 'var(--diff-del-fg)', bg: 'var(--diff-del-bg)', bd: 'var(--danger-border)' },
+  r: { icon: 'plus', fg: 'var(--diff-add-fg)', bg: 'var(--diff-add-bg)', bd: 'var(--success-border)' }
+};
+const SIDE = {
+  ctx: { bg: 'var(--card)', gut: 'var(--muted)', m: '', mc: 'inherit', wb: 'transparent' },
+  del: { bg: 'var(--diff-del-bg)', gut: 'var(--diff-del-gutter)', m: '−', mc: 'var(--diff-del-fg)', wb: 'var(--diff-del-word)' },
+  add: { bg: 'var(--diff-add-bg)', gut: 'var(--diff-add-gutter)', m: '+', mc: 'var(--diff-add-fg)', wb: 'var(--diff-add-word)' },
+  empty: { bg: 'var(--diff-empty-bg)', gut: 'var(--diff-empty-bg)', m: '', mc: 'inherit', wb: 'transparent' }
+};
+function side(kind, no, text, word) {
+  const S = SIDE[kind]; let a = text || '', w = '', b = '';
+  if (word && a.lastIndexOf(word) >= 0) { const ix = a.lastIndexOf(word); w = word; b = a.slice(ix + word.length); a = a.slice(0, ix); }
+  return { bg: S.bg, gut: S.gut, m: S.m, mc: S.mc, wb: S.wb, no: kind === 'empty' ? '' : fmt(no), a, w, b };
+}
+function code(l, r) { return { isCode: true, lbg: l.bg, lgut: l.gut, lm: l.m, lmc: l.mc, lwb: l.wb, lno: l.no, la: l.a, lw: l.w, lb: l.b, rbg: r.bg, rgut: r.gut, rm: r.m, rmc: r.mc, rwb: r.wb, rno: r.no, ra: r.a, rw: r.w, rb: r.b }; }
+function hunkRows(start, specs, head) {
+  let ln = start[0], rn = start[1]; const out = [{ isHunk: true, t: head }];
+  specs.forEach(s => {
+    const k = s[0];
+    if (k === 'c') { out.push(code(side('ctx', ln++, s[1]), side('ctx', rn++, s[1]))); }
+    else if (k === 'm') { out.push(code(side('del', ln++, s[1], s[3]), side('add', rn++, s[2], s[4]))); }
+    else if (k === 'a') { out.push(code(side('empty'), side('add', rn++, s[1]))); }
+    else if (k === 'd') { out.push(code(side('del', ln++, s[1]), side('empty'))); }
+  });
+  return out;
+}
+const MODS = [['  timeout-ms: 5000', '  timeout-ms: 10000', '5000', '10000'], ['  retries: 2', '  retries: 3', '2', '3'], ['  enabled: false', '  enabled: true', 'false', 'true'], ['  max-batch: 200', '  max-batch: 500', '200', '500']];
+const ADDS = ['  jitter-ms: 250', '  dead-letter: true', '  ttl-sec: 3600', '  priority: 2', '  owner: platform-ops', '  notify: ops-sit'];
+const DELS = ['  legacy-mode: true', '  poll-ms: 1000'];
+function coreDiff() {
+  return [].concat(
+    hunkRows([48, 48], [['c', '    limits:'], ['c', '      withdrawal:'], ['m', '        max: 2000', '        max: 2500', '2000', '2500'], ['c', '        min: 20'], ['a', '        per-txn-max: 1500'], ['c', '        currency: USD'], ['c', '      deposit:']], '@@ -48,7 +48,8 @@ channels.atm.limits.withdrawal'),
+    [{ isFold: true, t: '212 unchanged lines' }],
+    hunkRows([268, 269], [['c', '      host:'], ['c', '        connect-ms: 1500'], ['m', '        read-ms: 5000', '        read-ms: 10000', '5000', '10000'], ['a', '        idle-ms: 30000'], ['c', '        retries: 2'], ['d', '        backoff-ms: 250'], ['c', '      dispenser:']], '@@ -268,7 +269,7 @@ channels.remote-itm-teller.timeouts.host'),
+    [{ isFold: true, t: '1,893 unchanged lines' }],
+    hunkRows([2174, 2175], [['c', '      cardless-withdrawal:'], ['m', '        enabled: false', '        enabled: true', 'false', 'true'], ['a', '        rollout-pct: 25'], ['m', '        min-app-version: 4.3.1', '        min-app-version: 4.4.0', '4.3.1', '4.4.0'], ['c', '      quick-cash:']], '@@ -2174,5 +2175,6 @@ channels.atm-iso.features'),
+    [{ isFold: true, t: '2,826 unchanged lines' }]
+  );
+}
+function genChanged(path, a, d) {
+  const m = Math.min(a, d), ea = a - m, ed = d - m, sp = [['c', 'settings:']];
+  for (let x = 0; x < m; x++) { const md = MODS[x % 4]; sp.push(['m', md[0], md[1], md[2], md[3]]); }
+  for (let x = 0; x < ea; x++) sp.push(['a', ADDS[x % 6]]);
+  for (let x = 0; x < ed; x++) sp.push(['d', DELS[x % 2]]);
+  sp.push(['c', '  owner: platform-ops']);
+  const base = path.split('/').pop();
+  return hunkRows([12, 12], sp, '@@ -12,' + (m + ed + 2) + ' +12,' + (m + ea + 2) + ' @@ ' + base).concat([{ isFold: true, t: fmt(40 + a * 9) + ' unchanged lines' }]);
+}
+function genOnly(path, count, left) {
+  const base = path.split('/').pop();
+  const seeds = ['# ' + base, 'version: 3', 'enabled: true', 'entries:', '  - name: primary', '    interval-sec: 300', '    max-attempts: 5', '  - name: secondary', '    interval-sec: 900', '    max-attempts: 3', 'timezone: UTC', 'owner: platform-ops', 'retention-days: 14', 'notify:', '  channel: ops-sit'];
+  const n = Math.min(14, count), out = [{ isHunk: true, t: '@@ ' + (left ? '-1,' + count + ' +0,0' : '-0,0 +1,' + count) + ' @@ ' + base }];
+  for (let x = 0; x < n; x++) out.push(left ? code(side('del', x + 1, seeds[x]), side('empty')) : code(side('empty'), side('add', x + 1, seeds[x])));
+  if (count > n) out.push({ isFold: true, t: fmt(count - n) + ' more lines ' + (left ? 'removed' : 'added') });
+  return out;
+}
+
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    const p = this.props, b = this._b;
+    const lanes = p.mode === 'lanes', st = p.state || 'default';
+    this.state = {
+      mode: lanes ? 'lanes' : 'grid', onlyDiff: p.onlydiff === undefined ? true : (p.onlydiff === true || p.onlydiff === 'true'),
+      ch: { 'remote-itm-teller': true, 'atm-iso': true, 'atm': true }, q: p.search || '', picks: [], drawer: false, st: 0, vh: 700,
+      loading: st === 'loading', tm: st === 'toomany', ident: st === 'identical',
+      target: p.target || 'lane', file: p.fsel || 'tx-infinity-api/tx-infinity-core.yml', closed: {}, filter: 'all'
+    };
+    const drawer = p.drawer === true || p.drawer === 'true';
+    if (typeof p.crow === 'number' || (p.crow && !isNaN(+p.crow))) this.state.st = +p.crow * 28;
+    if (drawer) {
+      const fl = this.filtered(), absent = p.pickkind === 'absent';
+      let j = fl.findIndex((r, x) => x >= 8 && (absent ? (r.cells[0].k === 'v' && r.cells[1].k === 'a') : (r.cells[0].k === 'v' && r.cells[1].k === 'v' && r.cells[0].t !== r.cells[1].t)));
+      if (j < 0) j = 8;
+      this.state.picks = [{ r: fl[j].i, l: 0 }, { r: fl[j].i, l: 1 }]; this.state.drawer = true;
+      this.state.st = Math.max(0, j - 7) * 28;
+    }
+  }
+  _b = v => v === true || v === 'true';
+  _init = false;
+  filtered() {
+    const s = this.state, key = [s.onlyDiff, s.ch['remote-itm-teller'], s.ch['atm-iso'], s.ch['atm'], s.q].join('|');
+    if (this._fk === key) return this._fl;
+    const q = s.q.trim().toLowerCase();
+    const out = rows().filter(r => (!s.onlyDiff || r.differ) && (!r.ch || s.ch[r.ch]) && (!q || r.path.indexOf(q) >= 0));
+    const B = 120, buckets = new Array(B).fill(0);
+    out.forEach((r, x) => { if (r.differ) buckets[Math.min(B - 1, Math.floor(x * B / out.length))]++; });
+    const per = out.length / B;
+    this._ruler = buckets.map(c => ({ o: c ? Math.min(1, 0.2 + c / per * 1.5).toFixed(2) : 0 }));
+    this._fk = key; this._fl = out; return out;
+  }
+  setSc = el => {
+    this._sc = el;
+    if (!el) { this._init = false; return; }
+    if (!this._init) { this._init = true; el.scrollTop = this.state.st; const vh = el.clientHeight; if (vh && Math.abs(vh - this.state.vh) > 2) this.setState({ vh }); }
+  };
+  onScroll = e => { const el = e.currentTarget; if (Math.abs(el.scrollTop - this.state.st) >= 1) this.setState({ st: el.scrollTop, vh: el.clientHeight }); };
+  onRuler = e => {
+    const r = e.currentTarget.getBoundingClientRect(), f = (e.clientY - r.top) / r.height, n = this.filtered().length;
+    if (this._sc) this._sc.scrollTop = Math.max(0, f * (n * 28 + 68) - this.state.vh / 2);
+  };
+  pick(r, l) {
+    const pk = this.state.picks, ix = pk.findIndex(q => q.r === r && q.l === l);
+    if (ix >= 0) { this.setState({ picks: pk.filter((_, i) => i !== ix), drawer: false }); return; }
+    if (pk.length === 1 && pk[0].r === r) this.setState({ picks: [pk[0], { r, l }], drawer: true });
+    else this.setState({ picks: [{ r, l }], drawer: false });
+  }
+  gridVals() {
+    const s = this.state, p = this.props, b = this._b, all = rows(), fl = this.filtered(), n = fl.length;
+    const off = b(p.offline), loading = s.loading, tm = s.tm;
+    const start = Math.max(0, Math.floor(s.st / 28) - 6), end = Math.min(n, start + Math.ceil(s.vh / 28) + 14);
+    const vrows = [];
+    for (let x = start; x < end; x++) {
+      const r = fl[x];
+      const cells = r.cells.map((c, j) => {
+        const pk = s.picks.findIndex(q => q.r === r.i && q.l === j), isAbs = c.k === 'a', dif = r.differ && r.dc[j], offCol = off && j === 4;
+        const t = c.k === 'e' ? '""' : (c.t || '');
+        return {
+          isAbs, isVal: !isAbs, t, title: LANES[j].n + ' · ' + (isAbs ? 'absent: the key is not in the effective file' : r.leaf + ' = ' + t),
+          bg: isAbs ? 'var(--diff-empty-bg)' : (dif ? 'var(--diff-mod-bg)' : 'transparent'),
+          fg: offCol ? 'var(--muted-foreground)' : (r.differ ? 'var(--foreground)' : 'var(--muted-foreground)'), fw: dif ? 500 : 400,
+          sh: pk >= 0 ? 'inset 0 0 0 2px var(--primary)' : 'none', sel: pk >= 0, mark: pk >= 0, letter: pk === 0 ? 'A' : 'B',
+          bs: offCol ? 'dashed' : 'solid', click: () => this.pick(r.i, j)
+        };
+      });
+      vrows.push({ top: x * 28, parent: r.parent, leaf: r.leaf, line: fmt(r.line), lc: r.differ ? 'var(--foreground)' : 'var(--muted-foreground)', lfw: r.differ ? 500 : 400, cells });
+    }
+    const heads = LANES.map((L, j) => {
+      const ten = L.kind === 'tenant', t = TIER[L.tier], isOff = off && j === 4;
+      return {
+        n: L.n, tier: L.tier, tb: t[0], tbg: t[1], tfg: t[2], dotOn: !isOff, dotOff: isOff, isOff, bs: isOff ? 'dashed' : 'solid',
+        hasEff: !loading, sk: loading, effIcon: ten ? 'git-branch' : 'tag', effText: ten ? 'tenant ' + L.br : 'base ' + L.ver,
+        cbg: ten ? 'var(--info-bg)' : 'transparent', cbd: ten ? 'var(--info-border)' : 'var(--input)', cfg: ten ? 'var(--info-fg)' : 'var(--foreground)',
+        note: ten ? 'beside base ' + L.base : 'no ' + L.br + ' file', showNote: !loading && !isOff,
+        tip: ten ? L.n + ' reads ' + fileOf(j) + ', the tenant file beside the base file' : L.n + ' reads the base file tx-infinity-core.yml (' + L.ver + '). There is no ' + L.br + ' tenant file for it.'
+      };
+    });
+    const tmNames = ['sit'].concat('bcdefghijklmnopqrstuvwxyz'.split('').map(c => 'sit' + c), 'abcdefghijklmnopqr'.split('').map(c => 'presit' + c)).slice(0, 43);
+    const dv = this.drawerVals(all);
+    const noRows = !loading && !tm && n === 0, filtersOn = s.q.trim() || !(s.ch['remote-itm-teller'] && s.ch['atm-iso'] && s.ch['atm']);
+    const nTotal = all.length, nDiff = all.filter(r => r.differ).length;
+    const pa = s.picks[0], pb = s.picks[1], valOf = q => { const c = all[q.r].cells[q.l]; return c.k === 'a' ? 'absent' : (c.k === 'e' ? '""' : c.t); };
+    const thumbH = Math.min(100, s.vh / (n * 28 + 68) * 100);
+    const first = n ? start + 1 : 0, last = Math.min(n, start + Math.floor((s.vh - 68) / 28));
+    const showRuler = !loading && !tm && !s.onlyDiff && n > 0;
+    return Object.assign({
+      loading, tbOp: loading || tm ? 0.5 : 1, laneText: tm ? '43 swimlanes · limit 40' : '6 swimlanes', laneBd: tm ? 'var(--danger-border)' : 'var(--input)', laneBg: tm ? 'var(--danger-bg)' : 'var(--background)', laneFg: tm ? 'var(--danger-fg)' : 'var(--foreground)',
+      onlyDiff: s.onlyDiff, odTrack: s.onlyDiff ? 'var(--primary)' : 'var(--background)', odBd: s.onlyDiff ? 'var(--primary)' : 'var(--input)', odThumb: s.onlyDiff ? 'var(--primary-foreground)' : 'var(--input)', odLeft: s.onlyDiff ? '13px' : '1px',
+      toggleOD: () => this.setState({ onlyDiff: !s.onlyDiff }),
+      chList: CHS.map(name => { const on = s.ch[name]; return { name, on, icon: 'check', bs: on ? 'solid' : 'dashed', bd: on ? 'var(--input)' : 'var(--input)', bg: on ? 'var(--secondary)' : 'transparent', fg: on ? 'var(--foreground)' : 'var(--muted-foreground)', click: () => this.setState({ ch: Object.assign({}, s.ch, { [name]: !on }) }) }; }),
+      q: s.q, onQ: e => this.setState({ q: e.target.value, st: 0 }),
+      showCount: !loading && !tm, countText: s.onlyDiff ? fmt(n) + ' of ' + fmt(nTotal) + ' settings differ' : fmt(n) + ' settings · ' + fmt(nDiff) + ' differ',
+      hasPicks: s.picks.length > 0 && !tm && !loading, hasB: s.picks.length === 2, noB: s.picks.length === 1,
+      pickLaneA: pa ? LANES[pa.l].n : '', pickValA: pa ? valOf(pa) : '', pickLaneB: pb ? LANES[pb.l].n : '', pickValB: pb ? valOf(pb) : '',
+      drawerBtn: s.drawer ? 'Hide diff' : 'Open diff', toggleDrawer: () => this.setState({ drawer: !s.drawer }), clearPicks: () => this.setState({ picks: [], drawer: false }),
+      swapPicks: () => this.setState({ picks: [s.picks[1], s.picks[0]] }),
+      showOffBanner: off && !loading && !tm, tooMany: tm,
+      tmChips: tmNames.map((nm, x) => ({ n: nm, over: x >= 40, bg: x >= 40 ? 'var(--danger-bg)' : 'var(--background)', bd: x >= 40 ? 'var(--danger-border)' : 'var(--border)', fg: x >= 40 ? 'var(--danger-fg)' : 'var(--foreground)' })),
+      fixTM: () => this.setState({ tm: false }),
+      showGrid: !tm, heads, rowCount: n + 1, setSc: this.setSc, onScroll: this.onScroll,
+      skRows: Array.from({ length: 24 }, (_, x) => ({ a: (180 + (x * 37) % 120) + 'px', b: (40 + (x * 13) % 60) + 'px', c: (30 + (x * 29) % 70) + 'px', d: (50 + (x * 17) % 50) + 'px' })),
+      noRows, emptyW: '1100px', hasRows: !loading && n > 0, bodyH: n * 28, vrows,
+      emptyTitle: filtersOn ? 'No settings match' : 'All six swimlanes have the same values', emptyText: filtersOn ? 'Nothing in tx-infinity-core.yml matches "' + s.q + '" with these channels. The file has ' + fmt(nTotal) + ' settings.' : 'Every setting in tx-infinity-core.yml reads the same value in each swimlane, including which file is effective.',
+      emptyIcon: filtersOn ? 'search' : 'check', emptyBg: filtersOn ? 'var(--muted)' : 'var(--success-bg)', emptyBd: filtersOn ? 'var(--border)' : 'var(--success-border)', emptyFg: filtersOn ? 'var(--muted-foreground)' : 'var(--success-fg)',
+      emptyBtn: filtersOn ? 'Clear search and channels' : 'Show all rows', resetFilters: () => this.setState({ q: '', onlyDiff: filtersOn ? s.onlyDiff : false, ch: { 'remote-itm-teller': true, 'atm-iso': true, 'atm': true } }),
+      showRuler, ruler: this._ruler || [], thumbTop: Math.min(100 - thumbH, s.st / (n * 28 + 68) * 100), thumbH, onRuler: this.onRuler,
+      rangeText: loading || tm ? 'tx-infinity-api/tx-infinity-core.yml' : (n ? 'Rows ' + fmt(first) + '–' + fmt(Math.max(first, last)) + ' of ' + fmt(n) : 'No rows')
+    }, dv);
+  }
+  drawerVals(all) {
+    const s = this.state, open = s.drawer && s.picks.length === 2;
+    const none = { drawerOpen: false, dPath: '', dLines: '', dSummary: '', dSame: false, dSameText: '', dSides: [], dRows: [] };
+    if (!open) return none;
+    const [pa, pb] = s.picks, r = all[pa.r], a = r.cells[pa.l], c = r.cells[pb.l];
+    const segs = r.path.split('.'), par = segs.slice(-4, -1), leaf = segs[segs.length - 1], ind = '      ';
+    const sp = ['min', 'enabled', 'host', 'level'][Math.floor(H(r.i, 50) * 4)], sn = ['timeout', 'weight', 'retries', 'priority'][Math.floor(H(r.i, 51) * 4)], sn2 = ['tls', 'currency', 'template', 'mask'][Math.floor(H(r.i, 52) * 4)];
+    const val = x => x.k === 'a' ? null : (x.k === 'e' ? '""' : x.t);
+    const va = val(a), vb = val(c), same = va === vb;
+    const ln = [r.line - 4 + SHIFT[pa.l], r.line - 4 + SHIFT[pb.l]];
+    const out = [{ isHunk: true, t: '@@ -' + fmt(ln[0]) + ' +' + fmt(ln[1]) + ' @@ ' + segs.slice(0, -1).join('.') }];
+    const push = (l, rr) => out.push(code(l, rr));
+    const ctx = t => push(side('ctx', ln[0]++, t), side('ctx', ln[1]++, t));
+    par.forEach((sg, x) => ctx(' '.repeat(x * 2) + sg + ':'));
+    ctx(ind + sp + ': ' + (sp === 'enabled' ? 'true' : sp === 'host' ? 'hsm-sit-01.itm.internal' : sp === 'level' ? 'INFO' : '1'));
+    const lt = ind + leaf + ': ';
+    if (same) ctx(lt + (va === null ? '' : va));
+    else {
+      const L = va === null ? side('empty') : side('del', ln[0]++, lt + va, va), R = vb === null ? side('empty') : side('add', ln[1]++, lt + vb, vb);
+      push(L, R);
+    }
+    ctx(ind + sn + ': ' + (sn === 'timeout' ? '5000' : sn === 'weight' ? '50' : sn === 'retries' ? '2' : '3'));
+    ctx(ind + sn2 + ': ' + (sn2 === 'tls' ? 'true' : sn2 === 'currency' ? 'USD' : sn2 === 'template' ? 'receipt-v3' : 'pan-6-4'));
+    const sdv = (q, letter, br) => { const L = LANES[q.l], ten = L.kind === 'tenant', t = TIER[L.tier]; return { letter, br, tier: L.tier, tb: t[0], tbg: t[1], tfg: t[2], n: L.n, effIcon: ten ? 'git-branch' : 'tag', effText: ten ? 'tenant ' + L.br : 'base ' + L.ver, cbg: ten ? 'var(--info-bg)' : 'transparent', cbd: ten ? 'var(--info-border)' : 'var(--input)', cfg: ten ? 'var(--info-fg)' : 'var(--foreground)', file: fileOf(q.l) }; };
+    const sameFile = fileOf(pa.l) === fileOf(pb.l);
+    const name = x => LANES[x.l].n;
+    return {
+      drawerOpen: true, dPath: r.path, dLines: 'L' + fmt(r.line - 1) + '–' + fmt(r.line + 3),
+      dSummary: same ? 'Same value in both files' : (va === null ? 'Absent in ' + name(pa) + ', present in ' + name(pb) : vb === null ? 'Present in ' + name(pa) + ', absent in ' + name(pb) : 'Value differs'),
+      dSame: sameFile, dSameText: name(pa) + ' and ' + name(pb) + ' both read ' + fileOf(pa.l) + '. It is one file, so nothing can differ.',
+      dSides: [sdv(pa, 'A', '1px solid var(--border)'), sdv(pb, 'B', '0')], dRows: out
+    };
+  }
+  laneVals() {
+    const s = this.state, p = this.props, b = this._b, tg = s.target, off = b(p.offline);
+    const leftN = 'sitb', rightN = tg === 'lane' ? (off ? 'presitb' : 'sitc') : (tg === 'branch' ? 'sit7' : 'v2.3.1');
+    const rightSub = tg === 'lane' ? (off ? 'PRESIT · sit12' : 'SIT · sit9') : (tg === 'branch' ? 'csp-tenant-data' : 'configuration-base-saas');
+    const sub = SUBSET[tg], list0 = sub ? ALL.filter(e => sub.indexOf(e[0]) >= 0) : ALL, ident = s.ident, loading = s.loading;
+    const list = ident ? [] : list0;
+    const dirsDirect = {}; list.forEach(e => { dirsDirect[e[0].split('/').slice(0, -1).join('/')] = 1; });
+    const nDirect = Object.keys(dirsDirect).length, nChg = list.filter(e => e[1] === 'c' || e[1] === 'b').length, nL = list.filter(e => e[1] === 'l').length, nR = list.filter(e => e[1] === 'r').length;
+    const filt = s.filter, fl = list.filter(e => filt === 'all' || (filt === 'c' ? (e[1] === 'c' || e[1] === 'b') : e[1] === filt));
+    const D = {}, F = {}; const addDir = (path, depth) => { if (!D[path]) D[path] = { path, name: path.split('/').pop(), depth, count: 0 }; };
+    fl.forEach(e => { const parts = e[0].split('/'); const fname = parts.pop(); let acc = ''; parts.forEach((d, di) => { acc = acc ? acc + '/' + d : d; addDir(acc, di); D[acc].count++; }); (F[acc] = F[acc] || []).push(e); });
+    const trows = [];
+    const walk = (parent, depth) => {
+      Object.keys(D).filter(k => D[k].depth === depth && (parent === '' ? k.indexOf('/') < 0 : k.indexOf(parent + '/') === 0)).sort().forEach(k => {
+        const d = D[k], open = !s.closed[k];
+        trows.push({ isDir: true, isFile: false, ind: 8 + depth * 16, name: d.name, count: d.count, open, chev: open ? 'chevron-down' : 'chevron-right', fico: open ? 'folder-open' : 'folder', click: () => this.setState({ closed: Object.assign({}, s.closed, { [k]: open }) }) });
+        if (open) { walk(k, depth + 1); (F[k] || []).slice().sort((x, y) => x[0] < y[0] ? -1 : 1).forEach(e => trows.push(this.fileRow(e, depth + 1, leftN, rightN))); }
+      });
+    };
+    walk('', 0);
+    const selPath = fl.some(e => e[0] === s.file) ? s.file : (fl[0] ? fl[0][0] : null);
+    trows.forEach(t => { if (t.isFile) { const on = t.path === selPath; t.sel = on; t.bg = on ? 'var(--selection)' : 'transparent'; t.sh = on ? 'inset 0 0 0 1px var(--primary)' : 'none'; t.fw = on ? 500 : 400; } });
+    const cards = [
+      { label: 'Identical directories', n: 43 - nDirect, icon: 'circle-check', fg: 'var(--success-fg)', bg: 'var(--success-bg)', bd: 'var(--success-border)', key: null },
+      { label: 'Differing logical files', n: nChg, icon: 'arrow-left-right', fg: SKIND.c.fg, bg: SKIND.c.bg, bd: SKIND.c.bd, key: 'c' },
+      { label: 'Only in ' + leftN, n: nL, icon: 'minus', fg: SKIND.l.fg, bg: SKIND.l.bg, bd: SKIND.l.bd, key: 'l' },
+      { label: 'Only in ' + rightN, n: nR, icon: 'plus', fg: SKIND.r.fg, bg: SKIND.r.bg, bd: SKIND.r.bd, key: 'r' }
+    ].map(c => { const on = c.key && filt === c.key; return Object.assign(c, { pressed: c.key ? !!on : undefined, cbg: on ? 'var(--selection)' : 'var(--card)', sh: on ? 'inset 0 0 0 1px var(--primary)' : 'none', cur: c.key ? 'pointer' : 'default', click: c.key ? () => this.setState({ filter: on ? 'all' : c.key }) : () => {} }); });
+    const sel = ALL.find(e => e[0] === selPath);
+    const pv = sel ? this.panelVals(sel, leftN, rightN, tg, off) : {};
+    return Object.assign({
+      lLoading: loading, lReady: !loading, lOffline: off && !loading && !ident, lBtnOp: loading ? 0.5 : 1, lIdentical: ident && !loading, lSplit: !ident || loading,
+      tgts: Object.keys(TGT).map((k, x) => ({ on: tg === k, bl: x ? '1px solid var(--input)' : '0', bg: tg === k ? 'var(--secondary)' : 'transparent', fw: tg === k ? 500 : 400, icon: TGT[k].icon, label: TGT[k].label, click: () => this.setState({ target: k }) })),
+      rightVal: rightN, rightSub, rightIcon: TGT[tg].icon, noop: () => {},
+      lStatus: 'Compared at 10:41 · 214 logical files in 43 directories',
+      cards, trows, skTree: Array.from({ length: 14 }, (_, x) => ({ ind: x % 4 === 0 ? 8 : (x % 4 === 1 ? 24 : 40), w: (90 + (x * 31) % 130) + 'px' })),
+      treeSum: loading ? '' : fl.length + ' files in ' + Object.keys(D).length + ' directories', treeFoot: loading ? 'Reading directories…' : (43 - nDirect) + ' identical directories skipped',
+      expandAll: () => this.setState({ closed: {} }), collapseAll: () => { const c = {}; Object.keys(D).forEach(k => { if (D[k].depth === 0) c[k] = true; }); this.setState({ closed: c }); },
+      idTitle: tg === 'lane' ? 'sitb and sitc are identical' : (leftN + ' matches ' + (tg === 'branch' ? 'Git ' + rightN : 'tag ' + rightN)),
+      idText: 'All 43 directories and 214 logical files match, including which file each side reads (tenant or base). Nothing to review.',
+      idMeta: 'Compared at 10:41 · sitb a3f9c21 · ' + (tg === 'lane' ? 'sitc a3f9c21' : rightSub + '@' + rightN)
+    }, pv);
+  }
+  fileRow(e, depth, leftN, rightN) {
+    const k = e[1], name = e[0].split('/').pop(), kk = SKIND[k === 'b' ? 'c' : k];
+    const ext = name.split('.').pop(), fico = ext === 'yml' ? 'file-code' : (ext === 'jpeg' ? 'file-image' : (ext === 'jks' ? 'file' : 'file-text'));
+    return { isDir: false, isFile: true, path: e[0], ind: 8 + depth * 16, name, fico, hasStat: k === 'c', stat: '+' + e[2] + ' −' + e[3], kbd: kk.bd, kbg: kk.bg, kfg: kk.fg, kicon: kk.icon, klabel: k === 'c' ? 'changed' : (k === 'b' ? 'binary' : (k === 'l' ? 'only in ' + leftN : 'only in ' + rightN)), click: () => this.setState({ file: e[0] }) };
+  }
+  panelVals(e, leftN, rightN, tg, off) {
+    const path = e[0], k = e[1], name = path.split('/').pop(), kk = SKIND[k === 'b' ? 'c' : k];
+    const tenant = /^tx-infinity-.*\.yml$/.test(name), ten = n => n.replace('.yml', '-sit7.yml');
+    const fL = tenant ? ten(name) : name, fR = tg === 'branch' ? fL : name;
+    const rightKind = tg === 'lane' ? 'NFS' : 'Git', rightWhere = tg === 'lane' ? rightN : (tg === 'branch' ? 'csp-tenant-data@sit7' : 'configuration-base-saas@v2.3.1');
+    const rightIcon = tg === 'lane' ? 'server' : (tg === 'branch' ? 'git-branch' : 'tag');
+    const hatch = 'var(--diff-empty-bg)';
+    const sides = [
+      { icon: 'server', kind: 'NFS', where: leftN, file: k === 'r' ? 'Not in ' + leftN : fL, fc: k === 'r' ? 'var(--muted-foreground)' : 'var(--foreground)', br: '1px solid var(--border)', bg: k === 'r' ? hatch : 'transparent', isOff: false },
+      { icon: rightIcon, kind: rightKind, where: rightWhere, file: k === 'l' ? 'Not in ' + rightN : fR, fc: k === 'l' ? 'var(--muted-foreground)' : 'var(--foreground)', br: '0', bg: k === 'l' ? hatch : 'transparent', isOff: off && tg === 'lane' }
+    ];
+    let pRows = [], stat = '';
+    if (k === 'c') { pRows = path === 'tx-infinity-api/tx-infinity-core.yml' ? coreDiff() : genChanged(path, e[2], e[3]); stat = e[2] + ' added · ' + e[3] + ' removed'; }
+    else if (k === 'l') { pRows = genOnly(path, e[2], true); stat = fmt(e[2]) + ' lines'; }
+    else if (k === 'r') { pRows = genOnly(path, e[2], false); stat = fmt(e[2]) + ' lines'; }
+    else { stat = 'Binary'; }
+    const hs = path.indexOf('logo') >= 0 ? ['4.2 KB · sha256 9be1c40…', '5.8 KB · sha256 f0a77d2…'] : ['3.1 KB · sha256 1c3a9e8…', '3.1 KB · sha256 77d02b5…'];
+    return {
+      pNone: false, pHas: true, pNoneTitle: '', pNoneText: '', pIcon: path.endsWith('.yml') ? 'file-code' : (path.endsWith('.jpeg') ? 'file-image' : 'file-text'), pPath: path,
+      pKbd: kk.bd, pKbg: kk.bg, pKfg: kk.fg, pKicon: kk.icon, pKlabel: k === 'c' ? 'changed' : (k === 'b' ? 'binary differs' : (k === 'l' ? 'only in ' + leftN : 'only in ' + rightN)), pStat: stat,
+      pSides: sides, pBinary: k === 'b', pText: k !== 'b', pRows, pHashL: leftN, pHashLv: hs[0], pHashR: rightN, pHashRv: hs[1]
+    };
+  }
+  renderVals() {
+    const s = this.state, g = s.mode === 'grid';
+    const lv = this.laneVals();
+    if (lv.pNone === undefined) Object.assign(lv, { pNone: true, pHas: false, pNoneTitle: 'Select a file', pNoneText: 'Choose a file in the tree to see how the two sides differ.', pSides: [], pRows: [], pBinary: false, pText: false, pIcon: 'file', pPath: '', pKbd: '', pKbg: '', pKfg: '', pKicon: 'file', pKlabel: '', pStat: '', pHashL: '', pHashLv: '', pHashR: '', pHashRv: '' });
+    return Object.assign({
+      isGrid: g, isLanes: !g, mgBg: g ? 'var(--secondary)' : 'transparent', mlBg: g ? 'transparent' : 'var(--secondary)', mgFw: g ? 500 : 400, mlFw: g ? 400 : 500,
+      setGrid: () => this.setState({ mode: 'grid' }), setLanes: () => this.setState({ mode: 'lanes' }),
+      subtitle: g ? 'One logical file, one column per swimlane. Each cell shows the value from the file that swimlane actually reads.' : 'Every directory and logical file in one swimlane against another swimlane, a Git branch or a tag.'
+    }, this.gridVals(), lv);
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<style>
+*{box-sizing:border-box}
+a{color:var(--link)}
+a:hover{color:var(--primary-hover)}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+@keyframes lk-pulse{0%,100%{opacity:1}50%{opacity:.3}}
+</style>
+</helmet>
+<div data-theme="{{ theme }}" style="position:relative;display:flex;width:{{ wpx }};height:{{ hpx }};overflow:hidden;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:13px;line-height:18px;-webkit-font-smoothing:antialiased">
+
+<aside aria-label="Primary" style="position:relative;z-index:5;flex:none;width:{{ sbw }};display:flex;flex-direction:column;background:var(--muted);border-right:1px solid var(--border)">
+  <div style="height:44px;flex:none;display:flex;align-items:center;justify-content:{{ sbHeadJ }};gap:8px;padding:0 8px 0 12px;border-bottom:1px solid var(--border)">
+    <sc-if value="{{ expanded }}" hint-placeholder-val="{{ true }}"><span style="font-size:14px;line-height:20px;font-weight:600;letter-spacing:-0.01em">Lanekeeper</span></sc-if>
+    <button type="button" aria-label="Toggle sidebar" title="Toggle sidebar" style="width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:4px;background:transparent;color:var(--muted-foreground);cursor:pointer" style-hover="background:var(--accent);color:var(--foreground)"><span aria-hidden="true" style="width:16px;height:16px;background:currentColor;mask:url(assets/icons/panel-left.svg) center/contain no-repeat"></span></button>
+  </div>
+  <nav aria-label="Sections" style="flex:1;display:flex;flex-direction:column;gap:2px;padding:8px">
+    <sc-if value="{{ expanded }}" hint-placeholder-val="{{ true }}">
+      <sc-for list="{{ navExp }}" as="it" hint-placeholder-count="9">
+        <sc-if value="{{ it.isDiv }}" hint-placeholder-val="{{ false }}"><div style="height:1px;background:var(--border);margin:6px 0"></div></sc-if>
+        <sc-if value="{{ it.isItem }}" hint-placeholder-val="{{ true }}"><div style="position:relative">
+          <a href="#" aria-current="{{ it.cur }}" aria-disabled="{{ it.dis }}" style="display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:4px;color:var(--foreground);text-decoration:none;background:{{ it.bg }};font-weight:{{ it.fw }};opacity:{{ it.op }};cursor:{{ it.cursor }}" style-hover="background:var(--accent);color:var(--foreground)">
+            <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/{{ it.icon }}.svg) center/contain no-repeat"></span>
+            <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ it.label }}</span>
+            <sc-if value="{{ it.hasCount }}" hint-placeholder-val="{{ false }}"><span style="min-width:20px;height:18px;padding:0 5px;display:inline-flex;align-items:center;justify-content:center;border-radius:4px;border:1px solid var(--input);background:var(--background);font-size:12px;font-weight:500;font-variant-numeric:tabular-nums">{{ it.count }}</span></sc-if>
+            <sc-if value="{{ it.chev }}" hint-placeholder-val="{{ false }}"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/chevron-down.svg) center/contain no-repeat"></span></sc-if>
+            <sc-if value="{{ it.lock }}" hint-placeholder-val="{{ false }}"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/lock.svg) center/contain no-repeat"></span></sc-if>
+          </a>
+          <sc-if value="{{ it.tip }}" hint-placeholder-val="{{ false }}"><div role="tooltip" style="position:absolute;z-index:40;left:calc(100% + 8px);top:2px;display:inline-flex;align-items:center;gap:8px;height:24px;padding:0 8px;border-radius:4px;background:var(--foreground);color:var(--background);font-size:12px;white-space:nowrap;box-shadow:var(--shadow-popover)">{{ it.tipText }}</div></sc-if>
+        </div></sc-if>
+        <sc-if value="{{ it.isChild }}" hint-placeholder-val="{{ false }}"><a href="#" style="display:flex;align-items:center;gap:8px;height:24px;padding:0 8px 0 30px;border-radius:4px;color:var(--muted-foreground);text-decoration:none" style-hover="background:var(--accent);color:var(--foreground)"><span style="flex:1">{{ it.label }}</span><sc-if value="{{ it.hasK }}" hint-placeholder-val="{{ false }}"><kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--background);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">{{ it.k }}</kbd></sc-if></a></sc-if>
+      </sc-for>
+    </sc-if>
+    <sc-if value="{{ collapsed }}" hint-placeholder-val="{{ false }}">
+      <sc-for list="{{ navCol }}" as="it" hint-placeholder-count="0">
+        <sc-if value="{{ it.isDiv }}" hint-placeholder-val="{{ false }}"><div style="height:1px;background:var(--border);margin:6px 4px"></div></sc-if>
+        <sc-if value="{{ it.isItem }}" hint-placeholder-val="{{ false }}"><div style="position:relative;display:flex;justify-content:center">
+          <a href="#" aria-label="{{ it.label }}" aria-current="{{ it.cur }}" aria-disabled="{{ it.dis }}" style="position:relative;width:32px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px;color:var(--foreground);text-decoration:none;background:{{ it.bg }};opacity:{{ it.op }};cursor:{{ it.cursor }}" style-hover="background:var(--accent);color:var(--foreground)">
+            <span aria-hidden="true" style="width:16px;height:16px;background:currentColor;mask:url(assets/icons/{{ it.icon }}.svg) center/contain no-repeat"></span>
+            <sc-if value="{{ it.hasCount }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;top:-4px;right:-3px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--foreground);color:var(--background);font-size:12px;line-height:16px;font-weight:600;text-align:center;font-variant-numeric:tabular-nums">{{ it.count }}</span></sc-if>
+          </a>
+          <sc-if value="{{ it.tip }}" hint-placeholder-val="{{ false }}"><div role="tooltip" style="position:absolute;z-index:40;left:calc(100% + 8px);top:2px;display:inline-flex;align-items:center;gap:8px;height:24px;padding:0 8px;border-radius:4px;background:var(--foreground);color:var(--background);font-size:12px;white-space:nowrap;box-shadow:var(--shadow-popover)">{{ it.tipText }}</div></sc-if>
+        </div></sc-if>
+      </sc-for>
+    </sc-if>
+  </nav>
+  <div style="flex:none;padding:8px;border-top:1px solid var(--border)">
+    <sc-if value="{{ expanded }}" hint-placeholder-val="{{ true }}">
+    <button type="button" aria-haspopup="menu" aria-expanded="{{ menuOpen }}" style="display:flex;align-items:center;gap:8px;width:100%;height:48px;padding:0 8px;border-radius:4px;border:1px solid transparent;background:{{ userBg }};text-align:left;cursor:pointer" style-hover="background:var(--accent)">
+      <span aria-hidden="true" style="width:28px;height:28px;flex:none;border-radius:999px;border:1px solid var(--input);background:var(--secondary);display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">{{ user.ini }}</span>
+      <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;align-items:flex-start">
+        <span style="font-weight:500;white-space:nowrap">{{ user.name }}</span>
+        <sc-if value="{{ isAdmin }}" hint-placeholder-val="{{ true }}"><span style="display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 6px;border-radius:4px;border:1px solid var(--foreground);background:var(--foreground);color:var(--background);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/shield-check.svg) center/contain no-repeat"></span>Admin</span></sc-if>
+        <sc-if value="{{ notAdmin }}" hint-placeholder-val="{{ false }}"><span style="display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 6px;border-radius:4px;border:1px solid var(--input);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ user.ri }}.svg) center/contain no-repeat"></span>{{ user.role }}</span></sc-if>
+      </span>
+      <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/chevrons-up-down.svg) center/contain no-repeat"></span>
+    </button>
+    </sc-if>
+    <sc-if value="{{ collapsed }}" hint-placeholder-val="{{ false }}">
+    <button type="button" aria-label="{{ user.name }}, account menu" aria-haspopup="menu" style="display:flex;align-items:center;justify-content:center;width:100%;height:36px;border-radius:4px;border:1px solid transparent;background:{{ userBg }};cursor:pointer" style-hover="background:var(--accent)">
+      <span aria-hidden="true" style="width:28px;height:28px;border-radius:999px;border:1px solid var(--input);background:var(--secondary);display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">{{ user.ini }}</span>
+    </button>
+    </sc-if>
+  </div>
+  <sc-if value="{{ menuOpen }}" hint-placeholder-val="{{ false }}">
+  <div role="menu" style="position:absolute;z-index:40;left:8px;bottom:{{ menuBottom }};width:248px;border:1px solid var(--border);border-radius:6px;background:var(--popover);color:var(--popover-foreground);box-shadow:var(--shadow-popover);padding:4px">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;height:36px;padding:0 8px;border-bottom:1px solid var(--border);margin-bottom:4px"><span style="font-weight:600">{{ user.name }}</span><span style="font-size:12px;color:var(--muted-foreground)">{{ user.role }}</span></div>
+    <div role="menuitem" style="display:flex;align-items:center;gap:8px;height:32px;padding:0 8px;border-radius:4px;background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/key.svg) center/contain no-repeat"></span><span style="flex:1">My GitHub token</span><span style="font-size:12px;color:var(--muted-foreground)">41 days left</span></div>
+    <div role="menuitem" style="display:flex;align-items:center;gap:8px;height:32px;padding:0 8px;border-radius:4px"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/keyboard.svg) center/contain no-repeat"></span><span style="flex:1">Keyboard shortcuts</span><kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">?</kbd></div>
+    <div style="height:1px;background:var(--border);margin:4px -4px"></div>
+    <div role="menuitem" style="display:flex;align-items:center;gap:8px;height:32px;padding:0 8px;border-radius:4px"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/log-out.svg) center/contain no-repeat"></span><span style="flex:1">Sign out</span></div>
+  </div>
+  </sc-if>
+</aside>
+
+<div style="flex:1;min-width:0;display:flex;flex-direction:column">
+  <header style="position:relative;z-index:6;flex:none;height:44px;display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--background)">
+    <nav aria-label="Breadcrumb" style="flex:1;min-width:0;overflow:hidden"><ol style="display:flex;align-items:center;gap:4px;margin:0;padding:0;list-style:none;white-space:nowrap"><sc-if value="{{ showCrumb }}" hint-placeholder-val="{{ true }}">
+      <li style="flex:none"><a href="#" style="color:var(--muted-foreground);text-decoration:none">Swimlanes</a></li><li aria-hidden="true" style="display:flex;flex:none"><span style="width:12px;height:12px;background:var(--muted-foreground);mask:url(assets/icons/chevron-right.svg) center/contain no-repeat"></span></li>
+      <li style="flex:none"><a href="#" style="color:var(--muted-foreground);text-decoration:none;font-family:var(--font-mono);font-size:12px">sitb</a></li><li aria-hidden="true" style="display:flex;flex:none"><span style="width:12px;height:12px;background:var(--muted-foreground);mask:url(assets/icons/chevron-right.svg) center/contain no-repeat"></span></li>
+      <li style="flex:none"><a href="#" style="color:var(--muted-foreground);text-decoration:none;font-family:var(--font-mono);font-size:12px">{{ crumbDir }}</a></li><li aria-hidden="true" style="display:flex;flex:none"><span style="width:12px;height:12px;background:var(--muted-foreground);mask:url(assets/icons/chevron-right.svg) center/contain no-repeat"></span></li>
+      <li aria-current="page" style="min-width:0;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono);font-size:12px;font-weight:500">{{ crumbFile }}</li>
+    </sc-if><sc-if value="{{ isHome }}" hint-placeholder-val="{{ false }}"><li aria-current="page" style="font-weight:500">Swimlanes</li></sc-if><sc-if value="{{ isCompare }}" hint-placeholder-val="{{ false }}"><li aria-current="page" style="font-weight:500">Compare</li></sc-if><sc-if value="{{ isSearch }}" hint-placeholder-val="{{ false }}"><li style="flex:none"><a href="#" style="color:var(--muted-foreground);text-decoration:none">Search</a></li><li aria-hidden="true" style="display:flex;flex:none"><span style="width:12px;height:12px;background:var(--muted-foreground);mask:url(assets/icons/chevron-right.svg) center/contain no-repeat"></span></li><li aria-current="page" style="font-weight:500">{{ sTabLabel }}</li></sc-if><sc-if value="{{ isStatus }}" hint-placeholder-val="{{ false }}"><li aria-current="page" style="font-weight:500">Feature status</li></sc-if><sc-if value="{{ isFindings }}" hint-placeholder-val="{{ false }}"><li aria-current="page" style="font-weight:500">Findings</li></sc-if><sc-if value="{{ isApprovals }}" hint-placeholder-val="{{ false }}"><li aria-current="page" style="font-weight:500">Approvals</li></sc-if><sc-if value="{{ isAudit }}" hint-placeholder-val="{{ false }}"><li aria-current="page" style="font-weight:500">Audit</li></sc-if><sc-if value="{{ isAdminPg }}" hint-placeholder-val="{{ false }}"><li style="flex:none"><a href="#" style="color:var(--muted-foreground);text-decoration:none">Admin</a></li><li aria-hidden="true" style="display:flex;flex:none"><span style="width:12px;height:12px;background:var(--muted-foreground);mask:url(assets/icons/chevron-right.svg) center/contain no-repeat"></span></li><li aria-current="page" style="font-weight:500">{{ adLabel }}</li></sc-if><sc-if value="{{ isAdopt }}" hint-placeholder-val="{{ false }}"><li style="flex:none"><a href="#" style="color:var(--muted-foreground);text-decoration:none">Swimlanes</a></li><li aria-hidden="true" style="display:flex;flex:none"><span style="width:12px;height:12px;background:var(--muted-foreground);mask:url(assets/icons/chevron-right.svg) center/contain no-repeat"></span></li><li style="flex:none"><a href="#" style="color:var(--muted-foreground);text-decoration:none;font-family:var(--font-mono);font-size:12px">presitb</a></li><li aria-hidden="true" style="display:flex;flex:none"><span style="width:12px;height:12px;background:var(--muted-foreground);mask:url(assets/icons/chevron-right.svg) center/contain no-repeat"></span></li><li aria-current="page" style="font-weight:500">Adopt</li></sc-if><sc-if value="{{ isDetail }}" hint-placeholder-val="{{ false }}"><li style="flex:none"><a href="#" style="color:var(--muted-foreground);text-decoration:none">Swimlanes</a></li><li aria-hidden="true" style="display:flex;flex:none"><span style="width:12px;height:12px;background:var(--muted-foreground);mask:url(assets/icons/chevron-right.svg) center/contain no-repeat"></span></li><li aria-current="page" style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ dLaneName }}</li></sc-if></ol></nav>
+
+    <div style="position:relative;flex:none">
+      <button type="button" role="combobox" aria-haspopup="listbox" aria-expanded="{{ switcherOpen }}" aria-label="Swimlane: {{ sw.name }}, {{ sw.tier }}, branch {{ sw.branch }}" style="display:inline-flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:4px;border:1px solid var(--input);background:var(--background);cursor:pointer" style-hover="background:var(--accent)">
+        <span style="display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:4px;border:1px solid {{ sw.tb }};background:{{ sw.tbg }};color:{{ sw.tfg }};font-family:var(--font-mono);font-size:12px;font-weight:500;letter-spacing:0.04em">{{ sw.tier }}</span>
+        <span style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ sw.name }}</span>
+        <span style="display:inline-flex;align-items:center;gap:4px;font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/git-branch.svg) center/contain no-repeat"></span>{{ sw.branch }}</span>
+        <span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;white-space:nowrap;color:var(--status-{{ sw.sk }}-fg);background:var(--status-{{ sw.sk }}-bg);border:1px solid var(--status-{{ sw.sk }}-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ sw.icon }}.svg) center/contain no-repeat"></span><span style="font-variant-numeric:tabular-nums">{{ sw.n }}</span> {{ sw.word }}</span>
+        <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/chevrons-up-down.svg) center/contain no-repeat"></span>
+      </button>
+      <sc-if value="{{ switcherOpen }}" hint-placeholder-val="{{ false }}">
+      <div role="listbox" style="position:absolute;z-index:40;top:calc(100% + 4px);right:0;width:400px;border:1px solid var(--border);border-radius:6px;background:var(--popover);box-shadow:var(--shadow-popover);overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;height:36px;padding:0 10px;border-bottom:1px solid var(--border)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/search.svg) center/contain no-repeat"></span><span style="flex:1;color:var(--muted-foreground)">Filter swimlanes…</span><kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">Esc</kbd></div>
+        <div style="padding:4px;display:flex;flex-direction:column">
+          <sc-for list="{{ lanes }}" as="ln" hint-placeholder-count="6">
+            <div role="option" aria-selected="{{ ln.on }}" style="display:grid;grid-template-columns:16px 60px 52px minmax(0,1fr) auto;align-items:center;gap:8px;height:32px;padding:0 8px;border-radius:4px;background:{{ ln.bg }}" style-hover="background:var(--accent)">
+              <span aria-hidden="true" style="width:14px;height:14px;background:currentColor;mask:url(assets/icons/check.svg) center/contain no-repeat;opacity:{{ ln.chk }}"></span>
+              <span style="display:inline-flex;align-items:center;justify-content:center;height:20px;border-radius:4px;border:1px solid {{ ln.tb }};background:{{ ln.tbg }};color:{{ ln.tfg }};font-family:var(--font-mono);font-size:12px;font-weight:500;letter-spacing:0.04em">{{ ln.tier }}</span>
+              <span style="font-family:var(--font-mono);font-size:12px;font-weight:500">{{ ln.name }}</span>
+              <span style="display:inline-flex;align-items:center;gap:4px;font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/git-branch.svg) center/contain no-repeat"></span>{{ ln.branch }}</span>
+              <span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;white-space:nowrap;color:var(--status-{{ ln.sk }}-fg);background:var(--status-{{ ln.sk }}-bg);border:1px solid var(--status-{{ ln.sk }}-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ ln.si }}.svg) center/contain no-repeat"></span>{{ ln.st }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex;gap:16px;align-items:center;height:28px;padding:0 12px;border-top:1px solid var(--border);background:var(--muted);font-size:12px;color:var(--muted-foreground)"><span>↑↓ navigate</span><span>↵ switch</span><span style="margin-left:auto">Remembered per session</span></div>
+      </div>
+      </sc-if>
+    </div>
+
+    <button type="button" aria-label="Search and commands, Command K" style="flex:none;display:inline-flex;align-items:center;gap:8px;height:28px;width:{{ stw }};padding:0 6px 0 8px;border-radius:4px;border:1px solid var(--input);background:var(--background);color:var(--muted-foreground);text-align:left;cursor:pointer" style-hover="background:var(--accent)">
+      <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/search.svg) center/contain no-repeat"></span>
+      <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Search or jump to…</span>
+      <kbd style="display:inline-flex;align-items:center;justify-content:center;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">⌘K</kbd>
+    </button>
+
+    <sc-if value="{{ isLive }}" hint-placeholder-val="{{ true }}"><span role="status" style="flex:none;display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:999px;border:1px solid var(--border);font-size:12px;font-weight:500"><span style="width:8px;height:8px;border-radius:999px;background:var(--agent-online)"></span>Live</span></sc-if>
+    <sc-if value="{{ isRecon }}" hint-placeholder-val="{{ false }}"><span role="status" style="flex:none;display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:999px;border:1px solid var(--warning-border);background:var(--warning-bg);color:var(--warning-fg);font-size:12px;font-weight:500;white-space:nowrap"><span style="width:8px;height:8px;border-radius:999px;background:var(--warning-bg);border:2px solid var(--agent-degraded);animation:lk-pulse 1.4s ease-in-out infinite"></span>Reconnecting… retry in 3s</span></sc-if>
+    <sc-if value="{{ isOff }}" hint-placeholder-val="{{ false }}"><span role="status" style="flex:none;display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:999px;border:1px dashed var(--input);color:var(--muted-foreground);font-size:12px;font-weight:500;white-space:nowrap"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/wifi-off.svg) center/contain no-repeat"></span>Offline · data from 10:42</span></sc-if>
+
+    <button type="button" aria-label="Notifications, 2 unread" style="position:relative;flex:none;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:4px;background:transparent;color:var(--foreground);cursor:pointer" style-hover="background:var(--accent)">
+      <span aria-hidden="true" style="width:16px;height:16px;background:currentColor;mask:url(assets/icons/bell.svg) center/contain no-repeat"></span>
+      <span aria-hidden="true" style="position:absolute;top:3px;right:4px;width:10px;height:10px;border-radius:999px;background:var(--primary);border:2px solid var(--background)"></span>
+    </button>
+  </header>
+
+  <sc-if value="{{ isOff }}" hint-placeholder-val="{{ false }}">
+  <div role="status" style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:40px;padding:6px 16px;background:var(--warning-bg);color:var(--warning-fg);border-bottom:1px solid var(--warning-border)">
+    <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/wifi-off.svg) center/contain no-repeat"></span>
+    <strong style="font-weight:600">Live updates paused, retrying</strong>
+    <span>Showing data from 10:42. Saving and restarts are off until the connection returns.</span>
+    <span style="margin-left:auto;font-family:var(--font-mono);font-size:12px">Next attempt in 12s</span>
+    <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:4px;border:1px solid currentColor;background:transparent;color:inherit;font-size:12px;font-weight:500;cursor:pointer"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/refresh-cw.svg) center/contain no-repeat"></span>Retry now</button>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ isFile }}" hint-placeholder-val="{{ true }}"><main style="flex:1;min-height:0;overflow:hidden;display:flex;justify-content:center">
+  <div style="width:100%;max-width:{{ mw }};min-width:0;display:flex;flex-direction:column;padding:16px 24px 0">
+    <div style="flex:none;display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px 16px;padding-bottom:14px">
+      <div style="min-width:0;display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;align-items:center;gap:8px"><span aria-hidden="true" style="width:18px;height:18px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/file-code.svg) center/contain no-repeat"></span><h1 style="margin:0;font-family:var(--font-mono);font-size:20px;line-height:26px;font-weight:500">tx-infinity-core-sit1.yml</h1></div>
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px">
+          <span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;white-space:nowrap;color:var(--status-nfs-fg);background:var(--status-nfs-bg);border:1px solid var(--status-nfs-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/arrow-up-from-line.svg) center/contain no-repeat"></span>NFS ahead</span>
+          <span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;white-space:nowrap;color:var(--status-restart-fg);background:var(--status-restart-bg);border:1px solid var(--status-restart-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/clock.svg) center/contain no-repeat"></span>2 services need restart</span>
+          <span style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 6px;border-radius:4px;border:1px solid var(--info-border);background:var(--info-bg);color:var(--info-fg);font-family:var(--font-mono);font-size:12px"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/git-branch.svg) center/contain no-repeat"></span>sit7</span>
+          <span style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 6px;border-radius:4px;border:1px solid var(--border);font-family:var(--font-mono);font-size:12px"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/tag.svg) center/contain no-repeat"></span>v2.3.1<span style="color:var(--muted-foreground)">+ 4</span></span>
+          <span style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 6px;border-radius:4px;border:1px solid var(--border);font-family:var(--font-mono);font-size:12px"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/git-commit-horizontal.svg) center/contain no-repeat"></span>a3f9c21</span>
+          <span style="color:var(--muted-foreground)">Tenant file in use · saved 14 min ago by Dana Okoye</span>
+        </div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+        <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/columns-2.svg) center/contain no-repeat"></span>Compare with sitc</button>
+        <button type="button" aria-disabled="{{ viewer }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-weight:500;opacity:{{ prOp }};cursor:{{ prCur }}"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/git-pull-request.svg) center/contain no-repeat"></span>Raise PR</button>
+        <span style="position:relative;display:inline-flex">
+          <button type="button" aria-disabled="{{ saveDis }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-weight:500;opacity:{{ saveOp }};cursor:{{ saveCur }}"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/upload.svg) center/contain no-repeat"></span>Save to sitb</button>
+          <sc-if value="{{ actionTip }}" hint-placeholder-val="{{ false }}"><div role="tooltip" style="position:absolute;z-index:40;top:calc(100% + 6px);right:0;display:inline-flex;align-items:center;gap:8px;height:24px;padding:0 8px;border-radius:4px;background:var(--foreground);color:var(--background);font-size:12px;white-space:nowrap;box-shadow:var(--shadow-popover)">{{ actionTipText }}</div></sc-if>
+        </span>
+      </div>
+    </div>
+
+    <div style="flex:1;min-height:0;display:flex;flex-direction:column;border:1px solid var(--border);border-bottom:0;border-radius:6px 6px 0 0;overflow:hidden;background:var(--card)">
+      <div style="flex:none;display:flex;align-items:center;gap:12px;height:40px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--muted)">
+        <div role="group" aria-label="Diff layout" style="display:inline-flex;border:1px solid var(--input);border-radius:4px;overflow:hidden;background:var(--background)">
+          <button type="button" aria-pressed="true" style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 8px;border:0;background:var(--secondary);font-weight:500;cursor:pointer"><span aria-hidden="true" style="width:14px;height:14px;background:currentColor;mask:url(assets/icons/columns-2.svg) center/contain no-repeat"></span>Side by side</button>
+          <button type="button" aria-pressed="false" style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 8px;border:0;border-left:1px solid var(--input);background:transparent;cursor:pointer"><span aria-hidden="true" style="width:14px;height:14px;background:currentColor;mask:url(assets/icons/rows-2.svg) center/contain no-repeat"></span>Unified</button>
+        </div>
+        <span style="color:var(--muted-foreground)">3 hunks · 3 changed, 1 added, 1 removed</span>
+        <span style="margin-left:auto;font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums">Hunk 1 of 3</span>
+        <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 6px 0 8px;border-radius:4px;border:1px solid transparent;background:transparent;cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;background:currentColor;mask:url(assets/icons/arrow-up.svg) center/contain no-repeat"></span>Previous<kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--background);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">p</kbd></button>
+        <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 6px 0 8px;border-radius:4px;border:1px solid transparent;background:transparent;cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;background:currentColor;mask:url(assets/icons/arrow-down.svg) center/contain no-repeat"></span>Next<kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--background);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">n</kbd></button>
+      </div>
+      <div style="flex:none;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);height:28px;border-bottom:1px solid var(--border);font-size:12px">
+        <div style="display:flex;align-items:center;gap:6px;padding:0 12px;border-right:1px solid var(--border);color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/git-branch.svg) center/contain no-repeat"></span><span>Git</span><span style="font-family:var(--font-mono);color:var(--foreground)">csp-tenant-data@sit7</span></div>
+        <div style="display:flex;align-items:center;gap:6px;padding:0 12px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/server.svg) center/contain no-repeat"></span><span>NFS</span><span style="font-family:var(--font-mono);color:var(--foreground)">sitb</span></div>
+      </div>
+      <div style="flex:1;min-height:0;overflow:hidden;background:linear-gradient(to right,transparent calc(50% - 0.5px),var(--border) calc(50% - 0.5px),var(--border) calc(50% + 0.5px),transparent calc(50% + 0.5px))">
+        <sc-for list="{{ rows }}" as="r" hint-placeholder-count="12">
+          <sc-if value="{{ r.isFold }}" hint-placeholder-val="{{ false }}"><div style="display:flex;align-items:center;gap:6px;height:24px;padding:0 12px;background:var(--muted);border-top:1px solid var(--border);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/chevrons-up-down.svg) center/contain no-repeat"></span>{{ r.t }}</div></sc-if>
+          <sc-if value="{{ r.isHunk }}" hint-placeholder-val="{{ false }}"><div style="display:flex;align-items:center;height:20px;padding:0 12px;background:var(--diff-hunk-bg);color:var(--diff-hunk-fg);font-family:var(--font-mono);font-size:12px">{{ r.t }}</div></sc-if>
+          <sc-if value="{{ r.isCode }}" hint-placeholder-val="{{ true }}"><div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);height:18px;font-family:var(--font-mono);font-size:12px;line-height:18px">
+            <div style="display:flex;min-width:0;background:{{ r.lbg }}"><span style="width:40px;flex:none;text-align:right;padding-right:8px;color:var(--muted-foreground);background:{{ r.lgut }}">{{ r.lno }}</span><span style="width:16px;flex:none;text-align:center;color:{{ r.lmc }}">{{ r.lm }}</span><span style="min-width:0;white-space:pre;overflow:hidden">{{ r.la }}<span style="background:{{ r.lwb }}">{{ r.lw }}</span>{{ r.lb }}</span></div>
+            <div style="display:flex;min-width:0;background:{{ r.rbg }}"><span style="width:40px;flex:none;text-align:right;padding-right:8px;color:var(--muted-foreground);background:{{ r.rgut }}">{{ r.rno }}</span><span style="width:16px;flex:none;text-align:center;color:{{ r.rmc }}">{{ r.rm }}</span><span style="min-width:0;white-space:pre;overflow:hidden">{{ r.ra }}<span style="background:{{ r.rwb }}">{{ r.rw }}</span>{{ r.rb }}</span></div>
+          </div></sc-if>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+  </main></sc-if><sc-if value="{{ isFileView }}" hint-placeholder-val="{{ false }}">
+<main style="flex:1;min-height:0;overflow:hidden;display:flex"><dc-import name="Lanekeeper File" file="{{ fvFile }}" mode="{{ fvMode }}" tab="{{ fvTab }}" view="{{ fvView }}" panel="{{ fvPanel }}" role="{{ role }}" approval="{{ fvApproval }}" estate="{{ fvEstate }}" reveal="{{ fvReveal }}" revert="{{ fvRevert }}" ref-menu="{{ fvRef }}" style="flex:1;min-width:0;height:100%" hint-size="100%,100%"></dc-import></main>
+</sc-if>
+<sc-if value="{{ isCompare }}" hint-placeholder-val="{{ false }}">
+<main style="flex:1;min-height:0;overflow:hidden;display:flex"><dc-import name="Lanekeeper Compare Page" mode="{{ cMode }}" state="{{ cState }}" offline="{{ cOffline }}" onlydiff="{{ cOnlyDiff }}" drawer="{{ cDrawer }}" pickkind="{{ cPick }}" target="{{ cTarget }}" fsel="{{ cFile }}" crow="{{ cRow }}" search="{{ cSearch }}" style="flex:1;min-width:0;height:100%" hint-size="100%,100%"></dc-import></main>
+</sc-if>
+<sc-if value="{{ isDetail }}" hint-placeholder-val="{{ false }}">
+<main style="flex:1;min-height:0;overflow:hidden;display:flex"><dc-import name="Lanekeeper Detail" tab="{{ dTab }}" logical="{{ dLogical }}" role="{{ role }}" locked="{{ dLocked }}" agent-off="{{ dAgentOff }}" syncing="{{ dSync }}" restart-tip="{{ dTip }}" style="flex:1;min-width:0;height:100%" hint-size="100%,100%"></dc-import></main>
+</sc-if>
+<sc-if value="{{ isSearch }}" hint-placeholder-val="{{ false }}">
+<main style="flex:1;min-height:0;overflow:hidden;display:flex"><dc-import name="Lanekeeper Search Page" tab="{{ sTab }}" state="{{ sState }}" view="{{ sView }}" doc="{{ sDoc }}" dialog="{{ sDialog }}" pop="{{ sPop }}" tip="{{ sTip }}" role="{{ role }}" style="flex:1;min-width:0;height:100%" hint-size="100%,100%"></dc-import></main>
+</sc-if>
+<sc-if value="{{ isFindings }}" hint-placeholder-val="{{ false }}">
+<main style="flex:1;min-height:0;overflow:hidden;display:flex"><dc-import name="Lanekeeper Findings Page" role="{{ role }}" state="{{ fnState }}" tab="{{ fnTab }}" sel="{{ fnSel }}" lanes="{{ fnLanes }}" checks="{{ fnChecks }}" sev="{{ fnSev }}" confirm="{{ fnConfirm }}" pop="{{ fnPop }}" reason="{{ fnReason }}" style="flex:1;min-width:0;height:100%" hint-size="100%,100%"></dc-import></main>
+</sc-if>
+<sc-if value="{{ isApprovals }}" hint-placeholder-val="{{ false }}">
+<main style="flex:1;min-height:0;overflow:hidden;display:flex"><dc-import name="Lanekeeper Approvals Page" role="{{ role }}" state="{{ apState }}" tab="{{ apTab }}" sel="{{ apSel }}" live="{{ apLive }}" reason="{{ apReason }}" style="flex:1;min-width:0;height:100%" hint-size="100%,100%"></dc-import></main>
+</sc-if>
+<sc-if value="{{ isAudit }}" hint-placeholder-val="{{ false }}">
+<main style="flex:1;min-height:0;overflow:hidden;display:flex"><dc-import name="Lanekeeper Audit Page" state="{{ auState }}" integ="{{ auInteg }}" igopen="{{ auIgopen }}" quick="{{ auQuick }}" via="{{ auVia }}" act="{{ auAct }}" lanes="{{ auLanes }}" src="{{ auSrc }}" conf="{{ auConf }}" sel="{{ auSel }}" pop="{{ auPop }}" jump="{{ auJump }}" style="flex:1;min-width:0;height:100%" hint-size="100%,100%"></dc-import></main>
+</sc-if>
+<sc-if value="{{ isAdminPg }}" hint-placeholder-val="{{ false }}">
+<main style="flex:1;min-height:0;overflow:hidden;display:flex"><dc-import name="Lanekeeper Admin Page" section="{{ adSection }}" state="{{ adState }}" role="{{ role }}" mcp="{{ adMcp }}" style="flex:1;min-width:0;height:100%" hint-size="100%,100%"></dc-import></main>
+</sc-if>
+<sc-if value="{{ isAdopt }}" hint-placeholder-val="{{ false }}">
+<main style="flex:1;min-height:0;overflow:hidden;display:flex"><dc-import name="Lanekeeper Adoption Wizard" role="{{ role }}" step="{{ adStep }}" resume="{{ adResume }}" scan="{{ adScan }}" decided="{{ adDecided }}" selected="{{ adSelected }}" bulk="{{ adBulk }}" branch="{{ adBranch }}" base="{{ adBase }}" focus="{{ adFocus }}" ftab="{{ adFtab }}" style="flex:1;min-width:0;height:100%" hint-size="100%,100%"></dc-import></main>
+</sc-if>
+<sc-if value="{{ isStatus }}" hint-placeholder-val="{{ false }}">
+<main style="flex:1;min-height:0;overflow:hidden;display:flex"><dc-import name="Lanekeeper Feature Status" expand="{{ fsExpand }}" onlydiff="{{ fsOnlyDiff }}" tip="{{ fsTip }}" role="{{ role }}" style="flex:1;min-width:0;height:100%" hint-size="100%,100%"></dc-import></main>
+</sc-if>
+<sc-if value="{{ isHome }}" hint-placeholder-val="{{ false }}">
+<main style="flex:1;min-height:0;overflow:hidden;display:flex;justify-content:center">
+<div style="width:100%;max-width:{{ mw }};min-width:0;display:flex;flex-direction:column;padding:16px 24px 0">
+  <div style="flex:none;display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px 16px;padding-bottom:12px">
+    <div style="display:flex;flex-direction:column;gap:4px"><h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600;letter-spacing:-0.01em">Swimlanes</h1><span style="color:var(--muted-foreground)">{{ facts }}</span></div>
+    <sc-if value="{{ isAdmin }}" hint-placeholder-val="{{ true }}"><button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--secondary-foreground);font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/plus.svg) center/contain no-repeat"></span>Add a swimlane</button></sc-if>
+  </div>
+  <div style="flex:1;min-height:0;margin-bottom:16px;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--card)" aria-busy="{{ isLoading }}">
+    <div style="position:relative;z-index:3;flex:none;display:flex;align-items:center;gap:8px;height:40px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--muted)">
+      <span style="display:flex;align-items:center;gap:6px;height:28px;width:240px;padding:0 4px 0 8px;border-radius:4px;border:1px solid var(--input);background:var(--background);opacity:{{ tbOp }}"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/search.svg) center/contain no-repeat"></span><span style="flex:1;color:var(--muted-foreground)">Filter swimlanes…</span><kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">/</kbd></span>
+      <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:4px;border:1px dashed var(--input);background:transparent;cursor:pointer;opacity:{{ tbOp }}" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/plus.svg) center/contain no-repeat"></span>Tier</button><button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:4px;border:1px dashed var(--input);background:transparent;cursor:pointer;opacity:{{ tbOp }}" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/plus.svg) center/contain no-repeat"></span>Agent status</button>
+      <button type="button" aria-pressed="false" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:4px;border:1px solid var(--input);background:var(--background);cursor:pointer;opacity:{{ tbOp }}" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/split.svg) center/contain no-repeat"></span>Has drift</button>
+      <div style="position:relative">
+        <button type="button" aria-haspopup="menu" aria-expanded="{{ colsOpen }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:4px;border:1px solid {{ colsBorder }};background:{{ colsBg }};cursor:pointer;opacity:{{ tbOp }}" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/columns-2.svg) center/contain no-repeat"></span>Columns<span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/chevron-down.svg) center/contain no-repeat"></span></button>
+        <sc-if value="{{ colsOpen }}" hint-placeholder-val="{{ false }}"><div role="menu" style="position:absolute;z-index:40;top:calc(100% + 4px);left:0;width:216px;padding:4px;border:1px solid var(--border);border-radius:6px;background:var(--popover);box-shadow:var(--shadow-popover)">
+          <sc-for list="{{ colList }}" as="co" hint-placeholder-count="10"><div role="menuitemcheckbox" aria-checked="{{ co.on }}" style="display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:4px;opacity:{{ co.op }}" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;border-radius:3px;border:1px solid var(--input);background:{{ co.bg }};color:var(--primary-foreground);display:inline-flex;align-items:center;justify-content:center"><span style="width:10px;height:10px;background:currentColor;mask:url(assets/icons/check.svg) center/contain no-repeat;opacity:{{ co.chk }}"></span></span><span style="flex:1">{{ co.l }}</span><sc-if value="{{ co.locked }}" hint-placeholder-val="{{ false }}"><span style="font-size:12px;color:var(--muted-foreground)">Always on</span></sc-if></div></sc-for>
+        </div></sc-if>
+      </div>
+      <span style="margin-left:auto;font-size:12px;color:var(--muted-foreground);font-variant-numeric:tabular-nums">{{ selText }}</span>
+      <button type="button" aria-disabled="{{ cmpDis }}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid {{ cmpBorder }};background:{{ cmpBg }};color:{{ cmpFg }};font-weight:500;opacity:{{ cmpOp }};cursor:{{ cmpCur }}"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/columns-2.svg) center/contain no-repeat"></span>Compare selected</button>
+    </div>
+
+    <sc-if value="{{ notEmpty }}" hint-placeholder-val="{{ true }}">
+    <div role="row" style="flex:none;display:grid;grid-template-columns:28px 124px 80px 64px 92px 120px minmax(0,1fr) 52px 52px 172px 72px;gap:8px;align-items:center;height:32px;padding:0 8px;border-bottom:1px solid var(--border);background:var(--muted);font-size:12px;font-weight:500;color:var(--muted-foreground)">
+      <span aria-hidden="true" style="width:14px;height:14px;border-radius:3px;border:1px solid var(--input);background:var(--background)"></span>
+      <span aria-sort="ascending" style="display:inline-flex;align-items:center;gap:4px;color:var(--foreground)">Swimlane<span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/arrow-up.svg) center/contain no-repeat"></span></span><span style="text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Project</span><span style="text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Branch</span><span style="text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Base version</span><span style="text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Agent</span><span style="text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Drift</span><span style="text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Restarts</span><span style="text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Findings</span><span style="text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Baseline</span><span style="text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Last change</span>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ isLoading }}" hint-placeholder-val="{{ false }}">
+    <div role="status" aria-label="Loading swimlanes" style="flex:1;min-height:0;overflow:hidden">
+      <sc-for list="{{ skel }}" as="sk" hint-placeholder-count="12"><div style="display:grid;grid-template-columns:28px 124px 80px 64px 92px 120px minmax(0,1fr) 52px 52px 172px 72px;gap:8px;align-items:center;height:28px;padding:0 8px;border-bottom:1px solid var(--border)">
+        <span style="width:14px;height:14px;border-radius:3px;background:var(--accent)"></span>
+        <span style="height:10px;width:{{ sk.a }};border-radius:3px;background:var(--accent)"></span><span style="height:10px;width:{{ sk.b }};border-radius:3px;background:var(--accent)"></span><span style="height:10px;width:{{ sk.c }};border-radius:3px;background:var(--accent)"></span><span style="height:10px;width:{{ sk.b }};border-radius:3px;background:var(--accent)"></span><span style="height:10px;width:{{ sk.a }};border-radius:3px;background:var(--accent)"></span><span style="height:10px;width:{{ sk.d }};border-radius:3px;background:var(--accent)"></span><span style="height:10px;width:20px;justify-self:end;border-radius:3px;background:var(--accent)"></span><span style="height:10px;width:20px;justify-self:end;border-radius:3px;background:var(--accent)"></span><span style="height:10px;width:{{ sk.c }};border-radius:3px;background:var(--accent)"></span><span style="height:10px;width:{{ sk.b }};border-radius:3px;background:var(--accent)"></span>
+      </div></sc-for>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center;padding:24px"><span aria-hidden="true" style="width:20px;height:20px;background:var(--muted-foreground);mask:url(assets/icons/layers.svg) center/contain no-repeat"></span><strong style="font-size:14px;font-weight:600">No swimlanes registered yet</strong><span style="max-width:360px;color:var(--muted-foreground)">A swimlane appears here once an agent registers for its Kubernetes namespace.</span>
+      <sc-if value="{{ isAdmin }}" hint-placeholder-val="{{ true }}"><button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-weight:500;cursor:pointer" style-hover="background:var(--primary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/plus.svg) center/contain no-repeat"></span>Add a swimlane</button></sc-if>
+      <sc-if value="{{ notAdmin }}" hint-placeholder-val="{{ false }}"><span style="color:var(--muted-foreground)">Ask an admin to add one.</span></sc-if>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ hasRows }}" hint-placeholder-val="{{ true }}">
+    <div role="rowgroup" style="flex:1;min-height:0;overflow:hidden">
+      <sc-for list="{{ sl }}" as="r" hint-placeholder-count="6">
+        <div role="row" aria-selected="{{ r.sel }}" style="display:grid;grid-template-columns:28px 124px 80px 64px 92px 120px minmax(0,1fr) 52px 52px 172px 72px;gap:8px;align-items:center;height:28px;padding:0 8px;border-bottom:1px solid var(--border);background:{{ r.bg }};box-shadow:{{ r.sh }}" style-hover="background:var(--accent)">
+          <span aria-hidden="true" style="width:14px;height:14px;border-radius:3px;border:1px solid {{ r.cbb }};background:{{ r.cbg }};color:var(--primary-foreground);display:inline-flex;align-items:center;justify-content:center"><span style="width:10px;height:10px;background:currentColor;mask:url(assets/icons/check.svg) center/contain no-repeat;opacity:{{ r.chk }}"></span></span>
+          <span style="display:flex;align-items:center;gap:6px;min-width:0"><span style="flex:none;display:inline-flex;align-items:center;height:18px;padding:0 4px;border-radius:4px;border:1px solid {{ r.tb }};background:{{ r.tbg }};color:{{ r.tfg }};font-family:var(--font-mono);font-size:12px;font-weight:500;letter-spacing:0.04em">{{ r.tier }}</span><a href="#" style="min-width:0;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono);font-size:12px;font-weight:500;color:var(--foreground);text-decoration:none">{{ r.name }}</a></span>
+          <span style="color:var(--muted-foreground);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.project }}</span>
+          <span style="display:inline-flex;align-items:center;gap:4px;font-family:var(--font-mono);font-size:12px"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/git-branch.svg) center/contain no-repeat"></span>{{ r.branch }}</span>
+          <span style="font-family:var(--font-mono);font-size:12px;color:{{ r.baseFg }}">{{ r.base }}</span>
+          <span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap;color:{{ r.agentFg }}">
+            <sc-if value="{{ r.aOn }}" hint-placeholder-val="{{ true }}"><span style="width:8px;height:8px;flex:none;border-radius:999px;background:var(--agent-online)"></span></sc-if>
+            <sc-if value="{{ r.aDeg }}" hint-placeholder-val="{{ false }}"><span style="width:8px;height:8px;flex:none;border-radius:999px;background:var(--background);border:2px solid var(--agent-degraded)"></span></sc-if>
+            <sc-if value="{{ r.aOff }}" hint-placeholder-val="{{ false }}"><span style="width:8px;height:8px;flex:none;border-radius:2px;background:var(--agent-offline);transform:rotate(45deg)"></span></sc-if>{{ r.agent }}</span>
+          <span style="display:flex;align-items:center;gap:4px;min-width:0;overflow:hidden">
+            <sc-for list="{{ r.chips }}" as="c" hint-placeholder-count="2"><span title="{{ c.t }}" aria-label="{{ c.t }}" style="flex:none;display:inline-flex;align-items:center;gap:3px;height:20px;padding:0 5px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;font-variant-numeric:tabular-nums;color:var(--status-{{ c.key }}-fg);background:var(--status-{{ c.key }}-bg);border:1px {{ c.bs }} var(--status-{{ c.key }}-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/{{ c.icon }}.svg) center/contain no-repeat"></span>{{ c.n }}</span></sc-for>
+            <sc-if value="{{ r.inSync }}" hint-placeholder-val="{{ false }}"><span style="display:inline-flex;align-items:center;gap:4px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/check.svg) center/contain no-repeat"></span>In sync</span></sc-if>
+            <sc-if value="{{ r.stale }}" hint-placeholder-val="{{ false }}"><span style="color:var(--muted-foreground);white-space:nowrap">Stale · last known 3 NFS</span></sc-if>
+          </span>
+          <span style="display:flex;justify-content:flex-end;font-variant-numeric:tabular-nums">
+            <sc-if value="{{ r.rs }}" hint-placeholder-val="{{ false }}"><span title="{{ r.restarts }} pending restarts" style="display:inline-flex;align-items:center;gap:3px;height:20px;padding:0 5px;border-radius:4px;font-size:12px;font-weight:500;color:var(--status-restart-fg);background:var(--status-restart-bg);border:1px solid var(--status-restart-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/clock.svg) center/contain no-repeat"></span>{{ r.restarts }}</span></sc-if>
+            <sc-if value="{{ r.rs0 }}" hint-placeholder-val="{{ true }}"><span style="color:var(--muted-foreground)">{{ r.restarts }}</span></sc-if></span>
+          <span style="text-align:right;font-variant-numeric:tabular-nums;font-weight:{{ r.fw }};color:{{ r.fc }}">{{ r.findings }}</span>
+          <span style="display:flex;align-items:center;gap:6px;min-width:0">
+            <sc-if value="{{ r.confirmed }}" hint-placeholder-val="{{ true }}"><span style="display:inline-flex;align-items:center;gap:4px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:12px;height:12px;background:currentColor;mask:url(assets/icons/shield-check.svg) center/contain no-repeat"></span>Confirmed</span></sc-if>
+            <sc-if value="{{ r.adopt }}" hint-placeholder-val="{{ false }}"><span style="flex:none;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;font-size:12px;line-height:16px;font-weight:500;white-space:nowrap;color:var(--status-locked-fg);background:var(--status-locked-bg);border:1px solid var(--status-locked-border)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/lock.svg) center/contain no-repeat"></span>Adoption needed</span></sc-if>
+            <sc-if value="{{ r.adoptBtn }}" hint-placeholder-val="{{ false }}"><button type="button" style="flex:none;height:22px;padding:0 8px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);font-size:12px;font-weight:500;cursor:pointer" style-hover="background:var(--secondary-hover)">Adopt</button></sc-if>
+          </span>
+          <span style="white-space:nowrap;color:{{ r.lastFg }};font-weight:{{ r.lastFw }}">{{ r.last }}</span>
+        </div>
+      </sc-for>
+    </div>
+    <div style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:4px 16px;min-height:28px;padding:0 12px;border-top:1px solid var(--border);background:var(--muted);font-size:12px;color:var(--muted-foreground)">
+      <span style="font-variant-numeric:tabular-nums">{{ shown }}</span>
+      <span style="display:inline-flex;align-items:center;gap:4px"><span aria-hidden="true" style="width:12px;height:12px;background:var(--status-conflict-bg);mask:url(assets/icons/split.svg) center/contain no-repeat"></span>Conflict</span>
+      <span style="display:inline-flex;align-items:center;gap:4px"><span aria-hidden="true" style="width:12px;height:12px;background:var(--status-nfs-fg);mask:url(assets/icons/arrow-up-from-line.svg) center/contain no-repeat"></span>NFS ahead</span>
+      <span style="display:inline-flex;align-items:center;gap:4px"><span aria-hidden="true" style="width:12px;height:12px;background:var(--status-git-fg);mask:url(assets/icons/arrow-down-to-line.svg) center/contain no-repeat"></span>Git ahead</span>
+      <span style="display:inline-flex;align-items:center;gap:4px"><span aria-hidden="true" style="width:12px;height:12px;background:var(--status-unknown-fg);mask:url(assets/icons/circle-help.svg) center/contain no-repeat"></span>Unknown</span>
+      <span style="display:inline-flex;align-items:center;gap:4px"><span aria-hidden="true" style="width:12px;height:12px;background:var(--status-restart-fg);mask:url(assets/icons/clock.svg) center/contain no-repeat"></span>Pending restart</span>
+      <span style="margin-left:auto">Counts are files per state. Hover a badge for its name.</span>
+    </div>
+    </sc-if>
+  </div>
+</div>
+</main>
+</sc-if>
+</div>
+
+<sc-if value="{{ toastOn }}" hint-placeholder-val="{{ false }}">
+<div role="status" style="position:absolute;z-index:45;right:16px;bottom:16px;width:400px;display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border-radius:6px;border:1px solid var(--border);background:var(--popover);color:var(--popover-foreground);box-shadow:var(--shadow-popover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;margin-top:2px;background:var(--info-fg);mask:url(assets/icons/radio.svg) center/contain no-repeat"></span><div style="flex:1;display:flex;flex-direction:column;gap:4px"><strong style="font-weight:600"><span style="font-family:var(--font-mono);font-size:12px">sitb</span>: <span style="font-family:var(--font-mono);font-size:12px">tx-infinity-core-sit1.yml</span> changed on NFS (unknown author)</strong><a href="#" style="font-size:12px;font-weight:500">View diff</a></div><button type="button" aria-label="Dismiss" style="width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:4px;background:transparent;cursor:pointer" style-hover="background:var(--accent)"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/x.svg) center/contain no-repeat"></span></button></div>
+</sc-if>
+<sc-if value="{{ palOpen }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;inset:0;z-index:50;background:var(--overlay);display:flex;justify-content:center;align-items:flex-start;padding-top:{{ palTop }}">
+  <div role="dialog" aria-label="Command palette" style="width:640px;border:1px solid var(--border);border-radius:6px;background:var(--popover);color:var(--popover-foreground);box-shadow:var(--shadow-popover);overflow:hidden">
+    <div style="display:flex;align-items:center;gap:8px;height:44px;padding:0 12px;border-bottom:1px solid var(--border)"><span aria-hidden="true" style="width:16px;height:16px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/search.svg) center/contain no-repeat"></span><span style="flex:1;font-size:14px">core<span style="display:inline-block;width:1px;height:16px;background:var(--foreground);vertical-align:middle;margin-left:1px"></span></span><kbd style="display:inline-flex;align-items:center;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">Esc</kbd></div>
+    <div role="listbox" style="display:flex;flex-direction:column;padding:4px">
+      <sc-for list="{{ palette }}" as="pg" hint-placeholder-count="4">
+        <div role="group" aria-label="{{ pg.g }}" style="display:flex;flex-direction:column">
+          <span style="height:24px;display:flex;align-items:flex-end;padding:0 8px 4px;font-size:12px;font-weight:500;color:var(--muted-foreground)">{{ pg.g }}</span>
+          <sc-for list="{{ pg.items }}" as="pi" hint-placeholder-count="2"><div role="option" aria-selected="{{ pi.on }}" style="display:flex;align-items:center;gap:8px;height:32px;padding:0 8px;border-radius:4px;background:{{ pi.bg }}">
+            <span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/{{ pi.i }}.svg) center/contain no-repeat"></span>
+            <span style="min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:{{ pi.ff }};font-size:{{ pi.fs }}">{{ pi.a }}<strong style="font-weight:600;background:var(--selection);border-radius:2px">{{ pi.b }}</strong>{{ pi.c }}</span>
+            <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;color:var(--muted-foreground)">{{ pi.m }}</span>
+            <sc-if value="{{ pi.hasChip }}" hint-placeholder-val="{{ false }}"><span style="display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--input);font-family:var(--font-mono);font-size:12px;font-weight:500">{{ pi.chip }}</span></sc-if>
+            <span style="display:inline-flex;align-items:center;gap:2px"><sc-for list="{{ pi.keys }}" as="kk" hint-placeholder-count="1"><sc-if value="{{ kk.isK }}" hint-placeholder-val="{{ true }}"><kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">{{ kk.k }}</kbd></sc-if><sc-if value="{{ kk.isThen }}" hint-placeholder-val="{{ false }}"><span style="font-size:12px;color:var(--muted-foreground);padding:0 2px">then</span></sc-if></sc-for></span>
+          </div></sc-for>
+        </div>
+      </sc-for>
+    </div>
+    <div style="display:flex;gap:16px;align-items:center;height:32px;padding:0 12px;border-top:1px solid var(--border);background:var(--muted);font-size:12px;color:var(--muted-foreground)"><span>↑↓ navigate</span><span>↵ open</span><span>⌘↵ new tab</span><span>⌘1–4 jump to result</span><span style="margin-left:auto">&gt; actions only</span></div>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ keysOpen }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;inset:0;z-index:50;background:var(--overlay);display:flex;justify-content:center;align-items:center">
+  <div role="dialog" aria-label="Keyboard shortcuts" style="width:760px;border:1px solid var(--border);border-radius:6px;background:var(--popover);color:var(--popover-foreground);box-shadow:var(--shadow-popover)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)"><h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Keyboard shortcuts</h2><kbd style="display:inline-flex;align-items:center;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--muted-foreground)">Esc</kbd></div>
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px 40px;padding:12px 16px 16px">
+      <sc-for list="{{ shortcuts }}" as="sg" hint-placeholder-count="4"><div style="display:flex;flex-direction:column;gap:2px"><span style="font-size:12px;font-weight:500;color:var(--muted-foreground);height:24px;display:flex;align-items:center;border-bottom:1px solid var(--border);margin-bottom:2px">{{ sg.g }}</span>
+        <sc-for list="{{ sg.items }}" as="sk" hint-placeholder-count="4"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px;height:28px"><span>{{ sk.l }}</span><span style="display:inline-flex;align-items:center;gap:2px"><sc-for list="{{ sk.keys }}" as="kk" hint-placeholder-count="1"><sc-if value="{{ kk.isK }}" hint-placeholder-val="{{ true }}"><kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--muted);font-family:var(--font-mono);font-size:12px;color:var(--foreground)">{{ kk.k }}</kbd></sc-if><sc-if value="{{ kk.isThen }}" hint-placeholder-val="{{ false }}"><span style="font-size:12px;color:var(--muted-foreground);padding:0 2px">then</span></sc-if></sc-for></span></div></sc-for>
+      </div></sc-for>
+    </div>
+    <div style="display:flex;align-items:center;height:32px;padding:0 16px;border-top:1px solid var(--border);background:var(--muted);font-size:12px;color:var(--muted-foreground);border-radius:0 0 6px 6px">Sequences: press the first key, release, then the second. Shortcuts pause while you type in a field.</div>
+  </div>
+</div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;page&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;file&quot;,&quot;swimlanes&quot;,&quot;detail&quot;,&quot;fileview&quot;,&quot;findings&quot;,&quot;adopt&quot;,&quot;approvals&quot;,&quot;audit&quot;,&quot;admin&quot;],&quot;default&quot;:&quot;file&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;fv&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;core&quot;,&quot;lineending&quot;,&quot;large&quot;,&quot;binary&quot;,&quot;denied&quot;],&quot;default&quot;:&quot;core&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;fmode&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;view&quot;,&quot;edit&quot;],&quot;default&quot;:&quot;view&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;ftab&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;nfs&quot;,&quot;git&quot;,&quot;baseline&quot;,&quot;diff&quot;],&quot;default&quot;:&quot;nfs&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;fview&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;side&quot;,&quot;unified&quot;],&quot;default&quot;:&quot;side&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;fpanel&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;history&quot;,&quot;docs&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;approval&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;estate&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;clean&quot;,&quot;error&quot;,&quot;secret&quot;],&quot;default&quot;:&quot;clean&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;reveal&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;masked&quot;,&quot;dialog&quot;,&quot;shown&quot;],&quot;default&quot;:&quot;masked&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;revert&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;refMenu&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;dtab&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;services&quot;,&quot;drift&quot;,&quot;findings&quot;,&quot;activity&quot;],&quot;default&quot;:&quot;services&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;logical&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;locked&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;agentOff&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;syncing&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;restartTip&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;dataset&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;six&quot;,&quot;forty&quot;,&quot;loading&quot;,&quot;empty&quot;],&quot;default&quot;:&quot;six&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;selection&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;two&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;toast&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;popover&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;columns&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;w&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:1440,&quot;min&quot;:1024,&quot;max&quot;:2560,&quot;tsType&quot;:&quot;number&quot;},&quot;h&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:900,&quot;min&quot;:600,&quot;max&quot;:1440,&quot;tsType&quot;:&quot;number&quot;},&quot;collapsed&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;overlay&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;palette&quot;,&quot;shortcuts&quot;,&quot;usermenu&quot;,&quot;switcher&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;live&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;live&quot;,&quot;reconnecting&quot;,&quot;offline&quot;],&quot;default&quot;:&quot;live&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;role&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Admin&quot;,&quot;Editor&quot;,&quot;Viewer&quot;],&quot;default&quot;:&quot;Admin&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;navMode&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;hide&quot;,&quot;disable&quot;],&quot;default&quot;:&quot;hide&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;tip&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;nav&quot;,&quot;action&quot;,&quot;collapsed&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;maxW&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:1680,&quot;min&quot;:1000,&quot;max&quot;:2400,&quot;tsType&quot;:&quot;number&quot;}}">
+class Component extends DCLogic {
+  home(p, isAdmin) {
+    const bool = v => v === true || v === 'true';
+    const page = p.page ?? 'file', ds = p.dataset ?? 'six';
+    const T = { SIT: ['var(--input)', 'transparent', 'var(--foreground)'], PRESIT: ['var(--muted-foreground)', 'var(--muted-foreground)', 'var(--background)'] };
+    const C = { conflict: ['split', 'conflict', 'solid'], nfs: ['arrow-up-from-line', 'NFS ahead', 'solid'], git: ['arrow-down-to-line', 'Git ahead', 'solid'], unknown: ['circle-help', 'unknown', 'solid'] };
+    const six = [
+      { name: 'sit', tier: 'SIT', project: 'ops-sit', branch: 'sit1', base: 'v2.3.1', agent: 'online', d: {}, rs: 0, f: 0, bl: 'ok', last: '2 h ago' },
+      { name: 'sitb', tier: 'SIT', project: 'ops-sit', branch: 'sit7', base: 'v2.3.1 + 4', agent: 'online', d: { conflict: 1, nfs: 2, git: 1 }, rs: 2, f: 2, bl: 'ok', last: 'just now', live: true },
+      { name: 'sitc', tier: 'SIT', project: 'ops-sit', branch: 'sit9', base: 'v2.3.1 + 4', agent: 'online', d: { nfs: 1 }, rs: 0, f: 1, bl: 'ok', last: '31 min ago' },
+      { name: 'presita', tier: 'PRESIT', project: 'ops-presit', branch: 'sit11', base: 'v2.3.0', agent: 'degraded', d: { git: 2 }, rs: 0, f: 0, bl: 'ok', last: '1 d ago' },
+      { name: 'presitb', tier: 'PRESIT', project: 'ops-presit', branch: 'sit12', base: 'v2.3.1 + 2', agent: 'offline', seen: '14m ago', d: {}, stale: true, rs: 0, f: 2, bl: 'ok', last: '3 h ago' },
+      { name: 'presitc', tier: 'PRESIT', project: 'ops-presit', branch: 'sit13', base: 'unconfirmed', agent: 'online', d: { unknown: 412 }, rs: 0, f: 0, bl: 'adopt', last: '6 d ago' }
+    ];
+    const letters = 'defghijklmnopqrstuvwxyz'.split(''), vers = ['v2.3.1 + 4', 'v2.3.1', 'v2.3.0 + 1', 'v2.2.9'], lasts = ['4 min ago', '12 min ago', '1 h ago', '3 h ago', '1 d ago', '2 d ago', '5 d ago'];
+    const gen = [];
+    for (let i = 0; i < 34; i++) {
+      const pre = i >= 23, nm = (pre ? 'presit' : 'sit') + (pre ? 'defghijklmn'[i - 23] : letters[i]);
+      const s = ((i * 9301 + 49297) % 233280) / 233280, d = {};
+      if (s > 0.9) d.conflict = 1 + (i % 2); if (s > 0.5) d.nfs = Math.ceil(s * 6); if (i % 3 === 0) d.git = 1 + (i % 12);
+      gen.push({ name: nm, tier: pre ? 'PRESIT' : 'SIT', project: pre ? 'ops-presit' : (i % 3 === 1 ? 'cards-sit' : 'ops-sit'), branch: 'sit' + ((i % 13) + 1), base: vers[i % 4], agent: i === 17 ? 'offline' : (i % 11 === 4 ? 'degraded' : 'online'), seen: '2 h ago', d, rs: d.nfs ? i % 3 : 0, f: i % 4 === 0 ? i % 7 : 0, bl: (i === 21 || i === 30) ? 'adopt' : 'ok', last: lasts[i % 7] });
+    }
+    const src = ds === 'forty' ? six.concat(gen) : (ds === 'six' ? six : []);
+    const two = (p.selection ?? 'none') === 'two';
+    const sl = src.map(r => {
+      const sel = two && (r.name === 'sit' || r.name === 'sitc'), t = T[r.tier];
+      const chips = ['conflict', 'nfs', 'git', 'unknown'].filter(k => r.d[k]).map(k => ({ key: k, icon: C[k][0], n: r.d[k], t: r.d[k] + ' ' + C[k][1], bs: 'solid' }));
+      const off = r.agent === 'offline';
+      return { sel, bg: r.live ? 'var(--info-bg)' : (sel ? 'var(--selection)' : 'transparent'), sh: r.live ? 'inset 0 0 0 1px var(--info-border)' : 'none',
+        cbb: sel ? 'var(--primary)' : 'var(--input)', cbg: sel ? 'var(--primary)' : 'var(--background)', chk: sel ? 1 : 0,
+        tier: r.tier, tb: t[0], tbg: t[1], tfg: t[2], name: r.name, project: r.project, branch: r.branch, base: r.base, baseFg: r.bl === 'adopt' ? 'var(--muted-foreground)' : 'var(--foreground)',
+        aOn: r.agent === 'online', aDeg: r.agent === 'degraded', aOff: off, agent: off ? 'Offline · ' + r.seen : (r.agent === 'degraded' ? 'Degraded' : 'Online'), agentFg: off ? 'var(--muted-foreground)' : 'var(--foreground)',
+        chips: r.stale ? [] : chips, inSync: !r.stale && !chips.length, stale: !!r.stale,
+        restarts: r.rs, rs: r.rs > 0, rs0: !r.rs, findings: r.f, fw: r.f > 0 ? 500 : 400, fc: r.f > 0 ? 'var(--foreground)' : 'var(--muted-foreground)',
+        confirmed: r.bl === 'ok', adopt: r.bl === 'adopt', adoptBtn: r.bl === 'adopt' && isAdmin,
+        last: r.last, lastFg: r.live ? 'var(--info-fg)' : 'var(--foreground)', lastFw: r.live ? 600 : 400 };
+    });
+    const online = src.filter(r => r.agent === 'online').length;
+    const cols = [['Swimlane', 1, 1], ['Project', 1], ['Branch', 1], ['Base version', 1], ['Agent', 1], ['Drift', 1], ['Pending restarts', 1], ['Findings', 1], ['Baseline', 1], ['Last change', 1]];
+    return {
+      isApprovals: page === 'approvals', isAudit: page === 'audit', isAdminPg: page === 'admin', adSection: p.adsection ?? 'users', adState: p.adstate ?? 'view', adMcp: p.admcp ?? 'true', adLabel: ({ users: 'Users and access requests', swimlanes: 'Swimlanes and agents', paths: 'Path mappings', merge: 'Merge modes', tiers: 'Host tiers', folders: 'Folder mappings', notify: 'Notifications', mcp: 'MCP personal tokens', sentinels: 'Sentinels', oslogin: 'OS Login user mapping', severity: 'Severity rules', retention: 'Retention' })[p.adsection ?? 'users'], apState: p.apstate ?? 'results', apTab: p.aptab ?? 'pending', apSel: p.apsel ?? '', apLive: p.aplive ?? 'idle', apReason: p.apreason ?? '', auState: p.austate ?? 'results', auInteg: p.auinteg ?? 'ok', auIgopen: p.auigopen ?? '', auQuick: p.auquick ?? 'all', auVia: p.auvia ?? '', auAct: p.auact ?? '', auLanes: p.aulanes ?? '', auSrc: p.ausrc ?? '', auConf: p.auconf ?? 0, auSel: p.ausel ?? '', auPop: p.aupop ?? 'none', auJump: p.aujump ?? 0, isFindings: page === 'findings', isAdopt: page === 'adopt', fnState: p.fnstate ?? 'results', fnTab: p.fntab ?? 'open', fnSel: p.fnsel ?? '', fnLanes: p.fnlanes ?? '', fnChecks: p.fnchecks ?? '', fnSev: p.fnsev ?? '', fnConfirm: p.fnconfirm ?? 'none', fnPop: p.fnpop ?? 'none', fnReason: p.fnreason ?? '', adStep: p.adstep ?? '1', adResume: p.adresume ?? 'none', adScan: p.adscan ?? 'results', adDecided: p.addecided, adSelected: p.adselected ?? '', adBulk: p.adbulk ?? 'none', adBranch: p.adbranch ?? 'sit12', adBase: p.adbase ?? 'v2.3.1+4', adFocus: p.adfocus ?? 0, adFtab: p.adftab ?? 'all', isHome: page === 'swimlanes', isSearch: page === 'search', isStatus: page === 'status', sTab: p.stab ?? 'text', sTabLabel: ({ text: 'Text', settings: 'Settings', docs: 'Docs' })[p.stab ?? 'text'], sState: p.sstate ?? 'results', sView: p.sview ?? 'results', sDoc: p.sdoc ?? 'account', sDialog: p.sdialog ?? 'none', sPop: p.spop ?? 'none', sTip: p.stip ?? 'none', fsExpand: p.fsexpand ?? 'first', fsOnlyDiff: bool(p.fsonlydiff), fsTip: p.fstip ?? 'none', isDetail: page === 'detail', isCompare: page === 'compare', cMode: p.cmode ?? 'grid', cState: p.cstate ?? 'default', cOffline: bool(p.coffline), cOnlyDiff: p.conlydiff ?? true, cDrawer: bool(p.cdrawer), cPick: p.cpick ?? 'value', cTarget: p.ctarget ?? 'lane', cFile: p.cfile ?? 'tx-infinity-api/tx-infinity-core.yml', cRow: p.crow ?? 0, cSearch: p.csearch ?? '', isFileView: page === 'fileview', showCrumb: page === 'file' || page === 'fileview',
+      crumbDir: page === 'fileview' ? ({ core: ['tx-infinity-api', 'tx-infinity-core-sit7.yml'], lineending: ['tx-infinity-api', 'tx-infinity-gateway.yml'], large: ['security', 'security-roles.yml'], binary: ['resources', 'receipt-logo.jpeg'], denied: ['security', 'keystore.jks'] }[p.fv ?? 'core'] || ['', ''])[0] : 'tx-infinity-api', crumbFile: page === 'fileview' ? ({ core: ['tx-infinity-api', 'tx-infinity-core-sit7.yml'], lineending: ['tx-infinity-api', 'tx-infinity-gateway.yml'], large: ['security', 'security-roles.yml'], binary: ['resources', 'receipt-logo.jpeg'], denied: ['security', 'keystore.jks'] }[p.fv ?? 'core'] || ['', ''])[1] : 'tx-infinity-core-sit1.yml',
+      fvFile: p.fv ?? 'core', fvMode: p.fmode ?? 'view', fvTab: p.ftab ?? 'nfs', fvView: p.fview ?? 'side', fvPanel: p.fpanel ?? 'none', fvApproval: bool(p.approval), fvEstate: p.estate ?? 'clean', fvReveal: p.reveal ?? 'masked', fvRevert: bool(p.revert), fvRef: bool(p.refMenu), sw: (page === 'detail' && bool(p.locked)) ? { tier: 'PRESIT', name: 'presitc', branch: 'sit13', tb: 'var(--muted-foreground)', tbg: 'var(--muted-foreground)', tfg: 'var(--background)', sk: 'unknown', icon: 'circle-help', n: 412, word: 'unknown' } : { tier: 'SIT', name: 'sitb', branch: 'sit7', tb: 'var(--input)', tbg: 'transparent', tfg: 'var(--foreground)', sk: 'nfs', icon: 'arrow-up-from-line', n: 4, word: 'drift' }, role: p.role ?? 'Admin', dLaneName: bool(p.locked) ? 'presitc' : 'sitb', dTab: p.dtab ?? 'services', dLogical: bool(p.logical), dLocked: bool(p.locked), dAgentOff: bool(p.agentOff), dSync: bool(p.syncing), dTip: bool(p.restartTip),
+      isLoading: ds === 'loading', isEmpty: ds === 'empty', hasRows: ds === 'six' || ds === 'forty', notEmpty: ds !== 'empty',
+      tbOp: (ds === 'loading' || ds === 'empty') ? 0.5 : 1,
+      facts: ds === 'empty' ? 'No agents registered' : ds === 'loading' ? 'Loading…' : sl.length + ' swimlanes · ' + online + ' of ' + sl.length + ' agents online · ' + src.filter(r => r.bl === 'adopt').length + ' need adoption',
+      sl, shown: 'Showing ' + sl.length + ' of ' + sl.length,
+      skel: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].map(i => ({ a: [56, 44, 64, 52][i % 4] + 'px', b: [52, 60, 40][i % 3] + 'px', c: [60, 48][i % 2] + 'px', d: [110, 150, 80, 130][i % 4] + 'px' })),
+      selText: two ? '2 selected' : '', cmpDis: !two, cmpOp: two ? 1 : 0.5, cmpCur: two ? 'pointer' : 'not-allowed',
+      cmpBg: two ? 'var(--primary)' : 'var(--secondary)', cmpBorder: two ? 'var(--primary)' : 'var(--border)', cmpFg: two ? 'var(--primary-foreground)' : 'var(--secondary-foreground)',
+      colsOpen: p.popover === 'columns', colsBorder: p.popover === 'columns' ? 'var(--ring)' : 'var(--input)', colsBg: p.popover === 'columns' ? 'var(--accent)' : 'var(--background)',
+      colList: cols.map(([l, on, locked]) => ({ l, on: true, bg: 'var(--primary)', chk: 1, op: locked ? 0.5 : 1, locked: !!locked })),
+      toastOn: bool(p.toast)
+    };
+  }
+  renderVals() {
+    const p = this.props, bool = v => v === true || v === 'true';
+    const theme = p.theme ?? 'light', w = Number(p.w ?? 1440), h = Number(p.h ?? 900);
+    const collapsed = bool(p.collapsed), overlay = p.overlay ?? 'none', live = p.live ?? 'live';
+    const role = p.role ?? 'Admin', navMode = p.navMode ?? 'hide', tip = p.tip ?? 'none';
+    const isAdmin = role === 'Admin';
+    const user = isAdmin ? { name: 'Priya Shah', ini: 'PS', role: 'Admin', ri: 'shield-check' } : p.role === 'Editor' ? { name: 'Marco Diaz', ini: 'MD', role: 'Editor', ri: 'pencil' } : { name: 'Marco Diaz', ini: 'MD', role: 'Viewer', ri: 'eye' };
+
+    const G = [
+      [{ k: 'swimlanes', l: 'Swimlanes', i: 'layers', cur: !['compare', 'search', 'status', 'findings', 'approvals', 'audit', 'admin'].includes(p.page) }, { k: 'compare', l: 'Compare', i: 'columns-2', cur: p.page === 'compare' }, { k: 'search', l: 'Search', i: 'search', cur: p.page === 'search', kids: [['Text', '/'], ['Settings'], ['Docs']] }],
+      [{ k: 'status', l: 'Feature status', i: 'zap', cur: p.page === 'status' }, { k: 'findings', l: 'Findings', i: 'shield-alert', n: 11, cur: p.page === 'findings' }, { k: 'approvals', l: 'Approvals', i: 'circle-check', n: 6, gate: true, cur: p.page === 'approvals' }],
+      [{ k: 'audit', l: 'Audit', i: 'history', cur: p.page === 'audit' }, { k: 'admin', l: 'Admin', i: 'settings', gate: true, cur: p.page === 'admin' }]
+    ];
+    const vis = G.map(g => g.filter(it => !(it.gate && !isAdmin && navMode === 'hide'))).filter(g => g.length);
+    const navExp = [], navCol = [];
+    vis.forEach((g, gi) => {
+      if (gi) { navExp.push({ isDiv: true }); navCol.push({ isDiv: true }); }
+      g.forEach(it => {
+        const dis = !!it.gate && !isAdmin;
+        const base = { isItem: true, label: it.l, icon: it.i, cur: it.cur ? 'page' : undefined, bg: it.cur ? 'var(--selection)' : 'transparent', fw: it.cur ? 500 : 400, dis, op: dis ? 0.5 : 1, cursor: dis ? 'not-allowed' : 'pointer', lock: dis, hasCount: !!it.n && !dis, count: it.n, chev: !!it.kids };
+        navExp.push({ ...base, tip: tip === 'nav' && it.k === 'approvals', tipText: 'Requires Admin · Priya Shah can grant' });
+        if (it.kids) it.kids.forEach(([l, k]) => navExp.push({ isChild: true, label: l, hasK: !!k, k }));
+        navCol.push({ ...base, tip: tip === 'collapsed' && it.k === 'findings', tipText: 'Findings · 11 open' });
+      });
+    });
+
+    const L = (k, no, a, ww, b) => {
+      const S = {
+        ctx: { bg: 'var(--card)', gut: 'var(--muted)', m: '', mc: 'inherit', wb: 'transparent' },
+        del: { bg: 'var(--diff-del-bg)', gut: 'var(--diff-del-gutter)', m: '−', mc: 'var(--diff-del-fg)', wb: 'var(--diff-del-word)' },
+        add: { bg: 'var(--diff-add-bg)', gut: 'var(--diff-add-gutter)', m: '+', mc: 'var(--diff-add-fg)', wb: 'var(--diff-add-word)' },
+        empty: { bg: 'var(--diff-empty-bg)', gut: 'var(--diff-empty-bg)', m: '', mc: 'inherit', wb: 'transparent' }
+      }[k];
+      return { bg: S.bg, gut: S.gut, m: S.m, mc: S.mc, wb: S.wb, no: k === 'empty' ? '' : no, a: a ?? '', w: ww ?? '', b: b ?? '' };
+    };
+    const code = (l, r) => ({ isCode: true, lbg: l.bg, lgut: l.gut, lm: l.m, lmc: l.mc, lwb: l.wb, lno: l.no, la: l.a, lw: l.w, lb: l.b, rbg: r.bg, rgut: r.gut, rm: r.m, rmc: r.mc, rwb: r.wb, rno: r.no, ra: r.a, rw: r.w, rb: r.b });
+    const unfold = h >= 1200 || bool(p.unfold);
+    const rows = [];
+    const fold = (n, lines, ls, rs) => {
+      if (unfold) lines.forEach((t, i) => rows.push(code(L('ctx', ls + i, t), L('ctx', rs + i, t))));
+      else rows.push({ isFold: true, t: n + ' unchanged lines' });
+    };
+    const hunk = t => rows.push({ isHunk: true, t });
+    const ctx = (l, r, t) => rows.push(code(L('ctx', l, t), L('ctx', r, t)));
+    const mod = (l, r, pre, lw, rw, post) => rows.push(code(L('del', l, pre, lw, post), L('add', r, pre, rw, post)));
+    const add = (r, t) => rows.push(code(L('empty'), L('add', r, t)));
+    const del = (l, t) => rows.push(code(L('del', l, t), L('empty')));
+    fold(9, ['# tx-infinity-core · tenant override for sit1', 'tenant: sit1', 'service:', '  name: tx-infinity-core', '  replicas: 2', '  resources:', '    requests:', '      cpu: 500m', '      memory: 1Gi'], 1, 1);
+    hunk('@@ -10,9 +10,10 @@ txInfinityOptions');
+    ctx(10, 10, 'txInfinityOptions:'); ctx(11, 11, '  remote-itm-teller:'); ctx(12, 12, '    timeoutMs: 30000');
+    mod(13, 13, '    enableAccountSorting: ', 'false', 'true', '');
+    add(14, '    sortOrder: asc');
+    ctx(14, 15, '    pageSize: 50'); ctx(15, 16, '    retry:'); ctx(16, 17, '      attempts: 3'); ctx(17, 18, '      backoffMs: 250');
+    fold(12, ['  remote-itm-vault:', '    timeoutMs: 30000', '    enableAccountSorting: false', '    pageSize: 25', '  remote-itm-atm:', '    timeoutMs: 45000', '    pageSize: 100', 'kafka:', '  bootstrap: kafka-sit1:9092', '  consumerGroup: tx-core-sit1', '  autoOffsetReset: latest', '  maxPollRecords: 200'], 19, 20);
+    hunk('@@ -31,7 +32,6 @@ logging');
+    ctx(31, 32, 'logging:'); ctx(32, 33, '  appender: json');
+    mod(33, 34, '  level: ', 'WARN', 'INFO', '');
+    del(34, '  legacyAdapter: true');
+    ctx(35, 35, '  maskPatterns:'); ctx(36, 36, '    - pan'); ctx(37, 37, '    - accountNumber');
+    fold(8, ['  retention: 14d', 'featureFlags:', '  instantPayments: false', '  holdsV2: true', '  receiptsV3: true', '  legacyBatch: false', '  auditTrail: true', '  rateLimiter: true'], 38, 38);
+    hunk('@@ -46,7 +46,7 @@ entryGroupConfigMap');
+    ctx(46, 46, 'entryGroupConfigMap:'); ctx(47, 47, '  atm-iso:'); ctx(48, 48, '    DEPOSIT:');
+    mod(49, 49, '      limitCents: ', '500000', '750000', '');
+    ctx(50, 50, '      currency: USD'); ctx(51, 51, '    WITHDRAWAL:'); ctx(52, 52, '      limitCents: 200000');
+    fold(6, ['      currency: USD', '    TRANSFER:', '      limitCents: 1000000', '      currency: USD', 'metrics:', '  enabled: true'], 53, 53);
+
+    const T = n => ({ SIT: ['var(--input)', 'transparent', 'var(--foreground)'], PRESIT: ['var(--muted-foreground)', 'var(--muted-foreground)', 'var(--background)'] }[n]);
+    const lanes = [['SIT', 'sit', 'sit1', 4, 1], ['SIT', 'sitb', 'sit7', 4, 1], ['SIT', 'sitc', 'sit9', 0, 0], ['PRESIT', 'presita', 'sit11', 3, 0], ['PRESIT', 'presitb', 'sit12', 0, 0], ['PRESIT', 'presitc', 'sit13', 1, 0]].map(([tier, name, branch, d]) => {
+      const t = T(tier), on = name === 'sitb';
+      return { tier, name, branch, on, bg: on ? 'var(--selection)' : 'transparent', chk: on ? 1 : 0, tb: t[0], tbg: t[1], tfg: t[2], sk: d ? 'nfs' : 'sync', si: d ? 'arrow-up-from-line' : 'check', st: d ? d + ' drift' : 'In sync' };
+    });
+
+    const K = (...ks) => ks.map(k => ({ k, isK: k !== 'then', isThen: k === 'then' }));
+    const pit = (o) => ({ ff: 'var(--font-sans)', fs: '13px', a: '', b: '', c: '', m: '', chip: '', hasChip: false, on: false, bg: 'transparent', ...o, hasChip: !!o.chip, bg: o.on ? 'var(--accent)' : 'transparent' });
+    const mono = { ff: 'var(--font-mono)', fs: '12px' };
+    const palette = [
+      { g: 'Files', items: [
+        pit({ i: 'file-code', ...mono, a: 'tx-infinity-', b: 'core', c: '.yml', m: 'tx-infinity-api', chip: 'sitb', keys: K('⌘1'), on: true }),
+        pit({ i: 'file-code', ...mono, a: 'tx-infinity-', b: 'core', c: '.yml', m: 'tx-infinity-api', chip: 'sitc', keys: K('⌘2') })] },
+      { g: 'Services', items: [pit({ i: 'server', ...mono, a: 'tx-infinity-', b: 'core', c: '', m: 'runs in 6 swimlanes', keys: K('⌘3') })] },
+      { g: 'Docs', items: [pit({ i: 'book-open', a: 'Account sorting', m: 'remote-itm-teller · mentions tx-infinity-core', keys: K('⌘4') })] },
+      { g: 'Actions', items: [
+        pit({ i: 'columns-2', a: 'Compare sitb with sitc', keys: K('g', 'then', 'c') }),
+        pit({ i: 'search', a: 'Search text…', keys: K('/') })] }
+    ];
+    const shortcuts = [
+      { g: 'Global', items: [{ l: 'Command palette', keys: K('⌘', 'K') }, { l: 'Search text', keys: K('/') }, { l: 'Show this sheet', keys: K('?') }, { l: 'Toggle sidebar', keys: K('⌘', 'B') }, { l: 'Close dialog or menu', keys: K('Esc') }] },
+      { g: 'Go to', items: [{ l: 'Swimlanes', keys: K('g', 'then', 's') }, { l: 'Compare', keys: K('g', 'then', 'c') }, { l: 'Feature status', keys: K('g', 'then', 'f') }, { l: 'Findings', keys: K('g', 'then', 'i') }, { l: 'Audit', keys: K('g', 'then', 'a') }] },
+      { g: 'Diff navigation', items: [{ l: 'Next change', keys: K('n') }, { l: 'Previous change', keys: K('p') }, { l: 'Toggle side by side / unified', keys: K('u') }] },
+      { g: 'Lists and trees', items: [{ l: 'Move selection', keys: K('↑', '↓') }, { l: 'Open', keys: K('↵') }, { l: 'Open in new tab', keys: K('⌘', '↵') }] }
+    ];
+
+    const offline = live === 'offline', viewer = !isAdmin;
+    const saveDis = viewer || offline;
+    return {
+      theme, wpx: w + 'px', hpx: h + 'px', mw: (p.maxW ?? 1680) + 'px',
+      expanded: !collapsed, collapsed, sbw: collapsed ? '48px' : '224px', sbHeadJ: collapsed ? 'center' : 'space-between',
+      navExp, navCol, user, isAdmin, notAdmin: !isAdmin,
+      menuOpen: overlay === 'usermenu', userBg: overlay === 'usermenu' ? 'var(--accent)' : 'transparent', menuBottom: collapsed ? '52px' : '64px',
+      switcherOpen: overlay === 'switcher', lanes,
+      stw: w < 1400 ? '168px' : '240px',
+      isLive: live === 'live', isRecon: live === 'reconnecting', isOff: offline,
+      viewer, prOp: viewer ? 0.5 : 1, prCur: viewer ? 'not-allowed' : 'pointer',
+      saveDis, saveOp: saveDis ? 0.5 : 1, saveCur: saveDis ? 'not-allowed' : 'pointer',
+      actionTip: tip === 'action', actionTipText: viewer ? 'Requires Editor · Priya Shah can grant' : 'Unavailable offline · resumes when live updates return',
+      rows, palOpen: overlay === 'palette', palTop: h >= 1200 ? '160px' : '96px', palette,
+      keysOpen: overlay === 'shortcuts', shortcuts, notAdmin: !isAdmin,
+      ...this.home(p, isAdmin)
+    };
+  }
+}
+</script>
+</body>
+</html>

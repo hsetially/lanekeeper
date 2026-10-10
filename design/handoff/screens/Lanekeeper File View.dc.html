@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="styles.css">
+<style>
+body{margin:0;background:#eceae5;font-family:'Inter',system-ui,sans-serif}
+.dv-turn{padding:40px 44px 32px;scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 8px}
+.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 15px/1.2 'Inter',system-ui,sans-serif;color:#1a1a1a}
+.dv-sub{margin:0 0 24px;font:13px/1.5 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.6);max-width:900px}
+.dv-opts{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start;max-width:2920px}
+.dv-grp{flex-basis:100%;margin:20px 0 -8px;padding-top:16px;border-top:1px solid rgba(0,0,0,.12);font:600 12px/1.3 'Inter',system-ui,sans-serif;letter-spacing:.04em;text-transform:uppercase;color:rgba(0,0,0,.6)}
+.dv-grp:first-child{margin-top:0;padding-top:0;border-top:0}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:12px/1.3 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.65)}
+.dv-card{width:1442px;max-width:100%;background:#fff;border:1px solid rgba(0,0,0,.12);border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.06);overflow:hidden}
+.dv-opt:target .dv-oid{background:#2a78d6;color:#fff}
+.dv-next{margin:28px 0 0;font:12px/1.5 'Inter',system-ui,sans-serif;color:rgba(0,0,0,.6)}
+.dv-next a{color:inherit}
+</style>
+</helmet>
+<section class="dv-turn" id="t1" data-screen-label="Turn 1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">File view · sitb / tx-infinity-api / tx-infinity-core-sit7.yml</span></div>
+<p class="dv-sub">Line ending and encoding are always visible: in the header chips and in the editor status bar. Masked values never appear in the diff or the audit log; revealing needs a reason. The secret block names a line number only.</p>
+<div class="dv-opts">
+
+<div class="dv-grp">Diff tab · tx-infinity-core-sit7.yml</div>
+<div class="dv-opt" id="1a"><div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Light · side by side · semantic summary, change list, word-level highlights · ref picker open</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="fileview" ftab="diff" fview="side" ref-menu="{{ true }}" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1b"><div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Dark · unified view</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" page="fileview" ftab="diff" fview="unified" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1c"><div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>Light · line endings only: diff hidden behind a notice (tx-infinity-gateway.yml)</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="fileview" fv="lineending" ftab="diff" hint-size="1440px,900px"></dc-import></div></div>
+
+<div class="dv-grp">NFS tab · masked values</div>
+<div class="dv-opt" id="1d"><div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a>Light · masked value with Reveal (Editor and above)</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="fileview" ftab="nfs" role="Editor" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1e"><div class="dv-olabel"><a class="dv-oid" href="#1e">1e</a>Light · Reveal asks for a reason and warns about the audit log</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="fileview" ftab="nfs" role="Editor" reveal="dialog" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1f"><div class="dv-olabel"><a class="dv-oid" href="#1f">1f</a>Dark · value revealed, “Hide” and audit note shown</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" page="fileview" ftab="nfs" role="Editor" reveal="shown" hint-size="1440px,900px"></dc-import></div></div>
+
+<div class="dv-grp">Edit mode</div>
+<div class="dv-opt" id="1g"><div class="dv-olabel"><a class="dv-oid" href="#1g">1g</a>Light · error at line 88 and duplicate-key warning · Save disabled</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="fileview" fmode="edit" estate="error" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1h"><div class="dv-olabel"><a class="dv-oid" href="#1h">1h</a>Dark · secret detected: save blocked, line number only</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" page="fileview" fmode="edit" estate="secret" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1i"><div class="dv-olabel"><a class="dv-oid" href="#1i">1i</a>Light · user who needs approval: “Submit for approval”</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="fileview" fmode="edit" estate="clean" approval="{{ true }}" role="Editor" hint-size="1440px,900px"></dc-import></div></div>
+
+<div class="dv-grp">History panel</div>
+<div class="dv-opt" id="1j"><div class="dv-olabel"><a class="dv-oid" href="#1j">1j</a>Light · versions with attribution, severity, “Recovered from agent spool”</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="fileview" fpanel="history" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1k"><div class="dv-olabel"><a class="dv-oid" href="#1k">1k</a>Dark · revert confirmation lists its consequences</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" page="fileview" fpanel="history" revert="{{ true }}" hint-size="1440px,900px"></dc-import></div></div>
+
+<div class="dv-grp">Large, binary and denied files</div>
+<div class="dv-opt" id="1l"><div class="dv-olabel"><a class="dv-oid" href="#1l">1l</a>Light · security-roles.yml, outline and minimap, duplicate key linking to L5171, L5643, L6115</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="fileview" fv="large" ftab="nfs" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1m"><div class="dv-olabel"><a class="dv-oid" href="#1m">1m</a>Light · receipt-logo.jpeg, image compare against Git with both hashes</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="fileview" fv="binary" ftab="diff" hint-size="1440px,900px"></dc-import></div></div>
+<div class="dv-opt" id="1n"><div class="dv-olabel"><a class="dv-oid" href="#1n">1n</a>Dark · keystore.jks: content withheld, no edit actions</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="dark" page="fileview" fv="denied" hint-size="1440px,900px"></dc-import></div></div>
+
+<div class="dv-grp">Docs panel</div>
+<div class="dv-opt" id="1o"><div class="dv-olabel"><a class="dv-oid" href="#1o">1o</a>Light · “Docs for this file” drawer with the Feature Flags table</div><div class="dv-card"><dc-import name="Lanekeeper Shell" theme="light" page="fileview" fpanel="docs" hint-size="1440px,900px"></dc-import></div></div>
+
+</div>
+<p class="dv-next">Try next: “make the diff work at 6,000 lines” · “design the editing-locked and Viewer read-only states” · “show <a class="dv-oid" href="#1g">1g</a> with the find widget open”</p>
+</section>
+</x-dc>
+</body>
+</html>

@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:13px;line-height:18px;-webkit-font-smoothing:antialiased}
+a{color:var(--link)}a:hover{color:var(--primary-hover)}
+button{font-family:inherit}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+@keyframes lkp{0%{box-shadow:0 0 0 0 var(--warning-fg)}100%{box-shadow:0 0 0 8px transparent}}
+</style>
+</helmet>
+<div data-theme="{{ theme }}" style="min-height:100vh;background:var(--muted);color:var(--foreground);display:flex;flex-direction:column">
+
+<!-- journey bar -->
+<div style="background:var(--background);border-bottom:1px solid var(--border);padding:10px 16px;display:flex;flex-direction:column;gap:8px">
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+    <strong style="font-size:14px;margin-right:6px">Lanekeeper prototype</strong>
+    <sc-for list="{{ journeys }}" as="jj" hint-placeholder-count="7"><button onClick="{{ jj.go }}" aria-pressed="{{ jj.on }}" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid {{ jj.bd }};background:{{ jj.bg }};color:{{ jj.fg }};font:500 12px var(--font-sans);cursor:pointer">{{ jj.n }}. {{ jj.short }}</button></sc-for>
+    <span style="flex:1"></span>
+    <button onClick="{{ toggleTheme }}" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 12px var(--font-sans);cursor:pointer">{{ themeLabel }}</button>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <span style="font-weight:600">{{ cur.title }}</span>
+    <span style="color:var(--muted-foreground)">Signed in as {{ userName }} · {{ userRole }}</span>
+    <button onClick="{{ restart }}" style="height:24px;padding:0 8px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 12px var(--font-sans);cursor:pointer">Restart journey</button>
+  </div>
+  <ol style="margin:0;padding:0;list-style:none;display:flex;flex-wrap:wrap;gap:6px">
+    <sc-for list="{{ guide }}" as="g" hint-placeholder-count="5"><li style="display:flex;align-items:center;gap:6px;padding:3px 8px;border-radius:4px;border:1px solid {{ g.bd }};background:{{ g.bg }};color:{{ g.fg }};font-size:12px;font-weight:{{ g.w }}"><span style="font:500 11px var(--font-mono)">{{ g.i }}</span>{{ g.t }}</li></sc-for>
+    <sc-if value="{{ done }}" hint-placeholder-val="{{ false }}"><li style="padding:3px 8px;border-radius:4px;border:1px solid var(--success-border);background:var(--success-bg);color:var(--success-fg);font-size:12px;font-weight:600">Journey complete. Pick another above.</li></sc-if>
+  </ol>
+</div>
+
+<!-- app frame -->
+<div style="flex:1;padding:16px;display:flex;justify-content:center">
+<div style="position:relative;width:100%;max-width:1320px;height:780px;border:1px solid var(--border);border-radius:6px;background:var(--background);display:flex;flex-direction:column;overflow:hidden">
+
+  <!-- header -->
+  <div style="height:44px;flex:none;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid var(--border);background:var(--card)">
+    <strong style="font-size:14px">Lanekeeper</strong>
+    <span style="flex:1"></span>
+    <span role="status" style="display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:999px;border:1px solid var(--border);font-size:12px;font-weight:500"><span style="width:8px;height:8px;border-radius:999px;background:var(--agent-online)"></span>Live</span>
+    <span style="font-weight:500">{{ userName }}</span>
+    <span style="font-size:12px;padding:1px 6px;border-radius:4px;border:1px solid var(--border);color:var(--muted-foreground)">{{ userRole }}</span>
+  </div>
+
+  <div style="flex:1;min-height:0;display:flex">
+    <!-- sidebar -->
+    <sc-if value="{{ showNav }}" hint-placeholder-val="{{ true }}">
+    <nav style="width:200px;flex:none;border-right:1px solid var(--border);background:var(--card);padding:8px;display:flex;flex-direction:column;gap:2px">
+      <sc-for list="{{ nav }}" as="n" hint-placeholder-count="6"><button onClick="{{ n.go }}" style="display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:4px;border:0;background:{{ n.bg }};color:var(--foreground);font:{{ n.fw }} 13px var(--font-sans);cursor:pointer;text-align:left">{{ n.t }}<span style="flex:1"></span><sc-if value="{{ n.dot }}"><i style="width:8px;height:8px;border-radius:99px;background:var(--warning-fg);animation:lkp 1.2s infinite"></i></sc-if><sc-if value="{{ n.count }}"><span style="font:500 11px var(--font-mono);color:var(--muted-foreground)">{{ n.count }}</span></sc-if></button></sc-for>
+    </nav>
+    </sc-if>
+
+    <main style="flex:1;min-width:0;overflow:auto;padding:20px 24px;display:flex;flex-direction:column;gap:14px">
+
+    <!-- SIGN IN -->
+    <sc-if value="{{ p.signin }}"><div style="margin:80px auto;width:380px;border:1px solid var(--border);border-radius:6px;padding:24px;display:flex;flex-direction:column;gap:12px">
+      <h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600">Sign in to Lanekeeper</h1>
+      <p style="margin:0;color:var(--muted-foreground)">Manage configuration on the NFS servers of the sit, sitb, sitc, presita, presitb and presitc swimlanes.</p>
+      <button onClick="{{ doSignin }}" style="height:32px;border-radius:4px;border:0;background:var(--primary);color:var(--primary-foreground);font:500 13px var(--font-sans);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px">Continue with company SSO<sc-if value="{{ hl.signin }}"><i style="width:8px;height:8px;border-radius:99px;background:#fff;animation:lkp 1.2s infinite"></i></sc-if></button>
+    </div></sc-if>
+
+    <!-- PENDING -->
+    <sc-if value="{{ p.pending }}"><div style="margin:80px auto;width:440px;border:1px solid var(--border);border-radius:6px;padding:24px;display:flex;flex-direction:column;gap:12px">
+      <span style="align-self:flex-start;font-size:12px;font-weight:500;padding:2px 8px;border-radius:4px;border:1px solid var(--status-approval-border);color:var(--status-approval-fg)">Access requested</span>
+      <h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600">Waiting for an Admin</h1>
+      <p style="margin:0;color:var(--muted-foreground)">Your account sam.okafor@example.com has no role yet. Priya Nair and one other Admin were notified. You will get an email when a role is assigned.</p>
+      <div style="border-top:1px solid var(--border);padding-top:12px;display:flex;flex-direction:column;gap:6px">
+        <span style="font-size:12px;color:var(--muted-foreground)">Prototype shortcut</span>
+        <button onClick="{{ switchPriya }}" style="height:28px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 13px var(--font-sans);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px">Continue as Priya Nair (Admin)<sc-if value="{{ hl.switch_priya }}"><i style="width:8px;height:8px;border-radius:99px;background:var(--warning-fg);animation:lkp 1.2s infinite"></i></sc-if></button>
+      </div>
+    </div></sc-if>
+
+    <!-- ONBOARDING -->
+    <sc-if value="{{ p.onboard }}"><div style="margin:60px auto;width:480px;border:1px solid var(--border);border-radius:6px;padding:24px;display:flex;flex-direction:column;gap:12px">
+      <span style="font-size:12px;color:var(--muted-foreground)">Welcome, {{ userName }} · role Editor</span>
+      <h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600">Connect your GitHub token</h1>
+      <p style="margin:0;color:var(--muted-foreground)">Raising PRs to csp-tenant-data and reading configuration-base-saas need a personal access token with <span style="font:12px var(--font-mono)">repo</span> scope. Without it you can still edit NFS files.</p>
+      <label style="display:flex;flex-direction:column;gap:4px;font-weight:500">Personal access token<input value="{{ token }}" onInput="{{ setToken }}" placeholder="ghp_…" style="height:28px;border:1px solid var(--input);border-radius:4px;padding:0 8px;background:var(--background);color:var(--foreground);font:12px var(--font-mono)"></label>
+      <sc-if value="{{ tokenOk }}"><div style="padding:8px 10px;border-radius:4px;border:1px solid var(--success-border);background:var(--success-bg);color:var(--success-fg)">Token verified. Connected as sam-okafor with access to 2 repositories.</div>
+        <button onClick="{{ openApp }}" style="height:28px;border-radius:4px;border:0;background:var(--primary);color:var(--primary-foreground);font:500 13px var(--font-sans);cursor:pointer">Open Lanekeeper</button></sc-if>
+      <sc-if value="{{ notTokenOk }}"><button onClick="{{ verifyToken }}" style="height:28px;border-radius:4px;border:0;background:var(--primary);color:var(--primary-foreground);font:500 13px var(--font-sans);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px">Verify token<sc-if value="{{ hl.token_verify }}"><i style="width:8px;height:8px;border-radius:99px;background:#fff;animation:lkp 1.2s infinite"></i></sc-if></button></sc-if>
+    </div></sc-if>
+
+    <!-- SWIMLANES -->
+    <sc-if value="{{ p.lanes }}">
+      <h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600">Swimlanes</h1>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">
+        <sc-for list="{{ lanes }}" as="l" hint-placeholder-count="6">
+          <div style="border:1px solid var(--border);border-radius:6px;padding:12px;display:flex;flex-direction:column;gap:8px;background:var(--card)">
+            <div style="display:flex;align-items:center;gap:8px"><span style="width:8px;height:8px;border-radius:999px;background:var(--agent-online)"></span><button onClick="{{ l.open }}" style="border:0;background:none;padding:0;font:600 14px var(--font-sans);color:var(--link);cursor:pointer">{{ l.name }}</button><span style="font-size:12px;color:var(--muted-foreground)">{{ l.tier }}</span></div>
+            <div style="font:12px var(--font-mono);color:var(--muted-foreground)">{{ l.src }}</div>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+              <span style="display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:4px;font-size:12px;font-weight:500;border:1px {{ l.b.bs }} {{ l.b.bd }};background:{{ l.b.bg }};color:{{ l.b.fg }}">{{ l.b.label }}</span>
+              <sc-if value="{{ l.adopt }}"><button onClick="{{ startWizard }}" style="height:24px;padding:0 8px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 12px var(--font-sans);cursor:pointer;display:flex;align-items:center;gap:6px">Adopt presitb…<sc-if value="{{ hl.adopt }}"><i style="width:8px;height:8px;border-radius:99px;background:var(--warning-fg);animation:lkp 1.2s infinite"></i></sc-if></button></sc-if>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <!-- DETAIL -->
+    <sc-if value="{{ p.detail }}">
+      <div style="display:flex;align-items:center;gap:8px"><button onClick="{{ toLanes }}" style="border:0;background:none;padding:0;color:var(--link);cursor:pointer;font:13px var(--font-sans)">Swimlanes</button><span style="color:var(--muted-foreground)">/</span><h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600">{{ lane }}</h1><span style="font-size:12px;color:var(--muted-foreground)">{{ laneInfo.tier }} · {{ laneInfo.src }}</span></div>
+      <sc-if value="{{ adoptedBanner }}"><div style="padding:8px 10px;border-radius:4px;border:1px solid var(--success-border);background:var(--success-bg);color:var(--success-fg)"><strong>presitb is adopted.</strong> Editing is unlocked for Editors. Base v2.3.1, tenant overrides from sit3.</div></sc-if>
+      <sc-if value="{{ lockedBanner }}"><div style="padding:8px 10px;border-radius:4px;border:1px dashed var(--status-untracked-border);display:flex;align-items:center;gap:10px"><span><strong>presitb is untracked.</strong> Editing is locked until an Admin adopts it.</span><span style="flex:1"></span><button onClick="{{ startWizard }}" style="height:24px;padding:0 8px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 12px var(--font-sans);cursor:pointer">Adopt presitb…</button></div></sc-if>
+      <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden">
+        <div style="display:grid;grid-template-columns:minmax(0,1.5fr) 140px minmax(0,1fr);gap:12px;align-items:center;height:32px;padding:0 12px;background:var(--muted);border-bottom:1px solid var(--border);font-size:12px;font-weight:500;color:var(--muted-foreground)"><span>File</span><span>Status</span><span>Source</span></div>
+        <sc-for list="{{ files }}" as="f" hint-placeholder-count="4">
+          <div onClick="{{ f.open }}" style="display:grid;grid-template-columns:minmax(0,1.5fr) 140px minmax(0,1fr);gap:12px;align-items:center;height:32px;padding:0 12px;border-bottom:1px solid var(--border);cursor:pointer" style-hover="background:var(--accent)">
+            <span style="font:12px var(--font-mono);display:flex;align-items:center;gap:8px">{{ f.name }}<sc-if value="{{ f.dot }}"><i style="width:8px;height:8px;border-radius:99px;background:var(--warning-fg);animation:lkp 1.2s infinite"></i></sc-if></span>
+            <span><span style="display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:4px;font-size:12px;font-weight:500;border:1px {{ f.b.bs }} {{ f.b.bd }};background:{{ f.b.bg }};color:{{ f.b.fg }}">{{ f.b.label }}</span></span>
+            <span style="color:var(--muted-foreground);font:12px var(--font-mono)">{{ f.src }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <!-- FILE -->
+    <sc-if value="{{ p.file }}">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><button onClick="{{ backDetail }}" style="border:0;background:none;padding:0;color:var(--link);cursor:pointer;font:13px var(--font-sans)">{{ lane }}</button><span style="color:var(--muted-foreground)">/</span><h1 style="margin:0;font:600 16px var(--font-mono)">tx-infinity-core.yml</h1>
+        <span style="display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:4px;font-size:12px;font-weight:500;border:1px {{ fb.bs }} {{ fb.bd }};background:{{ fb.bg }};color:{{ fb.fg }}">{{ fb.label }}</span>
+        <span style="flex:1"></span>
+        <sc-if value="{{ btn.diffgit }}"><button onClick="{{ openDiffGit }}" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 13px var(--font-sans);cursor:pointer;display:flex;align-items:center;gap:6px">Diff vs Git<sc-if value="{{ hl.diffgit }}"><i style="width:8px;height:8px;border-radius:99px;background:var(--warning-fg);animation:lkp 1.2s infinite"></i></sc-if></button></sc-if>
+        <sc-if value="{{ btn.raise }}"><button onClick="{{ openPr }}" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 13px var(--font-sans);cursor:pointer">Raise PR…</button></sc-if>
+        <sc-if value="{{ btn.edit }}"><button onClick="{{ doEdit }}" style="height:28px;padding:0 10px;border-radius:4px;border:0;background:var(--primary);color:var(--primary-foreground);font:500 13px var(--font-sans);cursor:pointer;display:flex;align-items:center;gap:6px">Edit<sc-if value="{{ hl.edit }}"><i style="width:8px;height:8px;border-radius:99px;background:#fff;animation:lkp 1.2s infinite"></i></sc-if></button></sc-if>
+        <sc-if value="{{ btn.cancel }}"><button onClick="{{ doCancel }}" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 13px var(--font-sans);cursor:pointer">Cancel</button></sc-if>
+        <sc-if value="{{ btn.save }}"><button onClick="{{ doSave }}" style="height:28px;padding:0 10px;border-radius:4px;border:0;background:var(--primary);color:var(--primary-foreground);font:500 13px var(--font-sans);cursor:pointer;display:flex;align-items:center;gap:6px">Save<sc-if value="{{ hl.save }}"><i style="width:8px;height:8px;border-radius:99px;background:#fff;animation:lkp 1.2s infinite"></i></sc-if></button></sc-if>
+        <sc-if value="{{ btn.submit }}"><button onClick="{{ doSubmit }}" style="height:28px;padding:0 10px;border-radius:4px;border:0;background:var(--primary);color:var(--primary-foreground);font:500 13px var(--font-sans);cursor:pointer;display:flex;align-items:center;gap:6px">Submit for approval<sc-if value="{{ hl.submit }}"><i style="width:8px;height:8px;border-radius:99px;background:#fff;animation:lkp 1.2s infinite"></i></sc-if></button></sc-if>
+      </div>
+      <sc-if value="{{ ban.nfs }}"><div style="padding:8px 10px;border-radius:4px;border:1px solid var(--status-nfs-border);background:var(--status-nfs-bg);color:var(--status-nfs-fg)"><strong>NFS ahead.</strong> This file was changed on nfs-sitb at 10:42 outside Lanekeeper. Git does not have the change until a PR merges.</div></sc-if>
+      <sc-if value="{{ ban.pr }}"><div style="padding:8px 10px;border-radius:4px;border:1px solid var(--info-border);background:var(--info-bg);color:var(--info-fg)"><strong>PR created.</strong> <a href="#" onClick="{{ noop }}" style="font-family:var(--font-mono)">csp-tenant-data#1482</a> targets tenant branch sit7. The file stays NFS ahead until it merges.</div></sc-if>
+      <sc-if value="{{ ban.approval }}"><div style="padding:8px 10px;border-radius:4px;border:1px solid var(--status-approval-border);color:var(--status-approval-fg)"><strong>Sent for approval (202).</strong> Nothing is applied to presita until an Admin approves request #214.
+        <button onClick="{{ switchPriya }}" style="margin-left:10px;height:24px;padding:0 8px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 12px var(--font-sans);cursor:pointer;display:inline-flex;align-items:center;gap:6px">Switch to Priya Nair (Admin)<sc-if value="{{ hl.switch_priya }}"><i style="width:8px;height:8px;border-radius:99px;background:var(--warning-fg);animation:lkp 1.2s infinite"></i></sc-if></button></div></sc-if>
+      <sc-if value="{{ ban.conflict }}"><div style="padding:8px 10px;border-radius:4px;border:1px solid var(--danger-border);background:var(--danger-bg);color:var(--danger-fg);display:flex;flex-direction:column;gap:6px"><span><strong>409 Conflict. Nothing was saved.</strong> Marcus Lee changed this file at 10:51, after you opened it. Your change to maxConnections is still in the editor.</span><span style="font:12px var(--font-mono)">Request ID req_7f3a91</span>
+        <span style="display:flex;gap:8px"><button onClick="{{ reapply }}" style="height:28px;padding:0 10px;border-radius:4px;border:0;background:var(--primary);color:var(--primary-foreground);font:500 13px var(--font-sans);cursor:pointer;display:flex;align-items:center;gap:6px">Re-apply my change on top<sc-if value="{{ hl.reapply }}"><i style="width:8px;height:8px;border-radius:99px;background:#fff;animation:lkp 1.2s infinite"></i></sc-if></button><button onClick="{{ doCancel }}" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 13px var(--font-sans);cursor:pointer">Discard my change</button></span></div></sc-if>
+      <sc-if value="{{ ban.saved }}"><div style="padding:8px 10px;border-radius:4px;border:1px solid var(--success-border);background:var(--success-bg);color:var(--success-fg)"><strong>Saved to sit.</strong> Your change sits on top of Marcus Lee's 10:51 edit. Audit entry written.</div></sc-if>
+      <sc-if value="{{ ban.restart }}"><div style="padding:8px 10px;border-radius:4px;border:1px solid var(--status-restart-border);background:var(--status-restart-bg);color:var(--status-restart-fg);display:flex;align-items:center;gap:10px"><span><strong>2 services need restart</strong> to read this change: payments-gateway, tx-infinity-core.</span><button onClick="{{ openRestart }}" style="height:24px;padding:0 8px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 12px var(--font-sans);cursor:pointer;display:inline-flex;align-items:center;gap:6px">Restart…<sc-if value="{{ hl.restart }}"><i style="width:8px;height:8px;border-radius:99px;background:var(--warning-fg);animation:lkp 1.2s infinite"></i></sc-if></button></div></sc-if>
+      <sc-if value="{{ ban.restarted }}"><div style="padding:8px 10px;border-radius:4px;border:1px solid var(--success-border);background:var(--success-bg);color:var(--success-fg)"><strong>Restarted.</strong> payments-gateway and tx-infinity-core are running with your change. Audit entry written.</div></sc-if>
+      <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;font:12px/18px var(--font-mono)">
+        <sc-for list="{{ lines }}" as="ln" hint-placeholder-count="8">
+          <div style="display:grid;grid-template-columns:44px minmax(0,1fr);background:{{ ln.bg }}"><span style="text-align:right;padding:0 8px;color:var(--muted-foreground);background:var(--muted)">{{ ln.n }}</span><span style="padding:0 10px;white-space:pre;display:flex;align-items:center;gap:8px">{{ ln.pre }}<sc-if value="{{ ln.edit }}"><input value="{{ val }}" onInput="{{ setVal }}" aria-label="maxConnections" style="width:72px;height:18px;border:1px solid var(--input);border-radius:2px;padding:0 4px;background:var(--background);color:var(--foreground);font:12px var(--font-mono)"></sc-if><sc-if value="{{ ln.noedit }}">{{ ln.val }}</sc-if></span></div>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <!-- DIFF -->
+    <sc-if value="{{ p.diff }}">
+      <div style="display:flex;align-items:center;gap:8px"><button onClick="{{ diffBack }}" style="border:0;background:none;padding:0;color:var(--link);cursor:pointer;font:13px var(--font-sans)">Back</button><span style="color:var(--muted-foreground)">/</span><h1 style="margin:0;font-size:16px;line-height:22px;font-weight:600">{{ diff.title }}</h1><span style="flex:1"></span>
+        <sc-if value="{{ diff.raise }}"><button onClick="{{ openPr }}" style="height:28px;padding:0 10px;border-radius:4px;border:0;background:var(--primary);color:var(--primary-foreground);font:500 13px var(--font-sans);cursor:pointer;display:flex;align-items:center;gap:6px">Raise PR…<sc-if value="{{ hl.raisepr }}"><i style="width:8px;height:8px;border-radius:99px;background:#fff;animation:lkp 1.2s infinite"></i></sc-if></button></sc-if></div>
+      <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;font:12px/18px var(--font-mono)">
+        <div style="display:grid;grid-template-columns:1fr 1fr;background:var(--muted);border-bottom:1px solid var(--border);font:500 12px var(--font-sans);color:var(--muted-foreground)"><span style="padding:6px 12px;border-right:1px solid var(--border)">{{ diff.left }}</span><span style="padding:6px 12px">{{ diff.right }}</span></div>
+        <div style="padding:0 12px;background:var(--diff-hunk-bg);color:var(--diff-hunk-fg)">{{ diff.hunk }}</div>
+        <sc-for list="{{ diff.rows }}" as="r" hint-placeholder-count="4">
+          <div style="display:grid;grid-template-columns:1fr 1fr"><span style="padding:0 12px;white-space:pre;border-right:1px solid var(--border);background:{{ r.lb }};color:{{ r.lf }}">{{ r.l }}</span><span style="padding:0 12px;white-space:pre;background:{{ r.rb }};color:{{ r.rf }}">{{ r.r }}</span></div>
+        </sc-for>
+      </div>
+      <p style="margin:0;color:var(--muted-foreground)">{{ diff.note }}</p>
+    </sc-if>
+
+    <!-- COMPARE -->
+    <sc-if value="{{ p.compare }}">
+      <h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600">Compare swimlanes</h1>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:8px;font-weight:500">File
+          <select onChange="{{ pickFile }}" style="height:28px;border:1px solid var(--input);border-radius:4px;padding:0 8px;background:var(--background);color:var(--foreground);font:12px var(--font-mono)"><option value="">Choose a file…</option><option value="tx-infinity-core.yml">tx-infinity-core.yml</option><option value="payments-gateway.yml">payments-gateway.yml</option></select></label>
+        <sc-if value="{{ hl.cmp_file }}"><i style="width:8px;height:8px;border-radius:99px;background:var(--warning-fg);animation:lkp 1.2s infinite"></i></sc-if>
+        <sc-if value="{{ cmpReady }}"><label style="display:flex;align-items:center;gap:8px;font-weight:500;cursor:pointer"><input type="checkbox" checked="{{ cmpOnly }}" onChange="{{ toggleOnly }}">Only differing rows</label><sc-if value="{{ hl.cmp_only }}"><i style="width:8px;height:8px;border-radius:99px;background:var(--warning-fg);animation:lkp 1.2s infinite"></i></sc-if>
+        <span style="color:var(--muted-foreground)">{{ cmpCount }}</span>
+        <span style="flex:1"></span>
+        <button onClick="{{ openCmpDiff }}" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 13px var(--font-sans);cursor:pointer;display:flex;align-items:center;gap:6px">Diff sitb vs presita<sc-if value="{{ hl.cmp_diff }}"><i style="width:8px;height:8px;border-radius:99px;background:var(--warning-fg);animation:lkp 1.2s infinite"></i></sc-if></button></sc-if>
+      </div>
+      <sc-if value="{{ notCmpReady }}"><div style="border:1px dashed var(--border);border-radius:6px;padding:40px;text-align:center;color:var(--muted-foreground)"><strong style="color:var(--foreground)">No file chosen.</strong><br>Pick a file to see its values across all six swimlanes.</div></sc-if>
+      <sc-if value="{{ cmpReady }}"><div style="border:1px solid var(--border);border-radius:6px;overflow:hidden">
+        <div style="display:grid;grid-template-columns:minmax(0,1.6fr) repeat(6,minmax(0,1fr));gap:8px;align-items:center;height:32px;padding:0 12px;background:var(--muted);border-bottom:1px solid var(--border);font-size:12px;font-weight:500;color:var(--muted-foreground)"><span>Setting</span><sc-for list="{{ laneNames }}" as="ln" hint-placeholder-count="6"><span>{{ ln }}</span></sc-for></div>
+        <sc-for list="{{ cmpRows }}" as="r" hint-placeholder-count="7">
+          <div style="display:grid;grid-template-columns:minmax(0,1.6fr) repeat(6,minmax(0,1fr));gap:8px;align-items:center;height:32px;padding:0 12px;border-bottom:1px solid var(--border);font:12px var(--font-mono)"><span>{{ r.k }}</span><sc-for list="{{ r.cells }}" as="c" hint-placeholder-count="6"><span style="padding:2px 4px;border-radius:4px;background:{{ c.bg }};color:{{ c.fg }}">{{ c.v }}</span></sc-for></div>
+        </sc-for></div></sc-if>
+    </sc-if>
+
+    <!-- FEATURE STATUS -->
+    <sc-if value="{{ p.status }}">
+      <h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600">Feature status</h1>
+      <p style="margin:0;color:var(--muted-foreground)">Feature flags from tx-infinity-core.yml, by swimlane. Differences from the majority are highlighted.</p>
+      <div style="display:flex;gap:16px;align-items:flex-start">
+        <div style="flex:1;min-width:0;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+          <div style="display:grid;grid-template-columns:minmax(0,1.6fr) repeat(6,minmax(0,1fr));gap:8px;align-items:center;height:32px;padding:0 12px;background:var(--muted);border-bottom:1px solid var(--border);font-size:12px;font-weight:500;color:var(--muted-foreground)"><span>Feature</span><sc-for list="{{ laneNames }}" as="ln" hint-placeholder-count="6"><span>{{ ln }}</span></sc-for></div>
+          <sc-for list="{{ featRows }}" as="r" hint-placeholder-count="4">
+            <div style="display:grid;grid-template-columns:minmax(0,1.6fr) repeat(6,minmax(0,1fr));gap:8px;align-items:center;height:32px;padding:0 12px;border-bottom:1px solid var(--border);font:12px var(--font-mono)"><span>{{ r.k }}</span><sc-for list="{{ r.cells }}" as="c" hint-placeholder-count="6"><span><button onClick="{{ c.open }}" style="height:22px;padding:0 6px;border-radius:4px;border:1px solid {{ c.bd }};background:{{ c.bg }};color:{{ c.fg }};font:12px var(--font-mono);cursor:pointer;display:inline-flex;align-items:center;gap:6px">{{ c.v }}<sc-if value="{{ c.dot }}"><i style="width:8px;height:8px;border-radius:99px;background:var(--warning-fg);animation:lkp 1.2s infinite"></i></sc-if></button></span></sc-for></div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ panel }}"><aside style="width:300px;flex:none;border:1px solid var(--border);border-radius:6px;padding:14px;display:flex;flex-direction:column;gap:8px">
+          <strong style="font:600 13px var(--font-mono)">enableAccountSorting</strong>
+          <span style="color:var(--muted-foreground)">Differs in presita: true. Every other swimlane has false.</span>
+          <span style="font-size:12px;color:var(--muted-foreground)">Source</span><span style="font:12px var(--font-mono)">tx-infinity-core.yml:42 · presita</span>
+          <button onClick="{{ openDoc }}" style="height:28px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 13px var(--font-sans);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">Open doc<sc-if value="{{ hl.open_doc }}"><i style="width:8px;height:8px;border-radius:99px;background:var(--warning-fg);animation:lkp 1.2s infinite"></i></sc-if></button>
+        </aside></sc-if>
+      </div>
+    </sc-if>
+
+    <!-- DOC -->
+    <sc-if value="{{ p.doc }}">
+      <div style="display:flex;align-items:center;gap:8px"><button onClick="{{ toStatus }}" style="border:0;background:none;padding:0;color:var(--link);cursor:pointer;font:13px var(--font-sans)">Feature status</button><span style="color:var(--muted-foreground)">/</span><span>Docs</span></div>
+      <article style="max-width:640px;display:flex;flex-direction:column;gap:10px">
+        <h1 style="margin:0;font-size:24px;line-height:30px;font-weight:600">Account sorting</h1>
+        <p style="margin:0;color:var(--muted-foreground)">Flag <span style="font:12px var(--font-mono)">enableAccountSorting</span> lets customers sort the account list by balance and last activity. It is off by default and on only in presita while QA signs off.</p>
+        <h2 style="margin:8px 0 0;font-size:16px;line-height:22px;font-weight:600">Where it is set</h2>
+        <p style="margin:0">The value lives in <button onClick="{{ openLine }}" style="border:0;background:none;padding:0;color:var(--link);font:12px var(--font-mono);cursor:pointer;text-decoration:underline">tx-infinity-core.yml:42</button><sc-if value="{{ hl.open_line }}"> <i style="display:inline-block;width:8px;height:8px;border-radius:99px;background:var(--warning-fg);animation:lkp 1.2s infinite"></i></sc-if>, under <span style="font:12px var(--font-mono)">features</span>. Services that read it: tx-infinity-core. Restart required after a change.</p>
+      </article>
+    </sc-if>
+
+    <!-- APPROVALS -->
+    <sc-if value="{{ p.approvals }}">
+      <h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600">Approvals</h1>
+      <sc-if value="{{ hasReq }}"><div style="border:1px solid var(--border);border-radius:6px;padding:14px;display:flex;flex-direction:column;gap:10px;max-width:760px">
+        <div style="display:flex;align-items:center;gap:8px"><strong>Request #214</strong><span style="font-size:12px;padding:1px 6px;border-radius:4px;border:1px solid var(--status-approval-border);color:var(--status-approval-fg)">Pending approval</span><span style="flex:1"></span><span style="color:var(--muted-foreground)">Ana Ruiz · 10:55</span></div>
+        <span style="font:12px var(--font-mono)">presita / tx-infinity-core.yml</span>
+        <div style="font:12px/18px var(--font-mono);border:1px solid var(--border);border-radius:4px;overflow:hidden"><div style="padding:0 10px;background:var(--diff-del-bg);color:var(--diff-del-fg)">-    maxConnections: 40</div><div style="padding:0 10px;background:var(--diff-add-bg);color:var(--diff-add-fg)">+    maxConnections: {{ val }}</div></div>
+        <span style="color:var(--muted-foreground)">Applying this changes NFS on presita. 1 service needs restart afterwards.</span>
+        <sc-if value="{{ isAdmin }}"><div style="display:flex;gap:8px"><button onClick="{{ doApprove }}" style="height:28px;padding:0 10px;border-radius:4px;border:0;background:var(--primary);color:var(--primary-foreground);font:500 13px var(--font-sans);cursor:pointer;display:flex;align-items:center;gap:6px">Approve and apply<sc-if value="{{ hl.approve }}"><i style="width:8px;height:8px;border-radius:99px;background:#fff;animation:lkp 1.2s infinite"></i></sc-if></button><button onClick="{{ noop }}" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 13px var(--font-sans);cursor:pointer">Reject</button></div></sc-if>
+        <sc-if value="{{ notAdmin }}"><span style="color:var(--muted-foreground)">Only Admins can decide. Priya Nair has been notified.</span></sc-if>
+      </div></sc-if>
+      <sc-if value="{{ noReq }}"><div style="border:1px dashed var(--border);border-radius:6px;padding:40px;text-align:center;color:var(--muted-foreground);max-width:760px"><strong style="color:var(--foreground)">Nothing waiting for approval.</strong><br>Requests from Editors on PRESIT swimlanes appear here.</div></sc-if>
+    </sc-if>
+
+    <!-- AUDIT -->
+    <sc-if value="{{ p.audit }}">
+      <h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600">Audit</h1>
+      <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden">
+        <div style="display:grid;grid-template-columns:80px 140px minmax(0,1fr);gap:12px;align-items:center;height:32px;padding:0 12px;background:var(--muted);border-bottom:1px solid var(--border);font-size:12px;font-weight:500;color:var(--muted-foreground)"><span>Time</span><span>Actor</span><span>Event</span></div>
+        <sc-for list="{{ events }}" as="e" hint-placeholder-count="4">
+          <div style="display:grid;grid-template-columns:80px 140px minmax(0,1fr);gap:12px;align-items:center;min-height:32px;padding:0 12px;border-bottom:1px solid var(--border);background:{{ e.bg }}"><span style="font:12px var(--font-mono);color:var(--muted-foreground)">{{ e.time }}</span><span>{{ e.who }}</span><span>{{ e.what }}</span></div>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <!-- ADMIN -->
+    <sc-if value="{{ p.admin }}">
+      <h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600">Admin · users and access</h1>
+      <h2 style="margin:0;font-size:14px;line-height:20px;font-weight:600">Access requests</h2>
+      <sc-if value="{{ sam.pending }}"><div style="border:1px solid var(--border);border-radius:6px;padding:12px;display:flex;align-items:center;gap:12px;max-width:760px">
+        <div style="flex:1"><strong>Sam Okafor</strong><br><span style="color:var(--muted-foreground)">sam.okafor@example.com · requested 11:02</span></div>
+        <label style="display:flex;align-items:center;gap:6px">Role<select onChange="{{ setRole }}" style="height:28px;border:1px solid var(--input);border-radius:4px;padding:0 8px;background:var(--background);color:var(--foreground);font:13px var(--font-sans)"><option>Viewer</option><option selected>Editor</option><option>Operator</option><option>Admin</option></select></label>
+        <button onClick="{{ doApproveRole }}" style="height:28px;padding:0 10px;border-radius:4px;border:0;background:var(--primary);color:var(--primary-foreground);font:500 13px var(--font-sans);cursor:pointer;display:flex;align-items:center;gap:6px">Approve<sc-if value="{{ hl.approve_editor }}"><i style="width:8px;height:8px;border-radius:99px;background:#fff;animation:lkp 1.2s infinite"></i></sc-if></button>
+      </div></sc-if>
+      <sc-if value="{{ sam.approved }}"><div style="border:1px solid var(--success-border);background:var(--success-bg);color:var(--success-fg);border-radius:6px;padding:12px;display:flex;align-items:center;gap:12px;max-width:760px"><span style="flex:1"><strong>Sam Okafor approved as {{ roleSel }}.</strong> Audit entry written.</span><button onClick="{{ switchSam }}" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 13px var(--font-sans);cursor:pointer;display:flex;align-items:center;gap:6px">Switch to Sam Okafor<sc-if value="{{ hl.switch_sam }}"><i style="width:8px;height:8px;border-radius:99px;background:var(--warning-fg);animation:lkp 1.2s infinite"></i></sc-if></button></div></sc-if>
+      <sc-if value="{{ sam.none }}"><div style="border:1px dashed var(--border);border-radius:6px;padding:24px;color:var(--muted-foreground);max-width:760px">No pending access requests.</div></sc-if>
+      <h2 style="margin:8px 0 0;font-size:14px;line-height:20px;font-weight:600">Users</h2>
+      <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;max-width:760px">
+        <sc-for list="{{ users }}" as="u" hint-placeholder-count="4"><div style="display:grid;grid-template-columns:minmax(0,1fr) 120px;gap:12px;align-items:center;height:32px;padding:0 12px;border-bottom:1px solid var(--border)"><span>{{ u.n }}</span><span style="color:var(--muted-foreground)">{{ u.r }}</span></div></sc-for>
+      </div>
+    </sc-if>
+
+    </main>
+  </div>
+
+  <!-- toast -->
+  <sc-if value="{{ toast }}"><div role="status" style="position:absolute;right:16px;top:56px;width:340px;background:var(--popover);color:var(--popover-foreground);border:1px solid var(--status-nfs-border);border-radius:6px;box-shadow:var(--shadow-popover);padding:12px;display:flex;flex-direction:column;gap:6px">
+    <strong>NFS changed outside Lanekeeper</strong>
+    <span style="font:12px var(--font-mono);color:var(--muted-foreground)">sitb · tx-infinity-core.yml · 10:42</span>
+    <button onClick="{{ toastOpen }}" style="align-self:flex-start;height:24px;padding:0 8px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 12px var(--font-sans);cursor:pointer;display:flex;align-items:center;gap:6px">View swimlane<sc-if value="{{ hl.toast }}"><i style="width:8px;height:8px;border-radius:99px;background:var(--warning-fg);animation:lkp 1.2s infinite"></i></sc-if></button>
+  </div></sc-if>
+
+  <!-- PR dialog -->
+  <sc-if value="{{ dlgPr }}"><div style="position:absolute;inset:0;background:var(--overlay);display:flex;align-items:center;justify-content:center"><div role="dialog" aria-label="Raise PR" style="width:440px;background:var(--popover);border:1px solid var(--border);border-radius:6px;box-shadow:var(--shadow-popover);padding:18px;display:flex;flex-direction:column;gap:10px">
+    <h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Raise PR to a tenant branch</h2>
+    <p style="margin:0;color:var(--muted-foreground)">Copies the NFS version of tx-infinity-core.yml into csp-tenant-data as a tenant override. Nothing changes on NFS.</p>
+    <label style="display:flex;flex-direction:column;gap:4px;font-weight:500">Tenant branch<select style="height:28px;border:1px solid var(--input);border-radius:4px;padding:0 8px;background:var(--background);color:var(--foreground);font:12px var(--font-mono)"><option>sit1</option><option>sit3</option><option selected>sit7</option><option>sit11</option></select></label>
+    <span style="font:12px var(--font-mono)">Adds tx-infinity-core-sit7.yml beside the base file</span>
+    <div style="display:flex;justify-content:flex-end;gap:8px"><button onClick="{{ closeDlg }}" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 13px var(--font-sans);cursor:pointer">Cancel</button><button onClick="{{ submitPr }}" style="height:28px;padding:0 10px;border-radius:4px;border:0;background:var(--primary);color:var(--primary-foreground);font:500 13px var(--font-sans);cursor:pointer;display:flex;align-items:center;gap:6px">Raise PR to sit7<sc-if value="{{ hl.prsubmit }}"><i style="width:8px;height:8px;border-radius:99px;background:#fff;animation:lkp 1.2s infinite"></i></sc-if></button></div>
+  </div></div></sc-if>
+
+  <!-- Restart dialog -->
+  <sc-if value="{{ dlgRestart }}"><div style="position:absolute;inset:0;background:var(--overlay);display:flex;align-items:center;justify-content:center"><div role="alertdialog" aria-label="Restart services" style="width:440px;background:var(--popover);border:1px solid var(--border);border-radius:6px;box-shadow:var(--shadow-popover);padding:18px;display:flex;flex-direction:column;gap:10px">
+    <h2 style="margin:0;font-size:16px;line-height:22px;font-weight:600">Restart 2 services on sit?</h2>
+    <p style="margin:0;color:var(--muted-foreground)">payments-gateway and tx-infinity-core restart one pod at a time. Requests may be slower for about 90 seconds.</p>
+    <div style="display:flex;justify-content:flex-end;gap:8px"><button onClick="{{ closeDlg }}" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 13px var(--font-sans);cursor:pointer">Cancel</button><button onClick="{{ doRestart }}" style="height:28px;padding:0 10px;border-radius:4px;border:0;background:var(--primary);color:var(--primary-foreground);font:500 13px var(--font-sans);cursor:pointer;display:flex;align-items:center;gap:6px">Restart 2 services<sc-if value="{{ hl.restart_confirm }}"><i style="width:8px;height:8px;border-radius:99px;background:#fff;animation:lkp 1.2s infinite"></i></sc-if></button></div>
+  </div></div></sc-if>
+
+  <!-- Adoption wizard -->
+  <sc-if value="{{ p.wizard }}"><div style="position:absolute;inset:0;background:var(--background);display:flex;align-items:flex-start;justify-content:center;padding-top:48px;overflow:auto"><div style="width:560px;display:flex;flex-direction:column;gap:12px">
+    <span style="color:var(--muted-foreground)">Adopt presitb · step {{ wiz }} of 3</span>
+    <h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600">{{ wizTitle }}</h1>
+    <sc-if value="{{ w.s1 }}"><p style="margin:0;color:var(--muted-foreground)">Scanned nfs-presitb. 14 files found, none tracked. 12 match files in configuration-base-saas; 2 match tenant overrides in csp-tenant-data.</p>
+      <div style="border:1px dashed var(--status-untracked-border);border-radius:6px;padding:10px;font:12px/18px var(--font-mono)">tx-infinity-core.yml<br>tx-infinity-core-sit3.yml<br>payments-gateway.yml<br>ledger-service.yml<br><span style="color:var(--muted-foreground)">+ 10 more</span></div></sc-if>
+    <sc-if value="{{ w.s2 }}"><label style="display:flex;flex-direction:column;gap:4px;font-weight:500">Base version<select style="height:28px;border:1px solid var(--input);border-radius:4px;padding:0 8px;background:var(--background);color:var(--foreground);font:12px var(--font-mono)"><option selected>v2.3.1</option><option>v2.3.0</option></select></label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-weight:500">Tenant branch<select style="height:28px;border:1px solid var(--input);border-radius:4px;padding:0 8px;background:var(--background);color:var(--foreground);font:12px var(--font-mono)"><option selected>sit3</option><option>sit7</option></select></label>
+      <p style="margin:0;color:var(--muted-foreground)">3 of 14 files differ from v2.3.1 and will show as NFS ahead.</p></sc-if>
+    <sc-if value="{{ w.s3 }}"><div style="padding:8px 10px;border-radius:4px;border:1px solid var(--warning-border);background:var(--warning-bg);color:var(--warning-fg)"><strong>Consequences.</strong> presitb becomes managed. Editing unlocks for Editors. No file on NFS changes. 3 files become NFS ahead until a PR merges.</div></sc-if>
+    <div style="display:flex;justify-content:space-between;gap:8px;margin-top:8px"><button onClick="{{ wizBack }}" style="height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--border);background:var(--secondary);color:var(--foreground);font:500 13px var(--font-sans);cursor:pointer">{{ wizBackLabel }}</button>
+      <button onClick="{{ wizNext }}" style="height:28px;padding:0 10px;border-radius:4px;border:0;background:var(--primary);color:var(--primary-foreground);font:500 13px var(--font-sans);cursor:pointer;display:flex;align-items:center;gap:6px">{{ wizNextLabel }}<sc-if value="{{ hl.wiz }}"><i style="width:8px;height:8px;border-radius:99px;background:#fff;animation:lkp 1.2s infinite"></i></sc-if></button></div>
+  </div></div></sc-if>
+
+</div>
+</div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  constructor(p) { super(p); this.state = this.base(1); }
+  base(j) {
+    return { j, step: 0, theme: this.state ? this.state.theme : 'light', page: 'lanes', user: 'priya', lane: 'sitb', mode: 'view', toast: false, dlg: null, pr: false, line: 0, cmpFile: '', cmpOnly: false, panel: false, roleSel: 'Editor', token: '', tokenOk: false, wiz: 1, adopted: false, approved: false, submitted: false, val: '48', samState: 'new', diffKind: 'git', restarted: false, ev: [], ...this.J()[j].start };
+  }
+  J() {
+    return {
+      1: { short: 'Out-of-band', title: 'Out-of-band change to a PR', start: { toast: true }, steps: [['toast', 'Click “View swimlane” on the toast'], ['file_row', 'Open tx-infinity-core.yml (NFS ahead)'], ['diffgit', 'Click “Diff vs Git”'], ['raisepr', 'Click “Raise PR…”'], ['prsubmit', 'Raise PR to sit7']] },
+      2: { short: 'Compare', title: 'Cross-swimlane check', start: {}, steps: [['nav_compare', 'Open Compare in the sidebar'], ['cmp_file', 'Choose tx-infinity-core.yml'], ['cmp_only', 'Tick “Only differing rows”'], ['cmp_diff', 'Open “Diff sitb vs presita”']] },
+      3: { short: 'Safe edit', title: 'Safe edit with approval', start: { user: 'ana', page: 'file', lane: 'presita' }, steps: [['edit', 'As Ana Ruiz, click Edit'], ['submit', 'Click “Submit for approval”'], ['switch_priya', 'Switch to Priya Nair'], ['approve', 'Approve and apply in the queue']] },
+      4: { short: 'Conflict', title: 'Edit conflict and restart', start: { user: 'ana', page: 'file', lane: 'sit' }, steps: [['edit', 'Click Edit'], ['save', 'Click Save'], ['reapply', 'Re-apply your change on top'], ['restart', 'Click Restart… in the banner'], ['restart_confirm', 'Confirm the restart']] },
+      5: { short: 'New user', title: 'New user onboarding', start: { user: 'sam', page: 'signin' }, steps: [['signin', 'Sam signs in with SSO'], ['switch_priya', 'Switch to Priya Nair'], ['approve_editor', 'Approve Sam as Editor'], ['switch_sam', 'Switch back to Sam'], ['token_verify', 'Paste a token and verify it']] },
+      6: { short: 'Adoption', title: 'Adopt presitb', start: {}, steps: [['adopt', 'Click “Adopt presitb…”'], ['wiz', 'Next on the scan step'], ['wiz', 'Next on the source step'], ['wiz', 'Adopt presitb']] },
+      7: { short: 'Feature question', title: 'Feature status to file line', start: {}, steps: [['nav_status', 'Open Feature status'], ['status_cell', 'Click enableAccountSorting in presita'], ['open_doc', 'Click “Open doc”'], ['open_line', 'Open tx-infinity-core.yml:42']] }
+    };
+  }
+  USERS() { return { priya: ['Priya Nair', 'Admin'], ana: ['Ana Ruiz', 'Editor'], sam: ['Sam Okafor', this.state.samState === 'approved' ? 'Editor' : 'No role'] }; }
+  act(t, patch, ev) {
+    const s = this.state, st = this.J()[s.j].steps[s.step];
+    const p = { ...patch };
+    if (st && st[0] === t) p.step = s.step + 1;
+    if (ev) p.ev = [ev, ...s.ev];
+    this.setState(p);
+  }
+  badge(k) {
+    const M = { sync: ['In sync', 'sync'], git: ['Git ahead', 'git'], nfs: ['NFS ahead', 'nfs'], unt: ['Untracked', 'untracked'], pr: ['PR open', 'git'], ok: ['Adopted', 'sync'] }[k];
+    const c = M[1];
+    return { label: M[0], bg: `var(--status-${c}-bg)`, fg: `var(--status-${c}-fg)`, bd: `var(--status-${c}-border)`, bs: c === 'untracked' ? 'dashed' : 'solid' };
+  }
+  renderVals() {
+    const s = this.state, J = this.J(), cur = J[s.j], U = this.USERS()[s.user];
+    const set = (o) => () => this.setState(o);
+    const hl = {}; const stp = cur.steps[s.step]; if (stp) hl[stp[0]] = true;
+    const done = s.step >= cur.steps.length;
+    const guide = cur.steps.map((x, i) => ({ i: i + 1, t: x[1], bg: i === s.step ? 'var(--warning-bg)' : 'transparent', fg: i < s.step ? 'var(--muted-foreground)' : i === s.step ? 'var(--warning-fg)' : 'var(--muted-foreground)', bd: i === s.step ? 'var(--warning-border)' : 'var(--border)', w: i === s.step ? 600 : 400 }));
+    const journeys = Object.keys(J).map(k => ({ n: k, short: J[k].short, on: +k === s.j, bg: +k === s.j ? 'var(--primary)' : 'var(--secondary)', fg: +k === s.j ? 'var(--primary-foreground)' : 'var(--foreground)', bd: +k === s.j ? 'var(--primary)' : 'var(--border)', go: () => this.setState(this.base(+k)) }));
+    const page = s.page, p = {}; ['signin', 'pending', 'onboard', 'lanes', 'detail', 'file', 'diff', 'compare', 'status', 'doc', 'approvals', 'audit', 'admin', 'wizard'].forEach(k => p[k] = page === k);
+    const showNav = !['signin', 'pending', 'onboard'].includes(page);
+    const admin = s.user === 'priya';
+    const nav = [['lanes', 'Swimlanes'], ['compare', 'Compare'], ['status', 'Feature status'], ['approvals', 'Approvals'], ['audit', 'Audit'], ['admin', 'Admin']].map(([k, t]) => ({ t, bg: page === k || (k === 'lanes' && ['detail', 'file', 'diff'].includes(page)) ? 'var(--accent)' : 'transparent', fw: page === k ? 600 : 400, dot: !!hl['nav_' + k], count: k === 'approvals' && s.submitted && !s.approved ? '1' : '', go: () => this.act('nav_' + k, { page: k, panel: false }) })).filter(n => admin || n.t !== 'Admin');
+    const hasReq = s.submitted && !s.approved;
+    const laneDefs = [['sit', 'SIT', 'v2.3.1 · sit1–sit13', 'sync'], ['sitb', 'SIT', 'v2.3.1 · sit1–sit13', s.pr ? 'pr' : 'nfs'], ['sitc', 'SIT', 'v2.3.1 · sit1–sit13', 'sync'], ['presita', 'PRESIT', 'v2.3.1 · sit5', 'sync'], ['presitb', 'PRESIT', s.adopted ? 'v2.3.1 · sit3' : 'no base tag', s.adopted ? 'ok' : 'unt'], ['presitc', 'PRESIT', 'v2.3.0 · sit9', 'git']];
+    const info = (n) => { const d = laneDefs.find(x => x[0] === n); return { tier: d[1], src: d[2] }; };
+    const lanes = laneDefs.map(d => ({ name: d[0], tier: d[1], src: d[2], b: this.badge(d[3]), adopt: d[0] === 'presitb' && !s.adopted, open: () => this.act('lane', { page: 'detail', lane: d[0] }) }));
+    const sitbAhead = s.lane === 'sitb' && !s.pr;
+    const fstat = (l) => l === 'sitb' ? (s.pr ? 'pr' : 'nfs') : l === 'presitb' && !s.adopted ? 'unt' : 'sync';
+    const fileRows = [['tx-infinity-core.yml', 'configuration-base-saas'], ['payments-gateway.yml', 'configuration-base-saas'], ['ledger-service.yml', 'configuration-base-saas'], ['tx-infinity-core-sit3.yml', 'csp-tenant-data:sit3']];
+    const files = fileRows.map((f, i) => ({ name: f[0], src: f[1], b: this.badge(i === 0 ? fstat(s.lane) : s.lane === 'presitb' && !s.adopted ? 'unt' : 'sync'), dot: i === 0 && !!hl.file_row, open: () => this.act('file_row', { page: 'file', mode: 'view', line: 0 }) }));
+    // file page
+    const gated = s.lane === 'presita', canEdit = s.lane !== 'presitb' || s.adopted;
+    const m = s.mode;
+    const fb = this.badge(m === 'submitted' ? 'sync' : fstat(s.lane));
+    const fbx = m === 'submitted' ? { label: 'Pending approval', bg: 'var(--status-approval-bg)', fg: 'var(--status-approval-fg)', bd: 'var(--status-approval-border)', bs: 'solid' } : fb;
+    const editing = m === 'edit' || m === 'conflict';
+    const btn = { diffgit: sitbAhead && m === 'view', raise: sitbAhead && m === 'view', edit: canEdit && !editing && m !== 'submitted' && !(s.lane === 'sitb'), cancel: editing, save: m === 'edit' && !gated, submit: m === 'edit' && gated };
+    const ban = { nfs: sitbAhead, pr: s.lane === 'sitb' && s.pr, approval: m === 'submitted', conflict: m === 'conflict', saved: m === 'saved' || m === 'restart' || m === 'restarted', restart: m === 'saved', restarted: m === 'restarted' };
+    ban.saved = m === 'saved';
+    const base = [[36, '  pool:'], [37, '    minIdle: 4'], [38, '    maxConnections: '], [39, '  timeoutMs: 3000'], [40, '  features:'], [41, '    enableBulkExport: true'], [42, '    enableAccountSorting: '], [43, '    enableLedgerV2: false'], [44, '  retryBackoff: ']];
+    const vals = { 38: s.lane === 'sitb' ? '64' : (m === 'saved' || m === 'restarted' ? s.val : '40'), 42: s.lane === 'presita' ? 'true' : 'false', 44: s.lane === 'sitb' ? 'exponential' : 'linear' };
+    const lines = base.map(([n, pre]) => { const ed = n === 38 && editing; const hlt = s.line === n; const chg = (n === 38 && (s.lane === 'sitb' && !s.pr)) || (n === 38 && (m === 'saved' || m === 'restarted')); return { n, pre, edit: ed, noedit: !ed, val: vals[n] === undefined ? '' : vals[n], bg: hlt ? 'var(--selection)' : chg ? 'var(--diff-mod-bg)' : 'transparent' }; });
+    // diff
+    const H = (l, r, a, b) => ({ l, r, lb: a, lf: a === 'transparent' ? 'var(--foreground)' : 'var(--diff-del-fg)', rb: b, rf: b === 'transparent' ? 'var(--foreground)' : 'var(--diff-add-fg)' });
+    const D = 'var(--diff-del-bg)', A = 'var(--diff-add-bg)', T = 'transparent';
+    const diff = s.diffKind === 'git' ? { title: 'sitb · tx-infinity-core.yml: Git v2.3.1 vs NFS', left: 'Git (configuration-base-saas v2.3.1)', right: 'NFS (nfs-sitb)', hunk: '@@ -36,9 +36,9 @@', raise: true, note: '2 lines differ. The NFS version is what services read today.', rows: [H('  pool:', '  pool:', T, T), H('    maxConnections: 40', '    maxConnections: 64', D, A), H('  timeoutMs: 3000', '  timeoutMs: 3000', T, T), H('  retryBackoff: linear', '  retryBackoff: exponential', D, A)] }
+      : { title: 'tx-infinity-core.yml: sitb vs presita', left: 'sitb', right: 'presita', hunk: '@@ -36,9 +36,9 @@', raise: false, note: '3 lines differ. Values are read from NFS on each swimlane.', rows: [H('    maxConnections: 64', '    maxConnections: 40', D, A), H('    enableAccountSorting: false', '    enableAccountSorting: true', D, A), H('  retryBackoff: exponential', '  retryBackoff: linear', D, A)] };
+    // compare
+    const L = ['sit', 'sitb', 'sitc', 'presita', 'presitb', 'presitc'];
+    const CR = [['enableAccountSorting', ['false', 'false', 'false', 'true', 'false', 'false']], ['maxConnections', ['40', '64', '40', '40', '40', '40']], ['timeoutMs', Array(6).fill('3000')], ['logLevel', Array(6).fill('INFO')], ['region', Array(6).fill('eu-west-1')], ['retryBackoff', ['linear', 'exponential', 'linear', 'linear', 'linear', 'linear']], ['cacheTtl', Array(6).fill('300')]];
+    const mode = (a) => a.sort((x, y) => a.filter(v => v === y).length - a.filter(v => v === x).length)[0];
+    const crow = (k, v) => { const mj = mode([...v]); const dif = v.some(x => x !== mj); return { k, dif, cells: v.map(x => ({ v: x, bg: x !== mj ? 'var(--diff-mod-bg)' : 'transparent', fg: x !== mj ? 'var(--diff-mod-fg)' : 'var(--foreground)' })) }; };
+    const allRows = CR.map(r => crow(r[0], r[1]));
+    const cmpRows = allRows.filter(r => !s.cmpOnly || r.dif);
+    const cmpReady = !!s.cmpFile;
+    const featD = [['enableAccountSorting', ['false', 'false', 'false', 'true', 'false', 'false']], ['enableBulkExport', Array(6).fill('true')], ['enableLedgerV2', ['false', 'false', 'false', 'false', 'false', 'false']], ['enableRiskScore', Array(6).fill('true')]];
+    const featRows = featD.map(([k, v]) => { const mj = mode([...v]); return { k, cells: v.map((x, i) => { const d = x !== mj; return { v: x, bg: d ? 'var(--diff-mod-bg)' : 'var(--background)', fg: d ? 'var(--diff-mod-fg)' : 'var(--foreground)', bd: d ? 'var(--warning-border)' : 'var(--border)', dot: k === 'enableAccountSorting' && L[i] === 'presita' && !!hl.status_cell, open: () => this.act('status_cell', { panel: k === 'enableAccountSorting' && d }) }; }) }; });
+    // events
+    const baseEv = [['10:42', 'nfs-sitb (external)', 'tx-infinity-core.yml changed outside Lanekeeper'], ['09:31', 'Marcus Lee', 'Restarted payments-gateway on sit'], ['09:05', 'Priya Nair', 'Adopted sitc']];
+    const evs = [...s.ev.map(e => e.split('|')), ...baseEv].map((e, i) => ({ time: e[0], who: e[1], what: e[2], bg: i === 0 && s.ev.length ? 'var(--selection)' : 'transparent' }));
+    const users = [{ n: 'Priya Nair', r: 'Admin' }, { n: 'Marcus Lee', r: 'Operator' }, { n: 'Ana Ruiz', r: 'Editor' }].concat(s.samState === 'approved' ? [{ n: 'Sam Okafor', r: s.roleSel }] : []);
+    const wizTitles = ['Scan presitb', 'Choose source', 'Confirm adoption'];
+    const wnext = () => { if (s.wiz < 3) this.act('wiz', { wiz: s.wiz + 1 }); else this.act('wiz', { adopted: true, page: 'detail', lane: 'presitb', wiz: 1 }, '11:20|Priya Nair|Adopted presitb at v2.3.1, tenant sit3'); };
+    return {
+      theme: s.theme, themeLabel: s.theme === 'light' ? 'Dark theme' : 'Light theme', toggleTheme: set({ theme: s.theme === 'light' ? 'dark' : 'light' }),
+      journeys, cur, guide, done, userName: U[0], userRole: U[1], restart: () => this.setState(this.base(s.j)), hl, nav, showNav, p,
+      noop: (e) => { e && e.preventDefault && e.preventDefault(); },
+      // lanes + detail
+      lanes, lane: s.lane, laneInfo: info(s.lane), files, toLanes: set({ page: 'lanes' }), startWizard: () => this.act('adopt', { page: 'wizard', wiz: 1 }),
+      toast: s.toast, toastOpen: () => this.act('toast', { toast: false, page: 'detail', lane: 'sitb' }),
+      adoptedBanner: s.lane === 'presitb' && s.adopted, lockedBanner: s.lane === 'presitb' && !s.adopted,
+      // file
+      fb: fbx, btn, ban, lines, val: s.val, setVal: (e) => this.setState({ val: e.target.value }), backDetail: set({ page: 'detail' }),
+      openDiffGit: () => this.act('diffgit', { page: 'diff', diffKind: 'git' }), openPr: () => this.act('raisepr', { dlg: 'pr' }),
+      doEdit: () => this.act('edit', { mode: 'edit' }), doCancel: set({ mode: 'view' }),
+      doSave: () => s.j === 4 && s.mode === 'edit' ? this.act('save', { mode: 'conflict' }) : this.act('save', { mode: 'saved' }, '11:12|' + U[0] + '|Saved tx-infinity-core.yml on ' + s.lane),
+      doSubmit: () => this.act('submit', { mode: 'submitted', submitted: true }, '10:55|' + U[0] + '|Requested approval #214 for presita tx-infinity-core.yml'),
+      reapply: () => this.act('reapply', { mode: 'saved' }, '11:13|' + U[0] + '|Re-applied change on top of Marcus Lee\'s edit; saved sit tx-infinity-core.yml'),
+      openRestart: () => this.act('restart', { dlg: 'restart' }), doRestart: () => this.act('restart_confirm', { dlg: null, mode: 'restarted' }, '11:14|' + U[0] + '|Restarted payments-gateway, tx-infinity-core on sit'),
+      dlgPr: s.dlg === 'pr', dlgRestart: s.dlg === 'restart', closeDlg: set({ dlg: null }),
+      submitPr: () => this.act('prsubmit', { dlg: null, pr: true, page: 'file', mode: 'view', diffKind: 'git' }, '10:50|' + U[0] + '|Raised PR csp-tenant-data#1482 to sit7 from sitb tx-infinity-core.yml'),
+      switchPriya: () => this.act('switch_priya', { user: 'priya', page: s.j === 5 ? 'admin' : 'approvals' }),
+      switchSam: () => this.act('switch_sam', { user: 'sam', page: 'onboard' }),
+      // diff
+      diff, diffBack: set({ page: s.diffKind === 'git' ? 'file' : 'compare' }),
+      // compare
+      cmpReady, notCmpReady: !cmpReady, cmpOnly: s.cmpOnly, cmpRows, laneNames: L, cmpCount: `Showing ${cmpRows.length} of ${allRows.length} settings`,
+      pickFile: (e) => this.act('cmp_file', { cmpFile: e.target.value }), toggleOnly: () => this.act('cmp_only', { cmpOnly: !s.cmpOnly }),
+      openCmpDiff: () => this.act('cmp_diff', { page: 'diff', diffKind: 'cmp' }),
+      // status + doc
+      featRows, panel: s.panel, openDoc: () => this.act('open_doc', { page: 'doc' }), toStatus: set({ page: 'status' }),
+      openLine: () => this.act('open_line', { page: 'file', lane: 'presita', mode: 'view', line: 42 }),
+      // approvals
+      hasReq, noReq: !hasReq, isAdmin: admin, notAdmin: !admin,
+      doApprove: () => this.act('approve', { approved: true, page: 'audit' }, '11:00|Priya Nair|Approved #214 and applied maxConnections ' + s.val + ' to presita tx-infinity-core.yml'),
+      events: evs,
+      // admin / access
+      users, sam: { pending: s.samState === 'requested', approved: s.samState === 'approved', none: s.samState !== 'requested' && s.samState !== 'approved' }, roleSel: s.roleSel,
+      setRole: (e) => this.setState({ roleSel: e.target.value }),
+      doApproveRole: () => this.act('approve_editor', { samState: 'approved' }, '11:03|Priya Nair|Approved Sam Okafor as ' + s.roleSel),
+      doSignin: () => this.act('signin', { page: 'pending', samState: 'requested' }),
+      token: s.token, setToken: (e) => this.setState({ token: e.target.value }), tokenOk: s.tokenOk, notTokenOk: !s.tokenOk,
+      verifyToken: () => this.act('token_verify', { tokenOk: true, token: s.token || 'ghp_••••••••••••••••' }),
+      openApp: set({ page: 'lanes' }),
+      // wizard
+      wiz: s.wiz, wizTitle: wizTitles[s.wiz - 1], w: { s1: s.wiz === 1, s2: s.wiz === 2, s3: s.wiz === 3 },
+      wizBackLabel: s.wiz === 1 ? 'Cancel' : 'Back', wizBack: () => s.wiz === 1 ? this.setState({ page: 'lanes' }) : this.setState({ wiz: s.wiz - 1 }),
+      wizNextLabel: s.wiz === 3 ? 'Adopt presitb' : 'Next', wizNext: wnext
+    };
+  }
+}
+
+</script>
+</body>
+</html>

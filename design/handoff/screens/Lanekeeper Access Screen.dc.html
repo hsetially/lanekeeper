@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<style>
+*{box-sizing:border-box}
+a{color:var(--link)}
+a:hover{color:var(--primary-hover)}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+@keyframes lk-spin{to{transform:rotate(360deg)}}
+</style>
+</helmet>
+<div data-theme="{{ theme }}" style="position:relative;width:{{ wpx }};height:{{ hpx }};overflow:hidden;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:13px;line-height:18px;-webkit-font-smoothing:antialiased">
+
+<sc-if value="{{ isPre }}" hint-placeholder-val="{{ true }}">
+<div style="position:absolute;inset:0;background:var(--muted);display:flex;align-items:center;justify-content:center">
+  <div style="width:400px;display:flex;flex-direction:column;gap:20px;padding:32px;border:1px solid var(--border);border-radius:6px;background:var(--card)">
+    <sc-if value="{{ isSignin }}" hint-placeholder-val="{{ true }}">
+      <div style="display:flex;flex-direction:column;gap:6px"><h1 style="margin:0;font-size:24px;line-height:30px;font-weight:600;letter-spacing:-0.01em">Lanekeeper</h1><p style="margin:0;font-size:14px;line-height:20px;color:var(--muted-foreground)">Review and edit configuration across the SIT and PRESIT swimlanes.</p></div>
+      <button type="button" style="height:32px;width:100%;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-size:14px;font-weight:500;cursor:pointer" style-hover="background:var(--primary-hover)">Sign in with Microsoft</button>
+    </sc-if>
+    <sc-if value="{{ isReq }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <span style="align-self:flex-start;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--status-approval-border);background:var(--status-approval-bg);color:var(--status-approval-fg);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/hourglass.svg) center/contain no-repeat"></span>Pending approval</span>
+        <h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600;letter-spacing:-0.01em">Access requested</h1>
+        <p style="margin:0;font-size:14px;line-height:20px;color:var(--muted-foreground)">An admin must approve your access before you can use Lanekeeper. You'll be able to sign in as soon as they do.</p>
+      </div>
+      <dl style="margin:0;display:grid;grid-template-columns:104px minmax(0,1fr);gap:8px 12px;padding:12px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)">
+        <dt style="color:var(--muted-foreground)">Signed in as</dt><dd style="margin:0;font-weight:500">Sam Okafor</dd>
+        <dt style="color:var(--muted-foreground)">Request sent</dt><dd style="margin:0;font-variant-numeric:tabular-nums">9 Oct 2026, 09:14 <span style="color:var(--muted-foreground)">· 2 hours ago</span></dd>
+      </dl>
+      <a href="#" style="align-self:flex-start;font-weight:500">Sign out</a>
+    </sc-if>
+    <sc-if value="{{ isDis }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <span style="align-self:flex-start;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--status-locked-border);background:var(--status-locked-bg);color:var(--status-locked-fg);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/lock.svg) center/contain no-repeat"></span>Access disabled</span>
+        <h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600;letter-spacing:-0.01em">Your access is disabled</h1>
+        <p style="margin:0;font-size:14px;line-height:20px;color:var(--muted-foreground)">An admin turned off your account on 6 Oct 2026. You can't use Lanekeeper until it is turned back on.</p>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;padding:12px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)"><span style="color:var(--muted-foreground)">To get access back, contact an admin:</span><span style="font-weight:500">Priya Shah</span></div>
+      <a href="#" style="align-self:flex-start;font-weight:500">Sign out</a>
+    </sc-if>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isTok }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;inset:0;display:flex;flex-direction:column">
+  <header style="flex:none;height:44px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;border-bottom:1px solid var(--border);background:var(--muted)">
+    <span style="font-size:14px;line-height:20px;font-weight:600;letter-spacing:-0.01em">Lanekeeper</span>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span style="font-weight:500">Marco Diaz</span>
+      <span style="display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--input);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/pencil.svg) center/contain no-repeat"></span>Editor</span>
+      <a href="#" style="font-weight:500">Sign out</a>
+    </div>
+  </header>
+  <div style="flex:1;min-height:0;overflow:hidden;display:flex;justify-content:center;padding:32px 24px 0">
+    <div style="width:100%;max-width:640px;display:flex;flex-direction:column;gap:20px">
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <h1 style="margin:0;font-size:24px;line-height:30px;font-weight:600;letter-spacing:-0.01em">Add your GitHub token</h1>
+        <p style="margin:0;font-size:14px;line-height:20px;color:var(--muted-foreground)">Lanekeeper raises pull requests as you, so it needs a fine-grained token that you create. It's stored encrypted and never shown again.</p>
+      </div>
+
+      <sc-if value="{{ showForm }}" hint-placeholder-val="{{ true }}">
+      <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;background:var(--card)">
+        <div style="display:flex;align-items:center;justify-content:space-between;height:36px;padding:0 12px;border-bottom:1px solid var(--border)"><span style="font-weight:600">1 · Create the token on GitHub with these settings</span><a href="#" style="font-size:12px;font-weight:500">Open token settings</a></div>
+        <dl style="margin:0;display:grid;grid-template-columns:150px minmax(0,1fr);font-size:13px">
+          <dt style="padding:8px 12px;color:var(--muted-foreground);border-bottom:1px solid var(--border)">Token type</dt><dd style="margin:0;padding:8px 12px;border-bottom:1px solid var(--border)"><strong style="font-weight:600">Fine-grained</strong> only. Classic tokens are rejected.</dd>
+          <dt style="padding:8px 12px;color:var(--muted-foreground);border-bottom:1px solid var(--border)">Repositories</dt><dd style="margin:0;padding:8px 12px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px;align-items:center"><span style="color:var(--muted-foreground)">Only select repositories:</span><span style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 6px;border-radius:4px;border:1px solid var(--border);background:var(--muted);font-family:var(--font-mono);font-size:12px">configuration-base-saas</span><span style="display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 6px;border-radius:4px;border:1px solid var(--border);background:var(--muted);font-family:var(--font-mono);font-size:12px">csp-tenant-data</span></dd>
+          <dt style="padding:8px 12px;color:var(--muted-foreground);border-bottom:1px solid var(--border)">Permissions</dt><dd style="margin:0;padding:8px 12px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:2px"><span>Contents: <strong style="font-weight:600">Read and write</strong></span><span>Pull requests: <strong style="font-weight:600">Read and write</strong></span></dd>
+          <dt style="padding:8px 12px;color:var(--muted-foreground)">Expiration</dt><dd style="margin:0;padding:8px 12px">Set an expiry date. Lanekeeper warns you 7 days before it ends.</dd>
+        </dl>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <label style="font-weight:600" for="tok">2 · Paste the token</label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <div style="flex:1;min-width:0;display:flex;align-items:center;height:32px;padding:0 10px;border-radius:4px;border:1px solid {{ fieldBorder }};background:var(--background);opacity:{{ fieldOp }}"><span id="tok" aria-label="GitHub token, masked" style="flex:1;min-width:0;overflow:hidden;white-space:nowrap;font-family:var(--font-mono);font-size:12px;color:{{ fieldColor }}">{{ fieldText }}</span></div>
+          <sc-if value="{{ sVer }}" hint-placeholder-val="{{ false }}"><button type="button" aria-busy="true" aria-disabled="true" style="display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-weight:500;white-space:nowrap;opacity:.5;cursor:not-allowed"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/loader-circle.svg) center/contain no-repeat;animation:lk-spin 1s linear infinite"></span>Verifying…</button></sc-if>
+          <sc-if value="{{ notVer }}" hint-placeholder-val="{{ true }}"><button type="button" style="height:32px;padding:0 12px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-weight:500;white-space:nowrap;cursor:pointer" style-hover="background:var(--primary-hover)">Verify and save</button></sc-if>
+        </div>
+        <sc-if value="{{ sIdle }}" hint-placeholder-val="{{ true }}"><span style="font-size:12px;color:var(--muted-foreground)">The token is masked as you paste it. After saving, only your GitHub login and the expiry date are shown.</span></sc-if>
+
+        <sc-if value="{{ sVer }}" hint-placeholder-val="{{ false }}">
+        <div role="status" style="display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-radius:6px;border:1px solid var(--border);background:var(--muted)">
+          <span style="display:flex;align-items:center;gap:8px"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--success-fg);mask:url(assets/icons/circle-check.svg) center/contain no-repeat"></span>Token is fine-grained</span>
+          <span style="display:flex;align-items:center;gap:8px"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--muted-foreground);mask:url(assets/icons/loader-circle.svg) center/contain no-repeat;animation:lk-spin 1s linear infinite"></span>Checking access to both repositories</span>
+          <span style="display:flex;align-items:center;gap:8px;color:var(--muted-foreground)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/circle-dashed.svg) center/contain no-repeat"></span>Matching the GitHub login linked to you</span>
+        </div>
+        </sc-if>
+
+        <sc-if value="{{ sClassic }}" hint-placeholder-val="{{ false }}">
+        <div role="alert" style="display:flex;gap:8px;padding:10px 12px;border-radius:6px;border:1px solid var(--danger-border);background:var(--danger-bg);color:var(--danger-fg)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;margin-top:2px;background:currentColor;mask:url(assets/icons/circle-x.svg) center/contain no-repeat"></span><div style="display:flex;flex-direction:column;gap:4px"><strong style="font-weight:600">Classic tokens aren't allowed by policy</strong><span style="color:var(--foreground)">Classic tokens reach every repository you can. Create a fine-grained token with the settings above, then paste it here.</span></div></div>
+        </sc-if>
+
+        <sc-if value="{{ sRepo }}" hint-placeholder-val="{{ false }}">
+        <div role="alert" style="display:flex;gap:8px;padding:10px 12px;border-radius:6px;border:1px solid var(--danger-border);background:var(--danger-bg);color:var(--danger-fg)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;margin-top:2px;background:currentColor;mask:url(assets/icons/circle-x.svg) center/contain no-repeat"></span><div style="display:flex;flex-direction:column;gap:8px"><strong style="font-weight:600">This token can't reach csp-tenant-data</strong>
+          <div style="display:flex;flex-direction:column;gap:4px;color:var(--foreground)">
+            <span style="display:flex;align-items:center;gap:8px"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--success-fg);mask:url(assets/icons/circle-check.svg) center/contain no-repeat"></span><code style="font-family:var(--font-mono);font-size:12px">configuration-base-saas</code><span style="color:var(--muted-foreground)">Read and write OK</span></span>
+            <span style="display:flex;align-items:center;gap:8px"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:var(--danger-fg);mask:url(assets/icons/circle-x.svg) center/contain no-repeat"></span><code style="font-family:var(--font-mono);font-size:12px">csp-tenant-data</code><span style="color:var(--danger-fg)">No access</span></span>
+          </div>
+          <span style="color:var(--foreground)">On GitHub, edit the token, add csp-tenant-data under Repository access, then verify again.</span></div></div>
+        </sc-if>
+
+        <sc-if value="{{ sMis }}" hint-placeholder-val="{{ false }}">
+        <div role="alert" style="display:flex;gap:8px;padding:10px 12px;border-radius:6px;border:1px solid var(--danger-border);background:var(--danger-bg);color:var(--danger-fg)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;margin-top:2px;background:currentColor;mask:url(assets/icons/circle-x.svg) center/contain no-repeat"></span><div style="display:flex;flex-direction:column;gap:6px"><strong style="font-weight:600">This token belongs to a different GitHub account than the one linked to you</strong>
+          <dl style="margin:0;display:grid;grid-template-columns:120px minmax(0,1fr);gap:2px 8px;color:var(--foreground)"><dt style="color:var(--muted-foreground)">Linked to you</dt><dd style="margin:0;font-family:var(--font-mono);font-size:12px">mdiaz</dd><dt style="color:var(--muted-foreground)">Token belongs to</dt><dd style="margin:0;font-family:var(--font-mono);font-size:12px">marco-d</dd></dl>
+          <span style="color:var(--foreground)">Create the token while signed in to GitHub as mdiaz. If the linked account is wrong, ask an admin to change it.</span></div></div>
+        </sc-if>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ sOk }}" hint-placeholder-val="{{ false }}">
+      <div role="status" style="display:flex;flex-direction:column;gap:16px;padding:16px;border-radius:6px;border:1px solid var(--success-border);background:var(--success-bg)">
+        <div style="display:flex;align-items:center;gap:8px;color:var(--success-fg)"><span aria-hidden="true" style="width:16px;height:16px;flex:none;background:currentColor;mask:url(assets/icons/circle-check.svg) center/contain no-repeat"></span><strong style="font-size:14px;font-weight:600">Token verified and saved</strong></div>
+        <dl style="margin:0;display:grid;grid-template-columns:140px minmax(0,1fr);gap:8px 12px">
+          <dt style="color:var(--muted-foreground)">Linked GitHub login</dt><dd style="margin:0;font-family:var(--font-mono);font-size:12px;font-weight:500">mdiaz</dd>
+          <dt style="color:var(--muted-foreground)">Expires</dt><dd style="margin:0;font-variant-numeric:tabular-nums">7 Jan 2027 <span style="color:var(--muted-foreground)">· in 90 days</span></dd>
+        </dl>
+        <span style="color:var(--muted-foreground)">The token itself is stored encrypted and can't be viewed again. To change it later, use My GitHub token.</span>
+        <button type="button" style="align-self:flex-start;height:32px;padding:0 12px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-weight:500;cursor:pointer" style-hover="background:var(--primary-hover)">Continue to Lanekeeper</button>
+      </div>
+      </sc-if>
+    </div>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isMy }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;inset:0;display:flex">
+  <aside style="flex:none;width:48px;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 0;background:var(--muted);border-right:1px solid var(--border)">
+    <div style="height:36px;width:28px;display:flex;align-items:center;justify-content:center"><span aria-hidden="true" style="width:16px;height:16px;background:var(--muted-foreground);mask:url(assets/icons/panel-left.svg) center/contain no-repeat"></span></div>
+    <sc-for list="{{ rail }}" as="r" hint-placeholder-count="6"><span style="width:32px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:4px"><span aria-hidden="true" style="width:16px;height:16px;background:var(--muted-foreground);mask:url(assets/icons/{{ r }}.svg) center/contain no-repeat"></span></span></sc-for>
+    <span aria-hidden="true" style="margin-top:auto;width:28px;height:28px;border-radius:999px;border:1px solid var(--input);background:var(--secondary);display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">MD</span>
+  </aside>
+  <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+    <header style="flex:none;height:44px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid var(--border)">
+      <nav aria-label="Breadcrumb"><ol style="display:flex;align-items:center;gap:4px;margin:0;padding:0;list-style:none"><li style="color:var(--muted-foreground)">Account</li><li aria-hidden="true" style="display:flex"><span style="width:12px;height:12px;background:var(--muted-foreground);mask:url(assets/icons/chevron-right.svg) center/contain no-repeat"></span></li><li aria-current="page" style="font-weight:500">My GitHub token</li></ol></nav>
+      <span role="status" style="display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:999px;border:1px solid var(--border);font-size:12px;font-weight:500"><span style="width:8px;height:8px;border-radius:999px;background:var(--agent-online)"></span>Live</span>
+    </header>
+    <div role="status" style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:40px;padding:6px 16px;background:var(--warning-bg);color:var(--warning-fg);border-bottom:1px solid var(--warning-border)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/triangle-alert.svg) center/contain no-repeat"></span><strong style="font-weight:600">Your GitHub token expires in 5 days</strong><span>After 14 Oct 2026, Save and Raise PR stop working.</span><button type="button" style="margin-left:auto;height:24px;padding:0 8px;border-radius:4px;border:1px solid currentColor;background:transparent;color:inherit;font-size:12px;font-weight:500;cursor:pointer">Replace token</button></div>
+    <div style="flex:1;min-height:0;overflow:hidden;padding:24px">
+      <div style="max-width:720px;display:flex;flex-direction:column;gap:20px">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">
+          <div style="display:flex;flex-direction:column;gap:6px"><h1 style="margin:0;font-size:20px;line-height:26px;font-weight:600;letter-spacing:-0.01em">My GitHub token</h1><p style="margin:0;color:var(--muted-foreground)">Used to raise pull requests as you in configuration-base-saas and csp-tenant-data.</p></div>
+          <span style="flex:none;display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--warning-border);background:var(--warning-bg);color:var(--warning-fg);font-size:12px;font-weight:500"><span aria-hidden="true" style="width:12px;height:12px;flex:none;background:currentColor;mask:url(assets/icons/clock.svg) center/contain no-repeat"></span>Expires in 5 days</span>
+        </div>
+        <dl style="margin:0;display:grid;grid-template-columns:180px minmax(0,1fr);border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--card)">
+          <dt style="padding:8px 12px;color:var(--muted-foreground);border-bottom:1px solid var(--border)">Linked GitHub login</dt><dd style="margin:0;padding:8px 12px;border-bottom:1px solid var(--border);font-family:var(--font-mono);font-size:12px;font-weight:500">mdiaz</dd>
+          <dt style="padding:8px 12px;color:var(--muted-foreground);border-bottom:1px solid var(--border)">Expires</dt><dd style="margin:0;padding:8px 12px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums">14 Oct 2026 <span style="color:var(--warning-fg);font-weight:500">· in 5 days</span></dd>
+          <dt style="padding:8px 12px;color:var(--muted-foreground);border-bottom:1px solid var(--border)">Added</dt><dd style="margin:0;padding:8px 12px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums">15 Jul 2026</dd>
+          <dt style="padding:8px 12px;color:var(--muted-foreground);border-bottom:1px solid var(--border)">Last used</dt><dd style="margin:0;padding:8px 12px;border-bottom:1px solid var(--border)">14 min ago, to raise PR #482</dd>
+          <dt style="padding:8px 12px;color:var(--muted-foreground);border-bottom:1px solid var(--border)">Verified access</dt><dd style="margin:0;padding:8px 12px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:2px"><span><code style="font-family:var(--font-mono);font-size:12px">configuration-base-saas</code> · Contents, Pull requests</span><span><code style="font-family:var(--font-mono);font-size:12px">csp-tenant-data</code> · Contents, Pull requests</span></dd>
+          <dt style="padding:8px 12px;color:var(--muted-foreground)">Token</dt><dd style="margin:0;padding:8px 12px;color:var(--muted-foreground)">Stored encrypted. It can't be viewed or copied.</dd>
+        </dl>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--primary);background:var(--primary);color:var(--primary-foreground);font-weight:500;cursor:pointer" style-hover="background:var(--primary-hover)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/refresh-cw.svg) center/contain no-repeat"></span>Replace token</button>
+          <button type="button" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:4px;border:1px solid var(--danger-border);background:transparent;color:var(--danger-fg);font-weight:500;cursor:pointer" style-hover="background:var(--danger-bg)"><span aria-hidden="true" style="width:14px;height:14px;flex:none;background:currentColor;mask:url(assets/icons/trash-2.svg) center/contain no-repeat"></span>Delete token</button>
+          <span style="margin-left:8px;font-size:12px;color:var(--muted-foreground)">Deleting means you can't save or raise PRs until you add a new one.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:800},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;screen&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;signin&quot;,&quot;requested&quot;,&quot;disabled&quot;,&quot;token&quot;,&quot;mytoken&quot;],&quot;default&quot;:&quot;signin&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;idle&quot;,&quot;verifying&quot;,&quot;ok&quot;,&quot;classic&quot;,&quot;repo&quot;,&quot;mismatch&quot;],&quot;default&quot;:&quot;idle&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;w&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:1280,&quot;tsType&quot;:&quot;number&quot;},&quot;h&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:800,&quot;tsType&quot;:&quot;number&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const p = this.props, screen = p.screen ?? 'signin', st = p.state ?? 'idle';
+    const filled = st !== 'idle' && st !== 'ok', err = ['classic', 'repo', 'mismatch'].includes(st);
+    return {
+      theme: p.theme ?? 'light', wpx: (p.w ?? 1280) + 'px', hpx: (p.h ?? 800) + 'px',
+      isPre: ['signin', 'requested', 'disabled'].includes(screen), isSignin: screen === 'signin', isReq: screen === 'requested', isDis: screen === 'disabled',
+      isTok: screen === 'token', isMy: screen === 'mytoken',
+      showForm: st !== 'ok', sIdle: st === 'idle', sVer: st === 'verifying', notVer: st !== 'verifying', sOk: st === 'ok', sClassic: st === 'classic', sRepo: st === 'repo', sMis: st === 'mismatch',
+      fieldText: filled ? '•'.repeat(48) : 'github_pat_…', fieldColor: filled ? 'var(--foreground)' : 'var(--muted-foreground)',
+      fieldBorder: err ? 'var(--danger-fg)' : 'var(--input)', fieldOp: st === 'verifying' ? 0.5 : 1,
+      rail: ['layers', 'columns-2', 'search', 'zap', 'shield-alert', 'history']
+    };
+  }
+}
+</script>
+</body>
+</html>

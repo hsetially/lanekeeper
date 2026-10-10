@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="consequence.css">
+<link rel="stylesheet" href="lk-pages.css">
+<style>
+*{box-sizing:border-box}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+</style>
+</helmet>
+<div class="lk pg" data-screen-label="Findings">
+<div class="pg-in">
+  <div class="pg-h">
+    <div><h1>Findings</h1><span class="sub">{{ subtitle }}</span></div>
+    <span class="mut" style="display:inline-flex;align-items:center;gap:6px;font-size:12px"><i class="ic s12 i-clock"></i>Last scan 10:42 · 8 checks across 6 swimlanes</span>
+  </div>
+  <div class="pg-box" aria-busy="{{ loading }}">
+    <div class="tbar">
+      <div class="seg" role="group" aria-label="Status">
+        <button type="button" class="{{ tabOpenCls }}" aria-pressed="{{ tabIsOpen }}" onClick="{{ goOpen }}">Open<span class="n">{{ openCount }}</span></button>
+        <button type="button" class="{{ tabIntCls }}" aria-pressed="{{ tabIsInt }}" onClick="{{ goInt }}">Intentional<span class="n">{{ intCount }}</span></button>
+      </div>
+      <span aria-hidden="true" style="width:1px;height:20px;background:var(--border)"></span>
+      <div style="position:relative">
+        <button type="button" class="fb {{ fbLanes }}" aria-haspopup="menu" aria-expanded="{{ popLanes }}" onClick="{{ togLanes }}"><i class="ic s12 i-plus"></i>Swimlane<sc-if value="{{ hasLanes }}" hint-placeholder-val="{{ false }}"><span class="v">{{ lanesText }}</span></sc-if></button>
+        <sc-if value="{{ popLanes }}" hint-placeholder-val="{{ false }}"><div class="pop" role="menu" aria-label="Swimlane">
+          <sc-for list="{{ laneOpts }}" as="o" hint-placeholder-count="6"><div class="it" role="menuitemcheckbox" aria-checked="{{ o.on }}" onClick="{{ o.click }}"><span class="cb2 {{ o.cls }}"><i class="ic i-check" style="opacity:{{ o.chk }}"></i></span><span class="tier t-{{ o.tier }}">{{ o.tier }}</span><span class="mono">{{ o.name }}</span><span class="c">{{ o.n }}</span></div></sc-for>
+          <div class="ft"><span>Counts follow the other filters</span><a href="#" onClick="{{ clrLanes }}">Clear</a></div>
+        </div></sc-if>
+      </div>
+      <div style="position:relative">
+        <button type="button" class="fb {{ fbChecks }}" aria-haspopup="menu" aria-expanded="{{ popChecks }}" onClick="{{ togChecks }}"><i class="ic s12 i-plus"></i>Check<sc-if value="{{ hasChecks }}" hint-placeholder-val="{{ false }}"><span class="v">{{ checksText }}</span></sc-if></button>
+        <sc-if value="{{ popChecks }}" hint-placeholder-val="{{ false }}"><div class="pop" role="menu" aria-label="Check" style="width:320px">
+          <sc-for list="{{ checkOpts }}" as="o" hint-placeholder-count="8"><div class="it" role="menuitemcheckbox" aria-checked="{{ o.on }}" onClick="{{ o.click }}"><span class="cb2 {{ o.cls }}"><i class="ic i-check" style="opacity:{{ o.chk }}"></i></span><span class="ck">{{ o.c }}</span><span>{{ o.name }}</span><span class="c">{{ o.n }}</span></div></sc-for>
+          <div class="ft"><span>C1 to C8</span><a href="#" onClick="{{ clrChecks }}">Clear</a></div>
+        </div></sc-if>
+      </div>
+      <div style="position:relative">
+        <button type="button" class="fb {{ fbSev }}" aria-haspopup="menu" aria-expanded="{{ popSev }}" onClick="{{ togSev }}"><i class="ic s12 i-plus"></i>Severity<sc-if value="{{ hasSev }}" hint-placeholder-val="{{ false }}"><span class="v">{{ sevText }}</span></sc-if></button>
+        <sc-if value="{{ popSev }}" hint-placeholder-val="{{ false }}"><div class="pop" role="menu" aria-label="Severity" style="width:220px">
+          <sc-for list="{{ sevOpts }}" as="o" hint-placeholder-count="3"><div class="it" role="menuitemcheckbox" aria-checked="{{ o.on }}" onClick="{{ o.click }}"><span class="cb2 {{ o.cls }}"><i class="ic i-check" style="opacity:{{ o.chk }}"></i></span><span class="bd sv sv-{{ o.k }}"><i class="ic s12 {{ o.icon }}"></i>{{ o.label }}</span><span class="c">{{ o.n }}</span></div></sc-for>
+          <div class="ft"><span>Severity is set by the check</span><a href="#" onClick="{{ clrSev }}">Clear</a></div>
+        </div></sc-if>
+      </div>
+      <sc-if value="{{ hasFilters }}" hint-placeholder-val="{{ false }}"><button type="button" class="b g sm" onClick="{{ clrAll }}"><i class="ic s12 i-x"></i>Clear filters</button></sc-if>
+      <span class="sp">{{ shownText }}</span>
+    </div>
+
+    <div class="fr hd" role="row"><span>{{ colA }}</span><span>Check</span><span>Swimlane</span><span>File</span><span>What is wrong</span><span>Lines</span></div>
+
+    <sc-if value="{{ loading }}" hint-placeholder-val="{{ false }}"><div role="status" aria-label="Loading findings" style="flex:1;overflow:hidden">
+      <sc-for list="{{ skel }}" as="s" hint-placeholder-count="8"><div class="fr" style="cursor:default"><span class="skl" style="width:60px"></span><span class="skl" style="width:{{ s.a }}"></span><span class="skl" style="width:44px"></span><span class="skl" style="width:{{ s.b }}"></span><span class="skl" style="width:{{ s.c }}"></span><span class="skl" style="width:52px"></span></div></sc-for>
+    </div></sc-if>
+
+    <sc-if value="{{ noneAtAll }}" hint-placeholder-val="{{ false }}"><div class="empty"><i class="ic s16 i-circle-check" style="color:var(--success-fg)"></i><strong>No open findings</strong><span class="m">The last scan at 10:42 ran 8 checks on 6 swimlanes and found nothing to fix. The next scan runs when a file changes.</span></div></sc-if>
+    <sc-if value="{{ noMatch }}" hint-placeholder-val="{{ false }}"><div class="empty"><i class="ic s16 i-search" style="color:var(--muted-foreground)"></i><strong>{{ noMatchTitle }}</strong><span class="m">{{ noMatchBody }}</span><sc-if value="{{ hasFilters }}" hint-placeholder-val="{{ false }}"><button type="button" class="b" onClick="{{ clrAll }}">Clear filters</button></sc-if></div></sc-if>
+
+    <sc-if value="{{ hasRows }}" hint-placeholder-val="{{ true }}"><div role="rowgroup" style="flex:1;min-height:0;overflow:hidden">
+      <sc-for list="{{ rows }}" as="r" hint-placeholder-count="6">
+        <div role="row" tabindex="0" class="fr {{ r.cls }}" aria-selected="{{ r.sel }}" onClick="{{ r.open }}" onKeyDown="{{ r.key }}">
+          <span><span class="bd {{ r.bcls }}"><i class="ic s12 {{ r.bicon }}"></i>{{ r.blabel }}</span></span>
+          <span class="ckn"><span class="ck">{{ r.c }}</span><span>{{ r.cname }}</span></span>
+          <span class="mono">{{ r.lane }}</span>
+          <span class="fl"><b>{{ r.file }}</b><span>{{ r.dir }}</span></span>
+          <span class="xp">{{ r.expl }}</span>
+          <span><a href="#" class="lk-l" title="Open file at {{ r.lines }}" onClick="{{ r.link }}">{{ r.lines }}</a></span>
+        </div>
+      </sc-for>
+    </div></sc-if>
+
+    <div class="foot"><span style="font-variant-numeric:tabular-nums">{{ shownText }}</span><span>High: running config is wrong or at risk · Medium: will cause drift or missed updates · Low: tidy-up</span><span class="r">Click a row for evidence and next steps</span></div>
+
+    <sc-if value="{{ drawerOn }}" hint-placeholder-val="{{ false }}">
+    <aside class="dr" role="dialog" aria-label="Finding detail">
+      <div class="dr-h">
+        <div class="t">
+          <div class="bs"><span class="bd {{ d.bcls }}"><i class="ic s12 {{ d.bicon }}"></i>{{ d.blabel }}</span><span class="ck">{{ d.c }}</span><sc-if value="{{ d.isInt }}" hint-placeholder-val="{{ false }}"><span class="bd bd-int"><i class="ic s12 i-shield-check"></i>Intentional</span></sc-if></div>
+          <h2>{{ d.cname }}</h2>
+          <div class="sb"><span style="color:var(--foreground)">{{ d.lane }}</span><span>{{ d.path }}</span><a href="#" onClick="{{ noop }}">{{ d.lines }}</a></div>
+        </div>
+        <button type="button" class="b ib" aria-label="Close" onClick="{{ closeDrawer }}"><i class="ic i-x"></i></button>
+      </div>
+      <div class="dr-b">
+        <sc-if value="{{ d.isInt }}" hint-placeholder-val="{{ false }}"><div class="fx fx-int"><i class="ic i-shield-check"></i><span>Marked intentional by {{ d.intBy }}, {{ d.intWhen }}<span class="x">“{{ d.intWhy }}” It reopens if the file changes.</span></span></div></sc-if>
+        <div class="dr-sec"><span class="sec">What this means</span><p class="dr-say">{{ d.plain }}</p></div>
+        <div class="dr-sec"><span class="sec">Evidence</span>
+          <sc-for list="{{ d.ev }}" as="b" hint-placeholder-count="2">
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <sc-if value="{{ b.isCommits }}" hint-placeholder-val="{{ false }}"><span class="cp">{{ b.title }}</span><div class="codebox"><sc-for list="{{ b.items }}" as="c" hint-placeholder-count="2"><div class="cm"><span class="h">{{ c.h }}</span><span>{{ c.msg }}</span><span class="w">{{ c.w }}</span></div></sc-for></div></sc-if>
+              <sc-if value="{{ b.isLines }}" hint-placeholder-val="{{ false }}"><div class="codebox"><div class="cap">{{ b.title }}</div><sc-for list="{{ b.rows }}" as="r" hint-placeholder-count="4"><div class="dl dl-{{ r.k }}"><span class="n">{{ r.no }}</span><span class="m">{{ r.m }}</span><span>{{ r.tx }}</span></div></sc-for></div></sc-if>
+              <sc-if value="{{ b.isKv }}" hint-placeholder-val="{{ false }}"><div class="codebox"><sc-for list="{{ b.items }}" as="i" hint-placeholder-count="3"><div class="kvr"><span class="k">{{ i.k }}</span><span class="v {{ i.cls }}">{{ i.v }}</span></div></sc-for></div></sc-if>
+              <sc-if value="{{ b.isTl }}" hint-placeholder-val="{{ false }}"><span class="cp">{{ b.title }}</span><ul class="tl"><sc-for list="{{ b.items }}" as="i" hint-placeholder-count="3"><li class="{{ i.cls }}"><span class="tm">{{ i.time }}</span><span class="dt"><i></i></span><span class="tx"><b style="font-weight:500">{{ i.what }}</b><span>{{ i.who }}</span></span></li></sc-for></ul></sc-if>
+            </div>
+          </sc-for>
+        </div>
+        <div class="dr-sec"><span class="sec">Recommended next steps</span><ol class="dr-st"><sc-for list="{{ d.steps }}" as="s" hint-placeholder-count="3"><li><span>{{ s }}</span></li></sc-for></ol></div>
+      </div>
+
+      <sc-if value="{{ confIntent }}" hint-placeholder-val="{{ false }}"><div class="dr-ap" role="group" aria-label="Mark intentional">
+        <label class="fld"><span>Reason (required, shown to the next person)</span><input class="in" type="text" value="{{ reason }}" onChange="{{ onReason }}" placeholder="Why is this on purpose?" aria-label="Reason"></label>
+        <span class="mut" style="font-size:12px;line-height:16px">The finding moves to Intentional and stops counting. It reopens if the file changes.</span>
+        <div class="row" style="display:flex;gap:8px;justify-content:flex-end"><button type="button" class="b" onClick="{{ cancelConf }}">Cancel</button><button type="button" class="b p {{ intOff }}" disabled="{{ intDis }}" onClick="{{ doIntent }}">Mark intentional</button></div>
+      </div></sc-if>
+      <sc-if value="{{ confRestore }}" hint-placeholder-val="{{ false }}"><div class="dr-ap" role="alertdialog" aria-label="Restore lost version">
+        <div class="fx fx-warn"><i class="ic i-triangle-alert"></i><span>Restores Dana Okoye’s 10:12 version of line 22<span class="x">Writes <span class="mono">rateLimitPerMin: 1200</span> to sitb as a new change. The version on sitb now stays in history.</span></span></div>
+        <ul style="display:flex;flex-direction:column;gap:4px;font-size:12px;line-height:16px"><li style="display:flex;gap:6px;align-items:center"><span class="bd bd-nfs"><i class="ic i-arrow-up-from-line"></i>NFS ahead</span>File stays ahead of Git until a PR merges</li><li style="display:flex;gap:6px;align-items:center"><span class="bd bd-restart"><i class="ic i-clock"></i>1 restart</span>gateway needs a restart to read it</li></ul>
+        <div class="row" style="display:flex;gap:8px;justify-content:flex-end"><button type="button" class="b" onClick="{{ cancelConf }}">Cancel</button><button type="button" class="b p" onClick="{{ doRestore }}"><i class="ic i-history"></i>Restore version</button></div>
+      </div></sc-if>
+
+      <sc-if value="{{ showFooter }}" hint-placeholder-val="{{ true }}"><div class="dr-f">
+        <sc-if value="{{ d.hasNote }}" hint-placeholder-val="{{ false }}"><div class="note"><i class="ic s12 i-info" style="margin-top:2px"></i><span>{{ d.note }}</span></div></sc-if>
+        <div class="row"><sc-for list="{{ d.acts }}" as="a" hint-placeholder-count="3"><button type="button" class="b {{ a.cls }} {{ a.ml }}" disabled="{{ a.dis }}" title="{{ a.title }}" onClick="{{ a.click }}"><i class="ic i-{{ a.icon }}"></i>{{ a.label }}</button></sc-for></div>
+      </div></sc-if>
+    </aside>
+    </sc-if>
+
+    <sc-if value="{{ toastOn }}" hint-placeholder-val="{{ false }}"><div class="toast" role="status"><i class="ic i-circle-check" style="color:var(--success-fg)"></i><span>{{ toast }}</span></div></sc-if>
+  </div>
+</div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1216,&quot;height&quot;:856},&quot;role&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Admin&quot;,&quot;Editor&quot;,&quot;Viewer&quot;],&quot;default&quot;:&quot;Admin&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Findings&quot;},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;results&quot;,&quot;empty&quot;,&quot;loading&quot;],&quot;default&quot;:&quot;results&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Findings&quot;},&quot;tab&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;open&quot;,&quot;int&quot;],&quot;default&quot;:&quot;open&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Findings&quot;},&quot;sel&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Findings&quot;},&quot;lanes&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Findings&quot;},&quot;checks&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Findings&quot;},&quot;sev&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Findings&quot;},&quot;confirm&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;intent&quot;,&quot;restore&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Findings&quot;},&quot;pop&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;lanes&quot;,&quot;checks&quot;,&quot;sev&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Findings&quot;},&quot;reason&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Findings&quot;}}">
+class Component extends DCLogic {
+  state = { o: {} };
+  val(k, d) { const o = this.state.o; return k in o ? o[k] : (this.props[k] ?? d); }
+  arr(k) { const v = this.val(k, ''); return Array.isArray(v) ? v : String(v).split(',').map(s => s.trim()).filter(Boolean); }
+  set(k, v) { this.setState(s => ({ o: { ...s.o, [k]: v } })); }
+  many(x) { this.setState(s => ({ o: { ...s.o, ...x } })); }
+  tog(k, x) { const a = this.arr(k); this.set(k, a.includes(x) ? a.filter(i => i !== x) : [...a, x]); }
+  data() {
+    const R = (no, tx, k = 'ctx') => ({ no, tx, k });
+    const C = (title, items) => ({ t: 'commits', title, items });
+    const L = (title, rows) => ({ t: 'lines', title, rows });
+    const K = (items) => ({ t: 'kv', items });
+    const T = (title, items) => ({ t: 'tl', title, items });
+    const fold = (tx) => R('', tx, 'fold');
+    return [
+      { id: 'f7', c: 'C5', lane: 'sitc', sev: 'high', dir: 'tx-infinity-api', file: 'gateway-routes-sit9.yml', expl: 'gateway-routes-sit9.yml is not valid YAML: there is a tab on line 41', lines: 'L41', act: 'file',
+        plain: 'The file can’t be read as YAML, so the gateway on sitc may ignore it or fail to start.',
+        ev: [K([{ k: 'Parser says', v: 'found character \'\\t\' that cannot start any token', cls: 'mono' }, { k: 'Position', v: 'line 41, column 1', cls: 'mono' }, { k: 'Last valid version', v: 'a3f9c21 · 2 days ago · Dana Okoye', cls: '' }]),
+          L('sitb · gateway-routes-sit9.yml · lines 39–43 · → marks the tab', [R(39, 'routes:'), R(40, '  - id: accounts'), R(41, '→ path: /accounts/**', 'hit'), R(42, '    uri: lb://accounts-api'), R(43, '  - id: ledger')])],
+        steps: ['Replace the tab on line 41 with spaces. YAML allows spaces only.', 'Open the file in edit mode. The validator marks the line as you type.', 'Save to sitc. 1 service (gateway) needs a restart.'] },
+      { id: 'f8', c: 'C6', lane: 'presita', sev: 'high', dir: 'tx-infinity-api', file: 'tx-infinity-core-sit11.yml', expl: 'presita references a dev host', lines: 'L88', act: 'file',
+        plain: 'presita is a pre-production swimlane, but this file sends Kafka messages to a dev broker.',
+        ev: [L('presita · tx-infinity-core-sit11.yml · lines 86–89', [R(86, 'kafka:'), R(87, '  consumerGroup: tx-core-sit11'), R(88, '  bootstrap: kafka-dev3.corp.internal:9092', 'hit'), R(89, '  autoOffsetReset: latest')]),
+          K([{ k: 'Matched pattern', v: '*-dev*.corp.internal', cls: 'mono' }, { k: 'Expected for presita', v: 'kafka-presit.corp.internal:9092', cls: 'mono' }, { k: 'Other pre-prod lanes', v: 'presitb and presitc use kafka-presit', cls: '' }])],
+        steps: ['Change line 88 to kafka-presit.corp.internal:9092.', 'Mark it intentional only if presita should read from dev. Give the reason.', 'Saving restarts tx-infinity-core.'] },
+      { id: 'f9', c: 'C6', lane: 'presitb', sev: 'high', dir: 'tx-infinity-api', file: 'tx-infinity-payments-sit12.yml', expl: 'presitb sends payment callbacks to a dev host', lines: 'L57', act: 'file',
+        plain: 'presitb is a pre-production swimlane, but payment callbacks go to a dev server.',
+        ev: [L('presitb · tx-infinity-payments-sit12.yml · lines 55–58', [R(55, 'callbacks:'), R(56, '  timeoutMs: 8000'), R(57, '  url: https://payments-dev2.corp.internal/hooks', 'hit'), R(58, '  retries: 3')]),
+          K([{ k: 'Matched pattern', v: '*-dev*.corp.internal', cls: 'mono' }, { k: 'Expected for presitb', v: 'payments-presit.corp.internal', cls: 'mono' }])],
+        steps: ['Change line 57 to the presit host.', 'Editing on presitb is locked until adoption is confirmed. Finish the adoption wizard first.'] },
+      { id: 'f10', c: 'C7', lane: 'sitb', sev: 'high', dir: 'tx-infinity-api', file: 'tx-infinity-gateway-sit7.yml', expl: 'A sync overwrote an NFS change to rateLimitPerMin', lines: 'L22', act: 'restore',
+        plain: 'Someone changed this file on the server, then a sync from Git replaced it with the older Git version. The change is gone from the file but Lanekeeper still has it.',
+        ev: [T('What happened on sitb today', [{ time: '10:12', what: 'rateLimitPerMin changed 600 → 1200 on NFS', who: 'Dana Okoye · saved in Lanekeeper', cls: 'nfs' }, { time: '10:40', what: 'Sync from Git wrote 600 back', who: 'Job sit7-sync #7731 · started by Priya Shah', cls: 'hot' }, { time: '10:41', what: 'NFS now matches Git again', who: 'Agent sitb · no PR contained the 1200 change', cls: '' }]),
+          L('Red: on sitb now · Green: lost version (4c2d8e9)', [R(21, 'rateLimit:'), R(22, '  rateLimitPerMin: 600', 'del'), R(22, '  rateLimitPerMin: 1200', 'add'), R(23, '  burst: 40')])],
+        steps: ['Restore lost version. It writes 1200 back to sitb as a new change.', 'Raise a PR so Git has the change. Otherwise the next sync overwrites it again.', 'Tell Dana Okoye the change was dropped.'] },
+      { id: 'f11', c: 'C8', lane: 'presitb', sev: 'high', dir: 'security', file: 'security-roles.yml', expl: 'Duplicate keys in security-roles.yml at lines 5171, 5643 and 6115', lines: 'L5171 +2', at: 5171, act: 'file',
+        plain: 'The same key appears three times. Most YAML parsers keep the last one and silently ignore the first two, so the value at line 5171 may not be the one in effect.',
+        ev: [L('security-roles.yml · key roles.teller-supervisor', [fold('lines 1–5170'), R(5171, '  teller-supervisor: [approve-void, view-audit]', 'hit'), fold('lines 5172–5642'), R(5643, '  teller-supervisor: [approve-void, view-audit, export-reports]', 'hit'), fold('lines 5644–6114'), R(6115, '  teller-supervisor: [approve-void]', 'hit')]),
+          K([{ k: 'In effect', v: 'line 6115 (last one wins in most parsers)', cls: '' }, { k: 'Source', v: 'base file, v2.3.1 + 4. presitb has no tenant copy.', cls: '' }])],
+        steps: ['Decide which of the three values is correct.', 'Fix it in configuration-base-saas. This is a base file, so it needs a base PR and every swimlane reads it.', 'Or add a tenant copy on presitb. Editing is locked until adoption is confirmed.'] },
+      { id: 'f1', c: 'C1', lane: 'sitc', sev: 'med', dir: 'tx-infinity-api', file: 'entryGroupConfig-sit9.yml', expl: 'sitc’s tenant copy of entryGroupConfig.yml has no atm entry that base has', lines: 'L209–217', act: 'diff',
+        plain: 'Base added an atm entry after sitc’s copy was made. Because the tenant copy wins, sitc never gets it.',
+        ev: [C('Base commits since this copy was made · 3 of 4 touch the atm entry', [{ h: 'c41e9d2', msg: 'Add atm entry group for ISO 8583 terminals', w: 'Jun 3 · Lena Brandt' }, { h: '7bd03a1', msg: 'Raise atm DEPOSIT default limit', w: 'Jun 19 · Lena Brandt' }, { h: 'e90a2f4', msg: 'Rename atm-iso to atm', w: 'Jul 8 · Tomás Reyes' }]),
+          L('Base v2.3.1 · entryGroupConfig.yml · lines 209–217 · green is missing from sitc', [R(209, 'entryGroupConfigMap:'), R(210, '  teller:'), R(211, '    limitCents: 250000'), R(212, '  atm:', 'add'), R(213, '    DEPOSIT:', 'add'), R(214, '      limitCents: 500000', 'add'), R(215, '    WITHDRAWAL:', 'add'), R(216, '      limitCents: 200000', 'add'), R(217, '      currency: USD', 'add')])],
+        steps: ['Open the diff to see base’s atm entry beside sitc’s copy.', 'Copy the atm entry into the tenant file, or delete the tenant copy if sitc needs no override. Base then applies in full.', 'Raise a PR. Saving to sitc restarts 1 service (teller-api).'] },
+      { id: 'f2', c: 'C1', lane: 'presita', sev: 'med', dir: 'kafka', file: 'kafka-topics-sit11.yml', expl: 'presita’s tenant copy of kafka-topics.yml has no payments.retry topic that base has', lines: 'L40–46', act: 'diff',
+        plain: 'Base added the payments.retry topic in v2.3.1. presita’s copy was made earlier, so the topic is not set up there.',
+        ev: [C('Base commits since this copy was made · 1 touches this topic', [{ h: 'a5d03c8', msg: 'Add payments.retry topic with 3 partitions', w: 'Jul 21 · Tomás Reyes' }]),
+          L('Base v2.3.1 · kafka-topics.yml · lines 40–46 · green is missing from presita', [R(40, '  payments.retry:', 'add'), R(41, '    partitions: 3', 'add'), R(42, '    replication: 3', 'add'), R(43, '    retentionHours: 72', 'add'), R(44, '  payments.dead:')])],
+        steps: ['Open the diff and compare with presita’s copy.', 'Add the topic to the tenant file, or delete the copy so base applies.', 'Raise a PR. Saving restarts 1 service (payments-worker).'] },
+      { id: 'f3', c: 'C2', lane: 'sitb', sev: 'med', dir: 'tx-infinity-api', file: 'account-sorting-config-sit7.yml', expl: 'account-sorting-config-sit7.yml is identical to base and blocks future base changes', lines: 'L1–64', act: 'file',
+        plain: 'A tenant file wins whenever it exists, so this copy hides base. Base has 2 newer commits that sitb will not receive.',
+        ev: [K([{ k: 'Tenant file', v: 'tx-infinity-api/account-sorting-config-sit7.yml', cls: 'mono' }, { k: 'Base file', v: 'account-sorting-config.yml @ v2.3.1 + 4', cls: 'mono' }, { k: 'SHA-256 of both', v: 'a91f3c0e… (identical, 64 lines)', cls: 'mono' }]),
+          C('Base commits sitb will not receive · 2', [{ h: 'f12ab77', msg: 'Default enableAccountSorting to true for new tenants', w: 'Sep 30 · Lena Brandt' }, { h: '0c8d4e1', msg: 'Add sortOrder option', w: 'Oct 2 · Lena Brandt' }])],
+        steps: ['Delete the tenant copy so sitb follows base. Raise a PR on csp-tenant-data@sit7.', 'If you keep it on purpose, mark it intentional with a reason.'] },
+      { id: 'f6', c: 'C4', lane: 'sitb', sev: 'med', dir: 'tx-infinity-api', file: 'tmp-hotfix.yml', expl: 'tmp-hotfix.yml exists on sitb’s NFS only; Git and base have no copy', lines: 'L1–18', act: 'file',
+        plain: 'Someone added this file straight on the server. It isn’t in Git, so a rebuild or sync would lose it.',
+        ev: [K([{ k: 'On sitb NFS', v: 'yes · 18 lines · changed 2 hours ago', cls: '' }, { k: 'In csp-tenant-data@sit7', v: 'no', cls: '' }, { k: 'In base v2.3.1 + 4', v: 'no', cls: '' }, { k: 'Author', v: 'unknown · change made outside Lanekeeper', cls: '' }]),
+          L('sitb · tmp-hotfix.yml · lines 1–5', [R(1, '# TEMP hotfix INC-2210', 'hit'), R(2, 'rateLimit:'), R(3, '  perClientPerMin: 1200'), R(4, '  burst: 80'), fold('13 more lines')])],
+        steps: ['Open the file and check it is still needed.', 'If yes, raise a PR to add it to csp-tenant-data@sit7. If not, delete it from sitb.'] },
+      { id: 'f4', c: 'C2', lane: 'sitc', sev: 'low', dir: 'resources', file: 'receipt-templates-sit9.yml', expl: 'receipt-templates-sit9.yml is identical to base and blocks future base changes', lines: 'L1–212', act: 'file',
+        plain: 'This copy matches base exactly today. If base changes it later, sitc will not get the change.',
+        ev: [K([{ k: 'Tenant file', v: 'resources/receipt-templates-sit9.yml', cls: 'mono' }, { k: 'SHA-256 of both', v: '5e07b2d4… (identical, 212 lines)', cls: 'mono' }, { k: 'Newer base commits', v: 'none yet', cls: '' }])],
+        steps: ['Delete the tenant copy so sitc follows base, or mark it intentional with a reason.'] },
+      { id: 'f5', c: 'C3', lane: 'sit', sev: 'low', dir: 'batch', file: 'legacy-batch-sit1.yml', expl: 'legacy-batch-sit1.yml overrides a base file that no longer exists', lines: 'L1–38', act: 'file',
+        plain: 'Base deleted legacy-batch.yml in v2.3.0. This tenant file is a leftover, and nothing in base refers to it.',
+        ev: [K([{ k: 'Tenant file', v: 'batch/legacy-batch-sit1.yml · 38 lines · last changed Mar 4', cls: 'mono' }, { k: 'Base file', v: 'none', cls: '' }, { k: 'Read by', v: 'no service config in 6 swimlanes names it', cls: '' }]),
+          C('Base commit that removed it', [{ h: '5d2b7ee', msg: 'Retire legacy batch config', w: 'v2.3.0 · Tomás Reyes' }])],
+        steps: ['Check with the batch team that nothing reads the file by name.', 'Delete it with a PR on csp-tenant-data@sit1.'] },
+      { id: 'i1', c: 'C2', lane: 'sit', sev: 'low', dir: 'tx-infinity-api', file: 'payment-limits-sit1.yml', expl: 'payment-limits-sit1.yml is identical to base and blocks future base changes', lines: 'L1–40', act: 'file', int: { by: 'Dana Okoye', when: '3 days ago', why: 'Pinned on purpose until the Q4 limit review.' },
+        plain: 'This copy matches base, and someone keeps it on purpose so base changes do not reach sit.',
+        ev: [K([{ k: 'SHA-256 of both', v: '77c0e1ab… (identical, 40 lines)', cls: 'mono' }])], steps: ['Review at the Q4 limit review, then delete the copy.'] },
+      { id: 'i2', c: 'C6', lane: 'presitb', sev: 'med', dir: 'tx-infinity-api', file: 'partner-endpoints-sit12.yml', expl: 'presitb references a dev host', lines: 'L12', act: 'file', int: { by: 'Priya Shah', when: '9 days ago', why: 'The partner’s sandbox runs on a dev host on purpose.' },
+        plain: 'This pre-production swimlane calls a host with “dev” in its name, and an Admin confirmed that is correct.',
+        ev: [L('presitb · partner-endpoints-sit12.yml · line 12', [R(11, 'partners:'), R(12, '  sandbox: https://sandbox-dev1.partner.example/api', 'hit')])], steps: ['No action needed. This reopens if the file changes.'] }
+    ];
+  }
+  renderVals() {
+    const bool = v => v === true || v === 'true';
+    const role = this.val('role', 'Admin'), canEdit = role !== 'Viewer', st = this.val('state', 'results'), tab = this.val('tab', 'open');
+    const o = this.state.o, marked = o.marked || {}, restored = o.restored || {};
+    const LANES = [['SIT', 'sit'], ['SIT', 'sitb'], ['SIT', 'sitc'], ['PRESIT', 'presita'], ['PRESIT', 'presitb'], ['PRESIT', 'presitc']];
+    const CK = { C1: 'Tenant copy is behind base', C2: 'Override identical to base', C3: 'Override has no base file', C4: 'File only on NFS', C5: 'File does not parse', C6: 'Points at another environment', C7: 'Sync overwrote an NFS change', C8: 'Duplicate keys' };
+    const SEV = { high: ['High', 'i-circle-x'], med: ['Medium', 'i-triangle-alert'], low: ['Low', 'i-info'] }, RANK = { high: 0, med: 1, low: 2 };
+    const DENY = { C5: 'A file that does not parse can’t be intentional. Fix it.', C7: 'A dropped change is not intentional. Restore it, or leave it and raise a PR.', C8: 'Duplicate keys always change what the service reads. Fix the file.' };
+    const all = this.data().filter(f => !restored[f.id]).map(f => ({ ...f, int: f.int || marked[f.id] || null }));
+    const isOpenTab = tab === 'open';
+    const inTab = st === 'empty' ? [] : all.filter(f => isOpenTab === !f.int);
+    const fl = this.arr('lanes'), fc = this.arr('checks'), fs = this.arr('sev');
+    const m = (f, skip) => (skip === 'l' || !fl.length || fl.includes(f.lane)) && (skip === 'c' || !fc.length || fc.includes(f.c)) && (skip === 's' || !fs.length || fs.includes(f.sev));
+    const li = n => LANES.findIndex(l => l[1] === n);
+    const sorted = inTab.filter(f => m(f)).sort((a, b) => RANK[a.sev] - RANK[b.sev] || li(a.lane) - li(b.lane));
+    const sel = this.val('sel', ''), selF = st === 'results' ? all.find(f => f.id === sel) : null;
+    const confirm = this.val('confirm', 'none'), pop = this.val('pop', 'none'), reason = this.val('reason', '');
+    const noop = e => e && e.preventDefault && e.preventDefault();
+    const rows = sorted.map(f => {
+      const isInt = !!f.int;
+      return { cls: f.id === sel ? 'sel' : '', sel: f.id === sel, bcls: isInt ? 'bd-int' : 'sv sv-' + f.sev, bicon: isInt ? 'i-shield-check' : SEV[f.sev][1], blabel: isInt ? 'Intentional' : SEV[f.sev][0],
+        c: f.c, cname: CK[f.c], lane: f.lane, file: f.file, dir: f.dir + '/', expl: f.expl, lines: f.lines,
+        open: () => this.many({ sel: f.id, confirm: 'none', pop: 'none' }),
+        key: e => { if (e.key === 'Enter') this.many({ sel: f.id, confirm: 'none', pop: 'none' }); },
+        link: e => { e.preventDefault(); e.stopPropagation(); } };
+    });
+    const mkOpt = (arrName, id, extra) => { const on = this.arr(arrName).includes(id); return { on, cls: on ? 'on' : '', chk: on ? 1 : 0, click: () => this.tog(arrName, id), ...extra }; };
+    const laneOpts = LANES.map(([tier, name]) => mkOpt('lanes', name, { tier, name, n: inTab.filter(f => f.lane === name && m(f, 'l')).length }));
+    const checkOpts = Object.keys(CK).map(c => mkOpt('checks', c, { c, name: CK[c], n: inTab.filter(f => f.c === c && m(f, 'c')).length }));
+    const sevOpts = ['high', 'med', 'low'].map(k => mkOpt('sev', k, { k, label: SEV[k][0], icon: SEV[k][1], n: inTab.filter(f => f.sev === k && m(f, 's')).length }));
+    const openCount = all.filter(f => !f.int).length, intCount = all.filter(f => f.int).length;
+    const shortList = a => a.slice(0, 2).join(', ') + (a.length > 2 ? ' +' + (a.length - 2) : '');
+    const hasFilters = !!(fl.length || fc.length || fs.length);
+    let d = {};
+    if (selF) {
+      const f = selF, isInt = !!f.int, allowed = ['C1', 'C2', 'C3', 'C4', 'C6'].includes(f.c);
+      const M = { add: '+', del: '−', hit: '!', ctx: '', fold: '' };
+      const ev = f.ev.map(b => ({ isCommits: b.t === 'commits', isLines: b.t === 'lines', isKv: b.t === 'kv', isTl: b.t === 'tl', title: b.title, items: b.items, rows: b.rows ? b.rows.map(r => ({ ...r, m: M[r.k] })) : [] }));
+      const reasons = []; let dis = false, why = '';
+      if (!canEdit) { dis = true; why = 'Requires Editor · Priya Shah can grant'; } else if (!allowed && !isInt) { dis = true; why = DENY[f.c]; }
+      const acts = [];
+      acts.push(isInt ? { label: 'Reopen finding', icon: 'rotate-cw', cls: '', dis: !canEdit, title: !canEdit ? why : 'Reopen', click: () => { const mk = { ...marked }; delete mk[f.id]; this.many({ marked: mk, toast: 'Reopened · ' + f.c + ' on ' + f.lane + ' is open again' }); } }
+        : { label: 'Mark intentional', icon: 'shield-check', cls: '', dis, title: dis ? why : 'Mark intentional', click: () => this.many({ confirm: 'intent', reason: '' }) });
+      const fileAct = { label: 'Open file', icon: 'file-code', cls: f.act === 'file' ? 'p' : '', dis: false, title: 'Open ' + f.file + ' at ' + f.lines, click: noop };
+      const diffAct = { label: 'Open diff', icon: 'columns-2', cls: f.act === 'diff' ? 'p' : '', dis: false, title: 'Open diff', click: noop };
+      const resAct = { label: 'Restore lost version', icon: 'history', cls: 'p', dis: !canEdit, title: !canEdit ? 'Requires Editor · Priya Shah can grant' : 'Restore lost version', click: () => this.many({ confirm: 'restore' }) };
+      if (f.act === 'restore') acts.push(diffAct, fileAct, resAct); else if (f.act === 'diff') acts.push(fileAct, diffAct); else acts.push(diffAct, fileAct);
+      acts.forEach((a, i) => { a.ml = i === 1 ? 'mla' : ''; });
+      d = { c: f.c, cname: CK[f.c], lane: f.lane, path: f.dir + '/' + f.file, lines: f.lines, bcls: 'sv sv-' + f.sev, bicon: SEV[f.sev][1], blabel: SEV[f.sev][0] + ' severity', isInt, intBy: f.int && f.int.by, intWhen: f.int && f.int.when, intWhy: f.int && f.int.why,
+        plain: f.plain, ev, steps: f.steps, acts, hasNote: !!why && !isInt || (!canEdit && isInt), note: why };
+    }
+    const ft = st === 'results';
+    const noneAtAll = st === 'empty';
+    const noMatch = ft && sorted.length === 0;
+    const shownText = st === 'loading' ? 'Loading…' : (noneAtAll ? '0 findings' : 'Showing ' + sorted.length + ' of ' + inTab.length);
+    const clr = k => e => { noop(e); this.set(k, []); };
+    const toast = o.toast || '';
+    return {
+      subtitle: noneAtAll ? 'Nothing to fix' : openCount + ' open across ' + new Set(all.filter(f => !f.int).map(f => f.lane)).size + ' swimlanes · ' + intCount + ' marked intentional',
+      loading: st === 'loading', skel: [0, 1, 2, 3, 4, 5, 6, 7].map(i => ({ a: [120, 150, 100][i % 3] + 'px', b: [140, 170, 120][i % 3] + 'px', c: [300, 240, 360, 280][i % 4] + 'px' })),
+      tabIsOpen: isOpenTab, tabIsInt: !isOpenTab, tabOpenCls: isOpenTab ? 'on' : '', tabIntCls: isOpenTab ? '' : 'on', openCount, intCount,
+      goOpen: () => this.many({ tab: 'open', sel: '' }), goInt: () => this.many({ tab: 'int', sel: '' }),
+      colA: isOpenTab ? 'Severity' : 'Status',
+      popLanes: pop === 'lanes', popChecks: pop === 'checks', popSev: pop === 'sev',
+      togLanes: () => this.set('pop', pop === 'lanes' ? 'none' : 'lanes'), togChecks: () => this.set('pop', pop === 'checks' ? 'none' : 'checks'), togSev: () => this.set('pop', pop === 'sev' ? 'none' : 'sev'),
+      fbLanes: pop === 'lanes' ? 'open' : (fl.length ? 'on' : ''), fbChecks: pop === 'checks' ? 'open' : (fc.length ? 'on' : ''), fbSev: pop === 'sev' ? 'open' : (fs.length ? 'on' : ''),
+      hasLanes: !!fl.length, lanesText: shortList(fl), hasChecks: !!fc.length, checksText: shortList(fc), hasSev: !!fs.length, sevText: shortList(fs.map(k => SEV[k][0])),
+      laneOpts, checkOpts, sevOpts, clrLanes: clr('lanes'), clrChecks: clr('checks'), clrSev: clr('sev'),
+      hasFilters, clrAll: () => this.many({ lanes: [], checks: [], sev: [], pop: 'none' }), shownText,
+      noneAtAll, noMatch, hasRows: ft && rows.length > 0, rows,
+      noMatchTitle: hasFilters ? 'No findings match these filters' : 'Nothing marked intentional yet',
+      noMatchBody: hasFilters ? 'Loosen a filter, or clear them all to see ' + inTab.length + ' findings.' : 'Open a finding and choose Mark intentional when a difference is on purpose. It will be listed here with its reason.',
+      drawerOn: !!selF, d, noop, closeDrawer: () => this.many({ sel: '', confirm: 'none' }),
+      confIntent: !!selF && confirm === 'intent', confRestore: !!selF && confirm === 'restore', showFooter: !!selF && confirm === 'none',
+      reason, onReason: e => this.set('reason', e.target.value), intDis: reason.trim().length < 3, intOff: reason.trim().length < 3 ? 'off' : '',
+      cancelConf: () => this.set('confirm', 'none'),
+      doIntent: () => { if (reason.trim().length < 3 || !selF) return; this.many({ marked: { ...marked, [selF.id]: { by: 'Priya Shah', when: 'just now', why: reason.trim() } }, confirm: 'none', toast: 'Marked intentional · ' + selF.c + ' on ' + selF.lane + ' moved to Intentional' }); },
+      doRestore: () => { if (!selF) return; this.many({ restored: { ...restored, [selF.id]: true }, sel: '', confirm: 'none', toast: 'Restored 1200 on sitb · NFS ahead, gateway needs a restart' }); },
+      toastOn: !!toast, toast
+    };
+  }
+}
+</script>
+</body>
+</html>

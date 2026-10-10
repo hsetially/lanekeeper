@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="consequence.css">
+<link rel="stylesheet" href="lk-pages.css">
+<link rel="stylesheet" href="lk-appr.css">
+<style>
+*{box-sizing:border-box}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+</style>
+</helmet>
+<div class="lk pg" data-screen-label="Approvals">
+<div class="pg-in">
+  <div class="pg-h">
+    <div><h1>Approvals</h1><span class="sub">{{ subtitle }}</span></div>
+    <span class="live" role="status" aria-live="polite"><i aria-hidden="true"></i>Live · {{ liveText }}</span>
+  </div>
+
+  <sc-if value="{{ noAccess }}" hint-placeholder-val="{{ false }}"><div class="pg-box"><div class="empty"><i class="ic s16 i-lock" style="color:var(--muted-foreground)"></i><strong>Approvals require Admin</strong><span class="m">You can see that proposals exist, not their contents. Priya Shah can grant Admin.</span></div></div></sc-if>
+
+  <sc-if value="{{ hasAccess }}" hint-placeholder-val="{{ true }}">
+  <div class="pg-box" aria-busy="{{ loading }}">
+    <div class="tbar">
+      <div class="seg" role="tablist" aria-label="Approval status">
+        <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="4"><button type="button" role="tab" class="{{ t.cls }}" aria-selected="{{ t.on }}" onClick="{{ t.click }}">{{ t.label }}<span class="n">{{ t.n }}</span></button></sc-for>
+      </div>
+      <span class="sp">{{ shownText }}</span>
+    </div>
+
+    <div class="ar hd" role="row"><span>Author</span><span>Action</span><span>Swimlane</span><span>File</span><span>Age</span><span>{{ lastCol }}</span></div>
+
+    <sc-if value="{{ loading }}" hint-placeholder-val="{{ false }}"><div role="status" aria-label="Loading approvals" style="flex:1;overflow:hidden">
+      <sc-for list="{{ skel }}" as="s" hint-placeholder-count="6"><div class="ar" style="cursor:default"><span class="skl" style="width:{{ s.a }}"></span><span class="skl" style="width:96px"></span><span class="skl" style="width:44px"></span><span class="skl" style="width:{{ s.b }}"></span><span class="skl" style="width:40px"></span><span class="skl" style="width:56px"></span></div></sc-for>
+    </div></sc-if>
+
+    <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}"><div class="empty"><i class="ic s16 i-circle-check" style="color:var(--success-fg)"></i><strong>{{ emptyTitle }}</strong><span class="m">{{ emptyBody }}</span></div></sc-if>
+
+    <sc-if value="{{ hasRows }}" hint-placeholder-val="{{ true }}"><div role="rowgroup" style="flex:1;min-height:0;overflow:hidden">
+      <sc-for list="{{ rows }}" as="r" hint-placeholder-count="6">
+        <div role="row" tabindex="0" class="ar {{ r.cls }}" aria-selected="{{ r.sel }}" onClick="{{ r.open }}" onKeyDown="{{ r.key }}">
+          <span class="au"><b>{{ r.author }}</b>
+            <sc-if value="{{ r.isAI }}" hint-placeholder-val="{{ false }}"><span class="bd bd-cursor"><i class="ic s12 i-zap"></i>via Cursor</span></sc-if>
+            <sc-if value="{{ r.isMe }}" hint-placeholder-val="{{ false }}"><span class="you">You</span></sc-if>
+            <sc-if value="{{ r.isNew }}" hint-placeholder-val="{{ false }}"><span class="bd bd-pr">New</span></sc-if>
+          </span>
+          <span><span class="bd {{ r.acls }}"><i class="ic s12 {{ r.aicon }}"></i>{{ r.alabel }}</span></span>
+          <span class="mono">{{ r.lane }}</span>
+          <span class="fl"><b>{{ r.file }}</b>
+            <sc-if value="{{ r.isStale }}" hint-placeholder-val="{{ false }}"><span class="bd bd-stale"><i class="ic s12 i-triangle-alert"></i>File changed since proposed</span></sc-if>
+            <sc-if value="{{ r.notStale }}" hint-placeholder-val="{{ true }}"><span class="d">{{ r.dir }}</span></sc-if>
+          </span>
+          <span class="tm">{{ r.age }}</span>
+          <span class="tm {{ r.lastCls }}">{{ r.last }}</span>
+        </div>
+      </sc-for>
+    </div></sc-if>
+
+    <div class="foot"><span style="font-variant-numeric:tabular-nums">{{ shownText }}</span><span>Proposals expire 24 hours after they are made</span><span>You can’t approve your own proposal</span><span class="r">Click a row to review it</span></div>
+
+    <sc-if value="{{ drawerOn }}" hint-placeholder-val="{{ false }}">
+    <aside class="dr" role="dialog" aria-label="Proposal detail" style="width:600px">
+      <div class="dr-h">
+        <div class="t">
+          <div class="bs"><span class="bd {{ d.acls }}"><i class="ic s12 {{ d.aicon }}"></i>{{ d.alabel }}</span><span class="bd {{ d.scls }}"><i class="ic s12 {{ d.sicon }}"></i>{{ d.slabel }}</span><span class="ch">{{ d.id }}</span></div>
+          <h2>{{ d.title }}</h2>
+          <div class="sb"><span style="color:var(--foreground)">{{ d.lane }}</span><span>{{ d.path }}</span></div>
+        </div>
+        <button type="button" class="b ib" aria-label="Close" onClick="{{ closeDrawer }}"><i class="ic i-x"></i></button>
+      </div>
+      <div class="dr-b">
+        <div class="dr-meta"><span>Proposed by <b>{{ d.author }}</b><sc-if value="{{ d.isAI }}" hint-placeholder-val="{{ false }}"> via Cursor</sc-if></span><span>{{ d.ageText }}</span><span>{{ d.expText }}</span></div>
+        <sc-if value="{{ d.hasBan }}" hint-placeholder-val="{{ false }}"><div class="fx {{ d.banCls }}" role="status"><i class="{{ d.banIcon }}"></i><span>{{ d.banHead }}<span class="x">{{ d.banBody }}</span></span></div></sc-if>
+        <div class="dr-sec"><span class="sec">If you approve</span>
+          <p class="dr-say">{{ d.cHead }}</p>
+          <ul class="cq"><sc-for list="{{ d.chips }}" as="c" hint-placeholder-count="2"><li><span class="bd {{ c.cls }}"><i class="ic s12 {{ c.icon }}"></i>{{ c.label }}</span><span>{{ c.text }}</span></li></sc-for></ul>
+        </div>
+        <sc-for list="{{ d.blocks }}" as="b" hint-placeholder-count="2">
+          <div class="dr-sec"><span class="sec">{{ b.sec }}</span>
+            <sc-if value="{{ b.isDiff }}" hint-placeholder-val="{{ false }}"><div class="codebox"><div class="cap">{{ b.title }}</div><sc-for list="{{ b.rows }}" as="r" hint-placeholder-count="4"><div class="dl dl-{{ r.k }}"><span class="n">{{ r.no }}</span><span class="m">{{ r.m }}</span><span>{{ r.tx }}</span></div></sc-for></div></sc-if>
+            <sc-if value="{{ b.isKv }}" hint-placeholder-val="{{ false }}"><div class="codebox"><sc-for list="{{ b.items }}" as="i" hint-placeholder-count="3"><div class="kvr"><span class="k">{{ i.k }}</span><span class="v {{ i.cls }}">{{ i.v }}</span></div></sc-for></div></sc-if>
+          </div>
+        </sc-for>
+      </div>
+
+      <sc-if value="{{ f.act }}" hint-placeholder-val="{{ false }}"><div class="dr-f" role="group" aria-label="Decision">
+        <div class="rs"><label for="rj-reason">Reason (required to reject)</label><input id="rj-reason" class="in" type="text" value="{{ reason }}" onChange="{{ onReason }}" placeholder="Tell {{ d.author }} what to change"></div>
+        <div class="row sp"><button type="button" class="b dl {{ rejOff }}" disabled="{{ rejDis }}" title="{{ rejTitle }}" onClick="{{ doReject }}"><i class="ic i-circle-x"></i>Reject</button><button type="button" class="b p" onClick="{{ doApprove }}"><i class="ic i-check"></i>Approve</button></div>
+      </div></sc-if>
+
+      <sc-if value="{{ f.self }}" hint-placeholder-val="{{ false }}"><div class="dr-f" role="group" aria-label="Decision">
+        <div class="note"><i class="ic s12 i-lock" style="margin-top:2px"></i><span>You can’t approve your own proposal. Amir Haddad and Lena Brandt are the other Admins.</span></div>
+        <div class="row sp"><button type="button" class="b g" onClick="{{ doWithdraw }}"><i class="ic i-x"></i>Withdraw proposal</button><button type="button" class="b p off" disabled="{{ true }}" title="You can’t approve your own proposal"><i class="ic i-check"></i>Approve</button></div>
+      </div></sc-if>
+
+      <sc-if value="{{ f.stale }}" hint-placeholder-val="{{ false }}"><div class="dr-f" role="group" aria-label="Decision">
+        <div class="rs"><label for="rj-reason2">Reason (required to reject)</label><input id="rj-reason2" class="in" type="text" value="{{ reason }}" onChange="{{ onReason }}" placeholder="Why is this proposal no longer valid?"></div>
+        <div class="row sp"><button type="button" class="b dl {{ rejOff }}" disabled="{{ rejDis }}" title="{{ rejTitle }}" onClick="{{ doReject }}"><i class="ic i-circle-x"></i>Reject</button>
+          <div class="r"><button type="button" class="b off" disabled="{{ true }}" title="The file changed since this was proposed"><i class="ic i-check"></i>Approve</button><button type="button" class="b p {{ askOff }}" disabled="{{ askDone }}" onClick="{{ doAsk }}"><i class="ic i-corner-down-left"></i>{{ askLabel }}</button></div></div>
+      </div></sc-if>
+
+      <sc-if value="{{ f.none }}" hint-placeholder-val="{{ false }}"><div class="dr-f"><div class="row"><span class="mut" style="font-size:12px">{{ f.note }}</span><a class="b g mla" href="#" onClick="{{ noop }}"><i class="ic i-history"></i>View in audit log</a></div></div></sc-if>
+    </aside>
+    </sc-if>
+
+    <sc-if value="{{ toastOn }}" hint-placeholder-val="{{ false }}"><div class="toast" role="status"><i class="ic i-circle-check" style="color:var(--success-fg)"></i><span>{{ toast }}</span></div></sc-if>
+  </div>
+  </sc-if>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1216,&quot;height&quot;:856},&quot;role&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Admin&quot;,&quot;Editor&quot;,&quot;Viewer&quot;],&quot;default&quot;:&quot;Admin&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Approvals&quot;},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;results&quot;,&quot;empty&quot;,&quot;loading&quot;],&quot;default&quot;:&quot;results&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Approvals&quot;},&quot;tab&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;pending&quot;,&quot;stale&quot;,&quot;expired&quot;,&quot;decided&quot;],&quot;default&quot;:&quot;pending&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Approvals&quot;},&quot;sel&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Approvals&quot;},&quot;live&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;idle&quot;,&quot;arrived&quot;,&quot;decided&quot;],&quot;default&quot;:&quot;idle&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Approvals&quot;},&quot;simulate&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Approvals&quot;},&quot;reason&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Approvals&quot;}}">
+class Component extends DCLogic {
+  state = { o: {}, tick: 0 };
+  componentDidMount() {
+    const s = this.props.simulate; if (s === true || s === 'true') this._t = setTimeout(() => this.set('arrived', true), 5000);
+    this._i = setInterval(() => this.setState(s => ({ tick: s.tick + 1 })), 1000);
+  }
+  componentWillUnmount() { clearTimeout(this._t); clearInterval(this._i); }
+  val(k, d) { const o = this.state.o; return k in o ? o[k] : (this.props[k] ?? d); }
+  set(k, v) { this.setState(s => ({ o: { ...s.o, [k]: v } })); }
+  many(x) { this.setState(s => ({ o: { ...s.o, ...x } })); }
+  data() {
+    const R = (no, tx, k = 'ctx') => ({ no, tx, k });
+    const H = tx => R('', tx, 'hunk'), fold = tx => R('', tx, 'fold');
+    const D = (sec, title, rows) => ({ t: 'diff', sec, title, rows });
+    const K = (sec, items) => ({ t: 'kv', sec, items });
+    const nfs = ['bd-nfs', 'i-arrow-up-from-line', 'NFS ahead'], rs = n => ['bd-restart', 'i-clock', n + (n === 1 ? ' restart' : ' restarts')];
+    const C = (b, text) => ({ cls: b[0], icon: b[1], label: b[2], text });
+    return [
+      { id: 'AP-2048', arrival: true, author: 'Dana Okoye', ai: true, act: 'ai', lane: 'presita', dir: 'kafka', file: 'kafka-topics-sit11.yml', age: 'just now', exp: '24 h', state: 'pending', ageText: 'Proposed just now', expText: 'Expires in 24 h',
+        cHead: 'Writes an AI-made change to presita and restarts 1 service.', chips: [C(nfs, 'File stays ahead of Git until a PR merges'), C(rs(1), 'payments-worker needs a restart to read it')],
+        blocks: [D('Proposed change', 'presita · kafka/kafka-topics-sit11.yml · 5b20e1aa → 3c9f7d02', [H('@@ -40,5 +40,5 @@ topics'), R(40, '  payments.retry:'), R(41, '    partitions: 3', 'del'), R(41, '    partitions: 6', 'add'), R(42, '    replication: 3'), R(43, '    retentionHours: 72')]),
+          K('Made by Cursor', [{ k: 'Agent session', v: 'cur_c41e9d · started 1 min ago', cls: 'mono' }, { k: 'Prompt', v: 'Double the partitions on payments.retry for the presita load test', cls: '' }, { k: 'Requested by', v: 'Dana Okoye, who can’t approve it', cls: '' }])] },
+      { id: 'AP-2047', author: 'Wen Zhao', ai: true, act: 'ai', lane: 'sitc', dir: 'tx-infinity-api', file: 'tx-infinity-payments-sit9.yml', age: '4 min', exp: '23 h', state: 'pending', ageText: 'Proposed 4 min ago', expText: 'Expires in 23 h 56 min',
+        cHead: 'Writes an AI-made change to sitc and restarts 1 service.', chips: [C(nfs, 'File stays ahead of Git until a PR merges'), C(rs(1), 'payments-worker needs a restart to read it'), { cls: 'bd-cursor', icon: 'i-zap', label: 'Via Cursor', text: 'Recorded as Wen Zhao via Cursor in the audit log' }],
+        blocks: [D('Proposed change', 'sitc · tx-infinity-payments-sit9.yml · 55–58 · d84c07f3 → 19ab6e40', [H('@@ -55,4 +55,4 @@ callbacks'), R(55, 'callbacks:'), R(56, '  timeoutMs: 8000', 'del'), R(56, '  timeoutMs: 12000', 'add'), R(57, '  url: https://payments-sit9.corp.internal/hooks'), R(58, '  retries: 3')]),
+          K('Made by Cursor', [{ k: 'Agent session', v: 'cur_7f3a91 · 14:40', cls: 'mono' }, { k: 'Prompt', v: 'Raise the payment callback timeout to 12 s for the sit9 soak test', cls: '' }, { k: 'Checks', v: 'Parses as YAML · adds no findings', cls: '' }, { k: 'Requested by', v: 'Wen Zhao, who can’t approve it', cls: '' }])] },
+      { id: 'AP-2046', author: 'Ana Ruiz', act: 'edit', lane: 'sitb', dir: 'tx-infinity-api', file: 'tx-infinity-core-sit7.yml', age: '12 min', exp: '23 h', state: 'pending', ageText: 'Proposed 12 min ago', expText: 'Expires in 23 h 48 min',
+        cHead: 'Writes this change to sitb and restarts 2 services.', chips: [C(nfs, 'File stays ahead of Git until a PR merges'), C(rs(2), 'tx-infinity-core and gateway need a restart'), { cls: 'bd-stale', icon: 'i-triangle-alert', label: 'Sync risk', text: 'The next sync from Git overwrites it unless a PR merges' }],
+        blocks: [D('Proposed change', 'sitb · tx-infinity-core-sit7.yml · a91f3c0e → 7c3e55d1 · +1 −2', [H('@@ -42,6 +42,6 @@ tx-infinity-core'), R(42, '  retention: 14d'), R(43, '  timeoutMs: 8000'), R(44, '  maxRetries: 3', 'del'), R(44, '  maxRetries: 5', 'add'), R(45, '  backoffMs: 250'), fold('15 unchanged lines'), R(61, '  legacyAdapter: true', 'del'), R(62, '  maskPatterns:')])] },
+      { id: 'AP-2045', author: 'Dana Okoye', act: 'delete', lane: 'sit', dir: 'batch', file: 'legacy-batch-sit1.yml', age: '38 min', exp: '23 h', state: 'pending', ageText: 'Proposed 38 min ago', expText: 'Expires in 23 h 22 min',
+        cHead: 'Deletes the file from sit’s NFS. Base has no copy, so sit loses it.', chips: [C(nfs, 'Git still has the file until a PR merges'), ['bd-sync', 'i-check', 'No restart'].length && { cls: 'bd-sync', icon: 'i-check', label: 'No restart', text: 'No service config in 6 swimlanes names this file' }, { cls: 'bd-git', icon: 'i-history', label: 'Recoverable', text: 'The last version stays in file history' }],
+        blocks: [D('File to delete', 'sit · batch/legacy-batch-sit1.yml · 38 lines · 77d2e0b4 → deleted', [R(1, '# legacy batch adapter, retired in v2.3.0', 'del'), R(2, 'batch:', 'del'), R(3, '  adapter: legacy', 'del'), R(4, '  cron: "0 3 * * *"', 'del'), fold('34 more lines')]),
+          K('Why', [{ k: 'Reason given', v: 'Leftover from finding C3: base deleted legacy-batch.yml in v2.3.0', cls: '' }, { k: 'Base file', v: 'none', cls: '' }])] },
+      { id: 'AP-2044', author: 'Priya Shah', me: true, act: 'pr', lane: 'sitb', dir: 'tx-infinity-api', file: 'tx-infinity-gateway-sit7.yml', age: '1 h 20 min', exp: '22 h', state: 'pending', ageText: 'Proposed 1 h 20 min ago', expText: 'Expires in 22 h 40 min',
+        cHead: 'Opens a pull request on csp-tenant-data. Nothing changes on sitb until it merges.', chips: [{ cls: 'bd-pr', icon: 'i-git-pull-request', label: 'Pull request', text: 'lanekeeper/rate-limit-1200 → sit7' }, { cls: 'bd-restart', icon: 'i-clock', label: '1 restart', text: 'After merge, the sync restarts gateway' }],
+        blocks: [K('Pull request', [{ k: 'Repo', v: 'csp-tenant-data', cls: 'mono' }, { k: 'Branch', v: 'lanekeeper/rate-limit-1200 → sit7', cls: 'mono' }, { k: 'Title', v: 'Raise sitb rate limit to 1200', cls: '' }, { k: 'Writes', v: 'data/config/tx-infinity-api/tx-infinity-gateway.yml', cls: 'mono' }]),
+          D('Change', 'gateway.yml · 9a10b6c2 → 4c2d8e9f · +1 −1', [H('@@ -21,3 +21,3 @@ rateLimit'), R(21, 'rateLimit:'), R(22, '  rateLimitPerMin: 600', 'del'), R(22, '  rateLimitPerMin: 1200', 'add'), R(23, '  burst: 40')])] },
+      { id: 'AP-2043', author: 'Ana Ruiz', act: 'restart', lane: 'sitb', dir: 'services', file: 'gateway, tx-infinity-core', age: '3 h', exp: '21 h', state: 'pending', ageText: 'Proposed 3 h ago', expText: 'Expires in 21 h',
+        cHead: 'Restarts 2 services on sitb, one at a time.', chips: [{ cls: 'bd-restart', icon: 'i-clock', label: 'Clears 2', text: 'Both are waiting on a restart to read changed files' }, { cls: 'bd-stale', icon: 'i-triangle-alert', label: 'In flight', text: 'Requests in flight can fail while each service restarts' }],
+        blocks: [K('Action', [{ k: 'Services', v: 'gateway, then tx-infinity-core', cls: 'mono' }, { k: 'Swimlane', v: 'sitb', cls: 'mono' }, { k: 'Reason given', v: 'Pick up the changes from AP-2039', cls: '' }, { k: 'Order', v: 'One at a time, gateway first', cls: '' }])] },
+      { id: 'AP-2040', author: 'Tomás Reyes', act: 'upload', lane: 'presita', dir: 'resources', file: 'receipt-templates-sit11.yml', age: '19 h', exp: '5 h', urgent: true, state: 'pending', ageText: 'Proposed 19 h ago', expText: 'Expires in 5 h',
+        cHead: 'Replaces receipt-templates-sit11.yml on presita with the uploaded file.', chips: [C(nfs, 'File stays ahead of Git until a PR merges'), { cls: 'bd-stale', icon: 'i-triangle-alert', label: 'Agent degraded', text: 'presita’s agent is slow, so the write may take longer' }],
+        blocks: [K('Upload', [{ k: 'File', v: 'receipt-templates-sit11.yml · 6.1 KB · 212 lines', cls: 'mono' }, { k: 'SHA-256 of upload', v: 'c07a91e2…', cls: 'mono' }, { k: 'Replaces', v: 'a5d03c8e… on presita', cls: 'mono' }, { k: 'Lines changed', v: '+18 −4', cls: '' }]),
+          D('Change', 'presita · receipt-templates-sit11.yml · first change', [H('@@ -88,4 +88,6 @@ receipts'), R(88, '  footer:'), R(89, '    text: Thank you', 'del'), R(89, '    text: Thank you for banking with us', 'add'), R(90, '    showQr: true', 'add')])] },
+      { id: 'AP-2041', author: 'Lena Brandt', act: 'edit', lane: 'sitc', dir: 'tx-infinity-api', file: 'entryGroupConfig-sit9.yml', age: '20 h', exp: '4 h', urgent: true, state: 'stale', ageText: 'Proposed 20 h ago against b71c04d9', expText: 'Expires in 4 h',
+        ban: { cls: 'fx-warn', icon: 'i-triangle-alert', head: 'The file changed since this was proposed', body: 'Dana Okoye changed entryGroupConfig-sit9.yml in Lanekeeper 40 min ago (b71c04d9 → e2a8f610). Approving would overwrite her change.' },
+        cHead: 'Not approvable. It would overwrite Dana Okoye’s change on sitc.', chips: [{ cls: 'bd-stale', icon: 'i-triangle-alert', label: 'Stale', text: 'Proposed against b71c04d9, file is now e2a8f610' }],
+        blocks: [D('Changed since the proposal', 'sitc · entryGroupConfig-sit9.yml · b71c04d9 → e2a8f610 · Dana Okoye, 40 min ago', [H('@@ -209,5 +209,5 @@ entryGroupConfigMap'), R(209, 'entryGroupConfigMap:'), R(210, '  teller:'), R(211, '    limitCents: 250000', 'del'), R(211, '    limitCents: 300000', 'add'), R(212, '  atm:')]),
+          D('What Lena Brandt proposed', 'b71c04d9 → 0d6e92b1 · +1 −0', [H('@@ -212,3 +212,4 @@ atm'), R(212, '  atm:'), R(213, '    DEPOSIT:'), R(214, '      limitCents: 500000'), R(215, '    WITHDRAWAL:', 'add')])] },
+      { id: 'AP-2042', author: 'Amir Haddad', act: 'edit', lane: 'sit', dir: 'tx-infinity-api', file: 'payment-limits-sit1.yml', age: '3 h', exp: '21 h', state: 'stale', ageText: 'Proposed 3 h ago against 77c0e1ab', expText: 'Expires in 21 h',
+        ban: { cls: 'fx-warn', icon: 'i-triangle-alert', head: 'The file changed since this was proposed', body: 'It was changed outside Lanekeeper at 11:05 (77c0e1ab → 1d93aa07). Audit attributes it to Dana Okoye, 92%, edited on the NFS VM (event 18,453).' },
+        cHead: 'Not approvable. The file on sit is no longer the one Amir Haddad edited.', chips: [{ cls: 'bd-oob', icon: 'i-eye', label: 'Out of band', text: 'Detected on the NFS VM, not saved through Lanekeeper' }],
+        blocks: [D('Changed since the proposal', 'sit · payment-limits-sit1.yml · 77c0e1ab → 1d93aa07 · detected 11:05', [H('@@ -12,3 +12,3 @@ limits'), R(12, 'limits:'), R(13, '  perTxCents: 1000000', 'del'), R(13, '  perTxCents: 1500000', 'add'), R(14, '  daily: 5')])] },
+      { id: 'AP-2037', author: 'Tomás Reyes', act: 'upload', lane: 'presitc', dir: 'resources', file: 'receipt-templates-sit13.yml', age: '1 d', exp: '6 h ago', state: 'expired', ageText: 'Proposed 1 d ago', expText: 'Expired 6 h ago',
+        ban: { cls: 'fx-info', icon: 'i-hourglass', head: 'Expired 6 h ago with no decision', body: 'Nothing was written to presitc. Tomás Reyes can propose it again.' },
+        cHead: 'Would have replaced receipt-templates-sit13.yml on presitc.', chips: [{ cls: 'bd-exp', icon: 'i-hourglass', label: 'Expired', text: 'Proposals lapse after 24 hours' }],
+        blocks: [K('Upload', [{ k: 'File', v: 'receipt-templates-sit13.yml · 6.0 KB', cls: 'mono' }, { k: 'SHA-256 of upload', v: '9be41f07…', cls: 'mono' }])] },
+      { id: 'AP-2033', author: 'Ana Ruiz', act: 'delete', lane: 'sitb', dir: 'tx-infinity-api', file: 'tmp-hotfix.yml', age: '2 d', exp: '1 d ago', state: 'expired', ageText: 'Proposed 2 d ago', expText: 'Expired 1 d ago',
+        ban: { cls: 'fx-info', icon: 'i-hourglass', head: 'Expired 1 d ago with no decision', body: 'The file is still on sitb. Finding C4 stays open.' },
+        cHead: 'Would have deleted tmp-hotfix.yml from sitb.', chips: [{ cls: 'bd-exp', icon: 'i-hourglass', label: 'Expired', text: 'Proposals lapse after 24 hours' }],
+        blocks: [K('Action', [{ k: 'File', v: 'tx-infinity-api/tmp-hotfix.yml · 18 lines', cls: 'mono' }, { k: 'Reason given', v: 'INC-2210 is closed', cls: '' }])] },
+      { id: 'AP-2039', author: 'Ana Ruiz', act: 'edit', lane: 'sitb', dir: 'tx-infinity-api', file: 'account-sorting-config-sit7.yml', age: '14:41', state: 'decided', dec: { by: 'Priya Shah', what: 'approved', when: '14:41', why: '' }, ageText: 'Proposed 14:02', expText: 'Applied 14:41 · audit event 18,462',
+        cHead: 'Written to sitb on approval.', chips: [{ cls: 'bd-nfs', icon: 'i-arrow-up-from-line', label: 'NFS ahead', text: 'Until a PR merges' }],
+        blocks: [D('Change', 'sitb · account-sorting-config-sit7.yml · 3a77c1e0 → 8b02d5f9', [H('@@ -3,3 +3,3 @@ accountSorting'), R(3, 'accountSorting:'), R(4, '  enabled: false', 'del'), R(4, '  enabled: true', 'add'), R(5, '  sortOrder: asc')])] },
+      { id: 'AP-2038', author: 'Wen Zhao', ai: true, act: 'ai', lane: 'sitc', dir: 'tx-infinity-api', file: 'gateway-routes-sit9.yml', age: '14:09', state: 'decided', dec: { by: 'Amir Haddad', what: 'approved', when: '14:09', why: '' }, ageText: 'Proposed 14:01', expText: 'Applied 14:12 · audit event 18,460',
+        cHead: 'Written to sitc on approval.', chips: [{ cls: 'bd-cursor', icon: 'i-zap', label: 'Via Cursor', text: 'Fixed the tab on line 41' }],
+        blocks: [D('Change', 'sitc · gateway-routes-sit9.yml · 5b20e1aa → d84c07f3', [H('@@ -41,1 +41,1 @@ routes'), R(41, '→ path: /accounts/**', 'del'), R(41, '    path: /accounts/**', 'add')])] },
+      { id: 'AP-2032', author: 'Lena Brandt', act: 'edit', lane: 'sitb', dir: 'kafka', file: 'kafka-topics-sit7.yml', age: 'Oct 8', state: 'decided', dec: { by: 'Priya Shah', what: 'rejected', when: 'Oct 8 17:20', why: 'Wrong swimlane. The topic belongs on sitc.' }, ageText: 'Proposed Oct 8 16:48', expText: 'Rejected Oct 8 17:20',
+        cHead: 'Nothing was written.', chips: [{ cls: 'bd-rej', icon: 'i-circle-x', label: 'Rejected', text: 'No change reached sitb' }],
+        blocks: [D('Change', 'sitb · kafka-topics-sit7.yml · 1c80ab44 → 66e2d0f1', [H('@@ -40,2 +40,5 @@ topics'), R(40, '  payments.dead:'), R(41, '  payments.retry:', 'add'), R(42, '    partitions: 3', 'add'), R(43, '    replication: 3', 'add')])] }
+    ];
+  }
+  renderVals() {
+    const role = this.val('role', 'Admin'), isAdmin = role === 'Admin', st = this.val('state', 'results'), tab = this.val('tab', 'pending');
+    const o = this.state.o, decided = o.decided || {}, asked = o.asked || {}, gone = o.gone || {}, live = this.val('live', 'idle');
+    const ME = 'Priya Shah', noop = e => e && e.preventDefault && e.preventDefault();
+    const arrived = live === 'arrived' || !!o.arrived;
+    let all = this.data().filter(p => !gone[p.id] && (arrived || !p.arrival));
+    all = all.map(p => decided[p.id] ? { ...p, state: 'decided', dec: decided[p.id], age: 'just now', expText: decided[p.id].what === 'approved' ? 'Applied just now' : 'Rejected just now' } : p);
+    if (live === 'decided') all = all.map(p => p.id === 'AP-2046' ? { ...p, state: 'decided', dec: { by: 'Amir Haddad', what: 'approved', when: '8 s ago', why: '' }, age: '8 s ago', elsewhere: true } : p);
+    const cnt = k => all.filter(p => p.state === k).length;
+    const TABS = [['pending', 'Pending'], ['stale', 'Stale'], ['expired', 'Expired'], ['decided', 'Decided']];
+    const tabs = TABS.map(([k, l]) => ({ label: l, n: cnt(k), on: tab === k, cls: tab === k ? 'on' : '', click: () => this.many({ tab: k, sel: '', reason: '' }) }));
+    const A = { edit: ['bd-ui', 'i-pencil', 'Edit'], ai: ['bd-cursor', 'i-zap', 'AI-made edit'], upload: ['bd-ui', 'i-upload', 'Upload'], delete: ['bd-conflict', 'i-trash-2', 'Delete'], restart: ['bd-restart', 'i-rotate-cw', 'Restart'], pr: ['bd-pr', 'i-git-pull-request', 'Pull request'] };
+    const loading = st === 'loading', empty = st === 'empty';
+    const inTab = empty ? [] : all.filter(p => p.state === tab);
+    const sel = this.val('sel', ''), selP = (st === 'results' && isAdmin) ? all.find(p => p.id === sel) : null;
+    const open = id => () => this.many({ sel: id, reason: '' });
+    const lastCol = tab === 'pending' || tab === 'stale' ? 'Expires in' : (tab === 'expired' ? 'Expired' : 'Decision');
+    const rows = inTab.map(p => {
+      const isMe = p.author === ME, decl = tab === 'decided' ? (p.dec.what === 'approved' ? 'Approved · ' : 'Rejected · ') + p.dec.by.split(' ')[0] : '';
+      return { cls: (p.id === sel ? 'sel' : '') + (p.arrival ? ' new' : ''), sel: p.id === sel, author: p.author, isAI: !!p.ai, isMe, isNew: !!p.arrival,
+        acls: A[p.act][0], aicon: A[p.act][1], alabel: A[p.act][2], lane: p.lane, file: p.file, dir: p.dir + '/', isStale: p.state === 'stale', notStale: p.state !== 'stale',
+        age: p.age, last: tab === 'decided' ? decl : p.exp, lastCls: p.urgent && tab !== 'decided' ? 'urgent' : '', open: open(p.id), key: e => { if (e.key === 'Enter') open(p.id)(); } };
+    });
+    const reason = this.val('reason', '');
+    let d = {}, f = {};
+    if (selP) {
+      const p = selP, M = { add: '+', del: '−', hit: '!', ctx: '', fold: '', hunk: '' };
+      const isSelf = p.author === ME && p.state === 'pending';
+      const dec = p.dec;
+      let ban = p.ban;
+      if (p.state === 'decided') ban = p.elsewhere ? { cls: 'fx-ok', icon: 'i-circle-check', head: dec.by + ' approved this ' + dec.when, body: 'Someone else decided while you had it open. The change is being written to ' + p.lane + '. Nothing more to do.' } :
+        dec.what === 'approved' ? { cls: 'fx-ok', icon: 'i-circle-check', head: 'Approved by ' + dec.by + ', ' + dec.when, body: p.expText } : { cls: 'fx-danger', icon: 'i-circle-x', head: 'Rejected by ' + dec.by + ', ' + dec.when, body: dec.why ? '“' + dec.why + '”' : 'Nothing was written.' };
+      if (isSelf) ban = { cls: 'fx-lock', icon: 'i-lock', head: 'You can’t approve your own proposal', body: 'Another Admin has to approve it, so no one can change a swimlane alone. You can withdraw it.' };
+      const SI = { pending: ['bd-appr', 'i-hourglass', 'Pending approval'], stale: ['bd-stale', 'i-triangle-alert', 'Stale'], expired: ['bd-exp', 'i-hourglass', 'Expired'], decided: dec ? (dec.what === 'approved' ? ['bd-ok', 'i-circle-check', 'Approved'] : ['bd-rej', 'i-circle-x', 'Rejected']) : [] };
+      const si = SI[p.state];
+      const TT = { edit: 'Edit ', ai: 'AI-made edit to ', upload: 'Upload ', delete: 'Delete ', restart: 'Restart ', pr: 'Pull request for ' };
+      d = { id: p.id, acls: A[p.act][0], aicon: A[p.act][1], alabel: A[p.act][2], scls: si[0], sicon: si[1], slabel: si[2], title: TT[p.act] + p.file, lane: p.lane, path: p.act === 'restart' ? 'services' : p.dir + '/' + p.file,
+        author: p.author, isAI: !!p.ai, ageText: p.ageText, expText: p.expText, hasBan: !!ban, banCls: ban && ban.cls, banIcon: ban && 'ic ' + ban.icon, banHead: ban && ban.head, banBody: ban && ban.body,
+        cHead: p.cHead, chips: p.chips.map(c => ({ ...c, icon: c.icon })),
+        blocks: p.blocks.map(b => ({ sec: b.sec, isDiff: b.t === 'diff', isKv: b.t === 'kv', title: b.title, items: b.items, rows: b.rows ? b.rows.map(r => ({ ...r, m: M[r.k] })) : [] })) };
+      d.chips = d.chips.map(c => ({ cls: c.cls, icon: c.icon, label: c.label, text: c.text }));
+      const canAct = p.state === 'pending' && !isSelf;
+      f = { act: canAct, self: isSelf, stale: p.state === 'stale', none: p.state === 'expired' || p.state === 'decided',
+        note: p.state === 'expired' ? 'Expired proposals can’t be decided.' : (p.elsewhere ? 'Decided by ' + dec.by + '.' : 'Decision recorded in the audit log.') };
+    }
+    const rejDis = reason.trim().length < 3, askDone = selP && !!asked[selP.id];
+    const nPend = cnt('pending'), nStale = cnt('stale');
+    const decideTo = (what) => () => { if (!selP) return; if (what === 'rejected' && rejDis) return;
+      this.many({ decided: { ...decided, [selP.id]: { by: ME, what, when: 'just now', why: what === 'rejected' ? reason.trim() : '' } }, sel: '', reason: '', toast: (what === 'approved' ? 'Approved · ' + selP.id + ' is being written to ' + selP.lane : 'Rejected · ' + selP.author + ' was told why') }); };
+    const toast = o.toast || '';
+    return {
+      hasAccess: isAdmin, noAccess: !isAdmin,
+      subtitle: empty ? 'Nothing waiting' : nPend + ' waiting for an Admin · ' + nStale + ' stale · you are signed in as Priya Shah',
+      liveText: arrived ? 'new proposal 3 s ago' : 'updated 2 s ago',
+      tabs, loading, isEmpty: empty || (st === 'results' && rows.length === 0 && !loading),
+      emptyTitle: empty ? 'No proposals' : 'Nothing in ' + TABS.find(t => t[0] === tab)[1],
+      emptyBody: empty ? 'When someone proposes an edit, upload, delete, restart or pull request, it appears here as it happens.' : 'This list updates as proposals change.',
+      skel: [0, 1, 2, 3, 4, 5].map(i => ({ a: [96, 120, 80][i % 3] + 'px', b: [200, 240, 170][i % 3] + 'px' })),
+      hasRows: !loading && rows.length > 0, rows, lastCol, shownText: loading ? 'Loading…' : inTab.length + (inTab.length === 1 ? ' proposal' : ' proposals'),
+      drawerOn: !!selP, d, f, closeDrawer: () => this.many({ sel: '', reason: '' }), noop,
+      reason, onReason: e => this.set('reason', e.target.value), rejDis, rejOff: rejDis ? 'off' : '', rejTitle: rejDis ? 'Write a reason to reject' : 'Reject',
+      doApprove: decideTo('approved'), doReject: decideTo('rejected'),
+      doWithdraw: () => { if (selP) this.many({ gone: { ...gone, [selP.id]: true }, sel: '', toast: 'Withdrawn · ' + selP.id + ' is gone from the queue' }); },
+      askDone, askOff: askDone ? 'off' : '', askLabel: askDone ? 'Asked ' + (selP ? selP.author.split(' ')[0] : '') : 'Ask author to update', doAsk: () => { if (selP) this.many({ asked: { ...asked, [selP.id]: true }, toast: 'Asked ' + selP.author + ' to update ' + selP.id + ' against the current file' }); },
+      toastOn: !!toast, toast
+    };
+  }
+}
+</script>
+</body>
+</html>
