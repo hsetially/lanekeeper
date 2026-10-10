@@ -22,7 +22,7 @@ These are the targets the system is built and tested for. Confirm them in Q27.
 **Agent**
 
 - **P3** Idle traffic from each agent stays under 1 KB per minute: one heartbeat carrying a Merkle root.
-- **P4** Each agent uses at most 50 mCPU and 64 MiB of memory at steady state. A full rehash of 2,000 files takes under 20 seconds.
+- **P4** Each agent uses at most 50 mCPU and 64 MiB of memory at steady state. A full rehash of 2,000 files takes under 20 seconds. A stat walk of 2,000 files takes under 1 second.
 
 **Recompute**
 

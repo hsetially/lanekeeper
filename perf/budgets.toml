@@ -27,7 +27,7 @@ statistic = "p95"
 threshold = 15000
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P2"
@@ -47,7 +47,7 @@ statistic = "p95"
 threshold = 1024
 unit = "bytes_per_min"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P4"
@@ -57,7 +57,17 @@ statistic = "p95"
 threshold = 20000
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
+
+[[budget]]
+id = "P4.stat_walk"
+description = "Agent stat walk of 2,000 files"
+bench = "agent/stat_walk_2000_files"
+statistic = "p95"
+threshold = 1000
+unit = "ms"
+scale = "target"
+registered = true
 
 [[budget]]
 id = "P4.cpu_mcores"
