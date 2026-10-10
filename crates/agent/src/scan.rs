@@ -45,8 +45,9 @@ use tracing::{debug, info, warn};
 
 use crate::clock::Clock;
 use crate::config::Tunables;
-use crate::dispatch::{CommandHandler, OpLimits, failure, request_id_of};
+use crate::dispatch::{CommandHandler, OpLimits, failure, operation_of, request_id_of};
 use crate::fileops::TreeEdits;
+use crate::ops::{Metrics, Outcome, ScanKind, ScanResult};
 use crate::transport::session::{Link, LinkHandler};
 use crate::transport::{Outbox, OutboxError};
 use crate::tree::delta::{DeltaBuilder, DeltaError, DeltaOutcome, DeltaSink, SeqCounter, SinkError};
@@ -145,6 +146,7 @@ struct Inner {
     state: AsyncMutex<State>,
     snapshot: watch::Sender<Option<Snapshot>>,
     stats: ScannerStats,
+    metrics: Arc<Metrics>,
 }
 
 /// The tree of the NFS root and the loop that keeps it current. Cheap to clone; all clones are the same scanner.
@@ -164,6 +166,16 @@ impl fmt::Debug for Scanner {
 impl Scanner {
     /// `sink` receives the deltas the scanner pushes on its own: the live connection, or the spool (T9).
     pub fn new(source: Arc<dyn TreeSource>, clock: Arc<dyn Clock>, sink: Arc<dyn DeltaSink>) -> Self {
+        Self::with_metrics(source, clock, sink, Metrics::detached())
+    }
+
+    /// As [`Scanner::new`], reporting walk durations, the file count and delta sizes to `metrics` (T7).
+    pub fn with_metrics(
+        source: Arc<dyn TreeSource>,
+        clock: Arc<dyn Clock>,
+        sink: Arc<dyn DeltaSink>,
+        metrics: Arc<Metrics>,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 source,
@@ -180,6 +192,7 @@ impl Scanner {
                 }),
                 snapshot: watch::channel(None).0,
                 stats: ScannerStats::default(),
+                metrics,
             }),
         }
     }
@@ -248,14 +261,20 @@ impl Scanner {
             .is_none_or(|at| now.saturating_duration_since(at) >= tunables.full_rehash_interval);
         let mode = if full_due { ScanMode::Full } else { ScanMode::Stat };
         let previous = state.tree.clone();
+        let kind = match mode {
+            ScanMode::Full => ScanKind::Full,
+            ScanMode::Stat => ScanKind::Stat,
+        };
         let outcome = match inner.source.scan(previous.clone(), mode).await {
             Ok(outcome) => outcome,
             Err(error) => {
                 bump(&inner.stats.scan_errors);
+                inner.metrics.scan(kind, ScanResult::Failed, took(inner, now));
                 warn!(%error, "the scan failed; the tree is unchanged");
                 return;
             }
         };
+        let walked = took(inner, now);
         let ScanOutcome {
             tree: scanned,
             new_bytes,
@@ -279,6 +298,7 @@ impl Scanner {
             let since = *state.empty_since.get_or_insert(now);
             if now.saturating_duration_since(since) < tunables.max_defer {
                 bump(&inner.stats.empty_root_holds);
+                inner.metrics.scan(kind, ScanResult::Held, walked);
                 warn!(
                     "the NFS root lists as empty; holding the tree until it has been empty for the maximum deferral"
                 );
@@ -287,6 +307,7 @@ impl Scanner {
             info!("the NFS root has stayed empty; accepting it");
         }
         state.empty_since = None;
+        inner.metrics.scan(kind, ScanResult::Done, walked);
 
         match previous {
             None => {
@@ -361,11 +382,20 @@ impl Scanner {
         sink: &dyn DeltaSink,
     ) -> Result<DeltaOutcome, DeltaError> {
         let inner = &self.inner;
+        let metered = MeteredSink {
+            sink,
+            metrics: &inner.metrics,
+        };
         DeltaBuilder::new(inner.source.as_ref(), inner.clock.as_ref(), &inner.seq)
             .with_max_file_bytes(tunables.max_file_bytes)
-            .send(base, tree, sink)
+            .send(base, tree, &metered)
             .await
     }
+}
+
+/// Time since `started` on the scanner's clock.
+fn took(inner: &Inner, started: Instant) -> std::time::Duration {
+    inner.clock.instant().saturating_duration_since(started)
 }
 
 fn remember(ring: &mut RootRing, trees: Vec<crate::tree::delta::Remembered>, now: Instant) {
@@ -376,6 +406,7 @@ fn remember(ring: &mut RootRing, trees: Vec<crate::tree::delta::Remembered>, now
 
 fn publish(inner: &Inner, state: &State) {
     if let Some(tree) = &state.tree {
+        inner.metrics.files_tracked(tree.file_count());
         inner.snapshot.send_replace(Some(Snapshot {
             scan_seq: state.scan_seq,
             root: tree.root_hash(),
@@ -435,6 +466,32 @@ impl TreeEdits for Scanner {
 }
 
 // ------------------------------------------------------------------------------------------ sinks
+
+/// Records the size of every delta message that is handed to the sink it wraps.
+struct MeteredSink<'a> {
+    sink: &'a dyn DeltaSink,
+    metrics: &'a Metrics,
+}
+
+impl fmt::Debug for MeteredSink<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("MeteredSink")
+    }
+}
+
+#[async_trait]
+impl DeltaSink for MeteredSink<'_> {
+    async fn deliver(&self, delta: ScanDelta) -> Result<(), SinkError> {
+        let (entries, bytes) = (delta.entries.len(), delta.payload_bytes() as u64);
+        self.sink.deliver(delta).await?;
+        self.metrics.delta(entries, bytes);
+        Ok(())
+    }
+
+    fn ready(&self) -> bool {
+        self.sink.ready()
+    }
+}
 
 /// A delta sink in front of one connection's outbox.
 #[derive(Debug, Clone)]
@@ -527,7 +584,12 @@ pub struct ScanHandler {
     scanner: Scanner,
     live: Arc<LiveSink>,
     commands: Option<Arc<dyn CommandHandler>>,
+    on_config: Option<ConfigHook>,
 }
+
+/// Called with the hub's settings each time an `AgentConfig` arrives while connected, before the next message from the
+/// hub is read, so a command that follows a configuration always sees its effect.
+pub type ConfigHook = Arc<dyn Fn(&Tunables) + Send + Sync>;
 
 impl fmt::Debug for ScanHandler {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -542,7 +604,15 @@ impl ScanHandler {
             scanner,
             live,
             commands: None,
+            on_config: None,
         }
+    }
+
+    /// Call `hook` for every configuration the hub sends after the first (T7: the environment allowlist).
+    #[must_use]
+    pub fn with_config_hook(mut self, hook: ConfigHook) -> Self {
+        self.on_config = Some(hook);
+        self
     }
 
     /// Hand every command other than `RequestDelta` and `RequestFullScan` to `commands`.
@@ -562,6 +632,9 @@ impl ScanHandler {
         if tasks.len() >= MAX_PARALLEL_COMMANDS {
             bump(&self.scanner.inner.stats.dropped_requests);
             warn!("too many commands at once; this one is answered busy");
+            if let Some(operation) = operation_of(&command) {
+                self.scanner.inner.metrics.operation(operation, Outcome::Io);
+            }
             if let Some(request_id) = request_id_of(&command) {
                 let _ = outbox.try_send(failure(request_id.clone(), OpError::Io, None));
             }
@@ -643,6 +716,9 @@ impl LinkHandler for ScanHandler {
                                 heartbeat = ticker_after(heartbeat_period);
                             }
                             max_file_bytes = tunables.max_file_bytes;
+                            if let Some(hook) = &self.on_config {
+                                hook(&tunables);
+                            }
                             self.scanner.set_tunables(tunables);
                         }
                         ToAgent::Command(HubCommand::RequestDelta { since_root }) => {

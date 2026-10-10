@@ -185,6 +185,11 @@ impl OutboxReceiver {
     pub async fn recv(&mut self) -> Option<Queued> {
         self.rx.recv().await
     }
+
+    /// The next message if one is waiting right now. Used to flush the queue at shutdown.
+    pub fn try_recv(&mut self) -> Option<Queued> {
+        self.rx.try_recv().ok()
+    }
 }
 
 impl Drop for OutboxReceiver {

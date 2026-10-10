@@ -351,3 +351,115 @@ fn process_scan_rejects_planted_violations() {
     assert!(process_violations("fileops.rs", "// never std::process::Command").is_empty());
     assert!(process_violations("dispatch.rs", "pub enum HubCommand { }").is_empty());
 }
+
+/// Calls that change the file system. Through cap-std these are methods on a `Dir` or an `OpenOptions`; they are listed
+/// by name because a `Dir` is the only way the agent reaches a file at all (`all_file_access_via_cap_std`).
+const FS_WRITE_APIS: &[&str] = &[
+    "create_new(",
+    "OpenOptions::new",
+    ".rename(",
+    ".remove_file(",
+    ".remove_dir",
+    ".create_dir",
+    ".hard_link(",
+    ".symlink(",
+    ".set_permissions(",
+    ".write_all(",
+    ".create(",
+];
+
+/// Where those calls may be (S16): the file operations on the NFS export, and (from T9) the spool. The temp directory is
+/// not written by the agent today. `tree/testfs.rs` builds fixtures for unit tests and is not part of the binary.
+const FS_WRITERS: &[&str] = &["fileops.rs", "spool/", "tree/testfs.rs"];
+
+/// Lines of non-test code that change the file system, outside the files allowed to. Everything from the first
+/// `#[cfg(test)]` on is test code (the convention in this crate), so a helper that builds a fixture is not a writer.
+fn fs_write_violations(rel: &str, source: &str, writers: &[&str]) -> Vec<String> {
+    if writers
+        .iter()
+        .any(|w| rel == *w || (w.ends_with('/') && rel.starts_with(w)))
+    {
+        return Vec::new();
+    }
+    source
+        .lines()
+        .enumerate()
+        .take_while(|(_, line)| line.trim() != "#[cfg(test)]")
+        .filter(|(_, line)| !line.trim_start().starts_with("//"))
+        .filter(|(_, line)| FS_WRITE_APIS.iter().any(|api| line.contains(api)))
+        .map(|(n, line)| format!("{rel}:{}: {}", n + 1, line.trim()))
+        .collect()
+}
+
+/// S16: the root file system is read-only, and the three places the pod may write are the NFS export (file operations),
+/// the spool, and the temp directory. Nothing else in the source changes a file.
+#[test]
+fn no_fs_writes_outside_spool_and_tmp() {
+    let files = sources(&src_dir());
+    let violations: Vec<String> = files
+        .iter()
+        .flat_map(|(rel, source)| fs_write_violations(rel, source, FS_WRITERS))
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "file-system writes outside the file operations and the spool (S16):\n{}",
+        violations.join("\n")
+    );
+    // `tree/testfs.rs` is allowed because it is compiled for the crate's unit tests only.
+    let tree_mod = files.iter().find(|(rel, _)| rel == "tree/mod.rs").unwrap();
+    assert!(
+        tree_mod.1.contains("#[cfg(test)]\nmod testfs;"),
+        "tree/testfs.rs must be declared under #[cfg(test)]"
+    );
+    // The scan is not blind: the file operations do write, through these calls.
+    let fileops = files.iter().find(|(rel, _)| rel == "fileops.rs").unwrap();
+    assert!(
+        FS_WRITE_APIS
+            .iter()
+            .filter(|api| fileops.1.contains(*api))
+            .count()
+            >= 4
+    );
+}
+
+#[test]
+fn fs_write_scan_rejects_planted_violations() {
+    let planted = [
+        "dir.create(\"x\")?;",
+        "let f = options.write(true).create_new(true);",
+        "dir.rename(a, &dir, b)?;",
+        "dir.remove_file(name)?;",
+        "dir.create_dir_all(p)?;",
+        "file.write_all(bytes)?;",
+        "std::fs::OpenOptions::new()",
+    ];
+    for line in planted {
+        assert_eq!(
+            fs_write_violations("scan.rs", line, FS_WRITERS).len(),
+            1,
+            "{line}"
+        );
+    }
+    // The allowed writers, comments, and code after `#[cfg(test)]` are not violations.
+    assert!(fs_write_violations("fileops.rs", "dir.rename(a, &dir, b)?;", FS_WRITERS).is_empty());
+    assert!(fs_write_violations("spool/segment.rs", "file.write_all(b)?;", FS_WRITERS).is_empty());
+    assert!(fs_write_violations("scan.rs", "// dir.remove_file(name)", FS_WRITERS).is_empty());
+    assert!(
+        fs_write_violations(
+            "tree/source.rs",
+            "fn real() {}\n#[cfg(test)]\nmod tests { fn f() { dir.create_dir(x); } }",
+            FS_WRITERS
+        )
+        .is_empty()
+    );
+    // But a writer that is not allowed is caught even when a test module follows.
+    assert_eq!(
+        fs_write_violations(
+            "tree/source.rs",
+            "fn real() { dir.create_dir(x); }\n#[cfg(test)]\nmod tests {}",
+            FS_WRITERS
+        )
+        .len(),
+        1
+    );
+}

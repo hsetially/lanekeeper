@@ -35,6 +35,7 @@ use tracing::{debug, info, warn};
 
 use crate::fileops::{FileContent, FileError, FileOps, OpOutcome, WriteHooks};
 use crate::kube::ClusterOps;
+use crate::ops::{Metrics, Operation, Outcome};
 
 /// What a command may do, from the hub's settings as they are now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +63,20 @@ pub fn request_id_of(command: &HubCommand) -> Option<&RequestId> {
         | HubCommand::RequestClusterReport { request_id }
         | HubCommand::NotifyConfigServer { request_id, .. }
         | HubCommand::FetchServed { request_id, .. } => Some(request_id),
+    }
+}
+
+/// The operation a command is counted as, for the commands that have an answer.
+pub fn operation_of(command: &HubCommand) -> Option<Operation> {
+    match command {
+        HubCommand::RequestDelta { .. } | HubCommand::RequestFullScan => None,
+        HubCommand::ReadFile { .. } => Some(Operation::Read),
+        HubCommand::WriteFile { .. } => Some(Operation::Write),
+        HubCommand::DeleteFile { .. } => Some(Operation::Delete),
+        HubCommand::RestartDeployment { .. } => Some(Operation::Restart),
+        HubCommand::RequestClusterReport { .. } => Some(Operation::ClusterReport),
+        HubCommand::NotifyConfigServer { .. } => Some(Operation::Notify),
+        HubCommand::FetchServed { .. } => Some(Operation::FetchServed),
     }
 }
 
@@ -105,6 +120,7 @@ pub fn read_reply(request_id: RequestId, path: NfsPath, result: Result<FileConte
 pub struct Dispatcher<H: WriteHooks = crate::fileops::NoHooks> {
     ops: FileOps<H>,
     cluster: Option<Arc<dyn ClusterOps>>,
+    metrics: Arc<Metrics>,
 }
 
 impl<H: WriteHooks> fmt::Debug for Dispatcher<H> {
@@ -112,13 +128,30 @@ impl<H: WriteHooks> fmt::Debug for Dispatcher<H> {
         f.debug_struct("Dispatcher")
             .field("ops", &self.ops)
             .field("cluster", &self.cluster.is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 impl<H: WriteHooks> Dispatcher<H> {
     pub fn new(ops: FileOps<H>) -> Self {
-        Self { ops, cluster: None }
+        Self {
+            ops,
+            cluster: None,
+            metrics: Metrics::detached(),
+        }
+    }
+
+    /// Count every command by operation and outcome in `metrics` (T7).
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<Metrics>) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    /// Count the command and hand its answer back.
+    fn counted(&self, operation: Operation, reply: FromAgent) -> FromAgent {
+        self.metrics.operation(operation, outcome_of(&reply));
+        reply
     }
 
     /// Let the dispatcher answer `RequestClusterReport` and `RestartDeployment` (T6).
@@ -186,7 +219,7 @@ impl<H: WriteHooks> CommandHandler for Dispatcher<H> {
             HubCommand::ReadFile { request_id, path } => {
                 let result = self.ops.read(&path, limits.max_file_bytes).await;
                 log_outcome("read", &request_id, &path, &result);
-                Some(read_reply(request_id, path, result))
+                Some(self.counted(Operation::Read, read_reply(request_id, path, result)))
             }
             HubCommand::WriteFile {
                 request_id,
@@ -199,7 +232,7 @@ impl<H: WriteHooks> CommandHandler for Dispatcher<H> {
                     .write(&path, expected, bytes, limits.max_file_bytes)
                     .await;
                 log_outcome("write", &request_id, &path, &result);
-                Some(op_reply(request_id, result))
+                Some(self.counted(Operation::Write, op_reply(request_id, result)))
             }
             HubCommand::DeleteFile {
                 request_id,
@@ -208,21 +241,43 @@ impl<H: WriteHooks> CommandHandler for Dispatcher<H> {
             } => {
                 let result = self.ops.delete(&path, expected).await;
                 log_outcome("delete", &request_id, &path, &result);
-                Some(op_reply(request_id, result))
+                Some(self.counted(Operation::Delete, op_reply(request_id, result)))
             }
-            HubCommand::RequestClusterReport { request_id } => match &self.cluster {
-                Some(cluster) => Some(self.cluster_report(cluster.as_ref(), request_id).await),
-                None => Some(unsupported(request_id)),
-            },
-            HubCommand::RestartDeployment { request_id, service } => match &self.cluster {
-                Some(cluster) => Some(self.restart(cluster.as_ref(), request_id, &service).await),
-                None => Some(unsupported(request_id)),
-            },
+            HubCommand::RequestClusterReport { request_id } => {
+                let reply = match &self.cluster {
+                    Some(cluster) => self.cluster_report(cluster.as_ref(), request_id).await,
+                    None => unsupported(request_id),
+                };
+                Some(self.counted(Operation::ClusterReport, reply))
+            }
+            HubCommand::RestartDeployment { request_id, service } => {
+                let reply = match &self.cluster {
+                    Some(cluster) => self.restart(cluster.as_ref(), request_id, &service).await,
+                    None => unsupported(request_id),
+                };
+                Some(self.counted(Operation::Restart, reply))
+            }
             // The config-server calls arrive with T12. Until then the hub is told so at once instead of waiting for a
             // timeout.
-            HubCommand::NotifyConfigServer { request_id, .. }
-            | HubCommand::FetchServed { request_id, .. } => Some(unsupported(request_id)),
+            HubCommand::NotifyConfigServer { request_id, .. } => {
+                Some(self.counted(Operation::Notify, unsupported(request_id)))
+            }
+            HubCommand::FetchServed { request_id, .. } => {
+                Some(self.counted(Operation::FetchServed, unsupported(request_id)))
+            }
         }
+    }
+}
+
+/// How an answer ended, for the operation counters.
+fn outcome_of(reply: &FromAgent) -> Outcome {
+    match reply {
+        FromAgent::Reply(AgentReply::Op(result)) => Outcome::of(if result.ok {
+            None
+        } else {
+            Some(result.error.unwrap_or(OpError::Io))
+        }),
+        _ => Outcome::Ok,
     }
 }
 

@@ -6,6 +6,9 @@ mod support;
 
 use std::process::{Command, Output};
 
+use support::agent_process::{
+    free_port, http_get, running_env, spawn_waiting_agent, terminate, wait_for_health,
+};
 use support::valid_env;
 
 fn run(env: impl IntoIterator<Item = (String, String)>) -> Output {
@@ -17,15 +20,56 @@ fn run(env: impl IntoIterator<Item = (String, String)>) -> Output {
 }
 
 #[test]
-fn binary_starts_with_a_valid_environment() {
+fn binary_stops_with_a_clear_error_outside_a_cluster() {
     let tmp = tempfile::tempdir().unwrap();
-    let out = run(valid_env(tmp.path()));
-    assert!(
-        out.status.success(),
-        "{:?} {}",
-        out.status,
-        String::from_utf8_lossy(&out.stderr)
+    let env = running_env(tmp.path(), free_port());
+    let out = Command::new(env!("CARGO_BIN_EXE_agent"))
+        .env_clear()
+        .envs(env)
+        // No service account and no kubeconfig: the agent cannot read its certificate Secret.
+        .env("HOME", tmp.path())
+        .output()
+        .expect("the agent binary starts");
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let log = String::from_utf8_lossy(&out.stdout);
+    assert!(log.contains("Kubernetes client"), "{log}");
+    // Every line it logged is a JSON object.
+    for line in log.lines() {
+        assert!(line.starts_with('{') && line.ends_with('}'), "{line}");
+    }
+}
+
+#[test]
+fn binary_serves_health_while_it_waits_for_a_certificate_and_exits_zero_on_sigterm() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut child, port) = spawn_waiting_agent(env!("CARGO_BIN_EXE_agent"), tmp.path());
+
+    // The port opens first, whatever else is not ready.
+    wait_for_health(port);
+    assert_eq!(http_get(port, "/healthz"), Some((200, "ok\n".to_owned())));
+    assert_eq!(
+        http_get(port, "/readyz"),
+        Some((503, "not ready: starting\n".to_owned())),
+        "alive, and not ready until it has a certificate and a connection"
     );
+    let (code, metrics) = http_get(port, "/metrics").unwrap();
+    assert_eq!(code, 200);
+    assert!(metrics.contains("lanekeeper_agent_connection_state"));
+
+    // SIGTERM is what the kubelet sends.
+    terminate(&child);
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "the agent did not stop within 20 s of SIGTERM"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert_eq!(status.code(), Some(0), "an orderly shutdown exits 0");
 }
 
 #[test]

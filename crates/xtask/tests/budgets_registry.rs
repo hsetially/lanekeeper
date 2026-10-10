@@ -300,8 +300,8 @@ fn thresholds_match_docs_performance_md() {
 /// in view of the reviewer. Everything else stays unregistered (reported as UNMET).
 #[test]
 fn only_budgets_with_a_harness_are_registered() {
-    // Prompt 02 (agent): `cargo bench -p agent` produces P1, P3, P4 and P4.stat_walk.
-    const REGISTERED: &[&str] = &["P1", "P3", "P4", "P4.stat_walk"];
+    // Prompt 02 (agent): `cargo bench -p agent` produces P1, P3, P4, P4.stat_walk, P4.cpu_mcores and P4.memory_mib.
+    const REGISTERED: &[&str] = &["P1", "P3", "P4", "P4.stat_walk", "P4.cpu_mcores", "P4.memory_mib"];
     let reg = registry();
     let registered: BTreeSet<&str> = reg
         .budgets

@@ -22,6 +22,7 @@
 use std::convert::Infallible;
 use std::fmt;
 use std::future::pending;
+use std::pin::pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -44,6 +45,7 @@ use crate::backoff::Backoff;
 use crate::config::{Settings, Tunables};
 use crate::identity::RenewError;
 use crate::identity::joiner::{IdentityHandle, RenewalChannel};
+use crate::ops::Metrics;
 
 /// The hub must answer `Hello` with its configuration within this time.
 pub const CONFIG_TIMEOUT: Duration = Duration::from_secs(30);
@@ -51,6 +53,8 @@ pub const CONFIG_TIMEOUT: Duration = Duration::from_secs(30);
 pub const RENEWAL_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often the session looks for a quiet moment to reconnect for a renewed certificate.
 const QUIET_POLL: Duration = Duration::from_millis(100);
+/// After the last message of a shutdown has gone out, how long to wait for the hub to end its side of the stream.
+const CLOSE_WAIT: Duration = Duration::from_secs(2);
 
 /// Tuning that tests change and production leaves alone.
 #[derive(Debug, Clone)]
@@ -65,6 +69,8 @@ pub struct SessionConfig {
     pub stable_after: Duration,
     /// The longest to wait for an empty outbox before reconnecting with a renewed certificate.
     pub quiet_wait: Duration,
+    /// At shutdown, the longest to spend handing the queued messages to the connection.
+    pub flush_timeout: Duration,
     pub outbox: OutboxLimits,
     /// What the hub may have waiting for the handler.
     pub inbound_capacity: usize,
@@ -81,6 +87,7 @@ impl Default for SessionConfig {
             config_timeout: CONFIG_TIMEOUT,
             stable_after: Duration::from_secs(5),
             quiet_wait: Duration::from_secs(30),
+            flush_timeout: Duration::from_secs(5),
             outbox: OutboxLimits::default(),
             inbound_capacity: 16,
             seed: None,
@@ -202,6 +209,8 @@ pub struct Session {
     stats: SessionStats,
     state: watch::Sender<ConnectionState>,
     renewal: Mutex<RenewalSlot>,
+    shutdown: watch::Sender<bool>,
+    metrics: Arc<Metrics>,
 }
 
 impl fmt::Debug for Session {
@@ -235,7 +244,28 @@ impl Session {
             stats: SessionStats::default(),
             state: watch::channel(ConnectionState::Disconnected).0,
             renewal: Mutex::new(RenewalSlot::default()),
+            shutdown: watch::channel(false).0,
+            metrics: Metrics::detached(),
         }
+    }
+
+    /// Report connection state and attempts to `metrics` (T7).
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<Metrics>) -> Self {
+        metrics.set_connection(*self.state.borrow());
+        self.metrics = metrics;
+        self
+    }
+
+    /// Ask [`Session::serve`] to finish: what is queued is handed to the connection, the stream is closed in an orderly
+    /// way, and `serve` returns. Safe to call more than once, and from any task.
+    pub fn shutdown(&self) {
+        self.shutdown.send_replace(true);
+    }
+
+    fn set_state(&self, state: ConnectionState) {
+        self.state.send_replace(state);
+        self.metrics.set_connection(state);
     }
 
     pub fn stats(&self) -> &SessionStats {
@@ -247,19 +277,36 @@ impl Session {
         self.state.subscribe()
     }
 
-    /// Connect, run `handler`, and connect again, for as long as this future is polled.
+    /// Connect, run `handler`, and connect again, for as long as this future is polled. Never returns: use
+    /// [`Session::serve`] to be able to stop it.
     pub async fn run(&self, handler: Arc<dyn LinkHandler>) -> Infallible {
+        self.serve(handler).await;
+        pending().await
+    }
+
+    /// As [`Session::run`], until [`Session::shutdown`] is called. Then the connection is closed in an orderly way (the
+    /// queued messages are handed on first) and this returns. It also returns at once when the shutdown is asked for
+    /// while connecting or waiting to retry.
+    pub async fn serve(&self, handler: Arc<dyn LinkHandler>) {
+        let mut shutdown = self.shutdown.subscribe();
         let mut backoff = self.config.seed.map_or_else(
             || Backoff::new(self.config.backoff_base, self.config.backoff_cap),
             |seed| Backoff::with_seed(self.config.backoff_base, self.config.backoff_cap, seed),
         );
-        loop {
-            self.state.send_replace(ConnectionState::Connecting);
+        while !*shutdown.borrow() {
+            self.set_state(ConnectionState::Connecting);
             let started = Instant::now();
-            let attempt = self.attempt(&handler).await;
+            let attempt = self.attempt(&handler, &mut shutdown).await;
             self.detach_renewals();
-            self.state.send_replace(ConnectionState::Disconnected);
+            self.set_state(ConnectionState::Disconnected);
+            if !attempt.established {
+                self.metrics.connection_attempt(false);
+            }
 
+            if *shutdown.borrow() {
+                info!("the session is shut down");
+                return;
+            }
             if attempt.established {
                 match &attempt.result {
                     Ok(()) | Err(TransportError::Closed) => info!("the stream to the hub ended"),
@@ -275,19 +322,23 @@ impl Session {
                     Err(error) => warn!(%error, "cannot connect to the hub"),
                 }
             }
-            sleep(backoff.next_delay()).await;
+            tokio::select! {
+                () = sleep(backoff.next_delay()) => {}
+                () = stopped(&mut shutdown) => {}
+            }
         }
     }
 
-    async fn attempt(&self, handler: &Arc<dyn LinkHandler>) -> Attempt {
+    async fn attempt(&self, handler: &Arc<dyn LinkHandler>, shutdown: &mut watch::Receiver<bool>) -> Attempt {
         let mut established = false;
-        let result = self.connection(handler, &mut established).await;
+        let result = self.connection(handler, shutdown, &mut established).await;
         Attempt { established, result }
     }
 
     async fn connection(
         &self,
         handler: &Arc<dyn LinkHandler>,
+        shutdown: &mut watch::Receiver<bool>,
         established: &mut bool,
     ) -> Result<(), TransportError> {
         // Subscribe, then read: the identity used for this connection is exactly the one the receiver has seen, so
@@ -296,26 +347,35 @@ impl Session {
         let identity = Arc::clone(&newer_identity.borrow_and_update());
 
         let first = wire::encode(FromAgent::Hello(self.hello.clone()));
-        let Connection {
-            outbound,
-            mut inbound,
-        } = timeout(
-            self.config.connect_timeout,
-            self.transport.connect(&identity, first),
-        )
-        .await
-        .map_err(|_| TransportError::Timeout)??;
-
-        let tunables = timeout(self.config.config_timeout, self.await_config(&mut inbound))
+        let opening = async {
+            let Connection {
+                outbound,
+                mut inbound,
+            } = timeout(
+                self.config.connect_timeout,
+                self.transport.connect(&identity, first),
+            )
             .await
             .map_err(|_| TransportError::Timeout)??;
+            let tunables = timeout(self.config.config_timeout, self.await_config(&mut inbound))
+                .await
+                .map_err(|_| TransportError::Timeout)??;
+            Ok::<_, TransportError>((outbound, inbound, tunables))
+        };
+        // A shutdown asked for while connecting does not wait for the hub: nothing has been promised yet.
+        let (outbound, inbound, tunables) = tokio::select! {
+            biased;
+            () = stopped(shutdown) => return Err(TransportError::Closed),
+            opened = opening => opened?,
+        };
 
         let (outbox, outbox_rx) = outbox::channel(self.config.outbox);
         let (commands, link_inbound) = mpsc::channel(self.config.inbound_capacity.max(1));
         self.attach_renewals(outbox.clone());
         *established = true;
         SessionStats::bump(&self.stats.connections);
-        self.state.send_replace(ConnectionState::Connected);
+        self.metrics.connection_attempt(true);
+        self.set_state(ConnectionState::Connected);
         info!(
             scan_interval_s = tunables.scan_interval.as_secs(),
             heartbeat_interval_s = tunables.heartbeat_interval.as_secs(),
@@ -327,9 +387,23 @@ impl Session {
             outbox: outbox.clone(),
             inbound: link_inbound,
         };
+        let mut writing = pin!(write_loop(
+            outbox_rx,
+            outbound,
+            shutdown.clone(),
+            self.config.flush_timeout
+        ));
+        let mut reading = pin!(self.read_loop(inbound, commands, &outbox));
         tokio::select! {
-            result = write_loop(outbox_rx, outbound) => result,
-            result = self.read_loop(inbound, commands, &outbox) => result,
+            result = &mut writing => {
+                // The writer ends by itself only at shutdown (after flushing) or when the stream fails. After a flush
+                // the request side is closed: give the hub a moment to end its side, so that nothing is cut short.
+                if result.is_ok() && *shutdown.borrow() {
+                    let _ = timeout(CLOSE_WAIT, &mut reading).await;
+                }
+                result
+            }
+            result = &mut reading => result,
             () = handler.handle(link) => Ok(()),
             () = self.wait_for_newer_identity(&mut newer_identity, &outbox) => Ok(()),
         }
@@ -439,17 +513,51 @@ impl Session {
     }
 }
 
-/// Sends what the outbox holds to the transport, in order, until either side is gone.
+/// Resolves once shutdown has been asked for (or the session is gone, which is a stop too).
+async fn stopped(shutdown: &mut watch::Receiver<bool>) {
+    // The guard `wait_for` returns is not `Send`; dropping it here keeps it out of the callers' futures.
+    let _ = shutdown.wait_for(|stop| *stop).await;
+}
+
+/// Sends what the outbox holds to the transport, in order, until either side is gone. At shutdown it hands on what is
+/// queued at that moment (for at most `flush`), then returns, which closes the request side of the stream.
 async fn write_loop(
     mut outbox: OutboxReceiver,
     wire: mpsc::Sender<pb::AgentMessage>,
+    mut shutdown: watch::Receiver<bool>,
+    flush: Duration,
 ) -> Result<(), TransportError> {
-    while let Some(queued) = outbox.recv().await {
-        let (message, room) = queued.into_parts();
-        wire.send(message).await.map_err(|_| TransportError::Closed)?;
-        // The room is given back only now, so the outbox counts what is still on its way as well as what waits.
-        drop(room);
+    loop {
+        tokio::select! {
+            biased;
+            () = stopped(&mut shutdown) => break,
+            queued = outbox.recv() => {
+                let Some(queued) = queued else { return Ok(()) };
+                forward(queued, &wire).await?;
+            }
+        }
     }
+    let drained = timeout(flush, async {
+        while let Some(queued) = outbox.try_recv() {
+            forward(queued, &wire).await?;
+        }
+        Ok::<(), TransportError>(())
+    })
+    .await;
+    drained.unwrap_or_else(|_| {
+        warn!("the hub did not take the queued messages in time; the shutdown goes on without them");
+        Ok(())
+    })
+}
+
+async fn forward(
+    queued: outbox::Queued,
+    wire: &mpsc::Sender<pb::AgentMessage>,
+) -> Result<(), TransportError> {
+    let (message, room) = queued.into_parts();
+    wire.send(message).await.map_err(|_| TransportError::Closed)?;
+    // The room is given back only now, so the outbox counts what is still on its way as well as what waits.
+    drop(room);
     Ok(())
 }
 

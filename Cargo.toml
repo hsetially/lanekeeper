@@ -78,7 +78,13 @@ hyper = { version = "=1.11.1", default-features = false }
 http-body = "=1.1.0"
 http-body-util = "=0.1.5"
 fastrand = "=2.5.0"
+# Agent logging (T7): `fmt` + `json` write one JSON object per line, and `Targets` keeps the Kubernetes client libraries,
+# which log the API server's own message text, silent (S10). No `env-filter`: it brings a regex engine, and the level
+# comes from `LK_LOG`. `json` adds tracing-serde (0.2.0, 2024-11-27), which is tracing-subscriber's own JSON encoder.
 tracing-subscriber = { version = "=0.3.23", default-features = false }
+# Agent metrics (T7, S16): the Prometheus text format for `/metrics`. prometheus-client 0.25.1 (2026-09-01) is the
+# OpenMetrics client the plan names; `derive` and the protobuf feature stay off, so it adds only dtoa, itoa and parking_lot.
+prometheus-client = { version = "=0.25.1", default-features = false }
 time = { version = "=0.3.55", default-features = false }
 # Agent transport (T3, S6). The agent builds its own rustls config so that TLS 1.3 is the only version it can speak
 # and the hub CA is the only root; tonic's TLS features are not used. Both crates are already in the graph through

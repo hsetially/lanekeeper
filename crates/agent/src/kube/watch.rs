@@ -62,6 +62,9 @@ pub struct WatchConfig {
     pub debounce: Duration,
     pub page_size: u32,
     pub sync_timeout: Duration,
+    /// The names whose values may be reported, from the hub's `AgentConfig`. Set before the first list so that the
+    /// watchers do not list twice (T7).
+    pub env_allowlist: Vec<ShortText>,
 }
 
 impl WatchConfig {
@@ -73,7 +76,15 @@ impl WatchConfig {
             debounce: REPORT_DEBOUNCE,
             page_size: LIST_PAGE_SIZE,
             sync_timeout: SYNC_TIMEOUT,
+            env_allowlist: Vec::new(),
         }
+    }
+
+    /// Start with this allowlist instead of an empty one.
+    #[must_use]
+    pub fn with_env_allowlist(mut self, names: &[ShortText]) -> Self {
+        self.env_allowlist = names.to_vec();
+        self
     }
 
     pub fn from_settings(settings: &Settings) -> Result<Self, BuildError> {
@@ -325,7 +336,7 @@ impl ClusterWatcher {
             namespaces: namespaces.clone(),
             debouncer: ReportDebouncer::new(config.debounce),
             ctx: TrimContext {
-                guard: EnvGuard::new(),
+                guard: EnvGuard::with_allowlist(&config.env_allowlist),
                 jobs: JobTracker::new(config.jobs, config.helm.clone()),
                 helm: config.helm,
             },

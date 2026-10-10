@@ -1,0 +1,16 @@
+# BuildKit reads this file for crates/agent/Dockerfile. The build needs the Cargo workspace and nothing else.
+.git
+.worktrees
+.claude
+.cursor
+target
+node_modules
+web
+design
+deploy
+docs
+plans
+prompts
+skills
+fuzz/target
+crates/*/fuzz/target

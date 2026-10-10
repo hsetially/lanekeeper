@@ -77,7 +77,7 @@ statistic = "p95"
 threshold = 50
 unit = "mcores"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P4.memory_mib"
@@ -87,7 +87,7 @@ statistic = "max"
 threshold = 64
 unit = "mib"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P5"

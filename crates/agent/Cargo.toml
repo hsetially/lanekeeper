@@ -20,11 +20,12 @@ futures.workspace = true
 globset.workspace = true
 http.workspace = true
 http-body-util.workspace = true
-hyper = { workspace = true, features = ["client", "http1", "http2"] }
+hyper = { workspace = true, features = ["client", "server", "http1", "http2"] }
 hyper-util = { workspace = true, features = ["tokio"] }
 k8s-openapi.workspace = true
 kube.workspace = true
 pem.workspace = true
+prometheus-client.workspace = true
 prost.workspace = true
 rayon.workspace = true
 rcgen.workspace = true
@@ -34,7 +35,7 @@ serde_json.workspace = true
 sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-rustls.workspace = true
 tokio-stream.workspace = true
 # The generated gRPC client runs over the agent's own HTTP/2 connection (`transport::grpc`), not tonic's `Channel`, so
@@ -43,6 +44,8 @@ tokio-stream.workspace = true
 tonic = { workspace = true, features = ["codegen"] }
 tower.workspace = true
 tracing.workspace = true
+# Logs are JSON lines (T7); `Targets` silences the Kubernetes client libraries.
+tracing-subscriber = { workspace = true, features = ["fmt", "json", "std"] }
 x509-parser.workspace = true
 zeroize.workspace = true
 
@@ -55,7 +58,6 @@ serde-saphyr.workspace = true
 tempfile.workspace = true
 time = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
-tracing-subscriber = { workspace = true, features = ["fmt", "std"] }
 # The fake hub issues certificates from the agent's CSR, which needs rcgen's CSR parser.
 rcgen = { workspace = true, features = ["x509-parser"] }
 # The fake hub is a real tonic server behind a real TLS acceptor, and one test needs a TLS 1.2-only server.
@@ -78,4 +80,9 @@ harness = false
 
 [[bench]]
 name = "idle_traffic"
+harness = false
+
+# The steady-state harness (T7): the whole agent in-process against the fakes, and the real binary's idle footprint.
+[[bench]]
+name = "steady_state"
 harness = false

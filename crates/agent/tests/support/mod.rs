@@ -1,6 +1,8 @@
 //! Helpers shared by the integration tests.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+pub mod agent_process;
+pub mod app_rig;
 pub mod clock;
 pub mod collect_sink;
 pub mod fake_hub;
