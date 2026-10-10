@@ -12,8 +12,8 @@
 //!
 //! | Target | Input | What must hold |
 //! |---|---|---|
-//! | `agent_path` | one byte (the operation), then a path | whatever the path is, an operation on a root with planted symlinks changes nothing outside the root, leaves every symlink as it was, leaves no temporary file, and a success never went through a symlink |
-//! | `agent_hub_message` | a protobuf `HubMessage` | decoding never panics; a configuration is clamped into its ranges and its globs compile or fail cleanly; a file command gets exactly one answer, of bounded size, and touches nothing outside the root |
+//! | `agent_path` | one byte (the operation), then a path | whatever the path is, an operation on a root with planted symlinks changes nothing outside the root, leaves every symlink as it was, leaves no temporary file, and a success never went through a symlink; a path the deny list denies is never read, written, created or deleted, and its file is never changed (D79) |
+//! | `agent_hub_message` | a protobuf `HubMessage` | decoding never panics; a configuration is clamped into its ranges and its deny globs are applied or dropped cleanly, whatever they say, and never remove a built-in glob; a file command gets exactly one answer, of bounded size, and touches nothing outside the root |
 //! | `agent_cert_chain` | length-prefixed DER blobs | random bytes are never accepted as the agent's certificate |
 //! | `agent_pem` | one byte (key, CA, or damage to a generated key), then PEM text | a key that is accepted survives a PEM round trip; an undamaged generated key is always accepted; neither parser panics |
 //! | `agent_id_token` | text | a string accepted as a token is three non-empty base64url segments within the size limit |
@@ -35,6 +35,7 @@ use std::sync::{Arc, OnceLock};
 
 use agent::clock::Clock;
 use agent::config::Tunables;
+use agent::deny::{DEFAULT_DENY_GLOBS, DenyList};
 use agent::dispatch::{CommandHandler, Dispatcher, OpLimits};
 use agent::fileops::{FileOps, TreeEdits};
 use agent::identity::idtoken::looks_like_a_jwt;
@@ -95,6 +96,7 @@ fn ensure(cond: bool, why: impl FnOnce() -> String) -> Result<(), String> {
 ///     svc/escape          -> ../..
 ///     svc/alias           -> sub
 ///     svc/b-link.yml      -> b.yml
+///     svc/server.pem        "pem-body"         (a denied file: nothing may read, change or delete it)
 /// ```
 struct World {
     outer: tempfile::TempDir,
@@ -111,6 +113,7 @@ impl World {
         fs::write(outer.path().join("outside/deep.txt"), b"deep").unwrap();
         fs::write(root.join("a.yml"), b"alpha").unwrap();
         fs::write(root.join("svc/b.yml"), b"beta").unwrap();
+        fs::write(root.join("svc/server.pem"), b"pem-body").unwrap();
         symlink("..", root.join("up")).unwrap();
         symlink("../sentinel.txt", root.join("link")).unwrap();
         symlink(outer.path(), root.join("abs")).unwrap();
@@ -125,6 +128,13 @@ impl World {
     fn guarded(&self) -> BTreeMap<String, String> {
         let mut seen = BTreeMap::new();
         walk(self.outer.path(), self.outer.path(), &self.root, &mut seen);
+        seen
+    }
+
+    /// Every denied file in the root, with its content: none may appear, vanish or change (D79).
+    fn denied_files(&self) -> BTreeMap<String, String> {
+        let mut seen = BTreeMap::new();
+        find_denied(&self.root, &self.root, &DenyList::default(), &mut seen);
         seen
     }
 
@@ -156,6 +166,24 @@ fn walk(base: &Path, dir: &Path, root: &Path, seen: &mut BTreeMap<String, String
                 rel,
                 format!("file:{}", String::from_utf8_lossy(&fs::read(&path).unwrap())),
             );
+        }
+    }
+}
+
+fn find_denied(root: &Path, dir: &Path, deny: &DenyList, seen: &mut BTreeMap<String, String>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let md = fs::symlink_metadata(&path).unwrap();
+        if md.is_dir() {
+            find_denied(root, &path, deny, seen);
+        } else if md.is_file() {
+            let rel = path.strip_prefix(root).unwrap().to_string_lossy().into_owned();
+            if deny.is_denied(&rel) {
+                seen.insert(
+                    rel,
+                    String::from_utf8_lossy(&fs::read(&path).unwrap()).into_owned(),
+                );
+            }
         }
     }
 }
@@ -211,6 +239,11 @@ const LIMITS: OpLimits = OpLimits {
 /// After an operation: nothing outside the root moved, no symlink was changed, no temporary file is left behind.
 fn world_unharmed(world: &World, before: &BTreeMap<String, String>, what: &str) -> Result<(), String> {
     let after = world.guarded();
+    let denied = world.denied_files();
+    ensure(
+        denied.len() == 1 && denied.get("svc/server.pem").map(String::as_str) == Some("pem-body"),
+        || format!("{what} changed a denied file or made one: {denied:?}"),
+    )?;
     ensure(&after == before, || {
         let changed: Vec<_> = before
             .iter()
@@ -250,7 +283,7 @@ type Harm = fn(&World);
 /// Proof that the world check is not blind: each of the harms it exists to find, planted by hand, is found. Run by
 /// `corpus_replay.rs`; not a fuzz target.
 pub fn planted_harm_is_detected() -> Result<(), String> {
-    let harms: [(&str, Harm); 5] = [
+    let harms: [(&str, Harm); 7] = [
         ("a changed sentinel", |w| {
             fs::write(w.outer.path().join("sentinel.txt"), b"changed").unwrap()
         }),
@@ -266,6 +299,12 @@ pub fn planted_harm_is_detected() -> Result<(), String> {
         }),
         ("a temporary file left behind", |w| {
             fs::write(w.root.join("svc/.lanekeeper-tmp-00"), b"x").unwrap();
+        }),
+        ("a denied file rewritten", |w| {
+            fs::write(w.root.join("svc/server.pem"), b"planted").unwrap();
+        }),
+        ("a denied file created", |w| {
+            fs::write(w.root.join("svc/created.KEY"), b"planted").unwrap();
         }),
     ];
     for (name, harm) in harms {
@@ -350,6 +389,27 @@ pub fn agent_path(data: &[u8]) -> Result<(), String> {
         _ => return Err("a file command got a reply of another kind".to_owned()),
     };
     world_unharmed(&world, &before, &format!("{:?}", path.as_str()))?;
+    if DenyList::default().is_denied(path.as_str()) {
+        // D79: nothing succeeds on a denied path, and the refusal is DENIED, whatever else is wrong with the request.
+        ensure(!succeeded, || {
+            format!("an operation succeeded on the denied path {:?}", path.as_str())
+        })?;
+        let code = match &reply {
+            domain::AgentReply::Op(result) => result.error,
+            _ => None,
+        };
+        ensure(code == Some(domain::OpError::Denied), || {
+            format!(
+                "a denied path {:?} was refused with {code:?}, not DENIED",
+                path.as_str()
+            )
+        })?;
+        if let domain::AgentReply::Op(result) = &reply {
+            ensure(result.current_hash.is_none(), || {
+                "a refusal of a denied path carried a hash".to_owned()
+            })?;
+        }
+    }
     if succeeded {
         no_symlink_on_the_way(&world, &path)?;
         if let domain::AgentReply::File { bytes, hash, .. } = &reply {
@@ -416,13 +476,39 @@ pub fn agent_hub_message(data: &[u8]) -> Result<(), String> {
                 tunables.deny_globs.len() <= proto::limits::MAX_CONFIG_ITEMS,
                 || "more deny globs than the contract allows".to_owned(),
             )?;
-            // Compiling the hub's globs must either work or fail cleanly, and never take unbounded time or panic.
+            // Applying the hub's globs must work or drop what does not, and never take unbounded time or panic.
             let globs: Vec<&str> = tunables
                 .deny_globs
                 .iter()
                 .map(domain::ShortText::as_str)
                 .collect();
             let _ = WalkConfig::new(&agent::tree::walk::BUILT_IN_IGNORE, &globs);
+            let deny = DenyList::new(&globs);
+            ensure(deny.rejected() <= globs.len(), || {
+                "more globs rejected than were sent".to_owned()
+            })?;
+            // Whatever the hub sent, it cannot have removed a built-in glob (D79): a name for each is still denied.
+            for sample in [
+                "a.jks",
+                "a.p12",
+                "a.pfx",
+                "a.pem",
+                "a.key",
+                "a.keystore",
+                "x/private.yml",
+                "X/A.PEM",
+            ] {
+                ensure(deny.is_denied(sample), || {
+                    format!("the hub's globs {globs:?} un-denied {sample}")
+                })?;
+            }
+            deny.set_hub_globs(&[]);
+            for glob in DEFAULT_DENY_GLOBS {
+                let sample = glob.replace('*', "name");
+                ensure(deny.is_denied(&sample), || {
+                    format!("taking the hub's globs back un-denied {sample}")
+                })?;
+            }
             Ok(())
         }
         Decoded::Message(ToAgent::Command(command)) => {

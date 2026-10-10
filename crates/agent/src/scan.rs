@@ -295,7 +295,25 @@ impl Scanner {
     }
 
     /// The hub's settings. The walk interval takes effect at once; the file limit with the next delta.
+    ///
+    /// The hub's deny globs go into the source's list at once (D79, T11): a file operation, a delta being built and the
+    /// spool's next replay all see them from here on. When they change which files are denied, a walk is asked for, so
+    /// that the tree's marks follow. The built-in globs are not affected, whatever the hub sent.
     pub fn set_tunables(&self, tunables: Tunables) {
+        let applied = self.inner.source.deny().set_hub_texts(&tunables.deny_globs);
+        if applied.rejected > 0 {
+            warn!(
+                rejected = applied.rejected,
+                "some deny globs from the hub cannot be used (not valid, too long or too many); the rest apply"
+            );
+        }
+        if applied.changed {
+            info!(
+                globs = tunables.deny_globs.len(),
+                "the hub's deny globs changed; walking to re-mark the tree"
+            );
+            self.kick();
+        }
         self.inner.tunables.send_if_modified(|current| {
             if *current == tunables {
                 false
@@ -874,10 +892,12 @@ impl ScanHandler {
 #[async_trait]
 impl LinkHandler for ScanHandler {
     async fn handle(&self, mut link: Link) {
+        // The hub's settings first, deny globs among them: the pump below replays what the spool holds, and what the hub
+        // has denied must be known before the first of it is sent (D79).
+        self.scanner.set_tunables(link.tunables.clone());
         // The pump sends everything the spool holds, oldest first, then each new delta as it becomes durable. It lives as
         // long as this connection does.
         let mut pump = AbortOnDrop(tokio::spawn(self.spool.attach(link.outbox.clone()).run()));
-        self.scanner.set_tunables(link.tunables.clone());
         let mut heartbeat_period = link.tunables.heartbeat_interval;
         let mut heartbeat = ticker_now(heartbeat_period);
         let mut snapshots = self.scanner.subscribe();

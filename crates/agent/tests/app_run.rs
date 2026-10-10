@@ -339,6 +339,10 @@ struct PanicsOnSecondScan {
 
 #[async_trait::async_trait]
 impl agent::tree::TreeSource for PanicsOnSecondScan {
+    fn deny(&self) -> agent::deny::DenyList {
+        self.inner.deny()
+    }
+
     async fn scan(
         &self,
         previous: Option<agent::tree::MerkleTree>,
@@ -384,6 +388,10 @@ struct HangsOnSecondScan {
 
 #[async_trait::async_trait]
 impl agent::tree::TreeSource for HangsOnSecondScan {
+    fn deny(&self) -> agent::deny::DenyList {
+        self.inner.deny()
+    }
+
     async fn scan(
         &self,
         previous: Option<agent::tree::MerkleTree>,

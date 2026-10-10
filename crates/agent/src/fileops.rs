@@ -20,6 +20,12 @@
 //! - **Nothing is created beyond the file.** A missing parent directory is `NotFound` (decision A12): a new folder
 //!   needs a config-server restart (C11) and must be an explicit act.
 //!
+//! - **A denied path is refused before anything is touched** (D79, S17). A path that matches a deny glob (keystores, keys,
+//!   private material; [`crate::deny`]) is answered [`DeniedReason::DenyGlob`] for a read, a write and a delete alike,
+//!   before the lock is taken, before the file is opened and so before it is hashed: the answer is `DENIED` and carries
+//!   no hash, so neither the content nor a conflict hash of a denied file reaches the hub. This holds for a path that does
+//!   not exist yet too (a `*.pem` cannot be created), and for any case (`SERVER.KEY`).
+//!
 //! Operations on one path are serialised through a fixed number of lock stripes ([`PathLocks`]), so memory does not
 //! grow with the number of paths, and two writes to the same file never interleave. Every operation is bounded in time:
 //! the blocking work runs in `spawn_blocking` and the whole call is cut off after [`OP_TIMEOUT`], so a hung NFS mount
@@ -53,6 +59,7 @@ use tokio::time::timeout;
 use tracing::warn;
 
 use crate::config::limits::MAX_FILE_BYTES;
+use crate::deny::DenyList;
 use crate::root::NfsRoot;
 use crate::tree::hash::{HASH_LIMIT, hash_bytes, hash_stream, stat_of};
 use crate::tree::{FileLeaf, Stat};
@@ -81,6 +88,9 @@ pub enum DeniedReason {
     /// A name the agent keeps for itself: its temporary files and NFS silly-rename files.
     #[error("a reserved name")]
     ReservedName,
+    /// The path matches a deny glob (D79): keystores, keys and private material are not read, written or deleted.
+    #[error("a deny glob")]
+    DenyGlob,
 }
 
 /// Why a path is not something this operation does.
@@ -260,6 +270,8 @@ pub struct FileOps<H: WriteHooks = NoHooks> {
     locks: PathLocks,
     edits: Arc<dyn TreeEdits>,
     hooks: Arc<H>,
+    /// The agent's deny list (D79). Consulted first, by every operation.
+    deny: DenyList,
 }
 
 impl<H: WriteHooks> fmt::Debug for FileOps<H> {
@@ -283,7 +295,24 @@ impl<H: WriteHooks> FileOps<H> {
             locks: PathLocks::new(),
             edits,
             hooks: Arc::new(hooks),
+            deny: DenyList::default(),
         }
+    }
+
+    /// Follow `deny`, the agent's one deny list, instead of the built-in globs alone (T11).
+    #[must_use]
+    pub fn with_deny(mut self, deny: DenyList) -> Self {
+        self.deny = deny;
+        self
+    }
+
+    /// Refuse a denied path. Before the lock, before the size check and before any I/O, so that the answer is the same
+    /// for every operation, whatever else is wrong with the request, and nothing about the file is learnt from it.
+    fn check_not_denied(&self, path: &NfsPath) -> Result<(), FileError> {
+        if self.deny.is_denied(path.as_str()) {
+            return Err(FileError::Denied(DeniedReason::DenyGlob));
+        }
+        Ok(())
     }
 
     pub fn locks(&self) -> &PathLocks {
@@ -293,6 +322,7 @@ impl<H: WriteHooks> FileOps<H> {
     /// Read a file: its bytes and their hash. A file over `max_bytes` is refused without being read. The caller's limit
     /// can only lower the 2 MiB cap ([`MAX_FILE_BYTES`]), never raise it.
     pub async fn read(&self, path: &NfsPath, max_bytes: u64) -> Result<FileContent, FileError> {
+        self.check_not_denied(path)?;
         let max_bytes = max_bytes.min(MAX_FILE_BYTES);
         let target = path.clone();
         self.blocking(path, move |root| read_blocking(root, &target, max_bytes))
@@ -308,6 +338,7 @@ impl<H: WriteHooks> FileOps<H> {
         bytes: Bytes,
         max_bytes: u64,
     ) -> Result<OpOutcome, FileError> {
+        self.check_not_denied(path)?;
         // Before any lock and any I/O: the size is on the message.
         if bytes.len() as u64 > max_bytes.min(MAX_FILE_BYTES) {
             return Err(FileError::Unsupported(UnsupportedReason::TooLarge));
@@ -331,6 +362,7 @@ impl<H: WriteHooks> FileOps<H> {
 
     /// Delete `path` if its hash is `expected`. There is no "delete whatever is there".
     pub async fn delete(&self, path: &NfsPath, expected: ContentHash) -> Result<OpOutcome, FileError> {
+        self.check_not_denied(path)?;
         let target = path.clone();
         let dir_sync_failed = self
             .blocking(path, move |root| delete_blocking(root, &target, expected))

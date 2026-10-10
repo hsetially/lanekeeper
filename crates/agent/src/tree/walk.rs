@@ -15,6 +15,11 @@
 //!    otherwise (a [`ScanMode::Full`] walk hashes every file: NFS attribute caching can hide a change from the stat);
 //! 4. recurse into subdirectories in parallel, and share the previous subtree when nothing in it changed.
 //!
+//! A file that matches a deny glob (D79) is hashed like any other, by streaming through a fixed buffer, so its size and
+//! its hash are known and it is seen to change; its leaf is marked `denied` and that is all the walk does differently.
+//! The globs are those in force when the walk begins. A leaf whose mark differs from the globs is read again even on a
+//! stat walk, so a glob the hub adds (or takes back) reaches the tree on the next walk.
+//!
 //! A scan error never becomes a removal. A directory that cannot be listed, or a file that cannot be read, keeps what
 //! the tree already had for it and is counted; only an entry that is gone (`NotFound`) disappears. If the root itself
 //! cannot be listed the whole scan fails and the tree stays as it was.
@@ -32,6 +37,7 @@ use tracing::warn;
 
 use super::hash::{HASH_LIMIT, Pool, hash_stream, stat_of};
 use super::node::{DirNode, Entry, FileLeaf, MerkleTree, Name, OtherReason};
+use crate::deny::{DenyList, DenySnapshot};
 
 /// Directories nested deeper than this are not entered. A real config tree is a handful of levels deep; this keeps the
 /// recursion, and the paths, bounded (rule 5).
@@ -58,7 +64,8 @@ pub enum ScanMode {
 #[derive(Clone)]
 pub struct WalkConfig {
     ignore: GlobSet,
-    deny: GlobSet,
+    /// The deny globs (D79), shared with everything else that reads bytes. A walk takes one snapshot of them.
+    deny: DenyList,
     hash_limit: u64,
     max_entries: usize,
     /// Tests only: an I/O error to raise at a named place.
@@ -81,7 +88,7 @@ impl std::fmt::Debug for WalkConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WalkConfig")
             .field("ignore", &self.ignore.len())
-            .field("deny", &self.deny.len())
+            .field("deny", &self.deny)
             .field("hash_limit", &self.hash_limit)
             .field("max_entries", &self.max_entries)
             .finish_non_exhaustive()
@@ -89,7 +96,7 @@ impl std::fmt::Debug for WalkConfig {
 }
 
 impl Default for WalkConfig {
-    /// The built-in ignore globs and nothing denied.
+    /// The built-in ignore globs and the built-in deny globs.
     fn default() -> Self {
         Self::new(&BUILT_IN_IGNORE, &[]).unwrap_or_else(|_| Self::bare())
     }
@@ -99,7 +106,7 @@ impl WalkConfig {
     fn bare() -> Self {
         Self {
             ignore: GlobSet::empty(),
-            deny: GlobSet::empty(),
+            deny: DenyList::default(),
             hash_limit: HASH_LIMIT,
             max_entries: MAX_ENTRIES,
             #[cfg(test)]
@@ -107,15 +114,29 @@ impl WalkConfig {
         }
     }
 
-    /// `ignore`: names or paths to leave out of the tree. `deny`: files that are tracked but whose bytes are never
-    /// sent (D79). A glob without a `/` matches a name anywhere; one with a `/` matches the path from the root. The
-    /// caller supplies the whole ignore list, built-ins included ([`BUILT_IN_IGNORE`]).
+    /// `ignore`: names or paths to leave out of the tree. `deny`: globs added to the built-in deny globs
+    /// ([`crate::deny::DEFAULT_DENY_GLOBS`]): files that are tracked but whose bytes are never sent (D79). A glob without
+    /// a `/` matches a name anywhere; one with a `/` matches the path from the root. The caller supplies the whole ignore
+    /// list, built-ins included ([`BUILT_IN_IGNORE`]).
     pub fn new(ignore: &[&str], deny: &[&str]) -> Result<Self, globset::Error> {
         Ok(Self {
             ignore: glob_set(ignore)?,
-            deny: glob_set(deny)?,
+            deny: DenyList::new(deny),
             ..Self::bare()
         })
+    }
+
+    /// Use `deny` as the deny list, so that the walk, the reads, the file operations and the spool all follow one list
+    /// that the hub's configuration changes (T11).
+    #[must_use]
+    pub fn with_deny_list(mut self, deny: DenyList) -> Self {
+        self.deny = deny;
+        self
+    }
+
+    /// The deny list this walk follows.
+    pub fn deny_list(&self) -> &DenyList {
+        &self.deny
     }
 
     /// The most bytes of a file that are hashed.
@@ -138,10 +159,6 @@ impl WalkConfig {
 
     fn ignored(&self, name: &str, rel: &str) -> bool {
         !self.ignore.is_empty() && (self.ignore.is_match(name) || self.ignore.is_match(rel))
-    }
-
-    fn denied(&self, name: &str, rel: &str) -> bool {
-        !self.deny.is_empty() && (self.deny.is_match(name) || self.deny.is_match(rel))
     }
 }
 
@@ -191,6 +208,8 @@ pub enum ScanError {
 
 struct Ctx<'a> {
     cfg: &'a WalkConfig,
+    /// The deny globs as they were when the walk began.
+    deny: DenySnapshot,
     mode: ScanMode,
     entries: AtomicUsize,
     aborted: AtomicBool,
@@ -227,6 +246,7 @@ pub fn walk(
 ) -> Result<ScanOutcome, ScanError> {
     let ctx = Ctx {
         cfg,
+        deny: cfg.deny.snapshot(),
         mode,
         entries: AtomicUsize::new(0),
         aborted: AtomicBool::new(false),
@@ -373,7 +393,7 @@ fn scan_dir(
             }
         } else if kind.is_file() {
             ctx.files.fetch_add(1, Ordering::Relaxed);
-            let denied = ctx.cfg.denied(name_for_globs, &rel_child);
+            let denied = ctx.deny.is_denied_parts(name_for_globs, &rel_child);
             work.push(Work::File(FileWork {
                 os_name,
                 key,

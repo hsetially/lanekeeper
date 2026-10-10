@@ -30,8 +30,13 @@
 //! # What it never holds
 //!
 //! A record is the wire message, so a denied file (D79) is a name, a size and a hash with no bytes, here as on the wire.
-//! The spool does no matching of its own (T11 decides what is denied, before a version reaches it) and cannot add bytes
-//! that were not in the delta it was given. Its files are created `0600`, on a volume the NFS root does not contain.
+//! The walker and the delta builder already keep denied files' bytes out of a delta; the spool is the last guard, with the
+//! same [`DenyList`] (T11): [`Spool::append`] strips the bytes from any entry whose path is denied before the record is
+//! made, and the pump strips them again from a record written before the hub added a glob, so that bytes the agent held
+//! for a path that has become denied never reach the connection. What was written to a segment file before the path was
+//! denied stays in that file until the hub has acknowledged it and the segment is deleted (the threat model says so).
+//! The spool cannot add bytes that were not in the delta it was given. Its files are created `0600`, on a volume the NFS
+//! root does not contain.
 //!
 //! # Where it runs
 //!
@@ -55,6 +60,7 @@ use tokio::time::{MissedTickBehavior, interval, timeout};
 use tracing::{debug, warn};
 
 use crate::clock::Clock;
+use crate::deny::DenyList;
 use crate::ops::Metrics;
 use crate::transport::{Outbox, OutboxError};
 use crate::tree::delta::{DeltaSink, SeqCounter, SinkError};
@@ -258,6 +264,8 @@ pub struct Spool {
     io: IoMode,
     /// One file operation that can block for long at a time.
     busy: Arc<Semaphore>,
+    /// The agent's deny list (T11): what is stored and what is replayed never carries a denied file's bytes.
+    deny: DenyList,
 }
 
 impl fmt::Debug for Spool {
@@ -284,9 +292,18 @@ impl Spool {
                 core,
                 io,
                 busy: Arc::new(Semaphore::new(1)),
+                deny: DenyList::default(),
             },
             recovery,
         ))
+    }
+
+    /// Follow `deny`, the agent's one deny list, instead of the built-in globs alone. The returned spool is the same spool
+    /// (same files, same counter); only the list it consults differs.
+    #[must_use]
+    pub fn with_deny(mut self, deny: DenyList) -> Self {
+        self.deny = deny;
+        self
     }
 
     /// The counter every message the agent sends takes its number from, hub-initiated answers included.
@@ -350,7 +367,15 @@ impl Spool {
 
     /// Store one message of a delta. Returns once it is safely written; the last message of a delta only after it has
     /// been synced.
-    pub async fn append(&self, delta: ScanDelta) -> Result<Appended, SpoolError> {
+    pub async fn append(&self, mut delta: ScanDelta) -> Result<Appended, SpoolError> {
+        // The last guard (D79): whatever built this message, no denied file's bytes are written to the volume.
+        let scrubbed = self.deny.scrub(&mut delta);
+        if scrubbed > 0 {
+            debug!(
+                scrubbed,
+                "denied files had bytes in a delta being spooled; stripped"
+            );
+        }
         self.run(move |core| core.append(delta)).await?
     }
 
@@ -482,7 +507,16 @@ impl Pump {
                 continue;
             };
             let bytes = outgoing.payload_bytes;
-            match self.outbox.send(FromAgent::Delta(outgoing.delta)).await {
+            let mut delta = outgoing.delta;
+            // A record written before the hub added a deny glob may hold bytes of a file that is denied now (D79).
+            let scrubbed = self.spool.deny.scrub(&mut delta);
+            if scrubbed > 0 {
+                debug!(
+                    seq,
+                    scrubbed, "a spooled record held bytes of denied files; stripped before sending"
+                );
+            }
+            match self.outbox.send(FromAgent::Delta(delta)).await {
                 Ok(()) => {
                     self.cursor = seq;
                     self.window.push_back((seq, bytes));

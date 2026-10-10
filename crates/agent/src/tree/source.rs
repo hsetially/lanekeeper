@@ -17,6 +17,7 @@ use rayon::prelude::*;
 use super::hash::{Pool, hash_stream, stat_of};
 use super::node::{Entry, FileLeaf, MerkleTree, Stat};
 use super::walk::{ScanError, ScanMode, ScanOutcome, WalkConfig, walk};
+use crate::deny::{DenyList, DenySnapshot};
 use crate::root::NfsRoot;
 
 /// A file whose leaf is about to be sent: check that it is still what the tree says.
@@ -65,18 +66,25 @@ pub enum ReadError {
     NotRegular,
     #[error("the file could not be read")]
     Io,
+    /// The path matches a deny glob (D79): its bytes are never read for a delta, whoever asks.
+    #[error("the path is denied")]
+    Denied,
 }
 
 /// What the scan loop needs from the disk.
 #[async_trait]
 pub trait TreeSource: Send + Sync + fmt::Debug + 'static {
+    /// The deny globs this source walks and reads by (D79, T11). It is the one list in the agent: the scanner puts the
+    /// hub's globs into it, and the file operations and the spool follow the same handle.
+    fn deny(&self) -> DenyList;
+
     /// Walk the tree. `previous` lets the walk skip what has not changed.
     async fn scan(&self, previous: Option<MerkleTree>, mode: ScanMode) -> Result<ScanOutcome, ScanError>;
 
     /// Check each file against its leaf, rehashing the ones whose stat moved. One answer per request, in order.
     async fn refresh(&self, files: Vec<RefreshRequest>) -> Vec<Refreshed>;
 
-    /// Read each file. One answer per request, in order.
+    /// Read each file. One answer per request, in order. A denied path is answered `Denied` and not opened.
     async fn read(&self, files: Vec<ReadRequest>) -> Vec<Result<FileRead, ReadError>>;
 }
 
@@ -107,6 +115,10 @@ impl FsSource {
 
 #[async_trait]
 impl TreeSource for FsSource {
+    fn deny(&self) -> DenyList {
+        self.cfg.deny_list().clone()
+    }
+
     async fn scan(&self, previous: Option<MerkleTree>, mode: ScanMode) -> Result<ScanOutcome, ScanError> {
         let dir = self.root.shared();
         let cfg = Arc::clone(&self.cfg);
@@ -137,9 +149,16 @@ impl TreeSource for FsSource {
     async fn read(&self, files: Vec<ReadRequest>) -> Vec<Result<FileRead, ReadError>> {
         let dir = self.root.shared();
         let count = files.len();
+        // One look at the list for the whole call, taken now: a glob the hub adds a moment later applies to the next call.
+        let deny = self.cfg.deny_list().snapshot();
         let done = self
             .pool
-            .run(move || files.par_iter().map(|f| read_one(&dir, f)).collect::<Vec<_>>())
+            .run(move || {
+                files
+                    .par_iter()
+                    .map(|f| read_one(&dir, &deny, f))
+                    .collect::<Vec<_>>()
+            })
             .await;
         done.unwrap_or_else(|_| vec![Err(ReadError::Io); count])
     }
@@ -168,9 +187,13 @@ fn refresh_one(dir: &Dir, request: &RefreshRequest, hash_limit: u64) -> Refreshe
     }
 }
 
-fn read_one(dir: &Dir, request: &ReadRequest) -> Result<FileRead, ReadError> {
+fn read_one(dir: &Dir, deny: &DenySnapshot, request: &ReadRequest) -> Result<FileRead, ReadError> {
     use std::io::Read;
 
+    // Before anything is opened: a denied file's bytes are not read for a delta at all (D79).
+    if deny.is_denied(request.path.as_str()) {
+        return Err(ReadError::Denied);
+    }
     let mut file = dir.open(request.path.as_str()).map_err(|e| {
         if e.kind() == io::ErrorKind::NotFound {
             ReadError::NotFound

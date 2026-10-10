@@ -8,6 +8,7 @@
 //! - [`app`]: the loops put together, started and stopped (T7).
 //! - [`config`]: the validated environment, and the limits the hub cannot raise (T1).
 //! - [`root`]: the NFS export as a cap-std handle (T1).
+//! - [`deny`]: the deny globs, so that keystores and keys are hashed and never sent, read or written (T11, D79, S17).
 //! - [`clock`], [`backoff`]: injectable time, and retry delays with full jitter.
 //! - [`http`]: the plain-HTTP client for the metadata server and the config-server (T2, T12).
 //! - [`identity`]: the key, the certificate, joining the hub and renewing (T2, S5).
@@ -34,6 +35,7 @@ pub mod app;
 pub mod backoff;
 pub mod clock;
 pub mod config;
+pub mod deny;
 pub mod dispatch;
 pub mod fileops;
 pub mod http;

@@ -13,7 +13,7 @@
 //! |---|---|
 //! | the hash on disk is not the expected one | `CONFLICT`, with the current hash |
 //! | the file, or its directory, does not exist | `NOT_FOUND` |
-//! | a symbolic link, a reserved name, a path that failed validation | `DENIED` |
+//! | a symbolic link, a reserved name, a deny glob (D79), a path that failed validation | `DENIED` |
 //! | not a regular file, over 2 MiB, a command this build does not carry out | `UNSUPPORTED` |
 //! | anything else from the file system, a timeout, too many requests at once | `IO` |
 //! | a restart in a namespace the agent was not given | `DENIED` |
@@ -325,6 +325,7 @@ mod tests {
                 OpError::Denied,
                 None,
             ),
+            (FileError::Denied(DeniedReason::DenyGlob), OpError::Denied, None),
             (
                 FileError::Unsupported(UnsupportedReason::NotRegular),
                 OpError::Unsupported,

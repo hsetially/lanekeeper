@@ -199,6 +199,10 @@ impl App {
             Some(source) => source,
             None => production_source(&settings, &root)?,
         };
+        // One deny list (D79, T11): the source walks and reads by it, the scanner puts the hub's globs into it, and the
+        // file operations and the spool below follow the same handle, so nothing can disagree about what is denied.
+        let deny = source.deny();
+        let spool = spool.with_deny(deny.clone());
         // Everything the scanner builds goes to the spool and is sent from there; the spool also owns the sequence
         // counter, so a restart never repeats a number.
         let scanner = Scanner::with_seq(
@@ -220,7 +224,7 @@ impl App {
             )?)),
             None => None,
         };
-        let ops = FileOps::new(root, Arc::new(scanner.clone()));
+        let ops = FileOps::new(root, Arc::new(scanner.clone())).with_deny(deny);
         let mut dispatcher = Dispatcher::new(ops).with_metrics(Arc::clone(&metrics));
         if let Some(cluster) = &cluster {
             dispatcher = dispatcher.with_cluster(Arc::clone(cluster) as Arc<dyn ClusterOps>);
@@ -354,7 +358,7 @@ fn spawn_loops(
 /// The production tree source: the NFS root, walked and hashed on a pool of the configured size.
 fn production_source(settings: &Settings, root: &NfsRoot) -> Result<Arc<dyn TreeSource>, AppError> {
     let ignore: Vec<&str> = settings.ignore_globs.iter().map(ShortText::as_str).collect();
-    // Deny globs arrive with the hub's configuration (T11); until then nothing is denied.
+    // The built-in deny globs are in force from the start; the hub's arrive with its configuration (T11, D79).
     let walk = WalkConfig::new(&ignore, &[]).map_err(|_| AppError::Glob("LK_IGNORE_GLOBS"))?;
     let pool = Pool::new(settings.pool_threads).map_err(|_| AppError::Pool)?;
     Ok(Arc::new(FsSource::new(root.clone(), pool, walk)))

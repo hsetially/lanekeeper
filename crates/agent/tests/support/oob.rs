@@ -72,6 +72,8 @@ impl Harness {
             clock.clone(),
         )
         .unwrap();
+        // As the real agent wires it: the spool follows the source's deny list.
+        let spool = spool.with_deny(source.deny());
         let scanner = Scanner::with_seq(source, clock, spool.sink(), Metrics::detached(), spool.seq());
         let mut scan_handler = ScanHandler::new(scanner.clone(), spool.clone());
         if let Some(commands) = commands(&scanner) {

@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent::clock::Clock;
+use agent::deny::DenyList;
 use agent::tree::{
     Entry, FileLeaf, FileRead, MerkleTree, ReadError, ReadRequest, RefreshRequest, Refreshed, ScanError,
     ScanMode, ScanOutcome, ScanStats, Stat, StatTime, TreeSource,
@@ -38,6 +39,10 @@ pub struct ScriptedSource {
     largest_read_call: AtomicU64,
     fail_scans: Mutex<Option<ScanError>>,
     modes: Mutex<Vec<ScanMode>>,
+    /// The deny list, as the real source has one: leaves are marked by it, and a read of a denied path is refused (T11).
+    deny: DenyList,
+    /// Called once, at the start of the next `refresh`: a test uses it to change something in the middle of a delta.
+    refresh_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl std::fmt::Debug for ScriptedSource {
@@ -115,6 +120,11 @@ impl ScriptedSource {
         self.state.lock().unwrap().refresh_gone.push(path.to_owned());
     }
 
+    /// Run `hook` at the start of the next `refresh`, which is after a delta has been planned and before it reads.
+    pub fn before_next_refresh(&self, hook: impl FnOnce() + Send + 'static) {
+        *self.refresh_hook.lock().unwrap() = Some(Box::new(hook));
+    }
+
     pub fn fail_next_scans(&self, error: ScanError) {
         *self.fail_scans.lock().unwrap() = Some(error);
     }
@@ -163,17 +173,20 @@ impl ScriptedSource {
     /// The tree of the files as they are now.
     pub fn tree(&self) -> MerkleTree {
         let state = self.state.lock().unwrap();
-        MerkleTree::from_leaves(
-            state
-                .files
-                .iter()
-                .map(|(path, (bytes, time))| (path.as_str(), Entry::File(Self::leaf(path, bytes, *time)))),
-        )
+        let deny = self.deny.snapshot();
+        MerkleTree::from_leaves(state.files.iter().map(|(path, (bytes, time))| {
+            let leaf = Self::leaf(path, bytes, *time).with_denied(deny.is_denied(path));
+            (path.as_str(), Entry::File(leaf))
+        }))
     }
 }
 
 #[async_trait]
 impl TreeSource for ScriptedSource {
+    fn deny(&self) -> DenyList {
+        self.deny.clone()
+    }
+
     async fn scan(&self, _previous: Option<MerkleTree>, mode: ScanMode) -> Result<ScanOutcome, ScanError> {
         self.scans.fetch_add(1, Ordering::SeqCst);
         self.modes.lock().unwrap().push(mode);
@@ -193,6 +206,10 @@ impl TreeSource for ScriptedSource {
     }
 
     async fn refresh(&self, files: Vec<RefreshRequest>) -> Vec<Refreshed> {
+        let hook = self.refresh_hook.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
         let state = self.state.lock().unwrap();
         files
             .iter()
@@ -221,10 +238,14 @@ impl TreeSource for ScriptedSource {
         self.largest_read_call
             .fetch_max(files.len() as u64, Ordering::SeqCst);
         let state = self.state.lock().unwrap();
+        let deny = self.deny.snapshot();
         files
             .iter()
             .map(|f| {
                 let path = f.path.as_str();
+                if deny.is_denied(path) {
+                    return Err(ReadError::Denied);
+                }
                 if let Some(error) = state.read_errors.get(path) {
                     return Err(*error);
                 }

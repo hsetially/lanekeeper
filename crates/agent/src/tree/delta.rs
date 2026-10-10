@@ -31,6 +31,7 @@ use super::node::{ChangedFile, Entry, FileLeaf, MerkleTree, Skip, SkipReason, Tr
 use super::source::{FileRead, ReadError, ReadRequest, RefreshRequest, Refreshed, TreeSource};
 use crate::clock::Clock;
 use crate::config::limits;
+use crate::deny::DenyList;
 
 /// Estimated bytes on the wire per message. The real limit is 4 MiB; the estimate counts every path and a generous
 /// 96 bytes of fixed fields for each entry, so it is never below the truth.
@@ -162,6 +163,8 @@ pub struct DeltaBuilder<'a> {
     seq: &'a SeqCounter,
     max_file_bytes: u64,
     during_job: Option<&'a JobRef>,
+    /// The source's deny list, asked again for every file at the moment the delta is planned (D79).
+    deny: DenyList,
 }
 
 impl fmt::Debug for DeltaBuilder<'_> {
@@ -180,6 +183,7 @@ impl<'a> DeltaBuilder<'a> {
             seq,
             max_file_bytes: limits::MAX_FILE_BYTES,
             during_job: None,
+            deny: source.deny(),
         }
     }
 
@@ -273,8 +277,12 @@ impl<'a> DeltaBuilder<'a> {
     /// Turn the tree diff into paths the wire accepts, and decide which files are sent, denied or too big.
     fn plan(&self, diff: TreeDiff) -> Plan {
         let mut plan = Plan::default();
+        let deny = self.deny.snapshot();
         for ChangedFile { path, leaf } in diff.changed {
             let Some(path) = wire_path(&path) else { continue };
+            // The tree's mark was made when the file was walked; the list may have grown since (the hub added a glob).
+            // Either one makes the file denied, so a stale leaf can never put bytes on the wire.
+            let leaf = leaf.with_denied(leaf.denied || deny.is_denied(path.as_str()));
             if leaf.denied {
                 plan.denied.push(Item { path, leaf });
             } else if leaf.stat.size > self.max_file_bytes {
@@ -340,6 +348,17 @@ impl<'a> DeltaBuilder<'a> {
             Some(Entry::File(leaf)) => Some(*leaf),
             _ => None,
         };
+        // A file the list denies now, whose leaf in the tree does not say so yet: the tree learns the mark here, so that the
+        // next walk does not report the same file again as denied.
+        if item.leaf.denied {
+            if let Some(Entry::File(have)) = current.get(item.path.as_str()) {
+                if !have.denied {
+                    let edited = current.put(item.path.as_str(), Entry::File(have.with_denied(true)));
+                    *new_bytes += edited.new_bytes;
+                    *current = edited.tree;
+                }
+            }
+        }
         match answer {
             Refreshed::Same | Refreshed::Failed => Some(item),
             Refreshed::Changed(leaf) => {
@@ -432,6 +451,16 @@ impl<'a> DeltaBuilder<'a> {
                     settled.push(Unit::Removed(item.path));
                 }
                 Err(ReadError::TooLarge) => push_unit_skip(&mut settled, item.path, SkipReason::TooLarge),
+                Err(ReadError::Denied) => {
+                    // Denied after the plan was made (the hub's globs arrived meanwhile). Nothing was read: it goes as a
+                    // denied entry with the hash the tree has, and the tree learns the mark.
+                    let leaf = item.leaf.with_denied(true);
+                    late.push(LateEdit::Put(item.path.clone(), leaf));
+                    settled.push(Unit::Denied(Item {
+                        path: item.path,
+                        leaf,
+                    }));
+                }
                 Err(error @ (ReadError::NotRegular | ReadError::Io)) => {
                     warn!(
                         path = item.path.as_str(),

@@ -3,6 +3,7 @@
 
 pub mod agent_process;
 pub mod app_rig;
+pub mod capture;
 pub mod clock;
 pub mod collect_sink;
 pub mod fake_hub;

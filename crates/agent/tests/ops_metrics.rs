@@ -37,6 +37,10 @@ struct SlowSource(ScriptedSource);
 
 #[async_trait::async_trait]
 impl TreeSource for SlowSource {
+    fn deny(&self) -> agent::deny::DenyList {
+        self.0.deny()
+    }
+
     async fn scan(&self, previous: Option<MerkleTree>, mode: ScanMode) -> Result<ScanOutcome, ScanError> {
         sleep(Duration::from_secs(3)).await;
         self.0.scan(previous, mode).await

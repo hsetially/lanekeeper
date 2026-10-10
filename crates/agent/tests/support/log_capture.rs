@@ -28,6 +28,19 @@ impl LogCapture {
         tracing::subscriber::set_default(subscriber)
     }
 
+    /// Route the `tracing` events of every thread here, for the rest of the process. For a test whose work happens on
+    /// worker threads (the walker's pool, the blocking pool), where [`LogCapture::install`] would see nothing. It can be
+    /// called once per test binary, so a binary that uses it holds one test that does.
+    pub fn install_global(&self) {
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(self.clone())
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("no other test in this binary installed a subscriber");
+    }
+
     pub fn text(&self) -> String {
         String::from_utf8_lossy(&self.buffer.lock().unwrap()).into_owned()
     }
