@@ -16,7 +16,7 @@ use domain::{
     AgentConfig, AgentReply, AppName, AuditOperation, AuditRecord, AuditRecordBatch, ChannelName,
     ClusterReport, ContentHash, DeploymentInfo, EnvValue, Expected, Heartbeat, Hello, HubCommand, IdError,
     JobRef, NfsPath, OpError, OpResult, PodInfo, ReleaseHint, RequestId, ScanDelta, ScanEntry, Secret,
-    SentinelConfig, SentinelHello, ServeRequest, ServiceRef, ShortText, SkippedEntry, SwimlaneId,
+    SentinelConfig, SentinelHello, ServeRequest, ServiceRef, ShortText, SkippedEntry, SpoolGap, SwimlaneId,
     SyncWindowEvent, SyncWindowKind, TenantId, Timestamp,
 };
 
@@ -84,6 +84,14 @@ fn list<T, U>(
 ) -> Result<Vec<U>> {
     at_most(field, items.len(), max)?;
     items.into_iter().map(convert).collect()
+}
+
+/// An HTTP status the config-server answered with (100 to 599).
+fn http_status(field: &'static str, raw: u32) -> Result<u16> {
+    u16::try_from(raw)
+        .ok()
+        .filter(|status| (100..=599).contains(status))
+        .ok_or(ConvertError::Invalid(field))
 }
 
 fn ts(ms: i64) -> Timestamp {
@@ -174,6 +182,33 @@ impl From<SkippedEntry> for pb::SkippedEntry {
     }
 }
 
+impl TryFrom<pb::SpoolGap> for SpoolGap {
+    type Error = ConvertError;
+
+    /// A gap that ends before it starts is malformed: the receiver would otherwise compare roots over a
+    /// negative range and could decide that no history was lost.
+    fn try_from(g: pb::SpoolGap) -> Result<Self> {
+        if g.to_ms < g.from_ms {
+            return Err(ConvertError::Invalid("scan_delta.gap"));
+        }
+        Ok(Self {
+            from: ts(g.from_ms),
+            to: ts(g.to_ms),
+            lost_entries: g.lost_entries,
+        })
+    }
+}
+
+impl From<SpoolGap> for pb::SpoolGap {
+    fn from(g: SpoolGap) -> Self {
+        Self {
+            from_ms: g.from.unix_millis(),
+            to_ms: g.to.unix_millis(),
+            lost_entries: g.lost_entries,
+        }
+    }
+}
+
 impl TryFrom<pb::ScanDelta> for ScanDelta {
     type Error = ConvertError;
 
@@ -203,6 +238,7 @@ impl TryFrom<pb::ScanDelta> for ScanDelta {
                 .transpose()?,
             more: d.more,
             part: d.part,
+            gap: d.gap.map(SpoolGap::try_from).transpose()?,
         };
         at_most(
             "scan_delta.entries.content",
@@ -225,6 +261,7 @@ impl From<ScanDelta> for pb::ScanDelta {
             during_job: d.during_job.as_ref().map(pb_job),
             more: d.more,
             part: d.part,
+            gap: d.gap.map(Into::into),
         }
     }
 }
@@ -510,8 +547,8 @@ pub enum FromAgent {
     Delta(ScanDelta),
     /// A cluster report the agent sent on its own.
     Cluster(ClusterReport),
-    /// The answer to a [`HubCommand`]: an operation result, file content, a served response, or a
-    /// cluster report that carries the request id.
+    /// The answer to a [`HubCommand`]: an operation result, file content, a served response, a notify
+    /// result, or a cluster report that carries the request id.
     Reply(AgentReply),
     /// The agent asks for a new certificate before the current one expires (S5).
     CertRenewal {
@@ -568,11 +605,12 @@ impl FromAgent {
             }),
             Kind::ServedResponse(s) => Self::Reply(AgentReply::Served {
                 request_id: request_id("served_response.request_id", &s.request_id)?,
-                status: u16::try_from(s.status)
-                    .ok()
-                    .filter(|status| (100..=599).contains(status))
-                    .ok_or(ConvertError::Invalid("served_response.status"))?,
+                status: http_status("served_response.status", s.status)?,
                 bytes: file_bytes("served_response.body", s.body)?,
+            }),
+            Kind::NotifyResult(n) => Self::Reply(AgentReply::Notify {
+                request_id: request_id("notify_result.request_id", &n.request_id)?,
+                status: http_status("notify_result.status", n.status)?,
             }),
         }))
     }
@@ -608,6 +646,10 @@ impl FromAgent {
                 request_id: request_id.as_str().to_owned(),
                 status: u32::from(status),
                 body: bytes,
+            }),
+            Self::Reply(AgentReply::Notify { request_id, status }) => Kind::NotifyResult(pb::NotifyResult {
+                request_id: request_id.as_str().to_owned(),
+                status: u32::from(status),
             }),
         };
         pb::AgentMessage { kind: Some(kind) }
@@ -1084,7 +1126,7 @@ impl ToSentinel {
 /// sentinel identity or the reverse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinSubject {
-    /// An in-cluster agent, for this swimlane: `spiffe://lanekeeper/agent/<swimlane>`.
+    /// An in-cluster agent, for this swimlane: `spiffe://lanekeeper/swimlane/<id>`.
     Agent(SwimlaneId),
     /// The sentinel on an NFS VM, by name: `spiffe://lanekeeper/sentinel/<name>`.
     Sentinel(ShortText),

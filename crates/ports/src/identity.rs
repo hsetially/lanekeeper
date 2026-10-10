@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use domain::{ShortText, SwimlaneId, UserId};
 
 /// An agent whose client certificate was verified. The certificate SAN is
-/// `spiffe://lanekeeper/agent/<swimlane>` (S5, Q11), so an agent can only ever speak for its own swimlane.
+/// `spiffe://lanekeeper/swimlane/<id>` (S5, Q11), so an agent can only ever speak for its own swimlane.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AgentIdentity {
     swimlane: SwimlaneId,

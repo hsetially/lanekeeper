@@ -286,6 +286,7 @@ fn scan_delta_payload_is_the_sum_of_file_bytes_and_capped_at_3_mib() {
         during_job: None,
         more: false,
         part: 0,
+        gap: None,
     };
     assert_eq!(delta.payload_bytes(), 5);
     assert_eq!(ScanDelta::MAX_BYTES, 3 * 1024 * 1024);
