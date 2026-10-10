@@ -1,7 +1,7 @@
 # Plan 02: Agent
 
-Status: DRAFT
-Contract-change: needed
+Status: APPROVED
+Contract-change: APPROVED
 Extra-paths: `deny.toml`, `docs/decisions.md`
 Prompt: prompts/02-agent.md
 Branch: agent/02-agent
