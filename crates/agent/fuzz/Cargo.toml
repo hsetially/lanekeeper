@@ -64,3 +64,10 @@ path = "fuzz_targets/agent_id_token.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "agent_spool_record"
+path = "fuzz_targets/agent_spool_record.rs"
+test = false
+doc = false
+bench = false

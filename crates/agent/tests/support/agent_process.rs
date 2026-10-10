@@ -26,7 +26,11 @@ pub fn running_env(root: &Path, port: u16) -> HashMap<String, String> {
     std::fs::write(&ca, TestCa::new().pem()).unwrap();
     let nfs = root.join("nfs");
     std::fs::create_dir_all(&nfs).unwrap();
+    // The spool is a mounted volume that must exist (the agent does not create it), outside the NFS root.
+    let spool = root.join("spool");
+    std::fs::create_dir_all(&spool).unwrap();
     let mut env = valid_env(&nfs);
+    env.insert("LK_SPOOL_DIR".to_owned(), spool.to_string_lossy().into_owned());
     env.insert("LK_HUB_CA_FILE".to_owned(), ca.to_string_lossy().into_owned());
     env.insert("LK_HEALTH_ADDR".to_owned(), format!("127.0.0.1:{port}"));
     env

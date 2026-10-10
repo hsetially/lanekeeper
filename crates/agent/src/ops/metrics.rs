@@ -165,6 +165,10 @@ pub struct Metrics {
     connection_state: Family<StateLabel, Gauge>,
     connections: Family<AttemptLabel, Counter>,
     operations: Family<OperationLabels, Counter>,
+    spool_entries: Gauge,
+    spool_bytes: Gauge,
+    spool_lost: Counter,
+    spool_damaged: Counter,
 }
 
 impl Metrics {
@@ -182,6 +186,10 @@ impl Metrics {
         let connection_state = Family::<StateLabel, Gauge>::default();
         let connections = Family::<AttemptLabel, Counter>::default();
         let operations = Family::<OperationLabels, Counter>::default();
+        let spool_entries = Gauge::default();
+        let spool_bytes = Gauge::default();
+        let spool_lost = Counter::default();
+        let spool_damaged = Counter::default();
 
         registry.register(
             "lanekeeper_agent_scan_duration_seconds",
@@ -223,6 +231,26 @@ impl Metrics {
             "Hub commands carried out, by operation and outcome",
             operations.clone(),
         );
+        registry.register(
+            "lanekeeper_agent_spool_entries",
+            "Versions held in the spool, waiting for the hub to acknowledge them",
+            spool_entries.clone(),
+        );
+        registry.register(
+            "lanekeeper_agent_spool_bytes",
+            "Bytes the spool takes on its volume",
+            spool_bytes.clone(),
+        );
+        registry.register(
+            "lanekeeper_agent_spool_lost_entries",
+            "Versions dropped from the spool (full, damaged or never finished) and reported to the hub as a gap",
+            spool_lost.clone(),
+        );
+        registry.register(
+            "lanekeeper_agent_spool_damaged_records",
+            "Spooled records that could not be read back whole when they were due to be sent",
+            spool_damaged.clone(),
+        );
 
         let metrics = Self {
             registry,
@@ -234,6 +262,10 @@ impl Metrics {
             connection_state,
             connections,
             operations,
+            spool_entries,
+            spool_bytes,
+            spool_lost,
+            spool_damaged,
         };
         metrics.set_connection(ConnectionState::Disconnected);
         metrics.create_every_series();
@@ -287,6 +319,22 @@ impl Metrics {
     pub fn delta(&self, entries: usize, bytes: u64) {
         self.delta_entries.observe(entries as f64);
         self.delta_bytes.observe(bytes as f64);
+    }
+
+    /// What the spool holds now.
+    pub fn spool_held(&self, entries: u64, bytes: u64) {
+        self.spool_entries.set(i64::try_from(entries).unwrap_or(i64::MAX));
+        self.spool_bytes.set(i64::try_from(bytes).unwrap_or(i64::MAX));
+    }
+
+    /// Versions the spool dropped since it last said.
+    pub fn spool_lost(&self, entries: u64) {
+        self.spool_lost.inc_by(entries);
+    }
+
+    /// A spooled record failed its check when it was read back.
+    pub fn spool_damaged(&self) {
+        self.spool_damaged.inc();
     }
 
     pub fn set_connection(&self, state: ConnectionState) {
@@ -362,6 +410,35 @@ mod tests {
                 &text,
                 "lanekeeper_agent_scan_duration_seconds_count{kind=\"Stat\"}"
             ),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn the_spool_series_exist_from_the_start_and_move() {
+        let metrics = Metrics::new();
+        let text = metrics.render();
+        for series in [
+            "lanekeeper_agent_spool_entries",
+            "lanekeeper_agent_spool_bytes",
+            "lanekeeper_agent_spool_lost_entries_total",
+            "lanekeeper_agent_spool_damaged_records_total",
+        ] {
+            assert_eq!(value_of(&text, series), Some(0.0), "{series}");
+        }
+        metrics.spool_held(7, 4096);
+        metrics.spool_lost(3);
+        metrics.spool_lost(2);
+        metrics.spool_damaged();
+        let text = metrics.render();
+        assert_eq!(value_of(&text, "lanekeeper_agent_spool_entries"), Some(7.0));
+        assert_eq!(value_of(&text, "lanekeeper_agent_spool_bytes"), Some(4096.0));
+        assert_eq!(
+            value_of(&text, "lanekeeper_agent_spool_lost_entries_total"),
+            Some(5.0)
+        );
+        assert_eq!(
+            value_of(&text, "lanekeeper_agent_spool_damaged_records_total"),
             Some(1.0)
         );
     }

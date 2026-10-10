@@ -17,6 +17,7 @@
 //! | `agent_cert_chain` | length-prefixed DER blobs | random bytes are never accepted as the agent's certificate |
 //! | `agent_pem` | one byte (key, CA, or damage to a generated key), then PEM text | a key that is accepted survives a PEM round trip; an undamaged generated key is always accepted; neither parser panics |
 //! | `agent_id_token` | text | a string accepted as a token is three non-empty base64url segments within the size limit |
+//! | `agent_spool_record` | one byte (raw segment bytes, or message bodies the target wraps in valid frames), then the data | opening a spool over any bytes never panics and never reads or allocates beyond one record; whatever it replays is a delta the hub's own conversion accepts, in strictly rising order, within the bounds; damage is cut off so that opening again finds the same spool |
 
 #![allow(
     dead_code,
@@ -32,12 +33,16 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
+use agent::clock::Clock;
 use agent::config::Tunables;
 use agent::dispatch::{CommandHandler, Dispatcher, OpLimits};
 use agent::fileops::{FileOps, TreeEdits};
 use agent::identity::idtoken::looks_like_a_jwt;
 use agent::identity::{ClientIdentity, KeyMaterial};
 use agent::root::NfsRoot;
+use agent::spool::record::{FRAME_OVERHEAD, Frame, Meta, SEGMENT_MAGIC};
+use agent::spool::{IoMode, Spool, SpoolLimits, SpoolOptions, SpoolVolume};
+use agent::transport::outbox::{self, OutboxLimits};
 use agent::transport::tls::HubRoots;
 use agent::transport::wire::{self, Decoded};
 use agent::tree::{FileLeaf, WalkConfig};
@@ -51,12 +56,13 @@ use proto::convert::{FromAgent, ToAgent};
 pub type Check = fn(&[u8]) -> Result<(), String>;
 
 /// Every fuzz target: its name (also the file name in `fuzz_targets` and the corpus directory) and its check.
-pub const TARGETS: [(&str, Check); 5] = [
+pub const TARGETS: [(&str, Check); 6] = [
     ("agent_path", agent_path),
     ("agent_hub_message", agent_hub_message),
     ("agent_cert_chain", agent_cert_chain),
     ("agent_pem", agent_pem),
     ("agent_id_token", agent_id_token),
+    ("agent_spool_record", agent_spool_record),
 ];
 
 /// Every seed corpus must hold at least this many inputs, so deleting the seeds cannot go unnoticed.
@@ -562,4 +568,432 @@ pub fn agent_id_token(data: &[u8]) -> Result<(), String> {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')),
         || "a token with a character outside base64url was accepted".to_owned(),
     )
+}
+
+// ------------------------------------------------------------------------------------------------ agent_spool_record
+
+/// The most bytes of a segment the spool target looks at.
+const MAX_SPOOL_INPUT: usize = 1 << 20;
+/// The most message bodies the second input mode wraps.
+const MAX_BODIES: usize = 32;
+const SPOOL_SEGMENT: &str = "seg-0000000000000001.lks";
+
+#[derive(Debug)]
+struct FixedClock;
+
+impl Clock for FixedClock {
+    fn now(&self) -> Timestamp {
+        Timestamp::from_unix_millis(1_800_000_000_000)
+    }
+
+    fn instant(&self) -> tokio::time::Instant {
+        tokio::time::Instant::now()
+    }
+}
+
+/// What the wire conversion says about one message the spool replayed.
+type Replay = Result<Option<FromAgent>, proto::convert::ConvertError>;
+
+/// What opening the spool over some bytes and replaying it showed.
+struct Replayed {
+    seqs: Vec<u64>,
+    damaged_segments: usize,
+}
+
+/// A directory for one input: on a RAM disk when there is one, because opening a spool syncs its state file.
+fn scratch_dir() -> tempfile::TempDir {
+    let ram = Path::new("/dev/shm");
+    let built = if ram.is_dir() {
+        tempfile::Builder::new().prefix("lk-spool-fuzz-").tempdir_in(ram)
+    } else {
+        tempfile::Builder::new().prefix("lk-spool-fuzz-").tempdir()
+    };
+    built.unwrap()
+}
+
+/// The frame a delta is stored as: the same call the spool makes.
+fn frame_of(delta: &domain::ScanDelta) -> Vec<u8> {
+    let (mut first, mut last) = (i64::MAX, i64::MIN);
+    for e in &delta.entries {
+        first = first.min(e.observed_at.unix_millis());
+        last = last.max(e.observed_at.unix_millis());
+    }
+    if first > last {
+        (first, last) = (0, 0);
+    }
+    let meta = Meta {
+        seq: delta.seq,
+        part: delta.part,
+        more: delta.more,
+        entries: u32::try_from(delta.entries.len() + delta.removed.len() + delta.skipped.len())
+            .unwrap_or(u32::MAX),
+        first_ms: first,
+        last_ms: last,
+    };
+    let mut buf = Frame::begin(0);
+    agent::transport::wire::encode_delta_into(delta.clone(), &mut buf);
+    Frame::seal(buf, &meta).unwrap().as_bytes().to_vec()
+}
+
+/// A segment made of `bodies`, each wrapped in a frame with a valid checksum, so that what the fuzzer mutates reaches
+/// the decoder instead of stopping at the first checksum. A body that is a delta gets the metadata its delta implies;
+/// one that is not gets metadata that does not match it, which the spool must notice when it reads it back.
+fn framed_bodies(data: &[u8]) -> Vec<u8> {
+    let mut segment = SEGMENT_MAGIC.to_vec();
+    let mut rest = data;
+    let mut last_seq = 0;
+    for index in 0..MAX_BODIES {
+        let Some((len, tail)) = rest.split_first_chunk::<2>() else {
+            break;
+        };
+        let len = usize::from(u16::from_le_bytes(*len)).min(tail.len());
+        let (body, tail) = tail.split_at(len);
+        rest = tail;
+        let decoded = agent::transport::wire::decode_delta(Bytes::copy_from_slice(body));
+        let meta = match &decoded {
+            Ok(d) if d.seq > last_seq => {
+                last_seq = d.seq;
+                Meta {
+                    seq: d.seq,
+                    part: d.part,
+                    more: d.more,
+                    entries: u32::try_from(d.entries.len() + d.removed.len() + d.skipped.len())
+                        .unwrap_or(u32::MAX),
+                    first_ms: 0,
+                    last_ms: 0,
+                }
+            }
+            _ => {
+                last_seq += 1;
+                Meta {
+                    seq: last_seq + index as u64,
+                    part: 0,
+                    more: false,
+                    entries: 1,
+                    first_ms: 0,
+                    last_ms: 0,
+                }
+            }
+        };
+        let mut buf = Frame::begin(body.len());
+        buf.extend_from_slice(body);
+        if let Ok(frame) = Frame::seal(buf, &meta) {
+            segment.extend_from_slice(frame.as_bytes());
+        }
+    }
+    segment
+}
+
+fn open_and_replay(dir: &Path, file_len: usize) -> Result<Replayed, String> {
+    let volume = SpoolVolume::open(dir).map_err(|e| format!("the volume would not open: {e}"))?;
+    let limits = SpoolLimits::new(64 << 20, 10_000).with_segment_bytes(1 << 20);
+    let options = SpoolOptions::new(limits).with_io(IoMode::Inline);
+    let (spool, recovery) = Spool::open(volume, options, Arc::new(FixedClock))
+        .map_err(|e| format!("opening the spool failed: {e}"))?;
+    ensure(recovery.records <= file_len / FRAME_OVERHEAD + 1, || {
+        format!("{} records from {file_len} bytes", recovery.records)
+    })?;
+    let stats = spool.stats();
+    ensure(stats.entries <= 10_000, || {
+        format!("{} entries held, bound 10,000", stats.entries)
+    })?;
+    ensure(stats.disk_bytes <= file_len as u64, || {
+        format!("{} bytes counted, the file has {file_len}", stats.disk_bytes)
+    })?;
+
+    // The runtime of this call alone: a shared one would let another thread's `block_on` run this pump's task, and the
+    // stable replay runs the targets in parallel.
+    let own = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let messages = own.block_on(async {
+        let (outbox, mut rx) = outbox::channel(OutboxLimits {
+            messages: 1024,
+            bytes: 64 << 20,
+        });
+        let pump = tokio::spawn(spool.attach(outbox).run());
+        // Inline file operations: the pump sends everything it can before it first has to wait.
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        let mut got = Vec::new();
+        while let Some(queued) = rx.try_recv() {
+            let (message, _permit) = queued.into_parts();
+            got.push(FromAgent::from_proto(message));
+        }
+        pump.abort();
+        got
+    });
+    let seqs = check_replayed(messages)?;
+    Ok(Replayed {
+        seqs,
+        damaged_segments: recovery.damaged_segments,
+    })
+}
+
+/// What a replay must look like: deltas only, strictly rising, each one the hub's own conversion takes unchanged, a denied
+/// entry without bytes, and a gap only on a first part and never running backwards. Returns the sequence numbers.
+fn check_replayed(
+    messages: Vec<Result<Option<FromAgent>, proto::convert::ConvertError>>,
+) -> Result<Vec<u64>, String> {
+    let mut seqs = Vec::new();
+    let mut previous = 0;
+    for message in messages {
+        let Ok(Some(FromAgent::Delta(d))) = message else {
+            return Err("the spool replayed something that is not a delta".to_owned());
+        };
+        ensure(d.seq > previous, || format!("seq {} after {previous}", d.seq))?;
+        previous = d.seq;
+        // The hub's own conversion accepts exactly this.
+        let again = FromAgent::from_proto(FromAgent::Delta(d.clone()).into_proto());
+        ensure(matches!(&again, Ok(Some(FromAgent::Delta(x))) if *x == d), || {
+            format!("seq {} does not survive the wire conversion", d.seq)
+        })?;
+        ensure(d.entries.iter().all(|e| !e.denied || e.bytes.is_none()), || {
+            "a denied entry came back with bytes".to_owned()
+        })?;
+        if let Some(gap) = d.gap {
+            ensure(gap.from <= gap.to && d.part == 0, || {
+                format!("gap {gap:?} on part {}", d.part)
+            })?;
+        }
+        seqs.push(d.seq);
+    }
+    Ok(seqs)
+}
+
+/// The first byte picks how the rest is read: odd, message bodies that are wrapped in valid frames; even, the bytes of a
+/// segment file. Whatever the file holds, opening the spool over it is safe, and it opens the same way again (S22).
+pub fn agent_spool_record(data: &[u8]) -> Result<(), String> {
+    let Some((&mode, rest)) = data.split_first() else {
+        return Ok(());
+    };
+    let rest = &rest[..rest.len().min(MAX_SPOOL_INPUT)];
+    let file = if mode % 2 == 0 {
+        rest.to_vec()
+    } else {
+        framed_bodies(rest)
+    };
+    let dir = scratch_dir();
+    fs::write(dir.path().join(SPOOL_SEGMENT), &file).unwrap();
+    let first = open_and_replay(dir.path(), file.len())?;
+    // Damage was cut off and what was lost was written down, so the next start finds a spool it can read whole.
+    let second = open_and_replay(dir.path(), file.len())?;
+    ensure(second.seqs == first.seqs, || {
+        format!(
+            "a second open replays {:?}, the first {:?}",
+            second.seqs, first.seqs
+        )
+    })?;
+    ensure(second.damaged_segments == 0, || {
+        format!(
+            "{} segments are still damaged after being repaired",
+            second.damaged_segments
+        )
+    })
+}
+
+/// The seeds for `agent_spool_record`: (file name, bytes). `corpus_replay.rs` checks the files in `corpus/` are exactly
+/// these, and can rewrite them (`UPDATE_SPOOL_SEEDS=1`), so the seeds stay honest when the record format changes.
+pub fn spool_seeds() -> Vec<(&'static str, Vec<u8>)> {
+    use domain::{ScanDelta, ScanEntry, SkippedEntry};
+
+    let entry = |path: &str, content: &[u8], at: i64, denied: bool| ScanEntry {
+        path: NfsPath::parse(path).unwrap(),
+        hash: sha(content),
+        size: content.len() as u64,
+        mtime: Timestamp::from_unix_millis(at),
+        observed_at: Timestamp::from_unix_millis(at),
+        denied,
+        bytes: (!denied).then(|| Bytes::copy_from_slice(content)),
+    };
+    let delta = |seq: u64, part: u32, more: bool, entries: Vec<ScanEntry>| ScanDelta {
+        seq,
+        base_root: Some(ContentHash::from_bytes([seq as u8; 32])),
+        new_root: ContentHash::from_bytes([seq as u8 + 1; 32]),
+        entries,
+        removed: Vec::new(),
+        skipped: Vec::new(),
+        during_job: None,
+        more,
+        part,
+        gap: None,
+    };
+    let segment = |frames: &[Vec<u8>]| {
+        let mut bytes = SEGMENT_MAGIC.to_vec();
+        for f in frames {
+            bytes.extend_from_slice(f);
+        }
+        bytes
+    };
+    let raw = |bytes: Vec<u8>| [vec![0_u8], bytes].concat();
+    let single = frame_of(&delta(
+        1,
+        0,
+        false,
+        vec![entry("svc/a.yml", b"a: 1\r\n", 1_000, false)],
+    ));
+    let second = frame_of(&delta(
+        2,
+        0,
+        false,
+        vec![entry("svc/a.yml", b"a: 2\r\n", 2_000, false)],
+    ));
+    let parts = [
+        frame_of(&delta(3, 0, true, vec![entry("svc/b.yml", b"b", 3_000, false)])),
+        frame_of(&delta(4, 1, true, vec![entry("svc/c.yml", b"c", 3_000, false)])),
+        frame_of(&delta(5, 2, false, vec![entry("svc/d.yml", b"d", 3_000, false)])),
+    ];
+    let mut removal = delta(6, 0, false, Vec::new());
+    removal.removed.push(NfsPath::parse("svc/gone.yml").unwrap());
+    removal.skipped.push(SkippedEntry {
+        path: NfsPath::parse("svc/big.bin").unwrap(),
+        reason: domain::ShortText::parse("too_large").unwrap(),
+    });
+    let denied = frame_of(&delta(
+        7,
+        0,
+        false,
+        vec![entry("keys/site.pem", &[7; 300], 4_000, true)],
+    ));
+    let removal = frame_of(&removal);
+
+    let mut flipped = segment(&[single.clone(), second.clone()]);
+    let at = flipped.len() - 4;
+    flipped[at] ^= 0xFF;
+    let mut huge = segment(&[single.clone()]);
+    huge.extend_from_slice(&[0xFF; 8]);
+    huge.extend_from_slice(&[0_u8; 64]);
+    let mut wrong_magic = segment(&[single.clone()]);
+    wrong_magic[7] = b'9';
+    let mut backwards = segment(&[second.clone(), single.clone()]);
+    backwards.extend_from_slice(&removal);
+    let whole = segment(&[
+        single.clone(),
+        second.clone(),
+        parts[0].clone(),
+        parts[1].clone(),
+        parts[2].clone(),
+        removal.clone(),
+        denied.clone(),
+    ]);
+    let mut cut = whole.clone();
+    cut.truncate(cut.len() - 20);
+
+    let body_of = |d: &ScanDelta| {
+        let mut buf = Vec::new();
+        agent::transport::wire::encode_delta_into(d.clone(), &mut buf);
+        buf
+    };
+    let chunk = |body: &[u8]| [(body.len() as u16).to_le_bytes().to_vec(), body.to_vec()].concat();
+    let good_body = body_of(&delta(10, 0, false, vec![entry("x.yml", b"x", 5_000, false)]));
+    let mut bodies = chunk(&good_body);
+    bodies.extend(chunk(&body_of(&delta(
+        11,
+        0,
+        false,
+        vec![entry("y.yml", b"y", 6_000, false)],
+    ))));
+    bodies.extend(chunk(b"\xff\xff\xff\xffnot a message"));
+
+    vec![
+        ("valid_single_delta", raw(segment(&[single.clone()]))),
+        (
+            "valid_delta_and_its_successor",
+            raw(segment(&[single.clone(), second.clone()])),
+        ),
+        ("valid_three_part_delta", raw(segment(&parts))),
+        ("valid_mixed", raw(whole.clone())),
+        ("denied_entry_without_bytes", raw(segment(&[denied]))),
+        ("removal_and_skip", raw(segment(&[removal]))),
+        ("header_only", raw(SEGMENT_MAGIC.to_vec())),
+        ("empty_file", vec![0_u8]),
+        ("truncated_inside_a_frame", raw(cut)),
+        ("flipped_checksummed_byte", raw(flipped)),
+        ("length_field_of_four_gigabytes", raw(huge)),
+        ("wrong_magic", raw(wrong_magic)),
+        ("seq_goes_backwards", raw(backwards)),
+        (
+            "only_a_middle_part",
+            raw(segment(&[parts[1].clone(), parts[2].clone()])),
+        ),
+        (
+            "garbage",
+            raw((0..200_u32).map(|i| (i * 37 + 11) as u8).collect()),
+        ),
+        ("bodies_valid_then_invalid", [vec![1_u8], bodies].concat()),
+        ("bodies_empty", vec![1_u8]),
+    ]
+}
+
+/// The spool target is not blind: each violation of what a replay must look like is reported when planted, and a clean
+/// replay is not. Run by `corpus_replay.rs`.
+pub fn planted_spool_harm_is_detected() -> Result<(), String> {
+    use domain::{ScanDelta, ScanEntry, SpoolGap};
+
+    let plain = |seq: u64, part: u32| ScanDelta {
+        seq,
+        base_root: None,
+        new_root: ContentHash::from_bytes([1; 32]),
+        entries: Vec::new(),
+        removed: Vec::new(),
+        skipped: Vec::new(),
+        during_job: None,
+        more: false,
+        part,
+        gap: None,
+    };
+    let message = |d: ScanDelta| Ok(Some(FromAgent::Delta(d)));
+    ensure(
+        check_replayed(vec![message(plain(1, 0)), message(plain(2, 0))]) == Ok(vec![1, 2]),
+        || "a clean replay was refused".to_owned(),
+    )?;
+    let mut denied_with_bytes = plain(3, 0);
+    denied_with_bytes.entries.push(ScanEntry {
+        path: NfsPath::parse("keys/a.pem").unwrap(),
+        hash: sha(b"k"),
+        size: 1,
+        mtime: Timestamp::from_unix_millis(1),
+        observed_at: Timestamp::from_unix_millis(1),
+        denied: true,
+        bytes: Some(Bytes::from_static(b"k")),
+    });
+    let mut backwards_gap = plain(4, 0);
+    backwards_gap.gap = Some(SpoolGap {
+        from: Timestamp::from_unix_millis(5),
+        to: Timestamp::from_unix_millis(1),
+        lost_entries: 1,
+    });
+    let mut gap_on_a_later_part = plain(5, 1);
+    gap_on_a_later_part.gap = Some(SpoolGap {
+        from: Timestamp::from_unix_millis(1),
+        to: Timestamp::from_unix_millis(2),
+        lost_entries: 1,
+    });
+    let harms: [(&str, Vec<Replay>); 6] = [
+        (
+            "a seq that goes backwards",
+            vec![message(plain(2, 0)), message(plain(1, 0))],
+        ),
+        (
+            "the same seq twice",
+            vec![message(plain(2, 0)), message(plain(2, 0))],
+        ),
+        (
+            "a message that is not a delta",
+            vec![Ok(Some(FromAgent::CertRenewal {
+                csr_der: Bytes::from_static(b"x"),
+            }))],
+        ),
+        ("a denied entry with bytes", vec![message(denied_with_bytes)]),
+        ("a gap that runs backwards", vec![message(backwards_gap)]),
+        ("a gap on a later part", vec![message(gap_on_a_later_part)]),
+    ];
+    for (name, replay) in harms {
+        ensure(check_replayed(replay).is_err(), || {
+            format!("{name} went unnoticed")
+        })?;
+    }
+    Ok(())
 }

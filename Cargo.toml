@@ -96,6 +96,10 @@ tokio-rustls = { version = "=0.26.5", default-features = false, features = ["aws
 # Agent scanning (T4, P1, P4). rayon runs the walk and the hashing on a dedicated pool of the configured size, never the
 # global pool, and always inside `spawn_blocking` (code rule 4). sha2 is the Merkle and content hash (already pinned).
 rayon = "=1.12.0"
+# Agent spool (T9, D74, P15). crc32fast checksums every spooled record, so a torn or damaged tail is found at the first bad
+# frame instead of being believed. 1.5.0 (2025-07-13) is the version in the lockfile's registry cache; with `std` it
+# uses the CPU's CRC instructions at run time. Its only dependency, cfg-if, is already in the graph.
+crc32fast = { version = "=1.5.0", default-features = false, features = ["std"] }
 # Test tooling
 proptest = "=1.11.0"
 insta = "=1.48.0"

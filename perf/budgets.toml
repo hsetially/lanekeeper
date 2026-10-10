@@ -360,4 +360,4 @@ threshold = 1000
 unit = "versions_per_s"
 scale = "target"
 direction = "lower"
-registered = false
+registered = true

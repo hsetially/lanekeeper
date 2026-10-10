@@ -25,15 +25,17 @@
 //! - A root that suddenly lists as empty is held for the 30 s maximum deferral before it is accepted, so an NFS mount
 //!   that dropped does not look like the deletion of every file.
 //!
-//! The scanner keeps running while no hub is connected: the tree stays current, and what changed meanwhile reaches the hub
-//! through the next heartbeat's root, which differs from the one the hub knows, and the `RequestDelta` that follows. (T9
-//! adds the spool, so intermediate versions survive a long outage as well.)
+//! The scanner keeps running while no hub is connected, and every delta it builds goes to the spool ([`crate::spool`],
+//! T9, D74), not to the connection. So the intermediate versions of a file survive an outage of any length (up to the
+//! spool's bounds), and the connection's pump sends them, oldest first, when it is back. What the spool had to drop is
+//! reported as a gap; the heartbeat's root and the `RequestDelta` that follows it are still how the hub catches up on
+//! anything the spool could not keep.
 
 use std::convert::Infallible;
 use std::fmt;
 use std::future::pending;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
 use domain::{ContentHash, Heartbeat, HubCommand, NfsPath, ScanDelta};
@@ -48,6 +50,7 @@ use crate::config::Tunables;
 use crate::dispatch::{CommandHandler, OpLimits, failure, operation_of, request_id_of};
 use crate::fileops::TreeEdits;
 use crate::ops::{Metrics, Outcome, ScanKind, ScanResult};
+use crate::spool::{PumpEnd, Spool};
 use crate::transport::session::{Link, LinkHandler};
 use crate::transport::{Outbox, OutboxError};
 use crate::tree::delta::{DeltaBuilder, DeltaError, DeltaOutcome, DeltaSink, SeqCounter, SinkError};
@@ -141,7 +144,7 @@ struct Inner {
     source: Arc<dyn TreeSource>,
     clock: Arc<dyn Clock>,
     sink: Arc<dyn DeltaSink>,
-    seq: SeqCounter,
+    seq: Arc<SeqCounter>,
     tunables: watch::Sender<Tunables>,
     state: AsyncMutex<State>,
     snapshot: watch::Sender<Option<Snapshot>>,
@@ -164,7 +167,8 @@ impl fmt::Debug for Scanner {
 }
 
 impl Scanner {
-    /// `sink` receives the deltas the scanner pushes on its own: the live connection, or the spool (T9).
+    /// `sink` receives the deltas the scanner pushes on its own: the spool (T9), or whatever a test collects them in.
+    /// Sequence numbers start at 1.
     pub fn new(source: Arc<dyn TreeSource>, clock: Arc<dyn Clock>, sink: Arc<dyn DeltaSink>) -> Self {
         Self::with_metrics(source, clock, sink, Metrics::detached())
     }
@@ -176,12 +180,24 @@ impl Scanner {
         sink: Arc<dyn DeltaSink>,
         metrics: Arc<Metrics>,
     ) -> Self {
+        Self::with_seq(source, clock, sink, metrics, Arc::new(SeqCounter::new(1)))
+    }
+
+    /// As [`Scanner::with_metrics`], taking the sequence numbers from `seq`: the counter the spool keeps ahead of
+    /// every number ever used, so that a restart never repeats one (T9).
+    pub fn with_seq(
+        source: Arc<dyn TreeSource>,
+        clock: Arc<dyn Clock>,
+        sink: Arc<dyn DeltaSink>,
+        metrics: Arc<Metrics>,
+        seq: Arc<SeqCounter>,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 source,
                 clock,
                 sink,
-                seq: SeqCounter::new(1),
+                seq,
                 tunables: watch::channel(Tunables::default()).0,
                 state: AsyncMutex::new(State {
                     tree: None,
@@ -510,79 +526,17 @@ impl DeltaSink for OutboxSink {
     }
 }
 
-/// The delta sink for what the scanner pushes on its own: whichever connection is current. With none, a delta is
-/// refused ([`SinkError::Closed`]) and the hub catches up through the heartbeat root. T9 replaces this with the spool.
-#[derive(Debug, Default)]
-pub struct LiveSink {
-    current: Mutex<Option<(u64, Outbox)>>,
-    generation: AtomicU64,
-}
-
-impl LiveSink {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self::default())
-    }
-
-    /// Make `outbox` the current connection until the guard is dropped.
-    pub fn attach(self: &Arc<Self>, outbox: Outbox) -> Attached {
-        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        *self.current.lock().unwrap_or_else(PoisonError::into_inner) = Some((generation, outbox));
-        Attached {
-            sink: Arc::clone(self),
-            generation,
-        }
-    }
-}
-
-/// Keeps an outbox attached to a [`LiveSink`]. A later connection's guard is not undone by an earlier one's.
-#[derive(Debug)]
-pub struct Attached {
-    sink: Arc<LiveSink>,
-    generation: u64,
-}
-
-impl Drop for Attached {
-    fn drop(&mut self) {
-        let mut current = self.sink.current.lock().unwrap_or_else(PoisonError::into_inner);
-        if current.as_ref().is_some_and(|(g, _)| *g == self.generation) {
-            *current = None;
-        }
-    }
-}
-
-#[async_trait]
-impl DeltaSink for LiveSink {
-    async fn deliver(&self, delta: ScanDelta) -> Result<(), SinkError> {
-        let outbox = self
-            .current
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .map(|(_, outbox)| outbox.clone());
-        match outbox {
-            Some(outbox) => OutboxSink(outbox).deliver(delta).await,
-            None => Err(SinkError::Closed),
-        }
-    }
-
-    fn ready(&self) -> bool {
-        self.current
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_some()
-    }
-}
-
 // ------------------------------------------------------------------------------------------ the link handler
 
-/// The agent's side of one connection, as far as scanning goes: attach the connection so pushed deltas reach it, send
-/// the heartbeat, and answer `RequestDelta` and `RequestFullScan`.
+/// The agent's side of one connection, as far as scanning goes: start the spool's pump on the connection so that what
+/// the scanner spooled reaches the hub, pass the hub's acknowledgements to the spool, send the heartbeat, and answer
+/// `RequestDelta` and `RequestFullScan`.
 ///
 /// The other commands go to the [`CommandHandler`] if there is one (T5: file operations; cluster reports and the
 /// config-server calls follow in later tasks). Without one they are ignored.
 pub struct ScanHandler {
     scanner: Scanner,
-    live: Arc<LiveSink>,
+    spool: Spool,
     commands: Option<Arc<dyn CommandHandler>>,
     on_config: Option<ConfigHook>,
 }
@@ -598,11 +552,11 @@ impl fmt::Debug for ScanHandler {
 }
 
 impl ScanHandler {
-    /// `live` must be the sink the scanner was built with.
-    pub fn new(scanner: Scanner, live: Arc<LiveSink>) -> Self {
+    /// `spool` must be the spool the scanner's sink writes to.
+    pub fn new(scanner: Scanner, spool: Spool) -> Self {
         Self {
             scanner,
-            live,
+            spool,
             commands: None,
             on_config: None,
         }
@@ -685,7 +639,9 @@ impl ScanHandler {
 #[async_trait]
 impl LinkHandler for ScanHandler {
     async fn handle(&self, mut link: Link) {
-        let _attached = self.live.attach(link.outbox.clone());
+        // The pump sends everything the spool holds, oldest first, then each new delta as it becomes durable. It lives as
+        // long as this connection does.
+        let mut pump = AbortOnDrop(tokio::spawn(self.spool.attach(link.outbox.clone()).run()));
         self.scanner.set_tunables(link.tunables.clone());
         let mut heartbeat_period = link.tunables.heartbeat_interval;
         let mut heartbeat = ticker_now(heartbeat_period);
@@ -727,8 +683,8 @@ impl LinkHandler for ScanHandler {
                         ToAgent::Command(HubCommand::RequestFullScan) => {
                             self.request(None, &link.outbox, &mut tasks);
                         }
-                        // Acknowledgements matter once there is a spool (T9); nothing waits for them yet.
-                        ToAgent::Ack(_) | ToAgent::CertRenewal(_) => {}
+                        ToAgent::Ack(seq) => self.spool.ack(seq),
+                        ToAgent::CertRenewal(_) => {}
                         ToAgent::Command(command) => {
                             self.command(command, max_file_bytes, &link.outbox, &mut commands);
                         }
@@ -736,7 +692,25 @@ impl LinkHandler for ScanHandler {
                 }
                 Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
                 Some(_) = commands.join_next(), if !commands.is_empty() => {}
+                ended = &mut pump.0 => {
+                    // The connection is closed, or the spool's volume stopped answering. Either way this link is over,
+                    // and the next one starts a fresh pump from what is still unacknowledged.
+                    match ended {
+                        Ok(PumpEnd::StorageStalled) => warn!("the spool stopped answering; ending the connection"),
+                        Ok(PumpEnd::ConnectionClosed) | Err(_) => debug!("the pump ended with the connection"),
+                    }
+                    return;
+                }
             }
         }
+    }
+}
+
+/// Stops a task when dropped, so that nothing the connection started outlives it.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }

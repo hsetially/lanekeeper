@@ -2,7 +2,8 @@
 //!
 //! [`App::run`] owns the life of the process once the identity exists:
 //!
-//! - the **scanner** keeps the Merkle tree current and pushes deltas ([`crate::scan`]);
+//! - the **scanner** keeps the Merkle tree current and spools the deltas it builds ([`crate::scan`], [`crate::spool`]);
+//! - the **spool** housekeeping deletes what the hub acknowledged and keeps the sequence reservation ahead;
 //! - the **session** keeps a stream to the hub, reconnecting with backoff ([`crate::transport::session`]);
 //! - on every connection the **link handler** answers the hub's commands, sends the heartbeat, and forwards cluster
 //!   reports ([`AppHandler`]);
@@ -49,7 +50,8 @@ use crate::kube::jobs::JobMatcher;
 use crate::kube::{Cluster, ClusterOps, ReportError, RestartError, WatchConfig};
 use crate::ops::{Health, Metrics, Progress};
 use crate::root::NfsRoot;
-use crate::scan::{LiveSink, ScanHandler, Scanner};
+use crate::scan::{ScanHandler, Scanner};
+use crate::spool::Spool;
 use crate::transport::session::{Link, LinkHandler, Session, SessionConfig};
 use crate::transport::{HubTransport, Outbox};
 use crate::tree::{FsSource, Pool, TreeSource, WalkConfig};
@@ -92,6 +94,8 @@ pub struct Parts {
     pub kube: Option<::kube::Client>,
     /// Where the tree comes from. Default: the NFS root, walked on the worker pool.
     pub source: Option<Arc<dyn TreeSource>>,
+    /// The durable spool every delta the scanner builds goes through (T9).
+    pub spool: Spool,
     pub session: SessionConfig,
 }
 
@@ -106,6 +110,10 @@ impl fmt::Debug for Parts {
 }
 
 impl Parts {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one constructor names every part the agent needs; the optional ones have builder methods"
+    )]
     pub fn new(
         settings: Settings,
         root: NfsRoot,
@@ -114,6 +122,7 @@ impl Parts {
         clock: Arc<dyn Clock>,
         health: Arc<Health>,
         metrics: Arc<Metrics>,
+        spool: Spool,
     ) -> Self {
         Self {
             settings,
@@ -126,6 +135,7 @@ impl Parts {
             joiner: None,
             kube: None,
             source: None,
+            spool,
             session: SessionConfig::default(),
         }
     }
@@ -179,6 +189,7 @@ impl App {
             joiner,
             kube,
             source,
+            spool,
             session: session_config,
         } = self.parts;
 
@@ -186,8 +197,15 @@ impl App {
             Some(source) => source,
             None => production_source(&settings, &root)?,
         };
-        let live = LiveSink::new();
-        let scanner = Scanner::with_metrics(source, Arc::clone(&clock), live.clone(), Arc::clone(&metrics));
+        // Everything the scanner builds goes to the spool and is sent from there; the spool also owns the sequence
+        // counter, so a restart never repeats a number.
+        let scanner = Scanner::with_seq(
+            source,
+            Arc::clone(&clock),
+            spool.sink(),
+            Arc::clone(&metrics),
+            spool.seq(),
+        );
 
         let cluster = match kube {
             Some(client) => Some(Arc::new(ClusterRunner::new(
@@ -202,7 +220,7 @@ impl App {
         if let Some(cluster) = &cluster {
             dispatcher = dispatcher.with_cluster(Arc::clone(cluster) as Arc<dyn ClusterOps>);
         }
-        let mut scan_handler = ScanHandler::new(scanner.clone(), live)
+        let mut scan_handler = ScanHandler::new(scanner.clone(), spool.clone())
             .with_commands(Arc::new(dispatcher) as Arc<dyn CommandHandler>);
         if let Some(cluster) = &cluster {
             // Applied before the next message is read: a command that follows a configuration sees its allowlist.
@@ -233,7 +251,7 @@ impl App {
                 session.serve(handler).await;
             })
         };
-        let mut loops = spawn_loops(&health, &scanner, &identity, &session, joiner);
+        let mut loops = spawn_loops(&health, &scanner, &spool, &identity, &session, joiner);
         info!(swimlane = settings.swimlane.as_str(), "the agent is running");
 
         let mut session_task = session_task;
@@ -271,6 +289,7 @@ impl App {
 fn spawn_loops(
     health: &Health,
     scanner: &Scanner,
+    spool: &Spool,
     identity: &Arc<IdentityHandle>,
     session: &Arc<Session>,
     joiner: Option<Arc<Joiner>>,
@@ -289,6 +308,15 @@ fn spawn_loops(
         scanner.clone(),
         health.progress("scanner progress", SCAN_STALL),
     ));
+    {
+        let spool = spool.clone();
+        let guard = health.task("spool housekeeping");
+        loops.spawn(async move {
+            let _alive = guard;
+            let never: Infallible = spool.run_maintenance().await;
+            match never {}
+        });
+    }
     if let Some(joiner) = joiner {
         let (identity, session) = (Arc::clone(identity), Arc::clone(session));
         let guard = health.task("certificate renewal");

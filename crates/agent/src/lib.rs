@@ -17,6 +17,7 @@
 //! - [`kube`]: the Deployment, Pod and Job watchers, cluster reports and restarts (T6, S17).
 //! - [`process`]: from settings to a running agent and an exit code (T7).
 //! - [`ops`]: health probes, Prometheus metrics and JSON logs (T7, S16).
+//! - [`spool`]: the durable spool of observed versions, replayed to the hub in order (T9, D74, P15).
 //! - [`scan`]: the scan loop that keeps the tree current, pushes deltas and answers the hub (T4, D63, P1).
 //! - [`tree`]: the Merkle tree of the NFS root, its diffs and the ring of recent roots (T4, D63).
 #![forbid(unsafe_code)]
@@ -40,6 +41,7 @@ pub mod ops;
 pub mod process;
 pub mod root;
 pub mod scan;
+pub mod spool;
 pub mod transport;
 pub mod tree;
 

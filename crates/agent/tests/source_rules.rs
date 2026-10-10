@@ -8,9 +8,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Files that may open something with ambient authority. Each is a startup reader that runs before any hub command:
-/// the NFS root (`root.rs`) and the pinned hub CA file (`tls.rs`, read once, with a size limit, through a cap-std `Dir`
-/// opened on its directory). T9 adds the spool directory.
-const AMBIENT_ALLOWED: &[&str] = &["root.rs", "tls.rs"];
+/// the NFS root (`root.rs`), the pinned hub CA file (`tls.rs`, read once, with a size limit, through a cap-std `Dir`
+/// opened on its directory) and the spool directory (`volume.rs`, opened once from `LK_SPOOL_DIR`; the spool is a
+/// mounted volume of its own and cannot be reached through the NFS root's handle; everything after that goes through the
+/// `Dir`, and `spool_file_names_are_made_by_the_spool` checks that no name comes from anywhere else).
+const AMBIENT_ALLOWED: &[&str] = &["root.rs", "tls.rs", "volume.rs"];
 
 /// APIs that reach the filesystem without a cap-std `Dir`.
 const FORBIDDEN_ALWAYS: &[&str] = &[
@@ -98,9 +100,88 @@ fn all_file_access_via_cap_std() {
         "file access outside cap-std:\n{}",
         violations.join("\n")
     );
-    // The allow-list is not a dead entry: root.rs really is the one place the root is opened.
+    // The allow-list is not a dead entry: root.rs really is the one place the root is opened, and spool/volume.rs the one
+    // place the spool directory is.
     let root = files.iter().find(|(rel, _)| rel == "root.rs").unwrap();
     assert!(root.1.contains("open_ambient_dir"));
+    let volume = files.iter().find(|(rel, _)| rel == "spool/volume.rs").unwrap();
+    assert!(volume.1.contains("open_ambient_dir"));
+    assert!(
+        !files.iter().any(|(rel, source)| rel.starts_with("spool/")
+            && rel != "spool/volume.rs"
+            && source.contains("ambient_authority")),
+        "only spool/volume.rs may open the spool directory with ambient authority"
+    );
+}
+
+/// The calls that name a file inside the spool directory.
+const SPOOL_NAMING_CALLS: &[&str] = &[".open(", ".open_with(", ".remove_file(", ".rename("];
+
+/// What a name may start with: made here (`segment::name(id)`, the state file's constants) or "the directory itself".
+const SPOOL_NAME_ORIGINS: &[&str] = &[
+    "segment::name(",
+    "name(",
+    "STATE_FILE",
+    "STATE_TMP",
+    "\".\"",
+    "&name",
+    "name",
+];
+
+fn spool_naming_violations(rel: &str, source: &str) -> Vec<String> {
+    if !rel.starts_with("spool/") {
+        return Vec::new();
+    }
+    source
+        .lines()
+        .enumerate()
+        .take_while(|(_, line)| line.trim() != "#[cfg(test)]")
+        .filter(|(_, line)| !line.trim_start().starts_with("//"))
+        .filter_map(|(n, line)| {
+            SPOOL_NAMING_CALLS.iter().find_map(|call| {
+                let at = line.find(call)?;
+                let argument = line[at + call.len()..].trim_start();
+                let ok = SPOOL_NAME_ORIGINS
+                    .iter()
+                    .any(|origin| argument.starts_with(origin));
+                (!ok).then(|| format!("{rel}:{}: {}", n + 1, line.trim()))
+            })
+        })
+        .collect()
+}
+
+/// S17: a file name in the spool is made by the spool (`seg-<hex>.lks`, `state`), never taken from a hub message, a path
+/// in a delta or a file's content.
+#[test]
+fn spool_file_names_are_made_by_the_spool() {
+    let files = sources(&src_dir());
+    let violations: Vec<String> = files
+        .iter()
+        .flat_map(|(rel, source)| spool_naming_violations(rel, source))
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "spool files named from elsewhere:\n{}",
+        violations.join("\n")
+    );
+    // The scan is not blind: the spool does name files this way.
+    let core = files.iter().find(|(rel, _)| rel == "spool/core.rs").unwrap();
+    assert!(core.1.contains("segment::name("));
+    // And it catches a planted name.
+    for planted in [
+        "dir.open(delta.path.as_str())?;",
+        "dir.remove_file(&entry.path)?;",
+        "dir.open_with(format!(\"seg-{}\", p), &o)?;",
+        "dir.rename(from, dir, to)?;",
+    ] {
+        assert_eq!(
+            spool_naming_violations("spool/core.rs", planted).len(),
+            1,
+            "{planted}"
+        );
+    }
+    assert!(spool_naming_violations("spool/core.rs", "dir.open(segment::name(id))?;").is_empty());
+    assert!(spool_naming_violations("fileops.rs", "dir.open(path)?;").is_empty());
 }
 
 #[test]

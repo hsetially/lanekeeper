@@ -15,6 +15,7 @@ proto.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 cap-std.workspace = true
+crc32fast.workspace = true
 fastrand.workspace = true
 futures.workspace = true
 globset.workspace = true
@@ -85,4 +86,10 @@ harness = false
 # The steady-state harness (T7): the whole agent in-process against the fakes, and the real binary's idle footprint.
 [[bench]]
 name = "steady_state"
+harness = false
+
+# The spool's replay rate (T9, P15): a spool written during a simulated one-hour outage, reopened and replayed to a hub
+# that acknowledges every message.
+[[bench]]
+name = "spool_replay"
 harness = false

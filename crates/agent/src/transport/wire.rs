@@ -4,7 +4,9 @@
 //! The generated messages (`proto::pb`) are used only in this directory; the rest of the agent sees validated domain
 //! values, so a path that is not an `NfsPath` or a hash that is not 32 bytes never gets as far as a handler.
 
-use domain::{AgentReply, OpError, OpResult, RequestId};
+use bytes::Bytes;
+use domain::{AgentReply, OpError, OpResult, RequestId, ScanDelta};
+use prost::Message;
 use proto::convert::{ConvertError, FromAgent, ToAgent};
 use proto::pb;
 
@@ -68,6 +70,38 @@ pub fn refusal(request_id: RequestId) -> FromAgent {
 /// A message for the hub, as the generated type the transport sends.
 pub fn encode(message: FromAgent) -> pb::AgentMessage {
     message.into_proto()
+}
+
+/// Why a delta read back from the spool is not one.
+#[derive(Debug, thiserror::Error)]
+pub enum StoredDeltaError {
+    #[error("the bytes are not a protobuf message")]
+    Malformed,
+    #[error("the message is not a scan delta")]
+    NotADelta,
+    #[error("the delta breaks a wire rule: {0}")]
+    Invalid(ConvertError),
+}
+
+/// Append the wire encoding of a delta (the `AgentMessage` the hub would get) to `buf`, for the spool. A version in the
+/// spool is the message that will be sent, so the denied flag, the absence of bytes for a denied file, the roots and the
+/// timestamps all travel unchanged.
+pub fn encode_delta_into(delta: ScanDelta, buf: &mut Vec<u8>) {
+    let message = encode(FromAgent::Delta(delta));
+    buf.reserve(message.encoded_len());
+    // A `Vec` always has room, so encoding cannot fail.
+    let _ = message.encode(buf);
+}
+
+/// Read back a delta the spool stored, checking it against the same rules as a message from anywhere (S11, S22): a
+/// spool file that was damaged or planted is data to refuse, not to send. Content bytes share `body`'s allocation.
+pub fn decode_delta(body: Bytes) -> Result<ScanDelta, StoredDeltaError> {
+    let message = pb::AgentMessage::decode(body).map_err(|_| StoredDeltaError::Malformed)?;
+    match FromAgent::from_proto(message) {
+        Ok(Some(FromAgent::Delta(delta))) => Ok(delta),
+        Ok(_) => Err(StoredDeltaError::NotADelta),
+        Err(problem) => Err(StoredDeltaError::Invalid(problem)),
+    }
 }
 
 #[cfg(test)]

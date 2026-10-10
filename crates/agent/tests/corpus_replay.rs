@@ -67,6 +67,43 @@ fn corpus_replay_agent_id_token() {
 }
 
 #[test]
+fn corpus_replay_agent_spool_record() {
+    replay("agent_spool_record", invariants::agent_spool_record);
+}
+
+/// The spool seeds are valid segments and damaged copies of them, which only mean something while they match the record
+/// format. They are made by `invariants::spool_seeds`, and this test fails if the files drift from it; run with
+/// `UPDATE_SPOOL_SEEDS=1` to rewrite them after a deliberate change to the format.
+#[test]
+fn the_spool_seeds_are_what_the_generator_makes() {
+    let dir = fuzz_dir().join("corpus").join("agent_spool_record");
+    let seeds = invariants::spool_seeds();
+    if std::env::var_os("UPDATE_SPOOL_SEEDS").is_some() {
+        fs::create_dir_all(&dir).unwrap();
+        for stale in dir_names(&dir) {
+            fs::remove_file(dir.join(stale)).unwrap();
+        }
+        for (name, bytes) in &seeds {
+            fs::write(dir.join(name), bytes).unwrap();
+        }
+    }
+    let expected: BTreeSet<String> = seeds.iter().map(|(name, _)| (*name).to_owned()).collect();
+    assert_eq!(
+        dir_names(&dir),
+        expected,
+        "the files in corpus/agent_spool_record differ from the generator (UPDATE_SPOOL_SEEDS=1 rewrites them)"
+    );
+    for (name, bytes) in &seeds {
+        assert_eq!(
+            &fs::read(dir.join(name)).unwrap(),
+            bytes,
+            "seed {name} differs from the generator (UPDATE_SPOOL_SEEDS=1 rewrites it)"
+        );
+    }
+    assert!(seeds.len() >= invariants::MIN_SEEDS);
+}
+
+#[test]
 fn every_target_has_a_fuzz_binary_a_corpus_and_a_manifest_entry() {
     let targets: BTreeSet<String> = invariants::TARGETS.iter().map(|(t, _)| (*t).to_owned()).collect();
     let binaries: BTreeSet<String> = dir_names(&fuzz_dir().join("fuzz_targets"))
@@ -104,4 +141,5 @@ fn every_target_has_a_fuzz_binary_a_corpus_and_a_manifest_entry() {
 #[test]
 fn the_checks_catch_a_planted_violation() {
     invariants::planted_harm_is_detected().unwrap();
+    invariants::planted_spool_harm_is_detected().unwrap();
 }

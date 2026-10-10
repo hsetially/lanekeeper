@@ -10,10 +10,14 @@ use std::time::Duration;
 
 use agent::clock::Clock;
 use agent::dispatch::CommandHandler;
-use agent::scan::{LiveSink, ScanHandler, Scanner};
+use agent::ops::Metrics;
+use agent::scan::{ScanHandler, Scanner};
+use agent::spool::{Spool, SpoolLimits, SpoolOptions, SpoolVolume};
 use agent::transport::session::{Session, SessionConfig};
 use agent::tree::TreeSource;
 use proto::convert::FromAgent;
+use tempfile::TempDir;
+use tokio::runtime::{Handle, RuntimeFlavor};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until};
 
@@ -24,6 +28,9 @@ use super::rig::{Rig, hello};
 pub struct Harness {
     pub rig: Rig,
     pub scanner: Scanner,
+    /// The spool every delta goes through, on a temporary directory.
+    pub spool: Spool,
+    spool_files: TempDir,
     pub session: Arc<Session>,
     pub conn: ConnHandle,
     /// When the scanner started: its walks are on a 10 s grid from here.
@@ -58,9 +65,15 @@ impl Harness {
     ) -> Self {
         let identity = rig.identity_handle().await;
         let clock: Arc<dyn Clock> = rig.clock.clone();
-        let live = LiveSink::new();
-        let scanner = Scanner::new(source, clock, live.clone());
-        let mut scan_handler = ScanHandler::new(scanner.clone(), live);
+        let spool_dir = TempDir::new().unwrap();
+        let (spool, _) = Spool::open(
+            SpoolVolume::open(spool_dir.path()).unwrap(),
+            SpoolOptions::new(SpoolLimits::new(64 * 1024 * 1024, 100_000)).with_io(spool_io()),
+            clock.clone(),
+        )
+        .unwrap();
+        let scanner = Scanner::with_seq(source, clock, spool.sink(), Metrics::detached(), spool.seq());
+        let mut scan_handler = ScanHandler::new(scanner.clone(), spool.clone());
         if let Some(commands) = commands(&scanner) {
             scan_handler = scan_handler.with_commands(commands);
         }
@@ -92,11 +105,18 @@ impl Harness {
         Self {
             rig,
             scanner,
+            spool,
+            spool_files: spool_dir,
             session,
             conn,
             started,
             tasks,
         }
+    }
+
+    /// The directory the spool lives in.
+    pub fn spool_dir(&self) -> &std::path::Path {
+        self.spool_files.path()
     }
 
     /// Wait until `deadline`, make `change` (which returns the path it wrote) and measure how long the hub takes to
@@ -111,6 +131,16 @@ impl Harness {
             )
             .await;
         made.elapsed()
+    }
+}
+
+/// Where the spool's file operations run: inline on a current-thread runtime, which is what the tests in virtual time use
+/// (time must not jump while a `spawn_blocking` task works), and on the blocking pool on a multi-thread runtime, which
+/// is the real-time tests and the benchmarks.
+pub fn spool_io() -> agent::spool::IoMode {
+    match Handle::current().runtime_flavor() {
+        RuntimeFlavor::CurrentThread => agent::spool::IoMode::Inline,
+        _ => agent::spool::IoMode::Blocking,
     }
 }
 

@@ -172,12 +172,13 @@ async fn the_hub_can_ask_for_a_delta_from_a_root_or_for_everything() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn what_changed_while_disconnected_is_found_through_the_heartbeat_root() {
+async fn what_changed_while_disconnected_is_replayed_and_still_found_through_the_heartbeat_root() {
     let source = files(6);
     let harness = Harness::start(source.clone()).await;
     let known_to_hub = harness.scanner.snapshot().unwrap().root;
 
-    // The hub goes away. Files change meanwhile; the agent keeps walking.
+    // The hub goes away. Files change meanwhile; the agent keeps walking, and every walk that finds a change spools the
+    // delta it builds (T9): nobody is listening, and that no longer means nothing is read.
     harness.rig.server.net.set_reachable(false);
     harness.rig.server.net.kill_connections();
     sleep(Duration::from_secs(5)).await;
@@ -186,9 +187,10 @@ async fn what_changed_while_disconnected_is_found_through_the_heartbeat_root() {
     source.write("during-outage-2.yml", b"2");
     sleep(Duration::from_secs(25)).await;
     assert!(
-        harness.scanner.stats().deltas_skipped_offline() >= 2,
-        "nobody was listening, so no file was read for a delta"
+        harness.scanner.stats().deltas_pushed() >= 2,
+        "each change was read and spooled although nobody was listening"
     );
+    assert_eq!(harness.spool.stats().entries, 2);
     harness.rig.server.net.set_reachable(true);
 
     // The hub is back. The first heartbeat on the new connection shows a root the hub does not know.
@@ -199,17 +201,31 @@ async fn what_changed_while_disconnected_is_found_through_the_heartbeat_root() {
     };
     assert_ne!(h.merkle_root, known_to_hub);
     assert_eq!(h.merkle_root, source.tree().root_hash());
-    // Nothing stale was queued for the new connection.
-    assert!(deltas(&conn).is_empty());
 
-    // So the hub asks, from the root it knows, and gets both files.
+    // And the spool replays what it kept, oldest first, each delta with its own file: the hub does not have to guess.
+    wait_for_deltas(&conn, 2).await;
+    let replayed = deltas(&conn);
+    let paths: Vec<_> = replayed
+        .iter()
+        .map(|d| {
+            d.entries
+                .iter()
+                .map(|e| e.path.as_str().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(paths, [["during-outage-1.yml"], ["during-outage-2.yml"]]);
+    assert_eq!(replayed[0].base_root, Some(known_to_hub));
+    assert_eq!(replayed[1].new_root, source.tree().root_hash());
+    assert!(replayed[0].seq < replayed[1].seq);
+
+    // The hub can still ask by root, and is answered from the tree, with the same files.
     conn.send(ToAgent::Command(HubCommand::RequestDelta {
         since_root: known_to_hub,
     }))
     .await;
-    let FromAgent::Delta(d) = conn.wait_for(|m| matches!(m, FromAgent::Delta(_))).await else {
-        unreachable!()
-    };
+    wait_for_deltas(&conn, 3).await;
+    let d = deltas(&conn).pop().unwrap();
     assert_eq!(d.base_root, Some(known_to_hub));
     let mut paths: Vec<_> = d.entries.iter().map(|e| e.path.as_str().to_owned()).collect();
     paths.sort();

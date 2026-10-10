@@ -11,6 +11,7 @@ use agent::identity::joiner::Joiner;
 use agent::identity::store::MemoryCertStore;
 use agent::ops::{Health, Metrics};
 use agent::root::NfsRoot;
+use agent::spool::{Spool, SpoolLimits, SpoolOptions, SpoolVolume};
 use agent::transport::session::SessionConfig;
 use agent::tree::TreeSource;
 use proto::convert::FromAgent;
@@ -30,6 +31,9 @@ pub struct AppRig {
     pub health: Arc<Health>,
     pub metrics: Arc<Metrics>,
     pub dir: TempDir,
+    /// The spool the agent runs with, and the directory it lives in.
+    pub spool: Spool,
+    pub spool_dir: TempDir,
     pub source: Option<Arc<dyn TreeSource>>,
     /// The identity the agent connected with.
     pub identity: Arc<agent::identity::joiner::IdentityHandle>,
@@ -90,6 +94,15 @@ impl AppRig {
         let clock = rig.clock.clone();
         let health = Health::new(clock.clone());
         let metrics = Metrics::new();
+        let spool_dir = TempDir::new().unwrap();
+        let (spool, _) = Spool::open(
+            SpoolVolume::open(spool_dir.path()).unwrap(),
+            SpoolOptions::new(SpoolLimits::new(64 * 1024 * 1024, 100_000))
+                .with_io(super::oob::spool_io())
+                .with_metrics(metrics.clone()),
+            clock.clone(),
+        )
+        .unwrap();
         let mut parts = Parts::new(
             settings,
             root,
@@ -98,6 +111,7 @@ impl AppRig {
             clock,
             health.clone(),
             metrics.clone(),
+            spool.clone(),
         )
         .with_session_config(setup.session);
         if let Some(source) = &setup.source {
@@ -131,6 +145,8 @@ impl AppRig {
             health,
             metrics,
             dir,
+            spool,
+            spool_dir,
             source: setup.source,
             identity,
             stop: Some(stop),

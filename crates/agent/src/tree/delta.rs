@@ -47,6 +47,10 @@ pub enum SinkError {
     /// The message cannot be sent at all (over the wire limit).
     #[error("the message is too large to send")]
     TooLarge,
+    /// The spool could not keep the message (a full or failing volume). The hub learns the new root from the heartbeat and
+    /// asks for the difference.
+    #[error("the message could not be stored")]
+    Storage,
 }
 
 /// Where finished delta messages go. Delivering waits for room, so a slow hub slows the builder down instead of
@@ -460,6 +464,8 @@ impl<'a> DeltaBuilder<'a> {
             during_job: self.during_job.cloned(),
             more,
             part,
+            // A delta built from the tree never carries a gap; only the spool's replay does (T9).
+            gap: None,
         };
         for unit in batch {
             match unit {

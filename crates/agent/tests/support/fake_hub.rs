@@ -314,6 +314,8 @@ struct Shared {
     answer_renewals: AtomicBool,
     refuse_connect: AtomicBool,
     send_config: AtomicBool,
+    /// Acknowledge every scan delta the moment it arrives, as the real hub does after it has applied it (T9).
+    auto_ack: AtomicBool,
 }
 
 impl Shared {
@@ -363,6 +365,7 @@ impl HubServer {
             answer_renewals: AtomicBool::new(true),
             refuse_connect: AtomicBool::new(false),
             send_config: AtomicBool::new(true),
+            auto_ack: AtomicBool::new(true),
         });
         let serving = Arc::clone(&shared);
         let net = FakeNet::new(tls, move |io| {
@@ -400,6 +403,11 @@ impl HubServer {
     }
 
     /// Whether the hub sends its `AgentConfig` after `Hello`. A hub that does not is a hub that is stuck.
+    /// Whether the hub acknowledges deltas (the default). Off, the agent's spool keeps everything it sends.
+    pub fn set_auto_ack(&self, ack: bool) {
+        self.shared.auto_ack.store(ack, Ordering::SeqCst);
+    }
+
     pub fn set_send_config(&self, send: bool) {
         self.shared.send_config.store(send, Ordering::SeqCst);
     }
@@ -670,6 +678,10 @@ impl pb::agent_server::Agent for HubService {
                     Some(pb::agent_message::Kind::CertRenewalRequest(r)) => Some(r.csr_der.clone()),
                     _ => None,
                 };
+                let delta_seq = match &message.kind {
+                    Some(pb::agent_message::Kind::ScanDelta(d)) => Some(d.seq),
+                    _ => None,
+                };
                 {
                     let mut state = shared.state.lock().unwrap();
                     match state.conns[index].as_mut() {
@@ -678,6 +690,14 @@ impl pb::agent_server::Agent for HubService {
                     }
                 }
                 shared.touch();
+                if let Some(seq) = delta_seq.filter(|_| shared.auto_ack.load(Ordering::SeqCst)) {
+                    let to_agent = shared.state.lock().unwrap().conns[index]
+                        .as_ref()
+                        .map(|c| c.to_agent.clone());
+                    if let Some(to_agent) = to_agent {
+                        let _ = to_agent.send(Ok(ToAgent::Ack(seq).into_proto())).await;
+                    }
+                }
                 if let Some(csr) = renewal_csr {
                     if shared.answer_renewals.load(Ordering::SeqCst) {
                         if let Ok(issued) = RenewalChannel::renew(&*shared.hub, csr).await {

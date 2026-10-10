@@ -20,6 +20,7 @@ pub mod restarts;
 pub mod rig;
 pub mod scripted_source;
 pub mod scripted_transport;
+pub mod spool_rig;
 pub mod test_ca;
 pub mod tls;
 pub mod tree;

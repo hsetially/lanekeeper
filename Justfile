@@ -186,8 +186,8 @@ agent-slow-test:
 
 # S22: the agent's own fuzz crate (decision A16; `fuzz-smoke` does not run it). Its lockfile is complete and passes
 # cargo deny and cargo audit (S19), then each target runs {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in
-# crates/agent/fuzz/artifacts/. T9 adds agent_spool_record to the list.
-agent_fuzz_targets := "agent_path agent_hub_message agent_cert_chain agent_pem agent_id_token"
+# crates/agent/fuzz/artifacts/. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart.
+agent_fuzz_targets := "agent_path agent_hub_message agent_cert_chain agent_pem agent_id_token agent_spool_record"
 agent-fuzz: fuzz-tools-check
     #!/usr/bin/env bash
     set -euo pipefail
@@ -200,8 +200,9 @@ agent-fuzz: fuzz-tools-check
     done
     echo "agent-fuzz: {{agent_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
 
-# P1, P3, P4 and P4.stat_walk, P4.cpu_mcores and P4.memory_mib: the criterion benchmarks and the harnesses that write
-# target/perf-results/, then the check against perf/budgets.toml. A registered budget without a result fails.
+# P1, P3, P4 and P4.stat_walk, P4.cpu_mcores, P4.memory_mib and P15 (the spool's replay rate): the criterion benchmarks and
+# the harnesses that write target/perf-results/, then the check against perf/budgets.toml. A registered budget without a
+# result fails.
 agent-bench:
     cargo bench -p agent
     cargo xtask bench-check

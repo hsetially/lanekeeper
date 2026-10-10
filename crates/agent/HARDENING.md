@@ -155,7 +155,11 @@ The hub CA is a read-only ConfigMap mount. The certificate and key are not on di
 (`RBAC.md`), and in memory.
 
 The chart creates the PVC (small: the spool is bounded at 512 MiB by default, `LK_SPOOL_MAX_BYTES`) and the certificate
-Secret (`RBAC.md` explains why the agent cannot create it).
+Secret (`RBAC.md` explains why the agent cannot create it). The volume must be larger than `LK_SPOOL_MAX_BYTES`: the bound
+counts the segment files, and the small `state` file is on top of it. On a volume that is too small or full, an append
+fails, the delta is not spooled and the hub learns of the change by root comparison; nothing else stops. The agent
+creates its files with mode `0600`, and does not create the directory: it is a mounted volume, and the agent stops at
+start if it is missing.
 
 ## The network
 
