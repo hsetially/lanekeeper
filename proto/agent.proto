@@ -153,6 +153,20 @@ message ScanDelta {
   bool more = 8;
   // Zero-based index of this message within the logical delta.
   uint32 part = 9;
+  // Set when the agent's bounded spool overflowed and the oldest versions were dropped (D74). The hub treats it
+  // as "history was lost between `from_ms` and `to_ms`": it compares roots and requests a full scan. A gap rides
+  // on a delta, so it takes a `seq`, is acknowledged and keeps its place in the order.
+  optional SpoolGap gap = 10;
+}
+
+// The time range of file versions the agent dropped from a full spool (D74).
+message SpoolGap {
+  // Start of the lost range, Unix milliseconds. 0 is a real instant.
+  int64 from_ms = 1;
+  // End of the lost range, Unix milliseconds. Never before `from_ms`: the receiver rejects such a gap.
+  int64 to_ms = 2;
+  // How many spooled entries were dropped.
+  uint64 lost_entries = 3;
 }
 
 message ScanEntry {

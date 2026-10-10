@@ -78,6 +78,19 @@ pub struct ScanDelta {
     /// More messages of the same logical delta follow; the hub applies it only when this is false (Q12).
     pub more: bool,
     pub part: u32,
+    /// Set when the agent's spool overflowed and versions were dropped (D74). History between `from` and `to`
+    /// is lost: the receiver compares roots and requests a full scan, it does not trust the entries alone.
+    pub gap: Option<SpoolGap>,
+}
+
+/// The time range of file versions an agent dropped from its full spool (D74). `from <= to` holds for every
+/// value that comes off the wire (`crates/proto` rejects the rest).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpoolGap {
+    pub from: Timestamp,
+    pub to: Timestamp,
+    /// How many spooled entries were dropped.
+    pub lost_entries: u64,
 }
 
 impl ScanDelta {

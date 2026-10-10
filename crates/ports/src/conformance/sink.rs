@@ -61,6 +61,7 @@ fn delta(
         during_job: None,
         more,
         part: 0,
+        gap: None,
     }
 }
 

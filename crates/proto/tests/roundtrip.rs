@@ -6,7 +6,7 @@ use domain::{
     AgentConfig, AgentReply, AppName, AuditOperation, AuditRecord, AuditRecordBatch, ChannelName,
     ClusterReport, ContentHash, DeploymentInfo, EnvValue, Expected, Heartbeat, Hello, HubCommand, JobRef,
     NfsPath, OpError, OpResult, PodInfo, ReleaseHint, RequestId, ScanDelta, ScanEntry, SentinelConfig,
-    SentinelHello, ServeRequest, ServiceRef, ShortText, SkippedEntry, SwimlaneId, SyncWindowEvent,
+    SentinelHello, ServeRequest, ServiceRef, ShortText, SkippedEntry, SpoolGap, SwimlaneId, SyncWindowEvent,
     SyncWindowKind, TenantId, Timestamp,
 };
 use prost::Message;
@@ -139,6 +139,7 @@ fn from_agent_samples() -> Vec<FromAgent> {
             during_job: Some(job()),
             more: true,
             part: 2,
+            gap: None,
         }),
         FromAgent::Delta(ScanDelta {
             seq: 8,
@@ -150,6 +151,7 @@ fn from_agent_samples() -> Vec<FromAgent> {
             during_job: None,
             more: false,
             part: 0,
+            gap: None,
         }),
         FromAgent::Cluster(cluster_report()),
         FromAgent::Reply(AgentReply::Cluster {
@@ -395,6 +397,7 @@ proptest::proptest! {
             during_job: None,
             more,
             part,
+            gap: None,
         };
         let wire = FromAgent::Delta(delta.clone()).into_proto().encode_to_vec();
         let decoded = pb::AgentMessage::decode(wire.as_slice()).unwrap();
@@ -463,6 +466,82 @@ fn counts_are_bounded() {
         .collect();
     let err = FromAgent::from_proto(agent_message(delta)).unwrap_err();
     assert_eq!(err, ConvertError::TooLarge("scan_delta.entries"));
+}
+
+// ------------------------------------------------------------------ D74: spool gap
+
+fn delta_carrying(gap: Option<SpoolGap>) -> ScanDelta {
+    ScanDelta {
+        seq: 11,
+        base_root: Some(hash(1)),
+        new_root: hash(2),
+        entries: vec![entry("app/a.yml", 3, Some(b"a: 1\n"))],
+        removed: vec![],
+        skipped: vec![],
+        during_job: None,
+        more: false,
+        part: 0,
+        gap,
+    }
+}
+
+#[test]
+fn scan_delta_with_gap_roundtrips() {
+    for gap in [
+        SpoolGap {
+            from: ts(1_700_000_000_000),
+            to: ts(1_700_000_060_000),
+            lost_entries: 42,
+        },
+        // 0 is a real instant, and a gap may be a single instant that lost nothing countable.
+        SpoolGap {
+            from: ts(0),
+            to: ts(0),
+            lost_entries: 0,
+        },
+    ] {
+        let delta = delta_carrying(Some(gap));
+        let wire = FromAgent::Delta(delta.clone()).into_proto().encode_to_vec();
+        let decoded = pb::AgentMessage::decode(wire.as_slice()).unwrap();
+        let Some(pb::agent_message::Kind::ScanDelta(on_wire)) = &decoded.kind else {
+            panic!("a delta travels as a scan_delta");
+        };
+        assert!(
+            on_wire.gap.is_some(),
+            "the gap is on the wire, not dropped by the conversion"
+        );
+        assert_eq!(
+            FromAgent::from_proto(decoded).unwrap(),
+            Some(FromAgent::Delta(delta))
+        );
+    }
+
+    // An agent that predates the field sends none, and the delta stays gap-free.
+    let wire = FromAgent::Delta(delta_carrying(None))
+        .into_proto()
+        .encode_to_vec();
+    let decoded = pb::AgentMessage::decode(wire.as_slice()).unwrap();
+    match FromAgent::from_proto(decoded).unwrap() {
+        Some(FromAgent::Delta(d)) => assert_eq!(d.gap, None),
+        other => panic!("expected a delta, got {other:?}"),
+    }
+}
+
+#[test]
+fn gap_ending_before_it_starts_is_rejected() {
+    for (from_ms, to_ms) in [(2_000, 1_999), (1, 0), (0, -1), (i64::MAX, i64::MIN)] {
+        let mut delta = delta_with_content(&[]);
+        delta.gap = Some(pb::SpoolGap {
+            from_ms,
+            to_ms,
+            lost_entries: 3,
+        });
+        assert_eq!(
+            FromAgent::from_proto(agent_message(delta)).unwrap_err(),
+            ConvertError::Invalid("scan_delta.gap"),
+            "gap {from_ms}..{to_ms}"
+        );
+    }
 }
 
 #[test]

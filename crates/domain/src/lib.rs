@@ -75,7 +75,8 @@ pub use user::User;
 pub use wire::{
     AgentConfig, AgentReply, AuditOperation, AuditRecord, AuditRecordBatch, ClusterReport, DeploymentInfo,
     EnvValue, Heartbeat, HeartbeatAction, Hello, HubCommand, OpError, OpResult, PodInfo, ReleaseHint,
-    ScanDelta, ScanEntry, SentinelConfig, SentinelHello, SkippedEntry, SyncWindowEvent, SyncWindowKind,
+    ScanDelta, ScanEntry, SentinelConfig, SentinelHello, SkippedEntry, SpoolGap, SyncWindowEvent,
+    SyncWindowKind,
 };
 pub use write::{
     DeleteRequest, Draft, EditRequest, Expected, PrRequest, RejectReason, RestartRequest, RevertRequest,
