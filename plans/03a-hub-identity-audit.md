@@ -1,7 +1,7 @@
 # Plan 03a: Hub identity, sessions, authorization and audit
 
-Status: DRAFT
-Contract-change: needed
+Status: APPROVED
+Contract-change: APPROVED
 Extra-paths: `docs/performance.md`, `crates/xtask/tests/budgets_registry.rs`
 Prompt: prompts/03a-hub-identity-audit.md
 Branch: agent/03a-hub-identity-audit
