@@ -152,8 +152,60 @@ fixtures-verify:
     echo "fixtures-verify: two same-seed runs give an identical manifest (including every Git ref id) and identical NFS trees"
     cargo test -p xtask --test fixtures -- --ignored
 
-verify-02:
-    @echo "verify-02 not implemented yet" && exit 1
+# Prompt 02 gate (the agent): every sub-recipe, in order, stopping at the first failure. T9 to T12 append their own
+# sub-recipes to this line. Run `just verify` and `cargo xtask bench-check` after it (AGENTS.md, protocol step 4).
+# Not part of the gate, and said so rather than skipped silently: `docker build` of crates/agent/Dockerfile (needs a Docker
+# daemon; the Dockerfile and HARDENING.md are linted by `agent-test`), and osv-scanner (not installed here).
+verify-02: agent-tools-check agent-fixtures agent-lint agent-test agent-slow-test agent-fuzz agent-bench
+
+# The pinned tools the gate needs, or the command that installs them. Never skips.
+agent-tools-check: fuzz-tools-check
+    @cargo deny --version | grep -qx 'cargo-deny {{cargo_deny_version}}' || { echo "need cargo-deny {{cargo_deny_version}}: cargo install --locked cargo-deny --version {{cargo_deny_version}}"; exit 1; }
+    @cargo audit --version | grep -qx 'cargo-audit-audit {{cargo_audit_version}}' || { echo "need cargo-audit {{cargo_audit_version}}: cargo install --locked cargo-audit --version {{cargo_audit_version}}"; exit 1; }
+
+# The benchmarks measure at design scale, never on toy data: target-scale fixtures (40 swimlanes, about 80,000 files).
+agent-fixtures:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -f target/fixtures/target/manifest.json ]; then
+        cargo xtask gen-fixtures --scale target --out target/fixtures/target
+    fi
+
+agent-lint:
+    cargo fmt --all -- --check
+    cargo clippy -p agent --all-targets -- -D warnings
+
+# Unit, property, golden and integration tests of the agent, in virtual time where they can be: the fake hub (real TLS 1.3
+# and gRPC), the fake Kubernetes API, the fake metadata server, the corpus replay, the Dockerfile and HARDENING.md lints.
+agent-test:
+    cargo test -p agent --lib --tests
+
+# The tests that run in real time: P1 with the 10 s walk, the 3 s quiet period and the 30 s maximum deferral.
+agent-slow-test:
+    cargo test -p agent --release --tests -- --ignored
+
+# S22: the agent's own fuzz crate (decision A16; `fuzz-smoke` does not run it). Its lockfile is complete and passes
+# cargo deny and cargo audit (S19), then each target runs {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in
+# crates/agent/fuzz/artifacts/. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart.
+agent_fuzz_targets := "agent_path agent_hub_message agent_cert_chain agent_pem agent_id_token agent_spool_record"
+agent-fuzz: fuzz-tools-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo +{{fuzz_nightly}} metadata --locked --format-version 1 --manifest-path crates/agent/fuzz/Cargo.toml > /dev/null
+    cargo deny --manifest-path crates/agent/fuzz/Cargo.toml check --config deny.toml
+    cargo audit --file crates/agent/fuzz/Cargo.lock
+    for target in {{agent_fuzz_targets}}; do
+        mkdir -p "target/fuzz-corpus/$target"
+        cargo +{{fuzz_nightly}} fuzz run "$target" --fuzz-dir crates/agent/fuzz "target/fuzz-corpus/$target" "crates/agent/fuzz/corpus/$target" -- -max_total_time={{fuzz_seconds}}
+    done
+    echo "agent-fuzz: {{agent_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
+
+# P1, P3, P4 and P4.stat_walk, P4.cpu_mcores, P4.memory_mib and P15 (the spool's replay rate): the criterion benchmarks and
+# the harnesses that write target/perf-results/, then the check against perf/budgets.toml. A registered budget without a
+# result fails.
+agent-bench:
+    cargo bench -p agent
+    cargo xtask bench-check
 verify-03a:
     @echo "verify-03a not implemented yet" && exit 1
 verify-03b:

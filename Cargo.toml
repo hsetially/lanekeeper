@@ -19,6 +19,7 @@ rust-version = "1.88"
 # Workspace crates. The version keeps `cargo deny` from flagging them as wildcard dependencies.
 domain = { path = "crates/domain", version = "0.1.0" }
 ports = { path = "crates/ports", version = "0.1.0" }
+proto = { path = "crates/proto", version = "0.1.0" }
 # Every version is an exact pin, at least 14 days old when chosen (S19). Default features are off; member crates enable what they use.
 # Data and errors
 serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }
@@ -52,11 +53,62 @@ protox = "=0.9.1"
 tokio-stream = { version = "=0.1.19", default-features = false }
 hyper-util = { version = "=0.1.21", default-features = false }
 tower = { version = "=0.5.3", default-features = false }
+# Agent (prompt 02). cap-std keeps every agent file access inside the NFS root (S17); `http` validates the hub,
+# config-server and metadata URLs at startup (it is already in the graph through tonic); `globset` validates the ignore,
+# sync-Job and Helm-hint globs at startup and matches them in the walker (decision A1).
+cap-std = { version = "=4.0.3", default-features = false }
+http = { version = "=1.5.0", default-features = false, features = ["std"] }
+globset = { version = "=0.4.20", default-features = false }
+# Agent identity (T2, S5). rcgen makes the P-256 key and the CSR on aws-lc-rs (the stack's one crypto provider; `zeroize`
+# wipes its key copy on drop). x509-parser reads the issued certificate so it is checked before it is stored; its
+# `verify` features stay off. `pem` reads and writes the certificate Secret. kube is the Kubernetes client (the Secret
+# calls in T2, the Deployment/Pod/Job watchers in T6): `rustls-tls` with `aws-lc-rs` keeps `ring` out of the agent's
+# graph, and `runtime` adds the `watcher` (list, watch, backoff, paging) from kube-runtime and its small tree (backon,
+# async-broadcast, json-patch, hostname, educe). kube 4.2.0 needs rustc 1.89 and the toolchain is pinned to 1.88, so
+# 4.0.0 (2026-06-16) is the newest that builds.
+rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "aws_lc_rs", "zeroize"] }
+x509-parser = { version = "=0.18.1", default-features = false }
+pem = { version = "=3.0.6", default-features = false }
+kube = { version = "=4.0.0", default-features = false, features = ["client", "runtime", "rustls-tls", "aws-lc-rs"] }
+k8s-openapi = { version = "=0.28.0", default-features = false, features = ["v1_35"] }
+# Plain-HTTP client for the metadata server (and later the config-server): hyper's HTTP/1 client over a TcpStream, with a
+# timeout and a body cap, instead of reqwest, which would bring a second TLS stack. Retry jitter comes from fastrand.
+hyper = { version = "=1.11.1", default-features = false }
+# The fake Kubernetes API server in the agent's tests streams watch events as HTTP body frames (T6); already in the graph through hyper.
+http-body = "=1.1.0"
+http-body-util = "=0.1.5"
+fastrand = "=2.5.0"
+# Agent logging (T7): `fmt` + `json` write one JSON object per line, and `Targets` keeps the Kubernetes client libraries,
+# which log the API server's own message text, silent (S10). No `env-filter`: it brings a regex engine, and the level
+# comes from `LK_LOG`. `json` adds tracing-serde (0.2.0, 2024-11-27), which is tracing-subscriber's own JSON encoder.
+tracing-subscriber = { version = "=0.3.23", default-features = false }
+# Agent metrics (T7, S16): the Prometheus text format for `/metrics`. prometheus-client 0.25.1 (2026-09-01) is the
+# OpenMetrics client the plan names; `derive` and the protobuf feature stay off, so it adds only dtoa, itoa and parking_lot.
+prometheus-client = { version = "=0.25.1", default-features = false }
+time = { version = "=0.3.55", default-features = false }
+# Agent transport (T3, S6). The agent builds its own rustls config so that TLS 1.3 is the only version it can speak
+# and the hub CA is the only root; tonic's TLS features are not used. Both crates are already in the graph through
+# kube; the pins are the versions in the lockfile (rustls 2026-09-14, tokio-rustls 2026-09-04). The agent asks for
+# TLS 1.3 only at run time (`transport::tls`), whatever features other crates turn on; `tls12` is enabled in the agent's
+# dev-dependencies alone, for the tests that prove a TLS 1.2 hub is refused.
+rustls = { version = "=0.23.45", default-features = false, features = ["std", "aws_lc_rs"] }
+tokio-rustls = { version = "=0.26.5", default-features = false, features = ["aws_lc_rs"] }
+# Agent scanning (T4, P1, P4). rayon runs the walk and the hashing on a dedicated pool of the configured size, never the
+# global pool, and always inside `spawn_blocking` (code rule 4). sha2 is the Merkle and content hash (already pinned).
+rayon = "=1.12.0"
+# Agent spool (T9, D74, P15). crc32fast checksums every spooled record, so a torn or damaged tail is found at the first bad
+# frame instead of being believed. 1.5.0 (2025-07-13) is the version in the lockfile's registry cache; with `std` it
+# uses the CPU's CRC instructions at run time. Its only dependency, cfg-if, is already in the graph.
+crc32fast = { version = "=1.5.0", default-features = false, features = ["std"] }
 # Test tooling
 proptest = "=1.11.0"
 insta = "=1.48.0"
 static_assertions = "=1.1.0"
+tempfile = "=3.27.0"
 testcontainers = { version = "=0.28.0", default-features = false }
+# Agent benchmarks (T4, P4, rule 14). Without the HTML report (plotters) and the global rayon feature: `cargo bench` only
+# needs the harness and the `sample.json` files that `cargo xtask bench-check` reads.
+criterion = { version = "=0.8.2", default-features = false, features = ["cargo_bench_support"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

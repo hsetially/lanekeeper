@@ -1,0 +1,9 @@
+---
+source: crates/agent/tests/tree_merkle.rs
+expression: "lines.join(\"\\n\")"
+---
+root 48c94880af89c700173b4837bb65be0c8e77679dae20a99da88f8c38e68a1605
+dir                 48c94880af89c700173b4837bb65be0c8e77679dae20a99da88f8c38e68a1605
+dir  app            f40b7749b287f779b2c59ef415cd6d67ea4d97351a69d3e8beae6985e46d16f5
+dir  app/resources  eeef7d0c82dd2c06649b49bf5954221cccef9ca2df1e91d41c5d606b14f490d0
+dir  empty          e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

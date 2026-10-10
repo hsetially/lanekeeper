@@ -10,3 +10,86 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+domain.workspace = true
+proto.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+cap-std.workspace = true
+crc32fast.workspace = true
+fastrand.workspace = true
+futures.workspace = true
+globset.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["client", "server", "http1", "http2"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+k8s-openapi.workspace = true
+kube.workspace = true
+pem.workspace = true
+prometheus-client.workspace = true
+prost.workspace = true
+rayon.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-rustls.workspace = true
+tokio-stream.workspace = true
+# The generated gRPC client runs over the agent's own HTTP/2 connection (`transport::grpc`), not tonic's `Channel`, so
+# that the TLS settings, the URI scheme and the keepalive are all set in one place that no feature flag elsewhere in the
+# workspace can change.
+tonic = { workspace = true, features = ["codegen"] }
+tower.workspace = true
+tracing.workspace = true
+# Logs are JSON lines (T7); `Targets` silences the Kubernetes client libraries.
+tracing-subscriber = { workspace = true, features = ["fmt", "json", "std"] }
+x509-parser.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+http-body.workspace = true
+insta.workspace = true
+proptest.workspace = true
+serde-saphyr.workspace = true
+tempfile.workspace = true
+time = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
+# The fake hub issues certificates from the agent's CSR, which needs rcgen's CSR parser.
+rcgen = { workspace = true, features = ["x509-parser"] }
+# The fake hub is a real tonic server behind a real TLS acceptor, and one test needs a TLS 1.2-only server.
+rustls = { workspace = true, features = ["tls12"] }
+tonic = { workspace = true, features = ["server"] }
+
+# Benchmarks (T4, rule 14). Two criterion benchmarks for the walker, and two harnesses that write
+# `target/perf-results/*.json` for the numbers criterion cannot take (a latency over a connection, bytes on a wire).
+[[bench]]
+name = "full_rehash"
+harness = false
+
+[[bench]]
+name = "stat_walk"
+harness = false
+
+[[bench]]
+name = "oob_change"
+harness = false
+
+[[bench]]
+name = "idle_traffic"
+harness = false
+
+# The steady-state harness (T7): the whole agent in-process against the fakes, and the real binary's idle footprint.
+[[bench]]
+name = "steady_state"
+harness = false
+
+# The spool's replay rate (T9, P15): a spool written during a simulated one-hour outage, reopened and replayed to a hub
+# that acknowledges every message.
+[[bench]]
+name = "spool_replay"
+harness = false

@@ -46,6 +46,7 @@ fn every_p_number_has_an_entry() {
     // The multi-part budgets get one entry per part (plan Q5, Appendix C).
     for id in [
         "P4",
+        "P4.stat_walk",
         "P4.cpu_mcores",
         "P4.memory_mib",
         "P5",
@@ -163,6 +164,12 @@ fn thresholds_match_docs_performance_md() {
             20_000.0,
             "ms",
             "full rehash of 2,000 files takes under 20 seconds",
+        ),
+        (
+            "P4.stat_walk",
+            1_000.0,
+            "ms",
+            "A stat walk of 2,000 files takes under 1 second",
         ),
         ("P4.cpu_mcores", 50.0, "mcores", "at most 50 mCPU"),
         ("P4.memory_mib", 64.0, "mib", "64 MiB of memory"),
@@ -288,16 +295,34 @@ fn thresholds_match_docs_performance_md() {
     }
 }
 
+/// A budget is registered only together with the benchmark or harness that produces its result (plan Q5), and flipping
+/// it is the owning prompt's contract change. So the list is written out here: a PR that registers a budget changes it,
+/// in view of the reviewer. Everything else stays unregistered (reported as UNMET).
 #[test]
-fn nothing_is_registered_before_its_benchmark_exists() {
-    // Prompt 01 writes no benchmark. Flipping `registered` is the owning prompt's contract change (plan Q5).
-    for b in &registry().budgets {
-        assert!(
-            !b.registered,
-            "{}: registered = true needs a benchmark that produces the result",
-            b.id
-        );
-    }
+fn only_budgets_with_a_harness_are_registered() {
+    // Prompt 02 (agent): `cargo bench -p agent` produces P1, P3, P4, P4.stat_walk, P4.cpu_mcores, P4.memory_mib and
+    // P15.spool_replay_versions_per_s (the spool, T9).
+    const REGISTERED: &[&str] = &[
+        "P1",
+        "P3",
+        "P4",
+        "P4.stat_walk",
+        "P4.cpu_mcores",
+        "P4.memory_mib",
+        "P15.spool_replay_versions_per_s",
+    ];
+    let reg = registry();
+    let registered: BTreeSet<&str> = reg
+        .budgets
+        .iter()
+        .filter(|b| b.registered)
+        .map(|b| b.id.as_str())
+        .collect();
+    let expected: BTreeSet<&str> = REGISTERED.iter().copied().collect();
+    assert_eq!(
+        registered, expected,
+        "registered = true needs a benchmark that produces the result, and this list updated in the same PR"
+    );
 }
 
 #[test]
