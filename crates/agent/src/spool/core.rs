@@ -45,6 +45,9 @@ pub const SEQ_HEADROOM: u64 = 2048;
 /// The least time between two writes of the state file that only move the floor.
 const FLOOR_PERIOD: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// `drained_mark` before the pump of a connection has caught up. No sequence number is this large.
+const NOT_DRAINED: u64 = u64::MAX;
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -87,6 +90,13 @@ pub struct Core {
     reader: Mutex<Option<(u64, Arc<File>)>>,
     seq: Arc<SeqCounter>,
     changed: watch::Sender<u64>,
+    /// Raised when [`Core::drained`] may have changed (T10).
+    drain: watch::Sender<u64>,
+    /// The pump that is sending to the current connection (`0`: none), and the last epoch handed out.
+    pump_epoch: AtomicU64,
+    last_epoch: AtomicU64,
+    /// `ready_through` at the moment the current pump found nothing more to send, or [`NOT_DRAINED`].
+    drained_mark: AtomicU64,
     wake_maintenance: Notify,
     hooks: Option<Arc<dyn SpoolHooks>>,
     metrics: Arc<Metrics>,
@@ -186,6 +196,10 @@ impl Core {
             reader: Mutex::new(None),
             seq: Arc::new(SeqCounter::new(first_seq)),
             changed,
+            drain: watch::channel(0).0,
+            pump_epoch: AtomicU64::new(0),
+            last_epoch: AtomicU64::new(0),
+            drained_mark: AtomicU64::new(NOT_DRAINED),
             wake_maintenance: Notify::new(),
             hooks: options.hooks,
             metrics: options.metrics,
@@ -537,8 +551,40 @@ impl Core {
         self.bump();
     }
 
-    pub fn reset_carrier(&self) {
+    /// A connection's pump starts: the loss is owed to it afresh, and the spool is not drained until it has caught up.
+    /// Returns the pump's epoch, which it passes to [`Core::read_next`] and [`Core::pump_stopped`].
+    pub fn pump_started(&self) -> u64 {
         lock(&self.index).reset_carrier();
+        let epoch = self.last_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        self.pump_epoch.store(epoch, Ordering::SeqCst);
+        self.drained_mark.store(NOT_DRAINED, Ordering::SeqCst);
+        self.drain.send_modify(|n| *n = n.wrapping_add(1));
+        epoch
+    }
+
+    /// The pump of `epoch` has ended. A later pump's state is not touched.
+    pub fn pump_stopped(&self, epoch: u64) {
+        if self
+            .pump_epoch
+            .compare_exchange(epoch, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            self.drained_mark.store(NOT_DRAINED, Ordering::SeqCst);
+            self.drain.send_modify(|n| *n = n.wrapping_add(1));
+        }
+    }
+
+    /// The pump has handed the connection every complete delta the spool holds, and none has been added since.
+    pub fn drained(&self) -> bool {
+        // The mark is only ever written under the index lock at the moment the pump finds nothing; reading `ready_through`
+        // under the same lock means a delta appended after that moment makes the two differ.
+        let index = lock(&self.index);
+        self.pump_epoch.load(Ordering::SeqCst) != 0
+            && self.drained_mark.load(Ordering::SeqCst) == index.ready_through()
+    }
+
+    pub fn subscribe_drain(&self) -> watch::Receiver<u64> {
+        self.drain.subscribe()
     }
 
     /// Drop from `window` every message the hub has acknowledged (or that is gone).
@@ -563,9 +609,24 @@ impl Core {
 
     /// The next message to send after `cursor`, read back and checked. A record that cannot be read back whole is
     /// dropped with its delta, as lost, and the next one is tried.
-    pub fn read_next(&self, cursor: u64) -> Result<Option<(u64, Outgoing)>, SpoolError> {
+    pub fn read_next(&self, cursor: u64, epoch: u64) -> Result<Option<(u64, Outgoing)>, SpoolError> {
         loop {
-            let Some(next) = lock(&self.index).next_after(cursor) else {
+            let next = {
+                let mut index = lock(&self.index);
+                let next = index.next_after(cursor);
+                if next.is_none() {
+                    // Nothing more to send to this connection, as of this moment: written under the lock that appends
+                    // take, so a later append cannot be missed.
+                    let through = index.ready_through();
+                    if self.pump_epoch.load(Ordering::SeqCst) == epoch
+                        && self.drained_mark.swap(through, Ordering::SeqCst) != through
+                    {
+                        self.drain.send_modify(|n| *n = n.wrapping_add(1));
+                    }
+                }
+                next
+            };
+            let Some(next) = next else {
                 return Ok(None);
             };
             let seq = next.meta.seq;

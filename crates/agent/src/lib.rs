@@ -18,7 +18,9 @@
 //! - [`process`]: from settings to a running agent and an exit code (T7).
 //! - [`ops`]: health probes, Prometheus metrics and JSON logs (T7, S16).
 //! - [`spool`]: the durable spool of observed versions, replayed to the hub in order (T9, D74, P15).
+//! - [`quiesce`]: when a change is quiet enough to report (T10, D75).
 //! - [`scan`]: the scan loop that keeps the tree current, pushes deltas and answers the hub (T4, D63, P1).
+//! - [`windows`]: the spans in which a sync Job ran, and telling the hub about them (T10, D72, D75).
 //! - [`tree`]: the Merkle tree of the NFS root, its diffs and the ring of recent roots (T4, D63).
 #![forbid(unsafe_code)]
 // The error enums document themselves, and a one-line accessor does not need `#[must_use]`.
@@ -39,11 +41,13 @@ pub mod identity;
 pub mod kube;
 pub mod ops;
 pub mod process;
+pub mod quiesce;
 pub mod root;
 pub mod scan;
 pub mod spool;
 pub mod transport;
 pub mod tree;
+pub mod windows;
 
 pub use root::{NfsRoot, StartupError};
 

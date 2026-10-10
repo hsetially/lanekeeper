@@ -1,4 +1,5 @@
-//! The scan loop (T4, D63, D27, P1, P3): walk the root, keep the tree, push what changed, answer what the hub asks.
+//! The scan loop (T4, T10, D63, D27, D75, P1, P3): walk the root, keep the tree, push what changed, answer what the hub
+//! asks.
 //!
 //! # Timing
 //!
@@ -6,18 +7,33 @@
 //!   whose size, mtime, ctime or inode changed are read. Walks are on a fixed grid, so a slow walk does not push the next
 //!   one later.
 //! - **Every 15 min** everything is rehashed, because NFS attribute caching can show an old stat for a file that changed.
-//! - **At the walk that finds a change**, the difference between the old tree and the new one goes to the hub as a delta
-//!   (agent-initiated). So an out-of-band change reaches the hub about one walk after it was made: at most 10 s plus the
-//!   walk, read and send, against the 15 s of P1. (T10 adds the quiet period that batches a burst; this loop pushes at
-//!   once.)
+//! - **When a walk finds a change**, it is reported once the tree has been quiet for 3 s, and at the latest 30 s after
+//!   it began ([`crate::quiesce`], D75), so a copy of 600 files is one delta and not a hundred. A change that was already
+//!   finished when the walk found it is reported at that walk, which is what keeps P1: the walk is up to 10 s of the
+//!   15 s. While changes are held back the root is walked every second, so the 3 s and the 30 s are met within a second;
+//!   it is a burst, bounded by the 30 s, and not the steady state that P4 measures.
 //! - **Every 10 s**, on a connection, a heartbeat carries the root, the file count and the walk number: 6 messages a
-//!   minute, which is what P3's 1 KB a minute is spent on.
+//!   minute, which is what P3's 1 KB a minute is spent on. The root is the one the hub was told about, not the one being
+//!   held back: a root the hub has no delta for would only make it ask for one.
 //!
 //! # What is kept
 //!
-//! One tree, and the [`RootRing`] of the roots of the last hour. A hub that asks for `RequestDelta(since_root)` gets the
-//! difference from that root, or a full listing if the root is older than the ring; both are answered from the tree on
-//! the connection that asked, with fresh sequence numbers, not from any queue.
+//! Two trees. The **tree** is what the latest walk saw; the **reported** tree is what the hub was last told (the
+//! baseline, a delta, or an answer to a request), and the two are the same unless changes are being held. A delta is the
+//! difference between them. The hub's own file operations edit both, so they are never reported back as changes.
+//!
+//! The [`RootRing`] holds the roots of the last hour. A hub that asks for `RequestDelta(since_root)` gets the difference
+//! from that root, or a full listing if the root is older than the ring; both are answered from the tree on the
+//! connection that asked, with fresh sequence numbers, not from any queue. An answer includes the changes being held, and
+//! ends the hold: the hub has them.
+//!
+//! # Sync Jobs (D75)
+//!
+//! A change found by a walk is tagged with the sync Job that was running between that walk and the one before it
+//! ([`crate::windows`]), also when the Job has ended by the time the change is found or released. The tag stays with the
+//! held changes until they are reported. The scanner publishes its [`Progress`] (the last finished walk, as a ledger
+//! generation, and whether changes are held) so that the announcer can tell the hub a window closed only after the last
+//! walk that could have seen its files has been reported.
 //!
 //! # What is never believed
 //!
@@ -34,15 +50,15 @@
 use std::convert::Infallible;
 use std::fmt;
 use std::future::pending;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use domain::{ContentHash, Heartbeat, HubCommand, NfsPath, ScanDelta};
+use domain::{ContentHash, Heartbeat, HubCommand, JobRef, NfsPath, ScanDelta};
 use proto::convert::{FromAgent, ToAgent};
-use tokio::sync::{Mutex as AsyncMutex, watch};
+use tokio::sync::{Mutex as AsyncMutex, Notify, watch};
 use tokio::task::JoinSet;
-use tokio::time::{Instant, Interval, MissedTickBehavior, interval, interval_at, timeout};
+use tokio::time::{Instant, Interval, MissedTickBehavior, interval, interval_at, sleep_until, timeout};
 use tracing::{debug, info, warn};
 
 use crate::clock::Clock;
@@ -50,11 +66,13 @@ use crate::config::Tunables;
 use crate::dispatch::{CommandHandler, OpLimits, failure, operation_of, request_id_of};
 use crate::fileops::TreeEdits;
 use crate::ops::{Metrics, Outcome, ScanKind, ScanResult};
+use crate::quiesce::{Quiescer, Verdict, change_moment};
 use crate::spool::{PumpEnd, Spool};
 use crate::transport::session::{Link, LinkHandler};
 use crate::transport::{Outbox, OutboxError};
 use crate::tree::delta::{DeltaBuilder, DeltaError, DeltaOutcome, DeltaSink, SeqCounter, SinkError};
 use crate::tree::{Edited, Entry, FileLeaf, MerkleTree, RootRing, ScanMode, ScanOutcome, TreeSource};
+use crate::windows::WindowLedger;
 use domain::OpError;
 
 /// Hub requests answered at the same time. More than this are dropped (the hub asks again): rule 5.
@@ -85,6 +103,16 @@ impl Snapshot {
     }
 }
 
+/// How far the scanner has got, for whoever must wait for it (the announcer, T10).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Progress {
+    /// The sync-window ledger generation the latest finished walk started at: that walk saw every window change
+    /// numbered up to it. `None` before the first walk.
+    pub walked: Option<u64>,
+    /// Changes found by a walk are being held back, and the hub has not been told about them.
+    pub held: bool,
+}
+
 /// Counters for metrics (T7) and tests.
 #[derive(Debug, Default)]
 pub struct ScannerStats {
@@ -97,6 +125,7 @@ pub struct ScannerStats {
     deltas_skipped_offline: AtomicU64,
     empty_root_holds: AtomicU64,
     dropped_requests: AtomicU64,
+    held_walks: AtomicU64,
 }
 
 macro_rules! counter {
@@ -115,7 +144,8 @@ counter!(
     delta_failures,
     deltas_skipped_offline,
     empty_root_holds,
-    dropped_requests
+    dropped_requests,
+    held_walks
 );
 
 fn bump(counter: &AtomicU64) {
@@ -132,12 +162,21 @@ pub enum ScanRequestError {
 }
 
 struct State {
+    /// What the latest walk saw, with the hub's own file operations applied.
     tree: Option<MerkleTree>,
+    /// What the hub was last told, with the same file operations applied. Differs from `tree` while changes are held.
+    reported: Option<MerkleTree>,
     ring: RootRing,
     scan_seq: u64,
     last_full: Option<Instant>,
     /// Since when every walk has found an empty root, while the tree holds files.
     empty_since: Option<Instant>,
+    /// The rule for how long to hold changes back (D75).
+    quiescer: Quiescer,
+    /// The sync Job the held changes are tagged with.
+    held_tag: Option<JobRef>,
+    /// When the previous finished walk started, and the ledger generation it started at.
+    last_walk: Option<(Instant, u64)>,
 }
 
 struct Inner {
@@ -148,6 +187,11 @@ struct Inner {
     tunables: watch::Sender<Tunables>,
     state: AsyncMutex<State>,
     snapshot: watch::Sender<Option<Snapshot>>,
+    progress: watch::Sender<Progress>,
+    /// The sync windows, once the Kubernetes side exists to feed them.
+    windows: OnceLock<Arc<WindowLedger>>,
+    /// A walk is wanted now.
+    kick: Notify,
     stats: ScannerStats,
     metrics: Arc<Metrics>,
 }
@@ -201,12 +245,19 @@ impl Scanner {
                 tunables: watch::channel(Tunables::default()).0,
                 state: AsyncMutex::new(State {
                     tree: None,
+                    reported: None,
                     ring: RootRing::default(),
                     scan_seq: 0,
                     last_full: None,
                     empty_since: None,
+                    quiescer: Quiescer::new(Tunables::default().quiet_period, Tunables::default().max_defer),
+                    held_tag: None,
+                    last_walk: None,
                 }),
                 snapshot: watch::channel(None).0,
+                progress: watch::channel(Progress::default()).0,
+                windows: OnceLock::new(),
+                kick: Notify::new(),
                 stats: ScannerStats::default(),
                 metrics,
             }),
@@ -215,6 +266,21 @@ impl Scanner {
 
     pub fn stats(&self) -> &ScannerStats {
         &self.inner.stats
+    }
+
+    /// Tag changes with the sync Jobs in `ledger` (D75). The first ledger attached stays.
+    pub fn attach_windows(&self, ledger: Arc<WindowLedger>) {
+        let _ = self.inner.windows.set(ledger);
+    }
+
+    /// Walk now, in addition to the walks on the grid. The grid does not move.
+    pub fn kick(&self) {
+        self.inner.kick.notify_one();
+    }
+
+    /// How far the scanner has got. Wakes after each walk that changes it.
+    pub fn progress(&self) -> watch::Receiver<Progress> {
+        self.inner.progress.subscribe()
     }
 
     /// The root, file count and walk number of the latest tree; `None` until the first walk finishes. Never waits for a
@@ -241,14 +307,26 @@ impl Scanner {
     }
 
     /// Walk now and then every scan interval, for as long as this future is polled. The first walk is the baseline: it
-    /// sends no delta, because there is nothing to compare with.
+    /// sends no delta, because there is nothing to compare with. While changes are held back it also walks every
+    /// `pending_walk_interval`, and it walks when [`Scanner::kick`] asks.
     pub async fn run(&self) -> Infallible {
         let mut tunables = self.inner.tunables.subscribe();
         let mut period = tunables.borrow_and_update().scan_interval;
         let mut ticker = ticker_now(period);
+        // When the next extra walk is due, while changes are held back.
+        let mut extra: Option<Instant> = None;
         loop {
+            let extra_due = extra;
+            let extra_walk = async move {
+                match extra_due {
+                    Some(at) => sleep_until(at).await,
+                    None => pending::<()>().await,
+                }
+            };
             tokio::select! {
-                _ = ticker.tick() => self.scan_once().await,
+                _ = ticker.tick() => extra = self.walk().await,
+                () = extra_walk => extra = self.walk().await,
+                () = self.inner.kick.notified() => extra = self.walk().await,
                 changed = tunables.changed() => {
                     if changed.is_err() {
                         // The sender lives in `self`; there is nothing more to wait for.
@@ -264,12 +342,29 @@ impl Scanner {
         }
     }
 
-    /// One walk, and everything that follows from it. Public for tests; [`Scanner::run`] calls it.
-    pub async fn scan_once(&self) {
+    /// One walk, and when the next extra one is due if changes are being held back.
+    async fn walk(&self) -> Option<Instant> {
+        let inner = &self.inner;
+        let started = inner.clock.instant();
+        let held = self.scan_once().await;
+        let every = inner.tunables.borrow().pending_walk_interval;
+        // On a fixed beat from the start of this walk, but never back to back: a walk that takes a second still leaves
+        // the workers a quarter of one.
+        held.then(|| (started + every).max(inner.clock.instant() + every / 4))
+    }
+
+    /// One walk, and everything that follows from it. Returns whether changes are being held back. Public for tests;
+    /// [`Scanner::run`] calls it.
+    pub async fn scan_once(&self) -> bool {
         let inner = &self.inner;
         let mut state = inner.state.lock().await;
         let now = inner.clock.instant();
+        // Read before a single file is looked at: this walk sees every window change numbered up to here.
+        let walk_gen = inner.windows.get().map_or(0, |ledger| ledger.generation());
         let tunables = inner.tunables.borrow().clone();
+        state
+            .quiescer
+            .set_timing(tunables.quiet_period, tunables.max_defer);
         state.ring.evict(now);
 
         let full_due = state
@@ -287,7 +382,7 @@ impl Scanner {
                 bump(&inner.stats.scan_errors);
                 inner.metrics.scan(kind, ScanResult::Failed, took(inner, now));
                 warn!(%error, "the scan failed; the tree is unchanged");
-                return;
+                return state.quiescer.is_pending();
             }
         };
         let walked = took(inner, now);
@@ -318,55 +413,157 @@ impl Scanner {
                 warn!(
                     "the NFS root lists as empty; holding the tree until it has been empty for the maximum deferral"
                 );
-                return;
+                return state.quiescer.is_pending();
             }
             info!("the NFS root has stayed empty; accepting it");
         }
         state.empty_since = None;
         inner.metrics.scan(kind, ScanResult::Done, walked);
+        let before = state.last_walk.replace((now, walk_gen));
 
+        self.adopt(
+            &mut state,
+            &tunables,
+            previous,
+            scanned,
+            new_bytes,
+            (now, walk_gen),
+            before,
+        )
+        .await;
+        publish(inner, &state);
+        let held = state.quiescer.is_pending();
+        inner.progress.send_if_modified(|progress| {
+            let next = Progress {
+                walked: Some(walk_gen),
+                held,
+            };
+            let changed = *progress != next;
+            *progress = next;
+            changed
+        });
+        held
+    }
+
+    /// Take the tree this walk produced: as the first one, or compared with the one before.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one walk's results, named; a struct would only rename them"
+    )]
+    async fn adopt(
+        &self,
+        state: &mut State,
+        tunables: &Tunables,
+        previous: Option<MerkleTree>,
+        scanned: MerkleTree,
+        new_bytes: usize,
+        (now, walk_gen): (Instant, u64),
+        before: Option<(Instant, u64)>,
+    ) {
+        let inner = &self.inner;
         match previous {
             None => {
                 state.ring.push(scanned.clone(), new_bytes, now);
+                state.reported = Some(scanned.clone());
                 state.tree = Some(scanned);
-            }
-            Some(previous) if previous.root_hash() == scanned.root_hash() => {
-                // Same content; the stat fields may have moved (a touch), and the next walk should compare with them.
-                state.tree = Some(scanned);
-            }
-            Some(_) if !inner.sink.ready() => {
-                // Nobody to send to: remember the tree and the root, read no file. The hub learns the root from the
-                // heartbeat when it is back, and asks for what it is missing.
-                state.ring.push(scanned.clone(), new_bytes, now);
-                state.tree = Some(scanned);
-                bump(&inner.stats.deltas_skipped_offline);
             }
             Some(previous) => {
-                state.ring.push(scanned.clone(), new_bytes, now);
+                let moved = previous.root_hash() != scanned.root_hash();
+                if moved {
+                    state.ring.push(scanned.clone(), new_bytes, now);
+                }
+                // The stat fields may have moved even when the content did not (a touch); the next walk compares with them.
+                state.tree = Some(scanned.clone());
+                if inner.sink.ready() {
+                    let walk = Walk {
+                        now,
+                        gen_now: walk_gen,
+                        before,
+                        moved,
+                    };
+                    self.settle(state, tunables, &previous, scanned, &walk).await;
+                } else {
+                    // Nobody to send to: remember the tree and the root, read no file. The hub learns the root from the
+                    // heartbeat when it is back, and asks for what it is missing.
+                    if moved {
+                        bump(&inner.stats.deltas_skipped_offline);
+                    }
+                    state.reported = Some(scanned);
+                    state.quiescer.reset();
+                    state.held_tag = None;
+                }
+            }
+        }
+    }
+
+    /// Decide what to do with what this walk found: nothing, hold it back, or report it.
+    async fn settle(
+        &self,
+        state: &mut State,
+        tunables: &Tunables,
+        previous: &MerkleTree,
+        scanned: MerkleTree,
+        walk: &Walk,
+    ) {
+        let inner = &self.inner;
+        let Some(reported) = state.reported.clone() else {
+            // Not possible after the first walk; if it ever happens the hub is in step with the tree by definition.
+            state.reported = Some(scanned);
+            return;
+        };
+        let unreported = reported.root_hash() != scanned.root_hash();
+        let found = (unreported && walk.moved).then(|| {
+            let diff = scanned.diff(previous);
+            let previous_walk = walk.before.map_or(walk.now, |(at, _)| at);
+            change_moment(&diff, previous_walk, walk.now, inner.clock.now())
+        });
+        if unreported && walk.moved {
+            let after = walk.before.map_or(0, |(_, generation)| generation);
+            if let Some(job) = inner
+                .windows
+                .get()
+                .and_then(|ledger| ledger.overlapping(after, walk.gen_now))
+            {
+                // The first Job wins: a batch carries one tag.
+                state.held_tag.get_or_insert(job);
+            }
+        }
+        match state.quiescer.observe(walk.now, unreported, found) {
+            Verdict::Idle => state.held_tag = None,
+            Verdict::Hold => bump(&inner.stats.held_walks),
+            Verdict::Release => {
+                let tag = state.held_tag.take();
                 let sent = self
-                    .build(&tunables, Some(&previous), &scanned, inner.sink.as_ref())
+                    .build(
+                        tunables,
+                        Some(&reported),
+                        &scanned,
+                        inner.sink.as_ref(),
+                        tag.as_ref(),
+                    )
                     .await;
                 match sent {
                     Ok(outcome) => {
                         bump(&inner.stats.deltas_pushed);
-                        remember(&mut state.ring, outcome.trees, now);
+                        remember(&mut state.ring, outcome.trees, walk.now);
+                        state.reported = Some(outcome.tree.clone());
                         state.tree = Some(outcome.tree);
                     }
                     Err(error) => {
-                        // Not delivered (no connection, or it broke). The tree is still right; the hub learns the
-                        // new root from the next heartbeat and asks for the difference.
+                        // Not delivered (no connection, or it broke). The tree is still right; the hub learns the new
+                        // root from the next heartbeat and asks for the difference, so this is not tried again.
                         bump(&inner.stats.delta_failures);
                         debug!(%error, "the delta was not delivered");
-                        state.tree = Some(scanned);
+                        state.reported = Some(scanned);
                     }
                 }
             }
         }
-        publish(inner, &state);
     }
 
     /// Answer a hub request: the difference from `since` (a full listing when `since` is `None` or older than the
-    /// ring), sent to `sink`.
+    /// ring), sent to `sink`. It is made from the tree as it is, so it includes changes that are being held back, and the
+    /// hub having them ends the hold.
     pub async fn answer_delta(
         &self,
         since: Option<ContentHash>,
@@ -382,11 +579,26 @@ impl Scanner {
         if since.is_some() && base.is_none() {
             info!("the hub asked for a root that is no longer remembered; sending a full listing");
         }
-        let outcome = self.build(&tunables, base.as_ref(), &current, sink).await?;
+        // What was seen while a Job ran says so, whoever asks for it.
+        let tag = state
+            .held_tag
+            .clone()
+            .or_else(|| inner.windows.get().and_then(|ledger| ledger.active()));
+        let outcome = self
+            .build(&tunables, base.as_ref(), &current, sink, tag.as_ref())
+            .await?;
         let now = inner.clock.instant();
         remember(&mut state.ring, outcome.trees, now);
+        state.reported = Some(outcome.tree.clone());
         state.tree = Some(outcome.tree);
+        state.quiescer.reset();
+        state.held_tag = None;
         publish(inner, &state);
+        inner.progress.send_if_modified(|progress| {
+            let changed = progress.held;
+            progress.held = false;
+            changed
+        });
         Ok(())
     }
 
@@ -396,6 +608,7 @@ impl Scanner {
         base: Option<&MerkleTree>,
         tree: &MerkleTree,
         sink: &dyn DeltaSink,
+        job: Option<&JobRef>,
     ) -> Result<DeltaOutcome, DeltaError> {
         let inner = &self.inner;
         let metered = MeteredSink {
@@ -404,9 +617,22 @@ impl Scanner {
         };
         DeltaBuilder::new(inner.source.as_ref(), inner.clock.as_ref(), &inner.seq)
             .with_max_file_bytes(tunables.max_file_bytes)
+            .with_job(job)
             .send(base, tree, &metered)
             .await
     }
+}
+
+/// What `settle` needs to know about the walk that just finished.
+struct Walk {
+    /// When it started.
+    now: Instant,
+    /// The ledger generation it started at.
+    gen_now: u64,
+    /// The start and generation of the walk before it.
+    before: Option<(Instant, u64)>,
+    /// The root differs from the previous walk's.
+    moved: bool,
 }
 
 /// Time since `started` on the scanner's clock.
@@ -420,13 +646,16 @@ fn remember(ring: &mut RootRing, trees: Vec<crate::tree::delta::Remembered>, now
     }
 }
 
+/// The heartbeat's view: the tree the hub was last told about, not the one being held back.
 fn publish(inner: &Inner, state: &State) {
     if let Some(tree) = &state.tree {
         inner.metrics.files_tracked(tree.file_count());
+    }
+    if let Some(reported) = &state.reported {
         inner.snapshot.send_replace(Some(Snapshot {
             scan_seq: state.scan_seq,
-            root: tree.root_hash(),
-            file_count: tree.file_count(),
+            root: reported.root_hash(),
+            file_count: reported.file_count(),
         }));
     }
 }
@@ -451,7 +680,7 @@ impl Scanner {
     /// Apply an edit made by a file operation to the tree, and remember the new root. If a scan is holding the tree for
     /// longer than [`EDIT_WAIT`] the edit is dropped: the file's stat differs from the tree's leaf, so the next walk
     /// reads it and the tree catches up (a walk never loses a change, it only finds it later).
-    async fn edit(&self, change: impl FnOnce(&MerkleTree) -> Edited) {
+    async fn edit(&self, change: impl Fn(&MerkleTree) -> Edited) {
         let inner = &self.inner;
         let Ok(mut state) = timeout(EDIT_WAIT, inner.state.lock()).await else {
             debug!("a scan held the tree; the edit is left for the next walk");
@@ -466,6 +695,12 @@ impl Scanner {
             .ring
             .push(edited.tree.clone(), edited.new_bytes, inner.clock.instant());
         state.tree = Some(edited.tree);
+        // The hub did this itself: it is in what the hub knows as well as in what the walk saw, so it is not a change to
+        // report when the held ones are.
+        if let Some(reported) = state.reported.as_ref() {
+            let edited = change(reported);
+            state.reported = Some(edited.tree);
+        }
         publish(inner, &state);
     }
 }

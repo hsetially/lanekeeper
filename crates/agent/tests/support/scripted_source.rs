@@ -3,9 +3,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
+use agent::clock::Clock;
 use agent::tree::{
     Entry, FileLeaf, FileRead, MerkleTree, ReadError, ReadRequest, RefreshRequest, Refreshed, ScanError,
     ScanMode, ScanOutcome, ScanStats, Stat, StatTime, TreeSource,
@@ -17,7 +18,8 @@ use sha2::{Digest, Sha256};
 
 #[derive(Default)]
 struct State {
-    files: BTreeMap<String, (Vec<u8>, i64)>,
+    /// Content, and the times the file system reports for it.
+    files: BTreeMap<String, (Vec<u8>, StatTime)>,
     /// A read returns these bytes instead of the file's, as if the file changed after the scan.
     stale_reads: BTreeMap<String, Vec<u8>>,
     read_errors: BTreeMap<String, ReadError>,
@@ -26,6 +28,9 @@ struct State {
 
 #[derive(Default)]
 pub struct ScriptedSource {
+    /// Where file times come from. `None`: a fixed instant in 2023, far before any test starts, so a change never looks
+    /// recent. With a clock, a file is stamped with the clock's wall time, as a real file system stamps it.
+    clock_for_times: Option<Arc<dyn Clock>>,
     state: Mutex<State>,
     clock: AtomicU64,
     scans: AtomicU64,
@@ -51,14 +56,33 @@ impl ScriptedSource {
         Self::default()
     }
 
+    /// A source whose files carry the wall time of `clock` when they are written (mtime and ctime both).
+    pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
+        Self {
+            clock_for_times: Some(clock),
+            ..Self::default()
+        }
+    }
+
     /// Create or change a file. Each write gets a later modification time, so the stat differs.
     pub fn write(&self, path: &str, bytes: &[u8]) {
         let version = i64::try_from(self.clock.fetch_add(1, Ordering::SeqCst)).unwrap() + 1;
+        let time = match &self.clock_for_times {
+            // The sub-millisecond part tells two writes in the same millisecond apart.
+            Some(clock) => {
+                let ms = clock.now().unix_millis();
+                StatTime::new(
+                    ms.div_euclid(1000),
+                    u32::try_from(ms.rem_euclid(1000) * 1_000_000 + version % 1_000_000).unwrap(),
+                )
+            }
+            None => StatTime::new(1_700_000_000 + version, 0),
+        };
         self.state
             .lock()
             .unwrap()
             .files
-            .insert(path.to_owned(), (bytes.to_vec(), version));
+            .insert(path.to_owned(), (bytes.to_vec(), time));
     }
 
     pub fn remove(&self, path: &str) {
@@ -131,13 +155,8 @@ impl ScriptedSource {
             .collect()
     }
 
-    fn leaf(path: &str, bytes: &[u8], version: i64) -> FileLeaf {
-        let stat = Stat::new(
-            bytes.len() as u64,
-            StatTime::new(1_700_000_000 + version, 0),
-            StatTime::new(1_700_000_000 + version, 0),
-            ino(path),
-        );
+    fn leaf(path: &str, bytes: &[u8], time: StatTime) -> FileLeaf {
+        let stat = Stat::new(bytes.len() as u64, time, time, ino(path));
         FileLeaf::new(ContentHash::from_bytes(Sha256::digest(bytes).into()), stat)
     }
 
@@ -145,9 +164,10 @@ impl ScriptedSource {
     pub fn tree(&self) -> MerkleTree {
         let state = self.state.lock().unwrap();
         MerkleTree::from_leaves(
-            state.files.iter().map(|(path, (bytes, version))| {
-                (path.as_str(), Entry::File(Self::leaf(path, bytes, *version)))
-            }),
+            state
+                .files
+                .iter()
+                .map(|(path, (bytes, time))| (path.as_str(), Entry::File(Self::leaf(path, bytes, *time)))),
         )
     }
 }
@@ -183,8 +203,8 @@ impl TreeSource for ScriptedSource {
                 }
                 match state.files.get(path) {
                     None => Refreshed::Gone,
-                    Some((bytes, version)) => {
-                        let now = Self::leaf(path, bytes, *version);
+                    Some((bytes, time)) => {
+                        let now = Self::leaf(path, bytes, *time);
                         if now.stat == f.leaf.stat {
                             Refreshed::Same
                         } else {
@@ -208,12 +228,12 @@ impl TreeSource for ScriptedSource {
                 if let Some(error) = state.read_errors.get(path) {
                     return Err(*error);
                 }
-                let (bytes, version) = state.files.get(path).ok_or(ReadError::NotFound)?;
+                let (bytes, time) = state.files.get(path).ok_or(ReadError::NotFound)?;
                 let served = state.stale_reads.get(path).unwrap_or(bytes);
                 if served.len() as u64 > f.max_bytes {
                     return Err(ReadError::TooLarge);
                 }
-                let leaf = Self::leaf(path, served, *version);
+                let leaf = Self::leaf(path, served, *time);
                 Ok(FileRead {
                     bytes: Bytes::copy_from_slice(served),
                     hash: leaf.hash,

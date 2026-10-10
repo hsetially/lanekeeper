@@ -441,3 +441,83 @@ async fn healthz_stays_ok_across_a_long_hub_outage() {
     assert!(app.health.unhealthy().is_empty(), "{:?}", app.health.unhealthy());
     assert!(!app.is_ready());
 }
+
+// ------------------------------------------------------------------------------------------------ sync windows (T10)
+
+/// The window events and the deltas on a connection, in the order the hub received them.
+fn window_story(conn: &support::fake_hub::ConnHandle) -> Vec<String> {
+    use domain::SyncWindowKind;
+    let mut story = Vec::new();
+    for message in conn.received() {
+        match message {
+            FromAgent::Delta(d) => story.push(format!(
+                "delta {} files{}",
+                d.entries.len(),
+                d.during_job
+                    .map_or(String::new(), |j| format!(" during {}", j.name()))
+            )),
+            FromAgent::Cluster(report) => {
+                for event in report.sync_windows {
+                    let kind = if event.kind == SyncWindowKind::Opened {
+                        "opened"
+                    } else {
+                        "closed"
+                    };
+                    story.push(format!("{kind} {}", event.job.name()));
+                }
+            }
+            _ => {}
+        }
+    }
+    story
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_copy_during_a_fake_job_reaches_the_hub_tagged_between_the_window_events() {
+    use support::k8s_objects::{finish_job, job};
+    let rig = support::rig::Rig::new();
+    let source = std::sync::Arc::new(ScriptedSource::with_clock(rig.clock.clone()));
+    source.write("svc/a.yml", b"a: 1\n");
+    let kube = FakeKube::new(NS);
+    let setup = Setup {
+        kube: Some(kube.clone()),
+        source: Some(source.clone()),
+        ..Setup::default()
+    };
+    let app = AppRig::start_on(rig, setup).await;
+    let conn = app.connected().await;
+    conn.wait_for(|m| matches!(m, FromAgent::Cluster(_))).await;
+
+    sleep(Duration::from_secs(2)).await;
+    kube.apply(job(NS, "csp-dataload-9", "uid-9", &[]));
+    sleep(Duration::from_secs(1)).await;
+    for i in 0..600 {
+        source.write(&format!("tenant/f{i:03}.yml"), b"x");
+        sleep(Duration::from_millis(13)).await;
+    }
+    kube.apply(finish_job(job(NS, "csp-dataload-9", "uid-9", &[])));
+    sleep(Duration::from_secs(40)).await;
+
+    let story = window_story(&conn);
+    assert_eq!(
+        story.first().map(String::as_str),
+        Some("opened csp-dataload-9"),
+        "{story:?}"
+    );
+    assert_eq!(
+        story.last().map(String::as_str),
+        Some("closed csp-dataload-9"),
+        "{story:?}"
+    );
+    let deltas: Vec<&String> = story.iter().filter(|s| s.starts_with("delta")).collect();
+    assert!(deltas.len() <= 2, "{story:?}");
+    assert!(
+        deltas.iter().all(|d| d.ends_with("during csp-dataload-9")),
+        "{story:?}"
+    );
+    let files: usize = deltas
+        .iter()
+        .map(|d| d.split_whitespace().nth(1).unwrap().parse::<usize>().unwrap())
+        .sum();
+    assert_eq!(files, 600);
+}

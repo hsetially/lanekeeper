@@ -42,6 +42,7 @@ use super::jobs::{JobMatcher, JobRec, JobTracker};
 use super::projection::{Change, DirtyKey, Projection};
 use super::trim::{self, DeploymentRec, PodRec};
 use crate::config::{KubeName, Settings};
+use crate::windows::WindowLedger;
 
 /// Changes within this long leave as one report.
 pub const REPORT_DEBOUNCE: Duration = Duration::from_secs(1);
@@ -65,6 +66,8 @@ pub struct WatchConfig {
     /// The names whose values may be reported, from the hub's `AgentConfig`. Set before the first list so that the
     /// watchers do not list twice (T7).
     pub env_allowlist: Vec<ShortText>,
+    /// Where the sync Jobs' windows are recorded (T10). Without one they are not.
+    pub windows: Option<Arc<WindowLedger>>,
 }
 
 impl WatchConfig {
@@ -77,7 +80,15 @@ impl WatchConfig {
             page_size: LIST_PAGE_SIZE,
             sync_timeout: SYNC_TIMEOUT,
             env_allowlist: Vec::new(),
+            windows: None,
         }
+    }
+
+    /// Record the windows of the sync Jobs in `ledger`.
+    #[must_use]
+    pub fn with_windows(mut self, ledger: Arc<WindowLedger>) -> Self {
+        self.windows = Some(ledger);
+        self
     }
 
     /// Start with this allowlist instead of an empty one.
@@ -331,7 +342,10 @@ impl ClusterWatcher {
     pub fn start(client: &Client, config: WatchConfig) -> (Self, mpsc::Receiver<ClusterReport>) {
         let namespaces: Vec<String> = config.namespaces.iter().map(|n| n.as_str().to_owned()).collect();
         let shared = Arc::new(Shared {
-            projection: Mutex::new(Projection::new(&namespaces)),
+            projection: Mutex::new(match &config.windows {
+                Some(ledger) => Projection::new(&namespaces).with_windows(Arc::clone(ledger)),
+                None => Projection::new(&namespaces),
+            }),
             listed: Mutex::new(BTreeMap::new()),
             namespaces: namespaces.clone(),
             debouncer: ReportDebouncer::new(config.debounce),

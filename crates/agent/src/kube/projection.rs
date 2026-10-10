@@ -7,14 +7,16 @@
 //! The pure state lives here and nothing in this file waits or does I/O, so every rule can be tested with plain values.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use domain::{ClusterReport, DeploymentInfo, EnvValue, JobRef, PodInfo, ReleaseHint, ServiceRef, ShortText};
 use tracing::warn;
 
 use super::env::EnvGuard;
 use super::helm::{CHART_LABEL, HelmHints, INSTANCE_LABEL};
-use super::jobs::{JobPhase, JobRec};
+use super::jobs::{JobPhase, JobRec, window_transition};
 use super::trim::{DeploymentRec, PodRec};
+use crate::windows::WindowLedger;
 
 /// The most objects of one kind that are tracked. Past this the extra objects are ignored (and logged), so that memory
 /// stays bounded whatever the cluster holds.
@@ -175,6 +177,8 @@ pub struct Projection {
     deployments: ObjectStore<DeploymentRec>,
     pods: ObjectStore<PodRec>,
     jobs: ObjectStore<JobRec>,
+    /// Told when a sync Job starts or stops running (T10).
+    windows: Option<Arc<WindowLedger>>,
 }
 
 impl Projection {
@@ -184,7 +188,15 @@ impl Projection {
             deployments: ObjectStore::new("deployments"),
             pods: ObjectStore::new("pods"),
             jobs: ObjectStore::new("jobs"),
+            windows: None,
         }
+    }
+
+    /// Record the windows of the sync Jobs in `ledger` as the Jobs change.
+    #[must_use]
+    pub fn with_windows(mut self, ledger: Arc<WindowLedger>) -> Self {
+        self.windows = Some(ledger);
+        self
     }
 
     /// Every watched namespace has listed its Deployments and Pods. A report made earlier would say that a Deployment
@@ -228,8 +240,15 @@ impl Projection {
 
     /// A Job is mentioned again when it gains or changes a Helm hint: the hint is all a report says about it.
     pub fn apply_job(&mut self, namespace: &str, change: Change<JobRec>) -> Vec<DirtyKey> {
-        self.jobs
-            .apply(namespace, change)
+        let changes = self.jobs.apply(namespace, change);
+        if let Some(ledger) = &self.windows {
+            for c in &changes {
+                if let Some(transition) = window_transition(c.old.as_ref(), c.new.as_ref()) {
+                    ledger.apply(transition);
+                }
+            }
+        }
+        changes
             .into_iter()
             .filter_map(|c| {
                 let new = c.new?;

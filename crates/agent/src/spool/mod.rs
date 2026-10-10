@@ -303,6 +303,18 @@ impl Spool {
         self.core.gap()
     }
 
+    /// The connection's pump has handed every complete delta the spool holds to the connection (T10, A21). False while
+    /// no pump runs, from the moment a new connection's pump starts until it has caught up, and whenever a delta has been
+    /// appended since. Whatever is queued on the connection after this returns true comes after those deltas.
+    pub fn drained(&self) -> bool {
+        self.core.drained()
+    }
+
+    /// Wakes when [`Spool::drained`] may have changed.
+    pub fn subscribe_drain(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.core.subscribe_drain()
+    }
+
     /// The sink the scanner delivers its own deltas to.
     pub fn sink(&self) -> Arc<SpoolSink> {
         Arc::new(SpoolSink { spool: self.clone() })
@@ -422,9 +434,25 @@ pub struct Pump {
     window_bytes: u64,
 }
 
+/// Tells the spool its pump has ended, however the future ends (it is dropped when the connection's handler is).
+struct PumpGuard {
+    core: Arc<Core>,
+    epoch: u64,
+}
+
+impl Drop for PumpGuard {
+    fn drop(&mut self) {
+        self.core.pump_stopped(self.epoch);
+    }
+}
+
 impl Pump {
     pub async fn run(mut self) -> PumpEnd {
-        self.spool.core.reset_carrier();
+        let epoch = self.spool.core.pump_started();
+        let _guard = PumpGuard {
+            core: Arc::clone(&self.spool.core),
+            epoch,
+        };
         let mut changes = self.spool.core.subscribe();
         loop {
             // Anything that changes after this point wakes `changed()` below, so nothing can slip between the look and
@@ -440,7 +468,7 @@ impl Pump {
                 continue;
             }
             let cursor = self.cursor;
-            let next = match self.spool.run(move |core| core.read_next(cursor)).await {
+            let next = match self.spool.run(move |core| core.read_next(cursor, epoch)).await {
                 Ok(Ok(next)) => next,
                 Ok(Err(error)) | Err(error) => {
                     warn!(%error, "the spool could not be read for the hub");

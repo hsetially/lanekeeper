@@ -255,6 +255,40 @@ async fn p1_change_visible_scaled() {
     );
 }
 
+/// P1 again, now that changes are held until the tree is quiet (T10): files carry the time they were written, as on a real
+/// file system, so a change found 1 s after it was made really waits for the 3 s. No Job is running.
+#[tokio::test(start_paused = true)]
+async fn p1_holds_without_a_job() {
+    let rig = support::rig::Rig::new();
+    let source = Arc::new(ScriptedSource::with_clock(rig.clock.clone()));
+    for i in 0..2000 {
+        source.write(
+            &format!("svc-{}/file-{i}.yml", i % 7),
+            format!("content {i}").as_bytes(),
+        );
+    }
+    let harness = Harness::start_with(source.clone(), rig).await;
+    let offsets = phase_offsets(Duration::from_secs(10), 12);
+    let latencies = measure_oob_latencies(&harness, Duration::from_secs(10), &offsets, |i| {
+        let path = format!("oob/change-{i}.yml");
+        source.write(&path, format!("out of band {i}").as_bytes());
+        path
+    })
+    .await;
+    let mut ms: Vec<f64> = latencies.iter().map(|d| d.as_secs_f64() * 1000.0).collect();
+    ms.sort_by(f64::total_cmp);
+    eprintln!("change to hub with the quiet period, virtual time, ms: {ms:?}");
+    let p95 = support::perf::percentile(&ms, 0.95);
+    assert!(p95 <= 15_000.0, "p95 {p95} ms against 15,000");
+    // Nothing is faster than the quiet period: a change is at least 3 s old when it is reported (a change found at a walk
+    // is held until then), and nothing is slower than a walk plus the quiet period.
+    assert!(
+        ms.iter().all(|m| *m >= 2_900.0),
+        "nothing is reported before it has been quiet for 3 s: {ms:?}"
+    );
+    assert!(*ms.last().unwrap() <= 13_500.0, "{ms:?}");
+}
+
 #[tokio::test(start_paused = true)]
 async fn log_capture_contains_only_paths_and_hashes() {
     const MARKER: &str = "FILE-CONTENT-MARKER-0e5f";

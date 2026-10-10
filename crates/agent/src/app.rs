@@ -55,6 +55,8 @@ use crate::spool::Spool;
 use crate::transport::session::{Link, LinkHandler, Session, SessionConfig};
 use crate::transport::{HubTransport, Outbox};
 use crate::tree::{FsSource, Pool, TreeSource, WalkConfig};
+use crate::windows::WindowLedger;
+use crate::windows::announce::{Told, WindowAnnouncer};
 
 /// A walk or a scan error must be seen within this long, or `/healthz` fails. The hub can slow the walk to 300 s, so
 /// this is more than twice that.
@@ -207,11 +209,14 @@ impl App {
             spool.seq(),
         );
 
+        let (ledger, announcer) = sync_windows(&clock, &scanner, &spool);
         let cluster = match kube {
             Some(client) => Some(Arc::new(ClusterRunner::new(
                 client,
                 &settings,
                 Arc::clone(&clock),
+                ledger,
+                announcer,
             )?)),
             None => None,
         };
@@ -283,6 +288,23 @@ impl App {
         info!("the agent has stopped");
         outcome
     }
+}
+
+/// The sync Jobs' windows: the watchers feed the ledger, the scanner tags what it finds with them, and the announcer tells
+/// the hub, closing a window only after the last delta tagged with it (T10, D75).
+fn sync_windows(
+    clock: &Arc<dyn Clock>,
+    scanner: &Scanner,
+    spool: &Spool,
+) -> (Arc<WindowLedger>, Arc<WindowAnnouncer>) {
+    let ledger = Arc::new(WindowLedger::new(Arc::clone(clock)));
+    scanner.attach_windows(Arc::clone(&ledger));
+    let announcer = Arc::new(WindowAnnouncer::new(
+        Arc::clone(&ledger),
+        scanner.clone(),
+        spool.clone(),
+    ));
+    (ledger, announcer)
 }
 
 /// The loops that run for as long as the agent does, each with the claim to be alive that `/healthz` reads.
@@ -370,12 +392,15 @@ impl LinkHandler for AppHandler {
         };
         let outbox = link.outbox.clone();
         let tunables = link.tunables.clone();
+        // What this connection has been told about the sync windows: every connection starts afresh (A21).
+        let told = Mutex::new(Told::default());
         // The watchers are started before the first command is read, so that a restart or a report asked for in the
         // first moment is answered by a cluster that exists.
         cluster.start_once(&tunables.env_allowlist);
         tokio::select! {
             () = self.scan.handle(link) => {}
-            () = cluster.forward(&outbox, &tunables) => {}
+            () = cluster.forward(&outbox, &tunables, &told) => {}
+            () = cluster.announcer.run(&outbox, &told) => {}
         }
     }
 }
@@ -385,6 +410,7 @@ struct ClusterRunner {
     client: ::kube::Client,
     config: WatchConfig,
     clock: Arc<dyn Clock>,
+    announcer: Arc<WindowAnnouncer>,
     started: OnceLock<Running>,
 }
 
@@ -417,18 +443,26 @@ impl Drop for Lease<'_> {
 }
 
 impl ClusterRunner {
-    fn new(client: ::kube::Client, settings: &Settings, clock: Arc<dyn Clock>) -> Result<Self, AppError> {
+    fn new(
+        client: ::kube::Client,
+        settings: &Settings,
+        clock: Arc<dyn Clock>,
+        ledger: Arc<WindowLedger>,
+        announcer: Arc<WindowAnnouncer>,
+    ) -> Result<Self, AppError> {
         let config = WatchConfig::new(
             settings.namespaces.clone(),
             HelmFilter::new(&settings.helm_hint_chart_globs)
                 .map_err(|_| AppError::Glob("LK_HELM_HINT_CHART_GLOBS"))?,
             JobMatcher::new(&settings.sync_job_name_globs, settings.sync_job_label.as_ref())
                 .map_err(|_| AppError::Glob("LK_SYNC_JOB_NAME_GLOBS"))?,
-        );
+        )
+        .with_windows(ledger);
         Ok(Self {
             client,
             config,
             clock,
+            announcer,
             started: OnceLock::new(),
         })
     }
@@ -453,7 +487,7 @@ impl ClusterRunner {
     }
 
     /// Send the full report, then every delta, until the connection ends.
-    async fn forward(&self, outbox: &Outbox, tunables: &Tunables) {
+    async fn forward(&self, outbox: &Outbox, tunables: &Tunables, told: &Mutex<Told>) {
         let running = self.start_once(&tunables.env_allowlist);
         // A hub that connects again with another allowlist makes the watchers list again.
         running.cluster.set_env_allowlist(&tunables.env_allowlist);
@@ -476,7 +510,11 @@ impl ClusterRunner {
         // Reports queued while the hub was away are older than the full report that follows, and say less.
         while reports.try_recv().is_ok() {}
         match running.cluster.full_report().await {
-            Ok(report) => {
+            Ok(mut report) => {
+                // The windows this connection may be told of now; the closes follow once the spool has drained (A21).
+                report.sync_windows = self
+                    .announcer
+                    .due(&mut told.lock().unwrap_or_else(PoisonError::into_inner));
                 if send(outbox, report).await.is_err() {
                     return;
                 }
@@ -512,7 +550,11 @@ async fn send(outbox: &Outbox, report: ClusterReport) -> Result<(), ()> {
 impl ClusterOps for ClusterRunner {
     async fn full_report(&self) -> Result<ClusterReport, ReportError> {
         match self.started.get() {
-            Some(running) => running.cluster.full_report().await,
+            Some(running) => {
+                let mut report = running.cluster.full_report().await?;
+                report.sync_windows = self.announcer.snapshot();
+                Ok(report)
+            }
             None => Err(ReportError::NotSynced),
         }
     }

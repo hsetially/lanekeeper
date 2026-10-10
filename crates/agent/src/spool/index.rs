@@ -570,6 +570,11 @@ impl Index {
         })
     }
 
+    /// The sequence number of the last complete delta: everything up to it can be sent.
+    pub fn ready_through(&self) -> u64 {
+        self.ready_through
+    }
+
     /// A new connection: the loss is owed to it afresh.
     pub fn reset_carrier(&mut self) {
         self.carrier = None;

@@ -1054,3 +1054,145 @@ async fn spool_replay_memory_bounded() {
     assert!(held > 0, "the meter is not wired up");
     assert!(held <= 3 * 1024 * 1024, "the reader held {held} bytes at once");
 }
+
+// ------------------------------------------------------------------------------------------------ drained (T10)
+
+/// Pump a spool to a fresh outbox and keep the receiving end draining, as a connection's writer does.
+fn connect(
+    rig: &Rig,
+) -> (
+    tokio::task::JoinHandle<agent::spool::PumpEnd>,
+    tokio::sync::mpsc::UnboundedReceiver<u64>,
+) {
+    use agent::transport::outbox::{self, OutboxLimits};
+    use proto::convert::FromAgent;
+    let (outbox, mut rx) = outbox::channel(OutboxLimits::default());
+    let pump = tokio::spawn(rig.spool.attach(outbox).run());
+    let (seen, seqs) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(queued) = rx.recv().await {
+            let (message, _permit) = queued.into_parts();
+            if let Some(FromAgent::Delta(d)) = FromAgent::from_proto(message).unwrap() {
+                let _ = seen.send(d.seq);
+            }
+        }
+    });
+    (pump, seqs)
+}
+
+async fn wait_until_drained(rig: &Rig) {
+    let mut changes = rig.spool.subscribe_drain();
+    for _ in 0..1_000 {
+        changes.borrow_and_update();
+        if rig.spool.drained() {
+            return;
+        }
+        tokio::time::timeout(Duration::from_secs(1), changes.changed())
+            .await
+            .ok();
+    }
+    panic!("the spool never drained");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_spool_with_no_pump_is_not_drained_even_when_empty() {
+    let rig = Rig::new();
+    assert!(
+        !rig.spool.drained(),
+        "nobody is sending, so nothing has been sent"
+    );
+    rig.append(delta(1, vec![file("svc/a.yml", b"1", 1_000)])).await;
+    assert!(!rig.spool.drained());
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_spool_is_drained_when_the_pump_has_sent_everything_it_holds() {
+    let rig = Rig::new();
+    for seq in 1..=3 {
+        rig.append(delta(
+            seq,
+            vec![file(&format!("svc/f{seq}.yml"), b"x", 1_000 * seq as i64)],
+        ))
+        .await;
+    }
+    let (_pump, mut seqs) = connect(&rig);
+    wait_until_drained(&rig).await;
+    let mut sent = Vec::new();
+    while let Ok(seq) = seqs.try_recv() {
+        sent.push(seq);
+    }
+    assert_eq!(
+        sent,
+        [1, 2, 3],
+        "drained means the pump has handed all three to the connection"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_empty_spool_is_drained_as_soon_as_a_pump_looks() {
+    let rig = Rig::new();
+    let (_pump, _seqs) = connect(&rig);
+    wait_until_drained(&rig).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_new_delta_makes_the_spool_undrained_until_it_is_sent() {
+    let rig = Rig::new();
+    let (_pump, mut seqs) = connect(&rig);
+    wait_until_drained(&rig).await;
+
+    rig.append(delta(1, vec![file("svc/a.yml", b"1", 1_000)])).await;
+    assert!(
+        !rig.spool.drained(),
+        "the delta is in the spool, and the pump has not looked at it yet"
+    );
+    wait_until_drained(&rig).await;
+    assert_eq!(seqs.recv().await, Some(1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_part_of_a_delta_that_is_not_complete_does_not_count() {
+    let rig = Rig::new();
+    let (_pump, _seqs) = connect(&rig);
+    wait_until_drained(&rig).await;
+    // The first part of two: stored, but not sendable until the last part is.
+    rig.append(part(1, 0, true, vec![file("svc/a.yml", b"1", 1_000)]))
+        .await;
+    assert!(rig.spool.drained(), "nothing complete is waiting");
+    rig.append(part(2, 1, false, vec![file("svc/b.yml", b"2", 1_001)]))
+        .await;
+    assert!(!rig.spool.drained());
+    wait_until_drained(&rig).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_spool_is_not_drained_once_the_pump_has_ended() {
+    let rig = Rig::new();
+    let (pump, _seqs) = connect(&rig);
+    wait_until_drained(&rig).await;
+    pump.abort();
+    let _ = pump.await;
+    assert!(!rig.spool.drained(), "the connection is gone");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_new_pump_starts_undrained_and_replays_before_it_says_so() {
+    let rig = Rig::new();
+    for seq in 1..=2 {
+        rig.append(delta(
+            seq,
+            vec![file(&format!("svc/f{seq}.yml"), b"x", 1_000 * seq as i64)],
+        ))
+        .await;
+    }
+    let (first, _seqs) = connect(&rig);
+    wait_until_drained(&rig).await;
+    first.abort();
+    let _ = first.await;
+
+    // The hub never acknowledged them: the next connection replays both.
+    let (_second, mut seqs) = connect(&rig);
+    assert!(!rig.spool.drained(), "the replay has not started");
+    wait_until_drained(&rig).await;
+    assert_eq!((seqs.recv().await, seqs.recv().await), (Some(1), Some(2)));
+}

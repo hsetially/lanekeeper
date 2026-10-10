@@ -56,8 +56,22 @@ impl Rig {
         Self::with(HubVersions::Tls13Only)
     }
 
+    /// A rig whose wall clock is the real one when it is made and then follows real time, for tests and benchmarks in real
+    /// time on a real directory: the quiet period compares a file's time from the kernel with the agent's clock, and a
+    /// clock that starts at a made-up date would make every file look years old.
+    pub fn real_time() -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(T0_MS, |d| i64::try_from(d.as_millis()).unwrap_or(T0_MS));
+        Self::starting_at(HubVersions::Tls13Only, now)
+    }
+
     pub fn with(versions: HubVersions) -> Self {
-        let clock = Arc::new(TestClock::starting_at(T0_MS));
+        Self::starting_at(versions, T0_MS)
+    }
+
+    fn starting_at(versions: HubVersions, wall_ms: i64) -> Self {
+        let clock = Arc::new(TestClock::starting_at(wall_ms));
         let server = HubServer::start_with(clock.clone(), versions);
         let roots = HubRoots::from_pem(server.ca_pem().as_bytes()).unwrap();
         let transport = Arc::new(

@@ -33,7 +33,7 @@ fn main() {
             Pool::new(4).unwrap(),
             WalkConfig::default(),
         ));
-        let harness = Harness::start(source).await;
+        let harness = Harness::start_with(source, support::rig::Rig::real_time()).await;
         let interval = Duration::from_secs(10);
         let offsets = phase_offsets(interval, 12);
         let latencies = measure_oob_latencies(&harness, interval, &offsets, |i| {

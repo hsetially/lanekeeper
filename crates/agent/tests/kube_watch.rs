@@ -12,7 +12,9 @@ use agent::config::{KubeName, Settings};
 use agent::kube::helm::HelmFilter;
 use agent::kube::jobs::JobMatcher;
 use agent::kube::{ClusterWatcher, ReportError, WatchConfig};
+use agent::windows::WindowLedger;
 use domain::{ClusterReport, DeploymentInfo, ShortText};
+use std::sync::Arc;
 use support::fake_kube::{Call, FakeKube, Kind};
 use support::k8s_objects::{deployment, finish_job, job, pod, terminating_pod};
 use support::log_capture::LogCapture;
@@ -568,4 +570,89 @@ async fn the_first_list_is_paged() {
     assert_eq!(pod_lists[0].query_param("continue"), None);
     assert_eq!(pod_lists[1].query_param("continue").as_deref(), Some("200"));
     assert_eq!(pod_lists[2].query_param("continue").as_deref(), Some("400"));
+}
+
+// ------------------------------------------------------------------------------------------------ sync windows (T10)
+
+fn with_ledger() -> (Arc<WindowLedger>, WatchConfig) {
+    let clock: Arc<dyn agent::clock::Clock> = Arc::new(agent::clock::SystemClock);
+    let ledger = Arc::new(WindowLedger::new(clock));
+    (ledger.clone(), config(&[NS]).with_windows(ledger))
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_sync_job_opens_a_window_when_it_runs_and_closes_it_when_it_completes() {
+    let kube = FakeKube::new(NS);
+    let (ledger, config) = with_ledger();
+    let (watcher, _rx) = start_with(&kube, config, &[]);
+    watcher.full_report().await.unwrap();
+    assert!(ledger.views().is_empty());
+
+    kube.apply(job(NS, "csp-dataload-1", "uid-1", &[]));
+    sleep(Duration::from_millis(100)).await;
+    let views = ledger.views();
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].job.name(), "csp-dataload-1");
+    assert!(views[0].closed_gen.is_none());
+    // The start time is the API server's.
+    assert_eq!(views[0].opened_at.unix_millis(), 1_791_633_545_000);
+
+    kube.apply(finish_job(job(NS, "csp-dataload-1", "uid-1", &[])));
+    sleep(Duration::from_millis(100)).await;
+    let views = ledger.views();
+    assert_eq!(views.len(), 1, "the same window, now closed");
+    assert!(views[0].closed_gen.is_some());
+    assert_eq!(views[0].closed_at.unwrap().unix_millis(), 1_791_633_780_000);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_job_that_is_not_a_sync_job_opens_no_window() {
+    let kube = FakeKube::new(NS);
+    let (ledger, config) = with_ledger();
+    let (watcher, _rx) = start_with(&kube, config, &[]);
+    kube.apply(job(NS, "nightly-report", "uid-2", &[]));
+    watcher.full_report().await.unwrap();
+    sleep(Duration::from_millis(100)).await;
+    assert!(ledger.views().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_sync_job_that_is_deleted_while_running_closes_its_window() {
+    let kube = FakeKube::new(NS);
+    let (ledger, config) = with_ledger();
+    let (watcher, _rx) = start_with(&kube, config, &[]);
+    kube.apply(job(NS, "csp-dataload-1", "uid-1", &[]));
+    watcher.full_report().await.unwrap();
+    sleep(Duration::from_millis(100)).await;
+    assert!(ledger.views()[0].closed_gen.is_none());
+    kube.delete(Kind::Job, NS, "csp-dataload-1");
+    sleep(Duration::from_millis(100)).await;
+    assert!(ledger.views()[0].closed_gen.is_some());
+    assert!(ledger.active().is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_job_found_running_by_the_first_list_has_a_window() {
+    let kube = FakeKube::new(NS);
+    kube.apply(job(NS, "csp-dataload-1", "uid-1", &[]));
+    let (ledger, config) = with_ledger();
+    let (watcher, _rx) = start_with(&kube, config, &[]);
+    watcher.full_report().await.unwrap();
+    assert_eq!(
+        ledger.active().map(|j| j.name().to_owned()).as_deref(),
+        Some("csp-dataload-1")
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_job_already_finished_when_first_listed_has_no_window() {
+    let kube = FakeKube::new(NS);
+    kube.apply(finish_job(job(NS, "csp-dataload-1", "uid-1", &[])));
+    let (ledger, config) = with_ledger();
+    let (watcher, _rx) = start_with(&kube, config, &[]);
+    watcher.full_report().await.unwrap();
+    assert!(
+        ledger.views().is_empty(),
+        "nothing was tagged during a window nobody saw"
+    );
 }

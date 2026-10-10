@@ -44,7 +44,7 @@ async fn a_file_written_on_disk_reaches_the_hub_byte_for_byte() {
     let dir = TempDir::new().unwrap();
     fs::create_dir_all(dir.path().join("svc")).unwrap();
     fs::write(dir.path().join("svc/existing.yml"), b"a: 1\n").unwrap();
-    let rig = Rig::new();
+    let rig = Rig::real_time();
     fast_walks(&rig);
     let harness = Harness::start_with(source_over(dir.path()), rig).await;
 
@@ -95,7 +95,7 @@ async fn a_file_written_on_disk_reaches_the_hub_byte_for_byte() {
 async fn p1_change_visible_real_timings() {
     let dir = TempDir::new().unwrap();
     support::workload::populate(dir.path(), 2000);
-    let harness = Harness::start(source_over(dir.path())).await;
+    let harness = Harness::start_with(source_over(dir.path()), Rig::real_time()).await;
     let interval = Duration::from_secs(10);
     let offsets = phase_offsets(interval, 12);
     let latencies = measure_oob_latencies(&harness, interval, &offsets, |i| {
@@ -110,4 +110,10 @@ async fn p1_change_visible_real_timings() {
     eprintln!("change to hub, real time, ms: {ms:?}");
     let p95 = support::perf::percentile(&ms, 0.95);
     assert!(p95 <= 15_000.0, "p95 {p95} ms against the 15,000 ms budget");
+    // The quiet period is really in force: a file the walk finds a moment after it was written is held until the tree has
+    // been quiet for 3 s (T10, D75), so no change is reported sooner than that.
+    assert!(
+        ms.first().is_some_and(|fastest| *fastest >= 2_900.0),
+        "nothing is reported before it has been quiet for 3 s: {ms:?}"
+    );
 }

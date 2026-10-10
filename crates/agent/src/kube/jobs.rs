@@ -2,17 +2,19 @@
 //!
 //! A Job is a sync Job when its name matches one of the configured globs (`*dataload*` by default, the name Q36 gives)
 //! or it carries the configured `key=value` label. The tracker keeps a trimmed record of those Jobs, and of Jobs that
-//! carry a Helm hint, and nothing of the rest. T10 builds the sync window events and the delta tagging on top of this.
+//! carry a Helm hint, and nothing of the rest. [`window_transition`] turns a change of one of them into what the window
+//! ledger needs (T10, D75).
 
 use std::collections::BTreeMap;
 
-use domain::{ShortText, Timestamp};
+use domain::{JobRef, ShortText, Timestamp};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use k8s_openapi::api::batch::v1::Job;
 
 use super::error::BuildError;
 use super::helm::{HelmFilter, HelmHints};
 use crate::config::LabelSelector;
+use crate::windows::WindowTransition;
 
 /// Whether a Job still runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +126,26 @@ impl JobTracker {
             finished_at: status.and_then(|s| s.completion_time.as_ref()).map(millis),
             helm,
         })
+    }
+}
+
+/// What the change of a Job from `old` to `new` means for the sync windows: it started running, or it stopped (completed,
+/// failed, was suspended, was deleted, or is no longer a sync Job). `None` for everything else, including a Job that was
+/// never a sync Job.
+pub fn window_transition(old: Option<&JobRec>, new: Option<&JobRec>) -> Option<WindowTransition> {
+    let running = |rec: &&JobRec| rec.sync && rec.phase == JobPhase::Running;
+    match (old.filter(running), new) {
+        (_, Some(new)) if running(&new) => Some(WindowTransition::Running {
+            job: JobRef::new(&new.name, &new.uid).ok()?,
+            started: new.started_at,
+        }),
+        // It was running and is not now. `finished_at` is the completion time when the API gives one.
+        (Some(was), after) => Some(WindowTransition::Finished {
+            job: JobRef::new(&was.name, &was.uid).ok()?,
+            finished: after.and_then(|rec| rec.finished_at),
+        }),
+        // Never seen running: a Job that finished before it was seen has no window.
+        (None, _) => None,
     }
 }
 
@@ -272,5 +294,69 @@ mod tests {
             "metadata": { "name": "dataload", "namespace": "sit1" },
         }));
         assert!(t.trim("sit1", &no_uid).is_none());
+    }
+
+    fn rec(sync: bool, phase: JobPhase) -> JobRec {
+        JobRec {
+            namespace: "sit1".to_owned(),
+            name: "dataload".to_owned(),
+            uid: "u-1".to_owned(),
+            sync,
+            phase,
+            started_at: Some(Timestamp::from_unix_millis(5)),
+            finished_at: Some(Timestamp::from_unix_millis(9)),
+            helm: None,
+        }
+    }
+
+    #[test]
+    fn a_running_sync_job_opens_and_a_stopped_one_closes() {
+        let running = rec(true, JobPhase::Running);
+        let done = rec(true, JobPhase::Finished);
+        let job = JobRef::new("dataload", "u-1").unwrap();
+        assert_eq!(
+            window_transition(None, Some(&running)),
+            Some(WindowTransition::Running {
+                job: job.clone(),
+                started: Some(Timestamp::from_unix_millis(5))
+            })
+        );
+        assert_eq!(
+            window_transition(Some(&running), Some(&done)),
+            Some(WindowTransition::Finished {
+                job: job.clone(),
+                finished: Some(Timestamp::from_unix_millis(9))
+            })
+        );
+        assert_eq!(
+            window_transition(Some(&running), None),
+            Some(WindowTransition::Finished { job, finished: None }),
+            "deleted while running"
+        );
+    }
+
+    #[test]
+    fn a_job_that_was_never_running_or_is_not_a_sync_job_says_nothing() {
+        let done = rec(true, JobPhase::Finished);
+        assert_eq!(window_transition(None, Some(&done)), None);
+        assert_eq!(window_transition(Some(&done), Some(&done)), None);
+        assert_eq!(
+            window_transition(None, Some(&rec(false, JobPhase::Running))),
+            None
+        );
+        assert_eq!(
+            window_transition(Some(&rec(false, JobPhase::Running)), None),
+            None
+        );
+    }
+
+    #[test]
+    fn a_running_job_that_stops_being_a_sync_job_closes() {
+        let before = rec(true, JobPhase::Running);
+        let after = rec(false, JobPhase::Running);
+        assert!(matches!(
+            window_transition(Some(&before), Some(&after)),
+            Some(WindowTransition::Finished { .. })
+        ));
     }
 }
