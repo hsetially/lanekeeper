@@ -273,3 +273,81 @@ fn the_agent_does_not_depend_on_the_ignore_crate() {
         }
     }
 }
+
+/// APIs that start another program. The agent never runs a shell or any other process (S17): everything it does is a
+/// file operation through cap-std or a call on the Kubernetes API. `std::process::ExitCode` (the exit status of
+/// `main`) is not one of them.
+const PROCESS_APIS: &[&str] = &[
+    "tokio::process",
+    "std::process::Command",
+    "process::Command",
+    "Command::new",
+    "CommandExt",
+    "std::os::unix::process",
+    "libc::system",
+    "libc::execv",
+    "libc::execve",
+    "libc::fork",
+    "posix_spawn",
+];
+
+/// Lines of code that start a process. Comment lines are skipped.
+fn process_violations(rel: &str, source: &str) -> Vec<String> {
+    source
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim_start().starts_with("//"))
+        .filter(|(_, line)| {
+            let in_use_group =
+                line.trim_start().starts_with("use std::process::{") && has_token(line, "Command");
+            in_use_group || PROCESS_APIS.iter().any(|api| has_token(line, api))
+        })
+        .map(|(n, line)| format!("{rel}:{}: {}", n + 1, line.trim()))
+        .collect()
+}
+
+#[test]
+fn no_shell_or_exec_in_source() {
+    let files = sources(&src_dir());
+    let violations: Vec<String> = files
+        .iter()
+        .flat_map(|(rel, source)| process_violations(rel, source))
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "the agent starts a process (S17):\n{}",
+        violations.join("\n")
+    );
+    // The manifest pulls in nothing that exists to run programs.
+    let manifest = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap();
+    for line in manifest.lines().filter(|l| !l.trim_start().starts_with('#')) {
+        let name = line.split(['=', '.']).next().unwrap_or("").trim();
+        assert!(
+            !matches!(
+                name,
+                "duct" | "subprocess" | "xshell" | "cmd_lib" | "tokio-process" | "async-process"
+            ),
+            "a process-spawning dependency: {line}"
+        );
+    }
+}
+
+#[test]
+fn process_scan_rejects_planted_violations() {
+    let planted = [
+        "let out = std::process::Command::new(\"sh\").output()?;",
+        "let child = tokio::process::Command::new(\"ls\");",
+        "use std::process::{Command, ExitCode};",
+        "use std::os::unix::process::CommandExt;",
+        "let c = Command::new(\"cat\");",
+        "unsafe { libc::system(cmd) };",
+    ];
+    for line in planted {
+        assert_eq!(process_violations("fileops.rs", line).len(), 1, "{line}");
+    }
+    // The exit status of `main` is fine, and so are comments.
+    assert!(process_violations("main.rs", "use std::process::ExitCode;").is_empty());
+    assert!(process_violations("main.rs", "ExitCode::from(2)").is_empty());
+    assert!(process_violations("fileops.rs", "// never std::process::Command").is_empty());
+    assert!(process_violations("dispatch.rs", "pub enum HubCommand { }").is_empty());
+}

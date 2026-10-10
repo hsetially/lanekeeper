@@ -71,8 +71,9 @@ impl IdTokenSource for MetadataIdTokens {
     }
 }
 
-/// Three non-empty base64url segments, as in every compact JWS, within the contract's size limit.
-fn looks_like_a_jwt(token: &str) -> bool {
+/// Three non-empty base64url segments, as in every compact JWS, within the contract's size limit. Public for the
+/// fuzz target `agent_id_token`: the text comes from the metadata server, outside the process.
+pub fn looks_like_a_jwt(token: &str) -> bool {
     let segment_ok = |s: &str| {
         !s.is_empty()
             && s.bytes()

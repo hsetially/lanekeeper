@@ -11,6 +11,8 @@
 //! - [`http`]: the plain-HTTP client for the metadata server and the config-server (T2, T12).
 //! - [`identity`]: the key, the certificate, joining the hub and renewing (T2, S5).
 //! - [`transport`]: TLS 1.3 to the hub, the gRPC stream, the bounded outbox, and the session that reconnects (T3, S6).
+//! - [`fileops`]: reading, writing and deleting files, byte-exact and never blind (T5, S11, S17).
+//! - [`dispatch`]: the hub's commands, and the mapping from their outcomes to answers (T5).
 //! - [`scan`]: the scan loop that keeps the tree current, pushes deltas and answers the hub (T4, D63, P1).
 //! - [`tree`]: the Merkle tree of the NFS root, its diffs and the ring of recent roots (T4, D63).
 #![forbid(unsafe_code)]
@@ -24,6 +26,8 @@
 pub mod backoff;
 pub mod clock;
 pub mod config;
+pub mod dispatch;
+pub mod fileops;
 pub mod http;
 pub mod identity;
 pub mod root;

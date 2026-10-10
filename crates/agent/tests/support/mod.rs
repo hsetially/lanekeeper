@@ -11,6 +11,7 @@ pub mod log_capture;
 pub mod oob;
 pub mod perf;
 pub mod raw_server;
+pub mod recording_edits;
 pub mod restarts;
 pub mod rig;
 pub mod scripted_source;

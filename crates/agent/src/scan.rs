@@ -36,22 +36,31 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
-use domain::{ContentHash, Heartbeat, HubCommand, ScanDelta};
+use domain::{ContentHash, Heartbeat, HubCommand, NfsPath, ScanDelta};
 use proto::convert::{FromAgent, ToAgent};
 use tokio::sync::{Mutex as AsyncMutex, watch};
 use tokio::task::JoinSet;
-use tokio::time::{Instant, Interval, MissedTickBehavior, interval, interval_at};
+use tokio::time::{Instant, Interval, MissedTickBehavior, interval, interval_at, timeout};
 use tracing::{debug, info, warn};
 
 use crate::clock::Clock;
 use crate::config::Tunables;
+use crate::dispatch::{CommandHandler, OpLimits, failure, request_id_of};
+use crate::fileops::TreeEdits;
 use crate::transport::session::{Link, LinkHandler};
 use crate::transport::{Outbox, OutboxError};
 use crate::tree::delta::{DeltaBuilder, DeltaError, DeltaOutcome, DeltaSink, SeqCounter, SinkError};
-use crate::tree::{MerkleTree, RootRing, ScanMode, ScanOutcome, TreeSource};
+use crate::tree::{Edited, Entry, FileLeaf, MerkleTree, RootRing, ScanMode, ScanOutcome, TreeSource};
+use domain::OpError;
 
 /// Hub requests answered at the same time. More than this are dropped (the hub asks again): rule 5.
 const MAX_PARALLEL_REQUESTS: usize = 4;
+/// File operations (reads, writes, deletes) running at the same time. Each holds up to 2 MiB, so this is part of the
+/// memory budget (P4). One more is answered `IO` at once rather than queued without bound.
+const MAX_PARALLEL_COMMANDS: usize = 4;
+/// The longest a file operation waits for a scan to release the tree before it gives up on telling it (the next walk
+/// finds the change by its stat).
+const EDIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// What a heartbeat reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -389,6 +398,42 @@ fn ticker_after(period: std::time::Duration) -> Interval {
     ticker
 }
 
+// ------------------------------------------------------------------------------------------ edits from file operations
+
+impl Scanner {
+    /// Apply an edit made by a file operation to the tree, and remember the new root. If a scan is holding the tree for
+    /// longer than [`EDIT_WAIT`] the edit is dropped: the file's stat differs from the tree's leaf, so the next walk
+    /// reads it and the tree catches up (a walk never loses a change, it only finds it later).
+    async fn edit(&self, change: impl FnOnce(&MerkleTree) -> Edited) {
+        let inner = &self.inner;
+        let Ok(mut state) = timeout(EDIT_WAIT, inner.state.lock()).await else {
+            debug!("a scan held the tree; the edit is left for the next walk");
+            return;
+        };
+        // No tree yet: the first walk will see the file.
+        let Some(tree) = state.tree.as_ref() else {
+            return;
+        };
+        let edited = change(tree);
+        state
+            .ring
+            .push(edited.tree.clone(), edited.new_bytes, inner.clock.instant());
+        state.tree = Some(edited.tree);
+        publish(inner, &state);
+    }
+}
+
+#[async_trait]
+impl TreeEdits for Scanner {
+    async fn written(&self, path: &NfsPath, leaf: FileLeaf) {
+        self.edit(|tree| tree.put(path.as_str(), Entry::File(leaf))).await;
+    }
+
+    async fn removed(&self, path: &NfsPath) {
+        self.edit(|tree| tree.remove(path.as_str())).await;
+    }
+}
+
 // ------------------------------------------------------------------------------------------ sinks
 
 /// A delta sink in front of one connection's outbox.
@@ -476,10 +521,12 @@ impl DeltaSink for LiveSink {
 /// The agent's side of one connection, as far as scanning goes: attach the connection so pushed deltas reach it, send
 /// the heartbeat, and answer `RequestDelta` and `RequestFullScan`.
 ///
-/// Other commands (file operations, cluster reports, config-server calls) arrive in later tasks; they are ignored here.
+/// The other commands go to the [`CommandHandler`] if there is one (T5: file operations; cluster reports and the
+/// config-server calls follow in later tasks). Without one they are ignored.
 pub struct ScanHandler {
     scanner: Scanner,
     live: Arc<LiveSink>,
+    commands: Option<Arc<dyn CommandHandler>>,
 }
 
 impl fmt::Debug for ScanHandler {
@@ -491,7 +538,44 @@ impl fmt::Debug for ScanHandler {
 impl ScanHandler {
     /// `live` must be the sink the scanner was built with.
     pub fn new(scanner: Scanner, live: Arc<LiveSink>) -> Self {
-        Self { scanner, live }
+        Self {
+            scanner,
+            live,
+            commands: None,
+        }
+    }
+
+    /// Hand every command other than `RequestDelta` and `RequestFullScan` to `commands`.
+    #[must_use]
+    pub fn with_commands(mut self, commands: Arc<dyn CommandHandler>) -> Self {
+        self.commands = Some(commands);
+        self
+    }
+
+    /// Carry out one command in its own task and send its answer. At most [`MAX_PARALLEL_COMMANDS`] run at once; one
+    /// more is answered `IO` (busy) so the hub does not wait for a timeout.
+    fn command(&self, command: HubCommand, max_file_bytes: u64, outbox: &Outbox, tasks: &mut JoinSet<()>) {
+        let Some(handler) = &self.commands else {
+            debug!("a command for a part of the agent that is not running; ignored");
+            return;
+        };
+        if tasks.len() >= MAX_PARALLEL_COMMANDS {
+            bump(&self.scanner.inner.stats.dropped_requests);
+            warn!("too many commands at once; this one is answered busy");
+            if let Some(request_id) = request_id_of(&command) {
+                let _ = outbox.try_send(failure(request_id.clone(), OpError::Io, None));
+            }
+            return;
+        }
+        let handler = Arc::clone(handler);
+        let outbox = outbox.clone();
+        tasks.spawn(async move {
+            if let Some(reply) = handler.handle(command, OpLimits { max_file_bytes }).await {
+                if outbox.send(reply).await.is_err() {
+                    debug!("the connection ended before the answer could be sent");
+                }
+            }
+        });
     }
 
     /// Send a heartbeat if there is a tree to report. A heartbeat that does not fit the queue is dropped: a late one is
@@ -534,6 +618,8 @@ impl LinkHandler for ScanHandler {
         let mut heartbeat = ticker_now(heartbeat_period);
         let mut snapshots = self.scanner.subscribe();
         let mut tasks: JoinSet<()> = JoinSet::new();
+        let mut commands: JoinSet<()> = JoinSet::new();
+        let mut max_file_bytes = link.tunables.max_file_bytes;
         let mut reported = false;
         loop {
             tokio::select! {
@@ -556,6 +642,7 @@ impl LinkHandler for ScanHandler {
                                 heartbeat_period = tunables.heartbeat_interval;
                                 heartbeat = ticker_after(heartbeat_period);
                             }
+                            max_file_bytes = tunables.max_file_bytes;
                             self.scanner.set_tunables(tunables);
                         }
                         ToAgent::Command(HubCommand::RequestDelta { since_root }) => {
@@ -566,10 +653,13 @@ impl LinkHandler for ScanHandler {
                         }
                         // Acknowledgements matter once there is a spool (T9); nothing waits for them yet.
                         ToAgent::Ack(_) | ToAgent::CertRenewal(_) => {}
-                        ToAgent::Command(_) => debug!("a command for a later part of the agent; ignored here"),
+                        ToAgent::Command(command) => {
+                            self.command(command, max_file_bytes, &link.outbox, &mut commands);
+                        }
                     }
                 }
                 Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
+                Some(_) = commands.join_next(), if !commands.is_empty() => {}
             }
         }
     }

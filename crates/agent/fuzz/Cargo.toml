@@ -1,0 +1,66 @@
+[package]
+name = "agent-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+# cargo-fuzz needs a nightly compiler (sanitizer flags). The date is pinned in the Justfile (`fuzz_nightly`).
+# The main workspace stays on stable 1.88; this crate is outside it and has its own lockfile (S19). It is the agent's own
+# fuzz crate (decision A16): the root `fuzz/` crate belongs to prompt 01 and holds only the domain targets.
+
+[package.metadata]
+cargo-fuzz = true
+
+# Not a member of the root workspace: it builds with nightly and must not change the root lockfile.
+[workspace]
+
+# The target names are the corpus directory names and the names in the plan, so they stay snake_case.
+[lints.cargo]
+non_kebab_case_bins = "allow"
+
+[dependencies]
+# Exact pins (S19). libfuzzer-sys 0.4.13 was published 2026-06-04; the others are the versions the workspace uses.
+libfuzzer-sys = "=0.4.13"
+agent = { path = "..", version = "0.1.0" }
+domain = { path = "../../domain", version = "0.1.0" }
+proto = { path = "../../proto", version = "0.1.0" }
+async-trait = "=0.1.92"
+bytes = "=1.12.1"
+prost = "=0.14.4"
+tempfile = "=3.27.0"
+tokio = { version = "=1.53.1", default-features = false, features = ["rt", "time"] }
+
+[[bin]]
+name = "agent_path"
+path = "fuzz_targets/agent_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_hub_message"
+path = "fuzz_targets/agent_hub_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_cert_chain"
+path = "fuzz_targets/agent_cert_chain.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_pem"
+path = "fuzz_targets/agent_pem.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_id_token"
+path = "fuzz_targets/agent_id_token.rs"
+test = false
+doc = false
+bench = false

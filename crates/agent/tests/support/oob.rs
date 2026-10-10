@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent::clock::Clock;
+use agent::dispatch::CommandHandler;
 use agent::scan::{LiveSink, ScanHandler, Scanner};
 use agent::transport::session::{Session, SessionConfig};
 use agent::tree::TreeSource;
@@ -45,11 +46,25 @@ impl Harness {
     }
 
     pub async fn start_with(source: Arc<dyn TreeSource>, rig: Rig) -> Self {
+        Self::start_with_commands(source, rig, |_scanner| None).await
+    }
+
+    /// As [`Harness::start_with`], and the commands other than the scan requests go to the handler `commands` builds
+    /// from the scanner (so a handler can tell the scanner's tree about the files it writes).
+    pub async fn start_with_commands(
+        source: Arc<dyn TreeSource>,
+        rig: Rig,
+        commands: impl FnOnce(&Scanner) -> Option<Arc<dyn CommandHandler>>,
+    ) -> Self {
         let identity = rig.identity_handle().await;
         let clock: Arc<dyn Clock> = rig.clock.clone();
         let live = LiveSink::new();
         let scanner = Scanner::new(source, clock, live.clone());
-        let handler = Arc::new(ScanHandler::new(scanner.clone(), live));
+        let mut scan_handler = ScanHandler::new(scanner.clone(), live);
+        if let Some(commands) = commands(&scanner) {
+            scan_handler = scan_handler.with_commands(commands);
+        }
+        let handler = Arc::new(scan_handler);
         let session = Arc::new(Session::new(
             hello(),
             rig.transport.clone(),
