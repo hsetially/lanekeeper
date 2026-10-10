@@ -60,6 +60,8 @@ cargo build --workspace     # the Rust toolchain is pinned in rust-toolchain.tom
 | `git` | any recent version | the fixture generator builds Git repos with `git fast-import` |
 | `cargo-fuzz` and a pinned nightly | see `fuzz/README.md` | `just fuzz-smoke` |
 
+On a Windows machine, test through WSL2: the agent crate cannot compile natively (Unix-only file metadata through cap-std), and the gates are proven on Linux. See [`docs/windows-testing.md`](docs/windows-testing.md) for the setup that was proven end to end.
+
 ## Before the pilot goes live
 
 Answer the seven pilot-blocking questions in `docs/open-questions.md`: Q1, Q2, Q11, Q17, Q21, Q24 and Q26.
