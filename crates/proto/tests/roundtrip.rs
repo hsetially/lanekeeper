@@ -187,6 +187,10 @@ fn from_agent_samples() -> Vec<FromAgent> {
             status: 200,
             bytes: Bytes::from_static(b"served"),
         }),
+        FromAgent::Reply(AgentReply::Notify {
+            request_id: rid("req-6"),
+            status: 204,
+        }),
         FromAgent::CertRenewal {
             csr_der: Bytes::from_static(&[0x30, 0x82, 0x01]),
         },
@@ -737,6 +741,58 @@ fn served_status_must_be_an_http_status() {
             "status {bad}"
         );
     }
+}
+
+#[test]
+fn notify_result_roundtrips() {
+    // The statuses a config-server can answer `/update-resources` with, including both ends of the valid range.
+    for status in [100_u16, 200, 204, 404, 503, 599] {
+        let reply = FromAgent::Reply(AgentReply::Notify {
+            request_id: rid("req-notify"),
+            status,
+        });
+        let wire = reply.clone().into_proto().encode_to_vec();
+        // Field 9 of `AgentMessage`, length-delimited: a peer that reuses the number for something else is caught.
+        assert_eq!(wire.first(), Some(&0x4a), "NotifyResult is AgentMessage field 9");
+        let decoded = pb::AgentMessage::decode(wire.as_slice()).unwrap();
+        assert!(
+            matches!(decoded.kind, Some(pb::agent_message::Kind::NotifyResult(_))),
+            "status {status} travels as a notify_result, not a served_response"
+        );
+        assert_eq!(
+            FromAgent::from_proto(decoded).unwrap(),
+            Some(reply),
+            "status {status}"
+        );
+    }
+}
+
+#[test]
+fn notify_status_must_be_an_http_status() {
+    for bad in [0, 99, 600, 70_000] {
+        let msg = pb::AgentMessage {
+            kind: Some(pb::agent_message::Kind::NotifyResult(pb::NotifyResult {
+                request_id: "r1".to_owned(),
+                status: bad,
+            })),
+        };
+        assert_eq!(
+            FromAgent::from_proto(msg).unwrap_err(),
+            ConvertError::Invalid("notify_result.status"),
+            "status {bad}"
+        );
+    }
+    // A reply that names no request cannot be handed to a waiting caller.
+    let msg = pb::AgentMessage {
+        kind: Some(pb::agent_message::Kind::NotifyResult(pb::NotifyResult {
+            request_id: String::new(),
+            status: 200,
+        })),
+    };
+    assert_eq!(
+        FromAgent::from_proto(msg).unwrap_err(),
+        ConvertError::Invalid("notify_result.request_id")
+    );
 }
 
 // ------------------------------------------------------------------ S5, S7, S21: join

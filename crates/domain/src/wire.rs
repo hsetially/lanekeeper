@@ -211,7 +211,8 @@ pub enum HubCommand {
     RequestClusterReport {
         request_id: RequestId,
     },
-    /// The agent POSTs these paths to the config-server's `/update-resources` (D86).
+    /// The agent POSTs these paths to the config-server's `/update-resources` (D86). Answered by
+    /// [`AgentReply::Notify`].
     NotifyConfigServer {
         request_id: RequestId,
         paths: Vec<NfsPath>,
@@ -256,6 +257,13 @@ pub enum AgentReply {
         request_id: RequestId,
         status: u16,
         bytes: Bytes,
+    },
+    /// The answer to [`HubCommand::NotifyConfigServer`]: the config-server's HTTP status (100 to 599). The
+    /// caller decides what a status means (2xx is success). A failure before the config-server answers is an
+    /// [`AgentReply::Op`] with [`OpError::Io`] instead.
+    Notify {
+        request_id: RequestId,
+        status: u16,
     },
     Cluster {
         request_id: RequestId,

@@ -50,17 +50,23 @@ impl std::fmt::Debug for FakeAgentGateway {
     }
 }
 
-/// Acknowledge every command with a successful `Op`. Commands without a request id (`RequestDelta`,
-/// `RequestFullScan`) are acknowledged with the id `ack`.
+/// Acknowledge every command with a successful `Op`, except `NotifyConfigServer`, which is answered by
+/// `AgentReply::Notify` with status 200, as a real agent answers it. Commands without a request id
+/// (`RequestDelta`, `RequestFullScan`) are acknowledged with the id `ack`.
 pub fn echo_script() -> AgentScript {
     Arc::new(|cmd: &HubCommand| {
         let request_id = match cmd {
+            HubCommand::NotifyConfigServer { request_id, .. } => {
+                return Some(AgentReply::Notify {
+                    request_id: request_id.clone(),
+                    status: 200,
+                });
+            }
             HubCommand::ReadFile { request_id, .. }
             | HubCommand::WriteFile { request_id, .. }
             | HubCommand::DeleteFile { request_id, .. }
             | HubCommand::RestartDeployment { request_id, .. }
             | HubCommand::RequestClusterReport { request_id }
-            | HubCommand::NotifyConfigServer { request_id, .. }
             | HubCommand::FetchServed { request_id, .. } => request_id.clone(),
             HubCommand::RequestDelta { .. } | HubCommand::RequestFullScan => RequestId::parse("ack").ok()?,
         };

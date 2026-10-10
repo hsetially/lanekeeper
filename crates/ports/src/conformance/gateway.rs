@@ -10,7 +10,8 @@ use crate::{AgentGateway, GatewayError};
 #[async_trait]
 pub trait AgentGatewayScenario: AgentGateway {
     /// Connect an agent for `s` that acknowledges every command with `AgentReply::Op { ok: true, .. }`,
-    /// keeping the command's `request_id`.
+    /// keeping the command's `request_id`. The one exception is `NotifyConfigServer`, which it answers with
+    /// `AgentReply::Notify { status: 200, .. }` and the same `request_id`, as a real agent does.
     async fn attach_echo_agent(&self, s: &SwimlaneId);
     /// Connect an agent that never answers.
     async fn attach_silent_agent(&self, s: &SwimlaneId);
@@ -26,6 +27,8 @@ fn cluster_cmd(id: &str) -> HubCommand {
 
 /// - No agent ever seen: status `NeverSeen`, requests fail with `NotConnected`.
 /// - A connected agent answers, and the reply carries the request id.
+/// - A reply of another type reaches the caller unchanged: `NotifyConfigServer` is answered by
+///   `AgentReply::Notify`, not by an `Op` (`gateway_passes_a_notify_reply_through`).
 /// - A zero timeout, or an agent that stays silent, fails with `Timeout`; one silent agent does not block
 ///   another swimlane.
 /// - After the stream closes the status is `Disconnected` and requests fail with `NotConnected`.
@@ -63,6 +66,8 @@ pub async fn agent_gateway<G: AgentGatewayScenario + ?Sized>(g: &G) {
         other => panic!("expected an Op reply, got {other:?}"),
     }
 
+    gateway_passes_a_notify_reply_through(g, &s1).await;
+
     assert_eq!(
         g.request(&s1, cluster_cmd("r-2"), Duration::ZERO).await,
         Err(GatewayError::Timeout),
@@ -88,4 +93,35 @@ pub async fn agent_gateway<G: AgentGatewayScenario + ?Sized>(g: &G) {
         Err(GatewayError::NotConnected),
         "request after the stream closed"
     );
+}
+
+/// `NotifyConfigServer` is answered by `AgentReply::Notify { request_id, status }`: the gateway hands it to the
+/// waiting caller by request id like any other reply, and does not turn it into an `Op` or a `Served` (decision
+/// A4). The status is the config-server's HTTP status; the echo agent answers 200.
+async fn gateway_passes_a_notify_reply_through<G: AgentGatewayScenario + ?Sized>(g: &G, s: &SwimlaneId) {
+    let reply = g
+        .request(
+            s,
+            HubCommand::NotifyConfigServer {
+                request_id: request_id("r-notify"),
+                paths: vec![nfs("app/a.yml")],
+            },
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("a connected agent answers a notify");
+    match reply {
+        AgentReply::Notify {
+            request_id: id,
+            status,
+        } => {
+            assert_eq!(
+                id,
+                request_id("r-notify"),
+                "the notify reply keeps the request id"
+            );
+            assert_eq!(status, 200, "the config-server's status is passed through");
+        }
+        other => panic!("expected a Notify reply, got {other:?}"),
+    }
 }

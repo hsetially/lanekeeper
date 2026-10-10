@@ -86,6 +86,14 @@ fn list<T, U>(
     items.into_iter().map(convert).collect()
 }
 
+/// An HTTP status the config-server answered with (100 to 599).
+fn http_status(field: &'static str, raw: u32) -> Result<u16> {
+    u16::try_from(raw)
+        .ok()
+        .filter(|status| (100..=599).contains(status))
+        .ok_or(ConvertError::Invalid(field))
+}
+
 fn ts(ms: i64) -> Timestamp {
     Timestamp::from_unix_millis(ms)
 }
@@ -539,8 +547,8 @@ pub enum FromAgent {
     Delta(ScanDelta),
     /// A cluster report the agent sent on its own.
     Cluster(ClusterReport),
-    /// The answer to a [`HubCommand`]: an operation result, file content, a served response, or a
-    /// cluster report that carries the request id.
+    /// The answer to a [`HubCommand`]: an operation result, file content, a served response, a notify
+    /// result, or a cluster report that carries the request id.
     Reply(AgentReply),
     /// The agent asks for a new certificate before the current one expires (S5).
     CertRenewal {
@@ -597,11 +605,12 @@ impl FromAgent {
             }),
             Kind::ServedResponse(s) => Self::Reply(AgentReply::Served {
                 request_id: request_id("served_response.request_id", &s.request_id)?,
-                status: u16::try_from(s.status)
-                    .ok()
-                    .filter(|status| (100..=599).contains(status))
-                    .ok_or(ConvertError::Invalid("served_response.status"))?,
+                status: http_status("served_response.status", s.status)?,
                 bytes: file_bytes("served_response.body", s.body)?,
+            }),
+            Kind::NotifyResult(n) => Self::Reply(AgentReply::Notify {
+                request_id: request_id("notify_result.request_id", &n.request_id)?,
+                status: http_status("notify_result.status", n.status)?,
             }),
         }))
     }
@@ -637,6 +646,10 @@ impl FromAgent {
                 request_id: request_id.as_str().to_owned(),
                 status: u32::from(status),
                 body: bytes,
+            }),
+            Self::Reply(AgentReply::Notify { request_id, status }) => Kind::NotifyResult(pb::NotifyResult {
+                request_id: request_id.as_str().to_owned(),
+                status: u32::from(status),
             }),
         };
         pb::AgentMessage { kind: Some(kind) }
