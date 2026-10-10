@@ -41,7 +41,7 @@ use super::helm::HelmFilter;
 use super::jobs::{JobMatcher, JobRec, JobTracker};
 use super::projection::{Change, DirtyKey, Projection};
 use super::trim::{self, DeploymentRec, PodRec};
-use crate::config::{KubeName, Settings};
+use crate::config::{DeploymentRef, KubeName, Settings};
 use crate::windows::WindowLedger;
 
 /// Changes within this long leave as one report.
@@ -68,6 +68,9 @@ pub struct WatchConfig {
     pub env_allowlist: Vec<ShortText>,
     /// Where the sync Jobs' windows are recorded (T10). Without one they are not.
     pub windows: Option<Arc<WindowLedger>>,
+    /// The config-server's Deployment, whose pods' start time goes into the reports (T12, C11). Without one it is not
+    /// reported.
+    pub config_server: Option<DeploymentRef>,
 }
 
 impl WatchConfig {
@@ -81,7 +84,15 @@ impl WatchConfig {
             sync_timeout: SYNC_TIMEOUT,
             env_allowlist: Vec::new(),
             windows: None,
+            config_server: None,
         }
+    }
+
+    /// Report when the pods of `deployment` started, as the config-server's start time (T12).
+    #[must_use]
+    pub fn with_config_server(mut self, deployment: DeploymentRef) -> Self {
+        self.config_server = Some(deployment);
+        self
     }
 
     /// Record the windows of the sync Jobs in `ledger`.
@@ -99,11 +110,15 @@ impl WatchConfig {
     }
 
     pub fn from_settings(settings: &Settings) -> Result<Self, BuildError> {
-        Ok(Self::new(
+        let config = Self::new(
             settings.namespaces.clone(),
             HelmFilter::new(&settings.helm_hint_chart_globs)?,
             JobMatcher::new(&settings.sync_job_name_globs, settings.sync_job_label.as_ref())?,
-        ))
+        );
+        Ok(match &settings.config_server_deployment {
+            Some(deployment) => config.with_config_server(deployment.clone()),
+            None => config,
+        })
     }
 }
 
@@ -341,11 +356,16 @@ impl ClusterWatcher {
     /// [`ClusterWatcher::full_report`]. Must be called inside a tokio runtime.
     pub fn start(client: &Client, config: WatchConfig) -> (Self, mpsc::Receiver<ClusterReport>) {
         let namespaces: Vec<String> = config.namespaces.iter().map(|n| n.as_str().to_owned()).collect();
+        let mut projection = Projection::new(&namespaces);
+        if let Some(ledger) = &config.windows {
+            projection = projection.with_windows(Arc::clone(ledger));
+        }
+        if let Some(deployment) = &config.config_server {
+            projection =
+                projection.with_config_server(deployment.namespace.as_str(), deployment.name.as_str());
+        }
         let shared = Arc::new(Shared {
-            projection: Mutex::new(match &config.windows {
-                Some(ledger) => Projection::new(&namespaces).with_windows(Arc::clone(ledger)),
-                None => Projection::new(&namespaces),
-            }),
+            projection: Mutex::new(projection),
             listed: Mutex::new(BTreeMap::new()),
             namespaces: namespaces.clone(),
             debouncer: ReportDebouncer::new(config.debounce),

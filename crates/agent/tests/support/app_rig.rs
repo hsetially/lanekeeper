@@ -58,6 +58,10 @@ pub struct Setup {
     pub root: Option<TempDir>,
     pub session: SessionConfig,
     pub extra_env: Vec<(&'static str, &'static str)>,
+    /// The same for values only known at run time (a fake server's address).
+    pub extra_env_owned: Vec<(String, String)>,
+    /// How the agent connects to the config-server: an in-memory pipe to a fake one. `None`: TCP.
+    pub config_server_dialer: Option<Arc<dyn agent::transport::dial::Dialer>>,
     /// Run the certificate renewal too (a joiner against the fake hub, with an in-memory certificate store).
     pub renewal: bool,
 }
@@ -72,6 +76,8 @@ impl Default for Setup {
             root: None,
             session: SessionConfig::default(),
             extra_env: Vec::new(),
+            extra_env_owned: Vec::new(),
+            config_server_dialer: None,
             renewal: false,
         }
     }
@@ -88,6 +94,7 @@ impl AppRig {
         for (name, value) in &setup.extra_env {
             env.insert((*name).to_owned(), (*value).to_owned());
         }
+        env.extend(setup.extra_env_owned.iter().cloned());
         let settings = Settings::from_env(&env).unwrap();
         let root = NfsRoot::open(dir.path()).unwrap();
         let identity = rig.identity_handle().await;
@@ -119,6 +126,9 @@ impl AppRig {
         }
         if let Some(kube) = &setup.kube {
             parts = parts.with_kube(kube.client());
+        }
+        if let Some(dialer) = &setup.config_server_dialer {
+            parts = parts.with_config_server_dialer(Arc::clone(dialer));
         }
         if setup.renewal {
             let joiner = Joiner::new(

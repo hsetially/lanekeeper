@@ -41,6 +41,7 @@ use tracing::{error, info, warn};
 
 use crate::clock::Clock;
 use crate::config::{Settings, Tunables};
+use crate::configserver::ConfigServerClient;
 use crate::dispatch::{CommandHandler, Dispatcher};
 use crate::fileops::FileOps;
 use crate::identity::KubeError;
@@ -52,6 +53,7 @@ use crate::ops::{Health, Metrics, Progress};
 use crate::root::NfsRoot;
 use crate::scan::{ScanHandler, Scanner};
 use crate::spool::Spool;
+use crate::transport::dial::Dialer;
 use crate::transport::session::{Link, LinkHandler, Session, SessionConfig};
 use crate::transport::{HubTransport, Outbox};
 use crate::tree::{FsSource, Pool, TreeSource, WalkConfig};
@@ -99,6 +101,8 @@ pub struct Parts {
     /// The durable spool every delta the scanner builds goes through (T9).
     pub spool: Spool,
     pub session: SessionConfig,
+    /// How the plain-HTTP calls to the config-server connect. Default: TCP (a test gives an in-memory pipe).
+    pub config_server_dialer: Option<Arc<dyn Dialer>>,
 }
 
 impl fmt::Debug for Parts {
@@ -139,7 +143,15 @@ impl Parts {
             source: None,
             spool,
             session: SessionConfig::default(),
+            config_server_dialer: None,
         }
+    }
+
+    /// Connect to the config-server through `dialer` instead of TCP (for a test).
+    #[must_use]
+    pub fn with_config_server_dialer(mut self, dialer: Arc<dyn Dialer>) -> Self {
+        self.config_server_dialer = Some(dialer);
+        self
     }
 
     #[must_use]
@@ -193,6 +205,7 @@ impl App {
             source,
             spool,
             session: session_config,
+            config_server_dialer,
         } = self.parts;
 
         let source = match source {
@@ -214,18 +227,17 @@ impl App {
         );
 
         let (ledger, announcer) = sync_windows(&clock, &scanner, &spool);
-        let cluster = match kube {
-            Some(client) => Some(Arc::new(ClusterRunner::new(
-                client,
-                &settings,
-                Arc::clone(&clock),
-                ledger,
-                announcer,
-            )?)),
-            None => None,
-        };
+        let cluster = kube
+            .map(|client| {
+                ClusterRunner::new(client, &settings, Arc::clone(&clock), ledger, announcer).map(Arc::new)
+            })
+            .transpose()?;
+        // The config-server calls (T12) follow the same deny list, and exist only when an address was configured.
+        let config_server = config_server_client(&settings, &deny, &clock, config_server_dialer);
         let ops = FileOps::new(root, Arc::new(scanner.clone())).with_deny(deny);
-        let mut dispatcher = Dispatcher::new(ops).with_metrics(Arc::clone(&metrics));
+        let mut dispatcher = Dispatcher::new(ops)
+            .with_metrics(Arc::clone(&metrics))
+            .with_config_server_opt(config_server);
         if let Some(cluster) = &cluster {
             dispatcher = dispatcher.with_cluster(Arc::clone(cluster) as Arc<dyn ClusterOps>);
         }
@@ -292,6 +304,21 @@ impl App {
         info!("the agent has stopped");
         outcome
     }
+}
+
+/// The client for the config-server, when `LK_CONFIG_SERVER_URL` is set (T12). It shares the agent's deny list.
+fn config_server_client(
+    settings: &Settings,
+    deny: &crate::deny::DenyList,
+    clock: &Arc<dyn Clock>,
+    dialer: Option<Arc<dyn Dialer>>,
+) -> Option<Arc<ConfigServerClient>> {
+    let base = settings.config_server_url.clone()?;
+    let client = ConfigServerClient::new(base, deny.clone(), Arc::clone(clock));
+    Some(Arc::new(match dialer {
+        Some(dialer) => client.with_dialer(dialer),
+        None => client,
+    }))
 }
 
 /// The sync Jobs' windows: the watchers feed the ledger, the scanner tags what it finds with them, and the announcer tells
@@ -454,7 +481,7 @@ impl ClusterRunner {
         ledger: Arc<WindowLedger>,
         announcer: Arc<WindowAnnouncer>,
     ) -> Result<Self, AppError> {
-        let config = WatchConfig::new(
+        let mut config = WatchConfig::new(
             settings.namespaces.clone(),
             HelmFilter::new(&settings.helm_hint_chart_globs)
                 .map_err(|_| AppError::Glob("LK_HELM_HINT_CHART_GLOBS"))?,
@@ -462,6 +489,9 @@ impl ClusterRunner {
                 .map_err(|_| AppError::Glob("LK_SYNC_JOB_NAME_GLOBS"))?,
         )
         .with_windows(ledger);
+        if let Some(deployment) = &settings.config_server_deployment {
+            config = config.with_config_server(deployment.clone());
+        }
         Ok(Self {
             client,
             config,

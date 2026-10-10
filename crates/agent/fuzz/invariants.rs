@@ -13,7 +13,7 @@
 //! | Target | Input | What must hold |
 //! |---|---|---|
 //! | `agent_path` | one byte (the operation), then a path | whatever the path is, an operation on a root with planted symlinks changes nothing outside the root, leaves every symlink as it was, leaves no temporary file, and a success never went through a symlink; a path the deny list denies is never read, written, created or deleted, and its file is never changed (D79) |
-//! | `agent_hub_message` | a protobuf `HubMessage` | decoding never panics; a configuration is clamped into its ranges and its deny globs are applied or dropped cleanly, whatever they say, and never remove a built-in glob; a file command gets exactly one answer, of bounded size, and touches nothing outside the root |
+//! | `agent_hub_message` | a protobuf `HubMessage` | decoding never panics; a configuration is clamped into its ranges and its deny globs are applied or dropped cleanly, whatever they say, and never remove a built-in glob; a file command gets exactly one answer, of bounded size, and touches nothing outside the root; for a `FetchServed`, the request target the agent would send is origin-form ASCII with no query, fragment, space or dot segment and as many `/` as it has pieces, and for a `NotifyConfigServer` the form body has one `path=` field per path and nothing else (Q37) |
 //! | `agent_cert_chain` | length-prefixed DER blobs | random bytes are never accepted as the agent's certificate |
 //! | `agent_pem` | one byte (key, CA, or damage to a generated key), then PEM text | a key that is accepted survives a PEM round trip; an undamaged generated key is always accepted; neither parser panics |
 //! | `agent_id_token` | text | a string accepted as a token is three non-empty base64url segments within the size limit |
@@ -512,6 +512,11 @@ pub fn agent_hub_message(data: &[u8]) -> Result<(), String> {
             Ok(())
         }
         Decoded::Message(ToAgent::Command(command)) => {
+            match &command {
+                HubCommand::FetchServed { request, .. } => served_target_holds(request)?,
+                HubCommand::NotifyConfigServer { paths, .. } => notify_body_holds(paths)?,
+                _ => {}
+            }
             let world = World::new();
             let before = world.guarded();
             let dispatcher = dispatcher(&world);
@@ -533,6 +538,54 @@ pub fn agent_hub_message(data: &[u8]) -> Result<(), String> {
         }
         Decoded::Message(ToAgent::Ack(_) | ToAgent::CertRenewal(_)) => Ok(()),
     }
+}
+
+/// The request target for a `FetchServed` is built from the validated pieces and cannot change shape (Q37, S17).
+fn served_target_holds(request: &domain::ServeRequest) -> Result<(), String> {
+    let target = agent::configserver::served_target(request);
+    let prefix = format!(
+        "/{}/{},default/master/",
+        request.application.as_str(),
+        request.tenant.as_str()
+    );
+    ensure(target.starts_with(&prefix), || {
+        format!("a target that does not start as one must: {target}")
+    })?;
+    ensure(target.is_ascii(), || {
+        format!("a target that is not ASCII: {target}")
+    })?;
+    ensure(
+        !target
+            .chars()
+            .any(|c| matches!(c, '?' | '#' | ' ' | '\\' | '"' | '<' | '>') || c.is_control()),
+        || format!("a target with a character that can end or change a path: {target}"),
+    )?;
+    ensure(!target.contains("//"), || format!("an empty segment: {target}"))?;
+    ensure(target.split('/').all(|s| s != ".." && s != "."), || {
+        format!("a dot segment: {target}")
+    })?;
+    let pieces = 3 + usize::from(request.channel.is_some()) + request.file.components().count();
+    ensure(target.matches('/').count() == pieces, || {
+        format!("{pieces} pieces but a different number of segments: {target}")
+    })
+}
+
+/// The refresh form has one `path=` field per path, and a path cannot add a field of its own.
+fn notify_body_holds(paths: &[NfsPath]) -> Result<(), String> {
+    let body = agent::configserver::notify_body(paths);
+    ensure(body.is_ascii(), || "a form body that is not ASCII".to_owned())?;
+    let fields = if body.is_empty() {
+        0
+    } else {
+        body.matches('&').count() + 1
+    };
+    ensure(fields == paths.len(), || {
+        format!("{} paths but {fields} fields", paths.len())
+    })?;
+    ensure(
+        body.matches("path=").count() == paths.len() && body.matches('=').count() == paths.len(),
+        || "a path added a field or an equals sign".to_owned(),
+    )
 }
 
 // ------------------------------------------------------------------------------------------------ agent_cert_chain

@@ -6,6 +6,7 @@ pub mod app_rig;
 pub mod capture;
 pub mod clock;
 pub mod collect_sink;
+pub mod fake_configserver;
 pub mod fake_hub;
 pub mod fake_kube;
 pub mod fake_metadata;

@@ -544,3 +544,82 @@ fn fs_write_scan_rejects_planted_violations() {
         1
     );
 }
+
+// ------------------------------------------------------------------------------------------------ the config-server
+
+/// Lines of code, outside `allowed` files, that name the config-server's unauthenticated refresh endpoint, make a client
+/// for it, or call one of its two calls (Q37, S17). Comment lines are skipped. The calls may be made from the dispatcher
+/// only, and the client is built in `app.rs` alone: nothing else in the agent can reach the config-server, so every call
+/// is the answer to a command from the hub.
+fn config_server_violations(rel: &str, source: &str) -> Vec<String> {
+    const CONFINED: [(&str, &[&str]); 4] = [
+        ("update-resources", &["configserver.rs"]),
+        ("ConfigServerClient::new", &["configserver.rs", "app.rs"]),
+        (".notify(", &["configserver.rs", "dispatch.rs"]),
+        (".fetch_served(", &["configserver.rs", "dispatch.rs"]),
+    ];
+    // Everything from the first `#[cfg(test)]` on is test code (the convention in this crate).
+    let code = source.split("#[cfg(test)]").next().unwrap_or(source);
+    code.lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim_start().starts_with("//"))
+        .filter(|(_, line)| {
+            CONFINED
+                .iter()
+                .any(|(needle, allowed)| line.contains(needle) && !allowed.contains(&rel))
+        })
+        .map(|(n, line)| format!("{rel}:{}: {}", n + 1, line.trim()))
+        .collect()
+}
+
+#[test]
+fn config_server_calls_only_from_the_dispatcher() {
+    let violations: Vec<String> = sources(&src_dir())
+        .iter()
+        .flat_map(|(rel, source)| config_server_violations(rel, source))
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "something other than the dispatcher can reach the config-server (Q37):\n{}",
+        violations.join("\n")
+    );
+    // And the rule is not vacuous: the dispatcher does call both.
+    let files = sources(&src_dir());
+    let dispatch = &files.iter().find(|(rel, _)| rel == "dispatch.rs").unwrap().1;
+    assert!(dispatch.contains(".notify(") && dispatch.contains(".fetch_served("));
+}
+
+#[test]
+fn config_server_scan_rejects_planted_violations() {
+    for (rel, line) in [
+        ("scan.rs", "client.notify(&paths).await"),
+        ("scan.rs", "let r = client.fetch_served(&request).await;"),
+        ("kube/watch.rs", "post(\"/update-resources\")"),
+        (
+            "kube/watch.rs",
+            "let c = ConfigServerClient::new(base, deny, clock);",
+        ),
+        (
+            "dispatch.rs",
+            "let c = ConfigServerClient::new(base, deny, clock);",
+        ),
+    ] {
+        assert_eq!(config_server_violations(rel, line).len(), 1, "{rel}: {line}");
+    }
+    for (rel, line) in [
+        ("dispatch.rs", "client.notify(paths).await"),
+        ("dispatch.rs", "client.fetch_served(request).await"),
+        ("app.rs", "ConfigServerClient::new(base, deny, clock)"),
+        (
+            "configserver.rs",
+            "pub const NOTIFY_PATH: &str = \"/update-resources\";",
+        ),
+        ("scan.rs", "// never call update-resources from here"),
+    ] {
+        assert!(config_server_violations(rel, line).is_empty(), "{rel}: {line}");
+    }
+    // Test code is not scanned.
+    assert!(
+        config_server_violations("scan.rs", "#[cfg(test)]\nmod t { fn f() { c.notify(&p); } }").is_empty()
+    );
+}

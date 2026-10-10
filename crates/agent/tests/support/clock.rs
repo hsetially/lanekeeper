@@ -39,3 +39,35 @@ impl Clock for TestClock {
         Instant::now()
     }
 }
+
+/// A clock whose monotonic time moves only when a test says so, and that does not depend on `tokio::time::pause`. For the
+/// tests that need real sockets (which do not complete under a paused clock, because the runtime jumps over the I/O wait)
+/// and still need to control an interval.
+#[derive(Debug)]
+pub struct ManualClock {
+    base: Instant,
+    offset: std::sync::Mutex<std::time::Duration>,
+}
+
+impl ManualClock {
+    pub fn new() -> Self {
+        Self {
+            base: Instant::now(),
+            offset: std::sync::Mutex::new(std::time::Duration::ZERO),
+        }
+    }
+
+    pub fn advance(&self, by: std::time::Duration) {
+        *self.offset.lock().unwrap() += by;
+    }
+}
+
+impl Clock for ManualClock {
+    fn now(&self) -> Timestamp {
+        Timestamp::from_unix_millis(i64::try_from(self.offset.lock().unwrap().as_millis()).unwrap())
+    }
+
+    fn instant(&self) -> Instant {
+        self.base + *self.offset.lock().unwrap()
+    }
+}

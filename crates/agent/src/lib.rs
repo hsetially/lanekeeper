@@ -7,6 +7,7 @@
 //!
 //! - [`app`]: the loops put together, started and stopped (T7).
 //! - [`config`]: the validated environment, and the limits the hub cannot raise (T1).
+//! - [`configserver`]: the two calls to the config-server, a refresh and a served file, each the answer to a hub command (T12, Q37).
 //! - [`root`]: the NFS export as a cap-std handle (T1).
 //! - [`deny`]: the deny globs, so that keystores and keys are hashed and never sent, read or written (T11, D79, S17).
 //! - [`clock`], [`backoff`]: injectable time, and retry delays with full jitter.
@@ -35,6 +36,7 @@ pub mod app;
 pub mod backoff;
 pub mod clock;
 pub mod config;
+pub mod configserver;
 pub mod deny;
 pub mod dispatch;
 pub mod fileops;

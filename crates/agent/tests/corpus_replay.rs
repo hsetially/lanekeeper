@@ -143,3 +143,53 @@ fn the_checks_catch_a_planted_violation() {
     invariants::planted_harm_is_detected().unwrap();
     invariants::planted_spool_harm_is_detected().unwrap();
 }
+
+/// The config-server seeds (T12) mean something only while they decode to the commands they are named for: a hostile
+/// but valid `FetchServed` and `NotifyConfigServer` reach the target-building checks, and the invalid ones are refused.
+#[test]
+fn the_config_server_seeds_decode_to_the_commands_they_are_named_for() {
+    use agent::transport::wire::{self, Decoded};
+    use prost::Message as _;
+    use proto::convert::ToAgent;
+
+    let dir = fuzz_dir().join("corpus").join("agent_hub_message");
+    let decode = |name: &str| {
+        let bytes = fs::read(dir.join(name)).unwrap();
+        wire::decode(proto::pb::HubMessage::decode(bytes.as_slice()).unwrap())
+    };
+    for valid_fetch in [
+        "fetch_served",
+        "fetch_served_hostile_file",
+        "fetch_served_channel_nested",
+        "fetch_served_denied_pem",
+        "fetch_served_authority_in_file",
+    ] {
+        assert!(
+            matches!(
+                decode(valid_fetch),
+                Decoded::Message(ToAgent::Command(domain::HubCommand::FetchServed { .. }))
+            ),
+            "{valid_fetch}"
+        );
+    }
+    for valid_notify in ["notify_awkward_paths", "notify_no_paths"] {
+        assert!(
+            matches!(
+                decode(valid_notify),
+                Decoded::Message(ToAgent::Command(domain::HubCommand::NotifyConfigServer { .. }))
+            ),
+            "{valid_notify}"
+        );
+    }
+    for refused in [
+        "fetch_served_dotdot",
+        "fetch_served_bad_tenant",
+        "fetch_served_url_in_app",
+        "notify_traversal_path",
+    ] {
+        assert!(
+            matches!(decode(refused), Decoded::Invalid { .. }),
+            "{refused} must be refused at the edge"
+        );
+    }
+}

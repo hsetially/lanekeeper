@@ -9,7 +9,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use domain::{ClusterReport, DeploymentInfo, EnvValue, JobRef, PodInfo, ReleaseHint, ServiceRef, ShortText};
+use domain::{
+    ClusterReport, DeploymentInfo, EnvValue, JobRef, PodInfo, ReleaseHint, ServiceRef, ShortText, Timestamp,
+};
 use tracing::warn;
 
 use super::env::EnvGuard;
@@ -179,6 +181,8 @@ pub struct Projection {
     jobs: ObjectStore<JobRec>,
     /// Told when a sync Job starts or stops running (T10).
     windows: Option<Arc<WindowLedger>>,
+    /// The config-server's Deployment: the start time of its oldest pod goes into every report that lists it (T12).
+    config_server: Option<Key>,
 }
 
 impl Projection {
@@ -189,7 +193,15 @@ impl Projection {
             pods: ObjectStore::new("pods"),
             jobs: ObjectStore::new("jobs"),
             windows: None,
+            config_server: None,
         }
+    }
+
+    /// Report when the pods of the Deployment `namespace/name` started, as the config-server's start time (C11).
+    #[must_use]
+    pub fn with_config_server(mut self, namespace: &str, name: &str) -> Self {
+        self.config_server = Some((namespace.to_owned(), name.to_owned()));
+        self
     }
 
     /// Record the windows of the sync Jobs in `ledger` as the Jobs change.
@@ -327,6 +339,13 @@ impl Projection {
             })
             .take(MAX_PODS_PER_DEPLOYMENT)
             .collect();
+        if self
+            .config_server
+            .as_ref()
+            .is_some_and(|(ns, name)| *ns == deployment.namespace && *name == deployment.name)
+        {
+            report.config_server_started_at = self.oldest_start(deployment);
+        }
         let mut env_values = Vec::new();
         let mut env_names = Vec::new();
         for (name, value) in &deployment.env {
@@ -361,12 +380,26 @@ impl Projection {
     }
 }
 
+impl Projection {
+    /// When the oldest pod of `deployment` started. The oldest, because a replica that started before a folder was made
+    /// does not serve it, and a newer one must not hide that (C11). A pod with no start time (not scheduled yet) is not
+    /// the one that serves, and does not count.
+    fn oldest_start(&self, deployment: &DeploymentRec) -> Option<Timestamp> {
+        self.pods
+            .in_namespace(&deployment.namespace)
+            .filter(|(_, pod)| deployment.selector.matches(&pod.labels))
+            .map(|(_, pod)| pod.started_at)
+            .filter(|started| started.unix_millis() > 0)
+            .min_by_key(|started| started.unix_millis())
+    }
+}
+
 fn empty_report(full: bool) -> ClusterReport {
     ClusterReport {
         full,
         deployments: Vec::new(),
         release_hints: Vec::new(),
-        // The config-server's start time (C11) is T12's; sync windows (D75) are T10's.
+        // The config-server's start time (C11) is set by the Deployment it belongs to; sync windows (D75) by the announcer.
         config_server_started_at: None,
         sync_windows: Vec::new(),
     }

@@ -4,6 +4,7 @@
 //! config-server. TLS is not needed there and not offered. Every call has a timeout and a body cap (rule 5), redirects are
 //! never followed, and nothing from the request or the response is put into an error.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -11,10 +12,10 @@ use http::header::{CONNECTION, CONTENT_LENGTH, HOST, TRANSFER_ENCODING};
 use http::{HeaderName, HeaderValue, Method, Request, Uri};
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper_util::rt::TokioIo;
-use tokio::net::TcpStream;
 use tokio::task::JoinHandle;
 
 use crate::config::BaseUrl;
+use crate::transport::dial::{Dialer, TcpDialer};
 
 /// Why a request failed. None of these carries a URL, header or body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -81,10 +82,14 @@ pub struct HttpResponse {
 }
 
 /// A client with a total timeout per request and a cap on the response body.
+///
+/// It connects through a [`Dialer`]: TCP in production, and an in-memory pipe in the tests that need a server they can
+/// count, hold and cut without a socket (a paused clock does not work with real sockets).
 #[derive(Debug, Clone)]
 pub struct HttpClient {
     timeout: Duration,
     max_body: usize,
+    dialer: Arc<dyn Dialer>,
 }
 
 /// Stops the connection task when the request finishes or is cancelled, so no task outlives its caller.
@@ -98,7 +103,18 @@ impl Drop for AbortOnDrop {
 
 impl HttpClient {
     pub fn new(timeout: Duration, max_body: usize) -> Self {
-        Self { timeout, max_body }
+        Self {
+            timeout,
+            max_body,
+            dialer: Arc::new(TcpDialer),
+        }
+    }
+
+    /// Connect through `dialer` instead of TCP.
+    #[must_use]
+    pub fn with_dialer(mut self, dialer: Arc<dyn Dialer>) -> Self {
+        self.dialer = dialer;
+        self
     }
 
     /// Send `request` to `base` and read the whole response. Any status is an answer; only transport trouble is an error.
@@ -122,7 +138,9 @@ impl HttpClient {
             .and_then(|u| u.authority().cloned())
             .ok_or(HttpError::InvalidRequest)?;
         let port = authority.port_u16().unwrap_or(80);
-        let stream = TcpStream::connect((connect_host(authority.host()), port))
+        let stream = self
+            .dialer
+            .dial(connect_host(authority.host()), port)
             .await
             .map_err(|_| HttpError::Connect)?;
         let (mut sender, connection) =

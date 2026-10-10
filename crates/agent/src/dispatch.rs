@@ -20,19 +20,34 @@
 //! | a restart of a Deployment that does not exist | `NOT_FOUND` |
 //! | the Kubernetes API refused, timed out, or the watchers have not listed yet | `IO` |
 //!
-//! Commands whose part of the agent is not built yet are answered `UNSUPPORTED` at once rather than left to time out
-//! at the hub; each task that adds one (config-server) takes it out of [`Dispatcher::handle`]'s catch-all. The cluster
-//! commands (`RequestClusterReport`, `RestartDeployment`) are carried out by a [`ClusterOps`] given to
-//! [`Dispatcher::with_cluster`]; without one they are `UNSUPPORTED` too.
+//! A command whose part of the agent is not there is answered `UNSUPPORTED` at once rather than left to time out at the
+//! hub. The cluster commands (`RequestClusterReport`, `RestartDeployment`) are carried out by a [`ClusterOps`] given to
+//! [`Dispatcher::with_cluster`], and the config-server commands (`NotifyConfigServer`, `FetchServed`) by a
+//! [`ConfigServerClient`] given to [`Dispatcher::with_config_server`] (only when `LK_CONFIG_SERVER_URL` is set); without
+//! one they are `UNSUPPORTED` too.
+//!
+//! # The config-server commands (T12)
+//!
+//! | Outcome | Answer |
+//! |---|---|
+//! | the config-server answered a refresh, with any status | `NotifyResult` with that status, unchanged |
+//! | the config-server served a file, or answered with any status | `ServedResponse` with the status, and the bytes of a `2xx` |
+//! | more than five fetches in a second | `ServedResponse` `429`, no body, the config-server is not asked |
+//! | the path is covered by the deny list (D79) | `DENIED`, with no path in it |
+//! | no connection, a timeout (after the retries of a refresh), a peer that is not HTTP | `IO` |
+//! | a response over 2 MiB | `UNSUPPORTED` |
 
 use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use domain::{AgentReply, ContentHash, HubCommand, NfsPath, OpError, OpResult, RequestId, ServiceRef};
+use domain::{
+    AgentReply, ContentHash, HubCommand, NfsPath, OpError, OpResult, RequestId, ServeRequest, ServiceRef,
+};
 use proto::convert::FromAgent;
 use tracing::{debug, info, warn};
 
+use crate::configserver::{ConfigServerClient, ConfigServerError};
 use crate::fileops::{FileContent, FileError, FileOps, OpOutcome, WriteHooks};
 use crate::kube::ClusterOps;
 use crate::ops::{Metrics, Operation, Outcome};
@@ -120,6 +135,7 @@ pub fn read_reply(request_id: RequestId, path: NfsPath, result: Result<FileConte
 pub struct Dispatcher<H: WriteHooks = crate::fileops::NoHooks> {
     ops: FileOps<H>,
     cluster: Option<Arc<dyn ClusterOps>>,
+    config_server: Option<Arc<ConfigServerClient>>,
     metrics: Arc<Metrics>,
 }
 
@@ -128,6 +144,7 @@ impl<H: WriteHooks> fmt::Debug for Dispatcher<H> {
         f.debug_struct("Dispatcher")
             .field("ops", &self.ops)
             .field("cluster", &self.cluster.is_some())
+            .field("config_server", &self.config_server.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -137,6 +154,7 @@ impl<H: WriteHooks> Dispatcher<H> {
         Self {
             ops,
             cluster: None,
+            config_server: None,
             metrics: Metrics::detached(),
         }
     }
@@ -159,6 +177,67 @@ impl<H: WriteHooks> Dispatcher<H> {
     pub fn with_cluster(mut self, cluster: Arc<dyn ClusterOps>) -> Self {
         self.cluster = Some(cluster);
         self
+    }
+
+    /// Let the dispatcher answer `NotifyConfigServer` and `FetchServed` (T12). Without one they are `UNSUPPORTED`.
+    #[must_use]
+    pub fn with_config_server(mut self, client: Arc<ConfigServerClient>) -> Self {
+        self.config_server = Some(client);
+        self
+    }
+
+    /// As [`Dispatcher::with_config_server`], when there is a client (`LK_CONFIG_SERVER_URL` is set).
+    #[must_use]
+    pub fn with_config_server_opt(mut self, client: Option<Arc<ConfigServerClient>>) -> Self {
+        self.config_server = client;
+        self
+    }
+
+    /// Ask the config-server to refresh `paths`, and tell the hub what it said.
+    async fn notify(
+        &self,
+        client: &ConfigServerClient,
+        request_id: RequestId,
+        paths: &[NfsPath],
+    ) -> FromAgent {
+        match client.notify(paths).await {
+            Ok(status) => {
+                info!(%request_id, paths = paths.len(), status, "the config-server answered a refresh");
+                FromAgent::Reply(AgentReply::Notify { request_id, status })
+            }
+            Err(error) => {
+                warn!(%request_id, paths = paths.len(), %error, "a refresh of the config-server failed");
+                failure(request_id, error.code(), None)
+            }
+        }
+    }
+
+    /// Ask the config-server for what it serves, and hand the hub the status and the bytes.
+    async fn fetch_served(
+        &self,
+        client: &ConfigServerClient,
+        request_id: RequestId,
+        request: &ServeRequest,
+    ) -> FromAgent {
+        match client.fetch_served(request).await {
+            Ok(served) => {
+                debug!(%request_id, status = served.status, bytes = served.body.len(), "a served file");
+                FromAgent::Reply(AgentReply::Served {
+                    request_id,
+                    status: served.status,
+                    bytes: served.body,
+                })
+            }
+            // A refused path is named nowhere: not in the answer, and not here.
+            Err(error @ ConfigServerError::Denied) => {
+                info!(%request_id, %error, "a fetch of a served file was refused");
+                failure(request_id, error.code(), None)
+            }
+            Err(error) => {
+                warn!(%request_id, %error, "a fetch of a served file failed");
+                failure(request_id, error.code(), None)
+            }
+        }
     }
 
     async fn cluster_report(&self, cluster: &dyn ClusterOps, request_id: RequestId) -> FromAgent {
@@ -257,13 +336,19 @@ impl<H: WriteHooks> CommandHandler for Dispatcher<H> {
                 };
                 Some(self.counted(Operation::Restart, reply))
             }
-            // The config-server calls arrive with T12. Until then the hub is told so at once instead of waiting for a
-            // timeout.
-            HubCommand::NotifyConfigServer { request_id, .. } => {
-                Some(self.counted(Operation::Notify, unsupported(request_id)))
+            HubCommand::NotifyConfigServer { request_id, paths } => {
+                let reply = match &self.config_server {
+                    Some(client) => self.notify(client, request_id, &paths).await,
+                    None => unsupported(request_id),
+                };
+                Some(self.counted(Operation::Notify, reply))
             }
-            HubCommand::FetchServed { request_id, .. } => {
-                Some(self.counted(Operation::FetchServed, unsupported(request_id)))
+            HubCommand::FetchServed { request_id, request } => {
+                let reply = match &self.config_server {
+                    Some(client) => self.fetch_served(client, request_id, &request).await,
+                    None => unsupported(request_id),
+                };
+                Some(self.counted(Operation::FetchServed, reply))
             }
         }
     }
@@ -277,6 +362,10 @@ fn outcome_of(reply: &FromAgent) -> Outcome {
         } else {
             Some(result.error.unwrap_or(OpError::Io))
         }),
+        // The config-server answered, but a refresh it refused, or a file it did not serve, did not go well.
+        FromAgent::Reply(AgentReply::Notify { status, .. }) if !(200..300).contains(status) => Outcome::Io,
+        FromAgent::Reply(AgentReply::Served { status: 404, .. }) => Outcome::NotFound,
+        FromAgent::Reply(AgentReply::Served { status, .. }) if !(200..300).contains(status) => Outcome::Io,
         _ => Outcome::Ok,
     }
 }

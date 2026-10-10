@@ -3,12 +3,18 @@
 //! It reads the request head and body by hand and answers with bytes the test chooses, so a test can send a huge
 //! body, garbage, a hung connection or a reset, none of which a real HTTP library would produce. Every request is
 //! recorded.
+//!
+//! It listens on a loopback port ([`RawServer::start`]) or lives in memory ([`RawServer::in_memory`]). A test that waits
+//! on a clock must use the in-memory one: a paused clock does not work with real sockets, because the runtime jumps over
+//! the wait for the socket and every request times out.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::net::SocketAddr;
+use std::io;
 use std::sync::{Arc, Mutex};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use agent::transport::dial::{BoxedIo, Dialer};
+use async_trait::async_trait;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
@@ -91,9 +97,50 @@ impl Reply {
 type Handler = dyn Fn(&RecordedRequest) -> Reply + Send + Sync;
 
 pub struct RawServer {
-    addr: SocketAddr,
+    url: String,
     log: Arc<Mutex<Vec<RecordedRequest>>>,
-    task: JoinHandle<()>,
+    task: Option<JoinHandle<()>>,
+    dialer: Option<Arc<MemoryDialer>>,
+}
+
+/// The name an in-memory server answers to. It is never resolved.
+pub const MEMORY_AUTHORITY: &str = "config-server.test:8888";
+
+/// Connects to an in-memory [`RawServer`]: every dial makes a pipe and hands its far end to a task that serves it.
+pub struct MemoryDialer {
+    handler: Arc<Handler>,
+    log: Arc<Mutex<Vec<RecordedRequest>>>,
+    refusing: bool,
+    /// Every `(host, port)` the client asked to connect to.
+    dialed: Mutex<Vec<(String, u16)>>,
+}
+
+impl std::fmt::Debug for MemoryDialer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryDialer")
+            .field("refusing", &self.refusing)
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl Dialer for MemoryDialer {
+    async fn dial(&self, host: &str, port: u16) -> io::Result<BoxedIo> {
+        self.dialed.lock().unwrap().push((host.to_owned(), port));
+        if self.refusing {
+            return Err(io::Error::from(io::ErrorKind::ConnectionRefused));
+        }
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (handler, log) = (Arc::clone(&self.handler), Arc::clone(&self.log));
+        tokio::spawn(async move {
+            if let Some(parked) = serve(server, &handler, &log).await {
+                // A hung connection stays open for as long as the runtime lives.
+                let _held = parked;
+                std::future::pending::<()>().await;
+            }
+        });
+        Ok(Box::new(client))
+    }
 }
 
 impl RawServer {
@@ -118,12 +165,65 @@ impl RawServer {
                 }
             }
         });
-        Self { addr, log, task }
+        Self {
+            url: format!("http://{addr}"),
+            log,
+            task: Some(task),
+            dialer: None,
+        }
+    }
+
+    /// A server that needs no socket: connect to it through [`RawServer::dialer`]. Its URL is `http://` and
+    /// [`MEMORY_AUTHORITY`].
+    pub fn in_memory(handler: impl Fn(&RecordedRequest) -> Reply + Send + Sync + 'static) -> Self {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let dialer = Arc::new(MemoryDialer {
+            handler: Arc::new(handler),
+            log: Arc::clone(&log),
+            refusing: false,
+            dialed: Mutex::default(),
+        });
+        Self {
+            url: format!("http://{MEMORY_AUTHORITY}"),
+            log,
+            task: None,
+            dialer: Some(dialer),
+        }
+    }
+
+    /// Where nothing listens: every connection is refused.
+    pub fn in_memory_refusing() -> Self {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let dialer = Arc::new(MemoryDialer {
+            handler: Arc::new(|_: &RecordedRequest| Reply::Close),
+            log: Arc::clone(&log),
+            refusing: true,
+            dialed: Mutex::default(),
+        });
+        Self {
+            url: format!("http://{MEMORY_AUTHORITY}"),
+            log,
+            task: None,
+            dialer: Some(dialer),
+        }
+    }
+
+    /// How to connect to an in-memory server.
+    pub fn dialer(&self) -> Arc<dyn Dialer> {
+        Arc::clone(self.dialer.as_ref().expect("an in-memory server")) as Arc<dyn Dialer>
+    }
+
+    /// Where the client connected, for an in-memory server: one `(host, port)` per connection.
+    pub fn dialed(&self) -> Vec<(String, u16)> {
+        self.dialer
+            .as_ref()
+            .map(|d| d.dialed.lock().unwrap().clone())
+            .unwrap_or_default()
     }
 
     /// `http://127.0.0.1:port`, the form `BaseUrl` accepts.
     pub fn url(&self) -> String {
-        format!("http://{}", self.addr)
+        self.url.clone()
     }
 
     pub fn requests(&self) -> Vec<RecordedRequest> {
@@ -133,7 +233,9 @@ impl RawServer {
 
 impl Drop for RawServer {
     fn drop(&mut self) {
-        self.task.abort();
+        if let Some(task) = &self.task {
+            task.abort();
+        }
     }
 }
 
@@ -146,11 +248,11 @@ pub async fn unreachable_url() -> String {
 }
 
 /// Read one request, answer it, and return the stream if it must stay open.
-async fn serve(
-    mut stream: TcpStream,
+async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
+    mut stream: S,
     handler: &Arc<Handler>,
     log: &Arc<Mutex<Vec<RecordedRequest>>>,
-) -> Option<TcpStream> {
+) -> Option<S> {
     let request = read_request(&mut stream).await?;
     let reply = handler(&request);
     log.lock().unwrap().push(request);
@@ -165,7 +267,7 @@ async fn serve(
     }
 }
 
-async fn read_request(stream: &mut TcpStream) -> Option<RecordedRequest> {
+async fn read_request<S: AsyncRead + Unpin>(stream: &mut S) -> Option<RecordedRequest> {
     let mut buf = Vec::new();
     let mut chunk = [0_u8; 4096];
     let head_end = loop {
