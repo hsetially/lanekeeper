@@ -18,7 +18,7 @@ package lanekeeper.agent.v1;
 
 // ---------------------------------------------------------------- services
 
-// Served by the hub to in-cluster agents. mTLS identity is `spiffe://lanekeeper/agent/<swimlane>` (S5).
+// Served by the hub to in-cluster agents. mTLS identity is `spiffe://lanekeeper/swimlane/<id>` (S5).
 service Agent {
   // Exchanges a CSR plus a credential for a short-lived client certificate. The only RPC allowed without a
   // client certificate.

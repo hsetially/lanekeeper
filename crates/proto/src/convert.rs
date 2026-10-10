@@ -1126,7 +1126,7 @@ impl ToSentinel {
 /// sentinel identity or the reverse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinSubject {
-    /// An in-cluster agent, for this swimlane: `spiffe://lanekeeper/agent/<swimlane>`.
+    /// An in-cluster agent, for this swimlane: `spiffe://lanekeeper/swimlane/<id>`.
     Agent(SwimlaneId),
     /// The sentinel on an NFS VM, by name: `spiffe://lanekeeper/sentinel/<name>`.
     Sentinel(ShortText),
