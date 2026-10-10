@@ -148,3 +148,38 @@ fn lints_inherit_the_workspace_policy() {
     let first = lints.lines().find(|l| !l.trim().is_empty()).unwrap();
     assert_eq!(first.trim(), "workspace = true");
 }
+
+/// The SAN prefix is written once, in `identity/cert.rs`, and everything else refers to the constant (S5, decision A5).
+#[test]
+fn agent_san_defined_in_one_constant() {
+    const PREFIX: &str = "spiffe://lanekeeper/swimlane/";
+    const OLD_FORM: &str = "spiffe://lanekeeper/agent/";
+    let files = sources(&src_dir());
+    let mut spelled_out = Vec::new();
+    for (rel, source) in &files {
+        for (n, line) in source.lines().enumerate() {
+            // Comments may describe the form; only code can define it.
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            assert!(!line.contains(OLD_FORM), "{rel}:{}: the old SAN form (A5)", n + 1);
+            if line.contains(PREFIX) {
+                spelled_out.push(format!("{rel}:{}: {}", n + 1, line.trim()));
+            }
+        }
+    }
+    assert_eq!(
+        spelled_out.len(),
+        1,
+        "the SAN prefix must be defined once:\n{}",
+        spelled_out.join("\n")
+    );
+    assert!(
+        spelled_out[0].starts_with("identity/cert.rs:") && spelled_out[0].contains("AGENT_SAN_PREFIX"),
+        "{}",
+        spelled_out[0]
+    );
+    // And the one place that checks a certificate uses the constant.
+    let cert = files.iter().find(|(rel, _)| rel == "identity/cert.rs").unwrap();
+    assert!(cert.1.contains("strip_prefix(AGENT_SAN_PREFIX)"));
+}

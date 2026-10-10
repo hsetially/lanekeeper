@@ -12,13 +12,33 @@ workspace = true
 [dependencies]
 domain.workspace = true
 proto.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
 cap-std.workspace = true
+fastrand.workspace = true
 globset.workspace = true
 http.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+k8s-openapi.workspace = true
+kube.workspace = true
+pem.workspace = true
+rcgen.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["net", "rt", "sync", "time"] }
+tracing.workspace = true
+x509-parser.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+time = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
+tower.workspace = true
+tracing-subscriber = { workspace = true, features = ["fmt", "std"] }
+# The fake hub issues certificates from the agent's CSR, which needs rcgen's CSR parser.
+rcgen = { workspace = true, features = ["x509-parser"] }

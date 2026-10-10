@@ -4,6 +4,12 @@
 //!
 //! The agent reports facts and carries out commands; it never decides anything (the hub does). Every file operation
 //! goes through the cap-std [`root::NfsRoot`] handle opened at startup (S17).
+//!
+//! - [`config`]: the validated environment, and the limits the hub cannot raise (T1).
+//! - [`root`]: the NFS export as a cap-std handle (T1).
+//! - [`clock`], [`backoff`]: injectable time, and retry delays with full jitter.
+//! - [`http`]: the plain-HTTP client for the metadata server and the config-server (T2, T12).
+//! - [`identity`]: the key, the certificate, joining the hub and renewing (T2, S5).
 #![forbid(unsafe_code)]
 // The error enums document themselves, and a one-line accessor does not need `#[must_use]`.
 #![allow(
@@ -12,8 +18,11 @@
     clippy::module_name_repetitions
 )]
 
+pub mod backoff;
 pub mod clock;
 pub mod config;
+pub mod http;
+pub mod identity;
 pub mod root;
 
 pub use root::{NfsRoot, StartupError};
