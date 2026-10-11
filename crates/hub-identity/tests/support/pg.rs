@@ -13,6 +13,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use futures::future::BoxFuture;
 use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgConnectOptions, PgConnection, PgPoolOptions};
 use sqlx::{Connection, PgPool};
@@ -95,42 +96,158 @@ async fn connect_when_ready(
     }
 }
 
+/// The container behind a [`TestDb`], as far as tearing it down goes. It is a trait so that the teardown can be tested without
+/// Docker (`tests/pg_teardown.rs`).
+pub trait Container: Send + 'static {
+    fn id(&self) -> String;
+    /// Remove the container through the async API. Needs a runtime.
+    fn remove(&mut self) -> BoxFuture<'_, Result<(), String>>;
+    /// Remove the container without a runtime or a reactor (a child process). Idempotent, bounded, never panics.
+    fn remove_blocking(&self);
+    /// Give the container up without running its own `Drop`, which needs a reactor.
+    fn abandon(self: Box<Self>);
+}
+
+/// A real container started with `testcontainers`.
+struct Docker {
+    id: String,
+    container: Option<ContainerAsync<GenericImage>>,
+}
+
+impl Container for Docker {
+    fn id(&self) -> String {
+        self.id.clone()
+    }
+
+    fn remove(&mut self) -> BoxFuture<'_, Result<(), String>> {
+        Box::pin(async move {
+            match self.container.take() {
+                Some(container) => container.rm().await.map_err(|e| e.to_string()),
+                None => Ok(()),
+            }
+        })
+    }
+
+    fn remove_blocking(&self) {
+        let id = self.id.as_str();
+        let child = std::process::Command::new("docker")
+            .args(["rm", "--force", "--volumes", id])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let Ok(mut child) = child else {
+            eprintln!("could not run `docker rm`: remove the test container {id} by hand");
+            return;
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => return,
+                Ok(Some(_)) | Err(_) => break,
+                Ok(None) if std::time::Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break;
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            }
+        }
+        eprintln!("`docker rm` did not succeed: remove the test container {id} by hand");
+    }
+
+    fn abandon(mut self: Box<Self>) {
+        if let Some(container) = self.container.take() {
+            std::mem::forget(container);
+        }
+    }
+}
+
 pub struct TestDb {
     host: String,
     port: u16,
     admin_options: PgConnectOptions,
     pub database: String,
     pgvector: bool,
-    /// Set for a database this rig created on an external server: dropped again when the rig is dropped, so a throwaway
-    /// server does not accumulate one database per test run.
+    /// Set for a database this rig created on an external server: dropped again when the rig is shut down or dropped, so a
+    /// throwaway server does not accumulate one database per test run.
     drop_on_exit: bool,
-    _container: Option<ContainerAsync<GenericImage>>,
+    container: Option<Box<dyn Container>>,
+}
+
+async fn drop_database(opts: &PgConnectOptions, database: &str) {
+    // `FORCE` ends any connection a pool of the test still holds.
+    let stmt = format!("DROP DATABASE IF EXISTS {database} WITH (FORCE)");
+    if let Ok(mut conn) = connect(opts).await {
+        let _ = sqlx::query(&stmt).execute(&mut conn).await;
+    }
 }
 
 impl Drop for TestDb {
+    /// The fallback for a rig that was not shut down (a test; a benchmark that panicked). Best effort, and it never needs a
+    /// reactor of its own: the benchmarks drop their rig outside any runtime, where `testcontainers`' own `Drop` panics.
     fn drop(&mut self) {
-        if !self.drop_on_exit {
-            return;
+        if let Some(container) = self.container.take() {
+            if tokio::runtime::Handle::try_current().is_ok() {
+                // On a runtime's thread (every test): the container's own `Drop` is supported there and has always worked.
+                drop(container);
+            } else {
+                // Outside any runtime (a benchmark's teardown): its own `Drop` would panic, so remove the container with a
+                // child process and let the Rust value go without running its `Drop`.
+                container.remove_blocking();
+                container.abandon();
+            }
         }
-        // Best effort, on a thread of its own: `drop` may run on a runtime worker, and the test runtime is shutting down.
-        // `FORCE` ends any connection a pool of the test still holds.
-        let opts = self.admin_options.clone();
-        let stmt = format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", self.database);
-        let _ = std::thread::spawn(move || {
-            let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
-                return;
-            };
-            rt.block_on(async {
-                if let Ok(mut conn) = connect(&opts).await {
-                    let _ = sqlx::query(&stmt).execute(&mut conn).await;
-                }
-            });
-        })
-        .join();
+        if self.drop_on_exit {
+            // On a thread of its own: `drop` may run on a runtime worker, and the test runtime is shutting down.
+            let opts = self.admin_options.clone();
+            let database = self.database.clone();
+            let _ = std::thread::spawn(move || {
+                let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
+                    return;
+                };
+                rt.block_on(drop_database(&opts, &database));
+            })
+            .join();
+        }
     }
 }
 
 impl TestDb {
+    /// Tear the rig down inside a live runtime: the container is removed through the async API and an external server's
+    /// database is dropped. Benchmarks call it with `rt.block_on(db.shutdown())`; tests may rely on `Drop` instead.
+    pub async fn shutdown(mut self) {
+        if let Some(mut container) = self.container.take() {
+            let id = container.id();
+            match tokio::time::timeout(Duration::from_secs(60), container.remove()).await {
+                Ok(Ok(())) => {}
+                other => {
+                    let why = match other {
+                        Ok(Err(e)) => e,
+                        _ => "timed out".to_owned(),
+                    };
+                    eprintln!("could not remove the test container {id} ({why}); trying `docker rm`");
+                    container.remove_blocking();
+                }
+            }
+        }
+        if std::mem::take(&mut self.drop_on_exit) {
+            drop_database(&self.admin_options, &self.database).await;
+        }
+    }
+
+    /// A rig around a container and nothing else, for the tests of the teardown itself (`tests/pg_teardown.rs`).
+    pub fn detached(container: Box<dyn Container>) -> TestDb {
+        TestDb {
+            host: "127.0.0.1".to_owned(),
+            port: 1,
+            admin_options: PgConnectOptions::new().host("127.0.0.1").port(1),
+            database: "detached".to_owned(),
+            pgvector: false,
+            drop_on_exit: false,
+            container: Some(container),
+        }
+    }
+
     fn options(&self, user: &str, password: &str) -> PgConnectOptions {
         PgConnectOptions::new()
             .host(&self.host)
@@ -233,6 +350,7 @@ impl TestDb {
             .start()
             .await
             .map_err(|e| format!("cannot start the Postgres container: {e}"))?;
+        let id = container.id().to_owned();
         let host = container.get_host().await.map_err(|e| e.to_string())?.to_string();
         let port = container
             .get_host_port_ipv4(5432)
@@ -254,7 +372,10 @@ impl TestDb {
             database: "lanekeeper".to_owned(),
             pgvector: true,
             drop_on_exit: false,
-            _container: Some(container),
+            container: Some(Box::new(Docker {
+                id,
+                container: Some(container),
+            })),
         })
     }
 
@@ -283,7 +404,7 @@ impl TestDb {
             database,
             pgvector,
             drop_on_exit: true,
-            _container: None,
+            container: None,
         }
     }
 

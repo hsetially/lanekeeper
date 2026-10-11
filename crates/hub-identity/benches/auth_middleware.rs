@@ -35,8 +35,8 @@ use tower::ServiceExt;
 const USERS: u32 = 100;
 
 struct Fixture {
-    // Keeps the container (if any) and the pool alive.
-    _db: TestDb,
+    // Keeps the container (if any) and the pool alive; torn down by `db.shutdown()` inside the runtime, at the end.
+    db: TestDb,
     sessions: Arc<Sessions>,
     app: Router,
     /// `(session cookie, csrf cookie)` of each user.
@@ -81,7 +81,7 @@ async fn fixture() -> Fixture {
     }
     let app = app(&sessions);
     Fixture {
-        _db: db,
+        db,
         sessions,
         app,
         cookies,
@@ -131,6 +131,8 @@ fn auth_middleware(c: &mut Criterion) {
         );
     });
     group.finish();
+    // Inside the runtime: dropping the container outside one panics in `testcontainers` (`tests/pg_teardown.rs`).
+    rt.block_on(f.db.shutdown());
 }
 
 criterion_group!(benches, auth_middleware);

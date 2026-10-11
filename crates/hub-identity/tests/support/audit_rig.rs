@@ -158,4 +158,16 @@ impl AuditRig {
             .unwrap();
         sqlx::query(sql).execute(&mut admin).await.unwrap();
     }
+
+    /// `admin_sql` with one bound text, `$1`. A log-capture test that plants a marker in a row passes it here and not in `sql`:
+    /// `sqlx` logs the text of every statement it runs, so a marker written into the SQL would be found in the capture, put
+    /// there by the test and not by the code under test. Bound values are never logged.
+    pub async fn admin_sql_bound(&self, sql: &str, text: &str) {
+        let mut admin = self.db.admin().await;
+        sqlx::query("SET session_replication_role = replica")
+            .execute(&mut admin)
+            .await
+            .unwrap();
+        sqlx::query(sql).bind(text).execute(&mut admin).await.unwrap();
+    }
 }

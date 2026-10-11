@@ -246,6 +246,8 @@ identity_budgets := "P7.auth_middleware P7.auth_middleware_cold P12.audit_record
 identity-bench:
     #!/usr/bin/env bash
     set -euo pipefail
+    # Only this run's numbers may satisfy the check: a benchmark that dies at teardown must not pass on an earlier run's data.
+    rm -rf target/criterion/hub-identity
     cargo bench -p hub-identity
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT

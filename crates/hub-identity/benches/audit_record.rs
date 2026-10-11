@@ -138,6 +138,8 @@ fn audit_record(c: &mut Criterion) {
     });
     group.finish();
     contender.abort();
+    // Inside the runtime: dropping the container outside one panics in `testcontainers` (`tests/pg_teardown.rs`).
+    rt.block_on(db.shutdown());
 }
 
 criterion_group!(benches, audit_record);

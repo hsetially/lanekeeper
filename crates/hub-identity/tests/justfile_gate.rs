@@ -106,6 +106,13 @@ fn identity_bench_judges_exactly_the_registered_identity_budgets() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(recipe.contains("cargo bench -p hub-identity"));
+    // Earlier numbers are cleared first, so a benchmark that fails cannot pass the check on a previous run's data.
+    let cleared = recipe.find("rm -rf target/criterion/hub-identity");
+    let benched = recipe.find("cargo bench -p hub-identity");
+    assert!(
+        cleared.is_some() && cleared < benched,
+        "clear stale criterion data before benching"
+    );
     assert!(recipe.contains("cargo xtask bench-check --budgets"));
 }
 

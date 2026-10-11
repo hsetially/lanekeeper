@@ -299,8 +299,12 @@ async fn nightly_verify_mismatch_alerts_metric_and_notifier() {
     let (capture, _guard) = log_capture::install();
     let rig = rig_with_checkpoints(db!()).await;
     rig.tamper_open(true).await;
-    rig.admin_sql("UPDATE audit_events SET event_json = replace(event_json, 'settings_changed', 'SECRET-EVENT-TEXT') WHERE seq = 5")
-        .await;
+    // The marker is bound, not part of the SQL: `sqlx` logs statement text, and the capture below would find it there.
+    rig.admin_sql_bound(
+        "UPDATE audit_events SET event_json = replace(event_json, 'settings_changed', $1) WHERE seq = 5",
+        "SECRET-EVENT-TEXT",
+    )
+    .await;
     let outcome = rig.nightly().run_once().await.unwrap();
     let NightlyOutcome::Failed(report) = outcome else {
         panic!("expected a failed run, got {outcome:?}");
@@ -330,6 +334,12 @@ async fn nightly_verify_mismatch_alerts_metric_and_notifier() {
         "event content reached the log"
     );
     assert!(!format!("{sent:?}").contains("SECRET-EVENT-TEXT"));
+    // The search can fail: the same capture finds the marker when something logs it, so the absence above means something.
+    tracing::error!(event_text = "SECRET-EVENT-TEXT", "planted by the test");
+    assert!(
+        capture.text().contains("SECRET-EVENT-TEXT"),
+        "the capture would not have shown a leak"
+    );
 }
 
 #[tokio::test]
