@@ -237,6 +237,35 @@ async fn webhook_replayed_delivery_is_ignored() {
 }
 
 #[tokio::test]
+async fn webhook_replay_with_a_changed_delivery_header_is_still_a_replay() {
+    // `X-GitHub-Delivery` is not signed: whoever holds a captured signed body can send it under any id. The guard must therefore
+    // key on what the HMAC covers, the body, and not on the header alone.
+    let rig = rig();
+    let delivery = push("original-delivery-id", TENANT_REPO, "refs/heads/sit1");
+    let (first, _, _) = send(&rig, delivery.request()).await;
+    assert_eq!(first, StatusCode::ACCEPTED);
+    assert_eq!(rig.queue.next_batch().await.len(), 1);
+
+    let mut relabelled = delivery.clone();
+    relabelled.id = "a-different-delivery-id".to_owned();
+    let (second, _, _) = send(&rig, relabelled.request()).await;
+    assert_eq!(second, StatusCode::ACCEPTED);
+    assert!(
+        rig.queue.is_empty(),
+        "the same signed body under another delivery id did something"
+    );
+    assert_eq!(rig.metrics.webhooks_total(WebhookOutcome::Duplicate), 1);
+    assert_eq!(rig.deliveries.len(), 1);
+
+    // A different signed body is a different delivery, whatever its id.
+    let other = push("original-delivery-id", TENANT_REPO, "refs/heads/sit2");
+    let (third, _, _) = send(&rig, other.request()).await;
+    assert_eq!(third, StatusCode::ACCEPTED);
+    assert_eq!(rig.queue.next_batch().await.len(), 1);
+    assert_eq!(rig.deliveries.len(), 2);
+}
+
+#[tokio::test]
 async fn webhook_non_push_event_is_ignored() {
     let rig = rig();
     for (n, event) in [
@@ -519,24 +548,38 @@ fn webhook_signature_compare_is_constant_time() {
     assert!(!verify_signature(SECRET.as_bytes(), &body, None));
     assert!(!verify_signature(b"another secret", &body, Some(&good)));
 
-    // The comparison must not be an early-exit one: the verifier uses `subtle` and writes no `==` or `!=` of its own.
+    // The comparison must not be an early-exit one: the request path and `verify_signature` both go through `digest_matches`,
+    // which uses `subtle`, and neither it nor they write a `==` or `!=` of their own.
     let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/git/webhook.rs")).unwrap();
-    let start = source
-        .find("pub fn verify_signature")
-        .expect("verify_signature exists");
-    let end = source[start..]
-        .find("\n}\n")
-        .map(|e| start + e)
-        .expect("the function ends");
-    let function = &source[start..end];
+    let body_of = |signature: &str| -> String {
+        let start = source
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} exists"));
+        let end = source[start..]
+            .find("\n}\n")
+            .map(|e| start + e)
+            .expect("the function ends");
+        source[start..end].to_owned()
+    };
+    let comparing = body_of("fn digest_matches");
     assert!(
-        function.contains("ct_eq"),
+        comparing.contains("ct_eq"),
         "the digest is compared with subtle's ct_eq"
     );
-    for forbidden in [" == ", " != ", ".eq(", ".ne(", "starts_with(", "contains("] {
-        assert!(
-            !function.contains(forbidden),
-            "an early-exit comparison ({forbidden:?}) in verify_signature"
-        );
+    assert!(
+        body_of("pub fn verify_signature").contains("digest_matches("),
+        "verify_signature compares through digest_matches"
+    );
+    assert!(
+        source.contains("!digest_matches(&digest, text(headers, \"x-hub-signature-256\"))"),
+        "the request path compares through digest_matches"
+    );
+    for function in [comparing, body_of("pub fn verify_signature")] {
+        for forbidden in [" == ", " != ", ".eq(", ".ne(", "starts_with(", "contains("] {
+            assert!(
+                !function.contains(forbidden),
+                "an early-exit comparison ({forbidden:?}) in the signature check"
+            );
+        }
     }
 }

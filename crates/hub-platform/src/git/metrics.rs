@@ -50,7 +50,7 @@ pub enum WebhookOutcome {
     Dropped,
     /// An event the hub does not act on (and `ping`).
     Ignored,
-    /// A delivery id seen before.
+    /// A delivery seen before (the same signed body).
     Duplicate,
     /// A push for a repository the hub does not mirror, or a deleted ref; a pull request of such a repository, or one with no link.
     NotApplicable,

@@ -9,13 +9,17 @@
 //!    bare 401: the answer never says which, and nothing is recorded.
 //! 3. **Event type.** `push` goes on, `pull_request` goes on when a [`PrLinks`] is configured, `ping` answers 200, and every
 //!    other event is acknowledged with 202 and ignored.
-//! 4. **Replay guard.** The delivery id is inserted into `webhook_deliveries`; one seen before is a 202 that does nothing.
+//! 4. **Replay guard.** The delivery's key is inserted into `webhook_deliveries`; one seen before is a 202 that does nothing. The
+//!    key is the HMAC-SHA256 of the body that step 2 just verified (see [`replay_key`]), not `X-GitHub-Delivery`: that header is
+//!    not covered by the signature, so whoever holds one captured signed body could send it again under any id. GitHub's own
+//!    redelivery carries the same body, so it has the same key. The header is still required (and checked for form), as GitHub
+//!    always sends it.
 //! 5. **Strict parse.** The payload becomes a typed [`PushEvent`] or [`PullRequestEvent`], or the answer is 400.
 //!
 //! For a push, a fetch is *queued*, and the answer is 202 without waiting for it (the [`FetchWorker`](super::sync::FetchWorker)
 //! fetches, then announces `GitHeadMoved`). For a pull request, the link is updated (with its audit event and its
 //! `PrStateChanged`, in one transaction, [`super::pr_webhook`]) before the answer; if that fails the answer is 503 and the delivery
-//! id is forgotten, so that GitHub's redelivery of the same delivery is applied and not taken for a replay.
+//! key is forgotten, so that GitHub's redelivery of the same delivery is applied and not taken for a replay.
 //!
 //! The hub does no source-address check: the load balancer's allowlist is that control (S18, prompt 09), and the HMAC is the proof
 //! of origin. The threat model says so.
@@ -43,7 +47,7 @@ pub const DEFAULT_MAX_BODY: usize = 1024 * 1024;
 const MAX_DELIVERY_ID: usize = 128;
 /// The reason on the route table.
 const PUBLIC_REASON: &str =
-    "no session: verified by an HMAC over the raw body and a delivery-id replay guard";
+    "no session: verified by an HMAC over the raw body and a replay guard keyed on that HMAC";
 
 /// What the webhook accepts.
 #[derive(Debug, Clone)]
@@ -73,7 +77,7 @@ pub enum DeliveryError {
     Unavailable,
 }
 
-/// The record of delivery ids already seen (`webhook_deliveries`).
+/// The record of deliveries already seen (`webhook_deliveries`). The "id" is the delivery's [`replay_key`].
 #[async_trait]
 pub trait DeliveryLog: Send + Sync + 'static {
     /// Records `id`. `true` if it was new, `false` if it had been seen.
@@ -196,15 +200,38 @@ fn parse_signature(header: Option<&str>) -> ([u8; 32], bool) {
     }
 }
 
-/// Whether `header` is the HMAC-SHA256 of `body` under `secret`. The comparison is `subtle`'s, so its time does not depend on
-/// where the two digests first differ.
+/// The HMAC-SHA256 of `body` under `secret`: what a genuine `X-Hub-Signature-256` holds.
+fn body_digest(secret: &[u8], body: &[u8]) -> [u8; 32] {
+    let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret);
+    let tag = aws_lc_rs::hmac::sign(&key, body);
+    let mut digest = [0_u8; 32];
+    // SHA-256's tag is 32 bytes; a tag of another length would leave `digest` zeroed, which no header can match.
+    if tag.as_ref().len() == digest.len() {
+        digest.copy_from_slice(tag.as_ref());
+    }
+    digest
+}
+
+/// Whether `header` holds `expected`. The comparison is `subtle`'s, so its time does not depend on where the two digests first
+/// differ.
+fn digest_matches(expected: &[u8; 32], header: Option<&str>) -> bool {
+    let (provided, well_formed) = parse_signature(header);
+    let same = expected[..].ct_eq(&provided[..]);
+    bool::from(same & Choice::from(u8::from(well_formed)))
+}
+
+/// Whether `header` is the HMAC-SHA256 of `body` under `secret`.
 #[must_use]
 pub fn verify_signature(secret: &[u8], body: &[u8], header: Option<&str>) -> bool {
-    let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, secret);
-    let expected = aws_lc_rs::hmac::sign(&key, body);
-    let (provided, well_formed) = parse_signature(header);
-    let same = expected.as_ref().ct_eq(&provided[..]);
-    bool::from(same & Choice::from(u8::from(well_formed)))
+    digest_matches(&body_digest(secret, body), header)
+}
+
+/// The replay-guard key of a body whose signature has been verified: the HMAC-SHA256 of the body, in hex, behind a label (76
+/// characters, inside the `webhook_deliveries.delivery_id` limit of 128). Everything the sender chooses and the signature does not
+/// cover (the delivery header) is left out, so a captured signed body cannot be made to look new. The digest is what GitHub put
+/// in a header already, and an HMAC under a secret the table's readers do not have, so storing it gives nothing away.
+fn replay_key(digest: &[u8; 32]) -> String {
+    format!("hmac-sha256:{}", hex::encode(digest))
 }
 
 fn text<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
@@ -247,11 +274,8 @@ async fn receive(state: &WebhookState, headers: &HeaderMap, body: Body) -> Respo
         );
         return refuse(state, WebhookOutcome::Unavailable, ApiError::Unavailable);
     };
-    if !verify_signature(
-        secret.expose().as_bytes(),
-        &bytes,
-        text(headers, "x-hub-signature-256"),
-    ) {
+    let digest = body_digest(secret.expose().as_bytes(), &bytes);
+    if !digest_matches(&digest, text(headers, "x-hub-signature-256")) {
         return refuse(state, WebhookOutcome::BadSignature, ApiError::Unauthorized);
     }
 
@@ -270,10 +294,11 @@ async fn receive(state: &WebhookState, headers: &HeaderMap, body: Body) -> Respo
     }
 
     // 4. The replay guard.
-    let Some(delivery) = text(headers, "x-github-delivery").filter(|d| is_delivery_id(d)) else {
+    if !text(headers, "x-github-delivery").is_some_and(is_delivery_id) {
         return refuse(state, WebhookOutcome::BadRequest, ApiError::BadRequest);
-    };
-    match state.deliveries.first_time(delivery, event).await {
+    }
+    let delivery = replay_key(&digest);
+    match state.deliveries.first_time(&delivery, event).await {
         Ok(true) => {}
         Ok(false) => return accept(state, WebhookOutcome::Duplicate),
         Err(_) => {
@@ -287,7 +312,7 @@ async fn receive(state: &WebhookState, headers: &HeaderMap, body: Body) -> Respo
 
     // 5. The strict parse, then what the event is for.
     if event == "pull_request" {
-        return pull_request(state, delivery, &bytes).await;
+        return pull_request(state, &delivery, &bytes).await;
     }
     let Ok(push) = PushEvent::parse(&bytes) else {
         return refuse(state, WebhookOutcome::BadRequest, ApiError::BadRequest);
@@ -326,7 +351,7 @@ async fn receive(state: &WebhookState, headers: &HeaderMap, body: Body) -> Respo
     }
 }
 
-/// A `pull_request` delivery that passed the signature and the replay guard.
+/// A `pull_request` delivery that passed the signature and the replay guard, recorded under `delivery` (its [`replay_key`]).
 async fn pull_request(state: &WebhookState, delivery: &str, body: &[u8]) -> Response {
     let Some(links) = state.pull_requests.as_ref() else {
         return accept(state, WebhookOutcome::Ignored);
@@ -355,11 +380,11 @@ async fn pull_request(state: &WebhookState, delivery: &str, body: &[u8]) -> Resp
         Ok(PrOutcome::UnknownPr) => accept(state, WebhookOutcome::NotApplicable),
         Ok(PrOutcome::Ignored | PrOutcome::Unchanged) => accept(state, WebhookOutcome::Ignored),
         Err(_) => {
-            // Nothing was written, and the delivery id must not stay recorded: GitHub's redelivery carries the same id.
+            // Nothing was written, and the key must not stay recorded: GitHub's redelivery carries the same body.
             if state.deliveries.forget(delivery).await.is_err() {
                 warn!(
                     code = "webhook_delivery_forget_failed",
-                    "a delivery id could not be released after a failed update; a redelivery will look like a replay"
+                    "a delivery could not be released after a failed update; a redelivery will look like a replay"
                 );
             }
             refuse(state, WebhookOutcome::Unavailable, ApiError::Unavailable)

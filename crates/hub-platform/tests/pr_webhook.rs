@@ -362,6 +362,22 @@ async fn pull_request_webhook_uses_the_same_hmac_and_replay_guard() {
     assert_eq!(rig.metrics.webhooks_total(WebhookOutcome::Duplicate), 1);
     assert_eq!(rig.audit_rows().await.len(), 1, "one change, one audit event");
 
+    // The same signed body under another delivery id (the header is not signed): still a replay, and not applied.
+    let relabelled = Delivery::signed(
+        SECRET,
+        "pull_request",
+        "pr-1-relabelled",
+        pull_request_body(TENANT_REPO, 7, "closed", true),
+    );
+    assert_eq!(rig.send(relabelled.request()).await, StatusCode::ACCEPTED);
+    assert_eq!(
+        rig.state_of(id).await,
+        "open",
+        "a captured body sent under a new delivery id was applied again"
+    );
+    assert_eq!(rig.metrics.webhooks_total(WebhookOutcome::Duplicate), 2);
+    assert_eq!(rig.audit_rows().await.len(), 1, "one change, one audit event");
+
     // A delivery without an id cannot be checked against the guard, so it is refused (as for a push).
     let mut no_id = Delivery::signed(
         SECRET,

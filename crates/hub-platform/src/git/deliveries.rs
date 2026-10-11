@@ -1,6 +1,6 @@
 //! `webhook_deliveries` on Postgres: the replay guard of the GitHub webhook, and its daily prune (D64, S18).
 //!
-//! A delivery id is inserted with `ON CONFLICT DO NOTHING`; the insert that adds a row is the first time, and one that adds none is
+//! A delivery's key (the webhook's `replay_key`: the HMAC of its body, not the unsigned delivery header) is inserted with `ON CONFLICT DO NOTHING`; the insert that adds a row is the first time, and one that adds none is
 //! a replay. Ids older than the retention are deleted by a leased job, in bounded batches, so the table (and its index on
 //! `received_at`) stays small however many deliveries GitHub makes.
 
@@ -14,7 +14,7 @@ use crate::jobs::{Job, JobContext, JobError, JobSpec, SpecError};
 
 /// One database call.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long a delivery id is remembered. GitHub redelivers within hours; a week is generous.
+/// How long a delivery key is remembered. GitHub redelivers within hours; a week is generous.
 pub const RETENTION_DAYS: i32 = 7;
 /// Rows deleted per statement.
 pub const PRUNE_BATCH: i64 = 5_000;
@@ -41,7 +41,7 @@ impl PgDeliveryLog {
         Self { pool }
     }
 
-    /// Delete up to `batch` delivery ids older than `days`. Returns how many.
+    /// Delete up to `batch` delivery keys older than `days`. Returns how many.
     pub async fn prune(&self, days: i32, batch: i64) -> Result<u64, DeliveryError> {
         let call = sqlx::query(
             "DELETE FROM webhook_deliveries WHERE delivery_id IN \
