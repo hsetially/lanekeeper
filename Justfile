@@ -206,8 +206,43 @@ agent-fuzz: fuzz-tools-check
 agent-bench:
     cargo bench -p agent
     cargo xtask bench-check
-verify-03a:
-    @echo "verify-03a not implemented yet" && exit 1
+# Prompt 03a, hub identity, sessions, authorization and audit (S1 to S4, S7, S9, S10, S21, S22; P7, P12): lint, the tests
+# (unit, property, golden, integration; the integration tests need a Docker daemon from T2 on and fail without one), the
+# fuzz targets on the pinned nightly, and the benchmarks checked against perf/budgets.toml. Later tasks add to the
+# sub-recipes below and never skip one.
+verify-03a: identity-tools-check identity-lint identity-test identity-fuzz identity-bench
+
+# The pinned tools the gate needs, or the command that installs them. Never skips.
+identity-tools-check: agent-tools-check
+
+identity-lint:
+    cargo fmt --all -- --check
+    cargo clippy -p hub-identity --all-targets -- -D warnings
+
+# The mock Entra, the key-set cache with a paused clock, the real HTTPS client against a local TLS 1.3 server, the
+# seed replay of the fuzz corpora. LK_REQUIRE_DOCKER makes a missing Docker daemon a failure and not a skip.
+identity-test:
+    LK_REQUIRE_DOCKER=1 cargo test -p hub-identity --lib --tests
+
+# S22. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart.
+identity_fuzz_targets := "identity_jwt identity_cookie"
+identity-fuzz: fuzz-tools-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo +{{fuzz_nightly}} metadata --locked --format-version 1 --manifest-path crates/hub-identity/fuzz/Cargo.toml > /dev/null
+    cargo deny --manifest-path crates/hub-identity/fuzz/Cargo.toml check --config deny.toml
+    cargo audit --file crates/hub-identity/fuzz/Cargo.lock
+    for target in {{identity_fuzz_targets}}; do
+        mkdir -p "target/fuzz-corpus/$target"
+        cargo +{{fuzz_nightly}} fuzz run "$target" --fuzz-dir crates/hub-identity/fuzz "target/fuzz-corpus/$target" "crates/hub-identity/fuzz/corpus/$target" -- -max_total_time={{fuzz_seconds}}
+    done
+    echo "identity-fuzz: {{identity_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
+
+# P7 and P12 (from T3 and T5): the criterion benchmarks. `cargo xtask bench-check` judges the whole registry, and the other
+# prompts' budgets need their own benchmarks to have run (`just bench`), so T3 adds a check here that judges 03a's budgets
+# only; the full `cargo xtask bench-check` is run by the FINAL step after `just bench`.
+identity-bench:
+    cargo bench -p hub-identity
 verify-03b:
     @echo "verify-03b not implemented yet" && exit 1
 verify-04:

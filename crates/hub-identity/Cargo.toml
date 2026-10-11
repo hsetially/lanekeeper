@@ -10,3 +10,39 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+domain.workspace = true
+ports.workspace = true
+async-trait.workspace = true
+aws-lc-rs.workspace = true
+base64.workspace = true
+bytes.workspace = true
+fastrand.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+rustls.workspace = true
+rustls-native-certs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
+tokio-rustls.workspace = true
+tracing.workspace = true
+url.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+ports = { workspace = true, features = ["fakes"] }
+# The mock identity provider reads the modulus and exponent of a generated key to publish them as a JWKS.
+aws-lc-rs = { workspace = true, features = ["ring-io"] }
+# Captures `tracing` output so the log tests can search it (S10).
+tracing-subscriber = { workspace = true, features = ["fmt", "std"] }
+proptest.workspace = true
+rcgen.workspace = true
+# One test runs the real HTTPS client against a TLS 1.2-only server to prove it refuses it.
+rustls = { workspace = true, features = ["tls12"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
