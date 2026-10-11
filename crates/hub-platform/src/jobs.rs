@@ -77,6 +77,23 @@ pub struct JobContext {
     expiry: watch::Receiver<Instant>,
 }
 
+#[cfg(any(test, feature = "fakes"))]
+impl JobContext {
+    /// A context whose lease is held until the returned sender's value says otherwise, for tests that run one job directly
+    /// without a runner. Send an instant in the past to lose the lease. Keep the sender alive for as long as the context is used.
+    #[must_use]
+    pub fn held_until_told_otherwise(name: &str) -> (Self, watch::Sender<Instant>) {
+        let (tx, rx) = watch::channel(Instant::now() + Duration::from_secs(24 * 3600));
+        (
+            Self {
+                name: Arc::from(name),
+                expiry: rx,
+            },
+            tx,
+        )
+    }
+}
+
 impl JobContext {
     /// The job's name, which is also its lease's name.
     #[must_use]

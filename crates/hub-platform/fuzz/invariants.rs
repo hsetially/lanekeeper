@@ -13,8 +13,9 @@
 //! | `hub_join_csr` | a certificate signing request, DER | parsing never panics; an accepted request is at most 16 KiB, holds an uncompressed P-256 point, and is signed by its own key |
 //!
 //! | `hub_forward_request` | a protobuf `ForwardRequest` from a peer replica | decoding and validation never panic; an accepted request names a valid swimlane and a positive epoch, waits a bounded time, carries a command within every size limit, and survives a round trip unchanged |
+//! | `hub_webhook_payload` | the JSON body of a GitHub `push` or `pull_request` delivery | parsing never panics; an accepted push names a repository, a branch or tag and commit ids that are each well formed and bounded, and a zero `after` is a deletion; an accepted pull request has a positive number that fits the column; the signature check accepts a header only when it is exactly the HMAC-SHA256 of the body (checked against a second implementation) |
 //!
-//! `hub_webhook_payload` (T7) and `hub_sentinel_message` (T11) are added with their tasks.
+//! `hub_sentinel_message` (T11) is added with its task.
 
 #![allow(
     dead_code,
@@ -26,6 +27,8 @@
 
 use hub_platform::ca::csr::{MAX_CSR_BYTES, parse_csr};
 use hub_platform::gateway::wire::{ForwardCall, MAX_FORWARD_BYTES, MAX_FORWARD_TIMEOUT, pb::ForwardRequest};
+use hub_platform::git::payload::{PullRequestEvent, PushEvent, PushedRef, RepoFullName};
+use hub_platform::git::webhook::{DEFAULT_MAX_BODY, verify_signature};
 use prost::Message;
 use proto::convert::FromAgent;
 use proto::limits::{MAX_ENTRIES, MAX_FILE_BYTES, MAX_MESSAGE_BYTES, MAX_NOTIFY_PATHS, MAX_SCAN_DELTA_BYTES};
@@ -37,10 +40,11 @@ use x509_parser::prelude::FromDer;
 pub type Check = fn(&[u8]) -> Result<(), String>;
 
 /// Every fuzz target: its name (also the file name in `fuzz_targets` and the corpus directory) and its check.
-pub const TARGETS: [(&str, Check); 3] = [
+pub const TARGETS: [(&str, Check); 4] = [
     ("hub_agent_message", hub_agent_message),
     ("hub_join_csr", hub_join_csr),
     ("hub_forward_request", hub_forward_request),
+    ("hub_webhook_payload", hub_webhook_payload),
 ];
 
 /// Every seed corpus must hold at least this many inputs, so deleting the seeds cannot go unnoticed.
@@ -197,4 +201,105 @@ pub fn hub_forward_request(data: &[u8]) -> Result<(), String> {
             "an accepted request is refused after a round trip: {error}"
         )),
     }
+}
+
+/// SHA-256 over `data`, by a second implementation of nothing but the hash: the HMAC around it is written out below (RFC 2104),
+/// so the check does not use the code it checks.
+fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut block = [0_u8; 64];
+    if key.len() > 64 {
+        block[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let mut inner = Sha256::new();
+    inner.update(block.map(|b| b ^ 0x36));
+    inner.update(data);
+    let mut outer = Sha256::new();
+    outer.update(block.map(|b| b ^ 0x5c));
+    outer.update(inner.finalize());
+    outer.finalize().into()
+}
+
+/// Any bytes as the body of a `push` or `pull_request` delivery (after its signature was checked), and as the inputs of the
+/// signature check itself.
+pub fn hub_webhook_payload(data: &[u8]) -> Result<(), String> {
+    // The handler refuses a body larger than this before it parses anything.
+    if data.len() > DEFAULT_MAX_BODY {
+        return Ok(());
+    }
+    if let Ok(push) = PushEvent::parse(data) {
+        ensure(
+            RepoFullName::parse(push.repository.as_str()).is_ok() && push.repository.as_str().len() <= 140,
+            || "an accepted push names a repository that is not an owner/name".into(),
+        )?;
+        let (PushedRef::Branch(name) | PushedRef::Tag(name)) = &push.target;
+        let n = name.as_str();
+        ensure(
+            !n.is_empty()
+                && n.len() <= 255
+                && !n.contains("..")
+                && !n.starts_with('-')
+                && !n.starts_with('/')
+                && !n.chars().any(char::is_control)
+                && domain::GitRef::parse(n).is_ok(),
+            || "an accepted push names a ref that is not well formed".into(),
+        )?;
+        ensure(
+            !(n.len() >= 40 && n.bytes().all(|c| c.is_ascii_hexdigit())),
+            || "an accepted push names a ref that is a bare commit id".into(),
+        )?;
+        let hex_id =
+            |id: &str| (id.len() == 40 || id.len() == 64) && id.bytes().all(|c| c.is_ascii_hexdigit());
+        ensure(hex_id(push.after.as_str()), || {
+            "an accepted push has a commit id that is not hex".into()
+        })?;
+        if let Some(before) = &push.before {
+            ensure(hex_id(before.as_str()), || {
+                "an accepted push has a before id that is not hex".into()
+            })?;
+            ensure(!before.as_str().bytes().all(|c| c == b'0'), || {
+                "an all-zero before id was kept as a real one".into()
+            })?;
+        }
+        if push.after.as_str().bytes().all(|c| c == b'0') {
+            ensure(push.deleted, || {
+                "an all-zero after id is not marked as a deletion".into()
+            })?;
+        }
+    }
+    if let Ok(event) = PullRequestEvent::parse(data) {
+        ensure((1..=i32::MAX as u32).contains(&event.number), || {
+            format!("an accepted pull request has the number {}", event.number)
+        })?;
+        ensure(RepoFullName::parse(event.repository.as_str()).is_ok(), || {
+            "an accepted pull request names a repository that is not an owner/name".into()
+        })?;
+    }
+
+    // The signature check, driven by the same bytes: the first half is a secret, the second the body.
+    let (secret, body) = data.split_at(data.len() / 2);
+    let genuine = format!("sha256={}", hex::encode(hmac_sha256(secret, body)));
+    ensure(verify_signature(secret, body, Some(&genuine)), || {
+        "the genuine signature was refused".into()
+    })?;
+    let mut tampered = genuine.clone().into_bytes();
+    let at = "sha256=".len() + data.first().map_or(0, |b| usize::from(*b)) % 64;
+    tampered[at] = if tampered[at] == b'0' { b'1' } else { b'0' };
+    let tampered = String::from_utf8(tampered).map_err(|e| e.to_string())?;
+    ensure(!verify_signature(secret, body, Some(&tampered)), || {
+        "a signature with one digit changed was accepted".into()
+    })?;
+    // Whatever text arrives as the header, it is accepted only if it is exactly the genuine one.
+    let header = String::from_utf8_lossy(body);
+    if verify_signature(secret, body, Some(&header)) {
+        ensure(header.eq_ignore_ascii_case(&genuine), || {
+            "a header that is not the genuine signature was accepted".into()
+        })?;
+    }
+    ensure(!verify_signature(secret, body, None), || {
+        "a missing header was accepted".into()
+    })?;
+    Ok(())
 }

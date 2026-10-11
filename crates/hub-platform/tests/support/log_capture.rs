@@ -22,6 +22,10 @@ thread_local! {
 
 static INSTALL: Once = Once::new();
 
+/// Where events from threads with no sink of their own go, when [`LogCapture::install_everywhere`] was called (a fetch runs on a
+/// blocking thread of the runtime, not on the thread of the test).
+static EVERYWHERE: Mutex<Option<Sink>> = Mutex::new(None);
+
 /// The global subscriber: everything is enabled, and an event goes to this thread's sink, if it has one.
 struct Router;
 
@@ -47,17 +51,17 @@ impl Subscriber for Router {
     fn record_follows_from(&self, _: &Id, _: &Id) {}
 
     fn event(&self, event: &Event<'_>) {
-        SINK.with(|sink| {
-            if let Some(sink) = sink.borrow().as_ref() {
-                let mut line = Line(format!(
-                    "{} {}",
-                    event.metadata().level(),
-                    event.metadata().target()
-                ));
-                event.record(&mut line);
-                sink.lock().unwrap_or_else(PoisonError::into_inner).push(line.0);
-            }
-        });
+        let own = SINK.with(|sink| sink.borrow().clone());
+        let sink = own.or_else(|| EVERYWHERE.lock().unwrap_or_else(PoisonError::into_inner).clone());
+        if let Some(sink) = sink {
+            let mut line = Line(format!(
+                "{} {}",
+                event.metadata().level(),
+                event.metadata().target()
+            ));
+            event.record(&mut line);
+            sink.lock().unwrap_or_else(PoisonError::into_inner).push(line.0);
+        }
     }
 
     fn enter(&self, _: &Id) {}
@@ -91,6 +95,17 @@ impl LogCapture {
         let capture = Self::default();
         SINK.with(|sink| *sink.borrow_mut() = Some(Arc::clone(&capture.lines)));
         (capture, CaptureGuard)
+    }
+
+    /// Capture the events of every thread that has no capture of its own, for as long as the process lives. For a test binary
+    /// (or a child process) that runs one scenario at a time.
+    pub fn install_everywhere() -> Self {
+        INSTALL.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(Router);
+        });
+        let capture = Self::default();
+        *EVERYWHERE.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&capture.lines));
+        capture
     }
 
     pub fn text(&self) -> String {

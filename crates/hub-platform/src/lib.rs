@@ -18,6 +18,7 @@
 //!   between replicas over mTLS, and request correlation (T4).
 //! - [`events`]: the event bus over the Postgres outbox, and the SSE endpoint (T5, D66, D80, P13).
 //! - [`leases`], [`jobs`]: leases on Postgres with a fence, and the singleton jobs that run under them (T6, D62, D63).
+//! - [`git`]: the Git mirrors, `GixReader`, the GitHub webhook and the fetch that follows it (T7, D64, P2, S18).
 //! - [`routes`]: the guarded router every route of the hub is registered through (S4).
 #![forbid(unsafe_code)]
 // Documenting `# Errors` on every small constructor and check adds noise; the error enums are the docs.
@@ -35,6 +36,7 @@ pub mod error;
 pub mod events;
 pub mod gateway;
 pub mod gcp;
+pub mod git;
 pub mod jobs;
 pub mod join;
 pub mod leases;

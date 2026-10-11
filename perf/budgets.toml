@@ -37,7 +37,7 @@ statistic = "p95"
 threshold = 10000
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P3"

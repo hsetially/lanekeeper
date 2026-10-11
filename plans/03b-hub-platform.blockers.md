@@ -62,3 +62,25 @@ My recommendation is option 1 (or 2 if the human would rather keep `[graph]` unt
 ### State of T7
 
 No T7 code was written. T7 can start as soon as the A16 decision is made; the tests for the webhook, payload, queue, poll, reader and tree index do not depend on the HTTPS transport (they use the file transport, as the plan says). The pending pieces that do depend on it are only the `Mirror`'s `https` remote handling and the credential hook wiring.
+
+## Resolved: A16, option 1 (decided by the human at the gate)
+
+Decision: option 1. Narrow `[graph].targets` in `deny.toml` to the two Linux targets and enable gix's `blocking-http-transport-reqwest-rust-tls`.
+`reqwest` arriving transitively through `gix-transport` is explicitly accepted. It is not a direct dependency of any crate and no code of ours uses it.
+No licence exception was added, and nothing else in `deny.toml` changed.
+
+What was changed (T7 commit `03b/T7: Git mirror and webhooks`):
+
+- `deny.toml`: `[graph] targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]`, with a comment. The Windows and macOS dependency graphs are no longer checked by `cargo deny`.
+- Workspace `Cargo.toml`: `gix = "=0.87.1"` (published 2026-08-24, 48 days old at the time of the change, re-checked on crates.io on 2026-10-11; 0.88.0 is 16 days old, 0.89.0 is 3 days old and too new),
+  `default-features = false`, features `sha1`, `max-performance-safe`, `revision` and `blocking-http-transport-reqwest-rust-tls`. `crates/hub-platform/Cargo.toml` uses `gix.workspace = true`.
+
+Checks after the change:
+
+- `cargo deny check`: `advisories ok, bans ok, licenses ok, sources ok`. The one warning, `license-exception-not-encountered` for `libfuzzer-sys`, was there before (that crate lives in the separate fuzz workspace).
+- `cargo tree -p hub-platform -i ring -e normal` (and with `--target x86_64-unknown-linux-gnu` and `--target aarch64-unknown-linux-gnu`): prints nothing, so `ring` is not in `hub-platform`'s graph.
+- aws-lc-rs 1.18.1 remains the only crypto provider in that graph (rustls, tokio-rustls, hyper-rustls and rustls-platform-verifier all use it).
+- `openssl`, `openssl-sys` and `native-tls` are not in `Cargo.lock` at all. `openssl-probe` (a certificate-path probe, no cryptography) was already reached through `rustls-native-certs`.
+- `webpki-root-certs` is now in `Cargo.lock` (wasm32-only dependency of `rustls-platform-verifier`) but is outside the checked graph, which is why `licenses` passes.
+
+For the PR text: reqwest is a transitive dependency (gix-transport's HTTP client), and `deny.toml`'s graph is narrowed to Linux.

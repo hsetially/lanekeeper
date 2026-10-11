@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use domain::Secret;
+use hub_platform::git::mirror::RemoteUrl;
+use hub_platform::git::payload::RepoFullName;
 
 /// A setting that could not be read. Carries the variable name only.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -74,6 +76,33 @@ pub struct DatabaseSettings {
     pub statement_timeout: Duration,
 }
 
+/// Where the read-only Git credential comes from (Q17, A12).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitCredentialSource {
+    /// The token is this secret in Secret Manager (the default, S7).
+    SecretManager(String),
+    /// The token is in this mounted file (Q17's interim: a Kubernetes Secret volume).
+    MountedFile(PathBuf),
+}
+
+/// The Git mirrors and the webhook (T7). All of it is absent unless the remotes are set.
+#[derive(Debug, Clone)]
+pub struct GitSettings {
+    pub base_url: RemoteUrl,
+    pub tenant_url: RemoteUrl,
+    /// `owner/name` as GitHub reports it in webhook payloads.
+    pub base_repo: RepoFullName,
+    pub tenant_repo: RepoFullName,
+    /// The name of the webhook secret in Secret Manager.
+    pub webhook_secret: String,
+    pub credential: GitCredentialSource,
+    pub fetch_timeout: Duration,
+    /// Distinct pushes that can wait for the fetch worker.
+    pub queue_capacity: usize,
+    /// Index entries the tree-index cache holds.
+    pub tree_index_entries: u64,
+}
+
 /// Process-wide settings.
 #[derive(Debug)]
 pub struct HubSettings {
@@ -93,6 +122,8 @@ pub struct HubSettings {
     /// Open connections the web listener accepts at once.
     pub max_connections: usize,
     pub database: Option<DatabaseSettings>,
+    /// The Git mirrors and the webhook. `None` when no remote is configured.
+    pub git: Option<GitSettings>,
     /// OTLP gRPC endpoint of an in-cluster collector. No export when unset.
     pub otlp_endpoint: Option<String>,
     /// Seconds readiness fails before connections stop (lets the load balancer notice).
@@ -222,6 +253,53 @@ impl HubSettings {
             }),
         };
 
+        let git_settings = {
+            let url = |name: &'static str| -> Result<Option<RemoteUrl>, ConfigError> {
+                parse(name)?
+                    .map(|v| RemoteUrl::https(&v).map_err(|_| ConfigError::Invalid(name)))
+                    .transpose()
+            };
+            let repo = |name: &'static str| -> Result<Option<RepoFullName>, ConfigError> {
+                parse(name)?
+                    .map(|v| RepoFullName::parse(&v).map_err(|_| ConfigError::Invalid(name)))
+                    .transpose()
+            };
+            let secret_name = |name: &'static str, default: &str| -> Result<String, ConfigError> {
+                let value = parse(name)?.unwrap_or_else(|| default.to_owned());
+                if ports::is_valid_secret_name(&value) {
+                    Ok(value)
+                } else {
+                    Err(ConfigError::Invalid(name))
+                }
+            };
+            let (base_url, tenant_url) = (url("LK_GIT_BASE_URL")?, url("LK_GIT_TENANT_URL")?);
+            let (base_repo, tenant_repo) = (repo("LK_GIT_BASE_REPO")?, repo("LK_GIT_TENANT_REPO")?);
+            if base_url.is_none() && tenant_url.is_none() && base_repo.is_none() && tenant_repo.is_none() {
+                None
+            } else {
+                let credential = match (parse("LK_GIT_TOKEN_FILE")?, parse("LK_GIT_TOKEN_SECRET")?) {
+                    (Some(_), Some(_)) => return Err(ConfigError::Invalid("LK_GIT_TOKEN_FILE")),
+                    (Some(path), None) => GitCredentialSource::MountedFile(PathBuf::from(path)),
+                    (None, _) => GitCredentialSource::SecretManager(secret_name(
+                        "LK_GIT_TOKEN_SECRET",
+                        "github-read-token",
+                    )?),
+                };
+                Some(GitSettings {
+                    base_url: base_url.ok_or(ConfigError::Missing("LK_GIT_BASE_URL"))?,
+                    tenant_url: tenant_url.ok_or(ConfigError::Missing("LK_GIT_TENANT_URL"))?,
+                    base_repo: base_repo.ok_or(ConfigError::Missing("LK_GIT_BASE_REPO"))?,
+                    tenant_repo: tenant_repo.ok_or(ConfigError::Missing("LK_GIT_TENANT_REPO"))?,
+                    webhook_secret: secret_name("LK_GIT_WEBHOOK_SECRET", "github-webhook-secret")?,
+                    credential,
+                    fetch_timeout: Duration::from_secs(number("LK_GIT_FETCH_TIMEOUT_SECS", 120, 5, 1800)?),
+                    queue_capacity: usize::try_from(number("LK_GIT_QUEUE_CAPACITY", 256, 1, 100_000)?)
+                        .map_err(|_| ConfigError::Invalid("LK_GIT_QUEUE_CAPACITY"))?,
+                    tree_index_entries: number("LK_TREE_INDEX_ENTRIES", 400_000, 1_000, 50_000_000)?,
+                })
+            }
+        };
+
         let trusted_types: Vec<String> = parse("LK_TRUSTED_TYPES")?
             .unwrap_or_else(|| "lanekeeper-docs,lanekeeper-monaco".to_owned())
             .split(',')
@@ -254,6 +332,7 @@ impl HubSettings {
             max_connections: usize::try_from(number("LK_MAX_CONNECTIONS", 4096, 1, 1_000_000)?)
                 .map_err(|_| ConfigError::Invalid("LK_MAX_CONNECTIONS"))?,
             database,
+            git: git_settings,
             otlp_endpoint: parse("LK_OTLP_ENDPOINT")?,
             shutdown_grace: Duration::from_secs(number("LK_SHUTDOWN_GRACE_SECS", 5, 0, 60)?),
             shutdown_drain: Duration::from_secs(number("LK_SHUTDOWN_DRAIN_SECS", 25, 1, 120)?),
@@ -275,6 +354,7 @@ impl Default for HubSettings {
             limits: LimitSettings::default(),
             max_connections: 4096,
             database: None,
+            git: None,
             otlp_endpoint: None,
             shutdown_grace: Duration::from_secs(5),
             shutdown_drain: Duration::from_secs(25),
@@ -422,6 +502,116 @@ mod tests {
         ] {
             assert!(
                 HubSettings::from_lookup(lookup(&[(name, value)])).is_err(),
+                "{name}={value}"
+            );
+        }
+    }
+    #[test]
+    fn git_settings_are_absent_unless_a_remote_is_set() {
+        assert!(HubSettings::from_lookup(lookup(&[])).unwrap().git.is_none());
+    }
+
+    fn git_env<'a>(extra: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+        let mut env = vec![
+            (
+                "LK_GIT_BASE_URL",
+                "https://github.com/acme/configuration-base-saas.git",
+            ),
+            ("LK_GIT_TENANT_URL", "https://github.com/acme/csp-tenant-data.git"),
+            ("LK_GIT_BASE_REPO", "acme/configuration-base-saas"),
+            ("LK_GIT_TENANT_REPO", "acme/csp-tenant-data"),
+        ];
+        env.extend_from_slice(extra);
+        env
+    }
+
+    #[test]
+    fn git_settings_have_documented_defaults() {
+        let git = HubSettings::from_lookup(lookup(&git_env(&[])))
+            .unwrap()
+            .git
+            .unwrap();
+        assert_eq!(git.base_repo.as_str(), "acme/configuration-base-saas");
+        assert_eq!(git.webhook_secret, "github-webhook-secret");
+        assert_eq!(
+            git.credential,
+            GitCredentialSource::SecretManager("github-read-token".to_owned())
+        );
+        assert_eq!(git.fetch_timeout, Duration::from_secs(120));
+        assert_eq!(git.queue_capacity, 256);
+    }
+
+    #[test]
+    fn git_settings_may_name_a_mounted_token_file_for_the_interim() {
+        let git = HubSettings::from_lookup(lookup(&git_env(&[("LK_GIT_TOKEN_FILE", "/run/git/token")])))
+            .unwrap()
+            .git
+            .unwrap();
+        assert_eq!(
+            git.credential,
+            GitCredentialSource::MountedFile(PathBuf::from("/run/git/token"))
+        );
+        let both = HubSettings::from_lookup(lookup(&git_env(&[
+            ("LK_GIT_TOKEN_FILE", "/run/git/token"),
+            ("LK_GIT_TOKEN_SECRET", "x"),
+        ])))
+        .unwrap_err();
+        assert_eq!(both, ConfigError::Invalid("LK_GIT_TOKEN_FILE"));
+    }
+
+    #[test]
+    fn git_urls_must_be_https_without_a_credential_and_the_error_never_shows_the_value() {
+        for bad in [
+            "http://github.com/a/b.git",
+            "https://user:ghp_SECRETTOKEN@github.com/a/b.git",
+            "file:///srv/x.git",
+            "git@github.com:a/b.git",
+        ] {
+            let err = HubSettings::from_lookup(lookup(&[
+                ("LK_GIT_BASE_URL", bad),
+                ("LK_GIT_TENANT_URL", "https://github.com/a/c.git"),
+                ("LK_GIT_BASE_REPO", "a/b"),
+                ("LK_GIT_TENANT_REPO", "a/c"),
+            ]))
+            .unwrap_err();
+            assert_eq!(err, ConfigError::Invalid("LK_GIT_BASE_URL"), "{bad}");
+            assert!(!format!("{err} {err:?}").contains("SECRETTOKEN"));
+        }
+    }
+
+    #[test]
+    fn git_settings_need_all_four_remote_variables_or_none() {
+        for missing in [
+            "LK_GIT_BASE_URL",
+            "LK_GIT_TENANT_URL",
+            "LK_GIT_BASE_REPO",
+            "LK_GIT_TENANT_REPO",
+        ] {
+            let env: Vec<_> = git_env(&[]).into_iter().filter(|(k, _)| *k != missing).collect();
+            assert_eq!(
+                HubSettings::from_lookup(lookup(&env)).unwrap_err(),
+                ConfigError::Missing(match missing {
+                    "LK_GIT_BASE_URL" => "LK_GIT_BASE_URL",
+                    "LK_GIT_TENANT_URL" => "LK_GIT_TENANT_URL",
+                    "LK_GIT_BASE_REPO" => "LK_GIT_BASE_REPO",
+                    _ => "LK_GIT_TENANT_REPO",
+                }),
+            );
+        }
+    }
+
+    #[test]
+    fn git_repository_names_and_secret_names_are_checked() {
+        for (name, value) in [
+            ("LK_GIT_BASE_REPO", "no-slash"),
+            ("LK_GIT_TENANT_REPO", "a/b/c"),
+            ("LK_GIT_WEBHOOK_SECRET", "has space"),
+            ("LK_GIT_TOKEN_SECRET", "../x"),
+            ("LK_GIT_FETCH_TIMEOUT_SECS", "0"),
+            ("LK_GIT_QUEUE_CAPACITY", "0"),
+        ] {
+            assert!(
+                HubSettings::from_lookup(lookup(&git_env(&[(name, value)]))).is_err(),
                 "{name}={value}"
             );
         }

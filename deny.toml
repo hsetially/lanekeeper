@@ -1,6 +1,11 @@
 # cargo-deny configuration (S19). Run: cargo deny check
 [graph]
 all-features = true
+# The hub, the agent and the sentinel ship on Linux only (x86_64 and aarch64). Without `targets`, cargo-deny walks the
+# dependency graph of every platform, so crates that are built only for wasm32, Windows, macOS or Android are checked too
+# (for example `webpki-root-certs`, CDLA-Permissive-2.0, reached through `rustls-platform-verifier` on wasm32 alone). A
+# decision recorded in plans/03b-hub-platform.blockers.md (A16): the Windows and macOS graphs are no longer checked.
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 
 [advisories]
 version = 2

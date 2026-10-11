@@ -28,6 +28,7 @@ base64.workspace = true
 bytes.workspace = true
 fastrand.workspace = true
 futures.workspace = true
+gix.workspace = true
 hex.workspace = true
 http.workspace = true
 http-body-util.workspace = true
@@ -38,6 +39,8 @@ pem.workspace = true
 prometheus-client.workspace = true
 # The hub-to-hub RPC (T4) is generated from crates/hub-platform/proto/replica.proto by build.rs.
 prost.workspace = true
+# The tree index hashes every blob of a commit (T7, P2, rule 4): on a pool of its own, inside `spawn_blocking`, never on the async executor.
+rayon.workspace = true
 # The CA (T3, S5): rcgen builds each certificate and asks `KmsSigner` for the signature; its CSR parser needs `x509-parser`.
 rcgen = { workspace = true, features = ["x509-parser"] }
 rustls.workspace = true
@@ -89,8 +92,20 @@ rustls = { workspace = true, features = ["std", "tls12"] }
 sqlx = { workspace = true, features = ["postgres", "migrate", "runtime-tokio"] }
 testcontainers.workspace = true
 tempfile.workspace = true
+# The `diff_trees` benchmarks (T7, rule 14); the same pin as the agent's benchmarks.
+criterion.workspace = true
 
 # P13 (T5): three replicas, 300 SSE clients, an event committed on one and timed until the last client has it. Needs Docker.
 [[bench]]
 name = "sse_delivery"
+harness = false
+
+# T7 (P2): a signed webhook in, `GitHeadMoved` out on another replica, three replicas, real Postgres, target-scale fixture repository.
+[[bench]]
+name = "push_to_drift_webhook"
+harness = false
+
+# T7: `GitReader::diff_trees` and the cold tree index on the target-scale fixture repositories (reported, no budget).
+[[bench]]
+name = "diff_trees"
 harness = false

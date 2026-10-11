@@ -68,6 +68,11 @@ fn corpus_replay_hub_forward_request() {
 }
 
 #[test]
+fn corpus_replay_hub_webhook_payload() {
+    replay("hub_webhook_payload", invariants::hub_webhook_payload);
+}
+
+#[test]
 fn every_target_has_a_corpus_a_fuzz_target_file_and_a_manifest_entry() {
     let manifest = fs::read_to_string(fuzz_dir().join("Cargo.toml")).unwrap();
     for (target, _) in invariants::TARGETS {
@@ -154,6 +159,35 @@ fn csr_seeds_keep_their_meaning() {
     assert!(
         valid >= 3,
         "the corpus keeps valid requests, or the fuzzer starts from nothing"
+    );
+}
+
+/// The webhook payload seeds: `push_*` are accepted as a push, `pr_*` as a pull request, `rejected_*` by neither.
+#[test]
+fn webhook_payload_seeds_keep_their_meaning() {
+    use hub_platform::git::payload::{PullRequestEvent, PushEvent};
+    let dir = corpus("hub_webhook_payload");
+    let (mut pushes, mut prs) = (0, 0);
+    for name in names(&dir) {
+        let bytes = fs::read(dir.join(&name)).unwrap();
+        let push = PushEvent::parse(&bytes);
+        let pr = PullRequestEvent::parse(&bytes);
+        if name.starts_with("push_") {
+            assert!(push.is_ok(), "{name} is no longer accepted as a push: {push:?}");
+            pushes += 1;
+        } else if name.starts_with("pr_") {
+            assert!(
+                pr.is_ok(),
+                "{name} is no longer accepted as a pull request: {pr:?}"
+            );
+            prs += 1;
+        } else if name.starts_with("rejected_") {
+            assert!(push.is_err() && pr.is_err(), "{name} is no longer refused");
+        }
+    }
+    assert!(
+        pushes >= 4 && prs >= 3,
+        "the corpus keeps accepted payloads, or the fuzzer starts from nothing"
     );
 }
 
@@ -547,6 +581,75 @@ fn csr_seeds() -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
+const AFTER: &str = "0123456789abcdef0123456789abcdef01234567";
+const BEFORE: &str = "89abcdef0123456789abcdef0123456789abcdef";
+const ZERO: &str = "0000000000000000000000000000000000000000";
+
+fn push_json(git_ref: &str, before: &str, after: &str, deleted: bool, repo: &str) -> Vec<u8> {
+    serde_json::json!({
+        "ref": git_ref,
+        "before": before,
+        "after": after,
+        "deleted": deleted,
+        "created": false,
+        "forced": false,
+        "repository": {"id": 1, "full_name": repo, "private": true, "owner": {"login": "acme"}},
+        "pusher": {"name": "someone"},
+        "commits": [{"id": after, "message": "text", "added": [], "removed": [], "modified": ["a.yml"]}],
+        "sender": {"login": "someone"},
+    })
+    .to_string()
+    .into_bytes()
+}
+
+fn pr_json(action: &str, number: i64, merged: bool) -> Vec<u8> {
+    serde_json::json!({
+        "action": action,
+        "number": number,
+        "pull_request": {"number": number, "merged": merged, "state": "closed", "title": "text", "user": {"login": "u"}},
+        "repository": {"full_name": "acme/csp-tenant-data"},
+        "sender": {"login": "u"},
+    })
+    .to_string()
+    .into_bytes()
+}
+
+fn webhook_payload_seeds() -> Vec<(&'static str, Vec<u8>)> {
+    let deep = format!(
+        r#"{{"ref":"refs/heads/x","extra":{}{}}}"#,
+        "[".repeat(2000),
+        "]".repeat(2000)
+    );
+    vec![
+        ("push_branch", push_json("refs/heads/sit1", BEFORE, AFTER, false, "acme/csp-tenant-data")),
+        ("push_branch_with_slash", push_json("refs/heads/templates/common-docs", BEFORE, AFTER, false, "acme/csp-tenant-data")),
+        ("push_tag", push_json("refs/tags/v2.3.1", ZERO, AFTER, false, "acme/configuration-base-saas")),
+        ("push_new_branch_zero_before", push_json("refs/heads/sit9", ZERO, AFTER, false, "acme/csp-tenant-data")),
+        ("push_deleted_by_flag", push_json("refs/heads/old", BEFORE, AFTER, true, "acme/csp-tenant-data")),
+        ("push_deleted_by_zero_after", push_json("refs/heads/old", BEFORE, ZERO, false, "acme/csp-tenant-data")),
+        ("pr_opened", pr_json("opened", 17, false)),
+        ("pr_closed_merged", pr_json("closed", 17, true)),
+        ("pr_closed_not_merged", pr_json("closed", 18, false)),
+        ("pr_reopened", pr_json("reopened", 18, false)),
+        ("pr_edited_other_action", pr_json("edited", 19, false)),
+        ("rejected_ref_outside_heads_and_tags", push_json("refs/pull/1/head", BEFORE, AFTER, false, "a/b")),
+        ("rejected_ref_with_dotdot", push_json("refs/heads/a..b", BEFORE, AFTER, false, "a/b")),
+        ("rejected_short_commit_id", push_json("refs/heads/x", BEFORE, "abc123", false, "a/b")),
+        ("rejected_repository_with_two_slashes", push_json("refs/heads/x", BEFORE, AFTER, false, "a/b/c")),
+        ("rejected_pr_number_zero", pr_json("opened", 0, false)),
+        ("rejected_pr_number_over_the_column", pr_json("opened", i64::from(i32::MAX) + 1, false)),
+        ("rejected_wrong_type_for_ref", br#"{"ref":1,"before":"a","after":"b","repository":{"full_name":"a/b"}}"#.to_vec()),
+        (
+            "rejected_duplicated_keys",
+            br#"{"ref":"refs/heads/x","ref":"refs/heads/y","before":"89abcdef0123456789abcdef0123456789abcdef","after":"0123456789abcdef0123456789abcdef01234567","repository":{"full_name":"a/b"}}"#.to_vec(),
+        ),
+        ("rejected_deeply_nested", deep.into_bytes()),
+        ("rejected_truncated_push", push_json("refs/heads/sit1", BEFORE, AFTER, false, "a/b")[..60].to_vec()),
+        ("rejected_garbage_bytes", vec![0xff, 0xfe, 0x00, 0x7b, 0x22]),
+        ("rejected_empty", Vec::new()),
+    ]
+}
+
 /// Write the seeds: `UPDATE_HUB_SEEDS=1 cargo test -p hub-platform --test corpus_replay regenerate_the_seeds`. The CSR seeds hold
 /// freshly made throwaway keys' public halves, so regenerating changes their bytes; the message seeds are deterministic. Does
 /// nothing without the variable.
@@ -559,6 +662,7 @@ fn regenerate_the_seeds() {
         ("hub_agent_message", agent_message_seeds()),
         ("hub_join_csr", csr_seeds()),
         ("hub_forward_request", forward_request_seeds()),
+        ("hub_webhook_payload", webhook_payload_seeds()),
     ] {
         let dir = corpus(target);
         fs::create_dir_all(&dir).unwrap();
@@ -596,6 +700,27 @@ fn the_message_seeds_are_what_the_generator_makes() {
 fn the_forward_request_seeds_are_what_the_generator_makes() {
     let dir = corpus("hub_forward_request");
     let wanted = forward_request_seeds();
+    assert_eq!(
+        names(&dir),
+        wanted
+            .iter()
+            .map(|(n, _)| (*n).to_owned())
+            .collect::<BTreeSet<_>>(),
+        "run with UPDATE_HUB_SEEDS=1 to rewrite the seeds"
+    );
+    for (name, bytes) in wanted {
+        assert_eq!(
+            fs::read(dir.join(name)).unwrap(),
+            bytes,
+            "{name} drifted; run with UPDATE_HUB_SEEDS=1"
+        );
+    }
+}
+
+#[test]
+fn the_webhook_payload_seeds_are_what_the_generator_makes() {
+    let dir = corpus("hub_webhook_payload");
+    let wanted = webhook_payload_seeds();
     assert_eq!(
         names(&dir),
         wanted

@@ -118,6 +118,11 @@ tracing-opentelemetry = { version = "=0.34.0", default-features = false }
 # deny.toml does not allow) to verify `*.googleapis.com`. base64 0.22.1 is the version nearly the whole graph already uses.
 base64 = { version = "=0.22.1", default-features = false, features = ["std"] }
 rustls-native-certs = { version = "=0.8.4", default-features = false }
+# Git mirror (prompt 03b, T7, A16). gix 0.87.1 (2026-08-24, 48 days old). `blocking-http-transport-reqwest-rust-tls` is the one HTTPS
+# transport on rustls with aws-lc-rs (no ring, no openssl, no native-tls); reqwest arrives only as gix-transport's HTTP client
+# (a human accepted it, blockers file A16) and is never a direct dependency or used in our code. `max-performance-safe` is
+# gix's parallel pack decoding and pack caches (safe Rust); `revision` is `describe`; `sha1` is the object hash of the mirrors.
+gix = { version = "=0.87.1", default-features = false, features = ["sha1", "max-performance-safe", "revision", "blocking-http-transport-reqwest-rust-tls"] }
 # Test tooling
 proptest = "=1.11.0"
 insta = "=1.48.0"

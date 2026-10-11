@@ -302,9 +302,11 @@ fn thresholds_match_docs_performance_md() {
 fn only_budgets_with_a_harness_are_registered() {
     // Prompt 02 (agent): `cargo bench -p agent` produces P1, P3, P4, P4.stat_walk, P4.cpu_mcores, P4.memory_mib and
     // P15.spool_replay_versions_per_s (the spool, T9).
-    // Prompt 03b (hub platform): `cargo bench -p hub-platform` produces P13 (T5, `sse_delivery`).
+    // Prompt 03b (hub platform): `cargo bench -p hub-platform` produces P13 (T5, `sse_delivery`) and P2 (T7,
+    // `push_to_drift_webhook`: the webhook to `GitHeadMoved` part of it, which is the platform's share, plan A3).
     const REGISTERED: &[&str] = &[
         "P1",
+        "P2",
         "P3",
         "P4",
         "P4.stat_walk",
