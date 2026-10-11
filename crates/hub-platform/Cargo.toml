@@ -12,35 +12,51 @@ workspace = true
 [features]
 default = []
 # `FakeSessionAuth`, for the tests of this crate and of `hub`. Never enabled in the binary's release build.
-fakes = ["ports/fakes", "conformance", "dep:hex", "dep:sha2"]
+fakes = ["ports/fakes", "conformance"]
 # `RouteSpec::registered`, for the S4 route-table harness in `ports::conformance`.
 conformance = ["ports/conformance"]
 
 [dependencies]
 domain.workspace = true
-ports.workspace = true
+# `postgres` gives `Tx::from_pg`, which the join transaction hands to `AuditLog::record` (D80).
+ports = { workspace = true, features = ["postgres"] }
+proto.workspace = true
 async-trait.workspace = true
+aws-lc-rs.workspace = true
 axum.workspace = true
 base64.workspace = true
 bytes.workspace = true
 fastrand.workspace = true
+futures.workspace = true
+hex.workspace = true
 http.workspace = true
 http-body-util.workspace = true
-hyper = { workspace = true, features = ["client", "http1"] }
-hyper-util = { workspace = true, features = ["tokio"] }
+hyper = { workspace = true, features = ["client", "server", "http1", "http2"] }
+hyper-util = { workspace = true, features = ["tokio", "server", "server-graceful", "service"] }
+moka.workspace = true
 pem.workspace = true
 prometheus-client.workspace = true
+# The CA (T3, S5): rcgen builds each certificate and asks `KmsSigner` for the signature; its CSR parser needs `x509-parser`.
+rcgen = { workspace = true, features = ["x509-parser"] }
 rustls.workspace = true
 rustls-native-certs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio"] }
+subtle.workspace = true
 thiserror.workspace = true
+time = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
 tokio-rustls.workspace = true
+tokio-stream.workspace = true
+tower.workspace = true
+# The generated `Agent` server runs under our own rustls acceptor and HTTP/2 connection (as the agent's client does), so
+# tonic's `transport` stack is not used. `router` is `Routes`, which dispatches by service name.
+tonic = { workspace = true, features = ["codegen", "router", "zstd"] }
 tracing.workspace = true
+x509-parser.workspace = true
 zeroize.workspace = true
-hex = { workspace = true, optional = true }
-sha2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 # This crate's own integration tests need the fakes and the conformance helpers its features switch on.
@@ -60,3 +76,9 @@ aws-lc-rs.workspace = true
 hyper = { workspace = true, features = ["server", "client", "http1"] }
 rcgen = { workspace = true, features = ["pem"] }
 rustls = { workspace = true, features = ["std", "tls12"] }
+# Integration tests that need a real Postgres 16 with pgvector (T3 on): started with testcontainers from the image the dev
+# compose file pins by digest, migrated with sqlx's runtime Migrator as `lanekeeper_migrator`, used as `lanekeeper_app`.
+sqlx = { workspace = true, features = ["postgres", "migrate", "runtime-tokio"] }
+testcontainers.workspace = true
+tempfile.workspace = true
+prost.workspace = true

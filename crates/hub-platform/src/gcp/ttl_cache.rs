@@ -2,7 +2,8 @@
 //!
 //! The Secret Manager source needs "at most five minutes" to be provable without waiting five minutes, which a cache
 //! that reads the operating system's clock cannot give: this one reads `tokio::time::Instant`, so a test with a paused
-//! clock moves it. It is bounded in entries (rule 5); when it is full it drops what has expired, then the oldest entry.
+//! clock moves it. It is bounded in entries (rule 5); when it is full it drops what has expired, then the oldest entry
+//! (entries stored in the same instant leave in the order they were stored, so "oldest" never depends on hash order).
 //! Values drop when they leave, which is when a `Secret` wipes itself.
 
 use std::collections::HashMap;
@@ -13,9 +14,15 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 pub struct TtlCache<V> {
-    entries: Mutex<HashMap<String, (V, Instant)>>,
+    state: Mutex<State<V>>,
     ttl: Duration,
     max_entries: usize,
+}
+
+struct State<V> {
+    /// The value, when it was stored and the number of the insertion (which orders entries stored in the same instant).
+    entries: HashMap<String, (V, Instant, u64)>,
+    next_insertion: u64,
 }
 
 impl<V> fmt::Debug for TtlCache<V> {
@@ -32,7 +39,10 @@ impl<V> TtlCache<V> {
     #[must_use]
     pub fn new(ttl: Duration, max_entries: usize) -> Self {
         Self {
-            entries: Mutex::new(HashMap::new()),
+            state: Mutex::new(State {
+                entries: HashMap::new(),
+                next_insertion: 0,
+            }),
             ttl,
             max_entries: max_entries.max(1),
         }
@@ -40,12 +50,14 @@ impl<V> TtlCache<V> {
 
     /// Run `read` on the value for `key`, if there is one that has not expired. An expired entry is removed.
     pub fn get<R>(&self, key: &str, read: impl FnOnce(&V) -> R) -> Option<R> {
-        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let now = Instant::now();
-        match entries.get(key) {
-            Some((value, stored)) if now.saturating_duration_since(*stored) < self.ttl => Some(read(value)),
+        match state.entries.get(key) {
+            Some((value, stored, _)) if now.saturating_duration_since(*stored) < self.ttl => {
+                Some(read(value))
+            }
             Some(_) => {
-                entries.remove(key);
+                state.entries.remove(key);
                 None
             }
             None => None,
@@ -53,26 +65,35 @@ impl<V> TtlCache<V> {
     }
 
     pub fn insert(&self, key: &str, value: V) {
-        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let now = Instant::now();
-        if !entries.contains_key(key) && entries.len() >= self.max_entries {
-            entries.retain(|_, (_, stored)| now.saturating_duration_since(*stored) < self.ttl);
-            if entries.len() >= self.max_entries {
-                let oldest = entries
+        if !state.entries.contains_key(key) && state.entries.len() >= self.max_entries {
+            state
+                .entries
+                .retain(|_, (_, stored, _)| now.saturating_duration_since(*stored) < self.ttl);
+            if state.entries.len() >= self.max_entries {
+                let oldest = state
+                    .entries
                     .iter()
-                    .min_by_key(|(_, (_, stored))| *stored)
+                    .min_by_key(|(_, (_, stored, insertion))| (*stored, *insertion))
                     .map(|(name, _)| name.clone());
                 if let Some(oldest) = oldest {
-                    entries.remove(&oldest);
+                    state.entries.remove(&oldest);
                 }
             }
         }
-        entries.insert(key.to_owned(), (value, now));
+        let insertion = state.next_insertion;
+        state.next_insertion = insertion.wrapping_add(1);
+        state.entries.insert(key.to_owned(), (value, now, insertion));
     }
 
     #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.entries.lock().unwrap_or_else(PoisonError::into_inner).len()
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entries
+            .len()
     }
 
     #[cfg(test)]
@@ -107,6 +128,20 @@ mod tests {
         assert_eq!(cache.get("a", |v| *v), None, "the oldest went first");
         assert_eq!(cache.get("b", |v| *v), None);
         assert_eq!(cache.get("e", |v| *v), Some(4));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn entries_stored_in_the_same_instant_leave_in_the_order_they_were_stored() {
+        // With a paused clock every insert has the same instant; the oldest must still be the first one stored, every time.
+        for _ in 0..50 {
+            let cache = TtlCache::new(Duration::from_secs(300), 2);
+            for (i, name) in ["a", "b", "c"].into_iter().enumerate() {
+                cache.insert(name, i);
+            }
+            assert_eq!(cache.get("a", |v| *v), None, "the first stored left first");
+            assert_eq!(cache.get("b", |v| *v), Some(1));
+            assert_eq!(cache.get("c", |v| *v), Some(2));
+        }
     }
 
     #[tokio::test(start_paused = true)]
