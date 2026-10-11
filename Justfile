@@ -208,8 +208,27 @@ agent-bench:
     cargo xtask bench-check
 verify-03a:
     @echo "verify-03a not implemented yet" && exit 1
-verify-03b:
-    @echo "verify-03b not implemented yet" && exit 1
+
+# Prompt 03b gate (the hub platform): every sub-recipe, in order, stopping at the first failure. Later tasks append their own
+# sub-recipes to this line (T11 completes it). Run `just verify` and `cargo xtask bench-check` after it (AGENTS.md, protocol
+# step 4). Not part of the gate, and said so rather than skipped silently: `docker build` of crates/hub/Dockerfile (the
+# Dockerfile and HARDENING.md are linted by `platform-test`), and osv-scanner (not installed here).
+verify-03b: platform-tools-check platform-lint platform-test
+
+# The pinned tools the gate needs, and a Docker daemon (the database tests start Postgres 16 with pgvector through
+# testcontainers), or the command that fixes it. Never skips.
+platform-tools-check: docker-check
+    @cargo deny --version | grep -qx 'cargo-deny {{cargo_deny_version}}' || { echo "need cargo-deny {{cargo_deny_version}}: cargo install --locked cargo-deny --version {{cargo_deny_version}}"; exit 1; }
+    @cargo audit --version | grep -qx 'cargo-audit-audit {{cargo_audit_version}}' || { echo "need cargo-audit {{cargo_audit_version}}: cargo install --locked cargo-audit --version {{cargo_audit_version}}"; exit 1; }
+
+platform-lint:
+    cargo fmt --all -- --check
+    cargo clippy -p hub-platform -p hub --all-targets --all-features -- -D warnings
+
+# Unit, property, golden and integration tests of the hub platform and the composition crate. LK_REQUIRE_DOCKER=1 turns a
+# missing Docker daemon into a failure, never a skip.
+platform-test:
+    LK_REQUIRE_DOCKER=1 cargo test -p hub-platform -p hub --all-features
 verify-04:
     @echo "verify-04 not implemented yet" && exit 1
 verify-05:

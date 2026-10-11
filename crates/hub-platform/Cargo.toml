@@ -9,4 +9,36 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+# `FakeSessionAuth`, for the tests of this crate and of `hub`. Never enabled in the binary's release build.
+fakes = ["ports/fakes", "conformance", "dep:hex", "dep:sha2"]
+# `RouteSpec::registered`, for the S4 route-table harness in `ports::conformance`.
+conformance = ["ports/conformance"]
+
 [dependencies]
+domain.workspace = true
+ports.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+bytes.workspace = true
+http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing.workspace = true
+hex = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+
+[dev-dependencies]
+# This crate's own integration tests need the fakes and the conformance helpers its features switch on.
+hub-platform = { path = ".", version = "0.1.0", features = ["fakes"] }
+hex.workspace = true
+sha2.workspace = true
+ports = { workspace = true, features = ["fakes"] }
+insta = { workspace = true, features = ["json"] }
+serde-saphyr.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tower = { workspace = true, features = ["util"] }
+http-body-util.workspace = true
