@@ -19,6 +19,7 @@
 //! - [`events`]: the event bus over the Postgres outbox, and the SSE endpoint (T5, D66, D80, P13).
 //! - [`leases`], [`jobs`]: leases on Postgres with a fence, and the singleton jobs that run under them (T6, D62, D63).
 //! - [`git`]: the Git mirrors, `GixReader`, the GitHub webhook and the fetch that follows it (T7, D64, P2, S18).
+//! - [`blobs`]: the blob store on Postgres, its cache, and `GET /api/v1/blobs/{hash}` (T8, D47, P7).
 //! - [`routes`]: the guarded router every route of the hub is registered through (S4).
 #![forbid(unsafe_code)]
 // Documenting `# Errors` on every small constructor and check adds noise; the error enums are the docs.
@@ -30,6 +31,7 @@
 
 pub mod agent_metrics;
 pub mod agent_service;
+pub mod blobs;
 pub mod ca;
 pub mod clock;
 pub mod error;

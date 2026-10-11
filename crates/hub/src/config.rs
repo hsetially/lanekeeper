@@ -124,6 +124,8 @@ pub struct HubSettings {
     pub database: Option<DatabaseSettings>,
     /// The Git mirrors and the webhook. `None` when no remote is configured.
     pub git: Option<GitSettings>,
+    /// What the blob cache may hold (`LK_BLOB_CACHE_MIB`, default 512 MiB), in bytes.
+    pub blob_cache_bytes: u64,
     /// OTLP gRPC endpoint of an in-cluster collector. No export when unset.
     pub otlp_endpoint: Option<String>,
     /// Seconds readiness fails before connections stop (lets the load balancer notice).
@@ -333,6 +335,7 @@ impl HubSettings {
                 .map_err(|_| ConfigError::Invalid("LK_MAX_CONNECTIONS"))?,
             database,
             git: git_settings,
+            blob_cache_bytes: number("LK_BLOB_CACHE_MIB", 512, 1, 4096)?.saturating_mul(1024 * 1024),
             otlp_endpoint: parse("LK_OTLP_ENDPOINT")?,
             shutdown_grace: Duration::from_secs(number("LK_SHUTDOWN_GRACE_SECS", 5, 0, 60)?),
             shutdown_drain: Duration::from_secs(number("LK_SHUTDOWN_DRAIN_SECS", 25, 1, 120)?),
@@ -355,6 +358,7 @@ impl Default for HubSettings {
             max_connections: 4096,
             database: None,
             git: None,
+            blob_cache_bytes: 512 * 1024 * 1024,
             otlp_endpoint: None,
             shutdown_grace: Duration::from_secs(5),
             shutdown_drain: Duration::from_secs(25),
@@ -386,6 +390,21 @@ mod tests {
         assert_eq!(settings.shutdown_drain, Duration::from_secs(25));
         assert!(settings.database.is_none());
         assert!(settings.otlp_endpoint.is_none());
+    }
+
+    #[test]
+    fn the_blob_cache_is_512_mib_unless_set_and_is_bounded() {
+        let default = HubSettings::from_lookup(lookup(&[])).unwrap_or_default();
+        assert_eq!(default.blob_cache_bytes, 512 * 1024 * 1024);
+        let set = HubSettings::from_lookup(lookup(&[("LK_BLOB_CACHE_MIB", "128")])).unwrap();
+        assert_eq!(set.blob_cache_bytes, 128 * 1024 * 1024);
+        for bad in ["0", "lots", "-1", "100000", "1.5"] {
+            assert_eq!(
+                HubSettings::from_lookup(lookup(&[("LK_BLOB_CACHE_MIB", bad)])).unwrap_err(),
+                ConfigError::Invalid("LK_BLOB_CACHE_MIB"),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

@@ -230,6 +230,26 @@ scale = "target"
 registered = false
 
 [[budget]]
+id = "P7.blob_get_cached"
+description = "Blob get, cached (BlobStore::get with the content in the cache)"
+bench = "hub-platform/blob_get_cached"
+statistic = "p95"
+threshold = 1
+unit = "ms"
+scale = "target"
+registered = true
+
+[[budget]]
+id = "P7.blob_endpoint"
+description = "Blob endpoint (GET /api/v1/blobs/{hash})"
+bench = "hub-platform/blob_endpoint"
+statistic = "p95"
+threshold = 30
+unit = "ms"
+scale = "target"
+registered = true
+
+[[budget]]
 id = "P8"
 description = "Edit applied on NFS"
 bench = "hub-writes/edit_applied"
@@ -309,7 +329,7 @@ statistic = "p95"
 threshold = 10000
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P11.memory_mib"
@@ -319,7 +339,7 @@ statistic = "max"
 threshold = 1536
 unit = "mib"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P12.steady_state_query_ms"

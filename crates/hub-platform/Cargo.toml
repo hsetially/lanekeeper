@@ -109,3 +109,18 @@ harness = false
 [[bench]]
 name = "diff_trees"
 harness = false
+
+# T8 (P7): a cached `BlobStore::get` on the target-scale fixture blobs, against the 1 ms budget.
+[[bench]]
+name = "blob_get_cached"
+harness = false
+
+# T8 (P7): `GET /api/v1/blobs/{hash}` through the guard over a real Postgres, against the 30 ms budget (and the cold path, reported).
+[[bench]]
+name = "blob_endpoint"
+harness = false
+
+# T8 (P11): the platform's resident memory at design scale: 40 attached agents, 100 SSE subscribers, the blob cache full, 60 branches indexed.
+[[bench]]
+name = "memory_at_design_scale"
+harness = false

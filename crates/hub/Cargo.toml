@@ -63,6 +63,14 @@ rustls = { workspace = true, features = ["tls12"] }
 serde-saphyr.workspace = true
 tempfile.workspace = true
 testcontainers.workspace = true
+# The startup benchmark (T8, P11) includes the platform's Postgres test helper, which migrates a throwaway database.
+sha2.workspace = true
+sqlx = { workspace = true, features = ["postgres", "migrate", "runtime-tokio"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
 tower = { workspace = true, features = ["util"] }
 x509-parser.workspace = true
+
+# T8 (P11): process start to `/readyz` 200 against a real Postgres, populated mirrors of the target-scale fixtures, and the composed hub.
+[[bench]]
+name = "startup"
+harness = false

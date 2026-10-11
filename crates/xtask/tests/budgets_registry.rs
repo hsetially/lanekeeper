@@ -62,6 +62,8 @@ fn every_p_number_has_an_entry() {
         "P7.text_search",
         "P7.docs_search",
         "P7.feature_status",
+        "P7.blob_get_cached",
+        "P7.blob_endpoint",
         "P10.initial_js_gzip_kb",
         "P10.route_change_ms",
         "P10.diff_6000_lines_ms",
@@ -284,8 +286,42 @@ fn thresholds_match_docs_performance_md() {
             "{id}: docs/performance.md no longer says {needle:?}"
         );
     }
-    // Every registry entry is covered above, so a new entry cannot skip the comparison with the document.
-    let covered: BTreeSet<&str> = expected.iter().map(|e| e.0).collect();
+    // Budgets that a prompt states and `docs/performance.md` does not (the table there names no blob request). They are compared with
+    // the prompt's own text instead, so a changed prompt makes this fail until the registry is reconsidered, as for the others.
+    let prompt = std::fs::read_to_string(repo_root().join("prompts/03b-hub-platform.md")).unwrap();
+    let from_prompt: &[(&str, f64, &str, &str)] = &[
+        (
+            "P7.blob_get_cached",
+            1.0,
+            "ms",
+            "cached `get` under 1 ms and the blob endpoint under 30 ms (P7)",
+        ),
+        (
+            "P7.blob_endpoint",
+            30.0,
+            "ms",
+            "cached `get` under 1 ms and the blob endpoint under 30 ms (P7)",
+        ),
+    ];
+    for (id, threshold, unit, needle) in from_prompt {
+        let b = find(&reg, id);
+        assert!(
+            (b.threshold - threshold).abs() < f64::EPSILON,
+            "{id}: threshold {} != {threshold}",
+            b.threshold
+        );
+        assert_eq!(b.unit, *unit, "{id}: unit");
+        assert!(
+            prompt.contains(needle),
+            "{id}: prompts/03b-hub-platform.md no longer says {needle:?}"
+        );
+    }
+    // Every registry entry is covered above, so a new entry cannot skip the comparison with its source.
+    let covered: BTreeSet<&str> = expected
+        .iter()
+        .map(|e| e.0)
+        .chain(from_prompt.iter().map(|e| e.0))
+        .collect();
     for b in &reg.budgets {
         assert!(
             covered.contains(b.id.as_str()),
@@ -302,8 +338,10 @@ fn thresholds_match_docs_performance_md() {
 fn only_budgets_with_a_harness_are_registered() {
     // Prompt 02 (agent): `cargo bench -p agent` produces P1, P3, P4, P4.stat_walk, P4.cpu_mcores, P4.memory_mib and
     // P15.spool_replay_versions_per_s (the spool, T9).
-    // Prompt 03b (hub platform): `cargo bench -p hub-platform` produces P13 (T5, `sse_delivery`) and P2 (T7,
-    // `push_to_drift_webhook`: the webhook to `GitHeadMoved` part of it, which is the platform's share, plan A3).
+    // Prompt 03b (hub platform): `cargo bench -p hub-platform` produces P13 (T5, `sse_delivery`), P2 (T7, `push_to_drift_webhook`:
+    // the webhook to `GitHeadMoved` part of it, which is the platform's share, plan A3), P7.blob_get_cached and P7.blob_endpoint
+    // (T8, `blob_get_cached` and `blob_endpoint`, criterion), and the two hub harnesses of T8: P11 (`cargo bench -p hub --bench
+    // startup`) and P11.memory_mib (`cargo bench -p hub-platform --bench memory_at_design_scale`).
     const REGISTERED: &[&str] = &[
         "P1",
         "P2",
@@ -312,6 +350,10 @@ fn only_budgets_with_a_harness_are_registered() {
         "P4.stat_walk",
         "P4.cpu_mcores",
         "P4.memory_mib",
+        "P7.blob_get_cached",
+        "P7.blob_endpoint",
+        "P11",
+        "P11.memory_mib",
         "P13",
         "P15.spool_replay_versions_per_s",
     ];

@@ -6,10 +6,13 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use hub_platform::GuardedRouter;
+use hub_platform::git::mirror::Mirror;
 use hub_platform::git::webhook::{self, WebhookState};
 
 use crate::compose::Module;
+use crate::ops::ReadyCheck;
 
 /// Mounts the webhook.
 #[derive(Debug, Clone)]
@@ -31,5 +34,24 @@ impl Module for GitModule {
 
     fn mount(&self, router: GuardedRouter) -> GuardedRouter {
         webhook::mount(router, Arc::clone(&self.state))
+    }
+}
+
+/// Readiness: both mirrors hold a branch. A replica whose volume is empty (a first start, or a deleted one) is not ready until
+/// [`Mirror::initialize`] has filled it, so no read that needs a commit is routed to it before it can answer.
+#[derive(Debug, Clone)]
+pub struct MirrorsReady(Arc<Mirror>);
+
+impl MirrorsReady {
+    #[must_use]
+    pub fn new(mirror: Arc<Mirror>) -> Self {
+        Self(mirror)
+    }
+}
+
+#[async_trait]
+impl ReadyCheck for MirrorsReady {
+    async fn ready(&self) -> bool {
+        self.0.ready()
     }
 }

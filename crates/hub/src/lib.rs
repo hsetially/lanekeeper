@@ -13,6 +13,7 @@
     clippy::module_name_repetitions
 )]
 
+pub mod blobs;
 pub mod client_ip;
 pub mod compose;
 pub mod config;
@@ -30,6 +31,7 @@ pub mod shutdown;
 pub mod static_files;
 pub mod telemetry;
 
+pub use blobs::BlobsModule;
 pub use compose::{BuildError, Deps, Hub, Module};
 pub use config::{ConfigError, HubSettings};
 pub use events::EventsModule;

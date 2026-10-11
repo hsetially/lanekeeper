@@ -171,6 +171,14 @@ impl TestDb {
             .ssl_mode(PgSslMode::Disable)
     }
 
+    /// A connection URL for the app role, for a process that connects on its own (the startup benchmark's child process).
+    pub fn app_url(&self) -> String {
+        format!(
+            "postgres://{}:{}@{}:{}/{}",
+            APP.0, APP.1, self.host, self.port, self.database
+        )
+    }
+
     pub async fn admin(&self) -> PgConnection {
         connect(&self.admin_options.clone().database(&self.database))
             .await
