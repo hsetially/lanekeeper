@@ -16,8 +16,10 @@
 //! The chain is read by keyset in batches (`seq > $last ORDER BY seq LIMIT 5000`) and streamed row by row, so memory use does
 //! not depend on its length. The first row with a bad link or hash ends the walk of the chain, because every row after a bad one
 //! fails too; the report names that one position. A row whose columns differ does not end it (the chain is intact after it), so
-//! each such row is listed, up to the bound of the report. Checkpoints are checked one by one, each reporting its first problem,
-//! up to a bound.
+//! each such row is listed. A stored value that cannot be read (an infinite `at`, a `jsonb` that `serde_json` refuses, a `NULL`
+//! where the schema forbids one) is a finding about that row and never ends the walk; only a failure of the query itself is a
+//! [`VerifyError`]. Checkpoints are checked one by one, each reporting its first problem. The report lists at most 100 differing
+//! columns and, separately, at most 100 failures of every other kind, so that neither crowds out the other.
 //!
 //! What it cannot see, by design: an event removed *and* its checkpoint rows removed, or a tail cut off after the newest
 //! checkpoint, leave a chain that is internally consistent. The bucket's retention keeps the objects of the removed checkpoints,
@@ -37,7 +39,7 @@ use sqlx::{PgPool, Row};
 use super::JobHandle;
 use super::bucket::{BucketError, CheckpointBucket, object_name};
 use super::checkpoint::CheckpointObject;
-use super::columns::{ColumnSet, SELECT_LIST, StoredColumns, differing_columns};
+use super::columns::{ColumnSet, SELECT_LIST, differing_in_row, is_decode_failure};
 use super::signature::{CheckpointVerifier, checkpoint_message};
 use crate::metrics::IdentityMetrics;
 
@@ -45,7 +47,7 @@ use crate::metrics::IdentityMetrics;
 pub const DEFAULT_BATCH_ROWS: usize = 5_000;
 /// Checkpoint rows read per batch.
 const CHECKPOINT_BATCH: i64 = 500;
-/// The most failures a report lists; the rest are counted by `truncated`.
+/// The most failures of one class a report lists (differing columns, and everything else); the rest are counted by `truncated`.
 const MAX_FAILURES: usize = 100;
 /// The lease of the nightly job, and how long it lasts between renewals while a long run is going.
 pub const LEASE_NAME: &str = "audit.verify";
@@ -127,8 +129,17 @@ impl VerifyReport {
         self.failures.is_empty()
     }
 
+    /// List a failure, unless its kind already has [`MAX_FAILURES`] places taken. Differing columns are one kind and everything
+    /// else (a broken chain, a checkpoint) the other, each with a list of its own: a hundred rows with a changed copy must not
+    /// leave no room for the broken chain or the bad checkpoint that matters more.
     fn fail(&mut self, seq: i64, kind: FailureKind) {
-        if self.failures.len() < MAX_FAILURES {
+        let is_columns = kind.columns().is_some();
+        let taken = self
+            .failures
+            .iter()
+            .filter(|f| f.kind.columns().is_some() == is_columns)
+            .count();
+        if taken < MAX_FAILURES {
             self.failures.push(VerifyFailure { seq, kind });
         } else {
             self.truncated = true;
@@ -164,6 +175,19 @@ pub fn check_row(
 
 fn hash_of(bytes: Vec<u8>) -> Option<ContentHash> {
     <[u8; 32]>::try_from(bytes).ok().map(ContentHash::from_bytes)
+}
+
+/// A column of the chain, as it is stored; `None` when it is `NULL` or its value cannot be decoded. Both mean that the row is not
+/// one the chain can vouch for. Any other failure (the column is not in the row) is a fault of the query, and an error.
+fn chain_column<'r, T>(row: &'r sqlx::postgres::PgRow, name: &str) -> Result<Option<T>, VerifyError>
+where
+    Option<T>: sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
+{
+    match row.try_get::<Option<T>, _>(name) {
+        Ok(value) => Ok(value),
+        Err(e) if is_decode_failure(&e) => Ok(None),
+        Err(e) => Err(db_error("chain", &e)),
+    }
 }
 
 fn db_error(stage: &'static str, e: &sqlx::Error) -> VerifyError {
@@ -236,23 +260,25 @@ impl ChainVerifier {
             while let Some(row) = rows.try_next().await.map_err(|e| db_error("chain", &e))? {
                 in_batch += 1;
                 let seq: i64 = row.try_get("seq").map_err(|e| db_error("chain", &e))?;
-                let prev: Vec<u8> = row.try_get("prev_hash").map_err(|e| db_error("chain", &e))?;
-                let hash: Vec<u8> = row.try_get("hash").map_err(|e| db_error("chain", &e))?;
-                let json: String = row.try_get("event_json").map_err(|e| db_error("chain", &e))?;
+                // A value that cannot be read (a `NULL` in a column that is `NOT NULL` by the schema) is not the hash of anything:
+                // it is a bad row, found at this position, and not a failure to read the table.
+                let prev = chain_column::<Vec<u8>>(&row, "prev_hash")?;
+                let hash = chain_column::<Vec<u8>>(&row, "hash")?;
+                let json = chain_column::<String>(&row, "event_json")?;
                 after = seq;
                 report.events_checked += 1;
-                let checked = match (hash_of(prev), hash_of(hash)) {
-                    (Some(prev), Some(hash)) => {
-                        check_row(&expected_prev, &prev, &hash, json.as_bytes()).map(|()| hash)
+                let checked = match (prev.and_then(hash_of), hash.and_then(hash_of), json.as_deref()) {
+                    (Some(prev), Some(hash), Some(json)) => {
+                        check_row(&expected_prev, &prev, &hash, json.as_bytes()).map(|()| (hash, json))
                     }
                     _ => Err(FailureKind::ChainHashMismatch),
                 };
                 match checked {
-                    Ok(hash) => {
+                    Ok((hash, json)) => {
                         expected_prev = hash;
-                        // The text is now vouched for by the chain, so the copies of it can be held against it.
-                        let stored = StoredColumns::from_row(&row).map_err(|e| db_error("chain", &e))?;
-                        let differ = differing_columns(&json, &stored);
+                        // The text is now vouched for by the chain, so the copies of it can be held against it. A copy that
+                        // cannot be read is a difference too: only a fault of the query is an error.
+                        let differ = differing_in_row(&row, json).map_err(|e| db_error("chain", &e))?;
                         if !differ.is_empty() {
                             report.fail(seq, FailureKind::ColumnsDiffer(differ));
                         }
@@ -621,6 +647,46 @@ mod tests {
             alert_summary(2, "", &other),
             "2 problem(s) in the audit log. First: event hash mismatch at position 3"
         );
+    }
+
+    #[test]
+    fn column_failures_never_crowd_out_the_other_kinds() {
+        use super::super::columns::Column;
+        let differ = FailureKind::ColumnsDiffer(ColumnSet::of(&[Column::Via]));
+        let mut report = VerifyReport::default();
+        for n in 0..(MAX_FAILURES + 50) {
+            report.fail(i64::try_from(n).unwrap(), differ);
+        }
+        // The list of differing columns is full, and says so ...
+        assert_eq!(report.failures.len(), MAX_FAILURES);
+        assert!(report.truncated);
+        // ... and a broken chain, and as many checkpoint failures as the other list holds, still get in.
+        report.fail(1_000, FailureKind::ChainHashMismatch);
+        for n in 0..(MAX_FAILURES + 5) {
+            report.fail(2_000 + i64::try_from(n).unwrap(), FailureKind::SignatureInvalid);
+        }
+        assert_eq!(report.failures.len(), 2 * MAX_FAILURES);
+        assert_eq!(
+            report
+                .failures
+                .iter()
+                .filter(|f| f.kind.columns().is_none())
+                .count(),
+            MAX_FAILURES
+        );
+        assert!(report.failures.contains(&VerifyFailure {
+            seq: 1_000,
+            kind: FailureKind::ChainHashMismatch
+        }));
+        // The other way round: a full list of checkpoint failures does not keep a differing column out.
+        let mut report = VerifyReport::default();
+        for n in 0..(MAX_FAILURES + 5) {
+            report.fail(i64::try_from(n).unwrap(), FailureKind::BucketObjectMissing);
+        }
+        report.truncated = false;
+        report.fail(7, differ);
+        assert!(report.failures.contains(&VerifyFailure { seq: 7, kind: differ }));
+        assert!(!report.truncated);
     }
 
     #[test]

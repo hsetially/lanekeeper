@@ -91,7 +91,7 @@ impl Prepared {
     /// (a `timestamptz` ends long before), and the insert is refused.
     pub fn columns(&self) -> Option<StoredColumns> {
         Some(StoredColumns {
-            at_micros: self.at_millis.checked_mul(1000)?,
+            at_micros: Some(self.at_millis.checked_mul(1000)?),
             actor_kind: self.actor_kind.to_owned(),
             actor_ref: Some(self.actor_ref.clone()),
             action: self.action.clone(),
@@ -124,6 +124,18 @@ fn wire<T: serde::Serialize>(v: &T) -> Result<String, AuditError> {
     }
 }
 
+/// The `actor_kind` and `actor_ref` columns of an actor. The one place that maps the kinds of actor to them: the nightly verifier
+/// derives the expected columns from the stored actor with this function ([`super::columns`]), so a kind added to [`AuditActor`] is
+/// a compile error here and nowhere else, and cannot make every row of the new kind look tampered with.
+pub(crate) fn actor_parts(actor: &AuditActor) -> (&'static str, String) {
+    match actor {
+        AuditActor::User { user } => ("user", user.to_string()),
+        AuditActor::Agent { swimlane } => ("agent", swimlane.to_string()),
+        AuditActor::Sentinel { name } => ("sentinel", name.to_string()),
+        AuditActor::System { component } => ("system", component.to_string()),
+    }
+}
+
 /// Check and encode an event, without touching the database.
 ///
 /// # Errors
@@ -140,12 +152,7 @@ pub fn prepare(e: &AuditEvent) -> Result<Prepared, AuditError> {
     if json.len() > MAX_EVENT_JSON_BYTES {
         return Err(AuditError::TooLarge);
     }
-    let (actor_kind, actor_ref) = match &e.actor {
-        AuditActor::User { user } => ("user", user.to_string()),
-        AuditActor::Agent { swimlane } => ("agent", swimlane.to_string()),
-        AuditActor::Sentinel { name } => ("sentinel", name.to_string()),
-        AuditActor::System { component } => ("system", component.to_string()),
-    };
+    let (actor_kind, actor_ref) = actor_parts(&e.actor);
     let attribution = e.attribution.as_ref();
     Ok(Prepared {
         json,

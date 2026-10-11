@@ -16,14 +16,24 @@
 //! - the attribution columns are `NULL` when the event has no attribution; `attribution_actor` is `NULL` when the attribution
 //!   has no actor; the two `jsonb` columns are compared as JSON values, so the order of keys does not matter.
 //!
+//! - `at` is read as text, from a `CASE` that gives `NULL` for `infinity` and `-infinity`, so that no stored time can make the
+//!   query itself fail. A time that is not finite, or whose microseconds do not fit an `i64`, is `None` and is never the copy of
+//!   any event's time;
+//! - a column whose stored value cannot be decoded (a `jsonb` holding a number or a nesting `serde_json` refuses, a `NULL` in a
+//!   column that is `NOT NULL` by the schema) is reported as differing, by name, and the walk goes on. A copy that cannot be read
+//!   is not the copy of anything. Only a failure that is not about the value (a missing column, a connection) is an error.
+//!
 //! A difference is reported by the column's name only, never its value (S10).
 
 use std::fmt;
 
 use domain::ContentHash;
+use ports::AuditActor;
 use serde_json::{Map, Value};
 use sqlx::Row;
 use sqlx::postgres::PgRow;
+
+use super::log::actor_parts;
 
 /// A denormalised column of `audit_events`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +130,11 @@ impl ColumnSet {
         self.0 |= c.bit();
     }
 
+    /// Add every column of `other`.
+    pub fn extend(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+
     pub const fn contains(self, c: Column) -> bool {
         self.0 & c.bit() != 0
     }
@@ -155,17 +170,21 @@ impl fmt::Display for ColumnSet {
     }
 }
 
-/// The select list that reads the columns [`StoredColumns::from_row`] needs. `at` is read as whole microseconds, which is what a
-/// `timestamptz` holds, so that a change of one microsecond shows.
-pub const SELECT_LIST: &str = "(extract(epoch FROM at) * 1000000)::bigint AS at_micros, actor_kind, actor_ref, action, via, \
-     swimlane_id, path, hash_before, hash_after, github_login, approval_id, request_id, attribution_source, \
-     attribution_confidence, attribution_actor, attribution_evidence";
+/// The select list that reads the columns [`read_row`] needs. `at` is read as whole microseconds, which is what a `timestamptz`
+/// holds, so that a change of one microsecond shows. It is read as exact text and parsed here: a cast to `bigint` in the query
+/// raises an error for `infinity` and for times beyond the last microsecond an `i64` holds, and an error in the query is a
+/// failure of the whole walk, where the value is only a finding about one row. The `CASE` is the guard for the first; the parse is
+/// the guard for the second.
+pub const SELECT_LIST: &str = "CASE WHEN isfinite(at) THEN (extract(epoch FROM at) * 1000000)::numeric(40,0)::text END AS at_micros, \
+     actor_kind, actor_ref, action, via, swimlane_id, path, hash_before, hash_after, github_login, approval_id, request_id, \
+     attribution_source, attribution_confidence, attribution_actor, attribution_evidence";
 
 /// What one row of `audit_events` holds in the copied columns.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoredColumns {
-    /// Microseconds since the epoch.
-    pub at_micros: i64,
+    /// Microseconds since the epoch; `None` when the stored time is `infinity`, `-infinity` or beyond what an `i64` of microseconds
+    /// holds (and when it is `NULL`, which the schema forbids).
+    pub at_micros: Option<i64>,
     pub actor_kind: String,
     pub actor_ref: Option<String>,
     pub action: String,
@@ -183,31 +202,89 @@ pub struct StoredColumns {
     pub attribution_evidence: Option<Value>,
 }
 
-impl StoredColumns {
-    /// Read the columns named by [`SELECT_LIST`] from a row.
-    ///
-    /// # Errors
-    /// A column is missing from the row or has another type than the table gives it.
-    pub fn from_row(row: &PgRow) -> Result<Self, sqlx::Error> {
-        Ok(Self {
-            at_micros: row.try_get("at_micros")?,
-            actor_kind: row.try_get("actor_kind")?,
-            actor_ref: row.try_get("actor_ref")?,
-            action: row.try_get("action")?,
-            via: row.try_get("via")?,
-            swimlane_id: row.try_get("swimlane_id")?,
-            path: row.try_get("path")?,
-            hash_before: row.try_get("hash_before")?,
-            hash_after: row.try_get("hash_after")?,
-            github_login: row.try_get("github_login")?,
-            approval_id: row.try_get("approval_id")?,
-            request_id: row.try_get("request_id")?,
-            attribution_source: row.try_get("attribution_source")?,
-            attribution_confidence: row.try_get("attribution_confidence")?,
-            attribution_actor: row.try_get("attribution_actor")?,
-            attribution_evidence: row.try_get("attribution_evidence")?,
-        })
+/// What [`read_row`] makes of a row: the columns that could be decoded, and the names of those that could not.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadColumns {
+    /// The columns; one that could not be decoded holds its empty value (`None`, or an empty string), which no event matches.
+    pub columns: StoredColumns,
+    /// The columns whose stored value could not be decoded.
+    pub unreadable: ColumnSet,
+}
+
+/// Whether `e` says that a value in a fetched row could not be turned into the type asked for: the value is the problem. Anything
+/// else (a column that is not in the row, a connection that broke) says nothing about the value.
+pub fn is_decode_failure(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::ColumnDecode { .. } | sqlx::Error::Decode(_))
+}
+
+/// Decode one column. A value that cannot be decoded marks the column in `unreadable` and gives the empty value.
+fn read<'r, T>(
+    row: &'r PgRow,
+    name: &str,
+    column: Column,
+    unreadable: &mut ColumnSet,
+) -> Result<T, sqlx::Error>
+where
+    T: sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres> + Default,
+{
+    match row.try_get(name) {
+        Ok(value) => Ok(value),
+        Err(e) if is_decode_failure(&e) => {
+            unreadable.insert(column);
+            Ok(T::default())
+        }
+        Err(e) => Err(e),
     }
+}
+
+/// Read the columns named by [`SELECT_LIST`] from a row.
+///
+/// # Errors
+/// A column is missing from the row (the query and this function disagree), which is a fault and not a finding. A value that cannot
+/// be decoded is not an error: see [`ReadColumns::unreadable`].
+pub fn read_row(row: &PgRow) -> Result<ReadColumns, sqlx::Error> {
+    let mut u = ColumnSet::empty();
+    let at: Option<String> = read(row, "at_micros", Column::At, &mut u)?;
+    let columns = StoredColumns {
+        // Text that is not an `i64` (a time past the last microsecond of one) is not a time any event holds.
+        at_micros: at.and_then(|t| t.parse().ok()),
+        actor_kind: read(row, "actor_kind", Column::ActorKind, &mut u)?,
+        actor_ref: read(row, "actor_ref", Column::ActorRef, &mut u)?,
+        action: read(row, "action", Column::Action, &mut u)?,
+        via: read(row, "via", Column::Via, &mut u)?,
+        swimlane_id: read(row, "swimlane_id", Column::SwimlaneId, &mut u)?,
+        path: read(row, "path", Column::Path, &mut u)?,
+        hash_before: read(row, "hash_before", Column::HashBefore, &mut u)?,
+        hash_after: read(row, "hash_after", Column::HashAfter, &mut u)?,
+        github_login: read(row, "github_login", Column::GithubLogin, &mut u)?,
+        approval_id: read(row, "approval_id", Column::ApprovalId, &mut u)?,
+        request_id: read(row, "request_id", Column::RequestId, &mut u)?,
+        attribution_source: read(row, "attribution_source", Column::AttributionSource, &mut u)?,
+        attribution_confidence: read(
+            row,
+            "attribution_confidence",
+            Column::AttributionConfidence,
+            &mut u,
+        )?,
+        attribution_actor: read(row, "attribution_actor", Column::AttributionActor, &mut u)?,
+        attribution_evidence: read(row, "attribution_evidence", Column::AttributionEvidence, &mut u)?,
+    };
+    Ok(ReadColumns {
+        columns,
+        unreadable: u,
+    })
+}
+
+/// The columns of a fetched row that are not the copy of a field of `event_json`: those that differ, and those that could not be
+/// read at all.
+///
+/// # Errors
+/// As [`read_row`].
+pub fn differing_in_row(row: &PgRow, event_json: &str) -> Result<ColumnSet, sqlx::Error> {
+    let read = read_row(row)?;
+    let mut differ = differing_columns(event_json, &read.columns);
+    differ.extend(read.unreadable);
+    Ok(differ)
 }
 
 /// A field of the stored event, as it is compared with a column.
@@ -277,7 +354,7 @@ pub fn differing_columns(event_json: &str, stored: &StoredColumns) -> ColumnSet 
         .get("at")
         .and_then(Value::as_i64)
         .and_then(|ms| ms.checked_mul(1000));
-    check(Column::At, at == Some(stored.at_micros));
+    check(Column::At, at.is_some() && at == stored.at_micros);
     check(
         Column::Action,
         event.get("action").and_then(Value::as_str) == Some(stored.action.as_str()),
@@ -329,23 +406,20 @@ pub fn differing_columns(event_json: &str, stored: &StoredColumns) -> ColumnSet 
 }
 
 /// Whether `actor_kind` and `actor_ref` are copies of the event's actor.
+///
+/// The kind and the reference are derived from the stored actor by [`actor_parts`], the function the log derives them with when it
+/// writes, so a new kind of actor is handled in one place and the compiler forces that. A stored actor that is not an
+/// [`AuditActor`] (a kind this version does not know) is not the origin of any column.
 fn actor_columns(event: &Map<String, Value>, stored: &StoredColumns) -> (bool, bool) {
-    let actor = event.get("actor").and_then(Value::as_object);
-    let kind = actor.and_then(|a| a.get("kind")).and_then(Value::as_str);
-    let field = match kind {
-        Some("user") => Some("user"),
-        Some("agent") => Some("swimlane"),
-        Some("sentinel") => Some("name"),
-        Some("system") => Some("component"),
-        _ => None,
+    let actor = event
+        .get("actor")
+        .and_then(|a| serde_json::from_value::<AuditActor>(a.clone()).ok());
+    let Some((kind, reference)) = actor.as_ref().map(actor_parts) else {
+        return (false, false);
     };
-    let reference = field
-        .zip(actor)
-        .and_then(|(field, a)| a.get(field))
-        .and_then(Value::as_str);
     (
-        kind == Some(stored.actor_kind.as_str()),
-        reference.is_some() && reference == stored.actor_ref.as_deref(),
+        kind == stored.actor_kind,
+        stored.actor_ref.as_deref() == Some(reference.as_str()),
     )
 }
 
@@ -456,7 +530,7 @@ mod tests {
             );
         };
         match c {
-            Column::At => s.at_micros += 1,
+            Column::At => s.at_micros = s.at_micros.map(|m| m + 1),
             Column::ActorKind => s.actor_kind.push('x'),
             Column::ActorRef => text(&mut s.actor_ref),
             Column::Action => s.action.push('x'),
@@ -499,6 +573,105 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_time_that_is_not_an_i64_of_microseconds_is_never_the_copy_of_a_time() {
+        // `infinity`, `-infinity` and a time past the last microsecond of an `i64` are read as `None`, and `NULL` is too.
+        let (json, mut stored) = written(&bare());
+        stored.at_micros = None;
+        assert_eq!(differing_columns(&json, &stored), ColumnSet::of(&[Column::At]));
+        // Even for an event whose own time cannot be turned into microseconds: two nothings are not a match.
+        let mut v: Value = serde_json::from_str(&json).unwrap();
+        v["at"] = serde_json::json!(i64::MAX);
+        assert_eq!(
+            differing_columns(&v.to_string(), &stored),
+            ColumnSet::of(&[Column::At])
+        );
+        v["at"] = serde_json::json!("infinity");
+        assert_eq!(
+            differing_columns(&v.to_string(), &stored),
+            ColumnSet::of(&[Column::At])
+        );
+    }
+
+    #[test]
+    fn every_kind_of_actor_is_a_clean_row_and_a_changed_reference_is_not() {
+        use ports::AuditActor;
+        // `actor_parts` is an exhaustive match, so a new kind of actor does not compile until it is listed there; this lists the
+        // kinds that exist, and holds the verifier to the columns the log writes for each.
+        let actors = [
+            AuditActor::User {
+                user: ports::conformance::sample::user_id(7),
+            },
+            AuditActor::Agent {
+                swimlane: ports::conformance::sample::swimlane("sit3"),
+            },
+            AuditActor::Sentinel {
+                name: ShortText::parse("nfs-vm-2").unwrap(),
+            },
+            AuditActor::System {
+                component: ShortText::parse("sync-job").unwrap(),
+            },
+        ];
+        // Whatever `AuditActor` gains, the match below must be extended, and with it this test.
+        for a in &actors {
+            match a {
+                AuditActor::User { .. }
+                | AuditActor::Agent { .. }
+                | AuditActor::Sentinel { .. }
+                | AuditActor::System { .. } => {}
+            }
+        }
+        for actor in actors {
+            let mut e = bare();
+            e.actor = actor;
+            let (json, stored) = written(&e);
+            assert_eq!(differing_columns(&json, &stored), ColumnSet::empty(), "{json}");
+            let mut forged = stored.clone();
+            forged.actor_ref = Some("someone-else".to_owned());
+            assert_eq!(
+                differing_columns(&json, &forged),
+                ColumnSet::of(&[Column::ActorRef])
+            );
+            let mut forged = stored;
+            forged.actor_kind = "robot".to_owned();
+            assert_eq!(
+                differing_columns(&json, &forged),
+                ColumnSet::of(&[Column::ActorKind])
+            );
+        }
+    }
+
+    #[test]
+    fn an_actor_this_version_does_not_know_is_the_origin_of_no_column() {
+        let (json, stored) = written(&bare());
+        let mut v: Value = serde_json::from_str(&json).unwrap();
+        v["actor"] = serde_json::json!({"kind": "robot", "robot": "r2"});
+        assert_eq!(
+            differing_columns(&v.to_string(), &stored),
+            ColumnSet::of(&[Column::ActorKind, Column::ActorRef])
+        );
+    }
+
+    #[test]
+    fn only_a_value_that_cannot_be_decoded_is_a_finding_and_anything_else_is_a_fault() {
+        // A value in a fetched row that is not the type asked for is the data's problem ...
+        let source: Box<dyn std::error::Error + Send + Sync> = "number out of range".into();
+        assert!(is_decode_failure(&sqlx::Error::ColumnDecode {
+            index: "attribution_actor".to_owned(),
+            source,
+        }));
+        assert!(is_decode_failure(&sqlx::Error::Decode("x".into())));
+        // ... and these are not: the query and the reader disagree, or the database is not there.
+        assert!(!is_decode_failure(&sqlx::Error::ColumnNotFound("via".to_owned())));
+        assert!(!is_decode_failure(&sqlx::Error::PoolClosed));
+        assert!(!is_decode_failure(&sqlx::Error::PoolTimedOut));
+        assert!(!is_decode_failure(&sqlx::Error::WorkerCrashed));
+        assert!(!is_decode_failure(&sqlx::Error::Io(std::io::Error::other(
+            "reset"
+        ))));
+        assert!(!is_decode_failure(&sqlx::Error::RowNotFound));
     }
 
     #[test]

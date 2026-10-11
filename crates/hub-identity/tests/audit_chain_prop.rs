@@ -191,7 +191,7 @@ fn change(c: Column, s: &mut StoredColumns) {
         );
     }
     match c {
-        Column::At => s.at_micros += 1,
+        Column::At => s.at_micros = s.at_micros.map(|m| m + 1),
         Column::ActorKind => s.actor_kind.push('x'),
         Column::ActorRef => text(&mut s.actor_ref),
         Column::Action => s.action.push('x'),

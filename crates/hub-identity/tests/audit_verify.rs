@@ -515,6 +515,10 @@ struct Case {
     column: Column,
     full: &'static str,
     bare: &'static str,
+    /// A statement run first, as the owner, when the value needs a constraint out of the way.
+    prep: &'static str,
+    /// A value that something reading the column could choke on (a cast, a decode, a length), and not just one that differs.
+    hostile: bool,
 }
 
 const fn case(name: &'static str, column: Column, full: &'static str, bare: &'static str) -> Case {
@@ -523,8 +527,46 @@ const fn case(name: &'static str, column: Column, full: &'static str, bare: &'st
         column,
         full,
         bare,
+        prep: "",
+        hostile: false,
     }
 }
+
+/// A value the reader of the column could fail on: it must still be a finding about that column, and never an error that ends
+/// the walk.
+const fn hostile(
+    name: &'static str,
+    column: Column,
+    prep: &'static str,
+    full: &'static str,
+    bare: &'static str,
+) -> Case {
+    Case {
+        name,
+        column,
+        full,
+        bare,
+        prep,
+        hostile: true,
+    }
+}
+
+const NO_CHECK_ACTOR_KIND: &str = "ALTER TABLE audit_events DROP CONSTRAINT audit_events_actor_kind_check";
+const NO_CHECK_ACTION: &str = "ALTER TABLE audit_events DROP CONSTRAINT audit_events_action_check";
+const NO_CHECK_VIA: &str = "ALTER TABLE audit_events DROP CONSTRAINT audit_events_via_check";
+const NO_CHECK_SOURCE: &str =
+    "ALTER TABLE audit_events DROP CONSTRAINT audit_events_attribution_source_check";
+const NO_CHECK_CONFIDENCE: &str =
+    "ALTER TABLE audit_events DROP CONSTRAINT audit_events_attribution_confidence_check";
+const NO_HASH_LENGTH: &str = "ALTER DOMAIN sha256_hash DROP CONSTRAINT sha256_hash_length";
+/// A megabyte of text, for the columns that no index covers.
+const MEGABYTE: &str = "repeat('x', 1000000)";
+/// A hundred thousand characters: it compresses to a size the indexes on the other text columns still take.
+const LONG: &str = "repeat('x', 100000)";
+/// A number `serde_json` cannot read (a `jsonb` holds it, being a `numeric`).
+const HUGE_NUMBER: &str = "'{\"n\":1e400}'::jsonb";
+/// An array nested deeper than `serde_json` reads (its limit is 128).
+const DEEP_ARRAY: &str = "(repeat('[', 200) || repeat(']', 200))::jsonb";
 
 const EVIL_ACTOR: &str = "'{\"kind\":\"os_login\",\"login\":\"someone-else\"}'::jsonb";
 
@@ -604,6 +646,156 @@ const CASES: &[Case] = &[
         "NULL",
         "",
     ),
+    // Values a reader of the column could fail on. Each must be reported as that column, alone.
+    hostile("at infinity", Column::At, "", "'infinity'", "'infinity'"),
+    hostile("at -infinity", Column::At, "", "'-infinity'", "'-infinity'"),
+    hostile(
+        "at beyond the microseconds a bigint holds (294276-01-01)",
+        Column::At,
+        "",
+        "'294276-01-01 00:00:00+00'::timestamptz",
+        "'294276-01-01 00:00:00+00'::timestamptz",
+    ),
+    hostile(
+        "at before the epoch by the most a timestamptz holds",
+        Column::At,
+        "",
+        "'4713-01-01 00:00:00+00 BC'::timestamptz",
+        "'4713-01-01 00:00:00+00 BC'::timestamptz",
+    ),
+    hostile(
+        "actor_kind of a kind there is none of",
+        Column::ActorKind,
+        NO_CHECK_ACTOR_KIND,
+        "'robot'",
+        "'robot'",
+    ),
+    hostile(
+        "actor_ref of a hundred thousand characters",
+        Column::ActorRef,
+        "",
+        LONG,
+        LONG,
+    ),
+    hostile(
+        "action of a hundred thousand characters",
+        Column::Action,
+        NO_CHECK_ACTION,
+        "repeat('a', 100000)",
+        "repeat('a', 100000)",
+    ),
+    hostile(
+        "via of a route there is none of",
+        Column::Via,
+        NO_CHECK_VIA,
+        "'teleport'",
+        "'teleport'",
+    ),
+    hostile(
+        "swimlane_id of a hundred thousand characters",
+        Column::SwimlaneId,
+        "",
+        LONG,
+        LONG,
+    ),
+    hostile(
+        "path of a hundred thousand characters",
+        Column::Path,
+        "",
+        LONG,
+        LONG,
+    ),
+    hostile(
+        "hash_before of one byte",
+        Column::HashBefore,
+        NO_HASH_LENGTH,
+        "'\\x00'::bytea",
+        "'\\x00'::bytea",
+    ),
+    hostile(
+        "hash_before of a megabyte",
+        Column::HashBefore,
+        NO_HASH_LENGTH,
+        "decode(repeat('ab', 500000), 'hex')",
+        "decode(repeat('ab', 500000), 'hex')",
+    ),
+    hostile(
+        "hash_after of one byte",
+        Column::HashAfter,
+        NO_HASH_LENGTH,
+        "'\\x00'::bytea",
+        "'\\x00'::bytea",
+    ),
+    hostile(
+        "github_login of a megabyte",
+        Column::GithubLogin,
+        "",
+        MEGABYTE,
+        MEGABYTE,
+    ),
+    hostile(
+        "approval_id of the largest bigint",
+        Column::ApprovalId,
+        "",
+        "9223372036854775807",
+        "9223372036854775807",
+    ),
+    hostile(
+        "approval_id of the smallest bigint",
+        Column::ApprovalId,
+        "",
+        "-9223372036854775808",
+        "-9223372036854775808",
+    ),
+    hostile(
+        "request_id of a megabyte",
+        Column::RequestId,
+        "",
+        MEGABYTE,
+        MEGABYTE,
+    ),
+    hostile(
+        "attribution_source of a source there is none of",
+        Column::AttributionSource,
+        NO_CHECK_SOURCE,
+        "'wizard'",
+        "'wizard'",
+    ),
+    hostile(
+        "attribution_confidence of a level there is none of",
+        Column::AttributionConfidence,
+        NO_CHECK_CONFIDENCE,
+        "'omniscient'",
+        "'omniscient'",
+    ),
+    hostile(
+        "attribution_actor holding a number serde_json cannot read",
+        Column::AttributionActor,
+        "",
+        HUGE_NUMBER,
+        HUGE_NUMBER,
+    ),
+    hostile(
+        "attribution_actor nested deeper than serde_json reads",
+        Column::AttributionActor,
+        "",
+        DEEP_ARRAY,
+        DEEP_ARRAY,
+    ),
+    hostile(
+        "attribution_evidence holding a number serde_json cannot read",
+        Column::AttributionEvidence,
+        "",
+        HUGE_NUMBER,
+        HUGE_NUMBER,
+    ),
+    hostile(
+        "attribution_evidence nested deeper than serde_json reads",
+        Column::AttributionEvidence,
+        "",
+        DEEP_ARRAY,
+        DEEP_ARRAY,
+    ),
 ];
 
 #[test]
@@ -627,6 +819,33 @@ fn the_tamper_cases_cover_every_compared_column_changed_and_removed() {
             .count();
         assert_eq!(removed > 0, nullable, "{}", column.name());
     }
+    // Every column also has a value that something reading it could fail on, so that no column is judged only on tidy values.
+    for column in Column::ALL {
+        assert!(
+            CASES.iter().any(|c| c.column == column && c.hostile),
+            "no hostile-value case for {}",
+            column.name()
+        );
+    }
+    // The three times a `timestamptz` holds and a bigint of microseconds does not.
+    for needle in ["at infinity", "at -infinity", "294276-01-01"] {
+        assert!(
+            CASES.iter().any(|c| c.name.contains(needle)),
+            "no case for {needle}"
+        );
+    }
+    // The jsonb columns: the two ways a stored value cannot be read.
+    for column in [Column::AttributionActor, Column::AttributionEvidence] {
+        for what in ["cannot read", "nested deeper"] {
+            assert!(
+                CASES
+                    .iter()
+                    .any(|c| c.column == column && c.hostile && c.name.contains(what)),
+                "no {what} case for {}",
+                column.name()
+            );
+        }
+    }
 }
 
 /// Each case on a database of its own, with a checkpoint: the rows are clean before the tamper, and after it the only things that
@@ -649,6 +868,9 @@ async fn a_denormalised_column_changed_alone_is_detected_for_every_column() {
 
         let column = case.column.name();
         rig.tamper_open(false).await;
+        if !case.prep.is_empty() {
+            rig.admin_sql(case.prep).await;
+        }
         rig.admin_sql(&format!(
             "UPDATE audit_events SET {column} = {} WHERE seq = 1",
             case.full
@@ -778,5 +1000,171 @@ async fn columns_after_the_first_broken_link_are_not_looked_at() {
             failure(2, FailureKind::ColumnsDiffer(ColumnSet::of(&[Column::Via]))),
             failure(5, FailureKind::ChainLinkBroken)
         ]
+    );
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// A value in a copied column that cannot be read must not end the walk (round 2).
+
+/// 12 events with checkpoints at 6 and 12. The copied column of seq 2 is set by `column_sql` (an `UPDATE ... SET` list), the stored
+/// event of seq 5 is rewritten without its hash being kept, and seq 12 is rewritten consistently, so that the checkpoint at 12 signed
+/// another head. Run through the nightly job, as in production.
+async fn a_later_tamper_is_found_after(column_sql: &str, differ: Column) {
+    let rig = rig_with_checkpoints(db!()).await;
+    rig.tamper_open(true).await;
+    rig.admin_sql(&format!("UPDATE audit_events SET {column_sql} WHERE seq = 2"))
+        .await;
+    rig.admin_sql(
+        "UPDATE audit_events SET event_json = replace(event_json, 'settings_changed', 'role_changed') WHERE seq = 5",
+    )
+    .await;
+    rig.admin_sql(
+        "UPDATE audit_events SET event_json = replace(event_json, 'settings_changed', 'role_changed'), \
+         action = 'role_changed', \
+         hash = sha256(prev_hash || convert_to(replace(event_json, 'settings_changed', 'role_changed'), 'UTF8')) \
+         WHERE seq = 12",
+    )
+    .await;
+    let outcome = rig.nightly().run_once().await.unwrap();
+    assert!(
+        matches!(outcome, NightlyOutcome::Failed(_)),
+        "{column_sql}: expected a failed run, got {outcome:?}"
+    );
+    let NightlyOutcome::Failed(report) = outcome else {
+        return;
+    };
+    assert_eq!(
+        report.failures,
+        [
+            failure(2, FailureKind::ColumnsDiffer(ColumnSet::of(&[differ]))),
+            failure(5, FailureKind::ChainHashMismatch),
+            failure(12, FailureKind::CheckpointHeadMismatch),
+        ],
+        "{column_sql}"
+    );
+    assert_eq!(rig.metrics.audit_verify_failures_total(), 3);
+    assert_eq!(
+        rig.metrics.audit_verify_errors_total(),
+        0,
+        "this is a finding, not an error"
+    );
+    let sent = rig.notifier.sent();
+    assert_eq!(sent.len(), 1, "{column_sql}: the admins are told once");
+    assert_eq!(sent[0].severity, Severity::Critical);
+    let summary = sent[0].summary.as_str();
+    assert!(
+        summary.contains("3 problem(s)") && summary.contains("position 2") && summary.contains(differ.name()),
+        "{summary}"
+    );
+}
+
+#[tokio::test]
+async fn an_infinite_time_is_a_finding_and_a_later_tamper_is_still_found() {
+    // The reviewer's scenario: a verifier that fails on `at = 'infinity'` ends the walk at seq 2 and never looks at seq 5 or at
+    // the checkpoints.
+    a_later_tamper_is_found_after("at = 'infinity'", Column::At).await;
+}
+
+#[tokio::test]
+async fn a_negative_infinite_time_is_a_finding_and_a_later_tamper_is_still_found() {
+    a_later_tamper_is_found_after("at = '-infinity'", Column::At).await;
+}
+
+#[tokio::test]
+async fn a_time_beyond_the_microseconds_of_a_bigint_is_a_finding_and_a_later_tamper_is_still_found() {
+    a_later_tamper_is_found_after("at = '294276-01-01 00:00:00+00'", Column::At).await;
+}
+
+#[tokio::test]
+async fn a_jsonb_column_that_cannot_be_read_is_a_finding_and_a_later_tamper_is_still_found() {
+    a_later_tamper_is_found_after(
+        "attribution_evidence = '{\"n\":1e400}'::jsonb",
+        Column::AttributionEvidence,
+    )
+    .await;
+    a_later_tamper_is_found_after(
+        "attribution_actor = (repeat('[', 200) || repeat(']', 200))::jsonb",
+        Column::AttributionActor,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_row_with_a_null_in_a_chain_column_is_a_hash_failure_and_not_an_error() {
+    // The columns are NOT NULL; an owner can drop that. The table's own check passes on NULL, so nothing else refuses it.
+    for column in ["event_json", "hash", "prev_hash"] {
+        let rig = rig_with_checkpoints(db!()).await;
+        rig.tamper_open(false).await;
+        rig.admin_sql(&format!(
+            "ALTER TABLE audit_events ALTER COLUMN {column} DROP NOT NULL"
+        ))
+        .await;
+        rig.admin_sql(&format!("UPDATE audit_events SET {column} = NULL WHERE seq = 3"))
+            .await;
+        let outcome = rig.nightly().run_once().await.unwrap();
+        let NightlyOutcome::Failed(report) = outcome else {
+            panic!("{column}: expected a failed run, got {outcome:?}");
+        };
+        assert_eq!(
+            report.failures.first(),
+            Some(&failure(3, FailureKind::ChainHashMismatch)),
+            "{column}"
+        );
+        assert_eq!(rig.metrics.audit_verify_errors_total(), 0, "{column}");
+        assert_eq!(rig.notifier.sent().len(), 1, "{column}");
+    }
+}
+
+#[tokio::test]
+async fn a_database_error_is_still_an_error_and_not_a_finding() {
+    // The line between "the stored value cannot be read" (a finding) and "the database cannot be read" (an error): a query the
+    // server refuses is the second. Here a column the select list names is gone.
+    let rig = rig_with_checkpoints(db!()).await;
+    rig.admin_sql("ALTER TABLE audit_events RENAME COLUMN via TO via_renamed")
+        .await;
+    assert!(rig.chain_verifier().verify().await.is_err());
+    assert_eq!(rig.nightly().run_once().await.unwrap(), NightlyOutcome::Errored);
+    assert_eq!(rig.metrics.audit_verify_errors_total(), 1);
+    assert_eq!(rig.metrics.audit_verify_runs_total(), 0);
+}
+
+#[tokio::test]
+async fn a_hundred_column_failures_do_not_crowd_out_a_broken_chain_or_a_checkpoint() {
+    let rig = AuditRig::new(db!()).await;
+    rig.record(110).await;
+    rig.checkpoint_job().run_once().await.unwrap();
+    rig.tamper_open(true).await;
+    // 104 rows whose copies differ, then the stored event of seq 105 changed: the walk ends there.
+    rig.admin_sql("UPDATE audit_events SET via = 'mcp' WHERE seq <= 104")
+        .await;
+    rig.admin_sql(
+        "UPDATE audit_events SET event_json = replace(event_json, 'settings_changed', 'role_changed') WHERE seq = 105",
+    )
+    .await;
+    // A verifier that trusts another key: the checkpoint at 110 fails its signature.
+    let other = support::ecdsa_kms::EcdsaKms::new(rig.pool.clone());
+    let wrong = Arc::new(
+        hub_identity::audit::EcdsaP256Verifier::new()
+            .with_spki_der(support::audit_rig::VERSION, &other.spki_der())
+            .unwrap(),
+    );
+    let report = hub_identity::audit::ChainVerifier::new(rig.pool.clone(), rig.bucket.clone(), wrong)
+        .verify()
+        .await
+        .unwrap();
+    let columns = report
+        .failures
+        .iter()
+        .filter(|f| f.kind.columns().is_some())
+        .count();
+    assert_eq!(columns, 100, "the column failures are bounded");
+    assert!(report.truncated, "and the rest are counted as left out");
+    assert_eq!(
+        report.failures.iter().rev().take(2).copied().collect::<Vec<_>>(),
+        [
+            failure(110, FailureKind::SignatureInvalid),
+            failure(105, FailureKind::ChainHashMismatch)
+        ],
+        "the broken chain and the checkpoint are listed, though a hundred column failures came first"
     );
 }

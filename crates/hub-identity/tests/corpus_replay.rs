@@ -109,9 +109,6 @@ fn claim_invariants_report_what_they_are_meant_to() {
     };
     assert_eq!(invariants::claim_invariants(&good), Ok(()));
     let mut c = good.clone();
-    c.issuer = "https://elsewhere.test".to_owned();
-    assert!(invariants::claim_invariants(&c).is_err(), "wrong issuer");
-    let mut c = good.clone();
     c.audience = vec!["other".to_owned()];
     assert!(invariants::claim_invariants(&c).is_err(), "wrong audience");
     let mut c = good.clone();
@@ -129,6 +126,50 @@ fn claim_invariants_report_what_they_are_meant_to() {
     let mut c = good;
     c.nbf = Some(1_900_000_000);
     assert!(invariants::claim_invariants(&c).is_err(), "not yet valid");
+}
+
+/// The issuer invariant can fail. (The one it replaces compared the issuer in the accepted claims with the profile's, which
+/// `check_claims` copies from the profile: it could never fail.)
+#[test]
+fn the_issuer_invariant_fails_for_a_check_that_ignores_the_issuer() {
+    use hub_identity::oidc::jwt::{Profile, check_claims};
+    let seed = |name: &str| fs::read(fuzz_dir().join("corpus/identity_jwt").join(name)).unwrap();
+    // A check that never looks at the issuer: it accepts the same claims for every profile.
+    let ignores_issuer = |payload: &str, profile: &Profile, now: i64| {
+        let same_issuer = Profile {
+            issuer: "https://issuer.test".to_owned(),
+            ..profile.clone()
+        };
+        check_claims(payload, &same_issuer, now)
+    };
+    for name in [
+        "claims_json_accepted",
+        "claims_json_aud_list_float_exp",
+        "claims_token_middle_segment",
+    ] {
+        let bytes = seed(name);
+        assert_eq!(
+            invariants::issuer_is_enforced(&bytes),
+            Ok(()),
+            "{name}: the real check"
+        );
+        assert!(
+            invariants::issuer_is_enforced_by(&bytes, ignores_issuer).is_err(),
+            "{name}: a check that ignores the issuer went unnoticed"
+        );
+    }
+    // Claims that are refused anyway say nothing either way.
+    for name in [
+        "claims_json_expired",
+        "claims_json_wrong_tenant",
+        "claims_json_wrong_issuer",
+    ] {
+        assert_eq!(
+            invariants::issuer_is_enforced_by(&seed(name), ignores_issuer),
+            Ok(()),
+            "{name}"
+        );
+    }
 }
 
 /// Every target in `fuzz_targets/` has a corpus and a replay test, and the other way round.

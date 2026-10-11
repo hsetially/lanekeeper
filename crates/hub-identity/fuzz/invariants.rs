@@ -11,7 +11,7 @@
 //!
 //! | Target | Input | What must hold |
 //! |---|---|---|
-//! | `identity_jwt` | text | whatever the bytes are, parsing a token never panics and refuses more than 16 KiB without looking inside; an accepted header has algorithm RS256 and a key id of 1 to 256 bytes; a token is never verified against a key set that holds no key that signed it (random input is never a valid signature); a key-set document that parses holds 1 to 32 keys; claims that `check_claims` accepts (the input read as the claims JSON, and its middle segment read as a token payload, because random tokens never get past the signature) name the profile's issuer, one of its audiences and its tenant, and are neither expired nor from the future beyond the skew; the Entra profile accepts claims only with the `mcp.access` scope, an `nbf` and a GUID `tid` and `oid`, and its identity is exactly `tid:oid`; the Google profile accepts claims only with a verified, non-empty email and a subject |
+//! | `identity_jwt` | text | whatever the bytes are, parsing a token never panics and refuses more than 16 KiB without looking inside; an accepted header has algorithm RS256 and a key id of 1 to 256 bytes; a token is never verified against a key set that holds no key that signed it (random input is never a valid signature); a key-set document that parses holds 1 to 32 keys; claims that `check_claims` accepts (the input read as the claims JSON, and its middle segment read as a token payload, because random tokens never get past the signature) are refused when the profile's issuer is another, and name one of its audiences and its tenant, and are neither expired nor from the future beyond the skew; the Entra profile accepts claims only with the `mcp.access` scope, an `nbf` and a GUID `tid` and `oid`, and its identity is exactly `tid:oid`; the Google profile accepts claims only with a verified, non-empty email and a subject |
 //! | `identity_audit_event` | text | an event that parses is refused only when its diff is oversize; its canonical JSON parses back to the same event and is stable; a stored row passes the hash check only with the right predecessor, event text and hash; a checkpoint object that parses has a signature of 1 to 128 bytes and survives a round trip; a key or signature that is junk never verifies; the denormalised columns the log writes for an event never differ from its stored text, and text of any shape is judged without a panic |
 //! | `identity_cookie` | text | `valid_return_to` accepts only a site-relative path (one leading `/`, no backslash, no control character, at most 512 bytes); a login cookie that was not sealed with the key never opens; the callback query parser never panics; a list cursor is refused or decodes to a key that re-encodes to a cursor that decodes to the same key, and a request cursor that decodes re-encodes to the same text; a `Cookie` header that parses yields only non-empty values made of cookie octets, within the size cap; a session or CSRF token text that is accepted is the one spelling of its 32 bytes; the CSRF check lets a state-changing request with a session through only when the header, the cookie and the stored hash agree and `Origin` is exactly the public origin |
 
@@ -87,10 +87,9 @@ fn base64url(data: &[u8]) -> String {
     out
 }
 
-/// What `check_claims` says about an input, read two ways: the input as the claims JSON itself (so that the fuzzer's mutations
-/// land on the JSON and not on its base64), and, if the input is a three-segment token, its middle segment as the payload.
-pub fn claim_outcomes(data: &[u8]) -> Vec<Result<Claims, TokenError>> {
-    let profile = claim_profile();
+/// The payloads `check_claims` is run on for an input: the input read as the claims JSON, and, if it is a three-segment token, its
+/// middle segment.
+fn claim_payloads(data: &[u8]) -> Vec<String> {
     let mut payloads = vec![base64url(data)];
     let token = text(data);
     let mut parts = token.split('.');
@@ -99,17 +98,48 @@ pub fn claim_outcomes(data: &[u8]) -> Vec<Result<Claims, TokenError>> {
         payloads.push(payload.to_owned());
     }
     payloads
+}
+
+/// What `check_claims` says about an input, read two ways: the input as the claims JSON itself (so that the fuzzer's mutations
+/// land on the JSON and not on its base64), and, if the input is a three-segment token, its middle segment as the payload.
+pub fn claim_outcomes(data: &[u8]) -> Vec<Result<Claims, TokenError>> {
+    let profile = claim_profile();
+    claim_payloads(data)
         .iter()
         .map(|payload| check_claims(payload, &profile, NOW))
         .collect()
 }
 
+/// A payload that `check` accepts for the profile's issuer is refused for another. `Claims::issuer` is copied from the profile by
+/// `check_claims`, so it cannot be compared with the profile to learn whether the issuer was checked; this asks the question the
+/// only way that can fail, by changing the issuer the profile wants.
+pub fn issuer_is_enforced_by(
+    data: &[u8],
+    check: impl Fn(&str, &Profile, i64) -> Result<Claims, TokenError>,
+) -> Result<(), String> {
+    let profile = claim_profile();
+    let other = Profile {
+        issuer: "https://another-issuer.test".to_owned(),
+        ..profile.clone()
+    };
+    for payload in claim_payloads(data) {
+        if check(&payload, &profile, NOW).is_ok() && check(&payload, &other, NOW).is_ok() {
+            return Err("the same claims were accepted for two different issuers".to_owned());
+        }
+    }
+    Ok(())
+}
+
+/// [`issuer_is_enforced_by`] for the real `check_claims`.
+pub fn issuer_is_enforced(data: &[u8]) -> Result<(), String> {
+    issuer_is_enforced_by(data, check_claims)
+}
+
 /// What claims that `check_claims` accepted must satisfy.
 pub fn claim_invariants(claims: &Claims) -> Result<(), String> {
+    // The issuer is not compared here: `check_claims` copies it from the profile, so the comparison could never fail. That the
+    // issuer is checked at all is `issuer_is_enforced`.
     let profile = claim_profile();
-    if claims.issuer != profile.issuer {
-        return Err("accepted claims name another issuer".to_owned());
-    }
     if claims.audience.is_empty() || !claims.audience.iter().any(|a| profile.audiences.contains(a)) {
         return Err("accepted claims name none of the audiences".to_owned());
     }
@@ -156,6 +186,7 @@ pub fn identity_jwt(data: &[u8]) -> Result<(), String> {
     for claims in claim_outcomes(data).into_iter().flatten() {
         claim_invariants(&claims)?;
     }
+    issuer_is_enforced(data)?;
     // The same bytes as a key-set document.
     if let Ok(set) = KeySet::parse(data) {
         if set.is_empty() || set.len() > 32 {

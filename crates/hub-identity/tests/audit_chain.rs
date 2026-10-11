@@ -393,6 +393,73 @@ async fn a_wait_for_the_lock_ends_with_unavailable_and_an_aborted_transaction() 
     assert_eq!(committed(&pool).await.len(), 0);
 }
 
+/// The backend and the `lock_timeout` of the one connection of a pool.
+async fn session_state(pool: &PgPool) -> (i32, String) {
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let timeout: String = sqlx::query_scalar("SHOW lock_timeout")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    (pid, timeout)
+}
+
+#[tokio::test]
+async fn the_lock_timeout_is_set_for_the_transaction_only() {
+    // `SET LOCAL` ends with the transaction. A plain `SET` would stay on the pooled connection and make the next, unrelated
+    // statement of any other caller fail after a second. One connection in the pool, so that "the next statement" is on the same
+    // backend, whatever happened.
+    let db = db!();
+    let pool = db.app_pool(1).await;
+    let (pid, default) = session_state(&pool).await;
+    let log = PgAuditLog::new().with_lock_timeout(Duration::from_millis(1500));
+
+    // Committed.
+    let mut tx = pool.begin().await.unwrap();
+    log.record(&mut Tx::from_pg(&mut tx), event(1)).await.unwrap();
+    let inside: String = sqlx::query_scalar("SHOW lock_timeout")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_ne!(inside, default, "the timeout was set inside the transaction");
+    tx.commit().await.unwrap();
+    assert_eq!(
+        session_state(&pool).await,
+        (pid, default.clone()),
+        "after a commit"
+    );
+
+    // Rolled back.
+    let mut tx = pool.begin().await.unwrap();
+    log.record(&mut Tx::from_pg(&mut tx), event(2)).await.unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        session_state(&pool).await,
+        (pid, default.clone()),
+        "after a rollback"
+    );
+
+    // A wait for the lock that ran out: the transaction is aborted, and rolled back.
+    let holder_pool = db.app_pool(1).await;
+    let mut holder = holder_pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(CHAIN_LOCK_KEY)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let failed = PgAuditLog::new()
+        .with_lock_timeout(Duration::from_millis(200))
+        .record(&mut Tx::from_pg(&mut tx), event(3))
+        .await;
+    assert_eq!(failed, Err(AuditError::Unavailable));
+    tx.rollback().await.unwrap();
+    holder.rollback().await.unwrap();
+    assert_eq!(session_state(&pool).await, (pid, default), "after a lock timeout");
+}
+
 #[tokio::test]
 async fn a_transaction_of_another_store_is_refused() {
     let mut state = ports::fakes::FakeTxState::default();
