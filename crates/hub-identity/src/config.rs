@@ -2,6 +2,8 @@
 //!
 //! The configuration names secrets (by their Secret Manager name) and files, never their values. `Debug` shows only names.
 
+use std::collections::BTreeSet;
+
 use domain::Guid;
 use serde::Deserialize;
 use url::Url;
@@ -10,6 +12,9 @@ use url::Url;
 const MAX_FIELD_LEN: usize = 512;
 /// At most this many accepted API audiences (the hub API has one or two app-id URIs).
 const MAX_AUDIENCES: usize = 8;
+
+/// At most this many bootstrap admins: a handful of people who set the hub up, not a user list.
+pub const MAX_BOOTSTRAP_ADMINS: usize = 32;
 
 /// The host of the public Entra authority. Overridable for sovereign clouds and tests.
 pub const DEFAULT_AUTHORITY_HOST: &str = "login.microsoftonline.com";
@@ -31,6 +36,8 @@ pub enum ConfigError {
     TokenFile,
     #[error("accepted_api_audiences must hold 1 to 8 non-empty values without control characters")]
     Audiences,
+    #[error("bootstrap_admins must hold at most 32 distinct object ids")]
+    BootstrapAdmins,
 }
 
 /// How the hub proves its identity to Entra at the token endpoint.
@@ -167,16 +174,31 @@ impl EntraConfig {
     }
 }
 
-/// Everything the identity component is configured with. T2 adds the bootstrap admins.
+/// Everything the identity component is configured with.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IdentityConfig {
     pub entra: EntraConfig,
+    /// Entra object ids that become active admins when they first sign in (S1). Without any, the first admin has to be
+    /// made in the database. The list never promotes a user who already exists.
+    #[serde(default)]
+    pub bootstrap_admins: Vec<Guid>,
 }
 
 impl IdentityConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
-        self.entra.validate()
+        self.entra.validate()?;
+        let distinct = self.bootstrap_set();
+        if self.bootstrap_admins.len() > MAX_BOOTSTRAP_ADMINS || distinct.len() != self.bootstrap_admins.len()
+        {
+            return Err(ConfigError::BootstrapAdmins);
+        }
+        Ok(())
+    }
+
+    /// The bootstrap object ids, for [`crate::users::PgUsers::new`].
+    pub fn bootstrap_set(&self) -> BTreeSet<Guid> {
+        self.bootstrap_admins.iter().cloned().collect()
     }
 }
 
@@ -268,6 +290,51 @@ mod tests {
         let mut c = parse("");
         c.accepted_api_audiences.clear();
         assert_eq!(c.validate(), Err(ConfigError::Audiences));
+    }
+
+    fn identity(extra: &str) -> IdentityConfig {
+        serde_json::from_str(&format!(r#"{{"entra":{}{extra}}}"#, json(""))).unwrap()
+    }
+
+    #[test]
+    fn bootstrap_admins_default_to_nobody_and_are_guids() {
+        let c = identity("");
+        c.validate().unwrap();
+        assert!(c.bootstrap_admins.is_empty());
+        assert!(c.bootstrap_set().is_empty());
+
+        let c = identity(
+            r#","bootstrap_admins":["AAAAAAAA-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000002"]"#,
+        );
+        c.validate().unwrap();
+        assert_eq!(c.bootstrap_set().len(), 2);
+        // Guids are stored lower case, so the comparison with a token's `oid` is exact.
+        assert!(
+            c.bootstrap_set()
+                .iter()
+                .any(|g| g.as_str() == "aaaaaaaa-0000-4000-8000-000000000001")
+        );
+        assert!(
+            serde_json::from_str::<IdentityConfig>(&format!(
+                r#"{{"entra":{},"bootstrap_admins":["admin@example.com"]}}"#,
+                json("")
+            ))
+            .is_err(),
+            "an email is not an object id"
+        );
+    }
+
+    #[test]
+    fn bootstrap_admins_are_unique_and_bounded() {
+        let dup = identity(
+            r#","bootstrap_admins":["00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000001"]"#,
+        );
+        assert_eq!(dup.validate(), Err(ConfigError::BootstrapAdmins));
+        let many: Vec<String> = (0..=MAX_BOOTSTRAP_ADMINS)
+            .map(|n| format!("\"00000000-0000-4000-8000-{n:012x}\""))
+            .collect();
+        let too_many = identity(&format!(r#","bootstrap_admins":[{}]"#, many.join(",")));
+        assert_eq!(too_many.validate(), Err(ConfigError::BootstrapAdmins));
     }
 
     #[test]

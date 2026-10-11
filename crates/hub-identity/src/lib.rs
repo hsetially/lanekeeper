@@ -12,6 +12,14 @@
 //!   service-account token on every exchange (Q25), or a client secret from `SecretSource`.
 //! - [`http`] is the one outbound HTTPS client: TLS 1.3 only, a host allowlist, a timeout and a body cap on every call.
 //!
+//! T2: users, roles and access requests (S1, S4).
+//!
+//! - [`users::PgUsers`] is the `Users` port over Postgres and records the first sign-in: a new user is `pending` with an
+//!   access request, an event, an audit record and a notification, unless their object id is a configured bootstrap admin.
+//! - [`users::UserAdmin`] approves, rejects and changes users under [`users::rules`] (the last active admin stays, nobody
+//!   changes their own role), ends the sessions of a user whose role or status changed, and lists with keyset cursors.
+//! - [`users::onboarding`] answers `needs_github_token` for `/me` without reading a ciphertext; [`notify`] tells the admins.
+//!
 //! Nothing here is public beyond what the later tasks and the hub binary need, and no error carries input text (S10, S21).
 #![forbid(unsafe_code)]
 #![allow(
@@ -24,7 +32,9 @@ pub mod clock;
 pub mod config;
 pub mod error;
 pub mod http;
+pub mod notify;
 pub mod oidc;
+pub mod users;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{ClientAuth, ConfigError, EntraConfig, IdentityConfig};

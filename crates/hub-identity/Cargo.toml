@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 domain.workspace = true
-ports.workspace = true
+ports = { workspace = true, features = ["postgres"] }
 async-trait.workspace = true
 aws-lc-rs.workspace = true
 base64.workspace = true
@@ -26,6 +26,9 @@ rustls-native-certs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+# Users, access requests and sessions (T2, T3). Runtime-checked queries (no `query!`: it needs a live database or `.sqlx` metadata at compile
+# time, and the xtask harness has the same rule). No TLS feature, as the workspace comment says: TLS comes from the pool options.
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json"] }
 subtle.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
@@ -35,7 +38,11 @@ url.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-ports = { workspace = true, features = ["fakes"] }
+ports = { workspace = true, features = ["fakes", "postgres"] }
+# Real Postgres 16 in a container (or `LK_TEST_PG_ADMIN_URL`), migrated as lanekeeper_migrator and used as lanekeeper_app.
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json", "migrate"] }
+testcontainers.workspace = true
+futures.workspace = true
 # The mock identity provider reads the modulus and exponent of a generated key to publish them as a JWKS.
 aws-lc-rs = { workspace = true, features = ["ring-io"] }
 # Captures `tracing` output so the log tests can search it (S10).

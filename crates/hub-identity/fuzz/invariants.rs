@@ -12,7 +12,7 @@
 //! | Target | Input | What must hold |
 //! |---|---|---|
 //! | `identity_jwt` | text | whatever the bytes are, parsing a token never panics and refuses more than 16 KiB without looking inside; an accepted header has algorithm RS256 and a key id of 1 to 256 bytes; a token is never verified against a key set that holds no key that signed it (random input is never a valid signature); a key-set document that parses holds 1 to 32 keys |
-//! | `identity_cookie` | text | `valid_return_to` accepts only a site-relative path (one leading `/`, no backslash, no control character, at most 512 bytes); a login cookie that was not sealed with the key never opens; the callback query parser never panics |
+//! | `identity_cookie` | text | `valid_return_to` accepts only a site-relative path (one leading `/`, no backslash, no control character, at most 512 bytes); a login cookie that was not sealed with the key never opens; the callback query parser never panics; a list cursor is refused or decodes to a key that re-encodes to a cursor that decodes to the same key, and a request cursor that decodes re-encodes to the same text |
 
 #![allow(
     dead_code,
@@ -26,6 +26,7 @@ use hub_identity::TokenError;
 use hub_identity::oidc::jwks::{KeySet, RsaPublicKey};
 use hub_identity::oidc::jwt::{Profile, parse_compact, verify_with_keys};
 use hub_identity::oidc::login::{CallbackQuery, LoginSealer, valid_return_to};
+use hub_identity::users::cursor;
 
 /// A seed corpus needs at least this many files per target (`MIN_SEEDS` in the replay test).
 pub const MIN_SEEDS: usize = 8;
@@ -97,5 +98,16 @@ pub fn identity_cookie(data: &[u8]) -> Result<(), String> {
         return Err("a value that was not sealed with the key opened".to_owned());
     }
     let _ = CallbackQuery::parse(&value);
+    // The list cursors come from the client too (T2).
+    if let Ok(user) = cursor::decode_user(&value) {
+        if cursor::decode_user(&cursor::encode_user(&user)) != Ok(user) {
+            return Err("a user cursor did not survive a round trip".to_owned());
+        }
+    }
+    if let Ok(id) = cursor::decode_request(&value) {
+        if cursor::encode_request(id) != value {
+            return Err("a request cursor was accepted in a non-canonical form".to_owned());
+        }
+    }
     Ok(())
 }
