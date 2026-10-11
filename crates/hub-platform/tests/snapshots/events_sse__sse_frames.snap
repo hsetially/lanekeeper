@@ -1,0 +1,27 @@
+---
+source: crates/hub-platform/tests/events_sse.rs
+expression: "seen.join(\"-----\\n\")"
+---
+retry: 3000
+
+-----
+id: 1
+event: findings_changed
+data: {"type":"findings_changed","swimlane":"sit1"}
+
+-----
+id: 2
+event: proposal_changed
+data: {"type":"proposal_changed","id":7,"status":"pending"}
+
+-----
+event: resync
+data: {"type":"resync"}
+
+-----
+id: 3
+event: drift_changed
+data: {"type":"drift_changed","swimlane":"sit2","paths":["svc/app.yml"]}
+
+-----
+: heartbeat

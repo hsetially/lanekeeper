@@ -89,3 +89,8 @@ rustls = { workspace = true, features = ["std", "tls12"] }
 sqlx = { workspace = true, features = ["postgres", "migrate", "runtime-tokio"] }
 testcontainers.workspace = true
 tempfile.workspace = true
+
+# P13 (T5): three replicas, 300 SSE clients, an event committed on one and timed until the last client has it. Needs Docker.
+[[bench]]
+name = "sse_delivery"
+harness = false

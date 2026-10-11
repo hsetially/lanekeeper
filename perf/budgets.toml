@@ -339,7 +339,7 @@ statistic = "p95"
 threshold = 1000
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P14"

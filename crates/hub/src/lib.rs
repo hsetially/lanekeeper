@@ -18,6 +18,7 @@ pub mod compose;
 pub mod config;
 pub mod db;
 pub mod edge;
+pub mod events;
 pub mod headers;
 pub mod limits;
 pub mod metrics;
@@ -30,3 +31,4 @@ pub mod telemetry;
 
 pub use compose::{BuildError, Deps, Hub, Module};
 pub use config::{ConfigError, HubSettings};
+pub use events::EventsModule;
