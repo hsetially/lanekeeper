@@ -67,8 +67,9 @@ pub fn platform_routes() -> Vec<RouteSpec> {
             &Method::POST,
             WEBHOOK_PATH,
             RouteGuard::Public {
-                reason: "no session: verified by an HMAC over the raw body and a delivery-id replay guard"
-                    .to_owned(),
+                reason:
+                    "no session: verified by an HMAC over the raw body and a replay guard keyed on that HMAC"
+                        .to_owned(),
             },
         ),
     ]
