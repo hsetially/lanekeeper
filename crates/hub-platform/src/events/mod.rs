@@ -1,6 +1,8 @@
 //! Event bus and SSE (T5, D66, D80, P13).
 //!
 //! - [`wire`]: the outbox envelope and the event id.
+//! - [`outbox`]: the table's reads and writes; `publish_in_tx` is one `INSERT` on the caller's transaction (T10), and
+//!   [`crate::jobs::outbox_prune`] deletes rows after an hour.
 //! - [`relay`]: the cursor and overlap window that read new rows exactly once.
 //! - [`source`], [`visibility`], [`sse`], [`metrics`]: the SSE endpoint, and where its events come from.
 //! - [`fake`]: an in-memory source for tests of the endpoint (`fakes` feature).

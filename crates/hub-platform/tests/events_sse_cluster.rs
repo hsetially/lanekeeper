@@ -15,7 +15,7 @@ use domain::{DomainEvent, ProposalId, ProposalStatus, UserStatus};
 use hub_platform::events::bus::BusSettings;
 use hub_platform::events::sse::SseSettings;
 use ports::{EventBus, Tx};
-use support::event_cluster::{EventCluster, connect};
+use support::event_cluster::{EventCluster, connect, wait_for};
 use support::sse_client::{kind_of, parse};
 
 fn proposal(n: i64) -> DomainEvent {
@@ -88,6 +88,16 @@ async fn a_client_resumes_on_another_replica_from_its_last_event_id() {
     for n in 2..=4 {
         cluster.replicas[1].bus.publish(proposal(n)).await.unwrap();
     }
+    // Delivery is at least once: a replica whose relay has not yet read an older row hands it to a stream that subscribed in the
+    // meantime, even though the client has seen it (ids below the cursor are late commits to the relay, so they cannot be told
+    // apart from it). The "then live" check below is about events after the replay, so replica 2 must have read all four rows
+    // before the client arrives; without the wait the test passed or failed on how fast replica 2's relay was.
+    wait_for(
+        "replica 2's relay to read all four rows",
+        Duration::from_secs(5),
+        async || cluster.replicas[2].metrics.relayed_total() >= 4,
+    )
+    .await;
     let mut second = connect(
         cluster.replicas[2].addr,
         "viewer",

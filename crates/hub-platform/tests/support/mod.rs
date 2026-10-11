@@ -14,6 +14,7 @@ pub mod grpc;
 pub mod log_capture;
 pub mod perf;
 pub mod pg;
+pub mod pg_tx;
 pub mod soft_kms;
 pub mod sse_client;
 pub mod tls;

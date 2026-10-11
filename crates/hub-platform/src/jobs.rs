@@ -40,6 +40,8 @@ use tracing::{debug, info, warn};
 
 use crate::events::source::wait_closed;
 
+pub mod outbox_prune;
+
 /// The most jobs one runner holds. Job names come from code, so this also bounds the metric labels.
 pub const MAX_JOBS: usize = 64;
 /// What a run may take unless the spec says otherwise.

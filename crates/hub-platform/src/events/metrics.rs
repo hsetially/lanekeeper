@@ -101,6 +101,7 @@ pub struct EventMetrics {
     sse_ended: Family<EndLabels, Counter>,
     sse_refused: Family<RefusalLabels, Counter>,
     replays: Family<ReplayLabels, Counter>,
+    pruned: Counter,
 }
 
 impl EventMetrics {
@@ -156,6 +157,11 @@ impl EventMetrics {
             self.sse_refused.clone(),
         );
         registry.register("events_replays", "SSE replays, by outcome", self.replays.clone());
+        registry.register(
+            "events_outbox_pruned",
+            "Outbox rows deleted by the prune job on this replica",
+            self.pruned.clone(),
+        );
     }
 
     pub fn published(&self, outcome: PublishOutcome) {
@@ -205,6 +211,16 @@ impl EventMetrics {
 
     pub fn replay(&self, outcome: ReplayOutcome) {
         self.replays.get_or_create(&ReplayLabels { outcome }).inc();
+    }
+
+    /// The prune job deleted `rows` rows.
+    pub fn pruned(&self, rows: u64) {
+        self.pruned.inc_by(rows);
+    }
+
+    #[must_use]
+    pub fn pruned_total(&self) -> u64 {
+        self.pruned.get()
     }
 
     #[must_use]
