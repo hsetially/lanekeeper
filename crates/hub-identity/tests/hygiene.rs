@@ -48,6 +48,120 @@ fn forbid_unsafe_present() {
     }
 }
 
+/// Source files that may panic by design, and why. Nothing else under `src/` may.
+/// - `testing.rs`: helpers behind the `route-table` feature that panic with every problem they find (its module comment
+///   says so); the hub binary runs them in a test, never on a request.
+/// - `http/tests.rs`: the body of `#[cfg(test)] mod tests;` in `http.rs`.
+const PANIC_ALLOWED_FILES: [&str; 2] = ["testing.rs", "http/tests.rs"];
+
+/// The production part of a source file: everything before the first `#[cfg(test)]` line (the test module closes each
+/// file), without comment lines (doc comments may show `.unwrap()` in prose).
+fn production_text(source: &str) -> String {
+    source
+        .lines()
+        .take_while(|l| l.trim() != "#[cfg(test)]")
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Every construct that rule 2 of `AGENTS.md` denies in non-test code, found by text. `unwrap_or*` and `expect_err` stay legal.
+fn panic_sites(production: &str) -> Vec<&'static str> {
+    const BANNED: [&str; 12] = [
+        ".unwrap()",
+        ".expect(",
+        "panic!(",
+        "todo!(",
+        "unimplemented!(",
+        "dbg!(",
+        "allow(clippy::unwrap_used",
+        "allow(clippy::expect_used",
+        "allow(clippy::panic",
+        "allow(clippy::todo",
+        "allow(clippy::unimplemented",
+        "allow(clippy::dbg_macro",
+    ];
+    BANNED
+        .into_iter()
+        .filter(|banned| production.contains(banned))
+        .collect()
+}
+
+#[test]
+fn no_unwrap_on_input_derived_data() {
+    // S21 / AGENTS.md rule 2. The compile-time half is clippy: the crate takes its lint levels from the workspace, and the
+    // workspace denies the panicking constructs. The proptests in `corpus_replay.rs` are the runtime half. This test pins
+    // both of the settings the compile-time half depends on, and reads the production source for what slipped past them.
+    let manifest = fs::read_to_string(crate_dir().join("Cargo.toml")).unwrap();
+    assert!(
+        manifest.contains("[lints]\nworkspace = true"),
+        "hub-identity must take its lints from the workspace"
+    );
+    let workspace = fs::read_to_string(crate_dir().join("../../Cargo.toml")).unwrap();
+    for lint in [
+        "unwrap_used",
+        "expect_used",
+        "panic",
+        "todo",
+        "unimplemented",
+        "dbg_macro",
+    ] {
+        assert!(
+            workspace.contains(&format!("{lint} = \"deny\"")),
+            "the workspace must deny clippy::{lint}"
+        );
+    }
+    let src = crate_dir().join("src");
+    let mut files = Vec::new();
+    rust_sources(&src, &mut files);
+    let mut checked = 0;
+    for f in files {
+        let relative = f.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
+        if PANIC_ALLOWED_FILES.contains(&relative.as_str()) {
+            continue;
+        }
+        checked += 1;
+        let found = panic_sites(&production_text(&fs::read_to_string(&f).unwrap()));
+        assert!(
+            found.is_empty(),
+            "{relative} has panicking code outside its test module: {found:?}"
+        );
+    }
+    assert!(
+        checked > 30,
+        "the scan must cover the crate, covered {checked} files"
+    );
+    // The two exceptions stay what they say: `testing.rs` is behind the feature, and `http/tests.rs` is a test module.
+    let lib = fs::read_to_string(src.join("lib.rs")).unwrap();
+    assert!(lib.contains("#[cfg(feature = \"route-table\")]\npub mod testing;"));
+    let http = fs::read_to_string(src.join("http.rs")).unwrap();
+    assert!(http.contains("#[cfg(test)]\nmod tests;"));
+}
+
+#[test]
+fn panic_scan_finds_planted_violations() {
+    // The scan above is only worth having if it fires. Each plant is a production line a careless edit could add.
+    for (plant, expected) in [
+        ("fn f(x: Option<u8>) -> u8 { x.unwrap() }", ".unwrap()"),
+        ("fn f(x: Option<u8>) -> u8 { x.expect(\"set\") }", ".expect("),
+        ("fn f() { panic!(\"no\") }", "panic!("),
+        ("fn f() { todo!() }", "todo!("),
+        ("fn f() { dbg!(1); }", "dbg!("),
+        (
+            "#[allow(clippy::unwrap_used)]\nfn f() {}",
+            "allow(clippy::unwrap_used",
+        ),
+    ] {
+        assert!(
+            panic_sites(&production_text(plant)).contains(&expected),
+            "the scan missed {expected} in {plant}"
+        );
+    }
+    // A violation inside the test module, in a comment, or spelled `unwrap_or` is not production code.
+    let clean = "// x.unwrap() in prose\nfn f(x: Option<u8>) -> u8 { x.unwrap_or(0) }\n#[cfg(test)]\nmod tests { fn t() { Some(1).unwrap(); } }";
+    assert!(panic_sites(&production_text(clean)).is_empty());
+}
+
 #[test]
 fn no_kubernetes_secret_read_in_crate() {
     // The hub reads runtime secrets from Secret Manager through `SecretSource` (S8); the one file it reads from disk is
