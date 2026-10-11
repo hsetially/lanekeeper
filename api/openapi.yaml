@@ -3081,7 +3081,7 @@ paths:
             Set-Cookie:
               schema:
                 type: string
-              description: '`lk_session` (HttpOnly, Secure, SameSite=Lax) and `lk_csrf`.'
+              description: '`__Host-lk_session` (HttpOnly, Secure, SameSite=Lax, Path=/, no Domain) and `__Host-lk_csrf`.'
         '400':
           $ref: '#/components/responses/BadRequest'
         default:
@@ -3197,7 +3197,7 @@ components:
     sessionCookie:
       type: apiKey
       in: cookie
-      name: lk_session
+      name: __Host-lk_session
       description: HttpOnly, Secure, SameSite=Lax session cookie set by `/auth/callback` (S2).
   parameters:
     CsrfToken:
@@ -3208,7 +3208,7 @@ components:
         type: string
         minLength: 16
         maxLength: 256
-      description: 'Double-submit token (S3): the value of the `lk_csrf` cookie. The server also checks that `Origin`
+      description: 'Double-submit token (S3): the value of the `__Host-lk_csrf` cookie. The server also checks that `Origin`
         is the public origin.'
     IdempotencyKey:
       name: Idempotency-Key
@@ -4976,6 +4976,10 @@ components:
             enum:
             - all
             description: Every signed-in user sees every swimlane.
+          needs_github_token:
+            type: boolean
+            description: True while the user has no stored GitHub token, so the web app can prompt for one before
+              the first edit. Absent in older servers; treat absence as false.
         additionalProperties: false
     GithubTokenRequest:
       type: object

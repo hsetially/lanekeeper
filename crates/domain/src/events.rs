@@ -1,6 +1,7 @@
 //! Events published on the `EventBus` and delivered to SSE subscribers (`docs/interfaces.md`).
 //!
-//! The first ten variants are the base set; the last five are the D72-D80 additions.
+//! The first ten variants are the base set; then come the five D72-D80 additions and the internal
+//! `UserSessionsRevoked` (see [`DomainEvent::is_internal`]).
 //! The JSON shape (`{"type": "<snake_case variant>", ...fields}`) is pinned by a snapshot test.
 
 use serde::{Deserialize, Serialize};
@@ -76,6 +77,12 @@ pub enum DomainEvent {
         swimlane: SwimlaneId,
         job: JobRef,
     },
+    /// Every session of this user is revoked (the user was disabled or signed out everywhere): replicas
+    /// evict their cached sessions for the user. Internal: it never reaches browsers
+    /// ([`DomainEvent::is_internal`]).
+    UserSessionsRevoked {
+        user: UserId,
+    },
 }
 
 impl DomainEvent {
@@ -96,7 +103,15 @@ impl DomainEvent {
             | Self::DocIndexed { .. }
             | Self::Resync
             | Self::PrStateChanged { .. }
-            | Self::PrJobProgress { .. } => None,
+            | Self::PrJobProgress { .. }
+            | Self::UserSessionsRevoked { .. } => None,
         }
+    }
+
+    /// True for events that exist only to coordinate hub replicas. The SSE edge must drop them before
+    /// any per-user filtering: a global event is otherwise delivered to every web user, and this one
+    /// carries a user id. In-process subscribers (the session cache) still receive them from the bus.
+    pub fn is_internal(&self) -> bool {
+        matches!(self, Self::UserSessionsRevoked { .. })
     }
 }
