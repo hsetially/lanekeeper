@@ -158,6 +158,7 @@ fn sample_events() -> Vec<DomainEvent> {
             swimlane: sl(),
             job: job(),
         },
+        DomainEvent::UserSessionsRevoked { user: user_id(1) },
     ]
 }
 
@@ -176,8 +177,8 @@ fn event_kind_is_the_wire_type_of_every_domain_event() {
     }
     assert_eq!(
         kinds.len(),
-        15,
-        "5 added by D72-D80 plus the 10 base variants, all distinct"
+        16,
+        "5 added by D72-D80, the internal UserSessionsRevoked and the 10 base variants, all distinct"
     );
 }
 
@@ -403,4 +404,30 @@ fn tx_debug_names_the_backing_store_only() {
     let mut state = ports::fakes::FakeTxState::new();
     let tx = ports::Tx::in_memory(&mut state);
     assert_eq!(format!("{tx:?}"), "Tx { kind: \"in_memory\" }");
+}
+
+#[test]
+fn internal_events_reach_in_process_subscribers_but_are_flagged_for_the_sse_edge() {
+    let revoked = DomainEvent::UserSessionsRevoked { user: user_id(1) };
+    assert!(revoked.is_internal());
+    // The bus filter does not hide it: the session cache subscribes with these filters.
+    assert!(EventFilter::all().matches(&revoked));
+    assert!(EventFilter::for_swimlane(swimlane("sit1")).matches(&revoked));
+    let only_revoked = EventFilter {
+        swimlanes: None,
+        kinds: [EventKind::UserSessionsRevoked].into(),
+    };
+    assert!(only_revoked.matches(&revoked));
+    let only_drift = EventFilter {
+        swimlanes: None,
+        kinds: [EventKind::DriftChanged].into(),
+    };
+    assert!(!only_drift.matches(&revoked));
+    // Every other event is public.
+    assert!(
+        sample_events()
+            .iter()
+            .filter(|e| !matches!(e, DomainEvent::UserSessionsRevoked { .. }))
+            .all(|e| !e.is_internal())
+    );
 }

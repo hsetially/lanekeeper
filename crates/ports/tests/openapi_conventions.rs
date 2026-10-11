@@ -573,6 +573,8 @@ fn secrets_are_write_only() {
     let d = doc();
     // (schema, property): a value that is shown exactly once, with the reason.
     let shown_once = [("JoinToken", "token")];
+    // (schema, property): a boolean about a secret, not the secret, with the reason: whether a token is stored.
+    let flags = [("Me", "needs_github_token")];
     let mut checked = 0;
     for (name, schema) in d["components"]["schemas"].as_object().expect("schemas") {
         for (prop, def) in properties(&d, schema) {
@@ -584,6 +586,10 @@ fn secrets_are_write_only() {
                 continue;
             }
             checked += 1;
+            if flags.contains(&(name.as_str(), prop)) {
+                assert_eq!(def["type"], "boolean", "{name}.{prop} is a flag, so a boolean");
+                continue;
+            }
             if shown_once.contains(&(name.as_str(), prop)) {
                 assert_eq!(def["readOnly"], true, "{name}.{prop} is shown once, so readOnly");
                 continue;
@@ -681,4 +687,67 @@ fn schemas_carry_the_required_fields() {
             "sync_window_closed",
         ])
     );
+}
+
+/// S2: the cookies carry the `__Host-` prefix (Secure, Path=/, no Domain), in the scheme and in every description.
+#[test]
+fn cookie_names_have_the_host_prefix() {
+    let d = doc();
+    assert_eq!(
+        d["components"]["securitySchemes"]["sessionCookie"]["name"],
+        "__Host-lk_session"
+    );
+    for bare in ["`lk_session`", "`lk_csrf`", "name: lk_session"] {
+        assert!(
+            !SPEC.contains(bare),
+            "the bare cookie name {bare} is still in the spec"
+        );
+    }
+    let csrf = d["components"]["parameters"]["CsrfToken"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(csrf.contains("`__Host-lk_csrf`"), "{csrf}");
+    let callback =
+        d["paths"]["/auth/callback"]["get"]["responses"]["302"]["headers"]["Set-Cookie"]["description"]
+            .as_str()
+            .unwrap();
+    assert!(
+        callback.contains("`__Host-lk_session`") && callback.contains("`__Host-lk_csrf`"),
+        "{callback}"
+    );
+}
+
+/// 03a: `Me.needs_github_token` is an additive boolean (the signed-in user has no stored GitHub token yet).
+#[test]
+fn me_has_the_additive_needs_github_token_flag() {
+    let d = doc();
+    let me = &d["components"]["schemas"]["Me"];
+    let props = me["allOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|p| p.get("properties"))
+        .expect("Me adds properties to User");
+    assert_eq!(props["needs_github_token"]["type"], "boolean");
+    for p in me["allOf"].as_array().unwrap() {
+        let required = p.get("required").and_then(Value::as_array);
+        assert!(
+            required.is_none_or(|r| !r.iter().any(|v| v == "needs_github_token")),
+            "a new response field starts optional, so old mocks and clients stay valid"
+        );
+    }
+}
+
+/// The SSE `EventKind` lists only public events: `user_sessions_revoked` is internal and never streamed.
+#[test]
+fn internal_events_are_not_in_the_sse_event_kinds() {
+    let d = doc();
+    let kinds: Vec<&str> = d["components"]["schemas"]["EventKind"]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(!kinds.contains(&"user_sessions_revoked"));
+    assert_eq!(kinds.len(), 15);
 }
