@@ -15,7 +15,7 @@
 //! | `hub_forward_request` | a protobuf `ForwardRequest` from a peer replica | decoding and validation never panic; an accepted request names a valid swimlane and a positive epoch, waits a bounded time, carries a command within every size limit, and survives a round trip unchanged |
 //! | `hub_webhook_payload` | the JSON body of a GitHub `push` or `pull_request` delivery | parsing never panics; an accepted push names a repository, a branch or tag and commit ids that are each well formed and bounded, and a zero `after` is a deletion; an accepted pull request has a positive number that fits the column; the signature check accepts a header only when it is exactly the HMAC-SHA256 of the body (checked against a second implementation) |
 //!
-//! `hub_sentinel_message` (T11) is added with its task.
+//! | `hub_sentinel_message` | a protobuf `SentinelMessage` from the NFS VM's sentinel | decoding and validation never panic; an accepted batch has at most `MAX_ENTRIES` records, each with a typed path (relative, no `..`), a known operation and bounded names; an accepted message re-encodes and converts back to the same value |
 
 #![allow(
     dead_code,
@@ -30,7 +30,7 @@ use hub_platform::gateway::wire::{ForwardCall, MAX_FORWARD_BYTES, MAX_FORWARD_TI
 use hub_platform::git::payload::{PullRequestEvent, PushEvent, PushedRef, RepoFullName};
 use hub_platform::git::webhook::{DEFAULT_MAX_BODY, verify_signature};
 use prost::Message;
-use proto::convert::FromAgent;
+use proto::convert::{FromAgent, FromSentinel};
 use proto::limits::{MAX_ENTRIES, MAX_FILE_BYTES, MAX_MESSAGE_BYTES, MAX_NOTIFY_PATHS, MAX_SCAN_DELTA_BYTES};
 use proto::pb;
 use x509_parser::certification_request::X509CertificationRequest;
@@ -40,12 +40,16 @@ use x509_parser::prelude::FromDer;
 pub type Check = fn(&[u8]) -> Result<(), String>;
 
 /// Every fuzz target: its name (also the file name in `fuzz_targets` and the corpus directory) and its check.
-pub const TARGETS: [(&str, Check); 4] = [
+pub const TARGETS: [(&str, Check); 5] = [
     ("hub_agent_message", hub_agent_message),
     ("hub_join_csr", hub_join_csr),
     ("hub_forward_request", hub_forward_request),
     ("hub_webhook_payload", hub_webhook_payload),
+    ("hub_sentinel_message", hub_sentinel_message),
 ];
+
+/// The longest `ShortText` the domain accepts (`domain::text::SHORT_TEXT_MAX`, which the crate does not re-export).
+const SHORT_TEXT_MAX: usize = 256;
 
 /// Every seed corpus must hold at least this many inputs, so deleting the seeds cannot go unnoticed.
 pub const MIN_SEEDS: usize = 8;
@@ -110,6 +114,80 @@ pub fn hub_agent_message(data: &[u8]) -> Result<(), String> {
     let again = pb::AgentMessage::decode(encoded.as_slice())
         .map_err(|e| format!("re-encoded message does not decode: {e}"))?;
     match FromAgent::from_proto(again) {
+        Ok(Some(back)) => ensure(back == parsed, || {
+            "an accepted message changed in a round trip".into()
+        }),
+        other => Err(format!(
+            "an accepted message is refused after a round trip: {other:?}"
+        )),
+    }
+}
+
+/// Any bytes decoded as a `SentinelMessage` and validated, as the hub does on a `Report` stream.
+pub fn hub_sentinel_message(data: &[u8]) -> Result<(), String> {
+    // The transport refuses what is larger than this before decoding; the fuzzer is held to the same bound.
+    if data.len() > MAX_MESSAGE_BYTES {
+        return Ok(());
+    }
+    let Ok(message) = pb::SentinelMessage::decode(data) else {
+        return Ok(());
+    };
+    let parsed = match FromSentinel::from_proto(message) {
+        Ok(Some(parsed)) => parsed,
+        Ok(None) | Err(_) => return Ok(()),
+    };
+
+    // An accepted message respects every limit the contract states, and names only typed values.
+    match &parsed {
+        FromSentinel::Batch(batch) => {
+            ensure(batch.records.len() <= MAX_ENTRIES, || {
+                "too many audit records accepted".into()
+            })?;
+            for record in &batch.records {
+                let path = record.path.as_str();
+                ensure(
+                    !path.is_empty()
+                        && !path.starts_with('/')
+                        && !path.split('/').any(|part| part == ".." || part == ".")
+                        && !path.chars().any(char::is_control),
+                    || "an accepted audit record names a path that is not a clean relative one".into(),
+                )?;
+                for name in [
+                    record.login_user.as_str(),
+                    record.effective_user.as_str(),
+                    record.exe.as_str(),
+                    record.comm.as_str(),
+                ] {
+                    ensure(
+                        name.len() <= SHORT_TEXT_MAX && !name.chars().any(char::is_control),
+                        || "an accepted audit record has an unbounded or control-character name".into(),
+                    )?;
+                }
+            }
+        }
+        FromSentinel::Hello(hello) => {
+            for name in [
+                hello.vm.as_str(),
+                hello.export_root.as_str(),
+                hello.version.as_str(),
+            ] {
+                ensure(
+                    name.len() <= SHORT_TEXT_MAX && !name.chars().any(char::is_control),
+                    || "an accepted hello has an unbounded or control-character name".into(),
+                )?;
+            }
+        }
+        FromSentinel::Heartbeat { .. } => {}
+    }
+
+    // What was accepted survives a round trip unchanged: the typed value says what the wire said.
+    let encoded = parsed.clone().into_proto().encode_to_vec();
+    ensure(encoded.len() <= MAX_MESSAGE_BYTES, || {
+        "an accepted message re-encodes past the size limit".into()
+    })?;
+    let again = pb::SentinelMessage::decode(encoded.as_slice())
+        .map_err(|e| format!("re-encoded message does not decode: {e}"))?;
+    match FromSentinel::from_proto(again) {
         Ok(Some(back)) => ensure(back == parsed, || {
             "an accepted message changed in a round trip".into()
         }),

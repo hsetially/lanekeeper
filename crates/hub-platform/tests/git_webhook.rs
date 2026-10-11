@@ -244,6 +244,7 @@ async fn webhook_non_push_event_is_ignored() {
         "create",
         "release",
         "workflow_run",
+        // A pull request is acted on only where the hub has `PrLinks` (T11, `pr_webhook.rs`); this rig has none.
         "pull_request",
         "star",
     ]

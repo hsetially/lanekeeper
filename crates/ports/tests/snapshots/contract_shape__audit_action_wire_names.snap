@@ -37,5 +37,6 @@ expression: names
   "settings_changed",
   "auto_notify_changed",
   "session_signed_in",
-  "session_signed_out"
+  "session_signed_out",
+  "pr_state_changed"
 ]

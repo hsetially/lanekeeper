@@ -57,3 +57,10 @@ path = "fuzz_targets/hub_webhook_payload.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "hub_sentinel_message"
+path = "fuzz_targets/hub_sentinel_message.rs"
+test = false
+doc = false
+bench = false

@@ -86,6 +86,9 @@ pub enum AuditAction {
     AutoNotifyChanged,
     SessionSignedIn,
     SessionSignedOut,
+    /// A pull request's state changed on GitHub (opened, merged or closed, D77), learned from a `pull_request` webhook and
+    /// recorded with the `pr_links` update in one transaction.
+    PrStateChanged,
 }
 
 /// The facts of one audited action. Contains no secret and no file content other than the bounded `diff`.

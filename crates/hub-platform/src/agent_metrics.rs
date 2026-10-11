@@ -18,6 +18,13 @@ pub enum JoinOutcome {
     Unavailable,
 }
 
+/// Who joined: an in-cluster agent or the sentinel of an NFS VM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum JoinPeer {
+    Agent,
+    Sentinel,
+}
+
 /// Which credential a join carried.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
 pub enum CredentialKind {
@@ -57,6 +64,7 @@ pub enum StreamEnd {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
 struct JoinLabels {
+    peer: JoinPeer,
     credential: CredentialKind,
     outcome: JoinOutcome,
 }
@@ -86,13 +94,14 @@ pub struct AgentMetrics {
     unmatched_replies: Counter,
     sink_failures: Family<SinkLabels, Counter>,
     renewals_throttled: Counter,
+    acks_sent: Counter,
 }
 
 impl AgentMetrics {
     pub fn register(&self, registry: &mut Registry) {
         registry.register(
             "agent_joins",
-            "Agent joins by credential and outcome",
+            "Agent and sentinel joins by peer, credential and outcome",
             self.joins.clone(),
         );
         registry.register(
@@ -125,12 +134,29 @@ impl AgentMetrics {
             "Certificate renewals ignored because the last one was too recent",
             self.renewals_throttled.clone(),
         );
+        registry.register(
+            "agent_acks_sent",
+            "Scan deltas acknowledged to agents, after the sink applied them",
+            self.acks_sent.clone(),
+        );
     }
 
     pub fn join(&self, credential: CredentialKind, outcome: JoinOutcome) {
+        self.join_as(JoinPeer::Agent, credential, outcome);
+    }
+
+    pub fn join_as(&self, peer: JoinPeer, credential: CredentialKind, outcome: JoinOutcome) {
         self.joins
-            .get_or_create(&JoinLabels { credential, outcome })
+            .get_or_create(&JoinLabels {
+                peer,
+                credential,
+                outcome,
+            })
             .inc();
+    }
+
+    pub fn ack_sent(&self) {
+        self.acks_sent.inc();
     }
 
     pub fn stream_opened(&self) {
@@ -166,5 +192,10 @@ impl AgentMetrics {
     #[must_use]
     pub fn unmatched_replies(&self) -> u64 {
         self.unmatched_replies.get()
+    }
+
+    #[must_use]
+    pub fn acks_sent(&self) -> u64 {
+        self.acks_sent.get()
     }
 }

@@ -14,6 +14,8 @@
 //! - [`tls`], [`listener`], [`server_identity`]: TLS 1.3 only with client certificates, the gRPC accept loop that puts the verified
 //!   peer identity into each request, and the hub's own certificate, renewed at half its life (S5, S6).
 //! - [`join`], [`agent_service`], [`stream`], [`agent_metrics`]: `Join` and the `Connect` stream of agents (S5, S9, S11).
+//! - [`ack`]: `Ack{seq}` to an agent only after `ReportSink::delta` returned `Ok`, in order (T11, D74, P15).
+//! - [`sentinel_service`]: the `Sentinel` service of the NFS VM's daemon: `Join`, then `Report` with acknowledgements (T11, D72, D74).
 //! - [`gateway`]: the `AgentGateway` over several replicas (D62): the registry of which replica holds each stream, forwarding
 //!   between replicas over mTLS, and request correlation (T4).
 //! - [`events`]: the event bus over the Postgres outbox, and the SSE endpoint (T5, D66, D80, P13).
@@ -29,6 +31,7 @@
     clippy::module_name_repetitions
 )]
 
+pub mod ack;
 pub mod agent_metrics;
 pub mod agent_service;
 pub mod blobs;
@@ -44,6 +47,7 @@ pub mod join;
 pub mod leases;
 pub mod listener;
 pub mod routes;
+pub mod sentinel_service;
 pub mod server_identity;
 pub mod session_auth;
 pub mod stream;

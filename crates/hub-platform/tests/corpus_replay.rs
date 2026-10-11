@@ -17,7 +17,7 @@ use domain::{Expected, HubCommand, NfsPath, RequestId, ServiceRef, SwimlaneId};
 use hub_platform::gateway::local::Epoch;
 use hub_platform::gateway::wire::{ForwardCall, pb::ForwardRequest};
 use prost::Message;
-use proto::convert::{FromAgent, ToAgent};
+use proto::convert::{FromAgent, FromSentinel, ToAgent};
 use proto::pb;
 
 fn fuzz_dir() -> PathBuf {
@@ -73,6 +73,11 @@ fn corpus_replay_hub_webhook_payload() {
 }
 
 #[test]
+fn corpus_replay_hub_sentinel_message() {
+    replay("hub_sentinel_message", invariants::hub_sentinel_message);
+}
+
+#[test]
 fn every_target_has_a_corpus_a_fuzz_target_file_and_a_manifest_entry() {
     let manifest = fs::read_to_string(fuzz_dir().join("Cargo.toml")).unwrap();
     for (target, _) in invariants::TARGETS {
@@ -117,6 +122,38 @@ fn agent_message_seeds_keep_their_meaning() {
             );
         }
     }
+}
+
+/// The same for what the sentinel on the NFS VM sends.
+#[test]
+fn sentinel_message_seeds_keep_their_meaning() {
+    let dir = corpus("hub_sentinel_message");
+    let (mut accepted, mut batches) = (0, 0);
+    for name in names(&dir) {
+        let bytes = fs::read(dir.join(&name)).unwrap();
+        let outcome = pb::SentinelMessage::decode(bytes.as_slice())
+            .map_err(|_| ())
+            .and_then(|m| FromSentinel::from_proto(m).map_err(|_| ()));
+        if name.starts_with("accepted_") {
+            assert!(
+                matches!(outcome, Ok(Some(_))),
+                "{name} is no longer accepted: {outcome:?}"
+            );
+            accepted += 1;
+            batches += usize::from(matches!(outcome, Ok(Some(FromSentinel::Batch(_)))));
+        } else if name.starts_with("rejected_") {
+            assert!(outcome.is_err(), "{name} is no longer refused: {outcome:?}");
+        } else if name.starts_with("skipped_") {
+            assert!(
+                matches!(outcome, Ok(None)),
+                "{name} is no longer skipped: {outcome:?}"
+            );
+        }
+    }
+    assert!(
+        accepted >= 4 && batches >= 2,
+        "the corpus keeps accepted messages and batches, or the fuzzer starts from nothing"
+    );
 }
 
 /// The same for the forward requests a peer replica sends.
@@ -348,6 +385,123 @@ fn agent_message_seeds() -> Vec<(&'static str, Vec<u8>)> {
         // Field 16 is reserved: a newer peer's message kind this build does not know. Tag 16, length-delimited, empty.
         ("skipped_unknown_variant_16", vec![0x82, 0x01, 0x00]),
         ("truncated_hello", valid_hello[..valid_hello.len() / 2].to_vec()),
+        ("duplicated_hello_fields", duplicated),
+        (
+            "garbage_bytes",
+            vec![
+                0xff, 0xfe, 0x01, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02,
+            ],
+        ),
+        ("wrong_wire_type_for_hello", vec![0x08, 0x01]),
+    ]
+}
+
+fn sentinel_record(path: &str, operation: i32) -> pb::AuditRecord {
+    pb::AuditRecord {
+        time_ms: 1_800_000_000_000,
+        path: path.into(),
+        operation,
+        success: true,
+        login_user: "alice".into(),
+        effective_user: "app".into(),
+        exe: "/usr/bin/vim".into(),
+        comm: "vim".into(),
+    }
+}
+
+fn sentinel_batch(seq: u64, records: Vec<pb::AuditRecord>) -> Vec<u8> {
+    use pb::sentinel_message::Kind;
+    pb::SentinelMessage {
+        kind: Some(Kind::Batch(pb::AuditRecordBatch { seq, records })),
+    }
+    .encode_to_vec()
+}
+
+fn sentinel_hello(vm: &str) -> Vec<u8> {
+    use pb::sentinel_message::Kind;
+    pb::SentinelMessage {
+        kind: Some(Kind::Hello(pb::SentinelHello {
+            vm: vm.into(),
+            export_root: "/export".into(),
+            version: "0.1.0".into(),
+        })),
+    }
+    .encode_to_vec()
+}
+
+#[allow(clippy::too_many_lines)]
+fn sentinel_message_seeds() -> Vec<(&'static str, Vec<u8>)> {
+    use pb::AuditOperation as Op;
+    use pb::sentinel_message::Kind;
+    let valid_hello = sentinel_hello("nfs-vm-1");
+    let mut duplicated = valid_hello.clone();
+    duplicated.extend_from_slice(&sentinel_hello("nfs-vm-2"));
+    let valid_batch = sentinel_batch(
+        5,
+        vec![
+            sentinel_record("svc/app.yml", Op::Write as i32),
+            sentinel_record("svc/new.yml", Op::Create as i32),
+        ],
+    );
+    let all_operations = [Op::Create, Op::Write, Op::Delete, Op::Rename, Op::Attribute]
+        .into_iter()
+        .map(|op| sentinel_record("svc/app.yml", op as i32))
+        .collect();
+    vec![
+        ("accepted_hello", valid_hello.clone()),
+        (
+            "accepted_heartbeat",
+            pb::SentinelMessage {
+                kind: Some(Kind::Heartbeat(pb::SentinelHeartbeat {
+                    sent_at_ms: 1_800_000_000_000,
+                })),
+            }
+            .encode_to_vec(),
+        ),
+        ("accepted_batch_two_records", valid_batch.clone()),
+        ("accepted_batch_empty", sentinel_batch(1, Vec::new())),
+        (
+            "accepted_batch_every_operation",
+            sentinel_batch(9, all_operations),
+        ),
+        (
+            "accepted_batch_a_failed_operation",
+            sentinel_batch(
+                3,
+                vec![pb::AuditRecord {
+                    success: false,
+                    ..sentinel_record("svc/denied.yml", Op::Delete as i32)
+                }],
+            ),
+        ),
+        (
+            "accepted_batch_nested_path",
+            sentinel_batch(4, vec![sentinel_record("a/b/c/d/e/f.yml", Op::Rename as i32)]),
+        ),
+        (
+            "rejected_batch_traversal_path",
+            sentinel_batch(6, vec![sentinel_record("../../etc/passwd", Op::Write as i32)]),
+        ),
+        (
+            "rejected_batch_absolute_path",
+            sentinel_batch(6, vec![sentinel_record("/etc/passwd", Op::Write as i32)]),
+        ),
+        (
+            "rejected_batch_unspecified_operation",
+            sentinel_batch(7, vec![sentinel_record("svc/app.yml", 0)]),
+        ),
+        (
+            "rejected_batch_unknown_operation",
+            sentinel_batch(7, vec![sentinel_record("svc/app.yml", 99)]),
+        ),
+        (
+            "rejected_hello_control_character_in_vm",
+            sentinel_hello("nfs\u{1}vm"),
+        ),
+        ("skipped_empty_message", Vec::new()),
+        // Field 16 is reserved: a newer peer's message kind this build does not know. Tag 16, length-delimited, empty.
+        ("skipped_unknown_variant_16", vec![0x82, 0x01, 0x00]),
+        ("truncated_batch", valid_batch[..valid_batch.len() / 2].to_vec()),
         ("duplicated_hello_fields", duplicated),
         (
             "garbage_bytes",
@@ -663,6 +817,7 @@ fn regenerate_the_seeds() {
         ("hub_join_csr", csr_seeds()),
         ("hub_forward_request", forward_request_seeds()),
         ("hub_webhook_payload", webhook_payload_seeds()),
+        ("hub_sentinel_message", sentinel_message_seeds()),
     ] {
         let dir = corpus(target);
         fs::create_dir_all(&dir).unwrap();
@@ -721,6 +876,27 @@ fn the_forward_request_seeds_are_what_the_generator_makes() {
 fn the_webhook_payload_seeds_are_what_the_generator_makes() {
     let dir = corpus("hub_webhook_payload");
     let wanted = webhook_payload_seeds();
+    assert_eq!(
+        names(&dir),
+        wanted
+            .iter()
+            .map(|(n, _)| (*n).to_owned())
+            .collect::<BTreeSet<_>>(),
+        "run with UPDATE_HUB_SEEDS=1 to rewrite the seeds"
+    );
+    for (name, bytes) in wanted {
+        assert_eq!(
+            fs::read(dir.join(name)).unwrap(),
+            bytes,
+            "{name} drifted; run with UPDATE_HUB_SEEDS=1"
+        );
+    }
+}
+
+#[test]
+fn the_sentinel_message_seeds_are_what_the_generator_makes() {
+    let dir = corpus("hub_sentinel_message");
+    let wanted = sentinel_message_seeds();
     assert_eq!(
         names(&dir),
         wanted

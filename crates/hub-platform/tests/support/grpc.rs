@@ -241,3 +241,7 @@ pub async fn dial(addr: SocketAddr, tls: &ClientTls) -> io::Result<H2> {
 pub fn agent_client(h2: H2) -> proto::pb::agent_client::AgentClient<H2> {
     proto::grpc::agent_client(h2)
 }
+
+pub fn sentinel_client(h2: H2) -> proto::pb::sentinel_client::SentinelClient<H2> {
+    proto::grpc::sentinel_client(h2)
+}

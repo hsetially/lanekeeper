@@ -21,6 +21,17 @@ pub async fn registered_service_account(
     Ok(row.flatten())
 }
 
+/// The service account registered for the NFS VM `vm` (`sentinels.service_account`): `Ok(None)` for a VM that is not enrolled or
+/// has none registered.
+pub async fn registered_sentinel_account(pool: &PgPool, vm: &str) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<Option<String>> =
+        sqlx::query_scalar("SELECT service_account FROM sentinels WHERE vm = $1")
+            .bind(vm)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.flatten())
+}
+
 /// Whether the verified identity is the registered service account, compared in constant time and without regard to case
 /// (service-account emails are case-insensitive, and an admin typed the registered one). A swimlane without a registered
 /// account matches nothing, and takes the same comparison as one that does.

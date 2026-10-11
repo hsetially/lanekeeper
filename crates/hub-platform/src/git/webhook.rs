@@ -7,13 +7,18 @@
 //! 2. **HMAC.** `X-Hub-Signature-256` is `sha256=` and the HMAC-SHA256 of those raw bytes under the webhook secret (from
 //!    [`SecretSource`], cached there for five minutes), compared in constant time. A missing, malformed or wrong signature is a
 //!    bare 401: the answer never says which, and nothing is recorded.
-//! 3. **Event type.** `push` goes on, `ping` answers 200, and every other event is acknowledged with 202 and ignored.
+//! 3. **Event type.** `push` goes on, `pull_request` goes on when a [`PrLinks`] is configured, `ping` answers 200, and every
+//!    other event is acknowledged with 202 and ignored.
 //! 4. **Replay guard.** The delivery id is inserted into `webhook_deliveries`; one seen before is a 202 that does nothing.
-//! 5. **Strict parse.** The payload becomes a typed [`PushEvent`], or the answer is 400.
+//! 5. **Strict parse.** The payload becomes a typed [`PushEvent`] or [`PullRequestEvent`], or the answer is 400.
 //!
-//! Only then is a fetch *queued*, and the answer is 202 without waiting for it (the [`FetchWorker`](super::sync::FetchWorker)
-//! fetches, then announces `GitHeadMoved`). The hub does no source-address check: the load balancer's allowlist is that control
-//! (S18, prompt 09), and the HMAC is the proof of origin. The threat model says so.
+//! For a push, a fetch is *queued*, and the answer is 202 without waiting for it (the [`FetchWorker`](super::sync::FetchWorker)
+//! fetches, then announces `GitHeadMoved`). For a pull request, the link is updated (with its audit event and its
+//! `PrStateChanged`, in one transaction, [`super::pr_webhook`]) before the answer; if that fails the answer is 503 and the delivery
+//! id is forgotten, so that GitHub's redelivery of the same delivery is applied and not taken for a replay.
+//!
+//! The hub does no source-address check: the load balancer's allowlist is that control (S18, prompt 09), and the HMAC is the proof
+//! of origin. The threat model says so.
 
 use std::sync::Arc;
 
@@ -28,7 +33,8 @@ use tracing::{info, warn};
 
 use super::fetch_queue::{Enqueue, FetchQueue};
 use super::metrics::{GitMetrics, WebhookOutcome};
-use super::payload::{PushEvent, RepoFullName};
+use super::payload::{PullRequestEvent, PushEvent, RepoFullName};
+use super::pr_webhook::{PrLinks, PrOutcome};
 use crate::error::ApiError;
 use crate::routes::{GuardedRouter, WEBHOOK_PATH};
 
@@ -72,6 +78,10 @@ pub enum DeliveryError {
 pub trait DeliveryLog: Send + Sync + 'static {
     /// Records `id`. `true` if it was new, `false` if it had been seen.
     async fn first_time(&self, id: &str, event: &str) -> Result<bool, DeliveryError>;
+
+    /// Takes `id` back out, for a delivery that was recorded and then could not be applied, so that its redelivery is not
+    /// mistaken for a replay.
+    async fn forget(&self, id: &str) -> Result<(), DeliveryError>;
 }
 
 /// An in-memory log for tests.
@@ -104,6 +114,15 @@ impl DeliveryLog for MemoryDeliveryLog {
             .map(|mut s| s.insert(id.to_owned()))
             .map_err(|_| DeliveryError::Unavailable)
     }
+
+    async fn forget(&self, id: &str) -> Result<(), DeliveryError> {
+        self.seen
+            .lock()
+            .map(|mut s| {
+                s.remove(id);
+            })
+            .map_err(|_| DeliveryError::Unavailable)
+    }
 }
 
 /// Everything the handler needs.
@@ -113,6 +132,7 @@ pub struct WebhookState {
     deliveries: Arc<dyn DeliveryLog>,
     queue: Arc<FetchQueue>,
     metrics: GitMetrics,
+    pull_requests: Option<Arc<PrLinks>>,
 }
 
 impl std::fmt::Debug for WebhookState {
@@ -136,7 +156,15 @@ impl WebhookState {
             deliveries,
             queue,
             metrics,
+            pull_requests: None,
         }
+    }
+
+    /// Act on `pull_request` events with `links` (T11). Without it they are acknowledged and ignored, as every other event is.
+    #[must_use]
+    pub fn with_pull_requests(mut self, links: Arc<PrLinks>) -> Self {
+        self.pull_requests = Some(links);
+        self
     }
 }
 
@@ -237,6 +265,7 @@ async fn receive(state: &WebhookState, headers: &HeaderMap, body: Body) -> Respo
             return StatusCode::OK.into_response();
         }
         "push" => {}
+        "pull_request" if state.pull_requests.is_some() => {}
         _ => return accept(state, WebhookOutcome::Ignored),
     }
 
@@ -256,7 +285,10 @@ async fn receive(state: &WebhookState, headers: &HeaderMap, body: Body) -> Respo
         }
     }
 
-    // 5. The strict parse, then the queue.
+    // 5. The strict parse, then what the event is for.
+    if event == "pull_request" {
+        return pull_request(state, delivery, &bytes).await;
+    }
     let Ok(push) = PushEvent::parse(&bytes) else {
         return refuse(state, WebhookOutcome::BadRequest, ApiError::BadRequest);
     };
@@ -290,6 +322,47 @@ async fn receive(state: &WebhookState, headers: &HeaderMap, body: Body) -> Respo
                 "the fetch queue is full; the poll will catch this push"
             );
             accept(state, WebhookOutcome::Dropped)
+        }
+    }
+}
+
+/// A `pull_request` delivery that passed the signature and the replay guard.
+async fn pull_request(state: &WebhookState, delivery: &str, body: &[u8]) -> Response {
+    let Some(links) = state.pull_requests.as_ref() else {
+        return accept(state, WebhookOutcome::Ignored);
+    };
+    let Ok(event) = PullRequestEvent::parse(body) else {
+        return refuse(state, WebhookOutcome::BadRequest, ApiError::BadRequest);
+    };
+    let Some(repo) = state
+        .settings
+        .repos
+        .iter()
+        .find(|(_, name)| name.matches(&event.repository))
+        .map(|(kind, _)| *kind)
+    else {
+        return accept(state, WebhookOutcome::NotApplicable);
+    };
+    match links.apply(repo, &event).await {
+        Ok(PrOutcome::Applied { .. }) => {
+            info!(
+                code = "webhook_pull_request_applied",
+                repo = repo.as_str(),
+                "a pull request event moved a link"
+            );
+            accept(state, WebhookOutcome::PrApplied)
+        }
+        Ok(PrOutcome::UnknownPr) => accept(state, WebhookOutcome::NotApplicable),
+        Ok(PrOutcome::Ignored | PrOutcome::Unchanged) => accept(state, WebhookOutcome::Ignored),
+        Err(_) => {
+            // Nothing was written, and the delivery id must not stay recorded: GitHub's redelivery carries the same id.
+            if state.deliveries.forget(delivery).await.is_err() {
+                warn!(
+                    code = "webhook_delivery_forget_failed",
+                    "a delivery id could not be released after a failed update; a redelivery will look like a replay"
+                );
+            }
+            refuse(state, WebhookOutcome::Unavailable, ApiError::Unavailable)
         }
     }
 }

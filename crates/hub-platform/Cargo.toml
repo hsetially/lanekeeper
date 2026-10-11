@@ -124,3 +124,8 @@ harness = false
 [[bench]]
 name = "memory_at_design_scale"
 harness = false
+
+# T11 (P15): the hub acknowledging a replayed spool: 18,000 versions in 360 messages and eight 3 MiB ones, over real mutual TLS, a sink that commits in 1 ms.
+[[bench]]
+name = "ack_throughput"
+harness = false

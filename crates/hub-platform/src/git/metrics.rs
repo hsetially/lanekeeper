@@ -52,7 +52,7 @@ pub enum WebhookOutcome {
     Ignored,
     /// A delivery id seen before.
     Duplicate,
-    /// A push for a repository the hub does not mirror, or a deleted ref.
+    /// A push for a repository the hub does not mirror, or a deleted ref; a pull request of such a repository, or one with no link.
     NotApplicable,
     BadSignature,
     TooLarge,

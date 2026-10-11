@@ -73,6 +73,16 @@ impl DeliveryLog for PgDeliveryLog {
             Ok(Err(_)) | Err(_) => Err(DeliveryError::Unavailable),
         }
     }
+
+    async fn forget(&self, id: &str) -> Result<(), DeliveryError> {
+        let call = sqlx::query("DELETE FROM webhook_deliveries WHERE delivery_id = $1")
+            .bind(id)
+            .execute(&self.pool);
+        match tokio::time::timeout(QUERY_TIMEOUT, call).await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(_)) | Err(_) => Err(DeliveryError::Unavailable),
+        }
+    }
 }
 
 /// The daily prune, under a lease so that one replica does it.

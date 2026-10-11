@@ -381,3 +381,14 @@ unit = "versions_per_s"
 scale = "target"
 direction = "lower"
 registered = true
+
+[[budget]]
+id = "P15.hub_ack_versions_per_s"
+description = "Hub acknowledging a replayed spool (versions per second, lower bound; the hub half of P15)"
+bench = "hub-platform/ack_throughput"
+statistic = "min"
+threshold = 1000
+unit = "versions_per_s"
+scale = "target"
+direction = "lower"
+registered = true

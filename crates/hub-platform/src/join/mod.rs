@@ -27,7 +27,8 @@ use sqlx::PgPool;
 use tracing::{debug, warn};
 use zeroize::Zeroize;
 
-use crate::agent_metrics::{AgentMetrics, CredentialKind, JoinOutcome};
+use crate::agent_metrics::{AgentMetrics, CredentialKind, JoinOutcome, JoinPeer};
+use crate::ca::profile::PeerName;
 use crate::ca::{CaError, CaIssuer, CertProfile, parse_csr};
 use crate::clock::Clock;
 pub use limits::{JoinLimiter, JoinLimits};
@@ -58,6 +59,9 @@ pub enum Refusal {
     EmailMismatch,
     NoLiveToken,
     TokenAlreadyUsed,
+    /// A credential the service does not take for this kind of peer (a join token for a sentinel).
+    WrongCredential,
+    UnknownOrUnregisteredSentinel,
 }
 
 impl Refusal {
@@ -71,6 +75,8 @@ impl Refusal {
             Self::EmailMismatch => "join_email_mismatch",
             Self::NoLiveToken => "join_no_live_token",
             Self::TokenAlreadyUsed => "join_token_already_used",
+            Self::WrongCredential => "join_wrong_credential",
+            Self::UnknownOrUnregisteredSentinel => "join_sentinel_unknown_or_unregistered",
         }
     }
 }
@@ -173,6 +179,121 @@ impl JoinService {
             }
         }
         result
+    }
+
+    /// Join as the sentinel of an NFS VM (D72, S5). Only the VM's Google ID token is a credential, and its email must equal the
+    /// service account registered for that VM in `sentinels`. The certificate's name comes from the registered VM, never from the
+    /// request: `spiffe://lanekeeper/sentinel/<vm>`. An unknown VM, one with no account, a wrong account and a bad token are all the
+    /// same refusal. A sentinel renews by joining again (its stream has no renewal message), so each certificate is one audited join.
+    pub async fn join_sentinel(
+        &self,
+        remote: Option<IpAddr>,
+        params: JoinParams,
+    ) -> Result<IssuedCert, JoinError> {
+        let credential = match &params.credential {
+            JoinCredential::GoogleIdToken(_) => CredentialKind::GoogleIdToken,
+            JoinCredential::JoinToken(_) => CredentialKind::JoinToken,
+        };
+        let result = match tokio::time::timeout(JOIN_TIMEOUT, self.join_sentinel_inner(remote, params)).await
+        {
+            Ok(result) => result,
+            Err(_elapsed) => Err(JoinError::Unavailable),
+        };
+        match &result {
+            Ok(_) => {
+                debug!("a sentinel joined");
+                self.metrics
+                    .join_as(JoinPeer::Sentinel, credential, JoinOutcome::Issued);
+            }
+            Err(JoinError::Refused(reason)) => {
+                warn!(code = reason.code(), "sentinel join refused");
+                self.metrics
+                    .join_as(JoinPeer::Sentinel, credential, JoinOutcome::Refused);
+            }
+            Err(JoinError::RateLimited) => {
+                warn!(code = "join_rate_limited", "sentinel join refused");
+                self.metrics
+                    .join_as(JoinPeer::Sentinel, credential, JoinOutcome::RateLimited);
+            }
+            Err(JoinError::Unavailable) => {
+                warn!(code = "join_unavailable", "sentinel join failed");
+                self.metrics
+                    .join_as(JoinPeer::Sentinel, credential, JoinOutcome::Unavailable);
+            }
+        }
+        result
+    }
+
+    async fn join_sentinel_inner(
+        &self,
+        remote: Option<IpAddr>,
+        params: JoinParams,
+    ) -> Result<IssuedCert, JoinError> {
+        let JoinParams {
+            subject,
+            csr_der,
+            credential,
+        } = params;
+        let JoinSubject::Sentinel(vm) = subject else {
+            return Err(JoinError::Refused(Refusal::WrongKind));
+        };
+        // Counted before anything is looked at, under a key that no swimlane id can have.
+        if !self.limiter.allow(&format!("sentinel:{}", vm.as_str()), remote) {
+            return Err(JoinError::RateLimited);
+        }
+        let JoinCredential::GoogleIdToken(jwt) = credential else {
+            return Err(JoinError::Refused(Refusal::WrongCredential));
+        };
+        let name = PeerName::parse(vm.as_str()).map_err(|_| JoinError::Refused(Refusal::BadRequest))?;
+        let csr = parse_csr(&csr_der).map_err(|_| JoinError::Refused(Refusal::BadRequest))?;
+
+        // The credential decides; nothing is written yet.
+        let identity = self
+            .verifier
+            .google_id_token(jwt.expose(), self.audience.as_str())
+            .await
+            .map_err(|error| match error {
+                AuthError::Unavailable => JoinError::Unavailable,
+                _ => JoinError::Refused(Refusal::BadIdToken),
+            })?;
+        drop(jwt);
+        let registered = google::registered_sentinel_account(&self.pool, name.as_str())
+            .await
+            .map_err(|_| JoinError::Unavailable)?;
+        if !google::email_matches(&identity, registered.as_deref()) {
+            return Err(JoinError::Refused(
+                if registered.as_deref().is_none_or(str::is_empty) {
+                    Refusal::UnknownOrUnregisteredSentinel
+                } else {
+                    Refusal::EmailMismatch
+                },
+            ));
+        }
+
+        let issued = self
+            .ca
+            .issue(&CertProfile::sentinel(&name), &csr)
+            .await
+            .map_err(ca_error)?;
+
+        // The audit event commits before the certificate is handed over: a sentinel never holds one whose issue was not recorded.
+        let mut tx = self.pool.begin().await.map_err(|_| JoinError::Unavailable)?;
+        let event = AuditEvent::new(
+            self.clock.now(),
+            AuditActor::Sentinel { name: vm },
+            AuditAction::AgentJoined,
+            ports::AuditVia::System,
+        );
+        self.audit
+            .record(&mut Tx::from_pg(&mut tx), event)
+            .await
+            .map_err(|_| JoinError::Unavailable)?;
+        tx.commit().await.map_err(|_| JoinError::Unavailable)?;
+
+        Ok(IssuedCert {
+            cert_chain_der: issued.chain_der,
+            not_after: issued.not_after,
+        })
     }
 
     async fn join_agent_inner(

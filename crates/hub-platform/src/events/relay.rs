@@ -256,16 +256,25 @@ impl OutboxRelay {
     }
 
     /// Read what is new, and what was missing, and deliver it.
+    ///
+    /// **The order of the two reads matters.** Rows after the cursor are read first, and the rows that were missing after them. A
+    /// transaction that commits one event and then, once that returned, another has its two rows in id order, and a read that
+    /// sees the second sees the first (one statement is one snapshot). Reading the missing ids first would let a gap commit
+    /// between the two reads: the row after it would then be delivered before it, and one publisher's events would be heard out of
+    /// the order it published them. This way, whatever the fresh read saw has its older rows either in the same read or in the gap
+    /// read that follows, and `observe` hands both over in id order.
     async fn poll(&self, state: &mut RelayState) -> Result<(), OutboxError> {
         state.expire(Instant::now());
         let gaps = state.gaps();
-        let mut late = if gaps.is_empty() {
-            Vec::new()
-        } else {
-            outbox::read_ids(&self.pool, &gaps).await?
-        };
+        let mut first = true;
         loop {
             let new = outbox::read_after(&self.pool, state.after(), self.settings.batch).await?;
+            let late = if first && !gaps.is_empty() {
+                outbox::read_ids(&self.pool, &gaps).await?
+            } else {
+                Vec::new()
+            };
+            first = false;
             let full = i64::try_from(new.len()).is_ok_and(|n| n >= self.settings.batch);
             let new_ids: Vec<i64> = new.iter().map(|row| row.id.get()).collect();
             let late_ids: Vec<i64> = late.iter().map(|row| row.id.get()).collect();
@@ -280,7 +289,6 @@ impl OutboxRelay {
                     self.deliver(row);
                 }
             }
-            late.clear();
             if !full {
                 self.metrics.set_relay_lag(0);
                 return Ok(());

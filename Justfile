@@ -209,11 +209,12 @@ agent-bench:
 verify-03a:
     @echo "verify-03a not implemented yet" && exit 1
 
-# Prompt 03b gate (the hub platform): every sub-recipe, in order, stopping at the first failure. Later tasks append their own
-# sub-recipes to this line (T11 completes it). Run `just verify` and `cargo xtask bench-check` after it (AGENTS.md, protocol
-# step 4). Not part of the gate, and said so rather than skipped silently: `docker build` of crates/hub/Dockerfile (the
-# Dockerfile and HARDENING.md are linted by `platform-test`), and osv-scanner (not installed here).
-verify-03b: platform-tools-check platform-lint platform-test
+# Prompt 03b gate (the hub platform): every sub-recipe, in order, stopping at the first failure. Run `just verify` and
+# `cargo xtask bench-check` after it (AGENTS.md, protocol step 4; platform-bench already ends with the check). Not part of the gate,
+# and said so rather than skipped silently: `docker build` of crates/hub/Dockerfile (the Dockerfile and HARDENING.md are linted by
+# `platform-test`), osv-scanner (not installed here), and the opt-in tests against a real Google Cloud project
+# (`cargo test -p hub-platform --test gcp_real -- --ignored`, which need a project to spend on them).
+verify-03b: platform-tools-check platform-lint platform-test platform-slow-test platform-fuzz platform-bench
 
 # The pinned tools the gate needs, and a Docker daemon (the database tests start Postgres 16 with pgvector through
 # testcontainers), or the command that fixes it. Never skips.
@@ -229,6 +230,39 @@ platform-lint:
 # missing Docker daemon into a failure, never a skip.
 platform-test:
     LK_REQUIRE_DOCKER=1 cargo test -p hub-platform -p hub --all-features
+
+# The tests whose time bounds are the point, in release mode and one at a time, so that a bound (events to every replica within
+# 1 s, a push to `GitHeadMoved` within 10 s, the routing, lease and outbox races over three replicas) is checked without the load
+# of the rest of the suite. They also run in `platform-test`; this is the run with nothing else going on.
+platform-slow-test:
+    LK_REQUIRE_DOCKER=1 cargo test -p hub-platform --release --all-features --test events_bus --test gateway_cluster --test git_sync --test lease_race --test outbox -- --test-threads=1
+
+# S22: the hub platform's own fuzz crate (plan A17; `fuzz-smoke` does not run it). Its lockfile is complete and passes cargo deny
+# and cargo audit (S19), then each target runs {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in
+# crates/hub-platform/fuzz/artifacts/. `crates/hub/tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart. The
+# committed seeds also replay on stable in `cargo test -p hub-platform --test corpus_replay`.
+platform_fuzz_targets := "hub_agent_message hub_forward_request hub_join_csr hub_sentinel_message hub_webhook_payload"
+platform-fuzz: fuzz-tools-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo +{{fuzz_nightly}} metadata --locked --format-version 1 --manifest-path crates/hub-platform/fuzz/Cargo.toml > /dev/null
+    cargo deny --manifest-path crates/hub-platform/fuzz/Cargo.toml check --config deny.toml
+    cargo audit --file crates/hub-platform/fuzz/Cargo.lock
+    for target in {{platform_fuzz_targets}}; do
+        mkdir -p "target/fuzz-corpus/$target"
+        cargo +{{fuzz_nightly}} fuzz run "$target" --fuzz-dir crates/hub-platform/fuzz "target/fuzz-corpus/$target" "crates/hub-platform/fuzz/corpus/$target" -- -max_total_time={{fuzz_seconds}}
+    done
+    echo "platform-fuzz: {{platform_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
+
+# P2, P7 (blob), P11, P13 and P15 (acks): the criterion benchmarks and the harnesses that write target/perf-results/, at target
+# scale (`cargo xtask gen-fixtures --scale target` first, as `agent-fixtures` does), then the check against perf/budgets.toml. A
+# registered budget without a result fails, and the check covers the whole registry, so the agent's benchmarks (prompt 02) run
+# too: without them its registered budgets have no result. The benchmarks need Docker (or LK_TEST_PG_ADMIN_URL) for the Postgres
+# they measure.
+platform-bench: agent-fixtures
+    cargo bench -p agent
+    cargo bench -p hub-platform -p hub
+    cargo xtask bench-check
 verify-04:
     @echo "verify-04 not implemented yet" && exit 1
 verify-05:

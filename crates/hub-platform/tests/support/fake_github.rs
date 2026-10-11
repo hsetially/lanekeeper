@@ -273,6 +273,25 @@ pub fn push_body(repo: &str, git_ref: &str, before: &str, after: &str) -> Vec<u8
     .into_bytes()
 }
 
+/// The JSON body of a `pull_request` event. `merged` only means something with `action = "closed"`, as on GitHub.
+pub fn pull_request_body(repo: &str, number: i64, action: &str, merged: bool) -> Vec<u8> {
+    serde_json::json!({
+        "action": action,
+        "number": number,
+        "pull_request": {
+            "number": number,
+            "state": if action == "closed" { "closed" } else { "open" },
+            "merged": merged,
+            "title": "Update a setting",
+            "user": {"login": "someone"},
+        },
+        "repository": {"full_name": repo, "private": true},
+        "sender": {"login": "someone"},
+    })
+    .to_string()
+    .into_bytes()
+}
+
 /// A signed webhook delivery: the headers GitHub sends and the body.
 #[derive(Debug, Clone)]
 pub struct Delivery {

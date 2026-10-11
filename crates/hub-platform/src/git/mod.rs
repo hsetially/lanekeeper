@@ -7,6 +7,7 @@
 //! - [`reader`]: `GixReader`, the `GitReader` port over the mirrors, with the read-through fetch for a missing commit.
 //! - [`tree_index`]: the per-commit index of every file, cached by weight and persisted to `git_tree_index`.
 //! - [`webhook`], [`deliveries`]: `POST /hooks/github` and its replay guard on Postgres, with the prune job.
+//! - [`pr_webhook`]: the `pull_request` event: the state machine, the `pr_links` update, its audit event and `PrStateChanged` in one transaction.
 //! - [`fetch_queue`]: the bounded, coalescing queue between the webhook and the fetch worker.
 //! - [`payload`]: the typed, bounded parse of GitHub's `push` and `pull_request` payloads.
 pub mod credentials;
@@ -16,6 +17,7 @@ pub mod metrics;
 pub mod mirror;
 pub mod payload;
 pub mod poll;
+pub mod pr_webhook;
 pub mod reader;
 pub mod sync;
 pub mod tree_index;

@@ -25,6 +25,7 @@ use tonic::service::Routes;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, warn};
 
+use crate::ack::{AckWriter, Applied};
 use crate::agent_metrics::{AgentMetrics, MessageKind, StreamEnd};
 use crate::gateway::{Attachment, HubGateway};
 use crate::join::JoinService;
@@ -108,6 +109,12 @@ impl AgentService {
     #[must_use]
     pub fn routes(self) -> Routes {
         Routes::new(proto::grpc::agent_server(self))
+    }
+
+    /// The service added to `routes`, next to the services already there (the hub serves `Agent` and `Sentinel` on one listener).
+    #[must_use]
+    pub fn add_to(self, routes: Routes) -> Routes {
+        routes.add_service(proto::grpc::agent_server(self))
     }
 }
 
@@ -210,6 +217,7 @@ impl pb::agent_server::Agent for AgentService {
             limits: self.limits,
             closing: self.closing.clone(),
             metrics: self.metrics.clone(),
+            acks: AckWriter::new(Arc::clone(&agent), self.limits.send_timeout, self.metrics.clone()),
             identity,
             agent,
             attachment,
@@ -232,6 +240,8 @@ struct Session {
     limits: StreamLimits,
     closing: watch::Receiver<bool>,
     metrics: AgentMetrics,
+    /// The only sender of `Ack` (D74): after the sink applied a delta, never before.
+    acks: AckWriter,
     identity: AgentIdentity,
     agent: Arc<ConnectedAgent>,
     attachment: Option<Attachment>,
@@ -328,9 +338,25 @@ impl Session {
             }
             FromAgent::Delta(delta) => {
                 self.metrics.message(MessageKind::ScanDelta);
-                match within(self.limits.sink_timeout, self.sink.delta(&self.identity, delta)).await {
-                    Ok(()) => Flow::Continue,
-                    Err(error) => self.sink_failed(MessageKind::ScanDelta, error),
+                // The ack is sent by the writer, after the sink returned, and only then (D74).
+                match self
+                    .acks
+                    .apply(
+                        self.sink.as_ref(),
+                        &self.identity,
+                        delta,
+                        self.limits.sink_timeout,
+                    )
+                    .await
+                {
+                    Applied::Acked => Flow::Continue,
+                    Applied::Refused(error) => self.sink_failed(MessageKind::ScanDelta, error),
+                    Applied::StreamLost(crate::stream::SendError::Full) => {
+                        Flow::End(StreamEnd::Stalled, Some(Status::unavailable("")))
+                    }
+                    Applied::StreamLost(crate::stream::SendError::Closed) => {
+                        Flow::End(StreamEnd::AgentClosed, None)
+                    }
                 }
             }
             FromAgent::Cluster(report) => {

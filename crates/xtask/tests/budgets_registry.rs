@@ -73,6 +73,7 @@ fn every_p_number_has_an_entry() {
         "P11.memory_mib",
         "P12.steady_state_query_ms",
         "P15.spool_replay_versions_per_s",
+        "P15.hub_ack_versions_per_s",
     ] {
         find(&reg, id);
     }
@@ -130,6 +131,7 @@ fn lower_bound_budgets_are_marked() {
         "P10.grid_5000_rows_fps",
         "P10.lighthouse_perf",
         "P15.spool_replay_versions_per_s",
+        "P15.hub_ack_versions_per_s",
     ] {
         assert_eq!(find(&reg, id).direction, Direction::Lower, "{id}");
     }
@@ -147,7 +149,7 @@ fn lower_bound_budgets_are_marked() {
         .iter()
         .filter(|b| b.direction == Direction::Upper)
         .count();
-    assert_eq!(upper, reg.budgets.len() - 3);
+    assert_eq!(upper, reg.budgets.len() - 4);
 }
 
 /// The thresholds of `docs/performance.md`, entry by entry. The needle must appear in the document, so a changed
@@ -272,6 +274,13 @@ fn thresholds_match_docs_performance_md() {
             "versions_per_s",
             "replays at 1,000 or more versions per second",
         ),
+        // The hub's half of the same budget: the agent replays at that rate, so the hub must take it at that rate.
+        (
+            "P15.hub_ack_versions_per_s",
+            1_000.0,
+            "versions_per_s",
+            "replays at 1,000 or more versions per second",
+        ),
     ];
     for (id, threshold, unit, needle) in expected {
         let b = find(&reg, id);
@@ -341,7 +350,8 @@ fn only_budgets_with_a_harness_are_registered() {
     // Prompt 03b (hub platform): `cargo bench -p hub-platform` produces P13 (T5, `sse_delivery`), P2 (T7, `push_to_drift_webhook`:
     // the webhook to `GitHeadMoved` part of it, which is the platform's share, plan A3), P7.blob_get_cached and P7.blob_endpoint
     // (T8, `blob_get_cached` and `blob_endpoint`, criterion), and the two hub harnesses of T8: P11 (`cargo bench -p hub --bench
-    // startup`) and P11.memory_mib (`cargo bench -p hub-platform --bench memory_at_design_scale`).
+    // startup`) and P11.memory_mib (`cargo bench -p hub-platform --bench memory_at_design_scale`), and P15.hub_ack_versions_per_s
+    // (T11, `cargo bench -p hub-platform --bench ack_throughput`: the hub acknowledging a replayed spool).
     const REGISTERED: &[&str] = &[
         "P1",
         "P2",
@@ -356,6 +366,7 @@ fn only_budgets_with_a_harness_are_registered() {
         "P11.memory_mib",
         "P13",
         "P15.spool_replay_versions_per_s",
+        "P15.hub_ack_versions_per_s",
     ];
     let reg = registry();
     let registered: BTreeSet<&str> = reg
