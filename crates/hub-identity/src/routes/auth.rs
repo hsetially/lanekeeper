@@ -28,7 +28,9 @@ use ports::{AuditAction, AuditActor, AuditEvent, AuditLog, AuditVia, EventBus, T
 use sqlx::PgPool;
 
 use crate::clock::Clock;
+use crate::csrf::CsrfPolicy;
 use crate::error::IdentityError;
+use crate::guard::{GuardedRouter, Verb};
 use crate::middleware::AuthContext;
 use crate::oidc::login::{CallbackQuery, LOGIN_COOKIE_NAME, LOGIN_LIFETIME_SECS, OidcLogin};
 use crate::problem::problem;
@@ -97,7 +99,39 @@ impl AuthState {
     }
 }
 
-/// The three routes. Compose them behind `AuthLayer` and `CsrfLayer` (the guard in T4 does).
+/// Register the three routes on a [`GuardedRouter`], each public by design and with the reason in the route table. CSRF stays
+/// required: logout with a session must pass it, and the other two are `GET`s that change no session.
+#[must_use]
+pub fn register(guarded: GuardedRouter, state: AuthState) -> GuardedRouter {
+    guarded
+        .public(
+            Verb::Get,
+            "/auth/login",
+            "no session exists before sign-in; the redirect carries state, nonce and PKCE (S1)",
+            CsrfPolicy::Required,
+            state.clone(),
+            login,
+        )
+        .public(
+            Verb::Get,
+            "/auth/callback",
+            "no session exists before sign-in; the sealed state, the nonce and the code authenticate the response (S1)",
+            CsrfPolicy::Required,
+            state.clone(),
+            callback,
+        )
+        .public(
+            Verb::Post,
+            "/auth/logout",
+            "with no session there is nothing to end; with one, the CSRF check applies (S3)",
+            CsrfPolicy::Required,
+            state,
+            logout,
+        )
+}
+
+/// The three routes as a plain router, for tests of the layers beneath them. The hub registers them with [`register`], which
+/// puts them in the route table and behind the same layers.
 pub fn auth_routes(state: AuthState) -> Router {
     Router::new()
         .route("/auth/login", get(login))

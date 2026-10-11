@@ -9,6 +9,7 @@
 )]
 
 pub mod fake_https;
+pub mod guard_rig;
 pub mod log_capture;
 pub mod login_rig;
 pub mod mock_oidc;

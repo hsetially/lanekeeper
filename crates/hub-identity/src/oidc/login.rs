@@ -251,7 +251,7 @@ pub struct OidcLogin {
     cfg: EntraConfig,
     http: Arc<dyn HttpsClient>,
     discovery: Arc<DiscoveryCache>,
-    jwt: JwtVerifier,
+    jwt: Arc<JwtVerifier>,
     credentials: ClientCredentials,
     sealer: LoginSealer,
     clock: Arc<dyn Clock>,
@@ -282,7 +282,7 @@ impl OidcLogin {
             Arc::clone(&clock),
         ));
         Ok(Self {
-            jwt: JwtVerifier::new(jwks, Arc::clone(&clock)),
+            jwt: Arc::new(JwtVerifier::new(jwks, Arc::clone(&clock))),
             credentials: ClientCredentials::new(cfg.client_auth.clone(), secrets),
             cfg,
             http,
@@ -293,8 +293,8 @@ impl OidcLogin {
     }
 
     /// The verifier for this tenant's tokens, shared with the MCP token check (T4).
-    pub fn verifier(&self) -> &JwtVerifier {
-        &self.jwt
+    pub fn verifier(&self) -> Arc<JwtVerifier> {
+        Arc::clone(&self.jwt)
     }
 
     /// Step 1: the redirect to Entra and the cookie to set. An invalid `return_to` becomes `/`.

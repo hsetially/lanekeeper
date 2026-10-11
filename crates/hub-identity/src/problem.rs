@@ -36,6 +36,30 @@ pub fn problem(
     response
 }
 
+/// A problem with a `detail` sentence. The caller passes only text written in this crate (a rule's fixed message), never text
+/// that came from the request.
+pub fn problem_with_detail(
+    status: StatusCode,
+    kind: &'static str,
+    title: &'static str,
+    detail: &str,
+    request_id: Option<&RequestId>,
+) -> Response {
+    let mut response = problem(status, kind, title, request_id);
+    // Rebuild the body with the detail; the fixed fields stay as `problem` made them.
+    let mut body = serde_json::json!({
+        "type": format!("urn:lanekeeper:problem:{kind}"),
+        "title": title,
+        "status": status.as_u16(),
+        "detail": detail,
+    });
+    if let Some(id) = request_id {
+        body["request_id"] = serde_json::Value::String(id.to_string());
+    }
+    *response.body_mut() = Body::from(body.to_string());
+    response
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

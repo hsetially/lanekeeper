@@ -101,7 +101,33 @@ pub struct TestDb {
     admin_options: PgConnectOptions,
     pub database: String,
     pgvector: bool,
+    /// Set for a database this rig created on an external server: dropped again when the rig is dropped, so a throwaway
+    /// server does not accumulate one database per test run.
+    drop_on_exit: bool,
     _container: Option<ContainerAsync<GenericImage>>,
+}
+
+impl Drop for TestDb {
+    fn drop(&mut self) {
+        if !self.drop_on_exit {
+            return;
+        }
+        // Best effort, on a thread of its own: `drop` may run on a runtime worker, and the test runtime is shutting down.
+        // `FORCE` ends any connection a pool of the test still holds.
+        let opts = self.admin_options.clone();
+        let stmt = format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", self.database);
+        let _ = std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
+                return;
+            };
+            rt.block_on(async {
+                if let Ok(mut conn) = connect(&opts).await {
+                    let _ = sqlx::query(&stmt).execute(&mut conn).await;
+                }
+            });
+        })
+        .join();
+    }
 }
 
 impl TestDb {
@@ -227,6 +253,7 @@ impl TestDb {
             admin_options,
             database: "lanekeeper".to_owned(),
             pgvector: true,
+            drop_on_exit: false,
             _container: Some(container),
         })
     }
@@ -255,6 +282,7 @@ impl TestDb {
             admin_options: base,
             database,
             pgvector,
+            drop_on_exit: true,
             _container: None,
         }
     }

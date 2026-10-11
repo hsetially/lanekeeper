@@ -32,6 +32,17 @@
 //! - [`routes::auth`] has `/auth/login`, `/auth/callback` (a new session on every sign-in; the presented one is deleted) and
 //!   `/auth/logout` (idempotent).
 //!
+//! T4: authorization and token verification (S1, S4).
+//!
+//! - [`guard::GuardedRouter`] is the only way to add a route: the minimum role (or, for a public route, a reason) is a parameter,
+//!   the CSRF layer, the role gate and the auth layer are applied for the caller, an unmatched path is `401` before it is
+//!   `404`, and the route table is kept for the S4 test. [`guard::RequireRole`] and [`guard::ActiveUser`] check again from
+//!   inside the handler. Pending and disabled users get `403` with a problem type that says which (D36).
+//! - [`routes::identity_routes`] registers the sign-in routes, `/me` and the admin routes for users and access requests.
+//! - [`tokens`] verifies Entra access tokens for MCP and Google ID tokens for agent join, and [`tokens::McpAuthenticator`]
+//!   adds the rule that the user behind an MCP token must be active.
+//! - `testing` (feature `route-table`) is what the hub binary runs against its full route table.
+//!
 //! Nothing here is public beyond what the later tasks and the hub binary need, and no error carries input text (S10, S21).
 #![forbid(unsafe_code)]
 #![allow(
@@ -44,6 +55,7 @@ pub mod clock;
 pub mod config;
 pub mod csrf;
 pub mod error;
+pub mod guard;
 pub mod http;
 pub mod middleware;
 pub mod notify;
@@ -51,6 +63,9 @@ pub mod oidc;
 pub mod problem;
 pub mod routes;
 pub mod session;
+#[cfg(feature = "route-table")]
+pub mod testing;
+pub mod tokens;
 pub mod users;
 
 pub use clock::{Clock, ManualClock, SystemClock};

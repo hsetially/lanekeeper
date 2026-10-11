@@ -1642,6 +1642,7 @@ dependencies = [
  "futures",
  "http",
  "http-body-util",
+ "hub-identity",
  "hyper",
  "hyper-util",
  "insta",

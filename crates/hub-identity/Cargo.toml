@@ -9,6 +9,11 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+# `hub_identity::testing`: the route-table check and the default-deny check that the hub binary runs against its full route
+# table (S4). It pulls the ports conformance suite and its OpenAPI reader, so it stays out of the production build.
+route-table = ["ports/conformance", "tower/util"]
+
 [dependencies]
 domain.workspace = true
 ports = { workspace = true, features = ["postgres"] }
@@ -45,6 +50,8 @@ url.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+# The integration tests use `hub_identity::testing`, which sits behind the `route-table` feature.
+hub-identity = { path = ".", version = "0.1.0", features = ["route-table"] }
 ports = { workspace = true, features = ["fakes", "postgres"] }
 # Real Postgres 16 in a container (or `LK_TEST_PG_ADMIN_URL`), migrated as lanekeeper_migrator and used as lanekeeper_app.
 sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json", "migrate"] }

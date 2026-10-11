@@ -11,7 +11,7 @@
 //!
 //! | Target | Input | What must hold |
 //! |---|---|---|
-//! | `identity_jwt` | text | whatever the bytes are, parsing a token never panics and refuses more than 16 KiB without looking inside; an accepted header has algorithm RS256 and a key id of 1 to 256 bytes; a token is never verified against a key set that holds no key that signed it (random input is never a valid signature); a key-set document that parses holds 1 to 32 keys |
+//! | `identity_jwt` | text | whatever the bytes are, parsing a token never panics and refuses more than 16 KiB without looking inside; an accepted header has algorithm RS256 and a key id of 1 to 256 bytes; a token is never verified against a key set that holds no key that signed it (random input is never a valid signature); a key-set document that parses holds 1 to 32 keys; the Entra profile accepts claims only with the `mcp.access` scope, an `nbf` and a GUID `tid` and `oid`, and its identity is exactly `tid:oid`; the Google profile accepts claims only with a verified, non-empty email and a subject |
 //! | `identity_cookie` | text | `valid_return_to` accepts only a site-relative path (one leading `/`, no backslash, no control character, at most 512 bytes); a login cookie that was not sealed with the key never opens; the callback query parser never panics; a list cursor is refused or decodes to a key that re-encodes to a cursor that decodes to the same key, and a request cursor that decodes re-encodes to the same text; a `Cookie` header that parses yields only non-empty values made of cookie octets, within the size cap; a session or CSRF token text that is accepted is the one spelling of its 32 bytes; the CSRF check lets a state-changing request with a session through only when the header, the cookie and the stored hash agree and `Origin` is exactly the public origin |
 
 #![allow(
@@ -26,9 +26,10 @@ use http::{HeaderMap, HeaderValue, Method, header};
 use hub_identity::TokenError;
 use hub_identity::csrf::check as csrf_check;
 use hub_identity::oidc::jwks::{KeySet, RsaPublicKey};
-use hub_identity::oidc::jwt::{Profile, parse_compact, verify_with_keys};
+use hub_identity::oidc::jwt::{Claims, Profile, parse_compact, verify_with_keys};
 use hub_identity::oidc::login::{CallbackQuery, LoginSealer, valid_return_to};
 use hub_identity::session::cookie::{MAX_COOKIE_VALUE_BYTES, RandomToken, RequestCookies};
+use hub_identity::tokens::{entra, google};
 use hub_identity::users::cursor;
 
 /// A seed corpus needs at least this many files per target (`MIN_SEEDS` in the replay test).
@@ -79,6 +80,63 @@ pub fn identity_jwt(data: &[u8]) -> Result<(), String> {
     if let Ok(set) = KeySet::parse(data) {
         if set.is_empty() || set.len() > 32 {
             return Err("a key set that parsed holds a wrong number of keys".to_owned());
+        }
+    }
+    token_claims(&token)
+}
+
+/// Claims made of the lines of the input, as if a signature had already been checked: what the Entra and Google profiles
+/// accept from them (T4).
+fn claims_of(text: &str) -> Claims {
+    let mut lines = text.lines().map(str::to_owned);
+    let mut next = || lines.next();
+    let tid = next();
+    let oid = next();
+    let scp = next();
+    let email = next();
+    let name = next();
+    let subject = next();
+    let verified = next();
+    let nbf = next();
+    Claims {
+        issuer: String::new(),
+        audience: Vec::new(),
+        exp: 0,
+        nbf: nbf.and_then(|n| n.parse().ok()),
+        nonce: None,
+        tid,
+        oid,
+        subject,
+        preferred_username: email.clone(),
+        email,
+        email_verified: verified.map(|v| v == "true"),
+        name,
+        scp,
+    }
+}
+
+fn token_claims(text: &str) -> Result<(), String> {
+    let claims = claims_of(text);
+    if let Ok(user) = entra::identity_from_claims(&claims) {
+        let scope_ok = claims
+            .scp
+            .as_deref()
+            .is_some_and(|s| s.split(' ').any(|x| x == entra::MCP_SCOPE));
+        if !scope_ok || claims.nbf.is_none() {
+            return Err("an Entra token without the MCP scope or without nbf was accepted".to_owned());
+        }
+        let tid = claims.tid.as_deref().unwrap_or_default().to_ascii_lowercase();
+        let oid = claims.oid.as_deref().unwrap_or_default().to_ascii_lowercase();
+        if user.id.to_string() != format!("{tid}:{oid}") {
+            return Err("an Entra identity is not exactly tid:oid of the claims".to_owned());
+        }
+    }
+    if let Ok(identity) = google::identity_from_claims(&claims, "aud") {
+        if claims.email_verified != Some(true) {
+            return Err("a Google token with an unverified email was accepted".to_owned());
+        }
+        if identity.email.as_str().is_empty() || identity.subject.as_str().is_empty() {
+            return Err("a Google identity has an empty email or subject".to_owned());
         }
     }
     Ok(())
