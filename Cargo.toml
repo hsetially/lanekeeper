@@ -119,7 +119,8 @@ tracing-opentelemetry = { version = "=0.34.0", default-features = false }
 base64 = { version = "=0.22.1", default-features = false, features = ["std"] }
 rustls-native-certs = { version = "=0.8.4", default-features = false }
 # Git mirror (prompt 03b, T7, A16). gix 0.87.1 (2026-08-24, 48 days old). `blocking-http-transport-reqwest-rust-tls` is the one HTTPS
-# transport on rustls with aws-lc-rs (no ring, no openssl, no native-tls); reqwest arrives only as gix-transport's HTTP client
+# transport on rustls with aws-lc-rs (no openssl, no native-tls; ring is not in this crate's graph, but it is in the `hub` binary,
+# through sqlx's database-leg TLS, A15); reqwest arrives only as gix-transport's HTTP client
 # (a human accepted it, blockers file A16) and is never a direct dependency or used in our code. `max-performance-safe` is
 # gix's parallel pack decoding and pack caches (safe Rust); `revision` is `describe`; `sha1` is the object hash of the mirrors.
 gix = { version = "=0.87.1", default-features = false, features = ["sha1", "max-performance-safe", "revision", "blocking-http-transport-reqwest-rust-tls"] }
