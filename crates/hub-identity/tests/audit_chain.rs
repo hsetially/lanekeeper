@@ -494,3 +494,32 @@ async fn explain_audit_head_is_backward_pk_scan() {
         "{nodes:?}"
     );
 }
+
+/// The verifier compares `at` to the microsecond, so the log must write it exactly, whatever the date. A floating-point product of
+/// the milliseconds and an interval is off by microseconds from the year 2255 on.
+#[tokio::test]
+async fn at_is_stored_exactly_for_any_date_the_column_can_hold() {
+    let db = db!();
+    let pool = db.app_pool(2).await;
+    let dates = [
+        -210_866_803_200_000, // 4713 BC
+        -1,
+        0,
+        1,
+        1_791_676_800_123,
+        253_402_300_799_999, // 9999-12-31
+        8_900_000_000_000_123,
+    ];
+    for ms in dates {
+        let mut e = event(0);
+        e.at = Timestamp::from_unix_millis(ms);
+        record_committed(&pool, e).await;
+    }
+    let stored: Vec<i64> = sqlx::query_scalar(
+        "SELECT (extract(epoch FROM at) * 1000000)::bigint FROM audit_events ORDER BY seq",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(stored, dates.map(|ms| ms * 1000));
+}

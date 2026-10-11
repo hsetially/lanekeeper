@@ -46,7 +46,10 @@ pub struct AuthContext {
     pub request_id: Option<RequestId>,
 }
 
-/// A request id nobody can guess or choose. `None` only if the identifier were somehow refused, which it cannot be.
+/// A request id made by the hub, never taken from the client. It is a correlation id for logs and audit events, not a secret: it
+/// grants nothing, so it comes from `fastrand` (fast, not cryptographically secure) and is only made unlikely to repeat. Anything
+/// that must be unguessable (session ids, CSRF tokens) comes from the aws-lc-rs generator, in `session::cookie`. `None` only if the
+/// identifier were somehow refused, which it cannot be.
 fn new_request_id() -> Option<RequestId> {
     RequestId::parse(&format!("req-{:032x}", fastrand::u128(..))).ok()
 }

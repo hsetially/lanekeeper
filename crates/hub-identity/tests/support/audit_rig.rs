@@ -3,14 +3,14 @@
 
 use std::sync::Arc;
 
-use domain::Timestamp;
+use domain::{Attribution, AttributionSource, Confidence, ProposalId, ShortText, Timestamp};
 use hub_identity::audit::{
     ChainVerifier, CheckpointDeps, CheckpointJob, EcdsaP256Verifier, MemoryBucket, NightlyVerifyJob,
     PgAuditLog,
 };
 use hub_identity::metrics::IdentityMetrics;
 use hub_identity::{Clock, ManualClock};
-use ports::conformance::sample::user_id;
+use ports::conformance::sample::{hash, nfs, request_id, swimlane, user_id};
 use ports::fakes::{FakeLeases, FakeNotifier};
 use ports::{AuditAction, AuditActor, AuditEvent, AuditLog, AuditVia, Tx};
 use sqlx::PgPool;
@@ -38,6 +38,37 @@ pub fn event(n: i64) -> AuditEvent {
         AuditAction::SettingsChanged,
         AuditVia::Ui,
     )
+}
+
+/// An event with every optional field present, including a full attribution.
+pub fn full_event(n: i64) -> AuditEvent {
+    let mut e = event(n);
+    e.swimlane = Some(swimlane("sit1"));
+    e.path = Some(nfs("tx-infinity-api/tx-infinity-core.yml"));
+    e.hash_before = Some(hash(b"before"));
+    e.hash_after = Some(hash(b"after"));
+    e.diff = Some("-a: 1\n+a: 2\n".to_owned());
+    e.github_login = Some(ShortText::parse("octocat").unwrap());
+    e.approval = Some(ProposalId::from(77));
+    e.request_id = Some(request_id("req-1"));
+    e.attribution = Some(Attribution {
+        source: AttributionSource::SentinelLogin,
+        confidence: Confidence::High,
+        actor: Some(domain::Actor::OsLogin {
+            login: ShortText::parse("jdoe").unwrap(),
+        }),
+        evidence: domain::Evidence {
+            executable: Some(ShortText::parse("/usr/bin/vim").unwrap()),
+            login_identity: Some(ShortText::parse("jdoe@corp").unwrap()),
+            observed_at: Some(Timestamp::from_unix_millis(5)),
+        },
+    });
+    e
+}
+
+/// An event with no optional field at all.
+pub fn bare_event(n: i64) -> AuditEvent {
+    event(n)
 }
 
 impl AuditRig {
@@ -77,6 +108,17 @@ impl AuditRig {
             .fetch_one(&self.pool)
             .await
             .unwrap()
+    }
+
+    /// Commit one given event in a transaction of its own. Returns its `seq`.
+    pub async fn record_event(&self, e: AuditEvent) -> i64 {
+        let mut tx = self.pool.begin().await.unwrap();
+        let id = PgAuditLog::new()
+            .record(&mut Tx::from_pg(&mut tx), e)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        id.get()
     }
 
     pub fn checkpoint_job(&self) -> CheckpointJob {

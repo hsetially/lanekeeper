@@ -95,12 +95,14 @@ impl UserAdmin {
             let mut tx = self.svc.pool.begin().await.map_err(|e| db_err("begin", &e))?;
             let target = lock_open_request(&mut tx, request).await?;
             close_request(&mut tx, request, AccessRequestStatus::Rejected, &actor.user, now).await?;
-            let diff = format!("request={request}; user={target}; rejected; reason={reason}");
-            self.record(&mut tx, actor, now, AuditAction::AccessDenied, diff)
-                .await?;
+            // The answer is read before the audit record: the record takes the chain lock, which is held to the commit, so it is
+            // the last statement.
             let done = fetch_request(&mut tx, request)
                 .await?
                 .ok_or(AccessError::Unavailable)?;
+            let diff = format!("request={request}; user={target}; rejected; reason={reason}");
+            self.record(&mut tx, actor, now, AuditAction::AccessDenied, diff)
+                .await?;
             tx.commit().await.map_err(|e| db_err("commit", &e))?;
             Ok(done)
         })
@@ -214,6 +216,8 @@ impl UserAdmin {
                     },
                 )
                 .await?;
+            // Read before the audit record, which is the last statement (its chain lock is held to the commit).
+            let created = fetch_request(&mut tx, id).await?.ok_or(AccessError::Unavailable)?;
             let diff = format!(
                 "request={id}; user={}; asked for role {} (now {})",
                 actor.user,
@@ -221,7 +225,6 @@ impl UserAdmin {
                 role_text(user.role)
             );
             self.record(&mut tx, actor, now, AuditAction::AccessRequested, diff).await?;
-            let created = fetch_request(&mut tx, id).await?.ok_or(AccessError::Unavailable)?;
             tx.commit().await.map_err(|e| db_err("commit", &e))?;
             Ok((created, user))
         })

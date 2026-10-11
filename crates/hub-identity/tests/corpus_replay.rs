@@ -55,6 +55,82 @@ fn corpus_replay_identity_audit_event() {
     replay("identity_audit_event", invariants::identity_audit_event);
 }
 
+/// `identity_jwt` reaches the claim checks (`check_claims`). Random tokens fail the signature first, so the claim JSON and the time
+/// logic are fed to `check_claims` directly: the input read as the claims, and the middle segment of the input read as a token.
+/// These seeds are the ones that get there, one for each way through.
+#[test]
+fn identity_jwt_seeds_reach_the_claim_checks() {
+    use hub_identity::TokenError;
+    let outcomes = |name: &str| {
+        let bytes = fs::read(fuzz_dir().join("corpus/identity_jwt").join(name)).unwrap();
+        invariants::claim_outcomes(&bytes)
+    };
+    for name in [
+        "claims_json_accepted",
+        "claims_json_aud_list_float_exp",
+        "claims_token_middle_segment",
+    ] {
+        assert!(
+            outcomes(name).iter().any(Result::is_ok),
+            "{name} no longer reaches an accepted claim set"
+        );
+    }
+    for (name, expected) in [
+        ("claims_json_expired", TokenError::Expired),
+        ("claims_json_wrong_tenant", TokenError::WrongTenant),
+        ("claims_json_future_nbf", TokenError::NotYetValid),
+        ("claims_json_wrong_issuer", TokenError::WrongIssuer),
+    ] {
+        assert!(
+            outcomes(name).iter().any(|r| r.as_ref().err() == Some(&expected)),
+            "{name} no longer reaches {expected:?}"
+        );
+    }
+}
+
+/// The invariants on accepted claims are not vacuous: claims that break each one are reported.
+#[test]
+fn claim_invariants_report_what_they_are_meant_to() {
+    use hub_identity::oidc::jwt::Claims;
+    let good = Claims {
+        issuer: "https://issuer.test".to_owned(),
+        audience: vec!["aud".to_owned()],
+        exp: 1_800_000_100,
+        nbf: Some(1_799_999_000),
+        nonce: None,
+        tid: Some("TID".to_owned()),
+        oid: None,
+        subject: None,
+        email: None,
+        email_verified: None,
+        preferred_username: None,
+        name: None,
+        scp: None,
+    };
+    assert_eq!(invariants::claim_invariants(&good), Ok(()));
+    let mut c = good.clone();
+    c.issuer = "https://elsewhere.test".to_owned();
+    assert!(invariants::claim_invariants(&c).is_err(), "wrong issuer");
+    let mut c = good.clone();
+    c.audience = vec!["other".to_owned()];
+    assert!(invariants::claim_invariants(&c).is_err(), "wrong audience");
+    let mut c = good.clone();
+    c.audience = Vec::new();
+    assert!(invariants::claim_invariants(&c).is_err(), "no audience");
+    let mut c = good.clone();
+    c.tid = Some("other".to_owned());
+    assert!(invariants::claim_invariants(&c).is_err(), "wrong tenant");
+    let mut c = good.clone();
+    c.tid = None;
+    assert!(invariants::claim_invariants(&c).is_err(), "no tenant");
+    let mut c = good.clone();
+    c.exp = 1_700_000_000;
+    assert!(invariants::claim_invariants(&c).is_err(), "expired");
+    let mut c = good;
+    c.nbf = Some(1_900_000_000);
+    assert!(invariants::claim_invariants(&c).is_err(), "not yet valid");
+}
+
 /// Every target in `fuzz_targets/` has a corpus and a replay test, and the other way round.
 #[test]
 fn every_fuzz_target_has_a_corpus_and_a_replay() {

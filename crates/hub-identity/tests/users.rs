@@ -1493,3 +1493,90 @@ async fn error_display_never_contains_input() {
         assert!(!shown.contains('@'), "{shown}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// The audit record is the last statement before the commit (the chain lock is held from `record` to the commit).
+
+/// The statements `sqlx` ran, in order, from a log capture. Each is the short `summary` that `sqlx` logs.
+fn statements(log: &str) -> Vec<String> {
+    log.lines()
+        .filter_map(|line| {
+            let rest = line.split_once("sqlx::query: summary=\"")?.1;
+            Some(rest.split_once('"')?.0.to_owned())
+        })
+        .collect()
+}
+
+/// What ran after the last audit insert and before the end: nothing, but the commit.
+fn after_the_audit_insert(log: &str) -> Vec<String> {
+    let all = statements(log);
+    let at = all
+        .iter()
+        .rposition(|s| s.starts_with("INSERT INTO audit_events"))
+        .expect("an audit insert in the statements");
+    all[at + 1..].to_vec()
+}
+
+#[tokio::test]
+async fn the_audit_record_is_the_last_statement_before_commit() {
+    let rig = UsersRig::new(db!()).await;
+    rig.seed_admin(9).await;
+    rig.seed(3, Some(Role::Viewer), UserStatus::Active).await;
+    let approve_id = pending_user_with_request(&rig, 1).await;
+    let reject_id = pending_user_with_request(&rig, 2).await;
+    let commit_only = vec!["COMMIT".to_owned()];
+
+    let (capture, guard) = support::log_capture::install();
+    rig.admin
+        .approve(&actor(9), approve_id, Role::Editor)
+        .await
+        .unwrap();
+    drop(guard);
+    assert_eq!(after_the_audit_insert(&capture.text()), commit_only, "approve");
+
+    let (capture, guard) = support::log_capture::install();
+    rig.admin.reject(&actor(9), reject_id, &text("no")).await.unwrap();
+    drop(guard);
+    assert_eq!(after_the_audit_insert(&capture.text()), commit_only, "reject");
+
+    let (capture, guard) = support::log_capture::install();
+    rig.admin
+        .update_user(
+            &actor(9),
+            &uid(3),
+            Change {
+                role: Some(Some(Role::Operator)),
+                ..Change::default()
+            },
+        )
+        .await
+        .unwrap();
+    drop(guard);
+    assert_eq!(
+        after_the_audit_insert(&capture.text()),
+        commit_only,
+        "update_user"
+    );
+
+    rig.clock.advance_secs(11 * 60);
+    let (capture, guard) = support::log_capture::install();
+    rig.admin
+        .create_request(&actor(1), Role::Admin, &text("please"))
+        .await
+        .unwrap();
+    drop(guard);
+    assert_eq!(
+        after_the_audit_insert(&capture.text()),
+        commit_only,
+        "create_request"
+    );
+
+    let (capture, guard) = support::log_capture::install();
+    rig.users.first_sign_in(&sign_in(4), None).await.unwrap();
+    drop(guard);
+    assert_eq!(
+        after_the_audit_insert(&capture.text()),
+        commit_only,
+        "first_sign_in"
+    );
+}

@@ -11,7 +11,8 @@
 //!
 //! | Target | Input | What must hold |
 //! |---|---|---|
-//! | `identity_jwt` | text | whatever the bytes are, parsing a token never panics and refuses more than 16 KiB without looking inside; an accepted header has algorithm RS256 and a key id of 1 to 256 bytes; a token is never verified against a key set that holds no key that signed it (random input is never a valid signature); a key-set document that parses holds 1 to 32 keys; the Entra profile accepts claims only with the `mcp.access` scope, an `nbf` and a GUID `tid` and `oid`, and its identity is exactly `tid:oid`; the Google profile accepts claims only with a verified, non-empty email and a subject |
+//! | `identity_jwt` | text | whatever the bytes are, parsing a token never panics and refuses more than 16 KiB without looking inside; an accepted header has algorithm RS256 and a key id of 1 to 256 bytes; a token is never verified against a key set that holds no key that signed it (random input is never a valid signature); a key-set document that parses holds 1 to 32 keys; claims that `check_claims` accepts (the input read as the claims JSON, and its middle segment read as a token payload, because random tokens never get past the signature) name the profile's issuer, one of its audiences and its tenant, and are neither expired nor from the future beyond the skew; the Entra profile accepts claims only with the `mcp.access` scope, an `nbf` and a GUID `tid` and `oid`, and its identity is exactly `tid:oid`; the Google profile accepts claims only with a verified, non-empty email and a subject |
+//! | `identity_audit_event` | text | an event that parses is refused only when its diff is oversize; its canonical JSON parses back to the same event and is stable; a stored row passes the hash check only with the right predecessor, event text and hash; a checkpoint object that parses has a signature of 1 to 128 bytes and survives a round trip; a key or signature that is junk never verifies; the denormalised columns the log writes for an event never differ from its stored text, and text of any shape is judged without a panic |
 //! | `identity_cookie` | text | `valid_return_to` accepts only a site-relative path (one leading `/`, no backslash, no control character, at most 512 bytes); a login cookie that was not sealed with the key never opens; the callback query parser never panics; a list cursor is refused or decodes to a key that re-encodes to a cursor that decodes to the same key, and a request cursor that decodes re-encodes to the same text; a `Cookie` header that parses yields only non-empty values made of cookie octets, within the size cap; a session or CSRF token text that is accepted is the one spelling of its 32 bytes; the CSRF check lets a state-changing request with a session through only when the header, the cookie and the stored hash agree and `Origin` is exactly the public origin |
 
 #![allow(
@@ -26,12 +27,13 @@ use domain::ContentHash;
 use http::{HeaderMap, HeaderValue, Method, header};
 use hub_identity::TokenError;
 use hub_identity::audit::checkpoint::CheckpointObject;
+use hub_identity::audit::columns::differing_columns;
 use hub_identity::audit::log::prepare;
 use hub_identity::audit::verify::{FailureKind, check_row};
 use hub_identity::audit::{CheckpointVerifier, EcdsaP256Verifier};
 use hub_identity::csrf::check as csrf_check;
 use hub_identity::oidc::jwks::{KeySet, RsaPublicKey};
-use hub_identity::oidc::jwt::{Claims, Profile, parse_compact, verify_with_keys};
+use hub_identity::oidc::jwt::{Claims, Profile, check_claims, parse_compact, verify_with_keys};
 use hub_identity::oidc::login::{CallbackQuery, LoginSealer, valid_return_to};
 use hub_identity::session::cookie::{MAX_COOKIE_VALUE_BYTES, RandomToken, RequestCookies};
 use hub_identity::tokens::{entra, google};
@@ -56,6 +58,78 @@ fn fixed_keys() -> KeySet {
     KeySet::from_keys([("k".to_owned(), key)])
 }
 
+/// The time all the claim checks run at.
+const NOW: i64 = 1_800_000_000;
+/// The allowed clock skew of the claim checks, in seconds (`CLOCK_SKEW_SECS` in `oidc/jwt.rs`).
+const SKEW: i64 = 60;
+
+fn claim_profile() -> Profile {
+    Profile {
+        issuer: "https://issuer.test".to_owned(),
+        audiences: vec!["aud".to_owned()],
+        tenant: Some("tid".to_owned()),
+    }
+}
+
+/// Unpadded URL-safe base64, as a token's segments are written.
+fn base64url(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0_u32, |acc, (i, b)| acc | (u32::from(*b) << (16 - 8 * i)));
+        for i in 0..=chunk.len() {
+            out.push(char::from(ALPHABET[((n >> (18 - 6 * i)) & 0x3f) as usize]));
+        }
+    }
+    out
+}
+
+/// What `check_claims` says about an input, read two ways: the input as the claims JSON itself (so that the fuzzer's mutations
+/// land on the JSON and not on its base64), and, if the input is a three-segment token, its middle segment as the payload.
+pub fn claim_outcomes(data: &[u8]) -> Vec<Result<Claims, TokenError>> {
+    let profile = claim_profile();
+    let mut payloads = vec![base64url(data)];
+    let token = text(data);
+    let mut parts = token.split('.');
+    if let (Some(_), Some(payload), Some(_), None) = (parts.next(), parts.next(), parts.next(), parts.next())
+    {
+        payloads.push(payload.to_owned());
+    }
+    payloads
+        .iter()
+        .map(|payload| check_claims(payload, &profile, NOW))
+        .collect()
+}
+
+/// What claims that `check_claims` accepted must satisfy.
+pub fn claim_invariants(claims: &Claims) -> Result<(), String> {
+    let profile = claim_profile();
+    if claims.issuer != profile.issuer {
+        return Err("accepted claims name another issuer".to_owned());
+    }
+    if claims.audience.is_empty() || !claims.audience.iter().any(|a| profile.audiences.contains(a)) {
+        return Err("accepted claims name none of the audiences".to_owned());
+    }
+    let tenant = profile.tenant.as_deref().unwrap_or_default();
+    if !claims
+        .tid
+        .as_deref()
+        .is_some_and(|t| t.eq_ignore_ascii_case(tenant))
+    {
+        return Err("accepted claims are from another tenant, or from none".to_owned());
+    }
+    if NOW > claims.exp.saturating_add(SKEW) {
+        return Err("expired claims were accepted".to_owned());
+    }
+    if claims.nbf.is_some_and(|nbf| nbf > NOW.saturating_add(SKEW)) {
+        return Err("claims that are not yet valid were accepted".to_owned());
+    }
+    Ok(())
+}
+
 pub fn identity_jwt(data: &[u8]) -> Result<(), String> {
     let token = text(data);
     match parse_compact(&token) {
@@ -74,13 +148,13 @@ pub fn identity_jwt(data: &[u8]) -> Result<(), String> {
         }
         Err(_) => {}
     }
-    let profile = Profile {
-        issuer: "https://issuer.test".to_owned(),
-        audiences: vec!["aud".to_owned()],
-        tenant: Some("tid".to_owned()),
-    };
-    if verify_with_keys(&token, &fixed_keys(), &profile, 1_800_000_000).is_ok() {
+    let profile = claim_profile();
+    if verify_with_keys(&token, &fixed_keys(), &profile, NOW).is_ok() {
         return Err("random input was verified as a signed token".to_owned());
+    }
+    // Random input never gets past the signature above, so the claim checks (step 5) are run on it directly.
+    for claims in claim_outcomes(data).into_iter().flatten() {
+        claim_invariants(&claims)?;
     }
     // The same bytes as a key-set document.
     if let Ok(set) = KeySet::parse(data) {
@@ -235,6 +309,9 @@ pub fn identity_cookie(data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// An event whose columns are held against arbitrary stored text.
+const MINIMAL_EVENT: &str = r#"{"at":1791676800000,"actor":{"kind":"system","component":"job"},"action":"settings_changed","via":"system","swimlane":null,"path":null,"hash_before":null,"hash_after":null,"diff":null,"github_login":null,"approval":null,"request_id":null,"attribution":null}"#;
+
 /// The fixed predecessor of the stored-row check.
 const PREV: [u8; 32] = [0x5a; 32];
 
@@ -294,6 +371,26 @@ pub fn identity_audit_event(data: &[u8]) -> Result<(), String> {
     let other = ContentHash::from_bytes([0xa5; 32]);
     if check_row(&other, &prev, &good, data) != Err(FailureKind::ChainLinkBroken) {
         return Err("a row whose predecessor is not the previous row passed".to_owned());
+    }
+
+    // 2b. The columns that copy an event (S9). What the log writes for an event never differs from the event's stored text, and
+    // text of any shape is judged without a panic.
+    if let Ok(event) = serde_json::from_slice::<AuditEvent>(data) {
+        if let Ok(prepared) = prepare(&event) {
+            if let Some(columns) = prepared.columns() {
+                let differ = differing_columns(prepared.json(), &columns);
+                if !differ.is_empty() {
+                    return Err(format!(
+                        "the columns written for an event differ from it: {differ}"
+                    ));
+                }
+            }
+        }
+    }
+    if let Ok(minimal) = serde_json::from_str::<AuditEvent>(MINIMAL_EVENT) {
+        if let Some(columns) = prepare(&minimal).ok().and_then(|p| p.columns()) {
+            let _ = differing_columns(&text(data), &columns);
+        }
     }
 
     // 3. A checkpoint object, as the bucket returns it (S9).

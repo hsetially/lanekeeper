@@ -1,6 +1,6 @@
 //! The cached key set (JWKS) of an issuer (S1).
 //!
-//! - Only RSA signature keys are read, with a modulus of 2048 to 8192 bits. Keys with another `kty`, a `use` other than
+//! - Only RSA signature keys are read, with a modulus of 2048 to 8192 bits and an odd public exponent of at least 65537. Keys with another `kty`, a `use` other than
 //!   `sig`, or an `alg` other than RS256 are skipped. A repeated key id makes the whole set invalid, because it is ambiguous.
 //! - The set is cached for the issuer's `Cache-Control: max-age`, clamped to 60 s to 6 h.
 //! - A token with an unknown key id triggers one refresh, and at most one every 30 s however many tokens arrive. Concurrent
@@ -36,6 +36,9 @@ pub const MAX_KEYS: usize = 32;
 const MIN_MODULUS_BYTES: usize = 256;
 const MAX_MODULUS_BYTES: usize = 1024;
 const MAX_EXPONENT_BYTES: usize = 8;
+/// The smallest public exponent accepted (FIPS 186-5 asks for more than 2^16). A small one (1, 3) makes forgery easy, and the
+/// provider's own verifier does not always refuse it.
+const MIN_EXPONENT: u64 = 65_537;
 const MAX_KID_LEN: usize = 256;
 
 /// An RSA public key as the big-endian bytes of the modulus and the exponent, without leading zeros.
@@ -53,12 +56,19 @@ impl std::fmt::Debug for RsaPublicKey {
     }
 }
 
+/// An odd exponent of at least [`MIN_EXPONENT`]. `e` is at most [`MAX_EXPONENT_BYTES`] long, so it fits a `u64`.
+fn exponent_is_acceptable(e: &[u8]) -> bool {
+    let value = e.iter().fold(0_u64, |acc, b| (acc << 8) | u64::from(*b));
+    e.len() <= MAX_EXPONENT_BYTES && value >= MIN_EXPONENT && value % 2 == 1
+}
+
 impl RsaPublicKey {
     pub fn from_components(n: Vec<u8>, e: Vec<u8>) -> Option<Self> {
         let ok = (MIN_MODULUS_BYTES..=MAX_MODULUS_BYTES).contains(&n.len())
             && n.first().is_some_and(|b| *b != 0)
             && (1..=MAX_EXPONENT_BYTES).contains(&e.len())
-            && e.first().is_some_and(|b| *b != 0);
+            && e.first().is_some_and(|b| *b != 0)
+            && exponent_is_acceptable(&e);
         ok.then_some(Self { n, e })
     }
 

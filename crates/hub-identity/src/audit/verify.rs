@@ -8,9 +8,16 @@
 //! - for every row of `audit_checkpoints`: the chain has an event at that `seq` with that hash, the bucket holds the object for
 //!   it and the object equals the row, and the signature verifies with the KMS public key.
 //!
+//! - for every row whose hash is good, the denormalised columns (`actor_ref`, `action`, `at` and the rest, see [`super::columns`])
+//!   equal the fields they were copied from in the stored `event_json`. Nothing chains these columns, so an owner who disabled the
+//!   append-only trigger could change who an event is attributed to without touching the hash. A difference names the columns, not
+//!   their values.
+//!
 //! The chain is read by keyset in batches (`seq > $last ORDER BY seq LIMIT 5000`) and streamed row by row, so memory use does
-//! not depend on its length. The first bad row ends the walk of the chain, because every row after a bad one fails too; the
-//! report names that one position. Checkpoints are checked one by one, each reporting its first problem, up to a bound.
+//! not depend on its length. The first row with a bad link or hash ends the walk of the chain, because every row after a bad one
+//! fails too; the report names that one position. A row whose columns differ does not end it (the chain is intact after it), so
+//! each such row is listed, up to the bound of the report. Checkpoints are checked one by one, each reporting its first problem,
+//! up to a bound.
 //!
 //! What it cannot see, by design: an event removed *and* its checkpoint rows removed, or a tail cut off after the newest
 //! checkpoint, leave a chain that is internally consistent. The bucket's retention keeps the objects of the removed checkpoints,
@@ -30,6 +37,7 @@ use sqlx::{PgPool, Row};
 use super::JobHandle;
 use super::bucket::{BucketError, CheckpointBucket, object_name};
 use super::checkpoint::CheckpointObject;
+use super::columns::{ColumnSet, SELECT_LIST, StoredColumns, differing_columns};
 use super::signature::{CheckpointVerifier, checkpoint_message};
 use crate::metrics::IdentityMetrics;
 
@@ -64,6 +72,9 @@ pub enum FailureKind {
     /// The bucket could not be read. The check did not complete; this is not evidence of tampering, and still an alert.
     BucketUnavailable,
     SignatureInvalid,
+    /// The row's hash is good, but the named columns are not the copies of the fields of its stored event: the attribution or
+    /// the time shown by anything that reads the columns is not the event's. Carries column names only (S10).
+    ColumnsDiffer(ColumnSet),
 }
 
 impl FailureKind {
@@ -78,6 +89,15 @@ impl FailureKind {
             Self::BucketObjectMismatch => "checkpoint object differs from the table",
             Self::BucketUnavailable => "checkpoint bucket unavailable",
             Self::SignatureInvalid => "checkpoint signature invalid",
+            Self::ColumnsDiffer(_) => "columns differ from the stored event",
+        }
+    }
+
+    /// The columns that differ, for [`FailureKind::ColumnsDiffer`].
+    pub const fn columns(self) -> Option<ColumnSet> {
+        match self {
+            Self::ColumnsDiffer(set) => Some(set),
+            _ => None,
         }
     }
 }
@@ -92,7 +112,7 @@ pub struct VerifyFailure {
 /// The outcome of one verification.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct VerifyReport {
-    /// Events whose link and hash were checked, up to and including the first bad one.
+    /// Events whose link and hash were checked, up to and including the first with a bad link or hash.
     pub events_checked: u64,
     /// Keyset batches read from `audit_events`.
     pub batches: u64,
@@ -206,13 +226,12 @@ impl ChainVerifier {
         let limit = i64::try_from(self.batch_rows).unwrap_or(i64::MAX);
         let mut after = 0_i64;
         let mut expected_prev = genesis_hash();
+        let select = format!(
+            "SELECT seq, prev_hash, hash, event_json, {SELECT_LIST} FROM audit_events \
+             WHERE seq > $1 ORDER BY seq LIMIT $2"
+        );
         loop {
-            let mut rows = sqlx::query(
-                "SELECT seq, prev_hash, hash, event_json FROM audit_events WHERE seq > $1 ORDER BY seq LIMIT $2",
-            )
-            .bind(after)
-            .bind(limit)
-            .fetch(&self.pool);
+            let mut rows = sqlx::query(&select).bind(after).bind(limit).fetch(&self.pool);
             let mut in_batch = 0_usize;
             while let Some(row) = rows.try_next().await.map_err(|e| db_error("chain", &e))? {
                 in_batch += 1;
@@ -229,7 +248,15 @@ impl ChainVerifier {
                     _ => Err(FailureKind::ChainHashMismatch),
                 };
                 match checked {
-                    Ok(hash) => expected_prev = hash,
+                    Ok(hash) => {
+                        expected_prev = hash;
+                        // The text is now vouched for by the chain, so the copies of it can be held against it.
+                        let stored = StoredColumns::from_row(&row).map_err(|e| db_error("chain", &e))?;
+                        let differ = differing_columns(&json, &stored);
+                        if !differ.is_empty() {
+                            report.fail(seq, FailureKind::ColumnsDiffer(differ));
+                        }
+                    }
                     Err(kind) => {
                         // Every later row would fail too: name the first position and stop.
                         report.fail(seq, kind);
@@ -351,6 +378,25 @@ impl ChainVerifier {
     }
 }
 
+/// The one line of the alert: how many problems, and where and what the first is. For a column difference it names the columns if
+/// the line stays inside a [`ShortText`] and counts them otherwise, so the alert is always built.
+fn alert_summary(count: usize, more: &str, first: &VerifyFailure) -> String {
+    let base = format!(
+        "{count}{more} problem(s) in the audit log. First: {} at position {}",
+        first.kind.as_str(),
+        first.seq
+    );
+    let Some(columns) = first.kind.columns() else {
+        return base;
+    };
+    let named = format!("{base} ({columns})");
+    if ShortText::parse(&named).is_ok() {
+        named
+    } else {
+        format!("{base} ({} columns)", columns.len())
+    }
+}
+
 /// What a nightly run did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NightlyOutcome {
@@ -435,9 +481,12 @@ impl NightlyVerifyJob {
             return Ok(NightlyOutcome::Clean(report));
         }
         for failure in &report.failures {
+            // Column names are structure, not content; the values of the columns are never read into a message.
+            let columns = failure.kind.columns().map(|c| c.to_string()).unwrap_or_default();
             tracing::error!(
                 seq = failure.seq,
                 reason = failure.kind.as_str(),
+                columns = columns.as_str(),
                 "audit chain verification failed"
             );
         }
@@ -451,12 +500,7 @@ impl NightlyVerifyJob {
             return;
         };
         let more = if report.truncated { "+" } else { "" };
-        let summary = format!(
-            "{}{more} problem(s) in the audit log. First: {} at position {}",
-            report.failures.len(),
-            first.kind.as_str(),
-            first.seq
-        );
+        let summary = alert_summary(report.failures.len(), more, first);
         let (Ok(title), Ok(summary)) = (
             ShortText::parse("Audit log verification failed"),
             ShortText::parse(&summary),
@@ -546,6 +590,37 @@ mod tests {
         let mut r = rows(5);
         r[0].0 = ContentHash::from_bytes([1; 32]);
         assert_eq!(first_failure(&r), Some((0, FailureKind::ChainLinkBroken)));
+    }
+
+    #[test]
+    fn the_alert_names_the_columns_when_they_fit_and_counts_them_when_they_do_not() {
+        use super::super::columns::Column;
+        let few = VerifyFailure {
+            seq: 5,
+            kind: FailureKind::ColumnsDiffer(ColumnSet::of(&[Column::ActorRef, Column::At])),
+        };
+        let line = alert_summary(1, "", &few);
+        assert_eq!(
+            line,
+            "1 problem(s) in the audit log. First: columns differ from the stored event at position 5 (at, actor_ref)"
+        );
+        // Every column, and a position and a count that use all their digits: the line must still be a valid `ShortText`.
+        let all = VerifyFailure {
+            seq: i64::MIN,
+            kind: FailureKind::ColumnsDiffer(ColumnSet::all()),
+        };
+        let line = alert_summary(usize::MAX, "+", &all);
+        assert!(ShortText::parse(&line).is_ok(), "{} bytes: {line}", line.len());
+        assert!(line.contains(&format!("position {}", i64::MIN)), "{line}");
+        // A failure of another kind is the old line.
+        let other = VerifyFailure {
+            seq: 3,
+            kind: FailureKind::ChainHashMismatch,
+        };
+        assert_eq!(
+            alert_summary(2, "", &other),
+            "2 problem(s) in the audit log. First: event hash mismatch at position 3"
+        );
     }
 
     #[test]

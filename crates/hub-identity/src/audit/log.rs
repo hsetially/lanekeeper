@@ -3,7 +3,8 @@
 //! [`AuditLog::record`] runs, inside the caller's transaction:
 //!
 //! 1. the size check, before anything else (an oversized event never waits for the lock);
-//! 2. `pg_advisory_xact_lock`, one lock key for the whole chain, released when the transaction ends;
+//! 2. `SET LOCAL lock_timeout`, then `pg_advisory_xact_lock`, one lock key for the whole chain, released when the transaction
+//!    ends (two statements of one message, so the order is certain);
 //! 3. the head of the chain: `SELECT hash FROM audit_events ORDER BY seq DESC LIMIT 1` (a backward primary-key scan), or the
 //!    genesis hash when the log is empty. This is its own statement: under READ COMMITTED each statement sees what the previous
 //!    holder of the lock committed, which a single statement that also took the lock would not;
@@ -34,6 +35,8 @@ use domain::{AuditId, ContentHash};
 use ports::{AuditActor, AuditError, AuditEvent, AuditLog, Tx, canonical_json, chain_hash, genesis_hash};
 use sqlx::Row;
 
+use super::columns::StoredColumns;
+
 /// The advisory lock that serialises writers of the chain. No other part of the schema takes it. Every replica, of every
 /// version, must use this value: it is fixed, and a test pins it.
 pub const CHAIN_LOCK_KEY: i64 = 0x004C_4B41_5544_4955;
@@ -44,10 +47,12 @@ pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 /// The table refuses an `event_json` over this size. The bounded fields of an event cannot reach it; this is the backstop.
 const MAX_EVENT_JSON_BYTES: usize = 1024 * 1024;
 
+/// `at` is built by parsing the interval from text, which is integer arithmetic. `$4::bigint * interval '1 millisecond'` multiplies in
+/// floating point and is off by microseconds from the year 2255 on, and the nightly verifier compares `at` to the microsecond.
 const INSERT: &str = "INSERT INTO audit_events \
     (prev_hash, hash, event_json, at, actor_kind, actor_ref, action, via, swimlane_id, path, hash_before, hash_after, \
      github_login, approval_id, request_id, attribution_source, attribution_confidence, attribution_actor, attribution_evidence) \
-    VALUES ($1, $2, $3, timestamptz 'epoch' + $4::bigint * interval '1 millisecond', $5, $6, $7, $8, $9, $10, $11, $12, \
+    VALUES ($1, $2, $3, timestamptz 'epoch' + ($4::bigint::text || ' milliseconds')::interval, $5, $6, $7, $8, $9, $10, $11, $12, \
             $13, $14, $15, $16, $17, $18, $19) \
     RETURNING seq";
 
@@ -77,6 +82,32 @@ impl Prepared {
     /// The canonical JSON, exactly the text that is hashed and stored.
     pub fn json(&self) -> &str {
         &self.json
+    }
+
+    /// What the table holds in the columns that copy the event: the values the insert binds. The nightly verifier compares the
+    /// stored columns with the stored text ([`super::columns`]); this is the same set derived the other way, from the typed event.
+    ///
+    /// `None` when the time is so far out that its microseconds do not fit an `i64`: the table cannot hold such a time either
+    /// (a `timestamptz` ends long before), and the insert is refused.
+    pub fn columns(&self) -> Option<StoredColumns> {
+        Some(StoredColumns {
+            at_micros: self.at_millis.checked_mul(1000)?,
+            actor_kind: self.actor_kind.to_owned(),
+            actor_ref: Some(self.actor_ref.clone()),
+            action: self.action.clone(),
+            via: self.via.clone(),
+            swimlane_id: self.swimlane.clone(),
+            path: self.path.clone(),
+            hash_before: self.hash_before.map(|h| h.as_bytes().to_vec()),
+            hash_after: self.hash_after.map(|h| h.as_bytes().to_vec()),
+            github_login: self.github_login.clone(),
+            approval_id: self.approval,
+            request_id: self.request_id.clone(),
+            attribution_source: self.attribution_source.map(str::to_owned),
+            attribution_confidence: self.attribution_confidence.map(str::to_owned),
+            attribution_actor: self.attribution_actor.clone(),
+            attribution_evidence: self.attribution_evidence.clone(),
+        })
     }
 
     /// `SHA-256(prev || json)`.
@@ -196,12 +227,16 @@ impl AuditLog for PgAuditLog {
         let p = prepare(&e)?;
         let conn = tx.pg().map_err(|_| AuditError::WrongTx)?;
 
-        // 2. The lock. `set_config(..., true)` lasts to the end of the transaction. The two calls are one round trip.
-        let timeout_ms = self.lock_timeout.as_millis().clamp(1, 600_000).to_string();
-        sqlx::query("SELECT set_config('lock_timeout', $1, true), pg_advisory_xact_lock($2)")
-            .bind(timeout_ms)
-            .bind(CHAIN_LOCK_KEY)
-            .execute(&mut *conn)
+        // 2. The lock, after the timeout that bounds the wait for it. The two are statements of one simple-protocol message: they run
+        // in the order written, in one round trip, which two expressions in one `SELECT` list would not promise. `SET LOCAL` lasts to
+        // the end of the transaction. Both numbers are ours (a clamped integer and a constant), never input, so formatting them in is
+        // safe.
+        let timeout_ms = self.lock_timeout.as_millis().clamp(1, 600_000);
+        let lock = format!(
+            "SET LOCAL lock_timeout = '{timeout_ms}ms'; SELECT pg_advisory_xact_lock({CHAIN_LOCK_KEY})"
+        );
+        // Text with no bound arguments goes out as a simple query, which is what allows two statements in it.
+        sqlx::Executor::execute(&mut *conn, lock.as_str())
             .await
             .map_err(|e| db_error("lock", &e))?;
 

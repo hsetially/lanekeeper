@@ -5,7 +5,8 @@
 //! - [`checkpoint`]: every hour, the head is signed by KMS ([`signature`]) and the signed checkpoint goes to a locked bucket
 //!   ([`bucket`]) and to `audit_checkpoints`.
 //! - [`verify`]: every night, the whole chain is recomputed from the stored `event_json` and checked against every checkpoint,
-//!   its bucket object and its signature. A mismatch alerts the admins, raises a metric and logs the position.
+//!   its bucket object and its signature, and holds the columns that copy each event ([`columns`]) against the stored text. A
+//!   mismatch alerts the admins, raises a metric and logs the position (and, for columns, their names).
 //! - [`shipper`]: committed events are copied, hash included, to Cloud Logging as one structured line each.
 //!
 //! Appending is in the caller's transaction; the jobs run on one replica at a time under leases ([`ports::Leases`]).
@@ -17,6 +18,7 @@ use crate::session::AbortOnDrop;
 
 pub mod bucket;
 pub mod checkpoint;
+pub mod columns;
 pub mod log;
 pub mod metadata;
 pub mod shipper;
@@ -27,6 +29,7 @@ pub use bucket::{
     AccessTokenSource, BucketError, CheckpointBucket, GcsCheckpointBucket, MemoryBucket, PutOutcome,
 };
 pub use checkpoint::{CheckpointDeps, CheckpointError, CheckpointJob, CheckpointObject, CheckpointOutcome};
+pub use columns::{Column, ColumnSet};
 pub use log::{CHAIN_LOCK_KEY, PgAuditLog};
 pub use metadata::MetadataTokenSource;
 pub use shipper::{AuditLogShipper, ShipOutcome};

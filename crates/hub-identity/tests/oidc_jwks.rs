@@ -164,3 +164,43 @@ fn key_set_parsing_keeps_only_usable_rsa_signature_keys() {
         Err(IdentityError::Jwks)
     ));
 }
+
+#[test]
+fn a_public_exponent_below_65537_or_even_is_refused() {
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let jwk = public_jwk(&keys()[0]);
+    let with_exponent = |e: &[u8]| {
+        let mut j = jwk.clone();
+        j["e"] = json!(URL_SAFE_NO_PAD.encode(e));
+        KeySet::parse(&serde_json::to_vec(&json!({"keys": [j]})).unwrap())
+    };
+    // Accepted: 65537 (the one real keys have), and other odd values at or above it, up to 8 bytes.
+    assert!(with_exponent(&[1, 0, 1]).is_ok());
+    assert!(with_exponent(&[1, 0, 3]).is_ok());
+    assert!(with_exponent(&[0xFF; 8]).is_ok());
+    // Refused: 1 and 3 (a signature under them is a forgery waiting to happen), 65535, 65536 (even), 0, an empty exponent,
+    // an even one above the floor, a leading zero, and nine bytes.
+    for (what, e) in [
+        ("1", &[1_u8][..]),
+        ("3", &[3]),
+        ("17", &[17]),
+        ("65535", &[0xFF, 0xFF]),
+        ("65536", &[1, 0, 0]),
+        ("65538", &[1, 0, 2]),
+        ("0", &[0]),
+        ("empty", &[]),
+        ("leading zero", &[0, 1, 0, 1]),
+        ("nine bytes", &[1, 0, 0, 0, 0, 0, 0, 0, 1]),
+    ] {
+        assert!(
+            matches!(with_exponent(e), Err(IdentityError::Jwks)),
+            "an exponent of {what} was accepted"
+        );
+    }
+    // The constructor the key set uses says the same.
+    let n = vec![0xC1; 256];
+    assert!(hub_identity::oidc::jwks::RsaPublicKey::from_components(n.clone(), vec![1, 0, 1]).is_some());
+    assert!(hub_identity::oidc::jwks::RsaPublicKey::from_components(n.clone(), vec![3]).is_none());
+    assert!(hub_identity::oidc::jwks::RsaPublicKey::from_components(n, vec![1, 0, 0]).is_none());
+}
