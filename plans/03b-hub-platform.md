@@ -1,7 +1,7 @@
 # Plan 03b: Hub platform
 
-Status: DRAFT
-Contract-change: needed
+Status: APPROVED
+Contract-change: APPROVED
 Extra-paths: `crates/xtask/tests/budgets_registry.rs`, `deny.toml`
 Prompt: prompts/03b-hub-platform.md
 Branch: agent/03b-hub-platform
