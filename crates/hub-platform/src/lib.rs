@@ -7,6 +7,8 @@
 //!
 //! - [`error`]: `application/problem+json` and the closed set of API errors (S21).
 //! - [`session_auth`]: how a request becomes an active user, until the identity crate (03a) plugs its own in.
+//! - [`gcp`]: the access token, Secret Manager and Cloud KMS without an SDK, behind the `SecretSource`, `KmsSigner` and
+//!   `KmsEnvelope` ports (S5, S7, S18).
 //! - [`routes`]: the guarded router every route of the hub is registered through (S4).
 #![forbid(unsafe_code)]
 // Documenting `# Errors` on every small constructor and check adds noise; the error enums are the docs.
@@ -17,6 +19,7 @@
 )]
 
 pub mod error;
+pub mod gcp;
 pub mod routes;
 pub mod session_auth;
 

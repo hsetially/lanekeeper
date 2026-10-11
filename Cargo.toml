@@ -113,6 +113,11 @@ opentelemetry = { version = "=0.33.0", default-features = false, features = ["tr
 opentelemetry_sdk = { version = "=0.33.0", default-features = false, features = ["trace", "rt-tokio"] }
 opentelemetry-otlp = { version = "=0.33.0", default-features = false, features = ["trace", "grpc-tonic"] }
 tracing-opentelemetry = { version = "=0.34.0", default-features = false }
+# Google APIs without an SDK (T2, A9): Secret Manager and Cloud KMS speak base64 in JSON, and the hub reads the platform's
+# root certificates (rustls-native-certs, which is already in the graph through sqlx and is not webpki-roots, whose licence
+# deny.toml does not allow) to verify `*.googleapis.com`. base64 0.22.1 is the version nearly the whole graph already uses.
+base64 = { version = "=0.22.1", default-features = false, features = ["std"] }
+rustls-native-certs = { version = "=0.8.4", default-features = false }
 # Test tooling
 proptest = "=1.11.0"
 insta = "=1.48.0"
