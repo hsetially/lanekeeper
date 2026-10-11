@@ -3,7 +3,7 @@ use std::time::Duration;
 use domain::{DomainEvent, ProposalId, ProposalStatus};
 use futures::StreamExt;
 
-use super::sample::swimlane;
+use super::sample::{swimlane, user_id};
 use crate::{EventBus, EventFilter, EventKind, TxFactory};
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -71,6 +71,24 @@ pub async fn event_bus<B: EventBus + ?Sized>(bus: &B, txf: &dyn TxFactory, buffe
     );
     assert_eq!(next(&mut only_proposals).await, proposal(2), "kind filter");
     assert_quiet(&mut only_proposals, "only proposals were asked for").await;
+
+    // Internal events are delivered like any other (the session cache subscribes for them); hiding them from
+    // browsers is the SSE edge's job, through `DomainEvent::is_internal`.
+    let revoked = DomainEvent::UserSessionsRevoked { user: user_id(1) };
+    let mut everything = bus.subscribe(EventFilter::all());
+    let mut in_sit1 = bus.subscribe(EventFilter::for_swimlane(swimlane("sit1")));
+    let mut only_revoked = bus.subscribe(EventFilter {
+        swimlanes: None,
+        kinds: [EventKind::UserSessionsRevoked].into(),
+    });
+    bus.publish(revoked.clone()).await.unwrap();
+    assert_eq!(next(&mut everything).await, revoked, "an unfiltered subscriber");
+    assert_eq!(
+        next(&mut in_sit1).await,
+        revoked,
+        "an internal event has no swimlane, so it passes a swimlane filter"
+    );
+    assert_eq!(next(&mut only_revoked).await, revoked, "its own kind filter");
 
     // A new subscriber does not see the past.
     let mut late = bus.subscribe(EventFilter::all());

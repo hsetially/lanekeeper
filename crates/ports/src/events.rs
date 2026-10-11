@@ -28,6 +28,8 @@ pub enum EventKind {
     PrJobProgress,
     SyncWindowOpened,
     SyncWindowClosed,
+    /// Internal (see [`DomainEvent::is_internal`]): never streamed to browsers.
+    UserSessionsRevoked,
 }
 
 impl EventKind {
@@ -48,6 +50,7 @@ impl EventKind {
             DomainEvent::PrJobProgress { .. } => Self::PrJobProgress,
             DomainEvent::SyncWindowOpened { .. } => Self::SyncWindowOpened,
             DomainEvent::SyncWindowClosed { .. } => Self::SyncWindowClosed,
+            DomainEvent::UserSessionsRevoked { .. } => Self::UserSessionsRevoked,
         }
     }
 }
@@ -58,6 +61,8 @@ impl EventKind {
 ///   Events that belong to no swimlane (see [`DomainEvent::swimlane`]) pass a swimlane filter.
 /// - `kinds` empty means every kind.
 /// - [`DomainEvent::Resync`] always passes, so a filtered subscriber still learns that it lagged.
+/// - Internal events ([`DomainEvent::is_internal`]) pass like any other: in-process subscribers need them. The
+///   SSE edge must drop them before it filters by user.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct EventFilter {
     pub swimlanes: Option<BTreeSet<SwimlaneId>>,
