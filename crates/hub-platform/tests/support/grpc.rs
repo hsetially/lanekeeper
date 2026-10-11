@@ -119,17 +119,19 @@ impl ClientIdentity {
 
 /// Issue an agent certificate for `swimlane` from `ca`, for a fresh key.
 pub async fn agent_identity(ca: &TestCa, swimlane: &str) -> ClientIdentity {
-    use hub_platform::ca::{CertProfile, parse_csr};
+    identity_for(
+        ca,
+        &CertProfile::agent(&domain::SwimlaneId::parse(swimlane).unwrap()),
+    )
+    .await
+}
+
+/// Issue the certificate `profile` describes from `ca`, for a fresh key.
+pub async fn identity_for(ca: &TestCa, profile: &hub_platform::ca::CertProfile) -> ClientIdentity {
+    use hub_platform::ca::parse_csr;
     let key = KeyPair::generate().unwrap();
     let csr = parse_csr(&csr_for(&key)).unwrap();
-    let issued = ca
-        .issuer
-        .issue(
-            &CertProfile::agent(&domain::SwimlaneId::parse(swimlane).unwrap()),
-            &csr,
-        )
-        .await
-        .unwrap();
+    let issued = ca.issuer.issue(profile, &csr).await.unwrap();
     ClientIdentity {
         key,
         chain_der: issued.chain_der.iter().map(|c| c.to_vec()).collect(),
@@ -190,8 +192,17 @@ pub async fn dial_with(
     addr: SocketAddr,
     connector: tokio_rustls::TlsConnector,
 ) -> io::Result<(H2, Negotiated)> {
+    dial_named(addr, connector, HUB_NAME).await
+}
+
+/// Like [`dial_with`], checking the server's certificate for `server_name` (a replica's certificate names `localhost`).
+pub async fn dial_named(
+    addr: SocketAddr,
+    connector: tokio_rustls::TlsConnector,
+    server_name: &str,
+) -> io::Result<(H2, Negotiated)> {
     let tcp = TcpStream::connect(addr).await?;
-    let name = ServerName::try_from(HUB_NAME).unwrap();
+    let name = ServerName::try_from(server_name.to_owned()).unwrap();
     let tls = connector.connect(name, tcp).await?;
     let negotiated = {
         let (_, connection) = tls.get_ref();
@@ -214,7 +225,7 @@ pub async fn dial_with(
             send,
             origin: (
                 Scheme::HTTPS,
-                format!("{HUB_NAME}:{}", addr.port())
+                format!("{server_name}:{}", addr.port())
                     .parse::<Authority>()
                     .unwrap(),
             ),

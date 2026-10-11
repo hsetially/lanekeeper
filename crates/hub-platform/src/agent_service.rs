@@ -26,6 +26,7 @@ use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, warn};
 
 use crate::agent_metrics::{AgentMetrics, MessageKind, StreamEnd};
+use crate::gateway::{Attachment, HubGateway};
 use crate::join::JoinService;
 use crate::listener::{PeerAddr, PeerTls};
 use crate::stream::ConnectedAgent;
@@ -66,6 +67,9 @@ pub struct AgentService {
     /// `true` once the hub is shutting down: every stream ends and tells its agent to reconnect elsewhere.
     closing: watch::Receiver<bool>,
     metrics: AgentMetrics,
+    /// Where open streams register, so that commands reach them from any replica (T4). Without it the service still ingests
+    /// what agents send, and a reply has no request to complete.
+    gateway: Option<Arc<HubGateway>>,
 }
 
 impl std::fmt::Debug for AgentService {
@@ -89,7 +93,15 @@ impl AgentService {
             limits,
             closing,
             metrics,
+            gateway: None,
         }
+    }
+
+    /// Register every stream with `gateway` and hand it the agents' replies (D62).
+    #[must_use]
+    pub fn with_gateway(mut self, gateway: Arc<HubGateway>) -> Self {
+        self.gateway = Some(gateway);
+        self
     }
 
     /// The service as a router, with zstd and the message size limit (`proto::grpc`).
@@ -183,6 +195,14 @@ impl pb::agent_server::Agent for AgentService {
         agent
             .try_send(ToAgent::Config(config))
             .map_err(|_| Status::unavailable(""))?;
+        // The registration comes before the response: once the agent has its stream, commands can already be routed to it.
+        let attachment = match &self.gateway {
+            Some(gateway) => Some(gateway.attach(Arc::clone(&agent)).await.map_err(|error| {
+                warn!(code = "connect_attach_failed", %error, "an agent stream could not be registered");
+                Status::unavailable("")
+            })?),
+            None => None,
+        };
         self.metrics.stream_opened();
         let session = Session {
             join: Arc::clone(&self.join),
@@ -192,6 +212,7 @@ impl pb::agent_server::Agent for AgentService {
             metrics: self.metrics.clone(),
             identity,
             agent,
+            attachment,
             last_renewal: None,
         };
         tokio::spawn(session.run(inbound));
@@ -213,6 +234,7 @@ struct Session {
     metrics: AgentMetrics,
     identity: AgentIdentity,
     agent: Arc<ConnectedAgent>,
+    attachment: Option<Attachment>,
     last_renewal: Option<Instant>,
 }
 
@@ -248,6 +270,10 @@ impl Session {
         };
         if let Some(status) = status {
             self.agent.finish(status);
+        }
+        // Requests still waiting on this stream fail with `Closed` now, and the registration is released if it is still ours.
+        if let Some(attachment) = self.attachment.take() {
+            attachment.detach().await;
         }
         self.metrics.stream_closed(reason);
     }
@@ -319,14 +345,21 @@ impl Session {
                     Err(error) => self.sink_failed(MessageKind::ClusterReport, error),
                 }
             }
-            FromAgent::Reply(_reply) => {
-                // Nothing is waiting for it yet: requests and their correlation arrive with the gateway.
+            FromAgent::Reply(reply) => {
                 self.metrics.message(MessageKind::Reply);
-                self.metrics.unmatched_reply();
-                debug!(
-                    code = "reply_without_request",
-                    "a reply arrived that no request is waiting for"
-                );
+                // A reply completes a request of this stream only, by request id. Anything else (an id nobody waits for, one
+                // already answered or timed out, a kind of answer the command cannot have) is dropped and counted.
+                if !self
+                    .attachment
+                    .as_ref()
+                    .is_some_and(|attachment| attachment.complete(reply))
+                {
+                    self.metrics.unmatched_reply();
+                    debug!(
+                        code = "reply_without_request",
+                        "a reply arrived that no request is waiting for"
+                    );
+                }
                 Flow::Continue
             }
             FromAgent::CertRenewal { csr_der } => {

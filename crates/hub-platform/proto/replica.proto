@@ -1,0 +1,47 @@
+// The hub-to-hub RPC (prompt 03b, T4, plan A6). Private to crates/hub-platform: it is an internal detail of how a hub
+// replica reaches the replica that holds an agent's stream (D62), not a contract between components, so it lives beside
+// the crate that serves it and not in proto/.
+//
+// It reuses the contract's `HubMessage` and `AgentMessage` by import, so a forwarded command is validated by the same
+// `proto::convert` on both replicas and the same size limits apply.
+//
+// Identity is the certificate (S5, S6): the replica listener trusts only the replica CA, and a caller's SAN must be
+// `spiffe://lanekeeper/hub/<replica>`.
+syntax = "proto3";
+
+package lanekeeper.replica.v1;
+
+import "agent.proto";
+
+service Replica {
+  // Deliver one command to the agent stream this replica holds for `swimlane_id` and wait for its answer.
+  rpc Forward(ForwardRequest) returns (ForwardReply);
+}
+
+message ForwardRequest {
+  string swimlane_id = 1;
+  // The epoch of the `agent_connections` row the caller read. The owner refuses the call (FAILED_PRECONDITION) unless it is
+  // the epoch of the stream it holds, so a request never reaches a stream the agent has already left.
+  uint64 epoch = 2;
+  // How long the owner waits for the agent. Bounded by the owner.
+  uint32 timeout_ms = 3;
+  // Must hold a command, not a stream-only message.
+  lanekeeper.agent.v1.HubMessage command = 4;
+}
+
+enum ForwardError {
+  FORWARD_ERROR_UNSPECIFIED = 0;
+  FORWARD_ERROR_NOT_CONNECTED = 1;
+  FORWARD_ERROR_TIMEOUT = 2;
+  FORWARD_ERROR_BUSY = 3;
+  FORWARD_ERROR_CLOSED = 4;
+  FORWARD_ERROR_UNAVAILABLE = 5;
+}
+
+message ForwardReply {
+  oneof result {
+    // The agent's answer, as the agent sent it.
+    lanekeeper.agent.v1.AgentMessage reply = 1;
+    ForwardError error = 2;
+  }
+}

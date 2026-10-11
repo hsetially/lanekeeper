@@ -40,3 +40,10 @@ path = "fuzz_targets/hub_join_csr.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "hub_forward_request"
+path = "fuzz_targets/hub_forward_request.rs"
+test = false
+doc = false
+bench = false

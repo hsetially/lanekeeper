@@ -14,6 +14,8 @@
 //! - [`tls`], [`listener`], [`server_identity`]: TLS 1.3 only with client certificates, the gRPC accept loop that puts the verified
 //!   peer identity into each request, and the hub's own certificate, renewed at half its life (S5, S6).
 //! - [`join`], [`agent_service`], [`stream`], [`agent_metrics`]: `Join` and the `Connect` stream of agents (S5, S9, S11).
+//! - [`gateway`]: the `AgentGateway` over several replicas (D62): the registry of which replica holds each stream, forwarding
+//!   between replicas over mTLS, and request correlation (T4).
 //! - [`routes`]: the guarded router every route of the hub is registered through (S4).
 #![forbid(unsafe_code)]
 // Documenting `# Errors` on every small constructor and check adds noise; the error enums are the docs.
@@ -28,6 +30,7 @@ pub mod agent_service;
 pub mod ca;
 pub mod clock;
 pub mod error;
+pub mod gateway;
 pub mod gcp;
 pub mod join;
 pub mod listener;

@@ -209,10 +209,45 @@ impl ResolvesClientCert for PresentedIdentity {
     }
 }
 
+/// A client certificate that is the current one of a [`RotatingServerCert`]: a replica presents the certificate it serves with,
+/// and when that is renewed the next handshake presents the new one.
+#[derive(Debug)]
+struct RotatingIdentity(Arc<RotatingServerCert>);
+
+impl ResolvesClientCert for RotatingIdentity {
+    fn resolve(&self, _hints: &[&[u8]], _schemes: &[SignatureScheme]) -> Option<Arc<CertifiedKey>> {
+        Some(self.0.current())
+    }
+
+    fn has_certs(&self) -> bool {
+        true
+    }
+}
+
 impl ClientTls {
     pub fn new(
         roots: RootCertStore,
         identity: Option<Arc<CertifiedKey>>,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self, TlsError> {
+        match identity {
+            Some(identity) => Self::build(roots, Some(Arc::new(PresentedIdentity(identity))), clock),
+            None => Self::build(roots, None, clock),
+        }
+    }
+
+    /// Present whatever certificate `identity` holds at the time of each handshake (a replica toward its peers, T4).
+    pub fn new_rotating(
+        roots: RootCertStore,
+        identity: Arc<RotatingServerCert>,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self, TlsError> {
+        Self::build(roots, Some(Arc::new(RotatingIdentity(identity))), clock)
+    }
+
+    fn build(
+        roots: RootCertStore,
+        identity: Option<Arc<dyn ResolvesClientCert>>,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, TlsError> {
         let provider = Arc::new(aws_lc_rs::default_provider());
@@ -221,7 +256,7 @@ impl ClientTls {
             .map_err(|_| TlsError::Config)?
             .with_root_certificates(roots);
         let mut config = match identity {
-            Some(identity) => builder.with_client_cert_resolver(Arc::new(PresentedIdentity(identity))),
+            Some(identity) => builder.with_client_cert_resolver(identity),
             None => builder.with_no_client_auth(),
         };
         config.alpn_protocols = vec![ALPN_H2.to_vec()];

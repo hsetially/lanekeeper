@@ -36,6 +36,8 @@ hyper-util = { workspace = true, features = ["tokio", "server", "server-graceful
 moka.workspace = true
 pem.workspace = true
 prometheus-client.workspace = true
+# The hub-to-hub RPC (T4) is generated from crates/hub-platform/proto/replica.proto by build.rs.
+prost.workspace = true
 # The CA (T3, S5): rcgen builds each certificate and asks `KmsSigner` for the signature; its CSR parser needs `x509-parser`.
 rcgen = { workspace = true, features = ["x509-parser"] }
 rustls.workspace = true
@@ -47,16 +49,22 @@ sqlx = { workspace = true, features = ["postgres", "runtime-tokio"] }
 subtle.workspace = true
 thiserror.workspace = true
 time = { workspace = true, features = ["std"] }
-tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-rustls.workspace = true
 tokio-stream.workspace = true
 tower.workspace = true
 # The generated `Agent` server runs under our own rustls acceptor and HTTP/2 connection (as the agent's client does), so
 # tonic's `transport` stack is not used. `router` is `Routes`, which dispatches by service name.
 tonic = { workspace = true, features = ["codegen", "router", "zstd"] }
+tonic-prost.workspace = true
 tracing.workspace = true
 x509-parser.workspace = true
 zeroize.workspace = true
+
+[build-dependencies]
+# protox is a pure-Rust protobuf compiler, so no protoc binary is needed (Q10); both are already pinned by the `proto` crate.
+protox.workspace = true
+tonic-prost-build.workspace = true
 
 [dev-dependencies]
 # This crate's own integration tests need the fakes and the conformance helpers its features switch on.
@@ -81,4 +89,3 @@ rustls = { workspace = true, features = ["std", "tls12"] }
 sqlx = { workspace = true, features = ["postgres", "migrate", "runtime-tokio"] }
 testcontainers.workspace = true
 tempfile.workspace = true
-prost.workspace = true

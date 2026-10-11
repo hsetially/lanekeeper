@@ -12,7 +12,9 @@
 //! | `hub_agent_message` | a protobuf `AgentMessage` | decoding and validation never panic; an accepted message re-encodes and converts back to the same value, respects every size limit, and names only typed values (swimlane ids, paths, hashes) |
 //! | `hub_join_csr` | a certificate signing request, DER | parsing never panics; an accepted request is at most 16 KiB, holds an uncompressed P-256 point, and is signed by its own key |
 //!
-//! `hub_forward_request` (T4), `hub_webhook_payload` (T7) and `hub_sentinel_message` (T11) are added with their tasks.
+//! | `hub_forward_request` | a protobuf `ForwardRequest` from a peer replica | decoding and validation never panic; an accepted request names a valid swimlane and a positive epoch, waits a bounded time, carries a command within every size limit, and survives a round trip unchanged |
+//!
+//! `hub_webhook_payload` (T7) and `hub_sentinel_message` (T11) are added with their tasks.
 
 #![allow(
     dead_code,
@@ -23,9 +25,10 @@
 )]
 
 use hub_platform::ca::csr::{MAX_CSR_BYTES, parse_csr};
+use hub_platform::gateway::wire::{ForwardCall, MAX_FORWARD_BYTES, MAX_FORWARD_TIMEOUT, pb::ForwardRequest};
 use prost::Message;
 use proto::convert::FromAgent;
-use proto::limits::{MAX_ENTRIES, MAX_FILE_BYTES, MAX_MESSAGE_BYTES, MAX_SCAN_DELTA_BYTES};
+use proto::limits::{MAX_ENTRIES, MAX_FILE_BYTES, MAX_MESSAGE_BYTES, MAX_NOTIFY_PATHS, MAX_SCAN_DELTA_BYTES};
 use proto::pb;
 use x509_parser::certification_request::X509CertificationRequest;
 use x509_parser::prelude::FromDer;
@@ -34,9 +37,10 @@ use x509_parser::prelude::FromDer;
 pub type Check = fn(&[u8]) -> Result<(), String>;
 
 /// Every fuzz target: its name (also the file name in `fuzz_targets` and the corpus directory) and its check.
-pub const TARGETS: [(&str, Check); 2] = [
+pub const TARGETS: [(&str, Check); 3] = [
     ("hub_agent_message", hub_agent_message),
     ("hub_join_csr", hub_join_csr),
+    ("hub_forward_request", hub_forward_request),
 ];
 
 /// Every seed corpus must hold at least this many inputs, so deleting the seeds cannot go unnoticed.
@@ -142,4 +146,55 @@ pub fn hub_join_csr(data: &[u8]) -> Result<(), String> {
             == point,
         || "the accepted key is not the request's key".into(),
     )
+}
+
+/// Any bytes decoded as a `ForwardRequest` and validated, as the replica service does for a peer.
+pub fn hub_forward_request(data: &[u8]) -> Result<(), String> {
+    // The transport refuses what is larger than this before decoding; the fuzzer is held to the same bound.
+    if data.len() > MAX_FORWARD_BYTES {
+        return Ok(());
+    }
+    let Ok(request) = ForwardRequest::decode(data) else {
+        return Ok(());
+    };
+    let Ok(call) = ForwardCall::try_from(request) else {
+        return Ok(());
+    };
+
+    ensure(
+        domain::SwimlaneId::parse(call.swimlane.as_str()).is_ok() && call.swimlane.as_str().len() <= 63,
+        || "an accepted request names a swimlane that is not a valid id".into(),
+    )?;
+    ensure(call.epoch.get() > 0, || "an accepted request has no epoch".into())?;
+    ensure(
+        !call.timeout.is_zero() && call.timeout <= MAX_FORWARD_TIMEOUT,
+        || format!("an accepted request waits {:?}", call.timeout),
+    )?;
+    match &call.command {
+        domain::HubCommand::WriteFile { bytes, .. } => ensure(bytes.len() <= MAX_FILE_BYTES, || {
+            "an oversize write was accepted".into()
+        })?,
+        domain::HubCommand::NotifyConfigServer { paths, .. } => {
+            ensure(paths.len() <= MAX_NOTIFY_PATHS, || {
+                "too many notify paths were accepted".into()
+            })?
+        }
+        _ => {}
+    }
+
+    // What was accepted survives a round trip unchanged.
+    let encoded = call.clone().into_proto().encode_to_vec();
+    ensure(encoded.len() <= MAX_FORWARD_BYTES, || {
+        "an accepted request re-encodes past the size limit".into()
+    })?;
+    let again = ForwardRequest::decode(encoded.as_slice())
+        .map_err(|e| format!("re-encoded request does not decode: {e}"))?;
+    match ForwardCall::try_from(again) {
+        Ok(back) => ensure(back == call, || {
+            "an accepted request changed in a round trip".into()
+        }),
+        Err(error) => Err(format!(
+            "an accepted request is refused after a round trip: {error}"
+        )),
+    }
 }

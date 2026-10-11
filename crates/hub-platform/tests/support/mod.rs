@@ -3,6 +3,8 @@
 
 pub mod ca;
 pub mod clock;
+pub mod cluster;
+pub mod fake_agent;
 pub mod fake_google;
 pub mod grpc;
 pub mod log_capture;

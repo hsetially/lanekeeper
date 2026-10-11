@@ -13,8 +13,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use bytes::Bytes;
+use domain::{Expected, HubCommand, NfsPath, RequestId, ServiceRef, SwimlaneId};
+use hub_platform::gateway::local::Epoch;
+use hub_platform::gateway::wire::{ForwardCall, pb::ForwardRequest};
 use prost::Message;
-use proto::convert::FromAgent;
+use proto::convert::{FromAgent, ToAgent};
 use proto::pb;
 
 fn fuzz_dir() -> PathBuf {
@@ -57,6 +60,11 @@ fn corpus_replay_hub_agent_message() {
 #[test]
 fn corpus_replay_hub_join_csr() {
     replay("hub_join_csr", invariants::hub_join_csr);
+}
+
+#[test]
+fn corpus_replay_hub_forward_request() {
+    replay("hub_forward_request", invariants::hub_forward_request);
 }
 
 #[test]
@@ -104,6 +112,29 @@ fn agent_message_seeds_keep_their_meaning() {
             );
         }
     }
+}
+
+/// The same for the forward requests a peer replica sends.
+#[test]
+fn forward_request_seeds_keep_their_meaning() {
+    let dir = corpus("hub_forward_request");
+    let mut accepted = 0;
+    for name in names(&dir) {
+        let bytes = fs::read(dir.join(&name)).unwrap();
+        let outcome = ForwardRequest::decode(bytes.as_slice())
+            .map_err(|_| ())
+            .and_then(|r| ForwardCall::try_from(r).map_err(|_| ()));
+        if name.starts_with("accepted_") {
+            assert!(outcome.is_ok(), "{name} is no longer accepted: {outcome:?}");
+            accepted += 1;
+        } else if name.starts_with("rejected_") {
+            assert!(outcome.is_err(), "{name} is no longer refused: {outcome:?}");
+        }
+    }
+    assert!(
+        accepted >= 6,
+        "the corpus keeps accepted requests, or the fuzzer starts from nothing"
+    );
 }
 
 #[test]
@@ -294,6 +325,180 @@ fn agent_message_seeds() -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
+fn forward(swimlane: &str, epoch: i64, command: HubCommand) -> ForwardRequest {
+    ForwardCall {
+        swimlane: SwimlaneId::parse(swimlane).unwrap(),
+        epoch: Epoch::new(epoch),
+        timeout: std::time::Duration::from_millis(2500),
+        command,
+    }
+    .into_proto()
+}
+
+fn read_file(id: &str, path: &str) -> HubCommand {
+    HubCommand::ReadFile {
+        request_id: RequestId::parse(id).unwrap(),
+        path: NfsPath::parse(path).unwrap(),
+    }
+}
+
+fn hash(bytes: &[u8]) -> domain::ContentHash {
+    ports::content_hash(bytes)
+}
+
+#[allow(clippy::too_many_lines)]
+fn forward_request_seeds() -> Vec<(&'static str, Vec<u8>)> {
+    use proto::pb::hub_message::Kind;
+    let enc = |request: ForwardRequest| request.encode_to_vec();
+    let with_message = |kind: Kind| ForwardRequest {
+        command: Some(proto::pb::HubMessage { kind: Some(kind) }),
+        ..forward("sit1", 3, read_file("r-1", "a.yml"))
+    };
+    let valid = enc(forward("sit1", 3, read_file("req-1", "svc/app.yml")));
+    let mut duplicated = valid.clone();
+    duplicated.extend_from_slice(&enc(forward("sit2", 4, read_file("req-2", "svc/b.yml"))));
+    vec![
+        ("accepted_read_file", valid.clone()),
+        (
+            "accepted_write_file_expected_hash",
+            enc(forward(
+                "sit1",
+                2,
+                HubCommand::WriteFile {
+                    request_id: RequestId::parse("req-3").unwrap(),
+                    path: NfsPath::parse("svc/app.yml").unwrap(),
+                    expected: Expected::Hash { hash: hash(b"old") },
+                    bytes: Bytes::from_static(b"a: 2\n"),
+                },
+            )),
+        ),
+        (
+            "accepted_write_file_absent",
+            enc(forward(
+                "sit1",
+                2,
+                HubCommand::WriteFile {
+                    request_id: RequestId::parse("req-4").unwrap(),
+                    path: NfsPath::parse("svc/new.yml").unwrap(),
+                    expected: Expected::Absent,
+                    bytes: Bytes::from_static(b"b: 1\n"),
+                },
+            )),
+        ),
+        (
+            "accepted_delete_file",
+            enc(forward(
+                "sit1",
+                5,
+                HubCommand::DeleteFile {
+                    request_id: RequestId::parse("req-5").unwrap(),
+                    path: NfsPath::parse("svc/old.yml").unwrap(),
+                    expected: hash(b"gone"),
+                },
+            )),
+        ),
+        (
+            "accepted_restart_deployment",
+            enc(forward(
+                "sit1",
+                1,
+                HubCommand::RestartDeployment {
+                    request_id: RequestId::parse("req-6").unwrap(),
+                    service: ServiceRef::new("ns", "svc").unwrap(),
+                },
+            )),
+        ),
+        (
+            "accepted_notify_config_server",
+            enc(forward(
+                "sit1",
+                1,
+                HubCommand::NotifyConfigServer {
+                    request_id: RequestId::parse("req-7").unwrap(),
+                    paths: vec![NfsPath::parse("svc/app.yml").unwrap()],
+                },
+            )),
+        ),
+        (
+            "accepted_request_full_scan_without_a_request_id",
+            enc(forward("sit1", 1, HubCommand::RequestFullScan)),
+        ),
+        (
+            "accepted_timeout_over_the_cap_is_capped",
+            enc(ForwardRequest {
+                timeout_ms: u32::MAX,
+                ..forward("sit1", 1, read_file("req-8", "a.yml"))
+            }),
+        ),
+        (
+            "rejected_zero_epoch",
+            enc(ForwardRequest {
+                epoch: 0,
+                ..forward("sit1", 1, read_file("r", "a.yml"))
+            }),
+        ),
+        (
+            "rejected_zero_timeout",
+            enc(ForwardRequest {
+                timeout_ms: 0,
+                ..forward("sit1", 1, read_file("r", "a.yml"))
+            }),
+        ),
+        (
+            "rejected_swimlane_with_a_slash",
+            enc(ForwardRequest {
+                swimlane_id: "sit1/../sit2".into(),
+                ..forward("sit1", 1, read_file("r", "a.yml"))
+            }),
+        ),
+        (
+            "rejected_no_command",
+            enc(ForwardRequest {
+                command: None,
+                ..forward("sit1", 1, read_file("r", "a.yml"))
+            }),
+        ),
+        (
+            "rejected_traversal_path",
+            enc(with_message(Kind::ReadFile(proto::pb::ReadFile {
+                request_id: "r-1".into(),
+                path: "../../etc/passwd".into(),
+            }))),
+        ),
+        (
+            "rejected_an_acknowledgement_is_not_a_command",
+            enc(with_message(Kind::Ack(proto::pb::Ack { seq: 9 }))),
+        ),
+        (
+            "rejected_a_configuration_is_not_a_command",
+            enc(ForwardRequest {
+                command: Some(
+                    ToAgent::Config(domain::AgentConfig {
+                        scan_interval_secs: 10,
+                        heartbeat_interval_secs: 5,
+                        max_file_bytes: 1000,
+                        deny_globs: Vec::new(),
+                        env_allowlist: Vec::new(),
+                        tenants: Vec::new(),
+                    })
+                    .into_proto(),
+                ),
+                ..forward("sit1", 1, read_file("r", "a.yml"))
+            }),
+        ),
+        ("truncated_forward_request", valid[..valid.len() / 2].to_vec()),
+        ("duplicated_forward_request_fields", duplicated),
+        ("empty_forward_request", Vec::new()),
+        ("wrong_wire_type_for_the_swimlane", vec![0x08, 0x01]),
+        (
+            "garbage_bytes",
+            vec![
+                0xff, 0xfe, 0x01, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02,
+            ],
+        ),
+    ]
+}
+
 fn csr_seeds() -> Vec<(&'static str, Vec<u8>)> {
     use rcgen::{
         CertificateParams, DnType, ExtendedKeyUsagePurpose, KeyPair, PKCS_ECDSA_P384_SHA384, PKCS_ED25519,
@@ -353,6 +558,7 @@ fn regenerate_the_seeds() {
     for (target, seeds) in [
         ("hub_agent_message", agent_message_seeds()),
         ("hub_join_csr", csr_seeds()),
+        ("hub_forward_request", forward_request_seeds()),
     ] {
         let dir = corpus(target);
         fs::create_dir_all(&dir).unwrap();
@@ -369,6 +575,27 @@ fn regenerate_the_seeds() {
 fn the_message_seeds_are_what_the_generator_makes() {
     let dir = corpus("hub_agent_message");
     let wanted = agent_message_seeds();
+    assert_eq!(
+        names(&dir),
+        wanted
+            .iter()
+            .map(|(n, _)| (*n).to_owned())
+            .collect::<BTreeSet<_>>(),
+        "run with UPDATE_HUB_SEEDS=1 to rewrite the seeds"
+    );
+    for (name, bytes) in wanted {
+        assert_eq!(
+            fs::read(dir.join(name)).unwrap(),
+            bytes,
+            "{name} drifted; run with UPDATE_HUB_SEEDS=1"
+        );
+    }
+}
+
+#[test]
+fn the_forward_request_seeds_are_what_the_generator_makes() {
+    let dir = corpus("hub_forward_request");
+    let wanted = forward_request_seeds();
     assert_eq!(
         names(&dir),
         wanted
