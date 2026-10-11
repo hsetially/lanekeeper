@@ -46,6 +46,8 @@ These are the targets the system is built and tested for. Confirm them in Q27.
 | Docs search | 150 ms |
 | Feature status | 200 ms |
 
+Authentication adds at most 2 ms to a request (p95), with a warm session cache and with a cold one (part of P7).
+
 **Writes**
 
 - **P8** An edit is applied on NFS and acknowledged within 1.5 seconds, not counting any wait for approval.

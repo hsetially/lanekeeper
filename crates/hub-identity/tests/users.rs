@@ -835,6 +835,11 @@ async fn role_change_deletes_all_sessions_in_same_transaction() {
         1,
         "another user's sessions stay"
     );
+    assert_eq!(
+        rig.bus.published().await,
+        vec![DomainEvent::UserSessionsRevoked { user: uid(1) }],
+        "the revocation is published in the same transaction, once, for that user only"
+    );
 }
 
 #[tokio::test]
@@ -879,6 +884,11 @@ async fn rolled_back_change_keeps_sessions() {
     assert!(matches!(err, AccessError::Audit(_)));
     assert_eq!(rig.session_count(&uid(1)).await, 1);
     assert_eq!(rig.stored(&uid(1)).await.role, Some(Role::Viewer));
+    assert_eq!(
+        rig.outbox_count().await,
+        0,
+        "the revocation event rolled back with the change: nothing is fanned out for it"
+    );
 }
 
 #[tokio::test]

@@ -20,6 +20,18 @@
 //!   changes their own role), ends the sessions of a user whose role or status changed, and lists with keyset cursors.
 //! - [`users::onboarding`] answers `needs_github_token` for `/me` without reading a ciphertext; [`notify`] tells the admins.
 //!
+//! T3: sessions and CSRF (S2, S3).
+//!
+//! - [`session`] holds server-side sessions: a 256-bit id in the `__Host-lk_session` cookie and only its SHA-256 in the table
+//!   (`store`), a 30-second in-process cache with single-flight loads (`cache`), `last_seen_at` written in batches off the
+//!   request path (`touch`), and a listener that evicts a user's cached sessions on every replica when a role or status
+//!   change publishes `UserSessionsRevoked` (`revocation`). Sessions end after 8 hours idle or 12 hours in all.
+//! - [`middleware::AuthLayer`] turns the cookie into an [`middleware::AuthContext`] and gives every request an id.
+//! - [`csrf::CsrfLayer`] requires, on every state-changing request that carries a session, an exact `Origin` and a
+//!   double-submit token bound to the session.
+//! - [`routes::auth`] has `/auth/login`, `/auth/callback` (a new session on every sign-in; the presented one is deleted) and
+//!   `/auth/logout` (idempotent).
+//!
 //! Nothing here is public beyond what the later tasks and the hub binary need, and no error carries input text (S10, S21).
 #![forbid(unsafe_code)]
 #![allow(
@@ -30,10 +42,15 @@
 
 pub mod clock;
 pub mod config;
+pub mod csrf;
 pub mod error;
 pub mod http;
+pub mod middleware;
 pub mod notify;
 pub mod oidc;
+pub mod problem;
+pub mod routes;
+pub mod session;
 pub mod users;
 
 pub use clock::{Clock, ManualClock, SystemClock};

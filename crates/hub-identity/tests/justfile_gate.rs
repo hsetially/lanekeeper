@@ -65,3 +65,65 @@ fn identity_fuzz_list_matches_the_fuzz_targets_directory() {
 fn the_identity_test_recipe_requires_docker_rather_than_skipping() {
     assert!(justfile().contains("LK_REQUIRE_DOCKER=1 cargo test -p hub-identity"));
 }
+
+/// The ids of the registered budgets whose benchmark lives in this crate, from `perf/budgets.toml`.
+fn registered_identity_budgets() -> BTreeSet<String> {
+    let registry =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../perf/budgets.toml")).unwrap();
+    registry
+        .split("[[budget]]")
+        .skip(1)
+        .filter(|block| block.contains("bench = \"hub-identity/") && block.contains("registered = true"))
+        .map(|block| {
+            let id = block
+                .lines()
+                .find_map(|l| l.strip_prefix("id = \""))
+                .and_then(|l| l.strip_suffix('"'))
+                .expect("a budget has an id");
+            id.to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn identity_bench_judges_exactly_the_registered_identity_budgets() {
+    let text = justfile();
+    let list = text
+        .lines()
+        .find_map(|l| l.strip_prefix("identity_budgets := \""))
+        .and_then(|l| l.strip_suffix('"'))
+        .expect("identity_budgets");
+    let in_justfile: BTreeSet<String> = list.split_whitespace().map(str::to_owned).collect();
+    assert_eq!(in_justfile, registered_identity_budgets());
+    assert!(!in_justfile.is_empty());
+
+    // The recipe runs the benchmarks and then judges the filtered registry, not the whole one (which needs the other
+    // prompts' results) and not nothing.
+    let recipe: String = text
+        .lines()
+        .skip_while(|l| !l.starts_with("identity-bench:"))
+        .take_while(|l| !l.starts_with("verify-03b:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(recipe.contains("cargo bench -p hub-identity"));
+    assert!(recipe.contains("cargo xtask bench-check --budgets"));
+}
+
+#[test]
+fn every_identity_benchmark_is_a_registered_budget() {
+    let benches = Path::new(env!("CARGO_MANIFEST_DIR")).join("benches");
+    let registry =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../perf/budgets.toml")).unwrap();
+    for entry in fs::read_dir(benches).unwrap() {
+        let name = entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .trim_end_matches(".rs")
+            .to_owned();
+        assert!(
+            registry.contains(&format!("bench = \"hub-identity/{name}")),
+            "benches/{name}.rs has no budget in perf/budgets.toml"
+        );
+    }
+}

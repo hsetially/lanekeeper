@@ -14,13 +14,18 @@ domain.workspace = true
 ports = { workspace = true, features = ["postgres"] }
 async-trait.workspace = true
 aws-lc-rs.workspace = true
+# The session, CSRF and auth layers and the /auth routes (T3). Only the features the crate uses.
+axum.workspace = true
 base64.workspace = true
 bytes.workspace = true
 fastrand.workspace = true
+futures.workspace = true
 http.workspace = true
 http-body-util.workspace = true
 hyper = { workspace = true, features = ["client", "http1"] }
 hyper-util = { workspace = true, features = ["tokio"] }
+# The session cache (T3): bounded, short-lived, single-flight loads.
+moka.workspace = true
 rustls.workspace = true
 rustls-native-certs.workspace = true
 serde.workspace = true
@@ -33,6 +38,8 @@ subtle.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-rustls.workspace = true
+# `Layer` and `Service` for the session and CSRF layers; no tower feature is needed in the library.
+tower.workspace = true
 tracing.workspace = true
 url.workspace = true
 zeroize.workspace = true
@@ -42,7 +49,6 @@ ports = { workspace = true, features = ["fakes", "postgres"] }
 # Real Postgres 16 in a container (or `LK_TEST_PG_ADMIN_URL`), migrated as lanekeeper_migrator and used as lanekeeper_app.
 sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json", "migrate"] }
 testcontainers.workspace = true
-futures.workspace = true
 # The mock identity provider reads the modulus and exponent of a generated key to publish them as a JWKS.
 aws-lc-rs = { workspace = true, features = ["ring-io"] }
 # Captures `tracing` output so the log tests can search it (S10).
@@ -52,4 +58,15 @@ rcgen.workspace = true
 # One test runs the real HTTPS client against a TLS 1.2-only server to prove it refuses it.
 rustls = { workspace = true, features = ["tls12"] }
 tempfile.workspace = true
+# The Set-Cookie strings are golden (inline snapshots).
+insta.workspace = true
+# `oneshot` drives the layers in tests and in the benchmark.
+tower = { workspace = true, features = ["util"] }
+# The auth middleware benchmark (T3; P7). `cargo bench -p hub-identity` writes target/criterion for `cargo xtask bench-check`.
+criterion.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
+
+# P7 (T3): the real AuthLayer and CsrfLayer over a real pool, warm cache and cold cache.
+[[bench]]
+name = "auth_middleware"
+harness = false

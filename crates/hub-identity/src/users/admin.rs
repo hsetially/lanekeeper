@@ -273,16 +273,18 @@ impl UserAdmin {
 
     // -----------------------------------------------------------------------------------------------------------
 
-    /// Delete every session of the user. Runs in the caller's transaction, so the deletion and the change that caused it
-    /// commit or roll back together (S2).
+    /// End every session of the user: delete the rows and publish `UserSessionsRevoked` so that every replica drops its cached
+    /// copies. Runs in the caller's transaction, so the deletion, the event and the change that caused them commit or roll
+    /// back together (S2, D80). The event is published even when there was no row to delete: a replica may still hold a
+    /// cached session whose row a concurrent sign-in or sweep has just changed. Call it before [`UserAdmin::record`], which
+    /// must stay the last statement.
     async fn end_sessions(&self, tx: &mut Tx_<'_>, user: &UserId) -> Result<u64, AccessError> {
-        let done = sqlx::query("DELETE FROM sessions WHERE user_tid = $1 AND user_oid = $2")
-            .bind(user.tid().as_str())
-            .bind(user.oid().as_str())
-            .execute(&mut **tx)
+        let ended = crate::session::store::delete_all_for_user(tx, user)
             .await
-            .map_err(|e| db_err("end sessions", &e))?;
-        Ok(done.rows_affected())
+            .map_err(|_| AccessError::Unavailable)?;
+        crate::session::revocation::publish_revoked(self.svc.bus.as_ref(), &mut Tx::from_pg(tx), user)
+            .await?;
+        Ok(ended)
     }
 
     /// The one audit event of the operation. Call it last.

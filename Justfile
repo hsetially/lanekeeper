@@ -238,11 +238,22 @@ identity-fuzz: fuzz-tools-check
     done
     echo "identity-fuzz: {{identity_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
 
-# P7 and P12 (from T3 and T5): the criterion benchmarks. `cargo xtask bench-check` judges the whole registry, and the other
-# prompts' budgets need their own benchmarks to have run (`just bench`), so T3 adds a check here that judges 03a's budgets
-# only; the full `cargo xtask bench-check` is run by the FINAL step after `just bench`.
+# P7 and P12 (from T3 and T5): the criterion benchmarks, then `cargo xtask bench-check` on this prompt's budgets only. The
+# full registry needs every other prompt's benchmarks to have run (`just bench`), and `bench-check` has no filter, so the
+# recipe cuts a registry with just the budgets below and judges that; the full `cargo xtask bench-check` is run by the FINAL
+# step after `just bench`. `tests/justfile_gate.rs` fails if this list and the registered `hub-identity/` budgets drift apart.
+identity_budgets := "P7.auth_middleware P7.auth_middleware_cold"
 identity-bench:
+    #!/usr/bin/env bash
+    set -euo pipefail
     cargo bench -p hub-identity
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    awk -v ids="{{identity_budgets}}" 'BEGIN { RS = ""; ORS = "\n\n"; n = split(ids, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 } /^\[\[budget\]\]/ { if (match($0, /\nid = "[^"]+"/)) { id = substr($0, RSTART + 7, RLENGTH - 8); if (id in want) print } }' perf/budgets.toml > "$tmp/budgets.toml"
+    found="$(grep -c '^\[\[budget\]\]' "$tmp/budgets.toml" || true)"
+    wanted="$(wc -w <<< "{{identity_budgets}}")"
+    if [ "$found" -ne "$wanted" ]; then echo "identity-bench: found $found of $wanted budgets in perf/budgets.toml"; exit 1; fi
+    cargo xtask bench-check --budgets "$tmp/budgets.toml"
 verify-03b:
     @echo "verify-03b not implemented yet" && exit 1
 verify-04:

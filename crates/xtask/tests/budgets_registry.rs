@@ -62,6 +62,8 @@ fn every_p_number_has_an_entry() {
         "P7.text_search",
         "P7.docs_search",
         "P7.feature_status",
+        "P7.auth_middleware",
+        "P7.auth_middleware_cold",
         "P10.initial_js_gzip_kb",
         "P10.route_change_ms",
         "P10.diff_6000_lines_ms",
@@ -227,6 +229,18 @@ fn thresholds_match_docs_performance_md() {
         ),
         ("P7.docs_search", 150.0, "ms", "| Docs search | 150 ms |"),
         ("P7.feature_status", 200.0, "ms", "| Feature status | 200 ms |"),
+        (
+            "P7.auth_middleware",
+            2.0,
+            "ms",
+            "Authentication adds at most 2 ms to a request (p95), with a warm session cache and with a cold one",
+        ),
+        (
+            "P7.auth_middleware_cold",
+            2.0,
+            "ms",
+            "Authentication adds at most 2 ms to a request (p95), with a warm session cache and with a cold one",
+        ),
         ("P8", 1_500.0, "ms", "acknowledged within 1.5 seconds"),
         ("P9", 300.0, "ms", "respond within 300 ms"),
         ("P10.initial_js_gzip_kb", 250.0, "kb", "under 250 KB gzipped"),
@@ -301,8 +315,11 @@ fn thresholds_match_docs_performance_md() {
 #[test]
 fn only_budgets_with_a_harness_are_registered() {
     // Prompt 02 (agent): `cargo bench -p agent` produces P1, P3, P4, P4.stat_walk, P4.cpu_mcores, P4.memory_mib and
-    // P15.spool_replay_versions_per_s (the spool, T9).
+    // P15.spool_replay_versions_per_s (the spool, T9). Prompt 03a (identity): `cargo bench -p hub-identity` produces
+    // P7.auth_middleware and P7.auth_middleware_cold (T3).
     const REGISTERED: &[&str] = &[
+        "P7.auth_middleware",
+        "P7.auth_middleware_cold",
         "P1",
         "P3",
         "P4",

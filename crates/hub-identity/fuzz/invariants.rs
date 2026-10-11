@@ -12,7 +12,7 @@
 //! | Target | Input | What must hold |
 //! |---|---|---|
 //! | `identity_jwt` | text | whatever the bytes are, parsing a token never panics and refuses more than 16 KiB without looking inside; an accepted header has algorithm RS256 and a key id of 1 to 256 bytes; a token is never verified against a key set that holds no key that signed it (random input is never a valid signature); a key-set document that parses holds 1 to 32 keys |
-//! | `identity_cookie` | text | `valid_return_to` accepts only a site-relative path (one leading `/`, no backslash, no control character, at most 512 bytes); a login cookie that was not sealed with the key never opens; the callback query parser never panics; a list cursor is refused or decodes to a key that re-encodes to a cursor that decodes to the same key, and a request cursor that decodes re-encodes to the same text |
+//! | `identity_cookie` | text | `valid_return_to` accepts only a site-relative path (one leading `/`, no backslash, no control character, at most 512 bytes); a login cookie that was not sealed with the key never opens; the callback query parser never panics; a list cursor is refused or decodes to a key that re-encodes to a cursor that decodes to the same key, and a request cursor that decodes re-encodes to the same text; a `Cookie` header that parses yields only non-empty values made of cookie octets, within the size cap; a session or CSRF token text that is accepted is the one spelling of its 32 bytes; the CSRF check lets a state-changing request with a session through only when the header, the cookie and the stored hash agree and `Origin` is exactly the public origin |
 
 #![allow(
     dead_code,
@@ -22,10 +22,13 @@
     clippy::pedantic
 )]
 
+use http::{HeaderMap, HeaderValue, Method, header};
 use hub_identity::TokenError;
+use hub_identity::csrf::check as csrf_check;
 use hub_identity::oidc::jwks::{KeySet, RsaPublicKey};
 use hub_identity::oidc::jwt::{Profile, parse_compact, verify_with_keys};
 use hub_identity::oidc::login::{CallbackQuery, LoginSealer, valid_return_to};
+use hub_identity::session::cookie::{MAX_COOKIE_VALUE_BYTES, RandomToken, RequestCookies};
 use hub_identity::users::cursor;
 
 /// A seed corpus needs at least this many files per target (`MIN_SEEDS` in the replay test).
@@ -81,6 +84,29 @@ pub fn identity_jwt(data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// The public origin the CSRF check is run with, and the text of the one CSRF token it accepts (32 zero bytes).
+const ORIGIN: &str = "https://lanekeeper.example.com";
+const KNOWN_TOKEN: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+/// Whether a state-changing request with these header values passes the CSRF check for a session whose token is the known one.
+fn csrf_passes(origin: &str, token: &str, cookie_header: &str) -> bool {
+    let (Ok(origin), Ok(token), Ok(cookie)) = (
+        HeaderValue::from_str(origin),
+        HeaderValue::from_str(token),
+        HeaderValue::from_str(cookie_header),
+    ) else {
+        return false;
+    };
+    let mut headers = HeaderMap::new();
+    headers.append(header::ORIGIN, origin);
+    headers.append("x-csrf-token", token);
+    headers.append(header::COOKIE, cookie);
+    let Some(known) = RandomToken::from_text(KNOWN_TOKEN) else {
+        return false;
+    };
+    csrf_check(&Method::POST, &headers, ORIGIN, Some(&known.hash())).is_ok()
+}
+
 pub fn identity_cookie(data: &[u8]) -> Result<(), String> {
     let value = text(data);
     if valid_return_to(&value) {
@@ -108,6 +134,39 @@ pub fn identity_cookie(data: &[u8]) -> Result<(), String> {
         if cursor::encode_request(id) != value {
             return Err("a request cursor was accepted in a non-canonical form".to_owned());
         }
+    }
+    // The `Cookie` header (T3, S2).
+    if let Ok(cookies) = RequestCookies::parse([value.as_str()]) {
+        for v in [&cookies.session, &cookies.csrf, &cookies.login]
+            .into_iter()
+            .flatten()
+        {
+            let octets = v
+                .bytes()
+                .all(|b| matches!(b, 0x21 | 0x23..=0x2b | 0x2d..=0x3a | 0x3c..=0x5b | 0x5d..=0x7e));
+            if v.is_empty() || v.len() > MAX_COOKIE_VALUE_BYTES || !octets {
+                return Err(
+                    "an accepted cookie value is empty, too long or not made of cookie octets".to_owned(),
+                );
+            }
+        }
+    }
+    // A session or CSRF token has exactly one spelling.
+    if let Some(token) = RandomToken::from_text(&value) {
+        if token.to_text().expose() != &value {
+            return Err("a token text was accepted in a non-canonical spelling".to_owned());
+        }
+    }
+    // The CSRF check (T3, S3). Made-up header values never pass; only the known token does, and only with the exact origin.
+    let cookie = format!("__Host-lk_csrf={value}");
+    if csrf_passes(ORIGIN, &value, &cookie) && value != KNOWN_TOKEN {
+        return Err("the CSRF check passed with a token that is not the session's".to_owned());
+    }
+    if csrf_passes(&value, KNOWN_TOKEN, &format!("__Host-lk_csrf={KNOWN_TOKEN}")) && value != ORIGIN {
+        return Err("the CSRF check passed with an Origin that is not the public origin".to_owned());
+    }
+    if !csrf_passes(ORIGIN, KNOWN_TOKEN, &format!("__Host-lk_csrf={KNOWN_TOKEN}")) {
+        return Err("the CSRF check refused the known good request".to_owned());
     }
     Ok(())
 }

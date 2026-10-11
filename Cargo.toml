@@ -109,6 +109,11 @@ aws-lc-rs = { version = "=1.18.1", default-features = false, features = ["aws-lc
 base64 = { version = "=0.22.1", default-features = false, features = ["std"] }
 url = { version = "=2.5.8", default-features = false, features = ["std"] }
 rustls-native-certs = "=0.8.4"
+# Hub identity (prompt 03a, T3). axum is the web framework of the stack (0.8.9, 2026-04-14; already in the graph through tonic): the
+# session, CSRF and auth layers and the /auth routes. Only the features the crate uses. moka (0.12.16, 2026-08-09) is the stack's
+# cache: the session cache holds at most 50,000 entries for at most 30 seconds, with single-flight loads; `future` only.
+axum = { version = "=0.8.9", default-features = false, features = ["tokio", "http1", "query", "matched-path"] }
+moka = { version = "=0.12.16", default-features = false, features = ["future"] }
 # Test tooling
 proptest = "=1.11.0"
 insta = "=1.48.0"

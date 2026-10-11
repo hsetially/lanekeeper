@@ -14,5 +14,7 @@ pub mod login_rig;
 pub mod mock_oidc;
 pub mod pg;
 pub mod pg_bus;
+pub mod sessions_rig;
 pub mod simple_audit;
 pub mod users_rig;
+pub mod web_rig;

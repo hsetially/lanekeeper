@@ -22,6 +22,8 @@ non_kebab_case_bins = "allow"
 # Exact pins (S19). libfuzzer-sys 0.4.13 was published 2026-06-04; the others are the versions the workspace uses.
 libfuzzer-sys = "=0.4.13"
 hub-identity = { path = "..", version = "0.1.0" }
+# The CSRF check takes request headers (T3). Already in the graph through hub-identity; same exact pin as the workspace.
+http = "=1.5.0"
 
 [[bin]]
 name = "identity_jwt"
