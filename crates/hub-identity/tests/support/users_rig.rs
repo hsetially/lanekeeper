@@ -14,7 +14,7 @@ use sqlx::{PgPool, Row};
 
 use super::pg::TestDb;
 use super::pg_bus::PgTestBus;
-use super::simple_audit::SimpleChainAudit;
+use hub_identity::audit::PgAuditLog;
 
 /// 2026-10-11T00:00:00Z.
 pub const START_MS: i64 = 1_791_676_800_000;
@@ -83,11 +83,11 @@ pub struct UsersRig {
 
 impl UsersRig {
     pub async fn new(db: TestDb) -> Self {
-        Self::with(db, &[], Arc::new(SimpleChainAudit), None).await
+        Self::with(db, &[], Arc::new(PgAuditLog::new()), None).await
     }
 
     pub async fn with_bootstrap(db: TestDb, bootstrap: &[Guid]) -> Self {
-        Self::with(db, bootstrap, Arc::new(SimpleChainAudit), None).await
+        Self::with(db, bootstrap, Arc::new(PgAuditLog::new()), None).await
     }
 
     pub async fn with(

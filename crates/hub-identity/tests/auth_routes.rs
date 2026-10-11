@@ -1,5 +1,5 @@
 //! T3 (S1, S2, S3, S9, S10): `/auth/login`, `/auth/callback` and `/auth/logout` behind the real layers, against the mock Entra
-//! and a real Postgres. The audit chain is the test-only `SimpleChainAudit` (plan decision B7).
+//! and a real Postgres. The audit chain is the real `PgAuditLog`.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

@@ -1,7 +1,7 @@
 //! T3 (S2, P7, P12): server-side sessions against a real Postgres as `lanekeeper_app`: what is stored, expiry, the
 //! `last_seen_at` batches, the sweep, the cache, and a revocation reaching a second app instance.
 //!
-//! The audit chain is the test-only `SimpleChainAudit` (plan decision B7); the event bus is the outbox-backed `PgTestBus`
+//! The audit chain is the real `PgAuditLog`; the event bus is the outbox-backed `PgTestBus`
 //! with a `LISTEN` side, so two replicas on one database behave like two hub pods.
 #![allow(
     clippy::unwrap_used,

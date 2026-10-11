@@ -50,6 +50,11 @@ fn corpus_replay_identity_cookie() {
     replay("identity_cookie", invariants::identity_cookie);
 }
 
+#[test]
+fn corpus_replay_identity_audit_event() {
+    replay("identity_audit_event", invariants::identity_audit_event);
+}
+
 /// Every target in `fuzz_targets/` has a corpus and a replay test, and the other way round.
 #[test]
 fn every_fuzz_target_has_a_corpus_and_a_replay() {
@@ -85,6 +90,30 @@ mod random_inputs {
         #[test]
         fn any_bytes_satisfy_the_cookie_invariants(data in proptest::collection::vec(any::<u8>(), 0..2048)) {
             prop_assert_eq!(invariants::identity_cookie(&data), Ok(()));
+        }
+
+        #[test]
+        fn any_bytes_satisfy_the_audit_invariants(data in proptest::collection::vec(any::<u8>(), 0..2048)) {
+            prop_assert_eq!(invariants::identity_audit_event(&data), Ok(()));
+        }
+
+        /// Text that is shaped like an audit event or a checkpoint object reaches the deeper branches of the parsers.
+        #[test]
+        fn json_shaped_text_satisfies_the_audit_invariants(
+            seq in any::<i64>(),
+            sig in "[A-Za-z0-9_-]{0,200}",
+            head in "[0-9a-f]{60,66}",
+            diff in proptest::option::of("[ -~]{0,64}"),
+        ) {
+            let object = format!(
+                r#"{{"seq":{seq},"head":"{head}","signature":"{sig}","key_version":"v","created_at":1}}"#
+            );
+            prop_assert_eq!(invariants::identity_audit_event(object.as_bytes()), Ok(()));
+            let diff = diff.map_or_else(|| "null".to_owned(), |d| format!("{d:?}"));
+            let event = format!(
+                r#"{{"at":{seq},"actor":{{"kind":"system","component":"c"}},"action":"file_edited","via":"ui","swimlane":null,"path":null,"hash_before":null,"hash_after":null,"diff":{diff},"github_login":null,"approval":null,"request_id":null,"attribution":null}}"#
+            );
+            prop_assert_eq!(invariants::identity_audit_event(event.as_bytes()), Ok(()));
         }
 
         #[test]

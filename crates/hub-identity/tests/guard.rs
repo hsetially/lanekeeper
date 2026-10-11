@@ -203,7 +203,7 @@ async fn matrix_router(rig: &UsersRig, replica: &Replica) -> Router {
     let g = identity_guarded(
         replica.pool.clone(),
         Arc::clone(&replica.sessions),
-        Arc::new(support::simple_audit::SimpleChainAudit),
+        Arc::new(hub_identity::audit::PgAuditLog::new()),
         Arc::clone(&replica.bus) as Arc<_>,
         clock,
     )

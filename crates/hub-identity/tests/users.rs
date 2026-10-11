@@ -1,6 +1,6 @@
 //! T2 (S1, S4, S9, S10, P12): users, roles and access requests, against a real Postgres as `lanekeeper_app`.
 //!
-//! The audit chain here is the test-only `SimpleChainAudit` (plan decision B7); T5 runs the same tests with `PgAuditLog`.
+//! The audit chain here is the real `PgAuditLog` (T5).
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -229,7 +229,7 @@ async fn bootstrap_admin_who_is_disabled_is_not_reactivated_by_the_list() {
 async fn notifier_failure_does_not_fail_sign_in() {
     let rig = UsersRig::new(db!()).await;
     let (users, _admin) = rig.variant(
-        Arc::new(support::simple_audit::SimpleChainAudit),
+        Arc::new(hub_identity::audit::PgAuditLog::new()),
         Arc::new(FailingNotifier),
     );
     let signed = users.first_sign_in(&sign_in(1), None).await.unwrap();
@@ -1455,7 +1455,7 @@ async fn user_operations_log_no_names_emails_or_reasons() {
         )
         .await;
     let (users, _) = rig.variant(
-        Arc::new(support::simple_audit::SimpleChainAudit),
+        Arc::new(hub_identity::audit::PgAuditLog::new()),
         Arc::new(FailingNotifier),
     );
     let _ = users.first_sign_in(&sign_in(6), None).await;

@@ -114,7 +114,7 @@ impl App {
         let guarded = identity_guarded(
             rig.replica.pool.clone(),
             Arc::clone(&rig.replica.sessions),
-            Arc::new(super::simple_audit::SimpleChainAudit),
+            Arc::new(hub_identity::audit::PgAuditLog::new()),
             Arc::clone(&rig.replica.bus) as Arc<dyn EventBus>,
             &rig.users.clock,
         )

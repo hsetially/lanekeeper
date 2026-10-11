@@ -839,9 +839,12 @@ dependencies = [
 name = "identity-fuzz"
 version = "0.0.0"
 dependencies = [
+ "domain",
  "http",
  "hub-identity",
  "libfuzzer-sys",
+ "ports",
+ "serde_json",
 ]
 
 [[package]]

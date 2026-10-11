@@ -342,6 +342,16 @@ scale = "target"
 registered = false
 
 [[budget]]
+id = "P12.audit_record"
+description = "Recording an audit event adds to a transaction, with a second replica contending for the chain lock"
+bench = "hub-identity/audit_record"
+statistic = "p95"
+threshold = 3
+unit = "ms"
+scale = "target"
+registered = true
+
+[[budget]]
 id = "P12.steady_state_query_ms"
 description = "Steady-state query latency"
 bench = "hub-registry/steady_state_queries"

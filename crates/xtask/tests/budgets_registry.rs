@@ -72,6 +72,7 @@ fn every_p_number_has_an_entry() {
         "P11",
         "P11.memory_mib",
         "P12.steady_state_query_ms",
+        "P12.audit_record",
         "P15.spool_replay_versions_per_s",
     ] {
         find(&reg, id);
@@ -271,6 +272,12 @@ fn thresholds_match_docs_performance_md() {
             "ms",
             "No steady-state query takes longer than 50 ms",
         ),
+        (
+            "P12.audit_record",
+            3.0,
+            "ms",
+            "Recording an audit event adds at most 3 ms to a transaction (p95), with another replica contending for the chain lock",
+        ),
         ("P13", 1_000.0, "ms", "within 1 second"),
         (
             "P14",
@@ -316,10 +323,11 @@ fn thresholds_match_docs_performance_md() {
 fn only_budgets_with_a_harness_are_registered() {
     // Prompt 02 (agent): `cargo bench -p agent` produces P1, P3, P4, P4.stat_walk, P4.cpu_mcores, P4.memory_mib and
     // P15.spool_replay_versions_per_s (the spool, T9). Prompt 03a (identity): `cargo bench -p hub-identity` produces
-    // P7.auth_middleware and P7.auth_middleware_cold (T3).
+    // P7.auth_middleware and P7.auth_middleware_cold (T3) and P12.audit_record (T5).
     const REGISTERED: &[&str] = &[
         "P7.auth_middleware",
         "P7.auth_middleware_cold",
+        "P12.audit_record",
         "P1",
         "P3",
         "P4",

@@ -225,7 +225,7 @@ identity-test:
     LK_REQUIRE_DOCKER=1 cargo test -p hub-identity --lib --tests
 
 # S22. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart.
-identity_fuzz_targets := "identity_jwt identity_cookie"
+identity_fuzz_targets := "identity_jwt identity_cookie identity_audit_event"
 identity-fuzz: fuzz-tools-check
     #!/usr/bin/env bash
     set -euo pipefail
@@ -242,7 +242,7 @@ identity-fuzz: fuzz-tools-check
 # full registry needs every other prompt's benchmarks to have run (`just bench`), and `bench-check` has no filter, so the
 # recipe cuts a registry with just the budgets below and judges that; the full `cargo xtask bench-check` is run by the FINAL
 # step after `just bench`. `tests/justfile_gate.rs` fails if this list and the registered `hub-identity/` budgets drift apart.
-identity_budgets := "P7.auth_middleware P7.auth_middleware_cold"
+identity_budgets := "P7.auth_middleware P7.auth_middleware_cold P12.audit_record"
 identity-bench:
     #!/usr/bin/env bash
     set -euo pipefail

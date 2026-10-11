@@ -181,8 +181,8 @@ use super::fake_https::FakeHttps;
 use super::login_rig::Begun;
 use super::mock_oidc::{MockOidc, NOW_MS, OID, TID, TokenSpec, config, secret_auth, secrets};
 use super::sessions_rig::Replica;
-use super::simple_audit::SimpleChainAudit;
 use super::users_rig::UsersRig;
+use hub_identity::audit::PgAuditLog;
 
 /// Everything for the sign-in tests: one replica, the mock Entra, the routes and the stand-in handlers behind the layers.
 pub struct RoutesRig {
@@ -201,7 +201,7 @@ pub fn mock_user() -> UserId {
 
 impl RoutesRig {
     pub async fn new(db: super::pg::TestDb) -> Self {
-        Self::with_audit(db, Arc::new(SimpleChainAudit)).await
+        Self::with_audit(db, Arc::new(PgAuditLog::new())).await
     }
 
     /// `audit` is what the sign-in and logout transactions record to; the user directory keeps the normal one.

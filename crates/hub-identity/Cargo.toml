@@ -77,3 +77,8 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-mu
 [[bench]]
 name = "auth_middleware"
 harness = false
+
+# P12 (T5): `PgAuditLog::record` added to a transaction, with a second replica contending for the chain lock.
+[[bench]]
+name = "audit_record"
+harness = false

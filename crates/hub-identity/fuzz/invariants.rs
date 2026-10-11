@@ -22,8 +22,13 @@
     clippy::pedantic
 )]
 
+use domain::ContentHash;
 use http::{HeaderMap, HeaderValue, Method, header};
 use hub_identity::TokenError;
+use hub_identity::audit::checkpoint::CheckpointObject;
+use hub_identity::audit::log::prepare;
+use hub_identity::audit::verify::{FailureKind, check_row};
+use hub_identity::audit::{CheckpointVerifier, EcdsaP256Verifier};
 use hub_identity::csrf::check as csrf_check;
 use hub_identity::oidc::jwks::{KeySet, RsaPublicKey};
 use hub_identity::oidc::jwt::{Claims, Profile, parse_compact, verify_with_keys};
@@ -31,6 +36,7 @@ use hub_identity::oidc::login::{CallbackQuery, LoginSealer, valid_return_to};
 use hub_identity::session::cookie::{MAX_COOKIE_VALUE_BYTES, RandomToken, RequestCookies};
 use hub_identity::tokens::{entra, google};
 use hub_identity::users::cursor;
+use ports::{AuditError, AuditEvent, chain_hash};
 
 /// A seed corpus needs at least this many files per target (`MIN_SEEDS` in the replay test).
 pub const MIN_SEEDS: usize = 8;
@@ -228,3 +234,98 @@ pub fn identity_cookie(data: &[u8]) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// The fixed predecessor of the stored-row check.
+const PREV: [u8; 32] = [0x5a; 32];
+
+pub fn identity_audit_event(data: &[u8]) -> Result<(), String> {
+    // 1. The event, as the hub writes it (S9).
+    if let Ok(event) = serde_json::from_slice::<AuditEvent>(data) {
+        let too_big = event
+            .diff
+            .as_ref()
+            .is_some_and(|d| d.len() > AuditEvent::MAX_DIFF_BYTES);
+        match prepare(&event) {
+            Ok(prepared) => {
+                if too_big {
+                    return Err("an event with an oversize diff was accepted".to_owned());
+                }
+                let Ok(again) = serde_json::from_str::<AuditEvent>(prepared.json()) else {
+                    return Err("the canonical JSON of an event did not parse".to_owned());
+                };
+                if again != event {
+                    return Err("the canonical JSON parsed to another event".to_owned());
+                }
+                match prepare(&again) {
+                    Ok(p) if p.json() == prepared.json() => {}
+                    _ => return Err("the canonical JSON is not stable".to_owned()),
+                }
+            }
+            Err(AuditError::TooLarge) if too_big => {}
+            Err(e) => {
+                return Err(format!(
+                    "an event that parsed was refused for the wrong reason: {e}"
+                ));
+            }
+        }
+    }
+
+    // 2. A stored row, judged by its hash alone (S9). The input is the stored text.
+    let prev = ContentHash::from_bytes(PREV);
+    let good = chain_hash(&prev, data);
+    if check_row(&prev, &prev, &good, data).is_err() {
+        return Err("a row with the right hash failed the check".to_owned());
+    }
+    let mut changed_hash = *good.as_bytes();
+    changed_hash[(data.len() % 32).min(31)] ^= 1;
+    if check_row(&prev, &prev, &ContentHash::from_bytes(changed_hash), data)
+        != Err(FailureKind::ChainHashMismatch)
+    {
+        return Err("a row with a changed hash passed".to_owned());
+    }
+    if !data.is_empty() {
+        let mut changed = data.to_vec();
+        let at = usize::from(data[0]) % changed.len();
+        changed[at] ^= 1;
+        if check_row(&prev, &prev, &good, &changed) != Err(FailureKind::ChainHashMismatch) {
+            return Err("a row with a changed event passed".to_owned());
+        }
+    }
+    let other = ContentHash::from_bytes([0xa5; 32]);
+    if check_row(&other, &prev, &good, data) != Err(FailureKind::ChainLinkBroken) {
+        return Err("a row whose predecessor is not the previous row passed".to_owned());
+    }
+
+    // 3. A checkpoint object, as the bucket returns it (S9).
+    if let Ok(object) = CheckpointObject::parse(data) {
+        if object.signature.is_empty() || object.signature.len() > 128 {
+            return Err("a checkpoint object with a signature of a wrong size was accepted".to_owned());
+        }
+        let Ok(bytes) = object.encode() else {
+            return Err("an accepted checkpoint object could not be encoded".to_owned());
+        };
+        if CheckpointObject::parse(&bytes).as_ref() != Ok(&object) {
+            return Err("a checkpoint object did not survive a round trip".to_owned());
+        }
+    }
+
+    // 4. A public key and a signature (S9). Neither is ever trusted for being well formed.
+    let _ = EcdsaP256Verifier::new().with_spki_der("v", data);
+    let _ = EcdsaP256Verifier::new().with_spki_pem("v", &text(data));
+    if let Ok(v) = EcdsaP256Verifier::new().with_spki_der("v", &SPKI) {
+        if v.verify("v", b"message", data) {
+            return Err("random bytes verified as a checkpoint signature".to_owned());
+        }
+    }
+    Ok(())
+}
+
+/// The `SubjectPublicKeyInfo` of a P-256 key nobody holds the private half of: the generator point.
+const SPKI: [u8; 91] = [
+    0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86,
+    0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00, 0x04, 0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42,
+    0x47, 0xf8, 0xbc, 0xe6, 0xe5, 0x63, 0xa4, 0x40, 0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d, 0xeb, 0x33, 0xa0,
+    0xf4, 0xa1, 0x39, 0x45, 0xd8, 0x98, 0xc2, 0x96, 0x4f, 0xe3, 0x42, 0xe2, 0xfe, 0x1a, 0x7f, 0x9b, 0x8e,
+    0xe7, 0xeb, 0x4a, 0x7c, 0x0f, 0x9e, 0x16, 0x2b, 0xce, 0x33, 0x57, 0x6b, 0x31, 0x5e, 0xce, 0xcb, 0xb6,
+    0x40, 0x68, 0x37, 0xbf, 0x51, 0xf5,
+];

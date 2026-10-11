@@ -24,6 +24,11 @@ libfuzzer-sys = "=0.4.13"
 hub-identity = { path = "..", version = "0.1.0" }
 # The CSRF check takes request headers (T3). Already in the graph through hub-identity; same exact pin as the workspace.
 http = "=1.5.0"
+# The audit targets (T5) build events and check rows with the ports' own definitions. Path dependencies, already in the graph
+# through hub-identity; serde_json has the workspace pin.
+domain = { path = "../../domain", version = "0.1.0" }
+ports = { path = "../../ports", version = "0.1.0" }
+serde_json = "=1.0.151"
 
 [[bin]]
 name = "identity_jwt"
@@ -35,6 +40,13 @@ bench = false
 [[bin]]
 name = "identity_cookie"
 path = "fuzz_targets/identity_cookie.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "identity_audit_event"
+path = "fuzz_targets/identity_audit_event.rs"
 test = false
 doc = false
 bench = false

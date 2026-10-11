@@ -43,6 +43,15 @@
 //!   adds the rule that the user behind an MCP token must be active.
 //! - `testing` (feature `route-table`) is what the hub binary runs against its full route table.
 //!
+//! T5: the audit chain and its checkpoints (S9).
+//!
+//! - [`audit::PgAuditLog`] is the `AuditLog` port over the caller's transaction: an advisory lock, the head of the chain, the hash
+//!   `SHA-256(prev_hash || canonical JSON)`, the insert. Call `record` last in a transaction.
+//! - [`audit::CheckpointJob`] signs the head with KMS every hour and writes the checkpoint to the locked bucket and to
+//!   `audit_checkpoints`; [`audit::NightlyVerifyJob`] recomputes the whole chain and checks every checkpoint, its bucket object and
+//!   its signature, and alerts on any mismatch; [`audit::AuditLogShipper`] copies committed events to Cloud Logging.
+//! - [`metrics`] holds the counters (`audit_verify_failures_total` and a few more) for the hub's exporter.
+//!
 //! Nothing here is public beyond what the later tasks and the hub binary need, and no error carries input text (S10, S21).
 #![forbid(unsafe_code)]
 #![allow(
@@ -51,12 +60,14 @@
     clippy::module_name_repetitions
 )]
 
+pub mod audit;
 pub mod clock;
 pub mod config;
 pub mod csrf;
 pub mod error;
 pub mod guard;
 pub mod http;
+pub mod metrics;
 pub mod middleware;
 pub mod notify;
 pub mod oidc;
