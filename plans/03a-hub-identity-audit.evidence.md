@@ -576,3 +576,21 @@ Read these before merging. Nothing here is hidden behind a tick above.
 22. **`just verify` skips the Postgres-backed tests when Docker is missing** (it prints `SKIPPED` unless `LK_REQUIRE_DOCKER=1`), so a green `just verify` without Docker says little about them. `verify-03a` sets the variable.
 
 **Decisions that need an explicit human answer, all of them recorded above and in the PR text:** B1 (no `jsonwebtoken`; hand-written verification), B8 (Cloud Logging copy without the diff), B9 (GCS client in this crate), B12 (`GithubTokenPresence` local to this crate), B13 (bootstrap admins at first sign-in only; no break-glass rule), B15 (no self role or status change), B17 (no `Idempotency-Key` layer; owner to name), B18 (federated credential against the mock only, Q25).
+
+## [H3] Latest human gate run: Rocky Linux 8.10 VM, `058d741` [H3]
+
+Run by a human on 2026-10-12, 19:33 to 20:02 UTC, after `git pull` took the branch from `b6d3e23` to `058d741` (the jsonb-depth test fix) and `cargo clean -p hub-identity` forced a fresh rebuild. Same VM as [H2]: 4 vCPU, 15 GiB, xfs, Docker 29.9.0 on overlayfs, cgroup v1, SELinux off, gcc 8.5, cmake 3.26.5, rustc 1.88.0 and `nightly-2026-09-14`, about 23% CPU steal, load 1.4 to 3.9.
+
+| Command | Result |
+|---|---|
+| The 5 tests that failed at `b6d3e23` | All pass. `audit_verify`: 92 passed, 0 failed (was 84 passed and 5 failed; the fix added 3 tests). |
+| `just verify-03a` | **Exit 1, 1035 s, and it fails at one step only: the scoped `identity-bench` budget check, `P12.audit_record` 4.676 ms against 3 ms.** `identity-lint` (fmt, clippy `-D warnings`) passed. `identity-test` (`LK_REQUIRE_DOCKER=1`) passed: 24 binaries, 514 passed, 0 failed, zero `NOT PROVEN`, zero container-removal failures. `identity-fuzz` passed: three targets, 30 s each, no crash, no files in `fuzz/artifacts/`. |
+| `just identity-bench`, run 2 and run 3 | `P12.audit_record` 5.442 and 4.620 ms, both over budget. |
+| `cargo xtask gen-fixtures --scale target`, then `just bench` | Exit 0 (the agent benches of prompt 02 need those fixtures; not part of 03a). |
+| `cargo xtask bench-check` (after `just bench`) | Exit 0: `10 pass, 0 fail, 27 unmet`. **`P12.audit_record` 2.570 ms** in this run. |
+
+What this does and does not show. On this VM the `P12.audit_record` p95 is 2.570 ms in the full `just bench` and 4.620 to 5.442 ms in the scoped `identity-bench`, and it was 3.023 to 5.794 ms in the [H2] runs on the same machine; the criterion mean stays near 1.0 to 1.8 ms, so the p95 is a heavy fsync tail on a virtualised disk under CPU steal. **`just verify-03a` therefore does not exit 0 on this VM, and I am not calling `P12.audit_record` a pass or a fail.** It is the open human decision recorded under Known gaps: accept it as environment noise and measure on reference hardware, change the budget through a recorded decision in `docs/decisions.md`, make the gate robust (for example best or median of several runs), or rework the contention path. `perf/budgets.toml` is not changed.
+
+Not re-run in [H3]: `just verify` (workspace) on `058d741`, and `osv-scanner` (not installed on that VM). In [H2] the same `just verify` failed only on the 5 tests now fixed.
+
+Since the previous run, contract PR #8 (`audit_verify_state`) was merged into `main` (`ae7952d`). This branch merges with it without conflicts and does not use the table: the follow-up commit that reads and updates it, and removes the "count is held in memory" caveats, is separate work and not part of this PR.
