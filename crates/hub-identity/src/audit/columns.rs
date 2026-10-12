@@ -45,9 +45,13 @@
 //!   2. `pg_column_size(col #> '{}')` over the same limit: the size of the value once decompressed (the path `'{}'` hands the
 //!      detoasted value back). A value that is stored under the limit decompresses to at most about two megabytes, whatever it
 //!      holds (`lz4` shrinks a run of one byte 255 to 1, `pglz` 87 to 1). The raw size bounds the depth of nesting (at least 8
-//!      bytes a level, so 1,024 levels) far under the depth at which `jsonpath` itself fails (between 10,000 and 11,000 levels on
-//!      a server with the default `max_stack_depth` of 2 MB, with "stack depth limit exceeded", an error that `silent` does not
-//!      suppress, while the server's own parser still takes about 17,000), and it bounds how many numbers the value can hold;
+//!      bytes a level, so 1,024 levels) far under the depth at which `jsonpath` itself fails ("stack depth limit exceeded", an
+//!      error that `silent` does not suppress). That depth is a property of the server's stack, `max_stack_depth`, and of how its
+//!      binary was built (frames differ): `jsonpath` needs about 195 bytes of stack a level and the parser about 125, so on
+//!      the Ubuntu build of Postgres 16.15 at the default 2 MB `jsonpath` fails from about 10,900 levels and the parser from 16,300, and on
+//!      a build with larger frames both are lower. The 1,024 levels the gate lets through need about 200 kB, a tenth of the
+//!      default; the tests measure what the server under test takes and do not assume a number. It also bounds how many numbers
+//!      the value can hold;
 //!   3. a number that prints long: one past the range of an `i64`, or not an integer (`jsonpath`, by value: `1e131000`,
 //!      `-1e131000` and `1e-16383` all qualify). The check compares numbers, it never prints one;
 //!   4. more than [`JSONB_NUMBER_LIMIT`] numbers: an integer can still carry a scale (`0e-16383` prints 16 KB), which value

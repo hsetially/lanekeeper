@@ -1551,11 +1551,19 @@ impl NightlyVerifyJob {
             NightlyOutcome::NotLeader | NightlyOutcome::LeaseLost => return,
             NightlyOutcome::Clean(_) | NightlyOutcome::Failed(_) => 0,
             NightlyOutcome::Errored | NightlyOutcome::Incomplete(_) => {
-                match self
-                    .unfinished_in_a_row
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| Some(n.saturating_add(1)))
-                {
-                    Ok(before) | Err(before) => before.saturating_add(1),
+                // A saturating increment. (`fetch_update` does this in one call, but the nightly the fuzz targets build with
+                // renames it, with a deprecation warning, and the stable the workspace pins does not have the new name.)
+                let mut before = self.unfinished_in_a_row.load(Ordering::SeqCst);
+                loop {
+                    match self.unfinished_in_a_row.compare_exchange_weak(
+                        before,
+                        before.saturating_add(1),
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
+                        Ok(_) => break before.saturating_add(1),
+                        Err(now) => before = now,
+                    }
                 }
             }
         };

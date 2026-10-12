@@ -38,7 +38,7 @@ fn require_docker() -> bool {
 }
 
 /// Fail when the database is required, otherwise say loudly that the test did not run.
-fn skip_or_fail(why: &str) {
+pub fn skip_or_fail(why: &str) {
     assert!(
         !require_docker(),
         "LK_REQUIRE_DOCKER=1 but the database tests cannot run: {why}"

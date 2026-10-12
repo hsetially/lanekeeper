@@ -2368,9 +2368,190 @@ fn array_of(n: usize, element: &str) -> String {
     format!("('[' || repeat('{element},', {n}) || '1]')::jsonb")
 }
 
-/// A value that prints very large, or that makes a function over it fail, though it is stored small.
-fn poisons() -> Vec<(&'static str, String)> {
-    vec![
+/// An array nested `depth` levels deep, as a `jsonb` expression (8 bytes a level once decompressed: 1,024 levels are 8,192).
+fn nested(depth: usize) -> String {
+    format!("(repeat('[', {depth}) || repeat(']', {depth}))::jsonb")
+}
+
+/// How deep a value the server under test takes. The stack a server may use is `max_stack_depth`, and what fits in it depends on
+/// how the binary was built (the frames of one build are larger than another's: the same 2 MB took 16,300 levels from Ubuntu's
+/// Postgres 16.15 and fewer from the Debian build in the pinned image, on the gate run that found this). So no test names a depth
+/// that is large; each asks the server, once, and builds what it needs from the answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ServerDepth {
+    /// The deepest nesting the server takes as `jsonb` input (SQLSTATE 54001, "stack depth limit exceeded", past it), or
+    /// [`DEPTH_PROBE_CAP`] when it takes that and more.
+    parse: usize,
+    /// The deepest nesting the third check of the select (the `jsonpath` one) reads. `jsonpath` needs more stack for a level than
+    /// the parser, so it is at most `parse`; when it equals `parse`, no value the server can store is one `jsonpath` cannot read.
+    jsonpath: usize,
+}
+
+/// The deepest the probe looks. Nothing here needs more, and a deeper value only costs the server time.
+const DEPTH_PROBE_CAP: usize = 20_000;
+/// The nesting of the deepest value the size gate lets through: its 1,024 levels are 8,192 bytes decompressed.
+const GATE_DEPTH: usize = 1_024;
+/// What these tests need of a server: to store a value 1,100 deep (over the gate: 8,800 bytes), and for `jsonpath` to read 1,100
+/// levels (above the 1,024 that the gate lets through, with a little to spare). A server that cannot is one whose stack is too
+/// small for the verifier's own bound, which is a finding about the server, not a reason for the tests to pass or to skip.
+const NEEDED_DEPTH: usize = 1_100;
+
+impl ServerDepth {
+    /// The depth the tests build for "as deep as the server takes": a tenth under what the probe took. The statement that stores
+    /// the value has more frames on the stack than the probe's, and the answer should hold for both.
+    fn deepest(self) -> usize {
+        self.parse - self.parse / 10
+    }
+
+    /// Why this server is not one the tests can run on, or `None` when it is.
+    fn shortfall(self) -> Option<String> {
+        (self.deepest() < NEEDED_DEPTH || self.jsonpath < NEEDED_DEPTH).then(|| {
+            format!(
+                "this server takes jsonb nested {} deep as input (the tests build up to {}) and `jsonpath` reads {} levels; the tests \
+                 need {NEEDED_DEPTH} of each, to put a value over the {GATE_DEPTH}-level size gate under it. That is a 'max_stack_depth' \
+                 of about 210kB for the Postgres 16 builds measured (the default is 2MB): the server under test has less stack than \
+                 the verifier's own bound assumes",
+                self.parse,
+                self.deepest(),
+                self.jsonpath
+            )
+        })
+    }
+
+    /// The nesting depths the verifier is run against, shallow to deep: just under the gate, the deepest value it lets through
+    /// (whose `jsonpath` check does run), just over it, and then up to the deepest the server takes, with the depth at which
+    /// `jsonpath` itself gives up and the one after it where the server takes values `jsonpath` cannot read.
+    fn ladder(self) -> Vec<usize> {
+        let mut depths: Vec<usize> = [1_000, GATE_DEPTH, GATE_DEPTH + 1, 1_100, 2_000, 4_000, 8_000]
+            .into_iter()
+            .chain([self.jsonpath, self.jsonpath + 1])
+            .chain([self.deepest()])
+            .filter(|d| *d <= self.deepest())
+            .collect();
+        depths.sort_unstable();
+        depths.dedup();
+        depths
+    }
+}
+
+/// The deepest nesting `ok` accepts, between 1 (always taken) and `cap`: the statements `sql` builds for a depth, each of which
+/// either succeeds or is refused for its stack (54001). Any other error is a bug in the probe.
+async fn deepest_taken(admin: &mut sqlx::PgConnection, cap: usize, sql: impl Fn(usize) -> String) -> usize {
+    let (mut taken, mut refused) = (1_usize, cap + 1);
+    while refused - taken > 1 {
+        let depth = taken + (refused - taken) / 2;
+        match sqlx::query_scalar::<_, bool>(&sql(depth))
+            .fetch_one(&mut *admin)
+            .await
+        {
+            Ok(_) => taken = depth,
+            Err(e) if support::pg::sqlstate(&e).as_deref() == Some("54001") => refused = depth,
+            Err(e) => panic!("probing the depth {depth}: {e}"),
+        }
+    }
+    taken
+}
+
+/// What the server under test takes, probed on the test's own database (about thirty small statements; the answer is a property
+/// of the server's binary and its `max_stack_depth`, the same for every database on it), or `None` when it cannot run these tests
+/// and the environment does not require it to: `LK_REQUIRE_DOCKER=1` fails the test instead, with the probed numbers in the
+/// message.
+#[allow(clippy::print_stderr)]
+async fn server_depth(db: &support::pg::TestDb) -> Option<ServerDepth> {
+    let mut admin = db.admin().await;
+    let parse = deepest_taken(&mut admin, DEPTH_PROBE_CAP, |n| {
+        format!("SELECT jsonb_typeof({}) = 'array'", nested(n))
+    })
+    .await;
+    // The production expression, so that the probe and the select cannot drift apart.
+    let check = &jsonb_rejections("v")[2];
+    let jsonpath = deepest_taken(&mut admin, parse, |n| {
+        format!("SELECT {check} FROM (SELECT {} AS v) s", nested(n))
+    })
+    .await;
+    let depth = ServerDepth { parse, jsonpath };
+    eprintln!(
+        "server depth: jsonb input takes {parse} levels{}, jsonpath reads {jsonpath}{}",
+        if parse == DEPTH_PROBE_CAP {
+            " (the probe's cap)"
+        } else {
+            ""
+        },
+        if jsonpath == parse {
+            ": every value the server stores is one jsonpath reads"
+        } else {
+            ": the server stores values jsonpath cannot read"
+        }
+    );
+    if let Some(why) = depth.shortfall() {
+        support::pg::skip_or_fail(&why);
+        return None;
+    }
+    Some(depth)
+}
+
+#[test]
+fn a_server_without_the_stack_for_the_gate_is_named_and_one_with_it_is_not() {
+    // Measured on Ubuntu's Postgres 16.15 at max_stack_depth 100kB, 512kB, 1MB, 1536kB, 2MB and 6MB (the last is the probe's cap).
+    for (parse, jsonpath, takes_it) in [
+        (815, 540, false),
+        (4_062, 2_695, true),
+        (8_164, 5_429, true),
+        (12_265, 8_164, true),
+        (16_328, 10_859, true),
+        (DEPTH_PROBE_CAP, 20_000, true),
+        // The edges: 1,100 is needed of each (the parser's is taken a tenth off).
+        (1_221, 1_100, false),
+        (1_222, 1_100, true),
+        (5_000, 1_099, false),
+        (1_100, 1_100, false),
+    ] {
+        let why = ServerDepth { parse, jsonpath }.shortfall();
+        assert_eq!(why.is_none(), takes_it, "{parse} / {jsonpath}: {why:?}");
+        if let Some(why) = why {
+            // Named, with the numbers it probed, so that the failure under LK_REQUIRE_DOCKER=1 says what the server can do.
+            assert!(
+                why.contains(&parse.to_string()) && why.contains(&jsonpath.to_string()),
+                "{why}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_ladder_runs_from_under_the_gate_to_the_deepest_and_stops_where_the_server_does() {
+    // Where jsonpath gives up below the parser (Ubuntu at 2MB): both sides of it are in the ladder.
+    let ladder = ServerDepth {
+        parse: 16_328,
+        jsonpath: 10_859,
+    }
+    .ladder();
+    assert_eq!(
+        ladder,
+        [
+            1_000, 1_024, 1_025, 1_100, 2_000, 4_000, 8_000, 10_859, 10_860, 14_696
+        ]
+    );
+    // Where it reads whatever is stored: nothing past `deepest` is asked for, and nothing is repeated.
+    let ladder = ServerDepth {
+        parse: 8_164,
+        jsonpath: 8_164,
+    }
+    .ladder();
+    assert_eq!(ladder, [1_000, 1_024, 1_025, 1_100, 2_000, 4_000, 7_348]);
+    let ladder = ServerDepth {
+        parse: 1_222,
+        jsonpath: 1_100,
+    }
+    .ladder();
+    assert_eq!(ladder, [1_000, 1_024, 1_025, 1_100]);
+}
+
+/// A value that prints very large, or that makes a function over it fail, though it is stored small. The nesting ones are built
+/// from what the server takes (see [`ServerDepth`]).
+fn poisons(depth: ServerDepth) -> Vec<(String, String)> {
+    let deepest = depth.deepest();
+    let mut poisons: Vec<(String, String)> = vec![
         (
             "9000 x 1e131000: 144 KB decompressed, 2.5 KB stored; prints over 1 GiB and the server refuses",
             array_of(9000, "1e131000"),
@@ -2394,26 +2575,30 @@ fn poisons() -> Vec<(&'static str, String)> {
             "a number past the largest i64",
             "'{\"n\":9223372036854775808}'::jsonb".to_owned(),
         ),
-        (
-            "nested as deep as the server takes, where jsonpath refuses (stack depth)",
-            "(repeat('[', 16000) || repeat(']', 16000))::jsonb".to_owned(),
-        ),
-        (
-            "nested 1,100 deep: 8.8 KB raw",
-            "(repeat('[', 1100) || repeat(']', 1100))::jsonb".to_owned(),
-        ),
     ]
+    .into_iter()
+    .map(|(label, sql)| (label.to_owned(), sql))
+    .collect();
+    poisons.push((
+        format!(
+            "nested {deepest} deep, the most this server is asked to take (it takes {}; jsonpath reads {})",
+            depth.parse, depth.jsonpath
+        ),
+        nested(deepest),
+    ));
+    poisons.push(("nested 1,100 deep: 8.8 KB raw".to_owned(), nested(NEEDED_DEPTH)));
+    poisons
 }
 
 /// One poisoned row, 3 legitimate events after it, a tamper of the stored event at 15 by the owner: the run is `Failed`, quickly,
 /// names the poisoned column at 13 and the hash at 15, and is not an error.
 async fn a_poisoned_column_is_a_finding_and_a_later_tamper_is_still_found(
+    rig: &AuditRig,
     label: &str,
     column: C,
     value_sql: &str,
 ) {
-    let rig = rig_with_checkpoints(db!()).await;
-    let poisoned = append_copy_with(&rig, column, value_sql).await;
+    let poisoned = append_copy_with(rig, column, value_sql).await;
     assert_eq!(poisoned, 13, "{label}");
     assert_eq!(
         rig.record(3).await,
@@ -2449,44 +2634,81 @@ async fn a_poisoned_column_is_a_finding_and_a_later_tamper_is_still_found(
     assert_eq!(rig.notifier.sent().len(), 1, "{label}");
 }
 
+/// `poisons(..)[index]` in `column`, through [`a_poisoned_column_is_a_finding_and_a_later_tamper_is_still_found`], on a database
+/// of its own (the nesting ones are built from what that server takes).
+async fn the_poison_is_a_finding(index: usize, column: C) {
+    let rig = rig_with_checkpoints(db!()).await;
+    let Some(depth) = server_depth(&rig.db).await else {
+        return;
+    };
+    let (label, sql) = poisons(depth).swap_remove(index);
+    a_poisoned_column_is_a_finding_and_a_later_tamper_is_still_found(&rig, &label, column, &sql).await;
+}
+
 #[tokio::test]
 async fn jsonb_numbers_that_print_over_a_gigabyte_are_a_finding_not_an_error() {
-    let (label, sql) = &poisons()[0];
-    a_poisoned_column_is_a_finding_and_a_later_tamper_is_still_found(label, C::AttributionEvidence, sql)
-        .await;
+    the_poison_is_a_finding(0, C::AttributionEvidence).await;
 }
 
 #[tokio::test]
 async fn jsonb_numbers_that_take_seconds_to_print_are_a_finding_and_cost_nothing() {
-    let (label, sql) = &poisons()[1];
-    a_poisoned_column_is_a_finding_and_a_later_tamper_is_still_found(label, C::AttributionEvidence, sql)
-        .await;
+    the_poison_is_a_finding(1, C::AttributionEvidence).await;
 }
 
 #[tokio::test]
 async fn jsonb_numbers_with_large_negative_and_positive_exponents_are_findings() {
     for i in [2, 3, 4, 5, 6, 7, 8] {
-        let (label, sql) = &poisons()[i];
-        a_poisoned_column_is_a_finding_and_a_later_tamper_is_still_found(label, C::AttributionEvidence, sql)
-            .await;
+        the_poison_is_a_finding(i, C::AttributionEvidence).await;
     }
 }
 
 #[tokio::test]
-async fn jsonb_nested_past_what_jsonpath_reads_is_a_finding_not_an_error() {
+async fn jsonb_nested_as_deep_as_the_server_takes_is_a_finding_not_an_error() {
     for i in [8, 9] {
-        let (label, sql) = &poisons()[i];
-        a_poisoned_column_is_a_finding_and_a_later_tamper_is_still_found(label, C::AttributionEvidence, sql)
-            .await;
+        the_poison_is_a_finding(i, C::AttributionEvidence).await;
     }
+}
+
+/// The invariant behind the depth bound: at no depth the server takes does the run end `Errored` or stop short of a later row.
+/// From just under the size gate, through the deepest value the gate lets through (whose `jsonpath` check does run, on the
+/// most stack the verifier ever uses), to the deepest the server takes, and on a server that takes values `jsonpath` cannot
+/// read (the Ubuntu build at 2 MB does; others may not) the depths on either side of where `jsonpath` gives up. The depths come
+/// from the server, so a build with larger frames is held to the same invariant at the depths it has.
+#[tokio::test]
+async fn at_no_depth_the_server_takes_does_the_run_end_errored_or_skip_a_later_row() {
+    let mut step = 0;
+    loop {
+        let rig = rig_with_checkpoints(db!()).await;
+        let Some(depth) = server_depth(&rig.db).await else {
+            return;
+        };
+        let ladder = depth.ladder();
+        let Some(&at) = ladder.get(step) else {
+            break;
+        };
+        assert!(
+            ladder.contains(&GATE_DEPTH)
+                && ladder.contains(&NEEDED_DEPTH)
+                && ladder.contains(&depth.deepest()),
+            "{ladder:?}"
+        );
+        let label = format!("nested {at} deep (the ladder is {ladder:?})");
+        a_poisoned_column_is_a_finding_and_a_later_tamper_is_still_found(
+            &rig,
+            &label,
+            C::AttributionEvidence,
+            &nested(at),
+        )
+        .await;
+        step += 1;
+    }
+    assert!(step >= 4, "only {step} depths were run");
 }
 
 #[tokio::test]
 async fn the_attribution_actor_column_is_held_to_the_same_bounds() {
     for i in [0, 1, 3, 8] {
-        let (label, sql) = &poisons()[i];
-        a_poisoned_column_is_a_finding_and_a_later_tamper_is_still_found(label, C::AttributionActor, sql)
-            .await;
+        the_poison_is_a_finding(i, C::AttributionActor).await;
     }
 }
 
@@ -2558,6 +2780,9 @@ async fn sent_for(
 #[tokio::test]
 async fn a_jsonb_the_select_does_not_vet_is_sent_as_the_json_null_and_a_vetted_one_as_it_is() {
     let rig = rig_with_checkpoints(db!()).await;
+    let Some(depth) = server_depth(&rig.db).await else {
+        return;
+    };
     // Vetted: what the log writes, and its extremes. These come back as they are, and `read_row` finds nothing unreadable in them.
     for (what, sql, expected) in [
         (
@@ -2582,7 +2807,7 @@ async fn a_jsonb_the_select_does_not_vet_is_sent_as_the_json_null_and_a_vetted_o
     }
     // Not vetted: each comes back as the JSON `null`, which no event holds in these columns, and nothing is printed. `read_row`
     // records the column as unreadable.
-    for (label, sql) in poisons() {
+    for (label, sql) in poisons(depth) {
         let (sent, read) = sent_for(&rig, &sql).await;
         assert_eq!(sent, Some(serde_json::Value::Null), "{label}");
         assert!(read.unreadable.contains(Column::AttributionEvidence), "{label}");
@@ -2596,10 +2821,16 @@ async fn a_jsonb_the_select_does_not_vet_is_sent_as_the_json_null_and_a_vetted_o
 
 /// The five checks of the select, each evaluated by itself on a row stored in a table (so that its size is the stored size, as it
 /// is in `audit_events`), on the values each is for. A check is evaluated only where a check before it lets the value through, as
-/// the select does: `jsonpath` itself refuses a value nested 16,000 deep, and printing is what the first four exist to avoid.
+/// the select does: `jsonpath` itself refuses a value nested deeper than it reads (about 10,800 levels on Ubuntu's Postgres at 2 MB
+/// and fewer on a build with larger frames, where the server may not even take a value that deep), and printing is what the first
+/// four exist to avoid.
 #[tokio::test]
 async fn each_check_on_a_jsonb_rejects_what_it_is_for_and_lets_the_rest_through() {
     let rig = AuditRig::new(db!()).await;
+    let Some(depth) = server_depth(&rig.db).await else {
+        return;
+    };
+    let deepest = depth.deepest();
     let mut admin = rig.db.admin().await;
     sqlx::query("CREATE TABLE vet_probe (id int PRIMARY KEY, attribution_evidence jsonb)")
         .execute(&mut admin)
@@ -2637,14 +2868,30 @@ async fn each_check_on_a_jsonb_rejects_what_it_is_for_and_lets_the_rest_through(
             vec![(0, false), (1, true), (2, true), (3, true)],
         ),
         (
-            "nested 1,100 deep: under the stored limit, over the decompressed one",
-            "(repeat('[', 1100) || repeat(']', 1100))::jsonb".to_owned(),
+            "nested 1,024 deep, the most the gate lets through: 8,192 bytes decompressed, and every later check runs on it",
+            nested(GATE_DEPTH),
+            vec![(0, false), (1, false), (2, false), (3, false), (4, false)],
+        ),
+        (
+            "nested 1,025 deep, one more than the gate lets through: under the stored limit, over the decompressed one",
+            nested(GATE_DEPTH + 1),
             vec![(0, false), (1, true)],
         ),
         (
-            "nested 16,000 deep: where jsonpath would fail",
-            "(repeat('[', 16000) || repeat(']', 16000))::jsonb".to_owned(),
-            vec![(0, true), (1, true)],
+            "nested 1,100 deep: under the stored limit, over the decompressed one",
+            nested(NEEDED_DEPTH),
+            vec![(0, false), (1, true)],
+        ),
+        (
+            // Stored, the nesting compresses to about 3.3 bytes a level, so it is over the stored limit from about 2,500 levels
+            // (the checks before it, none of which reads the nesting, are what the size gate is for).
+            "nested as deep as the server is asked to take (where jsonpath may fail): over the decompressed limit",
+            nested(deepest),
+            if deepest >= 3_000 {
+                vec![(0, true), (1, true)]
+            } else {
+                vec![(1, true)]
+            },
         ),
         ("8 numbers of 1e131000", array_of(8, "1e131000"), vec![(0, false), (1, false), (2, true), (3, false)]),
         ("8 numbers of -1e131000", array_of(8, "-1e131000"), vec![(2, true), (3, false)]),
