@@ -16,7 +16,7 @@
 //! | the tables changed shape (a blinded verifier) | `increase(audit_verify_schema_changes_total[1d]) > 0` |
 //! | the verifier could not finish, twice running | `audit_verify_unfinished_runs_in_a_row >= 2` |
 //! | the verifier did not finish, in a pod that restarts daily | `increase(audit_verify_errors_total[3d]) >= 2` |
-//! | no verification has completed for a day and a half | `increase(audit_verify_runs_total[36h]) == 0` |
+//! | no verification has completed for a day and a half | `increase(audit_verify_runs_total[36h]) == 0 or absent(audit_verify_runs_total)` |
 //!
 //! The third is a gauge that this process holds in memory: it is lost when the pod restarts, which is why the fourth and fifth
 //! exist (they read history that Prometheus keeps).
