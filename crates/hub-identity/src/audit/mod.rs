@@ -6,7 +6,9 @@
 //!   ([`bucket`]) and to `audit_checkpoints`.
 //! - [`verify`]: every night, the whole chain is recomputed from the stored `event_json` and checked against every checkpoint,
 //!   its bucket object and its signature, and holds the columns that copy each event ([`columns`]) against the stored text. A
-//!   mismatch alerts the admins, raises a metric and logs the position (and, for columns, their names).
+//!   mismatch alerts the admins, raises a metric and logs the position (and, for columns, their names). A change to the shape of
+//!   the tables that blinds it alerts the same night, and nights on which it could not finish are counted and alerted from the
+//!   second in a row (in memory: see the module docs).
 //! - [`shipper`]: committed events are copied, hash included, to Cloud Logging as one structured line each.
 //!
 //! Appending is in the caller's transaction; the jobs run on one replica at a time under leases ([`ports::Leases`]).
@@ -35,8 +37,8 @@ pub use metadata::MetadataTokenSource;
 pub use shipper::{AuditLogShipper, ShipOutcome};
 pub use signature::{CheckpointVerifier, EcdsaP256Verifier, checkpoint_digest, checkpoint_message};
 pub use verify::{
-    ChainVerifier, CheckpointColumn, CheckpointColumnSet, FailureKind, NightlyOutcome, NightlyVerifyJob,
-    VerifyAborted, VerifyError, VerifyFailure, VerifyReport,
+    ChainVerifier, CheckpointColumn, CheckpointColumnSet, DEFAULT_ALERT_AFTER_FAILED_RUNS, FailureKind,
+    NightlyOutcome, NightlyVerifyJob, SqlState, VerifyAborted, VerifyError, VerifyFailure, VerifyReport,
 };
 
 /// A background job that stops when its owner drops the handle.

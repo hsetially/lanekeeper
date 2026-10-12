@@ -15,12 +15,14 @@ use bytes::Bytes;
 use domain::Severity;
 use hub_identity::audit::bucket::{CheckpointBucket, object_name};
 use hub_identity::audit::checkpoint::CheckpointObject;
+use hub_identity::audit::columns::jsonb_rejections;
 use hub_identity::audit::verify::{
     CheckpointColumn, CheckpointColumnSet, FailureKind, NightlyOutcome, VerifyError, chain_batch_sql,
     checkpoint_batch_sql,
 };
 use hub_identity::audit::{Column, ColumnSet};
 use hub_identity::audit::{MemoryBucket, VerifyFailure};
+use hub_identity::metrics::CounterSource;
 use ports::{Leases, NotificationKind};
 use support::audit_rig::{AuditRig, bare_event, full_event};
 use support::log_capture;
@@ -320,11 +322,16 @@ async fn nightly_verify_streams_in_bounded_batches() {
     let report = rig.chain_verifier().with_batch_rows(10).verify().await.unwrap();
     assert!(report.is_clean());
     assert_eq!(report.events_checked, 25);
-    assert_eq!(report.batches, 3, "10 + 10 + 5");
-    // A log that fills the last batch exactly ends on an empty read, not on a guess.
+    assert_eq!(
+        report.batches, 3,
+        "10 + 10 + 7 rows read: the second and third start by reading the last row of the one before again"
+    );
+    // A log that fills the last batch exactly ends on a read that finds nothing new, not on a guess: a batch starts at the last
+    // position the one before read (so that rows sharing a position are never split), finds that row alone, skips it as already
+    // compared, and is short.
     let report = rig.chain_verifier().with_batch_rows(25).verify().await.unwrap();
-    assert_eq!(report.events_checked, 25);
-    assert_eq!(report.batches, 1);
+    assert_eq!(report.events_checked, 25, "no row is compared twice");
+    assert_eq!(report.batches, 2);
 }
 
 #[tokio::test]
@@ -1243,16 +1250,35 @@ async fn a_row_with_a_null_in_a_chain_column_is_a_hash_failure_and_not_an_error(
 }
 
 #[tokio::test]
-async fn a_database_error_is_still_an_error_and_not_a_finding() {
-    // The line between "the stored value cannot be read" (a finding) and "the database cannot be read" (an error): a query the
-    // server refuses is the second. Here a column the select list names is gone.
+async fn a_query_the_database_refuses_for_the_shape_of_its_tables_is_a_finding_and_a_dead_connection_is_an_error()
+ {
+    // The line between "the tables are not what the verifier reads" (a finding, at once: nothing transient does that) and "the
+    // database cannot be read" (an error): a column the select names is gone ...
     let rig = rig_with_checkpoints(db!()).await;
     rig.admin_sql("ALTER TABLE audit_events RENAME COLUMN via TO via_renamed")
         .await;
     assert!(rig.chain_verifier().verify().await.is_err());
-    assert_eq!(rig.nightly().run_once().await.unwrap(), NightlyOutcome::Errored);
-    assert_eq!(rig.metrics.audit_verify_errors_total(), 1);
-    assert_eq!(rig.metrics.audit_verify_runs_total(), 0);
+    let outcome = rig.nightly().run_once().await.unwrap();
+    let NightlyOutcome::Incomplete(report) = outcome else {
+        panic!("expected an incomplete run with a finding, got {outcome:?}");
+    };
+    assert!(
+        matches!(report.failures.as_slice(), [f] if matches!(f.kind, FailureKind::SchemaChanged(_))),
+        "{:?}",
+        report.failures
+    );
+    assert_eq!(rig.notifier.sent().len(), 1, "the admins are told at once");
+    // ... and a connection that is gone is an error, and not that.
+    let rig = rig_with_checkpoints(db!()).await;
+    let verifier = rig.chain_verifier();
+    rig.pool.close().await;
+    let aborted = verifier.verify().await.unwrap_err();
+    assert!(
+        !matches!(aborted.error, VerifyError::SchemaChanged(_)),
+        "{:?}",
+        aborted.error
+    );
+    assert!(aborted.partial.is_clean());
 }
 
 #[tokio::test]
@@ -1622,39 +1648,77 @@ async fn a_checkpoint_created_at_that_is_null_or_infinite_changes_nothing() {
     }
 }
 
+/// A verifier whose reads give up on a locked table after 200 ms.
+fn quick_verifier(rig: &AuditRig) -> hub_identity::audit::ChainVerifier {
+    rig.chain_verifier()
+        .with_timeouts(Duration::from_secs(5), Duration::from_millis(200))
+}
+
 #[tokio::test]
 async fn a_checkpoint_query_that_fails_still_reports_what_the_chain_walk_found() {
-    // A real query-level fault in the second half (a column of `audit_checkpoints` the select names is gone). The findings of the
-    // first half are not thrown away with it: they come back with the error, and the admins are told.
-    let rig = rig_with_a_tamper_at_5(db!()).await;
-    rig.admin_sql("ALTER TABLE audit_checkpoints RENAME COLUMN gcs_object TO gcs_object_renamed")
-        .await;
-    let aborted = rig.chain_verifier().verify().await.unwrap_err();
-    assert_eq!(aborted.error, VerifyError::Database);
-    assert_eq!(
-        aborted.partial.failures,
-        [failure(5, FailureKind::ChainHashMismatch)]
-    );
-    assert_eq!(aborted.partial.events_checked, 5);
+    // A real query-level fault in the second half (the checkpoints are locked by an owner, or the shape of their table is not what
+    // the select names). The findings of the first half are not thrown away with it: they come back with the error, and the
+    // admins are told.
+    for (what, error) in [
+        ("locked", VerifyError::Timeout),
+        ("renamed", VerifyError::SchemaChanged(None)),
+    ] {
+        let rig = rig_with_a_tamper_at_5(db!()).await;
+        let mut owner = None;
+        if what == "locked" {
+            owner = Some(lock_table(&rig, "audit_checkpoints").await);
+        } else {
+            rig.admin_sql("ALTER TABLE audit_checkpoints RENAME COLUMN gcs_object TO gcs_object_renamed")
+                .await;
+        }
+        let aborted = quick_verifier(&rig).verify().await.unwrap_err();
+        match (error, aborted.error) {
+            (VerifyError::SchemaChanged(_), VerifyError::SchemaChanged(Some(_))) => {}
+            (expected, got) => assert_eq!(got, expected, "{what}"),
+        }
+        let mut expected = vec![failure(5, FailureKind::ChainHashMismatch)];
+        if what == "renamed" {
+            // The refusal of the shape of the tables is a finding as well.
+            expected.push(failure(
+                0,
+                FailureKind::SchemaChanged(match aborted.error {
+                    VerifyError::SchemaChanged(code) => code,
+                    _ => None,
+                }),
+            ));
+        }
+        assert_eq!(aborted.partial.failures, expected, "{what}");
+        assert_eq!(aborted.partial.events_checked, 5, "{what}");
 
-    let outcome = rig.nightly().run_once().await.unwrap();
-    let NightlyOutcome::Incomplete(report) = outcome else {
-        panic!("expected an incomplete run, got {outcome:?}");
-    };
-    assert_eq!(report.failures, [failure(5, FailureKind::ChainHashMismatch)]);
-    assert_eq!(rig.metrics.audit_verify_errors_total(), 1, "it is also an error");
-    assert_eq!(
-        rig.metrics.audit_verify_failures_total(),
-        1,
-        "and the finding is counted"
-    );
-    let sent = rig.notifier.sent();
-    assert_eq!(sent.len(), 1, "the admins are told of the finding");
-    let summary = sent[0].summary.as_str();
-    assert!(
-        summary.contains("position 5") && summary.contains("did not finish"),
-        "{summary}"
-    );
+        let outcome = nights::job(&rig, &Arc::<nights::EveryNight>::default())
+            .run_once()
+            .await
+            .unwrap();
+        let NightlyOutcome::Incomplete(report) = outcome else {
+            panic!("{what}: expected an incomplete run, got {outcome:?}");
+        };
+        assert_eq!(report.failures, expected, "{what}");
+        assert_eq!(
+            rig.metrics.audit_verify_errors_total(),
+            1,
+            "{what}: it is also an error"
+        );
+        assert_eq!(
+            rig.metrics.audit_verify_failures_total(),
+            u64::try_from(expected.len()).unwrap(),
+            "{what}: and the findings are counted"
+        );
+        let sent = rig.notifier.sent();
+        assert_eq!(sent.len(), 1, "{what}: the admins are told of the finding");
+        let summary = sent[0].summary.as_str();
+        assert!(
+            summary.contains("position 5") && summary.contains("did not finish"),
+            "{what}: {summary}"
+        );
+        if let Some(owner) = owner.as_mut() {
+            unlock(owner).await;
+        }
+    }
 }
 
 #[tokio::test]
@@ -1664,27 +1728,40 @@ async fn a_chain_query_that_fails_does_not_stop_the_checkpoints_being_checked() 
     // The checkpoint at 12 now signs a head the chain does not have ...
     rig.admin_sql("UPDATE audit_checkpoints SET head_hash = sha256('other') WHERE seq = 12")
         .await;
-    // ... and the chain walk cannot run at all.
+    // ... and the chain walk cannot run at all (the checkpoint query reads only `seq` and `hash` of the events).
     rig.admin_sql("ALTER TABLE audit_events RENAME COLUMN via TO via_renamed")
         .await;
     let aborted = rig.chain_verifier().verify().await.unwrap_err();
-    assert_eq!(aborted.error, VerifyError::Database);
+    let VerifyError::SchemaChanged(code) = aborted.error else {
+        panic!(
+            "expected a refusal of the shape of the table, got {:?}",
+            aborted.error
+        );
+    };
+    assert!(code.is_some());
     assert_eq!(
         aborted.partial.failures,
-        [failure(12, FailureKind::CheckpointHeadMismatch)]
+        [
+            failure(12, FailureKind::CheckpointHeadMismatch),
+            failure(0, FailureKind::SchemaChanged(code))
+        ]
     );
     assert_eq!(aborted.partial.checkpoints_checked, 2);
 }
 
 #[tokio::test]
 async fn a_run_that_found_nothing_before_it_failed_is_plainly_errored() {
+    // A fault of the database that is not about the tables' shape: the checkpoints are locked and the read gives up. No finding,
+    // so nothing is told to the admins that night (the nights in a row are counted: round 4, N5).
     let rig = rig_with_checkpoints(db!()).await;
-    rig.admin_sql("ALTER TABLE audit_checkpoints RENAME COLUMN gcs_object TO gcs_object_renamed")
-        .await;
-    assert_eq!(rig.nightly().run_once().await.unwrap(), NightlyOutcome::Errored);
+    let mut owner = lock_table(&rig, "audit_checkpoints").await;
+    let job = rig.nightly_with(quick_verifier(&rig));
+    assert_eq!(job.run_once().await.unwrap(), NightlyOutcome::Errored);
     assert_eq!(rig.metrics.audit_verify_errors_total(), 1);
     assert_eq!(rig.metrics.audit_verify_failures_total(), 0);
+    assert_eq!(rig.metrics.audit_verify_schema_changes_total(), 0);
     assert!(rig.notifier.sent().is_empty());
+    unlock(&mut owner).await;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------
@@ -2002,28 +2079,6 @@ async fn the_largest_event_the_log_accepts_verifies_clean() {
     assert!(matches!(outcome, NightlyOutcome::Clean(_)), "{outcome:?}");
 }
 
-#[tokio::test]
-async fn the_text_form_of_a_jsonb_is_at_most_one_and_a_half_times_its_compact_form() {
-    // `jsonb` prints `, ` and `: ` where the event's compact JSON has `,` and `:`: the worst case is an array of one-byte elements,
-    // 2 bytes each in the event and 3 in the column. The bound on the column is twice the bound on the event.
-    let db = db!();
-    let rig = AuditRig::new(db).await;
-    let compact = 1024 * 1024_i64;
-    let text_len: i64 = sqlx::query_scalar(
-        "SELECT octet_length(('[' || repeat('0,', ($1 / 2 - 1)::int) || '0]')::jsonb::text)::bigint",
-    )
-    .bind(compact)
-    .fetch_one(&rig.pool)
-    .await
-    .unwrap();
-    assert!(text_len > compact, "the text form is the longer one: {text_len}");
-    assert!(
-        text_len * 2 <= compact * 3 + 8,
-        "at most one and a half times: {text_len}"
-    );
-    assert!(text_len <= 2 * compact);
-}
-
 // ---------------------------------------------------------------------------------------------------------------------------
 // Round 3, N3: the comparison of a batch runs off the async threads.
 
@@ -2265,4 +2320,1261 @@ async fn the_look_for_an_event_without_a_seq_is_an_index_probe_while_the_key_is_
         "{nodes:?}"
     );
     assert!(!nodes.iter().any(|(t, _)| t == "Seq Scan"), "{nodes:?}");
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Round 4, B1: no value stored in a `jsonb` column can make the select itself fail, and none costs more than a bounded amount.
+//
+// A `jsonb` number is stored as a compact `numeric`, and printed in full: `1e131000` is a dozen bytes stored and 131 KB printed. The
+// INSERT-only app role can store 9,000 of them in 2.5 KB (144 KB decompressed), and printing that value is refused by the server
+// (SQLSTATE 54000, out of memory, after a gigabyte). A select that prints the column to measure it therefore failed on a stored value, every night, and nothing after
+// that row was ever verified. These tests append such rows as the app role (the only role that needs to), put legitimate events
+// after them, tamper with a later row as the owner, and require the run to end as `Failed`, quickly, with the later tamper found.
+
+use hub_identity::audit::Column as C;
+
+/// The columns of `audit_events` that copy the event, in the order of `Column::ALL`.
+fn copied_columns() -> Vec<&'static str> {
+    C::ALL.iter().map(|c| c.name()).collect()
+}
+
+/// Append one row, as the INSERT-only app role: the last row's event, correctly chained to the head, with `column` set to the
+/// SQL expression `value_sql` and every other copy left as it was. Returns its `seq`.
+async fn append_copy_with(rig: &AuditRig, column: C, value_sql: &str) -> i64 {
+    let select: Vec<String> = C::ALL
+        .iter()
+        .map(|c| {
+            if *c == column {
+                value_sql.to_owned()
+            } else {
+                c.name().to_owned()
+            }
+        })
+        .collect();
+    sqlx::query_scalar(&format!(
+        "INSERT INTO audit_events (prev_hash, hash, event_json, {}) \
+         SELECT hash, sha256(hash || convert_to(event_json, 'UTF8')), event_json, {} \
+         FROM (SELECT * FROM audit_events ORDER BY seq DESC LIMIT 1) head RETURNING seq",
+        copied_columns().join(", "),
+        select.join(", ")
+    ))
+    .fetch_one(&rig.pool)
+    .await
+    .unwrap()
+}
+
+/// `n` copies of `element`, as a JSON array that ends in a plain `1`.
+fn array_of(n: usize, element: &str) -> String {
+    format!("('[' || repeat('{element},', {n}) || '1]')::jsonb")
+}
+
+/// A value that prints very large, or that makes a function over it fail, though it is stored small.
+fn poisons() -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "9000 x 1e131000: 144 KB decompressed, 2.5 KB stored; prints over 1 GiB and the server refuses",
+            array_of(9000, "1e131000"),
+        ),
+        (
+            "7000 x 1e131000: 112 KB decompressed, 1.9 KB stored; prints 917 MB and takes 8 to 13 s",
+            array_of(7000, "1e131000"),
+        ),
+        ("9000 x -1e131000", array_of(9000, "-1e131000")),
+        ("9000 x 1e-16383: prints 16 KB each", array_of(9000, "1e-16383")),
+        (
+            "9000 x 0e-16383: zero with the largest scale",
+            array_of(9000, "0e-16383"),
+        ),
+        (
+            "300 x 0e-16383: small raw, many numbers that print 16 KB each",
+            array_of(300, "0e-16383"),
+        ),
+        ("8 x 1e131000: few numbers, 1 MB printed", array_of(8, "1e131000")),
+        (
+            "a number past the largest i64",
+            "'{\"n\":9223372036854775808}'::jsonb".to_owned(),
+        ),
+        (
+            "nested as deep as the server takes, where jsonpath refuses (stack depth)",
+            "(repeat('[', 16000) || repeat(']', 16000))::jsonb".to_owned(),
+        ),
+        (
+            "nested 1,100 deep: 8.8 KB raw",
+            "(repeat('[', 1100) || repeat(']', 1100))::jsonb".to_owned(),
+        ),
+    ]
+}
+
+/// One poisoned row, 3 legitimate events after it, a tamper of the stored event at 15 by the owner: the run is `Failed`, quickly,
+/// names the poisoned column at 13 and the hash at 15, and is not an error.
+async fn a_poisoned_column_is_a_finding_and_a_later_tamper_is_still_found(
+    label: &str,
+    column: C,
+    value_sql: &str,
+) {
+    let rig = rig_with_checkpoints(db!()).await;
+    let poisoned = append_copy_with(&rig, column, value_sql).await;
+    assert_eq!(poisoned, 13, "{label}");
+    assert_eq!(
+        rig.record(3).await,
+        16,
+        "{label}: three legitimate events after it"
+    );
+    rig.tamper_open(true).await;
+    rig.admin_sql(
+        "UPDATE audit_events SET event_json = replace(event_json, 'settings_changed', 'role_changed') WHERE seq = 15",
+    )
+    .await;
+    let started = std::time::Instant::now();
+    let outcome = rig.nightly().run_once().await.unwrap();
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(5), "{label}: took {took:?}");
+    let NightlyOutcome::Failed(report) = outcome else {
+        panic!("{label}: expected a failed run, got {outcome:?}");
+    };
+    assert_eq!(
+        report.failures,
+        [
+            failure(13, FailureKind::ColumnsDiffer(ColumnSet::of(&[column]))),
+            failure(15, FailureKind::ChainHashMismatch),
+        ],
+        "{label}"
+    );
+    assert_eq!(report.events_checked, 15, "{label}");
+    assert_eq!(
+        rig.metrics.audit_verify_errors_total(),
+        0,
+        "{label}: a finding, not an error"
+    );
+    assert_eq!(rig.notifier.sent().len(), 1, "{label}");
+}
+
+#[tokio::test]
+async fn jsonb_numbers_that_print_over_a_gigabyte_are_a_finding_not_an_error() {
+    let (label, sql) = &poisons()[0];
+    a_poisoned_column_is_a_finding_and_a_later_tamper_is_still_found(label, C::AttributionEvidence, sql)
+        .await;
+}
+
+#[tokio::test]
+async fn jsonb_numbers_that_take_seconds_to_print_are_a_finding_and_cost_nothing() {
+    let (label, sql) = &poisons()[1];
+    a_poisoned_column_is_a_finding_and_a_later_tamper_is_still_found(label, C::AttributionEvidence, sql)
+        .await;
+}
+
+#[tokio::test]
+async fn jsonb_numbers_with_large_negative_and_positive_exponents_are_findings() {
+    for i in [2, 3, 4, 5, 6, 7, 8] {
+        let (label, sql) = &poisons()[i];
+        a_poisoned_column_is_a_finding_and_a_later_tamper_is_still_found(label, C::AttributionEvidence, sql)
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn jsonb_nested_past_what_jsonpath_reads_is_a_finding_not_an_error() {
+    for i in [8, 9] {
+        let (label, sql) = &poisons()[i];
+        a_poisoned_column_is_a_finding_and_a_later_tamper_is_still_found(label, C::AttributionEvidence, sql)
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn the_attribution_actor_column_is_held_to_the_same_bounds() {
+    for i in [0, 1, 3, 8] {
+        let (label, sql) = &poisons()[i];
+        a_poisoned_column_is_a_finding_and_a_later_tamper_is_still_found(label, C::AttributionActor, sql)
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn several_poisoned_rows_do_not_add_up_to_a_timeout() {
+    // The reviewer's measure: a few rows that take 13 s each to print reached the 5-minute statement timeout. Here ten of them, in
+    // both columns, and the run is still quick and still finds the later tamper.
+    let rig = rig_with_checkpoints(db!()).await;
+    for i in 0..10 {
+        let column = if i % 2 == 0 {
+            C::AttributionEvidence
+        } else {
+            C::AttributionActor
+        };
+        append_copy_with(&rig, column, &array_of(7000, "1e131000")).await;
+    }
+    rig.record(3).await;
+    rig.tamper_open(true).await;
+    rig.admin_sql(
+        "UPDATE audit_events SET event_json = replace(event_json, 'settings_changed', 'role_changed') WHERE seq = 25",
+    )
+    .await;
+    let started = std::time::Instant::now();
+    let outcome = rig.nightly().run_once().await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "took {:?}",
+        started.elapsed()
+    );
+    let NightlyOutcome::Failed(report) = outcome else {
+        panic!("expected a failed run, got {outcome:?}");
+    };
+    assert_eq!(report.failures.len(), 11, "{:?}", report.failures);
+    assert_eq!(
+        report.failures.last(),
+        Some(&failure(25, FailureKind::ChainHashMismatch))
+    );
+    assert_eq!(rig.metrics.audit_verify_errors_total(), 0);
+}
+
+/// What the select sends for `value_sql` in `attribution_evidence` (the last row of the first batch, after the ones before it), and
+/// what `read_row` makes of it.
+async fn sent_for(
+    rig: &AuditRig,
+    value_sql: &str,
+) -> (
+    Option<serde_json::Value>,
+    hub_identity::audit::columns::ReadColumns,
+) {
+    use sqlx::Row;
+    append_copy_with(rig, C::AttributionEvidence, value_sql).await;
+    let rows = sqlx::query(&chain_batch_sql(false))
+        .bind(5_000_i64)
+        .fetch_all(&rig.pool)
+        .await
+        .unwrap();
+    let last = rows.last().unwrap();
+    assert!(
+        row_bytes(last) < 32 * 1024,
+        "a row of {} bytes was sent",
+        row_bytes(last)
+    );
+    let sent = last
+        .try_get::<Option<serde_json::Value>, _>("attribution_evidence")
+        .unwrap();
+    (sent, hub_identity::audit::columns::read_row(last).unwrap())
+}
+
+#[tokio::test]
+async fn a_jsonb_the_select_does_not_vet_is_sent_as_the_json_null_and_a_vetted_one_as_it_is() {
+    let rig = rig_with_checkpoints(db!()).await;
+    // Vetted: what the log writes, and its extremes. These come back as they are, and `read_row` finds nothing unreadable in them.
+    for (what, sql, expected) in [
+        (
+            "an object of text and a time",
+            "'{\"executable\":\"/usr/bin/vim\",\"observed_at\":1791676800005}'::jsonb",
+            serde_json::json!({"executable": "/usr/bin/vim", "observed_at": 1_791_676_800_005_i64}),
+        ),
+        (
+            "the extremes of an i64",
+            "'{\"a\":9223372036854775807,\"b\":-9223372036854775808}'::jsonb",
+            serde_json::json!({"a": i64::MAX, "b": i64::MIN}),
+        ),
+        (
+            "an integer written with a decimal point",
+            "'{\"a\":5.0}'::jsonb",
+            serde_json::from_str::<serde_json::Value>("{\"a\":5.0}").unwrap(),
+        ),
+    ] {
+        let (sent, read) = sent_for(&rig, sql).await;
+        assert_eq!(sent, Some(expected), "{what}");
+        assert!(!read.unreadable.contains(Column::AttributionEvidence), "{what}");
+    }
+    // Not vetted: each comes back as the JSON `null`, which no event holds in these columns, and nothing is printed. `read_row`
+    // records the column as unreadable.
+    for (label, sql) in poisons() {
+        let (sent, read) = sent_for(&rig, &sql).await;
+        assert_eq!(sent, Some(serde_json::Value::Null), "{label}");
+        assert!(read.unreadable.contains(Column::AttributionEvidence), "{label}");
+        assert!(!read.unreadable.contains(Column::AttributionActor), "{label}");
+    }
+    // A stored `null` (SQL) is still `None`: the column of an event with no attribution.
+    let (sent, read) = sent_for(&rig, "NULL").await;
+    assert_eq!(sent, None);
+    assert!(!read.unreadable.contains(Column::AttributionEvidence));
+}
+
+/// The five checks of the select, each evaluated by itself on a row stored in a table (so that its size is the stored size, as it
+/// is in `audit_events`), on the values each is for. A check is evaluated only where a check before it lets the value through, as
+/// the select does: `jsonpath` itself refuses a value nested 16,000 deep, and printing is what the first four exist to avoid.
+#[tokio::test]
+async fn each_check_on_a_jsonb_rejects_what_it_is_for_and_lets_the_rest_through() {
+    let rig = AuditRig::new(db!()).await;
+    let mut admin = rig.db.admin().await;
+    sqlx::query("CREATE TABLE vet_probe (id int PRIMARY KEY, attribution_evidence jsonb)")
+        .execute(&mut admin)
+        .await
+        .unwrap();
+    let reasons = jsonb_rejections("attribution_evidence");
+
+    // (value, the checks to evaluate on it with what each must say). Checks are numbered from 0: stored size, decompressed size,
+    // a number that prints long, too many numbers, text length.
+    #[allow(clippy::type_complexity)]
+    let cases: Vec<(&str, String, Vec<(usize, bool)>)> = vec![
+        (
+            "what the log writes",
+            "'{\"executable\":\"/usr/bin/vim\",\"login_identity\":\"jdoe@corp\",\"observed_at\":1791676800005}'::jsonb".to_owned(),
+            vec![(0, false), (1, false), (2, false), (3, false), (4, false)],
+        ),
+        (
+            "both extremes of an i64, and 5.0",
+            "'{\"a\":9223372036854775807,\"b\":-9223372036854775808,\"c\":5.0}'::jsonb".to_owned(),
+            vec![(0, false), (1, false), (2, false), (3, false), (4, false)],
+        ),
+        (
+            "stored large: 128 KB of text that does not compress",
+            "to_jsonb((SELECT string_agg(md5(i::text), '') FROM generate_series(1, 4000) i))".to_owned(),
+            vec![(0, true), (1, true)],
+        ),
+        (
+            "stored small, decompressed large: 500 KB of one character",
+            "to_jsonb(repeat('x', 500000))".to_owned(),
+            vec![(0, false), (1, true)],
+        ),
+        (
+            "9,000 numbers of 1e131000: stored 2.5 KB, 144 KB decompressed",
+            array_of(9000, "1e131000"),
+            vec![(0, false), (1, true), (2, true), (3, true)],
+        ),
+        (
+            "nested 1,100 deep: under the stored limit, over the decompressed one",
+            "(repeat('[', 1100) || repeat(']', 1100))::jsonb".to_owned(),
+            vec![(0, false), (1, true)],
+        ),
+        (
+            "nested 16,000 deep: where jsonpath would fail",
+            "(repeat('[', 16000) || repeat(']', 16000))::jsonb".to_owned(),
+            vec![(0, true), (1, true)],
+        ),
+        ("8 numbers of 1e131000", array_of(8, "1e131000"), vec![(0, false), (1, false), (2, true), (3, false)]),
+        ("8 numbers of -1e131000", array_of(8, "-1e131000"), vec![(2, true), (3, false)]),
+        ("8 numbers of 1e-16383", array_of(8, "1e-16383"), vec![(2, true), (3, false)]),
+        ("1.5", "'{\"n\":1.5}'::jsonb".to_owned(), vec![(2, true), (3, false)]),
+        ("one past the largest i64", "'{\"n\":9223372036854775808}'::jsonb".to_owned(), vec![(2, true)]),
+        ("one past the smallest i64", "'{\"n\":-9223372036854775809}'::jsonb".to_owned(), vec![(2, true)]),
+        (
+            "a bare number, 1e131000",
+            "'1e131000'::jsonb".to_owned(),
+            vec![(0, false), (1, false), (2, true), (3, false)],
+        ),
+        ("16 numbers", array_of(15, "5"), vec![(2, false), (3, false)]),
+        ("17 numbers", array_of(16, "5"), vec![(2, false), (3, true)]),
+        (
+            "10 zeros with the largest scale: integers, 160 KB printed",
+            array_of(10, "0e-16383"),
+            vec![(0, false), (1, false), (2, false), (3, false), (4, true)],
+        ),
+        (
+            "3,000 control characters: 3 KB stored, 18 KB printed",
+            "to_jsonb(repeat(chr(1), 3000))".to_owned(),
+            vec![(0, false), (1, false), (2, false), (3, false), (4, true)],
+        ),
+        (
+            "1,000 control characters: 6 KB printed",
+            "to_jsonb(repeat(chr(1), 1000))".to_owned(),
+            vec![(4, false)],
+        ),
+    ];
+    for (id, (what, sql, _)) in cases.iter().enumerate() {
+        sqlx::query(&format!("INSERT INTO vet_probe VALUES ({id}, {sql})"))
+            .execute(&mut admin)
+            .await
+            .unwrap_or_else(|e| panic!("{what}: {e}"));
+    }
+    for (id, (what, _, checks)) in cases.iter().enumerate() {
+        for (check, expected) in checks {
+            let got: bool = sqlx::query_scalar(&format!(
+                "SELECT {} FROM vet_probe WHERE id = {id}",
+                reasons[*check]
+            ))
+            .fetch_one(&mut admin)
+            .await
+            .unwrap_or_else(|e| panic!("{what}: check {check}: {e}"));
+            assert_eq!(got, *expected, "{what}: check {check} ({})", reasons[*check]);
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_largest_attribution_of_every_kind_of_actor_verifies_clean_and_is_far_under_the_bound() {
+    let rig = AuditRig::new(db!()).await;
+    let long = |unit: &str| domain::ShortText::parse(&unit.repeat(256 / unit.len())).unwrap();
+    let actors = [
+        domain::Actor::OsLogin { login: long("é") },
+        domain::Actor::Job {
+            job: domain::JobRef::new(&"a".repeat(253), &"b".repeat(64)).unwrap(),
+        },
+    ];
+    for (i, actor) in actors.into_iter().enumerate() {
+        let mut e = largest_event();
+        e.at = domain::Timestamp::from_unix_millis(1_700_000_000_000 + i64::try_from(i).unwrap());
+        if let Some(a) = e.attribution.as_mut() {
+            a.actor = Some(actor);
+            a.evidence.observed_at = Some(domain::Timestamp::from_unix_millis(i64::MIN));
+        }
+        rig.record_event(e).await;
+    }
+    rig.checkpoint_job().run_once().await.unwrap();
+    let outcome = rig.nightly().run_once().await.unwrap();
+    assert!(matches!(outcome, NightlyOutcome::Clean(_)), "{outcome:?}");
+    // The sizes the database sees: at least ten times under the bound, the margin the module docs promise.
+    let sizes: Vec<(i32, i32)> = sqlx::query_as(
+        "SELECT pg_column_size(attribution_actor #> '{}'), pg_column_size(attribution_evidence #> '{}') FROM audit_events",
+    )
+    .fetch_all(&rig.pool)
+    .await
+    .unwrap();
+    assert_eq!(sizes.len(), 2);
+    for (actor, evidence) in sizes {
+        assert!(actor.max(evidence) * 10 <= 8192, "{actor} / {evidence} bytes");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Round 4, N1: a position used twice is a finding, including when the two rows fall on either side of a batch edge.
+
+const DROP_EVENTS_PK: &str = "ALTER TABLE audit_events DROP CONSTRAINT audit_events_pkey";
+/// With no primary key, the order of rows that share a position is not promised. An ordinary index on the column orders them by
+/// where they are stored, and a verifier that may not sort or scan the table (see `stored_order_verifier`) reads them that way,
+/// which lets these tests say which row comes first: a row moved to an earlier position (an `UPDATE` writes a new copy, which is
+/// stored after the old rows) comes second.
+const INDEX_EVENTS_SEQ: &str = "CREATE INDEX audit_events_seq_idx ON audit_events (seq)";
+const DROP_CHECKPOINTS_PK: &str = "ALTER TABLE audit_checkpoints DROP CONSTRAINT audit_checkpoints_pkey";
+const INDEX_CHECKPOINTS_SEQ: &str = "CREATE INDEX audit_checkpoints_seq_idx ON audit_checkpoints (seq)";
+
+/// A pool whose connections may neither sort nor scan a table, so that reads ordered by `seq` go through the index on it.
+async fn stored_order_pool(rig: &AuditRig) -> sqlx::PgPool {
+    use sqlx::postgres::PgPoolOptions;
+    PgPoolOptions::new()
+        .max_connections(2)
+        .after_connect(|conn, _| {
+            Box::pin(async move {
+                sqlx::query("SET enable_seqscan = off")
+                    .execute(&mut *conn)
+                    .await?;
+                sqlx::query("SET enable_sort = off").execute(&mut *conn).await?;
+                Ok(())
+            })
+        })
+        .connect_with(rig.db.app_options())
+        .await
+        .unwrap()
+}
+
+fn verifier_on(rig: &AuditRig, pool: &sqlx::PgPool) -> hub_identity::audit::ChainVerifier {
+    hub_identity::audit::ChainVerifier::new(pool.clone(), rig.bucket.clone(), rig.public_key())
+}
+
+/// A verifier whose connections may neither sort nor scan a table (see `stored_order_pool`).
+async fn stored_order_verifier(rig: &AuditRig) -> hub_identity::audit::ChainVerifier {
+    verifier_on(rig, &stored_order_pool(rig).await)
+}
+
+/// 12 events with checkpoints at 6 and 12, the primary key of `audit_events` gone and an index on `seq` in its place, and the
+/// event at `from` moved to the position `to` (earlier), so that two rows have it and the chain is whole in the order they are read.
+async fn rig_with_an_event_moved_up(db: support::pg::TestDb, from: i64, to: i64) -> AuditRig {
+    let rig = rig_with_checkpoints(db).await;
+    rig.tamper_open(false).await;
+    rig.admin_sql(DROP_EVENTS_PK).await;
+    rig.admin_sql(INDEX_EVENTS_SEQ).await;
+    rig.admin_sql(&format!("UPDATE audit_events SET seq = {to} WHERE seq = {from}"))
+        .await;
+    rig
+}
+
+#[tokio::test]
+async fn two_events_at_one_position_are_a_finding_even_when_the_chain_is_whole() {
+    // The reviewer's scenario: one event moved onto the position of the one before it. The chain is intact in the order the rows
+    // come back, every hash is right, every checkpoint is right, and only the repeated position shows.
+    let rig = rig_with_an_event_moved_up(db!(), 10, 9).await;
+    let verifier = stored_order_verifier(&rig).await;
+    let outcome = rig.nightly_with(verifier).run_once().await.unwrap();
+    let NightlyOutcome::Failed(report) = outcome else {
+        panic!("expected a failed run, got {outcome:?}");
+    };
+    assert_eq!(
+        report.failures,
+        [failure(9, FailureKind::EventPositionDuplicated)]
+    );
+    assert_eq!(report.events_checked, 12);
+    assert_eq!(report.checkpoints_checked, 2);
+    assert_eq!(rig.metrics.audit_verify_failures_total(), 1);
+    assert_eq!(rig.notifier.sent().len(), 1);
+    assert!(
+        rig.notifier.sent()[0].summary.as_str().contains("position 9"),
+        "{:?}",
+        rig.notifier.sent()[0].summary
+    );
+}
+
+#[tokio::test]
+async fn a_repeated_position_is_found_wherever_it_falls_against_the_edge_of_a_batch() {
+    // For every size of batch from the smallest to one that holds the whole log, and for repeats at the start, in the middle and at
+    // the end: the two rows are in one batch, or one at the end of a batch and the other at the start of the next, and either way
+    // the repeat is found, once, with nothing else reported.
+    for (from, to) in [(3, 2), (5, 4), (8, 7), (10, 9), (11, 10)] {
+        let rig = rig_with_an_event_moved_up(db!(), from, to).await;
+        // 0 and 1 are asked for and 2 is what is used: a batch of one row could never show a position used twice.
+        let pool = stored_order_pool(&rig).await;
+        for batch in [0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 5_000] {
+            let verifier = verifier_on(&rig, &pool).with_batch_rows(batch);
+            let report = tokio::time::timeout(Duration::from_secs(30), verifier.verify())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("event {from} moved to {to}, batches of {batch}: the walk did not end")
+                })
+                .unwrap();
+            assert_eq!(
+                report.failures,
+                [failure(to, FailureKind::EventPositionDuplicated)],
+                "event {from} moved to {to}, batches of {batch}"
+            );
+            assert_eq!(
+                report.events_checked, 12,
+                "moved {from} to {to}, batches of {batch}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn several_rows_at_one_position_are_found_and_the_walk_goes_on_when_the_batch_holds_them() {
+    // Rows 4 and 5 moved to the position of 3: three rows have it, in the order they were written, so the chain is whole. A later
+    // tamper is found whenever the three fit one read (a batch of at least three); in a smaller batch the repeat is still found,
+    // the walk ends, and it does not ask for the same rows for ever.
+    for batch in [2, 3, 4, 5, 100] {
+        let rig = rig_with_checkpoints(db!()).await;
+        rig.tamper_open(true).await;
+        rig.admin_sql(DROP_EVENTS_PK).await;
+        rig.admin_sql(INDEX_EVENTS_SEQ).await;
+        rig.admin_sql("UPDATE audit_events SET seq = 3 WHERE seq IN (4, 5)")
+            .await;
+        rig.admin_sql(
+            "UPDATE audit_events SET event_json = replace(event_json, 'settings_changed', 'role_changed') WHERE seq = 9",
+        )
+        .await;
+        let verifier = stored_order_verifier(&rig).await.with_batch_rows(batch);
+        let report = tokio::time::timeout(Duration::from_secs(30), verifier.verify())
+            .await
+            .unwrap_or_else(|_| panic!("batches of {batch}: the walk did not end"))
+            .unwrap();
+        assert!(
+            report
+                .failures
+                .contains(&failure(3, FailureKind::EventPositionDuplicated)),
+            "batches of {batch}: {:?}",
+            report.failures
+        );
+        assert_eq!(
+            report
+                .failures
+                .iter()
+                .filter(|f| f.kind == FailureKind::EventPositionDuplicated)
+                .count(),
+            1,
+            "batches of {batch}: reported once"
+        );
+        if batch >= 3 {
+            assert_eq!(
+                report.failures,
+                [
+                    failure(3, FailureKind::EventPositionDuplicated),
+                    failure(9, FailureKind::ChainHashMismatch)
+                ],
+                "batches of {batch}"
+            );
+        }
+    }
+}
+
+/// A checkpoint row for a position no event has, as the owner could write one (the foreign key is not enforced for the owner's
+/// replication role).
+fn insert_checkpoints_sql(from: i64, to: i64) -> String {
+    format!(
+        "INSERT INTO audit_checkpoints (seq, head_hash, kms_key_version, signature, gcs_object) \
+         SELECT i, sha256(convert_to(i::text, 'UTF8')), 'v', '\\x3006010203040506', 'audit/checkpoints/' || i || '.json' \
+         FROM generate_series({from}, {to}) i"
+    )
+}
+
+#[tokio::test]
+async fn two_checkpoints_at_one_position_are_a_finding() {
+    let rig = rig_with_checkpoints(db!()).await;
+    rig.tamper_open_checkpoints().await;
+    rig.admin_sql(DROP_CHECKPOINTS_PK).await;
+    rig.admin_sql(INDEX_CHECKPOINTS_SEQ).await;
+    // An exact copy of the checkpoint at 6: each row is, on its own, a good checkpoint.
+    rig.admin_sql("INSERT INTO audit_checkpoints SELECT * FROM audit_checkpoints WHERE seq = 6")
+        .await;
+    let verifier = stored_order_verifier(&rig).await;
+    let outcome = rig.nightly_with(verifier).run_once().await.unwrap();
+    let NightlyOutcome::Failed(report) = outcome else {
+        panic!("expected a failed run, got {outcome:?}");
+    };
+    assert_eq!(
+        report.failures,
+        [failure(6, FailureKind::CheckpointPositionDuplicated)]
+    );
+    assert_eq!(report.checkpoints_checked, 3);
+    // Whatever the size of the batch (0 and 1 are 2: a batch of one row could never show a repeat), the repeat is found once, no
+    // checkpoint is checked twice, and the one at 12 after it is still checked.
+    let pool = stored_order_pool(&rig).await;
+    for batch in [0, 1, 2, 3, 4, 500] {
+        let report = tokio::time::timeout(
+            Duration::from_secs(30),
+            verifier_on(&rig, &pool)
+                .with_checkpoint_batch_rows(batch)
+                .verify(),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("checkpoint batches of {batch}: the walk did not end"))
+        .unwrap();
+        assert_eq!(
+            report.failures,
+            [failure(6, FailureKind::CheckpointPositionDuplicated)],
+            "checkpoint batches of {batch}"
+        );
+        assert_eq!(report.checkpoints_checked, 3, "checkpoint batches of {batch}");
+    }
+}
+
+#[tokio::test]
+async fn two_checkpoints_at_one_position_are_found_across_the_edge_of_a_batch() {
+    // The checkpoint batch is 500 rows. 600 rows for positions no event has (each is a finding of its own, in a list of its own),
+    // and a copy of the 500th row in the order they are read, so that the copy is the first row of the second batch.
+    let rig = rig_with_checkpoints(db!()).await;
+    rig.tamper_open_checkpoints().await;
+    rig.admin_sql(DROP_CHECKPOINTS_PK).await;
+    rig.admin_sql(INDEX_CHECKPOINTS_SEQ).await;
+    rig.admin_sql(&insert_checkpoints_sql(1001, 1600)).await;
+    // Positions 6 and 12 are the first two; 1001.. follow, so the 500th is 1001 + 497.
+    rig.admin_sql("INSERT INTO audit_checkpoints SELECT * FROM audit_checkpoints WHERE seq = 1498")
+        .await;
+    let verifier = stored_order_verifier(&rig).await;
+    let report = verifier.verify().await.unwrap();
+    assert!(
+        report
+            .failures
+            .contains(&failure(1498, FailureKind::CheckpointPositionDuplicated)),
+        "{:?}",
+        report
+            .failures
+            .iter()
+            .filter(|f| f.kind == FailureKind::CheckpointPositionDuplicated)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(report.checkpoints_checked, 603);
+}
+
+#[tokio::test]
+async fn a_repeated_position_where_a_checkpoint_is_does_not_repeat_the_checkpoint() {
+    // The checkpoint at 6 is joined to the event at 6. With two events there it is still one checkpoint, and a good one: the
+    // first of the two is the event it signed. Only the repeated event position is a finding.
+    let rig = rig_with_an_event_moved_up(db!(), 7, 6).await;
+    let verifier = stored_order_verifier(&rig).await;
+    let report = verifier.verify().await.unwrap();
+    assert_eq!(
+        report.failures,
+        [failure(6, FailureKind::EventPositionDuplicated)]
+    );
+    assert_eq!(report.checkpoints_checked, 2);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Round 4, N2: a change to the shape of the tables that blinds the verifier is a finding on the night it happens.
+//
+// An owner can retype or drop any column the verifier reads. Every query then fails, and until now the run ended `Errored` with no
+// alert, the same as a lost connection. No fault of the database looks like that: the server says so with SQLSTATE class 42
+// (undefined column, undefined function, datatype mismatch ...), and the run is reported as a finding and alerts that night.
+
+/// Drop every `CHECK`, foreign key and unique constraint of the two audit tables, as an owner does before retyping a column they
+/// mean to retype (the checks name the old types).
+const DEMOLISH_CONSTRAINTS: &str = "DO $$ DECLARE r record; BEGIN \
+     FOR r IN SELECT conrelid::regclass AS t, conname FROM pg_constraint \
+              WHERE conrelid IN ('audit_events'::regclass, 'audit_checkpoints'::regclass) AND contype IN ('c', 'f', 'u', 'p') \
+              ORDER BY (contype = 'f') DESC LOOP \
+       EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', r.t, r.conname); \
+     END LOOP; END $$";
+
+/// What the nightly run does after a change to the tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Becomes {
+    /// `Incomplete`, with a `SchemaChanged` finding: the query was refused.
+    Refused,
+    /// `Failed`, with a column named as differing: the query still ran, and the stored value can no longer be read as what it is.
+    UnreadableColumn(Column),
+    /// `Clean`: the type changed and every value is what it was.
+    Unchanged,
+}
+
+async fn after_ddl(db: support::pg::TestDb, statements: &[String]) -> (AuditRig, NightlyOutcome) {
+    let rig = rig_with_checkpoints(db).await;
+    // A full event and a bare one, so that the optional columns hold values and `NULL`s.
+    rig.record_event(full_event(100)).await;
+    rig.record_event(bare_event(101)).await;
+    rig.tamper_open(false).await;
+    rig.tamper_open_checkpoints().await;
+    rig.admin_sql(DEMOLISH_CONSTRAINTS).await;
+    for statement in statements {
+        rig.admin_sql(statement).await;
+    }
+    let outcome = rig.nightly().run_once().await.unwrap();
+    (rig, outcome)
+}
+
+fn assert_becomes(rig: &AuditRig, what: &str, outcome: &NightlyOutcome, expected: Becomes) {
+    match (expected, outcome) {
+        (Becomes::Refused, NightlyOutcome::Incomplete(report)) => {
+            assert!(
+                report
+                    .failures
+                    .iter()
+                    .any(|f| matches!(f.kind, FailureKind::SchemaChanged(_)) && f.seq == 0),
+                "{what}: {:?}",
+                report.failures
+            );
+            assert_eq!(rig.metrics.audit_verify_errors_total(), 1, "{what}");
+            assert!(rig.metrics.audit_verify_failures_total() >= 1, "{what}");
+            assert_eq!(
+                rig.notifier.sent().len(),
+                1,
+                "{what}: the admins are told at once"
+            );
+            let sent = rig.notifier.sent();
+            let summary = sent[0].summary.as_str();
+            assert!(
+                summary.contains("shape") && summary.contains("did not finish"),
+                "{what}: {summary}"
+            );
+        }
+        (Becomes::UnreadableColumn(column), NightlyOutcome::Failed(report)) => {
+            assert!(
+                report
+                    .failures
+                    .iter()
+                    .all(|f| matches!(f.kind, FailureKind::ColumnsDiffer(set) if set.contains(column))),
+                "{what}: {:?}",
+                report.failures
+            );
+            assert!(!report.failures.is_empty(), "{what}");
+            assert_eq!(rig.notifier.sent().len(), 1, "{what}");
+            assert_eq!(rig.metrics.audit_verify_errors_total(), 0, "{what}");
+        }
+        (Becomes::Unchanged, NightlyOutcome::Clean(_)) => {
+            assert!(rig.notifier.sent().is_empty(), "{what}");
+        }
+        (expected, outcome) => panic!("{what}: expected {expected:?}, got {outcome:?}"),
+    }
+}
+
+/// The columns of `audit_events` the verifier reads, besides the ones it compares.
+const CHAIN_COLUMNS: [&str; 4] = ["seq", "prev_hash", "hash", "event_json"];
+
+#[tokio::test]
+async fn retyping_a_column_of_the_events_to_int_is_a_finding_at_once() {
+    let columns: Vec<&str> = CHAIN_COLUMNS
+        .into_iter()
+        .chain(Column::ALL.iter().map(|c| c.name()))
+        .collect();
+    for column in columns {
+        // `seq` keeps its values (a primary key of zeros cannot be built); the others become 0.
+        let using = if column == "seq" { "seq::int" } else { "0" };
+        let (rig, outcome) = after_ddl(
+            db!(),
+            &[format!(
+                "ALTER TABLE audit_events ALTER COLUMN {column} TYPE int USING {using}"
+            )],
+        )
+        .await;
+        // `approval_id` is the one column that survives the change to the query: a bigint becomes an int, the select works, and the
+        // value cannot be read as the bigint it was.
+        let expected = if column == "approval_id" {
+            Becomes::UnreadableColumn(Column::ApprovalId)
+        } else {
+            Becomes::Refused
+        };
+        assert_becomes(&rig, &format!("{column} to int"), &outcome, expected);
+    }
+}
+
+#[tokio::test]
+async fn dropping_a_column_of_the_events_is_a_finding_at_once() {
+    let columns: Vec<&str> = CHAIN_COLUMNS
+        .into_iter()
+        .chain(Column::ALL.iter().map(|c| c.name()))
+        .collect();
+    for column in columns {
+        let (rig, outcome) = after_ddl(
+            db!(),
+            &[format!("ALTER TABLE audit_events DROP COLUMN {column} CASCADE")],
+        )
+        .await;
+        assert_becomes(&rig, &format!("drop {column}"), &outcome, Becomes::Refused);
+    }
+}
+
+#[tokio::test]
+async fn retyping_or_dropping_a_column_of_the_checkpoints_is_a_finding_at_once() {
+    for column in ["seq", "head_hash", "kms_key_version", "signature", "gcs_object"] {
+        let using = if column == "seq" { "seq::int" } else { "0" };
+        let (rig, outcome) = after_ddl(
+            db!(),
+            &[format!(
+                "ALTER TABLE audit_checkpoints ALTER COLUMN {column} TYPE int USING {using}"
+            )],
+        )
+        .await;
+        assert_becomes(
+            &rig,
+            &format!("checkpoint {column} to int"),
+            &outcome,
+            Becomes::Refused,
+        );
+        let (rig, outcome) = after_ddl(
+            db!(),
+            &[format!(
+                "ALTER TABLE audit_checkpoints DROP COLUMN {column} CASCADE"
+            )],
+        )
+        .await;
+        assert_becomes(
+            &rig,
+            &format!("checkpoint drop {column}"),
+            &outcome,
+            Becomes::Refused,
+        );
+    }
+}
+
+#[tokio::test]
+async fn other_retypes_are_a_finding_or_clean_by_what_the_values_are_afterwards() {
+    for (what, statements, expected) in [
+        (
+            "at to text: isfinite(text) does not exist",
+            vec!["ALTER TABLE audit_events ALTER COLUMN at TYPE text USING at::text".to_owned()],
+            Becomes::Refused,
+        ),
+        (
+            "a jsonb column to text: the operator on it does not exist",
+            vec![
+                "ALTER TABLE audit_events ALTER COLUMN attribution_evidence TYPE text USING attribution_evidence::text".to_owned(),
+            ],
+            Becomes::Refused,
+        ),
+        (
+            "a text column to bytea: the select works, the value cannot be read as text",
+            vec![
+                "ALTER TABLE audit_events ALTER COLUMN actor_ref TYPE bytea USING convert_to(actor_ref, 'UTF8')".to_owned(),
+            ],
+            Becomes::UnreadableColumn(Column::ActorRef),
+        ),
+        (
+            "a bigint column to numeric: the select works, the value cannot be read as a bigint",
+            vec![
+                "ALTER TABLE audit_events ALTER COLUMN approval_id TYPE numeric".to_owned(),
+            ],
+            Becomes::UnreadableColumn(Column::ApprovalId),
+        ),
+        (
+            "a text column to varchar: every value is what it was, so nothing was tampered with",
+            vec![
+                "ALTER TABLE audit_events ALTER COLUMN actor_ref TYPE varchar".to_owned(),
+                "ALTER TABLE audit_events ALTER COLUMN request_id TYPE varchar(100)".to_owned(),
+            ],
+            Becomes::Unchanged,
+        ),
+        (
+            "at to a date: the select works, and the times are no longer the events' times",
+            vec!["ALTER TABLE audit_events ALTER COLUMN at TYPE date".to_owned()],
+            Becomes::UnreadableColumn(Column::At),
+        ),
+    ] {
+        let (rig, outcome) = after_ddl(db!(), &statements).await;
+        assert_becomes(&rig, what, &outcome, expected);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Round 4, N5: the admins hear when the verification has not completed for N nights in a row.
+//
+// A run that ends in an error (or finds something and then cannot finish) says nothing to the admins that night: a lost
+// connection or a lock is usually gone by the next. But a verifier that errors every night verifies nothing, and used to say so to
+// nobody. The job now counts such nights, in memory (a restart resets the count: see the module docs of `audit::verify`), and from
+// the second in a row tells the admins, every night until a run completes.
+
+mod nights {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use hub_identity::audit::NightlyVerifyJob;
+    use ports::{LeaseBackend, LeaseError, LeaseGuard, Leases};
+    use tokio::time::Instant;
+
+    use super::AuditRig;
+
+    /// A lease that every night's run gets, so that a test can run the job night after night without waiting for a lease to run
+    /// out. Once `lose` is set, the next renewal fails: the run loses its lease.
+    ///
+    /// Once `elsewhere` is set, another replica holds the lease: the run is `NotLeader`.
+    #[derive(Default)]
+    pub struct EveryNight {
+        pub lose: Arc<AtomicBool>,
+        pub elsewhere: Arc<AtomicBool>,
+    }
+
+    struct Backend {
+        lose: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl LeaseBackend for Backend {
+        async fn renew(&self, _: &str, _: u64, ttl: Duration) -> Result<Instant, LeaseError> {
+            if self.lose.load(Ordering::SeqCst) {
+                Err(LeaseError::Lost)
+            } else {
+                Ok(Instant::now() + ttl)
+            }
+        }
+
+        async fn release(&self, _: &str, _: u64) -> Result<(), LeaseError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Leases for EveryNight {
+        async fn try_acquire(&self, name: &str, ttl: Duration) -> Result<Option<LeaseGuard>, LeaseError> {
+            if self.elsewhere.load(Ordering::SeqCst) {
+                return Ok(None);
+            }
+            Ok(Some(LeaseGuard::new(
+                name.to_owned(),
+                1,
+                Instant::now() + ttl,
+                Arc::new(Backend {
+                    lose: self.lose.clone(),
+                }),
+            )))
+        }
+    }
+
+    /// A job that runs every time it is asked, and gives up on a locked table after 200 ms.
+    pub fn job(rig: &AuditRig, leases: &Arc<EveryNight>) -> NightlyVerifyJob {
+        NightlyVerifyJob::new(
+            rig.chain_verifier()
+                .with_timeouts(Duration::from_secs(5), Duration::from_millis(200)),
+            leases.clone(),
+            Arc::new(rig.notifier.clone()),
+            rig.metrics.clone(),
+        )
+    }
+}
+
+/// An owner holds the table, so that every read of it times out on its lock.
+async fn lock_table(rig: &AuditRig, table: &str) -> sqlx::PgConnection {
+    let mut owner = rig.db.admin().await;
+    sqlx::query("BEGIN").execute(&mut owner).await.unwrap();
+    sqlx::query(&format!("LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE"))
+        .execute(&mut owner)
+        .await
+        .unwrap();
+    owner
+}
+
+async fn lock_events(rig: &AuditRig) -> sqlx::PgConnection {
+    lock_table(rig, "audit_events").await
+}
+
+async fn unlock(owner: &mut sqlx::PgConnection) {
+    sqlx::query("ROLLBACK").execute(&mut *owner).await.unwrap();
+}
+
+fn unfinished(rig: &AuditRig) -> u64 {
+    rig.metrics.audit_verify_unfinished_runs_in_a_row()
+}
+
+#[tokio::test]
+async fn the_second_unfinished_night_in_a_row_alerts_and_the_first_does_not() {
+    let rig = rig_with_checkpoints(db!()).await;
+    let job = nights::job(&rig, &Arc::<nights::EveryNight>::default());
+    let mut owner = lock_events(&rig).await;
+
+    assert_eq!(job.run_once().await.unwrap(), NightlyOutcome::Errored);
+    assert!(rig.notifier.sent().is_empty(), "one night is not enough to alert");
+    assert_eq!(unfinished(&rig), 1);
+
+    assert_eq!(job.run_once().await.unwrap(), NightlyOutcome::Errored);
+    assert_eq!(unfinished(&rig), 2);
+    let sent = rig.notifier.sent();
+    assert_eq!(sent.len(), 1, "the second night alerts");
+    assert_eq!(sent[0].kind, NotificationKind::CriticalFinding);
+    assert_eq!(sent[0].severity, Severity::Critical);
+    assert_eq!(sent[0].title.as_str(), "Audit log verification is not completing");
+    // The headline, the count and the class of the error: no text of the database's, no value.
+    assert_eq!(
+        sent[0].summary.as_str(),
+        "Audit log verification could not complete 2 nights in a row (last error: the audit tables did not answer in time)."
+    );
+
+    // And every night after, until a run completes.
+    assert_eq!(job.run_once().await.unwrap(), NightlyOutcome::Errored);
+    assert_eq!(unfinished(&rig), 3);
+    let sent = rig.notifier.sent();
+    assert_eq!(sent.len(), 2);
+    assert!(
+        sent[1].summary.as_str().contains("3 nights in a row"),
+        "{:?}",
+        sent[1].summary
+    );
+    assert_eq!(rig.metrics.audit_verify_errors_total(), 3);
+    assert_eq!(rig.metrics.audit_verify_runs_total(), 0);
+
+    unlock(&mut owner).await;
+    // A run that completes ends it, and says nothing.
+    assert!(matches!(job.run_once().await.unwrap(), NightlyOutcome::Clean(_)));
+    assert_eq!(unfinished(&rig), 0);
+    assert_eq!(rig.notifier.sent().len(), 2);
+}
+
+#[tokio::test]
+async fn a_clean_run_resets_the_count() {
+    let rig = rig_with_checkpoints(db!()).await;
+    let job = nights::job(&rig, &Arc::<nights::EveryNight>::default());
+    let mut owner = lock_events(&rig).await;
+    assert_eq!(job.run_once().await.unwrap(), NightlyOutcome::Errored);
+    assert_eq!(unfinished(&rig), 1);
+    unlock(&mut owner).await;
+    assert!(matches!(job.run_once().await.unwrap(), NightlyOutcome::Clean(_)));
+    assert_eq!(unfinished(&rig), 0);
+    // One unfinished night after a completed one is the first again: no alert.
+    let mut owner = lock_events(&rig).await;
+    assert_eq!(job.run_once().await.unwrap(), NightlyOutcome::Errored);
+    assert_eq!(unfinished(&rig), 1);
+    assert!(rig.notifier.sent().is_empty());
+    unlock(&mut owner).await;
+}
+
+#[tokio::test]
+async fn a_failed_run_resets_the_count_too() {
+    // A run that found something ran to the end and has told the admins; it is a verdict.
+    let rig = rig_with_checkpoints(db!()).await;
+    let job = nights::job(&rig, &Arc::<nights::EveryNight>::default());
+    let mut owner = lock_events(&rig).await;
+    assert_eq!(job.run_once().await.unwrap(), NightlyOutcome::Errored);
+    unlock(&mut owner).await;
+    rig.tamper_open(true).await;
+    rig.admin_sql(TAMPER_5).await;
+    assert!(matches!(job.run_once().await.unwrap(), NightlyOutcome::Failed(_)));
+    assert_eq!(unfinished(&rig), 0);
+    assert_eq!(rig.notifier.sent().len(), 1, "the finding, once");
+    let mut owner = lock_events(&rig).await;
+    assert_eq!(job.run_once().await.unwrap(), NightlyOutcome::Errored);
+    assert_eq!(unfinished(&rig), 1);
+    assert_eq!(
+        rig.notifier.sent().len(),
+        1,
+        "no alert for the first unfinished night after a verdict"
+    );
+    unlock(&mut owner).await;
+}
+
+#[tokio::test]
+async fn an_incomplete_run_counts_as_an_unfinished_night() {
+    // Night 1: an error. Night 2: the run finds a problem (the shape of the tables) and cannot finish. Two in a row.
+    let rig = rig_with_checkpoints(db!()).await;
+    let job = nights::job(&rig, &Arc::<nights::EveryNight>::default());
+    let mut owner = lock_events(&rig).await;
+    assert_eq!(job.run_once().await.unwrap(), NightlyOutcome::Errored);
+    unlock(&mut owner).await;
+    rig.admin_sql("ALTER TABLE audit_events RENAME COLUMN via TO via_renamed")
+        .await;
+    assert!(matches!(
+        job.run_once().await.unwrap(),
+        NightlyOutcome::Incomplete(_)
+    ));
+    assert_eq!(unfinished(&rig), 2);
+    let sent = rig.notifier.sent();
+    // The finding that night, which says the tables changed shape, and the count of nights.
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert!(
+        sent[0].summary.as_str().contains("shape"),
+        "{:?}",
+        sent[0].summary
+    );
+    assert_eq!(
+        sent[1].summary.as_str(),
+        "Audit log verification could not complete 2 nights in a row (last error: the audit tables changed shape, SQLSTATE 42703)."
+    );
+}
+
+#[tokio::test]
+async fn a_changed_shape_alerts_on_the_first_night_without_waiting_for_a_second() {
+    let rig = rig_with_checkpoints(db!()).await;
+    let job = nights::job(&rig, &Arc::<nights::EveryNight>::default());
+    rig.admin_sql("ALTER TABLE audit_events DROP COLUMN github_login")
+        .await;
+    assert!(matches!(
+        job.run_once().await.unwrap(),
+        NightlyOutcome::Incomplete(_)
+    ));
+    assert_eq!(unfinished(&rig), 1);
+    assert_eq!(
+        rig.notifier.sent().len(),
+        1,
+        "the finding, at once, and not the count"
+    );
+    assert_eq!(rig.metrics.audit_verify_schema_changes_total(), 1);
+    assert_eq!(rig.metrics.audit_verify_errors_total(), 1);
+    assert!(rig.metrics.audit_verify_failures_total() >= 1);
+    // The Prometheus side: the counter that alerts at once, and the gauge.
+    let names: Vec<_> = rig
+        .metrics
+        .counters()
+        .into_iter()
+        .filter(|c| c.value > 0)
+        .map(|c| c.name)
+        .collect();
+    assert!(names.contains(&"audit_verify_schema_changes_total"), "{names:?}");
+    assert_eq!(
+        rig.metrics
+            .gauges()
+            .into_iter()
+            .map(|g| (g.name, g.value))
+            .collect::<Vec<_>>(),
+        [("audit_verify_unfinished_runs_in_a_row", 1)]
+    );
+}
+
+#[tokio::test]
+async fn a_run_that_lost_its_lease_neither_counts_nor_resets() {
+    // Another replica holds the lease then and decides the night: this one's run is abandoned, and says nothing of the database.
+    use std::sync::atomic::Ordering;
+    let rig = rig_with_checkpoints(db!()).await;
+    let leases = Arc::new(nights::EveryNight::default());
+    let job = nights::job(&rig, &leases).with_lease_renew_every(Duration::from_millis(50));
+    let mut owner = lock_events(&rig).await;
+    assert_eq!(job.run_once().await.unwrap(), NightlyOutcome::Errored);
+    assert_eq!(unfinished(&rig), 1);
+    unlock(&mut owner).await;
+
+    // The same job, but its lease is lost at the first renewal; the table is locked for longer than the 50 ms between renewals (the
+    // job's verifier waits 200 ms for the lock), so the run is still going when it is.
+    leases.lose.store(true, Ordering::SeqCst);
+    let mut owner = lock_events(&rig).await;
+    let outcome = tokio::time::timeout(Duration::from_secs(10), job.run_once())
+        .await
+        .expect("the run was abandoned when the lease was lost")
+        .unwrap();
+    assert_eq!(outcome, NightlyOutcome::LeaseLost);
+    assert_eq!(
+        unfinished(&rig),
+        1,
+        "a lost lease neither counts (2) nor resets (0)"
+    );
+    assert_eq!(rig.metrics.audit_verify_errors_total(), 1);
+    assert!(rig.notifier.sent().is_empty());
+    unlock(&mut owner).await;
+
+    // And the next night with the lease goes on from where the count was: the second unfinished night.
+    leases.lose.store(false, Ordering::SeqCst);
+    let mut owner = lock_events(&rig).await;
+    assert_eq!(job.run_once().await.unwrap(), NightlyOutcome::Errored);
+    assert_eq!(unfinished(&rig), 2, "the next unfinished night is the second");
+    assert_eq!(rig.notifier.sent().len(), 1);
+    unlock(&mut owner).await;
+}
+
+#[tokio::test]
+async fn a_replica_that_did_not_hold_the_lease_neither_counts_nor_resets() {
+    // The same job, so that its own count is what is tested: another replica holds the lease for one night (`NotLeader`), and the
+    // gauge stays where it was (not 2, not 0), and the next unfinished night is the second.
+    use std::sync::atomic::Ordering;
+    let rig = rig_with_checkpoints(db!()).await;
+    let leases = Arc::new(nights::EveryNight::default());
+    let job = nights::job(&rig, &leases);
+    let mut owner = lock_events(&rig).await;
+    assert_eq!(job.run_once().await.unwrap(), NightlyOutcome::Errored);
+    assert_eq!(unfinished(&rig), 1);
+    leases.elsewhere.store(true, Ordering::SeqCst);
+    assert_eq!(job.run_once().await.unwrap(), NightlyOutcome::NotLeader);
+    assert_eq!(unfinished(&rig), 1, "neither counted (2) nor reset (0)");
+    assert_eq!(rig.metrics.audit_verify_errors_total(), 1);
+    assert!(rig.notifier.sent().is_empty());
+    leases.elsewhere.store(false, Ordering::SeqCst);
+    assert_eq!(job.run_once().await.unwrap(), NightlyOutcome::Errored);
+    assert_eq!(unfinished(&rig), 2, "the next unfinished night is the second");
+    assert_eq!(rig.notifier.sent().len(), 1);
+    unlock(&mut owner).await;
+}
+
+#[tokio::test]
+async fn the_number_of_nights_is_configurable_and_never_below_one() {
+    let rig = rig_with_checkpoints(db!()).await;
+    let three = nights::job(&rig, &Arc::<nights::EveryNight>::default()).with_alert_after(3);
+    let mut owner = lock_events(&rig).await;
+    for night in 1..=2 {
+        assert_eq!(three.run_once().await.unwrap(), NightlyOutcome::Errored);
+        assert!(rig.notifier.sent().is_empty(), "night {night}");
+    }
+    assert_eq!(three.run_once().await.unwrap(), NightlyOutcome::Errored);
+    assert_eq!(rig.notifier.sent().len(), 1);
+    assert!(
+        rig.notifier.sent()[0]
+            .summary
+            .as_str()
+            .contains("3 nights in a row")
+    );
+    unlock(&mut owner).await;
+
+    // Zero is one: every unfinished night alerts.
+    let rig = rig_with_checkpoints(db!()).await;
+    let every = nights::job(&rig, &Arc::<nights::EveryNight>::default()).with_alert_after(0);
+    let mut owner = lock_events(&rig).await;
+    assert_eq!(every.run_once().await.unwrap(), NightlyOutcome::Errored);
+    assert_eq!(rig.notifier.sent().len(), 1);
+    assert_eq!(
+        rig.notifier.sent()[0].summary.as_str(),
+        "Audit log verification could not complete 1 night in a row (last error: the audit tables did not answer in time)."
+    );
+    unlock(&mut owner).await;
+    assert_eq!(hub_identity::audit::DEFAULT_ALERT_AFTER_FAILED_RUNS, 2);
+}
+
+#[tokio::test]
+async fn a_notifier_that_is_down_does_not_stop_the_count_or_the_run() {
+    use async_trait::async_trait;
+    use ports::{Notification, Notifier, NotifyError};
+    struct Broken;
+    #[async_trait]
+    impl Notifier for Broken {
+        async fn notify(&self, _: Notification) -> Result<(), NotifyError> {
+            Err(NotifyError::Unavailable)
+        }
+    }
+    let rig = rig_with_checkpoints(db!()).await;
+    let job = hub_identity::audit::NightlyVerifyJob::new(
+        rig.chain_verifier()
+            .with_timeouts(Duration::from_secs(5), Duration::from_millis(200)),
+        Arc::new(nights::EveryNight::default()),
+        Arc::new(Broken),
+        rig.metrics.clone(),
+    );
+    let mut owner = lock_events(&rig).await;
+    for _ in 0..3 {
+        assert_eq!(job.run_once().await.unwrap(), NightlyOutcome::Errored);
+    }
+    // The count and the counter are what Prometheus reads when the notifier cannot be reached.
+    assert_eq!(unfinished(&rig), 3);
+    assert_eq!(rig.metrics.audit_verify_errors_total(), 3);
+    unlock(&mut owner).await;
+}
+
+#[tokio::test]
+async fn a_renewal_period_of_zero_is_a_millisecond_and_not_a_panic() {
+    // `tokio::time::interval` panics on a zero period; the test knob clamps it.
+    let rig = rig_with_checkpoints(db!()).await;
+    let job = nights::job(&rig, &Arc::<nights::EveryNight>::default()).with_lease_renew_every(Duration::ZERO);
+    assert!(matches!(job.run_once().await.unwrap(), NightlyOutcome::Clean(_)));
 }

@@ -18,35 +18,94 @@
 //!
 //! A stored value is a finding and never ends the walk. That covers a value that cannot be decoded (an infinite `at`, a `jsonb`
 //! that `serde_json` refuses), a `NULL` where the schema forbids one (in the chain, in a copied column, in a checkpoint), and a
-//! value over the bound of its column: the select sends nothing over a bound (see [`super::columns`]), so the value is never
-//! transferred or held. Each is reported against its row, by column name only. What is an error is a failure of the query: a lost
-//! connection, a column that is not there, a statement or lock that ran out of time. An error ends the run, but not the findings:
-//! [`VerifyAborted`] carries what was found before it, the two halves (chain, checkpoints) are run whatever happens to the other,
-//! and [`NightlyVerifyJob`] alerts on findings even when the run then errored ([`NightlyOutcome::Incomplete`]).
+//! value over the bound of its column or one the select does not vet: the select decides in the database, before anything is sent,
+//! and never evaluates anything on a value that can fail or grow with it (see [`super::columns`] for the checks, and why a `jsonb`
+//! number such as `1e131000` is the case that needed them). Each is reported against its row, by column name only.
+//!
+//! What is not a finding about a value is a failure of the query, and there are two kinds:
+//!
+//! - **The database cannot be read now**: a lost connection, a statement or lock that ran out of time, a resource limit. It ends
+//!   the run as an error ([`VerifyError::Database`], [`VerifyError::Timeout`]), but not the findings: [`VerifyAborted`] carries
+//!   what was found before it, the two halves (chain, checkpoints) are run whatever happens to the other, and
+//!   [`NightlyVerifyJob`] alerts on findings even when the run then errored ([`NightlyOutcome::Incomplete`]). Such a run says
+//!   nothing to the admins by itself, because the next night usually reads fine; but the job counts the nights, and from the
+//!   second in a row it tells them (below).
+//! - **The tables are not what the verifier reads**: the server refuses the query with SQLSTATE class 42 (an undefined column,
+//!   function or operator, a datatype mismatch, an undefined table, a privilege taken away), or returns a column of another type
+//!   than the one it is read as. The queries are fixed text, so this is never a value's fault, and nothing transient does it: an
+//!   owner dropped, renamed or retyped a column, which blinds the verifier (`ALTER COLUMN hash TYPE int` makes every query fail).
+//!   That is [`VerifyError::SchemaChanged`], and it is a finding as well as an error ([`FailureKind::SchemaChanged`], at position
+//!   0, carrying only the SQLSTATE): the run alerts that night as [`NightlyOutcome::Incomplete`] and raises
+//!   `audit_verify_schema_changes_total`. A migration that changes the audit tables must change the verifier first, or it will
+//!   raise this alert; the append-only design allows no migration that does.
+//!
+//! When a retype leaves the query working, what the verifier says is by the values: if every value is still what the event says
+//! the log is clean (a `text` column made `varchar` has not been tampered with), and if a value can no longer be read as the type
+//! it is read as, that column differs (`approval_id` made `int`, `actor_ref` made `bytea`).
+//!
+//! # Nights without a verdict
+//!
+//! [`NightlyVerifyJob`] counts, in memory, the nights in a row that ended without a verdict ([`NightlyOutcome::Errored`] and
+//! [`NightlyOutcome::Incomplete`]). From the [`DEFAULT_ALERT_AFTER_FAILED_RUNS`]th in a row (two; [`NightlyVerifyJob::with_alert_after`])
+//! it tells the admins, through the notifier that carries every other alert, that verification "could not complete N nights in a
+//! row", with the number and the class of the last error (a kind, or the SQLSTATE) and nothing else, and it does so every night
+//! until a run completes. A run that ran to the end ([`NightlyOutcome::Clean`], [`NightlyOutcome::Failed`]) ends the count. A run
+//! that was not the leader's ([`NightlyOutcome::NotLeader`]) or was abandoned when the lease was lost ([`NightlyOutcome::LeaseLost`])
+//! neither counts nor ends it: it learned nothing about the database.
+//!
+//! **The count is not persistent, and that has a cost.** The `Leases` port holds no payload and `db/migrations/` is a contract path,
+//! so the count lives in the job: a restart of the pod, or the lease passing to another replica, starts it again from zero. A pod
+//! that restarts every day and fails every night never reaches two, and two replicas that take the lease on alternate nights never
+//! do either. The count is therefore also exposed so that Prometheus, which keeps history, can alert independently of this job and
+//! of the notifier: `audit_verify_unfinished_runs_in_a_row` (a gauge, with the same limit), `audit_verify_errors_total` and
+//! `audit_verify_runs_total` (counters, read by `increase`, which survives resets); the expressions are in [`crate::metrics`]. A
+//! durable count needs a small table, `audit_verify_state`, in a contract-change PR (see the plan's follow-ups).
 //!
 //! # Memory, time and threads
 //!
-//! The chain is read by keyset in batches (`seq > $last ORDER BY seq LIMIT 5000`, the first batch with no `WHERE` so that no `seq`
+//! The chain is read by keyset in batches (`seq >= $last ORDER BY seq LIMIT 5000`, the first batch with no `WHERE` so that no `seq`
 //! is skipped), each in a transaction of its own that begins with `SET LOCAL statement_timeout` and `lock_timeout` (5 minutes and
 //! 30 seconds by default), and the client gives up 30 seconds after the statement timeout. The rows are streamed and compared in
 //! chunks of at most 1,024 rows or 16 MiB as sent, on a blocking thread (hashing and parsing up to a megabyte per row is CPU work),
 //! so the memory held is a chunk, not a batch and not the chain. A legitimate row is a few kilobytes (the largest part of an event
 //! is its diff, at most 64 KiB), about 230 of the largest fit a chunk; a row with every bounded column full is about 14 MiB.
 //!
+//! **The statement timeout counts the time the client spends comparing.** The rows of a batch are streamed: the server sends them
+//! as the client takes them, and blocks when the client does not, and a statement that is blocked on its client is still running,
+//! so `statement_timeout` runs through the comparison of every chunk as well as through the query. For legitimate rows this is
+//! nothing: a batch of 5,000 events of a few kilobytes was verified in 51 ms in a release build (round 3, one run), against a
+//! timeout of five minutes. A batch of the largest rows the bounds allow is another matter (up to 14 MB a row, hashed and parsed
+//! on this side while the statement waits), and the run would then end as a timeout, which is an error and not a finding. How
+//! close a batch of hostile rows (events of a megabyte, which the table's `CHECK` lets the INSERT-only role write) can come to
+//! five minutes was not measured; it is the cost of not holding a batch in memory, and the nights without a verdict are counted.
+//!
+//! # Positions used twice
+//!
+//! A batch starts *at* the last position the one before it read, so that all the rows that share a position are in one batch (a
+//! `seq > $last` would skip the second of two rows at the position that ended a batch, and the chain would show it only as a
+//! broken link one row later, or not at all). The rows of that position that were already compared are skipped, not compared
+//! twice. A row whose position is not after the previous row's is [`FailureKind::EventPositionDuplicated`] (or
+//! [`FailureKind::CheckpointPositionDuplicated`]), once per position. The same position twice is a damaged log: the log hands out
+//! each once, and only a dropped primary key lets it happen. In a table without the key the order of the rows that share a
+//! position is not promised, so the report may also name a broken link next to the repeated position. A position held by more
+//! rows than a batch (5,000 by default) is reported when a whole batch is rows at it; the rows of it beyond what a batch reaches
+//! are not compared, and as the chain then does not link, the first row after it is a broken link.
+//!
 //! The first row with a bad link or hash ends the walk of the chain, because every row after a bad one fails too; the report names
 //! that one position. A row whose columns differ does not end it (the chain is intact after it), so each such row is listed.
 //! Checkpoints are checked one by one, each reporting its first problem. The report lists at most 100 differing columns, 100 rows
-//! below position 1 and, separately, 100 failures of every other kind, so that no one kind crowds out the others.
+//! below position 1, 100 repeated positions and, separately, 100 failures of every other kind, so that no one kind crowds out
+//! the others.
 //!
 //! What it cannot see, by design: an event removed *and* its checkpoint rows removed, or a tail cut off after the newest
 //! checkpoint, leave a chain that is internally consistent. The bucket's retention keeps the objects of the removed checkpoints,
-//! but this job starts from the rows in the table. The newest unchecked stretch is at most an hour. Nor does it see two rows with
-//! the same `seq` once the primary key is dropped, when the second falls across a batch edge.
+//! but this job starts from the rows in the table. The newest unchecked stretch is at most an hour.
 //!
 //! The row hash is recomputed from the stored text, not from a re-parse: a future change to the event type must not turn old
 //! rows into false alarms.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use domain::{ContentHash, Severity, ShortText};
@@ -66,7 +125,7 @@ use crate::metrics::IdentityMetrics;
 pub const DEFAULT_BATCH_ROWS: usize = 5_000;
 /// Checkpoint rows read per batch. Each is bounded by the select (at most a few hundred bytes), so a batch is a few hundred
 /// kilobytes at the most.
-const CHECKPOINT_BATCH: i64 = 500;
+pub const DEFAULT_CHECKPOINT_BATCH_ROWS: usize = 500;
 /// The rows of a batch are compared in chunks of at most this many rows ...
 const CHUNK_ROWS: usize = 1_024;
 /// ... and, whichever comes first, this many bytes as the server sent them. A chunk is what is held in memory at once, apart from
@@ -89,6 +148,9 @@ pub const DEFAULT_STATEMENT_TIMEOUT: Duration = Duration::from_secs(300);
 pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 /// The notifier gets this long.
 const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
+/// How many nights in a row the verification may end without a verdict (an error, or a run that found something and then could
+/// not finish) before the admins are told that it is not completing.
+pub const DEFAULT_ALERT_AFTER_FAILED_RUNS: u32 = 2;
 
 /// What is wrong at one position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +182,16 @@ pub enum FailureKind {
     EventPositionMissing,
     /// The same for a row of `audit_checkpoints`.
     CheckpointPositionMissing,
+    /// Two or more rows of `audit_events` have the same `seq` (the primary key was dropped). The log hands out each position once,
+    /// so one of them was written by hand. Reported at that position, once.
+    EventPositionDuplicated,
+    /// The same for `audit_checkpoints`.
+    CheckpointPositionDuplicated,
+    /// The database refused a query of the verifier as not fitting its tables, or returned a column of another type than the one it
+    /// reads: a column was dropped, renamed or retyped. Nothing transient does that, and it blinds the verifier, so it is a
+    /// finding as soon as it happens and not an error that waits for the next night. Carries the SQLSTATE (the class of the
+    /// refusal) and no text of the database's message, which can quote a value (S10). Reported at position 0.
+    SchemaChanged(Option<SqlState>),
     /// A checkpoint row has a column that is `NULL`, cannot be decoded, or is larger than any checkpoint can hold. The checkpoint
     /// cannot be checked at all; the walk goes on with the next one. Carries column names only (S10).
     CheckpointColumnsInvalid(CheckpointColumnSet),
@@ -218,6 +290,9 @@ impl FailureKind {
             Self::SeqNotPositive => "event position is not positive",
             Self::EventPositionMissing => "an event has no position",
             Self::CheckpointPositionMissing => "a checkpoint has no position",
+            Self::EventPositionDuplicated => "two events have the same position",
+            Self::CheckpointPositionDuplicated => "two checkpoints have the same position",
+            Self::SchemaChanged(_) => "the audit tables no longer have the shape the verifier reads",
             Self::CheckpointColumnsInvalid(_) => "checkpoint row has a missing or unreadable column",
         }
     }
@@ -229,7 +304,9 @@ impl FailureKind {
             Self::ChainLinkBroken
             | Self::ChainHashMismatch
             | Self::SeqNotPositive
-            | Self::EventPositionMissing => 0,
+            | Self::EventPositionMissing
+            | Self::EventPositionDuplicated
+            | Self::SchemaChanged(_) => 0,
             Self::CheckpointHeadMissing
             | Self::CheckpointHeadMismatch
             | Self::CheckpointNameInvalid
@@ -237,7 +314,8 @@ impl FailureKind {
             | Self::BucketObjectMismatch
             | Self::SignatureInvalid
             | Self::CheckpointColumnsInvalid(_)
-            | Self::CheckpointPositionMissing => 1,
+            | Self::CheckpointPositionMissing
+            | Self::CheckpointPositionDuplicated => 1,
             Self::ColumnsDiffer(_) => 2,
             Self::BucketUnavailable => 3,
         }
@@ -248,6 +326,7 @@ impl FailureKind {
         match self {
             Self::ColumnsDiffer(set) => Some(set.to_string()),
             Self::CheckpointColumnsInvalid(set) => Some(set.to_string()),
+            Self::SchemaChanged(Some(code)) => Some(format!("SQLSTATE {code}")),
             _ => None,
         }
     }
@@ -259,8 +338,14 @@ impl FailureKind {
         match self {
             Self::ColumnsDiffer(_) => 1,
             Self::SeqNotPositive => 2,
+            Self::EventPositionDuplicated | Self::CheckpointPositionDuplicated => 3,
             _ => 0,
         }
+    }
+
+    /// Whether the failure is about a place in the log. One about the tables themselves is not.
+    pub const fn has_position(self) -> bool {
+        !matches!(self, Self::SchemaChanged(_))
     }
 
     /// The columns that differ, for [`FailureKind::ColumnsDiffer`].
@@ -314,6 +399,33 @@ impl VerifyReport {
     }
 }
 
+/// A SQLSTATE: the five characters with which a server names the class of an error. A code is structure, never a value, so it may
+/// be logged and put in an alert (S10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SqlState([u8; 5]);
+
+impl SqlState {
+    /// `code` if it is a SQLSTATE (five ASCII digits or upper-case letters).
+    pub fn parse(code: &str) -> Option<Self> {
+        let bytes: [u8; 5] = code.as_bytes().try_into().ok()?;
+        bytes
+            .iter()
+            .all(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
+            .then_some(Self(bytes))
+    }
+
+    pub fn as_str(&self) -> &str {
+        // Only ASCII digits and capitals get in (see `parse`).
+        std::str::from_utf8(&self.0).unwrap_or("?????")
+    }
+}
+
+impl std::fmt::Display for SqlState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Why a verification could not run to the end (as opposed to finding a mismatch).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum VerifyError {
@@ -322,6 +434,11 @@ pub enum VerifyError {
     /// A query did not answer within its time (the server cancelled it, or it was not answered at all).
     #[error("the audit tables did not answer in time")]
     Timeout,
+    /// The database refused a query as not fitting its tables, or returned a column of another type than the verifier reads (a
+    /// column dropped, renamed or retyped; SQLSTATE class 42). No transient fault looks like this: the tables are not what the
+    /// verifier was written for, and the run is reported as a finding at once (see [`FailureKind::SchemaChanged`]).
+    #[error("the audit tables do not have the shape the verifier reads")]
+    SchemaChanged(Option<SqlState>),
 }
 
 /// A verification that could not run to the end, with what it had found until then. An error is not a verdict, but the findings
@@ -375,8 +492,21 @@ where
     }
 }
 
-/// A server that cancelled a query for its time (`statement_timeout`, SQLSTATE 57014) or for a lock it could not get in time
-/// (`lock_timeout`, 55P03) is a timeout; any other failure of the query is a database error.
+/// Which kind of failure a failed query is.
+///
+/// - A server that cancelled a query for its time (`statement_timeout`, SQLSTATE 57014) or for a lock it could not get in time
+///   (`lock_timeout`, 55P03) is a [`VerifyError::Timeout`].
+/// - A query the server refused as not fitting its tables is [`VerifyError::SchemaChanged`]: SQLSTATE class 42, "syntax error or
+///   access rule violation", of which an undefined column (42703), an undefined function or operator (42883), a datatype mismatch
+///   (42804), an undefined table (42P01) and a coercion that cannot be made (42846) are the ones a dropped, renamed or retyped
+///   column causes. The verifier's queries are fixed text, so class 42 is never the fault of a value; it is the database not
+///   being the one the text was written for (or a privilege taken away, 42501). So are the errors of reading a column that came
+///   back with a type other than the one it is read as (`ColumnNotFound`, `ColumnDecode` of a column that holds no copy: the
+///   position and the flags). Connection, resource (53), operator-intervention (57P) and transaction (40) errors are not class 42
+///   and stay [`VerifyError::Database`].
+/// - Anything else is a [`VerifyError::Database`].
+///
+/// Only the SQLSTATE is kept, never the server's message, which can quote a value.
 fn db_error(stage: &'static str, e: &sqlx::Error) -> VerifyError {
     let code = e
         .as_database_error()
@@ -386,9 +516,22 @@ fn db_error(stage: &'static str, e: &sqlx::Error) -> VerifyError {
         sqlstate = code.as_deref().unwrap_or("none"),
         "audit verification could not read a table"
     );
-    match code.as_deref() {
+    classify(e, code.as_deref())
+}
+
+fn classify(e: &sqlx::Error, code: Option<&str>) -> VerifyError {
+    match code {
         Some("57014" | "55P03") => VerifyError::Timeout,
-        _ => VerifyError::Database,
+        Some(c) if c.starts_with("42") => VerifyError::SchemaChanged(SqlState::parse(c)),
+        Some(_) => VerifyError::Database,
+        None => match e {
+            sqlx::Error::ColumnNotFound(_)
+            | sqlx::Error::ColumnIndexOutOfBounds { .. }
+            | sqlx::Error::ColumnDecode { .. }
+            | sqlx::Error::Decode(_)
+            | sqlx::Error::TypeNotFound { .. } => VerifyError::SchemaChanged(None),
+            _ => VerifyError::Database,
+        },
     }
 }
 
@@ -400,19 +543,48 @@ const CHECKPOINTS_WITHOUT_SEQ: &str = "SELECT EXISTS (SELECT 1 FROM audit_checkp
 /// The longest `gcs_object` a checkpoint can have: [`OBJECT_PREFIX`], a `u64` in decimal, `.json` (see [`object_name`]).
 const GCS_OBJECT_LIMIT: usize = OBJECT_PREFIX.len() + 20 + ".json".len();
 
+/// Where a batch of the chain or of the checkpoints starts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Resume {
+    /// At the smallest `seq` there is, whatever it is: no `WHERE`, so that a row at the smallest `seq` an `i64` has is read too
+    /// (`seq > i64::MIN` would skip it).
+    First,
+    /// At the last `seq` the batch before read, that one included (`>=`): the rows that share it are all read again, in one
+    /// batch, whichever side of the edge they were on. The ones already compared are skipped (see [`verify_chain`]).
+    At,
+    /// After it (`>`): only when a whole batch was rows at one position, so that `>=` would ask for the same rows again.
+    After,
+}
+
+impl Resume {
+    /// The `WHERE` of a batch, over the column `seq` (qualified as `column`), and the placeholder of the limit.
+    fn clauses(self, column: &str) -> (String, &'static str) {
+        match self {
+            Self::First => (String::new(), "$1"),
+            Self::At => (format!("WHERE {column} >= $1 "), "$2"),
+            Self::After => (format!("WHERE {column} > $1 "), "$2"),
+        }
+    }
+}
+
 /// The text of the query that reads one batch of the chain: the first batch (`keyset` false, `$1` the row limit) and the later ones
-/// (`$1` the last `seq` read, `$2` the row limit). Public for the tests that look at its plan and at what it sends.
+/// (`$1` the `seq` of the last row read, which is read again, and `$2` the row limit). Public for the tests that look at its plan
+/// and at what it sends.
 ///
-/// The first batch has no `WHERE`: a row at the smallest `seq` an `i64` has must be read too, and `seq > i64::MIN` would skip it.
 /// Every column that can be large is bounded in the select (see [`super::columns`]); a value over its bound comes back `NULL`,
 /// which for the three columns of the chain means a row the chain cannot vouch for.
 #[doc(hidden)]
 pub fn chain_batch_sql(keyset: bool) -> String {
-    let (filter, limit) = if keyset {
-        ("WHERE seq > $1 ", "$2")
-    } else {
-        ("", "$1")
-    };
+    chain_sql(if keyset { Resume::At } else { Resume::First })
+}
+
+/// The batch that starts strictly after `$1` (limit `$2`).
+fn chain_batch_after_sql() -> String {
+    chain_sql(Resume::After)
+}
+
+fn chain_sql(resume: Resume) -> String {
+    let (filter, limit) = resume.clauses("seq");
     format!(
         "SELECT seq, \
          CASE WHEN octet_length(prev_hash) <= {HASH_COLUMN_BYTES} THEN prev_hash END AS prev_hash, \
@@ -425,21 +597,32 @@ pub fn chain_batch_sql(keyset: bool) -> String {
 
 /// The same for the checkpoints. A column that is `NULL` or over its bound comes back `NULL`: either way the checkpoint cannot be
 /// checked.
+///
+/// The hash of the event at the checkpoint's position is looked up, not joined: with two events at a position (see
+/// [`FailureKind::EventPositionDuplicated`]) a join would make two rows of the one checkpoint, and the verifier would report a
+/// checkpoint twice that exists once. The lookup prefers the event whose hash is the one the checkpoint signed.
 #[doc(hidden)]
 pub fn checkpoint_batch_sql(keyset: bool) -> String {
-    let (filter, limit) = if keyset {
-        ("WHERE c.seq > $1 ", "$2")
-    } else {
-        ("", "$1")
-    };
+    checkpoint_sql(if keyset { Resume::At } else { Resume::First })
+}
+
+fn checkpoint_batch_after_sql() -> String {
+    checkpoint_sql(Resume::After)
+}
+
+fn checkpoint_sql(resume: Resume) -> String {
+    let (filter, limit) = resume.clauses("c.seq");
     format!(
         "SELECT c.seq, \
          CASE WHEN octet_length(c.head_hash) <= {HASH_COLUMN_BYTES} THEN c.head_hash END AS head_hash, \
          CASE WHEN octet_length(c.kms_key_version) <= {} THEN c.kms_key_version END AS kms_key_version, \
          CASE WHEN octet_length(c.signature) <= {MAX_SIGNATURE_BYTES} THEN c.signature END AS signature, \
          CASE WHEN octet_length(c.gcs_object) <= {GCS_OBJECT_LIMIT} THEN c.gcs_object END AS gcs_object, \
-         CASE WHEN octet_length(e.hash) <= {HASH_COLUMN_BYTES} THEN e.hash END AS chain_hash \
-         FROM audit_checkpoints c LEFT JOIN audit_events e ON e.seq = c.seq {filter}ORDER BY c.seq LIMIT {limit}",
+         j.chain_hash AS chain_hash \
+         FROM audit_checkpoints c LEFT JOIN LATERAL ( \
+           SELECT CASE WHEN octet_length(e.hash) <= {HASH_COLUMN_BYTES} THEN e.hash END AS chain_hash \
+           FROM audit_events e WHERE e.seq = c.seq ORDER BY (e.hash = c.head_hash) DESC NULLS LAST LIMIT 1) j ON true \
+         {filter}ORDER BY c.seq LIMIT {limit}",
         KeyRef::MAX_LEN
     )
 }
@@ -467,6 +650,39 @@ fn row_bytes(row: &sqlx::postgres::PgRow) -> usize {
         .sum()
 }
 
+/// What the walk of the chain carries from one row to the next, across chunks and batches.
+#[derive(Debug, Clone, Copy)]
+struct ChainState {
+    /// The hash the next row must link to.
+    expected_prev: ContentHash,
+    /// The position of the last row compared. Rows come back in order of position, so a row whose position is not after it has
+    /// the position of the one before.
+    last_seq: Option<i64>,
+    /// The position last reported as repeated: three rows at one position are one finding, and a batch that starts by reading
+    /// again the rows it already compared does not report it twice.
+    repeat_reported: Option<i64>,
+}
+
+impl ChainState {
+    fn new() -> Self {
+        Self {
+            expected_prev: genesis_hash(),
+            last_seq: None,
+            repeat_reported: None,
+        }
+    }
+
+    /// Whether `seq` is a position the walk has already been at, and has not said so yet. Notes it.
+    fn repeats(&mut self, seq: i64) -> bool {
+        let repeated = self.last_seq.is_some_and(|last| seq <= last) && self.repeat_reported != Some(seq);
+        if repeated {
+            self.repeat_reported = Some(seq);
+        }
+        self.last_seq = Some(seq);
+        repeated
+    }
+}
+
 /// What comparing a chunk of rows found.
 struct Compared {
     /// Rows whose link and hash were checked.
@@ -476,19 +692,18 @@ struct Compared {
     stop: bool,
     /// A fault of the query (not a finding).
     fault: Option<VerifyError>,
-    /// The hash the next row must link to.
-    next_prev: ContentHash,
+    state: ChainState,
 }
 
 /// Compare a chunk of rows with the chain: each row's link and hash, and, for a row whose hash is good, its copied columns. CPU
 /// work (SHA-256 over up to a megabyte per row, JSON parsing of the same), so it runs in `spawn_blocking`.
-fn compare_rows(rows: &[sqlx::postgres::PgRow], mut expected_prev: ContentHash) -> Compared {
+fn compare_rows(rows: &[sqlx::postgres::PgRow], mut state: ChainState) -> Compared {
     let mut out = Compared {
         checked: 0,
         findings: Vec::new(),
         stop: false,
         fault: None,
-        next_prev: expected_prev,
+        state,
     };
     for row in rows {
         let seq: i64 = match row.try_get::<Option<i64>, _>("seq") {
@@ -507,6 +722,11 @@ fn compare_rows(rows: &[sqlx::postgres::PgRow], mut expected_prev: ContentHash) 
             out.findings.push((seq, FailureKind::SeqNotPositive));
             continue;
         }
+        // The log hands out each position once. A second row at one (the primary key was dropped) is reported, and compared like
+        // any other: it links to the chain or it does not.
+        if state.repeats(seq) {
+            out.findings.push((seq, FailureKind::EventPositionDuplicated));
+        }
         // A value that cannot be read (a `NULL` in a column that is `NOT NULL` by the schema, one over its bound) is not the hash of
         // anything: it is a bad row, found at this position, and not a failure to read the table.
         let (prev, hash, json) = match (
@@ -523,13 +743,13 @@ fn compare_rows(rows: &[sqlx::postgres::PgRow], mut expected_prev: ContentHash) 
         out.checked += 1;
         let checked = match (prev.and_then(hash_of), hash.and_then(hash_of), json.as_deref()) {
             (Some(prev), Some(hash), Some(json)) => {
-                check_row(&expected_prev, &prev, &hash, json.as_bytes()).map(|()| (hash, json))
+                check_row(&state.expected_prev, &prev, &hash, json.as_bytes()).map(|()| (hash, json))
             }
             _ => Err(FailureKind::ChainHashMismatch),
         };
         match checked {
             Ok((hash, json)) => {
-                expected_prev = hash;
+                state.expected_prev = hash;
                 // The text is now vouched for by the chain, so the copies of it can be held against it. A copy that cannot be
                 // read is a difference too: only a fault of the query is an error.
                 match differing_in_row(row, json) {
@@ -549,8 +769,114 @@ fn compare_rows(rows: &[sqlx::postgres::PgRow], mut expected_prev: ContentHash) 
             }
         }
     }
-    out.next_prev = expected_prev;
+    out.state = state;
     out
+}
+
+/// What a keyset walk carries from one batch to the next: where the next batch starts, and how many of its first rows the batch
+/// before already compared (they share the position it starts at, which it reads again).
+#[derive(Debug, Default)]
+struct Cursor {
+    /// The position of the last row read; `None` until one is.
+    after: Option<i64>,
+    reread: usize,
+    /// The next batch starts strictly after `after`: a whole batch was rows at one position.
+    strict: bool,
+}
+
+/// What the end of a batch means for the walk.
+enum Advance {
+    Done,
+    Continue,
+    /// A whole batch was rows at this one position: it is used more than once, and the next batch starts after it.
+    Repeated(i64),
+}
+
+impl Cursor {
+    fn skip(&self) -> usize {
+        if self.strict { 0 } else { self.reread }
+    }
+
+    /// Decide where the next batch starts, after a batch of `rows` rows (of at most `limit`) of which `seen` is the account.
+    fn advance(&mut self, seen: &BatchSeen, rows: usize, limit: usize, no_seq: bool) -> Advance {
+        // Rows with no `seq` sort last: nothing is after one. And a short batch is the end of the table.
+        if no_seq || rows < limit {
+            return Advance::Done;
+        }
+        if seen.last == self.after {
+            // A whole batch of rows at one position, nothing new to continue from by `>=`. (A batch holds at least two rows, so
+            // this is a position used twice.)
+            let Some(position) = seen.last else {
+                return Advance::Done;
+            };
+            self.strict = true;
+            self.reread = 0;
+            return Advance::Repeated(position);
+        }
+        self.after = seen.last;
+        self.strict = false;
+        self.reread = seen.tail;
+        Advance::Continue
+    }
+}
+
+/// What one batch has read, as far as positions go.
+#[derive(Debug)]
+struct BatchSeen {
+    resumed_from: Option<i64>,
+    skip: usize,
+    /// The position of the last row read.
+    last: Option<i64>,
+    /// How many rows at that position the batch has read (those it skipped included).
+    tail: usize,
+}
+
+impl BatchSeen {
+    fn new(cursor: &Cursor) -> Self {
+        Self {
+            resumed_from: cursor.after,
+            skip: cursor.skip(),
+            last: cursor.after,
+            tail: 0,
+        }
+    }
+
+    /// Note a row at `seq`. `true` when it is one the batch before already compared, and is to be skipped.
+    fn read(&mut self, seq: i64) -> bool {
+        self.tail = if self.last == Some(seq) { self.tail + 1 } else { 1 };
+        self.last = Some(seq);
+        if self.skip > 0 && self.resumed_from == Some(seq) {
+            self.skip -= 1;
+            return true;
+        }
+        false
+    }
+}
+
+/// The three texts of a keyset walk's query: the first batch, one that starts at the last position read, and one after it.
+struct BatchSql {
+    first: String,
+    at: String,
+    after: String,
+}
+
+impl BatchSql {
+    fn of(&self, cursor: &Cursor) -> &str {
+        match (cursor.after, cursor.strict) {
+            (None, _) => &self.first,
+            (Some(_), false) => &self.at,
+            (Some(_), true) => &self.after,
+        }
+    }
+}
+
+/// What reading and comparing one batch of the chain came to.
+struct ChainBatch {
+    seen: BatchSeen,
+    rows: usize,
+    saw_no_seq: bool,
+    /// A row with a bad link or hash was found: the walk ends.
+    stop: bool,
 }
 
 pub struct ChainVerifier {
@@ -558,6 +884,7 @@ pub struct ChainVerifier {
     bucket: Arc<dyn CheckpointBucket>,
     verifier: Arc<dyn CheckpointVerifier>,
     batch_rows: usize,
+    checkpoint_batch_rows: usize,
     statement_timeout: Duration,
     lock_timeout: Duration,
 }
@@ -581,15 +908,23 @@ impl ChainVerifier {
             bucket,
             verifier,
             batch_rows: DEFAULT_BATCH_ROWS,
+            checkpoint_batch_rows: DEFAULT_CHECKPOINT_BATCH_ROWS,
             statement_timeout: DEFAULT_STATEMENT_TIMEOUT,
             lock_timeout: DEFAULT_LOCK_TIMEOUT,
         }
     }
 
-    /// Rows per keyset batch (at least one).
+    /// Rows per keyset batch of the chain (at least two: a batch of one row could never show that a position is used twice).
     #[must_use]
     pub fn with_batch_rows(mut self, rows: usize) -> Self {
-        self.batch_rows = rows.max(1);
+        self.batch_rows = rows.max(2);
+        self
+    }
+
+    /// Rows per keyset batch of the checkpoints (at least two, for the same reason).
+    #[must_use]
+    pub fn with_checkpoint_batch_rows(mut self, rows: usize) -> Self {
+        self.checkpoint_batch_rows = rows.max(2);
         self
     }
 
@@ -609,6 +944,19 @@ impl ChainVerifier {
         let mut report = VerifyReport::default();
         let chain = self.verify_chain(&mut report).await;
         let checkpoints = self.verify_checkpoints(&mut report).await;
+        // A query refused for the shape of the tables is an error that ends the run and also a finding: it is not transient, and a
+        // verifier that cannot read the tables verifies nothing. (Once per distinct refusal: both halves can be refused alike.)
+        for error in [&chain, &checkpoints]
+            .into_iter()
+            .filter_map(|r| r.as_ref().err())
+        {
+            if let VerifyError::SchemaChanged(code) = error {
+                let kind = FailureKind::SchemaChanged(*code);
+                if !report.failures.iter().any(|f| f.kind == kind) {
+                    report.fail(0, kind);
+                }
+            }
+        }
         match chain.and(checkpoints) {
             Ok(()) => Ok(report),
             Err(error) => Err(VerifyAborted {
@@ -666,21 +1014,21 @@ impl ChainVerifier {
     async fn compare_chunk(
         &self,
         chunk: &mut Vec<sqlx::postgres::PgRow>,
-        expected_prev: &mut ContentHash,
+        state: &mut ChainState,
         report: &mut VerifyReport,
     ) -> Result<bool, VerifyError> {
         if chunk.is_empty() {
             return Ok(false);
         }
         let rows = std::mem::take(chunk);
-        let prev = *expected_prev;
-        let compared = tokio::task::spawn_blocking(move || compare_rows(&rows, prev))
+        let before = *state;
+        let compared = tokio::task::spawn_blocking(move || compare_rows(&rows, before))
             .await
             .map_err(|_| {
                 tracing::warn!(stage = "chain", "audit verification comparison did not finish");
                 VerifyError::Database
             })?;
-        *expected_prev = compared.next_prev;
+        *state = compared.state;
         report.events_checked += compared.checked;
         for (seq, kind) in compared.findings {
             report.fail(seq, kind);
@@ -691,89 +1039,129 @@ impl ChainVerifier {
         }
     }
 
+    /// Walk the chain by `seq`, a batch at a time.
+    ///
+    /// A batch starts *at* the last `seq` the one before read, not after it, so that all the rows that share a position are in one
+    /// batch: with `seq > $last` a second row at the position that ended a batch was never read. The rows of that position that the
+    /// batch before had compared (`reread`: how many it read at its last position) come first, and are skipped, not compared twice.
+    /// If a whole batch is rows at one position `>=` would ask for the same rows again, so the position is reported and the next
+    /// batch starts after it (`strict`); a position held by more rows than a batch is therefore compared only as far as a batch
+    /// reaches into it, which the report shows as a repeated position and, as the chain then does not link, a broken link.
     async fn verify_chain(&self, report: &mut VerifyReport) -> Result<(), VerifyError> {
         // A row with no `seq` is never returned by a keyset read; look for it once.
         if self.any_without_seq("chain", EVENTS_WITHOUT_SEQ).await? {
             report.fail(0, FailureKind::EventPositionMissing);
         }
-        let limit = i64::try_from(self.batch_rows).unwrap_or(i64::MAX);
-        let (first_sql, next_sql) = (chain_batch_sql(false), chain_batch_sql(true));
-        // `None` until the first row is read: the first batch starts at the smallest `seq` there is, whatever it is.
-        let mut after: Option<i64> = None;
-        let mut expected_prev = genesis_hash();
+        let sql = BatchSql {
+            first: chain_batch_sql(false),
+            at: chain_batch_sql(true),
+            after: chain_batch_after_sql(),
+        };
+        let mut cursor = Cursor::default();
+        let mut state = ChainState::new();
         loop {
-            let resumed_from = after;
-            let mut tx = self.begin("chain").await?;
-            let mut query = sqlx::query(if after.is_some() { &next_sql } else { &first_sql });
-            if let Some(last) = after {
-                query = query.bind(last);
+            let batch = self.chain_batch(&cursor, &sql, &mut state, report).await?;
+            if batch.rows > 0 || batch.stop {
+                report.batches += 1;
             }
-            let mut rows = query.bind(limit).fetch(&mut *tx);
-            let mut in_batch = 0_usize;
-            let mut chunk = Vec::new();
-            let mut chunk_bytes = 0_usize;
-            let mut fault = None;
-            let mut stop = false;
-            // The rows are read one at a time and compared in chunks that are bounded in count and in bytes, so the memory of a
-            // batch is that of a chunk, whatever the rows hold.
-            loop {
-                let row = match tokio::time::timeout(self.step_timeout(), rows.try_next()).await {
-                    Ok(Ok(Some(row))) => row,
-                    Ok(Ok(None)) => break,
-                    Ok(Err(e)) => {
-                        fault = Some(db_error("chain", &e));
-                        break;
-                    }
-                    Err(_) => {
-                        tracing::warn!(stage = "chain", "audit verification query timed out");
-                        fault = Some(VerifyError::Timeout);
-                        break;
-                    }
-                };
-                in_batch += 1;
-                match row.try_get::<Option<i64>, _>("seq") {
-                    Ok(seq) => after = seq.or(after),
-                    Err(e) => {
-                        fault = Some(db_error("chain", &e));
-                        break;
-                    }
-                }
-                chunk_bytes += row_bytes(&row);
-                chunk.push(row);
-                if chunk.len() >= CHUNK_ROWS || chunk_bytes >= CHUNK_BYTES {
-                    chunk_bytes = 0;
-                    stop = self.compare_chunk(&mut chunk, &mut expected_prev, report).await?;
-                    if stop {
-                        break;
-                    }
-                }
-            }
-            // What was read before a fault is still compared: its findings are evidence.
-            let last = if stop {
-                Ok(true)
-            } else {
-                self.compare_chunk(&mut chunk, &mut expected_prev, report).await
-            };
-            drop(rows);
-            if let Some(fault) = fault {
-                return Err(fault);
-            }
-            if last? {
+            if batch.stop {
                 // Every later row would fail too.
-                report.batches += 1;
                 return Ok(());
             }
-            self.step("chain", tx.commit()).await?;
-            if in_batch > 0 {
-                report.batches += 1;
-            }
-            // A full batch with no `seq` in it (rows with none sort last, and the first batch has no `WHERE`) gives nothing to
-            // continue from: the walk ends, and does not ask for the same batch for ever.
-            if in_batch < self.batch_rows || after == resumed_from {
-                return Ok(());
+            match cursor.advance(&batch.seen, batch.rows, self.batch_rows, batch.saw_no_seq) {
+                Advance::Done => return Ok(()),
+                Advance::Continue => {}
+                Advance::Repeated(position) => {
+                    // Said so, if the comparison has not.
+                    if state.repeat_reported != Some(position) {
+                        report.fail(position, FailureKind::EventPositionDuplicated);
+                        state.repeat_reported = Some(position);
+                    }
+                }
             }
             tokio::task::yield_now().await;
         }
+    }
+
+    /// Read one batch of the chain in a transaction of its own and compare it, a chunk at a time.
+    async fn chain_batch(
+        &self,
+        cursor: &Cursor,
+        sql: &BatchSql,
+        state: &mut ChainState,
+        report: &mut VerifyReport,
+    ) -> Result<ChainBatch, VerifyError> {
+        let limit = i64::try_from(self.batch_rows).unwrap_or(i64::MAX);
+        let mut tx = self.begin("chain").await?;
+        let mut query = sqlx::query(sql.of(cursor));
+        if let Some(last) = cursor.after {
+            query = query.bind(last);
+        }
+        let mut rows = query.bind(limit).fetch(&mut *tx);
+        let mut seen = BatchSeen::new(cursor);
+        let mut in_batch = 0_usize;
+        let mut saw_no_seq = false;
+        let mut chunk = Vec::new();
+        let mut chunk_bytes = 0_usize;
+        let mut fault = None;
+        let mut stop = false;
+        // The rows are read one at a time and compared in chunks that are bounded in count and in bytes, so the memory of a batch
+        // is that of a chunk, whatever the rows hold.
+        loop {
+            let row = match tokio::time::timeout(self.step_timeout(), rows.try_next()).await {
+                Ok(Ok(Some(row))) => row,
+                Ok(Ok(None)) => break,
+                Ok(Err(e)) => {
+                    fault = Some(db_error("chain", &e));
+                    break;
+                }
+                Err(_) => {
+                    tracing::warn!(stage = "chain", "audit verification query timed out");
+                    fault = Some(VerifyError::Timeout);
+                    break;
+                }
+            };
+            in_batch += 1;
+            match row.try_get::<Option<i64>, _>("seq") {
+                // The rows of the position this batch starts at that the batch before compared.
+                Ok(Some(seq)) if seen.read(seq) => continue,
+                Ok(Some(_)) => {}
+                Ok(None) => saw_no_seq = true,
+                Err(e) => {
+                    fault = Some(db_error("chain", &e));
+                    break;
+                }
+            }
+            chunk_bytes += row_bytes(&row);
+            chunk.push(row);
+            if chunk.len() >= CHUNK_ROWS || chunk_bytes >= CHUNK_BYTES {
+                chunk_bytes = 0;
+                stop = self.compare_chunk(&mut chunk, state, report).await?;
+                if stop {
+                    break;
+                }
+            }
+        }
+        // What was read before a fault is still compared: its findings are evidence.
+        let last = if stop {
+            Ok(true)
+        } else {
+            self.compare_chunk(&mut chunk, state, report).await
+        };
+        drop(rows);
+        if let Some(fault) = fault {
+            return Err(fault);
+        }
+        let stop = last?;
+        if !stop {
+            self.step("chain", tx.commit()).await?;
+        }
+        Ok(ChainBatch {
+            seen,
+            rows: in_batch,
+            saw_no_seq,
+            stop,
+        })
     }
 
     async fn verify_checkpoints(&self, report: &mut VerifyReport) -> Result<(), VerifyError> {
@@ -783,21 +1171,30 @@ impl ChainVerifier {
         {
             report.fail(0, FailureKind::CheckpointPositionMissing);
         }
-        let (first_sql, next_sql) = (checkpoint_batch_sql(false), checkpoint_batch_sql(true));
-        let mut after: Option<i64> = None;
+        let limit = i64::try_from(self.checkpoint_batch_rows).unwrap_or(i64::MAX);
+        let sql = BatchSql {
+            first: checkpoint_batch_sql(false),
+            at: checkpoint_batch_sql(true),
+            after: checkpoint_batch_after_sql(),
+        };
+        // As for the chain: a batch starts at the last position read, rereads the rows it already checked, and skips them.
+        let mut cursor = Cursor::default();
+        let mut last_seq: Option<i64> = None;
+        let mut repeat_reported: Option<i64> = None;
         loop {
-            let resumed_from = after;
             let mut tx = self.begin("checkpoints").await?;
-            let mut query = sqlx::query(if after.is_some() { &next_sql } else { &first_sql });
-            if let Some(last) = after {
+            let mut query = sqlx::query(sql.of(&cursor));
+            if let Some(last) = cursor.after {
                 query = query.bind(last);
             }
-            // At most `CHECKPOINT_BATCH` rows, and each is bounded by the select.
+            // At most `checkpoint_batch_rows` rows, and each is bounded by the select.
             let rows = self
-                .step("checkpoints", query.bind(CHECKPOINT_BATCH).fetch_all(&mut *tx))
+                .step("checkpoints", query.bind(limit).fetch_all(&mut *tx))
                 .await?;
             self.step("checkpoints", tx.commit()).await?;
             let n = rows.len();
+            let mut seen = BatchSeen::new(&cursor);
+            let mut saw_no_seq = false;
             for row in rows {
                 let seq = row
                     .try_get::<Option<i64>, _>("seq")
@@ -805,55 +1202,81 @@ impl ChainVerifier {
                 // A row with no position cannot be checked; `any_without_seq` has reported that there is one. (The first batch
                 // has no `WHERE`, so it can return such a row, last.)
                 let Some(seq) = seq else {
+                    saw_no_seq = true;
                     continue;
                 };
-                after = Some(seq);
-                // A column that is `NULL`, over its bound, or unreadable is a finding about this checkpoint, which cannot be
-                // checked; the next one is.
-                let head = stored_column::<Vec<u8>>(&row, "head_hash", "checkpoints")?;
-                let key_version = stored_column::<String>(&row, "kms_key_version", "checkpoints")?;
-                let signature = stored_column::<Vec<u8>>(&row, "signature", "checkpoints")?;
-                let object = stored_column::<String>(&row, "gcs_object", "checkpoints")?;
-                let chain = stored_column::<Vec<u8>>(&row, "chain_hash", "checkpoints")?;
-                report.checkpoints_checked += 1;
-                let mut invalid = CheckpointColumnSet::empty();
-                for (column, missing) in [
-                    (CheckpointColumn::HeadHash, head.is_none()),
-                    (CheckpointColumn::KmsKeyVersion, key_version.is_none()),
-                    (CheckpointColumn::Signature, signature.is_none()),
-                    (CheckpointColumn::GcsObject, object.is_none()),
-                ] {
-                    if missing {
-                        invalid.insert(column);
-                    }
-                }
-                if !invalid.is_empty() {
-                    report.fail(seq, FailureKind::CheckpointColumnsInvalid(invalid));
+                if seen.read(seq) {
                     continue;
                 }
-                if let (Some(head), Some(key_version), Some(signature), Some(object)) =
-                    (head, key_version, signature, object)
-                {
-                    if let Err(kind) = self
-                        .check_checkpoint(
-                            seq,
-                            hash_of(head),
-                            &key_version,
-                            &signature,
-                            &object,
-                            chain.and_then(hash_of),
-                        )
-                        .await
-                    {
-                        report.fail(seq, kind);
+                // The log hands out each position once, checkpoints included.
+                if last_seq.is_some_and(|last| seq <= last) && repeat_reported != Some(seq) {
+                    report.fail(seq, FailureKind::CheckpointPositionDuplicated);
+                    repeat_reported = Some(seq);
+                }
+                last_seq = Some(seq);
+                self.check_checkpoint_row(&row, seq, report).await?;
+            }
+            match cursor.advance(&seen, n, self.checkpoint_batch_rows, saw_no_seq) {
+                Advance::Done => return Ok(()),
+                Advance::Continue => {}
+                Advance::Repeated(position) => {
+                    if repeat_reported != Some(position) {
+                        report.fail(position, FailureKind::CheckpointPositionDuplicated);
+                        repeat_reported = Some(position);
                     }
                 }
             }
-            // As for the chain: a full batch with no `seq` in it has nothing to continue from.
-            if i64::try_from(n).unwrap_or(i64::MAX) < CHECKPOINT_BATCH || after == resumed_from {
-                return Ok(());
+        }
+    }
+
+    /// Check one row of the checkpoints: its columns can be read, and the checkpoint holds.
+    async fn check_checkpoint_row(
+        &self,
+        row: &sqlx::postgres::PgRow,
+        seq: i64,
+        report: &mut VerifyReport,
+    ) -> Result<(), VerifyError> {
+        // A column that is `NULL`, over its bound, or unreadable is a finding about this checkpoint, which cannot be checked; the
+        // next one is.
+        let head = stored_column::<Vec<u8>>(row, "head_hash", "checkpoints")?;
+        let key_version = stored_column::<String>(row, "kms_key_version", "checkpoints")?;
+        let signature = stored_column::<Vec<u8>>(row, "signature", "checkpoints")?;
+        let object = stored_column::<String>(row, "gcs_object", "checkpoints")?;
+        let chain = stored_column::<Vec<u8>>(row, "chain_hash", "checkpoints")?;
+        report.checkpoints_checked += 1;
+        let mut invalid = CheckpointColumnSet::empty();
+        for (column, missing) in [
+            (CheckpointColumn::HeadHash, head.is_none()),
+            (CheckpointColumn::KmsKeyVersion, key_version.is_none()),
+            (CheckpointColumn::Signature, signature.is_none()),
+            (CheckpointColumn::GcsObject, object.is_none()),
+        ] {
+            if missing {
+                invalid.insert(column);
             }
         }
+        if !invalid.is_empty() {
+            report.fail(seq, FailureKind::CheckpointColumnsInvalid(invalid));
+            return Ok(());
+        }
+        if let (Some(head), Some(key_version), Some(signature), Some(object)) =
+            (head, key_version, signature, object)
+        {
+            if let Err(kind) = self
+                .check_checkpoint(
+                    seq,
+                    hash_of(head),
+                    &key_version,
+                    &signature,
+                    &object,
+                    chain.and_then(hash_of),
+                )
+                .await
+            {
+                report.fail(seq, kind);
+            }
+        }
+        Ok(())
     }
 
     async fn check_checkpoint(
@@ -919,11 +1342,18 @@ fn most_severe(failures: &[VerifyFailure]) -> Option<&VerifyFailure> {
 /// the line stays inside a [`ShortText`] and counts them otherwise, so the alert is always built. `incomplete` says that the run
 /// then could not read the tables to the end.
 fn alert_summary(count: usize, more: &str, worst: &VerifyFailure, incomplete: bool) -> String {
-    let base = format!(
-        "{count}{more} problem(s) in the audit log. Most severe: {} at position {}",
-        worst.kind.as_str(),
-        worst.seq
-    );
+    let base = if worst.kind.has_position() {
+        format!(
+            "{count}{more} problem(s) in the audit log. Most severe: {} at position {}",
+            worst.kind.as_str(),
+            worst.seq
+        )
+    } else {
+        format!(
+            "{count}{more} problem(s) in the audit log. Most severe: {}",
+            worst.kind.as_str()
+        )
+    };
     let suffix = if incomplete {
         ". The run did not finish."
     } else {
@@ -939,6 +1369,23 @@ fn alert_summary(count: usize, more: &str, worst: &VerifyFailure, incomplete: bo
         let count = columns.split(", ").count();
         format!("{base} ({count} columns){suffix}")
     }
+}
+
+/// The line of the alert that the verification is not completing: how many nights, and the class of the last error. The class is
+/// the kind of the error, and the SQLSTATE for a refusal of the tables' shape: never a text of the database's, which can quote a
+/// value (S10).
+fn unfinished_summary(nights: u32, error: Option<VerifyError>) -> String {
+    let class = match error {
+        Some(VerifyError::Database) => "the audit tables could not be read".to_owned(),
+        Some(VerifyError::Timeout) => "the audit tables did not answer in time".to_owned(),
+        Some(VerifyError::SchemaChanged(Some(code))) => {
+            format!("the audit tables changed shape, SQLSTATE {code}")
+        }
+        Some(VerifyError::SchemaChanged(None)) => "the audit tables changed shape".to_owned(),
+        None => "unknown".to_owned(),
+    };
+    let plural = if nights == 1 { "night" } else { "nights" };
+    format!("Audit log verification could not complete {nights} {plural} in a row (last error: {class}).")
 }
 
 /// What a nightly run did.
@@ -963,6 +1410,10 @@ pub struct NightlyVerifyJob {
     leases: Arc<dyn Leases>,
     notifier: Arc<dyn Notifier>,
     metrics: Arc<IdentityMetrics>,
+    alert_after: u32,
+    /// Runs in a row, by this job, that ended without a verdict. In memory (see the module docs).
+    unfinished_in_a_row: AtomicU32,
+    lease_renew_every: Duration,
 }
 
 impl std::fmt::Debug for NightlyVerifyJob {
@@ -983,18 +1434,50 @@ impl NightlyVerifyJob {
             leases,
             notifier,
             metrics,
+            alert_after: DEFAULT_ALERT_AFTER_FAILED_RUNS,
+            unfinished_in_a_row: AtomicU32::new(0),
+            lease_renew_every: LEASE_TTL / 3,
         }
+    }
+
+    /// Tell the admins that the verification is not completing once it has ended without a verdict `runs` nights in a row (the
+    /// default is [`DEFAULT_ALERT_AFTER_FAILED_RUNS`]). 0 and 1 are the same: every unfinished night alerts.
+    #[must_use]
+    pub fn with_alert_after(mut self, runs: u32) -> Self {
+        self.alert_after = runs;
+        self
+    }
+
+    /// How often the lease is renewed while a run goes on. For tests that need a run to lose its lease without waiting for it.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_lease_renew_every(mut self, every: Duration) -> Self {
+        self.lease_renew_every = every.max(Duration::from_millis(1));
+        self
     }
 
     /// Verify now if this replica holds the lease. The lease is not released afterwards: it runs out, so the other replicas, which
     /// wake at the same time, find it held and skip, and the admins hear of a mismatch once.
+    ///
+    /// The run is also counted: a run that ends without a verdict ([`NightlyOutcome::Errored`] or
+    /// [`NightlyOutcome::Incomplete`]) is one more night in a row on which the audit log was not verified, and from the
+    /// [`NightlyVerifyJob::with_alert_after`]-th in a row the admins are told so, every night until a run completes. A run that
+    /// ran to the end ([`NightlyOutcome::Clean`] or [`NightlyOutcome::Failed`]) ends the count. A run that did not happen
+    /// ([`NightlyOutcome::NotLeader`]) or was abandoned because the lease was lost ([`NightlyOutcome::LeaseLost`]) neither counts
+    /// nor ends it: another replica decides that night, and nothing was learned about the database.
     pub async fn run_once(&self) -> Result<NightlyOutcome, LeaseError> {
+        let (outcome, error) = self.run_verification().await?;
+        self.count(&outcome, error).await;
+        Ok(outcome)
+    }
+
+    async fn run_verification(&self) -> Result<(NightlyOutcome, Option<VerifyError>), LeaseError> {
         let Some(mut lease) = self.leases.try_acquire(LEASE_NAME, LEASE_TTL).await? else {
-            return Ok(NightlyOutcome::NotLeader);
+            return Ok((NightlyOutcome::NotLeader, None));
         };
         let verify = self.verifier.verify();
         tokio::pin!(verify);
-        let mut renew = tokio::time::interval(LEASE_TTL / 3);
+        let mut renew = tokio::time::interval(self.lease_renew_every);
         renew.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         renew.tick().await;
         let result = loop {
@@ -1003,15 +1486,18 @@ impl NightlyVerifyJob {
                 _ = renew.tick() => {
                     if lease.renew(LEASE_TTL).await.is_err() {
                         tracing::error!("the audit verification lease was lost; the run is abandoned");
-                        return Ok(NightlyOutcome::LeaseLost);
+                        return Ok((NightlyOutcome::LeaseLost, None));
                     }
                 }
             }
         };
         let (report, aborted) = match result {
-            Ok(report) => (report, false),
+            Ok(report) => (report, None),
             Err(VerifyAborted { error, partial }) => {
                 self.metrics.verify_errored();
+                if matches!(error, VerifyError::SchemaChanged(_)) {
+                    self.metrics.verify_schema_changed();
+                }
                 tracing::error!(
                     error = %error,
                     found = partial.failures.len(),
@@ -1020,15 +1506,15 @@ impl NightlyVerifyJob {
                     "audit chain verification could not run to the end"
                 );
                 if partial.is_clean() {
-                    return Ok(NightlyOutcome::Errored);
+                    return Ok((NightlyOutcome::Errored, Some(error)));
                 }
                 // What it found before the fault is not thrown away with it.
                 self.metrics
                     .verify_found(u64::try_from(partial.failures.len()).unwrap_or(u64::MAX));
-                (partial, true)
+                (partial, Some(error))
             }
         };
-        if !aborted {
+        if aborted.is_none() {
             self.metrics
                 .verify_ran(u64::try_from(report.failures.len()).unwrap_or(u64::MAX));
             if report.is_clean() {
@@ -1037,25 +1523,73 @@ impl NightlyVerifyJob {
                     checkpoints = report.checkpoints_checked,
                     "audit chain verified"
                 );
-                return Ok(NightlyOutcome::Clean(report));
+                return Ok((NightlyOutcome::Clean(report), None));
             }
         }
         for failure in &report.failures {
-            // Column names are structure, not content; the values of the columns are never read into a message.
-            let columns = failure.kind.detail().unwrap_or_default();
+            // Column names and a SQLSTATE are structure, not content; the values of the columns are never read into a message.
+            let detail = failure.kind.detail().unwrap_or_default();
             tracing::error!(
                 seq = failure.seq,
                 reason = failure.kind.as_str(),
-                columns = columns.as_str(),
+                detail = detail.as_str(),
                 "audit chain verification failed"
             );
         }
-        self.alert(&report, aborted).await;
-        Ok(if aborted {
-            NightlyOutcome::Incomplete(report)
+        self.alert(&report, aborted.is_some()).await;
+        Ok(if aborted.is_some() {
+            (NightlyOutcome::Incomplete(report), aborted)
         } else {
-            NightlyOutcome::Failed(report)
+            (NightlyOutcome::Failed(report), None)
         })
+    }
+
+    /// Keep the count of nights in a row without a verdict, and tell the admins once it reaches the threshold. The count is in
+    /// memory, on this job: see the module docs for what that costs.
+    async fn count(&self, outcome: &NightlyOutcome, error: Option<VerifyError>) {
+        let runs = match outcome {
+            NightlyOutcome::NotLeader | NightlyOutcome::LeaseLost => return,
+            NightlyOutcome::Clean(_) | NightlyOutcome::Failed(_) => 0,
+            NightlyOutcome::Errored | NightlyOutcome::Incomplete(_) => {
+                match self
+                    .unfinished_in_a_row
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| Some(n.saturating_add(1)))
+                {
+                    Ok(before) | Err(before) => before.saturating_add(1),
+                }
+            }
+        };
+        if runs == 0 {
+            self.unfinished_in_a_row.store(0, Ordering::SeqCst);
+        }
+        self.metrics.set_verify_unfinished_in_a_row(u64::from(runs));
+        if runs > 0 && runs >= self.alert_after {
+            tracing::error!(
+                nights = runs,
+                "audit chain verification has not completed for several nights in a row"
+            );
+            self.alert_unfinished(runs, error).await;
+        }
+    }
+
+    /// Tell the admins that the verification is not completing. A notification problem is logged and goes no further.
+    async fn alert_unfinished(&self, nights: u32, error: Option<VerifyError>) {
+        let (Ok(title), Ok(summary)) = (
+            ShortText::parse("Audit log verification is not completing"),
+            ShortText::parse(&unfinished_summary(nights, error)),
+        ) else {
+            tracing::error!("audit alert could not be built");
+            return;
+        };
+        self.notify(Notification {
+            kind: NotificationKind::CriticalFinding,
+            severity: Severity::Critical,
+            swimlane: None,
+            title,
+            summary,
+            link: None,
+        })
+        .await;
     }
 
     /// Tell the admins. A notification problem is logged and goes no further.
@@ -1072,14 +1606,18 @@ impl NightlyVerifyJob {
             tracing::error!("audit alert could not be built");
             return;
         };
-        let note = Notification {
+        self.notify(Notification {
             kind: NotificationKind::CriticalFinding,
             severity: Severity::Critical,
             swimlane: None,
             title,
             summary,
             link: None,
-        };
+        })
+        .await;
+    }
+
+    async fn notify(&self, note: Notification) {
         match tokio::time::timeout(NOTIFY_TIMEOUT, self.notifier.notify(note)).await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => tracing::error!(error = %e, "audit alert was not delivered"),
@@ -1339,12 +1877,19 @@ mod tests {
 
     #[test]
     fn the_sql_of_a_batch_is_bounded_and_keyed_as_documented() {
-        let (first, next) = (chain_batch_sql(false), chain_batch_sql(true));
+        let (first, next, after) = (
+            chain_batch_sql(false),
+            chain_batch_sql(true),
+            chain_batch_after_sql(),
+        );
         assert!(
             !first.contains("WHERE") && first.ends_with("ORDER BY seq LIMIT $1"),
             "{first}"
         );
-        assert!(next.contains("WHERE seq > $1 ORDER BY seq LIMIT $2"), "{next}");
+        // A batch starts AT the last position the one before read, so that rows sharing a position are all in one batch ...
+        assert!(next.contains("WHERE seq >= $1 ORDER BY seq LIMIT $2"), "{next}");
+        // ... and AFTER it only when a whole batch was one position.
+        assert!(after.contains("WHERE seq > $1 ORDER BY seq LIMIT $2"), "{after}");
         // The three columns of the chain are bounded; `event_json` by the size the log enforces.
         for guard in [
             "CASE WHEN octet_length(prev_hash) <= 32 THEN prev_hash END AS prev_hash",
@@ -1353,14 +1898,31 @@ mod tests {
         ] {
             assert!(first.contains(guard), "{guard}");
         }
-        let (first, next) = (checkpoint_batch_sql(false), checkpoint_batch_sql(true));
+        let (first, next, after) = (
+            checkpoint_batch_sql(false),
+            checkpoint_batch_sql(true),
+            checkpoint_batch_after_sql(),
+        );
+        // (The lookup of the event at the position has a `WHERE` of its own, on `e.seq`.)
         assert!(
-            !first.contains("WHERE") && first.ends_with("ORDER BY c.seq LIMIT $1"),
+            !first.contains("c.seq >") && first.ends_with("ORDER BY c.seq LIMIT $1"),
             "{first}"
         );
         assert!(
-            next.contains("WHERE c.seq > $1 ORDER BY c.seq LIMIT $2"),
+            next.contains("WHERE c.seq >= $1 ORDER BY c.seq LIMIT $2"),
             "{next}"
+        );
+        assert!(
+            after.contains("WHERE c.seq > $1 ORDER BY c.seq LIMIT $2"),
+            "{after}"
+        );
+        // The event at the checkpoint's position is looked up (one row), not joined (one per event there), and prefers the event
+        // whose hash the checkpoint signed.
+        assert!(
+            first.contains("LEFT JOIN LATERAL (")
+                && first
+                    .contains("WHERE e.seq = c.seq ORDER BY (e.hash = c.head_hash) DESC NULLS LAST LIMIT 1"),
+            "{first}"
         );
         for guard in [
             "octet_length(c.head_hash) <= 32",
@@ -1386,12 +1948,300 @@ mod tests {
         }
     }
 
+    /// The type after every `::` in a SQL text of the verifier (a cast, or a type on a literal): a name, and its arguments if it has
+    /// any.
+    fn casts_in(sql: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut rest = sql;
+        while let Some(at) = rest.find("::") {
+            let after = &rest[at + 2..];
+            let mut end = after
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(after.len());
+            if after[end..].starts_with('(') {
+                end += after[end..]
+                    .find(')')
+                    .map_or(after.len() - end, |close| close + 1);
+            }
+            out.push(after[..end].to_owned());
+            rest = &after[end..];
+        }
+        out
+    }
+
+    #[test]
+    fn nothing_the_verifier_selects_is_cast_or_rendered_except_what_is_vetted_first() {
+        // Every cast in the verifier's queries is one that cannot fail or grow on a stored value. A new cast that can would be a way
+        // for one row to end every run (round 4: `col::text` on a `jsonb`), so each one is listed here with the reason.
+        let texts = [
+            chain_batch_sql(false),
+            chain_batch_sql(true),
+            chain_batch_after_sql(),
+            checkpoint_batch_sql(false),
+            checkpoint_batch_sql(true),
+            checkpoint_batch_after_sql(),
+            EVENTS_WITHOUT_SEQ.to_owned(),
+            CHECKPOINTS_WITHOUT_SEQ.to_owned(),
+            set_local_sql(Duration::from_secs(1), Duration::from_secs(1)),
+        ];
+        let mut seen = std::collections::BTreeMap::<String, usize>::new();
+        for text in &texts {
+            for cast in casts_in(text) {
+                *seen.entry(cast).or_default() += 1;
+            }
+        }
+        // The first chain batch holds each once; `jsonb` is the sentinel (a literal) and `text` the last check of each `jsonb`
+        // column (twice, one for each column), after the checks above it; `numeric(40,0)` and `text` are the time, selected only
+        // when `isfinite(at)`, whose epoch in microseconds is at most 20 digits; `int4` is the mask of flags (a sum of small
+        // constants). Nothing else is cast: the text, `bytea` and hash columns are measured with `octet_length`, which reads a
+        // length from the header, and `approval_id` and `seq` are selected as they are.
+        let in_one_text = |cast: &str| {
+            casts_in(&chain_batch_sql(false))
+                .iter()
+                .filter(|c| c.as_str() == cast)
+                .count()
+        };
+        assert_eq!(
+            in_one_text("jsonb"),
+            2 * 5,
+            "a sentinel for each of the five rejections, in each of the two columns"
+        );
+        assert_eq!(
+            in_one_text("text"),
+            1 + 2,
+            "the time, and the last check of each jsonb"
+        );
+        assert_eq!(in_one_text("numeric(40,0)"), 1);
+        assert_eq!(in_one_text("int4"), 1);
+        let allowed = ["jsonb", "text", "numeric(40,0)", "int4"];
+        for cast in seen.keys() {
+            assert!(
+                allowed.contains(&cast.as_str()),
+                "a new cast in a query of the verifier: ::{cast}"
+            );
+        }
+        // The checkpoint query casts nothing at all, and neither do the probes and the settings.
+        for text in [
+            checkpoint_batch_sql(false),
+            checkpoint_batch_sql(true),
+            checkpoint_batch_after_sql(),
+            EVENTS_WITHOUT_SEQ.to_owned(),
+            CHECKPOINTS_WITHOUT_SEQ.to_owned(),
+            set_local_sql(Duration::from_secs(1), Duration::from_secs(1)),
+        ] {
+            assert_eq!(casts_in(&text), Vec::<String>::new(), "{text}");
+        }
+        // And every `::text` of a `jsonb` comes after the checks that make it safe, in the one `CASE` of its column.
+        let list = chain_batch_sql(false);
+        for column in ["attribution_actor", "attribution_evidence"] {
+            let render = list.find(&format!("{column}::text")).unwrap();
+            for check in [
+                format!("pg_column_size({column}) >"),
+                format!("pg_column_size({column} #> '{{}}') >"),
+                format!("jsonb_path_exists({column},"),
+                format!("jsonb_array_length(jsonb_path_query_array({column},"),
+            ] {
+                let at = list.find(&check).unwrap_or_else(|| panic!("{check} is missing"));
+                assert!(at < render, "{check} must come before the column is printed");
+            }
+        }
+    }
+
     #[test]
     fn the_longest_object_name_is_what_the_bound_allows() {
         // `object_name` of the largest position: the bound on `gcs_object` is exactly that long.
         assert_eq!(object_name(u64::MAX).len(), GCS_OBJECT_LIMIT);
         assert_eq!(MAX_SIGNATURE_BYTES, 128);
         assert_eq!(KeyRef::MAX_LEN, 512);
+    }
+
+    /// A database error with the given SQLSTATE and a message that quotes a value, as a server's message can.
+    #[derive(Debug)]
+    struct Refusal {
+        code: &'static str,
+        message: String,
+    }
+
+    impl std::fmt::Display for Refusal {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.message)
+        }
+    }
+
+    impl std::error::Error for Refusal {}
+
+    impl sqlx::error::DatabaseError for Refusal {
+        fn message(&self) -> &str {
+            &self.message
+        }
+
+        fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
+            Some(std::borrow::Cow::Borrowed(self.code))
+        }
+
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+    }
+
+    fn refused_with(code: &'static str) -> VerifyError {
+        db_error(
+            "test",
+            &sqlx::Error::Database(Box::new(Refusal {
+                code,
+                message: "column \"a-secret-value\" does not exist".to_owned(),
+            })),
+        )
+    }
+
+    #[test]
+    fn a_refusal_for_the_shape_of_the_tables_is_told_from_a_fault_by_its_sqlstate() {
+        // Class 42: the statement does not fit the tables. These are what a dropped, renamed or retyped column causes, and the
+        // others of the class are the same kind of thing (the text of the statement is fixed, so it is never a value's fault).
+        for code in [
+            "42703", "42883", "42804", "42P01", "42846", "42809", "42501", "42601", "42704", "42P18", "42725",
+        ] {
+            assert_eq!(
+                refused_with(code),
+                VerifyError::SchemaChanged(SqlState::parse(code)),
+                "{code}"
+            );
+        }
+        // Time: the statement or the lock ran out.
+        for code in ["57014", "55P03"] {
+            assert_eq!(refused_with(code), VerifyError::Timeout, "{code}");
+        }
+        // Everything else is a fault of the database or the connection, and stays an error: a lost connection (08), resources (53),
+        // the server going away (57P), a serialisation failure or deadlock (40), data exceptions (22), integrity (23), a missing
+        // database (3D), a feature not supported (0A), an internal error (XX).
+        for code in [
+            "08006", "08001", "08003", "53100", "53200", "53300", "40001", "40P01", "57P01", "57P03",
+            "25P02", "XX000", "22003", "23505", "0A000", "3D000", "54000", "54001",
+        ] {
+            assert_eq!(refused_with(code), VerifyError::Database, "{code}");
+        }
+    }
+
+    #[test]
+    fn a_column_that_comes_back_as_another_type_or_not_at_all_is_the_same_refusal_and_other_errors_are_not() {
+        let source = || -> Box<dyn std::error::Error + Send + Sync> { "mismatched types".into() };
+        for e in [
+            sqlx::Error::ColumnNotFound("seq".to_owned()),
+            sqlx::Error::ColumnIndexOutOfBounds { index: 3, len: 2 },
+            sqlx::Error::ColumnDecode {
+                index: "seq".to_owned(),
+                source: source(),
+            },
+            sqlx::Error::Decode(source()),
+            sqlx::Error::TypeNotFound {
+                type_name: "x".to_owned(),
+            },
+        ] {
+            assert_eq!(db_error("test", &e), VerifyError::SchemaChanged(None), "{e:?}");
+        }
+        for e in [
+            sqlx::Error::PoolClosed,
+            sqlx::Error::PoolTimedOut,
+            sqlx::Error::WorkerCrashed,
+            sqlx::Error::RowNotFound,
+            sqlx::Error::Io(std::io::Error::other("reset")),
+            sqlx::Error::Protocol("bad".to_owned()),
+        ] {
+            assert_eq!(db_error("test", &e), VerifyError::Database, "{e:?}");
+        }
+    }
+
+    #[test]
+    fn a_sqlstate_is_five_digits_or_capitals_and_the_server_message_is_never_kept() {
+        assert_eq!(
+            SqlState::parse("42P01").map(|c| c.to_string()),
+            Some("42P01".to_owned())
+        );
+        for bad in [
+            "",
+            "4",
+            "42P0",
+            "42P011",
+            "42p01",
+            "42 01",
+            "42-01",
+            "42é1",
+            "４２P01",
+        ] {
+            assert_eq!(SqlState::parse(bad), None, "{bad:?}");
+        }
+        // The error carries the code and nothing of the message.
+        let e = refused_with("42703");
+        assert!(!format!("{e:?}{e}").contains("a-secret-value"));
+        let kind = FailureKind::SchemaChanged(SqlState::parse("42703"));
+        assert!(!format!("{kind:?}{}", kind.as_str()).contains("a-secret-value"));
+    }
+
+    #[test]
+    fn the_alert_for_a_changed_shape_names_the_sqlstate_and_no_position() {
+        let worst = VerifyFailure {
+            seq: 0,
+            kind: FailureKind::SchemaChanged(SqlState::parse("42883")),
+        };
+        let line = alert_summary(1, "", &worst, true);
+        assert_eq!(
+            line,
+            "1 problem(s) in the audit log. Most severe: the audit tables no longer have the shape the verifier reads (SQLSTATE 42883). The run did not finish."
+        );
+        assert!(ShortText::parse(&line).is_ok());
+        let none = VerifyFailure {
+            seq: 0,
+            kind: FailureKind::SchemaChanged(None),
+        };
+        assert_eq!(
+            alert_summary(2, "+", &none, true),
+            "2+ problem(s) in the audit log. Most severe: the audit tables no longer have the shape the verifier reads. The run did not finish."
+        );
+        assert_eq!(worst.kind.severity(), 0);
+        assert!(!worst.kind.has_position());
+        assert!(FailureKind::ChainHashMismatch.has_position());
+    }
+
+    #[test]
+    fn the_alert_that_the_verification_is_not_completing_names_the_class_of_the_error_and_nothing_else() {
+        assert_eq!(
+            unfinished_summary(2, Some(VerifyError::Timeout)),
+            "Audit log verification could not complete 2 nights in a row (last error: the audit tables did not answer in time)."
+        );
+        assert_eq!(
+            unfinished_summary(1, Some(VerifyError::Database)),
+            "Audit log verification could not complete 1 night in a row (last error: the audit tables could not be read)."
+        );
+        assert_eq!(
+            unfinished_summary(3, Some(VerifyError::SchemaChanged(SqlState::parse("42883")))),
+            "Audit log verification could not complete 3 nights in a row (last error: the audit tables changed shape, SQLSTATE 42883)."
+        );
+        assert_eq!(
+            unfinished_summary(3, Some(VerifyError::SchemaChanged(None))),
+            "Audit log verification could not complete 3 nights in a row (last error: the audit tables changed shape)."
+        );
+        // However many nights, and whatever the class, the line is a valid `ShortText`, so the alert is always built.
+        for error in [
+            None,
+            Some(VerifyError::Database),
+            Some(VerifyError::Timeout),
+            Some(VerifyError::SchemaChanged(SqlState::parse("42P01"))),
+        ] {
+            let line = unfinished_summary(u32::MAX, error);
+            assert!(ShortText::parse(&line).is_ok(), "{} bytes: {line}", line.len());
+        }
     }
 
     #[test]

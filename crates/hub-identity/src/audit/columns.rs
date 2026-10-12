@@ -23,13 +23,47 @@
 //!   column that is `NOT NULL` by the schema) is reported as differing, by name, and the walk goes on. A copy that cannot be read
 //!   is not the copy of anything. Only a failure that is not about the value (a missing column, a connection) is an error.
 //!
-//! - **every value read is bounded in the query**, not after it. A text or `bytea` column is read as
-//!   `CASE WHEN octet_length(col) <= N THEN col END`, a `jsonb` column as `... octet_length(col::text) <= N ...`, and a bitmask
-//!   column `oversize` says which were left out. A value over its bound is never sent to this process, never buffered, never
-//!   decoded: it is reported as that column differing, like any value no event can have written. The bound is derived from the one
-//!   the log enforces: a copy is a part of one event, and the log refuses an event over [`MAX_EVENT_JSON_BYTES`] (see
-//!   [`TEXT_COLUMN_LIMIT`], [`JSONB_TEXT_LIMIT`]). Without it one row with a few hundred megabytes in a `jsonb` column, which
-//!   nothing else limits, ends every nightly run out of memory and silent.
+//! # No stored value can make the select fail, or cost more than a bounded amount
+//!
+//! The select decides in the database, before anything is sent, whether it may send a value, and it decides without evaluating
+//! anything that can fail or grow on the value:
+//!
+//! - **text and `bytea` columns** are read as `CASE WHEN octet_length(col) <= N THEN col END`, and a bitmask column `oversize` says
+//!   which were left out. `octet_length` of a `text` or `bytea` reads the length from the header: it neither detoasts nor copies,
+//!   so it cannot fail and costs nothing. A value over its bound is never sent to this process, never buffered, never decoded: it
+//!   is reported as that column differing. The bound is derived from the one the log enforces: a copy is a part of one event, and
+//!   the log refuses an event over `MAX_EVENT_JSON_BYTES` (a megabyte; see [`TEXT_COLUMN_LIMIT`]);
+//! - **the two `jsonb` columns** are the ones whose length cannot be read from a header, and `col::text` is the dangerous way to
+//!   measure one: a `jsonb` number is stored as a compact `numeric` and printed in full, so `1e131000` is a dozen bytes stored and
+//!   131 KB printed. 9,000 of them (144 KB decompressed, 2.5 KB as stored in the table) print as more than a gigabyte, which the
+//!   server refuses (`out of memory`, SQLSTATE 54000, after allocating a gigabyte); 7,000 (112 KB, 1.9 KB stored) print as 917 MB
+//!   and take from 8 to 13 seconds each time, on the machines measured. The INSERT-only role can write such a value. So the select never prints a `jsonb` it has not vetted: one `CASE` with a `WHEN` per
+//!   rejection, in this order, each evaluated only if the ones before it did not apply, and each at most once per row (see
+//!   [`jsonb_rejections`]):
+//!   1. `pg_column_size(col)` over [`JSONB_COLUMN_LIMIT`]: the stored size, from the header. Nothing is fetched from the TOAST
+//!      table and nothing is decompressed for a value that is stored large;
+//!   2. `pg_column_size(col #> '{}')` over the same limit: the size of the value once decompressed (the path `'{}'` hands the
+//!      detoasted value back). A value that is stored under the limit decompresses to at most about two megabytes, whatever it
+//!      holds (`lz4` shrinks a run of one byte 255 to 1, `pglz` 87 to 1). The raw size bounds the depth of nesting (at least 8
+//!      bytes a level, so 1,024 levels) far under the depth at which `jsonpath` itself fails (between 10,000 and 11,000 levels on
+//!      a server with the default `max_stack_depth` of 2 MB, with "stack depth limit exceeded", an error that `silent` does not
+//!      suppress, while the server's own parser still takes about 17,000), and it bounds how many numbers the value can hold;
+//!   3. a number that prints long: one past the range of an `i64`, or not an integer (`jsonpath`, by value: `1e131000`,
+//!      `-1e131000` and `1e-16383` all qualify). The check compares numbers, it never prints one;
+//!   4. more than [`JSONB_NUMBER_LIMIT`] numbers: an integer can still carry a scale (`0e-16383` prints 16 KB), which value
+//!      cannot show, so what a value may print is bounded by how many numbers it has;
+//!   5. only now, `octet_length(col::text)` over [`JSONB_TEXT_LIMIT`]. The value has at most 16 numbers of at most 16 KB each, and
+//!      a raw size under 8 KiB (strings print at most six times their size), so this prints at most a few hundred kilobytes: it
+//!      cannot fail, and it is the bound on what is sent.
+//!
+//!   A value that is not vetted is replaced by the JSON `null` literal, a value the log never writes in these columns (an absent
+//!   value is SQL `NULL`, never JSON `null`, and an attribution's evidence is an object), so no event is its copy; [`read_row`]
+//!   reports it as unreadable. That replaces a second, separate flag, and with it a second evaluation of the same checks.
+//!
+//!   The bound is derived from the type, not from the event: the two columns hold an [`domain::Actor`] or an
+//!   [`domain::Evidence`], whose text fields are [`domain::ShortText`] (256 bytes) and whose one number is a time in milliseconds.
+//!   The largest of either is about 700 bytes; [`JSONB_COLUMN_LIMIT`] is more than ten times that, and a unit test fails if a
+//!   change to those types takes the largest value to a tenth of it. Raise the constant deliberately when it does.
 //!
 //! A difference is reported by the column's name only, never its value (S10).
 
@@ -45,15 +79,29 @@ use sqlx::postgres::PgRow;
 use super::log::{MAX_EVENT_JSON_BYTES, actor_parts};
 
 /// The most a copied text column can legitimately hold. A copy is a part of one event, and an event is at most
-/// [`MAX_EVENT_JSON_BYTES`] of JSON (the log checks this before it takes the lock, and the table's `CHECK` backs it); the text of
+/// `MAX_EVENT_JSON_BYTES` of JSON (the log checks this before it takes the lock, and the table's `CHECK` backs it); the text of
 /// a JSON string is never longer than the string. In practice every field is far shorter (a `ShortText` has 256 bytes), but this is
 /// the bound that cannot be wrong.
 pub const TEXT_COLUMN_LIMIT: usize = MAX_EVENT_JSON_BYTES;
-/// The most a copied `jsonb` column can legitimately hold, as `octet_length(col::text)`. The column is a part of the event, at most
-/// [`MAX_EVENT_JSON_BYTES`] as compact JSON; `jsonb` prints one space after every `,` and `:`, and each is next to an element of at
-/// least one byte, so its text is at most one and a half times the compact form. Twice is the bound.
-pub const JSONB_TEXT_LIMIT: usize = 2 * MAX_EVENT_JSON_BYTES;
-const _: () = assert!(JSONB_TEXT_LIMIT >= MAX_EVENT_JSON_BYTES + MAX_EVENT_JSON_BYTES / 2);
+/// The most a copied `jsonb` column can legitimately hold, stored and decompressed (see the module docs). The columns hold an
+/// actor or the evidence of an attribution, whose largest values are about 700 bytes; this is more than ten times that. It is
+/// deliberately small: a value over it is not read, and what the verifier spends on a row that is poisoned is a function of it.
+pub const JSONB_COLUMN_LIMIT: usize = 8 * 1024;
+/// The most a vetted `jsonb` column can print as text, which is also the most the select sends for one. A vetted value has a raw
+/// size under [`JSONB_COLUMN_LIMIT`], so its text is under six times that for any string and about the same for anything else; a
+/// legitimate one is never over its raw size.
+pub const JSONB_TEXT_LIMIT: usize = 2 * JSONB_COLUMN_LIMIT;
+/// The most numbers a vetted `jsonb` column holds. A legitimate one holds one (a time), and a number is what can print far more
+/// than it stores, so this bounds the work of the last check by a few hundred kilobytes.
+pub const JSONB_NUMBER_LIMIT: usize = 16;
+/// The text of the `jsonpath` that finds a number that prints long, by value and without printing it: past the range of an `i64`
+/// (a large exponent), or with a fractional part (a small exponent). `strict` and `silent` so that the check cannot fail on shape,
+/// and `strict` also keeps `.**` from visiting each element of an array twice, as it does in `lax` mode.
+const LONG_NUMBER_PATH: &str = "strict $.** ? (@.type() == \"number\" && (@ > 9223372036854775807 || @ < -9223372036854775808 || @ != @.floor()))";
+/// Every number of a value.
+const ANY_NUMBER_PATH: &str = "strict $.** ? (@.type() == \"number\")";
+/// What the select sends for a `jsonb` it did not vet: the JSON `null` literal.
+const NOT_VETTED: &str = "'null'::jsonb";
 /// A hash column holds 32 bytes.
 pub const HASH_COLUMN_BYTES: usize = 32;
 
@@ -233,11 +281,40 @@ impl fmt::Display for ColumnSet {
 /// microsecond an `i64` holds, and an error in the query is a failure of the whole walk, where the value is only a finding about
 /// one row. The `CASE` is the guard for the first; the parse is the guard for the second.
 ///
-/// Every other column that can hold more than a small value is bounded (see the module docs), and `oversize` is the bitmask of the
-/// ones that were left out.
+/// Every other column that can hold more than a small value is bounded (see the module docs). `oversize` is the bitmask of the text
+/// and hash columns that were left out; a `jsonb` column that was not vetted is sent as the JSON `null` literal.
 pub fn select_list() -> &'static str {
     static LIST: LazyLock<String> = LazyLock::new(build_select_list);
     LIST.as_str()
+}
+
+/// The reasons, in the order they are tried, for which the select sends a `jsonb` column as the JSON `null` instead of its value.
+/// Each is a SQL boolean over the column `name`, and none of them prints the value except the last, which is only reached by a
+/// value that all the others let through (see the module docs for why each is there and why the order matters).
+#[doc(hidden)]
+pub fn jsonb_rejections(name: &str) -> [String; 5] {
+    [
+        format!("pg_column_size({name}) > {JSONB_COLUMN_LIMIT}"),
+        format!("pg_column_size({name} #> '{{}}') > {JSONB_COLUMN_LIMIT}"),
+        format!("jsonb_path_exists({name}, '{LONG_NUMBER_PATH}', '{{}}', true)"),
+        format!(
+            "jsonb_array_length(jsonb_path_query_array({name}, '{ANY_NUMBER_PATH}', '{{}}', true)) > {JSONB_NUMBER_LIMIT}"
+        ),
+        format!("octet_length({name}::text) > {JSONB_TEXT_LIMIT}"),
+    ]
+}
+
+/// The select of one `jsonb` column: its value if it is `NULL` or none of [`jsonb_rejections`] applies, and the JSON `null`
+/// otherwise. A searched `CASE` evaluates its conditions in order and stops at the first that holds, which `AND` does not promise.
+fn jsonb_select(name: &str) -> String {
+    let whens: Vec<String> = jsonb_rejections(name)
+        .into_iter()
+        .map(|reason| format!("WHEN {reason} THEN {NOT_VETTED}"))
+        .collect();
+    format!(
+        "CASE WHEN {name} IS NULL THEN NULL {} ELSE {name} END AS {name}",
+        whens.join(" ")
+    )
 }
 
 fn build_select_list() -> String {
@@ -256,7 +333,10 @@ fn build_select_list() -> String {
             }
             Stored::Text => (format!("octet_length({name})"), TEXT_COLUMN_LIMIT),
             Stored::Hash => (format!("octet_length({name})"), HASH_COLUMN_BYTES),
-            Stored::Jsonb => (format!("octet_length({name}::text)"), JSONB_TEXT_LIMIT),
+            Stored::Jsonb => {
+                parts.push(jsonb_select(name));
+                continue;
+            }
         };
         parts.push(format!("CASE WHEN {length} <= {limit} THEN {name} END AS {name}"));
         oversize.push(format!(
@@ -327,7 +407,7 @@ where
     }
 }
 
-/// Read the columns named by [`SELECT_LIST`] from a row.
+/// Read the columns named by [`select_list`] from a row.
 ///
 /// # Errors
 /// A column is missing from the row (the query and this function disagree), which is a fault and not a finding. A value that cannot
@@ -360,6 +440,17 @@ pub fn read_row(row: &PgRow) -> Result<ReadColumns, sqlx::Error> {
         attribution_actor: read(row, "attribution_actor", Column::AttributionActor, &mut u)?,
         attribution_evidence: read(row, "attribution_evidence", Column::AttributionEvidence, &mut u)?,
     };
+    // The select sends the JSON `null` for a `jsonb` it did not vet (see the module docs). The log never writes one in these
+    // columns, so a `null` here is a value that was not read, or a forgery: either way the column is not the copy of anything.
+    // (It is also never equal to a field of an event, so it differs even if this were not recorded.)
+    for (column, value) in [
+        (Column::AttributionActor, &columns.attribution_actor),
+        (Column::AttributionEvidence, &columns.attribution_evidence),
+    ] {
+        if matches!(value, Some(Value::Null)) {
+            u.insert(column);
+        }
+    }
     Ok(ReadColumns {
         columns,
         unreadable: u,
@@ -957,7 +1048,13 @@ mod tests {
             } else if hashes.contains(&column) {
                 (format!("octet_length({name})"), HASH_COLUMN_BYTES)
             } else if jsonb.contains(&column) {
-                (format!("octet_length({name}::text)"), JSONB_TEXT_LIMIT)
+                // A `jsonb` is never measured by printing it first: the next test. It has no bit in the mask.
+                assert!(!list.contains(&format!("octet_length({name})")), "{name}");
+                assert!(
+                    !list.contains(&format!("{} ELSE 0", column.bit())),
+                    "{name}: a jsonb is not flagged by the mask"
+                );
+                continue;
             } else {
                 // Nothing to bound: `approval_id` is selected as it is, and `at` through its own `CASE`.
                 assert!(fixed.contains(&column), "{name}");
@@ -980,15 +1077,138 @@ mod tests {
         );
         // The limits themselves, by value.
         assert_eq!(TEXT_COLUMN_LIMIT, 1_048_576);
-        assert_eq!(JSONB_TEXT_LIMIT, 2_097_152);
+        assert_eq!(JSONB_COLUMN_LIMIT, 8_192);
+        assert_eq!(JSONB_TEXT_LIMIT, 16_384);
+        assert_eq!(JSONB_NUMBER_LIMIT, 16);
         assert_eq!(HASH_COLUMN_BYTES, 32);
+    }
+
+    #[test]
+    fn a_jsonb_is_vetted_by_value_and_size_in_order_before_anything_prints_it() {
+        for name in ["attribution_actor", "attribution_evidence"] {
+            let reasons = jsonb_rejections(name);
+            // The five checks, in this order: stored size, decompressed size, a number that prints long, too many numbers, and only
+            // then the text.
+            assert_eq!(reasons[0], format!("pg_column_size({name}) > 8192"));
+            assert_eq!(reasons[1], format!("pg_column_size({name} #> '{{}}') > 8192"));
+            assert!(
+                reasons[2].starts_with(&format!(
+                    "jsonb_path_exists({name}, 'strict $.** ? (@.type() == \"number\" && ("
+                )) && reasons[2].contains("@ > 9223372036854775807")
+                    && reasons[2].contains("@ < -9223372036854775808")
+                    && reasons[2].contains("@ != @.floor()")
+                    && reasons[2].ends_with("', '{}', true)"),
+                "{}",
+                reasons[2]
+            );
+            assert_eq!(
+                reasons[3],
+                format!(
+                    "jsonb_array_length(jsonb_path_query_array({name}, 'strict $.** ? (@.type() == \"number\")', '{{}}', true)) > 16"
+                )
+            );
+            assert_eq!(reasons[4], format!("octet_length({name}::text) > 16384"));
+
+            // The select is one searched `CASE`, the conditions in that order, the JSON `null` for each, the value last.
+            let list = select_list();
+            let start = list.find(&format!("CASE WHEN {name} IS NULL")).unwrap();
+            let end = list[start..].find(&format!("ELSE {name} END AS {name}")).unwrap();
+            let case = &list[start..start + end];
+            let mut at = 0;
+            for reason in &reasons {
+                let found = case[at..]
+                    .find(&format!("WHEN {reason} THEN 'null'::jsonb"))
+                    .unwrap_or_else(|| panic!("{name}: {reason} is missing or out of order in {case}"));
+                at += found + reason.len();
+            }
+            // Nothing prints the value but the last condition, and that one once; nothing else is evaluated twice.
+            assert_eq!(list.matches(&format!("{name}::text")).count(), 1, "{name}");
+            assert_eq!(
+                list.matches(&format!("pg_column_size({name}")).count(),
+                2,
+                "{name}"
+            );
+            assert_eq!(
+                list.matches(&format!("jsonb_path_exists({name}")).count(),
+                1,
+                "{name}"
+            );
+            assert_eq!(
+                list.matches(&format!("jsonb_path_query_array({name}")).count(),
+                1,
+                "{name}"
+            );
+            // A searched CASE, not AND: the order of evaluation is promised for the first only.
+            assert!(!case.contains(" AND "), "{case}");
+        }
+    }
+
+    #[test]
+    fn a_jsonb_the_select_did_not_vet_is_reported_as_unreadable_whatever_the_event_says() {
+        // The JSON `null` literal is what the select sends for it; no field of an event is that, and an absent one is SQL NULL.
+        let (json, stored) = written(&full());
+        let mut sent = stored.clone();
+        sent.attribution_evidence = Some(Value::Null);
+        assert_eq!(
+            differing_columns(&json, &sent),
+            ColumnSet::of(&[Column::AttributionEvidence])
+        );
+        let mut sent = stored;
+        sent.attribution_actor = Some(Value::Null);
+        assert_eq!(
+            differing_columns(&json, &sent),
+            ColumnSet::of(&[Column::AttributionActor])
+        );
+        // Also for an event with no attribution at all, whose columns are all SQL NULL: a JSON `null` there is not "nothing".
+        let (json, stored) = written(&bare());
+        let mut sent = stored;
+        sent.attribution_evidence = Some(Value::Null);
+        assert_eq!(
+            differing_columns(&json, &sent),
+            ColumnSet::of(&[Column::AttributionEvidence])
+        );
     }
 
     #[test]
     fn the_bounds_are_derived_from_the_size_an_event_can_have() {
         assert_eq!(TEXT_COLUMN_LIMIT, MAX_EVENT_JSON_BYTES);
-        // `jsonb` text is at most one and a half times the compact JSON (a space after each `,` and `:`).
         assert_eq!(HASH_COLUMN_BYTES, 32);
+    }
+
+    /// The largest actors and the largest evidence the types allow, as the log writes them: every text at its longest, in
+    /// two-byte characters (JSON keeps them as they are).
+    fn largest_attribution_parts() -> Vec<Value> {
+        let long = |unit: &str| ShortText::parse(&unit.repeat(256 / unit.len())).unwrap();
+        let evidence = domain::Evidence {
+            executable: Some(long("é")),
+            login_identity: Some(long("é")),
+            observed_at: Some(Timestamp::from_unix_millis(i64::MIN)),
+        };
+        let job = domain::JobRef::new(&"a".repeat(253), &"b".repeat(64)).unwrap();
+        let actors = [
+            domain::Actor::OsLogin { login: long("é") },
+            domain::Actor::Job { job },
+            domain::Actor::User {
+                user: ports::conformance::sample::user_id(7),
+            },
+        ];
+        let mut parts = vec![serde_json::to_value(&evidence).unwrap()];
+        parts.extend(actors.iter().map(|a| serde_json::to_value(a).unwrap()));
+        parts
+    }
+
+    #[test]
+    fn the_jsonb_bound_is_more_than_ten_times_the_largest_value_the_types_allow() {
+        for v in largest_attribution_parts() {
+            let largest = v.to_string().len();
+            assert!(
+                largest * 10 <= JSONB_COLUMN_LIMIT,
+                "{largest} bytes against a limit of {JSONB_COLUMN_LIMIT}: if the types grew, raise the limit on purpose"
+            );
+        }
+        // And the text bound is twice the size bound: a value under the one is under the other, escapes apart, which the types
+        // (`ShortText` has no control character) do not have.
+        assert_eq!(JSONB_TEXT_LIMIT, 2 * JSONB_COLUMN_LIMIT);
     }
 
     #[test]
@@ -1024,8 +1244,7 @@ mod tests {
             .into_iter()
             .flatten()
         {
-            // Compact length times one and a half is the most `jsonb` prints for it.
-            assert!(v.to_string().len() * 3 / 2 <= JSONB_TEXT_LIMIT);
+            assert!(v.to_string().len() * 10 <= JSONB_COLUMN_LIMIT);
         }
     }
 
