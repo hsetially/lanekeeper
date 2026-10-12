@@ -34,7 +34,10 @@ pub use log::{CHAIN_LOCK_KEY, PgAuditLog};
 pub use metadata::MetadataTokenSource;
 pub use shipper::{AuditLogShipper, ShipOutcome};
 pub use signature::{CheckpointVerifier, EcdsaP256Verifier, checkpoint_digest, checkpoint_message};
-pub use verify::{ChainVerifier, FailureKind, NightlyOutcome, NightlyVerifyJob, VerifyFailure, VerifyReport};
+pub use verify::{
+    ChainVerifier, CheckpointColumn, CheckpointColumnSet, FailureKind, NightlyOutcome, NightlyVerifyJob,
+    VerifyAborted, VerifyError, VerifyFailure, VerifyReport,
+};
 
 /// A background job that stops when its owner drops the handle.
 #[derive(Debug)]

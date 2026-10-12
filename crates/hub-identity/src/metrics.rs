@@ -62,6 +62,11 @@ impl IdentityMetrics {
         self.verify_failures.fetch_add(failures, Ordering::Relaxed);
     }
 
+    /// A run that could not finish still found these: they are counted, though the run is not (it is counted as an error).
+    pub(crate) fn verify_found(&self, failures: u64) {
+        self.verify_failures.fetch_add(failures, Ordering::Relaxed);
+    }
+
     pub(crate) fn verify_errored(&self) {
         self.verify_errors.fetch_add(1, Ordering::Relaxed);
     }

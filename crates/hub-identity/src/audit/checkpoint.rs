@@ -42,7 +42,7 @@ const LEASE_TTL: Duration = Duration::from_secs(300);
 /// KMS gets this long to sign.
 const SIGN_TIMEOUT: Duration = Duration::from_secs(10);
 /// The longest signature stored: an ECDSA P-256 signature is at most 72 bytes in DER.
-const MAX_SIGNATURE_BYTES: usize = 128;
+pub(crate) const MAX_SIGNATURE_BYTES: usize = 128;
 
 /// Why a checkpoint was not made. No variant carries a hash, a signature or an object name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

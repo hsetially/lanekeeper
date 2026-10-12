@@ -1,5 +1,10 @@
 //! T5 (S9): the nightly verification finds tampering, and alerts.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::too_many_lines
+)]
 
 mod support;
 
@@ -10,7 +15,10 @@ use bytes::Bytes;
 use domain::Severity;
 use hub_identity::audit::bucket::{CheckpointBucket, object_name};
 use hub_identity::audit::checkpoint::CheckpointObject;
-use hub_identity::audit::verify::{FailureKind, NightlyOutcome};
+use hub_identity::audit::verify::{
+    CheckpointColumn, CheckpointColumnSet, FailureKind, NightlyOutcome, VerifyError, chain_batch_sql,
+    checkpoint_batch_sql,
+};
 use hub_identity::audit::{Column, ColumnSet};
 use hub_identity::audit::{MemoryBucket, VerifyFailure};
 use ports::{Leases, NotificationKind};
@@ -515,7 +523,7 @@ struct Case {
     column: Column,
     full: &'static str,
     bare: &'static str,
-    /// A statement run first, as the owner, when the value needs a constraint out of the way.
+    /// Statements (separated by `;`) run first, as the owner, when the value needs a constraint or an index out of the way.
     prep: &'static str,
     /// A value that something reading the column could choke on (a cast, a decode, a length), and not just one that differs.
     hostile: bool,
@@ -567,6 +575,17 @@ const LONG: &str = "repeat('x', 100000)";
 const HUGE_NUMBER: &str = "'{\"n\":1e400}'::jsonb";
 /// An array nested deeper than `serde_json` reads (its limit is 128).
 const DEEP_ARRAY: &str = "(repeat('[', 200) || repeat(']', 200))::jsonb";
+
+/// The indexes that a value past what a btree entry holds cannot be written under.
+const DROP_ACTOR_IDX: &str = "DROP INDEX audit_events_actor_idx";
+const DROP_SWIMLANE_IDXS: &str = "DROP INDEX audit_events_swimlane_idx;DROP INDEX audit_events_path_idx";
+const DROP_PATH_IDX: &str = "DROP INDEX audit_events_path_idx";
+/// Two megabytes of text: more than the megabyte an event can hold, and so more than any copy of a part of it.
+const OVERSIZE_TEXT: &str = "repeat('x', 2097152)";
+/// A `jsonb` whose text form is over twice the megabyte an event can hold.
+const OVERSIZE_JSON: &str = "('\"' || repeat('x', 2097152) || '\"')::jsonb";
+/// 33 bytes: one more than a hash.
+const OVERSIZE_HASH: &str = "decode(repeat('ab', 33), 'hex')";
 
 const EVIL_ACTOR: &str = "'{\"kind\":\"os_login\",\"login\":\"someone-else\"}'::jsonb";
 
@@ -796,6 +815,105 @@ const CASES: &[Case] = &[
         DEEP_ARRAY,
         DEEP_ARRAY,
     ),
+    // Values past what any event can have put there (round 3): the select must not send them, and the column is reported.
+    hostile(
+        "actor_kind oversize",
+        Column::ActorKind,
+        NO_CHECK_ACTOR_KIND,
+        OVERSIZE_TEXT,
+        OVERSIZE_TEXT,
+    ),
+    hostile(
+        "actor_ref oversize",
+        Column::ActorRef,
+        DROP_ACTOR_IDX,
+        OVERSIZE_TEXT,
+        OVERSIZE_TEXT,
+    ),
+    hostile(
+        "action oversize",
+        Column::Action,
+        NO_CHECK_ACTION,
+        OVERSIZE_TEXT,
+        OVERSIZE_TEXT,
+    ),
+    hostile(
+        "via oversize",
+        Column::Via,
+        NO_CHECK_VIA,
+        OVERSIZE_TEXT,
+        OVERSIZE_TEXT,
+    ),
+    hostile(
+        "swimlane_id oversize",
+        Column::SwimlaneId,
+        DROP_SWIMLANE_IDXS,
+        OVERSIZE_TEXT,
+        OVERSIZE_TEXT,
+    ),
+    hostile(
+        "path oversize",
+        Column::Path,
+        DROP_PATH_IDX,
+        OVERSIZE_TEXT,
+        OVERSIZE_TEXT,
+    ),
+    hostile(
+        "hash_before oversize",
+        Column::HashBefore,
+        NO_HASH_LENGTH,
+        OVERSIZE_HASH,
+        OVERSIZE_HASH,
+    ),
+    hostile(
+        "hash_after oversize",
+        Column::HashAfter,
+        NO_HASH_LENGTH,
+        OVERSIZE_HASH,
+        OVERSIZE_HASH,
+    ),
+    hostile(
+        "github_login oversize",
+        Column::GithubLogin,
+        "",
+        OVERSIZE_TEXT,
+        OVERSIZE_TEXT,
+    ),
+    hostile(
+        "request_id oversize",
+        Column::RequestId,
+        "",
+        OVERSIZE_TEXT,
+        OVERSIZE_TEXT,
+    ),
+    hostile(
+        "attribution_source oversize",
+        Column::AttributionSource,
+        NO_CHECK_SOURCE,
+        OVERSIZE_TEXT,
+        OVERSIZE_TEXT,
+    ),
+    hostile(
+        "attribution_confidence oversize",
+        Column::AttributionConfidence,
+        NO_CHECK_CONFIDENCE,
+        OVERSIZE_TEXT,
+        OVERSIZE_TEXT,
+    ),
+    hostile(
+        "attribution_actor oversize",
+        Column::AttributionActor,
+        "",
+        OVERSIZE_JSON,
+        OVERSIZE_JSON,
+    ),
+    hostile(
+        "attribution_evidence oversize",
+        Column::AttributionEvidence,
+        "",
+        OVERSIZE_JSON,
+        OVERSIZE_JSON,
+    ),
 ];
 
 #[test]
@@ -826,6 +944,15 @@ fn the_tamper_cases_cover_every_compared_column_changed_and_removed() {
             "no hostile-value case for {}",
             column.name()
         );
+    }
+    // Every column that can hold more than a part of an event can hold has a value past that bound. Only the two of a fixed size
+    // (`at`, `approval_id`) cannot.
+    for column in Column::ALL {
+        let fixed = matches!(column, Column::At | Column::ApprovalId);
+        let oversize = CASES
+            .iter()
+            .any(|c| c.column == column && c.hostile && c.name.contains("oversize"));
+        assert_eq!(oversize, !fixed, "{}", column.name());
     }
     // The three times a `timestamptz` holds and a bigint of microseconds does not.
     for needle in ["at infinity", "at -infinity", "294276-01-01"] {
@@ -868,8 +995,8 @@ async fn a_denormalised_column_changed_alone_is_detected_for_every_column() {
 
         let column = case.column.name();
         rig.tamper_open(false).await;
-        if !case.prep.is_empty() {
-            rig.admin_sql(case.prep).await;
+        for statement in case.prep.split(';').filter(|s| !s.is_empty()) {
+            rig.admin_sql(statement).await;
         }
         rig.admin_sql(&format!(
             "UPDATE audit_events SET {column} = {} WHERE seq = 1",
@@ -1053,7 +1180,7 @@ async fn a_later_tamper_is_found_after(column_sql: &str, differ: Column) {
     assert_eq!(sent[0].severity, Severity::Critical);
     let summary = sent[0].summary.as_str();
     assert!(
-        summary.contains("3 problem(s)") && summary.contains("position 2") && summary.contains(differ.name()),
+        summary.contains("3 problem(s)") && summary.contains("event hash mismatch at position 5"),
         "{summary}"
     );
 }
@@ -1167,4 +1294,975 @@ async fn a_hundred_column_failures_do_not_crowd_out_a_broken_chain_or_a_checkpoi
         ],
         "the broken chain and the checkpoint are listed, though a hundred column failures came first"
     );
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Round 3, B1: a checkpoint column that cannot be used is a finding about that checkpoint, never an error that discards the rest.
+
+const TAMPER_5: &str = "UPDATE audit_events SET event_json = replace(event_json, 'settings_changed', 'role_changed') WHERE seq = 5";
+
+/// 12 events with checkpoints at 6 and 12, and the stored event of seq 5 rewritten without its hash. The triggers of both audit
+/// tables, and the table's own hash check, are off, as they are for an owner who means to.
+async fn rig_with_a_tamper_at_5(db: support::pg::TestDb) -> AuditRig {
+    let rig = rig_with_checkpoints(db).await;
+    rig.tamper_open(true).await;
+    rig.tamper_open_checkpoints().await;
+    rig.admin_sql(TAMPER_5).await;
+    rig
+}
+
+/// The nightly run is `Failed` with exactly these failures in this order, is not an error, and the admins are told once.
+async fn assert_failed_with(
+    rig: &AuditRig,
+    what: &str,
+    expected: &[VerifyFailure],
+) -> hub_identity::audit::VerifyReport {
+    let outcome = rig.nightly().run_once().await.unwrap();
+    let NightlyOutcome::Failed(report) = outcome else {
+        panic!("{what}: expected a failed run, got {outcome:?}");
+    };
+    assert_eq!(report.failures, expected, "{what}");
+    assert_eq!(
+        rig.metrics.audit_verify_errors_total(),
+        0,
+        "{what}: a finding, not an error"
+    );
+    assert_eq!(
+        rig.metrics.audit_verify_failures_total(),
+        u64::try_from(expected.len()).unwrap(),
+        "{what}"
+    );
+    assert_eq!(rig.notifier.sent().len(), 1, "{what}: the admins are told once");
+    report
+}
+
+struct CpCase {
+    name: &'static str,
+    column: CheckpointColumn,
+    /// Run first, as the owner.
+    prep: &'static str,
+    /// The SQL value written into the checkpoint at 12.
+    value: &'static str,
+    /// What the checkpoint is reported as; `None` is `CheckpointColumnsInvalid` naming the column.
+    kind: Option<FailureKind>,
+}
+
+const DROP_NOT_NULL_HEAD: &str = "ALTER TABLE audit_checkpoints ALTER COLUMN head_hash DROP NOT NULL";
+const DROP_NOT_NULL_VERSION: &str =
+    "ALTER TABLE audit_checkpoints ALTER COLUMN kms_key_version DROP NOT NULL";
+const DROP_NOT_NULL_SIGNATURE: &str = "ALTER TABLE audit_checkpoints ALTER COLUMN signature DROP NOT NULL";
+const DROP_NOT_NULL_OBJECT: &str = "ALTER TABLE audit_checkpoints ALTER COLUMN gcs_object DROP NOT NULL";
+
+const CP_CASES: &[CpCase] = &[
+    CpCase {
+        name: "head_hash NULL",
+        column: CheckpointColumn::HeadHash,
+        prep: DROP_NOT_NULL_HEAD,
+        value: "NULL",
+        kind: None,
+    },
+    CpCase {
+        name: "head_hash oversize (33 bytes)",
+        column: CheckpointColumn::HeadHash,
+        prep: NO_HASH_LENGTH,
+        value: "decode(repeat('ab', 33), 'hex')",
+        kind: None,
+    },
+    CpCase {
+        name: "head_hash of two megabytes",
+        column: CheckpointColumn::HeadHash,
+        prep: NO_HASH_LENGTH,
+        value: "decode(repeat('ab', 2000000), 'hex')",
+        kind: None,
+    },
+    CpCase {
+        name: "head_hash of one byte",
+        column: CheckpointColumn::HeadHash,
+        prep: NO_HASH_LENGTH,
+        value: "'\\x00'::bytea",
+        kind: Some(FailureKind::CheckpointHeadMismatch),
+    },
+    CpCase {
+        name: "kms_key_version NULL",
+        column: CheckpointColumn::KmsKeyVersion,
+        prep: DROP_NOT_NULL_VERSION,
+        value: "NULL",
+        kind: None,
+    },
+    CpCase {
+        name: "kms_key_version oversize (513 characters)",
+        column: CheckpointColumn::KmsKeyVersion,
+        prep: "",
+        value: "repeat('k', 513)",
+        kind: None,
+    },
+    CpCase {
+        name: "kms_key_version of four megabytes",
+        column: CheckpointColumn::KmsKeyVersion,
+        prep: "",
+        value: "repeat('k', 4000000)",
+        kind: None,
+    },
+    CpCase {
+        name: "kms_key_version empty",
+        column: CheckpointColumn::KmsKeyVersion,
+        prep: "",
+        value: "''",
+        kind: Some(FailureKind::BucketObjectMismatch),
+    },
+    CpCase {
+        name: "signature NULL",
+        column: CheckpointColumn::Signature,
+        prep: DROP_NOT_NULL_SIGNATURE,
+        value: "NULL",
+        kind: None,
+    },
+    CpCase {
+        name: "signature oversize (129 bytes)",
+        column: CheckpointColumn::Signature,
+        prep: "",
+        value: "decode(repeat('ab', 129), 'hex')",
+        kind: None,
+    },
+    CpCase {
+        name: "signature of two megabytes",
+        column: CheckpointColumn::Signature,
+        prep: "",
+        value: "decode(repeat('ab', 2000000), 'hex')",
+        kind: None,
+    },
+    CpCase {
+        name: "signature empty",
+        column: CheckpointColumn::Signature,
+        prep: "",
+        value: "'\\x'::bytea",
+        kind: Some(FailureKind::BucketObjectMismatch),
+    },
+    CpCase {
+        name: "gcs_object NULL",
+        column: CheckpointColumn::GcsObject,
+        prep: DROP_NOT_NULL_OBJECT,
+        value: "NULL",
+        kind: None,
+    },
+    CpCase {
+        name: "gcs_object oversize (129 characters)",
+        column: CheckpointColumn::GcsObject,
+        prep: "",
+        value: "repeat('o', 129)",
+        kind: None,
+    },
+    CpCase {
+        name: "gcs_object of four megabytes",
+        column: CheckpointColumn::GcsObject,
+        prep: "",
+        value: "repeat('o', 4000000)",
+        kind: None,
+    },
+    CpCase {
+        name: "gcs_object of another position",
+        column: CheckpointColumn::GcsObject,
+        prep: "",
+        value: "'audit/checkpoints/13.json'",
+        kind: Some(FailureKind::CheckpointNameInvalid),
+    },
+];
+
+#[test]
+fn the_checkpoint_cases_cover_every_column_removed_and_oversize() {
+    for column in CheckpointColumn::ALL {
+        for what in ["NULL", "oversize"] {
+            assert!(
+                CP_CASES
+                    .iter()
+                    .any(|c| c.column == column && c.kind.is_none() && c.name.contains(what)),
+                "no {what} case for {}",
+                column.name()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_checkpoint_column_that_cannot_be_used_is_a_finding_and_a_tamper_elsewhere_is_still_found() {
+    // The reviewer's scenario for every column: the checkpoint at 12 is unusable and the event at 5 was rewritten. A verifier that
+    // lets the first end the run never reports the second, night after night.
+    for case in CP_CASES {
+        let rig = rig_with_a_tamper_at_5(db!()).await;
+        for statement in case.prep.split(';').filter(|s| !s.is_empty()) {
+            rig.admin_sql(statement).await;
+        }
+        rig.admin_sql(&format!(
+            "UPDATE audit_checkpoints SET {} = {} WHERE seq = 12",
+            case.column.name(),
+            case.value
+        ))
+        .await;
+        let kind = case
+            .kind
+            .unwrap_or(FailureKind::CheckpointColumnsInvalid(CheckpointColumnSet::of(&[
+                case.column,
+            ])));
+        assert_failed_with(
+            &rig,
+            case.name,
+            &[failure(5, FailureKind::ChainHashMismatch), failure(12, kind)],
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn a_bad_checkpoint_column_alerts_with_the_column_name_and_never_the_value() {
+    let (capture, _guard) = log_capture::install();
+    let rig = rig_with_checkpoints(db!()).await;
+    rig.tamper_open_checkpoints().await;
+    rig.admin_sql_bound(
+        "UPDATE audit_checkpoints SET gcs_object = $1 || repeat('o', 200) WHERE seq = 12",
+        "SECRET-OBJECT-NAME",
+    )
+    .await;
+    let outcome = rig.nightly().run_once().await.unwrap();
+    let NightlyOutcome::Failed(report) = outcome else {
+        panic!("expected a failed run, got {outcome:?}");
+    };
+    assert_eq!(
+        report.failures,
+        [failure(
+            12,
+            FailureKind::CheckpointColumnsInvalid(CheckpointColumnSet::of(&[CheckpointColumn::GcsObject]))
+        )]
+    );
+    let sent = rig.notifier.sent();
+    assert_eq!(sent.len(), 1);
+    let summary = sent[0].summary.as_str();
+    assert!(
+        summary.contains("position 12") && summary.contains("gcs_object"),
+        "{summary}"
+    );
+    let log = capture.text();
+    assert!(log.contains("seq=12") && log.contains("gcs_object"), "{log}");
+    assert!(!log.contains("SECRET-OBJECT-NAME"), "a value reached the log");
+    assert!(!format!("{sent:?}{report:?}").contains("SECRET-OBJECT-NAME"));
+    tracing::error!(value = "SECRET-OBJECT-NAME", "planted by the test");
+    assert!(capture.text().contains("SECRET-OBJECT-NAME"));
+}
+
+#[tokio::test]
+async fn a_checkpoint_at_a_position_no_event_has_is_a_finding_for_any_seq() {
+    // The INSERT-only app role may write a checkpoint row with any seq. None of these is the checkpoint of a head.
+    for seq in [-5_i64, 0, i64::MIN, i64::MAX] {
+        let rig = rig_with_a_tamper_at_5(db!()).await;
+        rig.admin_sql(&format!(
+            "INSERT INTO audit_checkpoints (seq, head_hash, kms_key_version, signature, gcs_object) \
+             VALUES ({seq}, sha256('forged'), 'v', '\\x3006010203040506', 'audit/checkpoints/9.json')"
+        ))
+        .await;
+        assert_failed_with(
+            &rig,
+            &format!("checkpoint at {seq}"),
+            &[
+                failure(5, FailureKind::ChainHashMismatch),
+                failure(seq, FailureKind::CheckpointHeadMissing),
+            ],
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn a_checkpoint_of_a_forged_event_at_position_0_is_still_a_finding() {
+    // The forged event at 0 and a checkpoint row that names it, with the right hash and the right object name for position 0.
+    // Nothing is wrong with the checkpoint but its position: no head is ever signed there.
+    let rig = rig_with_checkpoints(db!()).await;
+    insert_forged_event(&rig, 0).await;
+    rig.admin_sql(
+        "INSERT INTO audit_checkpoints (seq, head_hash, kms_key_version, signature, gcs_object) \
+         SELECT 0, hash, 'v', '\\x3006010203040506', 'audit/checkpoints/0.json' FROM audit_events WHERE seq = 0",
+    )
+    .await;
+    assert_failed_with(
+        &rig,
+        "checkpoint at 0",
+        &[
+            failure(0, FailureKind::SeqNotPositive),
+            failure(0, FailureKind::CheckpointHeadMissing),
+        ],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_checkpoint_created_at_that_is_null_or_infinite_changes_nothing() {
+    // `created_at` is not read by the verifier (the bucket's object holds its own copy and it is not compared), so no value in it
+    // can end the run or hide the tamper at 5. A characterisation, true before the round and after it.
+    for (name, prep, value) in [
+        (
+            "NULL",
+            "ALTER TABLE audit_checkpoints ALTER COLUMN created_at DROP NOT NULL",
+            "NULL",
+        ),
+        ("infinity", "", "'infinity'"),
+        ("-infinity", "", "'-infinity'"),
+    ] {
+        let rig = rig_with_a_tamper_at_5(db!()).await;
+        if !prep.is_empty() {
+            rig.admin_sql(prep).await;
+        }
+        rig.admin_sql(&format!(
+            "UPDATE audit_checkpoints SET created_at = {value} WHERE seq = 12"
+        ))
+        .await;
+        assert_failed_with(
+            &rig,
+            &format!("created_at {name}"),
+            &[failure(5, FailureKind::ChainHashMismatch)],
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn a_checkpoint_query_that_fails_still_reports_what_the_chain_walk_found() {
+    // A real query-level fault in the second half (a column of `audit_checkpoints` the select names is gone). The findings of the
+    // first half are not thrown away with it: they come back with the error, and the admins are told.
+    let rig = rig_with_a_tamper_at_5(db!()).await;
+    rig.admin_sql("ALTER TABLE audit_checkpoints RENAME COLUMN gcs_object TO gcs_object_renamed")
+        .await;
+    let aborted = rig.chain_verifier().verify().await.unwrap_err();
+    assert_eq!(aborted.error, VerifyError::Database);
+    assert_eq!(
+        aborted.partial.failures,
+        [failure(5, FailureKind::ChainHashMismatch)]
+    );
+    assert_eq!(aborted.partial.events_checked, 5);
+
+    let outcome = rig.nightly().run_once().await.unwrap();
+    let NightlyOutcome::Incomplete(report) = outcome else {
+        panic!("expected an incomplete run, got {outcome:?}");
+    };
+    assert_eq!(report.failures, [failure(5, FailureKind::ChainHashMismatch)]);
+    assert_eq!(rig.metrics.audit_verify_errors_total(), 1, "it is also an error");
+    assert_eq!(
+        rig.metrics.audit_verify_failures_total(),
+        1,
+        "and the finding is counted"
+    );
+    let sent = rig.notifier.sent();
+    assert_eq!(sent.len(), 1, "the admins are told of the finding");
+    let summary = sent[0].summary.as_str();
+    assert!(
+        summary.contains("position 5") && summary.contains("did not finish"),
+        "{summary}"
+    );
+}
+
+#[tokio::test]
+async fn a_chain_query_that_fails_does_not_stop_the_checkpoints_being_checked() {
+    let rig = rig_with_checkpoints(db!()).await;
+    rig.tamper_open_checkpoints().await;
+    // The checkpoint at 12 now signs a head the chain does not have ...
+    rig.admin_sql("UPDATE audit_checkpoints SET head_hash = sha256('other') WHERE seq = 12")
+        .await;
+    // ... and the chain walk cannot run at all.
+    rig.admin_sql("ALTER TABLE audit_events RENAME COLUMN via TO via_renamed")
+        .await;
+    let aborted = rig.chain_verifier().verify().await.unwrap_err();
+    assert_eq!(aborted.error, VerifyError::Database);
+    assert_eq!(
+        aborted.partial.failures,
+        [failure(12, FailureKind::CheckpointHeadMismatch)]
+    );
+    assert_eq!(aborted.partial.checkpoints_checked, 2);
+}
+
+#[tokio::test]
+async fn a_run_that_found_nothing_before_it_failed_is_plainly_errored() {
+    let rig = rig_with_checkpoints(db!()).await;
+    rig.admin_sql("ALTER TABLE audit_checkpoints RENAME COLUMN gcs_object TO gcs_object_renamed")
+        .await;
+    assert_eq!(rig.nightly().run_once().await.unwrap(), NightlyOutcome::Errored);
+    assert_eq!(rig.metrics.audit_verify_errors_total(), 1);
+    assert_eq!(rig.metrics.audit_verify_failures_total(), 0);
+    assert!(rig.notifier.sent().is_empty());
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Round 3, N1: a position that is not positive, or missing, cannot hide a row.
+
+/// A row the INSERT-only app role can write with an explicit `seq`: a valid hash, a `prev_hash` that links to nothing, and an
+/// attribution that is a forgery.
+async fn insert_forged_event(rig: &AuditRig, seq: i64) {
+    sqlx::query(
+        "WITH p AS (SELECT sha256(convert_to('forged-prev-' || $1::bigint::text, 'UTF8')) AS prev) \
+         INSERT INTO audit_events (seq, prev_hash, hash, event_json, at, actor_kind, actor_ref, action, via) \
+         SELECT $1::bigint, prev, sha256(prev || convert_to('{\"forged\":1}', 'UTF8')), '{\"forged\":1}', now(), \
+                'system', 'forged', 'settings_changed', 'system' FROM p",
+    )
+    .bind(seq)
+    .execute(&rig.pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn an_event_at_a_position_that_is_not_positive_is_a_finding_and_the_chain_is_still_whole() {
+    for seq in [-5_i64, 0, i64::MIN] {
+        let rig = rig_with_checkpoints(db!()).await;
+        insert_forged_event(&rig, seq).await;
+        let report = assert_failed_with(
+            &rig,
+            &format!("event at {seq}"),
+            &[failure(seq, FailureKind::SeqNotPositive)],
+        )
+        .await;
+        // The real chain, from the genesis hash, is read and found good: the forged row is skipped and does not take the place of
+        // the first.
+        assert_eq!(report.events_checked, 12, "event at {seq}");
+        assert_eq!(report.checkpoints_checked, 2, "event at {seq}");
+    }
+}
+
+#[tokio::test]
+async fn an_event_at_a_position_that_is_not_positive_does_not_hide_a_later_tamper() {
+    for seq in [-5_i64, 0, i64::MIN] {
+        let rig = rig_with_checkpoints(db!()).await;
+        insert_forged_event(&rig, seq).await;
+        rig.tamper_open(true).await;
+        rig.admin_sql(TAMPER_5).await;
+        assert_failed_with(
+            &rig,
+            &format!("event at {seq}"),
+            &[
+                failure(seq, FailureKind::SeqNotPositive),
+                failure(5, FailureKind::ChainHashMismatch),
+            ],
+        )
+        .await;
+    }
+}
+
+const DROP_EVENTS_KEY: [&str; 2] = [
+    "ALTER TABLE audit_events DROP CONSTRAINT audit_events_pkey",
+    "ALTER TABLE audit_events ALTER COLUMN seq DROP NOT NULL",
+];
+const DROP_CHECKPOINTS_KEY: [&str; 2] = [
+    "ALTER TABLE audit_checkpoints DROP CONSTRAINT audit_checkpoints_pkey",
+    "ALTER TABLE audit_checkpoints ALTER COLUMN seq DROP NOT NULL",
+];
+
+#[tokio::test]
+async fn an_event_whose_seq_was_removed_is_a_finding_and_breaks_the_next_link() {
+    let rig = rig_with_checkpoints(db!()).await;
+    rig.tamper_open(false).await;
+    for statement in DROP_EVENTS_KEY {
+        rig.admin_sql(statement).await;
+    }
+    rig.admin_sql("UPDATE audit_events SET seq = NULL WHERE seq = 3")
+        .await;
+    assert_failed_with(
+        &rig,
+        "seq NULL",
+        &[
+            failure(0, FailureKind::EventPositionMissing),
+            failure(4, FailureKind::ChainLinkBroken),
+        ],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_forged_event_with_no_seq_at_the_tail_is_a_finding() {
+    // Nothing after it breaks: it is chained to the head, valid, and has no position. Only a look for such rows finds it.
+    let rig = rig_with_checkpoints(db!()).await;
+    rig.tamper_open(false).await;
+    for statement in DROP_EVENTS_KEY {
+        rig.admin_sql(statement).await;
+    }
+    rig.admin_sql(
+        "INSERT INTO audit_events (seq, prev_hash, hash, event_json, at, actor_kind, actor_ref, action, via) \
+         SELECT NULL, hash, sha256(hash || convert_to('{\"forged\":1}', 'UTF8')), '{\"forged\":1}', now(), \
+                'system', 'forged', 'settings_changed', 'system' FROM audit_events WHERE seq = 12",
+    )
+    .await;
+    let report = assert_failed_with(
+        &rig,
+        "forged tail",
+        &[failure(0, FailureKind::EventPositionMissing)],
+    )
+    .await;
+    assert_eq!(report.events_checked, 12, "the real chain is whole");
+}
+
+#[tokio::test]
+async fn a_full_batch_of_rows_with_no_seq_ends_the_walk_instead_of_repeating_it() {
+    // The first batch has no `WHERE`, so it returns rows with no `seq` (last). If a whole batch is such rows, no `seq` was read to
+    // continue from; the walk must end there and not ask for the same batch for ever.
+    let rig = rig_with_checkpoints(db!()).await;
+    rig.tamper_open(false).await;
+    rig.tamper_open_checkpoints().await;
+    for statement in DROP_EVENTS_KEY {
+        rig.admin_sql(statement).await;
+    }
+    for statement in DROP_CHECKPOINTS_KEY {
+        rig.admin_sql(statement).await;
+    }
+    rig.admin_sql("UPDATE audit_events SET seq = NULL").await;
+    // More checkpoint rows with no `seq` than a checkpoint batch holds (500).
+    rig.admin_sql(
+        "INSERT INTO audit_checkpoints (seq, head_hash, kms_key_version, signature, gcs_object) \
+         SELECT NULL, sha256('x'), 'v', '\\x3006010203040506', 'audit/checkpoints/1.json' FROM generate_series(1, 600)",
+    )
+    .await;
+    rig.admin_sql("UPDATE audit_checkpoints SET seq = NULL").await;
+    let verifier = rig.chain_verifier().with_batch_rows(5);
+    let report = tokio::time::timeout(Duration::from_secs(30), verifier.verify())
+        .await
+        .expect("the walk ended")
+        .unwrap();
+    assert_eq!(
+        report.failures,
+        [
+            failure(0, FailureKind::EventPositionMissing),
+            failure(0, FailureKind::CheckpointPositionMissing)
+        ]
+    );
+    assert_eq!((report.events_checked, report.checkpoints_checked), (0, 0));
+}
+
+#[tokio::test]
+async fn a_checkpoint_with_no_seq_is_a_finding() {
+    let rig = rig_with_checkpoints(db!()).await;
+    rig.tamper_open_checkpoints().await;
+    for statement in DROP_CHECKPOINTS_KEY {
+        rig.admin_sql(statement).await;
+    }
+    rig.admin_sql(
+        "INSERT INTO audit_checkpoints (seq, head_hash, kms_key_version, signature, gcs_object) \
+         VALUES (NULL, sha256('forged'), 'v', '\\x3006010203040506', 'audit/checkpoints/9.json')",
+    )
+    .await;
+    assert_failed_with(
+        &rig,
+        "checkpoint without seq",
+        &[failure(0, FailureKind::CheckpointPositionMissing)],
+    )
+    .await;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Round 3, B2: every value the verifier reads is bounded in the select; an oversize one is reported and never sent.
+
+/// The raw bytes of every column of a fetched row, as the server sent them.
+fn row_bytes(row: &sqlx::postgres::PgRow) -> usize {
+    (0..sqlx::Row::columns(row).len())
+        .map(|i| {
+            sqlx::Row::try_get_raw(row, i)
+                .ok()
+                .and_then(|v| v.as_bytes().ok().map(<[u8]>::len))
+                .unwrap_or(0)
+        })
+        .sum()
+}
+
+#[tokio::test]
+async fn the_select_sends_the_flag_and_not_an_oversize_value() {
+    let rig = rig_with_checkpoints(db!()).await;
+    rig.tamper_open(true).await;
+    rig.tamper_open_checkpoints().await;
+    rig.admin_sql("ALTER TABLE audit_events DROP CONSTRAINT audit_events_event_json_check")
+        .await;
+    rig.admin_sql(NO_HASH_LENGTH).await;
+    // With the unique indexes gone, the hash columns of the chain can be as long as any other.
+    rig.admin_sql("ALTER TABLE audit_checkpoints DROP CONSTRAINT audit_checkpoints_seq_head_hash_fkey")
+        .await;
+    rig.admin_sql(
+        "ALTER TABLE audit_events DROP CONSTRAINT audit_events_seq_hash_key, \
+         DROP CONSTRAINT audit_events_hash_key, DROP CONSTRAINT audit_events_prev_hash_key",
+    )
+    .await;
+    rig.admin_sql("UPDATE audit_events SET prev_hash = decode(repeat('ab', 1500000), 'hex') WHERE seq = 4")
+        .await;
+    rig.admin_sql("UPDATE audit_events SET hash = decode(repeat('cd', 1500000), 'hex') WHERE seq = 5")
+        .await;
+    // Server-side, so that the values never pass through this process: tens of megabytes in a row ...
+    rig.admin_sql(
+        "UPDATE audit_events SET github_login = repeat('x', 50000000), request_id = repeat('y', 3000000), \
+         hash_before = decode(repeat('ab', 1500000), 'hex'), \
+         attribution_evidence = ('[' || repeat('1,', 4000000) || '1]')::jsonb, \
+         event_json = event_json || repeat(' ', 3000000), hash = sha256(prev_hash || convert_to(event_json || repeat(' ', 3000000), 'UTF8')) \
+         WHERE seq = 3",
+    )
+    .await;
+    // ... and in the checkpoint row at 12.
+    rig.admin_sql("UPDATE audit_checkpoints SET gcs_object = repeat('o', 5000000), signature = decode(repeat('ab', 2000000), 'hex') WHERE seq = 12")
+        .await;
+    for (what, sql, binds) in [
+        ("chain, first batch", chain_batch_sql(false), 0),
+        ("chain, keyset batch", chain_batch_sql(true), 1),
+        ("checkpoints, first batch", checkpoint_batch_sql(false), 0),
+        ("checkpoints, keyset batch", checkpoint_batch_sql(true), 1),
+    ] {
+        let mut query = sqlx::query(&sql);
+        if binds == 1 {
+            query = query.bind(i64::MIN);
+        }
+        let rows = query.bind(5_000_i64).fetch_all(&rig.pool).await.unwrap();
+        assert!(!rows.is_empty(), "{what}");
+        let biggest = rows.iter().map(row_bytes).max().unwrap();
+        assert!(
+            biggest < 8 * 1024,
+            "{what}: a row came back with {biggest} bytes: an oversize value was sent"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_event_json_over_the_limit_is_a_hash_failure_even_when_its_hash_is_consistent() {
+    // The table's CHECK on the size is dropped, and the hash is recomputed over the long text, so that the only thing wrong with
+    // the row is its size. Without a bound the row verifies and the damage shows one row later, as a broken link.
+    let rig = rig_with_checkpoints(db!()).await;
+    rig.tamper_open(true).await;
+    rig.admin_sql("ALTER TABLE audit_events DROP CONSTRAINT audit_events_event_json_check")
+        .await;
+    rig.admin_sql(
+        "UPDATE audit_events SET event_json = event_json || repeat(' ', 2000000), \
+         hash = sha256(prev_hash || convert_to(event_json || repeat(' ', 2000000), 'UTF8')) WHERE seq = 3",
+    )
+    .await;
+    let report = rig.chain_verifier().verify().await.unwrap();
+    assert_eq!(report.failures, [failure(3, FailureKind::ChainHashMismatch)]);
+}
+
+#[tokio::test]
+async fn a_hash_column_of_the_wrong_size_in_the_chain_is_a_hash_failure_not_an_error() {
+    for (column, value) in [
+        ("prev_hash", "decode(repeat('ab', 33), 'hex')"),
+        // As long as a unique index on the column takes.
+        ("hash", "decode(repeat('ab', 2000), 'hex')"),
+    ] {
+        let rig = rig_with_checkpoints(db!()).await;
+        rig.tamper_open(true).await;
+        rig.admin_sql(NO_HASH_LENGTH).await;
+        rig.admin_sql(&format!(
+            "UPDATE audit_events SET {column} = {value} WHERE seq = 3"
+        ))
+        .await;
+        let outcome = rig.nightly().run_once().await.unwrap();
+        let NightlyOutcome::Failed(report) = outcome else {
+            panic!("{column}: expected a failed run, got {outcome:?}");
+        };
+        assert_eq!(
+            report.failures.first(),
+            Some(&failure(3, FailureKind::ChainHashMismatch)),
+            "{column}"
+        );
+        assert_eq!(rig.metrics.audit_verify_errors_total(), 0, "{column}");
+    }
+}
+
+/// The largest event the log accepts, field by field: every bounded field at its longest, the diff at its limit.
+fn largest_event() -> ports::AuditEvent {
+    let long = |unit: &str| domain::ShortText::parse(&unit.repeat(256 / unit.len())).unwrap();
+    let mut e = full_event(0);
+    e.actor = ports::AuditActor::System {
+        component: long("é")
+    };
+    e.github_login = Some(long("é"));
+    e.diff = Some("x".repeat(ports::AuditEvent::MAX_DIFF_BYTES));
+    e.path = Some(
+        domain::NfsPath::parse(&format!(
+            "{}/{}/{}/{}.yml",
+            "a".repeat(250),
+            "b".repeat(250),
+            "c".repeat(250),
+            "d".repeat(200)
+        ))
+        .unwrap(),
+    );
+    if let Some(a) = e.attribution.as_mut() {
+        a.evidence.executable = Some(long("é"));
+        a.evidence.login_identity = Some(long("é"));
+        a.actor = Some(domain::Actor::OsLogin { login: long("é") });
+    }
+    e
+}
+
+#[tokio::test]
+async fn the_largest_event_the_log_accepts_verifies_clean() {
+    // The bounds are derived from what an event can hold; none of them may flag an event the log wrote.
+    let rig = AuditRig::new(db!()).await;
+    for i in 0..3 {
+        let mut e = largest_event();
+        e.at = domain::Timestamp::from_unix_millis(1_700_000_000_000 + i);
+        rig.record_event(e).await;
+    }
+    rig.checkpoint_job().run_once().await.unwrap();
+    let outcome = rig.nightly().run_once().await.unwrap();
+    assert!(matches!(outcome, NightlyOutcome::Clean(_)), "{outcome:?}");
+}
+
+#[tokio::test]
+async fn the_text_form_of_a_jsonb_is_at_most_one_and_a_half_times_its_compact_form() {
+    // `jsonb` prints `, ` and `: ` where the event's compact JSON has `,` and `:`: the worst case is an array of one-byte elements,
+    // 2 bytes each in the event and 3 in the column. The bound on the column is twice the bound on the event.
+    let db = db!();
+    let rig = AuditRig::new(db).await;
+    let compact = 1024 * 1024_i64;
+    let text_len: i64 = sqlx::query_scalar(
+        "SELECT octet_length(('[' || repeat('0,', ($1 / 2 - 1)::int) || '0]')::jsonb::text)::bigint",
+    )
+    .bind(compact)
+    .fetch_one(&rig.pool)
+    .await
+    .unwrap();
+    assert!(text_len > compact, "the text form is the longer one: {text_len}");
+    assert!(
+        text_len * 2 <= compact * 3 + 8,
+        "at most one and a half times: {text_len}"
+    );
+    assert!(text_len <= 2 * compact);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Round 3, N3: the comparison of a batch runs off the async threads.
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_comparison_of_a_batch_does_not_block_the_async_runtime() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
+    let rig = AuditRig::new(db!()).await;
+    for i in 0..400_i64 {
+        let mut e = bare_event(i);
+        e.diff = Some("x".repeat(ports::AuditEvent::MAX_DIFF_BYTES));
+        rig.record_event(e).await;
+    }
+    // A task that wakes every 2 ms on the same single-threaded runtime. If the hashing and parsing of the events (25 MB of them)
+    // ran on this thread, it would not run for as long as they take.
+    let longest_gap_us = Arc::new(AtomicU64::new(0));
+    let ticker = {
+        let longest = longest_gap_us.clone();
+        tokio::spawn(async move {
+            let mut last = Instant::now();
+            loop {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                let now = Instant::now();
+                let gap = u64::try_from(now.duration_since(last).as_micros()).unwrap_or(u64::MAX);
+                longest.fetch_max(gap, Ordering::Relaxed);
+                last = now;
+            }
+        })
+    };
+    let started = Instant::now();
+    let report = rig.chain_verifier().verify().await.unwrap();
+    let took = started.elapsed();
+    ticker.abort();
+    assert!(report.is_clean());
+    assert_eq!(report.events_checked, 400);
+    let gap = Duration::from_micros(longest_gap_us.load(Ordering::Relaxed));
+    assert!(
+        gap < Duration::from_millis(250),
+        "the runtime was held for {gap:?} during a verification that took {took:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Round 3, N5: the verifier's queries are bounded in time.
+
+#[tokio::test]
+async fn a_table_that_stays_locked_ends_the_run_as_errored_in_bounded_time() {
+    let rig = rig_with_checkpoints(db!()).await;
+    // An owner holds ACCESS EXCLUSIVE on the table and does not let go.
+    let mut owner = rig.db.admin().await;
+    sqlx::query("BEGIN").execute(&mut owner).await.unwrap();
+    sqlx::query("LOCK TABLE audit_events IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut owner)
+        .await
+        .unwrap();
+
+    let limited = || {
+        rig.chain_verifier()
+            .with_timeouts(Duration::from_secs(5), Duration::from_millis(500))
+    };
+    let started = std::time::Instant::now();
+    let aborted = tokio::time::timeout(Duration::from_secs(20), limited().verify())
+        .await
+        .expect("the verification ended within the bound")
+        .unwrap_err();
+    assert_eq!(aborted.error, VerifyError::Timeout);
+    assert!(aborted.partial.is_clean() && aborted.partial.events_checked == 0);
+    // The job: errored, counted, not renewing a lease for ever.
+    let job = rig.nightly_with(limited());
+    let outcome = tokio::time::timeout(Duration::from_secs(20), job.run_once())
+        .await
+        .expect("the job ended within the bound")
+        .unwrap();
+    assert_eq!(outcome, NightlyOutcome::Errored);
+    assert_eq!(rig.metrics.audit_verify_errors_total(), 1);
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "took {:?}",
+        started.elapsed()
+    );
+    sqlx::query("ROLLBACK").execute(&mut owner).await.unwrap();
+
+    // Once the lock is gone the same verifier works again.
+    assert!(limited().verify().await.unwrap().is_clean());
+}
+
+#[tokio::test]
+async fn a_query_that_waits_past_the_statement_timeout_is_cancelled_by_the_server() {
+    // The lock timeout is long here (a minute) and the statement timeout short: only the statement timeout can end this wait, and
+    // it does so in the server. The client's own limit is thirty seconds past it.
+    let rig = rig_with_checkpoints(db!()).await;
+    let mut owner = rig.db.admin().await;
+    sqlx::query("BEGIN").execute(&mut owner).await.unwrap();
+    sqlx::query("LOCK TABLE audit_events IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut owner)
+        .await
+        .unwrap();
+    let verifier = rig
+        .chain_verifier()
+        .with_timeouts(Duration::from_secs(1), Duration::from_secs(60));
+    let aborted = tokio::time::timeout(Duration::from_secs(20), verifier.verify())
+        .await
+        .expect("the server ended the wait")
+        .unwrap_err();
+    assert_eq!(aborted.error, VerifyError::Timeout);
+    sqlx::query("ROLLBACK").execute(&mut owner).await.unwrap();
+}
+
+#[tokio::test]
+async fn the_timeouts_are_set_for_the_transaction_and_do_not_outlive_it() {
+    // One connection in the pool: whatever a query left set on it is what the next user of the pool gets.
+    let rig = rig_with_checkpoints(db!()).await;
+    let pool = rig.db.app_pool(1).await;
+    let verifier =
+        hub_identity::audit::ChainVerifier::new(pool.clone(), rig.bucket.clone(), rig.public_key())
+            .with_timeouts(Duration::from_secs(7), Duration::from_secs(3));
+    assert!(verifier.verify().await.unwrap().is_clean());
+    let statement: String = sqlx::query_scalar("SHOW statement_timeout")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let lock: String = sqlx::query_scalar("SHOW lock_timeout")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!((statement.as_str(), lock.as_str()), ("0", "0"));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Round 3: the headline of the alert is the most severe failure, whatever order they were found in.
+
+#[tokio::test]
+async fn the_alert_names_the_most_severe_failure_and_not_the_first_found() {
+    let rig = rig_with_a_tamper_at_5(db!()).await;
+    // A column difference at 2 is found first; the broken chain at 5 and the bad checkpoint at 12 after it.
+    rig.admin_sql("UPDATE audit_events SET via = 'mcp' WHERE seq = 2")
+        .await;
+    rig.admin_sql("UPDATE audit_checkpoints SET head_hash = sha256('other') WHERE seq = 12")
+        .await;
+    let report = assert_failed_with(
+        &rig,
+        "order",
+        &[
+            failure(2, FailureKind::ColumnsDiffer(ColumnSet::of(&[Column::Via]))),
+            failure(5, FailureKind::ChainHashMismatch),
+            failure(12, FailureKind::CheckpointHeadMismatch),
+        ],
+    )
+    .await;
+    assert_eq!(report.failures.len(), 3);
+    let sent = rig.notifier.sent();
+    let summary = sent[0].summary.as_str();
+    assert!(
+        summary.contains("3 problem(s)") && summary.contains("event hash mismatch at position 5"),
+        "{summary}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Round 3: plans of the verifier's queries (P12 family: the keyset walk reads by the primary key, never sorts, never scans).
+
+async fn plan_of(rig: &AuditRig, sql: &str) -> serde_json::Value {
+    let mut admin = rig.db.admin().await;
+    sqlx::query_scalar(&format!("EXPLAIN (FORMAT JSON) {sql}"))
+        .fetch_one(&mut admin)
+        .await
+        .unwrap()
+}
+
+fn node_types(plan: &serde_json::Value) -> Vec<(String, String)> {
+    fn walk(node: &serde_json::Value, out: &mut Vec<(String, String)>) {
+        out.push((
+            node["Node Type"].as_str().unwrap_or_default().to_owned(),
+            node["Index Name"]
+                .as_str()
+                .or_else(|| node["Relation Name"].as_str())
+                .unwrap_or_default()
+                .to_owned(),
+        ));
+        for child in node["Plans"].as_array().into_iter().flatten() {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(&plan[0]["Plan"], &mut out);
+    out
+}
+
+#[tokio::test]
+async fn the_verifier_reads_the_chain_by_the_primary_key_without_sorting() {
+    let rig = AuditRig::new(db!()).await;
+    rig.record(300).await;
+    let mut admin = rig.db.admin().await;
+    sqlx::query("ANALYZE audit_events")
+        .execute(&mut admin)
+        .await
+        .unwrap();
+    for (what, sql) in [
+        ("first batch", chain_batch_sql(false).replace("$1", "10")),
+        (
+            "keyset batch",
+            chain_batch_sql(true).replace("$1", "100").replace("$2", "10"),
+        ),
+    ] {
+        let nodes = node_types(&plan_of(&rig, &sql).await);
+        assert!(
+            nodes
+                .iter()
+                .any(|(t, i)| t == "Index Scan" && i == "audit_events_pkey"),
+            "{what}: {nodes:?}"
+        );
+        assert!(
+            !nodes.iter().any(|(t, _)| t == "Sort" || t == "Seq Scan"),
+            "{what}: {nodes:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_look_for_an_event_without_a_seq_is_an_index_probe_while_the_key_is_there() {
+    // With the primary key in place the probe reads an index and finds nothing, so a large table costs it nothing.
+    let rig = AuditRig::new(db!()).await;
+    rig.record(300).await;
+    let mut admin = rig.db.admin().await;
+    sqlx::query("ANALYZE audit_events")
+        .execute(&mut admin)
+        .await
+        .unwrap();
+    let plan = plan_of(
+        &rig,
+        "SELECT EXISTS (SELECT 1 FROM audit_events WHERE seq IS NULL)",
+    )
+    .await;
+    let nodes = node_types(&plan);
+    assert!(
+        nodes
+            .iter()
+            .any(|(t, i)| t.starts_with("Index") && i == "audit_events_pkey"),
+        "{nodes:?}"
+    );
+    assert!(!nodes.iter().any(|(t, _)| t == "Seq Scan"), "{nodes:?}");
 }

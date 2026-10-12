@@ -45,7 +45,7 @@ pub const CHAIN_LOCK_KEY: i64 = 0x004C_4B41_5544_4955;
 pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The table refuses an `event_json` over this size. The bounded fields of an event cannot reach it; this is the backstop.
-const MAX_EVENT_JSON_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_EVENT_JSON_BYTES: usize = 1024 * 1024;
 
 /// `at` is built by parsing the interval from text, which is integer arithmetic. `$4::bigint * interval '1 millisecond'` multiplies in
 /// floating point and is off by microseconds from the year 2255 on, and the nightly verifier compares `at` to the microsecond.

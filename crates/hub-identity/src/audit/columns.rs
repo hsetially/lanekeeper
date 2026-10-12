@@ -23,9 +23,18 @@
 //!   column that is `NOT NULL` by the schema) is reported as differing, by name, and the walk goes on. A copy that cannot be read
 //!   is not the copy of anything. Only a failure that is not about the value (a missing column, a connection) is an error.
 //!
+//! - **every value read is bounded in the query**, not after it. A text or `bytea` column is read as
+//!   `CASE WHEN octet_length(col) <= N THEN col END`, a `jsonb` column as `... octet_length(col::text) <= N ...`, and a bitmask
+//!   column `oversize` says which were left out. A value over its bound is never sent to this process, never buffered, never
+//!   decoded: it is reported as that column differing, like any value no event can have written. The bound is derived from the one
+//!   the log enforces: a copy is a part of one event, and the log refuses an event over [`MAX_EVENT_JSON_BYTES`] (see
+//!   [`TEXT_COLUMN_LIMIT`], [`JSONB_TEXT_LIMIT`]). Without it one row with a few hundred megabytes in a `jsonb` column, which
+//!   nothing else limits, ends every nightly run out of memory and silent.
+//!
 //! A difference is reported by the column's name only, never its value (S10).
 
 use std::fmt;
+use std::sync::LazyLock;
 
 use domain::ContentHash;
 use ports::AuditActor;
@@ -33,7 +42,20 @@ use serde_json::{Map, Value};
 use sqlx::Row;
 use sqlx::postgres::PgRow;
 
-use super::log::actor_parts;
+use super::log::{MAX_EVENT_JSON_BYTES, actor_parts};
+
+/// The most a copied text column can legitimately hold. A copy is a part of one event, and an event is at most
+/// [`MAX_EVENT_JSON_BYTES`] of JSON (the log checks this before it takes the lock, and the table's `CHECK` backs it); the text of
+/// a JSON string is never longer than the string. In practice every field is far shorter (a `ShortText` has 256 bytes), but this is
+/// the bound that cannot be wrong.
+pub const TEXT_COLUMN_LIMIT: usize = MAX_EVENT_JSON_BYTES;
+/// The most a copied `jsonb` column can legitimately hold, as `octet_length(col::text)`. The column is a part of the event, at most
+/// [`MAX_EVENT_JSON_BYTES`] as compact JSON; `jsonb` prints one space after every `,` and `:`, and each is next to an element of at
+/// least one byte, so its text is at most one and a half times the compact form. Twice is the bound.
+pub const JSONB_TEXT_LIMIT: usize = 2 * MAX_EVENT_JSON_BYTES;
+const _: () = assert!(JSONB_TEXT_LIMIT >= MAX_EVENT_JSON_BYTES + MAX_EVENT_JSON_BYTES / 2);
+/// A hash column holds 32 bytes.
+pub const HASH_COLUMN_BYTES: usize = 32;
 
 /// A denormalised column of `audit_events`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +124,35 @@ impl Column {
     const fn bit(self) -> u32 {
         1 << (self as u32)
     }
+
+    /// What kind of value the column holds, for its bound.
+    const fn stored(self) -> Stored {
+        match self {
+            Self::At | Self::ApprovalId => Stored::Fixed,
+            Self::ActorKind
+            | Self::ActorRef
+            | Self::Action
+            | Self::Via
+            | Self::SwimlaneId
+            | Self::Path
+            | Self::GithubLogin
+            | Self::RequestId
+            | Self::AttributionSource
+            | Self::AttributionConfidence => Stored::Text,
+            Self::HashBefore | Self::HashAfter => Stored::Hash,
+            Self::AttributionActor | Self::AttributionEvidence => Stored::Jsonb,
+        }
+    }
+}
+
+/// How a column is stored, which decides how its size is measured and bounded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stored {
+    /// A value of a fixed size (`timestamptz`, `bigint`): no bound needed.
+    Fixed,
+    Text,
+    Hash,
+    Jsonb,
 }
 
 /// A set of columns. Small and `Copy`, so a failure that carries one stays `Copy`.
@@ -124,6 +175,11 @@ impl ColumnSet {
             set.insert(*c);
         }
         set
+    }
+
+    /// The set a bitmask of the `oversize` column stands for (bit `n` is the column at index `n` of [`Column::ALL`]).
+    pub fn from_mask(mask: i32) -> Self {
+        Self(u32::try_from(mask).unwrap_or(0) & Self::all().0)
     }
 
     pub fn insert(&mut self, c: Column) {
@@ -170,14 +226,47 @@ impl fmt::Display for ColumnSet {
     }
 }
 
-/// The select list that reads the columns [`read_row`] needs. `at` is read as whole microseconds, which is what a `timestamptz`
-/// holds, so that a change of one microsecond shows. It is read as exact text and parsed here: a cast to `bigint` in the query
-/// raises an error for `infinity` and for times beyond the last microsecond an `i64` holds, and an error in the query is a
-/// failure of the whole walk, where the value is only a finding about one row. The `CASE` is the guard for the first; the parse is
-/// the guard for the second.
-pub const SELECT_LIST: &str = "CASE WHEN isfinite(at) THEN (extract(epoch FROM at) * 1000000)::numeric(40,0)::text END AS at_micros, \
-     actor_kind, actor_ref, action, via, swimlane_id, path, hash_before, hash_after, github_login, approval_id, request_id, \
-     attribution_source, attribution_confidence, attribution_actor, attribution_evidence";
+/// The select list that reads the columns [`read_row`] needs.
+///
+/// `at` is read as whole microseconds, which is what a `timestamptz` holds, so that a change of one microsecond shows. It is read
+/// as exact text and parsed here: a cast to `bigint` in the query raises an error for `infinity` and for times beyond the last
+/// microsecond an `i64` holds, and an error in the query is a failure of the whole walk, where the value is only a finding about
+/// one row. The `CASE` is the guard for the first; the parse is the guard for the second.
+///
+/// Every other column that can hold more than a small value is bounded (see the module docs), and `oversize` is the bitmask of the
+/// ones that were left out.
+pub fn select_list() -> &'static str {
+    static LIST: LazyLock<String> = LazyLock::new(build_select_list);
+    LIST.as_str()
+}
+
+fn build_select_list() -> String {
+    let mut parts = vec![
+        "CASE WHEN isfinite(at) THEN (extract(epoch FROM at) * 1000000)::numeric(40,0)::text END AS at_micros".to_owned(),
+    ];
+    let mut oversize = Vec::new();
+    for column in Column::ALL {
+        let name = column.name();
+        let (length, limit) = match column.stored() {
+            Stored::Fixed => {
+                if column != Column::At {
+                    parts.push(name.to_owned());
+                }
+                continue;
+            }
+            Stored::Text => (format!("octet_length({name})"), TEXT_COLUMN_LIMIT),
+            Stored::Hash => (format!("octet_length({name})"), HASH_COLUMN_BYTES),
+            Stored::Jsonb => (format!("octet_length({name}::text)"), JSONB_TEXT_LIMIT),
+        };
+        parts.push(format!("CASE WHEN {length} <= {limit} THEN {name} END AS {name}"));
+        oversize.push(format!(
+            "CASE WHEN {length} > {limit} THEN {} ELSE 0 END",
+            column.bit()
+        ));
+    }
+    parts.push(format!("({})::int4 AS oversize", oversize.join(" + ")));
+    parts.join(", ")
+}
 
 /// What one row of `audit_events` holds in the copied columns.
 #[derive(Debug, Clone, PartialEq)]
@@ -202,12 +291,13 @@ pub struct StoredColumns {
     pub attribution_evidence: Option<Value>,
 }
 
-/// What [`read_row`] makes of a row: the columns that could be decoded, and the names of those that could not.
+/// What [`read_row`] makes of a row: the columns that could be decoded, and the names of those that could not be (or were not read,
+/// being over their bound).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReadColumns {
     /// The columns; one that could not be decoded holds its empty value (`None`, or an empty string), which no event matches.
     pub columns: StoredColumns,
-    /// The columns whose stored value could not be decoded.
+    /// The columns whose stored value could not be decoded, or was over its bound and not sent.
     pub unreadable: ColumnSet,
 }
 
@@ -243,7 +333,8 @@ where
 /// A column is missing from the row (the query and this function disagree), which is a fault and not a finding. A value that cannot
 /// be decoded is not an error: see [`ReadColumns::unreadable`].
 pub fn read_row(row: &PgRow) -> Result<ReadColumns, sqlx::Error> {
-    let mut u = ColumnSet::empty();
+    // The columns the query left out for their size. It is computed by the query, so a failure to read it is a fault.
+    let mut u = ColumnSet::from_mask(row.try_get::<i32, _>("oversize")?);
     let at: Option<String> = read(row, "at_micros", Column::At, &mut u)?;
     let columns = StoredColumns {
         // Text that is not an `i64` (a time past the last microsecond of one) is not a time any event holds.
@@ -833,6 +924,109 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(differing_columns(&json, &stored), ColumnSet::empty());
+    }
+
+    #[test]
+    fn every_column_that_can_be_large_is_bounded_in_the_select_and_flagged_when_left_out() {
+        let list = select_list();
+        // Written out, not derived from `Column::stored`, so that a column moved to the wrong kind (or out of the bounded ones)
+        // fails here.
+        let text = [
+            Column::ActorKind,
+            Column::ActorRef,
+            Column::Action,
+            Column::Via,
+            Column::SwimlaneId,
+            Column::Path,
+            Column::GithubLogin,
+            Column::RequestId,
+            Column::AttributionSource,
+            Column::AttributionConfidence,
+        ];
+        let hashes = [Column::HashBefore, Column::HashAfter];
+        let jsonb = [Column::AttributionActor, Column::AttributionEvidence];
+        let fixed = [Column::At, Column::ApprovalId];
+        assert_eq!(
+            text.len() + hashes.len() + jsonb.len() + fixed.len(),
+            Column::ALL.len()
+        );
+        for column in Column::ALL {
+            let name = column.name();
+            let (length, limit) = if text.contains(&column) {
+                (format!("octet_length({name})"), TEXT_COLUMN_LIMIT)
+            } else if hashes.contains(&column) {
+                (format!("octet_length({name})"), HASH_COLUMN_BYTES)
+            } else if jsonb.contains(&column) {
+                (format!("octet_length({name}::text)"), JSONB_TEXT_LIMIT)
+            } else {
+                // Nothing to bound: `approval_id` is selected as it is, and `at` through its own `CASE`.
+                assert!(fixed.contains(&column), "{name}");
+                assert!(!list.contains(&format!("octet_length({name})")), "{name}");
+                continue;
+            };
+            // Sent only under its bound ...
+            let guard = format!("CASE WHEN {length} <= {limit} THEN {name} END AS {name}");
+            assert_eq!(list.matches(&guard).count(), 1, "{name}: {list}");
+            // ... and its bit is in the mask when it is not.
+            let flag = format!("CASE WHEN {length} > {limit} THEN {} ELSE 0 END", column.bit());
+            assert_eq!(list.matches(&flag).count(), 1, "{name}: {list}");
+        }
+        assert!(list.ends_with("::int4 AS oversize"), "{list}");
+        assert_eq!(ColumnSet::from_mask(i32::MAX), ColumnSet::all());
+        assert_eq!(ColumnSet::from_mask(-1), ColumnSet::empty());
+        assert_eq!(
+            ColumnSet::from_mask(i32::try_from(Column::Path.bit() | Column::Via.bit()).unwrap()),
+            ColumnSet::of(&[Column::Path, Column::Via])
+        );
+        // The limits themselves, by value.
+        assert_eq!(TEXT_COLUMN_LIMIT, 1_048_576);
+        assert_eq!(JSONB_TEXT_LIMIT, 2_097_152);
+        assert_eq!(HASH_COLUMN_BYTES, 32);
+    }
+
+    #[test]
+    fn the_bounds_are_derived_from_the_size_an_event_can_have() {
+        assert_eq!(TEXT_COLUMN_LIMIT, MAX_EVENT_JSON_BYTES);
+        // `jsonb` text is at most one and a half times the compact JSON (a space after each `,` and `:`).
+        assert_eq!(HASH_COLUMN_BYTES, 32);
+    }
+
+    #[test]
+    fn what_the_log_writes_for_a_largest_event_is_under_every_bound() {
+        // Each copy is a part of an event the log accepted, so it is no larger than the event; the bound is that event's size.
+        let mut e = full();
+        e.actor = AuditActor::System {
+            component: ShortText::parse(&"é".repeat(128)).unwrap(),
+        };
+        e.github_login = Some(ShortText::parse(&"é".repeat(128)).unwrap());
+        e.diff = Some("x".repeat(AuditEvent::MAX_DIFF_BYTES));
+        let (json, stored) = written(&e);
+        assert!(json.len() <= MAX_EVENT_JSON_BYTES);
+        let text = [
+            Some(stored.actor_kind.as_str()),
+            stored.actor_ref.as_deref(),
+            Some(stored.action.as_str()),
+            Some(stored.via.as_str()),
+            stored.swimlane_id.as_deref(),
+            stored.path.as_deref(),
+            stored.github_login.as_deref(),
+            stored.request_id.as_deref(),
+            stored.attribution_source.as_deref(),
+            stored.attribution_confidence.as_deref(),
+        ];
+        for t in text.into_iter().flatten() {
+            assert!(t.len() <= TEXT_COLUMN_LIMIT);
+        }
+        for h in [&stored.hash_before, &stored.hash_after].into_iter().flatten() {
+            assert_eq!(h.len(), HASH_COLUMN_BYTES);
+        }
+        for v in [&stored.attribution_actor, &stored.attribution_evidence]
+            .into_iter()
+            .flatten()
+        {
+            // Compact length times one and a half is the most `jsonb` prints for it.
+            assert!(v.to_string().len() * 3 / 2 <= JSONB_TEXT_LIMIT);
+        }
     }
 
     #[test]

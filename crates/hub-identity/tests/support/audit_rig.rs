@@ -162,8 +162,12 @@ impl AuditRig {
     }
 
     pub fn nightly(&self) -> NightlyVerifyJob {
+        self.nightly_with(self.chain_verifier())
+    }
+
+    pub fn nightly_with(&self, verifier: ChainVerifier) -> NightlyVerifyJob {
         NightlyVerifyJob::new(
-            self.chain_verifier(),
+            verifier,
             self.leases.clone(),
             Arc::new(self.notifier.clone()),
             self.metrics.clone(),
@@ -188,6 +192,17 @@ impl AuditRig {
                 .execute(&mut admin)
                 .await
                 .unwrap();
+        }
+    }
+
+    /// The same for `audit_checkpoints`: switch off its append-only triggers, so that its rows can be changed.
+    pub async fn tamper_open_checkpoints(&self) {
+        let mut admin = self.db.admin().await;
+        for stmt in [
+            "ALTER TABLE audit_checkpoints DISABLE TRIGGER audit_checkpoints_no_row_change",
+            "ALTER TABLE audit_checkpoints DISABLE TRIGGER audit_checkpoints_no_truncate",
+        ] {
+            sqlx::query(stmt).execute(&mut admin).await.unwrap();
         }
     }
 
