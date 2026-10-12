@@ -46,6 +46,8 @@ These are the targets the system is built and tested for. Confirm them in Q27.
 | Docs search | 150 ms |
 | Feature status | 200 ms |
 
+Authentication adds at most 2 ms to a request (p95), with a warm session cache and with a cold one (part of P7).
+
 **Writes**
 
 - **P8** An edit is applied on NFS and acknowledged within 1.5 seconds, not counting any wait for approval.
@@ -67,6 +69,8 @@ These are the targets the system is built and tested for. Confirm them in Q27.
 
 - **P11** Hub memory stays under 1.5 GiB per replica at design scale. Startup takes under 10 seconds.
 - **P12** No steady-state query takes longer than 50 ms. List endpoints use keyset pagination. Hot queries have an `EXPLAIN` checked into their tests.
+
+Recording an audit event adds at most 3 ms to a transaction (p95), with another replica contending for the chain lock (part of P12).
 
 **Attribution and spool**
 
