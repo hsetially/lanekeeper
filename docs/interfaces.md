@@ -198,3 +198,4 @@ New domain events:
 - `PrJobProgress { job_id, state }`
 - `SyncWindowOpened { swimlane, job }`
 - `SyncWindowClosed { swimlane, job }`
+- `UserSessionsRevoked { user }`: internal, for replica coordination (03a). `DomainEvent::is_internal()` is true for it; the SSE edge drops it, and it is not in the OpenAPI `EventKind` list.

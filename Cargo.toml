@@ -101,23 +101,36 @@ rayon = "=1.12.0"
 # frame instead of being believed. 1.5.0 (2025-07-13) is the version in the lockfile's registry cache; with `std` it
 # uses the CPU's CRC instructions at run time. Its only dependency, cfg-if, is already in the graph.
 crc32fast = { version = "=1.5.0", default-features = false, features = ["std"] }
-# Hub platform (prompt 03b, T1). axum is the web edge; it is already in the graph through tonic, at the same version. The
-# hub serves HTTPS through its own rustls acceptor (hyper-util), so axum's own server glue is not used for the web listener.
+# Shared by hub-identity (prompt 03a) and hub-platform / hub (prompt 03b): one pin per crate, and the union of the features each
+# side needs. Both sides pinned the same exact versions. The comments of both prompts follow.
+#
+# axum (0.8.9, 2026-04-14; already in the graph through tonic) is the web framework. 03a (T3): the session, CSRF and auth layers
+# and the /auth routes (`tokio`, `http1`, `query`, `matched-path`). 03b (T1): the web edge; the hub serves HTTPS through its own
+# rustls acceptor (hyper-util), so axum's own server glue is not used for the web listener (adds `http2`, `json`).
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "http2", "json", "matched-path", "query", "tokio"] }
-# Per-IP and per-user rate-limit buckets and, later, the blob and tree-index caches (T8, T7): bounded, time-to-idle, weighted.
-moka = { version = "=0.12.16", default-features = false, features = ["sync"] }
-# The one crypto provider of the stack (rustls and rcgen already use it): request ids and CSP nonces come from its CSPRNG.
-aws-lc-rs = { version = "=1.18.1", default-features = false, features = ["aws-lc-sys", "alloc"] }
-# Traces (T1, A9): OTLP over gRPC to an in-cluster collector, which forwards to Cloud Trace. Plain http to the collector, so no TLS feature.
+# moka (0.12.16, 2026-08-09) is the stack's cache. 03a: the session cache holds at most 50,000 entries for at most 30 seconds, with
+# single-flight loads (`future`). 03b: per-IP and per-user rate-limit buckets and the blob and tree-index caches (T8, T7), bounded,
+# time-to-idle, weighted (`sync`).
+moka = { version = "=0.12.16", default-features = false, features = ["future", "sync"] }
+# aws-lc-rs is the stack's one crypto provider (already in the graph through rustls and rcgen). 03a: it verifies the RS256 signature
+# of id and access tokens (`ring-sig-verify`), seals the login cookie (AES-256-GCM) and makes the random ids. 03b: request ids and
+# CSP nonces come from its CSPRNG. Pinned to the lockfile version. `openidconnect` and `jsonwebtoken` are not used (03a decision B1):
+# the first needs `rsa` (RUSTSEC-2023-0071), and the second adds a provider switch that panics when none is installed.
+aws-lc-rs = { version = "=1.18.1", default-features = false, features = ["aws-lc-sys", "alloc", "ring-sig-verify"] }
+# base64 0.22.1 is the version nearly the whole graph already uses. 03a reads JWT parts; 03b (T2, A9) speaks base64 in JSON to the
+# Google APIs (Secret Manager and Cloud KMS, no SDK).
+base64 = { version = "=0.22.1", default-features = false, features = ["std"] }
+# rustls-native-certs reads the platform's root certificates (already in the graph through sqlx). webpki-roots is refused by
+# deny.toml (its licence is not allowed). 03a verifies the Entra endpoints with it; 03b verifies `*.googleapis.com` with it.
+# 0.8.4 has no cargo features, so `default-features = false` (03b) and the plain pin (03a) mean the same.
+rustls-native-certs = { version = "=0.8.4", default-features = false }
+# Hub identity (prompt 03a, T1). `url` builds and checks the endpoint URLs.
+url = { version = "=2.5.8", default-features = false, features = ["std"] }
+# Traces (03b T1, A9): OTLP over gRPC to an in-cluster collector, which forwards to Cloud Trace. Plain http to the collector, so no TLS feature.
 opentelemetry = { version = "=0.33.0", default-features = false, features = ["trace"] }
 opentelemetry_sdk = { version = "=0.33.0", default-features = false, features = ["trace", "rt-tokio"] }
 opentelemetry-otlp = { version = "=0.33.0", default-features = false, features = ["trace", "grpc-tonic"] }
 tracing-opentelemetry = { version = "=0.34.0", default-features = false }
-# Google APIs without an SDK (T2, A9): Secret Manager and Cloud KMS speak base64 in JSON, and the hub reads the platform's
-# root certificates (rustls-native-certs, which is already in the graph through sqlx and is not webpki-roots, whose licence
-# deny.toml does not allow) to verify `*.googleapis.com`. base64 0.22.1 is the version nearly the whole graph already uses.
-base64 = { version = "=0.22.1", default-features = false, features = ["std"] }
-rustls-native-certs = { version = "=0.8.4", default-features = false }
 # Git mirror (prompt 03b, T7, A16). gix 0.87.1 (2026-08-24, 48 days old). `blocking-http-transport-reqwest-rust-tls` is the one HTTPS
 # transport on rustls with aws-lc-rs (no openssl, no native-tls; ring is not in this crate's graph, but it is in the `hub` binary,
 # through sqlx's database-leg TLS, A15); reqwest arrives only as gix-transport's HTTP client

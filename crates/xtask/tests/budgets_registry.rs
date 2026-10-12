@@ -64,6 +64,8 @@ fn every_p_number_has_an_entry() {
         "P7.feature_status",
         "P7.blob_get_cached",
         "P7.blob_endpoint",
+        "P7.auth_middleware",
+        "P7.auth_middleware_cold",
         "P10.initial_js_gzip_kb",
         "P10.route_change_ms",
         "P10.diff_6000_lines_ms",
@@ -72,6 +74,7 @@ fn every_p_number_has_an_entry() {
         "P11",
         "P11.memory_mib",
         "P12.steady_state_query_ms",
+        "P12.audit_record",
         "P15.spool_replay_versions_per_s",
         "P15.hub_ack_versions_per_s",
     ] {
@@ -231,6 +234,18 @@ fn thresholds_match_docs_performance_md() {
         ),
         ("P7.docs_search", 150.0, "ms", "| Docs search | 150 ms |"),
         ("P7.feature_status", 200.0, "ms", "| Feature status | 200 ms |"),
+        (
+            "P7.auth_middleware",
+            2.0,
+            "ms",
+            "Authentication adds at most 2 ms to a request (p95), with a warm session cache and with a cold one",
+        ),
+        (
+            "P7.auth_middleware_cold",
+            2.0,
+            "ms",
+            "Authentication adds at most 2 ms to a request (p95), with a warm session cache and with a cold one",
+        ),
         ("P8", 1_500.0, "ms", "acknowledged within 1.5 seconds"),
         ("P9", 300.0, "ms", "respond within 300 ms"),
         ("P10.initial_js_gzip_kb", 250.0, "kb", "under 250 KB gzipped"),
@@ -260,6 +275,12 @@ fn thresholds_match_docs_performance_md() {
             50.0,
             "ms",
             "No steady-state query takes longer than 50 ms",
+        ),
+        (
+            "P12.audit_record",
+            3.0,
+            "ms",
+            "Recording an audit event adds at most 3 ms to a transaction (p95), with another replica contending for the chain lock",
         ),
         ("P13", 1_000.0, "ms", "within 1 second"),
         (
@@ -352,7 +373,12 @@ fn only_budgets_with_a_harness_are_registered() {
     // (T8, `blob_get_cached` and `blob_endpoint`, criterion), and the two hub harnesses of T8: P11 (`cargo bench -p hub --bench
     // startup`) and P11.memory_mib (`cargo bench -p hub-platform --bench memory_at_design_scale`), and P15.hub_ack_versions_per_s
     // (T11, `cargo bench -p hub-platform --bench ack_throughput`: the hub acknowledging a replayed spool).
+    // Prompt 03a (identity): `cargo bench -p hub-identity` produces P7.auth_middleware and P7.auth_middleware_cold (T3) and
+    // P12.audit_record (T5).
     const REGISTERED: &[&str] = &[
+        "P7.auth_middleware",
+        "P7.auth_middleware_cold",
+        "P12.audit_record",
         "P1",
         "P2",
         "P3",

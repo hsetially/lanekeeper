@@ -220,6 +220,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-lock"
+version = "3.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "290f7f2596bd5b78a9fec8088ccd89180d7f9f55b94b0576823bbbdc72ee8311"
+dependencies = [
+ "event-listener",
+ "event-listener-strategy",
+ "pin-project-lite",
+]
+
+[[package]]
 name = "async-stream"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2586,6 +2597,44 @@ version = "0.1.0"
 [[package]]
 name = "hub-identity"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "criterion",
+ "domain",
+ "fastrand",
+ "futures",
+ "http",
+ "http-body-util",
+ "hub-identity",
+ "hyper",
+ "hyper-util",
+ "insta",
+ "moka",
+ "ports",
+ "proptest",
+ "rcgen",
+ "rustls",
+ "rustls-native-certs",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "subtle",
+ "tempfile",
+ "testcontainers",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "zeroize",
+]
 
 [[package]]
 name = "hub-mcp"
@@ -3474,10 +3523,13 @@ version = "0.12.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4293f18e7567a1caf3c584855554377025c65e0aa445344d04171f5ad63d19b9"
 dependencies = [
+ "async-lock",
  "crossbeam-channel",
  "crossbeam-epoch",
  "crossbeam-utils",
  "equivalent",
+ "event-listener",
+ "futures-util",
  "parking_lot",
  "portable-atomic",
  "smallvec",
@@ -5151,7 +5203,9 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx-core",
+ "sqlx-mysql",
  "sqlx-postgres",
+ "sqlx-sqlite",
  "syn 2.0.119",
  "tokio",
  "url",
@@ -5188,6 +5242,7 @@ dependencies = [
  "percent-encoding",
  "rand 0.8.8",
  "rsa",
+ "serde",
  "sha1",
  "sha2",
  "smallvec",
@@ -5251,6 +5306,7 @@ dependencies = [
  "libsqlite3-sys",
  "log",
  "percent-encoding",
+ "serde",
  "serde_urlencoded",
  "sqlx-core",
  "thiserror",

@@ -1,4 +1,4 @@
-//! Integration tests for `db/migrations` (prompt 01, T6; S9, S21).
+//! Integration tests for `db/migrations` (prompt 01, T6; S9, S21; `0002_audit_verify_state.sql` for prompt 03a).
 //!
 //! They run against a real Postgres 16 with pgvector, started with testcontainers from the same image digest as
 //! `deploy/dev/compose.yaml`. The tests use the runtime `sqlx::migrate::Migrator` and no `query!` macros, so no
@@ -9,7 +9,8 @@
 //!
 //! `LK_TEST_PG_ADMIN_URL=postgres://postgres@127.0.0.1:5432/postgres` points the tests at an existing superuser
 //! connection instead of a container (a throwaway server only: every test creates a database on it). When that
-//! server has no pgvector, the one block of `0001_init.sql` between the `lk:pgvector` markers is left out and the
+//! server has no pgvector, the one block of `0001_init.sql` between the `lk:pgvector` markers is left out (every later
+//! migration is applied as it is) and the
 //! checks that need it print `NOT PROVEN`. `LK_REQUIRE_DOCKER=1` refuses such a server.
 #![allow(
     clippy::unwrap_used,
@@ -47,6 +48,7 @@ const PGVECTOR_BEGIN: &str = "-- lk:pgvector:begin";
 const PGVECTOR_END: &str = "-- lk:pgvector:end";
 
 /// Every table `0001_init.sql` creates (plan Appendix B, Q1). Partitions of `sentinel_records` are not listed.
+/// Later migrations list their tables in `LATER_TABLES`, with the file that creates them.
 const EXPECTED_TABLES: &[&str] = &[
     // identity
     "users",
@@ -110,6 +112,18 @@ const EXPECTED_TABLES: &[&str] = &[
     "feature_flags",
 ];
 
+/// Tables added by migrations after `0001_init.sql`: (table, the migration file that creates it).
+const LATER_TABLES: &[(&str, &str)] = &[("audit_verify_state", "0002_audit_verify_state.sql")];
+
+/// Every table the migrations create, `_sqlx_migrations` aside.
+fn all_expected_tables() -> BTreeSet<&'static str> {
+    EXPECTED_TABLES
+        .iter()
+        .copied()
+        .chain(LATER_TABLES.iter().map(|(t, _)| *t))
+        .collect()
+}
+
 /// What `lanekeeper_app` may do with a table. The grant decision for every table lives here and in
 /// `0001_init.sql`; a table without a decision fails `every_table_has_a_grant_decision` (plan Q19).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,6 +134,9 @@ enum Grant {
     Immutable,
     /// SELECT, INSERT, UPDATE, DELETE.
     Mutable,
+    /// SELECT, UPDATE. A singleton row the migration inserts and the app only reads and updates: it can neither
+    /// create nor remove it (`audit_verify_state`).
+    StateRow,
     /// Nothing. The migrator's own bookkeeping.
     None,
 }
@@ -130,6 +147,7 @@ impl Grant {
             Grant::AppendOnly => ["SELECT", "INSERT"].into(),
             Grant::Immutable => ["SELECT", "INSERT", "DELETE"].into(),
             Grant::Mutable => ["SELECT", "INSERT", "UPDATE", "DELETE"].into(),
+            Grant::StateRow => ["SELECT", "UPDATE"].into(),
             Grant::None => BTreeSet::new(),
         }
     }
@@ -154,6 +172,7 @@ fn grant_decisions() -> BTreeMap<&'static str, Grant> {
     for t in EXPECTED_TABLES {
         m.entry(t).or_insert(Grant::Mutable);
     }
+    m.insert("audit_verify_state", Grant::StateRow);
     m.insert("_sqlx_migrations", Grant::None);
     m
 }
@@ -184,6 +203,34 @@ fn migrations_dir() -> PathBuf {
 
 fn migration_sql() -> String {
     std::fs::read_to_string(migrations_dir().join("0001_init.sql")).unwrap()
+}
+
+/// Every migration file as (version, file name, text), in version order.
+fn migration_files() -> Vec<(u32, String, String)> {
+    let mut files: Vec<(u32, String, String)> = std::fs::read_dir(migrations_dir())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| Path::new(n).extension().is_some_and(|x| x == "sql"))
+        .map(|n| {
+            let version: u32 = n.split('_').next().unwrap().parse().unwrap();
+            let sql = std::fs::read_to_string(migrations_dir().join(&n)).unwrap();
+            (version, n, sql)
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// The text of one migration file.
+fn migration_file(name: &str) -> String {
+    std::fs::read_to_string(migrations_dir().join(name)).unwrap()
+}
+
+/// The lines of `sql` that are not full-line comments.
+fn code_lines(sql: &str) -> Vec<&str> {
+    sql.lines()
+        .filter(|l| !l.trim_start().starts_with("--"))
+        .collect()
 }
 
 /// `sql` without the block between the pgvector markers.
@@ -266,7 +313,13 @@ impl TestDb {
 
     /// Apply `db/migrations` as `lanekeeper_migrator`.
     async fn migrate(&self) {
-        let dir = if self.pgvector {
+        self.migrate_upto(u32::MAX).await;
+    }
+
+    /// Apply the migrations up to and including `version`, as `lanekeeper_migrator`. Without pgvector only the block
+    /// of `0001_init.sql` between the markers is left out; every other file is applied as it is.
+    async fn migrate_upto(&self, version: u32) {
+        let dir = if self.pgvector && version == u32::MAX {
             migrations_dir()
         } else {
             let dir = std::env::temp_dir().join(format!(
@@ -275,7 +328,17 @@ impl TestDb {
                 NEXT_DB.fetch_add(1, Ordering::Relaxed)
             ));
             std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("0001_init.sql"), without_pgvector(&migration_sql())).unwrap();
+            for (v, name, sql) in migration_files() {
+                if v > version {
+                    continue;
+                }
+                let sql = if v == 1 && !self.pgvector {
+                    without_pgvector(&sql)
+                } else {
+                    sql
+                };
+                std::fs::write(dir.join(name), sql).unwrap();
+            }
             dir
         };
         let migrator = Migrator::new(dir.as_path()).await.unwrap();
@@ -422,6 +485,7 @@ const INSUFFICIENT_PRIVILEGE: &str = "42501";
 const RESTRICT_VIOLATION: &str = "23001";
 const UNIQUE_VIOLATION: &str = "23505";
 const CHECK_VIOLATION: &str = "23514";
+const NOT_NULL_VIOLATION: &str = "23502";
 
 async fn expect_sqlstate(conn: &mut PgConnection, sql: &str, want: &str) {
     let err = sqlx::query(sql)
@@ -475,19 +539,18 @@ fn pgvector_statements_are_isolated_between_markers() {
 #[test]
 fn migration_never_creates_roles_or_superuser_objects() {
     // Roles pre-exist (Q6): created by deploy/dev/init.sql, the test harness and CloudNativePG managed roles.
-    let sql = migration_sql().to_uppercase();
-    for banned in [
-        "CREATE ROLE",
-        "CREATE USER",
-        "ALTER ROLE",
-        "ALTER DEFAULT PRIVILEGES",
-        "SUPERUSER",
-    ] {
-        let hits = sql
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("--") && l.contains(banned))
-            .count();
-        assert_eq!(hits, 0, "0001_init.sql must not contain `{banned}`");
+    for (_, name, sql) in migration_files() {
+        let sql = sql.to_uppercase();
+        for banned in [
+            "CREATE ROLE",
+            "CREATE USER",
+            "ALTER ROLE",
+            "ALTER DEFAULT PRIVILEGES",
+            "SUPERUSER",
+        ] {
+            let hits = code_lines(&sql).iter().filter(|l| l.contains(banned)).count();
+            assert_eq!(hits, 0, "{name} must not contain `{banned}`");
+        }
     }
 }
 
@@ -500,6 +563,47 @@ fn every_expected_table_is_created_by_the_migration_text() {
             "no CREATE TABLE for {t}"
         );
     }
+    for (t, file) in LATER_TABLES {
+        let sql = migration_file(file);
+        assert!(
+            sql.contains(&format!("CREATE TABLE {t} (")),
+            "no CREATE TABLE for {t} in {file}"
+        );
+    }
+}
+
+/// `0002_audit_verify_state.sql` is expand-only (the contract-change rule): one new table, one row, one grant. It
+/// drops, alters, deletes and truncates nothing, and it does not name the audit tables.
+#[test]
+fn migration_0002_is_additive_only() {
+    let sql = migration_file("0002_audit_verify_state.sql");
+    let code = code_lines(&sql).join("\n").to_uppercase();
+    for banned in [
+        "DROP ",
+        "ALTER ",
+        "TRUNCATE",
+        "DELETE",
+        "RENAME",
+        "GRANT ALL",
+        "CASCADE",
+        "AUDIT_EVENTS",
+        "AUDIT_CHECKPOINTS",
+        "CREATE TRIGGER",
+        "CREATE FUNCTION",
+        "CREATE INDEX",
+    ] {
+        assert!(
+            !code.contains(banned),
+            "0002 must not contain `{banned}` outside comments"
+        );
+    }
+    assert_eq!(code.matches("CREATE TABLE").count(), 1, "one new table");
+    assert_eq!(code.matches("INSERT INTO").count(), 1, "one seeded row");
+    assert_eq!(code.matches("GRANT ").count(), 1, "one grant");
+    assert!(
+        code.contains("GRANT SELECT, UPDATE ON AUDIT_VERIFY_STATE TO LANEKEEPER_APP"),
+        "the app gets SELECT and UPDATE on the one table, nothing more"
+    );
 }
 
 #[test]
@@ -540,17 +644,20 @@ async fn migration_applies_on_pg16() {
     .unwrap()
     .into_iter()
     .collect();
-    let expected: BTreeSet<String> = EXPECTED_TABLES.iter().map(|t| (*t).to_owned()).collect();
+    let expected: BTreeSet<String> = all_expected_tables().into_iter().map(str::to_owned).collect();
     assert_eq!(tables, expected);
 
-    // Re-running is a no-op, and the schema is owned by the migrator, never by the app.
+    // Re-running is a no-op: each migration is recorded once, and 0002 applied on top of 0001. The schema is owned
+    // by the migrator, never by the app.
     db.migrate().await;
-    let applied: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations WHERE version = 1 AND success")
-            .fetch_one(&mut conn)
+    let applied: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
+            .fetch_all(&mut conn)
             .await
             .unwrap();
-    assert_eq!(applied, 1);
+    let files: Vec<i64> = migration_files().iter().map(|(v, _, _)| i64::from(*v)).collect();
+    assert_eq!(applied, files);
+    assert_eq!(applied, [1, 2]);
     let foreign: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tableowner <> 'lanekeeper_migrator'",
     )
@@ -582,6 +689,335 @@ async fn migration_refuses_to_run_as_another_role() {
         .await
         .unwrap();
     assert_eq!(tables, 0, "nothing was created");
+}
+
+/// The migrator owns every object. `0002` carries the same guard as `0001`, so a superuser or the app cannot create the
+/// table under another owner by running the file by hand.
+#[tokio::test]
+async fn migration_0002_refuses_to_run_as_another_role() {
+    let db = db!();
+    let sql = migration_file("0002_audit_verify_state.sql");
+    for role in [APP, ("postgres", SUPERUSER_PASSWORD)] {
+        let mut conn = if role.0 == "postgres" {
+            db.admin().await
+        } else {
+            db.as_role(role).await
+        };
+        let err = sqlx::raw_sql(&sql)
+            .execute(&mut conn)
+            .await
+            .expect_err("must refuse");
+        assert_eq!(sqlstate(&err).as_deref(), Some("55000"), "{}: {err}", role.0);
+        assert!(
+            err.to_string().contains("lanekeeper_migrator"),
+            "{}: {err}",
+            role.0
+        );
+    }
+    let mut admin = db.admin().await;
+    let owner: String =
+        sqlx::query_scalar("SELECT tableowner::text FROM pg_tables WHERE tablename = 'audit_verify_state'")
+            .fetch_one(&mut admin)
+            .await
+            .unwrap();
+    assert_eq!(owner, "lanekeeper_migrator");
+}
+
+/// 0002 adds `audit_verify_state` and changes nothing else: every other relation keeps its grants, and every trigger,
+/// constraint and column stays as 0001 left it, the append-only audit tables included.
+#[tokio::test]
+async fn migration_0002_adds_only_audit_verify_state() {
+    let Some(db) = TestDb::bootstrap().await else {
+        return;
+    };
+    db.migrate_upto(1).await;
+    let mut admin = db.admin().await;
+    let snapshot = |sql: &'static str| async {
+        let mut c = db.admin().await;
+        sqlx::query_scalar::<_, String>(sql)
+            .fetch_all(&mut c)
+            .await
+            .unwrap()
+    };
+    // Relations with their owner and ACL; triggers; constraints; columns; functions. All except the new table.
+    let queries: [&'static str; 5] = [
+        "SELECT c.relname::text || ' ' || c.relkind::text || ' ' || c.relowner::regrole::text || ' ' || coalesce(c.relacl::text, '-') \
+         FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace AND c.relname NOT LIKE 'audit\\_verify\\_state%' ORDER BY 1",
+        "SELECT t.tgrelid::regclass::text || ' ' || pg_get_triggerdef(t.oid, true) || ' ' || t.tgenabled::text \
+         FROM pg_trigger t WHERE NOT t.tgisinternal AND t.tgrelid::regclass::text <> 'audit_verify_state' ORDER BY 1",
+        "SELECT conrelid::regclass::text || ' ' || conname || ' ' || pg_get_constraintdef(oid) FROM pg_constraint \
+         WHERE connamespace = 'public'::regnamespace AND conrelid::regclass::text <> 'audit_verify_state' ORDER BY 1",
+        "SELECT attrelid::regclass::text || ' ' || attname || ' ' || format_type(atttypid, atttypmod) || ' ' || attnotnull::text \
+         FROM pg_attribute WHERE attnum > 0 AND NOT attisdropped AND attrelid IN (SELECT oid FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r', 'p')) \
+         AND attrelid::regclass::text <> 'audit_verify_state' ORDER BY 1",
+        "SELECT p.proname || ' ' || p.proowner::regrole::text || ' ' || coalesce(p.proacl::text, '-') || ' ' || md5(p.prosrc) \
+         FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace ORDER BY 1",
+    ];
+    let mut before = Vec::new();
+    for q in queries {
+        before.push(snapshot(q).await);
+    }
+    let had_table: bool = sqlx::query_scalar("SELECT to_regclass('public.audit_verify_state') IS NOT NULL")
+        .fetch_one(&mut admin)
+        .await
+        .unwrap();
+    assert!(!had_table, "0001 alone has no audit_verify_state");
+    for (q, b) in queries.iter().zip(&before) {
+        assert!(!b.is_empty(), "the snapshot must see something: {q}");
+    }
+
+    db.migrate_upto(u32::MAX).await;
+
+    for (q, b) in queries.iter().zip(&before) {
+        assert_eq!(&snapshot(q).await, b, "0002 changed an existing object: {q}");
+    }
+    let new_relations: Vec<String> = sqlx::query_scalar(
+        "SELECT relname::text FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relname LIKE 'audit\\_verify\\_state%' ORDER BY 1",
+    )
+    .fetch_all(&mut admin)
+    .await
+    .unwrap();
+    assert_eq!(new_relations, ["audit_verify_state", "audit_verify_state_pkey"]);
+}
+
+/// The row the migration seeds: the one and only row, with the starting values.
+#[tokio::test]
+async fn audit_verify_state_starts_as_one_row_of_zero() {
+    let db = db!();
+    let mut app = db.app().await;
+    let rows = sqlx::query("SELECT id, unfinished_runs, last_error, updated_at <= now() AS not_future, updated_at > now() - interval '1 hour' AS recent FROM audit_verify_state")
+        .fetch_all(&mut app)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1, "exactly one row");
+    let row = &rows[0];
+    assert!(row.get::<bool, _>("id"));
+    assert_eq!(row.get::<i32, _>("unfinished_runs"), 0);
+    assert_eq!(row.get::<Option<String>, _>("last_error"), None);
+    assert!(
+        row.get::<bool, _>("not_future") && row.get::<bool, _>("recent"),
+        "updated_at defaults to the migration time"
+    );
+
+    // The column defaults, from the catalog: id true, updated_at now().
+    let mut admin = db.admin().await;
+    let defaults: BTreeMap<String, Option<String>> = sqlx::query(
+        "SELECT a.attname::text, pg_get_expr(d.adbin, d.adrelid) FROM pg_attribute a \
+         LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+         WHERE a.attrelid = 'public.audit_verify_state'::regclass AND a.attnum > 0 AND NOT a.attisdropped",
+    )
+    .fetch_all(&mut admin)
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|r| (r.get(0), r.get(1)))
+    .collect();
+    assert_eq!(defaults["id"].as_deref(), Some("true"));
+    assert_eq!(defaults["updated_at"].as_deref(), Some("now()"));
+    assert_eq!(
+        defaults["unfinished_runs"], None,
+        "no default: the writer always says the count"
+    );
+    assert_eq!(defaults["last_error"], None);
+    assert_eq!(defaults.len(), 4, "{defaults:?}");
+}
+
+/// The CHECKs and the primary key keep the table harmless as data, even for a caller that may write to it.
+#[tokio::test]
+async fn audit_verify_state_constraints_reject_bad_rows() {
+    let db = db!();
+    let mut app = db.app().await;
+    let mut owner = db.migrator().await;
+
+    // A negative count.
+    expect_sqlstate(
+        &mut app,
+        "UPDATE audit_verify_state SET unfinished_runs = -1, updated_at = now()",
+        CHECK_VIOLATION,
+    )
+    .await;
+    // A missing count.
+    expect_sqlstate(
+        &mut app,
+        "UPDATE audit_verify_state SET unfinished_runs = NULL",
+        NOT_NULL_VIOLATION,
+    )
+    .await;
+    // A missing time.
+    expect_sqlstate(
+        &mut app,
+        "UPDATE audit_verify_state SET updated_at = NULL",
+        NOT_NULL_VIOLATION,
+    )
+    .await;
+    // The singleton key can only be true: the app cannot move the row to another key.
+    expect_sqlstate(
+        &mut app,
+        "UPDATE audit_verify_state SET id = false",
+        CHECK_VIOLATION,
+    )
+    .await;
+    // An over-long error text: 201 characters. (200 is the cap.)
+    expect_sqlstate(
+        &mut app,
+        "UPDATE audit_verify_state SET last_error = repeat('x', 201)",
+        CHECK_VIOLATION,
+    )
+    .await;
+    // A second row, even for the owner: another id is refused by the CHECK, the same id by the primary key.
+    expect_sqlstate(
+        &mut owner,
+        "INSERT INTO audit_verify_state (id, unfinished_runs, updated_at) VALUES (false, 0, now())",
+        CHECK_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut owner,
+        "INSERT INTO audit_verify_state (id, unfinished_runs, updated_at) VALUES (true, 0, now())",
+        UNIQUE_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut owner,
+        "INSERT INTO audit_verify_state (unfinished_runs) VALUES (0)",
+        UNIQUE_VIOLATION,
+    )
+    .await;
+
+    // Nothing above changed the row.
+    let (runs, err, count): (i32, Option<String>, i64) = {
+        let row = sqlx::query("SELECT unfinished_runs, last_error, (SELECT count(*) FROM audit_verify_state) FROM audit_verify_state")
+            .fetch_one(&mut app)
+            .await
+            .unwrap();
+        (row.get(0), row.get(1), row.get(2))
+    };
+    assert_eq!((runs, err, count), (0, None, 1));
+
+    // The edges that are allowed: zero, a large count, no error, exactly 200 characters (multi-byte ones count as one).
+    for sql in [
+        "UPDATE audit_verify_state SET unfinished_runs = 0, last_error = NULL, updated_at = now()",
+        "UPDATE audit_verify_state SET unfinished_runs = 2147483647, updated_at = now()",
+        "UPDATE audit_verify_state SET last_error = repeat('x', 200), updated_at = now()",
+        "UPDATE audit_verify_state SET last_error = repeat(chr(233), 200), updated_at = now()",
+        "UPDATE audit_verify_state SET last_error = '57014', updated_at = now()",
+    ] {
+        let done = sqlx::query(sql).execute(&mut app).await.unwrap();
+        assert_eq!(done.rows_affected(), 1, "{sql}");
+    }
+}
+
+/// `lanekeeper_app` reads and updates the row. It cannot insert (the migration seeds it), delete or truncate, so the
+/// singleton cannot be created again or removed through the app (S9, S21).
+#[tokio::test]
+async fn app_can_read_and_update_audit_verify_state_but_not_insert_delete_or_truncate() {
+    let db = db!();
+    let mut admin = db.admin().await;
+    let mut held = BTreeSet::new();
+    for p in [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "TRUNCATE",
+        "REFERENCES",
+        "TRIGGER",
+    ] {
+        let has: bool = sqlx::query_scalar(
+            "SELECT has_table_privilege('lanekeeper_app', 'public.audit_verify_state'::regclass, $1)",
+        )
+        .bind(p)
+        .fetch_one(&mut admin)
+        .await
+        .unwrap();
+        if has {
+            held.insert(p);
+        }
+    }
+    assert_eq!(held, BTreeSet::from(["SELECT", "UPDATE"]));
+    for p in ["INSERT", "REFERENCES"] {
+        let any_column: bool = sqlx::query_scalar(
+            "SELECT has_any_column_privilege('lanekeeper_app', 'public.audit_verify_state'::regclass, $1)",
+        )
+        .bind(p)
+        .fetch_one(&mut admin)
+        .await
+        .unwrap();
+        assert!(!any_column, "no column-level {p} either");
+    }
+
+    let mut app = db.app().await;
+    let done = sqlx::query(
+        "UPDATE audit_verify_state SET unfinished_runs = 3, last_error = 'timeout', updated_at = now() WHERE id",
+    )
+    .execute(&mut app)
+    .await
+    .unwrap();
+    assert_eq!(done.rows_affected(), 1);
+    let (runs, err): (i32, Option<String>) = {
+        let row = sqlx::query("SELECT unfinished_runs, last_error FROM audit_verify_state WHERE id")
+            .fetch_one(&mut app)
+            .await
+            .unwrap();
+        (row.get(0), row.get(1))
+    };
+    assert_eq!((runs, err.as_deref()), (3, Some("timeout")));
+
+    for sql in [
+        "DELETE FROM audit_verify_state",
+        "DELETE FROM audit_verify_state WHERE id",
+        "TRUNCATE audit_verify_state",
+        "INSERT INTO audit_verify_state (id, unfinished_runs, updated_at) VALUES (true, 0, now())",
+        "INSERT INTO audit_verify_state (id, unfinished_runs, updated_at) VALUES (true, 0, now()) ON CONFLICT DO NOTHING",
+        "INSERT INTO audit_verify_state (id, unfinished_runs, updated_at) VALUES (true, 0, now()) \
+         ON CONFLICT (id) DO UPDATE SET unfinished_runs = 0",
+        "ALTER TABLE audit_verify_state DROP CONSTRAINT audit_verify_state_unfinished_runs_check",
+        "DROP TABLE audit_verify_state",
+    ] {
+        expect_sqlstate(&mut app, sql, INSUFFICIENT_PRIVILEGE).await;
+    }
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_verify_state")
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "the singleton is still there");
+}
+
+/// The table is operational state, not a chain: no trigger, so nothing in it is tamper-evident and nothing in it is
+/// an audit event (see db/migrations/README.md). It must also not reference or be referenced by any other table.
+#[tokio::test]
+async fn audit_verify_state_is_plain_operational_state() {
+    let db = db!();
+    let mut admin = db.admin().await;
+    let triggers: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'public.audit_verify_state'::regclass AND NOT tgisinternal",
+    )
+    .fetch_one(&mut admin)
+    .await
+    .unwrap();
+    assert_eq!(triggers, 0);
+    let fks: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND 'public.audit_verify_state'::regclass IN (conrelid, confrelid)",
+    )
+    .fetch_one(&mut admin)
+    .await
+    .unwrap();
+    assert_eq!(fks, 0);
+    // An update writes no audit event: the app does the update and the chain has not grown.
+    let mut app = db.app().await;
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events")
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE audit_verify_state SET unfinished_runs = 1, updated_at = now()")
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events")
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    assert_eq!(before, after);
 }
 
 #[tokio::test]

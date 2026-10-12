@@ -9,4 +9,76 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+# `hub_identity::testing`: the route-table check and the default-deny check that the hub binary runs against its full route
+# table (S4). It pulls the ports conformance suite and its OpenAPI reader, so it stays out of the production build.
+route-table = ["ports/conformance", "tower/util"]
+
 [dependencies]
+domain.workspace = true
+ports = { workspace = true, features = ["postgres"] }
+async-trait.workspace = true
+aws-lc-rs.workspace = true
+# The session, CSRF and auth layers and the /auth routes (T3). Only the features the crate uses.
+axum.workspace = true
+base64.workspace = true
+bytes.workspace = true
+fastrand.workspace = true
+futures.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+# The session cache (T3): bounded, short-lived, single-flight loads.
+moka.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+# Users, access requests and sessions (T2, T3). Runtime-checked queries (no `query!`: it needs a live database or `.sqlx` metadata at compile
+# time, and the xtask harness has the same rule). No TLS feature, as the workspace comment says: TLS comes from the pool options.
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json"] }
+subtle.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
+tokio-rustls.workspace = true
+# `Layer` and `Service` for the session and CSRF layers; no tower feature is needed in the library.
+tower.workspace = true
+tracing.workspace = true
+url.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+# The integration tests use `hub_identity::testing`, which sits behind the `route-table` feature.
+hub-identity = { path = ".", version = "0.1.0", features = ["route-table"] }
+ports = { workspace = true, features = ["fakes", "postgres"] }
+# Real Postgres 16 in a container (or `LK_TEST_PG_ADMIN_URL`), migrated as lanekeeper_migrator and used as lanekeeper_app.
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json", "migrate"] }
+testcontainers.workspace = true
+# The mock identity provider reads the modulus and exponent of a generated key to publish them as a JWKS.
+aws-lc-rs = { workspace = true, features = ["ring-io"] }
+# Captures `tracing` output so the log tests can search it (S10).
+tracing-subscriber = { workspace = true, features = ["fmt", "std"] }
+proptest.workspace = true
+rcgen.workspace = true
+# One test runs the real HTTPS client against a TLS 1.2-only server to prove it refuses it.
+rustls = { workspace = true, features = ["tls12"] }
+tempfile.workspace = true
+# The Set-Cookie strings are golden (inline snapshots).
+insta.workspace = true
+# `oneshot` drives the layers in tests and in the benchmark.
+tower = { workspace = true, features = ["util"] }
+# The auth middleware benchmark (T3; P7). `cargo bench -p hub-identity` writes target/criterion for `cargo xtask bench-check`.
+criterion.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
+
+# P7 (T3): the real AuthLayer and CsrfLayer over a real pool, warm cache and cold cache.
+[[bench]]
+name = "auth_middleware"
+harness = false
+
+# P12 (T5): `PgAuditLog::record` added to a transaction, with a second replica contending for the chain lock.
+[[bench]]
+name = "audit_record"
+harness = false

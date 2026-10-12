@@ -240,11 +240,31 @@ scale = "target"
 registered = true
 
 [[budget]]
+id = "P7.auth_middleware"
+description = "Authentication adds to a request, session cache warm (100 signed-in users)"
+bench = "hub-identity/auth_middleware"
+statistic = "p95"
+threshold = 2
+unit = "ms"
+scale = "target"
+registered = true
+
+[[budget]]
 id = "P7.blob_endpoint"
 description = "Blob endpoint (GET /api/v1/blobs/{hash})"
 bench = "hub-platform/blob_endpoint"
 statistic = "p95"
 threshold = 30
+unit = "ms"
+scale = "target"
+registered = true
+
+[[budget]]
+id = "P7.auth_middleware_cold"
+description = "Authentication adds to a request, session cache cold (one indexed read)"
+bench = "hub-identity/auth_middleware_cold"
+statistic = "p95"
+threshold = 2
 unit = "ms"
 scale = "target"
 registered = true
@@ -338,6 +358,16 @@ bench = "hub/memory_at_design_scale_mib"
 statistic = "max"
 threshold = 1536
 unit = "mib"
+scale = "target"
+registered = true
+
+[[budget]]
+id = "P12.audit_record"
+description = "Recording an audit event adds to a transaction, with a second replica contending for the chain lock"
+bench = "hub-identity/audit_record"
+statistic = "p95"
+threshold = 3
+unit = "ms"
 scale = "target"
 registered = true
 

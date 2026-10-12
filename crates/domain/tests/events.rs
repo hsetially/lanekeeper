@@ -77,12 +77,19 @@ fn all_events() -> Vec<DomainEvent> {
             swimlane: lane(),
             job: JobRef::new("sync-job-1", "uid-1").unwrap(),
         },
+        DomainEvent::UserSessionsRevoked { user: user() },
     ]
 }
 
+fn user() -> domain::UserId {
+    "72f988bf-86f1-41af-91ab-2d7cd011db47:0b6c3e0e-5a1d-4a52-8f55-3f9d6f0a7f11"
+        .parse()
+        .unwrap()
+}
+
 #[test]
-fn there_are_fifteen_variants_ten_base_and_five_d72_to_d80() {
-    assert_eq!(all_events().len(), 15);
+fn there_are_sixteen_variants_ten_base_five_d72_to_d80_and_one_internal() {
+    assert_eq!(all_events().len(), 16);
 }
 
 #[test]
@@ -109,4 +116,21 @@ fn event_swimlane_is_exposed_for_filtering() {
     assert_eq!(e.swimlane(), Some(&lane()));
     assert_eq!(DomainEvent::Resync.swimlane(), None);
     assert_eq!(DomainEvent::DocIndexed { doc: 1.into() }.swimlane(), None);
+}
+
+#[test]
+fn user_sessions_revoked_is_global_and_carries_only_the_user_id() {
+    let e = DomainEvent::UserSessionsRevoked { user: user() };
+    assert_eq!(e.swimlane(), None);
+    let json = serde_json::to_value(&e).unwrap();
+    assert_eq!(json["type"], "user_sessions_revoked");
+    assert_eq!(json.as_object().unwrap().len(), 2, "type and user, nothing else");
+}
+
+#[test]
+fn only_user_sessions_revoked_is_internal_so_the_sse_edge_never_forwards_it() {
+    for e in all_events() {
+        let expected = matches!(e, DomainEvent::UserSessionsRevoked { .. });
+        assert_eq!(e.is_internal(), expected, "{e:?}");
+    }
 }
