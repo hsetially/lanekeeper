@@ -219,6 +219,13 @@ async fn renew_extends_the_expiry_the_database_holds() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_local_guard_never_outlives_the_database_lease() {
     // The guard's expiry is measured from before the request was sent, so it is never later than the row's.
+    //
+    // The two remaining times are read at different moments, so they cannot be compared as they stand: the database's one is
+    // taken some milliseconds after the local one, and under load that gap grew past the 1 ms the first version of this test
+    // allowed (it failed 1 run in 15 with eight busy loops competing, with the code unchanged). The database's `now()` is
+    // somewhere between `before` and `after`, the instants around the query, so the guard may exceed the row's remaining time by
+    // at most `after - before`, plus the 1 ms for the clock reads themselves. That holds whenever the guard is right, however
+    // slow the query was.
     let Some(r) = replicas(1).await else { return };
     let a = &r.leases[0].1;
     let g = a
@@ -226,18 +233,18 @@ async fn the_local_guard_never_outlives_the_database_lease() {
         .await
         .unwrap()
         .unwrap();
-    let remaining_local = g
-        .expires_at()
-        .saturating_duration_since(tokio::time::Instant::now());
+    let before = tokio::time::Instant::now();
+    let remaining_local = g.expires_at().saturating_duration_since(before);
     let remaining_db: f64 = sqlx::query_scalar(
         "SELECT extract(epoch FROM expires_at - now())::float8 FROM leases WHERE name = 'job.early'",
     )
     .fetch_one(&r.pool)
     .await
     .unwrap();
+    let query_time = before.elapsed().as_secs_f64();
     assert!(
-        remaining_local.as_secs_f64() <= remaining_db + 0.001,
-        "local {remaining_local:?} must not exceed database {remaining_db}"
+        remaining_local.as_secs_f64() <= remaining_db + query_time + 0.001,
+        "local {remaining_local:?} must not exceed database {remaining_db} by more than the query took ({query_time} s)"
     );
 }
 
