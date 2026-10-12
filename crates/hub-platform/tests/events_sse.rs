@@ -26,7 +26,7 @@ use http_body_util::BodyExt;
 use hub_platform::events::fake::FakeEventSource;
 use hub_platform::events::metrics::{EventMetrics, SseEnd, SseRefusal};
 use hub_platform::events::sse::{self, SseSettings, SseState};
-use hub_platform::events::visibility::RoleVisibility;
+use hub_platform::events::visibility::{EventVisibility, RoleVisibility};
 use hub_platform::session_auth::user_id;
 use hub_platform::{FakeSessionAuth, GuardedRouter, TEST_USER_HEADER};
 use support::sse_client::{Frames, kind_of, parse};
@@ -132,6 +132,12 @@ fn proposal(n: i64) -> DomainEvent {
         id: ProposalId::from(n),
         status: ProposalStatus::Pending,
     }
+}
+
+/// The internal event of the contract (`DomainEvent::is_internal`): hub replicas tell each other that a user's sessions are gone.
+/// It carries a user id and is a global event, so a per-user filter alone would hand it to every Viewer.
+fn revoked(user: &str) -> DomainEvent {
+    DomainEvent::UserSessionsRevoked { user: user_id(user) }
 }
 
 // ------------------------------------------------------------------------------------------------------ S4
@@ -244,6 +250,10 @@ async fn sse_query_bounds_are_enforced() {
         "/api/v1/events?swimlane=-leading-dash".to_owned(),
         format!("/api/v1/events?swimlane={long}"),
         "/api/v1/events?kinds=no_such_kind".to_owned(),
+        // The kind exists in the contract, but it is internal: the OpenAPI list of kinds does not have it, and a request
+        // for it is not a way to get it.
+        "/api/v1/events?kinds=user_sessions_revoked".to_owned(),
+        "/api/v1/events?kinds=findings_changed&kinds=user_sessions_revoked".to_owned(),
         "/api/v1/events?kinds=File_Observed".to_owned(),
         "/api/v1/events?kinds=".to_owned(),
         "/api/v1/events?unknown=1".to_owned(),
@@ -271,7 +281,7 @@ async fn sse_query_bounds_are_enforced() {
         StatusCode::BAD_REQUEST,
         "a Last-Event-ID over 64 characters"
     );
-    assert!(rig.metrics.sse_refused_total(SseRefusal::BadRequest) >= 14);
+    assert!(rig.metrics.sse_refused_total(SseRefusal::BadRequest) >= 16);
 }
 
 #[tokio::test(start_paused = true)]
@@ -407,6 +417,156 @@ async fn an_access_request_is_for_admins_and_a_resync_is_for_everyone() {
         kinds_of(for_admin),
         ["access_request_created", "resync", "findings_changed"]
     );
+}
+
+// ---------------------------------------------------------------------------------- internal events (S4, S12)
+
+/// The kinds a stream carries up to and including the first `findings_changed` (the probe each test publishes after the
+/// internal events, so that an internal event that leaks arrives before it).
+async fn kinds_up_to_the_probe<S, E>(stream: &mut Frames<S>) -> Vec<String>
+where
+    S: Stream<Item = Result<Bytes, E>> + Unpin,
+    E: std::fmt::Debug,
+{
+    let mut kinds = Vec::new();
+    loop {
+        let frame = stream.next_event().await.unwrap();
+        let kind = kind_of(&frame);
+        let done = kind == "findings_changed";
+        kinds.push(kind);
+        if done {
+            return kinds;
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_internal_event_is_never_streamed_live_to_a_viewer_or_an_admin() {
+    let rig = rig(settings());
+    let mut viewer = frames(open(&rig, Some("viewer"), "/api/v1/events", &[]).await);
+    let mut admin = frames(open(&rig, Some("admin"), "/api/v1/events", &[]).await);
+    // A viewer who narrows the stream by swimlane and one who narrows it by kind get nothing extra either.
+    let mut by_lane = frames(open(&rig, Some("viewer2"), "/api/v1/events?swimlane=sit1", &[]).await);
+    let mut by_kind = frames(
+        open(
+            &rig,
+            Some("viewer"),
+            "/api/v1/events?kinds=findings_changed&kinds=resync",
+            &[],
+        )
+        .await,
+    );
+    rig.source.publish(revoked("viewer"));
+    rig.source.publish(revoked("someone-else"));
+    rig.source.publish(findings("sit1"));
+    for (who, stream) in [
+        ("viewer", &mut viewer),
+        ("admin", &mut admin),
+        ("by swimlane", &mut by_lane),
+        ("by kind", &mut by_kind),
+    ] {
+        assert_eq!(
+            kinds_up_to_the_probe(stream).await,
+            ["findings_changed"],
+            "{who}: the internal events are dropped at the SSE edge"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_internal_event_is_never_replayed_to_a_viewer_or_an_admin() {
+    let rig = rig(settings());
+    rig.source.publish(proposal(1)); // 1: the event the client last saw
+    rig.source.publish(revoked("viewer")); // 2
+    rig.source.publish(proposal(3)); // 3
+    rig.source.publish(revoked("someone-else")); // 4
+    rig.source.publish(findings("sit1")); // 5
+    for who in ["viewer", "admin"] {
+        let mut stream = frames(open(&rig, Some(who), "/api/v1/events", &[("last-event-id", "1")]).await);
+        assert_eq!(stream.next().await.unwrap(), RETRY, "{who}");
+        let mut ids = Vec::new();
+        let mut kinds = Vec::new();
+        loop {
+            let frame = stream.next_event().await.unwrap();
+            ids.push(parse(&frame).id.unwrap());
+            kinds.push(kind_of(&frame));
+            if kinds.last().map(String::as_str) == Some("findings_changed") {
+                break;
+            }
+        }
+        assert_eq!(
+            kinds,
+            ["proposal_changed", "findings_changed"],
+            "{who}: the replay holds no internal event"
+        );
+        assert_eq!(ids, ["3", "5"], "{who}: and keeps the ids of the others");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_internal_event_that_is_both_replayed_and_live_is_still_dropped() {
+    let rig = rig(settings());
+    rig.source.publish(proposal(1));
+    let source = Arc::clone(&rig.source);
+    // Committed between the subscription and the replay's query, so it is in both paths of the edge. The probe follows it
+    // in the same hook, so that it is the later of the two in the log and a leak of the first would come before it.
+    rig.source.before_next_replay(move || {
+        source.publish(revoked("viewer"));
+        source.publish(findings("sit1"));
+    });
+    let mut stream = frames(open(&rig, Some("admin"), "/api/v1/events", &[("last-event-id", "1")]).await);
+    assert_eq!(kinds_up_to_the_probe(&mut stream).await, ["findings_changed"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_resync_and_the_other_kinds_still_reach_the_users_they_reached_before() {
+    let rig = rig(settings());
+    let mut viewer = frames(open(&rig, Some("viewer"), "/api/v1/events", &[]).await);
+    let mut admin = frames(open(&rig, Some("admin"), "/api/v1/events", &[]).await);
+    rig.source.publish(revoked("viewer"));
+    rig.source.publish_unstored(DomainEvent::Resync);
+    rig.source.publish(DomainEvent::AccessRequestCreated {
+        user: user_id("newcomer"),
+    });
+    rig.source.publish(findings("sit1"));
+    assert_eq!(
+        kinds_up_to_the_probe(&mut viewer).await,
+        ["resync", "findings_changed"]
+    );
+    assert_eq!(
+        kinds_up_to_the_probe(&mut admin).await,
+        ["resync", "access_request_created", "findings_changed"]
+    );
+}
+
+#[test]
+fn the_default_visibility_rule_refuses_an_internal_event_to_every_role() {
+    let internal = revoked("viewer");
+    for (name, role) in [
+        ("viewer", Role::Viewer),
+        ("operator", Role::Operator),
+        ("admin", Role::Admin),
+    ] {
+        let text = |s: &str| domain::ShortText::parse(s).unwrap();
+        let user = domain::User {
+            id: user_id(name),
+            email: text(&format!("{name}@example.test")),
+            display_name: text(name),
+            role: Some(role),
+            status: UserStatus::Active,
+            requires_approval: false,
+            github_login: None,
+            last_seen_at: None,
+        };
+        assert!(
+            RoleVisibility.visible(&user, &findings("sit1")),
+            "{name}: the rule still shows everything else"
+        );
+        assert!(
+            !RoleVisibility.visible(&user, &internal),
+            "{name}: the edge drops internal events first, and the rule must not be the hole behind it"
+        );
+    }
 }
 
 // ----------------------------------------------------------------------------------------------- replay

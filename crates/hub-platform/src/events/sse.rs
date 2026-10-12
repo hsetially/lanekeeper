@@ -22,6 +22,12 @@
 //! ends at its maximum age (30 minutes by default), so a role change that only narrows what a user may see takes effect when the
 //! client reconnects with its `Last-Event-ID`.
 //!
+//! **Internal events never reach a browser.** The bus carries events that exist only so that hub replicas can coordinate
+//! ([`DomainEvent::is_internal`]: today `UserSessionsRevoked`, which names a user). They are global events with an id in them, so the
+//! per-user filter would hand them to every Viewer. This edge drops them first, before the user's filter, on live delivery and
+//! on replay, and a request cannot ask for their kind (`kinds=user_sessions_revoked` is a 400, like any name the `OpenAPI` list
+//! of kinds does not have). Everything else, [`DomainEvent::Resync`] included, is delivered as before.
+//!
 //! The stream ends with a final `retry:` frame on shutdown and at its maximum age.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -53,7 +59,7 @@ use domain::Role;
 
 /// The most swimlanes a request may name.
 pub const MAX_SWIMLANES: usize = 64;
-/// The most kinds a request may name. There are 15 kinds.
+/// The most kinds a request may name. There are 15 kinds a browser can ask for (the internal kinds are not among them).
 pub const MAX_KINDS: usize = 15;
 /// The longest `Last-Event-ID` the API accepts.
 const MAX_LAST_EVENT_ID: usize = 64;
@@ -301,11 +307,41 @@ fn parse_query(query: Option<&str>, max_bytes: usize) -> Result<EventFilter, ()>
     })
 }
 
+/// Whether a kind is internal to the hub (the kind of an event for which [`DomainEvent::is_internal`] is true). The match has no
+/// wildcard, so a kind added to the contract fails to compile here until someone has decided which side of the edge it is on.
+fn is_internal_kind(kind: EventKind) -> bool {
+    match kind {
+        EventKind::UserSessionsRevoked => true,
+        EventKind::FileObserved
+        | EventKind::DriftChanged
+        | EventKind::FindingsChanged
+        | EventKind::PendingRestartChanged
+        | EventKind::ProposalChanged
+        | EventKind::AgentStatusChanged
+        | EventKind::GitHeadMoved
+        | EventKind::AccessRequestCreated
+        | EventKind::DocIndexed
+        | EventKind::Resync
+        | EventKind::AttributionUpdated
+        | EventKind::PrStateChanged
+        | EventKind::PrJobProgress
+        | EventKind::SyncWindowOpened
+        | EventKind::SyncWindowClosed => false,
+    }
+}
+
+/// A kind a browser may ask for. An internal kind is refused whole, and is never dropped from the list: an empty list of kinds means
+/// every kind, so a filter that was emptied by dropping it would widen the stream.
 fn parse_kind(name: &str) -> Result<EventKind, ()> {
     if name.is_empty() || name.len() > 32 || !name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
         return Err(());
     }
-    serde_json::from_value(serde_json::Value::String(name.to_owned())).map_err(|_| ())
+    let kind: EventKind =
+        serde_json::from_value(serde_json::Value::String(name.to_owned())).map_err(|_| ())?;
+    if is_internal_kind(kind) {
+        return Err(());
+    }
+    Ok(kind)
 }
 
 fn refuse(state: &SseState, reason: SseRefusal, error: ApiError) -> Response {
@@ -451,6 +487,15 @@ impl Stream {
         self.out.send(frame, self.state.settings.write_timeout).await
     }
 
+    /// Whether this user's stream carries `event`. Internal events come first and are never delivered, whoever the user is;
+    /// a [`DomainEvent::Resync`] always is; the rest follow the visibility rule.
+    fn deliverable(&self, event: &DomainEvent) -> bool {
+        if event.is_internal() {
+            return false;
+        }
+        matches!(event, DomainEvent::Resync) || self.state.visibility.visible(&self.user, event)
+    }
+
     async fn write_event(&self, id: Option<EventId>, event: &DomainEvent) -> Result<(), SseEnd> {
         match event_frame(id, event) {
             Some(frame) => self.write(frame).await,
@@ -485,7 +530,7 @@ impl Stream {
             Ok(Ok(Replay::Events(events))) => {
                 self.state.metrics.replay(ReplayOutcome::Events);
                 for (id, event) in events {
-                    if self.state.visibility.visible(&self.user, &event) {
+                    if self.deliverable(&event) {
                         self.write_event(Some(id), &event).await?;
                     }
                     sent.insert(id);
@@ -539,9 +584,7 @@ impl Stream {
                     if item.id.is_some_and(|id| replayed.contains(&id)) {
                         continue;
                     }
-                    if matches!(item.event, DomainEvent::Resync)
-                        || self.state.visibility.visible(&self.user, &item.event)
-                    {
+                    if self.deliverable(&item.event) {
                         self.write_event(item.id, &item.event).await?;
                     }
                 }
@@ -592,6 +635,19 @@ mod tests {
                 serde_json::to_value(kind).unwrap(),
                 serde_json::Value::String(name.to_owned())
             );
+        }
+    }
+
+    #[test]
+    fn an_internal_kind_cannot_be_asked_for_and_agrees_with_the_event() {
+        assert!(parse_kind("user_sessions_revoked").is_err());
+        let event = DomainEvent::UserSessionsRevoked {
+            user: crate::session_auth::user_id("someone"),
+        };
+        assert!(event.is_internal());
+        assert!(is_internal_kind(EventKind::of(&event)));
+        for name in KINDS {
+            assert!(!is_internal_kind(parse_kind(name).unwrap()), "{name}");
         }
     }
 

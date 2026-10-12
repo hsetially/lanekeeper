@@ -9,3 +9,4 @@ expression: "snapshot.join(\"\\n\")"
 {"v":1,"event":{"type":"git_head_moved","repo":"base","branch":"refs/heads/master","from":null,"to":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
 {"v":1,"event":{"type":"pr_state_changed","link_id":3,"state":"merged"}}
 {"v":1,"event":{"type":"resync"}}
+{"v":1,"event":{"type":"user_sessions_revoked","user":"2a59d59e-3809-f827-ce70-9d3815e3950e:ef4a6a93-af55-57a9-3a7f-dfba71460843"}}

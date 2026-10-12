@@ -47,6 +47,10 @@ fn sample_events() -> Vec<DomainEvent> {
             state: PrState::Merged,
         },
         DomainEvent::Resync,
+        // Internal (03a): the outbox carries it from the replica that changed a role to the session cache of every replica.
+        DomainEvent::UserSessionsRevoked {
+            user: hub_platform::session_auth::user_id("someone"),
+        },
     ]
 }
 
