@@ -1,7 +1,7 @@
 # Plan 04: Fact engine
 
-Status: DRAFT
-Contract-change: needed
+Status: APPROVED
+Contract-change: APPROVED
 Extra-paths: `docs/decisions.md`, `docs/threat-model.md`, `crates/xtask/tests/budgets_registry.rs`
 Prompt: prompts/04-fact-engine.md
 Branch: agent/04-fact-engine
