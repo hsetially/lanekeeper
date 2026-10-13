@@ -1,7 +1,7 @@
 # Plan 05: Registry, indexes, incremental pipeline and read API
 
-Status: DRAFT
-Contract-change: needed
+Status: APPROVED
+Contract-change: APPROVED
 Extra-paths: `docs/threat-model.md`, `docs/decisions.md`, `crates/xtask/tests/budgets_registry.rs`
 Prompt: prompts/05-registry-read-api.md
 Branch: agent/05-registry-read-api
