@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use domain::{DomainEvent, ProposalId, ProposalStatus};
+use domain::{DomainEvent, ProposalId, ProposalStatus, ServiceRef};
 use futures::StreamExt;
 
 use super::sample::{swimlane, user_id};
@@ -89,6 +89,24 @@ pub async fn event_bus<B: EventBus + ?Sized>(bus: &B, txf: &dyn TxFactory, buffe
         "an internal event has no swimlane, so it passes a swimlane filter"
     );
     assert_eq!(next(&mut only_revoked).await, revoked, "its own kind filter");
+
+    // `PickupChanged` (D85, prompt 05) belongs to a swimlane: a swimlane filter limits it, and its own kind finds it.
+    let pickup = |s: &str| DomainEvent::PickupChanged {
+        swimlane: swimlane(s),
+        services: vec![ServiceRef::new("csp", "tx-infinity-api").expect("a service")],
+    };
+    let mut pickups_in_sit1 = bus.subscribe(EventFilter {
+        swimlanes: Some([swimlane("sit1")].into()),
+        kinds: [EventKind::PickupChanged].into(),
+    });
+    bus.publish(pickup("sit2")).await.unwrap();
+    bus.publish(pickup("sit1")).await.unwrap();
+    assert_eq!(
+        next(&mut pickups_in_sit1).await,
+        pickup("sit1"),
+        "sit2 is filtered out"
+    );
+    assert_quiet(&mut pickups_in_sit1, "only sit1 was asked for").await;
 
     // A new subscriber does not see the past.
     let mut late = bus.subscribe(EventFilter::all());

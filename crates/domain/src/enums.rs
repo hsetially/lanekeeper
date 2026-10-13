@@ -145,7 +145,9 @@ wire_enum! {
 }
 
 wire_enum! {
-    /// Consistency checks C1-C11, in numeric order. See [`FindingKind::code`].
+    /// Consistency checks C1-C11, in numeric order, then C12: the "as served" mismatch of D86, where the config-server's
+    /// answer differs from the engine's rendering. New kinds are appended, so the codes already given never move. See
+    /// [`FindingKind::code`].
     FindingKind {
         MissedBaseChanges => "missed_base_changes",
         RedundantTenantFile => "redundant_tenant_file",
@@ -158,11 +160,12 @@ wire_enum! {
         AmbiguousFileName => "ambiguous_file_name",
         UnresolvedPlaceholder => "unresolved_placeholder",
         ConfigServerRestartRequired => "config_server_restart_required",
+        ServedMismatch => "served_mismatch",
     }
 }
 
 impl FindingKind {
-    /// The check id used in the docs: `C1` ... `C11`.
+    /// The check id used in the docs: `C1` ... `C12`.
     pub const fn code(self) -> &'static str {
         match self {
             Self::MissedBaseChanges => "C1",
@@ -176,6 +179,7 @@ impl FindingKind {
             Self::AmbiguousFileName => "C9",
             Self::UnresolvedPlaceholder => "C10",
             Self::ConfigServerRestartRequired => "C11",
+            Self::ServedMismatch => "C12",
         }
     }
 }
