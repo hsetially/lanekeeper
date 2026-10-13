@@ -6,8 +6,9 @@
 //! - **Property sources** (`application.*`, `application-*.*`, `<app>.*`, `<app>-<tenant>.*`, in `.properties`, `.yml` or
 //!   `.yaml`) merge setting by setting into the **property view** of the application and tenant ([`property_view`]).
 //! - **Resource files** (every other file) are chosen whole ([`resolve_resource`]): the tenant's copy, else the base copy,
-//!   the channel folder's copy first when the request names a channel. Then every `${KEY}` whose key is in the property view
-//!   is replaced ([`render`]); any other `${...}` stays as it is, for the service to fill from its own environment.
+//!   the channel folder's copy first when the request names a channel. Then, in a file that is text, every `${KEY}` whose
+//!   key is in the property view is replaced ([`render`]); any other `${...}` stays as it is, for the service to fill from
+//!   its own environment. A binary or denied file is not text and is served as it is ([`render_file`]).
 //!
 //! The folders searched, and their order, are [`search_locations`]; they are fixed when the config-server starts, which is
 //! why a new folder or a change to `channels.yml` needs a restart (check C11, [`pickup_state`]).
@@ -25,7 +26,10 @@
 //!   order, the later wins. A list defined by a higher source replaces the lower source's list as a unit (the binder's rule).
 //!   Profile activation inside a file (`spring.config.activate.on-profile`) is ignored, as is a profile named `default`.
 //! - Only `${KEY}` with `KEY` in `[A-Za-z0-9_.\-\[\]]+` is replaced, once, with no re-expansion of what was inserted.
-//!   `${KEY:default}`, nested forms and `$${` are left as written and C10 does not flag them.
+//!   `${KEY:default}`, nested forms and `$${` are left as written and C10 does not flag them. A nested form is skipped as a
+//!   whole only up to 256 bytes (the work of a scan is bounded, AGENTS.md rule 5): in a longer one only the opener is left
+//!   alone, and a plain `${KEY}` inside it is then a placeholder like any other. (Spring itself resolves the inner
+//!   placeholder first; which of the two is right for a nested form that long is not a question the engine settles.)
 //! - A request with a channel prefers the channel folder's tenant copy, then its base copy, then the folder above's.
 
 mod locations;

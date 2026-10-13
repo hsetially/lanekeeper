@@ -20,7 +20,7 @@
 //! | `engine_path_mapping` | NUL-separated pieces: an NFS path, tenant ids, a repository path, then application names | `reverse_map`, `classify_path`, `map_path`, `file_role` and `logical_file_role` never panic; a path that reads back to Git maps forward to the very same NFS path, under the root of its repository; a repository path maps to an NFS path that reads back to the same tenant file; the kind and the tenant of `classify_path` agree with the mapping; a file's role is the same when asked twice, a property source has a property extension, adding tenants only makes more files property sources, and with no tenants the role of a path is the role of the logical file it names |
 //! | `engine_flatten` | NUL-separated pieces | a path built from any keys and indexes is read back to the same keys and indexes; any text offered as a setting path is refused or read to something that writes and reads back the same |
 //! | `engine_regex` | a flags byte (regex or literal, case, small caps), a pattern, a NUL, then the text searched | `search_text` never panics, finishes within the (small) regex limits and gives the same answer twice; an empty or over-long pattern is refused as such; every hit is within the caps, in swimlane, path and line order, with line text of at most the cut length that has no `\r` or `\n`, and ranges that are in order, not empty, inside the text and on character boundaries; a binary or over-long text gives no hits; for a literal, case-sensitive pattern in UTF-8 text the hits are exactly the lines that hold the pattern and the ranges exactly its occurrences |
-//! | `engine_render` | a property file (`.properties` text), a NUL, then the text to render | `scan_placeholders`, `render` and `render_file` never panic, and give the same answer twice; the result is within the size limit or a limit error; every placeholder found is `${KEY}` with a plain key, and stands in the text; every placeholder whose key is in the view is replaced by its value and every other one is reported, once, sorted; the length of the output is the length of the text plus what the replacements add; with an empty view nothing changes |
+//! | `engine_render` | a property file (`.properties` text), a NUL, then the text to render | `scan_placeholders`, `render` and `render_file` never panic, and give the same answer twice; the result is within the size limit or a limit error; every placeholder found is `${KEY}` with a plain key, and stands in the text; every placeholder whose key is in the view is replaced by its value and every other one is reported, once, sorted; the output is the text with each placeholder replaced by its value and every other character as it was (checked as text, with a rendering that marks each key, and its length is the length of the text plus what the replacements add); with an empty view nothing changes |
 //! | `engine_secret_scan` | a flags byte (hex, shorter and looser thresholds), then text | `secret_scan` never panics and gives the same answer twice; every match is a non-empty span inside the text, in order and not overlapping, whose length counts its characters; its marker is `[REDACTED: N chars, rule]`; and replacing every span by its marker leaves a text in which the scan finds nothing, so what the scan reports is all of what it would report |
 
 #![allow(
@@ -40,12 +40,12 @@ use domain::{
 };
 use engine::{
     Body, CancelFlag, DenyMatcher, Flat, Limits, LocationSource, Newline, NodeKind, ParseError, ParseWarning,
-    Parsed, PathSegment, PropertyFile, RepoSource, ResolveError, ScanConfig, ScanError, SearchBlob,
-    SearchCorpus, SearchError, SearchLocation, SearchOutcome, SecretMatch, Syntax, apply_eol, classify,
-    classify_path, decode_setting_path, decode_text, detect_format, encode_setting_path, encode_text,
-    file_role, flatten, index_settings, locate, logical_file_role, map_path, merge_mode, normalise_eol,
-    normalised_hash, parse, property_view, render, render_file, reverse_map, scan_placeholders,
-    search_locations, search_text, secret_scan, validate,
+    Parsed, PathSegment, Placeholder, PropertyFile, PropertyView, RepoSource, ResolveError, ScanConfig,
+    ScanError, SearchBlob, SearchCorpus, SearchError, SearchLocation, SearchOutcome, SecretMatch, Syntax,
+    apply_eol, classify, classify_path, decode_setting_path, decode_text, detect_format, encode_setting_path,
+    encode_text, file_role, flatten, index_settings, locate, logical_file_role, map_path, merge_mode,
+    normalise_eol, normalised_hash, parse, property_view, render, render_file, reverse_map,
+    scan_placeholders, search_locations, search_text, secret_scan, validate,
 };
 
 /// A check over one fuzz input.
@@ -1040,6 +1040,107 @@ fn plain_key(key: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-' | b'[' | b']'))
 }
 
+/// The property view that a `.properties` text gives, as the only property source of an application; `None` when the text is
+/// not a property file under the limits, or the view would be over them.
+fn property_view_of(view_text: &str, limits: &Limits) -> Option<PropertyView> {
+    let path = NfsPath::parse("application.properties").ok()?;
+    let parsed = parse(view_text, Syntax::Properties, limits).ok()?;
+    let flat = flatten(&parsed, limits).ok()?;
+    let app = AppName::parse("app").ok()?;
+    let locations = search_locations(&app, None, std::slice::from_ref(&path), &[]);
+    let files = [PropertyFile {
+        path: &path,
+        settings: &flat.settings,
+    }];
+    property_view(&app, None, &locations, &files, limits).ok()
+}
+
+/// The first and last of the characters of a marker. Private-use characters: a template that holds one is not checked here.
+const MARK_OPEN: char = '\u{e000}';
+const MARK_CLOSE: char = '\u{e001}';
+
+/// The rendered text is the template with each placeholder replaced by its value (or left as written, when the view has no
+/// such key) and every other character as it was. The length is checked elsewhere; this is the text.
+///
+/// The engine's scan says which placeholders there are and in what order, but not where. To find where without reading its
+/// offsets, the template is rendered again with a view that gives every key a marker: cutting that rendering at the markers
+/// leaves the pieces of the template between the placeholders, and those pieces put back with their `${KEY}` have to be the
+/// template, or the markers do not stand where the placeholders are. The pieces with the real values in are then the text that
+/// `render` must have given.
+fn check_rendered_text(
+    template: &str,
+    found: &[Placeholder],
+    view: &PropertyView,
+    rendered: &str,
+    limits: &Limits,
+) -> Result<(), String> {
+    if template.contains([MARK_OPEN, MARK_CLOSE]) {
+        return Ok(());
+    }
+    let mut keys: Vec<&str> = found.iter().map(|p| p.key.as_str()).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    let marker = |n: usize| format!("{MARK_OPEN}{n}{MARK_CLOSE}");
+    let marked: String = keys.iter().enumerate().fold(String::new(), |mut out, (n, key)| {
+        out.push_str(&format!("{key}={}\n", marker(n)));
+        out
+    });
+    let Some(markers) = property_view_of(&marked, limits) else {
+        return Ok(());
+    };
+    let Ok(split) = render(template, &markers, limits) else {
+        return Ok(());
+    };
+
+    // The pieces between the markers, and the key each marker stands for.
+    let mut pieces: Vec<&str> = Vec::new();
+    let mut stood_for: Vec<usize> = Vec::new();
+    let mut rest = split.text.as_str();
+    while let Some(open) = rest.find(MARK_OPEN) {
+        pieces.push(&rest[..open]);
+        let after = &rest[open + MARK_OPEN.len_utf8()..];
+        let close = after
+            .find(MARK_CLOSE)
+            .ok_or("a marker that is not closed in the marked rendering")?;
+        stood_for.push(
+            after[..close]
+                .parse()
+                .map_err(|_| "a marker that is not a number")?,
+        );
+        rest = &after[close + MARK_CLOSE.len_utf8()..];
+    }
+    pieces.push(rest);
+
+    ensure(stood_for.len() == found.len(), || {
+        "the marked rendering has not one marker for each placeholder found".into()
+    })?;
+    for (marker, placeholder) in stood_for.iter().zip(found) {
+        ensure(keys.get(*marker) == Some(&placeholder.key.as_str()), || {
+            "the markers are not in the order of the placeholders".into()
+        })?;
+    }
+    let mut again = String::new();
+    let mut expected = String::new();
+    for (i, piece) in pieces.iter().enumerate() {
+        again.push_str(piece);
+        expected.push_str(piece);
+        if let Some(placeholder) = found.get(i) {
+            again.push_str(&format!("${{{}}}", placeholder.key));
+            match view.get(&placeholder.key) {
+                Some(setting) => expected.push_str(&setting.value.text),
+                None => expected.push_str(&format!("${{{}}}", placeholder.key)),
+            }
+        }
+    }
+    ensure(again == template, || {
+        "the pieces of the marked rendering, with their placeholders put back, are not the template".into()
+    })?;
+    ensure(expected == rendered, || {
+        "the rendered text is not the template with the values of the view in place of its placeholders"
+            .into()
+    })
+}
+
 pub fn engine_render(data: &[u8]) -> Result<(), String> {
     let text = String::from_utf8_lossy(data);
     let (view_text, template) = text.split_once('\0').unwrap_or(("", &text));
@@ -1108,6 +1209,7 @@ pub fn engine_render(data: &[u8]) -> Result<(), String> {
             ensure(r.text.len() as isize == template.len() as isize + added, || {
                 "the output is not the text plus what the replacements add".into()
             })?;
+            check_rendered_text(template, &found, &view, &r.text, &limits)?;
             let mut keys: Vec<&str> = found
                 .iter()
                 .filter(|p| view.get(&p.key).is_none())
@@ -1237,6 +1339,25 @@ pub fn planted_harm_is_detected() -> Result<(), String> {
     ensure(engine_secret_scan(b"\0password: x\n").is_ok(), || {
         "a clean scan input was reported".into()
     })?;
+
+    // The render check compares the text and not only its length: the same length with the values in the wrong places, or one
+    // character changed, is reported.
+    let view = property_view_of("x=1\ny=22\n", &limits).ok_or("no view")?;
+    let template = "a ${x} b ${y} ${z} c\n";
+    let found = scan_placeholders(template);
+    check_rendered_text(template, &found, &view, "a 1 b 22 ${z} c\n", &limits)?;
+    for (name, wrong) in [
+        ("the values swapped", "a 22 b 1 ${z} c\n"),
+        ("a character changed", "a 1 b 22 ${z} d\n"),
+        ("a value left out and a character added", "a  b 22 ${z}xc\n"),
+        ("the unresolved placeholder dropped", "a 1 b 22  c\n"),
+        ("the text cut short", "a 1 b 22 ${z} c"),
+    ] {
+        ensure(
+            check_rendered_text(template, &found, &view, wrong, &limits).is_err(),
+            || format!("a rendering with {name} was not reported"),
+        )?;
+    }
 
     ensure(engine_flatten(b"fine\0@1").is_ok(), || {
         "a clean input was reported".into()

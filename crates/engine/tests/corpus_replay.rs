@@ -160,6 +160,28 @@ fn the_hostile_seeds_hit_the_limits_they_are_named_for() {
     }
 }
 
+/// A text target reads its input as UTF-8 and does nothing with anything else (`text_of` in the invariants), so a seed for one
+/// that is not UTF-8 tests nothing there; the wrong encodings are the seeds of `engine_bytes` and `engine_index_settings`,
+/// which read bytes. This seed is a byte order mark and then JSON that is not JSON: the mark is ignored and the syntax error
+/// is found.
+#[test]
+fn the_json_seed_with_a_mark_and_bad_json_reaches_the_parser() {
+    let data = seed("engine_json", "bom_then_invalid");
+    let text = std::str::from_utf8(&data).expect("a seed for a text target is text");
+    assert!(text.starts_with('\u{feff}'));
+    assert!(matches!(
+        parse(text, Syntax::Json, &invariants::fuzz_limits()),
+        Err(ParseError::Syntax {
+            syntax: Syntax::Json,
+            ..
+        })
+    ));
+    // The same file without the mark is the same error, so the mark is not what makes it invalid.
+    let bare = text.trim_start_matches('\u{feff}');
+    assert!(parse(bare, Syntax::Json, &invariants::fuzz_limits()).is_err());
+    assert!(parse("{\"a\": 1}", Syntax::Json, &invariants::fuzz_limits()).is_ok());
+}
+
 #[test]
 fn the_huge_scalar_seeds_hit_the_scalar_limit() {
     let limits = invariants::fuzz_limits();

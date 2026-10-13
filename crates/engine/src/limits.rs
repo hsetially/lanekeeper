@@ -1,11 +1,18 @@
 //! The engine's size limits, in one struct (S11, S21).
 //!
 //! Every limit is on a size, never on time: a wall-clock timeout would make the output depend on how busy the machine is,
-//! and the engine's output must be byte-identical for identical input. A function that meets a limit returns an error
-//! value that names the limit and never the input.
+//! and the engine's output must be byte-identical for identical input. What a function does when it meets a limit depends on
+//! what it is for, and the function says which in its documentation:
+//!
+//! - the functions that read or write a file (`parse`, `flatten`, `validate`, `index_settings`, `render`, `secret_scan`,
+//!   `encode_text`) return an error value that names the limit and never the input;
+//! - a text diff, which is shown to a person, gives the outcome `too_large` and no hunks (`diff_lines`, `diff_cells`);
+//! - a search skips a blob that is over the file limit and counts it in the outcome, and stops at the caps on hits and
+//!   says that the result was cut (`hits_total`, `hits_per_file`);
+//! - a check lists at most `locations_per_finding` of anything and carries the full count.
 //!
 //! The defaults are the plan's (`plans/04-fact-engine.md`, "Limits"). Every field can be overridden, and the code that
-//! enforces a limit has a test at its boundary: exactly at the limit passes, one over fails.
+//! enforces a limit has a test at its boundary: exactly at the limit passes, one over is refused, skipped or cut as above.
 
 /// Size limits for parsing, indexing, diffing and searching.
 #[derive(Debug, Clone, PartialEq, Eq)]

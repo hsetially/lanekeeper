@@ -76,7 +76,10 @@ fn full_recompute_bench(c: &mut Criterion) {
     memory("after the first recompute");
 
     let mut group = c.benchmark_group("engine");
-    // One recompute per sample: the p95 is over single recomputes.
+    // One recompute per sample: the p95 is over single recomputes. Ten is the fewest samples criterion takes, and `bench-check`
+    // takes the nearest-rank percentile, which for ten samples is the slowest of them: the figure is the maximum, the
+    // cautious direction, and it is compared with a budget about a hundred times larger (a recompute is about 1.7 s; each
+    // sample costs that much of the gate's time, so more samples would only make the gate slower).
     group.sampling_mode(SamplingMode::Flat);
     group.sample_size(10);
     group.warm_up_time(Duration::from_millis(1));

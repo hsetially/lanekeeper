@@ -147,6 +147,40 @@ template: '{{ var }}'
 }
 
 #[test]
+fn a_sign_belongs_to_infinity_and_not_to_nan() {
+    // YAML 1.2 core schema (10.3.2): a float is `[-+]? \. (inf|Inf|INF)` or `\. (nan|NaN|NAN)`. A signed NaN is not one, so it
+    // is text, and must stay text: the engine does not say more than the schema does.
+    let flat = yaml(
+        "\
+inf: .inf\n\
+pos-inf: +.Inf\n\
+neg-inf: -.INF\n\
+nan: .nan\n\
+upper-nan: .NAN\n\
+pos-nan: +.NaN\n\
+neg-nan: -.nan\n",
+    );
+    let types: Vec<(String, domain::ValueType)> = flat
+        .settings
+        .iter()
+        .map(|s| (s.path.to_string(), s.value.ty))
+        .collect();
+    let (number, string) = (domain::ValueType::Float, domain::ValueType::String);
+    assert_eq!(
+        types,
+        vec![
+            ("inf".to_owned(), number),
+            ("pos-inf".to_owned(), number),
+            ("neg-inf".to_owned(), number),
+            ("nan".to_owned(), number),
+            ("upper-nan".to_owned(), number),
+            ("pos-nan".to_owned(), string),
+            ("neg-nan".to_owned(), string),
+        ]
+    );
+}
+
+#[test]
 fn golden_yaml_positions() {
     let flat = yaml(
         "\

@@ -331,9 +331,9 @@ engine-test:
     cargo test -p engine --lib --tests
 
 # Acceptance 4 (opt-in, plan decision A4): the engine against the real repositories, which this repository never holds (rule 12).
-# Not part of `verify-04`. Without the two checkouts it says NOT RUN, which is not a pass; a human runs it with them and pastes
-# the output into the PR. It checks the locations, the checks of `sit1` and the ambiguous names of the base (C9). It prints
-# counts, file names and setting paths, never a value.
+# Not part of `verify-04`. Without the two checkouts it says NOT RUN and exits 1, because a run that did not happen is not a
+# pass; a human runs it with them and pastes the output into the PR. It checks the locations, the checks of `sit1` and the
+# ambiguous names of the base (C9). It prints counts, file names and setting paths, never a value.
 #   LK_REAL_BASE_DIR   configuration-base-saas, default branch (the config/ folder or the checkout)
 #   LK_REAL_TENANT_DIR csp-tenant-data, branch sit1 (the data/config/ folder or the checkout)
 engine-real-snapshot:
@@ -341,7 +341,7 @@ engine-real-snapshot:
     set -euo pipefail
     if [ -z "${LK_REAL_BASE_DIR:-}" ] || [ -z "${LK_REAL_TENANT_DIR:-}" ]; then
         echo "real-snapshot: NOT RUN (set LK_REAL_BASE_DIR to a configuration-base-saas checkout and LK_REAL_TENANT_DIR to a csp-tenant-data checkout at sit1)"
-        exit 0
+        exit 1
     fi
     cargo test -p engine --test real_snapshot -- --ignored --nocapture
 

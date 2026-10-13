@@ -69,6 +69,7 @@ fn is_float(text: &str) -> bool {
     if matches!(body, ".inf" | ".Inf" | ".INF") {
         return true;
     }
+    // The core schema gives a sign to infinity and not to NaN (`+.NaN` is text), so this is `text` and not `body`.
     if matches!(text, ".nan" | ".NaN" | ".NAN") {
         return true;
     }

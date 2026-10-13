@@ -166,5 +166,18 @@ fn engine_real_snapshot_is_opt_in_and_says_so_when_it_is_not_run() {
     assert!(body.contains("LK_REAL_BASE_DIR") && body.contains("LK_REAL_TENANT_DIR"));
     assert!(body.contains("real-snapshot: NOT RUN"));
     assert!(!body.contains("PASS"));
+    // A run that did not happen is not a pass, and the exit status says so: whatever calls the recipe and does not read its
+    // output (a script, a CI step) must not take "NOT RUN" for success.
+    let lines: Vec<&str> = body.lines().map(str::trim).collect();
+    let said = lines
+        .iter()
+        .position(|l| l.starts_with("echo \"real-snapshot: NOT RUN"))
+        .expect("the recipe says NOT RUN");
+    assert_eq!(
+        lines.get(said + 1).copied(),
+        Some("exit 1"),
+        "the line after NOT RUN must be a non-zero exit"
+    );
+    assert!(!body.contains("exit 0"));
     assert!(body.contains("cargo test -p engine --test real_snapshot -- --ignored --nocapture"));
 }

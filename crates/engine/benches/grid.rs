@@ -29,16 +29,22 @@ const LOGICAL: &str = "reference-data/catalog-big-01.yml";
 /// The effective config of the logical file in one swimlane directory, or `None` when the swimlane lacks it.
 fn effective_of(dir: &std::path::Path, limits: &Limits) -> Option<Effective> {
     let folder = dir.join("reference-data");
-    // The tenant copy, if there is one: `catalog-big-01-<tenant>.yml`.
-    let mut tenant: Option<std::path::PathBuf> = None;
+    // The tenant copy, if there is one: `catalog-big-01-<tenant>.yml`. A swimlane can have several (it has a set of tenants),
+    // and the order in which a directory is read is the file system's, so the first in name order is the one: the same
+    // input on every machine and every run.
+    let mut copies: Vec<std::path::PathBuf> = Vec::new();
     for entry in fs::read_dir(&folder).ok()? {
         let p = entry.unwrap().path();
         let name = p.file_name().unwrap().to_string_lossy().into_owned();
         if name.starts_with("catalog-big-01-") && p.extension().is_some_and(|e| e == "yml") {
-            tenant = Some(p);
+            copies.push(p);
         }
     }
-    let chosen = tenant.unwrap_or_else(|| folder.join("catalog-big-01.yml"));
+    copies.sort();
+    let chosen = copies
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| folder.join("catalog-big-01.yml"));
     let data = Bytes::from(fs::read(chosen).ok()?);
     let text = decode_text(&data, limits).unwrap().text.into_owned();
     let settings = flatten(&parse(&text, Syntax::Yaml, limits).unwrap(), limits)
