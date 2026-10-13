@@ -1,0 +1,9 @@
+defaults: &d
+  t: 3000
+  r: 3
+svc:
+  <<: *d
+  name: a
+other:
+  name: b
+  <<: [*d]

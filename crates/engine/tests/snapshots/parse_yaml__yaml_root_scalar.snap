@@ -1,0 +1,5 @@
+---
+source: crates/engine/tests/parse_yaml.rs
+expression: dump(&yaml(text))
+---
+$ = "just a scalar" string L1-1

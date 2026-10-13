@@ -119,6 +119,19 @@ unit = "ms"
 scale = "target"
 registered = false
 
+# Prompt 04, T2: the engine's own share of P6, the parse and flatten of the 6,000-line YAML file in 20 ms (the 20 ms is the
+# prompt's, prompts/04-fact-engine.md T2; the P6 above is the nightly total).
+
+[[budget]]
+id = "P6.parse_flatten"
+description = "Parse and flatten a 6,000-line YAML file"
+bench = "engine/parse_flatten_6000_lines"
+statistic = "p95"
+threshold = 20
+unit = "ms"
+scale = "target"
+registered = true
+
 [[budget]]
 id = "P7.swimlane_list"
 description = "Swimlane list"

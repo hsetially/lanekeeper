@@ -316,7 +316,7 @@ platform-bench: agent-fixtures
 # its line, and it is complete at T10. Run `just verify` and `cargo xtask bench-check` after it (AGENTS.md, protocol step 4).
 # `engine-real-snapshot` (T3) is opt-in, needs the real repositories, and is not part of the gate.
 # Prompt 04 gate (the fact engine; S11, S13, S21, S22; P5 to P7): every sub-recipe, in order, stopping at the first failure.
-verify-04: engine-tools-check engine-lint engine-test
+verify-04: engine-tools-check engine-lint engine-test engine-fuzz fuzz-smoke engine-bench
 
 # The pinned tools the gate needs, or the command that installs them. Never skips.
 engine-tools-check: agent-tools-check
@@ -325,9 +325,47 @@ engine-lint:
     cargo fmt --all -- --check
     cargo clippy -p engine --all-targets -- -D warnings
 
-# Unit, property, golden and integration tests of the engine. It does no I/O, so there is no database and no Docker here.
+# Unit, property, golden and integration tests of the engine. It does no I/O, so there is no database and no Docker here. The
+# committed seeds of the engine's fuzz corpora replay here too (tests/corpus_replay.rs).
 engine-test:
     cargo test -p engine --lib --tests
+
+# S22: the engine's own fuzz crate (plan decision A2; `fuzz-smoke` does not run it). Its lockfile is complete and passes cargo
+# deny and cargo audit (S19), then each target runs {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in
+# crates/engine/fuzz/artifacts/. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart.
+engine_fuzz_targets := "engine_bytes engine_yaml engine_json engine_properties engine_flatten"
+engine-fuzz: fuzz-tools-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo +{{fuzz_nightly}} metadata --locked --format-version 1 --manifest-path crates/engine/fuzz/Cargo.toml > /dev/null
+    cargo deny --manifest-path crates/engine/fuzz/Cargo.toml check --config deny.toml
+    cargo audit --file crates/engine/fuzz/Cargo.lock
+    for target in {{engine_fuzz_targets}}; do
+        mkdir -p "target/fuzz-corpus/$target"
+        cargo +{{fuzz_nightly}} fuzz run "$target" --fuzz-dir crates/engine/fuzz "target/fuzz-corpus/$target" "crates/engine/fuzz/corpus/$target" -- -max_total_time={{fuzz_seconds}}
+    done
+    echo "engine-fuzz: {{engine_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
+
+# P5 to P7 (engine budgets, from T2 on): the criterion benchmarks at target scale (the fixtures are generated into
+# target/fixtures/target when missing), then `cargo xtask bench-check` on this prompt's budgets only. The full registry needs
+# every other prompt's benchmarks to have run (`just bench`), and `bench-check` has no filter, so the recipe cuts a registry with
+# just the budgets below and judges that; the full `cargo xtask bench-check` is run by the FINAL step after `just bench`.
+# `tests/justfile_gate.rs` fails if this list and the registered `engine/` budgets drift apart.
+engine_budgets := "P6.parse_flatten"
+engine-bench:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Only this run's numbers may satisfy the check: a benchmark that dies at teardown must not pass on an earlier run's data.
+    rm -rf target/criterion/engine
+    cargo bench -p engine
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    awk -v ids="{{engine_budgets}}" 'BEGIN { RS = ""; ORS = "\n\n"; n = split(ids, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 } /^\[\[budget\]\]/ { if (match($0, /\nid = "[^"]+"/)) { id = substr($0, RSTART + 7, RLENGTH - 8); if (id in want) print } }' perf/budgets.toml > "$tmp/budgets.toml"
+    found="$(grep -c '^\[\[budget\]\]' "$tmp/budgets.toml" || true)"
+    wanted="$(wc -w <<< "{{engine_budgets}}")"
+    if [ "$found" -ne "$wanted" ]; then echo "engine-bench: found $found of $wanted budgets in perf/budgets.toml"; exit 1; fi
+    cargo xtask bench-check --budgets "$tmp/budgets.toml"
+
 verify-05:
     @echo "verify-05 not implemented yet" && exit 1
 verify-06:

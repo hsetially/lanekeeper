@@ -130,7 +130,7 @@ pub fn classify(path: &NfsPath, content: Option<&[u8]>, deny: &DenyMatcher) -> F
     if deny.is_denied(path) {
         return FileClass::Denied;
     }
-    match extension(path.file_name()) {
+    match file_extension(path.file_name()) {
         Some(ext) if is_one_of(&STRUCTURED_EXTENSIONS, ext) => FileClass::Structured,
         Some(ext) if is_one_of(&TEXT_EXTENSIONS, ext) => FileClass::Text,
         None if content.is_some_and(is_utf8_text) => FileClass::Text,
@@ -139,7 +139,7 @@ pub fn classify(path: &NfsPath, content: Option<&[u8]>, deny: &DenyMatcher) -> F
 }
 
 /// The part of a file name after its last dot. A name that only starts with a dot (`.profile`) or ends in one has none.
-fn extension(name: &str) -> Option<&str> {
+pub(crate) fn file_extension(name: &str) -> Option<&str> {
     let (stem, ext) = name.rsplit_once('.')?;
     (!stem.is_empty() && !ext.is_empty()).then_some(ext)
 }

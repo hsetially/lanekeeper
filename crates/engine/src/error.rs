@@ -42,3 +42,62 @@ pub enum DenyError {
     #[error("a deny glob could not be compiled")]
     InvalidGlob,
 }
+
+/// Which of the engine's size limits was met (`Limits`). Naming it is all an error does: the input stays out of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LimitKind {
+    /// `Limits::input_bytes`.
+    InputBytes,
+    /// `Limits::nesting_depth`, counting what aliases bring in.
+    Depth,
+    /// `Limits::nodes`, counting what aliases expand to (the alias-bomb defence).
+    Nodes,
+    /// `Limits::settings`.
+    Settings,
+    /// `Limits::scalar_bytes`.
+    ScalarBytes,
+    /// `Limits::setting_path_bytes`, for a key or for a whole path as it is written.
+    SettingPathBytes,
+}
+
+impl LimitKind {
+    /// What the limit is on, for messages.
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::InputBytes => "file size",
+            Self::Depth => "nesting depth",
+            Self::Nodes => "node count",
+            Self::Settings => "setting count",
+            Self::ScalarBytes => "value size",
+            Self::SettingPathBytes => "setting path length",
+        }
+    }
+}
+
+impl std::fmt::Display for LimitKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.describe())
+    }
+}
+
+/// Why `parse`, `flatten` or `validate` refused a file. A small `Copy` value: a line and a column at most, never any of
+/// the text (S21), because a rejected file may hold a secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ParseError {
+    /// The bytes are not text of the encoding the file declares, or are over the size limit.
+    #[error(transparent)]
+    Decode(#[from] DecodeError),
+    /// The text is not valid for its syntax. The line and the column are 1-based.
+    #[error("the file is not valid {syntax} (line {line}, column {column})")]
+    Syntax {
+        syntax: crate::parse::Syntax,
+        line: u32,
+        column: u32,
+    },
+    /// An alias names an anchor that is not defined, or is not finished, where the alias is.
+    #[error("an alias on line {line} names an anchor that is not defined before it")]
+    UnknownAlias { line: u32 },
+    /// A size limit was met.
+    #[error("the file is over the limit on {0}")]
+    Limit(LimitKind),
+}

@@ -1,0 +1,18 @@
+---
+source: crates/engine/tests/parse_yaml.rs
+expression: dump(&flat)
+---
+server.port = "8080" int L2-2
+server.host = "example.org" string L3-3
+server.tags[0] = "alpha" string L5-5
+server.tags[1] = "beta" string L6-6
+server.limits.cpu = "2" int L7-7
+server.limits.mem = "512" int L7-7
+list[0].name = "first" string L9-9
+list[0].value = "1" int L10-10
+list[1].name = "second" string L11-11
+list[1].value = "2.5" float L12-12
+matrix[0][0] = "1" int L14-14
+matrix[0][1] = "2" int L14-14
+matrix[1][0] = "3" int L15-15
+matrix[1][1] = "4" int L15-15

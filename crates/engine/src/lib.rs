@@ -20,10 +20,16 @@
 mod bytes;
 mod error;
 mod limits;
+mod parse;
 
 pub use self::bytes::{
     DEFAULT_DENY_GLOBS, Decoded, DenyMatcher, Newline, apply_eol, classify, decode_text, detect_format,
     dominant_eol, encode_text, normalise_eol,
 };
-pub use self::error::{DecodeError, DenyError, EncodeError};
+pub use self::error::{DecodeError, DenyError, EncodeError, LimitKind, ParseError};
 pub use self::limits::Limits;
+pub use self::parse::{
+    Body, DecodedPath, Document, Entry, Flat, FlatSetting, Node, NodeId, NodeKind, ParseWarning, Parsed,
+    PathSegment, Position, PropertyEntry, Scalar, ScalarStyle, ScalarTag, Syntax, Validation,
+    decode_setting_path, encode_setting_path, flatten, parse, validate,
+};

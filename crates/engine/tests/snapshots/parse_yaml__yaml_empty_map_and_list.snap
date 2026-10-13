@@ -1,0 +1,7 @@
+---
+source: crates/engine/tests/parse_yaml.rs
+expression: dump(&yaml(text))
+---
+a = "{}" other L1-1
+b = "[]" other L2-2
+c.d = "[]" other L4-4

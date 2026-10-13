@@ -1,0 +1,10 @@
+---
+source: crates/engine/tests/parse_json.rs
+expression: dump(&flat)
+---
+esc = "a\tb\n\"q\" \\ Aé 😀" string L1-1
+yes = "yes" string L1-1
+num-string = "42" string L1-1
+placeholder = "${HOST}" string L1-1
+["dotted.key"] = "1" int L1-1
+["[x]"] = "2" int L1-1

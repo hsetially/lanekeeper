@@ -1,0 +1,15 @@
+---
+source: crates/engine/tests/parse_properties.rs
+expression: dump(&flat)
+---
+unicode = "café A" string L1-1
+escapes = "tab\there\nnewline\\backslash" string L2-2
+key with spaces = "v" string L3-3
+key=eq = "v2" string L4-4
+other:colon = "v3" string L5-5
+keep  = "trailing" string L6-6
+multi = "one two three" string L7-9
+after = "1" string L10-10
+comment-not-continued = "x" string L11-11
+next = "2" string L13-13
+not#comment = "3" string L14-14

@@ -1,0 +1,6 @@
+---
+source: crates/engine/tests/parse_json.rs
+expression: "dump(&json(\"[1, {\\\"a\\\": 2}]\"))"
+---
+[0] = "1" int L1-1
+[1].a = "2" int L1-1

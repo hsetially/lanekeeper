@@ -16,6 +16,20 @@ bytes.workspace = true
 # The D79 deny globs (T1) and every later glob rule (T4). Matching is linear in the path.
 globset.workspace = true
 thiserror.workspace = true
+# The YAML and JSON event parsers (T2, D90). Both keep every position the engine reports, and neither builds a tree.
+granit-parser.workspace = true
+json-event-parser.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+insta.workspace = true
+criterion.workspace = true
+# The small-scale synthetic fixtures (`xtask::fixtures::generate`): the tests and benchmarks parse real-shaped files, never toy data.
+xtask.workspace = true
+tempfile.workspace = true
+# Random JSON documents for the "JSON flattens like YAML" property (T2).
+serde_json.workspace = true
+
+[[bench]]
+name = "parse_flatten"
+harness = false

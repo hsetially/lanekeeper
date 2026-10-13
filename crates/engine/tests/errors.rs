@@ -2,7 +2,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use domain::{EolStyle, FileFormat, NfsPath, TextEncoding};
-use engine::{DecodeError, DenyError, DenyMatcher, EncodeError, Limits, decode_text, encode_text};
+use engine::{
+    DecodeError, DenyError, DenyMatcher, EncodeError, LimitKind, Limits, ParseError, Syntax, decode_text,
+    encode_text, flatten, parse, validate,
+};
 
 const MARKER: &str = "SECRET-MARKER-5c1e";
 
@@ -90,4 +93,162 @@ fn errors_are_small_copyable_values() {
     is_copy::<DecodeError>();
     is_copy::<EncodeError>();
     is_copy::<DenyError>();
+}
+
+/// T2: the parsers are where hostile text comes in. Every way they can refuse a file, with the marker in the input.
+#[test]
+fn parse_errors_never_echo_input() {
+    let tiny = |f: fn(&mut Limits)| {
+        let mut l = Limits::default();
+        f(&mut l);
+        l
+    };
+    let big_scalar = format!("{MARKER}{}", "x".repeat(40));
+    let cases: Vec<(&str, Syntax, String, Limits)> = vec![
+        (
+            "yaml syntax",
+            Syntax::Yaml,
+            format!("{MARKER}: [unclosed\nnext: {MARKER}\n"),
+            Limits::default(),
+        ),
+        (
+            "yaml unknown alias",
+            Syntax::Yaml,
+            format!("a: *{MARKER}\n"),
+            Limits::default(),
+        ),
+        (
+            "yaml scalar limit",
+            Syntax::Yaml,
+            format!("a: {big_scalar}\n"),
+            tiny(|l| l.scalar_bytes = 16),
+        ),
+        (
+            "yaml key limit",
+            Syntax::Yaml,
+            format!("{big_scalar}: 1\n"),
+            tiny(|l| l.setting_path_bytes = 16),
+        ),
+        (
+            "yaml depth",
+            Syntax::Yaml,
+            format!("{}{MARKER}{}", "[".repeat(5), "]".repeat(5)),
+            tiny(|l| l.nesting_depth = 2),
+        ),
+        (
+            "yaml nodes",
+            Syntax::Yaml,
+            format!("[{MARKER}, {MARKER}, {MARKER}]"),
+            tiny(|l| l.nodes = 2),
+        ),
+        (
+            "yaml input",
+            Syntax::Yaml,
+            format!("a: {MARKER}{MARKER}\n"),
+            tiny(|l| l.input_bytes = 16),
+        ),
+        (
+            "json syntax",
+            Syntax::Json,
+            format!("{{\"{MARKER}\": }}"),
+            Limits::default(),
+        ),
+        (
+            "json trailing",
+            Syntax::Json,
+            format!("1 {MARKER}"),
+            Limits::default(),
+        ),
+        (
+            "json scalar limit",
+            Syntax::Json,
+            format!("[\"{big_scalar}\"]"),
+            tiny(|l| l.scalar_bytes = 16),
+        ),
+        (
+            "json depth",
+            Syntax::Json,
+            format!("{}\"{MARKER}\"{}", "[".repeat(5), "]".repeat(5)),
+            tiny(|l| l.nesting_depth = 2),
+        ),
+        (
+            "properties escape",
+            Syntax::Properties,
+            format!("{MARKER}=\\u12\n"),
+            Limits::default(),
+        ),
+        (
+            "properties scalar limit",
+            Syntax::Properties,
+            format!("a={big_scalar}\n"),
+            tiny(|l| l.scalar_bytes = 16),
+        ),
+    ];
+    for (what, syntax, text, limits) in cases {
+        let err = parse(&text, syntax, &limits).expect_err(what);
+        assert_clean(&format!("{what}: display"), &err.to_string());
+        assert_clean(&format!("{what}: debug"), &format!("{err:?}"));
+    }
+}
+
+/// T2: the limits that `flatten` finds, and the decode errors that come through `validate`.
+#[test]
+fn flatten_and_validate_errors_never_echo_input() {
+    let tiny = |f: fn(&mut Limits)| {
+        let mut l = Limits::default();
+        f(&mut l);
+        l
+    };
+    let many = format!("{MARKER}1: 1\n{MARKER}2: 2\n{MARKER}3: 3\n");
+    let l = tiny(|l| l.settings = 2);
+    let err = flatten(&parse(&many, Syntax::Yaml, &l).unwrap(), &l).unwrap_err();
+    assert_eq!(err, ParseError::Limit(LimitKind::Settings));
+    assert_clean("settings display", &err.to_string());
+    let deep = format!("{MARKER}:\n  {MARKER}:\n    {MARKER}: 1\n");
+    let l = tiny(|l| l.setting_path_bytes = 40);
+    let err = flatten(&parse(&deep, Syntax::Yaml, &l).unwrap(), &l).unwrap_err();
+    assert_eq!(err, ParseError::Limit(LimitKind::SettingPathBytes));
+    assert_clean("path display", &err.to_string());
+
+    // `validate` starts from bytes: the decode errors come through it.
+    let utf8_bom_bad = [b"\xEF\xBB\xBF".as_slice(), MARKER.as_bytes(), b"\xFF"].concat();
+    let err = validate(&utf8_bom_bad, Syntax::Yaml, &Limits::default()).unwrap_err();
+    assert!(
+        matches!(err, ParseError::Decode(DecodeError::InvalidUtf8)),
+        "{err:?}"
+    );
+    assert_clean("decode display", &err.to_string());
+    assert_clean("decode debug", &format!("{err:?}"));
+}
+
+/// T2 (S13, S21): a debug print of a parsed or flattened file shows its shape, never its values. A config can hold a
+/// password, and a stray `{:?}` in a log line must not copy it.
+#[test]
+fn debug_output_never_contains_values() {
+    for (syntax, text) in [
+        (Syntax::Yaml, format!("password: {MARKER}\nlist:\n  - {MARKER}\n")),
+        (Syntax::Yaml, format!("a: |\n  {MARKER}\nb: &x {MARKER}\nc: *x\n")),
+        (
+            Syntax::Json,
+            format!("{{\"token\": \"{MARKER}\", \"l\": [\"{MARKER}\"]}}"),
+        ),
+        (Syntax::Properties, format!("db.password={MARKER}\n")),
+    ] {
+        let parsed = parse(&text, syntax, &Limits::default()).unwrap();
+        assert_clean(&format!("{syntax} Parsed debug"), &format!("{parsed:?}"));
+        assert_clean(&format!("{syntax} Parsed pretty debug"), &format!("{parsed:#?}"));
+        let flat = flatten(&parsed, &Limits::default()).unwrap();
+        assert!(!flat.settings.is_empty());
+        assert_clean(&format!("{syntax} Flat debug"), &format!("{flat:?}"));
+        assert_clean(&format!("{syntax} Flat pretty debug"), &format!("{flat:#?}"));
+        for s in &flat.settings {
+            assert_clean(&format!("{syntax} FlatSetting debug"), &format!("{s:?}"));
+        }
+    }
+}
+
+#[test]
+fn parse_errors_are_small_copyable_values() {
+    fn is_copy<T: Copy + Send + Sync + 'static + std::error::Error>() {}
+    is_copy::<ParseError>();
 }

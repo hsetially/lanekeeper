@@ -1,0 +1,28 @@
+---
+source: crates/engine/tests/parse_yaml.rs
+expression: dump(&flat)
+---
+defaults.timeoutMs = "3000" int L2-2
+defaults.retries = "3" int L3-3
+service-a.timeoutMs = "3000" int L2-2 alias
+service-a.retries = "3" int L3-3 alias
+service-a.name = "a" string L6-6
+service-b.retries = "3" int L3-3 alias
+service-b.timeoutMs = "100" int L9-9
+service-b.name = "b" string L10-10
+service-c.name = "c" string L12-12
+service-c.timeoutMs = "3000" int L2-2 alias
+service-c.retries = "3" int L3-3 alias
+list[0] = "x" string L15-15
+list[1] = "y" string L16-16
+copy[0] = "x" string L15-15 alias
+copy[1] = "y" string L16-16 alias
+base1.k = "from-b1" string L19-19
+base1.only1 = "1" int L20-20
+base2.k = "from-b2" string L22-22
+base2.only2 = "2" int L23-23
+merged.k = "from-b1" string L19-19 alias
+merged.only1 = "1" int L20-20 alias
+merged.only2 = "2" int L23-23 alias
+merged.own = "yes" string yaml-boolean-like L26-26
+warning: boolean-like value at merged.own line 26

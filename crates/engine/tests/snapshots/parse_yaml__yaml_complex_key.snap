@@ -1,0 +1,6 @@
+---
+source: crates/engine/tests/parse_yaml.rs
+expression: dump(&flat)
+---
+ok = "1" int L3-3
+warning: complex key skipped at 1:3

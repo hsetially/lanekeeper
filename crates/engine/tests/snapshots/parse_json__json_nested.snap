@@ -1,0 +1,18 @@
+---
+source: crates/engine/tests/parse_json.rs
+expression: dump(&flat)
+---
+server.port = "8080" int L3-3
+server.host = "example.org" string L4-4
+server.tags[0] = "alpha" string L5-5
+server.tags[1] = "beta" string L5-5
+server.enabled = "true" bool L6-6
+server.proxy = "null" null L7-7
+ratio = "0.75" float L9-9
+big = "12345678901234567890123" int L10-10
+exp = "1.5E+3" float L11-11
+neg = "-4" int L12-12
+empty-list = "[]" other L13-13
+empty-map = "{}" other L14-14
+list[0].name = "first" string L16-16
+list[1].name = "second" string L17-17

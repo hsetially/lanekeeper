@@ -1,0 +1,9 @@
+---
+source: crates/engine/tests/parse_yaml.rs
+expression: dump(&flat)
+---
+b = "2" int L2-2
+a = "3" int L3-3
+nested.y = "2" int L6-6
+nested.x = "6" int L8-8
+nested.deeper.k = "2" int L11-11

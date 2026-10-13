@@ -1,0 +1,9 @@
+# comment
+a=1
+b = 2
+c:3
+d 4
+! another
+url=http://h:80/p?x=y
+list[0]=x
+list[1]=y

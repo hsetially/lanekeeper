@@ -1,0 +1,8 @@
+---
+source: crates/engine/tests/parse_yaml.rs
+expression: parse_warnings(&p)
+---
+duplicate key a first at 1:1 again at 3:1
+duplicate key nested.x first at 5:3 again at 7:3
+duplicate key nested.x first at 5:3 again at 8:3
+duplicate key nested.deeper.k first at 10:5 again at 11:5
