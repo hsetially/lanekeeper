@@ -842,3 +842,28 @@ fn the_secret_flag_never_has_a_reveal_path() {
         );
     }
 }
+
+/// The finding kinds the tools filter on and report are the domain's, in order (C1 to C11, then C12 `served_mismatch`), and
+/// the `kinds` filter can name every one: its bound is the number of kinds (S11, `uniqueItems`).
+#[test]
+fn finding_kinds_are_the_domains_and_the_filter_allows_every_one() {
+    let doc = parse_doc();
+    let listed: Vec<&str> = doc.defs["FindingKind"]["enum"]
+        .as_array()
+        .expect("FindingKind is an enum")
+        .iter()
+        .map(|v| v.as_str().expect("a string"))
+        .collect();
+    let domain: Vec<&str> = domain::FindingKind::ALL.iter().map(|k| k.as_str()).collect();
+    assert_eq!(
+        listed, domain,
+        "docs/mcp-tools.md lists the kinds of crates/domain"
+    );
+    assert_eq!(listed.last(), Some(&"served_mismatch"));
+    let kinds = &tool(&doc, "find_inconsistencies").input["properties"]["kinds"];
+    assert_eq!(
+        kinds["maxItems"].as_u64(),
+        u64::try_from(listed.len()).ok(),
+        "the filter allows every kind"
+    );
+}

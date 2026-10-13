@@ -140,7 +140,7 @@ enum DomainEvent {
     FileObserved { swimlane, path, hash, source },        // scan | tool_write | sync
     DriftChanged { swimlane, paths },
     FindingsChanged { swimlane },
-    PendingRestartChanged { swimlane, services },
+    PendingRestartChanged { swimlane, services },         // superseded by PickupChanged (D85); kept, no longer published once 05 has pickup state
     ProposalChanged { id, status },
     AgentStatusChanged { swimlane, status },
     GitHeadMoved { repo, branch, from, to },
@@ -199,3 +199,4 @@ New domain events:
 - `SyncWindowOpened { swimlane, job }`
 - `SyncWindowClosed { swimlane, job }`
 - `UserSessionsRevoked { user }`: internal, for replica coordination (03a). `DomainEvent::is_internal()` is true for it; the SSE edge drops it, and it is not in the OpenAPI `EventKind` list.
+- `PickupChanged { swimlane, services }`: D85 (prompt 05). The pickup state of a change changed for these services; it carries ids only, and the state itself (with "live by HH:MM") is read from the pending-restarts endpoint. It supersedes `PendingRestartChanged`, which stays in the contract so that old rows and subscribers still parse. In the OpenAPI `EventKind` as `pickup_changed`.

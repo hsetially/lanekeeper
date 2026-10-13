@@ -178,6 +178,7 @@ How the UI labels the missing-file cases:
 - **C8 `duplicate_keys`:** a YAML mapping with the same key more than once. The last one wins.
 
   Real example in base: `security/security-roles.yml` defines `txRemoteJuniorTeller`, `txRemoteSeniorTeller` and `txRemoteSupervisor` twice.
+- **C12 `served_mismatch`** (D86): the engine's effective result for a file disagrees with what the config-server serves for the same request (application, tenant, channel and file). The agent fetches the served answer, read-only and rate-limited, and the nightly verification compares it with the engine's. The finding is high severity and names the file.
 
 ## Comparison grid
 

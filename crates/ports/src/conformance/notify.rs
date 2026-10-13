@@ -22,19 +22,25 @@ fn note(kind: NotificationKind, title: &str) -> Notification {
     }
 }
 
-/// A notification is delivered once, in order, and `notify` succeeds.
+/// A notification is delivered once, in order, and `notify` succeeds. Every kind is deliverable, the ones added for the
+/// registry (`DriftDetected`, `SyncWindowStale`) included.
 pub async fn notifier<N: NotifierProbe + ?Sized>(n: &N) {
     let before = n.delivered().await.len();
-    let first = note(NotificationKind::ProposalPending, "Proposal waiting");
-    let second = note(NotificationKind::ServiceRestarted, "Service restarted");
-    n.notify(first.clone()).await.expect("notify");
-    n.notify(second.clone()).await.expect("notify");
+    let sent = [
+        note(NotificationKind::ProposalPending, "Proposal waiting"),
+        note(NotificationKind::ServiceRestarted, "Service restarted"),
+        note(NotificationKind::DriftDetected, "Drift detected"),
+        note(NotificationKind::SyncWindowStale, "Sync window open too long"),
+    ];
+    for note in &sent {
+        n.notify(note.clone()).await.expect("notify");
+    }
     let delivered = n.delivered().await;
     // A bounded probe may have dropped its oldest entries, so compare the tail.
-    assert!(delivered.len() >= 2 && delivered.len() <= before + 2);
+    assert!(delivered.len() >= sent.len() && delivered.len() <= before + sent.len());
     assert_eq!(
-        &delivered[delivered.len() - 2..],
-        &[first, second],
+        &delivered[delivered.len() - sent.len()..],
+        &sent,
         "delivered once, in order"
     );
 }
