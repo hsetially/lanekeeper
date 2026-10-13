@@ -7,7 +7,7 @@
 //! and a tenant copy of the same name counts once, and a file in a channel folder (or below one) does not count at all,
 //! because the channel's copy is how a channel overrides a file and not an ambiguity.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use domain::{ChannelName, FindingKind, NfsPath};
 
@@ -16,21 +16,29 @@ use crate::limits::Limits;
 use crate::resolution::is_channel_dir;
 
 /// C9 over the swimlane's files: one result per name that is in two folders or more, sorted by name. The result's path is the
-/// first copy in path order; `folders` lists the folders (the root is the empty path), at most
-/// `Limits::locations_per_finding`, and `total` counts them all.
+/// first copy in path order (a file that is there: a folder with only a tenant's copy gives that copy's path); `folders` lists
+/// the folders (the root is the empty path), at most `Limits::locations_per_finding`, and `total` counts them all.
 pub fn c9_ambiguous_file_names(
     files: &[CheckFile<'_>],
     channels: &[ChannelName],
     limits: &Limits,
 ) -> Vec<CheckResult> {
-    let mut folders_of: BTreeMap<&str, BTreeSet<NfsPath>> = BTreeMap::new();
+    // For each name, each folder that has it, with the first of the folder's files of that name in path order.
+    let mut folders_of: BTreeMap<&str, BTreeMap<NfsPath, &NfsPath>> = BTreeMap::new();
     for file in files {
         let logical = file.facts.logical.as_path();
         let folder = logical.parent();
         if is_channel_dir(&folder, channels) {
             continue;
         }
-        folders_of.entry(logical.file_name()).or_default().insert(folder);
+        let first = folders_of
+            .entry(logical.file_name())
+            .or_default()
+            .entry(folder)
+            .or_insert(file.path);
+        if file.path < *first {
+            *first = file.path;
+        }
     }
 
     let mut out = Vec::new();
@@ -39,23 +47,19 @@ pub fn c9_ambiguous_file_names(
             continue;
         }
         let total = folders.len();
-        let listed: Vec<NfsPath> = folders.into_iter().take(limits.locations_per_finding).collect();
         let text = format!(
             "{name} is in {}; which copy a service gets depends on the config-server's search order.",
             count(total, "folder", "folders")
         );
-        let (Some(message), Some(first)) = (message(&text), listed.first()) else {
+        // The first copy, whatever the cap on the list: a cap hides folders, not the finding.
+        let (Some(message), Some(path)) = (message(&text), folders.values().next().map(|p| (*p).clone()))
+        else {
             continue;
         };
-        let path = NfsPath::parse(&if first.is_root() {
-            name.to_owned()
-        } else {
-            format!("{first}/{name}")
-        })
-        .ok();
+        let listed: Vec<NfsPath> = folders.into_keys().take(limits.locations_per_finding).collect();
         out.push(CheckResult {
             kind: FindingKind::AmbiguousFileName,
-            path,
+            path: Some(path),
             message,
             locations: Vec::new(),
             detail: CheckDetail::AmbiguousFileName {

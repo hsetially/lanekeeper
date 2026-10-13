@@ -84,7 +84,12 @@ impl Owned {
             let text = std::str::from_utf8(data).unwrap();
             let parsed = parse(text, syntax, &Limits::default()).unwrap();
             let flat = flatten(&parsed, &Limits::default()).unwrap();
-            (Some(flat), parsed.warnings, parsed.warnings_dropped)
+            // The warnings of the parse, then those of the flatten (a pair that could not be a setting is left out there):
+            // what the batch passes as `Structured::parse_warnings`.
+            let mut warnings = parsed.warnings;
+            warnings.extend(flat.warnings.iter().cloned());
+            let dropped = parsed.warnings_dropped + flat.warnings_dropped;
+            (Some(flat), warnings, dropped)
         } else {
             (None, Vec::new(), 0)
         };
@@ -138,6 +143,16 @@ impl Owned {
     fn mode(mut self, mode: MergeMode) -> Self {
         self.mode = mode;
         self
+    }
+
+    /// The same text as the base file of its logical file.
+    fn into_base(self) -> Self {
+        let logical = self.facts.logical.as_str().to_owned();
+        Self {
+            path: nfs(&logical),
+            facts: facts(FileKind::Base, &logical, None),
+            ..self
+        }
     }
 
     fn kind(mut self, kind: FileKind) -> Self {
@@ -621,6 +636,47 @@ fn c1_spring_merge_a_scalar_over_a_map_and_a_map_over_a_scalar_are_live() {
 }
 
 #[test]
+fn c1_spring_merge_a_list_over_a_map_and_a_map_over_a_list_are_live() {
+    // The merge's rules (`effective`): a list replaces everything the lower layers have below its path, keys or items, and a
+    // key replaces the items of a list that the lower layers have at the same place.
+    let base = Owned::base("svc/app.yml", "a:\n  b: 1\nc:\n  - x\n  - y\n").mode(MergeMode::SpringMerge);
+    let tenant = Owned::tenant(
+        "svc/app-sit1.yml",
+        "svc/app.yml",
+        "sit1",
+        "a:\n  - q\nc:\n  d: 1\n",
+    )
+    .mode(MergeMode::SpringMerge);
+    let results = run(&[base, tenant], &["sit1"]);
+    assert!(
+        of(&results, FindingKind::MissedBaseChanges).is_empty(),
+        "{}",
+        dump(&results)
+    );
+
+    // Deeper down, and with the root file as the lower layer. Something that is nowhere below is still dead.
+    let base = Owned::base("svc/app.yml", "x:\n  y:\n    z: 1\n").mode(MergeMode::SpringMerge);
+    let tenant = Owned::tenant(
+        "svc/app-sit1.yml",
+        "svc/app.yml",
+        "sit1",
+        "x:\n  y:\n    - 1\nroot_list:\n  - 1\nnowhere:\n  - 1\n",
+    )
+    .mode(MergeMode::SpringMerge)
+    .root("root_list:\n  k: 1\n");
+    let results = run(&[base, tenant], &["sit1"]);
+    let c1 = of(&results, FindingKind::MissedBaseChanges);
+    assert_eq!(c1.len(), 1, "{}", dump(&results));
+    let CheckDetail::DeadOverrides { settings, .. } = &c1[0].detail else {
+        panic!("{:?}", c1[0].detail)
+    };
+    assert_eq!(
+        settings.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        vec!["nowhere[0]"]
+    );
+}
+
+#[test]
 fn c1_spring_merge_everything_live_is_silent() {
     let base = Owned::base("svc/app.yml", "a: 1\nb: 2\n").mode(MergeMode::SpringMerge);
     let tenant =
@@ -631,6 +687,36 @@ fn c1_spring_merge_everything_live_is_silent() {
 // ---------------------------------------------------------------------------------------------------------------------
 // C2: a tenant file equal to base.
 // ---------------------------------------------------------------------------------------------------------------------
+
+#[test]
+fn c2_does_not_call_a_file_the_same_when_pairs_the_engine_left_out_differ() {
+    // A `.properties` pair with an empty key, or a key with a control character, is no setting and is left out of the settings;
+    // a YAML pair with a key that is not a scalar is too. Two files that differ only in such pairs have the same settings and
+    // are not the same file: deleting the tenant's would lose them.
+    let c2 = |base: Owned, tenant: Owned| {
+        of(&run(&[base, tenant], &["sit1"]), FindingKind::RedundantTenantFile).len()
+    };
+    let props = |text: &str| Owned::tenant("svc/app-sit1.properties", "svc/app.properties", "sit1", text);
+    let base = || Owned::base("svc/app.properties", "a=1\n");
+    assert_eq!(c2(base(), props("a=1\n=lost\n")), 0);
+    assert_eq!(c2(base(), props("a=1\n\\u0001k=lost\n")), 0);
+    let yaml = |text: &str| Owned::tenant("svc/app-sit1.yml", "svc/app.yml", "sit1", text);
+    assert_eq!(
+        c2(
+            Owned::base("svc/app.yml", "a: 1\n"),
+            yaml("a: 1\n? [x, y]\n: 2\n")
+        ),
+        0
+    );
+    // Controls: the same settings written differently, with every pair read, are still the same file.
+    assert_eq!(c2(base(), props("a = 1\n")), 1);
+    assert_eq!(
+        c2(Owned::base("svc/app.yml", "a: 1\nb: 2\n"), yaml("b: 2\na: 1\n")),
+        1
+    );
+    // Identical bytes are the same file whatever pairs they hold.
+    assert_eq!(c2(props("a=1\n=lost\n").into_base(), props("a=1\n=lost\n")), 1);
+}
 
 #[test]
 fn golden_c2_semantic_and_byte_equal() {
@@ -1021,6 +1107,27 @@ fn c6_finds_several_hosts_in_one_value() {
 }
 
 #[test]
+fn c6_counts_each_host_of_a_value_once_however_often_the_value_names_it() {
+    // 600 hosts, the whole list twice over, in one value: 600 mismatches and not 1,200. (A value is at most 64 KiB, so one
+    // holds thousands of hosts, and the de-duplication of its hosts must not be quadratic.)
+    let urls: Vec<String> = (0..600).map(|i| format!("http://h{i}-dev.io/")).collect();
+    let value = urls
+        .iter()
+        .chain(&urls)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(",");
+    let results = c6(&format!("a: \"{value}\"\n"), "prod");
+    let r = &of(&results, FindingKind::EnvironmentHostMismatch)[0];
+    let CheckDetail::EnvironmentHostMismatch { hosts, total, .. } = &r.detail else {
+        panic!()
+    };
+    assert_eq!((hosts.len(), *total), (50, 600));
+    assert_eq!(hosts[0].host, "h0-dev.io");
+    assert_eq!(r.locations.len(), 1);
+}
+
+#[test]
 fn c6_the_first_matching_rule_names_the_tier() {
     let rules = HostRules::new(vec![
         HostRule {
@@ -1222,6 +1329,20 @@ fn c7_is_silent_for_other_states_other_sources_and_an_unchanged_file() {
         source: AttributionSource::SyncJob,
     });
     assert!(of(&run(&[same], &[]), FindingKind::OverwrittenNfsChange).is_empty());
+}
+
+#[test]
+fn c7_compares_the_hash_for_comparing_with_the_hash_for_comparing() {
+    // `Overwrite::previous_nfs` is a `normalised_hash`, like `CheckFile::hash` and the hashes of the drift states: the same
+    // file with other line endings is the same file, and a sync that wrote it back changed nothing.
+    let crlf = normalised_hash(&Bytes::from_static(b"a: 1\r\nb: 2\r\n"), FileClass::Structured);
+    let file = Owned::base("tx/synced.yml", "a: 1\nb: 2\n").overwrite(Overwrite {
+        previous_state: DriftState::NfsAhead,
+        previous_nfs: Some(crlf),
+        source: AttributionSource::SyncJob,
+    });
+    assert_eq!(file.hash, crlf);
+    assert!(of(&run(&[file], &[]), FindingKind::OverwrittenNfsChange).is_empty());
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

@@ -114,7 +114,8 @@ impl std::fmt::Debug for EffectPreview {
     }
 }
 
-/// The file that lists the channels (D83): any file of this name.
+/// The file that lists the channels (D83): any base file of this name. A tenant's copy of it is not the list the config-server
+/// reads (`docs/domain-model.md`: "listed in the base `channels.yml`").
 const CHANNELS_FILE: &str = "channels.yml";
 
 /// What `change` does to the effective config of the logical file.
@@ -181,7 +182,8 @@ pub fn effect_preview(input: &EffectInput<'_>, limits: &Limits) -> EffectPreview
     if matches!(input.change, EffectChange::Write(_)) && !input.target_folder_exists {
         warnings.push(EffectWarning::NewFolderNeedsConfigServerRestart);
     }
-    if input.target.logical.as_path().file_name() == CHANNELS_FILE && effective_changed {
+    // The list is the base file; a tenant's copy of it is something that tenant's services are given, not read at the start.
+    if !is_tenant_file && input.target.logical.as_path().file_name() == CHANNELS_FILE && effective_changed {
         warnings.push(EffectWarning::ChannelsYmlNeedsConfigServerRestart);
     }
 

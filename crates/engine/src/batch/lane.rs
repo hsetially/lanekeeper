@@ -15,7 +15,7 @@ use crate::drift::{Drift, DriftInput, drift_state};
 use crate::effective::{Layer, Layers, effective};
 use crate::error::BatchError;
 use crate::limits::Limits;
-use crate::parse::{FlatSetting, ParseWarning, Syntax, flatten, parse_decoded};
+use crate::parse::{FlatSetting, ParseWarning, Syntax, combine_warnings, flatten, parse_decoded};
 use crate::resolution::{logical_file_role, merge_mode};
 use crate::tree_hash::{normalised_hash, swimlane_hash};
 
@@ -69,10 +69,18 @@ fn parse_file(data: &[u8], syntax: Syntax, limits: &Limits) -> Option<ParsedFile
     let decoded = decode_text(data, limits).ok()?;
     let parsed = parse_decoded(&decoded.text, syntax, limits).ok()?;
     let flat = flatten(&parsed, limits).ok()?;
+    // The checks read the warnings of both steps (C8 the duplicate keys, C2 the pairs that `flatten` left out).
+    let (warnings, warnings_dropped) = combine_warnings(
+        parsed.warnings,
+        parsed.warnings_dropped,
+        flat.warnings,
+        flat.warnings_dropped,
+        limits.warnings,
+    );
     Some(ParsedFile {
         settings: flat.settings,
-        warnings: parsed.warnings,
-        warnings_dropped: parsed.warnings_dropped,
+        warnings,
+        warnings_dropped,
     })
 }
 

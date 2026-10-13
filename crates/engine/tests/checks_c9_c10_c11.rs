@@ -180,6 +180,49 @@ fn checks_c9_lists_are_capped_and_counted() {
 }
 
 #[test]
+fn checks_c9_the_path_is_a_file_that_is_there_and_not_the_name_of_a_copy_that_is_not() {
+    // The first folder has only a tenant copy: `a/x.yml` is not a file, `a/x-sit1.yml` is.
+    let paths = [nfs("a/x-sit1.yml"), nfs("b/x.yml")];
+    let facts = [tenant_facts("a/x.yml", "sit1"), base_facts("b/x.yml")];
+    let results = c9_ambiguous_file_names(&check_files(&paths, &facts), &[], &Limits::default());
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].path.as_ref().unwrap().as_str(), "a/x-sit1.yml");
+    assert_eq!(ambiguous(&results[0]), ("x.yml", vec!["a", "b"], 2));
+    // The first copy in path order, in whatever order the files are given, and the root's file has no folder in its path.
+    let paths = [nfs("x.yml"), nfs("x-sit1.yml"), nfs("b/x.yml")];
+    let facts = [
+        base_facts("x.yml"),
+        tenant_facts("x.yml", "sit1"),
+        base_facts("b/x.yml"),
+    ];
+    let forward = c9_ambiguous_file_names(&check_files(&paths, &facts), &[], &Limits::default());
+    assert_eq!(forward[0].path.as_ref().unwrap().as_str(), "x-sit1.yml");
+    let (paths, facts): (Vec<_>, Vec<_>) = paths.into_iter().zip(facts).rev().unzip();
+    assert_eq!(
+        c9_ambiguous_file_names(&check_files(&paths, &facts), &[], &Limits::default()),
+        forward
+    );
+}
+
+#[test]
+fn checks_c9_a_cap_of_zero_lists_nothing_and_still_reports_the_name() {
+    let cap = Limits {
+        locations_per_finding: 0,
+        ..Limits::default()
+    };
+    let paths = [nfs("a/x.yml"), nfs("b/x.yml")];
+    let facts = [base_facts("a/x.yml"), base_facts("b/x.yml")];
+    let results = c9_ambiguous_file_names(&check_files(&paths, &facts), &[], &cap);
+    assert_eq!(
+        results.len(),
+        1,
+        "an ambiguity is not hidden by the length of a list"
+    );
+    assert_eq!(ambiguous(&results[0]), ("x.yml", Vec::new(), 2));
+    assert_eq!(results[0].path.as_ref().unwrap().as_str(), "a/x.yml");
+}
+
+#[test]
 fn checks_c9_results_do_not_depend_on_the_input_order() {
     let mut list = vec!["b/x.yml", "a/x.yml", "c/y.yml", "d/y.yml", "d/z.yml"];
     let forward = c9(&list, &[]);
@@ -410,6 +453,33 @@ fn checks_c9_c10_c11_c10_a_key_is_resolved_for_the_tenants_whose_view_has_it() {
 }
 
 #[test]
+fn checks_c9_c10_c11_c10_the_tenants_of_a_finding_do_not_depend_on_the_order_of_the_views() {
+    let (sit1, sit2, sit3) = (tenant("sit1"), tenant("sit2"), tenant("sit3"));
+    let empty = view_of(&[("application.properties", "OTHER = 1\n")], None);
+    let path = nfs("a.yml");
+    let file = PlaceholderFile {
+        path: &path,
+        text: "${GONE}\n",
+        settings: None,
+    };
+    let view = |tenant| TenantView { tenant, view: &empty };
+    let run = |views: &[TenantView<'_>]| {
+        c10_unresolved_placeholders(&[file], views, &EnvNames::new([]), &Limits::default())
+    };
+    let forward = run(&[view(&sit1), view(&sit2), view(&sit3)]);
+    assert_eq!(
+        keys(&forward[0]),
+        vec![(
+            "GONE".to_owned(),
+            vec!["sit1".to_owned(), "sit2".to_owned(), "sit3".to_owned()],
+            vec![1]
+        )]
+    );
+    assert_eq!(run(&[view(&sit3), view(&sit1), view(&sit2)]), forward);
+    assert_eq!(run(&[view(&sit2), view(&sit3), view(&sit1)]), forward);
+}
+
+#[test]
 fn checks_c9_c10_c11_c10_environment_names_match_the_way_spring_binds_them() {
     let env = EnvNames::new(["SERVER_PORT", "MY_APP_NAME", "plain"]);
     assert!(env.contains("SERVER_PORT"));
@@ -527,6 +597,10 @@ impl Facts {
     }
 
     fn run(&self) -> Vec<engine::CheckResult> {
+        self.run_with(&Limits::default())
+    }
+
+    fn run_with(&self, limits: &Limits) -> Vec<engine::CheckResult> {
         let folders: Vec<FolderSeen<'_>> = self
             .folders
             .iter()
@@ -546,7 +620,7 @@ impl Facts {
                 }),
                 folders: &folders,
             },
-            &Limits::default(),
+            limits,
         )
     }
 }
@@ -661,4 +735,54 @@ fn checks_c9_c10_c11_c11_every_reason_at_once_in_a_stable_order() {
         ]
     );
     assert_eq!(facts.run(), results);
+}
+
+#[test]
+fn checks_c9_c10_c11_c11_every_list_is_capped_and_the_folders_are_counted() {
+    // 70 channels that the list has now and did not have at the start, each with a folder: the lists of the finding are
+    // capped like every other (`Limits::locations_per_finding`), and the folders are counted.
+    let mut facts = Facts::new();
+    for i in 0..70 {
+        let name = format!("c{i:02}");
+        facts.now.push(channel(&name));
+        facts.folders.push((nfs(&format!("ui/{name}")), at(100)));
+    }
+    facts.at_start = Some(vec![channel("remote-itm-teller"), channel("atm")]);
+    let cap = Limits::default().locations_per_finding;
+    let results = facts.run();
+    assert_eq!(
+        reasons(&results),
+        vec![RestartReason::ChannelFolderNotListedAtStart]
+    );
+    let CheckDetail::ConfigServerRestart {
+        folders,
+        channels,
+        total,
+        ..
+    } = &results[0].detail
+    else {
+        panic!()
+    };
+    assert_eq!((folders.len(), channels.len(), *total), (cap, cap, 70));
+    assert_eq!(channels[0], channel("c00"));
+    // A cap of zero lists nothing and still reports.
+    let none = Limits {
+        locations_per_finding: 0,
+        ..Limits::default()
+    };
+    let results = facts.run_with(&none);
+    assert_eq!(
+        reasons(&results),
+        vec![RestartReason::ChannelFolderNotListedAtStart]
+    );
+    let CheckDetail::ConfigServerRestart {
+        folders,
+        channels,
+        total,
+        ..
+    } = &results[0].detail
+    else {
+        panic!()
+    };
+    assert_eq!((folders.len(), channels.len(), *total), (0, 0, 70));
 }

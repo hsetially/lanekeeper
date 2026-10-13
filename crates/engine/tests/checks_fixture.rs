@@ -100,7 +100,11 @@ fn load_lane(fx: &Fixtures, id: &str) -> Vec<LaneFile> {
                 )
                 .unwrap_or_else(|e| panic!("{rel}: {e}"));
                 let flat = flatten(&parsed, &Limits::default()).unwrap();
-                (Some(flat), parsed.warnings, parsed.warnings_dropped)
+                // The warnings of both steps, as the batch passes them (`Structured::parse_warnings`).
+                let mut warnings = parsed.warnings;
+                warnings.extend(flat.warnings.iter().cloned());
+                let dropped = parsed.warnings_dropped + flat.warnings_dropped;
+                (Some(flat), warnings, dropped)
             }
             _ => (None, Vec::new(), 0),
         };

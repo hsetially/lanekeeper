@@ -101,6 +101,15 @@ fn step(bytes: &[u8], at: usize) -> Step {
     Step::Literal { next: at + 2 }
 }
 
+/// True when the byte at `at` ends a line: a `\n`, or a `\r` that is not the first half of a `\r\n`.
+fn ends_line(bytes: &[u8], at: usize) -> bool {
+    match bytes.get(at) {
+        Some(b'\n') => true,
+        Some(b'\r') => bytes.get(at + 1) != Some(&b'\n'),
+        _ => false,
+    }
+}
+
 /// Walks the text and calls `f(start, end, key, line)` for each placeholder, in order.
 fn walk(text: &str, mut f: impl FnMut(usize, usize, &str, u32)) {
     let bytes = text.as_bytes();
@@ -108,9 +117,8 @@ fn walk(text: &str, mut f: impl FnMut(usize, usize, &str, u32)) {
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
-            b'\n' => line = line.saturating_add(1),
-            b'\r' => {
-                if bytes.get(i + 1) != Some(&b'\n') {
+            b'\n' | b'\r' => {
+                if ends_line(bytes, i) {
                     line = line.saturating_add(1);
                 }
             }
@@ -127,9 +135,9 @@ fn walk(text: &str, mut f: impl FnMut(usize, usize, &str, u32)) {
                         continue;
                     }
                     Step::Literal { next } => {
-                        // Lines inside a skipped expression still count.
-                        for &b in &bytes[i..next] {
-                            if b == b'\n' {
+                        // Lines inside a skipped expression still count, the way they do outside it.
+                        for at in i..next {
+                            if ends_line(bytes, at) {
                                 line = line.saturating_add(1);
                             }
                         }

@@ -270,7 +270,13 @@ fn read_file(path: &NfsPath, class: FileClass, data: &[u8]) -> (Option<Flat>, Ve
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let limits = Limits::default();
     match parse(text, syntax, &limits).and_then(|p| flatten(&p, &limits).map(|f| (f, p))) {
-        Ok((flat, parsed)) => (Some(flat), parsed.warnings, parsed.warnings_dropped),
+        Ok((flat, parsed)) => {
+            // The warnings of both steps, as the batch passes them (`Structured::parse_warnings`).
+            let mut warnings = parsed.warnings;
+            warnings.extend(flat.warnings.iter().cloned());
+            let dropped = parsed.warnings_dropped + flat.warnings_dropped;
+            (Some(flat), warnings, dropped)
+        }
         Err(_) => (None, Vec::new(), 0),
     }
 }

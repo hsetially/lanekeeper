@@ -153,24 +153,28 @@ struct Defined {
     keys: BTreeSet<Vec<PathSegment>>,
     /// Every path that has a list directly below it: for `a[0].b[1]`, `a` and `a[0].b`.
     lists: BTreeSet<Vec<PathSegment>>,
+    /// Every path that has a map directly below it, that is, a key: for `a.b[0].c`, the root, `a` and `a.b[0]`.
+    maps: BTreeSet<Vec<PathSegment>>,
 }
 
 impl Defined {
     fn new<'a>(settings: impl Iterator<Item = &'a FlatSetting>) -> Self {
         let mut keys = BTreeSet::new();
         let mut lists = BTreeSet::new();
+        let mut maps = BTreeSet::new();
         for setting in settings {
             let Some(decoded) = decode_setting_path(&setting.path) else {
                 continue;
             };
             for (at, segment) in decoded.segments.iter().enumerate() {
-                if matches!(segment, PathSegment::Index(_)) {
-                    lists.insert(decoded.segments[..at].to_vec());
-                }
+                match segment {
+                    PathSegment::Index(_) => lists.insert(decoded.segments[..at].to_vec()),
+                    PathSegment::Key(_) => maps.insert(decoded.segments[..at].to_vec()),
+                };
             }
             keys.insert(decoded.segments);
         }
-        Self { keys, lists }
+        Self { keys, lists, maps }
     }
 
     /// True if a setting at `key` replaces or extends something that is defined. The rules are the merge's (`effective`):
@@ -178,7 +182,9 @@ impl Defined {
     /// - the same setting;
     /// - a scalar over a map or a map over a scalar: a prefix of the key is defined, or the key is a prefix of something
     ///   defined;
-    /// - an item of a list the lower layers have (the list is replaced as a unit).
+    /// - an item of a list the lower layers have (the list is replaced as a unit);
+    /// - a list over a map: an item of a list at a path where the lower layers have keys (the list replaces them);
+    /// - a map over a list: a key at a path where the lower layers have a list (the key replaces its items).
     fn is_override(&self, key: &[PathSegment]) -> bool {
         // A prefix of the key is defined (a map or a list below it is replaced by this scalar, or a scalar by this map).
         if (0..key.len()).any(|n| self.keys.contains(&key[..n])) {
@@ -193,9 +199,16 @@ impl Defined {
         {
             return true;
         }
-        key.iter()
-            .enumerate()
-            .any(|(at, segment)| matches!(segment, PathSegment::Index(_)) && self.lists.contains(&key[..at]))
+        // A list where the lower layers have a list (replaced as a unit) or keys (replaced by the list); a key, up to the
+        // first index, where they have a list (the merge replaces the items of that list, `no_lists` in `effective`).
+        let first_index = key
+            .iter()
+            .position(|segment| matches!(segment, PathSegment::Index(_)))
+            .unwrap_or(key.len());
+        key.iter().enumerate().any(|(at, segment)| match segment {
+            PathSegment::Index(_) => self.lists.contains(&key[..at]) || self.maps.contains(&key[..at]),
+            PathSegment::Key(_) => at < first_index && self.lists.contains(&key[..at]),
+        })
     }
 }
 

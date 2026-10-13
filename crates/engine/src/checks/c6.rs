@@ -17,6 +17,8 @@
 //!
 //! Only string values are read, never keys, and only values of settings: the check is about what a service will connect to.
 
+use std::collections::BTreeSet;
+
 use domain::{FindingKind, LineRange, SettingLocation, ShortText};
 
 use super::{CheckDetail, CheckFile, CheckResult, MismatchedHost, count, message};
@@ -118,8 +120,10 @@ fn is_host_byte(b: u8) -> bool {
 /// The hosts named in a setting value, lower-cased, in order, without repeats.
 fn hosts_in(value: &str) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
+    // A value can hold thousands of hosts: a set tells whether one has been seen, in the time of a lookup.
+    let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut add = |host: String| {
-        if !found.contains(&host) {
+        if seen.insert(host.clone()) {
             found.push(host);
         }
     };

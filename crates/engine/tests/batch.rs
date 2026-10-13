@@ -184,10 +184,14 @@ fn reference_findings(lane: &LaneData, rules: &Rules) -> Vec<CheckResult> {
             };
             let decoded = decode_text(&content.bytes, &limits).unwrap();
             let p = parse(&decoded.text, syntax, &limits).unwrap();
+            let flat = flatten(&p, &limits).unwrap();
+            // The warnings of both steps, as the batch passes them (`Structured::parse_warnings`).
+            let mut warnings = p.warnings;
+            warnings.extend(flat.warnings.iter().cloned());
             Parsed {
-                flat: Some(flatten(&p, &limits).unwrap()),
-                warnings: p.warnings,
-                dropped: p.warnings_dropped,
+                dropped: p.warnings_dropped + flat.warnings_dropped,
+                flat: Some(flat),
+                warnings,
             }
         })
         .collect();

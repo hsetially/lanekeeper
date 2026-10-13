@@ -80,9 +80,11 @@ const MESSAGE_MAX_BYTES: usize = 256;
 pub struct Structured<'a> {
     /// `flatten` of the parsed file.
     pub settings: &'a [FlatSetting],
-    /// `Parsed::warnings`: C8 reads the duplicate keys from them.
+    /// The warnings of `parse` and then those of `flatten` (`Parsed::warnings`, then `Flat::warnings`; `combine_warnings` of
+    /// the engine puts them together under the cap). C8 reads the duplicate keys from them, and C2 the pairs that `flatten`
+    /// left out.
     pub parse_warnings: &'a [ParseWarning],
-    /// `Parsed::warnings_dropped`: warnings the parser counted and did not keep.
+    /// The warnings that were counted and not kept (`Parsed::warnings_dropped` and `Flat::warnings_dropped`).
     pub parse_warnings_dropped: usize,
 }
 
@@ -125,6 +127,8 @@ pub struct Overwrite {
     /// The drift state before the change.
     pub previous_state: DriftState,
     /// The hash of the file on NFS before the change; `None` if it was missing. This is the version the finding links to.
+    /// It is the hash for comparing (`normalised_hash`, the N of the drift states), like `CheckFile::hash` that C7 compares
+    /// it with: a file that a sync wrote back with other line endings is the file that was there.
     pub previous_nfs: Option<ContentHash>,
     /// How the change was attributed (D73). Only a sync job overwrites.
     pub source: AttributionSource,

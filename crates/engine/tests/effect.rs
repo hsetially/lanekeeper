@@ -634,6 +634,31 @@ fn channels_yml_change_warns_that_the_config_server_must_restart() {
             .warnings
             .contains(&EffectWarning::ChannelsYmlNeedsConfigServerRestart)
     );
+    // The list the config-server reads is the base file. A tenant's copy of it is a file that tenant's services are given, and
+    // the server does not read it when it starts.
+    let (tenant_old, tenant_new) = (
+        file("channels-sit1.yml", "- atm\n"),
+        file("channels-sit1.yml", "- atm\n- web\n"),
+    );
+    let copy = preview_in(
+        MergeMode::WholeFile,
+        &facts("channels.yml", Some("sit1")),
+        true,
+        Layers {
+            tenant: Some(tenant_old.layer()),
+            base: Some(old.layer()),
+            root: None,
+        },
+        &EffectChange::Write(tenant_new.layer()),
+    );
+    assert!(copy.effective_changed);
+    assert!(
+        !copy
+            .warnings
+            .contains(&EffectWarning::ChannelsYmlNeedsConfigServerRestart),
+        "{:?}",
+        copy.warnings
+    );
     // A file of another name in any folder is not the list.
     let other = preview_in(
         MergeMode::WholeFile,

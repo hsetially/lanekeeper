@@ -585,6 +585,25 @@ fn placeholder_scan_gives_keys_and_lines() {
 }
 
 #[test]
+fn lines_are_counted_the_same_inside_and_outside_an_expression_that_is_skipped() {
+    // `${a:...}` is not a placeholder and is skipped as a whole; a line ends in it at `\n`, `\r\n` or a lone `\r` as anywhere.
+    let line_of_b = |text: &str| {
+        let found = scan_placeholders(text);
+        assert_eq!(found.len(), 1, "{text:?}: {found:?}");
+        found[0].line
+    };
+    assert_eq!(line_of_b("${a:x}\n${B}"), 2);
+    assert_eq!(line_of_b("${a:\nx}\n${B}"), 3);
+    assert_eq!(line_of_b("${a:\r\nx}\r\n${B}"), 3);
+    assert_eq!(line_of_b("${a:\rx}\n${B}"), 3);
+    assert_eq!(line_of_b("${a:\rx}\r${B}"), 3);
+    assert_eq!(line_of_b("${a:\r\r}\r\n${B}"), 4);
+    assert_eq!(line_of_b("x\r${a:\r${c}}\r${B}"), 4);
+    // The same texts outside a skipped expression, for the reference.
+    assert_eq!(line_of_b("\r\rx\r\n${B}"), 4);
+}
+
+#[test]
 fn render_is_bounded() {
     let view = view_from(&[("A", &"x".repeat(1000))]);
     let tiny = Limits {

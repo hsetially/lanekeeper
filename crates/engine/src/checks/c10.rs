@@ -102,10 +102,13 @@ pub fn c10_unresolved_placeholders(
             if env.contains(&key) {
                 continue;
             }
+            // In tenant order, whatever the order of the views.
             let tenants: Vec<TenantId> = views
                 .iter()
                 .filter(|v| v.view.get(&key).is_none())
                 .map(|v| v.tenant.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
                 .collect();
             if !views.is_empty() && tenants.is_empty() {
                 continue;

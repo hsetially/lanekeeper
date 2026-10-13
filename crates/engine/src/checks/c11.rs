@@ -175,6 +175,7 @@ fn folders_not_listed_at_start(facts: &ConfigServerFacts<'_>, limits: &Limits, o
     let mut channels: Vec<ChannelName> = added.into_iter().cloned().collect();
     channels.sort();
     channels.dedup();
+    channels.truncate(limits.locations_per_finding);
     folders.truncate(limits.locations_per_finding);
     let text = format!(
         "{} named like a channel that channels.yml lists now and did not when the config-server started; it still searches {}.",

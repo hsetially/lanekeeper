@@ -37,7 +37,10 @@ pub struct AdoptionCandidate<'a> {
 }
 
 /// The Jaccard similarity of two sets, as the fraction `shared / union`. Two empty sets have similarity zero.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Two similarities are equal when they are the same fraction (`1/2` and `2/4`; any `0/n` is zero), the way they compare, so
+/// that equality and order agree. The counts they were made from are `shared` and `union`.
+#[derive(Debug, Clone, Copy)]
 pub struct Similarity {
     shared: u64,
     union: u64,
@@ -64,6 +67,14 @@ impl Similarity {
         }
     }
 }
+
+impl PartialEq for Similarity {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for Similarity {}
 
 impl Ord for Similarity {
     fn cmp(&self, other: &Self) -> Ordering {
@@ -173,4 +184,43 @@ pub fn adoption_rank(
             .then_with(|| a.tenant.cmp(&b.tenant))
     });
     Ok(scores)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fraction(shared: u64, union: u64) -> Similarity {
+        Similarity { shared, union }
+    }
+
+    /// `Eq` and `Ord` say the same thing: two similarities are equal exactly when they are the same fraction, whatever the
+    /// counts they were made from, so that a sorted list of them, or a set, can never put two equal ones apart.
+    #[test]
+    fn equal_fractions_are_equal_and_compare_equal() {
+        let (half, two_quarters, third) = (fraction(1, 2), fraction(2, 4), fraction(1, 3));
+        assert_eq!(half, two_quarters);
+        assert_eq!(half.cmp(&two_quarters), Ordering::Equal);
+        assert_ne!(half, third);
+        assert_eq!(half.cmp(&third), Ordering::Greater);
+        // Nothing in common is zero whatever the size of the union, and an empty union is zero too.
+        assert_eq!(fraction(0, 5), fraction(0, 9));
+        assert_eq!(fraction(0, 0), fraction(0, 7));
+        assert_ne!(fraction(0, 0), fraction(1, 7));
+        // The whole is one.
+        assert_eq!(fraction(3, 3), fraction(10, 10));
+    }
+
+    #[test]
+    fn eq_agrees_with_ord_for_every_pair() {
+        let all: Vec<Similarity> = (0..=6)
+            .flat_map(|union| (0..=union).map(move |shared| fraction(shared, union)))
+            .collect();
+        for a in &all {
+            for b in &all {
+                assert_eq!(a == b, a.cmp(b) == Ordering::Equal, "{a:?} {b:?}");
+                assert_eq!(a.cmp(b), b.cmp(a).reverse(), "{a:?} {b:?}");
+            }
+        }
+    }
 }

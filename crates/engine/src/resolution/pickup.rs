@@ -59,7 +59,9 @@ pub struct PickupInput<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pickup {
     pub state: PickupState,
-    /// For `live_within_ttl`: when the client cache expires ("by HH:MM").
+    /// For `live_within_ttl`: the time by which the change is live ("by HH:MM"): `changed_at` plus the cache's time to live.
+    /// It is the latest the old file can be served, from a cache that was filled just before the change; a cache filled
+    /// earlier expires earlier, and one filled after it already holds the new file, so no client is stale for longer.
     pub live_by: Option<Timestamp>,
     /// For `needs_notify_or_restart`: a notification would do, so "Notify services" helps. False: only a restart does.
     pub refreshable_by_notification: bool,
@@ -98,6 +100,8 @@ pub fn pickup_state(input: &PickupInput<'_>) -> Pickup {
             }
         }
         PickupChange::ResourceFile => {
+            // The latest a client can still serve the old file: a cache that was filled at `changed_at` (a fill after it holds
+            // the new file, a fill before it expires before this).
             let expires = input
                 .changed_at
                 .unix_millis()
