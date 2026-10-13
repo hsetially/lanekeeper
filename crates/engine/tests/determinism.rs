@@ -20,14 +20,14 @@ use domain::{
 use engine::{
     AdoptionCandidate, Baseline, BatchRules, BinaryFacts, CancelFlag, ChangeContext, DenyMatcher, DriftInput,
     EffectChange, EffectInput, Effective, Flat, GridColumn, GridOptions, HostRules, LaneState, Layer, Layers,
-    Limits, MergeRules, ScanConfig, SearchCorpus, SeverityMatch, SeverityRule, SeverityRules, Syntax,
-    TreeHashes, adoption_rank, apply_eol, binary_compare, classify, decode_text, detect_format, dominant_eol,
+    Limits, ScanConfig, SearchCorpus, SeverityMatch, SeverityRule, SeverityRules, Syntax, TreeHashes,
+    adoption_rank, apply_eol, binary_compare, classify, decode_text, detect_format, dominant_eol,
     drift_state, effect_preview, effective, effective_tree_hash, findings_for_swimlanes, flatten, grid,
     index_settings, normalise_eol, normalised_hash, parse, recompute_all, recompute_paths, search_text,
     secret_scan, semantic_diff, severity, swimlane_hash, text_diff,
 };
 use sha2::{Digest, Sha256};
-use support::lanes::{LaneData, load_branches, load_lanes};
+use support::lanes::{LaneData, load_branches, load_lanes, sample_app_names};
 use support::small_fixtures;
 
 fn pool(threads: usize) -> rayon::ThreadPool {
@@ -248,6 +248,7 @@ fn transcript(pool: &rayon::ThreadPool) -> String {
                         target: &file.facts,
                         tenants: &first.tenants,
                         layers,
+                        target_folder_exists: true,
                         change,
                     },
                     &limits,
@@ -466,10 +467,10 @@ fn transcript(pool: &rayon::ThreadPool) -> String {
     t.add("severity", &severities);
 
     // The batch functions (T8).
-    let merge = MergeRules::new(MergeMode::WholeFile, &[("*.yml", MergeMode::SpringMerge)]).unwrap();
+    let apps = sample_app_names(lanes, 200);
     let hosts = HostRules::default();
     let rules = BatchRules {
-        merge_rules: &merge,
+        application_names: &apps,
         host_rules: &hosts,
         limits: &limits,
     };
@@ -623,12 +624,9 @@ fn search_truncation_is_deterministic() {
 fn batch_matches_single_threaded_reference() {
     let limits = Limits::default();
     let hosts = HostRules::default();
-    for merge in [
-        MergeRules::default(),
-        MergeRules::new(MergeMode::WholeFile, &[("*.yml", MergeMode::SpringMerge)]).unwrap(),
-    ] {
+    for apps in [Vec::new(), sample_app_names(lanes(), 200)] {
         let rules = BatchRules {
-            merge_rules: &merge,
+            application_names: &apps,
             host_rules: &hosts,
             limits: &limits,
         };
@@ -678,10 +676,9 @@ fn a_state_does_not_depend_on_the_buffers_it_was_computed_from() {
     // A state holds hashes and findings, never content: a copy of the swimlane with the same blobs under other `Bytes` buffers
     // gives the same state.
     let limits = Limits::default();
-    let merge = MergeRules::default();
     let hosts = HostRules::default();
     let rules = BatchRules {
-        merge_rules: &merge,
+        application_names: &[],
         host_rules: &hosts,
         limits: &limits,
     };

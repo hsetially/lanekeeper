@@ -12,15 +12,15 @@ use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
 use domain::{
-    BranchKind, CommitId, ContentHash, DriftState, FileClass, FindingKind, GitRef, LogicalFile, MergeMode,
+    AppName, BranchKind, CommitId, ContentHash, DriftState, FileClass, FindingKind, GitRef, LogicalFile,
     NfsPath, PathMappingRule, SwimlaneId, TenantId, TenantSet, Timestamp,
 };
 use engine::{
     AdoptionCandidate, BaseVersion, Baseline, BatchError, BatchRules, CheckFile, CheckInput, CheckResult,
-    DenyMatcher, DriftInput, HostRules, LaneFile, LaneHistory, LaneInput, LaneState, Limits, MergeRules,
-    NfsContent, Structured, Syntax, adoption_rank, checks_c1_to_c8, classify, classify_path, decode_text,
-    drift_hash, drift_state, effective_tree_hash, findings_for_swimlanes, flatten, normalised_hash, parse,
-    recompute_all, recompute_paths, swimlane_hash,
+    DenyMatcher, DriftInput, HostRules, LaneFile, LaneHistory, LaneInput, LaneState, Limits, NfsContent,
+    Structured, Syntax, adoption_rank, checks_c1_to_c8, classify, classify_path, decode_text, drift_hash,
+    drift_state, effective_tree_hash, findings_for_swimlanes, flatten, logical_file_role, merge_mode,
+    normalised_hash, parse, recompute_all, recompute_paths, swimlane_hash,
 };
 use proptest::prelude::*;
 use sha2::{Digest, Sha256};
@@ -48,7 +48,8 @@ fn sha(data: &[u8]) -> ContentHash {
 
 /// The rules of a test: owned, lent as `BatchRules`.
 struct Rules {
-    merge: MergeRules,
+    /// The applications: a file named after one is a property source (`spring_merge`), any other file is a resource.
+    apps: Vec<AppName>,
     hosts: HostRules,
     limits: Limits,
 }
@@ -56,7 +57,7 @@ struct Rules {
 impl Rules {
     fn whole_file() -> Self {
         Self {
-            merge: MergeRules::default(),
+            apps: Vec::new(),
             hosts: HostRules::default(),
             limits: Limits::default(),
         }
@@ -64,14 +65,17 @@ impl Rules {
 
     fn spring_for_yml() -> Self {
         Self {
-            merge: MergeRules::new(MergeMode::WholeFile, &[("*.yml", MergeMode::SpringMerge)]).unwrap(),
+            apps: ["app", "a", "b", "c", "d", "e", "x", "gone", "zz", "new-file"]
+                .iter()
+                .map(|n| AppName::parse(n).unwrap())
+                .collect(),
             ..Self::whole_file()
         }
     }
 
     fn lend(&self) -> BatchRules<'_> {
         BatchRules {
-            merge_rules: &self.merge,
+            application_names: &self.apps,
             host_rules: &self.hosts,
             limits: &self.limits,
         }
@@ -209,7 +213,7 @@ fn reference_findings(lane: &LaneData, rules: &Rules) -> Vec<CheckResult> {
             facts: &f.facts,
             class: f.class,
             hash: normalised_hash(&f.nfs.as_ref().unwrap().bytes, f.class),
-            merge_mode: rules.merge.mode_for(&f.facts.logical),
+            merge_mode: merge_mode(logical_file_role(&f.facts.logical, &rules.apps)),
             structured: p.flat.as_ref().map(|flat| Structured {
                 settings: &flat.settings,
                 parse_warnings: &p.warnings,

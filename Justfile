@@ -312,9 +312,9 @@ platform-bench: agent-fixtures
     cargo bench -p hub-identity
     cargo bench -p hub-platform -p hub
     cargo xtask bench-check
-# T1 starts this gate with the tool check, the lint and the tests; the tasks after it append the fuzz and benchmark recipes to
-# its line, and it is complete at T10. Run `just verify` and `cargo xtask bench-check` after it (AGENTS.md, protocol step 4).
-# `engine-real-snapshot` (T3) is opt-in, needs the real repositories, and is not part of the gate.
+# The gate is complete (T10): lint, tests, the engine's fuzz crate, `fuzz-smoke`, and the benchmarks against this prompt's
+# budgets. Run `just verify` and `cargo xtask bench-check` after it (AGENTS.md, protocol step 4).
+# `engine-real-snapshot` is opt-in, needs the real repositories, and is not part of the gate.
 # Prompt 04 gate (the fact engine; S11, S13, S21, S22; P5 to P7): every sub-recipe, in order, stopping at the first failure.
 verify-04: engine-tools-check engine-lint engine-test engine-fuzz fuzz-smoke engine-bench
 
@@ -332,8 +332,8 @@ engine-test:
 
 # Acceptance 4 (opt-in, plan decision A4): the engine against the real repositories, which this repository never holds (rule 12).
 # Not part of `verify-04`. Without the two checkouts it says NOT RUN, which is not a pass; a human runs it with them and pastes
-# the output into the PR. T3 checks the locations, T6 the checks of `sit1`, T10 the ambiguous names. It prints counts and
-# setting paths, never a value.
+# the output into the PR. It checks the locations, the checks of `sit1` and the ambiguous names of the base (C9). It prints
+# counts, file names and setting paths, never a value.
 #   LK_REAL_BASE_DIR   configuration-base-saas, default branch (the config/ folder or the checkout)
 #   LK_REAL_TENANT_DIR csp-tenant-data, branch sit1 (the data/config/ folder or the checkout)
 engine-real-snapshot:
@@ -348,7 +348,7 @@ engine-real-snapshot:
 # S22: the engine's own fuzz crate (plan decision A2; `fuzz-smoke` does not run it). Its lockfile is complete and passes cargo
 # deny and cargo audit (S19), then each target runs {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in
 # crates/engine/fuzz/artifacts/. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart.
-engine_fuzz_targets := "engine_bytes engine_yaml engine_json engine_properties engine_flatten engine_index_settings engine_path_mapping engine_regex engine_secret_scan"
+engine_fuzz_targets := "engine_bytes engine_yaml engine_json engine_properties engine_flatten engine_index_settings engine_path_mapping engine_regex engine_secret_scan engine_render"
 engine-fuzz: fuzz-tools-check
     #!/usr/bin/env bash
     set -euo pipefail

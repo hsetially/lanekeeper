@@ -89,3 +89,10 @@ path = "fuzz_targets/engine_secret_scan.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "engine_render"
+path = "fuzz_targets/engine_render.rs"
+test = false
+doc = false
+bench = false

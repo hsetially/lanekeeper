@@ -1,0 +1,10 @@
+entryGroupConfigMap:
+  teller:
+    createVirtualItem: ${CREATE_VIRTUAL_ITEM}
+    groups:
+      - name: deposits
+        virtual: ${CREATE_VIRTUAL_ITEM}
+      - name: withdrawals
+        virtual: ${CREATE_VIRTUAL_ITEM}
+  atm:
+    createVirtualItem: ${CREATE_VIRTUAL_ITEM}

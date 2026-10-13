@@ -13,7 +13,9 @@
 //! T3 adds the first expectation: on every structured file of both checkouts, tree-sitter and the parser agree on where every
 //! setting is. T6 adds the checks of `sit1`: C2 for three files, C1 for the missing `atm` entry (this one reads the history of
 //! both checkouts with `git`, which therefore have to be clones and not exports), and C8 for the three keys of
-//! `security-roles.yml`. Later tasks add the rest (the 13 ambiguous names of C9 in T10).
+//! `security-roles.yml`. T10 adds the last: C9 on the base checkout reports the 13 ambiguous names (`authentication-config.yaml`
+//! in 12 folders, `error-codes-config.yaml` in 4, `hold-details.ej.yaml`, `transaction.ej.yaml` and nine more), with the channel
+//! folders of `channels.yml` left out.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::print_stdout)]
 
 use std::fmt::Write as _;
@@ -22,14 +24,14 @@ use std::path::{Path, PathBuf};
 
 use bytes::Bytes;
 use domain::{
-    CommitId, ContentHash, FileClass, FindingKind, MergeMode, NfsPath, PathMappingRule, RepoPath, TenantId,
-    TenantSet, Timestamp,
+    ChannelName, CommitId, ContentHash, FileClass, FindingKind, MergeMode, NfsPath, PathMappingRule,
+    RepoPath, TenantId, TenantSet, Timestamp,
 };
 use engine::{
     BaseHistory, BaseVersion, CheckDetail, CheckFile, CheckInput, CheckResult, DenyMatcher, FileFacts, Flat,
     HostRules, Limits, LocationSource, ParseWarning, RepoSource, Structured, Syntax, c1_missed_base_changes,
-    c8_duplicate_keys, checks_c1_to_c8, classify, classify_path, flatten, index_settings, map_path,
-    normalised_hash, parse,
+    c8_duplicate_keys, c9_ambiguous_file_names, checks_c1_to_c8, classify, classify_path, flatten,
+    index_settings, map_path, normalised_hash, parse,
 };
 
 /// The checkouts named by the environment. Panics when they are not set: a run that cannot happen is not a run that passed.
@@ -531,6 +533,93 @@ fn base_c8_security_roles(base_dir: &Path) -> Expectation {
     }
 }
 
+/// The channels of the base checkout: the scalar values of its `channels.yml`, or the three the real one lists when the file
+/// is not there. The second part says which.
+fn base_channels(base_dir: &Path) -> (Vec<ChannelName>, &'static str) {
+    const REAL: [&str; 3] = ["remote-itm-teller", "atm-iso", "atm"];
+    let from_file = fs::read(base_root(base_dir).join("channels.yml"))
+        .ok()
+        .and_then(|data| {
+            let text = String::from_utf8(data).ok()?;
+            let flat = flatten(
+                &parse(&text, Syntax::Yaml, &Limits::default()).ok()?,
+                &Limits::default(),
+            )
+            .ok()?;
+            let mut channels: Vec<ChannelName> = flat
+                .settings
+                .iter()
+                .filter_map(|s| ChannelName::parse(&s.value.text).ok())
+                .collect();
+            channels.sort();
+            channels.dedup();
+            (!channels.is_empty()).then_some(channels)
+        });
+    match from_file {
+        Some(channels) => (channels, "channels.yml"),
+        None => (
+            REAL.iter().map(|c| ChannelName::parse(c).unwrap()).collect(),
+            "the three real channels",
+        ),
+    }
+}
+
+/// Expectation (T10): C9 on the base checkout reports 13 names, among them `authentication-config.yaml` in 12 folders and
+/// `error-codes-config.yaml` in 4. It reads no file but `channels.yml`: only the paths matter.
+fn base_c9_thirteen_ambiguous_names(base_dir: &Path) -> Expectation {
+    const NAME: &str = "base_c9_reports_13_ambiguous_names";
+    let root = base_root(base_dir);
+    let (channels, channels_from) = base_channels(base_dir);
+    let rule = PathMappingRule::default();
+    let none = TenantSet::default();
+    let files: Vec<(NfsPath, FileFacts)> = files_below(&root)
+        .into_iter()
+        .filter_map(|(rel, _)| {
+            let path = NfsPath::parse(&rel).ok()?;
+            let facts = classify_path(&rule, &path, &none, |_| true).ok()?;
+            Some((path, facts))
+        })
+        .collect();
+    let views: Vec<CheckFile<'_>> = files
+        .iter()
+        .map(|(path, facts)| CheckFile {
+            path,
+            facts,
+            class: FileClass::Text,
+            hash: ContentHash::from_bytes([0; 32]),
+            merge_mode: MergeMode::WholeFile,
+            structured: None,
+            root_settings: None,
+            drift: None,
+            overwrite: None,
+            base_history: None,
+        })
+        .collect();
+    let found: Vec<(String, usize)> = c9_ambiguous_file_names(&views, &channels, &Limits::default())
+        .into_iter()
+        .filter_map(|r| match r.detail {
+            CheckDetail::AmbiguousFileName { name, total, .. } => Some((name, total)),
+            _ => None,
+        })
+        .collect();
+    let count_of = |name: &str| found.iter().find(|(n, _)| n == name).map(|(_, c)| *c);
+    let ok = found.len() == 13
+        && count_of("authentication-config.yaml") == Some(12)
+        && count_of("error-codes-config.yaml") == Some(4)
+        && count_of("hold-details.ej.yaml").is_some()
+        && count_of("transaction.ej.yaml").is_some();
+    Expectation {
+        name: NAME,
+        ok,
+        detail: format!(
+            "{} ambiguous names (channels from {channels_from}); authentication-config.yaml in {:?} folders, error-codes-config.yaml in {:?}",
+            found.len(),
+            count_of("authentication-config.yaml"),
+            count_of("error-codes-config.yaml")
+        ),
+    }
+}
+
 /// Acceptance 4, second part (T6): C2 for the three files of sit1.
 #[test]
 #[ignore = "needs LK_REAL_BASE_DIR and LK_REAL_TENANT_DIR: just engine-real-snapshot"]
@@ -557,6 +646,16 @@ fn sit1_c1_entry_group_config_missing_atm() {
 fn base_c8_security_roles_three_keys() {
     let (base, _) = real_dirs();
     let e = base_c8_security_roles(&base);
+    e.print();
+    assert!(e.ok, "real-snapshot: {}: {}", e.name, e.detail);
+}
+
+/// Acceptance 4, third part (T10): C9 on the base checkout reports the 13 ambiguous names.
+#[test]
+#[ignore = "needs LK_REAL_BASE_DIR and LK_REAL_TENANT_DIR: just engine-real-snapshot"]
+fn base_c9_reports_13_ambiguous_names() {
+    let (base, _) = real_dirs();
+    let e = base_c9_thirteen_ambiguous_names(&base);
     e.print();
     assert!(e.ok, "real-snapshot: {}: {}", e.name, e.detail);
 }
@@ -753,6 +852,79 @@ mod harness {
         assert!(!sit1_c2(empty.path(), empty.path()).ok);
         assert!(!base_c8_security_roles(empty.path()).ok);
         assert!(!sit1_c1_entry_group_config(empty.path(), empty.path()).ok);
+    }
+
+    // --- T10: C9 on a base made up here -------------------------------------------------------------------------------
+
+    /// A base with `names` ambiguous names: the first in 12 folders, the second in 4, the rest in 2. A copy in a channel folder
+    /// and a unique name are there too; neither counts.
+    fn made_up_base(root: &Path, names: usize) -> PathBuf {
+        let base = root.join("base");
+        write(&base, "config/channels.yml", "- remote-itm-teller\n- atm\n");
+        for i in 0..12 {
+            write(
+                &base,
+                &format!("config/core-adapter-{i:02}/authentication-config.yaml"),
+                "a: 1\n",
+            );
+        }
+        for i in 0..4 {
+            write(
+                &base,
+                &format!("config/core-adapter-{i:02}/error-codes-config.yaml"),
+                "a: 1\n",
+            );
+        }
+        let others = ["hold-details.ej.yaml", "transaction.ej.yaml"]
+            .into_iter()
+            .map(str::to_owned)
+            .chain((0..20).map(|i| format!("shared-{i:02}.yaml")));
+        for name in others.take(names.saturating_sub(2)) {
+            for folder in ["holds", "payments"] {
+                write(&base, &format!("config/{folder}/{name}"), "a: 1\n");
+            }
+        }
+        write(&base, "config/ui/layout.yml", "a: 1\n");
+        write(&base, "config/ui/remote-itm-teller/layout.yml", "a: 2\n");
+        base
+    }
+
+    #[test]
+    fn the_c9_expectation_passes_on_a_base_with_thirteen_ambiguous_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = made_up_base(dir.path(), 13);
+        let e = base_c9_thirteen_ambiguous_names(&base);
+        e.print();
+        assert!(e.ok, "{}", e.detail);
+        assert!(
+            e.detail.contains("channels.yml"),
+            "the channels came from the file: {}",
+            e.detail
+        );
+        // The checkout itself being the folder works too.
+        assert!(base_c9_thirteen_ambiguous_names(&base.join("config")).ok);
+    }
+
+    #[test]
+    fn the_c9_expectation_fails_when_the_count_is_not_thirteen() {
+        let dir = tempfile::tempdir().unwrap();
+        for names in [3, 12, 14] {
+            let base = made_up_base(&dir.path().join(names.to_string()), names);
+            let e = base_c9_thirteen_ambiguous_names(&base);
+            assert!(!e.ok, "{names} names passed: {}", e.detail);
+        }
+        let empty = tempfile::tempdir().unwrap();
+        assert!(!base_c9_thirteen_ambiguous_names(empty.path()).ok);
+    }
+
+    #[test]
+    fn the_c9_expectation_needs_the_channel_folders_left_out() {
+        // With a channel list that does not name `remote-itm-teller`, `ui/layout.yml` counts as a fourteenth name.
+        let dir = tempfile::tempdir().unwrap();
+        let base = made_up_base(dir.path(), 13);
+        write(&base, "config/channels.yml", "- atm\n");
+        let e = base_c9_thirteen_ambiguous_names(&base);
+        assert!(!e.ok, "{}", e.detail);
     }
 
     #[test]

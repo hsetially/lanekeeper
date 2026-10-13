@@ -25,14 +25,13 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use criterion::{Criterion, criterion_group};
-use domain::{FileClass, MergeMode, NfsPath, SwimlaneId};
+use domain::{AppName, FileClass, NfsPath, SwimlaneId};
 use engine::{
-    BatchRules, HostRules, LaneFile, LaneState, Limits, MergeRules, NfsContent, recompute_all,
-    recompute_paths,
+    BatchRules, HostRules, LaneFile, LaneState, Limits, NfsContent, recompute_all, recompute_paths,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use support::lanes::{LaneData, load_lanes};
+use support::lanes::{LaneData, load_lanes, sample_app_names};
 
 const SWIMLANES: usize = 10;
 const FILES_PER_SWIMLANE: usize = 100;
@@ -40,16 +39,9 @@ const SAMPLES: usize = 10;
 /// The harness's name below `engine/` in `perf/budgets.toml` (`P5.engine_per_file_per_swimlane`).
 const HARNESS: &str = "incremental_recompute_per_file_per_swimlane";
 
-fn merge_rules() -> MergeRules {
-    MergeRules::new(
-        MergeMode::WholeFile,
-        &[
-            ("*.yml", MergeMode::SpringMerge),
-            ("*.yaml", MergeMode::SpringMerge),
-            ("*.properties", MergeMode::SpringMerge),
-        ],
-    )
-    .unwrap()
+/// Some files are named like an application, so some are property sources: the hub's roles (D82), at a realistic count.
+fn app_names(lanes: &[LaneData]) -> Vec<AppName> {
+    sample_app_names(lanes, 300)
 }
 
 fn edit(file: &LaneFile, round: usize) -> LaneFile {
@@ -133,11 +125,11 @@ criterion_group!(benches, base_benches);
 fn base_benches(c: &mut Criterion) {
     let lanes = load_lanes(&common::fixtures(), 1);
     let lane = &lanes[0];
-    let merge = merge_rules();
+    let apps = app_names(&lanes);
     let hosts = HostRules::default();
     let limits = Limits::default();
     let rules = BatchRules {
-        merge_rules: &merge,
+        application_names: &apps,
         host_rules: &hosts,
         limits: &limits,
     };
@@ -200,11 +192,11 @@ fn results_dir() -> PathBuf {
 fn per_file_per_swimlane() {
     let lanes = load_lanes(&common::fixtures(), SWIMLANES);
     assert_eq!(lanes.len(), SWIMLANES);
-    let merge = merge_rules();
+    let apps = app_names(&lanes);
     let hosts = HostRules::default();
     let limits = Limits::default();
     let rules = BatchRules {
-        merge_rules: &merge,
+        application_names: &apps,
         host_rules: &hosts,
         limits: &limits,
     };

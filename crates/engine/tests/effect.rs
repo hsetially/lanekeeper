@@ -86,6 +86,7 @@ fn preview(
                 base: base.map(File::layer),
                 root: None,
             },
+            target_folder_exists: true,
             change: *change,
         },
         &Limits::default(),
@@ -181,7 +182,14 @@ fn delete_tenant_file_of_a_property_source_only_takes_back_what_it_overrode() {
             ("only_tenant".to_owned(), ChangeKind::Removed)
         ]
     );
-    assert_eq!(p.warnings, vec![EffectWarning::FallsBackToBase]);
+    // A property source also needs a notification or a restart before the services see the change (D85).
+    assert_eq!(
+        p.warnings,
+        vec![
+            EffectWarning::FallsBackToBase,
+            EffectWarning::NeedsNotifyOrRestart
+        ]
+    );
 }
 
 #[test]
@@ -235,7 +243,8 @@ fn upload_new_tenant_file_of_a_property_source_merges_and_does_not_fork() {
         Some(&base),
         &EffectChange::Write(new.layer()),
     );
-    assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+    // It does not fork (the file merges), but a property source needs a notification or a restart (D85).
+    assert_eq!(p.warnings, vec![EffectWarning::NeedsNotifyOrRestart]);
     assert_eq!(changes(&p), vec![("a".to_owned(), ChangeKind::Changed)]);
 }
 
@@ -411,6 +420,7 @@ fn a_text_file_changes_by_hash_alone() {
                     base: None,
                     root: None,
                 },
+                target_folder_exists: true,
                 change: EffectChange::Write(Layer {
                     path: &new,
                     hash: hash(to),
@@ -463,4 +473,178 @@ fn the_same_input_gives_the_same_preview() {
         )
     };
     assert_eq!(run(), run());
+}
+
+// --- T10: what a change needs before the services see it (D85) ---
+
+fn preview_in(
+    mode: MergeMode,
+    target: &FileFacts,
+    folder_exists: bool,
+    layers: Layers<'_>,
+    change: &EffectChange<'_>,
+) -> engine::EffectPreview {
+    let tenants = tenants(&["sit1"]);
+    effect_preview(
+        &EffectInput {
+            mode,
+            target,
+            tenants: &tenants,
+            layers,
+            target_folder_exists: folder_exists,
+            change: *change,
+        },
+        &Limits::default(),
+    )
+}
+
+#[test]
+fn property_source_change_needs_notify_or_restart() {
+    let (base, new) = (file("svc/app.yml", "a: 1\n"), file("svc/app.yml", "a: 2\n"));
+    let layers = Layers {
+        tenant: None,
+        base: Some(base.layer()),
+        root: None,
+    };
+    let p = preview_in(
+        MergeMode::SpringMerge,
+        &facts("svc/app.yml", None),
+        true,
+        layers,
+        &EffectChange::Write(new.layer()),
+    );
+    assert!(
+        p.warnings.contains(&EffectWarning::NeedsNotifyOrRestart),
+        "{:?}",
+        p.warnings
+    );
+    assert!(
+        !p.warnings
+            .contains(&EffectWarning::NewFolderNeedsConfigServerRestart)
+    );
+    // A write that changes nothing the services read warns about nothing.
+    let same = preview_in(
+        MergeMode::SpringMerge,
+        &facts("svc/app.yml", None),
+        true,
+        layers,
+        &EffectChange::Write(base.layer()),
+    );
+    assert!(same.warnings.is_empty(), "{:?}", same.warnings);
+    // A resource file (whole file) is live within the cache lifetime: no property-source warning.
+    let resource = preview_in(
+        MergeMode::WholeFile,
+        &facts("svc/app.yml", None),
+        true,
+        layers,
+        &EffectChange::Write(new.layer()),
+    );
+    assert!(!resource.warnings.contains(&EffectWarning::NeedsNotifyOrRestart));
+    // Deleting a property source is a change too.
+    let deleted = preview_in(
+        MergeMode::SpringMerge,
+        &facts("svc/app.yml", None),
+        true,
+        layers,
+        &EffectChange::Delete,
+    );
+    assert!(deleted.warnings.contains(&EffectWarning::NeedsNotifyOrRestart));
+}
+
+#[test]
+fn new_folder_warns_that_the_config_server_must_restart() {
+    let new = file("fresh/x.xsl", "a: 1\n");
+    let layers = Layers {
+        tenant: None,
+        base: None,
+        root: None,
+    };
+    let p = preview_in(
+        MergeMode::WholeFile,
+        &facts("fresh/x.xsl", None),
+        false,
+        layers,
+        &EffectChange::Write(new.layer()),
+    );
+    assert_eq!(p.warnings, vec![EffectWarning::NewFolderNeedsConfigServerRestart]);
+    // The same write into a folder that exists does not.
+    let there = preview_in(
+        MergeMode::WholeFile,
+        &facts("fresh/x.xsl", None),
+        true,
+        layers,
+        &EffectChange::Write(new.layer()),
+    );
+    assert!(there.warnings.is_empty());
+    // A delete never creates a folder.
+    let gone = preview_in(
+        MergeMode::WholeFile,
+        &facts("fresh/x.xsl", None),
+        false,
+        layers,
+        &EffectChange::Delete,
+    );
+    assert!(
+        !gone
+            .warnings
+            .contains(&EffectWarning::NewFolderNeedsConfigServerRestart)
+    );
+}
+
+#[test]
+fn channels_yml_change_warns_that_the_config_server_must_restart() {
+    let (old, new) = (
+        file("channels.yml", "- atm\n"),
+        file("channels.yml", "- atm\n- web\n"),
+    );
+    let layers = Layers {
+        tenant: None,
+        base: Some(old.layer()),
+        root: None,
+    };
+    let p = preview_in(
+        MergeMode::WholeFile,
+        &facts("channels.yml", None),
+        true,
+        layers,
+        &EffectChange::Write(new.layer()),
+    );
+    assert_eq!(
+        p.warnings,
+        vec![EffectWarning::ChannelsYmlNeedsConfigServerRestart]
+    );
+    let unchanged = preview_in(
+        MergeMode::WholeFile,
+        &facts("channels.yml", None),
+        true,
+        layers,
+        &EffectChange::Write(old.layer()),
+    );
+    assert!(unchanged.warnings.is_empty());
+    // Deleting the list changes which folders are channels.
+    let deleted = preview_in(
+        MergeMode::WholeFile,
+        &facts("channels.yml", None),
+        true,
+        layers,
+        &EffectChange::Delete,
+    );
+    assert!(
+        deleted
+            .warnings
+            .contains(&EffectWarning::ChannelsYmlNeedsConfigServerRestart)
+    );
+    // A file of another name in any folder is not the list.
+    let other = preview_in(
+        MergeMode::WholeFile,
+        &facts("svc/channels.yaml", None),
+        true,
+        layers,
+        &EffectChange::Write(new.layer()),
+    );
+    assert!(
+        !other
+            .warnings
+            .contains(&EffectWarning::ChannelsYmlNeedsConfigServerRestart)
+    );
 }

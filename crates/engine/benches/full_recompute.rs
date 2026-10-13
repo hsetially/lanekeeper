@@ -22,9 +22,9 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use criterion::{Criterion, SamplingMode, criterion_group, criterion_main};
-use domain::{DriftState, MergeMode};
-use engine::{BatchRules, HostRules, Limits, MergeRules, recompute_all};
-use support::lanes::{LaneData, load_lanes};
+use domain::DriftState;
+use engine::{BatchRules, HostRules, Limits, recompute_all};
+use support::lanes::{LaneData, load_lanes, sample_app_names};
 
 /// A line of `/proc/self/status` (Linux), for the report: the resident size now and at its peak (P11 is the hub's budget; the
 /// batch's table of parsed blobs lives only for one call, and this shows how big it gets).
@@ -49,19 +49,12 @@ fn full_recompute_bench(c: &mut Criterion) {
     let inputs: Vec<_> = lanes.iter().map(LaneData::input).collect();
     memory("after reading the fixtures");
 
-    let merge = MergeRules::new(
-        MergeMode::WholeFile,
-        &[
-            ("*.yml", MergeMode::SpringMerge),
-            ("*.yaml", MergeMode::SpringMerge),
-            ("*.properties", MergeMode::SpringMerge),
-        ],
-    )
-    .unwrap();
+    // Some files are named like an application, so some are property sources: the hub's roles (D82), at a realistic count.
+    let apps = sample_app_names(&lanes, 300);
     let hosts = HostRules::default();
     let limits = Limits::default();
     let rules = BatchRules {
-        merge_rules: &merge,
+        application_names: &apps,
         host_rules: &hosts,
         limits: &limits,
     };

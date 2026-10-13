@@ -30,6 +30,7 @@ mod index;
 mod limits;
 mod parse;
 mod paths;
+mod resolution;
 mod search;
 mod secret_scan;
 mod severity;
@@ -45,10 +46,13 @@ pub use self::bytes::{
     dominant_eol, encode_text, normalise_eol,
 };
 pub use self::checks::{
-    BaseCommit, BaseHistory, BaseVersion, ChangedSetting, CheckDetail, CheckFile, CheckInput, CheckResult,
-    DuplicatedKey, EqualBy, HostMatcher, HostRule, HostRules, MismatchedHost, OrphanReason, Overwrite,
-    Structured, c1_missed_base_changes, c2_redundant_tenant_file, c3_uneven_tenant_files, c4_orphan_file,
-    c5_drift, c6_environment_host_mismatch, c7_overwritten_nfs_change, c8_duplicate_keys, checks_c1_to_c8,
+    BaseCommit, BaseHistory, BaseVersion, ChangedSetting, ChannelsYml, CheckDetail, CheckFile, CheckInput,
+    CheckResult, ConfigServerFacts, DuplicatedKey, EnvNames, EqualBy, FolderSeen, HostMatcher, HostRule,
+    HostRules, MismatchedHost, OrphanReason, Overwrite, PlaceholderFile, RestartReason, Structured,
+    TenantView, UnresolvedKey, c1_missed_base_changes, c2_redundant_tenant_file, c3_uneven_tenant_files,
+    c4_orphan_file, c5_drift, c6_environment_host_mismatch, c7_overwritten_nfs_change, c8_duplicate_keys,
+    c9_ambiguous_file_names, c10_unresolved_placeholders, c11_config_server_restart_required,
+    checks_c1_to_c8,
 };
 pub use self::diff::{
     BinaryDiff, BinaryFacts, DIFF_CONTEXT_LINES, SettingView, TextDiff, binary_compare, semantic_diff,
@@ -60,7 +64,7 @@ pub use self::effect::{
 };
 pub use self::effective::{Effective, EffectiveValue, Layer, Layers, Origin, Source, effective};
 pub use self::error::{
-    BatchError, DecodeError, DenyError, EncodeError, HostRulesError, LimitKind, MergeRulesError, ParseError,
+    BatchError, DecodeError, DenyError, EncodeError, HostRulesError, LimitKind, ParseError, ResolveError,
     ScanError, SearchError, SeverityError, TreeHashError,
 };
 pub use self::grid::{
@@ -73,7 +77,13 @@ pub use self::parse::{
     PathSegment, Position, PropertyEntry, Scalar, ScalarStyle, ScalarTag, Syntax, Validation,
     decode_setting_path, encode_setting_path, flatten, parse, validate,
 };
-pub use self::paths::{FileFacts, MergeRules, RepoSource, classify_path, map_path, reverse_map};
+pub use self::paths::{FileFacts, RepoSource, classify_path, map_path, reverse_map};
+pub use self::resolution::{
+    ClientSettings, DEFAULT_CACHE_TTL_SECS, Pickup, PickupChange, PickupInput, Placeholder, PropertyFile,
+    PropertyView, Rendered, RenderedFile, ResourceChoice, SearchLocations, ViewSetting, file_role,
+    is_channel_dir, logical_file_role, merge_mode, pickup_state, property_view, render, render_file,
+    resolve_resource, scan_placeholders, search_locations,
+};
 pub use self::search::{
     CancelFlag, SearchBlob, SearchCorpus, SearchLocation, SearchOutcome, SearchStats, search_text,
 };

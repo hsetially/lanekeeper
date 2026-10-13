@@ -1,0 +1,2 @@
+coreRouting: ${CORE_ROUTING}
+logLevel: ${LOG_LEVEL}

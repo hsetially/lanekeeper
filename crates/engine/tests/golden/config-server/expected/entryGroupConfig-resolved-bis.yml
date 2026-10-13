@@ -1,0 +1,10 @@
+entryGroupConfigMap:
+  teller:
+    createVirtualItem: false
+    groups:
+      - name: deposits
+        virtual: false
+      - name: withdrawals
+        virtual: false
+  atm:
+    createVirtualItem: false

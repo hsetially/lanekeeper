@@ -12,7 +12,12 @@
 //! - a tenant file whose suffix is not one of the swimlane's tenants is never read ([`EffectWarning::NeverRead`]), and
 //!   changes nothing for anybody;
 //! - a root file is read by every service ([`EffectScope::EveryService`]); any other file by the application of its
-//!   folder.
+//!   folder;
+//! - a property source change reaches a client only by a notification (if the client listens) or a restart
+//!   ([`EffectWarning::NeedsNotifyOrRestart`], D85);
+//! - a file written into a folder that does not exist yet, and a change to `channels.yml`, are not seen until the
+//!   config-server restarts, because it fixes its search locations when it starts
+//!   ([`EffectWarning::NewFolderNeedsConfigServerRestart`], [`EffectWarning::ChannelsYmlNeedsConfigServerRestart`], D83).
 //!
 //! The preview reads no file and no clock. When the change is to a tenant file, `layers` must be the view of the tenant the
 //! file is for. When it is to a base file, `layers` is the view of whichever tenant the caller wants to preview.
@@ -43,6 +48,9 @@ pub struct EffectInput<'a> {
     pub tenants: &'a TenantSet,
     /// The layers of the logical file as they are now.
     pub layers: Layers<'a>,
+    /// The folder of the target file exists now. A write into one that does not is a new folder (D83). Irrelevant to a
+    /// delete.
+    pub target_folder_exists: bool,
     pub change: EffectChange<'a>,
 }
 
@@ -68,6 +76,14 @@ pub enum EffectWarning {
     ForksFromBase,
     /// The file's suffix is the id of a tenant that the swimlane does not deploy: no service of it reads the file.
     NeverRead { suffix: TenantId },
+    /// A property source changes: a client with notifications enabled refreshes when it is notified, and every other client
+    /// has to restart (D85).
+    NeedsNotifyOrRestart,
+    /// The file is written into a folder that does not exist: the config-server does not search it until it restarts
+    /// (D83).
+    NewFolderNeedsConfigServerRestart,
+    /// `channels.yml` changes: the config-server reads the list once, when it starts, and must restart (D83).
+    ChannelsYmlNeedsConfigServerRestart,
 }
 
 /// What a change does.
@@ -97,6 +113,9 @@ impl std::fmt::Debug for EffectPreview {
             .finish()
     }
 }
+
+/// The file that lists the channels (D83): any file of this name.
+const CHANNELS_FILE: &str = "channels.yml";
 
 /// What `change` does to the effective config of the logical file.
 pub fn effect_preview(input: &EffectInput<'_>, limits: &Limits) -> EffectPreview {
@@ -153,6 +172,19 @@ pub fn effect_preview(input: &EffectInput<'_>, limits: &Limits) -> EffectPreview
     }
 
     let (old, new) = (effective(input.mode, &before), effective(input.mode, &after));
+    let effective_changed = old.as_ref().map(|e| e.hash) != new.as_ref().map(|e| e.hash);
+
+    // What the services need before they see the change (D85).
+    if input.mode == MergeMode::SpringMerge && effective_changed {
+        warnings.push(EffectWarning::NeedsNotifyOrRestart);
+    }
+    if matches!(input.change, EffectChange::Write(_)) && !input.target_folder_exists {
+        warnings.push(EffectWarning::NewFolderNeedsConfigServerRestart);
+    }
+    if input.target.logical.as_path().file_name() == CHANNELS_FILE && effective_changed {
+        warnings.push(EffectWarning::ChannelsYmlNeedsConfigServerRestart);
+    }
+
     let old_settings = old.as_ref().map_or(&[][..], |e| e.settings.as_slice());
     let new_settings = new.as_ref().map_or(&[][..], |e| e.settings.as_slice());
     let mut changes = semantic_diff(old_settings, new_settings);
@@ -164,7 +196,7 @@ pub fn effect_preview(input: &EffectInput<'_>, limits: &Limits) -> EffectPreview
         warnings,
         changes,
         changes_total,
-        effective_changed: old.map(|e| e.hash) != new.map(|e| e.hash),
+        effective_changed,
     }
 }
 

@@ -6,19 +6,16 @@
 //! - `map_path` and `reverse_map`: Git to NFS and back, typed on both sides (`RepoPath`, `NfsPath`, `TenantId`), so a
 //!   hostile string cannot reach the mapping and the mapping cannot produce a path outside the roots;
 //! - `classify_path`: is an NFS path a base file, a tenant file or an untracked file, which logical file is it, and which
-//!   tenant;
-//! - `MergeRules`: which merge mode a logical file has. It is interim (D82 supersedes D14: the mode follows the file's
-//!   role in the config-server's resolution) and T10 deletes it.
+//!   tenant.
+//!
+//! Which merge mode a logical file has is not decided here: it follows from the file's role (D82 supersedes D14), see
+//! `file_role` and `merge_mode`.
 //!
 //! Nothing here reads a file. Whether Git has a path is the caller's knowledge, passed in as a closure.
 
 use domain::{
-    FileKind, LogicalFile, MapError, MergeMode, NfsPath, PathMappingRule, RepoPath, ReverseMapping, TenantId,
-    TenantSet,
+    FileKind, LogicalFile, MapError, NfsPath, PathMappingRule, RepoPath, ReverseMapping, TenantId, TenantSet,
 };
-use globset::{Candidate, Glob, GlobSet, GlobSetBuilder};
-
-use crate::error::MergeRulesError;
 
 /// Which repository a path is in.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,86 +116,4 @@ pub fn classify_path(
             repo_path,
         },
     })
-}
-
-/// Which merge mode a logical file has, by glob (D14). Interim: D82 supersedes D14, the mode follows the file's role, and
-/// T10 deletes this type and its tests.
-///
-/// The first rule that matches wins; a file that matches none has the default mode. Globs match the whole logical path
-/// from the root, case-sensitively (file names on NFS are), and `*` crosses `/`.
-#[derive(Clone)]
-pub struct MergeRules {
-    default: MergeMode,
-    set: Option<GlobSet>,
-    modes: Vec<MergeMode>,
-}
-
-impl MergeRules {
-    /// The most rules `new` takes.
-    pub const MAX_RULES: usize = 1_000;
-    /// The longest glob `new` takes, in bytes.
-    pub const MAX_GLOB_BYTES: usize = 512;
-
-    /// Rules in order of precedence.
-    ///
-    /// # Errors
-    ///
-    /// `TooManyRules`, `GlobTooLong`, or `InvalidGlob` for a glob that does not compile. The error does not contain the
-    /// glob.
-    pub fn new(default: MergeMode, rules: &[(&str, MergeMode)]) -> Result<Self, MergeRulesError> {
-        if rules.len() > Self::MAX_RULES {
-            return Err(MergeRulesError::TooManyRules);
-        }
-        let mut builder = GlobSetBuilder::new();
-        let mut modes = Vec::with_capacity(rules.len());
-        for (text, mode) in rules {
-            if text.len() > Self::MAX_GLOB_BYTES {
-                return Err(MergeRulesError::GlobTooLong);
-            }
-            builder.add(Glob::new(text).map_err(|_| MergeRulesError::InvalidGlob)?);
-            modes.push(*mode);
-        }
-        let set = if modes.is_empty() {
-            None
-        } else {
-            Some(builder.build().map_err(|_| MergeRulesError::InvalidGlob)?)
-        };
-        Ok(Self { default, set, modes })
-    }
-
-    /// The merge mode of a logical file.
-    pub fn mode_for(&self, file: &LogicalFile) -> MergeMode {
-        let Some(set) = &self.set else {
-            return self.default;
-        };
-        let mut hits = Vec::new();
-        set.matches_candidate_into(&Candidate::new(file.as_str()), &mut hits);
-        // `matches_into` gives the indices of the globs that match; the first rule is the lowest index.
-        hits.iter()
-            .min()
-            .and_then(|&i| self.modes.get(i))
-            .copied()
-            .unwrap_or(self.default)
-    }
-}
-
-impl Default for MergeRules {
-    /// Every file is `whole_file` (D14's default).
-    fn default() -> Self {
-        Self {
-            default: MergeMode::WholeFile,
-            set: None,
-            modes: Vec::new(),
-        }
-    }
-}
-
-impl std::fmt::Debug for MergeRules {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The globs are admin configuration; they are not printed.
-        f.debug_struct("MergeRules")
-            .field("default", &self.default)
-            .field("rules", &self.modes.len())
-            .finish_non_exhaustive()
-    }
 }

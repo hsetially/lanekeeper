@@ -59,6 +59,7 @@ fn corpus_replay_all_engine_targets() {
     replay("engine_path_mapping", invariants::engine_path_mapping);
     replay("engine_regex", invariants::engine_regex);
     replay("engine_secret_scan", invariants::engine_secret_scan);
+    replay("engine_render", invariants::engine_render);
 }
 
 #[test]
@@ -259,14 +260,8 @@ fn the_index_seeds_are_refused_or_indexed_as_named() {
 /// passing after the code it was written for has changed.
 #[test]
 fn the_path_mapping_seeds_reach_what_they_are_named_for() {
-    use domain::{MergeMode, NfsPath, PathMappingRule, RepoPath, ReverseMapping, TenantId, TenantSet};
-    use engine::{MergeRules, MergeRulesError, reverse_map};
-
-    fn rules(list: &[String]) -> Vec<(&str, MergeMode)> {
-        list.iter()
-            .map(|g| (g.as_str(), MergeMode::SpringMerge))
-            .collect()
-    }
+    use domain::{AppName, NfsPath, PathMappingRule, RepoPath, ReverseMapping, TenantId, TenantSet};
+    use engine::reverse_map;
 
     let pieces = |name: &str| -> Vec<String> {
         String::from_utf8_lossy(&seed("engine_path_mapping", name))
@@ -334,20 +329,12 @@ fn the_path_mapping_seeds_reach_what_they_are_named_for() {
     // More tenants than a swimlane can have.
     let many = &pieces("many_tenants")[1];
     assert!(TenantSet::new(many.split_whitespace().filter_map(|t| TenantId::parse(t).ok())).is_err());
-    // Rule lists that are refused, and why.
-    let globs = |name: &str| pieces(name)[3..].to_vec();
-    let bad = globs("bad_globs");
-    assert_eq!(
-        MergeRules::new(MergeMode::WholeFile, &rules(&bad)).unwrap_err(),
-        MergeRulesError::InvalidGlob
-    );
-    let long = globs("long_glob");
-    assert_eq!(
-        MergeRules::new(MergeMode::WholeFile, &rules(&long)).unwrap_err(),
-        MergeRulesError::GlobTooLong
-    );
-    let good = globs("glob_depth");
-    assert!(MergeRules::new(MergeMode::WholeFile, &rules(&good)).is_ok());
+    // The application names after the repository path: the hostile ones are refused by `AppName`, so they never reach
+    // `file_role`; the plain ones do.
+    let names = |name: &str| pieces(name)[3..].to_vec();
+    assert!(names("bad_globs").iter().all(|n| AppName::parse(n).is_err()));
+    assert!(names("long_glob").iter().all(|n| AppName::parse(n).is_err()));
+    assert!(names("glob_depth").iter().all(|n| AppName::parse(n).is_err()));
 }
 
 /// The regex seeds are not blind either: each is refused, searched or skipped as the name says, so a seed cannot go on

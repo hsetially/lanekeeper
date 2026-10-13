@@ -50,7 +50,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use domain::{ContentHash, FileClass, LogicalFile, NfsPath, ShortText, SwimlaneId, TenantSet};
+use domain::{AppName, ContentHash, FileClass, LogicalFile, NfsPath, ShortText, SwimlaneId, TenantSet};
 use rayon::ThreadPool;
 use rayon::prelude::*;
 
@@ -62,7 +62,7 @@ use crate::checks::{BaseVersion, CheckResult, HostRules, Overwrite};
 use crate::drift::{Baseline, Drift, IntentionalMark};
 use crate::error::BatchError;
 use crate::limits::Limits;
-use crate::paths::{FileFacts, MergeRules};
+use crate::paths::FileFacts;
 use crate::tree_hash::{IncrementalTree, TreeHashes};
 
 /// The most swimlanes in one batch call.
@@ -74,8 +74,9 @@ pub const MAX_LANE_FILES: usize = 200_000;
 /// everything and not only the paths that changed.
 #[derive(Debug, Clone, Copy)]
 pub struct BatchRules<'a> {
-    /// Which logical file is `whole_file` and which `spring_merge` (interim, until T10).
-    pub merge_rules: &'a MergeRules,
+    /// The applications' names (D88, `SPRING_APPLICATION_NAME`). A file is a property source (`spring_merge`) or a resource
+    /// (`whole_file`) by its role, and the role depends on these (D82, `file_role`).
+    pub application_names: &'a [AppName],
     /// C6.
     pub host_rules: &'a HostRules,
     pub limits: &'a Limits,

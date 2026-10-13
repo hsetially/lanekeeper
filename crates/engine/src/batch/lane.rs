@@ -15,10 +15,12 @@ use crate::effective::{Layer, Layers, effective};
 use crate::error::BatchError;
 use crate::limits::Limits;
 use crate::parse::{FlatSetting, ParseWarning, Syntax, flatten, parse};
+use crate::resolution::{logical_file_role, merge_mode};
 use crate::tree_hash::{normalised_hash, swimlane_hash};
 
-/// The root property files, in the order that the interim model prefers them (`.properties` beats `.yml` at equal rank).
-/// T10 replaces this with the config-server's resolution.
+/// The root property files, in the order of precedence (`.properties` beats `.yml` at equal rank). They are the lowest layer of
+/// every property source's effective hash. (`application-<tenant>.*` is a layer of the application's `property_view`; the
+/// batch's per-file hash uses the three layers tenant, base and root.)
 const ROOT_FILES: [&str; 3] = ["application.properties", "application.yml", "application.yaml"];
 
 /// What identifies work on a blob: the same bytes are parsed once per syntax, and hashed once per way of normalising.
@@ -365,6 +367,11 @@ fn group_findings(ctx: &Ctx<'_>, mode: MergeMode, members: &[Member<'_>]) -> Vec
     findings
 }
 
+/// How a logical file merges: a property source merges setting by setting, a resource is chosen whole (D82).
+fn mode_of(rules: &BatchRules<'_>, logical: &LogicalFile) -> MergeMode {
+    merge_mode(logical_file_role(logical, rules.application_names))
+}
+
 /// Computes one group and puts the result in the state.
 fn apply(
     state: &mut LaneState,
@@ -373,7 +380,7 @@ fn apply(
     members: &[Member<'_>],
     want_hashes: bool,
 ) -> Result<(), BatchError> {
-    let mode = ctx.rules.merge_rules.mode_for(logical);
+    let mode = mode_of(ctx.rules, logical);
     let effective = if want_hashes {
         group_effective(ctx, mode, members)
     } else {
@@ -426,12 +433,12 @@ pub(super) fn update_lane(
     // The root file is a layer of every `spring_merge` group.
     if paths.iter().any(|p| could_be_root(p)) {
         for logical in index.groups.keys() {
-            if rules.merge_rules.mode_for(logical) == MergeMode::SpringMerge {
+            if mode_of(rules, logical) == MergeMode::SpringMerge {
                 dirty.insert(logical);
             }
         }
         for old in previous.files.values() {
-            if rules.merge_rules.mode_for(&old.logical) == MergeMode::SpringMerge {
+            if mode_of(rules, &old.logical) == MergeMode::SpringMerge {
                 dirty.insert(&old.logical);
             }
         }

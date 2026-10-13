@@ -43,20 +43,6 @@ pub enum DenyError {
     InvalidGlob,
 }
 
-/// Why a list of merge rules was refused (interim: T10 deletes `MergeRules`, and this with it).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum MergeRulesError {
-    /// More rules than `MergeRules::MAX_RULES`.
-    #[error("too many merge rules")]
-    TooManyRules,
-    /// A glob longer than `MergeRules::MAX_GLOB_BYTES`.
-    #[error("a merge rule glob is too long")]
-    GlobTooLong,
-    /// A glob is not valid, or the list is too complex to compile.
-    #[error("a merge rule glob could not be compiled")]
-    InvalidGlob,
-}
-
 /// Why a list of severity rules was refused. The error never contains the rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SeverityError {
@@ -220,4 +206,20 @@ pub enum ScanError {
     /// caller treats the text as unsafe to show.
     #[error("the text holds more secrets than can be listed")]
     TooManyMatches,
+}
+
+/// Why the config-server's resolution (T10) refused an input: a property view that is too big, or a file that cannot be
+/// rendered. The error never contains the input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ResolveError {
+    /// A size limit was exceeded: the property view holds more settings than `Limits::settings`, or the text to render, or
+    /// the text it renders to, is longer than `Limits::input_bytes`.
+    #[error("the {} limit was exceeded", .0.describe())]
+    Limit(LimitKind),
+    /// The file's bytes are not text of the encoding it declares.
+    #[error(transparent)]
+    Decode(#[from] DecodeError),
+    /// The rendered text cannot be written back in the file's encoding.
+    #[error(transparent)]
+    Encode(#[from] EncodeError),
 }

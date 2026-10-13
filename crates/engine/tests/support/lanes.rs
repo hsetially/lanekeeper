@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use bytes::Bytes;
-use domain::{ContentHash, NfsPath, PathMappingRule, ReverseMapping, SwimlaneId, TenantId, TenantSet};
+use domain::{
+    AppName, ContentHash, NfsPath, PathMappingRule, ReverseMapping, SwimlaneId, TenantId, TenantSet,
+};
 use engine::{Baseline, DenyMatcher, LaneFile, LaneInput, NfsContent, classify, classify_path, drift_hash};
 use sha2::{Digest, Sha256};
 
@@ -32,6 +34,28 @@ impl LaneData {
             files: &self.files,
         }
     }
+}
+
+/// Application names that make some of the fixtures' files property sources (D82): the stems of the first `max` structured
+/// files with a property extension, by path. With none, only `application.*` is one. A handful is enough to run the
+/// `spring_merge` path in a test; a benchmark uses the folders' names, which is closer to the real thing.
+pub fn sample_app_names(lanes: &[LaneData], max: usize) -> Vec<AppName> {
+    let mut stems = BTreeSet::new();
+    for lane in lanes {
+        for file in &lane.files {
+            let name = file.path.file_name();
+            if let Some((stem, ext)) = name.rsplit_once('.') {
+                if matches!(ext, "yml" | "yaml" | "properties") && !stem.is_empty() {
+                    stems.insert(stem.to_owned());
+                }
+            }
+        }
+    }
+    stems
+        .iter()
+        .filter_map(|s| AppName::parse(s).ok())
+        .take(max)
+        .collect()
 }
 
 fn git(repo: &Path, args: &[&str]) -> Vec<u8> {

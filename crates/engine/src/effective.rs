@@ -1,4 +1,4 @@
-//! Effective config of one file (T4, D14, D82): what a service gets from the layers a file can come from.
+//! Effective config of one file (T4, D82): what a service gets from the layers a file can come from.
 //!
 //! A logical file can exist as a tenant file (`app-sit1.yml`), as a base file (`app.yml`), and, for a Spring property
 //! source, as a root file (`application.yml`) below both. `effective` takes those layers, already flattened, and gives the
@@ -11,7 +11,8 @@
 //!   so a merged path has no `#<n>/` prefix (plan decision A10).
 //!
 //! The function reads no file and renders nothing: it works on the flattened settings, so the caller (which has parsed each
-//! blob once) pays for no parse. Rendering of `${KEY}` placeholders comes with the resolution model (T10).
+//! blob once) pays for no parse. Rendering of `${KEY}` placeholders is `render` (T10, `resolution`); the mode of a file follows
+//! from its role (`file_role`, `merge_mode`), not from a pattern.
 //!
 //! # Hashes
 //!

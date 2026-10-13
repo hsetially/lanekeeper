@@ -17,9 +17,10 @@
 //! | `engine_json` | text | the same for JSON |
 //! | `engine_properties` | text | the same for `.properties` (a path is the key as written) |
 //! | `engine_index_settings` | a selector byte (YAML, JSON or `.properties`), then any bytes | `index_settings` and `locate` never panic and give the same answer twice; the index is there exactly when `validate` accepts the bytes, with the same settings; every range is inside the text; a YAML file is located by tree-sitter or says that it could not be, and every disagreement names a setting of the file |
-//! | `engine_path_mapping` | NUL-separated pieces: an NFS path, tenant ids, a repository path, then merge-rule globs | `reverse_map`, `classify_path`, `map_path` and `MergeRules` never panic; a path that reads back to Git maps forward to the very same NFS path, under the root of its repository; a repository path maps to an NFS path that reads back to the same tenant file; the kind and the tenant of `classify_path` agree with the mapping; a merge rule list gives the same mode as asking each rule alone, first match first |
+//! | `engine_path_mapping` | NUL-separated pieces: an NFS path, tenant ids, a repository path, then application names | `reverse_map`, `classify_path`, `map_path`, `file_role` and `logical_file_role` never panic; a path that reads back to Git maps forward to the very same NFS path, under the root of its repository; a repository path maps to an NFS path that reads back to the same tenant file; the kind and the tenant of `classify_path` agree with the mapping; a file's role is the same when asked twice, a property source has a property extension, adding tenants only makes more files property sources, and with no tenants the role of a path is the role of the logical file it names |
 //! | `engine_flatten` | NUL-separated pieces | a path built from any keys and indexes is read back to the same keys and indexes; any text offered as a setting path is refused or read to something that writes and reads back the same |
 //! | `engine_regex` | a flags byte (regex or literal, case, small caps), a pattern, a NUL, then the text searched | `search_text` never panics, finishes within the (small) regex limits and gives the same answer twice; an empty or over-long pattern is refused as such; every hit is within the caps, in swimlane, path and line order, with line text of at most the cut length that has no `\r` or `\n`, and ranges that are in order, not empty, inside the text and on character boundaries; a binary or over-long text gives no hits; for a literal, case-sensitive pattern in UTF-8 text the hits are exactly the lines that hold the pattern and the ranges exactly its occurrences |
+//! | `engine_render` | a property file (`.properties` text), a NUL, then the text to render | `scan_placeholders`, `render` and `render_file` never panic, and give the same answer twice; the result is within the size limit or a limit error; every placeholder found is `${KEY}` with a plain key, and stands in the text; every placeholder whose key is in the view is replaced by its value and every other one is reported, once, sorted; the length of the output is the length of the text plus what the replacements add; with an empty view nothing changes |
 //! | `engine_secret_scan` | a flags byte (hex, shorter and looser thresholds), then text | `secret_scan` never panics and gives the same answer twice; every match is a non-empty span inside the text, in order and not overlapping, whose length counts its characters; its marker is `[REDACTED: N chars, rule]`; and replacing every span by its marker leaves a text in which the scan finds nothing, so what the scan reports is all of what it would report |
 
 #![allow(
@@ -34,23 +35,24 @@ use std::collections::BTreeSet;
 
 use bytes::Bytes;
 use domain::{
-    FileClass, FileKind, LogicalFile, MergeMode, NfsPath, PathMappingRule, RepoPath, ReverseMapping,
-    SettingPath, SwimlaneId, TenantId, TenantSet, TextHit, TextQuery, ValueFlag, ValueType,
+    AppName, FileClass, FileKind, FileRole, LogicalFile, MergeMode, NfsPath, PathMappingRule, RepoPath,
+    ReverseMapping, SettingPath, SwimlaneId, TenantId, TenantSet, TextHit, TextQuery, ValueFlag, ValueType,
 };
 use engine::{
-    Body, CancelFlag, DenyMatcher, Flat, Limits, LocationSource, MergeRules, Newline, NodeKind, ParseError,
-    ParseWarning, Parsed, PathSegment, RepoSource, ScanConfig, ScanError, SearchBlob, SearchCorpus,
-    SearchError, SearchLocation, SearchOutcome, SecretMatch, Syntax, apply_eol, classify, classify_path,
-    decode_setting_path, decode_text, detect_format, encode_setting_path, encode_text, flatten,
-    index_settings, locate, map_path, normalise_eol, normalised_hash, parse, reverse_map, search_text,
-    secret_scan, validate,
+    Body, CancelFlag, DenyMatcher, Flat, Limits, LocationSource, Newline, NodeKind, ParseError, ParseWarning,
+    Parsed, PathSegment, PropertyFile, RepoSource, ResolveError, ScanConfig, ScanError, SearchBlob,
+    SearchCorpus, SearchError, SearchLocation, SearchOutcome, SecretMatch, Syntax, apply_eol, classify,
+    classify_path, decode_setting_path, decode_text, detect_format, encode_setting_path, encode_text,
+    file_role, flatten, index_settings, locate, logical_file_role, map_path, merge_mode, normalise_eol,
+    normalised_hash, parse, property_view, render, render_file, reverse_map, scan_placeholders,
+    search_locations, search_text, secret_scan, validate,
 };
 
 /// A check over one fuzz input.
 pub type Check = fn(&[u8]) -> Result<(), String>;
 
 /// Every fuzz target: its name (also the file name in `fuzz_targets` and the corpus directory) and its check.
-pub const TARGETS: [(&str, Check); 9] = [
+pub const TARGETS: [(&str, Check); 10] = [
     ("engine_bytes", engine_bytes),
     ("engine_yaml", engine_yaml),
     ("engine_json", engine_json),
@@ -60,6 +62,7 @@ pub const TARGETS: [(&str, Check); 9] = [
     ("engine_path_mapping", engine_path_mapping),
     ("engine_regex", engine_regex),
     ("engine_secret_scan", engine_secret_scan),
+    ("engine_render", engine_render),
 ];
 
 /// The least number of seeds in each corpus directory: valid, truncated, oversized, alias bomb, deep nesting, wrong
@@ -845,10 +848,10 @@ pub fn engine_flatten(data: &[u8]) -> Result<(), String> {
 
 // --- engine_path_mapping ---
 
-/// The most pieces of an input that are asked about as files, and the most merge-rule globs it may carry (each glob is
-/// compiled twice, in the list and alone), so that an input stays quick.
+/// The most pieces of an input that are asked about as files, and the most application names it may carry, so that an input
+/// stays quick.
 const MAX_PIECES: usize = 40;
-const MAX_GLOBS: usize = 10;
+const MAX_APPS: usize = 10;
 
 pub fn engine_path_mapping(data: &[u8]) -> Result<(), String> {
     let text = String::from_utf8_lossy(data);
@@ -856,7 +859,10 @@ pub fn engine_path_mapping(data: &[u8]) -> Result<(), String> {
     let nfs_text = pieces.next().unwrap_or("");
     let tenant_text = pieces.next().unwrap_or("");
     let repo_text = pieces.next().unwrap_or("");
-    let globs: Vec<&str> = pieces.take(MAX_GLOBS).collect();
+    let app_names: Vec<AppName> = pieces
+        .take(MAX_APPS)
+        .filter_map(|n| AppName::parse(n).ok())
+        .collect();
 
     let tenant_ids: Vec<TenantId> = tenant_text
         .split_whitespace()
@@ -934,7 +940,7 @@ pub fn engine_path_mapping(data: &[u8]) -> Result<(), String> {
         }
     }
 
-    merge_rules_agree_with_single_rules(&globs, &text)
+    roles_are_coherent(&app_names, &tenants, &text)
 }
 
 /// A mapping of `nfs` back to Git must map forward to `nfs` again, under the right root.
@@ -987,54 +993,157 @@ fn forward_after_reverse(rule: &PathMappingRule, nfs: &NfsPath, tenants: &Tenant
     }
 }
 
-/// A list of merge rules gives, for any file, what the first rule that matches it gives when asked alone.
-fn merge_rules_agree_with_single_rules(globs: &[&str], text: &str) -> Result<(), String> {
-    let mode = |i: usize| {
-        if i % 2 == 0 {
-            MergeMode::SpringMerge
-        } else {
-            MergeMode::WholeFile
-        }
-    };
-    let opposite = |m: MergeMode| match m {
-        MergeMode::SpringMerge => MergeMode::WholeFile,
-        MergeMode::WholeFile => MergeMode::SpringMerge,
-    };
-    let rules: Vec<(&str, MergeMode)> = globs.iter().enumerate().map(|(i, g)| (*g, mode(i))).collect();
-    let Ok(all) = MergeRules::new(MergeMode::WholeFile, &rules) else {
-        // A refusal is fine, but it must be a refusal of a single glob or of the number, never of nothing.
-        return ensure(
-            rules.len() > MergeRules::MAX_RULES
-                || rules
-                    .iter()
-                    .any(|(g, m)| MergeRules::new(opposite(*m), &[(*g, *m)]).is_err()),
-            || "a list of rules is refused although every rule alone is fine".into(),
-        );
-    };
-    // Each rule alone, built once: it matches a file exactly when it gives its own mode against the opposite default.
-    let mut alones = Vec::with_capacity(rules.len());
-    for (glob, m) in &rules {
-        alones.push((
-            *m,
-            MergeRules::new(opposite(*m), &[(*glob, *m)]).map_err(|e| format!("a rule alone: {e}"))?,
-        ));
-    }
-    // The files to ask about: the pieces of the input that are paths.
+/// The role of a file (D82) is a function of its name: the same when asked twice, a property source only with a property
+/// extension, never fewer property sources for more tenants, and with no tenants the role of a path is the role of the
+/// logical file it names. The merge mode follows the role.
+fn roles_are_coherent(apps: &[AppName], tenants: &TenantSet, text: &str) -> Result<(), String> {
+    let none = TenantSet::default();
     for candidate in text.split('\0').take(MAX_PIECES) {
-        let Ok(file) = LogicalFile::parse(candidate) else {
+        let Ok(path) = NfsPath::parse(candidate) else {
             continue;
         };
-        ensure(all.mode_for(&file) == all.mode_for(&file), || {
-            "a rule list answers twice differently".into()
+        let role = file_role(&path, tenants, apps);
+        ensure(role == file_role(&path, tenants, apps), || {
+            "a file's role changes between two questions".into()
         })?;
-        let expected = alones
-            .iter()
-            .find(|(m, alone)| alone.mode_for(&file) == *m)
-            .map_or(MergeMode::WholeFile, |(m, _)| *m);
-        ensure(all.mode_for(&file) == expected, || {
-            "the rule list does not give what the first matching rule gives".into()
+        let bare = file_role(&path, &none, apps);
+        if let Ok(logical) = LogicalFile::from_nfs(path.clone()) {
+            ensure(bare == logical_file_role(&logical, apps), || {
+                "a path and the logical file it names have different roles".into()
+            })?;
+        }
+        ensure(
+            bare != FileRole::PropertySource || role == FileRole::PropertySource,
+            || "more tenants made a property source a resource".into(),
+        )?;
+        if role == FileRole::PropertySource {
+            let ext = path.file_name().rsplit('.').next().unwrap_or("");
+            ensure(matches!(ext, "properties" | "yml" | "yaml"), || {
+                "a property source without a property extension".into()
+            })?;
+        }
+        ensure(
+            (merge_mode(role) == MergeMode::SpringMerge) == (role == FileRole::PropertySource),
+            || "the merge mode does not follow the role".into(),
+        )?;
+    }
+    Ok(())
+}
+
+// --- engine_render ---
+
+/// The key of a plain placeholder: letters, digits and `_ . - [ ]`.
+fn plain_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-' | b'[' | b']'))
+}
+
+pub fn engine_render(data: &[u8]) -> Result<(), String> {
+    let text = String::from_utf8_lossy(data);
+    let (view_text, template) = text.split_once('\0').unwrap_or(("", &text));
+    let limits = fuzz_limits();
+
+    // The property view: whatever the first piece parses to, as the only source there is.
+    let path = NfsPath::parse("application.properties").map_err(|e| e.to_string())?;
+    let flat = parse(view_text, Syntax::Properties, &limits)
+        .ok()
+        .and_then(|parsed| flatten(&parsed, &limits).ok());
+    let settings = flat.as_ref().map_or(&[][..], |f| f.settings.as_slice());
+    let app = AppName::parse("app").map_err(|e| e.to_string())?;
+    let locations = search_locations(&app, None, std::slice::from_ref(&path), &[]);
+    let files = [PropertyFile {
+        path: &path,
+        settings,
+    }];
+    let Ok(view) = property_view(&app, None, &locations, &files, &limits) else {
+        return Ok(());
+    };
+    let empty = property_view(&app, None, &locations, &[], &limits).map_err(|e| e.to_string())?;
+
+    // The placeholders: plain keys, standing in the text, in line order.
+    let found = scan_placeholders(template);
+    ensure(found == scan_placeholders(template), || {
+        "the scan gives different answers for the same text".into()
+    })?;
+    let mut last_line = 1;
+    for p in &found {
+        ensure(plain_key(&p.key), || {
+            "a placeholder with a key that is not plain".into()
+        })?;
+        ensure(template.contains(&format!("${{{}}}", p.key)), || {
+            "a placeholder that is not in the text".into()
+        })?;
+        ensure(p.line >= last_line, || "placeholders out of line order".into())?;
+        last_line = p.line;
+    }
+
+    let rendered = render(template, &view, &limits);
+    ensure(rendered == render(template, &view, &limits), || {
+        "rendering twice gives different answers".into()
+    })?;
+    match rendered {
+        Err(ResolveError::Limit(_)) => {}
+        Err(other) => {
+            return Err(format!(
+                "render refused a text for a reason other than a limit: {other}"
+            ));
+        }
+        Ok(r) => {
+            ensure(r.text.len() <= limits.input_bytes, || {
+                "rendered text over the size limit".into()
+            })?;
+            let in_view: Vec<_> = found.iter().filter(|p| view.get(&p.key).is_some()).collect();
+            ensure(r.replaced == in_view.len(), || {
+                "the number of replacements is not the number of placeholders in the view".into()
+            })?;
+            let added: isize = in_view
+                .iter()
+                .map(|p| {
+                    let value = view.get(&p.key).map_or(0, |s| s.value.text.len());
+                    value as isize - (p.key.len() + 3) as isize
+                })
+                .sum();
+            ensure(r.text.len() as isize == template.len() as isize + added, || {
+                "the output is not the text plus what the replacements add".into()
+            })?;
+            let mut keys: Vec<&str> = found
+                .iter()
+                .filter(|p| view.get(&p.key).is_none())
+                .map(|p| p.key.as_str())
+                .collect();
+            keys.sort_unstable();
+            keys.dedup();
+            let reported: Vec<&str> = r.unresolved.iter().map(|p| p.key.as_str()).collect();
+            ensure(reported == keys, || {
+                "the unresolved keys are not the placeholders that the view lacks, once each and sorted"
+                    .into()
+            })?;
+        }
+    }
+
+    // With nothing in the view, nothing changes and every key is unresolved.
+    let none = render(template, &empty, &limits);
+    if let Ok(r) = none {
+        ensure(r.text == template && r.replaced == 0, || {
+            "an empty view changed the text".into()
         })?;
     }
+
+    // A file: no panic, and a file with nothing to replace is the very same bytes.
+    let bytes = Bytes::copy_from_slice(template.as_bytes());
+    if let Ok(file) = render_file(&bytes, FileClass::Structured, &view, &limits) {
+        if file.replaced == 0 {
+            ensure(file.bytes == bytes, || {
+                "a file with no replacement was changed".into()
+            })?;
+        }
+    }
+    let binary = render_file(&bytes, FileClass::Binary, &view, &limits).map_err(|e| e.to_string())?;
+    ensure(binary.bytes == bytes && binary.replaced == 0, || {
+        "a binary file was rendered".into()
+    })?;
     Ok(())
 }
 

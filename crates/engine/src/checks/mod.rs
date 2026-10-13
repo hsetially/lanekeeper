@@ -1,4 +1,4 @@
-//! Consistency checks C1 to C8 (T6, `docs/domain-model.md` "Consistency checks", D19, D20, D84).
+//! Consistency checks C1 to C8 (T6, `docs/domain-model.md` "Consistency checks", D19, D20, D84), and C9 to C11 (T10).
 //!
 //! A check looks at the files of one swimlane and finds a fact: a tenant copy that has fallen behind (C1), a copy that is
 //! no copy at all (C2), tenants that are not alike (C3), a file nobody reads (C4), drift (C5), a host of the wrong
@@ -6,6 +6,12 @@
 //! the finding is about, a plain sentence written here and not by an AI layer (D33), the lines to point at, and the facts
 //! behind the sentence in [`CheckDetail`]. Severity (T9), the finding id, the swimlane and the time belong to the caller,
 //! who turns a result into a `domain::Finding`.
+//!
+//! C9 to C11 belong to the config-server's resolution model (D82 to D87) and take their own inputs, because they are about the
+//! tree and the config-server and not about one logical file: C9 ([`c9_ambiguous_file_names`]) reads the swimlane's files and
+//! the channel list, C10 ([`c10_unresolved_placeholders`]) the resource files' text, the tenants' property views and the
+//! environment variable names, C11 ([`c11_config_server_restart_required`]) the folders' first-seen times, `channels.yml` and the
+//! config-server's start time.
 //!
 //! # Inputs
 //!
@@ -28,6 +34,8 @@
 //! never the text of a value (S13, S21).
 
 mod c1;
+mod c10;
+mod c11;
 mod c2;
 mod c3;
 mod c4;
@@ -35,6 +43,7 @@ mod c5;
 mod c6;
 mod c7;
 mod c8;
+mod c9;
 
 use std::collections::BTreeMap;
 
@@ -52,6 +61,11 @@ pub use self::c5::c5_drift;
 pub use self::c6::{HostMatcher, HostRule, HostRules, c6_environment_host_mismatch};
 pub use self::c7::c7_overwritten_nfs_change;
 pub use self::c8::c8_duplicate_keys;
+pub use self::c9::c9_ambiguous_file_names;
+pub use self::c10::{EnvNames, PlaceholderFile, TenantView, UnresolvedKey, c10_unresolved_placeholders};
+pub use self::c11::{
+    ChannelsYml, ConfigServerFacts, FolderSeen, RestartReason, c11_config_server_restart_required,
+};
 use crate::bytes::decode_text;
 use crate::drift::Drift;
 use crate::limits::Limits;
@@ -262,6 +276,29 @@ pub enum CheckDetail {
         total: usize,
         /// The parser dropped warnings (too many): there may be more keys than listed.
         more_not_listed: bool,
+    },
+    /// C9: one name, the folders it is in (the root is the empty path), sorted, at most `Limits::locations_per_finding`.
+    AmbiguousFileName {
+        name: String,
+        folders: Vec<NfsPath>,
+        /// Every folder, listed or not.
+        total: usize,
+    },
+    /// C10: the keys no view and no environment variable fills, sorted by key, at most `Limits::locations_per_finding`.
+    UnresolvedPlaceholders {
+        keys: Vec<UnresolvedKey>,
+        /// Every such key, listed or not.
+        total: usize,
+    },
+    /// C11.
+    ConfigServerRestart {
+        reason: RestartReason,
+        /// The folders behind the reason, sorted, at most `Limits::locations_per_finding`.
+        folders: Vec<NfsPath>,
+        /// The channels behind the reason, sorted.
+        channels: Vec<domain::ChannelName>,
+        /// Every folder or channel behind the reason, listed or not.
+        total: usize,
     },
 }
 

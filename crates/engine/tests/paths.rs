@@ -2,7 +2,7 @@
 //! path as a base file, a tenant file or an untracked file.
 //!
 //! The mapping itself is `domain::PathMappingRule`; these tests pin what the engine builds on it: `map_path`,
-//! `reverse_map`, `classify_path`, and the interim `MergeRules`.
+//! `reverse_map` and `classify_path`. (Which merge mode a file has follows from its role, D82: `tests/resolution.rs`.)
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -10,10 +10,9 @@
 )]
 
 use domain::{
-    FileKind, LogicalFile, MapError, MergeMode, NfsPath, PathMappingRule, RepoPath, ReverseMapping, TenantId,
-    TenantSet,
+    FileKind, LogicalFile, MapError, NfsPath, PathMappingRule, RepoPath, ReverseMapping, TenantId, TenantSet,
 };
-use engine::{FileFacts, MergeRules, MergeRulesError, RepoSource, classify_path, map_path, reverse_map};
+use engine::{FileFacts, RepoSource, classify_path, map_path, reverse_map};
 use proptest::prelude::*;
 
 fn nfs(s: &str) -> NfsPath {
@@ -373,75 +372,5 @@ proptest! {
             ReverseMapping::Tenant { tenant, repo_path, .. } => map_path(&rule, &RepoSource::Tenant(tenant), &repo_path),
         };
         prop_assert_eq!(back.unwrap(), path);
-    }
-}
-
-// --- MergeRules (interim, deleted by T10) ---
-
-fn logical(s: &str) -> LogicalFile {
-    LogicalFile::parse(s).unwrap()
-}
-
-#[test]
-fn merge_rules_default_to_whole_file_and_the_first_matching_rule_wins() {
-    let rules = MergeRules::default();
-    assert_eq!(rules.mode_for(&logical("a/b.yml")), MergeMode::WholeFile);
-
-    let rules = MergeRules::new(
-        MergeMode::WholeFile,
-        &[
-            ("**/special/*.yml", MergeMode::WholeFile),
-            ("**/*.yml", MergeMode::SpringMerge),
-            ("application*.properties", MergeMode::SpringMerge),
-        ],
-    )
-    .unwrap();
-    assert_eq!(rules.mode_for(&logical("svc/x.yml")), MergeMode::SpringMerge);
-    // The earlier rule wins over the later one that also matches.
-    assert_eq!(
-        rules.mode_for(&logical("svc/special/x.yml")),
-        MergeMode::WholeFile
-    );
-    // No rule: the default.
-    assert_eq!(rules.mode_for(&logical("svc/x.xsl")), MergeMode::WholeFile);
-    assert_eq!(
-        rules.mode_for(&logical("application.properties")),
-        MergeMode::SpringMerge
-    );
-    // Case matters in file names.
-    assert_eq!(rules.mode_for(&logical("svc/X.YML")), MergeMode::WholeFile);
-    // A different default.
-    let rules = MergeRules::new(MergeMode::SpringMerge, &[("*.xsl", MergeMode::WholeFile)]).unwrap();
-    assert_eq!(rules.mode_for(&logical("a.xsl")), MergeMode::WholeFile);
-    assert_eq!(rules.mode_for(&logical("a.yml")), MergeMode::SpringMerge);
-}
-
-#[test]
-fn merge_rules_refuse_too_many_too_long_and_invalid_globs() {
-    let many: Vec<(&str, MergeMode)> = (0..=MergeRules::MAX_RULES)
-        .map(|_| ("*.yml", MergeMode::WholeFile))
-        .collect();
-    assert_eq!(
-        MergeRules::new(MergeMode::WholeFile, &many).unwrap_err(),
-        MergeRulesError::TooManyRules
-    );
-    let exactly: Vec<(&str, MergeMode)> = (0..MergeRules::MAX_RULES)
-        .map(|_| ("*.yml", MergeMode::WholeFile))
-        .collect();
-    assert!(MergeRules::new(MergeMode::WholeFile, &exactly).is_ok());
-
-    let long = "a".repeat(MergeRules::MAX_GLOB_BYTES + 1);
-    assert_eq!(
-        MergeRules::new(MergeMode::WholeFile, &[(long.as_str(), MergeMode::WholeFile)]).unwrap_err(),
-        MergeRulesError::GlobTooLong
-    );
-    let at_limit = "a".repeat(MergeRules::MAX_GLOB_BYTES);
-    assert!(MergeRules::new(MergeMode::WholeFile, &[(at_limit.as_str(), MergeMode::WholeFile)]).is_ok());
-
-    for bad in ["[", "a{b", "**a/**b/[x"] {
-        let err = MergeRules::new(MergeMode::WholeFile, &[(bad, MergeMode::WholeFile)]).unwrap_err();
-        assert_eq!(err, MergeRulesError::InvalidGlob, "{bad}");
-        // The error never repeats the glob.
-        assert!(!format!("{err} {err:?}").contains(bad));
     }
 }
