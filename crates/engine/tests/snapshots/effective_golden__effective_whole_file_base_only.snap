@@ -1,0 +1,17 @@
+---
+source: crates/engine/tests/effective_golden.rs
+expression: dump(&only_base)
+---
+mode WholeFile
+hash 8551e53dc704b23516c90c682267a640c786e23c060ab98975f95bb48791ce08
+source #1 svc/app.yml 8551e53dc704b23516c90c682267a640c786e23c060ab98975f95bb48791ce08
+list[0] = "1" Int <- #1 svc/app.yml L5-5
+list[1] = "2" Int <- #1 svc/app.yml L6-6
+list[2] = "3" Int <- #1 svc/app.yml L7-7
+mapish.k = "v" String <- #1 svc/app.yml L13-13
+only_base = "yes" String <- #1 svc/app.yml L14-14
+scalar = "1" Int <- #1 svc/app.yml L11-11
+server.host = "base.example" String <- #1 svc/app.yml L3-3
+server.port = "8080" Int <- #1 svc/app.yml L2-2
+users[0].name = "x" String <- #1 svc/app.yml L9-9
+users[0].role = "y" String <- #1 svc/app.yml L10-10

@@ -18,16 +18,22 @@
 )]
 
 mod bytes;
+mod effective;
 mod error;
 mod index;
 mod limits;
 mod parse;
+mod paths;
+mod tree_hash;
 
 pub use self::bytes::{
     DEFAULT_DENY_GLOBS, Decoded, DenyMatcher, Newline, apply_eol, classify, decode_text, detect_format,
     dominant_eol, encode_text, normalise_eol,
 };
-pub use self::error::{DecodeError, DenyError, EncodeError, LimitKind, ParseError};
+pub use self::effective::{Effective, EffectiveValue, Layer, Layers, Origin, Source, effective};
+pub use self::error::{
+    DecodeError, DenyError, EncodeError, LimitKind, MergeRulesError, ParseError, TreeHashError,
+};
 pub use self::index::{LocationSource, SettingRow, SettingsIndex, index_settings, locate};
 pub use self::limits::Limits;
 pub use self::parse::{
@@ -35,3 +41,5 @@ pub use self::parse::{
     PathSegment, Position, PropertyEntry, Scalar, ScalarStyle, ScalarTag, Syntax, Validation,
     decode_setting_path, encode_setting_path, flatten, parse, validate,
 };
+pub use self::paths::{FileFacts, MergeRules, RepoSource, classify_path, map_path, reverse_map};
+pub use self::tree_hash::{TreeHashes, effective_tree_hash, normalised_hash, swimlane_hash};

@@ -56,6 +56,7 @@ fn corpus_replay_all_engine_targets() {
     replay("engine_properties", invariants::engine_properties);
     replay("engine_flatten", invariants::engine_flatten);
     replay("engine_index_settings", invariants::engine_index_settings);
+    replay("engine_path_mapping", invariants::engine_path_mapping);
 }
 
 #[test]
@@ -250,4 +251,99 @@ fn the_index_seeds_are_refused_or_indexed_as_named() {
         assert!(!index.rows.is_empty(), "{name}");
         assert_eq!(index.located_by, LocationSource::Parser, "{name}");
     }
+}
+
+/// The path-mapping seeds are not blind either: each is refused, mapped or read as the name says, so a seed cannot go on
+/// passing after the code it was written for has changed.
+#[test]
+fn the_path_mapping_seeds_reach_what_they_are_named_for() {
+    use domain::{MergeMode, NfsPath, PathMappingRule, RepoPath, ReverseMapping, TenantId, TenantSet};
+    use engine::{MergeRules, MergeRulesError, reverse_map};
+
+    fn rules(list: &[String]) -> Vec<(&str, MergeMode)> {
+        list.iter()
+            .map(|g| (g.as_str(), MergeMode::SpringMerge))
+            .collect()
+    }
+
+    let pieces = |name: &str| -> Vec<String> {
+        String::from_utf8_lossy(&seed("engine_path_mapping", name))
+            .split('\0')
+            .map(str::to_owned)
+            .collect()
+    };
+    let rule = PathMappingRule::default();
+    let tenants =
+        |text: &str| TenantSet::new(text.split_whitespace().filter_map(|t| TenantId::parse(t).ok())).unwrap();
+    let read = |name: &str| {
+        let p = pieces(name);
+        let nfs = NfsPath::parse(&p[0]).unwrap_or_else(|e| panic!("{name}: {e}"));
+        reverse_map(&rule, &nfs, &tenants(&p[1]))
+    };
+
+    // Read as a tenant file, with the name the seed is named for.
+    for name in [
+        "valid_tenant_file",
+        "hyphenated_names",
+        "extensionless_suffix",
+        "multi_dot_name",
+        "dotfile_name",
+        "longest_tenant_wins",
+    ] {
+        assert!(
+            matches!(read(name), Ok(ReverseMapping::Tenant { .. })),
+            "{name} is not read as a tenant file"
+        );
+    }
+    // Read as a base file: no suffix, an unknown suffix, or nothing before the suffix.
+    for name in [
+        "valid_base_file",
+        "orphan_unknown_suffix",
+        "suffix_with_nothing_before",
+    ] {
+        assert!(
+            matches!(read(name), Ok(ReverseMapping::Base { .. })),
+            "{name} is not read as a base file"
+        );
+    }
+    // Refused before the mapping: not a plain relative path, or a `.git` component.
+    for name in ["traversal", "absolute_and_backslash", "empty", "oversized_path"] {
+        assert!(
+            NfsPath::parse(&pieces(name)[0]).is_err(),
+            "{name}: the NFS path should be refused"
+        );
+    }
+    assert!(read("git_metadata").is_err());
+    for name in [
+        "traversal",
+        "git_metadata",
+        "root_only_repo_path",
+        "repo_path_outside_root",
+    ] {
+        let repo = &pieces(name)[2];
+        let mapped = RepoPath::parse(repo)
+            .ok()
+            .and_then(|r| engine::map_path(&rule, &engine::RepoSource::Base, &r).ok());
+        assert!(
+            mapped.is_none(),
+            "{name}: the repository path should not map to a base file"
+        );
+    }
+    // More tenants than a swimlane can have.
+    let many = &pieces("many_tenants")[1];
+    assert!(TenantSet::new(many.split_whitespace().filter_map(|t| TenantId::parse(t).ok())).is_err());
+    // Rule lists that are refused, and why.
+    let globs = |name: &str| pieces(name)[3..].to_vec();
+    let bad = globs("bad_globs");
+    assert_eq!(
+        MergeRules::new(MergeMode::WholeFile, &rules(&bad)).unwrap_err(),
+        MergeRulesError::InvalidGlob
+    );
+    let long = globs("long_glob");
+    assert_eq!(
+        MergeRules::new(MergeMode::WholeFile, &rules(&long)).unwrap_err(),
+        MergeRulesError::GlobTooLong
+    );
+    let good = globs("glob_depth");
+    assert!(MergeRules::new(MergeMode::WholeFile, &rules(&good)).is_ok());
 }

@@ -1,0 +1,16 @@
+---
+source: crates/engine/tests/effective_golden.rs
+expression: dump(&merged)
+---
+mode SpringMerge
+hash b78ec601e98e37c91a92c8c6d8a2aa24c97eae6db69fc2da2a29eeb379bc7960
+source #1 svc/app-sit1.yml 8258572ec3098d01d63e5e511b609f8719381cd8ebde1f534d7352c2fff64d06
+source #2 svc/app.yml 8551e53dc704b23516c90c682267a640c786e23c060ab98975f95bb48791ce08
+list[0] = "9" Int <- #1 svc/app-sit1.yml L4-4
+mapish = "flat" String <- #1 svc/app-sit1.yml L9-9
+only_base = "yes" String <- #2 svc/app.yml L14-14
+only_tenant = "true" Bool <- #1 svc/app-sit1.yml L10-10
+scalar.now = "a-map" String <- #1 svc/app-sit1.yml L8-8
+server.host = "base.example" String <- #2 svc/app.yml L3-3
+server.port = "9090" Int <- #1 svc/app-sit1.yml L2-2
+users[0].name = "z" String <- #1 svc/app-sit1.yml L6-6

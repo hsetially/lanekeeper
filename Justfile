@@ -348,7 +348,7 @@ engine-real-snapshot:
 # S22: the engine's own fuzz crate (plan decision A2; `fuzz-smoke` does not run it). Its lockfile is complete and passes cargo
 # deny and cargo audit (S19), then each target runs {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in
 # crates/engine/fuzz/artifacts/. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart.
-engine_fuzz_targets := "engine_bytes engine_yaml engine_json engine_properties engine_flatten engine_index_settings"
+engine_fuzz_targets := "engine_bytes engine_yaml engine_json engine_properties engine_flatten engine_index_settings engine_path_mapping"
 engine-fuzz: fuzz-tools-check
     #!/usr/bin/env bash
     set -euo pipefail

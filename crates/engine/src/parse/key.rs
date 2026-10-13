@@ -14,8 +14,9 @@
 
 use domain::SettingPath;
 
-/// One step of a setting path.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One step of a setting path. Ordered (keys before indexes, then by value) so that the settings below a path are
+/// contiguous in a sorted map, which the merge of `effective` relies on.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PathSegment {
     /// A key of a mapping.
     Key(String),

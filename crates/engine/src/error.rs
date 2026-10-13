@@ -43,6 +43,29 @@ pub enum DenyError {
     InvalidGlob,
 }
 
+/// Why a list of merge rules was refused (interim: T10 deletes `MergeRules`, and this with it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum MergeRulesError {
+    /// More rules than `MergeRules::MAX_RULES`.
+    #[error("too many merge rules")]
+    TooManyRules,
+    /// A glob longer than `MergeRules::MAX_GLOB_BYTES`.
+    #[error("a merge rule glob is too long")]
+    GlobTooLong,
+    /// A glob is not valid, or the list is too complex to compile.
+    #[error("a merge rule glob could not be compiled")]
+    InvalidGlob,
+}
+
+/// Why `effective_tree_hash` refused its input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum TreeHashError {
+    /// The same logical file twice, or a path that is a file in one entry and a directory in another. A tree has one
+    /// answer for a path, so the input is wrong, not the tree.
+    #[error("the files do not form a tree: a path appears twice, or as both a file and a directory")]
+    Inconsistent,
+}
+
 /// Which of the engine's size limits was met (`Limits`). Naming it is all an error does: the input stays out of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LimitKind {

@@ -17,6 +17,7 @@
 //! | `engine_json` | text | the same for JSON |
 //! | `engine_properties` | text | the same for `.properties` (a path is the key as written) |
 //! | `engine_index_settings` | a selector byte (YAML, JSON or `.properties`), then any bytes | `index_settings` and `locate` never panic and give the same answer twice; the index is there exactly when `validate` accepts the bytes, with the same settings; every range is inside the text; a YAML file is located by tree-sitter or says that it could not be, and every disagreement names a setting of the file |
+//! | `engine_path_mapping` | NUL-separated pieces: an NFS path, tenant ids, a repository path, then merge-rule globs | `reverse_map`, `classify_path`, `map_path` and `MergeRules` never panic; a path that reads back to Git maps forward to the very same NFS path, under the root of its repository; a repository path maps to an NFS path that reads back to the same tenant file; the kind and the tenant of `classify_path` agree with the mapping; a merge rule list gives the same mode as asking each rule alone, first match first |
 //! | `engine_flatten` | NUL-separated pieces | a path built from any keys and indexes is read back to the same keys and indexes; any text offered as a setting path is refused or read to something that writes and reads back the same |
 
 #![allow(
@@ -30,24 +31,29 @@
 use std::collections::BTreeSet;
 
 use bytes::Bytes;
-use domain::{NfsPath, SettingPath, ValueFlag, ValueType};
+use domain::{
+    FileKind, LogicalFile, MergeMode, NfsPath, PathMappingRule, RepoPath, ReverseMapping, SettingPath,
+    TenantId, TenantSet, ValueFlag, ValueType,
+};
 use engine::{
-    Body, DenyMatcher, Flat, Limits, LocationSource, Newline, NodeKind, ParseError, ParseWarning, Parsed,
-    PathSegment, Syntax, apply_eol, classify, decode_setting_path, decode_text, detect_format,
-    encode_setting_path, encode_text, flatten, index_settings, locate, normalise_eol, parse, validate,
+    Body, DenyMatcher, Flat, Limits, LocationSource, MergeRules, Newline, NodeKind, ParseError, ParseWarning,
+    Parsed, PathSegment, RepoSource, Syntax, apply_eol, classify, classify_path, decode_setting_path,
+    decode_text, detect_format, encode_setting_path, encode_text, flatten, index_settings, locate, map_path,
+    normalise_eol, parse, reverse_map, validate,
 };
 
 /// A check over one fuzz input.
 pub type Check = fn(&[u8]) -> Result<(), String>;
 
 /// Every fuzz target: its name (also the file name in `fuzz_targets` and the corpus directory) and its check.
-pub const TARGETS: [(&str, Check); 6] = [
+pub const TARGETS: [(&str, Check); 7] = [
     ("engine_bytes", engine_bytes),
     ("engine_yaml", engine_yaml),
     ("engine_json", engine_json),
     ("engine_properties", engine_properties),
     ("engine_flatten", engine_flatten),
     ("engine_index_settings", engine_index_settings),
+    ("engine_path_mapping", engine_path_mapping),
 ];
 
 /// The least number of seeds in each corpus directory: valid, truncated, oversized, alias bomb, deep nesting, wrong
@@ -466,6 +472,201 @@ pub fn engine_flatten(data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+// --- engine_path_mapping ---
+
+/// The most pieces of an input that are asked about as files, and the most merge-rule globs it may carry (each glob is
+/// compiled twice, in the list and alone), so that an input stays quick.
+const MAX_PIECES: usize = 40;
+const MAX_GLOBS: usize = 10;
+
+pub fn engine_path_mapping(data: &[u8]) -> Result<(), String> {
+    let text = String::from_utf8_lossy(data);
+    let mut pieces = text.split('\0');
+    let nfs_text = pieces.next().unwrap_or("");
+    let tenant_text = pieces.next().unwrap_or("");
+    let repo_text = pieces.next().unwrap_or("");
+    let globs: Vec<&str> = pieces.take(MAX_GLOBS).collect();
+
+    let tenant_ids: Vec<TenantId> = tenant_text
+        .split_whitespace()
+        .take(TenantSet::MAX_TENANTS + 2)
+        .filter_map(|t| TenantId::parse(t).ok())
+        .collect();
+    // More than the most a swimlane can have is refused, as it is everywhere.
+    let tenants = TenantSet::new(tenant_ids.iter().cloned()).unwrap_or_default();
+    let rule = PathMappingRule::default();
+
+    if let Ok(nfs) = NfsPath::parse(nfs_text) {
+        let first = reverse_map(&rule, &nfs, &tenants);
+        ensure(first == reverse_map(&rule, &nfs, &tenants), || {
+            "reading a path back to Git twice gives different answers".into()
+        })?;
+        // A name that is not a valid repository path (`.git`) is refused, and that is all there is to check.
+        if let Ok(mapping) = first {
+            check_reverse(&rule, &nfs, &mapping)?;
+            for in_git in [true, false] {
+                let facts = classify_path(&rule, &nfs, &tenants, |m| {
+                    // The closure is asked about exactly what the name was read as.
+                    in_git && *m == mapping
+                })
+                .map_err(|e| format!("classify_path refused what reverse_map accepted: {e}"))?;
+                let (expected_kind, tenant, logical) = match &mapping {
+                    ReverseMapping::Base { logical, .. } => (FileKind::Base, None, logical.clone()),
+                    ReverseMapping::Tenant { tenant, logical, .. } => {
+                        (FileKind::Tenant, Some(tenant.clone()), logical.clone())
+                    }
+                };
+                ensure(
+                    facts.kind
+                        == if in_git {
+                            expected_kind
+                        } else {
+                            FileKind::Untracked
+                        },
+                    || format!("classify_path says {:?} (in git: {in_git})", facts.kind),
+                )?;
+                ensure(facts.tenant == tenant && facts.logical == logical, || {
+                    "classify_path disagrees with the mapping on the tenant or the logical file".into()
+                })?;
+            }
+        }
+    }
+
+    // The other way: a repository path to the NFS tree, and back.
+    if let Ok(repo) = RepoPath::parse(repo_text) {
+        if let Ok(nfs) = map_path(&rule, &RepoSource::Base, &repo) {
+            ensure(
+                repo.as_str().strip_prefix("config/") == Some(nfs.as_str()),
+                || "a base file is not its repository path without the root".into(),
+            )?;
+            forward_after_reverse(&rule, &nfs, &tenants)?;
+        }
+        for tenant in tenant_ids.iter().take(4) {
+            let Ok(nfs) = map_path(&rule, &RepoSource::Tenant(tenant.clone()), &repo) else {
+                continue;
+            };
+            forward_after_reverse(&rule, &nfs, &tenants)?;
+            // Alone in its swimlane, the tenant's own file reads back to the same branch and the same path.
+            let alone = TenantSet::new([tenant.clone()]).map_err(|e| e.to_string())?;
+            match reverse_map(&rule, &nfs, &alone) {
+                Ok(ReverseMapping::Tenant {
+                    tenant: back,
+                    repo_path,
+                    ..
+                }) => ensure(back == *tenant && repo_path == repo, || {
+                    "a tenant file does not read back to its branch and path".into()
+                })?,
+                // `-<tenant>` right after nothing (`-sit1.yml`) is a base name, and the mapping says so.
+                Ok(ReverseMapping::Base { .. }) => {}
+                Err(e) => return Err(format!("a mapped tenant file cannot be read back: {e}")),
+            }
+        }
+    }
+
+    merge_rules_agree_with_single_rules(&globs, &text)
+}
+
+/// A mapping of `nfs` back to Git must map forward to `nfs` again, under the right root.
+fn check_reverse(rule: &PathMappingRule, nfs: &NfsPath, mapping: &ReverseMapping) -> Result<(), String> {
+    let (forward, root, logical) = match mapping {
+        ReverseMapping::Base { repo_path, logical } => {
+            (map_path(rule, &RepoSource::Base, repo_path), "config/", logical)
+        }
+        ReverseMapping::Tenant {
+            tenant,
+            repo_path,
+            logical,
+        } => (
+            map_path(rule, &RepoSource::Tenant(tenant.clone()), repo_path),
+            "data/config/",
+            logical,
+        ),
+    };
+    let repo_path = match mapping {
+        ReverseMapping::Base { repo_path, .. } | ReverseMapping::Tenant { repo_path, .. } => repo_path,
+    };
+    ensure(repo_path.as_str().starts_with(root), || {
+        format!("a repository path outside {root}")
+    })?;
+    ensure(
+        !repo_path
+            .as_str()
+            .split('/')
+            .any(|c| matches!(c, "" | "." | ".." | ".git")),
+        || "a repository path with a component that must never be there".into(),
+    )?;
+    ensure(forward.as_ref() == Ok(nfs), || {
+        "a path read back to Git does not map forward to itself".into()
+    })?;
+    ensure(
+        !logical.as_str().is_empty() && logical.as_str().len() <= nfs.as_str().len(),
+        || "a logical file longer than the path it comes from".into(),
+    )?;
+    ensure(
+        LogicalFile::parse(logical.as_str()).as_ref() == Ok(logical),
+        || "a logical file that does not parse as itself".into(),
+    )
+}
+
+fn forward_after_reverse(rule: &PathMappingRule, nfs: &NfsPath, tenants: &TenantSet) -> Result<(), String> {
+    match reverse_map(rule, nfs, tenants) {
+        Ok(mapping) => check_reverse(rule, nfs, &mapping),
+        // Only a name that would be a `.git` component is refused.
+        Err(_) => Ok(()),
+    }
+}
+
+/// A list of merge rules gives, for any file, what the first rule that matches it gives when asked alone.
+fn merge_rules_agree_with_single_rules(globs: &[&str], text: &str) -> Result<(), String> {
+    let mode = |i: usize| {
+        if i % 2 == 0 {
+            MergeMode::SpringMerge
+        } else {
+            MergeMode::WholeFile
+        }
+    };
+    let opposite = |m: MergeMode| match m {
+        MergeMode::SpringMerge => MergeMode::WholeFile,
+        MergeMode::WholeFile => MergeMode::SpringMerge,
+    };
+    let rules: Vec<(&str, MergeMode)> = globs.iter().enumerate().map(|(i, g)| (*g, mode(i))).collect();
+    let Ok(all) = MergeRules::new(MergeMode::WholeFile, &rules) else {
+        // A refusal is fine, but it must be a refusal of a single glob or of the number, never of nothing.
+        return ensure(
+            rules.len() > MergeRules::MAX_RULES
+                || rules
+                    .iter()
+                    .any(|(g, m)| MergeRules::new(opposite(*m), &[(*g, *m)]).is_err()),
+            || "a list of rules is refused although every rule alone is fine".into(),
+        );
+    };
+    // Each rule alone, built once: it matches a file exactly when it gives its own mode against the opposite default.
+    let mut alones = Vec::with_capacity(rules.len());
+    for (glob, m) in &rules {
+        alones.push((
+            *m,
+            MergeRules::new(opposite(*m), &[(*glob, *m)]).map_err(|e| format!("a rule alone: {e}"))?,
+        ));
+    }
+    // The files to ask about: the pieces of the input that are paths.
+    for candidate in text.split('\0').take(MAX_PIECES) {
+        let Ok(file) = LogicalFile::parse(candidate) else {
+            continue;
+        };
+        ensure(all.mode_for(&file) == all.mode_for(&file), || {
+            "a rule list answers twice differently".into()
+        })?;
+        let expected = alones
+            .iter()
+            .find(|(m, alone)| alone.mode_for(&file) == *m)
+            .map_or(MergeMode::WholeFile, |(m, _)| *m);
+        ensure(all.mode_for(&file) == expected, || {
+            "the rule list does not give what the first matching rule gives".into()
+        })?;
+    }
+    Ok(())
+}
+
 // --- the checks catch what they exist to catch ---
 
 /// The replay is not blind: a result that breaks a rule is reported. Used by `tests/corpus_replay.rs`.
@@ -492,6 +693,25 @@ pub fn planted_harm_is_detected() -> Result<(), String> {
     ensure(check_flat(&bad_path, Syntax::Yaml, 2, &limits).is_err(), || {
         "a path that cannot be read back was not reported".into()
     })?;
+
+    // A reverse mapping that does not map forward to its own path is reported.
+    let nfs = NfsPath::parse("a/b-sit1.yml").map_err(|e| e.to_string())?;
+    let rule = PathMappingRule::default();
+    let set =
+        TenantSet::new([TenantId::parse("sit1").map_err(|e| e.to_string())?]).map_err(|e| e.to_string())?;
+    let honest = reverse_map(&rule, &nfs, &set).map_err(|e| e.to_string())?;
+    check_reverse(&rule, &nfs, &honest)?;
+    let lying = ReverseMapping::Base {
+        repo_path: RepoPath::parse("config/a/other.yml").map_err(|e| e.to_string())?,
+        logical: LogicalFile::parse("a/other.yml").map_err(|e| e.to_string())?,
+    };
+    ensure(check_reverse(&rule, &nfs, &lying).is_err(), || {
+        "a mapping that does not lead back was not reported".into()
+    })?;
+    ensure(
+        engine_path_mapping(b"a/b-sit1.yml\0sit1\0data/config/a/b.yml\0*.yml").is_ok(),
+        || "a clean path mapping input was reported".into(),
+    )?;
 
     ensure(engine_flatten(b"fine\0@1").is_ok(), || {
         "a clean input was reported".into()

@@ -1174,6 +1174,7 @@ dependencies = [
  "json-event-parser",
  "proptest",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "tree-sitter",

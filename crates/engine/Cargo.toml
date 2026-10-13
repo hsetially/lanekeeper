@@ -16,6 +16,8 @@ bytes.workspace = true
 # The D79 deny globs (T1) and every later glob rule (T4). Matching is linear in the path.
 globset.workspace = true
 thiserror.workspace = true
+# Content and tree hashes (T4): SHA-256, the identity of a blob everywhere else in the system. Already pinned in the workspace.
+sha2.workspace = true
 # The YAML and JSON event parsers (T2, D90). Both keep every position the engine reports, and neither builds a tree.
 granit-parser.workspace = true
 json-event-parser.workspace = true

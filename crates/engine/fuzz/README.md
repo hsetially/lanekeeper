@@ -9,9 +9,10 @@ The engine's own cargo-fuzz crate (plan decision A2). The root `fuzz/` crate bel
 | `engine_json` | text | the same for JSON |
 | `engine_properties` | text | the same for `.properties` |
 | `engine_index_settings` | a selector byte (YAML, JSON or `.properties`), then any bytes | `index_settings` and `locate` never panic and give the same answer twice; the index is there exactly when `validate` accepts the bytes, with the same settings; every range is inside the text; a YAML file is located by tree-sitter or says that it could not be, and every disagreement names a setting of the file. Agreement itself is not an invariant here (the grammars differ on odd input, and the row then keeps the parser's range with a warning); it is checked on the fixtures and on random documents in `tests/locations.rs` |
+| `engine_path_mapping` | NUL-separated pieces: an NFS path, tenant ids, a repository path, then merge-rule globs | `reverse_map`, `classify_path`, `map_path` and `MergeRules` never panic; a path that reads back to Git maps forward to the very same NFS path, under the right root and with no `..`, `.` or `.git` component; a repository path maps to an NFS path that reads back to the same tenant file; the kind and tenant `classify_path` reports agree with the mapping; a rule list gives what the first rule that matches gives when asked alone |
 | `engine_flatten` | NUL-separated pieces | a path built from any keys and indexes is read back to the same keys and indexes; any text offered as a setting path is refused, or read to something that writes and reads back the same |
 
-The invariants are in `invariants.rs`. Both the fuzz targets and the stable test `crates/engine/tests/corpus_replay.rs` include that file, so `cargo test -p engine` (and so `just verify`) replays every seed in `corpus/` with the same checks. Later tasks add `engine_path_mapping` (T4), `engine_regex` and `engine_secret_scan` (T7), and `engine_render` (T10).
+The invariants are in `invariants.rs`. Both the fuzz targets and the stable test `crates/engine/tests/corpus_replay.rs` include that file, so `cargo test -p engine` (and so `just verify`) replays every seed in `corpus/` with the same checks. Later tasks add `engine_regex` and `engine_secret_scan` (T7), and `engine_render` (T10).
 
 ## Seeds
 
