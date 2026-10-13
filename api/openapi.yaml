@@ -1760,7 +1760,7 @@ paths:
           type: array
           items:
             $ref: '#/components/schemas/EventKind'
-          maxItems: 15
+          maxItems: 16
           uniqueItems: true
         description: Only these kinds; all when absent.
         style: form
@@ -1839,7 +1839,7 @@ paths:
   /api/v1/findings:
     get:
       operationId: listFindings
-      summary: List findings (checks C1 to C11)
+      summary: List findings (checks C1 to C12)
       tags:
       - findings
       x-required-role: viewer
@@ -1856,7 +1856,7 @@ paths:
           type: array
           items:
             $ref: '#/components/schemas/FindingKind'
-          maxItems: 11
+          maxItems: 12
           uniqueItems: true
         style: form
         explode: false
@@ -3509,6 +3509,8 @@ components:
       - ambiguous_file_name
       - unresolved_placeholder
       - config_server_restart_required
+      - served_mismatch
+      description: Checks C1 to C11, in order, then C12, the "as served" mismatch of D86.
     FileRole:
       type: string
       enum:
@@ -3596,6 +3598,7 @@ components:
       - pr_job_progress
       - sync_window_opened
       - sync_window_closed
+      - pickup_changed
     ValueType:
       type: string
       enum:

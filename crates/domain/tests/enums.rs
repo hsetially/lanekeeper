@@ -89,15 +89,21 @@ fn as_str_from_str_and_serde_agree() {
 }
 
 #[test]
-fn finding_kinds_cover_c1_to_c11_with_stable_codes() {
+fn finding_kinds_cover_c1_to_c12_with_stable_codes() {
     let codes: Vec<_> = FindingKind::ALL.iter().map(|k| k.code()).collect();
     assert_eq!(
         codes,
-        ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11"]
+        [
+            "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12"
+        ]
     );
     assert_eq!(FindingKind::MissedBaseChanges.code(), "C1");
     assert_eq!(FindingKind::DuplicateKeys.code(), "C8");
     assert_eq!(FindingKind::ConfigServerRestartRequired.code(), "C11");
+    // D86: "as served" differs from the engine's rendering. Appended, so the codes C1 to C11 did not move.
+    assert_eq!(FindingKind::ServedMismatch.code(), "C12");
+    assert_eq!(FindingKind::ServedMismatch.as_str(), "served_mismatch");
+    assert_eq!(FindingKind::ALL.last(), Some(&FindingKind::ServedMismatch));
 }
 
 #[test]

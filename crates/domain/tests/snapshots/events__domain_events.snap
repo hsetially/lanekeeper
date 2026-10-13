@@ -94,5 +94,15 @@ expression: all_events()
   {
     "type": "user_sessions_revoked",
     "user": "72f988bf-86f1-41af-91ab-2d7cd011db47:0b6c3e0e-5a1d-4a52-8f55-3f9d6f0a7f11"
+  },
+  {
+    "type": "pickup_changed",
+    "swimlane": "sitb",
+    "services": [
+      {
+        "namespace": "csp",
+        "name": "tx-infinity-api"
+      }
+    ]
   }
 ]

@@ -685,6 +685,7 @@ fn schemas_carry_the_required_fields() {
             "pr_job_progress",
             "sync_window_opened",
             "sync_window_closed",
+            "pickup_changed",
         ])
     );
 }
@@ -749,5 +750,35 @@ fn internal_events_are_not_in_the_sse_event_kinds() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert!(!kinds.contains(&"user_sessions_revoked"));
-    assert_eq!(kinds.len(), 15);
+    assert_eq!(kinds.len(), 16);
+}
+
+/// A client can name every kind: the `kinds` filters of the event stream and of the findings list are bounded by the number of
+/// kinds they filter on (S11, `uniqueItems`), so a new kind raises the bound with it.
+#[test]
+fn kind_filters_allow_every_kind() {
+    let d = doc();
+    for (path, schema) in [
+        ("/api/v1/events", "EventKind"),
+        ("/api/v1/findings", "FindingKind"),
+    ] {
+        let kinds = u64::try_from(
+            d["components"]["schemas"][schema]["enum"]
+                .as_array()
+                .unwrap()
+                .len(),
+        )
+        .unwrap();
+        let params = d["paths"][path]["get"]["parameters"].as_array().unwrap();
+        let filter = params
+            .iter()
+            .find(|p| p["name"] == "kinds")
+            .unwrap_or_else(|| panic!("{path} has no kinds filter"));
+        assert_eq!(
+            filter["schema"]["maxItems"].as_u64().unwrap(),
+            kinds,
+            "{path}: maxItems is the number of {schema} values"
+        );
+        assert_eq!(filter["schema"]["uniqueItems"], true, "{path}");
+    }
 }

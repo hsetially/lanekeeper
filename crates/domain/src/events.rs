@@ -1,7 +1,8 @@
 //! Events published on the `EventBus` and delivered to SSE subscribers (`docs/interfaces.md`).
 //!
-//! The first ten variants are the base set; then come the five D72-D80 additions and the internal
-//! `UserSessionsRevoked` (see [`DomainEvent::is_internal`]).
+//! The first ten variants are the base set; then come the five D72-D80 additions, the internal
+//! `UserSessionsRevoked` (see [`DomainEvent::is_internal`]) and `PickupChanged` (D85), which supersedes
+//! `PendingRestartChanged`.
 //! The JSON shape (`{"type": "<snake_case variant>", ...fields}`) is pinned by a snapshot test.
 
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,10 @@ pub enum DomainEvent {
     FindingsChanged {
         swimlane: SwimlaneId,
     },
+    /// **Superseded** by [`DomainEvent::PickupChanged`] (D85: there is no bare "pending restart"; a change takes effect
+    /// differently for each consuming service). It stays in the contract, additively, so that rows already in the
+    /// outbox, old subscribers and old clients still parse; the registry (prompt 05) publishes it until its pickup state
+    /// is in place and then stops. New code subscribes to `PickupChanged`.
     PendingRestartChanged {
         swimlane: SwimlaneId,
         services: Vec<ServiceRef>,
@@ -83,6 +88,14 @@ pub enum DomainEvent {
     UserSessionsRevoked {
         user: UserId,
     },
+    /// The pickup state (D85) of a change changed for these services of the swimlane: a resource file went live, a
+    /// property source now needs a notification or a restart, a new folder needs a config-server restart. An
+    /// invalidation hint: it carries ids only, and the state itself (with "live by HH:MM" for cache-lifetime cases) is read
+    /// from the pending-restarts endpoint. Replaces [`DomainEvent::PendingRestartChanged`].
+    PickupChanged {
+        swimlane: SwimlaneId,
+        services: Vec<ServiceRef>,
+    },
 }
 
 impl DomainEvent {
@@ -93,6 +106,7 @@ impl DomainEvent {
             | Self::DriftChanged { swimlane, .. }
             | Self::FindingsChanged { swimlane }
             | Self::PendingRestartChanged { swimlane, .. }
+            | Self::PickupChanged { swimlane, .. }
             | Self::AgentStatusChanged { swimlane, .. }
             | Self::AttributionUpdated { swimlane, .. }
             | Self::SyncWindowOpened { swimlane, .. }

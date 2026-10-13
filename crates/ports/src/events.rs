@@ -30,6 +30,8 @@ pub enum EventKind {
     SyncWindowClosed,
     /// Internal (see [`DomainEvent::is_internal`]): never streamed to browsers.
     UserSessionsRevoked,
+    /// D85. Supersedes `PendingRestartChanged`.
+    PickupChanged,
 }
 
 impl EventKind {
@@ -51,6 +53,7 @@ impl EventKind {
             DomainEvent::SyncWindowOpened { .. } => Self::SyncWindowOpened,
             DomainEvent::SyncWindowClosed { .. } => Self::SyncWindowClosed,
             DomainEvent::UserSessionsRevoked { .. } => Self::UserSessionsRevoked,
+            DomainEvent::PickupChanged { .. } => Self::PickupChanged,
         }
     }
 }

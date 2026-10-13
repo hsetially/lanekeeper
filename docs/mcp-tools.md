@@ -162,9 +162,10 @@ JSON Schema (2020-12). Tool schemas refer to these as `#/$defs/<Name>`. Names an
         "duplicate_keys",
         "ambiguous_file_name",
         "unresolved_placeholder",
-        "config_server_restart_required"
+        "config_server_restart_required",
+        "served_mismatch"
       ],
-      "description": "Checks C1 to C11, in order."
+      "description": "Checks C1 to C11, in order, then C12, the \"as served\" mismatch of D86."
     },
     "Severity": {"type": "string", "maxLength": 16, "enum": ["low", "medium", "high", "critical"]},
     "Confidence": {"type": "string", "maxLength": 16, "enum": ["low", "medium", "high", "certain"]},
@@ -1007,7 +1008,7 @@ The hub caps the result at the lower of `max_total` and what fits in 16 KB. `tru
 
 ### `find_inconsistencies`
 
-Findings from the consistency checks C1 to C11, produced by the engine.
+Findings from the consistency checks C1 to C11 and the C12 "as served" verification (D86), produced by the engine and the nightly verification.
 
 - role: viewer
 - confirmation: none
@@ -1022,7 +1023,7 @@ Findings from the consistency checks C1 to C11, produced by the engine.
   "type": "object",
   "properties": {
     "swimlane": {"$ref": "#/$defs/SwimlaneId"},
-    "kinds": {"type": "array", "items": {"$ref": "#/$defs/FindingKind"}, "maxItems": 11, "uniqueItems": true},
+    "kinds": {"type": "array", "items": {"$ref": "#/$defs/FindingKind"}, "maxItems": 12, "uniqueItems": true},
     "min_severity": {"$ref": "#/$defs/Severity"},
     "cursor": {"$ref": "#/$defs/Cursor"},
     "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50, "description": "Page size."}
