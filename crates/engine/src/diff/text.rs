@@ -24,9 +24,10 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use domain::{DiffHunk, DiffLine, DiffLineKind};
+use domain::{DiffHunk, DiffLine, DiffLineKind, InlineRange};
 
 use super::align::{Run, align};
+use super::inline::pair_ranges;
 use crate::effective::len32;
 use crate::limits::Limits;
 
@@ -120,17 +121,26 @@ pub fn text_diff(left: &str, right: &str, limits: &Limits) -> TextDiff {
         identical: false,
         eol_only: false,
         too_large: false,
-        hunks: hunks(&runs, &old, &new),
+        hunks: hunks(&runs, &old, &new, limits),
     }
 }
 
-fn line(kind: DiffLineKind, text: &str) -> DiffLine {
+/// A line of a hunk: its text without the terminator, and the changed ranges inside it (`inline_changes`).
+fn line(kind: DiffLineKind, text: &str, inline_changes: Vec<InlineRange>) -> DiffLine {
     DiffLine {
         kind,
-        text: text.strip_suffix('\n').unwrap_or(text).to_owned(),
-        // Word-level ranges are filled in by `diff::inline` (T9).
-        inline_changes: Vec::new(),
+        text: without_terminator(text).to_owned(),
+        inline_changes,
     }
+}
+
+fn without_terminator(text: &str) -> &str {
+    text.strip_suffix('\n').unwrap_or(text)
+}
+
+/// The lines without their terminators.
+fn texts<'a>(side: &[&'a str]) -> Vec<&'a str> {
+    side.iter().map(|t| without_terminator(t)).collect()
 }
 
 /// A block of removed and added lines between two runs: `old` lines of the left text are replaced by `new` lines of the right.
@@ -163,8 +173,10 @@ fn changes(runs: &[Run], old_len: usize, new_len: usize) -> Vec<Change> {
 
 /// The hunks of an alignment: each change with `DIFF_CONTEXT_LINES` lines of unchanged text around it, and changes that are
 /// close enough for their contexts to touch in one hunk.
-fn hunks(runs: &[Run], old: &[&str], new: &[&str]) -> Vec<DiffHunk> {
+fn hunks(runs: &[Run], old: &[&str], new: &[&str], limits: &Limits) -> Vec<DiffHunk> {
     let all = changes(runs, old.len(), new.len());
+    // The cells the inline ranges of all the hunks of this diff may cost (see `inline`).
+    let mut budget = limits.diff_cells as u64;
     let mut out = Vec::new();
     let mut at = 0;
     while at < all.len() {
@@ -177,8 +189,8 @@ fn hunks(runs: &[Run], old: &[&str], new: &[&str]) -> Vec<DiffHunk> {
             &all[at..end],
             at.checked_sub(1).map(|p| &all[p]),
             all.get(end),
-            old,
-            new,
+            (old, new),
+            (limits, &mut budget),
         ));
         at = end;
     }
@@ -190,8 +202,8 @@ fn hunk(
     group: &[Change],
     before: Option<&Change>,
     after: Option<&Change>,
-    old: &[&str],
-    new: &[&str],
+    (old, new): (&[&str], &[&str]),
+    (limits, budget): (&Limits, &mut u64),
 ) -> DiffHunk {
     let (Some(first), Some(last)) = (group.first(), group.last()) else {
         return DiffHunk {
@@ -213,20 +225,25 @@ fn hunk(
             old.iter()
                 .skip(from)
                 .take(count)
-                .map(|t| line(DiffLineKind::Context, t)),
+                .map(|t| line(DiffLineKind::Context, t, Vec::new())),
         );
     };
     context(&mut lines, old_from, lead);
     for (n, change) in group.iter().enumerate() {
+        let removed = &old[change.old.clone()];
+        let added = &new[change.new.clone()];
+        let (removed_ranges, added_ranges) = pair_ranges(&texts(removed), &texts(added), limits, budget);
         lines.extend(
-            old[change.old.clone()]
+            removed
                 .iter()
-                .map(|t| line(DiffLineKind::Removed, t)),
+                .zip(removed_ranges)
+                .map(|(t, ranges)| line(DiffLineKind::Removed, t, ranges)),
         );
         lines.extend(
-            new[change.new.clone()]
+            added
                 .iter()
-                .map(|t| line(DiffLineKind::Added, t)),
+                .zip(added_ranges)
+                .map(|(t, ranges)| line(DiffLineKind::Added, t, ranges)),
         );
         if let Some(next) = group.get(n + 1) {
             context(&mut lines, change.old.end, next.old.start - change.old.end);

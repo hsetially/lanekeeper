@@ -119,7 +119,12 @@ fn a_real_change_under_other_line_endings_is_a_change_and_the_hunks_have_no_cr()
     assert_eq!(d.hunks.len(), 1);
     for line in d.hunks.iter().flat_map(|h| &h.lines) {
         assert!(!line.text.contains('\r') && !line.text.contains('\n'), "{line:?}");
-        assert!(line.inline_changes.is_empty(), "inline ranges come with T9");
+        // The inline ranges of a pair are `tests/inline.rs`'s; here they only have to stay inside the text.
+        assert!(
+            line.inline_changes
+                .iter()
+                .all(|r| r.start < r.end && r.end as usize <= line.text.len())
+        );
     }
     let removed: Vec<_> = d.hunks[0]
         .lines

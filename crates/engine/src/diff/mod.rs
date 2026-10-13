@@ -2,6 +2,7 @@
 //!
 //! - **text**: hunks for a virtualised view, from Patience over lines, with line endings normalised first. A difference in
 //!   line endings alone is hidden and flagged (`eol_only`). A text too big to diff within the limits is reported as such.
+//!   The lines of a replaced pair carry the character ranges that changed (`inline`, T9).
 //! - **semantic**: the settings that differ, for a `structured` file, sorted by path, each with the lines it is written on.
 //! - **binary**: hash and size.
 //!
@@ -9,6 +10,7 @@
 
 mod align;
 mod binary;
+mod inline;
 mod semantic;
 mod text;
 

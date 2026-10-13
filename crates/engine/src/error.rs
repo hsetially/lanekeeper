@@ -57,6 +57,23 @@ pub enum MergeRulesError {
     InvalidGlob,
 }
 
+/// Why a list of severity rules was refused. The error never contains the rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum SeverityError {
+    /// More rules than `SeverityRules::MAX_RULES`.
+    #[error("too many severity rules")]
+    TooManyRules,
+    /// Two rules have the same id.
+    #[error("two severity rules have the same id")]
+    DuplicateId,
+    /// A glob longer than `SeverityRules::MAX_GLOB_BYTES`.
+    #[error("a severity rule glob is too long")]
+    GlobTooLong,
+    /// A glob is not valid, or the rules are too complex to compile.
+    #[error("a severity rule glob could not be compiled")]
+    InvalidGlob,
+}
+
 /// Why a list of host rules (check C6) was refused. The error never contains the rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum HostRulesError {

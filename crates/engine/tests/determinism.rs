@@ -14,17 +14,17 @@ use std::sync::OnceLock;
 
 use bytes::Bytes;
 use domain::{
-    BranchKind, ContentHash, DriftState, FileClass, LogicalFile, MergeMode, NfsPath, PathMappingRule,
-    SwimlaneId, TextQuery,
+    BranchKind, ChangeKind, ContentHash, DriftState, FileClass, FindingKind, LogicalFile, MergeMode, NfsPath,
+    PathMappingRule, SettingPath, Severity, ShortText, SwimlaneId, TextQuery,
 };
 use engine::{
-    AdoptionCandidate, Baseline, BatchRules, BinaryFacts, CancelFlag, DenyMatcher, DriftInput, EffectChange,
-    EffectInput, Effective, Flat, GridColumn, GridOptions, HostRules, LaneState, Layer, Layers, Limits,
-    MergeRules, ScanConfig, SearchCorpus, Syntax, TreeHashes, adoption_rank, apply_eol, binary_compare,
-    classify, decode_text, detect_format, dominant_eol, drift_state, effect_preview, effective,
-    effective_tree_hash, findings_for_swimlanes, flatten, grid, index_settings, normalise_eol,
-    normalised_hash, parse, recompute_all, recompute_paths, search_text, secret_scan, semantic_diff,
-    swimlane_hash, text_diff,
+    AdoptionCandidate, Baseline, BatchRules, BinaryFacts, CancelFlag, ChangeContext, DenyMatcher, DriftInput,
+    EffectChange, EffectInput, Effective, Flat, GridColumn, GridOptions, HostRules, LaneState, Layer, Layers,
+    Limits, MergeRules, ScanConfig, SearchCorpus, SeverityMatch, SeverityRule, SeverityRules, Syntax,
+    TreeHashes, adoption_rank, apply_eol, binary_compare, classify, decode_text, detect_format, dominant_eol,
+    drift_state, effect_preview, effective, effective_tree_hash, findings_for_swimlanes, flatten, grid,
+    index_settings, normalise_eol, normalised_hash, parse, recompute_all, recompute_paths, search_text,
+    secret_scan, semantic_diff, severity, swimlane_hash, text_diff,
 };
 use sha2::{Digest, Sha256};
 use support::lanes::{LaneData, load_branches, load_lanes};
@@ -424,6 +424,47 @@ fn transcript(pool: &rayon::ThreadPool) -> String {
     }
     t.add("secret_scan", &scans);
 
+    // Severity (T9): every file of the first swimlane under every kind of finding and every drift state, with the default rules
+    // and with an admin rule that has both kinds of glob.
+    let admin = SeverityRule {
+        id: ShortText::parse("admin.db").unwrap(),
+        severity: Severity::Critical,
+        enabled: true,
+        matcher: SeverityMatch {
+            path_glob: Some("*.yml".to_owned()),
+            setting_glob: Some("*.url".to_owned()),
+            ..SeverityMatch::default()
+        },
+    };
+    let rule_sets = [
+        SeverityRules::with_defaults(Vec::new()).unwrap(),
+        SeverityRules::with_defaults(vec![admin]).unwrap(),
+    ];
+    let mut severities = String::new();
+    for file in &lanes[0].files {
+        for kind in FindingKind::ALL {
+            for state in DriftState::ALL {
+                let context = ChangeContext {
+                    finding_kind: Some(kind),
+                    change_kinds: &[ChangeKind::Changed, ChangeKind::Removed],
+                    path: Some(&file.path),
+                    setting_paths: &[SettingPath::parse("db.url").unwrap()],
+                    drift_state: Some(state),
+                    file_class: Some(file.class),
+                };
+                for rules in &rule_sets {
+                    let _ = writeln!(
+                        severities,
+                        "{} {kind} {state} {:?}",
+                        file.path,
+                        severity(&context, rules)
+                    );
+                }
+            }
+        }
+    }
+    t.add("severity", &severities);
+
     // The batch functions (T8).
     let merge = MergeRules::new(MergeMode::WholeFile, &[("*.yml", MergeMode::SpringMerge)]).unwrap();
     let hosts = HostRules::default();
@@ -506,6 +547,7 @@ fn everything_twice_is_byte_identical() {
             "grid",
             "search_text",
             "secret_scan",
+            "severity",
             "recompute_all",
             "findings_for_swimlanes",
             "recompute_paths",

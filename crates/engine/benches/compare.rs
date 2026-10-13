@@ -6,6 +6,8 @@
 //! compare answers with: both sides decoded, the line diff in hunks, and the setting changes from both sides parsed and
 //! flattened (the hub has the flattened settings in the settings index, so this is the pessimistic case).
 //!
+//! Since T9 the line diff carries the inline (word-level) change ranges of the replaced lines, so they are in the number.
+//!
 //! The result is checked on every iteration, so a change that makes the work disappear shows up as a failure, not as a fast
 //! number.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -77,6 +79,17 @@ fn compare(c: &mut Criterion) {
     let (diff, changes) = run();
     let (hunks, setting_changes) = (diff.hunks.len(), changes.len());
     assert!(!diff.too_large && !diff.eol_only && hunks > 100, "{hunks} hunks");
+    // The inline (word-level) ranges are part of what is measured (T9): the replaced `weight` lines have them.
+    let inline = diff
+        .hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .filter(|l| !l.inline_changes.is_empty())
+        .count();
+    assert!(
+        inline > 100,
+        "{inline} lines with inline ranges: the benchmark must run with them on"
+    );
     assert!(setting_changes > 100, "{setting_changes} setting changes");
 
     let mut group = c.benchmark_group("engine");

@@ -32,6 +32,7 @@ mod parse;
 mod paths;
 mod search;
 mod secret_scan;
+mod severity;
 mod tree_hash;
 
 pub use self::batch::{
@@ -60,7 +61,7 @@ pub use self::effect::{
 pub use self::effective::{Effective, EffectiveValue, Layer, Layers, Origin, Source, effective};
 pub use self::error::{
     BatchError, DecodeError, DenyError, EncodeError, HostRulesError, LimitKind, MergeRulesError, ParseError,
-    ScanError, SearchError, TreeHashError,
+    ScanError, SearchError, SeverityError, TreeHashError,
 };
 pub use self::grid::{
     GridColumn, GridEntry, GridError, GridOptions, GridResult, GridValue, MAX_GRID_COLUMNS, grid,
@@ -77,4 +78,7 @@ pub use self::search::{
     CancelFlag, SearchBlob, SearchCorpus, SearchLocation, SearchOutcome, SearchStats, search_text,
 };
 pub use self::secret_scan::{ScanConfig, SecretMatch, SecretRule, secret_scan};
+pub use self::severity::{
+    ChangeContext, SeverityMatch, SeverityOutcome, SeverityRule, SeverityRules, default_rules, severity,
+};
 pub use self::tree_hash::{TreeHashes, effective_tree_hash, normalised_hash, swimlane_hash};

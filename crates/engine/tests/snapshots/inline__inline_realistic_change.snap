@@ -1,0 +1,17 @@
+---
+source: crates/engine/tests/inline.rs
+expression: "render(left, right)"
+---
+ spring:
+   datasource:
+-    url: jdbc:postgresql://db-[sit1].internal:5432/core
+-    max_pool: [10]
+-  profiles: [sit1],default
++    url: jdbc:postgresql://db-[sit2].internal:5432/core
++    max_pool: [25]
++  profiles: [sit2],default
+ logging:
+   level:
+-    root: [INFO]
++    root: [DEBUG]
++    com.example: TRACE
