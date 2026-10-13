@@ -201,7 +201,22 @@ statistic = "p95"
 threshold = 100
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
+
+# Prompt 04, T5: the engine's share of the grid, the merge of 40 swimlanes' pre-flattened effective configs of one logical file
+# (both views: only the differing rows, and every row). The 150 ms is the prompt's (prompts/04-fact-engine.md, T5). The registry
+# entry below keeps the `hub-registry/` benchmark for prompt 05, which adds the database and the HTTP layer to the same budget; bench
+# names are unique, so the engine's own benchmark has its own id.
+
+[[budget]]
+id = "P7.engine_grid"
+description = "Grid of one logical file across 40 swimlanes, pre-flattened inputs (engine only)"
+bench = "engine/grid_40_swimlanes"
+statistic = "p95"
+threshold = 150
+unit = "ms"
+scale = "target"
+registered = true
 
 [[budget]]
 id = "P7.grid"

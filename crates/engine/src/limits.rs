@@ -27,6 +27,12 @@ pub struct Limits {
     pub warnings: usize,
     /// Lines on one side of a text diff. A bigger file gets a "too large to diff" outcome.
     pub diff_lines: usize,
+    /// The work a text diff may do, in cells. Aligning two texts costs about the product of the lengths of the stretches
+    /// between the lines that both texts have exactly once, summed over the stretches (the lines that only one text has, and
+    /// the common beginning and end, are set aside first). Two files with the same keys are cheap however long; two files
+    /// with a shared vocabulary and no shared skeleton are not, and this is what keeps a hostile pair of 50,000-line files
+    /// from holding a thread. It is a count of cells, not a time, so the outcome does not depend on how busy the machine is.
+    pub diff_cells: usize,
     /// The longest line that gets word-level (inline) change ranges, in bytes.
     pub inline_line_bytes: usize,
     /// The longest search pattern, in bytes. It is `domain::TextQuery::MAX_PATTERN_BYTES`.
@@ -56,6 +62,7 @@ impl Limits {
         setting_path_bytes: 1_024,
         warnings: 1_000,
         diff_lines: 50_000,
+        diff_cells: 20_000_000,
         inline_line_bytes: 4 * 1024,
         regex_pattern_bytes: 512,
         regex_size_limit: 1024 * 1024,

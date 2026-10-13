@@ -16,6 +16,7 @@ fn defaults_are_the_documented_values() {
     assert_eq!(l.setting_path_bytes, 1_024);
     assert_eq!(l.warnings, 1_000);
     assert_eq!(l.diff_lines, 50_000);
+    assert_eq!(l.diff_cells, 20_000_000);
     assert_eq!(l.inline_line_bytes, 4 * 1024);
     assert_eq!(l.regex_pattern_bytes, 512);
     assert_eq!(l.regex_size_limit, 1024 * 1024);
@@ -49,6 +50,7 @@ fn every_default_is_nonzero_and_ordered_sensibly() {
         l.settings,
         l.warnings,
         l.diff_lines,
+        l.diff_cells,
         l.locations_per_finding,
     ] {
         assert!(v > 0);

@@ -18,8 +18,11 @@
 )]
 
 mod bytes;
+mod diff;
+mod drift;
 mod effective;
 mod error;
+mod grid;
 mod index;
 mod limits;
 mod parse;
@@ -30,9 +33,17 @@ pub use self::bytes::{
     DEFAULT_DENY_GLOBS, Decoded, DenyMatcher, Newline, apply_eol, classify, decode_text, detect_format,
     dominant_eol, encode_text, normalise_eol,
 };
+pub use self::diff::{
+    BinaryDiff, BinaryFacts, DIFF_CONTEXT_LINES, SettingView, TextDiff, binary_compare, semantic_diff,
+    text_diff,
+};
+pub use self::drift::{Baseline, Drift, DriftInput, DriftLabel, IntentionalMark, drift_hash, drift_state};
 pub use self::effective::{Effective, EffectiveValue, Layer, Layers, Origin, Source, effective};
 pub use self::error::{
     DecodeError, DenyError, EncodeError, LimitKind, MergeRulesError, ParseError, TreeHashError,
+};
+pub use self::grid::{
+    GridColumn, GridEntry, GridError, GridOptions, GridResult, GridValue, MAX_GRID_COLUMNS, grid,
 };
 pub use self::index::{LocationSource, SettingRow, SettingsIndex, index_settings, locate};
 pub use self::limits::Limits;

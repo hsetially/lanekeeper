@@ -151,6 +151,10 @@ json-event-parser = "=0.2.3"
 # toolchain is pinned to 1.88. `std` only: no wasm engine, and the grammar's C sources are built by the `cc` build dependency.
 tree-sitter = { version = "=0.26.13", default-features = false, features = ["std"] }
 tree-sitter-yaml = "=0.7.2"
+# Fact engine (prompt 04, T5, D54). similar 2.7.0 gives the line diff (Patience, which reads better on config than Myers). Already in
+# the lockfile through insta, so it is not new to `cargo deny`; 3.x has no feature the engine needs. Default features only: `text`
+# is empty (no dependency behind it), and the engine uses only the algorithms and the grouping of operations, not the text layer.
+similar = "=2.7.0"
 # Test tooling
 proptest = "=1.11.0"
 insta = "=1.48.0"
