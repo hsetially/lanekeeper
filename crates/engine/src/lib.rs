@@ -18,8 +18,10 @@
 )]
 
 mod bytes;
+mod checks;
 mod diff;
 mod drift;
+mod effect;
 mod effective;
 mod error;
 mod grid;
@@ -33,14 +35,24 @@ pub use self::bytes::{
     DEFAULT_DENY_GLOBS, Decoded, DenyMatcher, Newline, apply_eol, classify, decode_text, detect_format,
     dominant_eol, encode_text, normalise_eol,
 };
+pub use self::checks::{
+    BaseCommit, BaseHistory, BaseVersion, ChangedSetting, CheckDetail, CheckFile, CheckInput, CheckResult,
+    DuplicatedKey, EqualBy, HostMatcher, HostRule, HostRules, MismatchedHost, OrphanReason, Overwrite,
+    Structured, c1_missed_base_changes, c2_redundant_tenant_file, c3_uneven_tenant_files, c4_orphan_file,
+    c5_drift, c6_environment_host_mismatch, c7_overwritten_nfs_change, c8_duplicate_keys, checks_c1_to_c8,
+};
 pub use self::diff::{
     BinaryDiff, BinaryFacts, DIFF_CONTEXT_LINES, SettingView, TextDiff, binary_compare, semantic_diff,
     text_diff,
 };
 pub use self::drift::{Baseline, Drift, DriftInput, DriftLabel, IntentionalMark, drift_hash, drift_state};
+pub use self::effect::{
+    EffectChange, EffectInput, EffectPreview, EffectScope, EffectWarning, effect_preview,
+};
 pub use self::effective::{Effective, EffectiveValue, Layer, Layers, Origin, Source, effective};
 pub use self::error::{
-    DecodeError, DenyError, EncodeError, LimitKind, MergeRulesError, ParseError, TreeHashError,
+    DecodeError, DenyError, EncodeError, HostRulesError, LimitKind, MergeRulesError, ParseError,
+    TreeHashError,
 };
 pub use self::grid::{
     GridColumn, GridEntry, GridError, GridOptions, GridResult, GridValue, MAX_GRID_COLUMNS, grid,

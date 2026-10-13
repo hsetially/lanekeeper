@@ -1,0 +1,9 @@
+---
+source: crates/engine/tests/checks.rs
+expression: dump(&results)
+---
+C1 missed_base_changes svc/app-sit1.yml
+  message: 2 settings in the file for sit1 override a base setting that no longer exists.
+  at removed.gone L10-10
+  at server.old L3-3
+  detail: DeadOverrides { settings: [SettingPath("removed.gone"), SettingPath("server.old")], total: 2 }

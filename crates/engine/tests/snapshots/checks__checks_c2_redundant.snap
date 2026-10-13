@@ -1,0 +1,13 @@
+---
+source: crates/engine/tests/checks.rs
+expression: dump(&results)
+---
+C2 redundant_tenant_file doc/receipt-sit1.bmp
+  message: The file for sit1 is identical to the base file, so it only keeps sit1 from base changes; it can be deleted.
+  detail: RedundantTenantFile { tenant: TenantId("sit1"), equal_by: Bytes }
+C2 redundant_tenant_file tx/account-sorting-config-sit1.yml
+  message: The file for sit1 has the same settings as the base file, so it only keeps sit1 from base changes; it can be deleted.
+  detail: RedundantTenantFile { tenant: TenantId("sit1"), equal_by: Settings }
+C2 redundant_tenant_file tx/t-sit1.xsl
+  message: The file for sit1 is identical to the base file, so it only keeps sit1 from base changes; it can be deleted.
+  detail: RedundantTenantFile { tenant: TenantId("sit1"), equal_by: Bytes }

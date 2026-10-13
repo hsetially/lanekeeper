@@ -1,0 +1,28 @@
+---
+source: crates/engine/tests/checks.rs
+expression: dump(&results)
+---
+C5 drift d/conflict.yml
+  message: NFS and Git both changed after the baseline, in different ways.
+  detail: Drift { state: Conflict, label: None }
+C5 drift d/deleted_in_git.yml
+  message: The file was deleted in Git and is still on NFS.
+  detail: Drift { state: GitAhead, label: Some(DeletedInGit) }
+C5 drift d/deleted_on_nfs.yml
+  message: The file was deleted on NFS after the baseline.
+  detail: Drift { state: NfsAhead, label: Some(DeletedOnNfs) }
+C5 drift d/git_ahead.yml
+  message: Git has changes that NFS does not have.
+  detail: Drift { state: GitAhead, label: None }
+C5 drift d/new_in_git.yml
+  message: Git has a file that is missing on NFS (new in Git).
+  detail: Drift { state: GitAhead, label: Some(NewInGit) }
+C5 drift d/nfs_ahead.yml
+  message: NFS has changes that Git does not have.
+  detail: Drift { state: NfsAhead, label: None }
+C5 drift d/unknown.yml
+  message: There is no baseline for this file, and NFS differs from Git.
+  detail: Drift { state: Unknown, label: None }
+C5 drift d/untracked.yml
+  message: The file is on NFS and has no source in Git.
+  detail: Drift { state: Untracked, label: None }

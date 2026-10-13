@@ -57,6 +57,23 @@ pub enum MergeRulesError {
     InvalidGlob,
 }
 
+/// Why a list of host rules (check C6) was refused. The error never contains the rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum HostRulesError {
+    /// More rules than `HostRules::MAX_RULES`.
+    #[error("too many host rules")]
+    TooManyRules,
+    /// A rule with nothing to match.
+    #[error("a host rule is empty")]
+    EmptyNeedle,
+    /// A rule longer than a host name can be (`HostRules::MAX_NEEDLE_BYTES`).
+    #[error("a host rule is too long")]
+    NeedleTooLong,
+    /// A rule with a character that a host name does not have (only ASCII letters, digits, `.`, `-` and `_` do).
+    #[error("a host rule has a character that a host name cannot have")]
+    InvalidNeedle,
+}
+
 /// Why `effective_tree_hash` refused its input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum TreeHashError {
