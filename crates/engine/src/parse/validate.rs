@@ -1,7 +1,7 @@
 //! `validate` (T2, S11): is this file acceptable? Bytes in, a verdict out.
 
 use super::node::{Body, ParseWarning, Validation};
-use super::{Syntax, flatten, parse};
+use super::{Syntax, flatten, parse_decoded};
 use crate::bytes::{Decoded, decode_text};
 use crate::error::{DecodeError, LimitKind, ParseError};
 use crate::limits::Limits;
@@ -44,7 +44,7 @@ pub(crate) fn combine_warnings(
 /// The errors of `decode_text`, `parse` and `flatten`; a file over `Limits::input_bytes` is `Limit(InputBytes)`.
 pub fn validate(data: &[u8], syntax: Syntax, limits: &Limits) -> Result<Validation, ParseError> {
     let decoded = decode_for_parse(data, limits)?;
-    let parsed = parse(&decoded.text, syntax, limits)?;
+    let parsed = parse_decoded(&decoded.text, syntax, limits)?;
     let flat = flatten(&parsed, limits)?;
     let documents = match &parsed.body {
         Body::Documents(documents) => documents.len(),

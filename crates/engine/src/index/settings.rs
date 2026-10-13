@@ -6,7 +6,7 @@ use super::yaml_ts::{self, Outcome};
 use super::{LocationSource, SettingRow, SettingsIndex};
 use crate::error::ParseError;
 use crate::limits::Limits;
-use crate::parse::{Body, ParseWarning, Syntax, combine_warnings, decode_for_parse, flatten, parse};
+use crate::parse::{Body, ParseWarning, Syntax, combine_warnings, decode_for_parse, flatten, parse_decoded};
 
 /// One row for every setting of the file `data`, read as `syntax`, in file order.
 ///
@@ -20,7 +20,7 @@ use crate::parse::{Body, ParseWarning, Syntax, combine_warnings, decode_for_pars
 /// with the parser, is a warning on the rows and never an error.
 pub fn index_settings(data: &[u8], syntax: Syntax, limits: &Limits) -> Result<SettingsIndex, ParseError> {
     let decoded = decode_for_parse(data, limits)?;
-    let parsed = parse(&decoded.text, syntax, limits)?;
+    let parsed = parse_decoded(&decoded.text, syntax, limits)?;
     let flat = flatten(&parsed, limits)?;
     let (mut warnings, mut dropped) = combine_warnings(
         parsed.warnings,

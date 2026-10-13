@@ -10,7 +10,10 @@
 /// Size limits for parsing, indexing, diffing and searching.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Limits {
-    /// The largest file, in bytes. The agent and uploads stop at the same size.
+    /// The largest file, in bytes. The agent and uploads stop at the same size. The functions that take a file's bytes
+    /// (`validate`, `index_settings`, `render_file`) hold the bytes to it; the text of a Latin-1 or UTF-16 file can be longer
+    /// than the file, up to twice as long, and is not refused for that. The functions that take text (`parse`, `render`,
+    /// `secret_scan`) hold the text to it.
     pub input_bytes: usize,
     /// The deepest nesting of maps and lists in a parsed file.
     pub nesting_depth: usize,
@@ -27,9 +30,10 @@ pub struct Limits {
     pub warnings: usize,
     /// Lines on one side of a text diff. A bigger file gets a "too large to diff" outcome.
     pub diff_lines: usize,
-    /// The work a text diff may do, in cells. Aligning two texts costs about the product of the lengths of the stretches
-    /// between the lines that both texts have exactly once, summed over the stretches (the lines that only one text has, and
-    /// the common beginning and end, are set aside first). Two files with the same keys are cheap however long; two files
+    /// The work a text diff may do, in cells. Aligning two texts costs about the square of half the combined length of each
+    /// stretch between the lines that both texts have exactly once (the product of the lengths, when the sides are equally
+    /// long), summed over the stretches (the lines that only one text has, and the common beginning and end, are set aside
+    /// first). Two files with the same keys are cheap however long; two files
     /// with a shared vocabulary and no shared skeleton are not, and this is what keeps a hostile pair of 50,000-line files
     /// from holding a thread. It is a count of cells, not a time, so the outcome does not depend on how busy the machine is.
     pub diff_cells: usize,

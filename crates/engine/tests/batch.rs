@@ -629,6 +629,79 @@ fn the_root_file_is_a_layer_of_every_spring_merge_file() {
 }
 
 #[test]
+fn every_root_file_is_a_layer_of_the_property_sources_and_properties_beats_yml_beats_yaml() {
+    let synth = Synth::new(&["sit1"]);
+    let rules = Rules::spring_for_yml();
+    let same = |path: &str, text: &str| synth.file(path, Some(text), Some(text));
+    // Three root files, each with something of its own and one key that all three define: `.properties` wins, then `.yml`.
+    let split = vec![
+        same(
+            "application.properties",
+            "key=from-properties\nfrom.properties=p\n",
+        ),
+        same("application.yml", "key: from-yml\nfrom:\n  yml: y\n  both: yml\n"),
+        same(
+            "application.yaml",
+            "key: from-yaml\nfrom:\n  yaml: z\n  both: yaml\n",
+        ),
+        same("svc/app.yml", "own: x\n"),
+        same("svc/app-sit1.yml", "own: t\nfrom:\n  yaml: tenant\n"),
+    ];
+    // The same settings in one root file.
+    let one = vec![
+        same(
+            "application.yml",
+            "key: from-properties\nfrom:\n  properties: p\n  yml: y\n  yaml: z\n  both: yml\n",
+        ),
+        same("svc/app.yml", "own: x\n"),
+        same("svc/app-sit1.yml", "own: t\nfrom:\n  yaml: tenant\n"),
+    ];
+    let (a, b) = (all_of(&synth, &split, &rules), all_of(&synth, &one, &rules));
+    let app = logical("svc/app.yml");
+    assert!(a.effective_hash(&app).is_some());
+    assert_eq!(
+        a.effective_hash(&app),
+        b.effective_hash(&app),
+        "the effective settings of a property source must be those of all the root files, merged"
+    );
+    // A tenant setting that overrides a setting of a root file other than the strongest is an override and not a dead one.
+    assert!(
+        !a.findings()
+            .iter()
+            .any(|f| f.kind == FindingKind::MissedBaseChanges),
+        "{:?}",
+        a.findings()
+    );
+
+    // Changing the weaker root file moves what the services read, and the incremental recompute agrees with the full one.
+    let mut changed = split.clone();
+    changed[1] = same(
+        "application.yml",
+        "key: from-yml\nfrom:\n  yml: changed\n  both: yml\n",
+    );
+    let affected = [(synth.id.clone(), nfs("application.yml"))];
+    let next = recompute_paths(
+        &pool(2),
+        std::slice::from_ref(&a),
+        &[synth.input(&changed)],
+        &affected,
+        &rules.lend(),
+    )
+    .unwrap();
+    assert_eq!(next[0], all_of(&synth, &changed, &rules));
+    assert_ne!(next[0].effective_hash(&app), a.effective_hash(&app));
+
+    // Each root file is a file of its own: another root file is not a layer of it.
+    let alone = vec![same(
+        "application.yml",
+        "key: from-yml\nfrom:\n  yml: y\n  both: yml\n",
+    )];
+    let (with_others, without) = (all_of(&synth, &split, &rules), all_of(&synth, &alone, &rules));
+    let root = logical("application.yml");
+    assert_eq!(with_others.effective_hash(&root), without.effective_hash(&root));
+}
+
+#[test]
 fn base_history_reaches_check_c1() {
     let synth = Synth::new(&["sit1"]);
     let version = |sha: &str, time: i64, text: &str| BaseVersion {
@@ -756,6 +829,39 @@ fn inputs_that_are_not_valid_are_refused_before_any_work() {
         recompute_all(&p, &lanes, &rules.lend()).unwrap_err(),
         BatchError::TooManySwimlanes
     );
+}
+
+#[test]
+fn every_input_is_checked_before_any_swimlane_is_computed() {
+    let synth = Synth::new(&["sit1"]);
+    let rules = Rules::whole_file();
+    let p = pool(2);
+    let second = SwimlaneId::parse("sl-second").unwrap();
+    // The first swimlane fails while it is computed (a file that is a directory of another); the second is not what the
+    // function takes (a path twice). The second is refused first: nothing is parsed or computed for a call that has it.
+    let clash = [
+        synth.file("svc", Some("k: 1\n"), None),
+        synth.file("svc/x.yml", Some("k: 1\n"), None),
+    ];
+    let a = synth.file("svc/a.yml", Some("k: 1\n"), None);
+    let twice = [a.clone(), a];
+    let lanes = [
+        synth.input(&clash),
+        LaneInput {
+            swimlane: &second,
+            ..synth.input(&twice)
+        },
+    ];
+    for _ in 0..4 {
+        assert_eq!(
+            recompute_all(&p, &lanes, &rules.lend()).unwrap_err(),
+            BatchError::DuplicatePath
+        );
+        assert_eq!(
+            findings_for_swimlanes(&p, &lanes, &rules.lend()).unwrap_err(),
+            BatchError::DuplicatePath
+        );
+    }
 }
 
 #[test]

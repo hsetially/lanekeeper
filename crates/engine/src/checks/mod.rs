@@ -69,7 +69,7 @@ pub use self::c11::{
 use crate::bytes::decode_text;
 use crate::drift::Drift;
 use crate::limits::Limits;
-use crate::parse::{FlatSetting, ParseWarning, Syntax, flatten, parse};
+use crate::parse::{FlatSetting, ParseWarning, Syntax, flatten, parse_decoded};
 use crate::paths::FileFacts;
 
 /// The longest message the checks write: a `ShortText` is at most 256 bytes.
@@ -378,7 +378,7 @@ pub(crate) fn message(text: &str) -> Option<ShortText> {
 pub(crate) fn settings_of_blob(path: &NfsPath, data: &[u8], limits: &Limits) -> Option<Vec<FlatSetting>> {
     let syntax = Syntax::of_path(path)?;
     let decoded = decode_text(data, limits).ok()?;
-    let parsed = parse(&decoded.text, syntax, limits).ok()?;
+    let parsed = parse_decoded(&decoded.text, syntax, limits).ok()?;
     flatten(&parsed, limits).ok().map(|flat| flat.settings)
 }
 

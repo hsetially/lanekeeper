@@ -404,6 +404,55 @@ fn a_diff_whose_work_would_be_quadratic_is_refused_before_it_starts() {
 }
 
 #[test]
+fn a_skewed_pair_is_costed_by_the_work_myers_does_and_not_by_the_product_of_its_sides() {
+    // Myers works for about the square of half the combined length of a leaf, whatever the sides are: a long text against a
+    // two-line one has a small product and a large bill. The texts have no line that occurs once in both, so there is no
+    // anchor, nothing is set aside, and the whole of the long text is one leaf against `x, y`.
+    let skewed = |long: usize| {
+        let mut old = String::from("y\n");
+        old.push_str(&"x\n".repeat(long));
+        old.push_str("y\nx\n");
+        (old, String::from("x\ny\n"))
+    };
+    let tight = Limits {
+        diff_cells: 100_000,
+        ..Limits::default()
+    };
+    // 2,003 lines against 2: a product of about 6,000 cells, but Myers would take about a million steps.
+    let (old, new) = skewed(2_000);
+    assert!(text_diff(&old, &new, &tight).too_large);
+    assert!(text_diff(&new, &old, &tight).too_large);
+    // The same pair is far under the default budget, so it is a diff there.
+    let d = diff(&old, &new);
+    assert!(!d.too_large && !d.hunks.is_empty());
+    // A hostile pair under the default budget: 49,003 lines against 2 is a product of 150,000 cells and about 600 million
+    // steps. It is refused before Myers starts, and quickly.
+    let (old, new) = skewed(49_000);
+    assert!(diff(&old, &new).too_large);
+    assert!(diff(&new, &old).too_large);
+    // A pair of equal sides costs what it did: the product.
+    let tight = Limits {
+        diff_cells: 441,
+        ..Limits::default()
+    };
+    let alternating = |first: &str, second: &str| {
+        (0..20)
+            .map(|i| if i % 2 == 0 { first } else { second })
+            .fold(String::new(), |mut s, l| {
+                writeln!(s, "{l}").unwrap();
+                s
+            })
+    };
+    let (ab, ba) = (alternating("a", "b"), alternating("b", "a"));
+    assert!(!text_diff(&ab, &ba, &tight).too_large);
+    let tighter = Limits {
+        diff_cells: 440,
+        ..Limits::default()
+    };
+    assert!(text_diff(&ab, &ba, &tighter).too_large);
+}
+
+#[test]
 fn a_deletion_ahead_of_a_kept_line_numbers_both_sides_right() {
     // `similar` reports where a deletion falls in the new text, and where an insertion falls in the old text, inconsistently
     // for this input (a line deleted, then a kept line that is also inserted again). The header must not depend on it.

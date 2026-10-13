@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use domain::NfsPath;
-use engine::{DecodeError, LimitKind, Limits, ParseError, ParseWarning, Syntax, validate};
+use engine::{DecodeError, LimitKind, Limits, ParseError, ParseWarning, Syntax, index_settings, validate};
 
 fn utf16le(text: &str) -> Vec<u8> {
     let mut out = vec![0xFF, 0xFE];
@@ -110,4 +110,58 @@ fn warnings_are_capped_across_parsing_and_flattening() {
     let v = validate(text.as_bytes(), Syntax::Yaml, &limits).unwrap();
     assert_eq!(v.warnings.len(), 3);
     assert_eq!(v.warnings_dropped, 2);
+}
+
+#[test]
+fn the_size_limit_is_on_the_file_and_not_on_what_decoding_makes_of_it() {
+    // `input_bytes` is the size of a file. Latin-1 turns each byte over 0x7F into two bytes of text, and UTF-16 turns two
+    // bytes into up to three, so a file within the limit can have a longer text: it is still within the limit.
+    let limits = Limits {
+        input_bytes: 64,
+        ..Limits::default()
+    };
+    // Latin-1: 2 + 40 + 1 = 43 bytes, and 2 + 80 + 1 = 83 bytes of text.
+    let mut latin1 = b"k=".to_vec();
+    latin1.extend(std::iter::repeat_n(0xE9, 40));
+    latin1.push(b'\n');
+    assert!(latin1.len() <= limits.input_bytes);
+    let v = validate(&latin1, Syntax::Properties, &limits).unwrap();
+    assert_eq!(v.settings, 1);
+    assert_eq!(
+        index_settings(&latin1, Syntax::Properties, &limits)
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+
+    // UTF-16: 2 + 28 * 2 = 58 bytes, and 2 + 25 * 3 + 1 = 78 bytes of text.
+    let utf16 = utf16le(&format!("k={}\n", "\u{4e2d}".repeat(25)));
+    assert!(utf16.len() <= limits.input_bytes);
+    let v = validate(&utf16, Syntax::Properties, &limits).unwrap();
+    assert_eq!(v.settings, 1);
+    assert_eq!(
+        index_settings(&utf16, Syntax::Properties, &limits)
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+
+    // The file itself is still held to the limit, one byte over or not.
+    let mut over = latin1.clone();
+    over.extend(std::iter::repeat_n(b'x', 64 - over.len() + 1));
+    assert_eq!(over.len(), limits.input_bytes + 1);
+    for result in [
+        validate(&over, Syntax::Properties, &limits).unwrap_err(),
+        index_settings(&over, Syntax::Properties, &limits).unwrap_err(),
+    ] {
+        assert_eq!(result, ParseError::Limit(LimitKind::InputBytes));
+    }
+    // And a text handed to `parse` is held to it as it always was: it is the size of the text.
+    let text = "k=".to_owned() + &"\u{e9}".repeat(40) + "\n";
+    assert_eq!(
+        engine::parse(&text, Syntax::Properties, &limits).unwrap_err(),
+        ParseError::Limit(LimitKind::InputBytes)
+    );
 }

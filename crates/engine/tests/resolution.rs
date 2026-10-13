@@ -610,6 +610,36 @@ fn render_is_bounded() {
 }
 
 #[test]
+fn a_latin1_file_within_the_limit_is_rendered_although_its_text_is_longer() {
+    // The limit is on the file. A Latin-1 byte over 0x7F is two bytes of text, so this file of 64 bytes is a text of 124.
+    let view = view_from(&[("A", "1")]);
+    let limits = Limits {
+        input_bytes: 100,
+        ..Limits::default()
+    };
+    let mut data = b"${A}".to_vec();
+    data.extend(std::iter::repeat_n(0xE9, 60));
+    let data = Bytes::from(data);
+    assert!(data.len() <= limits.input_bytes);
+    let r = render_file(&data, FileClass::Text, &view, &limits).unwrap();
+    assert_eq!(r.replaced, 1);
+    let mut want = b"1".to_vec();
+    want.extend(std::iter::repeat_n(0xE9, 60));
+    assert_eq!(r.bytes.as_ref(), want.as_slice());
+    // A file over the limit is refused as ever, and so is a rendering that is.
+    let over = Bytes::from(vec![b'x'; 101]);
+    assert_eq!(
+        render_file(&over, FileClass::Text, &view, &limits).unwrap_err(),
+        ResolveError::Decode(engine::DecodeError::TooLarge)
+    );
+    let long = view_from(&[("A", &"y".repeat(101))]);
+    assert_eq!(
+        render_file(&data, FileClass::Text, &long, &limits).unwrap_err(),
+        ResolveError::Limit(engine::LimitKind::InputBytes)
+    );
+}
+
+#[test]
 fn a_hostile_run_of_openers_is_linear_enough() {
     let view = view_from(&[("A", "1")]);
     let text = "${".repeat(200_000);

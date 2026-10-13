@@ -11,8 +11,9 @@
 //!    the wrong one.)
 //! 4. A stretch with no anchor, or at the depth limit, is a leaf, and a leaf is aligned by Myers.
 //!
-//! Steps 1 to 3 cost a few passes over the lines. Myers is the expensive part, about the product of the lengths of a leaf. So
-//! the whole tree of stretches is built first, the leaves' products are added up, and if the sum is over the budget the answer
+//! Steps 1 to 3 cost a few passes over the lines. Myers is the expensive part, about the square of half the combined length
+//! of a leaf (the product of the lengths, when the two sides are as long as each other; see `leaf_cost`). So the whole tree
+//! of stretches is built first, the leaves' costs are added up, and if the sum is over the budget the answer
 //! is "too large" and Myers never runs. That is what makes the cost of a diff a function of the input and not of the clock,
 //! and why two long files with the same skeleton (the same keys, other values) are cheap and two with only a shared
 //! vocabulary are refused.
@@ -134,10 +135,14 @@ fn longest_increasing(pairs: &[(usize, usize)]) -> Vec<(usize, usize)> {
     chain
 }
 
-/// The cost of a leaf: the product of its two lengths, each counted with one extra so that a long leaf against a short one
-/// is not free.
+/// The cost of a leaf: the work Myers may do on it. Its loop runs for up to half the combined length of the two sides, and
+/// the work of each step grows with the step, so the bound is the square of that half (counted with one extra, so that a
+/// leaf is never free). For two sides of one length this is the product of the lengths, `(n + 1) * (n + 1)`; for a long side
+/// against a short one the product would be far too small, and a pair such as 49,000 lines against 2 would pass a budget it
+/// costs a hundred times over.
 fn leaf_cost(old: usize, new: usize) -> u64 {
-    ((old as u64) + 1).saturating_mul((new as u64) + 1)
+    let half = ((old as u64).saturating_add(new as u64).saturating_add(1) / 2).saturating_add(1);
+    half.saturating_mul(half)
 }
 
 /// The runs of equal lines of two numbered texts, in order. `distinct` is one more than the largest line number. `None`

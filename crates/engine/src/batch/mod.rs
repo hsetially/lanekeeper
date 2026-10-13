@@ -57,7 +57,7 @@ use rayon::prelude::*;
 pub use self::adoption::{
     AdoptionCandidate, AdoptionScore, MAX_ADOPTION_CANDIDATES, Similarity, adoption_rank,
 };
-use self::lane::{Blobs, compute_lane, update_lane};
+use self::lane::{Blobs, LaneIndex, UpdatePlan, compute_lane, finish_update, index_lanes, plan_update};
 use crate::checks::{BaseVersion, CheckResult, HostRules, Overwrite};
 use crate::drift::{Baseline, Drift, IntentionalMark};
 use crate::error::BatchError;
@@ -292,10 +292,16 @@ fn parse_blobs<'a>(pool: &ThreadPool, files: impl Iterator<Item = &'a LaneFile>,
     Blobs::build(Some(pool), keys, limits)
 }
 
+/// The files of every swimlane of a call, from their indexes.
+fn files_of<'a, 'i>(indexes: &'i [LaneIndex<'a>]) -> impl Iterator<Item = &'a LaneFile> + 'i {
+    indexes.iter().flat_map(|index| index.files().iter().copied())
+}
+
 /// The full recompute (P6): every swimlane from scratch. The results are in the order of `lanes`.
 ///
-/// Distinct blobs are decoded, hashed and parsed once, in parallel, and then each swimlane is computed in parallel from the
-/// shared table. Call it from a blocking context.
+/// The inputs are checked first, all of them, before a blob is parsed (a path that is there twice is `DuplicatePath` whatever
+/// else is wrong with another swimlane). Then distinct blobs are decoded, hashed and parsed once, in parallel, and each swimlane
+/// is computed in parallel from the shared table. Call it from a blocking context.
 ///
 /// # Errors
 ///
@@ -307,15 +313,13 @@ pub fn recompute_all(
     rules: &BatchRules<'_>,
 ) -> Result<Vec<LaneState>, BatchError> {
     check_batch(lanes)?;
-    let blobs = parse_blobs(
-        pool,
-        lanes.iter().flat_map(|lane| lane.files.iter()),
-        rules.limits,
-    );
+    let indexes = index_lanes(pool, lanes)?;
+    let blobs = parse_blobs(pool, files_of(&indexes), rules.limits);
     let results: Vec<Result<LaneState, BatchError>> = pool.install(|| {
         lanes
             .par_iter()
-            .map(|lane| compute_lane(lane, rules, &blobs, true))
+            .zip(indexes.par_iter())
+            .map(|(lane, index)| compute_lane(lane, index, rules, &blobs, true))
             .collect()
     });
     first_error(results)
@@ -333,16 +337,14 @@ pub fn findings_for_swimlanes(
     rules: &BatchRules<'_>,
 ) -> Result<Vec<SwimlaneFindings>, BatchError> {
     check_batch(lanes)?;
-    let blobs = parse_blobs(
-        pool,
-        lanes.iter().flat_map(|lane| lane.files.iter()),
-        rules.limits,
-    );
+    let indexes = index_lanes(pool, lanes)?;
+    let blobs = parse_blobs(pool, files_of(&indexes), rules.limits);
     let results: Vec<Result<SwimlaneFindings, BatchError>> = pool.install(|| {
         lanes
             .par_iter()
-            .map(|lane| {
-                compute_lane(lane, rules, &blobs, false).map(|state| SwimlaneFindings {
+            .zip(indexes.par_iter())
+            .map(|(lane, index)| {
+                compute_lane(lane, index, rules, &blobs, false).map(|state| SwimlaneFindings {
                     swimlane: lane.swimlane.clone(),
                     findings: state.findings(),
                 })
@@ -363,7 +365,9 @@ pub fn findings_for_swimlanes(
 /// read again unless they share a group with an affected one. A swimlane's tenants, tier and the rules are taken to be what
 /// they were: when they change, the caller recomputes everything.
 ///
-/// Call it from a blocking context.
+/// The affected swimlanes are indexed first, then the blobs that all of them read are parsed together, once each, however many
+/// of the swimlanes hold the same bytes (a change to a base file that forty swimlanes share is one parse and not forty), and
+/// then each swimlane is brought up to date in parallel from the shared table. Call it from a blocking context.
 ///
 /// # Errors
 ///
@@ -389,10 +393,127 @@ pub fn recompute_paths(
         };
         work.push((*state, *input, paths));
     }
+    let plans: Vec<Result<UpdatePlan<'_>, BatchError>> = pool.install(|| {
+        work.into_par_iter()
+            .map(|(state, input, paths)| plan_update(state, input, rules, paths))
+            .collect()
+    });
+    let plans = first_error(plans)?;
+    let mut keys = BTreeMap::new();
+    for plan in &plans {
+        for (key, data) in plan.keys() {
+            keys.entry(*key).or_insert(*data);
+        }
+    }
+    let blobs = Blobs::build(Some(pool), keys, rules.limits);
     let results: Vec<Result<LaneState, BatchError>> = pool.install(|| {
-        work.par_iter()
-            .map(|(state, input, paths)| update_lane(state, input, rules, paths))
+        plans
+            .par_iter()
+            .map(|plan| finish_update(plan, rules, &blobs))
             .collect()
     });
     first_error(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+
+    use domain::{PathMappingRule, TenantId};
+    use sha2::{Digest, Sha256};
+
+    use super::lane::BLOBS_PARSED;
+    use super::*;
+    use crate::checks::HostRules;
+    use crate::paths::classify_path;
+
+    fn file(tenants: &TenantSet, path: &str, text: &str) -> LaneFile {
+        let path = NfsPath::parse(path).expect("a path");
+        let bytes = Bytes::from(text.to_owned());
+        LaneFile {
+            facts: classify_path(&PathMappingRule::default(), &path, tenants, |_| false).expect("a mapping"),
+            path,
+            class: FileClass::Structured,
+            nfs: Some(NfsContent {
+                blob: ContentHash::from_bytes(Sha256::digest(&bytes).into()),
+                bytes,
+            }),
+            git: None,
+            baseline: Baseline::NotRecorded,
+            intentional: None,
+            overwrite: None,
+            history: None,
+        }
+    }
+
+    fn inputs<'a>(
+        files: &'a [Vec<LaneFile>],
+        ids: &'a [SwimlaneId],
+        tenants: &'a TenantSet,
+    ) -> Vec<LaneInput<'a>> {
+        files
+            .iter()
+            .zip(ids)
+            .map(|(files, swimlane)| LaneInput {
+                swimlane,
+                tenants,
+                tier: None,
+                files,
+            })
+            .collect()
+    }
+
+    /// Forty swimlanes hold the same base file, and it changes in all of them: the new bytes are one blob, and the update
+    /// parses them once, not once for each swimlane. The files that did not change are not read at all.
+    #[test]
+    fn a_blob_that_many_swimlanes_share_is_parsed_once_by_the_incremental_recompute() {
+        let tenants = TenantSet::new([TenantId::parse("sit1").expect("a tenant")]).expect("tenants");
+        let ids: Vec<SwimlaneId> = (0..40)
+            .map(|i| SwimlaneId::parse(&format!("sl-{i}")).expect("an id"))
+            .collect();
+        let build = |text: &str| -> Vec<Vec<LaneFile>> {
+            ids.iter()
+                .map(|_| {
+                    vec![
+                        file(&tenants, "svc/a.yml", text),
+                        file(&tenants, "svc/b.yml", "k: 2\n"),
+                        file(&tenants, "svc/c.yml", "k: 3\n"),
+                    ]
+                })
+                .collect()
+        };
+        let (before, after) = (build("k: 1\n"), build("k: 4\n"));
+
+        let limits = Limits::default();
+        let hosts = HostRules::default();
+        let rules = BatchRules {
+            application_names: &[],
+            host_rules: &hosts,
+            limits: &limits,
+        };
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .expect("a pool");
+        let inputs_of = |files| inputs(files, &ids, &tenants);
+        let previous = recompute_all(&pool, &inputs_of(&before), &rules).expect("a full recompute");
+        let affected: Vec<(SwimlaneId, NfsPath)> = ids
+            .iter()
+            .map(|id| (id.clone(), NfsPath::parse("svc/a.yml").expect("a path")))
+            .collect();
+
+        let parsed_before = BLOBS_PARSED.load(Ordering::Relaxed);
+        let next =
+            recompute_paths(&pool, &previous, &inputs_of(&after), &affected, &rules).expect("an update");
+        let parsed = BLOBS_PARSED.load(Ordering::Relaxed) - parsed_before;
+        assert_eq!(
+            parsed, 1,
+            "the changed file is one blob, parsed once for forty swimlanes"
+        );
+
+        // And the answer is the full recompute's (the update gives the swimlanes in swimlane order, a full one in input order).
+        let mut full = recompute_all(&pool, &inputs_of(&after), &rules).expect("a full recompute");
+        full.sort_by(|a, b| a.swimlane().cmp(b.swimlane()));
+        assert_eq!(next, full);
+    }
 }

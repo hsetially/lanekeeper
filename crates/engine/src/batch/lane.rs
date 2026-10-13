@@ -1,5 +1,6 @@
 //! The work behind the batch functions: the table of parsed blobs, one swimlane's index, and the computation of a group.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use bytes::Bytes;
@@ -14,13 +15,14 @@ use crate::drift::{Drift, DriftInput, drift_state};
 use crate::effective::{Layer, Layers, effective};
 use crate::error::BatchError;
 use crate::limits::Limits;
-use crate::parse::{FlatSetting, ParseWarning, Syntax, flatten, parse};
+use crate::parse::{FlatSetting, ParseWarning, Syntax, flatten, parse_decoded};
 use crate::resolution::{logical_file_role, merge_mode};
 use crate::tree_hash::{normalised_hash, swimlane_hash};
 
-/// The root property files, in the order of precedence (`.properties` beats `.yml` at equal rank). They are the lowest layer of
-/// every property source's effective hash. (`application-<tenant>.*` is a layer of the application's `property_view`; the
-/// batch's per-file hash uses the three layers tenant, base and root.)
+/// The root property files, in the order of precedence (`.properties` beats `.yml` beats `.yaml`, at equal rank). Together they
+/// are the lowest layer of every property source's effective hash: all of those that exist are merged setting by setting, as
+/// `property_view` merges them. (`application-<tenant>.*` is a layer of the application's `property_view`; the batch's
+/// per-file hash uses the three layers tenant, base and root.)
 const ROOT_FILES: [&str; 3] = ["application.properties", "application.yml", "application.yaml"];
 
 /// What identifies work on a blob: the same bytes are parsed once per syntax, and hashed once per way of normalising.
@@ -65,7 +67,7 @@ pub(super) fn collect_key<'a>(file: &'a LaneFile, into: &mut BTreeMap<BlobKey, &
 
 fn parse_file(data: &[u8], syntax: Syntax, limits: &Limits) -> Option<ParsedFile> {
     let decoded = decode_text(data, limits).ok()?;
-    let parsed = parse(&decoded.text, syntax, limits).ok()?;
+    let parsed = parse_decoded(&decoded.text, syntax, limits).ok()?;
     let flat = flatten(&parsed, limits).ok()?;
     Some(ParsedFile {
         settings: flat.settings,
@@ -74,7 +76,15 @@ fn parse_file(data: &[u8], syntax: Syntax, limits: &Limits) -> Option<ParsedFile
     })
 }
 
+/// How many blobs were parsed in this process (tests only: a test of sharing counts parses, which the results do not show).
+#[cfg(test)]
+pub(super) static BLOBS_PARSED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 fn facts_of(key: &BlobKey, data: &Bytes, limits: &Limits) -> BlobFacts {
+    #[cfg(test)]
+    if key.syntax.is_some() {
+        BLOBS_PARSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     BlobFacts {
         hash: normalised_hash(data, key.class),
         parsed: key.syntax.and_then(|syntax| parse_file(data, syntax, limits)),
@@ -138,13 +148,32 @@ impl<'a> LaneIndex<'a> {
             .map(|i| self.files[i])
     }
 
-    /// The root `application.*` file that is the lowest layer of the `spring_merge` files.
-    fn root(&self) -> Option<&'a LaneFile> {
-        ROOT_FILES.iter().find_map(|name| {
-            let file = self.get(&NfsPath::parse(name).ok()?)?;
-            (file.nfs.is_some() && file.facts.tenant.is_none()).then_some(file)
-        })
+    /// Every file of the swimlane, in path order.
+    pub(super) fn files(&self) -> &[&'a LaneFile] {
+        &self.files
     }
+
+    /// The root `application.*` files that are on NFS, strongest first. Together they are the lowest layer of the
+    /// `spring_merge` files.
+    fn roots(&self) -> Vec<&'a LaneFile> {
+        ROOT_FILES
+            .iter()
+            .filter_map(|name| {
+                let file = self.get(&NfsPath::parse(name).ok()?)?;
+                (file.nfs.is_some() && file.facts.tenant.is_none()).then_some(file)
+            })
+            .collect()
+    }
+}
+
+/// The index of every swimlane of a call, built before any blob is parsed: the sort that puts the files in path order is also
+/// what finds a path that is there twice, and a call with such a swimlane is refused before it costs anything. The error is
+/// the first in the order of `lanes`, whatever the schedule.
+pub(super) fn index_lanes<'a>(
+    pool: &ThreadPool,
+    lanes: &'a [LaneInput<'a>],
+) -> Result<Vec<LaneIndex<'a>>, BatchError> {
+    super::first_error(pool.install(|| lanes.par_iter().map(LaneIndex::new).collect()))
 }
 
 /// True when a change to `path` could change which file is the root.
@@ -152,12 +181,90 @@ fn could_be_root(path: &NfsPath) -> bool {
     path.parent().is_root() && ROOT_FILES.contains(&path.file_name())
 }
 
-/// The root file with what the groups need from it.
-#[derive(Clone, Copy)]
+/// The root files with what the groups need from them: one layer, below the base file of every `spring_merge` group.
 struct RootLayer<'a> {
-    file: &'a LaneFile,
+    /// The root files that are on NFS, strongest first.
+    paths: Vec<&'a NfsPath>,
+    /// The hash of the strongest one. The layer is named by it; the effective hash is of the merged settings, so it is not part
+    /// of that.
     hash: ContentHash,
-    parsed: Option<&'a ParsedFile>,
+    /// The settings of the root files, merged (a single file's own settings, as they are). `None` when a root file did not
+    /// parse: the groups then fall back to the hash of the file that is served.
+    settings: Option<Cow<'a, [FlatSetting]>>,
+}
+
+impl RootLayer<'_> {
+    /// True for a root file: it is a file of its own, and the root layer is not below it.
+    fn covers(&self, path: &NfsPath) -> bool {
+        self.paths.contains(&path)
+    }
+}
+
+/// The root layer of a swimlane, or `None` when it has no root file.
+fn root_layer<'a>(roots: &[&'a LaneFile], blobs: &'a Blobs) -> Option<RootLayer<'a>> {
+    struct Root<'a> {
+        path: &'a NfsPath,
+        hash: ContentHash,
+        parsed: Option<&'a ParsedFile>,
+    }
+    let members: Vec<Root<'a>> = roots
+        .iter()
+        .map(|&file| {
+            let facts = blobs.of(file);
+            let hash = facts
+                .map(|f| f.hash)
+                .or_else(|| file.nfs.as_ref().map(|c| normalised_hash(&c.bytes, file.class)))?;
+            Some(Root {
+                path: &file.path,
+                hash,
+                parsed: facts.and_then(|f| f.parsed.as_ref()),
+            })
+        })
+        .collect::<Option<_>>()?;
+    let first = members.first()?;
+    let settings = if let [only] = members.as_slice() {
+        only.parsed.map(|p| Cow::Borrowed(p.settings.as_slice()))
+    } else {
+        // `.properties` over `.yml` over `.yaml`: the three slots of `Layers` are three layers, strongest first.
+        let layers: Option<Vec<Layer<'_>>> = members
+            .iter()
+            .map(|m| {
+                Some(Layer {
+                    path: m.path,
+                    hash: m.hash,
+                    settings: &m.parsed?.settings,
+                })
+            })
+            .collect();
+        layers.and_then(|layers| {
+            let mut layers = layers.into_iter();
+            let merged = effective(
+                MergeMode::SpringMerge,
+                &Layers {
+                    tenant: layers.next(),
+                    base: layers.next(),
+                    root: layers.next(),
+                },
+            )?;
+            Some(Cow::Owned(
+                merged
+                    .settings
+                    .into_iter()
+                    .map(|v| FlatSetting {
+                        path: v.path,
+                        value: v.value,
+                        lines: v.origin.lines,
+                        via_alias: false,
+                    })
+                    .collect(),
+            ))
+        })
+    };
+    Some(RootLayer {
+        paths: members.iter().map(|m| m.path).collect(),
+        hash: first.hash,
+        settings,
+    })
 }
 
 /// What a group is computed from.
@@ -174,18 +281,11 @@ impl<'a> Ctx<'a> {
         blobs: &'a Blobs,
         index: &LaneIndex<'a>,
     ) -> Self {
-        let root = index.root().and_then(|file| {
-            let facts = blobs.of(file);
-            let hash = facts
-                .map(|f| f.hash)
-                .or_else(|| file.nfs.as_ref().map(|c| normalised_hash(&c.bytes, file.class)))?;
-            Some(RootLayer {
-                file,
-                hash,
-                parsed: facts.and_then(|f| f.parsed.as_ref()),
-            })
-        });
-        Self { input, rules, root }
+        Self {
+            input,
+            rules,
+            root: root_layer(&index.roots(), blobs),
+        }
     }
 }
 
@@ -249,7 +349,7 @@ fn history_view(history: &LaneHistory) -> BaseHistory<'_> {
 fn spring_hash(
     tenant: Option<&Member<'_>>,
     base: Option<&Member<'_>>,
-    root: Option<RootLayer<'_>>,
+    root: Option<&RootLayer<'_>>,
 ) -> Option<ContentHash> {
     fn layer<'m>(member: &'m Member<'_>) -> Option<Layer<'m>> {
         Some(Layer {
@@ -258,8 +358,8 @@ fn spring_hash(
             settings: &member.parsed()?.settings,
         })
     }
-    // The root file is below the base file; when the base file is the root file it is the same layer, once.
-    let root = root.filter(|r| base.is_none_or(|b| b.file.path != r.file.path));
+    // The root files are below the base file; a base file that is one of them is a file of its own, with no root layer.
+    let root = root.filter(|r| base.is_none_or(|b| !r.covers(&b.file.path)));
     let tenant = match tenant {
         Some(member) => Some(layer(member)?),
         None => None,
@@ -270,9 +370,9 @@ fn spring_hash(
     };
     let root = match root {
         Some(r) => Some(Layer {
-            path: &r.file.path,
+            path: r.paths.first()?,
             hash: r.hash,
-            settings: &r.parsed?.settings,
+            settings: r.settings.as_deref()?,
         }),
         None => None,
     };
@@ -288,7 +388,7 @@ fn group_effective(ctx: &Ctx<'_>, mode: MergeMode, members: &[Member<'_>]) -> Op
     let one = |tenant: Option<&Member<'_>>| -> Option<ContentHash> {
         let served = tenant.or(base)?;
         if mode == MergeMode::SpringMerge {
-            if let Some(hash) = spring_hash(tenant, base, ctx.root) {
+            if let Some(hash) = spring_hash(tenant, base, ctx.root.as_ref()) {
                 return Some(hash);
             }
         }
@@ -310,12 +410,12 @@ fn group_effective(ctx: &Ctx<'_>, mode: MergeMode, members: &[Member<'_>]) -> Op
     swimlane_hash(&per_tenant)
 }
 
-/// A group's file as the checks see it. `root_settings` is the root file's, when the file's mode merges it.
+/// A group's file as the checks see it. `root` is the root layer, when the file's mode merges it.
 fn view<'m>(
     m: &'m Member<'_>,
     hash: ContentHash,
     mode: MergeMode,
-    root_settings: Option<(&LaneFile, &'m ParsedFile)>,
+    root: Option<&'m RootLayer<'_>>,
 ) -> CheckFile<'m> {
     CheckFile {
         path: &m.file.path,
@@ -328,9 +428,9 @@ fn view<'m>(
             parse_warnings: &p.warnings,
             parse_warnings_dropped: p.warnings_dropped,
         }),
-        root_settings: root_settings
-            .filter(|(root, _)| root.path != m.file.path)
-            .map(|(_, p)| p.settings.as_slice()),
+        root_settings: root
+            .filter(|r| !r.covers(&m.file.path))
+            .and_then(|r| r.settings.as_deref()),
         drift: Some(m.drift),
         overwrite: m.file.overwrite,
         base_history: m.file.history.as_deref().map(history_view),
@@ -339,13 +439,13 @@ fn view<'m>(
 
 /// The findings of one group: C1 to C8 on its files that are on NFS, and C5 for those that are not.
 fn group_findings(ctx: &Ctx<'_>, mode: MergeMode, members: &[Member<'_>]) -> Vec<CheckResult> {
-    let root_settings = (mode == MergeMode::SpringMerge)
-        .then(|| ctx.root.and_then(|r| r.parsed.map(|p| (r.file, p))))
+    let root = (mode == MergeMode::SpringMerge)
+        .then_some(ctx.root.as_ref())
         .flatten();
     let present: Vec<CheckFile<'_>> = members
         .iter()
         .filter(|m| m.on_nfs())
-        .filter_map(|m| Some(view(m, m.hash?, mode, root_settings)))
+        .filter_map(|m| Some(view(m, m.hash?, mode, root)))
         .collect();
     let mut findings = checks_c1_to_c8(&CheckInput {
         tenants: ctx.input.tenants,
@@ -390,15 +490,15 @@ fn apply(
     state.apply_group(logical, effective, findings)
 }
 
-/// One swimlane from scratch.
+/// One swimlane from scratch, from its index and the table of parsed blobs.
 pub(super) fn compute_lane(
     input: &LaneInput<'_>,
+    index: &LaneIndex<'_>,
     rules: &BatchRules<'_>,
     blobs: &Blobs,
     want_hashes: bool,
 ) -> Result<LaneState, BatchError> {
-    let index = LaneIndex::new(input)?;
-    let ctx = Ctx::new(input, rules, blobs, &index);
+    let ctx = Ctx::new(input, rules, blobs, index);
     let mut state = LaneState::empty(input.swimlane.clone());
     for (logical, files) in &index.groups {
         let members: Vec<Member<'_>> = files.iter().map(|f| Member::new(f, blobs)).collect();
@@ -411,18 +511,36 @@ pub(super) fn compute_lane(
     Ok(state)
 }
 
-/// One swimlane brought up to date after `paths` changed.
-pub(super) fn update_lane(
-    previous: &LaneState,
-    input: &LaneInput<'_>,
+/// What an incremental update of one swimlane has decided before any blob is parsed: the index, the groups to recompute and the
+/// blobs they read. The blobs of all the swimlanes of a call are then parsed together, once each.
+pub(super) struct UpdatePlan<'a> {
+    previous: &'a LaneState,
+    input: &'a LaneInput<'a>,
+    index: LaneIndex<'a>,
+    paths: BTreeSet<&'a NfsPath>,
+    dirty: BTreeSet<&'a LogicalFile>,
+    keys: BTreeMap<BlobKey, &'a Bytes>,
+}
+
+impl<'a> UpdatePlan<'a> {
+    /// The blobs that the update reads.
+    pub(super) fn keys(&self) -> &BTreeMap<BlobKey, &'a Bytes> {
+        &self.keys
+    }
+}
+
+/// Which groups of a swimlane `paths` can have changed, and which blobs they read.
+pub(super) fn plan_update<'a>(
+    previous: &'a LaneState,
+    input: &'a LaneInput<'a>,
     rules: &BatchRules<'_>,
-    paths: &BTreeSet<&NfsPath>,
-) -> Result<LaneState, BatchError> {
+    paths: BTreeSet<&'a NfsPath>,
+) -> Result<UpdatePlan<'a>, BatchError> {
     let index = LaneIndex::new(input)?;
 
     // The groups to compute: those of the affected paths, before and after.
-    let mut dirty: BTreeSet<&LogicalFile> = BTreeSet::new();
-    for path in paths {
+    let mut dirty: BTreeSet<&'a LogicalFile> = BTreeSet::new();
+    for path in &paths {
         if let Some(old) = previous.files.get(*path) {
             dirty.insert(&old.logical);
         }
@@ -430,7 +548,7 @@ pub(super) fn update_lane(
             dirty.insert(&file.facts.logical);
         }
     }
-    // The root file is a layer of every `spring_merge` group.
+    // The root files are a layer of every `spring_merge` group.
     if paths.iter().any(|p| could_be_root(p)) {
         for logical in index.groups.keys() {
             if mode_of(rules, logical) == MergeMode::SpringMerge {
@@ -444,20 +562,42 @@ pub(super) fn update_lane(
         }
     }
 
-    // The blobs of what is recomputed, and the root file's.
+    // The blobs of what is recomputed, and the root files'.
     let mut keys = BTreeMap::new();
     for logical in &dirty {
         for file in index.groups.get(*logical).into_iter().flatten() {
             collect_key(file, &mut keys);
         }
     }
-    if let Some(root) = index.root() {
+    for root in index.roots() {
         collect_key(root, &mut keys);
     }
-    let blobs = Blobs::build(None, keys, rules.limits);
+    Ok(UpdatePlan {
+        previous,
+        input,
+        index,
+        paths,
+        dirty,
+        keys,
+    })
+}
 
-    let ctx = Ctx::new(input, rules, &blobs, &index);
-    let mut state = previous.clone();
+/// One swimlane brought up to date after `plan.paths` changed, from the table of parsed blobs.
+pub(super) fn finish_update(
+    plan: &UpdatePlan<'_>,
+    rules: &BatchRules<'_>,
+    blobs: &Blobs,
+) -> Result<LaneState, BatchError> {
+    let UpdatePlan {
+        previous,
+        input,
+        index,
+        paths,
+        dirty,
+        ..
+    } = plan;
+    let ctx = Ctx::new(input, rules, blobs, index);
+    let mut state = (*previous).clone();
     // A path that is gone has no state; the ones that are still there get theirs below, with their group.
     for path in paths {
         if index.get(path).is_none() {
@@ -465,8 +605,8 @@ pub(super) fn update_lane(
         }
     }
     for logical in dirty {
-        let files: &[&LaneFile] = index.groups.get(logical).map_or(&[], Vec::as_slice);
-        let members: Vec<Member<'_>> = files.iter().map(|f| Member::new(f, &blobs)).collect();
+        let files: &[&LaneFile] = index.groups.get(*logical).map_or(&[], Vec::as_slice);
+        let members: Vec<Member<'_>> = files.iter().map(|f| Member::new(f, blobs)).collect();
         for member in &members {
             state.files.insert(member.file.path.clone(), member.state());
         }

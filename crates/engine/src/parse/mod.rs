@@ -93,7 +93,19 @@ pub(crate) fn assemble(syntax: Syntax, builder: TreeBuilder<'_>, mut warnings: W
 /// bring in), stands for more than `Limits::nodes` nodes once aliases are expanded, or holds a value longer than
 /// `Limits::scalar_bytes` or a key longer than `Limits::setting_path_bytes`.
 pub fn parse(text: &str, syntax: Syntax, limits: &Limits) -> Result<Parsed, ParseError> {
-    if text.len() > limits.input_bytes {
+    parse_within(text, syntax, limits, limits.input_bytes)
+}
+
+/// `parse` for the text that `decode_text` made of a file. `Limits::input_bytes` is the size of a file, and `decode_text`
+/// has held the file to it; decoding can make the text longer (each byte of Latin-1 over 0x7F is two bytes of UTF-8, two
+/// bytes of UTF-16 are up to three), never more than twice as long, so a file within the limit is not refused for the
+/// length of its text. The text is held to twice the limit, which is the most a file within it can come to.
+pub(crate) fn parse_decoded(text: &str, syntax: Syntax, limits: &Limits) -> Result<Parsed, ParseError> {
+    parse_within(text, syntax, limits, limits.input_bytes.saturating_mul(2))
+}
+
+fn parse_within(text: &str, syntax: Syntax, limits: &Limits, longest: usize) -> Result<Parsed, ParseError> {
+    if text.len() > longest {
         return Err(ParseError::Limit(LimitKind::InputBytes));
     }
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);

@@ -162,7 +162,13 @@ pub fn scan_placeholders(text: &str) -> Vec<Placeholder> {
 ///
 /// `Limit(InputBytes)` when `text`, or what it renders to, is longer than `Limits::input_bytes`.
 pub fn render(text: &str, view: &PropertyView, limits: &Limits) -> Result<Rendered, ResolveError> {
-    if text.len() > limits.input_bytes {
+    render_within(text, view, limits.input_bytes)
+}
+
+/// `render` with the length that the text and the rendering may come to. `render_file` gives a file's text twice the limit,
+/// which is the most that decoding can make of a file within it (see `parse_decoded`).
+fn render_within(text: &str, view: &PropertyView, longest: usize) -> Result<Rendered, ResolveError> {
+    if text.len() > longest {
         return Err(ResolveError::Limit(LimitKind::InputBytes));
     }
     let mut out = String::with_capacity(text.len());
@@ -180,7 +186,7 @@ pub fn render(text: &str, view: &PropertyView, limits: &Limits) -> Result<Render
                 out.push_str(&setting.value.text);
                 copied = end;
                 replaced += 1;
-                too_long = out.len() > limits.input_bytes;
+                too_long = out.len() > longest;
             }
             None => {
                 unresolved.entry(key.to_owned()).or_insert(line);
@@ -191,7 +197,7 @@ pub fn render(text: &str, view: &PropertyView, limits: &Limits) -> Result<Render
         return Err(ResolveError::Limit(LimitKind::InputBytes));
     }
     out.push_str(&text[copied..]);
-    if out.len() > limits.input_bytes {
+    if out.len() > longest {
         return Err(ResolveError::Limit(LimitKind::InputBytes));
     }
     Ok(Rendered {
@@ -211,7 +217,9 @@ pub fn render(text: &str, view: &PropertyView, limits: &Limits) -> Result<Render
 /// # Errors
 ///
 /// `Decode` for bytes that are not the text they declare, `Encode` for a rendering that the encoding cannot hold (a value
-/// with a character that Latin-1 has no code for), and `Limit` as for `render`.
+/// with a character that Latin-1 has no code for), and `Limit(InputBytes)` for a file over the limit, or a rendering that
+/// is. The limit is the size of a file: the rendered file is held to it as bytes (`encode_text`), and its text, which a
+/// Latin-1 or UTF-16 file makes longer, to twice that.
 pub fn render_file(
     data: &Bytes,
     class: FileClass,
@@ -227,7 +235,7 @@ pub fn render_file(
         });
     }
     let decoded = decode_text(data, limits)?;
-    let rendered = render(&decoded.text, view, limits)?;
+    let rendered = render_within(&decoded.text, view, limits.input_bytes.saturating_mul(2))?;
     let bytes = if rendered.replaced == 0 {
         // Nothing changed: the very same bytes, not a re-encoding of them.
         data.clone()
