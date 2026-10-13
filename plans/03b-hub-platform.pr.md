@@ -29,7 +29,7 @@ Real output is in `plans/03b-hub-platform.evidence.md`. All of the following wer
 
 Honest record of the `just verify-03b` runs on the merged tree: run 1 failed in `platform-test` on a flake in my own round-1 test `lease_race::the_local_guard_never_outlives_the_database_lease` (it compared two readings taken at different moments; 1 failure in 15 runs under load with the code unchanged; the assertion was fixed and passed 40 of 40 under the same load). Run 2 passed everything up to `platform-bench`, which failed on **03a's** `P12.audit_record 3.190 ms p95 <= 3 ms`; five isolated runs on the merged tree gave 2.78 to 3.01 ms and five on a clean `origin/main` gave 2.53 to 3.03 ms, and 03a's own evidence calls the budget marginal ("Known gap 15"). Run 3 passed; the reviewer's run saw 2.530 ms. **The P12 budget is 03a's and marginal, so `just verify-03b` can fail at its last step on a noisy machine; that is for a human to settle.**
 
-Known flakes, not 03b's: `crates/agent/tests/binary.rs:72` and `crates/agent/tests/kube_watch.rs` (prompt 02); both passed in the final runs.
+Two agent flakes, prompt 02's, hit CI on this PR (see "Agent fixes"): `crates/agent/tests/binary.rs:72` (the reported failure) and `crates/agent/tests/kube_watch.rs:310` (once on main). Both are fixed on this branch, in `2ad6d24`.
 
 Not run: `docker build` of `crates/hub/Dockerfile` (the Dockerfile and `HARDENING.md` are linted by tests), `osv-scanner` (not installed; `cargo deny` and `cargo audit` stand in), the three `#[ignore]` real-Google-project tests in `gcp_real.rs`, and `just fuzz-smoke` / `just verify-03a` as such (03a's tests and benches ran inside `just verify` and `platform-bench`).
 
@@ -119,7 +119,14 @@ Open items for a human, left unfixed on purpose (the round 3 reviewer found no b
 13. A sentinel batch the sink rejects as `Invalid` or `TooLarge` gets no ack and no stream end (07's side).
 14. `git_tree_index` has no retention; the gix transport trusts system roots and has a 30 s total timeout per request.
 15. The plan proposed a separate `contract:` PR for `AuditAction::PrStateChanged` and the budget entries; both landed on this branch under the approved `Contract-change`. Confirm the merge route.
-16. The two flaky agent tests above need a prompt-02 follow-up.
+16. ~~The two flaky agent tests above need a prompt-02 follow-up.~~ Fixed on this branch in `2ad6d24`, with the human's Extra-paths approval; see "Agent fixes".
+
+## Agent fixes
+
+Two pre-existing races in `crates/agent` — prompt 02's ownership, not this prompt's — made CI red on this PR (`binary.rs:72`, the reported failure) and once on main (`kube_watch.rs:310`, run 38278983056). The human approved fixing both here (conversation, 2026-10-13) by adding `crates/agent/**` to the plan's Extra-paths for this. Commit `2ad6d24`, cross-ownership, test-support and startup-order only; no hub-platform behaviour touched. The full analysis is in `plans/03b-hub-platform.blockers.md`.
+
+1. **SIGTERM race** (`binary_serves_health_while_it_waits_for_a_certificate_and_exits_zero_on_sigterm`). The health port opened before the shutdown future's first poll installed its signal handlers, so a SIGTERM in that window was the default kill (`status.code() == None`). `process::run` now polls the future once before the port binds. The reproduction script went 10/10 killed before, 10/10 orderly exit 0 after; the binary test file passes 5/5 batches. Known limit, unchanged and now stated in the module doc: a SIGTERM before `run()`'s first poll (between `exec` and the runtime hand-off) is still the default kill.
+2. **`kube_watch` log assertion.** Not a timing race: `tracing` fixes each callsite's interest once per process, at the callsite's first hit, against whatever subscriber the hitting thread has then; with no global subscriber in a test binary, a callsite first hit by a capture-less test is cached "never" and stays silent in every later capture. `a_failing_list_is_retried_and_the_report_follows` (lists fail 500/503, no capture) could disable the agent's watch-failure `warn!` for the whole process, and then the log assertion read `[]` — deterministically at `--test-threads=1`, ~15% of runs under four threads (6/40 pinned to 2 vCPUs). `tests/support/log_capture.rs`'s `install` now installs a once-per-process keep-alive global (answers "always", drops events) and rebuilds the interest cache per install, so a capture always sees its own callsites; capture-less threads still drop their events, and no binary mixes `install` with `install_global`. After: `--test-threads=1` passes, 40 pinned four-thread batches 0 failures, `cargo test -p agent` green across all 55 binaries (so no test was passing on a silenced line).
 
 ## Reviewer agent verdict
 
@@ -133,7 +140,7 @@ Full text of all three rounds: `plans/03b-hub-platform.review.md`.
 
 ## Labels
 
-`contract-change`: the plan's Contract-change was approved by a human. It covers `perf/budgets.toml` (P2, P11, P11.memory_mib and P13 registered; new P7.blob_get_cached, P7.blob_endpoint, P15.hub_ack_versions_per_s) and `crates/ports` (additive `AuditAction::PrStateChanged`). Approved Extra-paths: `crates/xtask/tests/budgets_registry.rs` and `deny.toml`.
+`contract-change`: the plan's Contract-change was approved by a human. It covers `perf/budgets.toml` (P2, P11, P11.memory_mib and P13 registered; new P7.blob_get_cached, P7.blob_endpoint, P15.hub_ack_versions_per_s) and `crates/ports` (additive `AuditAction::PrStateChanged`). Approved Extra-paths: `crates/xtask/tests/budgets_registry.rs`, `deny.toml` and — added for `2ad6d24`, the agent fixes above — `crates/agent/**`.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
