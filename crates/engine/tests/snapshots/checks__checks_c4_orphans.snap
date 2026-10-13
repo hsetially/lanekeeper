@@ -1,0 +1,19 @@
+---
+source: crates/engine/tests/checks.rs
+expression: dump(&results)
+---
+C2 redundant_tenant_file tx/fine-sit1.yml
+  message: The file for sit1 is identical to the base file, so it only keeps sit1 from base changes; it can be deleted.
+  detail: RedundantTenantFile { tenant: TenantId("sit1"), equal_by: Bytes }
+C4 orphan_file tx/new-sit1.yml
+  message: Git has no such file: it is only on NFS.
+  detail: OrphanFile { reason: Untracked }
+C4 orphan_file tx/odd-sit2.yml
+  message: The name carries the suffix of sit2, which this swimlane does not deploy, so no service reads the file.
+  detail: OrphanFile { reason: TenantNotDeployed(TenantId("sit2")) }
+C4 orphan_file tx/scratch.yml
+  message: Git has no such file: it is only on NFS.
+  detail: OrphanFile { reason: Untracked }
+C4 orphan_file tx/stray-sit2.yml
+  message: The name carries the suffix of sit2, which this swimlane does not deploy, so no service reads the file.
+  detail: OrphanFile { reason: TenantNotDeployed(TenantId("sit2")) }

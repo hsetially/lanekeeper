@@ -1,0 +1,15 @@
+---
+source: crates/engine/tests/parse_yaml.rs
+expression: dump(&flat)
+---
+literal = "line one\nline two\n" string L2-4
+folded = "folded text" string L6-8
+quoted = "one two" string L9-10
+plain = "a b c" string L11-13
+flow[0] = "1" int L14-14
+flow[1] = "2" int L14-14
+flow[2] = "3" int L15-15
+map.x = "1" int L16-16
+map.y = "2" int L17-17
+nested.deep.leaf = "v" string L20-20
+after = "1" int L21-21

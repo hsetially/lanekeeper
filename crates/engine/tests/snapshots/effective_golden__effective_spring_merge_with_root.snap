@@ -1,0 +1,13 @@
+---
+source: crates/engine/tests/effective_golden.rs
+expression: dump(&merged)
+---
+mode SpringMerge
+hash 8ea6eeca2d193514a9045f48d99180ec406c57d2158fb97e877c1dd33fde5f30
+source #1 svc/app-sit1.yml a364874ce8d9b03fa16446b264cc01d357637c2c71d2b00a5e1ff22569ba65c0
+source #2 svc/app.yml 7dd394632719f72ecf4fe21cd335f8391afbefa16dc636337f949fd03a7b11aa
+source #3 application.yml 57bf2df02e2330567eae2d778272a9a2b327551669fd0b597e9f48344a02db15
+features[0] = "c" String <- #2 svc/app.yml L4-4
+logging.level = "DEBUG" String <- #1 svc/app-sit1.yml L2-2
+server.keepalive = "5" Int <- #3 application.yml L5-5
+server.port = "8080" Int <- #2 svc/app.yml L2-2

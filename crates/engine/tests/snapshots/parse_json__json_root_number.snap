@@ -1,0 +1,5 @@
+---
+source: crates/engine/tests/parse_json.rs
+expression: "dump(&json(\"  42  \"))"
+---
+$ = "42" int L1-1

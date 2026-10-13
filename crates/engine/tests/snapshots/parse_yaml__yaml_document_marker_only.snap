@@ -1,0 +1,5 @@
+---
+source: crates/engine/tests/parse_yaml.rs
+expression: dump(&yaml(text))
+---
+$ = "" null L1-1

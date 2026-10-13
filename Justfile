@@ -312,8 +312,75 @@ platform-bench: agent-fixtures
     cargo bench -p hub-identity
     cargo bench -p hub-platform -p hub
     cargo xtask bench-check
-verify-04:
-    @echo "verify-04 not implemented yet" && exit 1
+# The gate is complete (T10): lint, tests, the engine's fuzz crate, `fuzz-smoke`, and the benchmarks against this prompt's
+# budgets. Run `just verify` and `cargo xtask bench-check` after it (AGENTS.md, protocol step 4).
+# `engine-real-snapshot` is opt-in, needs the real repositories, and is not part of the gate.
+# Prompt 04 gate (the fact engine; S11, S13, S21, S22; P5 to P7): every sub-recipe, in order, stopping at the first failure.
+verify-04: engine-tools-check engine-lint engine-test engine-fuzz fuzz-smoke engine-bench
+
+# The pinned tools the gate needs, or the command that installs them. Never skips.
+engine-tools-check: agent-tools-check
+
+engine-lint:
+    cargo fmt --all -- --check
+    cargo clippy -p engine --all-targets -- -D warnings
+
+# Unit, property, golden and integration tests of the engine. It does no I/O, so there is no database and no Docker here. The
+# committed seeds of the engine's fuzz corpora replay here too (tests/corpus_replay.rs).
+engine-test:
+    cargo test -p engine --lib --tests
+
+# Acceptance 4 (opt-in, plan decision A4): the engine against the real repositories, which this repository never holds (rule 12).
+# Not part of `verify-04`. Without the two checkouts it says NOT RUN and exits 1, because a run that did not happen is not a
+# pass; a human runs it with them and pastes the output into the PR. It checks the locations, the checks of `sit1` and the
+# ambiguous names of the base (C9). It prints counts, file names and setting paths, never a value.
+#   LK_REAL_BASE_DIR   configuration-base-saas, default branch (the config/ folder or the checkout)
+#   LK_REAL_TENANT_DIR csp-tenant-data, branch sit1 (the data/config/ folder or the checkout)
+engine-real-snapshot:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "${LK_REAL_BASE_DIR:-}" ] || [ -z "${LK_REAL_TENANT_DIR:-}" ]; then
+        echo "real-snapshot: NOT RUN (set LK_REAL_BASE_DIR to a configuration-base-saas checkout and LK_REAL_TENANT_DIR to a csp-tenant-data checkout at sit1)"
+        exit 1
+    fi
+    cargo test -p engine --test real_snapshot -- --ignored --nocapture
+
+# S22: the engine's own fuzz crate (plan decision A2; `fuzz-smoke` does not run it). Its lockfile is complete and passes cargo
+# deny and cargo audit (S19), then each target runs {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in
+# crates/engine/fuzz/artifacts/. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart.
+engine_fuzz_targets := "engine_bytes engine_yaml engine_json engine_properties engine_flatten engine_index_settings engine_path_mapping engine_regex engine_secret_scan engine_render"
+engine-fuzz: fuzz-tools-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo +{{fuzz_nightly}} metadata --locked --format-version 1 --manifest-path crates/engine/fuzz/Cargo.toml > /dev/null
+    cargo deny --manifest-path crates/engine/fuzz/Cargo.toml check --config deny.toml
+    cargo audit --file crates/engine/fuzz/Cargo.lock
+    for target in {{engine_fuzz_targets}}; do
+        mkdir -p "target/fuzz-corpus/$target"
+        cargo +{{fuzz_nightly}} fuzz run "$target" --fuzz-dir crates/engine/fuzz "target/fuzz-corpus/$target" "crates/engine/fuzz/corpus/$target" -- -max_total_time={{fuzz_seconds}}
+    done
+    echo "engine-fuzz: {{engine_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
+
+# P5 to P7 (engine budgets, from T2 on): the criterion benchmarks at target scale (the fixtures are generated into
+# target/fixtures/target when missing), then `cargo xtask bench-check` on this prompt's budgets only. The full registry needs
+# every other prompt's benchmarks to have run (`just bench`), and `bench-check` has no filter, so the recipe cuts a registry with
+# just the budgets below and judges that; the full `cargo xtask bench-check` is run by the FINAL step after `just bench`.
+# `tests/justfile_gate.rs` fails if this list and the registered `engine/` budgets drift apart.
+engine_budgets := "P6 P6.index_settings P6.parse_flatten P7.compare P7.engine_grid P7.engine_text_search P5.engine_base P5.engine_per_file_per_swimlane"
+engine-bench:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Only this run's numbers may satisfy the check: a benchmark that dies at teardown must not pass on an earlier run's data.
+    rm -rf target/criterion/engine
+    cargo bench -p engine
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    awk -v ids="{{engine_budgets}}" 'BEGIN { RS = ""; ORS = "\n\n"; n = split(ids, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 } /^\[\[budget\]\]/ { if (match($0, /\nid = "[^"]+"/)) { id = substr($0, RSTART + 7, RLENGTH - 8); if (id in want) print } }' perf/budgets.toml > "$tmp/budgets.toml"
+    found="$(grep -c '^\[\[budget\]\]' "$tmp/budgets.toml" || true)"
+    wanted="$(wc -w <<< "{{engine_budgets}}")"
+    if [ "$found" -ne "$wanted" ]; then echo "engine-bench: found $found of $wanted budgets in perf/budgets.toml"; exit 1; fi
+    cargo xtask bench-check --budgets "$tmp/budgets.toml"
+
 verify-05:
     @echo "verify-05 not implemented yet" && exit 1
 verify-06:

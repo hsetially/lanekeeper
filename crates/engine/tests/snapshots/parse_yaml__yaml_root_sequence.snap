@@ -1,0 +1,8 @@
+---
+source: crates/engine/tests/parse_yaml.rs
+expression: dump(&yaml(text))
+---
+[0] = "a" string L1-1
+[1].b = "1" int L2-2
+[1].c = "2" int L3-3
+[2][0] = "x" string L4-4

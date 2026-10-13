@@ -1,0 +1,16 @@
+---
+source: crates/engine/tests/parse_yaml.rs
+expression: dump(&flat)
+---
+["a.b"] = "1" int L1-1
+["c[0]"] = "2" int L2-2
+d["x.y"] = "3" int L4-4
+d["e]f"] = "4" int L5-5
+d.q"uote = "5" int L6-6
+d.back\slash = "6" int L7-7
+d["tab\u{9}here"] = "7" int L8-8
+d[""] = "8" int L9-9
+["#0/looks-like-a-document"] = "9" int L10-10
+["$"] = "10" int L11-11
+plain key with spaces = "11" int L12-12
+mid"quote = "12" int L13-13

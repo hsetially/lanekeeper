@@ -1,0 +1,21 @@
+---
+source: crates/engine/tests/diff.rs
+expression: render(&d.hunks)
+---
+@@ -1,9 +1,9 @@
+ server:
+-  port: 8080
++  port: 8081
+   host: localhost
+   timeout: 30
+ logging:
+-  level: info
++  level: debug
+   file: /var/log/app.log
+ features:
+   a: true
+@@ -16,3 +16,4 @@
+ database:
+   url: jdbc:postgresql://db/app
+   pool: 10
++  max-lifetime: 600

@@ -1,0 +1,10 @@
+---
+source: crates/engine/tests/parse_yaml.rs
+expression: dump(&flat)
+---
+a = "yes" string yaml-boolean-like L1-1
+b = "true" bool L2-2
+c = "no" string L3-3
+d = "off" string yaml-boolean-like L4-4
+warning: boolean-like value at a line 1
+warning: boolean-like value at d line 4

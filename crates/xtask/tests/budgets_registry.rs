@@ -316,24 +316,74 @@ fn thresholds_match_docs_performance_md() {
             "{id}: docs/performance.md no longer says {needle:?}"
         );
     }
-    // Budgets that a prompt states and `docs/performance.md` does not (the table there names no blob request). They are compared with
-    // the prompt's own text instead, so a changed prompt makes this fail until the registry is reconsidered, as for the others.
-    let prompt = std::fs::read_to_string(repo_root().join("prompts/03b-hub-platform.md")).unwrap();
-    let from_prompt: &[(&str, f64, &str, &str)] = &[
+    // Budgets that a prompt states and `docs/performance.md` does not (the table there names no blob request, and the prompt's 20 ms
+    // for parse and flatten is the engine's share of P6). They are compared with the prompt's own text instead, so a changed prompt
+    // makes this fail until the registry is reconsidered, as for the others.
+    let from_prompt: &[(&str, f64, &str, &str, &str)] = &[
         (
             "P7.blob_get_cached",
             1.0,
             "ms",
+            "prompts/03b-hub-platform.md",
             "cached `get` under 1 ms and the blob endpoint under 30 ms (P7)",
         ),
         (
             "P7.blob_endpoint",
             30.0,
             "ms",
+            "prompts/03b-hub-platform.md",
             "cached `get` under 1 ms and the blob endpoint under 30 ms (P7)",
         ),
+        (
+            "P6.parse_flatten",
+            20.0,
+            "ms",
+            "prompts/04-fact-engine.md",
+            "a benchmark: parse and flatten of the 6,000-line file in 20 ms or less",
+        ),
+        (
+            "P7.engine_grid",
+            150.0,
+            "ms",
+            "prompts/04-fact-engine.md",
+            "a benchmark: grid for one logical file across 40 swimlanes in 150 ms or less, using pre-flattened inputs",
+        ),
+        (
+            "P7.engine_text_search",
+            400.0,
+            "ms",
+            "prompts/04-fact-engine.md",
+            "a benchmark: text search over the target-scale deduplicated blob set, running on rayon, in 400 ms or less",
+        ),
+        // The prompt gives P5 and P6 as the whole budgets, 50 ms + 2 ms and 3 minutes. The engine entries for P5 use the full
+        // figures (the engine alone must fit them); the plan's table names them, and the plan is frozen once approved.
+        (
+            "P5.engine_base",
+            50.0,
+            "ms",
+            "plans/04-fact-engine.md",
+            "| `incremental_recompute_base` | `P5.engine_base` | 50 ms |",
+        ),
+        (
+            "P5.engine_per_file_per_swimlane",
+            2.0,
+            "ms",
+            "plans/04-fact-engine.md",
+            "| `incremental_recompute_per_file_per_swimlane` | `P5.engine_per_file_per_swimlane` | 2 ms |",
+        ),
+        // The prompt gives no number for the settings index. The plan proposed 40 ms (A1); T3 measured 45.8 ms p95 and a human
+        // set 60 ms (the blockers file of prompt 04), so the plan is the source for the number. This comparison keeps it from
+        // being changed without its source.
+        (
+            "P6.index_settings",
+            60.0,
+            "ms",
+            "plans/04-fact-engine.md",
+            "| `index_settings_6000_lines` | `P6.index_settings` | 60 ms |",
+        ),
     ];
-    for (id, threshold, unit, needle) in from_prompt {
+    for (id, threshold, unit, file, needle) in from_prompt {
+        let prompt = std::fs::read_to_string(repo_root().join(file)).unwrap();
         let b = find(&reg, id);
         assert!(
             (b.threshold - threshold).abs() < f64::EPSILON,
@@ -341,10 +391,7 @@ fn thresholds_match_docs_performance_md() {
             b.threshold
         );
         assert_eq!(b.unit, *unit, "{id}: unit");
-        assert!(
-            prompt.contains(needle),
-            "{id}: prompts/03b-hub-platform.md no longer says {needle:?}"
-        );
+        assert!(prompt.contains(needle), "{id}: {file} no longer says {needle:?}");
     }
     // Every registry entry is covered above, so a new entry cannot skip the comparison with its source.
     let covered: BTreeSet<&str> = expected
@@ -375,7 +422,18 @@ fn only_budgets_with_a_harness_are_registered() {
     // (T11, `cargo bench -p hub-platform --bench ack_throughput`: the hub acknowledging a replayed spool).
     // Prompt 03a (identity): `cargo bench -p hub-identity` produces P7.auth_middleware and P7.auth_middleware_cold (T3) and
     // P12.audit_record (T5).
+    // Prompt 04 (fact engine): `cargo bench -p engine` produces P6.parse_flatten (T2), P7.compare and P7.engine_grid (T5),
+    // P7.engine_text_search (T7), P6.index_settings (T3; threshold set by a human, plans/04-fact-engine.blockers.md), and P6,
+    // P5.engine_base and P5.engine_per_file_per_swimlane (T8; the last is a harness that writes `target/perf-results/`).
     const REGISTERED: &[&str] = &[
+        "P6.parse_flatten",
+        "P6.index_settings",
+        "P7.compare",
+        "P7.engine_grid",
+        "P7.engine_text_search",
+        "P6",
+        "P5.engine_base",
+        "P5.engine_per_file_per_swimlane",
         "P7.auth_middleware",
         "P7.auth_middleware_cold",
         "P12.audit_record",

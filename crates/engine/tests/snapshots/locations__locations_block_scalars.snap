@@ -1,0 +1,8 @@
+---
+source: crates/engine/tests/locations.rs
+expression: dump(&index)
+---
+literal = "line one\nline two\n" L1-3
+folded = "folded text" L5-7
+keep = "kept\n\n" L10-11
+after = "1" L13-13

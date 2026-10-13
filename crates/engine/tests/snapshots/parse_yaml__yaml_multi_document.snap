@@ -1,0 +1,9 @@
+---
+source: crates/engine/tests/parse_yaml.rs
+expression: dump(&flat)
+---
+#0/a = "1" int L1-1
+#1/b = "2" int L3-3
+#2/[0] = "x" string L6-6
+#2/[1] = "y" string L7-7
+#3/$ = "plain" string L9-9

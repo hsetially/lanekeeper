@@ -1,0 +1,7 @@
+---
+source: crates/engine/tests/parse_yaml.rs
+expression: dump(&flat)
+---
+a.<< = "5" int L2-2
+a.k = "1" int L3-3
+warning: invalid merge key at 2:3

@@ -1,0 +1,6 @@
+---
+source: crates/engine/tests/parse_properties.rs
+expression: dump(&flat)
+---
+b = "2" string L2-2
+a = "4" string L4-4

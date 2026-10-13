@@ -1,0 +1,10 @@
+---
+source: crates/engine/tests/checks.rs
+expression: dump(&results)
+---
+C3 uneven_tenant_files tx/a.yml
+  message: Tenant files exist for sit1, sit2 but not for sit3.
+  detail: UnevenTenantFiles { with_file: [TenantId("sit1"), TenantId("sit2")], without_file: [TenantId("sit3")] }
+C3 uneven_tenant_files tx/c.yml
+  message: Tenant files exist for sit3 but not for sit1, sit2.
+  detail: UnevenTenantFiles { with_file: [TenantId("sit3")], without_file: [TenantId("sit1"), TenantId("sit2")] }

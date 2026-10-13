@@ -1,0 +1,24 @@
+---
+source: crates/engine/tests/locations.rs
+expression: dump(&index)
+---
+defaults.timeoutMs = "3000" L2-2
+defaults.retries = "3" L3-3
+service-a.timeoutMs = "3000" L2-2
+service-a.retries = "3" L3-3
+service-a.name = "a" L6-6
+service-b.retries = "3" L3-3
+service-b.timeoutMs = "100" L9-9
+service-b.name = "b" L10-10
+scalar_anchor = "hello" L11-11
+scalar_alias = "hello" L11-11
+list[0] = "x" L14-14
+list[1] = "y" L15-15
+copy[0] = "x" L14-14
+copy[1] = "y" L15-15
+multi.timeoutMs = "3000" L2-2
+multi.retries = "3" L3-3
+multi.extra = "1" L18-18
+multi.own = "yes" L19-19
+anchored_value.inner = "5" L21-21
+alias_of_leaf = "5" L21-21

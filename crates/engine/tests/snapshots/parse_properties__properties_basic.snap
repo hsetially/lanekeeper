@@ -1,0 +1,20 @@
+---
+source: crates/engine/tests/parse_properties.rs
+expression: dump(&flat)
+---
+a = "1" string L3-3
+b = "2" string L4-4
+c = "3" string L5-5
+d = "4" string L6-6
+e = "5" string L7-7
+f = "6" string L8-8
+indented = "7" string L9-9
+empty = "" string L10-10
+no-value = "" string L11-11
+spaced = "value with  spaces  " string L12-12
+url = "http://host:8080/path?x=y" string L13-13
+colon.in.value = "a:b=c" string L14-14
+config.server.port = "8080" string L15-15
+list[0] = "x" string L16-16
+list[1] = "y" string L17-17
+log.level = "INFO" string L18-18

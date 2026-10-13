@@ -1,0 +1,10 @@
+a: yes
+b: No
+c: 0755
+d: 0x1F
+e: .inf
+f: ~
+g:
+h: !!int '7'
+i: !custom v
+j: '${X}'

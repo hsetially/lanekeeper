@@ -1,0 +1,39 @@
+---
+source: crates/engine/tests/parse_yaml.rs
+expression: dump(&flat)
+---
+int = "42" int L1-1
+negative = "-7" int L2-2
+hex = "0x1F" int L3-3
+octal12 = "0o17" int L4-4
+leading-zero = "0755" string L5-5
+float = "3.14" float L6-6
+exp = "1e3" float L7-7
+inf = ".inf" float L8-8
+nan = ".NaN" float L9-9
+bool-true = "true" bool L10-10
+bool-capital = "True" bool L11-11
+bool-upper = "FALSE" bool L12-12
+null-tilde = "~" null L13-13
+null-word = "null" null L14-14
+null-empty = "" null L15-15
+yes = "yes" string yaml-boolean-like L16-16
+no-value = "no" string yaml-boolean-like L17-17
+on-value = "On" string yaml-boolean-like L18-18
+off-value = "OFF" string yaml-boolean-like L19-19
+quoted-yes = "yes" string L20-20
+quoted-int = "42" string L21-21
+quoted-bool = "true" string L22-22
+empty-quoted = "" string L23-23
+string = "hello world" string L24-24
+url = "https://example.org/a?b=c#d" string L25-25
+tagged-str = "123" string L26-26
+tagged-int = "7" int L27-27
+tagged-other = "value" other L28-28
+placeholder = "${ENV_NAME}" string L29-29
+placeholder-default = "${HOST:localhost}:${PORT}" string L30-30
+template = "{{ var }}" string L31-31
+warning: boolean-like value at yes line 16
+warning: boolean-like value at no-value line 17
+warning: boolean-like value at on-value line 18
+warning: boolean-like value at off-value line 19

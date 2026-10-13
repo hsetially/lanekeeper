@@ -1,0 +1,8 @@
+server:
+  port: 8080
+  tags:
+    - a
+    - b
+list:
+  - name: x
+    value: 1.5

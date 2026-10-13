@@ -1,0 +1,2 @@
+# Seeds keep their exact bytes (CRLF, lone CR, byte order marks, invalid UTF-8): the fuzz targets and the replay test read them as they are.
+corpus/** -text

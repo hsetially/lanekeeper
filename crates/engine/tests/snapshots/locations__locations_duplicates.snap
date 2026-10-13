@@ -1,0 +1,7 @@
+---
+source: crates/engine/tests/locations.rs
+expression: dump(&index)
+---
+b = "2" L2-2
+a = "3" L3-3
+c.d = "2" L6-6

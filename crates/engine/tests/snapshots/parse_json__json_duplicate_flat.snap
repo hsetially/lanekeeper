@@ -1,0 +1,6 @@
+---
+source: crates/engine/tests/parse_json.rs
+expression: dump(&flat)
+---
+b.x = "2" int L3-3
+a = "3" int L4-4

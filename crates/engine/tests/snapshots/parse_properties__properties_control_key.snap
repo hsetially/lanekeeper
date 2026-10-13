@@ -1,0 +1,6 @@
+---
+source: crates/engine/tests/parse_properties.rs
+expression: dump(&flat)
+---
+ok = "2" string L2-2
+warning: unusable key skipped at line 1

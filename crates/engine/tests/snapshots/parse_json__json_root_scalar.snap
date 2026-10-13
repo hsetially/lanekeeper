@@ -1,0 +1,5 @@
+---
+source: crates/engine/tests/parse_json.rs
+expression: "dump(&json(\"\\\"text\\\"\"))"
+---
+$ = "text" string L1-1

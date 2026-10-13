@@ -1,0 +1,6 @@
+---
+source: crates/engine/tests/parse_properties.rs
+expression: parse_warnings(&p)
+---
+duplicate key a first at 1:1 again at 3:1
+duplicate key a first at 1:1 again at 4:1

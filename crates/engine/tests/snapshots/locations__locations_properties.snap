@@ -1,0 +1,10 @@
+---
+source: crates/engine/tests/locations.rs
+expression: dump(&props)
+---
+a = "1" L2-2
+b.c = "two" L4-4
+long = "first second" L5-6
+d = "3" L7-7
+e = "f" L8-8
+g = "" L10-10

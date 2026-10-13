@@ -1,0 +1,11 @@
+---
+source: crates/engine/tests/locations.rs
+expression: dump(&index)
+---
+#0/a = "1" L1-1
+#1/b = "2" L3-3
+#2/[0] = "x" L5-5
+#2/[1] = "y" L6-6
+#3/$ = "plain" L8-8
+#4/$ = "" L10-10
+#5/last = "1" L12-12

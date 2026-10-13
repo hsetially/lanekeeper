@@ -1,0 +1,8 @@
+---
+source: crates/engine/tests/locations.rs
+expression: dump(&seq)
+---
+[0] = "" L1-1
+[1] = "a" L2-2
+[2][0] = "b" L4-4
+[3].c = "" L5-5

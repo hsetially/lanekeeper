@@ -117,7 +117,37 @@ statistic = "p95"
 threshold = 180000
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
+
+# Prompt 04, T2: the engine's own share of P6, the parse and flatten of the 6,000-line YAML file in 20 ms (the 20 ms is the
+# prompt's, prompts/04-fact-engine.md T2; the P6 above is the nightly total).
+
+[[budget]]
+id = "P6.parse_flatten"
+description = "Parse and flatten a 6,000-line YAML file"
+bench = "engine/parse_flatten_6000_lines"
+statistic = "p95"
+threshold = 20
+unit = "ms"
+scale = "target"
+registered = true
+
+# Prompt 04, T3: the settings index of the same file, end to end as the hub runs it for every unique blob: decode, parse, flatten,
+# and tree-sitter reading the text a second time and being checked against the parser. The prompt gives no number for it. The plan
+# proposed 40 ms (plans/04-fact-engine.md, A1); the measured p95 was 45.8 ms (decode, parse and flatten 7 ms; tree-sitter's own
+# parse of the 146 KB file 14 to 21 ms; its tree turned into the parser's shape 3 to 5 ms; flatten 1 ms), so a human set 60 ms
+# (`plans/04-fact-engine.blockers.md`). The docs/performance.md budget table has only the SQL half of the settings search
+# (P7.settings_search, prompt 05).
+
+[[budget]]
+id = "P6.index_settings"
+description = "Settings index of a 6,000-line YAML file (parse, flatten, tree-sitter locations)"
+bench = "engine/index_settings_6000_lines"
+statistic = "p95"
+threshold = 60
+unit = "ms"
+scale = "target"
+registered = true
 
 [[budget]]
 id = "P7.swimlane_list"
@@ -167,7 +197,66 @@ statistic = "p95"
 threshold = 100
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
+
+# Prompt 04, T5: the engine's share of the grid, the merge of 40 swimlanes' pre-flattened effective configs of one logical file
+# (both views: only the differing rows, and every row). The 150 ms is the prompt's (prompts/04-fact-engine.md, T5). The registry
+# entry below keeps the `hub-registry/` benchmark for prompt 05, which adds the database and the HTTP layer to the same budget; bench
+# names are unique, so the engine's own benchmark has its own id.
+
+[[budget]]
+id = "P7.engine_grid"
+description = "Grid of one logical file across 40 swimlanes, pre-flattened inputs (engine only)"
+bench = "engine/grid_40_swimlanes"
+statistic = "p95"
+threshold = 150
+unit = "ms"
+scale = "target"
+registered = true
+
+# Prompt 04, T7: the engine's share of the text search: the search itself over the distinct stored blobs of the target-scale
+# fixtures (about 23,000 blobs for about 80,000 places), on a pool of two threads, one search per sample over a fixed set of 20
+# queries (frequent, rare and absent literals, case-insensitive ones, regexes). The 400 ms is the prompt's
+# (prompts/04-fact-engine.md, T7). The registry entry `P7.text_search` keeps the `hub-registry/` benchmark for prompt 05, which
+# adds the database read of the blobs and the HTTP layer to the same budget; bench names are unique, so the engine's own
+# benchmark has its own id.
+
+[[budget]]
+id = "P7.engine_text_search"
+description = "Text search over the deduplicated blobs of 40 swimlanes, on 2 threads (engine only)"
+bench = "engine/search_text_target_blobs"
+statistic = "p95"
+threshold = 400
+unit = "ms"
+scale = "target"
+registered = true
+
+# Prompt 04, T8: the engine's share of P5, the incremental recompute (`recompute_paths`), on the target-scale fixtures with a pool
+# of two threads. `P5.engine_base` is one changed file in one swimlane (criterion); `P5.engine_per_file_per_swimlane` is the time of
+# 100 changed files in each of 10 swimlanes divided by the 1,000 pairs (a harness, `target/perf-results/`), which has the base cost
+# inside it. Both use the full figures of docs/performance.md (50 ms and 2 ms): the engine alone has to fit the whole budget, and
+# whatever headroom is left belongs to prompt 05, whose entries above (`P5`, `P5.per_file_per_swimlane`) keep their
+# `hub-registry/` benchmarks for the database and event part. Bench names are unique, so the engine has its own ids.
+
+[[budget]]
+id = "P5.engine_base"
+description = "Incremental recompute base cost, engine kernel (one changed file in one swimlane)"
+bench = "engine/incremental_recompute_base"
+statistic = "p95"
+threshold = 50
+unit = "ms"
+scale = "target"
+registered = true
+
+[[budget]]
+id = "P5.engine_per_file_per_swimlane"
+description = "Incremental recompute cost per changed file per affected swimlane, engine kernel"
+bench = "engine/incremental_recompute_per_file_per_swimlane"
+statistic = "p95"
+threshold = 2
+unit = "ms"
+scale = "target"
+registered = true
 
 [[budget]]
 id = "P7.grid"

@@ -1,0 +1,13 @@
+---
+source: crates/engine/tests/checks.rs
+expression: dump(&results)
+---
+C7 overwritten_nfs_change tx/conflicted.yml
+  message: A sync replaced a change that was only on NFS (the file was in conflict); the version it replaced can be restored.
+  detail: OverwrittenNfsChange { previous_state: Conflict, lost_version: Some(ContentHash(0808080808080808080808080808080808080808080808080808080808080808)), source: SyncJob }
+C7 overwritten_nfs_change tx/deleted.yml
+  message: A sync replaced a change that was only on NFS (the file was ahead on NFS); the version it replaced can be restored.
+  detail: OverwrittenNfsChange { previous_state: NfsAhead, lost_version: None, source: SyncJob }
+C7 overwritten_nfs_change tx/synced.yml
+  message: A sync replaced a change that was only on NFS (the file was ahead on NFS); the version it replaced can be restored.
+  detail: OverwrittenNfsChange { previous_state: NfsAhead, lost_version: Some(ContentHash(0707070707070707070707070707070707070707070707070707070707070707)), source: SyncJob }

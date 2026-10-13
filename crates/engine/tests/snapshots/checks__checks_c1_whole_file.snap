@@ -1,0 +1,8 @@
+---
+source: crates/engine/tests/checks.rs
+expression: dump(&results)
+---
+C1 missed_base_changes tx-infinity-api/entryGroupConfig-sit1.yml
+  message: The base file has 2 commits since the copy for sit1 was last updated (matched by commit time); 2 settings differ.
+  at entryGroups.branch.limit L3-3
+  detail: MissedBaseChanges { commits: [BaseCommit { commit: CommitId("0202020202020202020202020202020202020202"), time: Timestamp(200000) }, BaseCommit { commit: CommitId("0303030303030303030303030303030303030303"), time: Timestamp(300000) }], commits_total: 2, changes: [ChangedSetting { path: SettingPath("entryGroups.atm.limit"), kind: Added }, ChangedSetting { path: SettingPath("entryGroups.branch.limit"), kind: Changed }], changes_total: 2, compared: true }

@@ -1,0 +1,10 @@
+---
+source: crates/engine/tests/checks.rs
+expression: dump(&results)
+---
+C6 environment_host_mismatch svc/app-sit1.yml
+  message: 3 settings point to hosts of another environment (dev); this swimlane is prod.
+  at auth.issuer L4-4
+  at plain L11-11
+  at video.url L2-2
+  detail: EnvironmentHostMismatch { swimlane_tier: ShortText("prod"), hosts: [MismatchedHost { path: SettingPath("auth.issuer"), host: "login.oktapreview.com", host_tier: ShortText("dev") }, MismatchedHost { path: SettingPath("plain"), host: "video-dev.example.com", host_tier: ShortText("dev") }, MismatchedHost { path: SettingPath("video.url"), host: "video-dev.example.com", host_tier: ShortText("dev") }], total: 3 }

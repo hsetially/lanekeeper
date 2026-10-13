@@ -1,0 +1,14 @@
+---
+source: crates/engine/tests/locations.rs
+expression: dump(&index)
+---
+["a.b"] = "1" L1-1
+["c[0]"] = "2" L2-2
+d["x.y"] = "3" L4-4
+d["e]f"] = "4" L5-5
+d[""] = "5" L6-6
+d["tab\u{9}here"] = "6" L7-7
+d.it's = "7" L8-8
+["#0/looks-like-a-document"] = "8" L9-9
+["$"] = "9" L10-10
+explicit = "10" L11-12

@@ -1,0 +1,10 @@
+---
+source: crates/engine/tests/checks.rs
+expression: dump(&results)
+---
+C8 duplicate_keys security/security-roles.yml
+  message: 3 keys are defined more than once; the last definition wins.
+  at roles.txRemoteJuniorTeller L8-8
+  at roles.txRemoteSeniorTeller L10-10
+  at roles.txRemoteSupervisor L14-14
+  detail: DuplicateKeys { keys: [DuplicatedKey { path: Some(SettingPath("roles.txRemoteJuniorTeller")), lines: [2, 8] }, DuplicatedKey { path: Some(SettingPath("roles.txRemoteSeniorTeller")), lines: [4, 10] }, DuplicatedKey { path: Some(SettingPath("roles.txRemoteSupervisor")), lines: [6, 12, 14] }], total: 3, more_not_listed: false }

@@ -1,0 +1,12 @@
+---
+source: crates/engine/tests/locations.rs
+expression: dump(&index)
+---
+a = "1" L1-1
+b.c = "2" L3-3
+b.d[0] = "x" L5-5
+b.d[1].y = "3" L6-6
+b.d[1].z = "4" L7-7
+b.d[2][0] = "p" L8-8
+b.d[2][1] = "q" L9-9
+e = "end" L10-10

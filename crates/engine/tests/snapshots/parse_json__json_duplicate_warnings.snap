@@ -1,0 +1,6 @@
+---
+source: crates/engine/tests/parse_json.rs
+expression: parse_warnings(&p)
+---
+duplicate key b.x first at 3:0 again at 3:0
+duplicate key a first at 2:0 again at 4:0
