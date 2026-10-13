@@ -2,7 +2,7 @@
 
 Status: APPROVED
 Contract-change: APPROVED
-Extra-paths: `crates/xtask/tests/budgets_registry.rs`, `deny.toml`
+Extra-paths: `crates/xtask/tests/budgets_registry.rs`, `deny.toml`, `crates/agent/**`
 Prompt: prompts/03b-hub-platform.md
 Branch: agent/03b-hub-platform
 

@@ -84,3 +84,54 @@ Checks after the change:
 - `webpki-root-certs` is now in `Cargo.lock` (wasm32-only dependency of `rustls-platform-verifier`) but is outside the checked graph, which is why `licenses` passes.
 
 For the PR text: reqwest is a transitive dependency (gix-transport's HTTP client), and `deny.toml`'s graph is narrowed to Linux.
+
+## CI is red on two timing races in `crates/agent` (owned by prompt 02); fixing them here needs Extra-paths
+
+2026-10-13. PR #7's `rust` job fails on `crates/agent/tests/binary.rs:72`
+(`binary_serves_health_while_it_waits_for_a_certificate_and_exits_zero_on_sigterm`):
+the child exits by signal, not code 0. Main fails the same way (merge of PR #9, run 38303091082), and
+`crates/agent` is untouched in this PR — the races are pre-existing, and GitHub's slower runners expose them.
+
+1. **The SIGTERM race** (the reported failure). The health port binds first (`process.rs`), but the
+   shutdown future installs its signal handlers only on its first poll, which happens in `assemble`'s
+   `select!` — after the kube client, CA load, transport and spool. A SIGTERM in that window is the
+   default kill: `status.code() == None`. Reproduced 10/10 locally by mimicking the test; the module
+   doc ("a shutdown signal at any of these points ends the process in an orderly way") promises otherwise.
+   Fix: poll the shutdown future once at the top of `process::run`, before the port binds.
+2. **The `kube_watch` log race** (`kube_watch.rs:310`, once on main: run 38278983056, `[]`). Not a
+   timing race. `tracing` fixes per callsite, for the rest of the process, whether its events are
+   dispatched at all: the interest is computed once, at the callsite's first hit, against whatever
+   subscriber the hitting thread has then, and `set_default` never recomputes it. In a test binary
+   there is no global subscriber, so a callsite first hit on a thread without a capture is cached
+   "never" and stays silent in every later capture. `a_failing_list_is_retried_and_the_report_follows`
+   hits the agent's watch-failure `warn!` (lists fail 500/503) without installing a capture, so whether
+   `no_full_report_while_the_lists_are_refused_and_the_log_has_only_the_status` sees its own line
+   depends on which test registers the callsite first: deterministic failure at `--test-threads=1`
+   (confirmed), ~15% under four threads (6/40 and 3/30 pinned to 2 vCPUs). The failing captures show
+   the signature: kube-rs's 403 `warn!` (only hit on `Forbidden`, which the poisoning test's 500s do
+   not reach) arrives, but every callsite the poisoning test hit first — the agent's `warn!`,
+   `kube_client`'s debug, `stream_backoff`'s debug — is missing. Waiting for the line could not have
+   fixed it. Fix: `tests/support/log_capture.rs`'s `install` now installs a once-per-process global
+   keep-alive subscriber (answers "always", drops events), so no first hit is ever evaluated against
+   `NoSubscriber`, and rebuilds the interest cache per install, so callsites poisoned before it are
+   re-enabled. Threads without a capture still drop their events when they dispatch, so capture-less
+   tests are unaffected. A binary that uses `install_global` must not also use `install`, because the
+   first `install` claims the global default; no binary mixes them today.
+
+The human approved fixing both on this branch (conversation, 2026-10-13): Extra-paths `crates/agent/**`
+was added to the plan header for two commits, both tests-only or startup-order only, no behaviour of the
+hub platform touched.
+
+### Evidence after the fixes
+
+- SIGTERM: the reproduction script (mimicking the test: SIGTERM once `/healthz` answers) went 10/10
+  `code() == None` before, 10/10 orderly 0 after; `--test binary` 10/10 before the session's other
+  changes and 5/5 again after.
+- `kube_watch`: `--test-threads=1` failed deterministically before the `log_capture` fix, passes after;
+  40 batches at `taskset -c 0,1 ... --test-threads=4`: 0 failures (was 6/40 in the same loop).
+- `cargo test -p agent`: 55 test binaries, all green — the keep-alive does not expose any test that
+  was passing because a poisoned callsite silenced a line.
+- `cargo fmt --all`, `cargo clippy -p agent --all-targets -- -D warnings`: clean.
+- Known limitation, unchanged: a SIGTERM before `run()`'s first poll — between `exec` and the runtime
+  hand-off — is still the default kill; the module doc now states the handlers are installed at the
+  first poll, inside `run`.
