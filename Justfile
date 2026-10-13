@@ -312,8 +312,22 @@ platform-bench: agent-fixtures
     cargo bench -p hub-identity
     cargo bench -p hub-platform -p hub
     cargo xtask bench-check
-verify-04:
-    @echo "verify-04 not implemented yet" && exit 1
+# T1 starts this gate with the tool check, the lint and the tests; the tasks after it append the fuzz and benchmark recipes to
+# its line, and it is complete at T10. Run `just verify` and `cargo xtask bench-check` after it (AGENTS.md, protocol step 4).
+# `engine-real-snapshot` (T3) is opt-in, needs the real repositories, and is not part of the gate.
+# Prompt 04 gate (the fact engine; S11, S13, S21, S22; P5 to P7): every sub-recipe, in order, stopping at the first failure.
+verify-04: engine-tools-check engine-lint engine-test
+
+# The pinned tools the gate needs, or the command that installs them. Never skips.
+engine-tools-check: agent-tools-check
+
+engine-lint:
+    cargo fmt --all -- --check
+    cargo clippy -p engine --all-targets -- -D warnings
+
+# Unit, property, golden and integration tests of the engine. It does no I/O, so there is no database and no Docker here.
+engine-test:
+    cargo test -p engine --lib --tests
 verify-05:
     @echo "verify-05 not implemented yet" && exit 1
 verify-06:

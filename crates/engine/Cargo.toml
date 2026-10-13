@@ -10,3 +10,12 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+domain.workspace = true
+# File content is `Bytes` end to end: a result that did not change is the same buffer, not a copy (T1).
+bytes.workspace = true
+# The D79 deny globs (T1) and every later glob rule (T4). Matching is linear in the path.
+globset.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
