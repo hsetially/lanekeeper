@@ -22,7 +22,7 @@ use std::fmt;
 
 use domain::NfsPath;
 
-use self::build::{TreeBuilder, Warnings};
+pub(crate) use self::build::{TreeBuilder, Warnings, clamp32};
 pub use self::flatten::flatten;
 pub use self::key::{DecodedPath, PathSegment, decode_setting_path, encode_setting_path};
 pub use self::node::{
@@ -30,6 +30,8 @@ pub use self::node::{
     PropertyEntry, Scalar, ScalarStyle, ScalarTag, Validation,
 };
 pub use self::validate::validate;
+pub(crate) use self::validate::{combine_warnings, decode_for_parse};
+pub(crate) use self::yaml::SourceLines;
 use crate::bytes::file_extension;
 use crate::error::{LimitKind, ParseError};
 use crate::limits::Limits;
@@ -66,6 +68,18 @@ impl fmt::Display for Syntax {
             Self::Json => "JSON",
             Self::Properties => ".properties",
         })
+    }
+}
+
+/// The `Parsed` of documents that some other reader fed to a `TreeBuilder` (the tree-sitter reader of the settings index,
+/// T3). It has no warnings of its own: the builder's go into `warnings`.
+pub(crate) fn assemble(syntax: Syntax, builder: TreeBuilder<'_>, mut warnings: Warnings) -> Parsed {
+    let documents = builder.finish(&mut warnings);
+    Parsed {
+        syntax,
+        body: Body::Documents(documents),
+        warnings: warnings.items,
+        warnings_dropped: warnings.dropped,
     }
 }
 

@@ -16,6 +16,7 @@
 //! | `engine_yaml` | text | `parse` and `flatten` never panic, finish within the limits and give the same answer twice; what is accepted is a graph without cycles whose positions are inside the text; every setting path is unique, within the limits, and survives decode and encode |
 //! | `engine_json` | text | the same for JSON |
 //! | `engine_properties` | text | the same for `.properties` (a path is the key as written) |
+//! | `engine_index_settings` | a selector byte (YAML, JSON or `.properties`), then any bytes | `index_settings` and `locate` never panic and give the same answer twice; the index is there exactly when `validate` accepts the bytes, with the same settings; every range is inside the text; a YAML file is located by tree-sitter or says that it could not be, and every disagreement names a setting of the file |
 //! | `engine_flatten` | NUL-separated pieces | a path built from any keys and indexes is read back to the same keys and indexes; any text offered as a setting path is refused or read to something that writes and reads back the same |
 
 #![allow(
@@ -31,21 +32,22 @@ use std::collections::BTreeSet;
 use bytes::Bytes;
 use domain::{NfsPath, SettingPath, ValueFlag, ValueType};
 use engine::{
-    Body, DenyMatcher, Flat, Limits, Newline, NodeKind, ParseError, Parsed, PathSegment, Syntax, apply_eol,
-    classify, decode_setting_path, decode_text, detect_format, encode_setting_path, encode_text, flatten,
-    normalise_eol, parse,
+    Body, DenyMatcher, Flat, Limits, LocationSource, Newline, NodeKind, ParseError, ParseWarning, Parsed,
+    PathSegment, Syntax, apply_eol, classify, decode_setting_path, decode_text, detect_format,
+    encode_setting_path, encode_text, flatten, index_settings, locate, normalise_eol, parse, validate,
 };
 
 /// A check over one fuzz input.
 pub type Check = fn(&[u8]) -> Result<(), String>;
 
 /// Every fuzz target: its name (also the file name in `fuzz_targets` and the corpus directory) and its check.
-pub const TARGETS: [(&str, Check); 5] = [
+pub const TARGETS: [(&str, Check); 6] = [
     ("engine_bytes", engine_bytes),
     ("engine_yaml", engine_yaml),
     ("engine_json", engine_json),
     ("engine_properties", engine_properties),
     ("engine_flatten", engine_flatten),
+    ("engine_index_settings", engine_index_settings),
 ];
 
 /// The least number of seeds in each corpus directory: valid, truncated, oversized, alias bomb, deep nesting, wrong
@@ -290,6 +292,133 @@ fn check_flat(flat: &Flat, syntax: Syntax, total_lines: u32, limits: &Limits) ->
     Ok(())
 }
 
+// --- engine_index_settings ---
+
+/// The syntax a selector byte stands for.
+pub fn syntax_of_selector(selector: u8) -> Syntax {
+    match selector % 3 {
+        0 => Syntax::Yaml,
+        1 => Syntax::Json,
+        _ => Syntax::Properties,
+    }
+}
+
+pub fn engine_index_settings(data: &[u8]) -> Result<(), String> {
+    let Some((&selector, body)) = data.split_first() else {
+        return Ok(());
+    };
+    let syntax = syntax_of_selector(selector);
+    let limits = fuzz_limits();
+
+    let first = index_settings(body, syntax, &limits);
+    ensure(first == index_settings(body, syntax, &limits), || {
+        "indexing twice gives different answers".into()
+    })?;
+    // The index is there exactly when the bytes are acceptable, and holds the settings `validate` counts.
+    let index = match (first, validate(body, syntax, &limits)) {
+        (Ok(index), Ok(validation)) => {
+            ensure(index.rows.len() == validation.settings, || {
+                format!("{} rows for {} settings", index.rows.len(), validation.settings)
+            })?;
+            index
+        }
+        (Err(a), Err(b)) => {
+            ensure(a == b, || {
+                format!("index_settings fails with {a:?} and validate with {b:?}")
+            })?;
+            return Ok(());
+        }
+        (a, b) => {
+            return Err(format!(
+                "index_settings is {} and validate is {}",
+                if a.is_ok() { "ok" } else { "an error" },
+                if b.is_ok() { "ok" } else { "an error" }
+            ));
+        }
+    };
+
+    let text =
+        decode_text(body, &limits).map_err(|e| format!("an index for bytes that do not decode: {e}"))?;
+    let total_lines = lines_in(&text.text);
+    ensure(index.rows.len() <= limits.settings, || {
+        "more rows than the limit".into()
+    })?;
+    ensure(index.warnings.len() <= limits.warnings, || {
+        "more warnings than the cap".into()
+    })?;
+    let mut seen = BTreeSet::new();
+    for row in &index.rows {
+        let path = row.path.as_str();
+        ensure(seen.insert(path.to_owned()), || {
+            format!("the path {path:?} appears twice")
+        })?;
+        ensure(path.len() <= limits.setting_path_bytes, || {
+            "a path over the limit".into()
+        })?;
+        ensure(
+            row.lines.start() >= 1 && row.lines.start() <= row.lines.end(),
+            || format!("{path}: lines {}..{}", row.lines.start(), row.lines.end()),
+        )?;
+        ensure(row.lines.end() <= total_lines + 1, || {
+            format!(
+                "{path}: lines {}..{} in a text of {total_lines}",
+                row.lines.start(),
+                row.lines.end()
+            )
+        })?;
+        ensure(row.value.text.len() <= limits.scalar_bytes.max(2), || {
+            format!("{path}: a value over the limit")
+        })?;
+    }
+
+    // Where the ranges come from, and what the warnings say about it.
+    let mismatches: Vec<&Option<domain::SettingPath>> = index
+        .warnings
+        .iter()
+        .filter_map(|w| match w {
+            ParseWarning::LocationMismatch { path } => Some(path),
+            _ => None,
+        })
+        .collect();
+    match (syntax, index.located_by) {
+        (Syntax::Yaml, LocationSource::TreeSitter) => {
+            for path in &mismatches {
+                let named = path
+                    .as_ref()
+                    .ok_or_else(|| "tree-sitter read the file and the warning has no setting".to_owned())?;
+                ensure(seen.contains(named.as_str()), || {
+                    "a disagreement names a setting that the file does not have".into()
+                })?;
+            }
+        }
+        (Syntax::Yaml, LocationSource::Parser) => {
+            // tree-sitter could not read the file: the file says so, unless the warnings are full.
+            ensure(
+                mismatches.iter().any(|p| p.is_none()) || index.warnings_dropped > 0,
+                || "tree-sitter could not read a YAML file and nothing says so".into(),
+            )?;
+        }
+        (_, LocationSource::Parser) => {
+            ensure(mismatches.is_empty(), || {
+                "a location warning on a file that tree-sitter does not read".into()
+            })?;
+        }
+        (_, LocationSource::TreeSitter) => return Err("tree-sitter located a file that is not YAML".into()),
+    }
+
+    // `locate` is the index, asked for one setting.
+    for row in index.rows.iter().take(8) {
+        ensure(index.locate(&row.path) == Some(row.lines), || {
+            format!("{}: the index does not find its own row", row.path)
+        })?;
+        ensure(
+            locate(body, syntax, &row.path, &limits) == Ok(Some(row.lines)),
+            || format!("{}: locate disagrees with the index", row.path),
+        )?;
+    }
+    Ok(())
+}
+
 // --- engine_flatten ---
 
 pub fn engine_flatten(data: &[u8]) -> Result<(), String> {
@@ -367,5 +496,9 @@ pub fn planted_harm_is_detected() -> Result<(), String> {
     ensure(engine_flatten(b"fine\0@1").is_ok(), || {
         "a clean input was reported".into()
     })?;
+    ensure(
+        engine_index_settings(b"\0a: 1\nb:\n  c: |\n    x\n  d: 2\n").is_ok(),
+        || "a clean file was reported by the index check".into(),
+    )?;
     Ok(())
 }

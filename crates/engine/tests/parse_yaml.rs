@@ -176,6 +176,49 @@ after: 1
     assert_snapshot!("yaml_positions", dump(&flat));
 }
 
+/// Found by the second reader of the settings index (T3): the parser's span for a block scalar covers its text only, so a
+/// scalar followed by an indented sibling ran one line too far, and one in a sequence or at the root started one line late
+/// (on its first line of text and not on the line of its `|`).
+#[test]
+fn block_scalars_are_on_the_lines_from_their_indicator_to_their_last_line_of_text() {
+    let lines = |text: &str| -> Vec<String> {
+        yaml(text)
+            .settings
+            .iter()
+            .map(|s| format!("{} L{}-{}", s.path, s.lines.start(), s.lines.end()))
+            .collect()
+    };
+    // Followed by a sibling that is indented: the scalar ends where its text ends.
+    assert_eq!(
+        lines("a: 1\nb:\n  c: |\n    x\n    y\n  d: 2\n"),
+        ["a L1-1", "b.c L3-5", "b.d L6-6"]
+    );
+    // In a sequence, the item starts on the line of `- |`.
+    assert_eq!(lines("- |\n  one\n  two\n- x\n"), ["[0] L1-3", "[1] L4-4"]);
+    assert_eq!(
+        lines("- a\n- >-\n\n  b\n- &x |\n  c\n"),
+        ["[0] L1-1", "[1] L2-4", "[2] L5-6"]
+    );
+    // At the root, on the line of the `---` that carries the indicator.
+    assert_eq!(lines("--- |\n  root\n"), ["$ L1-2"]);
+    // Empty: the indicator's line, and not the next token's.
+    assert_eq!(lines("- |\n- b\n"), ["[0] L1-1", "[1] L2-2"]);
+    assert_eq!(lines("k: |\nj: 1\n"), ["k L1-1", "j L2-2"]);
+    assert_eq!(lines("- >\n\n\n- c\n"), ["[0] L1-1", "[1] L4-4"]);
+    // An empty one at the very end of the text, with no line feed after it.
+    assert_eq!(lines("- |\n  x\n- >"), ["[0] L1-2", "[1] L3-3"]);
+    assert_eq!(lines("a: 1\nb: >"), ["a L1-1", "b L2-2"]);
+    // Text that begins with the indicator character is text.
+    assert_eq!(lines("- |\n  |x\n- 1\n"), ["[0] L1-2", "[1] L3-3"]);
+    // Blank lines after the text, kept by `|+`, are not counted in the range.
+    assert_eq!(lines("- |+\n  t\n\n\n- d\n"), ["[0] L1-2", "[1] L5-5"]);
+    // The same in every line ending.
+    assert_eq!(
+        lines("a:\r\n  c: |\r\n    x\r\n    y\r\n  d: 2\r\n"),
+        ["a.c L2-4", "a.d L5-5"]
+    );
+}
+
 #[test]
 fn golden_yaml_line_endings_are_counted_once() {
     let crlf = yaml("a: 1\r\nb:\r\n  c: |\r\n    x\r\n    y\r\nd: 2\r\n");

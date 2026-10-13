@@ -1,0 +1,8 @@
+---
+source: crates/engine/tests/locations.rs
+expression: dump(&index)
+---
+ключ = "значение" L1-1
+zh = "你好 world" L2-3
+emoji = "🙂" L4-4
+last = "1" L5-5

@@ -221,6 +221,10 @@ pub enum ParseWarning {
     InvalidMergeKey { at: Position },
     /// A `.properties` key that cannot be a setting path (empty, or with a control character). The pair is left out.
     UnusableKeySkipped { line: u32 },
+    /// Found by `index_settings` (T3): tree-sitter and the parser do not agree on where a YAML setting is, or tree-sitter
+    /// could not read the file at all (`path` is `None`). The row keeps the parser's range, which is the one every other
+    /// function of the engine uses, and this says that the second reader did not confirm it.
+    LocationMismatch { path: Option<SettingPath> },
 }
 
 /// The result of `parse`.

@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use engine::{LimitKind, ParseError, Syntax, flatten, parse};
+use engine::{LimitKind, LocationSource, ParseError, Syntax, flatten, index_settings, parse};
 
 fn fuzz_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz")
@@ -55,6 +55,7 @@ fn corpus_replay_all_engine_targets() {
     replay("engine_json", invariants::engine_json);
     replay("engine_properties", invariants::engine_properties);
     replay("engine_flatten", invariants::engine_flatten);
+    replay("engine_index_settings", invariants::engine_index_settings);
 }
 
 #[test]
@@ -176,4 +177,77 @@ fn the_huge_scalar_seeds_hit_the_scalar_limit() {
         parse(&key, Syntax::Yaml, &limits).map(|_| ()),
         Err(ParseError::Limit(LimitKind::SettingPathBytes))
     );
+}
+
+/// The index seeds are not blind either: the hostile ones are refused under the fuzzer's limits, the good ones are indexed
+/// (a YAML file by tree-sitter, with nothing to report), and the selector byte picks the syntax.
+#[test]
+fn the_index_seeds_are_refused_or_indexed_as_named() {
+    let limits = invariants::fuzz_limits();
+    let run = |name: &str| {
+        let data = seed("engine_index_settings", name);
+        let syntax = invariants::syntax_of_selector(data[0]);
+        index_settings(&data[1..], syntax, &limits)
+    };
+    for (name, kind) in [
+        ("yaml_alias_bomb", LimitKind::Nodes),
+        ("yaml_merge_bomb", LimitKind::Nodes),
+        ("yaml_deep_flow", LimitKind::Depth),
+        ("yaml_deep_block", LimitKind::Depth),
+        ("yaml_oversized", LimitKind::InputBytes),
+        ("yaml_huge_scalar", LimitKind::ScalarBytes),
+        ("json_deep_arrays", LimitKind::Depth),
+        ("properties_oversized", LimitKind::InputBytes),
+    ] {
+        assert!(
+            matches!(run(name), Err(ParseError::Limit(got)) if got == kind),
+            "{name}: expected the limit on {kind}, got {:?}",
+            run(name).map(|i| i.rows.len())
+        );
+    }
+    for name in [
+        "yaml_truncated_flow",
+        "yaml_unknown_alias",
+        "yaml_self_reference",
+        "json_truncated_object",
+    ] {
+        assert!(run(name).is_err(), "{name} should be refused");
+    }
+    for name in [
+        "yaml_valid_nested",
+        "yaml_valid_anchor_merge",
+        "yaml_valid_multidoc",
+        "yaml_block_scalar_then_indented_sibling",
+        "yaml_block_scalar_in_sequence",
+        "yaml_block_scalar_empty",
+        "yaml_flow_pairs_in_sequence",
+        "yaml_empty_items_and_values",
+        "yaml_anchor_redefined",
+        "yaml_merge_chain",
+        "yaml_document_markers",
+        "yaml_utf16le",
+        "yaml_utf16be",
+    ] {
+        let index = run(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(!index.rows.is_empty(), "{name}");
+        assert_eq!(index.located_by, LocationSource::TreeSitter, "{name}");
+        assert!(
+            !index
+                .warnings
+                .iter()
+                .any(|w| matches!(w, engine::ParseWarning::LocationMismatch { .. })),
+            "{name}: tree-sitter disagreed with the parser: {:?}",
+            index.warnings
+        );
+    }
+    for name in [
+        "json_valid_object",
+        "json_nested_multiline",
+        "properties_valid",
+        "properties_continued_values",
+    ] {
+        let index = run(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(!index.rows.is_empty(), "{name}");
+        assert_eq!(index.located_by, LocationSource::Parser, "{name}");
+    }
 }

@@ -145,6 +145,12 @@ gix = { version = "=0.87.1", default-features = false, features = ["sha1", "max-
 # low-level parser has no I/O and a configurable stack limit, and the engine counts lines from the bytes it consumes.
 granit-parser = { version = "=1.3.0", default-features = false, features = ["std"] }
 json-event-parser = "=0.2.3"
+# Fact engine (prompt 04, T3, D54). tree-sitter 0.26.13 (2026-08-23, 51 days old) with the YAML grammar tree-sitter-yaml 0.7.2
+# (2025-10-07) maps a setting path to its line range. Only the engine's own parser has read the bytes by then: tree-sitter (C code)
+# is given only input that parser accepted under the limits, and it is cancelled by a work budget. 0.27.x needs rustc 1.90 and the
+# toolchain is pinned to 1.88. `std` only: no wasm engine, and the grammar's C sources are built by the `cc` build dependency.
+tree-sitter = { version = "=0.26.13", default-features = false, features = ["std"] }
+tree-sitter-yaml = "=0.7.2"
 # Test tooling
 proptest = "=1.11.0"
 insta = "=1.48.0"

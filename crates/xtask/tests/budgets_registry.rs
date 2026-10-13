@@ -341,6 +341,16 @@ fn thresholds_match_docs_performance_md() {
             "prompts/04-fact-engine.md",
             "a benchmark: parse and flatten of the 6,000-line file in 20 ms or less",
         ),
+        // The prompt gives no number for the settings index. The 40 ms is the approved plan's own proposal (A1), so the plan is
+        // the source; it is frozen once approved. The entry is not registered while the measured p95 is over it (the blockers
+        // file of prompt 04), and this comparison keeps the number from being changed without its source.
+        (
+            "P6.index_settings",
+            40.0,
+            "ms",
+            "plans/04-fact-engine.md",
+            "| `index_settings_6000_lines` | `P6.index_settings` | 40 ms |",
+        ),
     ];
     for (id, threshold, unit, file, needle) in from_prompt {
         let prompt = std::fs::read_to_string(repo_root().join(file)).unwrap();
@@ -382,7 +392,8 @@ fn only_budgets_with_a_harness_are_registered() {
     // (T11, `cargo bench -p hub-platform --bench ack_throughput`: the hub acknowledging a replayed spool).
     // Prompt 03a (identity): `cargo bench -p hub-identity` produces P7.auth_middleware and P7.auth_middleware_cold (T3) and
     // P12.audit_record (T5).
-    // Prompt 04 (fact engine): `cargo bench -p engine` produces P6.parse_flatten (T2). The later tasks add P6.index_settings (T3),
+    // Prompt 04 (fact engine): `cargo bench -p engine` produces P6.parse_flatten (T2). P6.index_settings (T3) has its benchmark
+    // but is not registered until a human settles its threshold (plans/04-fact-engine.blockers.md). The later tasks add
     // P7.compare and P7.engine_grid (T5), P7.engine_text_search (T7), and P6, P5.engine_base and P5.engine_per_file_per_swimlane (T8).
     const REGISTERED: &[&str] = &[
         "P6.parse_flatten",

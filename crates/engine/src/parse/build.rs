@@ -22,20 +22,20 @@ use crate::error::{LimitKind, ParseError};
 use crate::limits::Limits;
 
 /// `n` as a line or column number: saturates instead of wrapping.
-pub(super) fn clamp32(n: usize) -> u32 {
+pub(crate) fn clamp32(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 /// Warnings kept up to a cap; the rest are counted.
 #[derive(Debug)]
-pub(super) struct Warnings {
-    pub(super) items: Vec<ParseWarning>,
-    pub(super) dropped: usize,
+pub(crate) struct Warnings {
+    pub(crate) items: Vec<ParseWarning>,
+    pub(crate) dropped: usize,
     cap: usize,
 }
 
 impl Warnings {
-    pub(super) fn new(cap: usize) -> Self {
+    pub(crate) fn new(cap: usize) -> Self {
         Self {
             items: Vec::new(),
             dropped: 0,
@@ -43,11 +43,11 @@ impl Warnings {
         }
     }
 
-    pub(super) fn has_room(&self) -> bool {
+    pub(crate) fn has_room(&self) -> bool {
         self.items.len() < self.cap
     }
 
-    pub(super) fn push(&mut self, warning: ParseWarning) {
+    pub(crate) fn push(&mut self, warning: ParseWarning) {
         if self.has_room() {
             self.items.push(warning);
         } else {
@@ -93,7 +93,7 @@ struct Meta {
     height: u32,
 }
 
-pub(super) struct TreeBuilder<'l> {
+pub(crate) struct TreeBuilder<'l> {
     limits: &'l Limits,
     syntax: Syntax,
     nodes: Vec<Node>,
@@ -109,7 +109,7 @@ pub(super) struct TreeBuilder<'l> {
 }
 
 impl<'l> TreeBuilder<'l> {
-    pub(super) fn new(limits: &'l Limits, syntax: Syntax) -> Self {
+    pub(crate) fn new(limits: &'l Limits, syntax: Syntax) -> Self {
         Self {
             limits,
             syntax,
@@ -125,7 +125,7 @@ impl<'l> TreeBuilder<'l> {
         }
     }
 
-    pub(super) fn syntax_error(&self, line: u32, column: u32) -> ParseError {
+    pub(crate) fn syntax_error(&self, line: u32, column: u32) -> ParseError {
         ParseError::Syntax {
             syntax: self.syntax,
             line,
@@ -133,7 +133,7 @@ impl<'l> TreeBuilder<'l> {
         }
     }
 
-    pub(super) fn start_document(&mut self) {
+    pub(crate) fn start_document(&mut self) {
         self.nodes.clear();
         self.meta.clear();
         self.anchors.clear();
@@ -141,7 +141,7 @@ impl<'l> TreeBuilder<'l> {
         self.root = None;
     }
 
-    pub(super) fn end_document(&mut self, line: u32) -> Result<(), ParseError> {
+    pub(crate) fn end_document(&mut self, line: u32) -> Result<(), ParseError> {
         if !self.stack.is_empty() {
             return Err(self.syntax_error(line, 0));
         }
@@ -162,7 +162,7 @@ impl<'l> TreeBuilder<'l> {
     }
 
     /// The documents, and the duplicate-key warnings with their final paths.
-    pub(super) fn finish(mut self, warnings: &mut Warnings) -> Vec<Document> {
+    pub(crate) fn finish(mut self, warnings: &mut Warnings) -> Vec<Document> {
         let multiple = self.documents.len() > 1;
         // File order: by document, then by where the repeated key is written. (Inner mappings finish first.)
         self.pending
@@ -186,7 +186,7 @@ impl<'l> TreeBuilder<'l> {
         self.documents
     }
 
-    pub(super) fn scalar(
+    pub(crate) fn scalar(
         &mut self,
         text: Cow<'_, str>,
         style: ScalarStyle,
@@ -216,7 +216,7 @@ impl<'l> TreeBuilder<'l> {
         self.attach(id)
     }
 
-    pub(super) fn alias(&mut self, anchor: usize, at: Position) -> Result<(), ParseError> {
+    pub(crate) fn alias(&mut self, anchor: usize, at: Position) -> Result<(), ParseError> {
         let target = self
             .anchors
             .get(anchor)
@@ -228,7 +228,7 @@ impl<'l> TreeBuilder<'l> {
         self.attach(id)
     }
 
-    pub(super) fn open_sequence(
+    pub(crate) fn open_sequence(
         &mut self,
         anchor: usize,
         flow: bool,
@@ -237,7 +237,7 @@ impl<'l> TreeBuilder<'l> {
         self.open(FrameKind::Sequence(Vec::new()), anchor, flow, at)
     }
 
-    pub(super) fn open_mapping(&mut self, anchor: usize, flow: bool, at: Position) -> Result<(), ParseError> {
+    pub(crate) fn open_mapping(&mut self, anchor: usize, flow: bool, at: Position) -> Result<(), ParseError> {
         self.open(
             FrameKind::Mapping {
                 entries: Vec::new(),
@@ -267,7 +267,7 @@ impl<'l> TreeBuilder<'l> {
     }
 
     /// Finishes the innermost container. `end_line` is the line of its closing bracket; only a flow container has one.
-    pub(super) fn close(&mut self, end_line: u32) -> Result<(), ParseError> {
+    pub(crate) fn close(&mut self, end_line: u32) -> Result<(), ParseError> {
         let Some(frame) = self.stack.pop() else {
             return Err(self.syntax_error(end_line, 0));
         };

@@ -330,10 +330,25 @@ engine-lint:
 engine-test:
     cargo test -p engine --lib --tests
 
+# Acceptance 4 (opt-in, plan decision A4): the engine against the real repositories, which this repository never holds (rule 12).
+# Not part of `verify-04`. Without the two checkouts it says NOT RUN, which is not a pass; a human runs it with them and pastes
+# the output into the PR. T3 checks the locations, T6 the checks of `sit1`, T10 the ambiguous names. It prints counts and
+# setting paths, never a value.
+#   LK_REAL_BASE_DIR   configuration-base-saas, default branch (the config/ folder or the checkout)
+#   LK_REAL_TENANT_DIR csp-tenant-data, branch sit1 (the data/config/ folder or the checkout)
+engine-real-snapshot:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "${LK_REAL_BASE_DIR:-}" ] || [ -z "${LK_REAL_TENANT_DIR:-}" ]; then
+        echo "real-snapshot: NOT RUN (set LK_REAL_BASE_DIR to a configuration-base-saas checkout and LK_REAL_TENANT_DIR to a csp-tenant-data checkout at sit1)"
+        exit 0
+    fi
+    cargo test -p engine --test real_snapshot -- --ignored --nocapture
+
 # S22: the engine's own fuzz crate (plan decision A2; `fuzz-smoke` does not run it). Its lockfile is complete and passes cargo
 # deny and cargo audit (S19), then each target runs {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in
 # crates/engine/fuzz/artifacts/. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart.
-engine_fuzz_targets := "engine_bytes engine_yaml engine_json engine_properties engine_flatten"
+engine_fuzz_targets := "engine_bytes engine_yaml engine_json engine_properties engine_flatten engine_index_settings"
 engine-fuzz: fuzz-tools-check
     #!/usr/bin/env bash
     set -euo pipefail

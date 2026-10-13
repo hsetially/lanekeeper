@@ -59,3 +59,10 @@ path = "fuzz_targets/engine_flatten.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "engine_index_settings"
+path = "fuzz_targets/engine_index_settings.rs"
+test = false
+doc = false
+bench = false

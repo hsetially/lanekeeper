@@ -1,0 +1,10 @@
+---
+source: crates/engine/tests/locations.rs
+expression: dump(&json)
+---
+a = "1" L2-2
+b.c = "x" L4-4
+b.d[0] = "1" L6-6
+b.d[1] = "2" L7-7
+e = "[]" L10-10
+f = "s" L11-11

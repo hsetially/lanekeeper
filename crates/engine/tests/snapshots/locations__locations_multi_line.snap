@@ -1,0 +1,11 @@
+---
+source: crates/engine/tests/locations.rs
+expression: dump(&index)
+---
+quoted = "one two" L1-2
+plain = "a b c" L3-5
+single = "x\ny" L6-8
+next = "value on the next line" L9-10
+key with spaces = "v" L11-11
+quoted key = "1" L12-12
+single key = "2" L13-13

@@ -1,0 +1,6 @@
+a=1
+b=first \
+  second \
+  third
+c:3
+d e

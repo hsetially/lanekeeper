@@ -1,0 +1,7 @@
+---
+source: crates/engine/tests/locations.rs
+expression: dump(&index)
+---
+a = "1" L3-3
+b.c = "2" L8-8
+d = "text\n# not a comment\n" L11-13

@@ -1,0 +1,17 @@
+---
+source: crates/engine/tests/locations.rs
+expression: dump(&index)
+---
+flow[0] = "1" L1-1
+flow[1] = "2" L1-1
+flow[2] = "3" L2-2
+map.a = "1" L3-3
+map.b = "2" L3-3
+map.c = "3" L4-4
+empty_list = "[]" L5-5
+empty_map = "{}" L6-6
+nested.x[0] = "1" L7-7
+nested.x[1].y = "2" L7-7
+nested.z = "[]" L7-7
+seq_of_pairs[0].a = "1" L8-8
+seq_of_pairs[1].b = "2" L8-8

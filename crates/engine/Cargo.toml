@@ -19,6 +19,9 @@ thiserror.workspace = true
 # The YAML and JSON event parsers (T2, D90). Both keep every position the engine reports, and neither builds a tree.
 granit-parser.workspace = true
 json-event-parser.workspace = true
+# Setting paths to line ranges for YAML (T3, D54). The C parser only ever reads input that the Rust parser accepted.
+tree-sitter.workspace = true
+tree-sitter-yaml.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
@@ -32,4 +35,8 @@ serde_json.workspace = true
 
 [[bench]]
 name = "parse_flatten"
+harness = false
+
+[[bench]]
+name = "index_settings"
 harness = false

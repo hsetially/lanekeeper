@@ -19,6 +19,7 @@
 
 mod bytes;
 mod error;
+mod index;
 mod limits;
 mod parse;
 
@@ -27,6 +28,7 @@ pub use self::bytes::{
     dominant_eol, encode_text, normalise_eol,
 };
 pub use self::error::{DecodeError, DenyError, EncodeError, LimitKind, ParseError};
+pub use self::index::{LocationSource, SettingRow, SettingsIndex, index_settings, locate};
 pub use self::limits::Limits;
 pub use self::parse::{
     Body, DecodedPath, Document, Entry, Flat, FlatSetting, Node, NodeId, NodeKind, ParseWarning, Parsed,

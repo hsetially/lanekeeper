@@ -149,3 +149,22 @@ fn every_registered_engine_budget_has_a_benchmark_function() {
         }
     }
 }
+
+#[test]
+fn engine_real_snapshot_is_opt_in_and_says_so_when_it_is_not_run() {
+    let text = justfile();
+    let body = recipe(&text, "engine-real-snapshot");
+    assert!(!body.is_empty(), "no engine-real-snapshot recipe");
+    // The gate never depends on repositories that this repository does not hold.
+    let gate = text
+        .lines()
+        .find(|l| l.starts_with("verify-04:"))
+        .expect("verify-04");
+    assert!(!gate.contains("engine-real-snapshot"));
+    // Without the two checkouts the recipe says that it did not run (and never prints a pass), and with them it runs the
+    // ignored tests of `tests/real_snapshot.rs` with their output.
+    assert!(body.contains("LK_REAL_BASE_DIR") && body.contains("LK_REAL_TENANT_DIR"));
+    assert!(body.contains("real-snapshot: NOT RUN"));
+    assert!(!body.contains("PASS"));
+    assert!(body.contains("cargo test -p engine --test real_snapshot -- --ignored --nocapture"));
+}
