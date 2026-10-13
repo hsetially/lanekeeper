@@ -1,0 +1,123 @@
+---
+source: crates/hub/tests/headers.rs
+expression: out
+---
+## html 200
+cache-control: no-store
+content-security-policy: default-src 'none'; script-src 'self' 'nonce-<nonce>'; style-src 'self' 'nonce-<nonce>'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'; require-trusted-types-for 'script'; trusted-types lanekeeper-docs lanekeeper-monaco
+content-type: text/html; charset=utf-8
+cross-origin-opener-policy: same-origin
+cross-origin-resource-policy: same-origin
+permissions-policy: accelerometer=(), autoplay=(), bluetooth=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), xr-spatial-tracking=()
+referrer-policy: no-referrer
+strict-transport-security: max-age=63072000; includeSubDomains
+x-content-type-options: nosniff
+x-request-id: <request id>
+
+## static_asset 200
+cache-control: public, max-age=31536000, immutable
+content-security-policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
+content-type: text/javascript; charset=utf-8
+cross-origin-opener-policy: same-origin
+cross-origin-resource-policy: same-origin
+permissions-policy: accelerometer=(), autoplay=(), bluetooth=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), xr-spatial-tracking=()
+referrer-policy: no-referrer
+strict-transport-security: max-age=63072000; includeSubDomains
+x-content-type-options: nosniff
+x-request-id: <request id>
+
+## api_json 200
+cache-control: no-store
+content-security-policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
+content-type: application/json
+cross-origin-opener-policy: same-origin
+cross-origin-resource-policy: same-origin
+permissions-policy: accelerometer=(), autoplay=(), bluetooth=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), xr-spatial-tracking=()
+referrer-policy: no-referrer
+strict-transport-security: max-age=63072000; includeSubDomains
+x-content-type-options: nosniff
+x-request-id: <request id>
+
+## problem_json 401
+cache-control: no-store
+content-security-policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
+content-type: application/problem+json
+cross-origin-opener-policy: same-origin
+cross-origin-resource-policy: same-origin
+permissions-policy: accelerometer=(), autoplay=(), bluetooth=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), xr-spatial-tracking=()
+referrer-policy: no-referrer
+strict-transport-security: max-age=63072000; includeSubDomains
+x-content-type-options: nosniff
+x-request-id: <request id>
+
+## sse 200
+cache-control: no-store
+content-security-policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
+content-type: text/event-stream
+cross-origin-opener-policy: same-origin
+cross-origin-resource-policy: same-origin
+permissions-policy: accelerometer=(), autoplay=(), bluetooth=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), xr-spatial-tracking=()
+referrer-policy: no-referrer
+strict-transport-security: max-age=63072000; includeSubDomains
+x-content-type-options: nosniff
+x-request-id: <request id>
+
+## blob 200
+cache-control: private, max-age=31536000, immutable
+content-security-policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
+content-type: application/octet-stream
+cross-origin-opener-policy: same-origin
+cross-origin-resource-policy: same-origin
+permissions-policy: accelerometer=(), autoplay=(), bluetooth=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), xr-spatial-tracking=()
+referrer-policy: no-referrer
+strict-transport-security: max-age=63072000; includeSubDomains
+x-content-type-options: nosniff
+x-request-id: <request id>
+
+## webhook 202
+cache-control: no-store
+content-security-policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
+cross-origin-opener-policy: same-origin
+cross-origin-resource-policy: same-origin
+permissions-policy: accelerometer=(), autoplay=(), bluetooth=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), xr-spatial-tracking=()
+referrer-policy: no-referrer
+strict-transport-security: max-age=63072000; includeSubDomains
+x-content-type-options: nosniff
+x-request-id: <request id>
+
+## not_found 404
+cache-control: no-store
+content-security-policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
+content-type: application/problem+json
+cross-origin-opener-policy: same-origin
+cross-origin-resource-policy: same-origin
+permissions-policy: accelerometer=(), autoplay=(), bluetooth=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), xr-spatial-tracking=()
+referrer-policy: no-referrer
+strict-transport-security: max-age=63072000; includeSubDomains
+x-content-type-options: nosniff
+x-request-id: <request id>
+
+## method_not_allowed 405
+allow: GET,HEAD
+cache-control: no-store
+content-security-policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
+content-type: application/problem+json
+cross-origin-opener-policy: same-origin
+cross-origin-resource-policy: same-origin
+permissions-policy: accelerometer=(), autoplay=(), bluetooth=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), xr-spatial-tracking=()
+referrer-policy: no-referrer
+strict-transport-security: max-age=63072000; includeSubDomains
+x-content-type-options: nosniff
+x-request-id: <request id>
+
+## payload_too_large 413
+cache-control: no-store
+content-security-policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
+content-type: application/problem+json
+cross-origin-opener-policy: same-origin
+cross-origin-resource-policy: same-origin
+permissions-policy: accelerometer=(), autoplay=(), bluetooth=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), xr-spatial-tracking=()
+referrer-policy: no-referrer
+strict-transport-security: max-age=63072000; includeSubDomains
+x-content-type-options: nosniff
+x-request-id: <request id>

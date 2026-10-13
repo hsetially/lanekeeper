@@ -37,7 +37,7 @@ statistic = "p95"
 threshold = 10000
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P3"
@@ -230,11 +230,31 @@ scale = "target"
 registered = false
 
 [[budget]]
+id = "P7.blob_get_cached"
+description = "Blob get, cached (BlobStore::get with the content in the cache)"
+bench = "hub-platform/blob_get_cached"
+statistic = "p95"
+threshold = 1
+unit = "ms"
+scale = "target"
+registered = true
+
+[[budget]]
 id = "P7.auth_middleware"
 description = "Authentication adds to a request, session cache warm (100 signed-in users)"
 bench = "hub-identity/auth_middleware"
 statistic = "p95"
 threshold = 2
+unit = "ms"
+scale = "target"
+registered = true
+
+[[budget]]
+id = "P7.blob_endpoint"
+description = "Blob endpoint (GET /api/v1/blobs/{hash})"
+bench = "hub-platform/blob_endpoint"
+statistic = "p95"
+threshold = 30
 unit = "ms"
 scale = "target"
 registered = true
@@ -329,7 +349,7 @@ statistic = "p95"
 threshold = 10000
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P11.memory_mib"
@@ -339,7 +359,7 @@ statistic = "max"
 threshold = 1536
 unit = "mib"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P12.audit_record"
@@ -369,7 +389,7 @@ statistic = "p95"
 threshold = 1000
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P14"
@@ -385,6 +405,17 @@ registered = false
 id = "P15.spool_replay_versions_per_s"
 description = "Spool replay after a 1-hour outage (versions per second, lower bound)"
 bench = "agent/spool_replay_versions_per_s"
+statistic = "min"
+threshold = 1000
+unit = "versions_per_s"
+scale = "target"
+direction = "lower"
+registered = true
+
+[[budget]]
+id = "P15.hub_ack_versions_per_s"
+description = "Hub acknowledging a replayed spool (versions per second, lower bound; the hub half of P15)"
+bench = "hub-platform/ack_throughput"
 statistic = "min"
 threshold = 1000
 unit = "versions_per_s"

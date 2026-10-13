@@ -9,4 +9,123 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+# `FakeSessionAuth`, for the tests of this crate and of `hub`. Never enabled in the binary's release build.
+fakes = ["ports/fakes", "conformance"]
+# `RouteSpec::registered`, for the S4 route-table harness in `ports::conformance`.
+conformance = ["ports/conformance"]
+
 [dependencies]
+domain.workspace = true
+# `postgres` gives `Tx::from_pg`, which the join transaction hands to `AuditLog::record` (D80).
+ports = { workspace = true, features = ["postgres"] }
+proto.workspace = true
+async-trait.workspace = true
+aws-lc-rs.workspace = true
+axum.workspace = true
+base64.workspace = true
+bytes.workspace = true
+fastrand.workspace = true
+futures.workspace = true
+gix.workspace = true
+hex.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["client", "server", "http1", "http2"] }
+hyper-util = { workspace = true, features = ["tokio", "server", "server-graceful", "service"] }
+moka.workspace = true
+pem.workspace = true
+prometheus-client.workspace = true
+# The hub-to-hub RPC (T4) is generated from crates/hub-platform/proto/replica.proto by build.rs.
+prost.workspace = true
+# The tree index hashes every blob of a commit (T7, P2, rule 4): on a pool of its own, inside `spawn_blocking`, never on the async executor.
+rayon.workspace = true
+# The CA (T3, S5): rcgen builds each certificate and asks `KmsSigner` for the signature; its CSR parser needs `x509-parser`.
+rcgen = { workspace = true, features = ["x509-parser"] }
+rustls.workspace = true
+rustls-native-certs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio"] }
+subtle.workspace = true
+thiserror.workspace = true
+time = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio-rustls.workspace = true
+tokio-stream.workspace = true
+tower.workspace = true
+# The generated `Agent` server runs under our own rustls acceptor and HTTP/2 connection (as the agent's client does), so
+# tonic's `transport` stack is not used. `router` is `Routes`, which dispatches by service name.
+tonic = { workspace = true, features = ["codegen", "router", "zstd"] }
+tonic-prost.workspace = true
+tracing.workspace = true
+x509-parser.workspace = true
+zeroize.workspace = true
+
+[build-dependencies]
+# protox is a pure-Rust protobuf compiler, so no protoc binary is needed (Q10); both are already pinned by the `proto` crate.
+protox.workspace = true
+tonic-prost-build.workspace = true
+
+[dev-dependencies]
+# This crate's own integration tests need the fakes and the conformance helpers its features switch on.
+hub-platform = { path = ".", version = "0.1.0", features = ["fakes"] }
+hex.workspace = true
+sha2.workspace = true
+ports = { workspace = true, features = ["fakes"] }
+insta = { workspace = true, features = ["json"] }
+serde-saphyr.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time", "test-util"] }
+tower = { workspace = true, features = ["util"] }
+proptest.workspace = true
+futures.workspace = true
+# The fake Google server (tests/support/fake_google.rs): a real HTTP/1 server over an in-memory pipe, real AES-256-GCM and
+# real P-256 keys behind the KMS routes, and a TLS 1.3 server with a throwaway certificate for the TLS tests.
+aws-lc-rs.workspace = true
+hyper = { workspace = true, features = ["server", "client", "http1"] }
+rcgen = { workspace = true, features = ["pem"] }
+rustls = { workspace = true, features = ["std", "tls12"] }
+# Integration tests that need a real Postgres 16 with pgvector (T3 on): started with testcontainers from the image the dev
+# compose file pins by digest, migrated with sqlx's runtime Migrator as `lanekeeper_migrator`, used as `lanekeeper_app`.
+sqlx = { workspace = true, features = ["postgres", "migrate", "runtime-tokio"] }
+testcontainers.workspace = true
+tempfile.workspace = true
+# The `diff_trees` benchmarks (T7, rule 14); the same pin as the agent's benchmarks.
+criterion.workspace = true
+
+# P13 (T5): three replicas, 300 SSE clients, an event committed on one and timed until the last client has it. Needs Docker.
+[[bench]]
+name = "sse_delivery"
+harness = false
+
+# T7 (P2): a signed webhook in, `GitHeadMoved` out on another replica, three replicas, real Postgres, target-scale fixture repository.
+[[bench]]
+name = "push_to_drift_webhook"
+harness = false
+
+# T7: `GitReader::diff_trees` and the cold tree index on the target-scale fixture repositories (reported, no budget).
+[[bench]]
+name = "diff_trees"
+harness = false
+
+# T8 (P7): a cached `BlobStore::get` on the target-scale fixture blobs, against the 1 ms budget.
+[[bench]]
+name = "blob_get_cached"
+harness = false
+
+# T8 (P7): `GET /api/v1/blobs/{hash}` through the guard over a real Postgres, against the 30 ms budget (and the cold path, reported).
+[[bench]]
+name = "blob_endpoint"
+harness = false
+
+# T8 (P11): the platform's resident memory at design scale: 40 attached agents, 100 SSE subscribers, the blob cache full, 60 branches indexed.
+[[bench]]
+name = "memory_at_design_scale"
+harness = false
+
+# T11 (P15): the hub acknowledging a replayed spool: 18,000 versions in 360 messages and eight 3 MiB ones, over real mutual TLS, a sink that commits in 1 ms.
+[[bench]]
+name = "ack_throughput"
+harness = false

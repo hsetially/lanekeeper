@@ -1,0 +1,32 @@
+---
+source: crates/hub-platform/tests/ca.rs
+expression: "describe(&issued.chain_der[0])"
+---
+{
+  "basic_constraints": {
+    "ca": false,
+    "critical": true
+  },
+  "eku": {
+    "any": false,
+    "client_auth": false,
+    "other": 0,
+    "server_auth": true
+  },
+  "key_usage": {
+    "crl_sign": false,
+    "digital_signature": true,
+    "key_cert_sign": false
+  },
+  "lifetime_secs": 86700,
+  "not_after_unix": 1800086400,
+  "not_before_unix": 1799999700,
+  "san": [
+    "uri:spiffe://lanekeeper/hub/hub-0",
+    "dns:hub.lanekeeper.test"
+  ],
+  "serial_bytes": 20,
+  "signature_algorithm": "1.2.840.10045.4.3.2",
+  "subject": "CN=lanekeeper hub",
+  "version": 2
+}

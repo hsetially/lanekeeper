@@ -62,6 +62,8 @@ fn every_p_number_has_an_entry() {
         "P7.text_search",
         "P7.docs_search",
         "P7.feature_status",
+        "P7.blob_get_cached",
+        "P7.blob_endpoint",
         "P7.auth_middleware",
         "P7.auth_middleware_cold",
         "P10.initial_js_gzip_kb",
@@ -74,6 +76,7 @@ fn every_p_number_has_an_entry() {
         "P12.steady_state_query_ms",
         "P12.audit_record",
         "P15.spool_replay_versions_per_s",
+        "P15.hub_ack_versions_per_s",
     ] {
         find(&reg, id);
     }
@@ -131,6 +134,7 @@ fn lower_bound_budgets_are_marked() {
         "P10.grid_5000_rows_fps",
         "P10.lighthouse_perf",
         "P15.spool_replay_versions_per_s",
+        "P15.hub_ack_versions_per_s",
     ] {
         assert_eq!(find(&reg, id).direction, Direction::Lower, "{id}");
     }
@@ -148,7 +152,7 @@ fn lower_bound_budgets_are_marked() {
         .iter()
         .filter(|b| b.direction == Direction::Upper)
         .count();
-    assert_eq!(upper, reg.budgets.len() - 3);
+    assert_eq!(upper, reg.budgets.len() - 4);
 }
 
 /// The thresholds of `docs/performance.md`, entry by entry. The needle must appear in the document, so a changed
@@ -291,6 +295,13 @@ fn thresholds_match_docs_performance_md() {
             "versions_per_s",
             "replays at 1,000 or more versions per second",
         ),
+        // The hub's half of the same budget: the agent replays at that rate, so the hub must take it at that rate.
+        (
+            "P15.hub_ack_versions_per_s",
+            1_000.0,
+            "versions_per_s",
+            "replays at 1,000 or more versions per second",
+        ),
     ];
     for (id, threshold, unit, needle) in expected {
         let b = find(&reg, id);
@@ -305,8 +316,42 @@ fn thresholds_match_docs_performance_md() {
             "{id}: docs/performance.md no longer says {needle:?}"
         );
     }
-    // Every registry entry is covered above, so a new entry cannot skip the comparison with the document.
-    let covered: BTreeSet<&str> = expected.iter().map(|e| e.0).collect();
+    // Budgets that a prompt states and `docs/performance.md` does not (the table there names no blob request). They are compared with
+    // the prompt's own text instead, so a changed prompt makes this fail until the registry is reconsidered, as for the others.
+    let prompt = std::fs::read_to_string(repo_root().join("prompts/03b-hub-platform.md")).unwrap();
+    let from_prompt: &[(&str, f64, &str, &str)] = &[
+        (
+            "P7.blob_get_cached",
+            1.0,
+            "ms",
+            "cached `get` under 1 ms and the blob endpoint under 30 ms (P7)",
+        ),
+        (
+            "P7.blob_endpoint",
+            30.0,
+            "ms",
+            "cached `get` under 1 ms and the blob endpoint under 30 ms (P7)",
+        ),
+    ];
+    for (id, threshold, unit, needle) in from_prompt {
+        let b = find(&reg, id);
+        assert!(
+            (b.threshold - threshold).abs() < f64::EPSILON,
+            "{id}: threshold {} != {threshold}",
+            b.threshold
+        );
+        assert_eq!(b.unit, *unit, "{id}: unit");
+        assert!(
+            prompt.contains(needle),
+            "{id}: prompts/03b-hub-platform.md no longer says {needle:?}"
+        );
+    }
+    // Every registry entry is covered above, so a new entry cannot skip the comparison with its source.
+    let covered: BTreeSet<&str> = expected
+        .iter()
+        .map(|e| e.0)
+        .chain(from_prompt.iter().map(|e| e.0))
+        .collect();
     for b in &reg.budgets {
         assert!(
             covered.contains(b.id.as_str()),
@@ -322,19 +367,32 @@ fn thresholds_match_docs_performance_md() {
 #[test]
 fn only_budgets_with_a_harness_are_registered() {
     // Prompt 02 (agent): `cargo bench -p agent` produces P1, P3, P4, P4.stat_walk, P4.cpu_mcores, P4.memory_mib and
-    // P15.spool_replay_versions_per_s (the spool, T9). Prompt 03a (identity): `cargo bench -p hub-identity` produces
-    // P7.auth_middleware and P7.auth_middleware_cold (T3) and P12.audit_record (T5).
+    // P15.spool_replay_versions_per_s (the spool, T9).
+    // Prompt 03b (hub platform): `cargo bench -p hub-platform` produces P13 (T5, `sse_delivery`), P2 (T7, `push_to_drift_webhook`:
+    // the webhook to `GitHeadMoved` part of it, which is the platform's share, plan A3), P7.blob_get_cached and P7.blob_endpoint
+    // (T8, `blob_get_cached` and `blob_endpoint`, criterion), and the two hub harnesses of T8: P11 (`cargo bench -p hub --bench
+    // startup`) and P11.memory_mib (`cargo bench -p hub-platform --bench memory_at_design_scale`), and P15.hub_ack_versions_per_s
+    // (T11, `cargo bench -p hub-platform --bench ack_throughput`: the hub acknowledging a replayed spool).
+    // Prompt 03a (identity): `cargo bench -p hub-identity` produces P7.auth_middleware and P7.auth_middleware_cold (T3) and
+    // P12.audit_record (T5).
     const REGISTERED: &[&str] = &[
         "P7.auth_middleware",
         "P7.auth_middleware_cold",
         "P12.audit_record",
         "P1",
+        "P2",
         "P3",
         "P4",
         "P4.stat_walk",
         "P4.cpu_mcores",
         "P4.memory_mib",
+        "P7.blob_get_cached",
+        "P7.blob_endpoint",
+        "P11",
+        "P11.memory_mib",
+        "P13",
         "P15.spool_replay_versions_per_s",
+        "P15.hub_ack_versions_per_s",
     ];
     let reg = registry();
     let registered: BTreeSet<&str> = reg

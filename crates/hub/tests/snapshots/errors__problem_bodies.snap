@@ -1,0 +1,111 @@
+---
+source: crates/hub/tests/errors.rs
+expression: bodies
+---
+[
+  {
+    "code": "bad_request",
+    "request_id": "0123456789abcdef",
+    "status": 400,
+    "title": "Bad request",
+    "type": "urn:lanekeeper:problem:bad_request"
+  },
+  {
+    "code": "unauthorized",
+    "request_id": "0123456789abcdef",
+    "status": 401,
+    "title": "Authentication required",
+    "type": "urn:lanekeeper:problem:unauthorized"
+  },
+  {
+    "code": "forbidden",
+    "request_id": "0123456789abcdef",
+    "status": 403,
+    "title": "Not allowed",
+    "type": "urn:lanekeeper:problem:forbidden"
+  },
+  {
+    "code": "not_found",
+    "request_id": "0123456789abcdef",
+    "status": 404,
+    "title": "Not found",
+    "type": "urn:lanekeeper:problem:not_found"
+  },
+  {
+    "code": "method_not_allowed",
+    "request_id": "0123456789abcdef",
+    "status": 405,
+    "title": "Method not allowed",
+    "type": "urn:lanekeeper:problem:method_not_allowed"
+  },
+  {
+    "code": "request_timeout",
+    "request_id": "0123456789abcdef",
+    "status": 408,
+    "title": "Request timeout",
+    "type": "urn:lanekeeper:problem:request_timeout"
+  },
+  {
+    "code": "conflict",
+    "request_id": "0123456789abcdef",
+    "status": 409,
+    "title": "Conflict",
+    "type": "urn:lanekeeper:problem:conflict"
+  },
+  {
+    "code": "payload_too_large",
+    "request_id": "0123456789abcdef",
+    "status": 413,
+    "title": "Payload too large",
+    "type": "urn:lanekeeper:problem:payload_too_large"
+  },
+  {
+    "code": "unsupported_media_type",
+    "request_id": "0123456789abcdef",
+    "status": 415,
+    "title": "Unsupported media type",
+    "type": "urn:lanekeeper:problem:unsupported_media_type"
+  },
+  {
+    "code": "unprocessable",
+    "request_id": "0123456789abcdef",
+    "status": 422,
+    "title": "Unprocessable request",
+    "type": "urn:lanekeeper:problem:unprocessable"
+  },
+  {
+    "code": "too_many_requests",
+    "request_id": "0123456789abcdef",
+    "status": 429,
+    "title": "Too many requests",
+    "type": "urn:lanekeeper:problem:too_many_requests"
+  },
+  {
+    "code": "internal",
+    "request_id": "0123456789abcdef",
+    "status": 500,
+    "title": "Internal error",
+    "type": "urn:lanekeeper:problem:internal"
+  },
+  {
+    "code": "unavailable",
+    "request_id": "0123456789abcdef",
+    "status": 503,
+    "title": "Service unavailable",
+    "type": "urn:lanekeeper:problem:unavailable"
+  },
+  {
+    "code": "shutting_down",
+    "request_id": "0123456789abcdef",
+    "status": 503,
+    "title": "Shutting down",
+    "type": "urn:lanekeeper:problem:shutting_down"
+  },
+  {
+    "code": "gateway_timeout",
+    "request_id": "0123456789abcdef",
+    "status": 504,
+    "title": "Gateway timeout",
+    "type": "urn:lanekeeper:problem:gateway_timeout"
+  }
+]

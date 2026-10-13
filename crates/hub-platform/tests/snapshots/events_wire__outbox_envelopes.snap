@@ -1,0 +1,12 @@
+---
+source: crates/hub-platform/tests/events_wire.rs
+expression: "snapshot.join(\"\\n\")"
+---
+{"v":1,"event":{"type":"findings_changed","swimlane":"sit1"}}
+{"v":1,"event":{"type":"proposal_changed","id":7,"status":"pending"}}
+{"v":1,"event":{"type":"drift_changed","swimlane":"sit2","paths":["svc/app.yml"]}}
+{"v":1,"event":{"type":"file_observed","swimlane":"sit1","path":"svc/app.yml","hash":"0707070707070707070707070707070707070707070707070707070707070707","source":"scan"}}
+{"v":1,"event":{"type":"git_head_moved","repo":"base","branch":"refs/heads/master","from":null,"to":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+{"v":1,"event":{"type":"pr_state_changed","link_id":3,"state":"merged"}}
+{"v":1,"event":{"type":"resync"}}
+{"v":1,"event":{"type":"user_sessions_revoked","user":"2a59d59e-3809-f827-ce70-9d3815e3950e:ef4a6a93-af55-57a9-3a7f-dfba71460843"}}

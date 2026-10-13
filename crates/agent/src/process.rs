@@ -13,14 +13,16 @@
 //!    backoff, for as long as the hub or the metadata server does not answer.
 //! 5. The [`App`] runs until the shutdown future completes.
 //!
-//! A shutdown signal at any of these points ends the process in an orderly way.
+//! A shutdown signal at any of these points ends the process in an orderly way: the shutdown future
+//! is polled once before step 1, which installs its signal handlers, so no step runs uncovered.
 
 use std::future::Future;
 use std::io;
-use std::pin::pin;
+use std::pin::{Pin, pin};
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::FutureExt;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tracing::info;
@@ -59,11 +61,22 @@ pub enum ProcessError {
 }
 
 /// Run the agent until `shutdown` completes. Must be called inside a tokio runtime.
+///
+/// The shutdown future is polled once before the health port opens: its first poll installs its
+/// signal handlers, so a SIGTERM that arrives while the startup below runs — the port can already be
+/// answering `/healthz` by then — is an orderly shutdown and not the default kill. A signal that
+/// arrives before the next poll is latched by the signal streams, not lost.
 pub async fn run(
     started: Started,
     metrics: Arc<Metrics>,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), ProcessError> {
+    let mut shutdown = pin!(shutdown);
+    if shutdown.as_mut().now_or_never().is_some() {
+        // The real signal future is never done this fast; this is for a caller that passes an
+        // already-completed one.
+        return Ok(());
+    }
     let clock = Arc::new(SystemClock);
     let health = Health::new(clock);
     let listener = TcpListener::bind(started.settings.health_addr)
@@ -85,10 +98,9 @@ async fn assemble(
     started: Started,
     health: Arc<Health>,
     metrics: Arc<Metrics>,
-    shutdown: impl Future<Output = ()>,
+    mut shutdown: Pin<&mut impl Future<Output = ()>>,
 ) -> Result<(), ProcessError> {
     let Started { settings, root } = started;
-    let mut shutdown = pin!(shutdown);
 
     let client = tokio::time::timeout(KUBE_CLIENT_TIMEOUT, ::kube::Client::try_default())
         .await
@@ -122,7 +134,7 @@ async fn assemble(
     // Not ready while this lasts: `/readyz` says "starting".
     let identity = tokio::select! {
         identity = joiner.establish() => identity,
-        () = &mut shutdown => {
+        () = shutdown.as_mut() => {
             info!("shutdown requested before the agent had a certificate");
             return Ok(());
         }
