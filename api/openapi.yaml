@@ -3647,6 +3647,8 @@ components:
       - pr_raised
       - agent_disconnected
       - critical_finding
+      - drift_detected
+      - sync_window_stale
     AccessRequestStatus:
       type: string
       enum:
