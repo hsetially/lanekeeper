@@ -151,7 +151,7 @@ statistic = "p95"
 threshold = 60
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P7.swimlane_list"

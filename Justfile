@@ -366,7 +366,7 @@ engine-fuzz: fuzz-tools-check
 # every other prompt's benchmarks to have run (`just bench`), and `bench-check` has no filter, so the recipe cuts a registry with
 # just the budgets below and judges that; the full `cargo xtask bench-check` is run by the FINAL step after `just bench`.
 # `tests/justfile_gate.rs` fails if this list and the registered `engine/` budgets drift apart.
-engine_budgets := "P6 P6.parse_flatten P7.compare P7.engine_grid P7.engine_text_search P5.engine_base P5.engine_per_file_per_swimlane"
+engine_budgets := "P6 P6.index_settings P6.parse_flatten P7.compare P7.engine_grid P7.engine_text_search P5.engine_base P5.engine_per_file_per_swimlane"
 engine-bench:
     #!/usr/bin/env bash
     set -euo pipefail
