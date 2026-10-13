@@ -1,6 +1,6 @@
 # Migrations
 
-These files are a contract. Prompt 01 (T6) writes `0001_init.sql`; `0002_audit_verify_state.sql` is a contract-change that adds one table for prompt 03a.
+These files are a contract. Prompt 01 (T6) writes `0001_init.sql`; `0002_audit_verify_state.sql` is a contract-change that adds one table for prompt 03a; `0003_registry.sql` is a contract-change that adds the registry's tables and columns for prompt 05.
 
 - Add new migrations as new files (`0002_<what>.sql`). Never edit a merged one.
 - Follow the lanekeeper-contract-change skill: expand first, contract later.
@@ -59,6 +59,33 @@ They come from `deploy/dev/init.sql` (dev and tests) and from CloudNativePG mana
 - **Grants: SELECT and UPDATE only.** No INSERT, because the migration seeds the row and the app never has to create it; no DELETE or TRUNCATE, so the app cannot remove it. Without INSERT, `INSERT ... ON CONFLICT DO UPDATE` is refused too; the verifier uses a plain `UPDATE`. If the row is missing (only the owner or a superuser can remove it), the `UPDATE` touches zero rows and the verifier treats that as a broken schema (`SchemaChanged`, an alert), not as a reason to recreate the row.
 - **Rollout order.** The migration deploys before the 03a code that reads it. An older 03a binary ignores the table. The new verifier treats a missing table (`42P01`) as `SchemaChanged`, so deploying the binary before the migration alerts instead of silently counting nothing.
 - **Not tamper-evident, not audited.** The table is not part of the audit chain and has no trigger. A compromised `lanekeeper_app` can set the count to 0 or to a large number, which can silence or force the in-process alert. The alerts that read history (`increase(audit_verify_errors_total[3d]) >= 2`, `increase(audit_verify_runs_total[36h]) == 0 or absent(audit_verify_runs_total)`) stay the recommended ones, because they do not depend on this row. Writes to it are operational state, like `last_seen_at` and the session sweep, not a change of state of the product (B19; "Not everything is audited" in the 03a section of the threat model), so they write no audit event. What a verification found is reported through the verifier's findings, metrics and logs, not stored here.
+
+## The registry's tables and columns (`0003_registry.sql`, prompt 05)
+
+Expand-only: new columns and indexes on existing tables, eight new tables, one grant, and one CHECK widened in the same transaction. Nothing is dropped, renamed, re-typed or deleted, `0001` and `0002` are untouched, and every new column is nullable or has a default, so an older binary ignores them. Deploy the migration before the 05 code. `migration_0003_changes_existing_objects_only_by_adding` compares the catalog before and after and fails if anything that existed changed.
+
+| Where | What | Why |
+|---|---|---|
+| `file_observations` | `initial`, `previous_hash`, `previous_state`; unique `file_observations_replay_key` on `(swimlane_id, path, observed_at, hash)` with `NULLS NOT DISTINCT` | the first inventory is not a change (A11); the C7 context; replaying a delta is idempotent |
+| `file_state` | `seq` (identity, `GENERATED ALWAYS`), `nfs_drift_hash`, `observed_at`, `last_observation_id` (no foreign key on purpose); indexes `file_state_seq_idx` (unique, `(swimlane_id, seq)`), `file_state_prefix_idx` (`text_pattern_ops`), `file_state_denied_hash_idx` (partial), `file_state_current_hash_idx` (covering, partial) | a short keyset surrogate (A31); the normalised N of the drift table; folder listings; the blob policy; the text-search file list |
+| `baselines` | `blob_hash` | the raw version behind a baseline (`hash` is the drift hash) |
+| `sync_windows` | `warned_at`, `processed_at` | a stuck window warns once; a closed window is processed once |
+| `service_state` | `pending_files jsonb` | the files whose change a service has not picked up (D85) |
+| `settings_index` | `secret_rule` | the rule that flagged a value (the value is stored redacted, S13) |
+| `swimlanes` | `last_notified_at` | written by prompt 06's notify action, read by the pickup state (A20) |
+| `findings` | the `kind` CHECK also allows `served_mismatch` | D86: "as served" differs from the engine's rendering |
+| new: `swimlane_registry` | first inventory, `needs_full_scan`, rules fingerprint, `version` (the list ETag), `state_counts`, `finding_count` | the pipeline's state per swimlane |
+| new: `swimlane_deployments` | what the last sync deployed, per `(swimlane, tenant)` | `record_sync` (T4) |
+| new: `swimlane_folders` | when each folder was first seen, and whether it was in the first inventory | C11 |
+| new: `release_hints` | Helm release hints per service | adoption hints (Q19) |
+| new: `effective_files` | the effective hash of each logical file | `compare_tree` descends only into directories whose hashes differ (D67) |
+| new: `adoptions`, `adoption_resolutions` | the wizard's state, and the admin's decision per differing file | adoption progress persists and resumes (D22) |
+| new: `delta_staging` | the acknowledged parts of a multi-part delta that are not yet applied | P15: no acknowledged version is lost (A14) |
+
+- **Grants.** All eight new tables are `mutable` (SELECT, INSERT, UPDATE, DELETE). The pipeline upserts and prunes them, and each hangs off `swimlanes` with `ON DELETE CASCADE`, which `no_cascading_foreign_key_touches_a_protected_table` allows only for tables the app may delete from. Their decision is in `grant_decisions` in `db_migrations.rs` (`REGISTRY_TABLES`).
+- **Vocabularies.** `adoptions.reason` is `initial` or `tenant_suffix_changed`; `status` is `in_progress`, `review`, `confirmed` or `cancelled`; `step` is `branch`, `base_version`, `files`, `secrets` or `confirm`; `adoption_resolutions.resolution` is `nfs_is_right`, `git_is_right` or `intentional`. At most one adoption per `(swimlane, reason)` is open (`in_progress` or `review`) at a time. A new value is a new migration that widens the CHECK.
+- **Not relaxed (plan 05, A16).** The `sentinel_records.operation` CHECK still allows only `create`, `write`, `delete` and `rename`: an `Attribute` record (chmod, chown) is acknowledged and counted, not stored. Storing them would be a later contract change.
+- **Cursors.** A `Cursor` is at most 512 characters and a path up to 1,024 bytes, so keyset lists over files page on `file_state.seq` (or a time and an id), never on a path (A31).
 
 ## Other database-side guards
 
