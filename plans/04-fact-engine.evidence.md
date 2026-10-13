@@ -176,3 +176,16 @@ All plan assumptions A1 to A22 stand as approved, with these notes for the PR:
 - `P6.index_settings` is not registered and exceeds the plan's 40 ms (45.8 ms and 46.348 ms p95). Recorded in
   `plans/04-fact-engine.blockers.md` (commit `eb87ef8`). Resolution is the human's: raise to 60 ms and register.
 - Acceptance item 4 and the original config-server goldens (A3) need a human, as the plan said they would.
+
+## After the automated review of PR 10 (FIX round)
+
+Thirty comments were triaged in `plans/04-fact-engine.pr-comments.md`: 27 fixed (commits `8b4940a`, `bc7458e`, `c499287`), 3 not
+a bug, none deferred. The numbers above are from before those fixes; the ones after them are:
+
+- `just verify-04`: PASS (exit 0). `cargo test -p engine --lib --tests`: 538 passed, 0 failed (519 before). The 10 engine fuzz
+  targets ran 30 s each clean.
+- `just verify`: PASS (exit 0). Workspace: 2,695 tests, 0 failed.
+- Engine budgets (`engine-bench`, p95): P6 1532.8 ms, P6.parse_flatten 14.3 ms, P7.compare 22.3 ms, P7.engine_grid 42.6 ms,
+  P7.engine_text_search 137.3 ms, P5.engine_base 3.6 ms, P5.engine_per_file_per_swimlane 0.15 ms. All pass. The side-by-side
+  measurement of the changed paths is in the triage file.
+- Unchanged: `P6.index_settings` is still the human's step, and acceptance item 4 (real snapshot) and `osv-scanner` are still not run.
