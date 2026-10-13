@@ -17,6 +17,7 @@
     clippy::module_name_repetitions
 )]
 
+mod batch;
 mod bytes;
 mod checks;
 mod diff;
@@ -33,6 +34,11 @@ mod search;
 mod secret_scan;
 mod tree_hash;
 
+pub use self::batch::{
+    AdoptionCandidate, AdoptionScore, BatchRules, FileState, LaneFile, LaneHistory, LaneInput, LaneState,
+    MAX_ADOPTION_CANDIDATES, MAX_BATCH_SWIMLANES, MAX_LANE_FILES, NfsContent, Similarity, SwimlaneFindings,
+    adoption_rank, findings_for_swimlanes, recompute_all, recompute_paths,
+};
 pub use self::bytes::{
     DEFAULT_DENY_GLOBS, Decoded, DenyMatcher, Newline, apply_eol, classify, decode_text, detect_format,
     dominant_eol, encode_text, normalise_eol,
@@ -53,8 +59,8 @@ pub use self::effect::{
 };
 pub use self::effective::{Effective, EffectiveValue, Layer, Layers, Origin, Source, effective};
 pub use self::error::{
-    DecodeError, DenyError, EncodeError, HostRulesError, LimitKind, MergeRulesError, ParseError, ScanError,
-    SearchError, TreeHashError,
+    BatchError, DecodeError, DenyError, EncodeError, HostRulesError, LimitKind, MergeRulesError, ParseError,
+    ScanError, SearchError, TreeHashError,
 };
 pub use self::grid::{
     GridColumn, GridEntry, GridError, GridOptions, GridResult, GridValue, MAX_GRID_COLUMNS, grid,

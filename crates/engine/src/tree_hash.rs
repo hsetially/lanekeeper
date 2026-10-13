@@ -160,6 +160,160 @@ fn update_entry(hasher: &mut Sha256, name: &str, directory: bool, hash: &Content
     hasher.update(hash.as_bytes());
 }
 
+/// A node of a directory of an [`IncrementalTree`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Node {
+    File(ContentHash),
+    /// A subdirectory; its hash is in `IncrementalTree::hashes`.
+    Dir,
+}
+
+/// The tree of `effective_tree_hash`, kept between runs so that a change to a few files rehashes only their directories and
+/// the directories above them (P5). Every directory keeps its entries and its hash. `set` changes a file and marks the
+/// directories above it, and `finish` rehashes the marked ones, deepest first, so that a directory is hashed once however
+/// many of its files changed. The result is the same as `effective_tree_hash` of the same files (a property test in
+/// `tests/batch.rs` holds the two together), whatever order the changes were made in.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct IncrementalTree {
+    /// Directory (as text, the root is `""`) to its entries by name. A directory with no entries is not kept.
+    entries: BTreeMap<String, BTreeMap<String, Node>>,
+    /// Directory to its hash, for every directory in `entries`.
+    hashes: BTreeMap<String, ContentHash>,
+    /// Directories whose hash is out of date: after `finish` there are none.
+    dirty: BTreeSet<String>,
+}
+
+impl IncrementalTree {
+    /// Sets (`Some`) or removes (`None`) the effective hash of one logical file. The directories above it are rehashed by the
+    /// next `finish`.
+    ///
+    /// # Errors
+    ///
+    /// `Inconsistent` if a name is both a file and a directory.
+    pub(crate) fn set(&mut self, file: &LogicalFile, hash: Option<ContentHash>) -> Result<(), TreeHashError> {
+        let path = file.as_str();
+        let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+        if let Some(hash) = hash {
+            self.link(dir)?;
+            let slot = self.entries.entry(dir.to_owned()).or_default();
+            if matches!(slot.get(name), Some(Node::Dir)) {
+                return Err(TreeHashError::Inconsistent);
+            }
+            slot.insert(name.to_owned(), Node::File(hash));
+        } else {
+            // A file that is not there is already removed, and marks nothing.
+            let Some(slot) = self.entries.get_mut(dir) else {
+                return Ok(());
+            };
+            if !matches!(slot.get(name), Some(Node::File(_))) {
+                return Ok(());
+            }
+            slot.remove(name);
+        }
+        self.mark(dir);
+        Ok(())
+    }
+
+    /// Makes `dir` and each directory above it a known directory, with a `Dir` node in its parent.
+    fn link(&mut self, dir: &str) -> Result<(), TreeHashError> {
+        self.entries.entry(dir.to_owned()).or_default();
+        let mut child = dir;
+        while !child.is_empty() {
+            let (parent, name) = child.rsplit_once('/').unwrap_or(("", child));
+            let slot = self.entries.entry(parent.to_owned()).or_default();
+            match slot.get(name) {
+                Some(Node::File(_)) => return Err(TreeHashError::Inconsistent),
+                Some(Node::Dir) => break,
+                None => {
+                    slot.insert(name.to_owned(), Node::Dir);
+                }
+            }
+            child = parent;
+        }
+        Ok(())
+    }
+
+    /// Marks `dir` and each directory above it. A directory that is marked has its ancestors marked, so the walk stops at the
+    /// first one that already is.
+    fn mark(&mut self, dir: &str) {
+        let mut current = dir;
+        loop {
+            if !self.dirty.insert(current.to_owned()) || current.is_empty() {
+                break;
+            }
+            current = current.rsplit_once('/').map_or("", |(parent, _)| parent);
+        }
+    }
+
+    /// Rehashes the marked directories, deepest first, and drops those that no longer hold a file.
+    ///
+    /// # Errors
+    ///
+    /// `Inconsistent` if a directory node has no hash (a bug; the tree is left as it is).
+    pub(crate) fn finish(&mut self) -> Result<(), TreeHashError> {
+        let mut order: Vec<String> = std::mem::take(&mut self.dirty).into_iter().collect();
+        order.sort_by_key(|d| std::cmp::Reverse(depth(d)));
+        for dir in order {
+            let empty = self.entries.get(&dir).is_none_or(BTreeMap::is_empty);
+            if empty {
+                self.entries.remove(&dir);
+                self.hashes.remove(&dir);
+                // Its entry in the parent goes too (the parent is marked, as every directory above a marked one is).
+                if !dir.is_empty() {
+                    let (parent, name) = dir.rsplit_once('/').unwrap_or(("", dir.as_str()));
+                    if let Some(slot) = self.entries.get_mut(parent) {
+                        if slot.get(name) == Some(&Node::Dir) {
+                            slot.remove(name);
+                        }
+                    }
+                }
+                continue;
+            }
+            let mut sha = Sha256::new();
+            if let Some(entries) = self.entries.get(&dir) {
+                for (name, node) in entries {
+                    match node {
+                        Node::File(hash) => update_entry(&mut sha, name, false, hash),
+                        Node::Dir => {
+                            let child = if dir.is_empty() {
+                                name.clone()
+                            } else {
+                                format!("{dir}/{name}")
+                            };
+                            let hash = self.hashes.get(&child).ok_or(TreeHashError::Inconsistent)?;
+                            update_entry(&mut sha, name, true, hash);
+                        }
+                    }
+                }
+            }
+            self.hashes
+                .insert(dir, ContentHash::from_bytes(sha.finalize().into()));
+        }
+        Ok(())
+    }
+
+    /// The hash of the whole tree, or `None` for a tree with no file.
+    pub(crate) fn root(&self) -> Option<ContentHash> {
+        self.hashes.get("").copied()
+    }
+
+    /// The hash of one directory, or `None` for one that holds no file.
+    pub(crate) fn get(&self, dir: &NfsPath) -> Option<ContentHash> {
+        self.hashes.get(dir.as_str()).copied()
+    }
+
+    /// The hashes as `effective_tree_hash` returns them.
+    pub(crate) fn to_hashes(&self) -> TreeHashes {
+        TreeHashes {
+            dirs: self
+                .hashes
+                .iter()
+                .filter_map(|(dir, hash)| Some((NfsPath::parse_prefix(dir).ok()?, *hash)))
+                .collect(),
+        }
+    }
+}
+
 /// The value of one logical file in a swimlane that has several tenants (Q34): the hash all of them agree on, or, when
 /// they do not, a hash over the tenants and their hashes, sorted by tenant. `None` when there is no tenant.
 pub fn swimlane_hash(per_tenant: &[(TenantId, ContentHash)]) -> Option<ContentHash> {

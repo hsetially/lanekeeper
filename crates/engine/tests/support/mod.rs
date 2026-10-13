@@ -1,6 +1,8 @@
 //! Shared by the parsing tests (T2): small helpers, and the text form the golden snapshots use.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+pub mod lanes;
+
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

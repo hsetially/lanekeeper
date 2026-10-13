@@ -61,3 +61,11 @@ harness = false
 [[bench]]
 name = "search_text"
 harness = false
+
+[[bench]]
+name = "full_recompute"
+harness = false
+
+[[bench]]
+name = "incremental"
+harness = false

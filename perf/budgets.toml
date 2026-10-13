@@ -117,7 +117,7 @@ statistic = "p95"
 threshold = 180000
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 # Prompt 04, T2: the engine's own share of P6, the parse and flatten of the 6,000-line YAML file in 20 ms (the 20 ms is the
 # prompt's, prompts/04-fact-engine.md T2; the P6 above is the nightly total).
@@ -231,6 +231,33 @@ description = "Text search over the deduplicated blobs of 40 swimlanes, on 2 thr
 bench = "engine/search_text_target_blobs"
 statistic = "p95"
 threshold = 400
+unit = "ms"
+scale = "target"
+registered = true
+
+# Prompt 04, T8: the engine's share of P5, the incremental recompute (`recompute_paths`), on the target-scale fixtures with a pool
+# of two threads. `P5.engine_base` is one changed file in one swimlane (criterion); `P5.engine_per_file_per_swimlane` is the time of
+# 100 changed files in each of 10 swimlanes divided by the 1,000 pairs (a harness, `target/perf-results/`), which has the base cost
+# inside it. Both use the full figures of docs/performance.md (50 ms and 2 ms): the engine alone has to fit the whole budget, and
+# whatever headroom is left belongs to prompt 05, whose entries above (`P5`, `P5.per_file_per_swimlane`) keep their
+# `hub-registry/` benchmarks for the database and event part. Bench names are unique, so the engine has its own ids.
+
+[[budget]]
+id = "P5.engine_base"
+description = "Incremental recompute base cost, engine kernel (one changed file in one swimlane)"
+bench = "engine/incremental_recompute_base"
+statistic = "p95"
+threshold = 50
+unit = "ms"
+scale = "target"
+registered = true
+
+[[budget]]
+id = "P5.engine_per_file_per_swimlane"
+description = "Incremental recompute cost per changed file per affected swimlane, engine kernel"
+bench = "engine/incremental_recompute_per_file_per_swimlane"
+statistic = "p95"
+threshold = 2
 unit = "ms"
 scale = "target"
 registered = true

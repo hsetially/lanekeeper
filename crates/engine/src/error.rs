@@ -83,6 +83,33 @@ pub enum TreeHashError {
     Inconsistent,
 }
 
+/// Why a batch function refused its input (T8). Small values that name the problem and never the input, like every error here.
+/// The checks are made before any parallel work starts, so the same input gives the same error however many threads ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BatchError {
+    /// More swimlanes than `MAX_BATCH_SWIMLANES`.
+    #[error("the batch has more swimlanes than the limit")]
+    TooManySwimlanes,
+    /// A swimlane with more files than `MAX_LANE_FILES`.
+    #[error("a swimlane has more files than the limit")]
+    TooManyFiles,
+    /// More branches than `MAX_ADOPTION_CANDIDATES` to rank.
+    #[error("there are more branches to rank than the limit")]
+    TooManyCandidates,
+    /// The same swimlane listed twice.
+    #[error("a swimlane is listed twice")]
+    DuplicateSwimlane,
+    /// The same path listed twice in one swimlane.
+    #[error("a path is listed twice in one swimlane")]
+    DuplicatePath,
+    /// `recompute_paths` was asked about a swimlane that has no earlier state, or no current files.
+    #[error("a swimlane has no earlier state or no current files")]
+    UnknownSwimlane,
+    /// The effective files of a swimlane do not form a tree: a name is both a file and a directory.
+    #[error("the effective files of a swimlane do not form a tree")]
+    InconsistentTree,
+}
+
 /// Which of the engine's size limits was met (`Limits`). Naming it is all an error does: the input stays out of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LimitKind {

@@ -355,6 +355,22 @@ fn thresholds_match_docs_performance_md() {
             "prompts/04-fact-engine.md",
             "a benchmark: text search over the target-scale deduplicated blob set, running on rayon, in 400 ms or less",
         ),
+        // The prompt gives P5 and P6 as the whole budgets, 50 ms + 2 ms and 3 minutes. The engine entries for P5 use the full
+        // figures (the engine alone must fit them); the plan's table names them, and the plan is frozen once approved.
+        (
+            "P5.engine_base",
+            50.0,
+            "ms",
+            "plans/04-fact-engine.md",
+            "| `incremental_recompute_base` | `P5.engine_base` | 50 ms |",
+        ),
+        (
+            "P5.engine_per_file_per_swimlane",
+            2.0,
+            "ms",
+            "plans/04-fact-engine.md",
+            "| `incremental_recompute_per_file_per_swimlane` | `P5.engine_per_file_per_swimlane` | 2 ms |",
+        ),
         // The prompt gives no number for the settings index. The 40 ms is the approved plan's own proposal (A1), so the plan is
         // the source; it is frozen once approved. The entry is not registered while the measured p95 is over it (the blockers
         // file of prompt 04), and this comparison keeps the number from being changed without its source.
@@ -406,15 +422,18 @@ fn only_budgets_with_a_harness_are_registered() {
     // (T11, `cargo bench -p hub-platform --bench ack_throughput`: the hub acknowledging a replayed spool).
     // Prompt 03a (identity): `cargo bench -p hub-identity` produces P7.auth_middleware and P7.auth_middleware_cold (T3) and
     // P12.audit_record (T5).
-    // Prompt 04 (fact engine): `cargo bench -p engine` produces P6.parse_flatten (T2), P7.compare and P7.engine_grid (T5) and
-    // P7.engine_text_search (T7). P6.index_settings (T3) has its benchmark but is not registered until a human settles its
-    // threshold (plans/04-fact-engine.blockers.md). The last task adds P6, P5.engine_base and P5.engine_per_file_per_swimlane
-    // (T8).
+    // Prompt 04 (fact engine): `cargo bench -p engine` produces P6.parse_flatten (T2), P7.compare and P7.engine_grid (T5),
+    // P7.engine_text_search (T7), and P6, P5.engine_base and P5.engine_per_file_per_swimlane (T8; the last is a harness that
+    // writes `target/perf-results/`). P6.index_settings (T3) has its benchmark but is not registered until a human settles its
+    // threshold (plans/04-fact-engine.blockers.md).
     const REGISTERED: &[&str] = &[
         "P6.parse_flatten",
         "P7.compare",
         "P7.engine_grid",
         "P7.engine_text_search",
+        "P6",
+        "P5.engine_base",
+        "P5.engine_per_file_per_swimlane",
         "P7.auth_middleware",
         "P7.auth_middleware_cold",
         "P12.audit_record",
