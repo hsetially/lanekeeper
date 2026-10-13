@@ -19,6 +19,8 @@
 //! | `engine_index_settings` | a selector byte (YAML, JSON or `.properties`), then any bytes | `index_settings` and `locate` never panic and give the same answer twice; the index is there exactly when `validate` accepts the bytes, with the same settings; every range is inside the text; a YAML file is located by tree-sitter or says that it could not be, and every disagreement names a setting of the file |
 //! | `engine_path_mapping` | NUL-separated pieces: an NFS path, tenant ids, a repository path, then merge-rule globs | `reverse_map`, `classify_path`, `map_path` and `MergeRules` never panic; a path that reads back to Git maps forward to the very same NFS path, under the root of its repository; a repository path maps to an NFS path that reads back to the same tenant file; the kind and the tenant of `classify_path` agree with the mapping; a merge rule list gives the same mode as asking each rule alone, first match first |
 //! | `engine_flatten` | NUL-separated pieces | a path built from any keys and indexes is read back to the same keys and indexes; any text offered as a setting path is refused or read to something that writes and reads back the same |
+//! | `engine_regex` | a flags byte (regex or literal, case, small caps), a pattern, a NUL, then the text searched | `search_text` never panics, finishes within the (small) regex limits and gives the same answer twice; an empty or over-long pattern is refused as such; every hit is within the caps, in swimlane, path and line order, with line text of at most the cut length that has no `\r` or `\n`, and ranges that are in order, not empty, inside the text and on character boundaries; a binary or over-long text gives no hits; for a literal, case-sensitive pattern in UTF-8 text the hits are exactly the lines that hold the pattern and the ranges exactly its occurrences |
+//! | `engine_secret_scan` | a flags byte (hex, shorter and looser thresholds), then text | `secret_scan` never panics and gives the same answer twice; every match is a non-empty span inside the text, in order and not overlapping, whose length counts its characters; its marker is `[REDACTED: N chars, rule]`; and replacing every span by its marker leaves a text in which the scan finds nothing, so what the scan reports is all of what it would report |
 
 #![allow(
     dead_code,
@@ -32,21 +34,23 @@ use std::collections::BTreeSet;
 
 use bytes::Bytes;
 use domain::{
-    FileKind, LogicalFile, MergeMode, NfsPath, PathMappingRule, RepoPath, ReverseMapping, SettingPath,
-    TenantId, TenantSet, ValueFlag, ValueType,
+    FileClass, FileKind, LogicalFile, MergeMode, NfsPath, PathMappingRule, RepoPath, ReverseMapping,
+    SettingPath, SwimlaneId, TenantId, TenantSet, TextHit, TextQuery, ValueFlag, ValueType,
 };
 use engine::{
-    Body, DenyMatcher, Flat, Limits, LocationSource, MergeRules, Newline, NodeKind, ParseError, ParseWarning,
-    Parsed, PathSegment, RepoSource, Syntax, apply_eol, classify, classify_path, decode_setting_path,
-    decode_text, detect_format, encode_setting_path, encode_text, flatten, index_settings, locate, map_path,
-    normalise_eol, parse, reverse_map, validate,
+    Body, CancelFlag, DenyMatcher, Flat, Limits, LocationSource, MergeRules, Newline, NodeKind, ParseError,
+    ParseWarning, Parsed, PathSegment, RepoSource, ScanConfig, ScanError, SearchBlob, SearchCorpus,
+    SearchError, SearchLocation, SearchOutcome, SecretMatch, Syntax, apply_eol, classify, classify_path,
+    decode_setting_path, decode_text, detect_format, encode_setting_path, encode_text, flatten,
+    index_settings, locate, map_path, normalise_eol, normalised_hash, parse, reverse_map, search_text,
+    secret_scan, validate,
 };
 
 /// A check over one fuzz input.
 pub type Check = fn(&[u8]) -> Result<(), String>;
 
 /// Every fuzz target: its name (also the file name in `fuzz_targets` and the corpus directory) and its check.
-pub const TARGETS: [(&str, Check); 7] = [
+pub const TARGETS: [(&str, Check); 9] = [
     ("engine_bytes", engine_bytes),
     ("engine_yaml", engine_yaml),
     ("engine_json", engine_json),
@@ -54,6 +58,8 @@ pub const TARGETS: [(&str, Check); 7] = [
     ("engine_flatten", engine_flatten),
     ("engine_index_settings", engine_index_settings),
     ("engine_path_mapping", engine_path_mapping),
+    ("engine_regex", engine_regex),
+    ("engine_secret_scan", engine_secret_scan),
 ];
 
 /// The least number of seeds in each corpus directory: valid, truncated, oversized, alias bomb, deep nesting, wrong
@@ -296,6 +302,371 @@ fn check_flat(flat: &Flat, syntax: Syntax, total_lines: u32, limits: &Limits) ->
         )?;
     }
     Ok(())
+}
+
+// --- engine_regex ---
+
+/// The pool every search of the fuzzer runs on: one thread, built once.
+fn pool() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("a pool of one thread")
+    })
+}
+
+/// Small regex limits and a short line cut, so that the boundaries are easy to reach.
+pub fn search_limits() -> Limits {
+    Limits {
+        regex_size_limit: 64 * 1024,
+        regex_dfa_size_limit: 256 * 1024,
+        regex_nest_limit: 8,
+        hit_line_bytes: 64,
+        ..fuzz_limits()
+    }
+}
+
+const SEARCH_PLACES: [(&str, &str); 2] = [("sit1", "a.txt"), ("sit2", "b.yml")];
+
+/// The text with `\r\n` and a lone `\r` turned into `\n`, as the search reads it.
+fn lines_as_lf(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+pub fn engine_regex(data: &[u8]) -> Result<(), String> {
+    let Some((&flags, rest)) = data.split_first() else {
+        return Ok(());
+    };
+    let split = rest.iter().position(|&b| b == 0);
+    let (pattern, haystack) = split.map_or((rest, &rest[rest.len()..]), |p| (&rest[..p], &rest[p + 1..]));
+    let Ok(pattern) = std::str::from_utf8(pattern) else {
+        return Ok(());
+    };
+    let limits = search_limits();
+    let query = TextQuery {
+        pattern: pattern.to_owned(),
+        regex: flags & 1 != 0,
+        case_sensitive: flags & 2 != 0,
+        swimlanes: Vec::new(),
+        path_glob: None,
+        max_total: if flags & 4 != 0 {
+            3
+        } else {
+            TextQuery::DEFAULT_MAX_TOTAL
+        },
+        max_per_file: if flags & 8 != 0 {
+            2
+        } else {
+            TextQuery::DEFAULT_MAX_PER_FILE
+        },
+    };
+    let content = Bytes::copy_from_slice(haystack);
+    let corpus = SearchCorpus::new(vec![SearchBlob {
+        hash: normalised_hash(&content, FileClass::Binary),
+        content,
+        locations: SEARCH_PLACES
+            .iter()
+            .map(|(s, p)| SearchLocation {
+                swimlane: SwimlaneId::parse(s).unwrap(),
+                path: NfsPath::parse(p).unwrap(),
+            })
+            .collect(),
+    }])
+    .map_err(|e| e.to_string())?;
+    let run = || {
+        search_text(
+            &corpus,
+            &query,
+            &DenyMatcher::default(),
+            &limits,
+            pool(),
+            &CancelFlag::new(),
+        )
+    };
+    let first = run();
+    ensure(first == run(), || {
+        "searching twice gives different answers".into()
+    })?;
+    match first {
+        Err(SearchError::EmptyPattern) => ensure(pattern.is_empty(), || {
+            "a pattern that is not empty was refused as empty".into()
+        }),
+        Err(SearchError::PatternTooLong) => ensure(pattern.len() > limits.regex_pattern_bytes, || {
+            "a pattern within the limit was refused as too long".into()
+        }),
+        Err(SearchError::InvalidPattern) => ensure(
+            !pattern.is_empty() && pattern.len() <= limits.regex_pattern_bytes,
+            || "an empty or over-long pattern was refused as invalid".into(),
+        ),
+        Err(other) => Err(format!("a search without a glob or a flag failed with {other:?}")),
+        Ok(outcome) => {
+            ensure(
+                pattern.len() <= limits.regex_pattern_bytes && !pattern.is_empty(),
+                || "an empty or over-long pattern was searched".into(),
+            )?;
+            check_search(&outcome, &query, &limits)?;
+            check_literal_oracle(&outcome, &query, &limits, haystack)
+        }
+    }
+}
+
+/// What every answer of `search_text` has, whatever the query.
+fn check_search(outcome: &SearchOutcome, query: &TextQuery, limits: &Limits) -> Result<(), String> {
+    let hits = &outcome.results.hits;
+    ensure(hits.len() <= query.max_total as usize, || {
+        format!("{} hits over the total cap of {}", hits.len(), query.max_total)
+    })?;
+    let stats = outcome.stats;
+    ensure(
+        stats.blobs_searched + stats.blobs_binary + stats.blobs_oversized <= 1,
+        || format!("{stats:?} for one blob"),
+    )?;
+    let mut per_place: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut count = 0_usize;
+    let mut previous: Option<(String, String, u32)> = None;
+    for hit in hits {
+        check_hit(hit, limits)?;
+        let place = (hit.swimlane.to_string(), hit.path.to_string());
+        let key = (place.0.clone(), place.1.clone(), hit.line);
+        if let Some(before) = &previous {
+            ensure(*before < key, || {
+                format!("hits out of order: {before:?} then {key:?}")
+            })?;
+            if (before.0.as_str(), before.1.as_str()) != (place.0.as_str(), place.1.as_str()) {
+                count = 0;
+            }
+        }
+        count += 1;
+        ensure(count <= query.max_per_file as usize, || {
+            format!("{count} hits in one place over the cap of {}", query.max_per_file)
+        })?;
+        per_place.insert(place);
+        previous = Some(key);
+    }
+    Ok(())
+}
+
+fn check_hit(hit: &TextHit, limits: &Limits) -> Result<(), String> {
+    ensure(hit.line >= 1, || "a hit on line 0".into())?;
+    ensure(hit.text.len() <= limits.hit_line_bytes, || {
+        format!(
+            "a line of {} bytes over the cut of {}",
+            hit.text.len(),
+            limits.hit_line_bytes
+        )
+    })?;
+    ensure(!hit.text.contains(['\r', '\n']), || {
+        "a line break in a hit's text".into()
+    })?;
+    ensure(hit.ranges.len() <= 64, || "more than 64 ranges in a hit".into())?;
+    let mut end_before = 0_u32;
+    for &(start, end) in &hit.ranges {
+        ensure(start < end && start >= end_before, || {
+            format!("ranges out of order or empty: {:?}", hit.ranges)
+        })?;
+        ensure(hit.text.get(start as usize..end as usize).is_some(), || {
+            format!("the range {start}..{end} is not inside the text or not on character boundaries")
+        })?;
+        end_before = end;
+    }
+    Ok(())
+}
+
+/// For a literal, case-sensitive pattern in UTF-8 text, the answer can be worked out with `str`: the lines that hold the
+/// pattern, and the places in them where it occurs.
+fn check_literal_oracle(
+    outcome: &SearchOutcome,
+    query: &TextQuery,
+    limits: &Limits,
+    haystack: &[u8],
+) -> Result<(), String> {
+    let hits = &outcome.results.hits;
+    // A byte order mark that says UTF-16 makes NUL bytes part of the text, and the text is read as such.
+    if haystack.starts_with(&[0xFF, 0xFE]) || haystack.starts_with(&[0xFE, 0xFF]) {
+        return Ok(());
+    }
+    if haystack.contains(&0) || haystack.len() > limits.input_bytes {
+        ensure(hits.is_empty(), || "hits in a binary or over-long text".into())?;
+        ensure(outcome.stats.blobs_searched == 0, || {
+            "a binary or over-long text was searched".into()
+        })?;
+        return Ok(());
+    }
+    let Ok(text) = std::str::from_utf8(haystack) else {
+        return Ok(());
+    };
+    if query.regex || !query.case_sensitive || text.starts_with('\u{feff}') {
+        return Ok(());
+    }
+    let lf = lines_as_lf(text);
+    let pattern = query.pattern.as_str();
+    let expected: Vec<(u32, &str)> = lf
+        .split('\n')
+        .zip(1_u32..)
+        .filter(|(line, _)| line.contains(pattern))
+        .map(|(line, n)| (n, line))
+        .collect();
+    let at = |lane: &str| -> Vec<&TextHit> { hits.iter().filter(|h| h.swimlane.as_str() == lane).collect() };
+    for (lane, _) in SEARCH_PLACES {
+        let got = at(lane);
+        if !outcome.results.truncated {
+            ensure(got.len() == expected.len(), || {
+                format!(
+                    "{} hits in {lane} for {} lines that hold the pattern",
+                    got.len(),
+                    expected.len()
+                )
+            })?;
+        }
+        for (hit, &(n, line)) in got.iter().zip(&expected) {
+            ensure(hit.line == n, || {
+                format!("a hit on line {} where line {n} is next", hit.line)
+            })?;
+            let mut cut = line.len().min(limits.hit_line_bytes);
+            while !line.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            ensure(hit.text == line[..cut], || {
+                format!("line {n}: the text differs from the line")
+            })?;
+            let ranges: Vec<(u32, u32)> = line
+                .match_indices(pattern)
+                .filter(|(s, _)| *s < cut)
+                .take(64)
+                .map(|(s, m)| (s as u32, (s + m.len()).min(cut) as u32))
+                .collect();
+            ensure(hit.ranges == ranges, || {
+                format!("line {n}: ranges {:?} for occurrences at {ranges:?}", hit.ranges)
+            })?;
+        }
+    }
+    Ok(())
+}
+
+// --- engine_secret_scan ---
+
+pub fn engine_secret_scan(data: &[u8]) -> Result<(), String> {
+    let Some((&flags, rest)) = data.split_first() else {
+        return Ok(());
+    };
+    let Ok(text) = std::str::from_utf8(rest) else {
+        return Ok(());
+    };
+    let config = ScanConfig {
+        hex_is_random: flags & 1 != 0,
+        min_random_len: if flags & 2 != 0 { 16 } else { 32 },
+        min_entropy_millibits: if flags & 4 != 0 { 3_000 } else { 4_000 },
+        max_matches: 64,
+        ..ScanConfig::default()
+    };
+    let limits = fuzz_limits();
+    let first = secret_scan(text, &config, &limits);
+    ensure(first == secret_scan(text, &config, &limits), || {
+        "scanning twice gives different answers".into()
+    })?;
+    match first {
+        Err(ScanError::TooLarge) => ensure(text.len() > limits.input_bytes, || {
+            "a text within the limit was refused as too large".into()
+        }),
+        // More than the cap is an error, and the cap is what the config said.
+        Err(ScanError::TooManyMatches) => Ok(()),
+        Ok(matches) => check_matches(text, &matches, &config),
+    }
+}
+
+/// The (start, end) byte offsets of each line of the text, with the same line ends as the scan: `\n`, `\r\n` and `\r`.
+fn line_table(text: &str) -> Vec<(usize, usize)> {
+    let b = text.as_bytes();
+    let (mut lines, mut start, mut i) = (Vec::new(), 0, 0);
+    while i < b.len() {
+        match b[i] {
+            b'\r' | b'\n' => {
+                lines.push((start, i));
+                i += if b[i] == b'\r' && b.get(i + 1) == Some(&b'\n') {
+                    2
+                } else {
+                    1
+                };
+                start = i;
+            }
+            _ => i += 1,
+        }
+    }
+    lines.push((start, b.len()));
+    lines
+}
+
+/// The byte span of a match, or `None` when it is not inside the text.
+fn span_of(text: &str, lines: &[(usize, usize)], m: &SecretMatch) -> Option<(usize, usize)> {
+    let (from, to) = *lines.get((m.line as usize).checked_sub(1)?)?;
+    let line = &text[from..to];
+    let start = line
+        .char_indices()
+        .nth((m.column as usize).checked_sub(1)?)
+        .map(|(i, _)| i)
+        .or_else(|| (line.chars().count() == (m.column as usize) - 1).then_some(line.len()))?;
+    let tail = &line[start..];
+    let len = m.length as usize;
+    let end = if tail.chars().count() < len {
+        return None;
+    } else {
+        tail.char_indices().nth(len).map_or(tail.len(), |(i, _)| i)
+    };
+    Some((from + start, from + start + end))
+}
+
+fn check_matches(text: &str, matches: &[SecretMatch], config: &ScanConfig) -> Result<(), String> {
+    ensure(matches.len() <= config.max_matches, || {
+        "more matches than the cap".into()
+    })?;
+    let lines = line_table(text);
+    let mut spans = Vec::new();
+    let mut end_before = 0_usize;
+    for m in matches {
+        ensure(m.length >= 1 && m.column >= 1 && m.line >= 1, || {
+            format!("an empty or unplaced match {m:?}")
+        })?;
+        let (start, end) =
+            span_of(text, &lines, m).ok_or_else(|| format!("a match outside the text: {m:?}"))?;
+        ensure(start >= end_before, || {
+            format!("matches out of order or overlapping at {m:?}")
+        })?;
+        ensure(text[start..end].chars().count() == m.length as usize, || {
+            format!("{m:?}: the length does not count characters")
+        })?;
+        ensure(
+            m.marker() == format!("[REDACTED: {} chars, {}]", m.length, m.rule.name()),
+            || "a marker that is not the marker format".into(),
+        )?;
+        end_before = end;
+        spans.push((start, end, m.marker()));
+    }
+    // What the scan reports is all of it: hide every span, and the scan has nothing left to report.
+    let mut redacted = text.to_owned();
+    for (start, end, marker) in spans.iter().rev() {
+        redacted.replace_range(*start..*end, marker);
+    }
+    let again = secret_scan(
+        &redacted,
+        &ScanConfig {
+            max_matches: usize::MAX,
+            ..config.clone()
+        },
+        &Limits {
+            input_bytes: usize::MAX,
+            ..fuzz_limits()
+        },
+    )
+    .map_err(|e| format!("the redacted text could not be scanned: {e}"))?;
+    ensure(again.is_empty(), || {
+        format!(
+            "{} matches are left after redacting {} spans: {again:?}",
+            again.len(),
+            spans.len()
+        )
+    })
 }
 
 // --- engine_index_settings ---
@@ -712,6 +1083,51 @@ pub fn planted_harm_is_detected() -> Result<(), String> {
         engine_path_mapping(b"a/b-sit1.yml\0sit1\0data/config/a/b.yml\0*.yml").is_ok(),
         || "a clean path mapping input was reported".into(),
     )?;
+
+    // The search checks catch a hit that breaks a rule, and the scan checks a match outside the text.
+    let limits_for_search = search_limits();
+    let hit = |text: &str, ranges: Vec<(u32, u32)>| TextHit {
+        swimlane: SwimlaneId::parse("sit1").unwrap(),
+        path: NfsPath::parse("a.txt").unwrap(),
+        line: 1,
+        text: text.to_owned(),
+        ranges,
+    };
+    check_hit(&hit("fine", vec![(0, 2)]), &limits_for_search)?;
+    for (name, bad) in [
+        ("a carriage return", hit("a\rb", vec![])),
+        ("a range outside the text", hit("ab", vec![(1, 9)])),
+        ("an empty range", hit("ab", vec![(1, 1)])),
+        ("ranges out of order", hit("abcd", vec![(2, 3), (0, 1)])),
+        ("a range inside a character", hit("\u{e9}", vec![(0, 1)])),
+        ("a line over the cut", hit(&"x".repeat(65), vec![])),
+    ] {
+        ensure(check_hit(&bad, &limits_for_search).is_err(), || {
+            format!("a hit with {name} was not reported")
+        })?;
+    }
+    let text = "a: ghp_";
+    let lines = line_table(text);
+    ensure(
+        span_of(
+            text,
+            &lines,
+            &SecretMatch {
+                line: 1,
+                column: 4,
+                length: 9,
+                rule: engine::SecretRule::Jwt,
+            },
+        )
+        .is_none(),
+        || "a match outside the text was not reported".into(),
+    )?;
+    ensure(engine_regex(b"\x03fine\0a fine line\n").is_ok(), || {
+        "a clean search input was reported".into()
+    })?;
+    ensure(engine_secret_scan(b"\0password: x\n").is_ok(), || {
+        "a clean scan input was reported".into()
+    })?;
 
     ensure(engine_flatten(b"fine\0@1").is_ok(), || {
         "a clean input was reported".into()

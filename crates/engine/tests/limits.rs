@@ -24,6 +24,7 @@ fn defaults_are_the_documented_values() {
     assert_eq!(l.regex_nest_limit, 50);
     assert_eq!(l.hits_total, 500);
     assert_eq!(l.hits_per_file, 20);
+    assert_eq!(l.hit_line_bytes, 512);
     assert_eq!(l.locations_per_finding, 50);
 }
 
@@ -52,6 +53,7 @@ fn every_default_is_nonzero_and_ordered_sensibly() {
         l.diff_lines,
         l.diff_cells,
         l.locations_per_finding,
+        l.hit_line_bytes,
     ] {
         assert!(v > 0);
     }

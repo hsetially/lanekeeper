@@ -57,6 +57,8 @@ fn corpus_replay_all_engine_targets() {
     replay("engine_flatten", invariants::engine_flatten);
     replay("engine_index_settings", invariants::engine_index_settings);
     replay("engine_path_mapping", invariants::engine_path_mapping);
+    replay("engine_regex", invariants::engine_regex);
+    replay("engine_secret_scan", invariants::engine_secret_scan);
 }
 
 #[test]
@@ -346,4 +348,182 @@ fn the_path_mapping_seeds_reach_what_they_are_named_for() {
     );
     let good = globs("glob_depth");
     assert!(MergeRules::new(MergeMode::WholeFile, &rules(&good)).is_ok());
+}
+
+/// The regex seeds are not blind either: each is refused, searched or skipped as the name says, so a seed cannot go on
+/// passing after the code it was written for has changed.
+#[test]
+fn the_regex_seeds_reach_what_they_are_named_for() {
+    use domain::{FileClass, NfsPath, SwimlaneId, TextQuery};
+    use engine::{
+        CancelFlag, DenyMatcher, SearchBlob, SearchCorpus, SearchError, SearchLocation, normalised_hash,
+        search_text,
+    };
+
+    let run = |name: &str| {
+        let data = seed("engine_regex", name);
+        let flags = data[0];
+        let nul = data[1..].iter().position(|&b| b == 0).unwrap_or(data.len() - 1);
+        let pattern = String::from_utf8(data[1..=nul].to_vec()).unwrap();
+        let hay = data.get(nul + 2..).unwrap_or_default().to_vec();
+        let query = TextQuery {
+            pattern,
+            regex: flags & 1 != 0,
+            case_sensitive: flags & 2 != 0,
+            swimlanes: Vec::new(),
+            path_glob: None,
+            max_total: if flags & 4 != 0 {
+                3
+            } else {
+                TextQuery::DEFAULT_MAX_TOTAL
+            },
+            max_per_file: if flags & 8 != 0 {
+                2
+            } else {
+                TextQuery::DEFAULT_MAX_PER_FILE
+            },
+        };
+        let content = bytes::Bytes::from(hay);
+        let corpus = SearchCorpus::new(vec![SearchBlob {
+            hash: normalised_hash(&content, FileClass::Binary),
+            content,
+            locations: vec![SearchLocation {
+                swimlane: SwimlaneId::parse("sit1").unwrap(),
+                path: NfsPath::parse("a.txt").unwrap(),
+            }],
+        }])
+        .unwrap();
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let limits = invariants::search_limits();
+        search_text(
+            &corpus,
+            &query,
+            &DenyMatcher::default(),
+            &limits,
+            &pool,
+            &CancelFlag::new(),
+        )
+    };
+    assert_eq!(
+        run("pattern_over_512_bytes").unwrap_err(),
+        SearchError::PatternTooLong
+    );
+    for name in [
+        "nested_groups_over_limit",
+        "size_limit_exceeded",
+        "line_break_in_pattern",
+        "unclosed_group",
+    ] {
+        assert_eq!(run(name).unwrap_err(), SearchError::InvalidPattern, "{name}");
+    }
+    assert_eq!(run("empty_pattern").unwrap_err(), SearchError::EmptyPattern);
+    for (name, hits) in [
+        ("literal_valid", 2),
+        ("literal_dot_is_a_dot", 2),
+        ("literal_case_insensitive", 2),
+        ("regex_anchors", 1),
+        ("regex_alternation_word_boundary", 2),
+        ("crlf_haystack_anchor", 3),
+        ("lone_cr_lines", 3),
+        ("catastrophic_backtracking", 0),
+        ("many_matches_in_a_line", 1),
+        ("long_line_cut_inside_a_character", 1),
+    ] {
+        let found = run(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(found.results.hits.len(), hits, "{name}");
+        assert_eq!(found.stats.blobs_searched, 1, "{name}");
+    }
+    let capped = run("caps_total_and_per_file").unwrap();
+    assert_eq!(capped.results.hits.len(), 2);
+    assert!(capped.results.truncated);
+    let binary = run("binary_haystack_nul").unwrap();
+    assert!(binary.results.hits.is_empty());
+    assert_eq!(binary.stats.blobs_binary, 1);
+    // The cut falls inside a two-byte letter, and the line is cut before it.
+    let cut = run("long_line_cut_inside_a_character").unwrap();
+    assert_eq!(cut.results.hits[0].text.len(), 63);
+}
+
+/// And the scan seeds: each finds, or leaves alone, what its name says.
+#[test]
+fn the_secret_scan_seeds_reach_what_they_are_named_for() {
+    use engine::{ScanConfig, ScanError, SecretRule, secret_scan};
+
+    let scan = |name: &str, config: &ScanConfig| {
+        let data = seed("engine_secret_scan", name);
+        let text = String::from_utf8(data[1..].to_vec()).unwrap();
+        secret_scan(&text, config, &invariants::fuzz_limits())
+    };
+    let plain = ScanConfig::default();
+    let rules =
+        |name: &str| -> Vec<SecretRule> { scan(name, &plain).unwrap().iter().map(|m| m.rule).collect() };
+    assert_eq!(
+        rules("private_key_block"),
+        [
+            SecretRule::PrivateKey,
+            SecretRule::PrivateKey,
+            SecretRule::PrivateKey
+        ]
+    );
+    assert_eq!(rules("private_key_unterminated").len(), 3);
+    assert_eq!(rules("private_key_inline_json"), [SecretRule::PrivateKey]);
+    for quiet in [
+        "public_key_and_certificate",
+        "names_and_placeholders",
+        "words_and_paths",
+        "hex_digest_and_uuid",
+        "truncated_input",
+    ] {
+        assert!(rules(quiet).is_empty(), "{quiet}: {:?}", rules(quiet));
+    }
+    assert_eq!(
+        rules("github_tokens"),
+        [
+            SecretRule::GithubToken,
+            SecretRule::GithubToken,
+            SecretRule::GithubToken
+        ]
+    );
+    assert_eq!(
+        rules("aws_and_other_prefixes"),
+        [
+            SecretRule::AwsAccessKey,
+            SecretRule::SlackToken,
+            SecretRule::GitlabToken,
+            SecretRule::StripeKey
+        ]
+    );
+    assert_eq!(rules("jwt"), [SecretRule::Jwt]);
+    assert_eq!(
+        rules("random_token_values"),
+        [SecretRule::HighEntropy, SecretRule::HighEntropy]
+    );
+    assert_eq!(rules("non_ascii_before_token").len(), 2);
+    // Settings change what is found.
+    let hex = ScanConfig {
+        hex_is_random: true,
+        ..plain.clone()
+    };
+    assert_eq!(scan("hex_digest_flagged_when_asked", &hex).unwrap().len(), 1);
+    assert!(scan("hex_digest_flagged_when_asked", &plain).unwrap().is_empty());
+    let loose = ScanConfig {
+        min_random_len: 16,
+        min_entropy_millibits: 3_000,
+        ..plain.clone()
+    };
+    assert_eq!(scan("looser_thresholds", &loose).unwrap().len(), 1);
+    assert!(scan("looser_thresholds", &plain).unwrap().is_empty());
+    // Past the cap there is an error and no list.
+    let capped = ScanConfig {
+        max_matches: 64,
+        ..plain.clone()
+    };
+    assert_eq!(
+        scan("many_matches_over_the_cap", &capped).unwrap_err(),
+        ScanError::TooManyMatches
+    );
+    assert_eq!(
+        scan("one_character_lines_in_a_key", &capped).unwrap_err(),
+        ScanError::TooManyMatches
+    );
 }

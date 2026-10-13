@@ -155,6 +155,14 @@ tree-sitter-yaml = "=0.7.2"
 # the lockfile through insta, so it is not new to `cargo deny`; 3.x has no feature the engine needs. Default features only: `text`
 # is empty (no dependency behind it), and the engine uses only the algorithms and the grouping of operations, not the text layer.
 similar = "=2.7.0"
+# Fact engine (prompt 04, T7, D54). The text search is ripgrep's own: grep-regex 0.1.14 (2025-10-16) builds the matcher from the Rust
+# `regex` engine (linear time, with the size, DFA and nesting limits of `Limits`), grep-searcher 0.1.17 (2026-07-15, 90 days old)
+# searches one in-memory slice and reports line numbers, grep-matcher 0.1.9 (2026-07-15) is the trait between them. No features: the
+# searcher's `simd-accel` and `avx-accel` only speed up non-UTF-8 transcoding, which the engine does itself (it decodes first). The
+# engine never maps a file and never reads one: it searches the bytes it is given. rayon is already pinned (the agent's scanning).
+grep-regex = "=0.1.14"
+grep-searcher = "=0.1.17"
+grep-matcher = "=0.1.9"
 # Test tooling
 proptest = "=1.11.0"
 insta = "=1.48.0"

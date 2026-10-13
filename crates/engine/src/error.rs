@@ -141,3 +141,39 @@ pub enum ParseError {
     #[error("the file is over the limit on {0}")]
     Limit(LimitKind),
 }
+
+/// Why `search_text` refused a query. The error never contains the pattern or the glob: a pattern may be a pasted secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum SearchError {
+    /// The pattern is empty (it would match every line).
+    #[error("the search pattern is empty")]
+    EmptyPattern,
+    /// The pattern is longer than `Limits::regex_pattern_bytes`.
+    #[error("the search pattern is longer than the limit")]
+    PatternTooLong,
+    /// The pattern is not a valid regex, holds a line break (a search reads one line at a time), or is over the size or
+    /// nesting limit.
+    #[error("the search pattern is not valid, or is too large or too complex")]
+    InvalidPattern,
+    /// The path filter is not a valid glob.
+    #[error("the path filter is not a valid glob")]
+    InvalidGlob,
+    /// More blobs or places than the search can index.
+    #[error("the set of files to search is too large")]
+    CorpusTooLarge,
+    /// The cancel flag was set. No partial answer is given.
+    #[error("the search was cancelled")]
+    Cancelled,
+}
+
+/// Why `secret_scan` refused a text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ScanError {
+    /// The text is longer than `Limits::input_bytes`.
+    #[error("the text is larger than the size limit")]
+    TooLarge,
+    /// More matches than `ScanConfig::max_matches`. A short list would leave the rest unredacted, so there is none: the
+    /// caller treats the text as unsafe to show.
+    #[error("the text holds more secrets than can be listed")]
+    TooManyMatches,
+}

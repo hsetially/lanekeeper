@@ -252,3 +252,96 @@ fn parse_errors_are_small_copyable_values() {
     fn is_copy<T: Copy + Send + Sync + 'static + std::error::Error>() {}
     is_copy::<ParseError>();
 }
+
+/// T7 (S21): a search pattern or a scanned text may be a pasted secret. The errors of both name what was wrong and nothing
+/// of the input.
+#[test]
+fn search_and_scan_errors_never_echo_input() {
+    fn is_copy<T: Copy + Send + Sync + 'static + std::error::Error>() {}
+    use bytes::Bytes;
+    use domain::{FileClass, NfsPath, SwimlaneId, TextQuery};
+    use engine::{
+        CancelFlag, ScanConfig, ScanError, SearchBlob, SearchCorpus, SearchError, SearchLocation,
+        normalised_hash, search_text, secret_scan,
+    };
+
+    let content = Bytes::from_static(b"nothing\n");
+    let corpus = SearchCorpus::new(vec![SearchBlob {
+        hash: normalised_hash(&content, FileClass::Binary),
+        content,
+        locations: vec![SearchLocation {
+            swimlane: SwimlaneId::parse("sit1").unwrap(),
+            path: NfsPath::parse("a.txt").unwrap(),
+        }],
+    }])
+    .unwrap();
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    let query = |pattern: String, regex: bool, glob: Option<&str>| TextQuery {
+        pattern,
+        regex,
+        case_sensitive: true,
+        swimlanes: Vec::new(),
+        path_glob: glob.map(|g| domain::ShortText::parse(g).unwrap()),
+        max_total: 10,
+        max_per_file: 10,
+    };
+    let cases = [
+        (
+            "too long",
+            query(MARKER.repeat(60), false, None),
+            SearchError::PatternTooLong,
+        ),
+        (
+            "not a regex",
+            query(format!("({MARKER}"), true, None),
+            SearchError::InvalidPattern,
+        ),
+        (
+            "line break",
+            query(format!("{MARKER}\n"), false, None),
+            SearchError::InvalidPattern,
+        ),
+        (
+            "bad glob",
+            query("x".into(), false, Some(&format!("{MARKER}[a-"))),
+            SearchError::InvalidGlob,
+        ),
+    ];
+    for (what, q, expected) in cases {
+        let err = search_text(
+            &corpus,
+            &q,
+            &DenyMatcher::default(),
+            &Limits::default(),
+            &pool,
+            &CancelFlag::new(),
+        )
+        .unwrap_err();
+        assert_eq!(err, expected, "{what}");
+        assert_clean(&format!("{what}: display"), &err.to_string());
+        assert_clean(&format!("{what}: debug"), &format!("{err:?}"));
+    }
+
+    let tiny = Limits {
+        input_bytes: 8,
+        ..Limits::default()
+    };
+    let err = secret_scan(&format!("{MARKER}{MARKER}"), &ScanConfig::default(), &tiny).unwrap_err();
+    assert_eq!(err, ScanError::TooLarge);
+    assert_clean("scan too large", &format!("{err} {err:?}"));
+    let many = ScanConfig {
+        max_matches: 0,
+        ..ScanConfig::default()
+    };
+    let err = secret_scan(
+        "ghp_aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC1dE3fG5",
+        &many,
+        &Limits::default(),
+    )
+    .unwrap_err();
+    assert_eq!(err, ScanError::TooManyMatches);
+    assert_clean("scan too many", &format!("{err} {err:?}"));
+
+    is_copy::<SearchError>();
+    is_copy::<ScanError>();
+}

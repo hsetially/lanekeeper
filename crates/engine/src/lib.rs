@@ -29,6 +29,8 @@ mod index;
 mod limits;
 mod parse;
 mod paths;
+mod search;
+mod secret_scan;
 mod tree_hash;
 
 pub use self::bytes::{
@@ -51,8 +53,8 @@ pub use self::effect::{
 };
 pub use self::effective::{Effective, EffectiveValue, Layer, Layers, Origin, Source, effective};
 pub use self::error::{
-    DecodeError, DenyError, EncodeError, HostRulesError, LimitKind, MergeRulesError, ParseError,
-    TreeHashError,
+    DecodeError, DenyError, EncodeError, HostRulesError, LimitKind, MergeRulesError, ParseError, ScanError,
+    SearchError, TreeHashError,
 };
 pub use self::grid::{
     GridColumn, GridEntry, GridError, GridOptions, GridResult, GridValue, MAX_GRID_COLUMNS, grid,
@@ -65,4 +67,8 @@ pub use self::parse::{
     decode_setting_path, encode_setting_path, flatten, parse, validate,
 };
 pub use self::paths::{FileFacts, MergeRules, RepoSource, classify_path, map_path, reverse_map};
+pub use self::search::{
+    CancelFlag, SearchBlob, SearchCorpus, SearchLocation, SearchOutcome, SearchStats, search_text,
+};
+pub use self::secret_scan::{ScanConfig, SecretMatch, SecretRule, secret_scan};
 pub use self::tree_hash::{TreeHashes, effective_tree_hash, normalised_hash, swimlane_hash};

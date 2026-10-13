@@ -348,7 +348,7 @@ engine-real-snapshot:
 # S22: the engine's own fuzz crate (plan decision A2; `fuzz-smoke` does not run it). Its lockfile is complete and passes cargo
 # deny and cargo audit (S19), then each target runs {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in
 # crates/engine/fuzz/artifacts/. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart.
-engine_fuzz_targets := "engine_bytes engine_yaml engine_json engine_properties engine_flatten engine_index_settings engine_path_mapping"
+engine_fuzz_targets := "engine_bytes engine_yaml engine_json engine_properties engine_flatten engine_index_settings engine_path_mapping engine_regex engine_secret_scan"
 engine-fuzz: fuzz-tools-check
     #!/usr/bin/env bash
     set -euo pipefail
@@ -366,7 +366,7 @@ engine-fuzz: fuzz-tools-check
 # every other prompt's benchmarks to have run (`just bench`), and `bench-check` has no filter, so the recipe cuts a registry with
 # just the budgets below and judges that; the full `cargo xtask bench-check` is run by the FINAL step after `just bench`.
 # `tests/justfile_gate.rs` fails if this list and the registered `engine/` budgets drift apart.
-engine_budgets := "P6.parse_flatten P7.compare P7.engine_grid"
+engine_budgets := "P6.parse_flatten P7.compare P7.engine_grid P7.engine_text_search"
 engine-bench:
     #!/usr/bin/env bash
     set -euo pipefail

@@ -26,6 +26,11 @@ tree-sitter.workspace = true
 tree-sitter-yaml.workspace = true
 # The line diff of two texts (T5): Patience, hunks with context. Deterministic, and it reads nothing but the two slices it is given.
 similar.workspace = true
+# The text search (T7, D54): ripgrep's matcher and searcher over in-memory slices, on the caller's rayon pool (never the global one).
+grep-regex.workspace = true
+grep-searcher.workspace = true
+grep-matcher.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
@@ -51,4 +56,8 @@ harness = false
 
 [[bench]]
 name = "grid"
+harness = false
+
+[[bench]]
+name = "search_text"
 harness = false

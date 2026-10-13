@@ -348,6 +348,13 @@ fn thresholds_match_docs_performance_md() {
             "prompts/04-fact-engine.md",
             "a benchmark: grid for one logical file across 40 swimlanes in 150 ms or less, using pre-flattened inputs",
         ),
+        (
+            "P7.engine_text_search",
+            400.0,
+            "ms",
+            "prompts/04-fact-engine.md",
+            "a benchmark: text search over the target-scale deduplicated blob set, running on rayon, in 400 ms or less",
+        ),
         // The prompt gives no number for the settings index. The 40 ms is the approved plan's own proposal (A1), so the plan is
         // the source; it is frozen once approved. The entry is not registered while the measured p95 is over it (the blockers
         // file of prompt 04), and this comparison keeps the number from being changed without its source.
@@ -399,14 +406,15 @@ fn only_budgets_with_a_harness_are_registered() {
     // (T11, `cargo bench -p hub-platform --bench ack_throughput`: the hub acknowledging a replayed spool).
     // Prompt 03a (identity): `cargo bench -p hub-identity` produces P7.auth_middleware and P7.auth_middleware_cold (T3) and
     // P12.audit_record (T5).
-    // Prompt 04 (fact engine): `cargo bench -p engine` produces P6.parse_flatten (T2) and P7.compare and P7.engine_grid (T5).
-    // P6.index_settings (T3) has its benchmark but is not registered until a human settles its threshold
-    // (plans/04-fact-engine.blockers.md). The later tasks add P7.engine_text_search (T7), and P6, P5.engine_base and
-    // P5.engine_per_file_per_swimlane (T8).
+    // Prompt 04 (fact engine): `cargo bench -p engine` produces P6.parse_flatten (T2), P7.compare and P7.engine_grid (T5) and
+    // P7.engine_text_search (T7). P6.index_settings (T3) has its benchmark but is not registered until a human settles its
+    // threshold (plans/04-fact-engine.blockers.md). The last task adds P6, P5.engine_base and P5.engine_per_file_per_swimlane
+    // (T8).
     const REGISTERED: &[&str] = &[
         "P6.parse_flatten",
         "P7.compare",
         "P7.engine_grid",
+        "P7.engine_text_search",
         "P7.auth_middleware",
         "P7.auth_middleware_cold",
         "P12.audit_record",

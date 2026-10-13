@@ -47,6 +47,8 @@ pub struct Limits {
     pub hits_total: usize,
     /// Hits from one file in a text search result. It is `domain::TextQuery::DEFAULT_MAX_PER_FILE`.
     pub hits_per_file: usize,
+    /// The longest line text in a search hit, in bytes. A longer line is cut on a character boundary.
+    pub hit_line_bytes: usize,
     /// Locations listed in one finding.
     pub locations_per_finding: usize,
 }
@@ -70,6 +72,7 @@ impl Limits {
         regex_nest_limit: 50,
         hits_total: 500,
         hits_per_file: 20,
+        hit_line_bytes: 512,
         locations_per_finding: 50,
     };
 }
