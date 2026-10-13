@@ -84,3 +84,45 @@ None. The round 1 blocking finding is fixed.
 8. **Scope and spec chain.** The plan file has only `81fd103` (draft) and `98b632d` (approved). The fix commits (`254ce27..3d7ec2c`) touch only owned paths; no new contract-path edits since `e22419b`. `Extra-paths` match the diff. Commit order is T1..T11 with `03b/blocked: A16` between T6 and T7, then the `03b/fix:` commits.
 
 VERDICT: APPROVE
+
+---
+
+# Review 03b: round 3 (after merging origin/main)
+
+Reviewer: `reviewer` subagent (fresh context, read-only). Head reviewed: `2434614`, against the last reviewed pushed head `c296aa1`. `origin/main` (`8c3a27c`: 03a identity, contract PRs 6 and 8) was merged by commit `4590103`; no rebase, no force push.
+
+VERDICT: APPROVE
+
+## Blocking
+
+None.
+
+## Non-blocking
+
+1. **`crates/hub-platform/tests/events_sse.rs` (internal-event tests, from ~line 422) and `tests/events_sse_cluster.rs`: no test pins the SSE edge check on its own.** Every rig uses `RoleVisibility`, which also refuses internal events (`visibility.rs:21-26`). Deleting the `if event.is_internal() { return false; }` at `sse.rs:493-495` would leave every test green. `EventVisibility` is meant to be swapped by later modules, so a swapped-in rule that says yes to unknown variants would leak with CI green. Fix: add a test-local `AllowAll: EventVisibility` and re-run the live, replay and replayed-and-live cases with it. Today's code is correct; no bypass found.
+2. **`crates/hub-platform/tests/lease_race.rs:236-249` (`05166af`) is sound but weaker than needed.** A tighter flake-free bound: take `remaining_local` at an instant read after the query returns, and assert `remaining_local_after <= remaining_db + 0.001`. Still meaningful as is.
+3. **`docs/threat-model.md:392` (needs-human).** It says the stream "ends within one heartbeat (15 s)" when "the session ends". `SessionAuth::still_valid(&UserId)` is per user; 03a's sessions are per cookie, so after a plain logout that browser's stream runs to the 30-minute maximum age. A disabled user or a role change is fine (03a deletes all of that user's sessions). Not exposed today because `hub` refuses to start without a real `SessionAuth`. Add a residual-risk sentence before sign-off; the future adapter needs a session handle, or `still_valid` needs one.
+4. **Other items not acted on:**
+   - No CSRF check in 03b's `GuardedRouter` (`routes.rs:236`, `route()` accepts any method). Not a live hole: only GET routes and the HMAC webhook use it. Suggested hardening: refuse non-safe methods in `route()`. The two `GuardedRouter`s (03a and 03b) and two request-id layers need a human decision (prompt 09).
+   - Two outbound HTTPS clients and two metadata-token sources (03a and 03b): design duplication, no live defect.
+   - `PgTestAuditLog` is not chain-equivalent to `PgAuditLog` (test-only).
+   - `git/pr_webhook.rs` `apply_link` (~line 240) calls `record` and `publish_in_tx` per link (up to 500) in one transaction. With 03a's log the chain lock is held from the first `record` to commit, stalling every audit writer and working against P12. Not an S9 violation. Fix before 09 wires `PgAuditLog`: do updates and publishes first, `record` just before commit.
+5. **Environment note.** A bare `cargo xtask bench-check` without `CARGO_PROFILE_DEV_DEBUG=0` picked up a stale `target/debug/xtask` pointing at a deleted scratch worktree path: a shared-target artifact, not a repo defect.
+
+## Detail on the specific checks
+
+- **Internal events never reach a browser: no bypass found.** Every route to a browser goes through `Stream::deliverable` (`sse.rs:492-497`), which checks `is_internal()` first. It covers live delivery (`sse.rs:587`) and replay (`sse.rs:533`), including replay served by another replica. `Replay::Resync`, `Resume::Unknown` and relay lag or undecodable rows write only a synthetic `Resync`. `EventSource` and `outbox::read_*` are used only by `sse.rs` and the bus/relay; other bus subscribers are in-process. `parse_kind` accepts only `[a-z_]`; internal kinds are refused whole, so an emptied list cannot widen the stream; `kinds=user_sessions_revoked` returns the same 400 and refusal metric as an unknown kind, so no oracle. In-process subscribers still receive the event (conformance test and `an_internal_event_crosses_the_replicas_on_the_bus_and_reaches_no_browser`). Old replicas in a rolling deploy turn the unknown variant into a `Resync` (a refetch, not a leak).
+- **Merge.** Same exact versions on both sides for every shared pin; feature unions benign (axum `http2`/`json`, moka `sync`; aws-lc-rs identical to 03a's). `prodash 31.0.0`, `quinn-proto 0.11.18`, `quinn-udp 0.5.15`, `h2 0.4.19`, `tokio-util 0.7.19` survive. `verify-03a` and `verify-03b` both intact; the added `cargo bench -p hub-identity` in `platform-bench` is justified (bench-check covers the whole registry, 03a registered three budgets), at the cost that `verify-03b` now depends on 03a's marginal P12 budget. 17 budgets registered, no threshold changed on either side. Both threat-model sections intact.
+- **Scope.** `crates/hub-identity/fuzz/Cargo.lock` (03a's path, not in the plan's Extra-paths) was regenerated: acceptable and non-blocking (lockfile only, mechanical result of the merged feature union, pins h2 0.4.19 and tokio-util 0.7.19 to stay within the 14-day rule; `cargo metadata --locked`, `cargo audit` and `cargo deny` clean on it). The human should be told that 03b's PR touches 03a's fuzz lockfile. Everything else outside owned paths is a shared file, a plan Extra-path or an approved contract path.
+- **Dependency ages (2026-10-12).** 424 unique (name, version) pairs added or changed versus origin/main across `Cargo.lock`, `crates/hub-identity/fuzz/Cargo.lock` and `crates/hub-platform/fuzz/Cargo.lock`, each looked up on crates.io: none under 14 days, none yanked; the youngest are 18 days. All sources are crates.io.
+- **Evidence honesty.** The evidence matches what was run. Recording `just verify-03b` run 2 as a failure on 03a's `P12.audit_record 3.190 ms p95 <= 3 ms` (marginal; implementer measured 2.78-3.01 ms on the merged tree and 2.53-3.03 ms on clean origin/main) and run 3 as a pass is honest. P12 is 03a's budget and code, so not a blocker for this PR; hand it to the human (`just verify-03b` can fail at its last step on a noisy machine; 03a's own evidence flags the same, "Known gap 15"). The reviewer saw 2.530 ms.
+
+## Gates re-run by the reviewer
+
+- `just verify-03b` (CARGO_INCREMENTAL=0, debug info off, `LK_REQUIRE_DOCKER=1`): exit 0. `platform-test` 626 passed; slow tests 57; 5 fuzz targets x 30 s, no crash; `platform-bench` and `bench-check` green.
+- `just verify`: exit 0. fmt and clippy clean; 2157 passed, 0 failed, 6 ignored; `cargo deny` ok; `cargo audit` 600 crates; web build ok. The known flaky agent tests passed.
+- `cargo xtask bench-check` alone: 17 pass, 0 fail, 23 unmet. P2 26.871 ms, P11 35.948 ms, P11.memory_mib 760.719 MiB, P12.audit_record 2.530 ms, P13 5.268 ms, P7.blob_get_cached 0.000 ms, P7.blob_endpoint 0.005 ms, P15.hub_ack 20942 versions/s.
+- `cargo +nightly-2026-09-14 metadata --locked`, `cargo audit --file` and `cargo deny --manifest-path` on `crates/hub-identity/fuzz`: clean.
+- Not re-run: `just fuzz-smoke`, `just verify-03a` (not part of the 03b gate), `osv-scanner` (not installed), `docker build` of the hub image, the real-GCP `--ignored` tests.
+
+VERDICT: APPROVE
