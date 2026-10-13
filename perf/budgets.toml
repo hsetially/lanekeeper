@@ -133,15 +133,11 @@ scale = "target"
 registered = true
 
 # Prompt 04, T3: the settings index of the same file, end to end as the hub runs it for every unique blob: decode, parse, flatten,
-# and tree-sitter reading the text a second time and being checked against the parser. The 40 ms is the plan's own proposal
-# (plans/04-fact-engine.md, A1): the prompt gives no number for it, and the budget table of docs/performance.md has only the SQL
-# half of the settings search (P7.settings_search, prompt 05).
-#
-# NOT REGISTERED YET: measured on the build machine (4 vCPU, shared) the benchmark's p95 is 45.8 ms, over the 40 ms (median of
-# the stages: decode, parse and flatten 7 ms; tree-sitter's own parse of the 146 KB file 14 to 21 ms; its tree turned into the
-# parser's shape 3 to 5 ms; flatten 1 ms). `plans/04-fact-engine.blockers.md` has the numbers and the options. A human sets the
-# threshold or the approach, and then this entry is registered (`registered = true`) and added to `engine_budgets` in the
-# Justfile. Until then `cargo xtask bench-check` lists it as UNMET with the measured number, which is what it is.
+# and tree-sitter reading the text a second time and being checked against the parser. The prompt gives no number for it. The plan
+# proposed 40 ms (plans/04-fact-engine.md, A1); the measured p95 was 45.8 ms (decode, parse and flatten 7 ms; tree-sitter's own
+# parse of the 146 KB file 14 to 21 ms; its tree turned into the parser's shape 3 to 5 ms; flatten 1 ms), so a human set 60 ms
+# (`plans/04-fact-engine.blockers.md`). The docs/performance.md budget table has only the SQL half of the settings search
+# (P7.settings_search, prompt 05).
 
 [[budget]]
 id = "P6.index_settings"

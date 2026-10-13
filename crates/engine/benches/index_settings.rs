@@ -1,8 +1,6 @@
 //! P6, P7 (settings): the settings index of the 6,000-line YAML file takes 60 ms or less (`P6.index_settings`,
-//! `engine/index_settings_6000_lines`). The plan proposed 40 ms; the budget is being raised from that proposal to 60 ms (a
-//! human decision, applied to `perf/budgets.toml`, the plan, the Justfile and the registry test by hand; see
-//! `plans/04-fact-engine.blockers.md` for the measurements). Until it is applied the entry is `registered = false`, which
-//! `cargo xtask bench-check` reports as UNMET and never as a pass.
+//! `engine/index_settings_6000_lines`). The plan proposed 40 ms; T3 measured 45.8 ms p95
+//! and a human set 60 ms (`plans/04-fact-engine.blockers.md` has the measurements). The entry is registered.
 //!
 //! The same file as `parse_flatten`, end to end as the hub runs it for every unique blob: decode, parse, flatten, and then
 //! tree-sitter reading the text a second time and being checked against the parser, setting by setting. The result is

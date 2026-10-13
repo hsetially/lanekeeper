@@ -371,15 +371,15 @@ fn thresholds_match_docs_performance_md() {
             "plans/04-fact-engine.md",
             "| `incremental_recompute_per_file_per_swimlane` | `P5.engine_per_file_per_swimlane` | 2 ms |",
         ),
-        // The prompt gives no number for the settings index. The 40 ms is the approved plan's own proposal (A1), so the plan is
-        // the source; it is frozen once approved. The entry is not registered while the measured p95 is over it (the blockers
-        // file of prompt 04), and this comparison keeps the number from being changed without its source.
+        // The prompt gives no number for the settings index. The plan proposed 40 ms (A1); T3 measured 45.8 ms p95 and a human
+        // set 60 ms (the blockers file of prompt 04), so the plan is the source for the number. This comparison keeps it from
+        // being changed without its source.
         (
             "P6.index_settings",
-            40.0,
+            60.0,
             "ms",
             "plans/04-fact-engine.md",
-            "| `index_settings_6000_lines` | `P6.index_settings` | 40 ms |",
+            "| `index_settings_6000_lines` | `P6.index_settings` | 60 ms |",
         ),
     ];
     for (id, threshold, unit, file, needle) in from_prompt {
@@ -423,11 +423,11 @@ fn only_budgets_with_a_harness_are_registered() {
     // Prompt 03a (identity): `cargo bench -p hub-identity` produces P7.auth_middleware and P7.auth_middleware_cold (T3) and
     // P12.audit_record (T5).
     // Prompt 04 (fact engine): `cargo bench -p engine` produces P6.parse_flatten (T2), P7.compare and P7.engine_grid (T5),
-    // P7.engine_text_search (T7), and P6, P5.engine_base and P5.engine_per_file_per_swimlane (T8; the last is a harness that
-    // writes `target/perf-results/`). P6.index_settings (T3) has its benchmark but is not registered until a human settles its
-    // threshold (plans/04-fact-engine.blockers.md).
+    // P7.engine_text_search (T7), P6.index_settings (T3; threshold set by a human, plans/04-fact-engine.blockers.md), and P6,
+    // P5.engine_base and P5.engine_per_file_per_swimlane (T8; the last is a harness that writes `target/perf-results/`).
     const REGISTERED: &[&str] = &[
         "P6.parse_flatten",
+        "P6.index_settings",
         "P7.compare",
         "P7.engine_grid",
         "P7.engine_text_search",
