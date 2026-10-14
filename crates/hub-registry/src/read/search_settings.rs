@@ -1,13 +1,15 @@
 //! Settings search (T6, P7: 200 ms, D65, S11, A28, A31, P12).
 //!
 //! A part of a setting path, searched across swimlanes: indexed SQL over `settings_index` (trigram index on `setting_path`), limited to
-//! the settings of the files as they are *now*. Two statements:
+//! the settings of the files as they are *now*. Statements:
 //!
-//! 1. the next settings (blob and path) that match, among the blobs that are the current version of a readable file of the swimlanes
-//!    asked for, in primary key order after the cursor's position, so a page reads only what it shows; the planner takes the primary
-//!    key when matches are dense and the trigram index when they are rare;
-//! 2. the places of those blobs: the files of the swimlanes that have them as their current version, from the covering index
-//!    `(swimlane_id, nfs_hash)`.
+//! 0. over a few swimlanes or in one file: the blobs that are the current version of a readable file there (from the covering index
+//!    `(swimlane_id, nfs_hash)`), at most `search_listed_blobs` of them (20,000 by default);
+//! 1. the next settings (blob and path) that match, among those blobs (or, over many swimlanes, among all), in primary key order after
+//!    the cursor's position, so a page reads only what it shows; the planner takes the primary key when matches are dense and the
+//!    trigram index when they are rare (every one of these statements is planned for its own values: `persistent(false)`, because a
+//!    prepared statement that has been run a few times is given one generic plan, which for a rare needle walks the whole primary key);
+//! 2. the places of those blobs: the files of the swimlanes that have them as their current version, from the same index.
 //!
 //! The same setting is a hit in every swimlane that holds the blob. Hits are ordered by (blob hash, setting path, swimlane, file
 //! sequence) and the cursor is that key, so a page boundary can fall between two swimlanes' hits of the same setting. Values come from
@@ -31,21 +33,25 @@ use super::service::Inner;
 use super::settings::flag_of;
 use crate::error::RegistryError;
 
-/// The matching settings of current blobs, tested in SQL: `$1` the `LIKE` pattern, `$2` the swimlanes, `$3` a logical file or `NULL`,
-/// `$4` and `$5` the blob and setting path to resume at (inclusive; empty for the first page), `$6` how many to read, `$7` the longest
-/// path a cursor holds. Used when the swimlanes or the file are few: the planner then takes the primary key's order when matches are
-/// dense and the trigram index when they are rare, and the test is a probe of a few swimlanes.
+/// The blobs that are the current version of a readable file of these swimlanes, sorted: `$1` the swimlanes, `$2` a logical file or
+/// `NULL`, `$3` how many to read at most. An index-only scan of the covering index `(swimlane_id, nfs_hash)` (a few thousand blobs for
+/// eight swimlanes of the target scale, about 20 ms), or the files' own index when `$2` is given.
+pub const LANE_BLOBS_SQL: &str = "\
+SELECT DISTINCT nfs_hash::bytea AS blob FROM file_state \
+WHERE swimlane_id = ANY($1::text[]) AND nfs_hash IS NOT NULL AND NOT denied AND ($2::text IS NULL OR logical_file = $2) \
+ORDER BY 1 LIMIT $3";
+
+/// The matching settings of a list of blobs: `$1` the `LIKE` pattern, `$2` the blobs, `$3` and `$4` the blob and setting path to resume
+/// at (inclusive; empty for the first page), `$5` how many to read, `$6` the longest path a cursor holds. The planner takes the primary
+/// key's order when matches are dense (a page is read from the first blobs) and the trigram index when they are rare.
 pub const PAIRS_SQL: &str = "\
 SELECT si.blob_hash::bytea AS blob, si.setting_path, si.value_text, si.value_type, si.start_line, si.end_line \
 FROM settings_index si \
 WHERE si.setting_path ILIKE $1 \
-  AND octet_length(si.setting_path) <= $7 \
-  AND (si.blob_hash, si.setting_path) >= ($4::bytea, $5::text) \
-  AND si.blob_hash IN ( \
-        SELECT nfs_hash FROM file_state \
-        WHERE swimlane_id = ANY($2::text[]) AND nfs_hash IS NOT NULL AND NOT denied \
-          AND ($3::text IS NULL OR logical_file = $3)) \
-ORDER BY si.blob_hash, si.setting_path LIMIT $6";
+  AND octet_length(si.setting_path) <= $6 \
+  AND si.blob_hash = ANY($2::bytea[]) \
+  AND (si.blob_hash, si.setting_path) >= ($3::bytea, $4::text) \
+ORDER BY si.blob_hash, si.setting_path LIMIT $5";
 
 /// The matching settings, not tested: `$1` the `LIKE` pattern, `$2` and `$3` the blob and setting path to resume at (inclusive), `$4`
 /// how many to read, `$5` the longest path a cursor holds. Used over many swimlanes with no file: the places of the blobs found (one
@@ -74,6 +80,14 @@ CROSS JOIN LATERAL ( \
   SELECT f.swimlane_id, f.seq, f.path FROM file_state f \
   WHERE f.swimlane_id = ANY($1::text[]) AND f.nfs_hash = b.h AND NOT f.denied AND ($3::text IS NULL OR f.logical_file = $3) \
   ORDER BY f.swimlane_id, f.seq LIMIT 10000) fs";
+
+/// What the settings are read among.
+enum Among {
+    /// The blobs that are current in the swimlanes asked for (a list, sorted): every setting found has a place.
+    Listed(Vec<Vec<u8>>),
+    /// All the index: a setting found may be of a blob that is no file's now.
+    Everything,
+}
 
 struct Pair {
     blob: ContentHash,
@@ -172,45 +186,70 @@ impl Inner {
         Ok(asked.into_iter().map(str::to_owned).collect())
     }
 
-    /// The next `want` matching (blob, setting) pairs at or after the key; those that belong to a current file when `tested`.
+    /// The blobs that are the current version of a readable file of these swimlanes (and of this file), or `Everything` when there are
+    /// more than `search_listed_blobs`: a search that has more reads the settings first and asks where they are, as over many swimlanes.
+    async fn lane_blobs(&self, lanes: &[String], file: Option<&str>) -> Result<Among, ReadError> {
+        let most = self.config.search_listed_blobs;
+        let blobs: Vec<Vec<u8>> = self
+            .db
+            .run(
+                "read_setting_lane_blobs",
+                sqlx::query_scalar(LANE_BLOBS_SQL)
+                    .persistent(false)
+                    .bind(lanes)
+                    .bind(file)
+                    .bind(i64::try_from(most.saturating_add(1)).unwrap_or(i64::MAX))
+                    .fetch_all(self.db.pool()),
+            )
+            .await?;
+        Ok(if blobs.len() > most {
+            Among::Everything
+        } else {
+            Among::Listed(blobs)
+        })
+    }
+
+    /// The next `want` matching (blob, setting) pairs at or after the key, among the blobs listed or all.
     async fn setting_pairs(
         &self,
-        tested: bool,
+        among: &Among,
         pattern: &str,
-        lanes: &[String],
-        file: Option<&str>,
         start: (&[u8], &str),
         want: i64,
     ) -> Result<Vec<Pair>, ReadError> {
         let max_path = i32::try_from(MAX_BYTES_FIELD).unwrap_or(255);
-        let fetched = if tested {
-            self.db
-                .run(
-                    "read_setting_pairs",
-                    sqlx::query(PAIRS_SQL)
-                        .bind(pattern)
-                        .bind(lanes)
-                        .bind(file)
-                        .bind(start.0)
-                        .bind(start.1)
-                        .bind(want)
-                        .bind(max_path)
-                        .fetch_all(self.db.pool()),
-                )
-                .await?
-        } else {
-            self.db
-                .run(
-                    "read_setting_pairs",
-                    sqlx::query(PAIRS_UNTESTED_SQL)
-                        .bind(pattern)
-                        .bind(start.0)
-                        .bind(start.1)
-                        .bind(want)
-                        .bind(max_path)
-                        .fetch_all(self.db.pool()),
-                )
-                .await?
+        let fetched = match among {
+            Among::Listed(blobs) => {
+                self.db
+                    .run(
+                        "read_setting_pairs",
+                        sqlx::query(PAIRS_SQL)
+                            .persistent(false)
+                            .bind(pattern)
+                            .bind(blobs)
+                            .bind(start.0)
+                            .bind(start.1)
+                            .bind(want)
+                            .bind(max_path)
+                            .fetch_all(self.db.pool()),
+                    )
+                    .await?
+            }
+            Among::Everything => {
+                self.db
+                    .run(
+                        "read_setting_pairs",
+                        sqlx::query(PAIRS_UNTESTED_SQL)
+                            .persistent(false)
+                            .bind(pattern)
+                            .bind(start.0)
+                            .bind(start.1)
+                            .bind(want)
+                            .bind(max_path)
+                            .fetch_all(self.db.pool()),
+                    )
+                    .await?
+            }
         };
         let mut pairs: Vec<Pair> = Vec::with_capacity(fetched.len());
         for row in &fetched {
@@ -269,12 +308,12 @@ impl Inner {
 
     /// The hits from the key on, at least `limit + 1` of them if there are that many (and if the batches allowed are enough).
     ///
-    /// A batch is `limit + 2` settings: the first may be the cursor's own with nothing left of it. Tested in SQL, every setting of a
-    /// batch has a place, so one batch gives `limit + 1` hits if there are that many; not tested, a batch may have settings of blobs that
-    /// are no file's now, and the next batch is read (a bounded number of times) until there are enough.
+    /// A batch is `limit + 2` settings: the first may be the cursor's own with nothing left of it. Among the blobs listed, every setting
+    /// of a batch has a place, so one batch gives `limit + 1` hits if there are that many; among all, a batch may have settings of
+    /// blobs that are no file's now, and the next batch is read (a bounded number of times) until there are enough.
     async fn scan_settings(
         &self,
-        tested: bool,
+        among: &Among,
         pattern: &str,
         (lanes, file): (&[String], Option<&str>),
         (start_blob, start_path): (&[u8], &str),
@@ -282,6 +321,7 @@ impl Inner {
         limit: usize,
     ) -> Result<Scan, ReadError> {
         let batch = limit + 2;
+        let tested = matches!(among, Among::Listed(_));
         let mut hits: Vec<Positioned> = Vec::new();
         let mut at = (start_blob.to_vec(), start_path.to_owned());
         let mut scanned: Option<(Vec<u8>, String)> = None;
@@ -289,10 +329,8 @@ impl Inner {
         for round in 0..if tested { 1 } else { MAX_BATCHES } {
             let mut pairs = self
                 .setting_pairs(
-                    tested,
+                    among,
                     pattern,
-                    lanes,
-                    file,
                     (&at.0, &at.1),
                     i64::try_from(batch).unwrap_or(i64::MAX),
                 )
@@ -362,14 +400,22 @@ impl Inner {
         let (start_blob, start_path) = after
             .as_ref()
             .map_or((&[][..], ""), |(b, p, _, _)| (b.as_slice(), p.as_str()));
-        let tested = file.is_some() || lanes.len() <= self.config.search_semijoin_lanes;
+        let among = if file.is_some() || lanes.len() <= self.config.search_tested_lanes {
+            self.lane_blobs(&lanes, file.as_deref()).await?
+        } else {
+            Among::Everything
+        };
+        if matches!(&among, Among::Listed(blobs) if blobs.is_empty()) {
+            return Ok(Paged::last(Vec::new()));
+        }
+        let tested = matches!(among, Among::Listed(_));
         let Scan {
             mut hits,
             scanned,
             exhausted,
         } = self
             .scan_settings(
-                tested,
+                &among,
                 &pattern,
                 (&lanes, file.as_deref()),
                 (start_blob, start_path),

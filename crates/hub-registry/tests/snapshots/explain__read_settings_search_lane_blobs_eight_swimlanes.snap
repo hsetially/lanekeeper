@@ -7,12 +7,7 @@ expression: plan
     "node": "Limit"
   },
   {
-    "node": "Merge Join"
-  },
-  {
-    "index": "settings_index_pkey",
-    "node": "Index Scan",
-    "relation": "settings_index"
+    "node": "Unique"
   },
   {
     "node": "Sort"

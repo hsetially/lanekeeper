@@ -179,11 +179,14 @@ pub struct RegistryConfig {
     /// Blobs read from the blob store in one call when a search corpus is built, and how many such calls run at once.
     pub search_blob_batch: usize,
     pub search_blob_parallel: usize,
-    /// A settings search over at most this many swimlanes, or in one file, tests in SQL which of the settings it found belong to a
-    /// current file (the semi join is cheap when the files are few); over more it finds the settings first and tests a page's worth
-    /// (a semi join over many swimlanes costs a probe of `file_state` for each of them for every setting found). Zero tests in SQL
-    /// never; tests use it to run both ways over the same data.
-    pub search_semijoin_lanes: usize,
+    /// A settings search over at most this many swimlanes, or in one file, first lists the blobs that are the current version of a
+    /// file there (a few thousand per swimlane at most) and looks for the settings of those blobs only; over more it finds the
+    /// settings first and asks where they are (the list of blobs would be most of the index, and every request would carry it). Zero
+    /// lists never; tests use it to run both ways over the same data.
+    pub search_tested_lanes: usize,
+    /// The most blobs such a search lists before it reads their settings; a search that would list more reads the settings first and
+    /// asks where they are, as over many swimlanes (a request does not carry a list of the index).
+    pub search_listed_blobs: usize,
     /// One `FetchServed` round trip to the config-server through the agent (A36).
     pub served_timeout: Duration,
     /// `FetchServed` calls in flight at once on this replica. The config-server answers one request at a time per agent, so a user
@@ -260,7 +263,8 @@ impl Default for RegistryConfig {
             search_timeout: Duration::from_secs(5),
             search_blob_batch: MAX_GET_MANY,
             search_blob_parallel: 4,
-            search_semijoin_lanes: 8,
+            search_tested_lanes: 8,
+            search_listed_blobs: 20_000,
             served_timeout: Duration::from_secs(10),
             served_concurrency: 16,
             tree_scan_rows: 200_001,
@@ -489,12 +493,8 @@ impl RegistryConfig {
             MAX_GET_MANY as u64,
         )?;
         within("search_blob_parallel", self.search_blob_parallel as u64, 1, 64)?;
-        within(
-            "search_semijoin_lanes",
-            self.search_semijoin_lanes as u64,
-            0,
-            1_000,
-        )?;
+        within("search_tested_lanes", self.search_tested_lanes as u64, 0, 1_000)?;
+        within("search_listed_blobs", self.search_listed_blobs as u64, 1, 100_000)?;
         within("served_timeout", millis(self.served_timeout), 100, 120_000)?;
         within("served_concurrency", self.served_concurrency as u64, 1, 1_024)?;
         within(
@@ -778,7 +778,9 @@ mod tests {
         out_of_range("search_blob_batch", |c| c.search_blob_batch = 0);
         out_of_range("search_blob_batch", |c| c.search_blob_batch = MAX_GET_MANY + 1);
         out_of_range("search_blob_parallel", |c| c.search_blob_parallel = 0);
-        out_of_range("search_semijoin_lanes", |c| c.search_semijoin_lanes = 1_001);
+        out_of_range("search_tested_lanes", |c| c.search_tested_lanes = 1_001);
+        out_of_range("search_listed_blobs", |c| c.search_listed_blobs = 0);
+        out_of_range("search_listed_blobs", |c| c.search_listed_blobs = 100_001);
         out_of_range("served_timeout", |c| c.served_timeout = Duration::from_millis(1));
         out_of_range("served_concurrency", |c| c.served_concurrency = 0);
         out_of_range("tree_scan_rows", |c| c.tree_scan_rows = 10);

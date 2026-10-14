@@ -759,7 +759,13 @@ async fn testing_the_settings_in_sql_or_after_finding_them_gives_the_same_hits_a
     }
     let tested = r.service_with(RegistryConfig::default());
     let untested = r.service_with(RegistryConfig {
-        search_semijoin_lanes: 0,
+        search_tested_lanes: 0,
+        ..RegistryConfig::default()
+    });
+    // A list of blobs longer than the limit is not made: the search reads the settings first, and this one has a list only for the
+    // searches that find one blob (one file of one swimlane).
+    let capped = r.service_with(RegistryConfig {
+        search_listed_blobs: 1,
         ..RegistryConfig::default()
     });
     for (needle, lanes, file) in [
@@ -775,6 +781,12 @@ async fn testing_the_settings_in_sql_or_after_finding_them_gives_the_same_hits_a
             let (want, _) = all_hits(&tested, needle, &lanes, file, size).await;
             let (got, pages) = all_hits(&untested, needle, &lanes, file, size).await;
             assert_eq!(got, want, "{needle} {lanes:?} {file:?} in pages of {size}");
+            assert!(pages <= 400);
+            let (got, pages) = all_hits(&capped, needle, &lanes, file, size).await;
+            assert_eq!(
+                got, want,
+                "{needle} {lanes:?} {file:?} in pages of {size}, listing one blob at most"
+            );
             assert!(pages <= 400);
         }
     }
@@ -806,7 +818,7 @@ async fn a_search_that_has_to_look_through_many_old_versions_is_bounded_and_resu
         r.index_all().await;
     }
     let untested = r.service_with(RegistryConfig {
-        search_semijoin_lanes: 0,
+        search_tested_lanes: 0,
         ..RegistryConfig::default()
     });
     let v = Reads::viewer();

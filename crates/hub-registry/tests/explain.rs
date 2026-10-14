@@ -31,7 +31,7 @@ use hub_registry::read::findings::findings_sql;
 use hub_registry::read::history::history_sql;
 use hub_registry::read::resource::{ALL_PATHS_SQL, PROPERTY_ROWS_SQL, ROWS_BY_PATH_SQL};
 use hub_registry::read::restarts::services_sql;
-use hub_registry::read::search_settings::{PAIRS_SQL, PAIRS_UNTESTED_SQL, PLACES_SQL};
+use hub_registry::read::search_settings::{LANE_BLOBS_SQL, PAIRS_SQL, PAIRS_UNTESTED_SQL, PLACES_SQL};
 use hub_registry::read::search_text::{FILES_SQL, VERSIONS_SQL};
 use hub_registry::read::settings::ROWS_SQL;
 use hub_registry::read::swimlanes::{SWIMLANE_SQL, SWIMLANES_SQL};
@@ -801,25 +801,25 @@ async fn read_queries_have_no_sequential_scan_on_large_tables() {
         ]
     );
     check!(
-        "settings_search_pairs_few_swimlanes",
-        PAIRS_SQL,
+        "settings_search_lane_blobs_eight_swimlanes",
+        LANE_BLOBS_SQL,
+        [Arg::TextArray(lanes(8)), Arg::OptText(None), Arg::Int(20_001)]
+    );
+    check!(
+        "settings_search_lane_blobs_one_file",
+        LANE_BLOBS_SQL,
         [
-            Arg::Text("%port%"),
-            Arg::TextArray(lanes(2)),
-            Arg::OptText(None),
-            Arg::Bytes(&[]),
-            Arg::Text(""),
-            Arg::Int(102),
-            Arg::Int32(255)
+            Arg::TextArray(lanes(1)),
+            Arg::OptText(Some("dir3/file3.yml")),
+            Arg::Int(20_001)
         ]
     );
     check!(
-        "settings_search_pairs_one_swimlane_and_file",
+        "settings_search_pairs_listed_blobs",
         PAIRS_SQL,
         [
-            Arg::Text("%timeout%"),
-            Arg::TextArray(lanes(1)),
-            Arg::OptText(Some("dir3/file3.yml")),
+            Arg::Text("%port%"),
+            Arg::ByteaArray(blob_hashes(2_000)),
             Arg::Bytes(&[]),
             Arg::Text(""),
             Arg::Int(102),

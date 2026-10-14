@@ -36,7 +36,7 @@ use hub_registry::read::findings::findings_sql;
 use hub_registry::read::history::history_sql;
 use hub_registry::read::resource::{ALL_PATHS_SQL, PROPERTY_ROWS_SQL, ROWS_BY_PATH_SQL};
 use hub_registry::read::restarts::services_sql;
-use hub_registry::read::search_settings::{PAIRS_SQL, PAIRS_UNTESTED_SQL, PLACES_SQL};
+use hub_registry::read::search_settings::{LANE_BLOBS_SQL, PAIRS_SQL, PAIRS_UNTESTED_SQL, PLACES_SQL};
 use hub_registry::read::search_text::{FILES_SQL, VERSIONS_SQL};
 use hub_registry::read::settings::ROWS_SQL;
 use hub_registry::read::swimlanes::{SWIMLANE_SQL, SWIMLANES_SQL};
@@ -75,6 +75,19 @@ async fn main() {
     .await
     .unwrap();
     let hashes102: Vec<Vec<u8>> = hashes.iter().take(102).cloned().collect();
+    let largest: Vec<Vec<u8>> = sqlx::query_scalar(
+        "SELECT blob_hash::bytea FROM settings_index GROUP BY blob_hash ORDER BY count(*) DESC, blob_hash LIMIT 4",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let typical: Vec<Vec<u8>> = sqlx::query_scalar(
+        "SELECT blob_hash::bytea FROM settings_index GROUP BY blob_hash HAVING count(*) BETWEEN 30 AND 50 ORDER BY blob_hash LIMIT 4",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(largest.len() == 4 && typical.len() == 4);
     let like_folder = format!("{folder}/%");
     let logical = path.clone();
     let roots: Vec<String> = ["application.yml", "application.yaml", "application.properties"]
@@ -197,9 +210,15 @@ async fn main() {
         sqlx::query(CONTENT_TENANTS_SQL).bind(lane_s)
     );
     measure!("path_mapping", sqlx::query(MAPPING_SQL));
+    // The statements that read the settings of blobs take a few blobs each (`ROWS_PER_STATEMENT`, four): the biggest such statement is
+    // four of the biggest blobs (about 6,000 settings each), a typical one four blobs of a few dozen settings.
     measure!(
-        "setting_rows_of_200_blobs",
-        sqlx::query(ROWS_SQL).bind(&hashes).bind(1_000_i64)
+        "setting_rows_of_4_largest_blobs",
+        sqlx::query(ROWS_SQL).bind(&largest).bind(1_000_i64)
+    );
+    measure!(
+        "setting_rows_of_4_typical_blobs",
+        sqlx::query(ROWS_SQL).bind(&typical).bind(1_000_i64)
     );
     measure!(
         "effective_group_rows_40_swimlanes",
@@ -243,25 +262,41 @@ async fn main() {
         "compare_tree_baseline_map",
         sqlx::query(BASELINE_MAP_SQL).bind(lane_s).bind("%")
     );
-    // Over a few swimlanes the settings are tested in SQL; over many they are read untested and the places say which are current.
-    let few: Vec<String> = lanes.iter().take(2).cloned().collect();
+    // Over a few swimlanes (at most eight, the default) the blobs that are current there are listed and the settings read among them;
+    // over many the settings are read untested and the places say which are current. Every one of these is planned for its own values.
+    let eight: Vec<String> = lanes.iter().take(8).cloned().collect();
     measure!(
-        "settings_search_pairs_dense_few_swimlanes",
-        sqlx::query(PAIRS_SQL)
-            .bind("%name%")
-            .bind(&few)
+        "settings_search_lane_blobs_eight_swimlanes",
+        sqlx::query(LANE_BLOBS_SQL)
+            .persistent(false)
+            .bind(&eight)
             .bind(None::<&str>)
+            .bind(20_001_i64)
+    );
+    let listed: Vec<Vec<u8>> = sqlx::query_scalar(LANE_BLOBS_SQL)
+        .bind(&eight)
+        .bind(None::<&str>)
+        .bind(20_001_i64)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    measure!(
+        "settings_search_pairs_dense_listed_blobs",
+        sqlx::query(PAIRS_SQL)
+            .persistent(false)
+            .bind("%name%")
+            .bind(&listed)
             .bind(&[][..] as &[u8])
             .bind("")
             .bind(102_i64)
             .bind(255_i32)
     );
     measure!(
-        "settings_search_pairs_absent_few_swimlanes",
+        "settings_search_pairs_absent_listed_blobs",
         sqlx::query(PAIRS_SQL)
+            .persistent(false)
             .bind("%zzzqqqxx%")
-            .bind(&few)
-            .bind(None::<&str>)
+            .bind(&listed)
             .bind(&[][..] as &[u8])
             .bind("")
             .bind(102_i64)
@@ -270,6 +305,7 @@ async fn main() {
     measure!(
         "settings_search_pairs_dense_untested",
         sqlx::query(PAIRS_UNTESTED_SQL)
+            .persistent(false)
             .bind("%name%")
             .bind(&[][..] as &[u8])
             .bind("")
@@ -279,6 +315,7 @@ async fn main() {
     measure!(
         "settings_search_pairs_absent_untested",
         sqlx::query(PAIRS_UNTESTED_SQL)
+            .persistent(false)
             .bind("%zzzqqqxx%")
             .bind(&[][..] as &[u8])
             .bind("")

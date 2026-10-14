@@ -1,0 +1,20 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: plan
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Unique"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "index": "file_state_logical_idx",
+    "node": "Index Scan",
+    "relation": "file_state"
+  }
+]
