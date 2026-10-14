@@ -379,7 +379,28 @@ impl Inner {
         self.audit_moves(&mut tx, swimlane, &moves, now_ms).await?;
         self.publish_moves(&mut tx, swimlane, &moves).await?;
         self.db.commit(tx).await?;
+        self.offer_to_index(&moves);
         Ok(report)
+    }
+
+    /// Tell the settings index about the structured blobs that just became the current version of a file (T2). A non-blocking offer
+    /// after the commit, so the acknowledgement never waits for a parse; a blob the queue cannot take is found by the sweeper.
+    fn offer_to_index(&self, moves: &[Move<'_>]) {
+        let Some(indexer) = self.indexer.get() else {
+            return;
+        };
+        for m in moves {
+            let Some(entry) = &m.last.entry else { continue };
+            if entry.class != FileClass::Structured || entry.denied || !entry.has_content {
+                continue;
+            }
+            if let Some(syntax) = engine::Syntax::of_path(&entry.path) {
+                indexer.offer(crate::index::IndexJob {
+                    hash: entry.hash,
+                    syntax,
+                });
+            }
+        }
     }
 
     /// Read what the chunk's decisions depend on (the stored state of its paths, the tool writes, the sync windows) and decide

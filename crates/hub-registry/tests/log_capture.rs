@@ -134,3 +134,124 @@ async fn planted_secret_never_reaches_a_log_line() {
         }
     }
 }
+
+/// The settings index reads file contents and writes them to a table, so its lines are the ones most likely to leak: a flagged
+/// value, a plain value, a file that does not parse, a blob store that fails, a sweep, and a moved Git head over a file that holds a
+/// secret. Every one of them logs, and none of them may show a value.
+#[tokio::test]
+async fn planted_secret_never_reaches_a_log_line_of_the_index() {
+    use std::sync::Arc;
+
+    use bytes::Bytes;
+    use domain::{FileClass, RepoKind, RepoPath};
+    use hub_registry::config::RegistryConfig;
+    use hub_registry::{GitIndex, GitIndexDeps, RegistryMetrics, SettingsSweeper};
+    use ports::BlobStore;
+    use ports::fakes::FakeGit;
+
+    const FLAGGED: &str = "ghp_aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bD1fH3jL5";
+    const PLAIN: &str = "PLANTED-PLAIN-VALUE-1a2b";
+    const BROKEN: &str = "PLANTED-BROKEN-9f9f";
+    const IN_GIT: &str = "PLANTED-GIT-VALUE-77aa";
+
+    let Some(rig) = Rig::with_index("sit1", RegistryConfig::default()).await else {
+        return;
+    };
+    let (capture, _guard) = LogCapture::install();
+
+    let secrets = format!("token: {FLAGGED}\nname: {PLAIN}\n");
+    let broken = format!("a: [{BROKEN}\n");
+    rig.first_scan(&[("secrets.yml", secrets.as_str()), ("broken.yml", broken.as_str())])
+        .await;
+    rig.index().idle().await;
+
+    // A blob the store cannot read: the batch fails and says so.
+    let failing = format!("k: {PLAIN}-again\n");
+    rig.blobs.put(Bytes::from(failing.clone())).await.unwrap();
+    rig.blobs.set_failing_reads(true);
+    let job = hub_registry::IndexJob {
+        hash: ports::content_hash(failing.as_bytes()),
+        syntax: engine::Syntax::Yaml,
+    };
+    assert!(rig.index().index_now(vec![job]).await.is_err());
+    rig.blobs.set_failing_reads(false);
+
+    // A sweep over files whose markers are gone, so that it indexes them again.
+    sqlx::query("DELETE FROM settings_index_blobs")
+        .execute(&rig.pool)
+        .await
+        .unwrap();
+    let (sweeping, _worker) = rig.another_indexer(RegistryConfig::default(), RegistryMetrics::default());
+    let swept = SettingsSweeper::new(sweeping).sweep(|| Ok(())).await.unwrap();
+    assert_eq!(swept.found, 2);
+
+    // A moved Git head over a file that holds a secret, and the hash of that file.
+    rig.add_swimlane("sit1", &["sit1"], true).await;
+    let fake = FakeGit::new();
+    let c1 = fake
+        .commit(
+            RepoKind::Base,
+            "master",
+            &[("config/a.yml", Some(b"x: 1\n"))],
+            "1",
+        )
+        .unwrap();
+    let body = format!("password: {IN_GIT}\n");
+    let c2 = fake
+        .commit(
+            RepoKind::Base,
+            "master",
+            &[("config/a.yml", Some(body.as_bytes()))],
+            "2",
+        )
+        .unwrap();
+    let git = GitIndex::new(GitIndexDeps {
+        pool: rig.pool.clone(),
+        git: Arc::new(fake),
+        config: RegistryConfig::default(),
+        metrics: RegistryMetrics::default(),
+    })
+    .unwrap();
+    assert!(
+        !git.affected(RepoKind::Base, "master", Some(&c1), &c2)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    git.git_hash(
+        RepoKind::Base,
+        &c2,
+        &RepoPath::parse("config/a.yml").unwrap(),
+        FileClass::Structured,
+    )
+    .unwrap();
+    // The mirror cannot be read for a path outside the tree index: an error, and its line.
+    let _ = git.git_hash(
+        RepoKind::Tenant,
+        &c2,
+        &RepoPath::parse("config/a.yml").unwrap(),
+        FileClass::Structured,
+    );
+
+    let text = capture.text();
+    let ours: Vec<&str> = text.lines().filter(|l| l.contains(" hub_registry")).collect();
+    assert!(
+        ours.iter().any(|l| l.contains("settings index batch")),
+        "the capture sees the index: {ours:?}"
+    );
+    assert!(
+        ours.iter().any(|l| l.contains("git head moved")),
+        "and the Git index: {ours:?}"
+    );
+    for secret in [FLAGGED, PLAIN, BROKEN, IN_GIT, "MIIE"] {
+        assert!(!text.contains(secret), "{secret} reached the log: {text}");
+    }
+    for line in ours {
+        for sql in ["SELECT", "INSERT", "unnest"] {
+            assert!(
+                !line.contains(sql),
+                "SQL text reached a log line of the registry: {line}"
+            );
+        }
+    }
+}

@@ -4,7 +4,7 @@
 //! log as a fixed word (see [`crate::db::Db`]), with the ids the caller already has. At the edge the closed [`ports::SinkError`]
 //! set (or, from T6, the closed problem set of the REST edge) is all a caller ever sees.
 
-use ports::{AuditError, BlobError, BusError, SinkError, TxError, WrongTxKind};
+use ports::{AuditError, BlobError, BusError, GitError, SinkError, TxError, WrongTxKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum RegistryError {
@@ -23,6 +23,9 @@ pub enum RegistryError {
     Bus(BusError),
     #[error("the blob store is unavailable")]
     Blob(BlobError),
+    /// The mirror could not answer (T2): a commit it does not have, or a repository it cannot read.
+    #[error("the Git mirror could not answer")]
+    Git(GitError),
     /// A transaction of another store was handed to a Postgres implementation: always a wiring bug.
     #[error("the transaction is not backed by Postgres")]
     WrongTx,
@@ -69,6 +72,12 @@ impl From<BlobError> for RegistryError {
     }
 }
 
+impl From<GitError> for RegistryError {
+    fn from(e: GitError) -> Self {
+        Self::Git(e)
+    }
+}
+
 impl From<WrongTxKind> for RegistryError {
     fn from(_: WrongTxKind) -> Self {
         Self::WrongTx
@@ -94,6 +103,7 @@ impl From<RegistryError> for SinkError {
             | RegistryError::Audit(_)
             | RegistryError::Bus(_)
             | RegistryError::Blob(_)
+            | RegistryError::Git(_)
             | RegistryError::Capacity
             | RegistryError::WrongTx => Self::Unavailable,
         }
@@ -127,6 +137,7 @@ mod tests {
             RegistryError::Audit(AuditError::Unavailable),
             RegistryError::Bus(BusError::Unavailable),
             RegistryError::Blob(BlobError::Unavailable),
+            RegistryError::Git(GitError::Unavailable),
             RegistryError::Capacity,
             RegistryError::WrongTx,
         ] {
@@ -152,6 +163,7 @@ mod tests {
             RegistryError::Invalid,
             RegistryError::TooLarge,
             RegistryError::NotFound,
+            RegistryError::Git(GitError::NotFound),
             RegistryError::Capacity,
             RegistryError::WrongTx,
         ] {

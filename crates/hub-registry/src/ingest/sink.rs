@@ -1,7 +1,7 @@
 //! `AgentIngest`: the [`ReportSink`] over Postgres.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use async_trait::async_trait;
 use domain::{AgentConfig, ClusterReport, Heartbeat, HeartbeatAction, Hello, ScanDelta, SwimlaneId};
@@ -16,6 +16,7 @@ use crate::clock::Clock;
 use crate::config::{ConfigError, RegistryConfig};
 use crate::db::Db;
 use crate::error::RegistryError;
+use crate::index::SettingsIndexer;
 use crate::metrics::{MessageKind, Outcome, RegistryMetrics};
 
 /// Everything ingestion needs from the rest of the hub.
@@ -49,6 +50,8 @@ pub(crate) struct Inner {
     streams: Mutex<HashSet<SwimlaneId>>,
     /// One lock per swimlane, so that its deltas are applied one at a time on this replica. Keyed like `streams`.
     locks: Mutex<HashMap<SwimlaneId, Arc<tokio::sync::Mutex<()>>>>,
+    /// The settings index that is told about every structured blob that becomes current (T2). Set once, after construction.
+    pub indexer: OnceLock<SettingsIndexer>,
 }
 
 fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -122,6 +125,7 @@ impl AgentIngest {
                 deny,
                 streams: Mutex::new(HashSet::new()),
                 locks: Mutex::new(HashMap::new()),
+                indexer: OnceLock::new(),
             }),
         })
     }
@@ -129,6 +133,16 @@ impl AgentIngest {
     /// The seam with prompt 06 (A10): it registers a tool write in its own transaction before it sends `WriteFile`.
     pub fn tool_writes(&self) -> ToolWrites {
         ToolWrites::new(Arc::clone(&self.inner.bus), Arc::clone(&self.inner.clock))
+    }
+
+    /// Tell the settings index about every structured blob that becomes the current version of a file (T2). Once: a second call is
+    /// refused and returns the indexer it was given. Without it ingestion indexes nothing and the sweeper does all the work.
+    ///
+    /// # Errors
+    ///
+    /// An indexer is attached already.
+    pub fn attach_settings_index(&self, indexer: SettingsIndexer) -> Result<(), SettingsIndexer> {
+        self.inner.indexer.set(indexer)
     }
 
     pub fn metrics(&self) -> &RegistryMetrics {

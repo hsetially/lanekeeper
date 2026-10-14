@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use engine::{DEFAULT_DENY_GLOBS, DenyMatcher};
-use ports::MAX_BLOB_BYTES;
+use ports::{MAX_BLOB_BYTES, MAX_GET_MANY};
 
 /// The environment variables whose values the agent may report (D88). Anything else is a name only.
 pub const DEFAULT_ENV_ALLOWLIST: [&str; 4] = [
@@ -72,6 +72,29 @@ pub struct RegistryConfig {
     pub max_env_names_per_service: usize,
     pub max_release_hints_per_report: usize,
     pub max_sync_windows_per_report: usize,
+
+    // ---------------------------------------------------------------------------------------------- indexes (T2)
+    /// Threads of the registry's rayon pool, which parses blobs for the settings index (rule 4: CPU work is rayon inside
+    /// `spawn_blocking`). Small on purpose: indexing is off the acknowledgement path and must not starve the readers.
+    pub pool_threads: usize,
+    /// Blob hashes waiting for the settings index on this replica. A hash offered to a full queue is dropped and counted; the
+    /// sweeper finds it again, so the bound costs latency and never an index row.
+    pub index_queue: usize,
+    /// Blobs indexed per transaction (and read from the blob store per call).
+    pub index_batch: usize,
+    /// How often the leased sweeper looks for current structured blobs that have no index marker.
+    pub index_sweep_interval: Duration,
+    /// The most blobs one sweep run indexes, so a run ends well inside its `max_run`; the next run goes on.
+    pub index_sweep_max_blobs: usize,
+    /// Rows per statement when the registry writes many rows at once (settings rows, effective files and directories).
+    pub rows_per_statement: usize,
+    /// The most paths of one swimlane that a moved Git head may name before the swimlane is recomputed whole (A21).
+    pub max_affected_paths: usize,
+    /// The bytes the cache of normalised Git hashes may weigh (A23). A key weighs its text and a fixed overhead.
+    pub git_hash_cache_bytes: u64,
+    /// One Git operation (a tree diff, a tree index, a blob read), as seen by the caller. The operation itself runs in
+    /// `spawn_blocking` and cannot be cancelled, so a timeout frees the caller and not the thread.
+    pub git_timeout: Duration,
 }
 
 impl Default for RegistryConfig {
@@ -96,6 +119,15 @@ impl Default for RegistryConfig {
             max_env_names_per_service: 1_024,
             max_release_hints_per_report: 5_000,
             max_sync_windows_per_report: 100,
+            pool_threads: 2,
+            index_queue: 4_096,
+            index_batch: 32,
+            index_sweep_interval: Duration::from_secs(5 * 60),
+            index_sweep_max_blobs: 20_000,
+            rows_per_statement: 5_000,
+            max_affected_paths: 5_000,
+            git_hash_cache_bytes: 24 * 1024 * 1024,
+            git_timeout: Duration::from_secs(30),
         }
     }
 }
@@ -163,6 +195,30 @@ impl RegistryConfig {
             0,
             10_000,
         )?;
+        within("pool_threads", self.pool_threads as u64, 1, 64)?;
+        within("index_queue", self.index_queue as u64, 1, 1_000_000)?;
+        within("index_batch", self.index_batch as u64, 1, MAX_GET_MANY as u64)?;
+        within(
+            "index_sweep_interval",
+            millis(self.index_sweep_interval),
+            10_000,
+            24 * 3600 * 1000,
+        )?;
+        within(
+            "index_sweep_max_blobs",
+            self.index_sweep_max_blobs as u64,
+            1,
+            10_000_000,
+        )?;
+        within("rows_per_statement", self.rows_per_statement as u64, 100, 50_000)?;
+        within("max_affected_paths", self.max_affected_paths as u64, 1, 100_000)?;
+        within(
+            "git_hash_cache_bytes",
+            self.git_hash_cache_bytes,
+            1024 * 1024,
+            1024 * 1024 * 1024,
+        )?;
+        within("git_timeout", millis(self.git_timeout), 100, 600_000)?;
         // The globs travel to the agent as `ShortText` (256 bytes) and must compile.
         if self.extra_deny_globs.iter().any(|g| g.len() > 256) {
             return Err(ConfigError::Invalid("extra_deny_globs"));
@@ -218,6 +274,72 @@ mod tests {
         assert_eq!(c.blob_timeout, Duration::from_secs(15), "one put of up to 2 MiB");
         assert_eq!(c.env_allowlist.len(), 4, "D88: four variables keep their value");
         assert!(usize::try_from(c.max_file_bytes).is_ok_and(|v| v <= MAX_BLOB_BYTES));
+    }
+
+    #[test]
+    fn the_index_defaults_are_pinned() {
+        let c = RegistryConfig::default();
+        assert_eq!(c.pool_threads, 2, "the plan's registry pool: 2 threads");
+        assert_eq!(c.index_queue, 4_096, "a bounded queue of blob hashes");
+        assert_eq!(c.index_batch, 32);
+        assert_eq!(c.index_sweep_interval, Duration::from_secs(300));
+        assert_eq!(c.rows_per_statement, 5_000);
+        assert_eq!(
+            c.max_affected_paths, 5_000,
+            "past this a swimlane is recomputed whole"
+        );
+        assert_eq!(
+            c.git_hash_cache_bytes,
+            24 * 1024 * 1024,
+            "about 20 MB of normalised hashes (plan, risk 6)"
+        );
+        assert!(c.index_batch <= MAX_GET_MANY, "one get_many per batch");
+    }
+
+    fn out_of_range(name: &'static str, change: impl FnOnce(&mut RegistryConfig)) {
+        let mut c = RegistryConfig::default();
+        change(&mut c);
+        assert_eq!(c.validate(), Err(ConfigError::OutOfRange(name)), "{name}");
+    }
+
+    #[test]
+    fn every_index_and_git_bound_is_enforced() {
+        out_of_range("pool_threads", |c| {
+            c.pool_threads = 0;
+        });
+        out_of_range("pool_threads", |c| {
+            c.pool_threads = 65;
+        });
+        out_of_range("index_queue", |c| {
+            c.index_queue = 0;
+        });
+        out_of_range("index_batch", |c| {
+            c.index_batch = 0;
+        });
+        out_of_range("index_batch", |c| {
+            c.index_batch = MAX_GET_MANY + 1;
+        });
+        out_of_range("index_sweep_interval", |c| {
+            c.index_sweep_interval = Duration::from_secs(1);
+        });
+        out_of_range("index_sweep_max_blobs", |c| {
+            c.index_sweep_max_blobs = 0;
+        });
+        out_of_range("rows_per_statement", |c| {
+            c.rows_per_statement = 99;
+        });
+        out_of_range("rows_per_statement", |c| {
+            c.rows_per_statement = 50_001;
+        });
+        out_of_range("max_affected_paths", |c| {
+            c.max_affected_paths = 0;
+        });
+        out_of_range("git_hash_cache_bytes", |c| {
+            c.git_hash_cache_bytes = 1024;
+        });
+        out_of_range("git_timeout", |c| {
+            c.git_timeout = Duration::from_millis(1);
+        });
     }
 
     #[test]

@@ -1,7 +1,9 @@
 //! Shared test support for the hub-registry integration tests.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+pub mod counting_git;
 pub mod fixtures;
+pub mod lane;
 pub mod log_capture;
 pub mod perf;
 pub mod pg;

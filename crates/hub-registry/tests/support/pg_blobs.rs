@@ -14,6 +14,7 @@ pub struct PgBlobs {
     pool: PgPool,
     puts: AtomicU64,
     fail: AtomicBool,
+    fail_reads: AtomicBool,
     hang: AtomicBool,
 }
 
@@ -23,6 +24,7 @@ impl PgBlobs {
             pool,
             puts: AtomicU64::new(0),
             fail: AtomicBool::new(false),
+            fail_reads: AtomicBool::new(false),
             hang: AtomicBool::new(false),
         }
     }
@@ -34,6 +36,11 @@ impl PgBlobs {
 
     pub fn set_failing(&self, fail: bool) {
         self.fail.store(fail, Ordering::SeqCst);
+    }
+
+    /// Make `get` and `get_many` fail, as a store that has lost its connection does for readers.
+    pub fn set_failing_reads(&self, fail: bool) {
+        self.fail_reads.store(fail, Ordering::SeqCst);
     }
 
     /// Make `put` wait for ever, as a store that has lost its connection does.
@@ -83,6 +90,9 @@ impl BlobStore for PgBlobs {
     }
 
     async fn get(&self, h: &ContentHash) -> Result<Option<Bytes>, BlobError> {
+        if self.fail_reads.load(Ordering::SeqCst) {
+            return Err(BlobError::Unavailable);
+        }
         let row: Option<Vec<u8>> =
             sqlx::query_scalar("SELECT content::bytea FROM blobs WHERE hash = $1::bytea")
                 .bind(h.as_bytes().as_slice())

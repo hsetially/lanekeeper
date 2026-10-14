@@ -56,14 +56,9 @@ impl LaneRules {
     }
 }
 
-/// Read the mapping, tenants and application names of a swimlane in the caller's transaction.
-pub(crate) async fn load(db: &Db, tx: &mut Txn, swimlane: &SwimlaneId) -> Result<LaneRules, RegistryError> {
-    let roots: Vec<(String, String)> = db
-        .run(
-            "rules_mapping",
-            sqlx::query_as("SELECT repo, repo_root FROM path_mappings LIMIT 8").fetch_all(&mut **tx),
-        )
-        .await?;
+/// The path mapping rule from the rows of `path_mappings` (`repo`, `repo_root`): the admin's root for each repository, and the
+/// default root (`config`, `data/config`) for one that has no row or a root that is not a valid path.
+pub(crate) fn rule_of(roots: &[(String, String)]) -> PathMappingRule {
     let default = PathMappingRule::default();
     let root_of = |repo: &str, fallback: &RepoPath| {
         roots
@@ -72,10 +67,21 @@ pub(crate) async fn load(db: &Db, tx: &mut Txn, swimlane: &SwimlaneId) -> Result
             .and_then(|(_, root)| RepoPath::parse(root).ok())
             .unwrap_or_else(|| fallback.clone())
     };
-    let rule = PathMappingRule::new(
+    PathMappingRule::new(
         root_of("base", default.base_root()),
         root_of("tenant", default.tenant_root()),
-    );
+    )
+}
+
+/// Read the mapping, tenants and application names of a swimlane in the caller's transaction.
+pub(crate) async fn load(db: &Db, tx: &mut Txn, swimlane: &SwimlaneId) -> Result<LaneRules, RegistryError> {
+    let roots: Vec<(String, String)> = db
+        .run(
+            "rules_mapping",
+            sqlx::query_as("SELECT repo, repo_root FROM path_mappings LIMIT 8").fetch_all(&mut **tx),
+        )
+        .await?;
+    let rule = rule_of(&roots);
 
     let tenant_ids: Vec<String> = db
         .run(
@@ -138,6 +144,22 @@ mod tests {
         assert_eq!(tenant.kind, FileKind::Tenant);
         assert_eq!(base.logical, tenant.logical);
         assert_eq!(base.logical.as_str(), "tx-infinity-api/tx-infinity-core.yml");
+    }
+
+    #[test]
+    fn the_admins_roots_replace_the_defaults_and_a_bad_root_falls_back() {
+        let rows = vec![
+            ("base".to_owned(), "cfg".to_owned()),
+            ("tenant".to_owned(), "../escape".to_owned()),
+        ];
+        let rule = rule_of(&rows);
+        assert_eq!(rule.base_root().as_str(), "cfg");
+        assert_eq!(
+            rule.tenant_root().as_str(),
+            "data/config",
+            "a root that is not a valid path is not used"
+        );
+        assert_eq!(rule_of(&[]), PathMappingRule::default());
     }
 
     #[test]

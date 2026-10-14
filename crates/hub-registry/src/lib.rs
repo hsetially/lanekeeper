@@ -8,6 +8,9 @@
 //! - [`ingest`] (T1): the [`ports::ReportSink`] over Postgres. Source facts only: blobs, observations, the NFS columns of
 //!   `file_state`, Merkle roots, Deployments, release hints and sync windows. Every state change commits with its audit event and
 //!   its outbox events in one transaction (D80).
+//! - [`index`] (T2): the settings index (one set of rows per unique structured blob, flagged values stored redacted), the Git side of
+//!   drift (which swimlane paths a moved head changes, and the normalised hash of a Git file), and the effective tree hashes. Derived
+//!   facts, idempotent, and off the acknowledgement path.
 //!
 //! Nothing here reads a clock or an environment variable directly: instants come from a [`clock::Clock`] and every limit is a
 //! field of [`config::RegistryConfig`] with a tested default. Queries are runtime-checked `sqlx::query` with binds (plan A39);
@@ -24,11 +27,17 @@ pub mod clock;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod index;
 pub mod ingest;
 pub mod metrics;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{ConfigError, RegistryConfig};
 pub use error::RegistryError;
+pub use index::{
+    Affected, GitIndex, GitIndexDeps, IndexDeps, IndexJob, IndexReport, Indexed, LaneImpact, Offer, Row,
+    SettingsIndexer, SettingsSweeper, SettingsWorker, StoredTree, SweepReport, TreeHashStore, TreeWrite,
+    index_blob,
+};
 pub use ingest::{AgentIngest, IngestDeps, ToolWriteRecord, ToolWrites, fuzzing};
 pub use metrics::RegistryMetrics;

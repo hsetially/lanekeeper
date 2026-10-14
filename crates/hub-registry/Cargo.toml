@@ -15,10 +15,17 @@ domain.workspace = true
 ports = { workspace = true, features = ["postgres"] }
 # The fact engine (D33): the class of a file, its format, the drift hash, the path mapping and the roles. No other crate computes them.
 engine.workspace = true
+# `Job`, `JobSpec` and `JobContext`: the leased jobs (the index sweeper from T2, the pipeline from T3). Plan A9: the registry depends on
+# hub-platform for these and for `GuardedRouter`, `ApiError` and `BlobPolicy` (T6), and for nothing else.
+hub-platform.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 futures.workspace = true
+# The bounded cache of normalised Git hashes (T2, plan A23): weighed in bytes, never more than `git_hash_cache_bytes`. Already pinned.
+moka.workspace = true
 prometheus-client.workspace = true
+# The settings index parses on a pool of its own (T2, rule 4: CPU work is rayon inside `spawn_blocking`). Already pinned.
+rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -30,6 +37,10 @@ tracing.workspace = true
 
 [dev-dependencies]
 ports = { workspace = true, features = ["fakes", "postgres"] }
+# `JobContext::held_until_told_otherwise`: a test runs a job without a runner.
+hub-platform = { workspace = true, features = ["fakes"] }
+# `EXPLAIN (FORMAT JSON)` snapshots of the hot queries (P12, T2 on).
+insta = { workspace = true, features = ["json"] }
 # Real Postgres 16 with pgvector (a container, or `LK_TEST_PG_ADMIN_URL`), migrated as lanekeeper_migrator and used as lanekeeper_app.
 sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json", "migrate"] }
 testcontainers.workspace = true

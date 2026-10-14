@@ -10,7 +10,9 @@ use domain::{
     AgentConfig, ClusterReport, ContentHash, Heartbeat, HeartbeatAction, Hello, NfsPath, ScanDelta,
     ScanEntry, ShortText, SwimlaneId, Timestamp,
 };
-use hub_registry::{AgentIngest, IngestDeps, ManualClock, RegistryConfig, RegistryMetrics};
+use hub_registry::{
+    AgentIngest, IndexDeps, IngestDeps, ManualClock, RegistryConfig, RegistryMetrics, SettingsIndexer,
+};
 use ports::{AgentIdentity, ReportSink, SinkError, content_hash};
 use sqlx::{PgPool, Row};
 
@@ -30,6 +32,8 @@ pub struct Rig {
     pub ingest: AgentIngest,
     pub swimlane: SwimlaneId,
     pub identity: AgentIdentity,
+    /// The settings index that ingestion offers its blobs to, when the rig was built `with_index`; its worker runs as a task.
+    pub indexer: Option<SettingsIndexer>,
 }
 
 /// `observed_at` of the first scan in a test: a moment before the clock's `T0_MS`.
@@ -42,6 +46,37 @@ impl Rig {
     }
 
     pub async fn with(swimlane: &str, config: RegistryConfig) -> Option<Self> {
+        Self::build(swimlane, config, false).await
+    }
+
+    /// A rig whose ingestion offers every structured blob to a settings index, with its worker running.
+    pub async fn with_index(swimlane: &str, config: RegistryConfig) -> Option<Self> {
+        Self::build(swimlane, config, true).await
+    }
+
+    /// The settings indexer of a rig built `with_index`.
+    pub fn index(&self) -> &SettingsIndexer {
+        self.indexer.as_ref().expect("the rig was built with_index")
+    }
+
+    /// A settings indexer over this rig's database, blob store and clock, with its own queue: a second replica. Its worker is not
+    /// started; the caller runs it, or calls `index_now`.
+    pub fn another_indexer(
+        &self,
+        config: RegistryConfig,
+        metrics: RegistryMetrics,
+    ) -> (SettingsIndexer, hub_registry::SettingsWorker) {
+        SettingsIndexer::new(IndexDeps {
+            pool: self.pool.clone(),
+            blobs: Arc::clone(&self.blobs) as _,
+            clock: Arc::clone(&self.clock) as _,
+            config,
+            metrics,
+        })
+        .unwrap()
+    }
+
+    async fn build(swimlane: &str, config: RegistryConfig, index: bool) -> Option<Self> {
         let db = TestDb::ready().await?;
         let pool = db.app_pool().await;
         db.seed_swimlane(&pool, swimlane).await;
@@ -50,6 +85,20 @@ impl Rig {
         let blobs = Arc::new(PgBlobs::new(pool.clone()));
         let clock = Arc::new(ManualClock::at_t0());
         let metrics = RegistryMetrics::default();
+        let indexer = if index {
+            let (indexer, worker) = SettingsIndexer::new(IndexDeps {
+                pool: pool.clone(),
+                blobs: Arc::clone(&blobs) as _,
+                clock: Arc::clone(&clock) as _,
+                config: config.clone(),
+                metrics: metrics.clone(),
+            })
+            .unwrap();
+            tokio::spawn(worker.run());
+            Some(indexer)
+        } else {
+            None
+        };
         let ingest = AgentIngest::new(IngestDeps {
             pool: pool.clone(),
             blobs: Arc::clone(&blobs) as _,
@@ -60,6 +109,9 @@ impl Rig {
             metrics: metrics.clone(),
         })
         .unwrap();
+        if let Some(indexer) = &indexer {
+            assert!(ingest.attach_settings_index(indexer.clone()).is_ok());
+        }
         let swimlane = SwimlaneId::parse(swimlane).unwrap();
         Some(Self {
             identity: AgentIdentity::new(swimlane.clone()),
@@ -72,7 +124,37 @@ impl Rig {
             metrics,
             ingest,
             swimlane,
+            indexer,
         })
+    }
+
+    /// Another swimlane in the same database, with its tenants, and (when `inventory`) a `swimlane_registry` row that says its first
+    /// inventory has been applied, as a full scan would.
+    pub async fn add_swimlane(&self, id: &str, tenants: &[&str], inventory: bool) {
+        sqlx::query(
+            "INSERT INTO projects (id, display_name) VALUES ('p1', 'Project 1') ON CONFLICT DO NOTHING",
+        )
+        .execute(&self.pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO swimlanes (id, project_id, display_name) VALUES ($1, 'p1', $1) ON CONFLICT DO NOTHING")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .unwrap();
+        for tenant in tenants {
+            self.db.seed_tenant(&self.pool, id, tenant).await;
+        }
+        sqlx::query(
+            "INSERT INTO swimlane_registry (swimlane_id, first_inventory_at) \
+             VALUES ($1, CASE WHEN $2 THEN now() END) \
+             ON CONFLICT (swimlane_id) DO UPDATE SET first_inventory_at = EXCLUDED.first_inventory_at",
+        )
+        .bind(id)
+        .bind(inventory)
+        .execute(&self.pool)
+        .await
+        .unwrap();
     }
 
     pub async fn hello(&self) -> AgentConfig {

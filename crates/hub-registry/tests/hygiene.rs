@@ -284,3 +284,53 @@ fn every_query_is_bounded_or_keyed() {
         }
     }
 }
+
+/// The text of a source file with every run of whitespace (and every line continuation of a string literal) collapsed to one
+/// space and the case folded, so that a statement written over several lines is found by its words.
+fn squeezed(production: &str) -> String {
+    production
+        .replace("\\\n", " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// A22: the table `git_tree_index` has one writer, hub-platform's `TreeIndexPersist` (lease `git-tree-index`). The registry reads the
+/// index through `GitReader::tree_index` and never writes the table, so two writers can never disagree about a commit.
+fn writes_git_tree_index(production: &str) -> bool {
+    let text = squeezed(production);
+    [
+        "insert into git_tree_index",
+        "update git_tree_index",
+        "delete from git_tree_index",
+        "truncate git_tree_index",
+    ]
+    .iter()
+    .any(|statement| text.contains(statement))
+}
+
+#[test]
+fn the_scan_for_git_tree_index_writes_finds_planted_violations() {
+    for plant in [
+        "sqlx::query(\"INSERT INTO git_tree_index (repo) VALUES ($1)\")",
+        "sqlx::query(\"INSERT INTO\n   git_tree_index (repo) VALUES ($1)\")",
+        "sqlx::query(\"DELETE   FROM git_tree_index WHERE x\")",
+        "sqlx::query(\"insert into \\\n    git_tree_index (repo) values ($1)\")",
+    ] {
+        assert!(writes_git_tree_index(plant), "the scan missed: {plant}");
+    }
+    assert!(!writes_git_tree_index(
+        "sqlx::query(\"SELECT hash FROM git_tree_index WHERE repo = $1\")"
+    ));
+}
+
+#[test]
+fn no_source_writes_the_git_tree_index() {
+    for (name, text) in sources() {
+        assert!(
+            !writes_git_tree_index(&production_text(&text)),
+            "{name}: A22, hub-platform's TreeIndexPersist is the only writer of git_tree_index"
+        );
+    }
+}
