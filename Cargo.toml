@@ -23,6 +23,7 @@ engine = { path = "crates/engine", version = "0.1.0" }
 proto = { path = "crates/proto", version = "0.1.0" }
 xtask = { path = "crates/xtask", version = "0.1.0" }
 hub-platform = { path = "crates/hub-platform", version = "0.1.0" }
+hub-identity = { path = "crates/hub-identity", version = "0.1.0" }
 # Every version is an exact pin, at least 14 days old when chosen (S19). Default features are off; member crates enable what they use.
 # Data and errors
 serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }

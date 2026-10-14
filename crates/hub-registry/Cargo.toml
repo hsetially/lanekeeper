@@ -41,6 +41,9 @@ tracing.workspace = true
 ports = { workspace = true, features = ["fakes", "postgres"] }
 # `JobContext::held_until_told_otherwise`: a test runs a job without a runner.
 hub-platform = { workspace = true, features = ["fakes"] }
+# The real `PgAuditLog` (P15, T1): the ingestion tests and the P15 benchmark run the registry against the audit log the hub runs, so that
+# `AuditLog::record_many` is the real one-lock, one-insert batch and not a loop. Tests and benchmarks only, never the library.
+hub-identity.workspace = true
 # `EXPLAIN (FORMAT JSON)` snapshots of the hot queries (P12, T2 on).
 insta = { workspace = true, features = ["json"] }
 # Real Postgres 16 with pgvector (a container, or `LK_TEST_PG_ADMIN_URL`), migrated as lanekeeper_migrator and used as lanekeeper_app.

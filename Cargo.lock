@@ -2764,6 +2764,7 @@ dependencies = [
  "domain",
  "engine",
  "futures",
+ "hub-identity",
  "hub-platform",
  "insta",
  "moka",

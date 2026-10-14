@@ -24,14 +24,15 @@ use std::time::Instant;
 
 use bytes::Bytes;
 use domain::{NfsPath, ScanEntry, SwimlaneId, Timestamp};
+use hub_identity::audit::PgAuditLog;
+use hub_platform::events::bus::{BusSettings, PgEventBus};
+use hub_platform::events::metrics::EventMetrics;
 use hub_registry::{AgentIngest, IngestDeps, ManualClock, RegistryConfig, RegistryMetrics};
 use ports::{AgentIdentity, ReportSink, content_hash};
 use support::fixtures;
 use support::perf::write_result;
 use support::pg::TestDb;
-use support::pg_audit::PgTestAudit;
 use support::pg_blobs::PgBlobs;
-use support::pg_bus::PgTestBus;
 use support::rig::{hello, root};
 
 const MESSAGES: usize = 360;
@@ -86,8 +87,14 @@ async fn run(files: &[(NfsPath, Bytes)]) -> Option<f64> {
     let ingest = AgentIngest::new(IngestDeps {
         pool: pool.clone(),
         blobs: Arc::new(PgBlobs::new(pool.clone())),
-        bus: Arc::new(PgTestBus::new(pool.clone())),
-        audit: Arc::new(PgTestAudit::default()),
+        // The audit log and the bus the hub runs, handed to the registry as they are: `record_many` and `publish_many_in_tx` are the
+        // real one-statement batches, not a decorator's loop over the single calls.
+        bus: Arc::new(PgEventBus::new(
+            pool.clone(),
+            BusSettings::default(),
+            EventMetrics::default(),
+        )),
+        audit: Arc::new(PgAuditLog::new()),
         clock: Arc::new(ManualClock::at_t0()),
         config: RegistryConfig::default(),
         metrics: RegistryMetrics::default(),

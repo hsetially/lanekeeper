@@ -1,100 +1,130 @@
-//! `AuditLog` over the real `audit_events` table and the real hash chain, for tests that run a state change on Postgres. It stands
-//! in for 03a's log: it appends in the caller's transaction (an entry exists only if that transaction commits), serialises the
-//! appends with a transaction-level advisory lock held until the commit (as the real log does), and can be told to fail from the
-//! Nth call on, to show what a failing audit write rolls back.
+//! The real `PgAuditLog` (hub-identity, 03a) behind a thin decorator, for the tests that run a state change on Postgres: the entries are
+//! the real chain, written by the real log in the caller's transaction, under the real chain lock. What the decorator adds is the
+//! hooks a test needs: it can be told to fail from the Nth event on, or with one given error, and it counts the calls.
+//!
+//! **It forwards both `record` and `record_many`** to the real log, so a registry that calls `record_many` takes the real one-lock,
+//! one-head-read, one-insert path. A decorator that forwarded only `record` would still work, through the default `record_many`, and
+//! would silently run the slow loop of one lock, head read and insert per event (P15): the test that counts statements
+//! (`tests/batch_writes.rs`) exists to catch that. [`PgTestAudit::per_event`] is that slow loop on purpose: it is the reference of the
+//! equivalence test, what the registry did before it batched.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use domain::{AuditId, ContentHash};
-use ports::{AuditError, AuditEvent, AuditLog, Tx, canonical_json, chain_hash, genesis_hash};
+use hub_identity::audit::PgAuditLog;
+use ports::{AuditError, AuditEvent, AuditLog, Tx};
 use sqlx::PgPool;
 
 #[derive(Debug)]
 pub struct PgTestAudit {
-    /// Calls that succeed before every later one fails; negative: never fail.
+    inner: PgAuditLog,
+    /// `record_many` as the trait's default has it, one real `record` for each event: the registry before it batched.
+    per_event: bool,
+    /// Events that succeed before every later one fails; negative: never fail.
     fail_after: AtomicI64,
-    calls: AtomicU64,
+    /// Every call fails with this error, when set.
+    fail_with: Mutex<Option<AuditError>>,
+    /// Events asked for so far, in `record` and in `record_many` alike (what `fail_after` counts).
+    events: AtomicU64,
+    singles: AtomicU64,
+    batches: AtomicU64,
 }
 
 impl Default for PgTestAudit {
     fn default() -> Self {
-        Self {
-            fail_after: AtomicI64::new(-1),
-            calls: AtomicU64::new(0),
-        }
+        Self::new(false)
     }
 }
 
 impl PgTestAudit {
-    /// Calls that succeed, then every call fails. `None`: never fail.
-    pub fn fail_after(&self, calls: Option<u64>) {
-        self.fail_after
-            .store(calls.map_or(-1, |c| i64::try_from(c).unwrap()), Ordering::SeqCst);
-        self.calls.store(0, Ordering::SeqCst);
+    fn new(per_event: bool) -> Self {
+        Self {
+            inner: PgAuditLog::new(),
+            per_event,
+            fail_after: AtomicI64::new(-1),
+            fail_with: Mutex::new(None),
+            events: AtomicU64::new(0),
+            singles: AtomicU64::new(0),
+            batches: AtomicU64::new(0),
+        }
     }
 
+    /// The registry's reference: `record_many` is one `record` for each event, as before the audit log had a batch call.
+    pub fn per_event() -> Self {
+        Self::new(true)
+    }
+
+    /// Events that succeed, then every event fails (a batch that does not fit in what is left fails whole, written nowhere).
+    /// `None`: never fail. Resets the count.
+    pub fn fail_after(&self, events: Option<u64>) {
+        self.fail_after
+            .store(events.map_or(-1, |c| i64::try_from(c).unwrap()), Ordering::SeqCst);
+        self.events.store(0, Ordering::SeqCst);
+    }
+
+    /// Every call fails with `error` until it is `None` again.
+    pub fn fail_with(&self, error: Option<AuditError>) {
+        *self.fail_with.lock().unwrap() = error;
+    }
+
+    /// The events asked for since the last `fail_after`.
     pub fn calls(&self) -> u64 {
-        self.calls.load(Ordering::SeqCst)
+        self.events.load(Ordering::SeqCst)
+    }
+
+    /// How many calls of `record` and of `record_many` reached the real log.
+    pub fn single_calls(&self) -> u64 {
+        self.singles.load(Ordering::SeqCst)
+    }
+
+    pub fn batch_calls(&self) -> u64 {
+        self.batches.load(Ordering::SeqCst)
+    }
+
+    /// Count `n` more events, and fail if they do not fit in what `fail_after` allows or if `fail_with` is set.
+    fn admit(&self, n: u64) -> Result<(), AuditError> {
+        if let Some(error) = *self.fail_with.lock().unwrap() {
+            return Err(error);
+        }
+        let before = self.events.fetch_add(n, Ordering::SeqCst);
+        let limit = self.fail_after.load(Ordering::SeqCst);
+        if limit >= 0 && i64::try_from(before + n).unwrap() > limit {
+            return Err(AuditError::Unavailable);
+        }
+        Ok(())
     }
 }
 
 #[async_trait]
 impl AuditLog for PgTestAudit {
     async fn record(&self, tx: &mut Tx<'_>, e: AuditEvent) -> Result<AuditId, AuditError> {
-        let n = self.calls.fetch_add(1, Ordering::SeqCst);
-        let limit = self.fail_after.load(Ordering::SeqCst);
-        if limit >= 0 && i64::try_from(n).unwrap() >= limit {
-            return Err(AuditError::Unavailable);
+        self.admit(1)?;
+        self.singles.fetch_add(1, Ordering::SeqCst);
+        self.inner.record(tx, e).await
+    }
+
+    async fn record_many(
+        &self,
+        tx: &mut Tx<'_>,
+        events: Vec<AuditEvent>,
+    ) -> Result<Vec<AuditId>, AuditError> {
+        if events.is_empty() {
+            return Ok(Vec::new());
         }
-        let json = canonical_json(&e)?;
-        let value: serde_json::Value = serde_json::from_slice(&json).map_err(|_| AuditError::Encode)?;
-        let conn = tx.pg().map_err(|_| AuditError::WrongTx)?;
-        // Appends are serialised for the length of the transaction, so the chain order is the commit order.
-        sqlx::query("SELECT pg_advisory_xact_lock(7203)")
-            .execute(&mut *conn)
-            .await
-            .map_err(|_| AuditError::Unavailable)?;
-        let prev: Option<Vec<u8>> =
-            sqlx::query_scalar("SELECT hash::bytea FROM audit_events ORDER BY seq DESC LIMIT 1")
-                .fetch_optional(&mut *conn)
-                .await
-                .map_err(|_| AuditError::Unavailable)?;
-        let prev = prev.map_or_else(genesis_hash, |bytes| {
-            ContentHash::from_bytes(bytes.try_into().unwrap_or([0; 32]))
-        });
-        let hash = chain_hash(&prev, &json);
-        let text = |v: &serde_json::Value| v.as_str().map(str::to_owned);
-        let hex = |v: &serde_json::Value| {
-            v.as_str()
-                .and_then(|s| ContentHash::parse(s).ok())
-                .map(|h| h.as_bytes().to_vec())
-        };
-        let seq: i64 = sqlx::query_scalar(
-            "INSERT INTO audit_events (prev_hash, hash, event_json, at, actor_kind, actor_ref, action, via, swimlane_id, path, \
-                                       hash_before, hash_after, attribution_source, attribution_confidence) \
-             VALUES ($1::bytea, $2::bytea, $3, timestamptz 'epoch' + ($4::bigint * interval '1 millisecond'), $5, $6, $7, $8, $9, \
-                     $10, $11::bytea, $12::bytea, $13, $14) RETURNING seq",
-        )
-        .bind(prev.as_bytes().as_slice())
-        .bind(hash.as_bytes().as_slice())
-        .bind(String::from_utf8_lossy(&json).into_owned())
-        .bind(e.at.unix_millis())
-        .bind(text(&value["actor"]["kind"]))
-        .bind(text(&value["actor"]["swimlane"]).or_else(|| text(&value["actor"]["user"])))
-        .bind(text(&value["action"]))
-        .bind(text(&value["via"]))
-        .bind(text(&value["swimlane"]))
-        .bind(text(&value["path"]))
-        .bind(hex(&value["hash_before"]))
-        .bind(hex(&value["hash_after"]))
-        .bind(text(&value["attribution"]["source"]))
-        .bind(text(&value["attribution"]["confidence"]))
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(|_| AuditError::Unavailable)?;
-        Ok(AuditId::from(seq))
+        self.admit(u64::try_from(events.len()).unwrap())?;
+        if self.per_event {
+            let mut ids = Vec::with_capacity(events.len());
+            for e in events {
+                self.singles.fetch_add(1, Ordering::SeqCst);
+                ids.push(self.inner.record(tx, e).await?);
+            }
+            return Ok(ids);
+        }
+        self.batches.fetch_add(1, Ordering::SeqCst);
+        self.inner.record_many(tx, events).await
     }
 }
 

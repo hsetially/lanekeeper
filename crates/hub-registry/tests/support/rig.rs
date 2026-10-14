@@ -87,14 +87,27 @@ impl Rig {
     /// A rig whose ingestion publishes through the real `PgEventBus` (NOTIFY, relay, broadcast), so that a pipeline subscribed to it
     /// hears what ingestion publishes, as in the hub.
     pub async fn with_event_bus(swimlane: &str, config: RegistryConfig) -> Option<Self> {
-        Self::build_with(swimlane, config, false, true).await
+        Self::build_with(swimlane, config, false, true, false).await
+    }
+
+    /// A rig whose audit log and event bus write one event at a time, as the registry did before it had `record_many` and
+    /// `publish_many_in_tx` (the default of both calls is a loop of the single ones, over the same real log and bus). It is the
+    /// reference that `tests/batch_writes.rs` compares the batch path with.
+    pub async fn per_event(swimlane: &str, config: RegistryConfig) -> Option<Self> {
+        Self::build_with(swimlane, config, false, false, true).await
     }
 
     async fn build(swimlane: &str, config: RegistryConfig, index: bool) -> Option<Self> {
-        Self::build_with(swimlane, config, index, false).await
+        Self::build_with(swimlane, config, index, false, false).await
     }
 
-    async fn build_with(swimlane: &str, config: RegistryConfig, index: bool, real_bus: bool) -> Option<Self> {
+    async fn build_with(
+        swimlane: &str,
+        config: RegistryConfig,
+        index: bool,
+        real_bus: bool,
+        per_event: bool,
+    ) -> Option<Self> {
         let db = TestDb::ready().await?;
         let pool = db.app_pool().await;
         db.seed_swimlane(&pool, swimlane).await;
@@ -107,12 +120,20 @@ impl Rig {
         } else {
             (None, None)
         };
-        let bus = Arc::new(PgTestBus::new(pool.clone()));
+        let bus = Arc::new(if per_event {
+            PgTestBus::per_event(pool.clone())
+        } else {
+            PgTestBus::new(pool.clone())
+        });
         let ingest_bus: Arc<dyn EventBus> = events.clone().map_or_else(
             || Arc::clone(&bus) as Arc<dyn EventBus>,
             |e| Arc::new(e) as Arc<dyn EventBus>,
         );
-        let audit = Arc::new(PgTestAudit::default());
+        let audit = Arc::new(if per_event {
+            PgTestAudit::per_event()
+        } else {
+            PgTestAudit::default()
+        });
         let blobs = Arc::new(PgBlobs::new(pool.clone()));
         let clock = Arc::new(ManualClock::at_t0());
         let metrics = RegistryMetrics::default();
