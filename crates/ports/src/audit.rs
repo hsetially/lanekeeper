@@ -1,7 +1,7 @@
 //! The tamper-evident audit log port (S9, D38, D56).
 //!
-//! Every state-changing action writes exactly one [`AuditEvent`], through [`AuditLog::record`], in the same
-//! transaction as the change. The log is hash-chained: `hash = SHA-256(prev_hash || canonical event JSON)`.
+//! Every state-changing action writes exactly one [`AuditEvent`], through [`AuditLog::record`] (or, for a
+//! change that audits many paths at once, [`AuditLog::record_many`]), in the same transaction as the change. The log is hash-chained: `hash = SHA-256(prev_hash || canonical event JSON)`.
 //! [`canonical_json`] and [`chain_hash`] are the single definition of that chain, so the real log (03a), the
 //! nightly verifier and the fakes agree.
 
@@ -90,6 +90,16 @@ pub enum AuditAction {
     /// recorded with the `pr_links` update in one transaction.
     PrStateChanged,
 }
+
+/// The most events one [`AuditLog::record_many`] call takes. A bigger batch is refused whole with
+/// [`AuditError::BatchTooLarge`], never truncated.
+///
+/// The chain lock is held from the batch to the end of the caller's transaction, so every other writer waits at
+/// least as long as the batch takes. 200 is four times the 50 versions of one agent message, the largest unit of
+/// work that audits many paths in one transaction (D93), so a caller never needs to split a unit, and it keeps the
+/// longest hold to tens of milliseconds: the one statement carries at most 200 events of at most
+/// [`AuditEvent::MAX_DIFF_BYTES`] each, 12.8 MiB at the very worst and a few hundred KiB for real events.
+pub const MAX_AUDIT_BATCH: usize = 200;
 
 /// The facts of one audited action. Contains no secret and no file content other than the bounded `diff`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,6 +203,9 @@ pub enum AuditError {
     Encode,
     #[error("audit log is unavailable")]
     Unavailable,
+    /// `record_many` was given more than [`MAX_AUDIT_BATCH`] events. Nothing was recorded; split the batch.
+    #[error("audit batch is too large")]
+    BatchTooLarge,
 }
 
 #[async_trait]
@@ -200,4 +213,45 @@ pub trait AuditLog: Send + Sync + 'static {
     /// Append `e` to the chain inside `tx`. The entry exists only if `tx` commits. Appends are serialised,
     /// so the chain order is the commit order.
     async fn record(&self, tx: &mut Tx<'_>, e: AuditEvent) -> Result<AuditId, AuditError>;
+
+    /// Append `events` to the chain inside `tx`, in order, as if `record` had been called once per event: the same links
+    /// and hashes, one entry per event (rule 8 is unchanged), and the ids come back in input order. An implementation
+    /// may do it with less work (one lock acquisition, one read of the chain head and one insert), but the chain that
+    /// results must be byte for byte the one that `n` calls of `record` write. The entries exist only if `tx` commits,
+    /// and the batch is not interleaved with another writer's entries: its entries are consecutive in the chain.
+    ///
+    /// - An empty batch is `Ok` with no ids; it takes no lock and does not look at `tx`.
+    /// - More than [`MAX_AUDIT_BATCH`] events is [`AuditError::BatchTooLarge`], and nothing is recorded.
+    /// - An event that `record` would refuse (`TooLarge`, `Encode`) is refused the same way, before anything of the
+    ///   batch is recorded: the transaction stays usable and committing it keeps nothing of the batch. Any other
+    ///   error (the store is unavailable) leaves the transaction in an unknown state, and the caller must roll it
+    ///   back, as after a failed `record`.
+    ///
+    /// The default calls `record` once per event, after the checks above, so an implementation that does not override it
+    /// keeps working. Overriding is for the cost of a call, not for a different result.
+    async fn record_many(
+        &self,
+        tx: &mut Tx<'_>,
+        events: Vec<AuditEvent>,
+    ) -> Result<Vec<AuditId>, AuditError> {
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+        if events.len() > MAX_AUDIT_BATCH {
+            return Err(AuditError::BatchTooLarge);
+        }
+        // `record` refuses an oversized diff; say so before the first event is recorded, not after some are.
+        if events.iter().any(|e| {
+            e.diff
+                .as_ref()
+                .is_some_and(|d| d.len() > AuditEvent::MAX_DIFF_BYTES)
+        }) {
+            return Err(AuditError::TooLarge);
+        }
+        let mut ids = Vec::with_capacity(events.len());
+        for e in events {
+            ids.push(self.record(tx, e).await?);
+        }
+        Ok(ids)
+    }
 }
