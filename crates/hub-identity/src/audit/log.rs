@@ -473,7 +473,12 @@ impl AuditLog for PgAuditLog {
         self.lock_chain(conn).await?;
         let head = chain_head(conn).await?;
 
-        // 4, for all of them, in input order, off the runtime: SHA-256 of up to the budget, inside the lock.
+        // 4, for all of them, in input order, off the runtime: SHA-256 of up to the budget, inside the lock. The hop is made for every
+        // batch, small ones too, and that was measured (release build, local Postgres, the ignored test `report_hashing_...` in
+        // tests/audit_batch.rs): hashing in place is cheaper below about 25 KB, by 0.1 to 0.2 ms (50 typical events, 24.5 KB: 140 to
+        // 250 microseconds in place, 230 to 310 for the hop hot and 330 to 380 spaced; 10 events, 4.9 KB: 30 against 75 to 190;
+        // 1 MiB: 5.4 ms either way), against a lock hold of several milliseconds. So one path is kept for every size, and rule 4
+        // holds from one event to the budget.
         let (prepared, links) = off_the_runtime("link", move || {
             let links = link_chain(head, &prepared);
             (prepared, links)

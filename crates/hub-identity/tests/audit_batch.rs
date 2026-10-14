@@ -1242,3 +1242,81 @@ async fn report_the_time_of_a_batch_against_the_same_events_one_by_one() {
         }
     }
 }
+
+/// Hashing a batch where it is (on the async thread) against the hop to the blocking pool that `record_many` makes, inside the
+/// chain lock. No database: the question is what the hop costs against what it saves. Each size is measured hot (calls back to
+/// back, the blocking thread is awake) and spaced (5 ms between calls, as audited writes arrive in service, the blocking thread
+/// asleep). `cargo test --release -p hub-identity --test audit_batch -- --ignored --nocapture report_hashing`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "a measurement: run with --release --ignored --nocapture"]
+async fn report_hashing_inline_against_the_hop_to_the_blocking_pool() {
+    use hub_identity::audit::log::{link_chain, prepare_batch};
+
+    fn percentile(v: &mut [Duration], p: usize) -> f64 {
+        v.sort();
+        v[(v.len() * p / 100).min(v.len() - 1)].as_secs_f64() * 1e6
+    }
+    let shapes: [(&str, Vec<AuditEvent>); 5] = [
+        ("1 typical event", events(0, 1)),
+        ("10 typical events", events(0, 10)),
+        ("50 typical events", events(0, 50)),
+        (
+            "3 events at the budget",
+            audit_events_totalling(3, MAX_AUDIT_BATCH_BYTES),
+        ),
+        (
+            "200 events at the budget",
+            audit_events_totalling(MAX_AUDIT_BATCH, MAX_AUDIT_BATCH_BYTES),
+        ),
+    ];
+    println!("\nhash the links of a batch, microseconds (median / p95 of 400 calls)");
+    println!(
+        "{:<26} {:>10} | {:>14} | {:>14} | {:>14}",
+        "batch", "bytes", "inline", "hop, hot", "hop, spaced"
+    );
+    for (what, batch) in shapes {
+        let mut prepared = prepare_batch(&batch).unwrap();
+        let bytes: usize = batch.iter().map(|e| ports::canonical_size(e).unwrap()).sum();
+        let (mut inline, mut hot, mut spaced) = (Vec::new(), Vec::new(), Vec::new());
+        for _ in 0..400 {
+            let started = Instant::now();
+            let links = link_chain(genesis_hash(), &prepared);
+            inline.push(started.elapsed());
+            std::hint::black_box(links);
+        }
+        for _ in 0..400 {
+            let started = Instant::now();
+            let (back, links) = tokio::task::spawn_blocking(move || {
+                let links = link_chain(genesis_hash(), &prepared);
+                (prepared, links)
+            })
+            .await
+            .unwrap();
+            hot.push(started.elapsed());
+            prepared = back;
+            std::hint::black_box(links);
+        }
+        for _ in 0..400 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            let started = Instant::now();
+            let (back, links) = tokio::task::spawn_blocking(move || {
+                let links = link_chain(genesis_hash(), &prepared);
+                (prepared, links)
+            })
+            .await
+            .unwrap();
+            spaced.push(started.elapsed());
+            prepared = back;
+            std::hint::black_box(links);
+        }
+        println!(
+            "{what:<26} {bytes:>10} | {:>6.0} /{:>6.0} | {:>6.0} /{:>6.0} | {:>6.0} /{:>6.0}",
+            percentile(&mut inline, 50),
+            percentile(&mut inline, 95),
+            percentile(&mut hot, 50),
+            percentile(&mut hot, 95),
+            percentile(&mut spaced, 50),
+            percentile(&mut spaced, 95)
+        );
+    }
+}
