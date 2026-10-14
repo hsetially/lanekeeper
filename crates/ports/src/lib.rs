@@ -39,13 +39,14 @@ pub mod conformance;
 pub mod fakes;
 
 pub use audit::{
-    AuditAction, AuditActor, AuditEntry, AuditError, AuditEvent, AuditLog, AuditVia, canonical_json,
-    chain_hash, genesis_hash, verify_chain,
+    AuditAction, AuditActor, AuditEntry, AuditError, AuditEvent, AuditLog, AuditVia, MAX_AUDIT_BATCH,
+    MAX_AUDIT_BATCH_BYTES, MAX_AUDIT_EVENT_BYTES, canonical_json, canonical_size, chain_hash, genesis_hash,
+    split_batches, verify_chain,
 };
 pub use auth::{AuthError, MAX_TOKEN_BYTES, TokenVerifier, UserError, Users};
 pub use blob::{BlobError, BlobStore, MAX_BLOB_BYTES, MAX_GET_MANY, content_hash};
 pub use docs::{DocError, DocSearch, MAX_DOC_HITS, MAX_DOC_PATTERN_BYTES, MAX_GREP_CONTEXT};
-pub use events::{BusError, EventBus, EventFilter, EventKind};
+pub use events::{BusError, EventBus, EventFilter, EventKind, MAX_EVENT_BATCH};
 pub use gateway::{AgentGateway, GatewayError};
 pub use git::{GitError, GitReader};
 pub use identity::{AckSeq, AgentIdentity, GoogleIdentity, SentinelIdentity, VerifiedUser};
