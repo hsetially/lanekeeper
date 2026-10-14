@@ -76,7 +76,8 @@ pub struct Group {
     pub swimlane: SwimlaneId,
     /// Sorted.
     pub tenants: Vec<TenantId>,
-    /// The applications its Deployments run (D88), sorted, without repeats.
+    /// The applications its Deployments run (D88) that are named like the logical file (`app_candidates`), sorted, without repeats:
+    /// what the file's role needs of them, and no more.
     pub apps: Vec<AppName>,
     /// The files of the logical file's group: the base file and the tenants' copies.
     pub files: Vec<LayerRow>,
@@ -105,9 +106,33 @@ pub const TENANTS_SQL: &str = "\
 SELECT swimlane_id, array_agg(tenant_id ORDER BY tenant_id) AS tenants FROM swimlane_tenants \
 WHERE swimlane_id = ANY($1::text[]) GROUP BY swimlane_id";
 
+/// `$1` swimlanes, `$2` the names to look for: the applications of those swimlanes that have one of these names (D88). A swimlane runs
+/// hundreds of services, each with a name of its own, and what a logical file needs of them is only whether one is named like the file
+/// (see [`app_candidates`]), so the rows that come back are those few and not every service.
 pub const APPS_SQL: &str = "\
 SELECT swimlane_id, env_values ->> 'SPRING_APPLICATION_NAME' AS app FROM services \
-WHERE swimlane_id = ANY($1::text[]) AND removed_at IS NULL AND env_values ? 'SPRING_APPLICATION_NAME' LIMIT 100000";
+WHERE swimlane_id = ANY($1::text[]) AND removed_at IS NULL AND env_values ->> 'SPRING_APPLICATION_NAME' = ANY($2::text[]) LIMIT 100000";
+
+/// The application names that can change what is read of a logical file, which is the only thing a group's applications are used for
+/// (D88): the engine asks whether a prefix of the file's *name*, cut before a `.` or a `-` (the stem, or an application with a tenant
+/// suffix), or the whole name, is an application (`is_property_source`), and the view that renders a resource is the application named
+/// like a *folder* of the path (`resource::application_of`). Every such name is a candidate, more than will be asked about: a name that
+/// is not asked about changes nothing. Tests hold the engine's rule and `application_of` to this list.
+pub fn app_candidates(file: &LogicalFile) -> Vec<String> {
+    let path = file.as_str();
+    let name = file.as_path().file_name();
+    let folders = path.rsplit_once('/').map_or("", |(folders, _)| folders);
+    let mut out: Vec<String> = name
+        .match_indices(['.', '-'])
+        .map(|(i, _)| name[..i].to_owned())
+        .chain(folders.split('/').map(str::to_owned))
+        .filter(|n| !n.is_empty())
+        .collect();
+    out.push(name.to_owned());
+    out.sort();
+    out.dedup();
+    out
+}
 
 pub const EXISTING_SQL: &str = "SELECT id FROM swimlanes WHERE id = ANY($1::text[])";
 
@@ -126,6 +151,34 @@ pub(crate) fn layer_row(row: &sqlx::postgres::PgRow) -> Result<LayerRow, Registr
         size: u64::try_from(row.get::<i64, _>("size")).unwrap_or(0),
         denied: row.get("denied"),
     })
+}
+
+/// The tenants and the application names that the two statements found, on the groups they belong to.
+fn tenants_and_apps(
+    out: &mut HashMap<SwimlaneId, Group>,
+    tenant_rows: &[sqlx::postgres::PgRow],
+    app_rows: &[sqlx::postgres::PgRow],
+) {
+    for row in tenant_rows {
+        let id: String = row.get("swimlane_id");
+        let tenants: Vec<String> = row.get("tenants");
+        if let Some(g) = SwimlaneId::parse(&id).ok().and_then(|s| out.get_mut(&s)) {
+            g.tenants = tenants.iter().filter_map(|t| TenantId::parse(t).ok()).collect();
+        }
+    }
+    for row in app_rows {
+        let id: String = row.get("swimlane_id");
+        let app: Option<String> = row.get("app");
+        if let (Some(g), Some(app)) = (SwimlaneId::parse(&id).ok().and_then(|s| out.get_mut(&s)), app) {
+            if let Ok(app) = AppName::parse(&app) {
+                g.apps.push(app);
+            }
+        }
+    }
+    for g in out.values_mut() {
+        g.apps.sort();
+        g.apps.dedup();
+    }
 }
 
 /// Whether `path` is the copy of `file` that `tenant` reads (`<name>-<tenant>.<ext>`), by the engine's own rule for choosing one.
@@ -380,6 +433,7 @@ impl Inner {
         }
         let ids: Vec<&str> = existing.iter().map(String::as_str).collect();
         let roots: Vec<&str> = ROOT_FILES.to_vec();
+        let candidates = app_candidates(file);
         let (file_rows, tenant_rows, app_rows) = tokio::try_join!(
             async {
                 self.db
@@ -407,7 +461,10 @@ impl Inner {
                 self.db
                     .run(
                         "read_group_apps",
-                        sqlx::query(APPS_SQL).bind(&ids).fetch_all(self.db.pool()),
+                        sqlx::query(APPS_SQL)
+                            .bind(&ids)
+                            .bind(&candidates)
+                            .fetch_all(self.db.pool()),
                     )
                     .await
                     .map_err(ReadError::from)
@@ -428,26 +485,7 @@ impl Inner {
                 },
             );
         }
-        for row in &tenant_rows {
-            let id: String = row.get("swimlane_id");
-            let tenants: Vec<String> = row.get("tenants");
-            if let Some(g) = SwimlaneId::parse(&id).ok().and_then(|s| out.get_mut(&s)) {
-                g.tenants = tenants.iter().filter_map(|t| TenantId::parse(t).ok()).collect();
-            }
-        }
-        for row in &app_rows {
-            let id: String = row.get("swimlane_id");
-            let app: Option<String> = row.get("app");
-            if let (Some(g), Some(app)) = (SwimlaneId::parse(&id).ok().and_then(|s| out.get_mut(&s)), app) {
-                if let Ok(app) = AppName::parse(&app) {
-                    g.apps.push(app);
-                }
-            }
-        }
-        for g in out.values_mut() {
-            g.apps.sort();
-            g.apps.dedup();
-        }
+        tenants_and_apps(&mut out, &tenant_rows, &app_rows);
         for row in &file_rows {
             let id: String = row.get("swimlane_id");
             let in_group: bool = row.get("in_group");

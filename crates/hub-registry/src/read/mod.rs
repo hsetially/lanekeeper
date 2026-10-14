@@ -25,6 +25,7 @@
 //! - [`cache`]: the weighed moka caches. [`api`]: the superset trait and the service.
 
 pub mod api;
+pub(crate) mod array_bin;
 pub mod authz;
 pub mod cache;
 pub mod compare;

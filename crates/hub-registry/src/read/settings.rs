@@ -30,6 +30,7 @@ use futures::stream::{self, StreamExt};
 use ports::ReadError;
 use tracing::warn;
 
+use super::array_bin::{self, Array};
 use super::cache::BlobRows;
 use super::service::Inner;
 use crate::index::{Indexed, index_blob};
@@ -65,7 +66,79 @@ enum Converted {
     Rows(BlobRows),
 }
 
-/// One row of [`ROWS_SQL`] as the rows of its blob. The strings the database sent are moved into the settings, not copied.
+/// The array in a column of a [`ROWS_SQL`] row: binary, as the driver asks the server for every column, and empty for the `NULL` that
+/// `array_agg` gives over no rows.
+fn column<'r>(row: &'r sqlx::postgres::PgRow, name: &str, oid: u32) -> Result<Array<'r>, ReadError> {
+    use sqlx::{Row as _, ValueRef as _};
+    let unavailable = |what: &str| {
+        warn!(column = name, what, "a column of an index row cannot be read");
+        ReadError::Unavailable
+    };
+    let value = row.try_get_raw(name).map_err(|_| unavailable("missing"))?;
+    if value.is_null() {
+        return Ok(Array::empty());
+    }
+    if value.format() != sqlx::postgres::PgValueFormat::Binary {
+        return Err(unavailable("not binary"));
+    }
+    let bytes = value.as_bytes().map_err(|_| unavailable("no bytes"))?;
+    Array::parse(bytes, oid).map_err(|_| unavailable("not an array of the type"))
+}
+
+/// An array of an index row that is cut, or holds a null where there is none.
+fn malformed(_: array_bin::Malformed) -> ReadError {
+    warn!("an array of an index row is cut or holds a null where there is none");
+    ReadError::Unavailable
+}
+
+/// The next element of an array that has `n` of them (the caller has checked the count).
+fn next<'a>(elements: &mut array_bin::Elements<'a>) -> Result<Option<&'a [u8]>, ReadError> {
+    elements.next().ok_or(ReadError::Unavailable)?.map_err(malformed)
+}
+
+/// The settings of a blob out of the six arrays of its row, read in place: the strings made are the path (checked by the domain, which
+/// copies it) and the value, and nothing else.
+fn settings_of_row(row: &sqlx::postgres::PgRow) -> Result<BlobRows, ReadError> {
+    let (paths, vals, types) = (
+        column(row, "paths", array_bin::TEXT)?,
+        column(row, "vals", array_bin::TEXT)?,
+        column(row, "types", array_bin::TEXT)?,
+    );
+    let (starts, ends, rules) = (
+        column(row, "starts", array_bin::INT4)?,
+        column(row, "ends", array_bin::INT4)?,
+        column(row, "rules", array_bin::TEXT)?,
+    );
+    let n = paths.len();
+    if [vals.len(), types.len(), starts.len(), ends.len(), rules.len()]
+        .iter()
+        .any(|len| *len != n)
+    {
+        warn!(rows = n, "the columns of an index row do not line up");
+        return Err(ReadError::Unavailable);
+    }
+    let mut settings = Vec::with_capacity(n);
+    let mut secret = Vec::with_capacity(n);
+    let (mut paths, mut vals, mut types) = (paths.iter(), vals.iter(), types.iter());
+    let (mut starts, mut ends, mut rules) = (starts.iter(), ends.iter(), rules.iter());
+    // Each array has `n` elements (checked above), and the iterators say so when they do not.
+    for _ in 0..n {
+        let path = array_bin::text(next(&mut paths)?).map_err(malformed)?;
+        let value = array_bin::text(next(&mut vals)?).map_err(malformed)?;
+        let ty = array_bin::text(next(&mut types)?).map_err(malformed)?;
+        let start = array_bin::int4(next(&mut starts)?).map_err(malformed)?;
+        let end = array_bin::int4(next(&mut ends)?).map_err(malformed)?;
+        // Only whether a rule flagged the value is read, and it is the null that says it.
+        let rule = next(&mut rules)?;
+        if let Some(s) = setting(path, value, ty, start, end) {
+            settings.push(s);
+            secret.push(rule.is_some());
+        }
+    }
+    Ok(BlobRows::new(settings, secret, false))
+}
+
+/// One row of [`ROWS_SQL`] as the rows of its blob.
 fn convert_row(row: &sqlx::postgres::PgRow) -> Result<(ContentHash, Converted), ReadError> {
     use sqlx::Row as _;
     let hash = crate::read::rows::hash(&row.get::<Vec<u8>, _>("hash"))?;
@@ -73,40 +146,7 @@ fn convert_row(row: &sqlx::postgres::PgRow) -> Result<(ContentHash, Converted), 
     let rows = match parse_ok {
         None => return Ok((hash, Converted::Unindexed)),
         Some(false) => BlobRows::new(Vec::new(), Vec::new(), true),
-        Some(true) => {
-            let paths: Vec<String> = row.get::<Option<Vec<String>>, _>("paths").unwrap_or_default();
-            let vals: Vec<String> = row.get::<Option<Vec<String>>, _>("vals").unwrap_or_default();
-            let types: Vec<String> = row.get::<Option<Vec<String>>, _>("types").unwrap_or_default();
-            let starts: Vec<i32> = row.get::<Option<Vec<i32>>, _>("starts").unwrap_or_default();
-            let ends: Vec<i32> = row.get::<Option<Vec<i32>>, _>("ends").unwrap_or_default();
-            let rules: Vec<Option<String>> = row
-                .get::<Option<Vec<Option<String>>>, _>("rules")
-                .unwrap_or_default();
-            let n = paths.len();
-            if [vals.len(), types.len(), starts.len(), ends.len(), rules.len()]
-                .iter()
-                .any(|len| *len != n)
-            {
-                warn!(rows = n, "the columns of an index row do not line up");
-                return Err(ReadError::Unavailable);
-            }
-            let mut settings = Vec::with_capacity(n);
-            let mut secret = Vec::with_capacity(n);
-            let all = paths
-                .into_iter()
-                .zip(vals)
-                .zip(types)
-                .zip(starts)
-                .zip(ends)
-                .zip(rules);
-            for (((((path, value), ty), start), end), rule) in all {
-                if let Some(s) = setting_owned(&path, value, &ty, start, end) {
-                    settings.push(s);
-                    secret.push(rule.is_some());
-                }
-            }
-            BlobRows::new(settings, secret, false)
-        }
+        Some(true) => settings_of_row(row)?,
     };
     Ok((hash, Converted::Rows(rows)))
 }
@@ -142,22 +182,6 @@ fn setting(path: &str, value: &str, ty: &str, start: i32, end: i32) -> Option<Fl
             text: value.to_owned(),
             ty,
             flag: flag_of(ty, value),
-        },
-        lines: LineRange::new(u32::try_from(start).ok()?, u32::try_from(end).ok()?).ok()?,
-        via_alias: false,
-    })
-}
-
-/// As [`setting`], with the value given by value (it is moved into the setting).
-fn setting_owned(path: &str, value: String, ty: &str, start: i32, end: i32) -> Option<FlatSetting> {
-    let ty = value_type(ty);
-    let flag = flag_of(ty, &value);
-    Some(FlatSetting {
-        path: SettingPath::parse(path).ok()?,
-        value: SettingValue {
-            text: value,
-            ty,
-            flag,
         },
         lines: LineRange::new(u32::try_from(start).ok()?, u32::try_from(end).ok()?).ok()?,
         via_alias: false,

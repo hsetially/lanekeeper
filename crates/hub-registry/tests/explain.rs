@@ -747,7 +747,18 @@ async fn read_queries_have_no_sequential_scan_on_large_tables() {
         ]
     );
     check!("effective_tenants", TENANTS_SQL, [Arg::TextArray(lanes(40))]);
-    check!("effective_applications", APPS_SQL, [Arg::TextArray(lanes(40))]);
+    check!(
+        "effective_applications",
+        APPS_SQL,
+        [
+            Arg::TextArray(lanes(40)),
+            Arg::TextArray(vec![
+                "catalog".to_owned(),
+                "catalog-big".to_owned(),
+                "catalog-big-01.yml".to_owned()
+            ])
+        ]
+    );
     check!(
         "resource_rows_by_path",
         ROWS_BY_PATH_SQL,

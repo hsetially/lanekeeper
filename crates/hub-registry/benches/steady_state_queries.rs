@@ -31,7 +31,7 @@ use hub_registry::read::content::{
     BASELINE_SQL as CONTENT_BASELINE_SQL, FILE_SQL as CONTENT_FILE_SQL, MAPPING_SQL,
     TENANTS_SQL as CONTENT_TENANTS_SQL,
 };
-use hub_registry::read::effective::{APPS_SQL, EXISTING_SQL, GROUP_ROWS_SQL, TENANTS_SQL};
+use hub_registry::read::effective::{APPS_SQL, EXISTING_SQL, GROUP_ROWS_SQL, TENANTS_SQL, app_candidates};
 use hub_registry::read::findings::findings_sql;
 use hub_registry::read::history::history_sql;
 use hub_registry::read::resource::{ALL_PATHS_SQL, PROPERTY_ROWS_SQL, ROWS_BY_PATH_SQL};
@@ -90,6 +90,7 @@ async fn main() {
     assert!(largest.len() == 4 && typical.len() == 4);
     let like_folder = format!("{folder}/%");
     let logical = path.clone();
+    let candidates = app_candidates(&domain::LogicalFile::parse(&logical).unwrap());
     let roots: Vec<String> = ["application.yml", "application.yaml", "application.properties"]
         .map(str::to_owned)
         .to_vec();
@@ -228,7 +229,10 @@ async fn main() {
             .bind(&roots)
     );
     measure!("effective_tenants", sqlx::query(TENANTS_SQL).bind(&lanes));
-    measure!("effective_applications", sqlx::query(APPS_SQL).bind(&lanes));
+    measure!(
+        "effective_applications",
+        sqlx::query(APPS_SQL).bind(&lanes).bind(&candidates)
+    );
     measure!(
         "resource_rows_by_path",
         sqlx::query(ROWS_BY_PATH_SQL).bind(lane_s).bind(&tenant_copy)

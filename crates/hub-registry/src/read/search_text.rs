@@ -22,7 +22,7 @@
 //! - The search runs on the read pool inside `spawn_blocking`, with a cancel flag the deadline sets: after `search_timeout` (5 s) the
 //!   request is answered 503 and the engine stops at its next blob, so a pattern cannot hold the pool.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -145,16 +145,27 @@ impl Inner {
             .into_iter()
             .collect::<Result<_, _>>()?;
 
-        let mut places: BTreeMap<ContentHash, Vec<SearchLocation>> = BTreeMap::new();
-        for (lane, list) in &lists {
-            let swimlane = SwimlaneId::parse(lane).map_err(|_| ReadError::Unavailable)?;
-            for (path, _, hash) in &list.files {
-                places.entry(*hash).or_default().push(SearchLocation {
-                    swimlane: swimlane.clone(),
-                    path: path.clone(),
-                });
+        // Where each blob is: 80,000 places at the target scale, each a swimlane and a path, built off the async threads (rule 4) and in
+        // a hash map (the order of the blobs is made below, by hash, whatever order this has).
+        let places: HashMap<ContentHash, Vec<SearchLocation>> = tokio::task::spawn_blocking(move || {
+            let mut places: HashMap<ContentHash, Vec<SearchLocation>> =
+                HashMap::with_capacity(lists.iter().map(|(_, l)| l.files.len()).sum::<usize>() / 2);
+            for (lane, list) in &lists {
+                let swimlane = SwimlaneId::parse(lane).map_err(|_| ReadError::Unavailable)?;
+                for (path, _, hash) in &list.files {
+                    places.entry(*hash).or_default().push(SearchLocation {
+                        swimlane: swimlane.clone(),
+                        path: path.clone(),
+                    });
+                }
             }
-        }
+            Ok::<_, ReadError>(places)
+        })
+        .await
+        .map_err(|_| {
+            warn!("a corpus task on the blocking pool did not finish");
+            ReadError::Unavailable
+        })??;
 
         // The bytes, in batches of the port's limit, several batches at once.
         let hashes: Vec<ContentHash> = places.keys().copied().collect();
@@ -181,29 +192,33 @@ impl Inner {
             .into_iter()
             .collect::<Result<_, _>>()?;
 
-        let mut total_bytes: u64 = 0;
-        let mut blobs: Vec<SearchBlob> = Vec::with_capacity(hashes.len());
-        let mut place_count = 0_usize;
-        for (hash, content) in fetched.into_iter().flatten() {
-            if let Some(locations) = places.remove(&hash) {
-                total_bytes += content.len() as u64;
-                place_count += locations.len();
-                blobs.push(SearchBlob {
-                    hash,
-                    content,
-                    locations,
-                });
+        // The corpus: the blobs that came back, each with its places, in hash order, sorted by place for the engine (all of it CPU).
+        let (corpus, total_bytes, place_count) = tokio::task::spawn_blocking(move || {
+            let mut places = places;
+            let mut total_bytes: u64 = 0;
+            let mut blobs: Vec<SearchBlob> = Vec::with_capacity(places.len());
+            let mut place_count = 0_usize;
+            for (hash, content) in fetched.into_iter().flatten() {
+                if let Some(locations) = places.remove(&hash) {
+                    total_bytes += content.len() as u64;
+                    place_count += locations.len();
+                    blobs.push(SearchBlob {
+                        hash,
+                        content,
+                        locations,
+                    });
+                }
             }
-        }
-        // Deterministic whatever order the batches came back in.
-        blobs.sort_by_key(|b| b.hash);
-        let corpus = tokio::task::spawn_blocking(move || SearchCorpus::new(blobs))
-            .await
-            .map_err(|_| {
-                warn!("a corpus task on the blocking pool did not finish");
-                ReadError::Unavailable
-            })?
-            .map_err(map_error)?;
+            // Deterministic whatever order the batches came back in.
+            blobs.sort_by_key(|b| b.hash);
+            SearchCorpus::new(blobs).map(|corpus| (corpus, total_bytes, place_count))
+        })
+        .await
+        .map_err(|_| {
+            warn!("a corpus task on the blocking pool did not finish");
+            ReadError::Unavailable
+        })?
+        .map_err(map_error)?;
         let weight = total_bytes
             .saturating_add(place_count as u64 * 100)
             .saturating_add(4096);

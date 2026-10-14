@@ -267,6 +267,45 @@ mod tests {
     }
 
     #[test]
+    fn the_application_depends_only_on_the_candidates_among_the_applications() {
+        use proptest::prelude::*;
+        let word = prop::sample::select(vec!["core", "pay", "application", "ledger", "x"]);
+        let path = (
+            prop::collection::vec(word.clone(), 0..4),
+            prop::collection::vec(word.clone(), 1..3),
+        )
+            .prop_map(|(folders, name)| {
+                folders
+                    .iter()
+                    .map(|f| (*f).to_owned())
+                    .chain(std::iter::once(format!("{}.yml", name.join("-"))))
+                    .collect::<Vec<_>>()
+                    .join("/")
+            });
+        let apps = prop::collection::vec(word.prop_map(str::to_owned), 0..5);
+        let mut runner = proptest::test_runner::TestRunner::default();
+        runner
+            .run(&(path, apps), |(path, apps)| {
+                let file = LogicalFile::parse(&path).unwrap();
+                let all: Vec<AppName> = apps.iter().filter_map(|a| AppName::parse(a).ok()).collect();
+                let candidates = super::super::effective::app_candidates(&file);
+                let some: Vec<AppName> = all
+                    .iter()
+                    .filter(|a| candidates.iter().any(|c| c == a.as_str()))
+                    .cloned()
+                    .collect();
+                prop_assert_eq!(
+                    application_of(&file, &all),
+                    application_of(&file, &some),
+                    "{}",
+                    path
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
     fn a_property_view_reads_twelve_names() {
         let names = property_names(
             &AppName::parse("core").unwrap(),
