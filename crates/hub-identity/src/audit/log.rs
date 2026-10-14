@@ -24,7 +24,7 @@
 //!    [`next_link`] folded over the batch, and `record` uses [`next_link`] too: there is one definition of a link);
 //! 5. one `INSERT ... SELECT FROM unnest(...) ORDER BY ordinality` writes the rows, so that their `seq` runs in input order. The
 //!    statement returns each row's `seq` and `hash`, and the ids are matched to the batch by hash and checked to be increasing
-//!    along the chain ([`ids_in_chain_order`]). If they are not, the call returns [`AuditError::Unavailable`] and the caller must
+//!    along the chain (`ids_in_chain_order`, private). If they are not, the call returns [`AuditError::Unavailable`] and the caller must
 //!    roll back, as after any error from a call that has taken the lock; nothing here commits for it.
 //!
 //! Three round trips for any batch, against three for every event. The two hops to the blocking pool cost tens of microseconds
