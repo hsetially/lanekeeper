@@ -77,6 +77,13 @@ fn every_p_number_has_an_entry() {
         "P12.audit_record",
         "P15.spool_replay_versions_per_s",
         "P15.hub_ack_versions_per_s",
+        // Prompt 05 (registry): its shares of P1, P2, P6, P7 and P15, on `hub-registry/` benchmarks.
+        "P1.hub_delta_to_drift",
+        "P2.hub_head_moved_to_drift",
+        "P6.hub_full_recompute",
+        "P6.adoption_rank",
+        "P7.compare_api",
+        "P15.registry_ingest_versions_per_s",
     ] {
         find(&reg, id);
     }
@@ -135,6 +142,7 @@ fn lower_bound_budgets_are_marked() {
         "P10.lighthouse_perf",
         "P15.spool_replay_versions_per_s",
         "P15.hub_ack_versions_per_s",
+        "P15.registry_ingest_versions_per_s",
     ] {
         assert_eq!(find(&reg, id).direction, Direction::Lower, "{id}");
     }
@@ -152,7 +160,7 @@ fn lower_bound_budgets_are_marked() {
         .iter()
         .filter(|b| b.direction == Direction::Upper)
         .count();
-    assert_eq!(upper, reg.budgets.len() - 4);
+    assert_eq!(upper, reg.budgets.len() - 5);
 }
 
 /// The thresholds of `docs/performance.md`, entry by entry. The needle must appear in the document, so a changed
@@ -302,6 +310,28 @@ fn thresholds_match_docs_performance_md() {
             "versions_per_s",
             "replays at 1,000 or more versions per second",
         ),
+        // Prompt 05 (registry). The same figures as the whole budgets, measured through the database and the HTTP layer
+        // (`hub-registry/` benchmarks; bench names are unique, so the engine and the platform keep their own ids).
+        (
+            "P6.hub_full_recompute",
+            180_000.0,
+            "ms",
+            "finishes within 3 minutes",
+        ),
+        (
+            "P7.compare_api",
+            100.0,
+            "ms",
+            "| Compare two versions of a 6,000-line file | 100 ms |",
+        ),
+        // The registry's half of P15: the hub takes a replayed spool at the rate the agent sends it, with the audit
+        // events of the out-of-band versions inside the number.
+        (
+            "P15.registry_ingest_versions_per_s",
+            1_000.0,
+            "versions_per_s",
+            "replays at 1,000 or more versions per second",
+        ),
     ];
     for (id, threshold, unit, needle) in expected {
         let b = find(&reg, id);
@@ -381,6 +411,14 @@ fn thresholds_match_docs_performance_md() {
             "plans/04-fact-engine.md",
             "| `index_settings_6000_lines` | `P6.index_settings` | 60 ms |",
         ),
+        // The prompt's T5 figure for the adoption ranking of one swimlane.
+        (
+            "P6.adoption_rank",
+            5_000.0,
+            "ms",
+            "prompts/05-registry-read-api.md",
+            "ranking takes 5 seconds or less per swimlane",
+        ),
     ];
     for (id, threshold, unit, file, needle) in from_prompt {
         let prompt = std::fs::read_to_string(repo_root().join(file)).unwrap();
@@ -394,10 +432,13 @@ fn thresholds_match_docs_performance_md() {
         assert!(prompt.contains(needle), "{id}: {file} no longer says {needle:?}");
     }
     // Every registry entry is covered above, so a new entry cannot skip the comparison with its source.
+    // The registry's shares of P1 and P2 are derived from the whole budget, below (`registry_shares_of_p1_and_p2_...`).
+    let derived = ["P1.hub_delta_to_drift", "P2.hub_head_moved_to_drift"];
     let covered: BTreeSet<&str> = expected
         .iter()
         .map(|e| e.0)
         .chain(from_prompt.iter().map(|e| e.0))
+        .chain(derived)
         .collect();
     for b in &reg.budgets {
         assert!(
@@ -406,6 +447,39 @@ fn thresholds_match_docs_performance_md() {
             b.id
         );
     }
+}
+
+/// The registry's shares of P1 and P2 (prompt 05, plan A42). `docs/performance.md` states the whole budgets only; the share of
+/// the hub is what is left of one after the other components have taken theirs, so it is derived here from the sources of
+/// those components, and a change to any of them makes this fail until the share is reconsidered.
+#[test]
+fn registry_shares_of_p1_and_p2_are_what_the_other_components_leave() {
+    let reg = registry();
+    let performance = std::fs::read_to_string(repo_root().join("docs/performance.md")).unwrap();
+    let decisions = std::fs::read_to_string(repo_root().join("docs/decisions.md")).unwrap();
+    let close = |a: f64, b: f64| (a - b).abs() < f64::EPSILON;
+
+    // P1: 15 s from the change to the UI. The agent's stat walk takes up to 10 s to see it (docs/performance.md, mechanism 2)
+    // and it reports after the tree has been quiet for 3 s (D75). What is left is the hub's: ingest the delta, recompute,
+    // publish `DriftChanged` to the outbox.
+    assert!(performance.contains("Stat-walks every 10 seconds"));
+    assert!(decisions.contains("quiet for 3 seconds"));
+    let (whole, share) = (find(&reg, "P1"), find(&reg, "P1.hub_delta_to_drift"));
+    assert!(
+        close(share.threshold, whole.threshold - 10_000.0 - 3_000.0),
+        "P1 {} less the 10 s walk and the 3 s quiet period is the hub's share, not {}",
+        whole.threshold,
+        share.threshold
+    );
+    assert_eq!((share.unit.as_str(), share.statistic), ("ms", whole.statistic));
+
+    // P2: 10 s from the push to the drift, through the webhook. Prompt 03b spends the webhook, the fetch and the tree index;
+    // the registry gets 1 s from `GitHeadMoved` to the drift in the outbox (a figure a human approved with the plan of
+    // prompt 05, because no document divides P2).
+    let (whole, share) = (find(&reg, "P2"), find(&reg, "P2.hub_head_moved_to_drift"));
+    assert!(close(share.threshold, 1_000.0), "{}", share.threshold);
+    assert!(share.threshold < whole.threshold);
+    assert_eq!((share.unit.as_str(), share.statistic), ("ms", whole.statistic));
 }
 
 /// A budget is registered only together with the benchmark or harness that produces its result (plan Q5), and flipping

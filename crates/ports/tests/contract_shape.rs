@@ -12,8 +12,8 @@ use ports::conformance::sample::{swimlane, user_id};
 use ports::{
     AckSeq, AgentGateway, AuditAction, AuditActor, AuditEvent, AuditLog, AuditVia, BlobStore, DocSearch,
     EventBus, EventFilter, EventKind, GitReader, KeyRef, KeyRefError, KmsEnvelope, KmsSigner, Leases,
-    Notifier, RegistryRead, ReportSink, SecretSource, SentinelSink, TokenVerifier, ToolWrites, Users,
-    WriteService, canonical_json, chain_hash, genesis_hash,
+    NotificationKind, Notifier, RegistryRead, ReportSink, SecretSource, SentinelSink, TokenVerifier,
+    ToolWrites, Users, WriteService, canonical_json, chain_hash, genesis_hash,
 };
 use static_assertions::{assert_impl_all, assert_obj_safe};
 
@@ -160,6 +160,10 @@ fn sample_events() -> Vec<DomainEvent> {
             job: job(),
         },
         DomainEvent::UserSessionsRevoked { user: user_id(1) },
+        DomainEvent::PickupChanged {
+            swimlane: sl(),
+            services: vec![ServiceRef::new("ns", "svc").unwrap()],
+        },
     ]
 }
 
@@ -178,8 +182,8 @@ fn event_kind_is_the_wire_type_of_every_domain_event() {
     }
     assert_eq!(
         kinds.len(),
-        16,
-        "5 added by D72-D80, the internal UserSessionsRevoked and the 10 base variants, all distinct"
+        17,
+        "5 added by D72-D80, the internal UserSessionsRevoked, PickupChanged (prompt 05) and the 10 base variants, all distinct"
     );
 }
 
@@ -453,4 +457,29 @@ fn internal_events_reach_in_process_subscribers_but_are_flagged_for_the_sse_edge
             .filter(|e| !matches!(e, DomainEvent::UserSessionsRevoked { .. }))
             .all(|e| !e.is_internal())
     );
+}
+
+/// The notification kinds are named in snake case on the wire. `DriftDetected` and `SyncWindowStale` were added for the
+/// registry (prompt 05, T8): held drift alerts evaluated when a sync window closes, and a window open for over two hours.
+#[test]
+fn notification_kinds_have_stable_wire_names() {
+    let kinds = [
+        (NotificationKind::AccessRequested, "access_requested"),
+        (NotificationKind::ProposalPending, "proposal_pending"),
+        (NotificationKind::ProposalDecided, "proposal_decided"),
+        (NotificationKind::ServiceRestarted, "service_restarted"),
+        (NotificationKind::PrRaised, "pr_raised"),
+        (NotificationKind::AgentDisconnected, "agent_disconnected"),
+        (NotificationKind::CriticalFinding, "critical_finding"),
+        (NotificationKind::DriftDetected, "drift_detected"),
+        (NotificationKind::SyncWindowStale, "sync_window_stale"),
+    ];
+    for (kind, name) in kinds {
+        assert_eq!(serde_json::to_value(kind).unwrap(), name);
+        assert_eq!(
+            serde_json::from_value::<NotificationKind>(name.into()).unwrap(),
+            kind
+        );
+    }
+    assert!(serde_json::from_value::<NotificationKind>("nope".into()).is_err());
 }

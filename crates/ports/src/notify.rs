@@ -14,6 +14,10 @@ pub enum NotificationKind {
     PrRaised,
     AgentDisconnected,
     CriticalFinding,
+    /// Drift was detected in a swimlane. Held while a sync window is open and evaluated once, when it closes (D75).
+    DriftDetected,
+    /// A sync window has been open for over two hours: the Job may be stuck (D75).
+    SyncWindowStale,
 }
 
 /// A message for a person. Contains names, ids and counts, never file content or a secret.

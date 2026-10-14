@@ -1,6 +1,6 @@
--- 0003_write_additions.sql: what the write paths need from the schema (prompt 06). A contract: never edit it once merged.
+-- 0004_write_additions.sql: what the write paths need from the schema (prompt 06). A contract: never edit it once merged.
 --
--- Three changes, all behind the same guard as 0001 and 0002. Run it as `lanekeeper_migrator`.
+-- Three changes, all behind the same guard as 0001, 0002 and 0003. Run it as `lanekeeper_migrator`.
 --
 --   1. `proposals.action` accepts 'notify' (a notify of the config-server, which an approval-bound user proposes like any
 --      other write). The CHECK is replaced by a wider one in a single statement, so no row is ever unchecked.

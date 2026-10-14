@@ -45,6 +45,15 @@ impl<L: AuditLog> AuditLog for PgAuditProbe<L> {
     async fn record(&self, tx: &mut Tx<'_>, e: AuditEvent) -> Result<AuditId, AuditError> {
         self.log.record(tx, e).await
     }
+
+    /// Forwarded, so that the conformance suite tests the wrapped log's batching and not the default.
+    async fn record_many(
+        &self,
+        tx: &mut Tx<'_>,
+        events: Vec<AuditEvent>,
+    ) -> Result<Vec<AuditId>, AuditError> {
+        self.log.record_many(tx, events).await
+    }
 }
 
 #[async_trait]

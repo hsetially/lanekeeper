@@ -15,6 +15,7 @@ use std::time::Duration;
 use axum::http::{StatusCode, header};
 use domain::{Role, UserStatus};
 use hub_identity::session::cookie::RandomToken;
+use hub_identity::session::{CachedSession, SessionError, Sessions};
 use support::login_rig::Begun;
 use support::mock_oidc::{CLIENT_SECRET, TokenSpec};
 use support::users_rig::FailingAudit;
@@ -544,17 +545,46 @@ async fn idempotent_logout() {
     );
 }
 
+/// `Sessions::authenticate`, asked again while the store says `Unavailable`. The store fails closed when its read takes more than
+/// 3 s, and a CI runner that starts a database container per test, all at once, can be that slow for the first read of a fresh
+/// pool. That says nothing about what the test is after, and `Unavailable` is neither "signed in" nor "signed out", so waiting
+/// for an answer cannot turn a wrong answer into a right one. Bounded: a store that stays unavailable still fails the test.
+async fn authenticate_settled(
+    sessions: &Sessions,
+    cookie: &str,
+) -> Result<Option<Arc<CachedSession>>, SessionError> {
+    let mut answer = sessions.authenticate(cookie).await;
+    for _ in 0..4 {
+        if !matches!(answer, Err(SessionError::Unavailable)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        answer = sessions.authenticate(cookie).await;
+    }
+    answer
+}
+
 #[tokio::test]
 async fn logout_is_immediate_on_every_replica() {
     let rig = viewer!();
     let other = support::sessions_rig::Replica::start(&rig.users.db, &rig.users.clock).await;
     let (session, csrf) = signed_in(&rig).await;
     // The other replica serves the session from its cache.
-    assert!(other.sessions.authenticate(&session).await.unwrap().is_some());
+    assert!(
+        authenticate_settled(&other.sessions, &session)
+            .await
+            .unwrap()
+            .is_some()
+    );
     let ok = send(&rig.app, Req::post("/auth/logout").with_session(&session, &csrf)).await;
     assert_eq!(ok.status, StatusCode::NO_CONTENT);
     other.wait_for_events(1, Duration::from_secs(1)).await;
-    assert!(other.sessions.authenticate(&session).await.unwrap().is_none());
+    assert!(
+        authenticate_settled(&other.sessions, &session)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
