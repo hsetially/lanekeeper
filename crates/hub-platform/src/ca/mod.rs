@@ -7,7 +7,7 @@
 //!
 //! - [`profile`]: what a certificate says (identity SAN, lifetime, use).
 //! - [`csr`]: the request, as proof of possession of a P-256 key and nothing else.
-//! - [`kms_key`]: the signing key rcgen sees, which asks KMS.
+//! - `kms_key`: the signing key rcgen sees, which asks KMS.
 //! - [`ceremony`]: the one-off creation of the CA certificate (`hub ca-init`).
 
 pub mod ceremony;

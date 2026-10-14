@@ -62,7 +62,8 @@ expression: "serde_json::json!({\n    \"role\": names(&Role::ALL), \"user_status
     "duplicate_keys",
     "ambiguous_file_name",
     "unresolved_placeholder",
-    "config_server_restart_required"
+    "config_server_restart_required",
+    "served_mismatch"
   ],
   "merge_mode": [
     "whole_file",

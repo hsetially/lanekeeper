@@ -685,6 +685,7 @@ fn schemas_carry_the_required_fields() {
             "pr_job_progress",
             "sync_window_opened",
             "sync_window_closed",
+            "pickup_changed",
         ])
     );
 }
@@ -749,5 +750,95 @@ fn internal_events_are_not_in_the_sse_event_kinds() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert!(!kinds.contains(&"user_sessions_revoked"));
-    assert_eq!(kinds.len(), 15);
+    assert_eq!(kinds.len(), 16);
+}
+
+/// The `NotificationKind` of the admin API is the port's: the wire names match, in the same order, and a channel can
+/// subscribe to every one of them (its `kinds` bound is at least the number of kinds).
+#[test]
+fn notification_kinds_are_the_ports_and_a_channel_can_name_them_all() {
+    use ports::NotificationKind as K;
+    /// Passes a variant through a match without a wildcard: a variant added to the port and not listed here fails to compile.
+    fn listed(k: K) -> K {
+        match k {
+            K::AccessRequested
+            | K::ProposalPending
+            | K::ProposalDecided
+            | K::ServiceRestarted
+            | K::PrRaised
+            | K::AgentDisconnected
+            | K::CriticalFinding
+            | K::DriftDetected
+            | K::SyncWindowStale => k,
+        }
+    }
+    let d = doc();
+    let rust: Vec<String> = [
+        K::AccessRequested,
+        K::ProposalPending,
+        K::ProposalDecided,
+        K::ServiceRestarted,
+        K::PrRaised,
+        K::AgentDisconnected,
+        K::CriticalFinding,
+        K::DriftDetected,
+        K::SyncWindowStale,
+    ]
+    .map(|k| {
+        serde_json::to_value(listed(k))
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_owned()
+    })
+    .to_vec();
+    let spec: Vec<String> = d["components"]["schemas"]["NotificationKind"]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        spec, rust,
+        "OpenAPI NotificationKind and ports::NotificationKind differ"
+    );
+    for schema in ["NotificationChannelInput", "NotificationChannel"] {
+        let max = d["components"]["schemas"][schema]["properties"]["kinds"]["maxItems"]
+            .as_u64()
+            .unwrap();
+        assert!(
+            max >= u64::try_from(rust.len()).unwrap(),
+            "{schema}.kinds: maxItems {max} cannot hold every notification kind"
+        );
+    }
+}
+
+/// A client can name every kind: the `kinds` filters of the event stream and of the findings list are bounded by the number of
+/// kinds they filter on (S11, `uniqueItems`), so a new kind raises the bound with it.
+#[test]
+fn kind_filters_allow_every_kind() {
+    let d = doc();
+    for (path, schema) in [
+        ("/api/v1/events", "EventKind"),
+        ("/api/v1/findings", "FindingKind"),
+    ] {
+        let kinds = u64::try_from(
+            d["components"]["schemas"][schema]["enum"]
+                .as_array()
+                .unwrap()
+                .len(),
+        )
+        .unwrap();
+        let params = d["paths"][path]["get"]["parameters"].as_array().unwrap();
+        let filter = params
+            .iter()
+            .find(|p| p["name"] == "kinds")
+            .unwrap_or_else(|| panic!("{path} has no kinds filter"));
+        assert_eq!(
+            filter["schema"]["maxItems"].as_u64().unwrap(),
+            kinds,
+            "{path}: maxItems is the number of {schema} values"
+        );
+        assert_eq!(filter["schema"]["uniqueItems"], true, "{path}");
+    }
 }

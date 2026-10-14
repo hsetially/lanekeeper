@@ -1,4 +1,5 @@
-//! Integration tests for `db/migrations` (prompt 01, T6; S9, S21; `0002_audit_verify_state.sql` for prompt 03a).
+//! Integration tests for `db/migrations` (prompt 01, T6; S9, S21; `0002_audit_verify_state.sql` for prompt 03a;
+//! `0003_registry.sql` for prompt 05).
 //!
 //! They run against a real Postgres 16 with pgvector, started with testcontainers from the same image digest as
 //! `deploy/dev/compose.yaml`. The tests use the runtime `sqlx::migrate::Migrator` and no `query!` macros, so no
@@ -113,7 +114,32 @@ const EXPECTED_TABLES: &[&str] = &[
 ];
 
 /// Tables added by migrations after `0001_init.sql`: (table, the migration file that creates it).
-const LATER_TABLES: &[(&str, &str)] = &[("audit_verify_state", "0002_audit_verify_state.sql")];
+const LATER_TABLES: &[(&str, &str)] = &[
+    ("audit_verify_state", "0002_audit_verify_state.sql"),
+    // Prompt 05 (registry): see `REGISTRY_TABLES` and `migration_0003_*` below.
+    ("swimlane_registry", "0003_registry.sql"),
+    ("swimlane_deployments", "0003_registry.sql"),
+    ("swimlane_folders", "0003_registry.sql"),
+    ("release_hints", "0003_registry.sql"),
+    ("effective_files", "0003_registry.sql"),
+    ("adoptions", "0003_registry.sql"),
+    ("adoption_resolutions", "0003_registry.sql"),
+    ("delta_staging", "0003_registry.sql"),
+];
+
+/// The tables `0003_registry.sql` creates, all `Grant::Mutable`: the pipeline upserts and prunes them, and every one hangs
+/// off `swimlanes` with `ON DELETE CASCADE`, which `no_cascading_foreign_key_touches_a_protected_table` allows only for tables
+/// the app may delete from.
+const REGISTRY_TABLES: &[&str] = &[
+    "swimlane_registry",
+    "swimlane_deployments",
+    "swimlane_folders",
+    "release_hints",
+    "effective_files",
+    "adoptions",
+    "adoption_resolutions",
+    "delta_staging",
+];
 
 /// Every table the migrations create, `_sqlx_migrations` aside.
 fn all_expected_tables() -> BTreeSet<&'static str> {
@@ -171,6 +197,9 @@ fn grant_decisions() -> BTreeMap<&'static str, Grant> {
     }
     for t in EXPECTED_TABLES {
         m.entry(t).or_insert(Grant::Mutable);
+    }
+    for t in REGISTRY_TABLES {
+        m.insert(t, Grant::Mutable);
     }
     m.insert("audit_verify_state", Grant::StateRow);
     m.insert("_sqlx_migrations", Grant::None);
@@ -486,6 +515,9 @@ const RESTRICT_VIOLATION: &str = "23001";
 const UNIQUE_VIOLATION: &str = "23505";
 const CHECK_VIOLATION: &str = "23514";
 const NOT_NULL_VIOLATION: &str = "23502";
+const FOREIGN_KEY_VIOLATION: &str = "23503";
+/// `generated_always`: a value was given for a `GENERATED ALWAYS AS IDENTITY` column.
+const GENERATED_ALWAYS: &str = "428C9";
 
 async fn expect_sqlstate(conn: &mut PgConnection, sql: &str, want: &str) {
     let err = sqlx::query(sql)
@@ -647,8 +679,8 @@ async fn migration_applies_on_pg16() {
     let expected: BTreeSet<String> = all_expected_tables().into_iter().map(str::to_owned).collect();
     assert_eq!(tables, expected);
 
-    // Re-running is a no-op: each migration is recorded once, and 0002 applied on top of 0001. The schema is owned
-    // by the migrator, never by the app.
+    // Re-running is a no-op: each migration is recorded once, and 0002 and 0003 applied on top of 0001. The schema is
+    // owned by the migrator, never by the app.
     db.migrate().await;
     let applied: Vec<i64> =
         sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
@@ -657,7 +689,7 @@ async fn migration_applies_on_pg16() {
             .unwrap();
     let files: Vec<i64> = migration_files().iter().map(|(v, _, _)| i64::from(*v)).collect();
     assert_eq!(applied, files);
-    assert_eq!(applied, [1, 2]);
+    assert_eq!(applied, [1, 2, 3]);
     let foreign: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tableowner <> 'lanekeeper_migrator'",
     )
@@ -766,7 +798,8 @@ async fn migration_0002_adds_only_audit_verify_state() {
         assert!(!b.is_empty(), "the snapshot must see something: {q}");
     }
 
-    db.migrate_upto(u32::MAX).await;
+    // Up to 0002 only: 0003 changes existing tables on purpose (`migration_0003_changes_existing_objects_only_by_adding`).
+    db.migrate_upto(2).await;
 
     for (q, b) in queries.iter().zip(&before) {
         assert_eq!(&snapshot(q).await, b, "0002 changed an existing object: {q}");
@@ -1984,4 +2017,986 @@ async fn idempotency_and_webhook_replay_keys_are_unique() {
         .await
         .expect_err("duplicate key");
     assert_eq!(sqlstate(&err).as_deref(), Some(UNIQUE_VIOLATION), "{err}");
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// 0003_registry.sql (prompt 05)
+
+/// A project and a swimlane to hang rows on.
+async fn seed_swimlane(conn: &mut PgConnection, id: &str) {
+    sqlx::query("INSERT INTO projects (id, display_name) VALUES ('p1', 'P1') ON CONFLICT DO NOTHING")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO swimlanes (id, project_id, display_name) VALUES ($1, 'p1', $1)")
+        .bind(id)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+}
+
+/// 32 bytes as a SQL expression: `h(1)` is the hash made of `0x11` bytes.
+fn h(n: u8) -> String {
+    format!("decode(repeat('{n:02x}', 32), 'hex')")
+}
+
+/// `0003_registry.sql` is expand-only (the contract-change rule): it adds columns, indexes, tables and one grant, and widens
+/// one CHECK. The single DROP is that CHECK, replaced in the same transaction by a wider one. Nothing is renamed, deleted,
+/// truncated or re-typed, no trigger or function is added, the app gets no more than SELECT, INSERT, UPDATE and DELETE on the
+/// new tables only, and the audit and sentinel tables are not named (A16: the `sentinel_records.operation` CHECK stays).
+#[test]
+fn migration_0003_is_additive_only() {
+    let sql = migration_file("0003_registry.sql");
+    let code = code_lines(&sql).join("\n").to_uppercase();
+    for banned in [
+        "RENAME",
+        "TRUNCATE",
+        "DELETE FROM",
+        "INSERT INTO",
+        "GRANT ALL",
+        "DROP TABLE",
+        "DROP COLUMN",
+        "DROP INDEX",
+        "DROP TYPE",
+        "DROP FUNCTION",
+        "DROP TRIGGER",
+        "ALTER COLUMN",
+        "ALTER DEFAULT",
+        "SET NOT NULL",
+        "CREATE TRIGGER",
+        "CREATE FUNCTION",
+        "AUDIT_EVENTS",
+        "AUDIT_CHECKPOINTS",
+        "SENTINEL_RECORDS",
+        "ON DELETE SET",
+    ] {
+        assert!(
+            !code.contains(banned),
+            "0003 must not contain `{banned}` outside comments"
+        );
+    }
+    assert_eq!(code.matches("DROP ").count(), 1, "one DROP");
+    assert!(
+        code.contains("DROP CONSTRAINT FINDINGS_KIND_CHECK"),
+        "the one DROP is the findings.kind CHECK that is widened"
+    );
+    assert!(
+        code.contains("ADD CONSTRAINT FINDINGS_KIND_CHECK"),
+        "and it is added again, wider, in the same file (one transaction)"
+    );
+    // Every ALTER TABLE adds a column or replaces the one CHECK.
+    for stmt in code
+        .split(';')
+        .map(str::trim)
+        .filter(|s| s.starts_with("ALTER TABLE"))
+    {
+        let adds = stmt.contains("ADD COLUMN")
+            || stmt.contains("ADD CONSTRAINT FINDINGS_KIND_CHECK")
+            || stmt.contains("DROP CONSTRAINT FINDINGS_KIND_CHECK");
+        assert!(adds, "an ALTER TABLE that is not an addition: {stmt}");
+    }
+    // Exactly one GRANT, SELECT/INSERT/UPDATE/DELETE on the new tables to the app, and it names every new table.
+    assert_eq!(code.matches("GRANT ").count(), 1, "one grant");
+    let grant = code
+        .split(';')
+        .map(str::trim)
+        .find(|s| s.starts_with("GRANT "))
+        .expect("the grant");
+    let rest = grant
+        .strip_prefix("GRANT SELECT, INSERT, UPDATE, DELETE ON")
+        .unwrap_or_else(|| panic!("the grant is not SELECT, INSERT, UPDATE, DELETE: {grant}"));
+    let (tables, to) = rest.split_once(" TO ").expect("TO");
+    assert_eq!(to.trim(), "LANEKEEPER_APP");
+    let granted: BTreeSet<String> = tables.split(',').map(|t| t.trim().to_lowercase()).collect();
+    let created: BTreeSet<String> = REGISTRY_TABLES.iter().map(|t| (*t).to_owned()).collect();
+    assert_eq!(
+        granted, created,
+        "the grant names exactly the tables the file creates"
+    );
+    assert_eq!(
+        code.matches("CREATE TABLE ").count(),
+        REGISTRY_TABLES.len(),
+        "the file creates the registry tables and nothing else"
+    );
+}
+
+/// The migrator owns every object, so `0003` carries the same guard as `0001` and `0002`.
+#[tokio::test]
+async fn migration_0003_refuses_to_run_as_another_role() {
+    let db = db!();
+    let sql = migration_file("0003_registry.sql");
+    for role in [APP, ("postgres", SUPERUSER_PASSWORD)] {
+        let mut conn = if role.0 == "postgres" {
+            db.admin().await
+        } else {
+            db.as_role(role).await
+        };
+        let err = sqlx::raw_sql(&sql)
+            .execute(&mut conn)
+            .await
+            .expect_err("must refuse");
+        assert_eq!(sqlstate(&err).as_deref(), Some("55000"), "{}: {err}", role.0);
+        assert!(
+            err.to_string().contains("lanekeeper_migrator"),
+            "{}: {err}",
+            role.0
+        );
+    }
+    let mut admin = db.admin().await;
+    for t in REGISTRY_TABLES {
+        let owner: String = sqlx::query_scalar("SELECT tableowner::text FROM pg_tables WHERE tablename = $1")
+            .bind(t)
+            .fetch_one(&mut admin)
+            .await
+            .unwrap();
+        assert_eq!(owner, "lanekeeper_migrator", "{t}");
+    }
+}
+
+/// What `migration_0003_changes_existing_objects_only_by_adding` compares before and after: (name, query), each query
+/// returning one string per object.
+const CATALOG: [(&str, &str); 7] = [
+    (
+        "relations",
+        "SELECT c.relname::text || ' ' || c.relkind::text || ' ' || c.relowner::regrole::text || ' ' || coalesce(c.relacl::text, '-') \
+         FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace",
+    ),
+    (
+        "triggers",
+        "SELECT t.tgrelid::regclass::text || ' ' || pg_get_triggerdef(t.oid, true) || ' ' || t.tgenabled::text \
+         FROM pg_trigger t WHERE NOT t.tgisinternal",
+    ),
+    (
+        "constraints",
+        "SELECT conrelid::regclass::text || ' ' || conname || ' ' || pg_get_constraintdef(oid) FROM pg_constraint \
+         WHERE connamespace = 'public'::regnamespace AND conname <> 'findings_kind_check'",
+    ),
+    (
+        "columns",
+        "SELECT a.attrelid::regclass::text || '.' || a.attname || ' ' || format_type(a.atttypid, a.atttypmod) || ' ' \
+                || a.attnotnull::text || ' ' || coalesce(nullif(a.attidentity::text, ''), '-') || ' ' \
+                || coalesce(pg_get_expr(d.adbin, d.adrelid), '-') \
+         FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+         WHERE a.attnum > 0 AND NOT a.attisdropped \
+           AND a.attrelid IN (SELECT oid FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r', 'p'))",
+    ),
+    (
+        "indexes",
+        "SELECT indexname::text || ' ' || indexdef FROM pg_indexes WHERE schemaname = 'public'",
+    ),
+    (
+        "index_names",
+        "SELECT tablename::text || ' ' || indexname::text FROM pg_indexes WHERE schemaname = 'public'",
+    ),
+    (
+        "functions",
+        "SELECT p.proname || ' ' || p.proowner::regrole::text || ' ' || coalesce(p.proacl::text, '-') || ' ' || md5(p.prosrc) \
+         FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace",
+    ),
+];
+
+type CatalogSnapshot = (BTreeMap<&'static str, BTreeSet<String>>, String, String);
+
+/// The catalog as `CATALOG` reads it, the definition of the `findings.kind` CHECK, and the definition of the
+/// `sentinel_records.operation` CHECK.
+async fn catalog_snapshot(db: &TestDb) -> CatalogSnapshot {
+    let mut out = BTreeMap::new();
+    let mut c = db.admin().await;
+    for (name, q) in CATALOG {
+        let rows: BTreeSet<String> = sqlx::query_scalar::<_, String>(q)
+            .fetch_all(&mut c)
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert!(!rows.is_empty(), "the snapshot must see something: {name}");
+        out.insert(name, rows);
+    }
+    let check = |table: &'static str, name: &'static str| {
+        sqlx::query_scalar::<_, String>(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = $2 AND conrelid = $1::regclass",
+        )
+        .bind(table)
+        .bind(name)
+    };
+    let kind_check = check("findings", "findings_kind_check")
+        .fetch_one(&mut c)
+        .await
+        .unwrap();
+    let operation_check = check("sentinel_records", "sentinel_records_operation_check")
+        .fetch_one(&mut c)
+        .await
+        .unwrap();
+    (out, kind_check, operation_check)
+}
+
+/// 0003 only adds: everything 0002 left behind (relations with their owner and ACL, triggers, constraints, columns with
+/// their types, nullability and defaults, indexes, functions) is still there exactly as it was. The additions are the ones
+/// the plan lists, and the one CHECK that changed (`findings.kind`) keeps every old value.
+#[tokio::test]
+async fn migration_0003_changes_existing_objects_only_by_adding() {
+    let Some(db) = TestDb::bootstrap().await else {
+        return;
+    };
+    db.migrate_upto(2).await;
+
+    let (before, kinds_before, operation_before) = catalog_snapshot(&db).await;
+    db.migrate_upto(u32::MAX).await;
+    let (after, kinds_after, operation_after) = catalog_snapshot(&db).await;
+
+    for (name, _) in CATALOG {
+        let gone: Vec<&String> = before[name].difference(&after[name]).collect();
+        assert!(
+            gone.is_empty(),
+            "0003 changed or removed existing {name}: {gone:#?}"
+        );
+    }
+
+    // The quoted values of a CHECK (kind = ANY (ARRAY['a'::text, 'b'::text])).
+    let values =
+        |def: &str| -> BTreeSet<String> { def.split('\'').skip(1).step_by(2).map(str::to_owned).collect() };
+    let mut want = values(&kinds_before);
+    assert_eq!(want.len(), 11, "0001 lists the 11 checks: {kinds_before}");
+    want.insert("served_mismatch".to_owned());
+    assert_eq!(
+        values(&kinds_after),
+        want,
+        "findings.kind gains served_mismatch and loses nothing"
+    );
+    // A16: the sentinel operations CHECK is not relaxed.
+    assert_eq!(operation_after, operation_before);
+    assert_eq!(
+        values(&operation_after),
+        BTreeSet::from(["create", "write", "delete", "rename"].map(str::to_owned)),
+        "no `attribute`"
+    );
+
+    // What 0003 adds to tables that already existed, and nothing else.
+    let on_old_tables = |added: &str| {
+        !REGISTRY_TABLES
+            .iter()
+            .any(|t| added.starts_with(&format!("{t}.")) || added.starts_with(&format!("{t} ")))
+    };
+    let added = |name: &str| -> BTreeSet<String> {
+        after[name]
+            .difference(&before[name])
+            .filter(|s| on_old_tables(s))
+            .cloned()
+            .collect()
+    };
+    let set = |xs: &[&str]| -> BTreeSet<String> { xs.iter().map(|s| (*s).to_owned()).collect() };
+    assert_eq!(
+        added("columns"),
+        set(&[
+            "file_observations.initial boolean true - false",
+            "file_observations.previous_hash sha256_hash false - -",
+            "file_observations.previous_state text false - -",
+            "file_state.seq bigint true a -",
+            "file_state.nfs_drift_hash sha256_hash false - -",
+            "file_state.observed_at timestamp with time zone false - -",
+            "file_state.last_observation_id bigint false - -",
+            "baselines.blob_hash sha256_hash false - -",
+            "sync_windows.warned_at timestamp with time zone false - -",
+            "sync_windows.processed_at timestamp with time zone false - -",
+            "service_state.pending_files jsonb true - '[]'::jsonb",
+            "settings_index.secret_rule text false - -",
+            "swimlanes.last_notified_at timestamp with time zone false - -",
+        ])
+    );
+    assert_eq!(
+        added("index_names"),
+        set(&[
+            "file_observations file_observations_replay_key",
+            "file_state file_state_seq_idx",
+            "file_state file_state_prefix_idx",
+            "file_state file_state_denied_hash_idx",
+            "file_state file_state_current_hash_idx",
+        ])
+    );
+    // New relations: the eight tables with their keys and indexes, and the identity sequences. Nothing is a view or a function.
+    let new_relations: BTreeSet<String> = after["relations"]
+        .difference(&before["relations"])
+        .map(|s| s.split(' ').next().unwrap().to_owned())
+        .collect();
+    for t in REGISTRY_TABLES {
+        assert!(new_relations.contains(*t), "{t} is new");
+        assert!(
+            new_relations.contains(&format!("{t}_pkey")),
+            "{t} has a primary key"
+        );
+    }
+    assert_eq!(after["functions"], before["functions"], "no function is added");
+    assert_eq!(after["triggers"], before["triggers"], "no trigger is added");
+}
+
+/// Rows written under 0002 survive 0003, the new columns take their defaults, and `file_state.seq` is filled in for the
+/// rows that already exist (the identity column is added to a table that has data).
+#[tokio::test]
+async fn migration_0003_keeps_existing_rows_and_fills_the_new_columns() {
+    let Some(db) = TestDb::bootstrap().await else {
+        return;
+    };
+    db.migrate_upto(2).await;
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    let h1 = h(0x11);
+    for sql in [
+        "INSERT INTO blobs (hash, content, size) SELECT sha256(c), c, octet_length(c) FROM (SELECT convert_to('a: 1', 'UTF8') AS c) b".to_owned(),
+        format!("INSERT INTO file_observations (swimlane_id, path, hash, source, observed_at) VALUES \
+                 ('sit1', 'a.yml', {h1}, 'scan', now() - interval '2 minutes'), ('sit1', 'a.yml', NULL, 'scan', now() - interval '1 minute')"),
+        "INSERT INTO file_state (swimlane_id, path, logical_file, kind, class, state) VALUES \
+         ('sit1', 'a.yml', 'a.yml', 'base', 'structured', 'in_sync'), ('sit1', 'b.yml', 'b.yml', 'base', 'text', 'nfs_ahead'), \
+         ('sit1', 'c.bin', 'c.bin', 'untracked', 'binary', 'untracked')".to_owned(),
+        format!("INSERT INTO baselines (swimlane_id, path, hash, repo, commit_id) VALUES ('sit1', 'a.yml', {h1}, 'base', 'abcdef0123')"),
+        "INSERT INTO findings (swimlane_id, kind, severity, message, fingerprint) VALUES ('sit1', 'drift', 'low', 'm', 'f1')".to_owned(),
+        "INSERT INTO sync_windows (swimlane_id, job_name, job_uid, opened_at) VALUES ('sit1', 'sync', 'uid-1', now())".to_owned(),
+        "INSERT INTO services (swimlane_id, namespace, name) VALUES ('sit1', 'csp', 'tx-api')".to_owned(),
+        "INSERT INTO service_state (service_id) SELECT id FROM services".to_owned(),
+        "INSERT INTO settings_index (blob_hash, setting_path, value_text, value_type, start_line, end_line) \
+         SELECT hash, 'a', '1', 'int', 1, 1 FROM blobs".to_owned(),
+    ] {
+        sqlx::query(&sql).execute(&mut app).await.unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
+    drop(app);
+
+    db.migrate_upto(u32::MAX).await;
+    let mut app = db.app().await;
+
+    for (table, want) in [
+        ("file_observations", 2_i64),
+        ("file_state", 3),
+        ("baselines", 1),
+        ("findings", 1),
+        ("sync_windows", 1),
+        ("service_state", 1),
+        ("settings_index", 1),
+    ] {
+        let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+            .fetch_one(&mut app)
+            .await
+            .unwrap();
+        assert_eq!(n, want, "{table} keeps its rows");
+    }
+    // The new columns take their defaults on the old rows.
+    let row = sqlx::query(
+        "SELECT count(*) FILTER (WHERE initial) AS initial, count(previous_hash) AS ph, count(previous_state) AS ps FROM file_observations",
+    )
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    assert_eq!(
+        (
+            row.get::<i64, _>("initial"),
+            row.get::<i64, _>("ph"),
+            row.get::<i64, _>("ps")
+        ),
+        (0, 0, 0),
+        "an old observation is not an initial one and has no overwrite context"
+    );
+    let row = sqlx::query(
+        "SELECT count(nfs_drift_hash) AS a, count(observed_at) AS b, count(last_observation_id) AS c FROM file_state",
+    )
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    assert_eq!(
+        (
+            row.get::<i64, _>("a"),
+            row.get::<i64, _>("b"),
+            row.get::<i64, _>("c")
+        ),
+        (0, 0, 0),
+        "the pipeline fills these"
+    );
+    let blob_hash: i64 = sqlx::query_scalar("SELECT count(blob_hash) FROM baselines")
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    assert_eq!(blob_hash, 0);
+    let (pending, secret_rule, warned, processed, notified): (
+        serde_json::Value,
+        Option<String>,
+        Option<()>,
+        Option<()>,
+        Option<()>,
+    ) = {
+        let r = sqlx::query(
+            "SELECT (SELECT pending_files FROM service_state) AS p, (SELECT secret_rule FROM settings_index) AS s, \
+                    (SELECT warned_at IS NOT NULL FROM sync_windows) AS w, (SELECT processed_at IS NOT NULL FROM sync_windows) AS q, \
+                    (SELECT last_notified_at IS NOT NULL FROM swimlanes) AS n",
+        )
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+        let none_if_false = |c: &str| r.get::<bool, _>(c).then_some(());
+        (
+            r.get("p"),
+            r.get("s"),
+            none_if_false("w"),
+            none_if_false("q"),
+            none_if_false("n"),
+        )
+    };
+    assert_eq!(pending, serde_json::json!([]));
+    assert_eq!(
+        (secret_rule, warned, processed, notified),
+        (None, None, None, None)
+    );
+
+    // `seq` was filled for the rows that existed: distinct, positive; a new row continues after them.
+    let seqs: Vec<i64> = sqlx::query_scalar("SELECT seq FROM file_state ORDER BY seq")
+        .fetch_all(&mut app)
+        .await
+        .unwrap();
+    assert_eq!(seqs.len(), 3);
+    assert!(seqs.windows(2).all(|w| w[0] < w[1]) && seqs[0] > 0, "{seqs:?}");
+    let next: i64 = sqlx::query_scalar(
+        "INSERT INTO file_state (swimlane_id, path, logical_file, kind, class, state) \
+         VALUES ('sit1', 'd.yml', 'd.yml', 'base', 'text', 'in_sync') RETURNING seq",
+    )
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    assert!(next > seqs[2], "{next} after {seqs:?}");
+}
+
+/// The twelve finding kinds are accepted, an unknown one is not.
+#[tokio::test]
+async fn findings_accept_served_mismatch_and_still_reject_unknown_kinds() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    let kinds = [
+        "missed_base_changes",
+        "redundant_tenant_file",
+        "uneven_tenant_files",
+        "orphan_file",
+        "drift",
+        "environment_host_mismatch",
+        "overwritten_nfs_change",
+        "duplicate_keys",
+        "ambiguous_file_name",
+        "unresolved_placeholder",
+        "config_server_restart_required",
+        "served_mismatch",
+    ];
+    for (i, kind) in kinds.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO findings (swimlane_id, kind, severity, message, fingerprint) VALUES ('sit1', $1, 'high', 'm', $2)",
+        )
+        .bind(kind)
+        .bind(format!("fp-{i}"))
+        .execute(&mut app)
+        .await
+        .unwrap_or_else(|e| panic!("{kind}: {e}"));
+    }
+    expect_sqlstate(
+        &mut app,
+        "INSERT INTO findings (swimlane_id, kind, severity, message, fingerprint) VALUES ('sit1', 'served_mismatch_x', 'high', 'm', 'fp-x')",
+        CHECK_VIOLATION,
+    )
+    .await;
+}
+
+/// `file_observations` gets a unique replay key: the same version of a file at the same instant is recorded once, whether
+/// or not it has a hash (a deletion has none, and two deletions at one instant are one).
+#[tokio::test]
+async fn file_observations_replay_key_makes_a_replayed_version_a_conflict() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    let insert = |hash: String, at: &str| {
+        format!(
+            "INSERT INTO file_observations (swimlane_id, path, hash, source, observed_at) VALUES ('sit1', 'a.yml', {hash}, 'scan', '{at}')"
+        )
+    };
+    let t1 = "2026-10-01 10:00:00+00";
+    let t2 = "2026-10-01 10:00:01+00";
+    sqlx::query(&insert(h(1), t1)).execute(&mut app).await.unwrap();
+    expect_sqlstate(&mut app, &insert(h(1), t1), UNIQUE_VIOLATION).await;
+    // The same instant with another content, and the same content at another instant, are different versions.
+    sqlx::query(&insert(h(2), t1)).execute(&mut app).await.unwrap();
+    sqlx::query(&insert(h(1), t2)).execute(&mut app).await.unwrap();
+    // A deletion has no hash: NULLS NOT DISTINCT makes two of them at one instant one.
+    sqlx::query(&insert("NULL".to_owned(), t1))
+        .execute(&mut app)
+        .await
+        .unwrap();
+    expect_sqlstate(&mut app, &insert("NULL".to_owned(), t1), UNIQUE_VIOLATION).await;
+    // Replaying with the idempotent form the ingestion uses is a no-op.
+    let done = sqlx::query(&format!("{} ON CONFLICT DO NOTHING", insert(h(1), t1)))
+        .execute(&mut app)
+        .await
+        .unwrap();
+    assert_eq!(done.rows_affected(), 0);
+    // The previous state is a drift state.
+    expect_sqlstate(
+        &mut app,
+        &format!(
+            "INSERT INTO file_observations (swimlane_id, path, hash, source, observed_at, previous_state) VALUES ('sit1', 'b.yml', {}, 'sync', now(), 'nope')",
+            h(3)
+        ),
+        CHECK_VIOLATION,
+    )
+    .await;
+    sqlx::query(&format!(
+        "INSERT INTO file_observations (swimlane_id, path, hash, source, observed_at, previous_state, previous_hash, initial) \
+         VALUES ('sit1', 'b.yml', {}, 'sync', now(), 'nfs_ahead', {}, true)",
+        h(3),
+        h(4)
+    ))
+    .execute(&mut app)
+    .await
+    .unwrap();
+}
+
+/// `file_state.seq` is the short keyset surrogate: assigned by the database, increasing, unique within a swimlane, and
+/// not settable by the app.
+#[tokio::test]
+async fn file_state_seq_is_assigned_by_the_database_and_cannot_be_set() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    let insert = "INSERT INTO file_state (swimlane_id, path, logical_file, kind, class, state) \
+                  VALUES ('sit1', $1, $1, 'base', 'text', 'in_sync') RETURNING seq";
+    let a: i64 = sqlx::query_scalar(insert)
+        .bind("a.yml")
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    let b: i64 = sqlx::query_scalar(insert)
+        .bind("b.yml")
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    assert!(b > a, "{a} then {b}");
+    // An upsert that updates an existing row keeps its seq.
+    let again: i64 = sqlx::query_scalar(
+        "INSERT INTO file_state (swimlane_id, path, logical_file, kind, class, state) VALUES ('sit1', 'a.yml', 'a.yml', 'base', 'text', 'nfs_ahead') \
+         ON CONFLICT (swimlane_id, path) DO UPDATE SET state = EXCLUDED.state RETURNING seq",
+    )
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    assert_eq!(again, a, "an update keeps the surrogate");
+    expect_sqlstate(
+        &mut app,
+        "INSERT INTO file_state (swimlane_id, path, logical_file, kind, class, state, seq) VALUES ('sit1', 'c.yml', 'c.yml', 'base', 'text', 'in_sync', 1)",
+        GENERATED_ALWAYS,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        "UPDATE file_state SET seq = 99 WHERE path = 'a.yml'",
+        GENERATED_ALWAYS,
+    )
+    .await;
+    // Unique within the swimlane, by index, so a keyset on (swimlane_id, seq) is a total order.
+    let mut admin = db.admin().await;
+    let def: String =
+        sqlx::query_scalar("SELECT indexdef FROM pg_indexes WHERE indexname = 'file_state_seq_idx'")
+            .fetch_one(&mut admin)
+            .await
+            .unwrap();
+    assert!(
+        def.contains("UNIQUE") && def.contains("(swimlane_id, seq)"),
+        "{def}"
+    );
+}
+
+/// The three indexes that serve the registry's file_state queries: prefix listing (pattern ops, so LIKE 'dir/%' can use
+/// it under any collation), the denied-hash lookup of the blob policy, and the covering index for the text-search file list.
+#[tokio::test]
+async fn file_state_has_the_prefix_denied_and_current_hash_indexes() {
+    let db = db!();
+    let mut admin = db.admin().await;
+    let mut defs = BTreeMap::new();
+    for name in [
+        "file_state_prefix_idx",
+        "file_state_denied_hash_idx",
+        "file_state_current_hash_idx",
+    ] {
+        let d: String = sqlx::query_scalar(
+            "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = $1",
+        )
+        .bind(name)
+        .fetch_one(&mut admin)
+        .await
+        .unwrap();
+        defs.insert(name, d);
+    }
+    assert!(
+        defs["file_state_prefix_idx"].contains("(swimlane_id, path text_pattern_ops)"),
+        "{defs:#?}"
+    );
+    let denied = &defs["file_state_denied_hash_idx"];
+    assert!(
+        denied.contains("(nfs_hash)") && denied.contains("WHERE"),
+        "{denied}"
+    );
+    assert!(denied.contains("denied"), "{denied}");
+    let current = &defs["file_state_current_hash_idx"];
+    assert!(current.contains("(swimlane_id, nfs_hash)"), "{current}");
+    assert!(current.contains("INCLUDE (path, class)"), "{current}");
+    assert!(current.contains("WHERE"), "{current}");
+}
+
+/// A listing of one folder is a prefix range, and the two prefix indexes (`file_state` and `effective_files`) can serve it.
+/// This asks whether the index is usable for the query, not whether the planner finds it cheaper at the size of this fixture:
+/// with 4,000 rows (about 80 of them match) a cost-based choice between an index and a sequential scan is not stable across
+/// versions and settings. So sequential scans are switched off for the connection, and the plan must then be built on the index
+/// if the index can serve the query at all (a `LIKE` prefix on a column without `text_pattern_ops` cannot, and fails here).
+#[tokio::test]
+async fn folder_listings_use_the_prefix_indexes() {
+    let db = db!();
+    let mut admin = db.admin().await;
+    seed_swimlane(&mut admin, "sit1").await;
+    for sql in [
+        "INSERT INTO file_state (swimlane_id, path, logical_file, kind, class, state) \
+         SELECT 'sit1', 'dir' || (i % 50) || '/file' || i || '.yml', 'dir' || (i % 50) || '/file' || i || '.yml', 'base', 'text', 'in_sync' \
+         FROM generate_series(1, 4000) i",
+        "INSERT INTO effective_files (swimlane_id, logical_file, hash) \
+         SELECT 'sit1', 'dir' || (i % 50) || '/file' || i || '.yml', sha256(convert_to(i::text, 'UTF8')) FROM generate_series(1, 4000) i",
+        "ANALYZE file_state",
+        "ANALYZE effective_files",
+    ] {
+        sqlx::query(sql).execute(&mut admin).await.unwrap();
+    }
+    sqlx::query("SET enable_seqscan = off")
+        .execute(&mut admin)
+        .await
+        .unwrap();
+    for (query, index) in [
+        (
+            "SELECT path FROM file_state WHERE swimlane_id = 'sit1' AND path LIKE 'dir7/%'",
+            "file_state_prefix_idx",
+        ),
+        (
+            "SELECT logical_file, hash FROM effective_files WHERE swimlane_id = 'sit1' AND logical_file LIKE 'dir7/%'",
+            "effective_files_prefix_idx",
+        ),
+    ] {
+        let plan: serde_json::Value = sqlx::query_scalar(&format!("EXPLAIN (FORMAT JSON) {query}"))
+            .fetch_one(&mut admin)
+            .await
+            .unwrap();
+        assert!(plan.to_string().contains(index), "{query}: {plan}");
+    }
+}
+
+/// The new tables reject malformed rows (the CHECKs), keep their keys, hang off `swimlanes` with a cascade the app can
+/// follow, and give the app the whole mutable set of privileges and no more (`every_table_has_a_grant_decision` also checks
+/// the grants).
+#[tokio::test]
+async fn registry_tables_enforce_their_constraints_and_cascade_with_the_swimlane() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    let hash = h(7);
+
+    // swimlane_registry: defaults, bounds, one row per swimlane, a known swimlane.
+    sqlx::query("INSERT INTO swimlane_registry (swimlane_id) VALUES ('sit1')")
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let row = sqlx::query(
+        "SELECT first_inventory_at IS NULL AS no_inventory, needs_full_scan, version, state_counts, finding_count, rules_fingerprint IS NULL AS no_rules \
+         FROM swimlane_registry",
+    )
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    assert!(row.get::<bool, _>("no_inventory") && row.get::<bool, _>("no_rules"));
+    assert!(!row.get::<bool, _>("needs_full_scan"));
+    assert_eq!(row.get::<i64, _>("version"), 0);
+    assert_eq!(
+        row.get::<serde_json::Value, _>("state_counts"),
+        serde_json::json!({})
+    );
+    assert_eq!(row.get::<i32, _>("finding_count"), 0);
+    expect_sqlstate(
+        &mut app,
+        "INSERT INTO swimlane_registry (swimlane_id) VALUES ('sit1')",
+        UNIQUE_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        "INSERT INTO swimlane_registry (swimlane_id) VALUES ('nope')",
+        FOREIGN_KEY_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        "UPDATE swimlane_registry SET version = -1",
+        CHECK_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        "UPDATE swimlane_registry SET finding_count = -1",
+        CHECK_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        "UPDATE swimlane_registry SET state_counts = '[]'",
+        CHECK_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        "UPDATE swimlane_registry SET rules_fingerprint = decode('00', 'hex')",
+        CHECK_VIOLATION,
+    )
+    .await;
+
+    // swimlane_deployments: one row per (swimlane, tenant), commit ids of 7 to 64 characters.
+    let deployment = |tenant: &str, commit: &str| {
+        format!(
+            "INSERT INTO swimlane_deployments (swimlane_id, tenant_id, tenant_commit, base_commit, source) VALUES ('sit1', '{tenant}', '{commit}', 'abcdef0', 'sync')"
+        )
+    };
+    sqlx::query(&deployment("sit1", "0123456789abcdef"))
+        .execute(&mut app)
+        .await
+        .unwrap();
+    expect_sqlstate(
+        &mut app,
+        &deployment("sit1", "0123456789abcdef"),
+        UNIQUE_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(&mut app, &deployment("sit2", "abcdef"), CHECK_VIOLATION).await;
+    expect_sqlstate(&mut app, &deployment("", "abcdef0"), CHECK_VIOLATION).await;
+    sqlx::query(&deployment("sit2", "abcdef0"))
+        .execute(&mut app)
+        .await
+        .unwrap();
+
+    // swimlane_folders: a folder is a non-empty directory path, first seen once.
+    sqlx::query(
+        "INSERT INTO swimlane_folders (swimlane_id, dir_path, initial) VALUES ('sit1', 'tx-api', true)",
+    )
+    .execute(&mut app)
+    .await
+    .unwrap();
+    expect_sqlstate(
+        &mut app,
+        "INSERT INTO swimlane_folders (swimlane_id, dir_path) VALUES ('sit1', 'tx-api')",
+        UNIQUE_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        "INSERT INTO swimlane_folders (swimlane_id, dir_path) VALUES ('sit1', '')",
+        CHECK_VIOLATION,
+    )
+    .await;
+
+    // release_hints: a hint per (service, key).
+    let hint = |key: &str| {
+        format!(
+            "INSERT INTO release_hints (swimlane_id, namespace, service, key, value) VALUES ('sit1', 'csp', 'tx-api', '{key}', 'csp-tenant-data-sit1')"
+        )
+    };
+    sqlx::query(&hint("helm.release"))
+        .execute(&mut app)
+        .await
+        .unwrap();
+    expect_sqlstate(&mut app, &hint("helm.release"), UNIQUE_VIOLATION).await;
+    expect_sqlstate(&mut app, &hint(""), CHECK_VIOLATION).await;
+
+    // effective_files: one effective hash per logical file; the hash is 32 bytes.
+    let effective = |hash: &str| {
+        format!(
+            "INSERT INTO effective_files (swimlane_id, logical_file, hash) VALUES ('sit1', 'tx-api/core.yml', {hash})"
+        )
+    };
+    expect_sqlstate(&mut app, &effective("decode('00', 'hex')"), CHECK_VIOLATION).await;
+    sqlx::query(&effective(&hash)).execute(&mut app).await.unwrap();
+    expect_sqlstate(&mut app, &effective(&hash), UNIQUE_VIOLATION).await;
+
+    // adoptions: closed vocabularies, and one open adoption per swimlane and reason.
+    let adoption = |reason: &str, status: &str, step: &str| {
+        format!(
+            "INSERT INTO adoptions (swimlane_id, reason, status, step) VALUES ('sit1', '{reason}', '{status}', '{step}') RETURNING id"
+        )
+    };
+    expect_sqlstate(
+        &mut app,
+        &adoption("whim", "in_progress", "branch"),
+        CHECK_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(&mut app, &adoption("initial", "done", "branch"), CHECK_VIOLATION).await;
+    expect_sqlstate(
+        &mut app,
+        &adoption("initial", "in_progress", "lunch"),
+        CHECK_VIOLATION,
+    )
+    .await;
+    let first: i64 = sqlx::query_scalar(&adoption("initial", "in_progress", "branch"))
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    expect_sqlstate(
+        &mut app,
+        &adoption("initial", "in_progress", "files"),
+        UNIQUE_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        &adoption("initial", "review", "files"),
+        UNIQUE_VIOLATION,
+    )
+    .await;
+    // Another reason may be open at the same time; a finished adoption does not block a new one.
+    let review: i64 = sqlx::query_scalar(&adoption("tenant_suffix_changed", "review", "branch"))
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    assert_ne!(first, review);
+    sqlx::query("UPDATE adoptions SET status = 'confirmed', confirmed_at = now() WHERE id = $1")
+        .bind(first)
+        .execute(&mut app)
+        .await
+        .unwrap();
+    sqlx::query(&adoption("initial", "in_progress", "branch"))
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    let defaults = sqlx::query(
+        "SELECT ranking, hints, tenants, tenant_commits, secret_scan FROM adoptions WHERE id = $1",
+    )
+    .bind(review)
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    assert_eq!(
+        defaults.get::<serde_json::Value, _>("ranking"),
+        serde_json::json!([])
+    );
+    assert_eq!(
+        defaults.get::<serde_json::Value, _>("hints"),
+        serde_json::json!({})
+    );
+    assert_eq!(defaults.get::<Vec<String>, _>("tenants"), Vec::<String>::new());
+    assert_eq!(
+        defaults.get::<serde_json::Value, _>("tenant_commits"),
+        serde_json::json!({})
+    );
+    assert_eq!(
+        defaults.get::<serde_json::Value, _>("secret_scan"),
+        serde_json::json!([])
+    );
+    expect_sqlstate(
+        &mut app,
+        &format!("UPDATE adoptions SET ranking = '{{}}' WHERE id = {review}"),
+        CHECK_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        &format!("UPDATE adoptions SET secret_scan = '{{}}' WHERE id = {review}"),
+        CHECK_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        &format!("UPDATE adoptions SET base_commit = 'abc' WHERE id = {review}"),
+        CHECK_VIOLATION,
+    )
+    .await;
+    // A user is named by both halves or by neither: a foreign key on two columns is not checked when one is NULL, so the
+    // CHECK is what stops half an identity from being stored as attribution.
+    for who in ["started_by", "confirmed_by"] {
+        for half in ["tid", "oid"] {
+            expect_sqlstate(
+                &mut app,
+                &format!("UPDATE adoptions SET {who}_{half} = 'half' WHERE id = {review}"),
+                CHECK_VIOLATION,
+            )
+            .await;
+        }
+    }
+
+    // adoption_resolutions: the three choices, one per (adoption, path); they go with their adoption.
+    let resolution = |path: &str, choice: &str| {
+        format!(
+            "INSERT INTO adoption_resolutions (adoption_id, path, resolution, nfs_hash, git_hash) VALUES ({review}, '{path}', '{choice}', {hash}, NULL)"
+        )
+    };
+    expect_sqlstate(&mut app, &resolution("a.yml", "whatever"), CHECK_VIOLATION).await;
+    for (path, choice) in [
+        ("a.yml", "nfs_is_right"),
+        ("b.yml", "git_is_right"),
+        ("c.yml", "intentional"),
+    ] {
+        sqlx::query(&resolution(path, choice))
+            .execute(&mut app)
+            .await
+            .unwrap();
+    }
+    expect_sqlstate(&mut app, &resolution("a.yml", "git_is_right"), UNIQUE_VIOLATION).await;
+    expect_sqlstate(
+        &mut app,
+        "INSERT INTO adoption_resolutions (adoption_id, path, resolution) VALUES (999999, 'a.yml', 'nfs_is_right')",
+        FOREIGN_KEY_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        &format!("UPDATE adoption_resolutions SET reason = repeat('x', 2001) WHERE adoption_id = {review} AND path = 'c.yml'"),
+        CHECK_VIOLATION,
+    )
+    .await;
+    for half in ["tid", "oid"] {
+        expect_sqlstate(
+            &mut app,
+            &format!("UPDATE adoption_resolutions SET resolved_by_{half} = 'half' WHERE adoption_id = {review} AND path = 'c.yml'"),
+            CHECK_VIOLATION,
+        )
+        .await;
+    }
+
+    // delta_staging: one staged message per (swimlane, seq).
+    let staged = |seq: i64, part: i32| {
+        format!(
+            "INSERT INTO delta_staging (swimlane_id, seq, part, new_root, metadata) VALUES ('sit1', {seq}, {part}, {hash}, '{{\"entries\": []}}')"
+        )
+    };
+    sqlx::query(&staged(10, 0)).execute(&mut app).await.unwrap();
+    sqlx::query(&staged(11, 1)).execute(&mut app).await.unwrap();
+    expect_sqlstate(&mut app, &staged(10, 0), UNIQUE_VIOLATION).await;
+    expect_sqlstate(&mut app, &staged(-1, 0), CHECK_VIOLATION).await;
+    expect_sqlstate(&mut app, &staged(12, -1), CHECK_VIOLATION).await;
+    let no_root = sqlx::query(
+        "INSERT INTO delta_staging (swimlane_id, seq, part, metadata) VALUES ('sit1', 13, 0, '{}')",
+    )
+    .execute(&mut app)
+    .await
+    .expect_err("a staged message names its new root");
+    assert_eq!(sqlstate(&no_root).as_deref(), Some(NOT_NULL_VIOLATION));
+
+    // Deleting the swimlane takes every row of the new tables with it, with the app's own privileges.
+    for t in REGISTRY_TABLES {
+        let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {t}"))
+            .fetch_one(&mut app)
+            .await
+            .unwrap();
+        assert!(n > 0, "{t} has a row to cascade");
+    }
+    sqlx::query("DELETE FROM swimlanes WHERE id = 'sit1'")
+        .execute(&mut app)
+        .await
+        .unwrap();
+    for t in REGISTRY_TABLES {
+        let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {t}"))
+            .fetch_one(&mut app)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "{t} follows its swimlane");
+    }
 }

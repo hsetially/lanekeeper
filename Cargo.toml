@@ -90,10 +90,14 @@ prometheus-client = { version = "=0.25.1", default-features = false }
 time = { version = "=0.3.55", default-features = false }
 # Agent transport (T3, S6). The agent builds its own rustls config so that TLS 1.3 is the only version it can speak
 # and the hub CA is the only root; tonic's TLS features are not used. Both crates are already in the graph through
-# kube; the pins are the versions in the lockfile (rustls 2026-09-14, tokio-rustls 2026-09-04). The agent asks for
+# kube; the pins are the versions in the lockfile (rustls 2026-10-14, tokio-rustls 2026-09-04). The agent asks for
 # TLS 1.3 only at run time (`transport::tls`), whatever features other crates turn on; `tls12` is enabled in the agent's
 # dev-dependencies alone, for the tests that prove a TLS 1.2 hub is refused.
-rustls = { version = "=0.23.45", default-features = false, features = ["std", "aws_lc_rs"] }
+# rustls 0.23.46 is an exception to the 14-day rule (AGENTS.md rule 15, S19) that the repository owner approved on
+# 2026-10-14: 0.23.45 fails `cargo deny` and `cargo audit` on four advisories published that day (RUSTSEC-2026-0346 to
+# RUSTSEC-2026-0349, severity 2.3 to 4), and 0.23.46 fixes all four. It is 14 days old on 2026-10-28; the next rustls bump
+# follows the normal rule again.
+rustls = { version = "=0.23.46", default-features = false, features = ["std", "aws_lc_rs"] }
 tokio-rustls = { version = "=0.26.5", default-features = false, features = ["aws_lc_rs"] }
 # Agent scanning (T4, P1, P4). rayon runs the walk and the hashing on a dedicated pool of the configured size, never the
 # global pool, and always inside `spawn_blocking` (code rule 4). sha2 is the Merkle and content hash (already pinned).

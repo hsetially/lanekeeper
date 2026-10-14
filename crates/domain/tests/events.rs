@@ -78,6 +78,11 @@ fn all_events() -> Vec<DomainEvent> {
             job: JobRef::new("sync-job-1", "uid-1").unwrap(),
         },
         DomainEvent::UserSessionsRevoked { user: user() },
+        // D85, prompt 05: replaces PendingRestartChanged as the event that a service's pickup state changed.
+        DomainEvent::PickupChanged {
+            swimlane: lane(),
+            services: vec![ServiceRef::new("csp", "tx-infinity-api").unwrap()],
+        },
     ]
 }
 
@@ -88,8 +93,8 @@ fn user() -> domain::UserId {
 }
 
 #[test]
-fn there_are_sixteen_variants_ten_base_five_d72_to_d80_and_one_internal() {
-    assert_eq!(all_events().len(), 16);
+fn there_are_seventeen_variants_ten_base_five_d72_to_d80_one_internal_and_pickup_changed() {
+    assert_eq!(all_events().len(), 17);
 }
 
 #[test]
@@ -133,4 +138,30 @@ fn only_user_sessions_revoked_is_internal_so_the_sse_edge_never_forwards_it() {
         let expected = matches!(e, DomainEvent::UserSessionsRevoked { .. });
         assert_eq!(e.is_internal(), expected, "{e:?}");
     }
+}
+
+#[test]
+fn pickup_changed_is_swimlane_scoped_public_and_carries_service_ids_only() {
+    let e = DomainEvent::PickupChanged {
+        swimlane: lane(),
+        services: vec![ServiceRef::new("csp", "tx-infinity-api").unwrap()],
+    };
+    assert_eq!(e.swimlane(), Some(&lane()));
+    assert!(!e.is_internal(), "a browser may receive it");
+    let json = serde_json::to_value(&e).unwrap();
+    assert_eq!(json["type"], "pickup_changed");
+    assert_eq!(
+        json.as_object().unwrap().len(),
+        3,
+        "type, swimlane and services, nothing else: the live-by time travels in the pending-restarts read, not in the event"
+    );
+    assert_eq!(serde_json::from_value::<DomainEvent>(json).unwrap(), e);
+}
+
+#[test]
+fn pending_restart_changed_stays_so_that_old_rows_and_subscribers_still_parse() {
+    let old = r#"{"type":"pending_restart_changed","swimlane":"sitb","services":[{"namespace":"csp","name":"tx-infinity-api"}]}"#;
+    let e: DomainEvent = serde_json::from_str(old).unwrap();
+    assert!(matches!(e, DomainEvent::PendingRestartChanged { .. }));
+    assert_eq!(e.swimlane(), Some(&lane()));
 }

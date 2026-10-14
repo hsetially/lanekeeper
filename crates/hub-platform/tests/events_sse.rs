@@ -206,6 +206,7 @@ async fn sse_query_bounds_are_enforced() {
         "pr_job_progress",
         "sync_window_opened",
         "sync_window_closed",
+        "pickup_changed",
     ];
     let query = |name: &str, values: Vec<String>| -> String {
         let pairs: Vec<String> = values.iter().map(|v| format!("{name}={v}")).collect();
@@ -230,14 +231,14 @@ async fn sse_query_bounds_are_enforced() {
     assert_eq!(
         ok(query("kinds", kinds.iter().map(ToString::to_string).collect())).await,
         StatusCode::OK,
-        "all 15 kinds"
+        "all 16 kinds"
     );
-    let mut sixteen: Vec<String> = kinds.iter().map(ToString::to_string).collect();
-    sixteen.push("resync".to_owned());
+    let mut seventeen: Vec<String> = kinds.iter().map(ToString::to_string).collect();
+    seventeen.push("resync".to_owned());
     assert_eq!(
-        ok(query("kinds", sixteen)).await,
+        ok(query("kinds", seventeen)).await,
         StatusCode::BAD_REQUEST,
-        "16 kinds"
+        "17 kinds"
     );
 
     let long = "a".repeat(64);
