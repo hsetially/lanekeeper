@@ -15,6 +15,8 @@
 #[path = "../../tests/support/mod.rs"]
 pub mod support;
 
+pub mod reads;
+
 use std::collections::BTreeSet;
 use std::time::Instant;
 
@@ -201,6 +203,45 @@ impl Bed {
     pub async fn edit(&mut self, lane: usize, indices: &[usize]) -> Vec<NfsPath> {
         let (identity, d, paths) = self.edit_delta(lane, indices);
         self.rig.ingest.delta(&identity, d).await.unwrap();
+        paths
+    }
+
+    /// New files (or new versions) in a swimlane, sent as one scan delta the way an agent sends them, and the pipeline told about their
+    /// paths (as the hub does when ingestion reports them): the state a read finds after a change. Returns the paths.
+    pub async fn put_files(&mut self, lane: usize, files: Vec<(NfsPath, Bytes)>) -> Vec<NfsPath> {
+        let paths: Vec<NfsPath> = files.iter().map(|(p, _)| p.clone()).collect();
+        let identity = AgentIdentity::new(self.lanes[lane].id.clone());
+        // Messages of at most 2 MB and 1,000 files, as an agent sends them (a message over the hub's bound is refused).
+        let mut batches: Vec<Vec<(NfsPath, Bytes)>> = Vec::new();
+        let mut bytes = 0_usize;
+        for file in files {
+            if batches
+                .last()
+                .is_none_or(|b| b.len() >= 1_000 || bytes + file.1.len() > 2_000_000)
+            {
+                batches.push(Vec::new());
+                bytes = 0;
+            }
+            bytes += file.1.len();
+            batches.last_mut().unwrap().push(file);
+        }
+        for batch in batches {
+            self.round += 1;
+            let round = self.round;
+            self.rig.clock.advance_secs(10);
+            let at = self.rig.clock.now().unix_millis() - 500;
+            let entries: Vec<ScanEntry> = batch.into_iter().map(|(p, c)| entry(&p, c, at)).collect();
+            let d = support::rig::delta(1_000 + round, Some(root(0)), root(0), entries);
+            self.rig.ingest.delta(&identity, d).await.unwrap();
+        }
+        let set: BTreeSet<NfsPath> = paths.iter().cloned().collect();
+        self.pipeline
+            .process(vec![(
+                self.lanes[lane].id.clone(),
+                hub_registry::Work::Paths(set),
+            )])
+            .await
+            .unwrap();
         paths
     }
 

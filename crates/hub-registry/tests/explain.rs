@@ -31,7 +31,7 @@ use hub_registry::read::findings::findings_sql;
 use hub_registry::read::history::history_sql;
 use hub_registry::read::resource::{ALL_PATHS_SQL, PROPERTY_ROWS_SQL, ROWS_BY_PATH_SQL};
 use hub_registry::read::restarts::services_sql;
-use hub_registry::read::search_settings::{PAIRS_SQL, PLACES_SQL};
+use hub_registry::read::search_settings::{PAIRS_SQL, PAIRS_UNTESTED_SQL, PLACES_SQL};
 use hub_registry::read::search_text::{FILES_SQL, VERSIONS_SQL};
 use hub_registry::read::settings::ROWS_SQL;
 use hub_registry::read::swimlanes::{SWIMLANE_SQL, SWIMLANES_SQL};
@@ -787,13 +787,25 @@ async fn read_queries_have_no_sequential_scan_on_large_tables() {
         [Arg::Text(lane), Arg::Text("dir3/%")]
     );
 
-    // Settings search: a part of a path across all swimlanes, in one swimlane, and the places of the blobs found.
+    // Settings search: a part of a path across all swimlanes (read untested, the places say which are current), in a few swimlanes
+    // (tested in SQL), in one file, and the places of the blobs found.
     check!(
         "settings_search_pairs_all_swimlanes",
+        PAIRS_UNTESTED_SQL,
+        [
+            Arg::Text("%port%"),
+            Arg::Bytes(&[]),
+            Arg::Text(""),
+            Arg::Int(102),
+            Arg::Int32(255)
+        ]
+    );
+    check!(
+        "settings_search_pairs_few_swimlanes",
         PAIRS_SQL,
         [
             Arg::Text("%port%"),
-            Arg::TextArray(lanes(40)),
+            Arg::TextArray(lanes(2)),
             Arg::OptText(None),
             Arg::Bytes(&[]),
             Arg::Text(""),

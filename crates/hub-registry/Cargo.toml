@@ -110,3 +110,44 @@ harness = false
 [[bench]]
 name = "adoption_rank_per_swimlane"
 harness = false
+
+# P7 (T6): the read API through the router at target scale, over the read bed (every swimlane computed and indexed).
+[[bench]]
+name = "swimlane_list"
+harness = false
+
+[[bench]]
+name = "file_tree"
+harness = false
+
+[[bench]]
+name = "file_content_cached"
+harness = false
+
+[[bench]]
+name = "file_content_cold"
+harness = false
+
+[[bench]]
+name = "compare_6000_lines"
+harness = false
+
+[[bench]]
+name = "grid_40_swimlanes"
+harness = false
+
+[[bench]]
+name = "whole_swimlane_compare"
+harness = false
+
+[[bench]]
+name = "search_settings_all_swimlanes"
+harness = false
+
+[[bench]]
+name = "search_text_all_swimlanes"
+harness = false
+
+[[bench]]
+name = "steady_state_queries"
+harness = false

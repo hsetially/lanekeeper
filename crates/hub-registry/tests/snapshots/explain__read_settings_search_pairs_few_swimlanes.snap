@@ -1,0 +1,28 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: plan
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Merge Join"
+  },
+  {
+    "index": "settings_index_pkey",
+    "node": "Index Scan",
+    "relation": "settings_index"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "file_state"
+  },
+  {
+    "index": "file_state_seq_idx",
+    "node": "Bitmap Index Scan"
+  }
+]

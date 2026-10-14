@@ -7,16 +7,8 @@ expression: plan
     "node": "Limit"
   },
   {
-    "node": "Nested Loop"
-  },
-  {
     "index": "settings_index_pkey",
     "node": "Index Scan",
     "relation": "settings_index"
-  },
-  {
-    "index": "file_state_current_hash_idx",
-    "node": "Index Only Scan",
-    "relation": "file_state"
   }
 ]

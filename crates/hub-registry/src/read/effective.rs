@@ -501,11 +501,23 @@ impl Inner {
         };
 
         // The merges that are not cached, on the read pool (rule 4), in parallel; the answer does not depend on the pool.
-        let todo: Vec<usize> = (0..jobs.len())
-            .filter(|i| {
-                hits[*i].is_none() && (layerings[*i].tenant.is_some() || layerings[*i].base.is_some())
-            })
-            .collect();
+        // Swimlanes that have the same layers have the same key and so the same effective config: it is made once and shared (in a fleet,
+        // most swimlanes run the same files).
+        let mut todo: Vec<usize> = Vec::new();
+        let mut first_of: HashMap<ContentHash, usize> = HashMap::new();
+        let mut same_as: Vec<(usize, usize)> = Vec::new();
+        for i in 0..jobs.len() {
+            if hits[i].is_some() || (layerings[i].tenant.is_none() && layerings[i].base.is_none()) {
+                continue;
+            }
+            match first_of.entry(keys[i]) {
+                std::collections::hash_map::Entry::Occupied(first) => same_as.push((i, *first.get())),
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(i);
+                    todo.push(i);
+                }
+            }
+        }
         if !todo.is_empty() {
             let (pool, work) = (
                 Arc::clone(&self.pool),
@@ -529,6 +541,10 @@ impl Inner {
                     self.caches.effective.insert(keys[i], Arc::clone(&entry));
                     hits[i] = Some(entry);
                 }
+            }
+            for (i, first) in same_as {
+                let shared = hits[first].clone();
+                hits[i] = shared;
             }
         }
         Ok(layerings

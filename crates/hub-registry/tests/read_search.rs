@@ -705,3 +705,141 @@ async fn a_search_that_runs_past_its_deadline_is_answered_503_and_the_pool_is_no
     }
     assert_eq!(ok.expect("the pool is free again").hits.len(), 1);
 }
+
+/// Every hit of a search by following its cursors, in order, with the number of pages it took.
+async fn all_hits(
+    service: &hub_registry::RegistryService,
+    q: &str,
+    lanes: &[&str],
+    file: Option<&str>,
+    size: u32,
+) -> (Vec<(String, String, String, String)>, usize) {
+    let v = Reads::viewer();
+    let mut seen = Vec::new();
+    let mut cursor = None;
+    let mut pages = 0;
+    loop {
+        let mut query = settings(q, lanes, file, size);
+        query.page = Page::new(size, cursor.clone()).unwrap();
+        let page = service.search_settings(&v, query).await.unwrap();
+        pages += 1;
+        assert!(page.items.len() <= size as usize);
+        seen.extend(page.items.iter().map(|h| {
+            (
+                h.swimlane.to_string(),
+                h.file.to_string(),
+                h.path.to_string(),
+                h.value.text.clone(),
+            )
+        }));
+        match page.next {
+            Some(c) => cursor = Some(c),
+            None => return (seen, pages),
+        }
+        assert!(pages < 400, "the pages do not end");
+    }
+}
+
+#[tokio::test]
+async fn testing_the_settings_in_sql_or_after_finding_them_gives_the_same_hits_and_the_same_pages() {
+    // Three swimlanes with the same file, and a second file whose old versions each have a setting of their own with the needle.
+    let same: &[(&str, &str)] = &[
+        ("core.yml", "port: 1\nname: a\nnode: z\n"),
+        ("hist.yml", "needle_now: 0\nother: 1\n"),
+    ];
+    let Some(mut r) = world(same, &[("sit2", same), ("sit3", same)]).await else {
+        return;
+    };
+    for i in 1..=25 {
+        r.world
+            .nfs_change(&[("hist.yml", &format!("needle_v{i}: {i}\nneedle_now: 0\n"))])
+            .await;
+        // The index sees every version while it is current, so that the old ones keep their rows (as in a running hub).
+        r.index_all().await;
+    }
+    let tested = r.service_with(RegistryConfig::default());
+    let untested = r.service_with(RegistryConfig {
+        search_semijoin_lanes: 0,
+        ..RegistryConfig::default()
+    });
+    for (needle, lanes, file) in [
+        ("o", vec![], None),
+        ("port", vec![], None),
+        ("needle", vec![], None),
+        ("needle_now", vec![], None),
+        ("needle", vec!["sit2", "sit3"], None),
+        ("o", vec!["sit1"], Some("core.yml")),
+        ("zzzz", vec![], None),
+    ] {
+        for size in [1_u32, 2, 3, 100] {
+            let (want, _) = all_hits(&tested, needle, &lanes, file, size).await;
+            let (got, pages) = all_hits(&untested, needle, &lanes, file, size).await;
+            assert_eq!(got, want, "{needle} {lanes:?} {file:?} in pages of {size}");
+            assert!(pages <= 400);
+        }
+    }
+    // The old versions are history: only the current `needle_now` and the current version's own setting are hits, in every swimlane.
+    let (hits, _) = all_hits(&untested, "needle", &[], None, 100).await;
+    assert!(hits.iter().all(|h| h.2.starts_with("needle_")), "{hits:?}");
+    let current: Vec<_> = hits
+        .iter()
+        .filter(|h| h.0 == "sit1" && h.1 == "hist.yml")
+        .map(|h| h.2.as_str())
+        .collect();
+    assert_eq!(
+        current,
+        ["needle_now", "needle_v25"],
+        "sit1's current hist.yml only: {hits:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_search_that_has_to_look_through_many_old_versions_is_bounded_and_resumes_where_it_got_to() {
+    let Some(mut r) = world(&[("hist.yml", "needle_now: 0\n")], &[]).await else {
+        return;
+    };
+    // 200 old versions, each with a setting of its own: far more than the batches one request looks at (16 of three settings).
+    for i in 1..=200 {
+        r.world
+            .nfs_change(&[("hist.yml", &format!("needle_v{i}: {i}\nneedle_now: 0\n"))])
+            .await;
+        r.index_all().await;
+    }
+    let untested = r.service_with(RegistryConfig {
+        search_semijoin_lanes: 0,
+        ..RegistryConfig::default()
+    });
+    let v = Reads::viewer();
+    // Pages of one hit: the current version has two settings with the needle and the other 200 blobs none that count, so the pages
+    // that find nothing are short ones that say where the search got to, and following them ends and finds exactly the two.
+    let mut names = Vec::new();
+    let (mut cursor, mut pages, mut short) = (None, 0, 0);
+    loop {
+        let mut query = settings("needle", &[], None, 1);
+        query.page = Page::new(1, cursor.clone()).unwrap();
+        let page = untested.search_settings(&v, query).await.unwrap();
+        pages += 1;
+        if page.items.is_empty() && page.next.is_some() {
+            short += 1;
+        }
+        names.extend(page.items.iter().map(|h| h.path.to_string()));
+        match page.next {
+            Some(c) => cursor = Some(c),
+            None => break,
+        }
+        assert!(pages < 400, "the pages do not end");
+    }
+    names.sort_unstable();
+    assert_eq!(names, ["needle_now", "needle_v200"]);
+    assert!(
+        short >= 2,
+        "{short} short pages in {pages}: a request looks at a bounded number of settings"
+    );
+    // 201 blobs with two settings each match: 402 pairs. A request reads 16 batches of three, and every batch after the first has one
+    // pair the batch before read, so it covers at least 32 new pairs; the two hits end two of the pages, and one more is the last read.
+    let covered_per_request = 16 * 2;
+    assert!(
+        pages <= (201_usize * 2).div_ceil(covered_per_request) + 3,
+        "each short page covers many settings, not one batch: {pages} pages"
+    );
+}

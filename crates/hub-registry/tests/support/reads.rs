@@ -55,6 +55,20 @@ impl Reads {
         })
     }
 
+    /// Another read service over the same database, blobs and Git with another configuration: two strategies, one set of data.
+    pub fn service_with(&self, config: RegistryConfig) -> RegistryService {
+        RegistryService::new(ReadDeps {
+            pool: self.world.rig.pool.clone(),
+            blobs: Arc::clone(&self.world.rig.blobs) as _,
+            git: Arc::new(self.world.git.clone()),
+            gateway: Arc::new(self.gateway.clone()),
+            clock: Arc::clone(&self.world.rig.clock) as _,
+            config,
+            metrics: hub_registry::RegistryMetrics::default(),
+        })
+        .unwrap()
+    }
+
     pub fn viewer() -> User {
         active(1, Role::Viewer)
     }

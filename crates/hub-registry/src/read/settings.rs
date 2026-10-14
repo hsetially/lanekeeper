@@ -26,6 +26,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use domain::{ContentHash, LineRange, SettingPath, SettingValue, ValueFlag, ValueType};
 use engine::{FlatSetting, Syntax};
+use futures::stream::{self, StreamExt};
 use ports::ReadError;
 use tracing::warn;
 
@@ -34,8 +35,11 @@ use super::service::Inner;
 use crate::index::{Indexed, index_blob};
 use crate::metrics::CacheName;
 
-/// The rows of up to this many blobs are read in one statement.
-const ROWS_PER_STATEMENT: usize = 1_000;
+/// The rows of up to this many blobs are read in one statement: a few, so that a read of many blobs is several statements that the
+/// database works on at once, and a single large blob (6,000 settings and more) is a statement of its own.
+const ROWS_PER_STATEMENT: usize = 4;
+/// How many of those statements are in flight at once for one read.
+const STATEMENTS_AT_ONCE: usize = 4;
 
 /// One row per blob: its marker (`NULL` when the indexer has not seen the blob) and its settings as arrays. The arrays are in primary
 /// key order, which is path order; nothing downstream needs file order (the merge and the diff sort by path).
@@ -47,6 +51,65 @@ LEFT JOIN LATERAL ( \
   SELECT array_agg(setting_path) AS paths, array_agg(value_text) AS vals, array_agg(value_type) AS types, \
          array_agg(start_line) AS starts, array_agg(end_line) AS ends, array_agg(secret_rule) AS rules \
   FROM settings_index s WHERE s.blob_hash = b.h) r ON true LIMIT $2";
+
+/// What one statement found: the rows of the blobs the index has, and the blobs it has not reached.
+#[derive(Default)]
+struct Loaded {
+    rows: Vec<(ContentHash, BlobRows)>,
+    unindexed: Vec<(ContentHash, Syntax)>,
+}
+
+enum Converted {
+    /// The indexer has not seen the blob.
+    Unindexed,
+    Rows(BlobRows),
+}
+
+/// One row of [`ROWS_SQL`] as the rows of its blob. The strings the database sent are moved into the settings, not copied.
+fn convert_row(row: &sqlx::postgres::PgRow) -> Result<(ContentHash, Converted), ReadError> {
+    use sqlx::Row as _;
+    let hash = crate::read::rows::hash(&row.get::<Vec<u8>, _>("hash"))?;
+    let parse_ok: Option<bool> = row.get("parse_ok");
+    let rows = match parse_ok {
+        None => return Ok((hash, Converted::Unindexed)),
+        Some(false) => BlobRows::new(Vec::new(), Vec::new(), true),
+        Some(true) => {
+            let paths: Vec<String> = row.get::<Option<Vec<String>>, _>("paths").unwrap_or_default();
+            let vals: Vec<String> = row.get::<Option<Vec<String>>, _>("vals").unwrap_or_default();
+            let types: Vec<String> = row.get::<Option<Vec<String>>, _>("types").unwrap_or_default();
+            let starts: Vec<i32> = row.get::<Option<Vec<i32>>, _>("starts").unwrap_or_default();
+            let ends: Vec<i32> = row.get::<Option<Vec<i32>>, _>("ends").unwrap_or_default();
+            let rules: Vec<Option<String>> = row
+                .get::<Option<Vec<Option<String>>>, _>("rules")
+                .unwrap_or_default();
+            let n = paths.len();
+            if [vals.len(), types.len(), starts.len(), ends.len(), rules.len()]
+                .iter()
+                .any(|len| *len != n)
+            {
+                warn!(rows = n, "the columns of an index row do not line up");
+                return Err(ReadError::Unavailable);
+            }
+            let mut settings = Vec::with_capacity(n);
+            let mut secret = Vec::with_capacity(n);
+            let all = paths
+                .into_iter()
+                .zip(vals)
+                .zip(types)
+                .zip(starts)
+                .zip(ends)
+                .zip(rules);
+            for (((((path, value), ty), start), end), rule) in all {
+                if let Some(s) = setting_owned(&path, value, &ty, start, end) {
+                    settings.push(s);
+                    secret.push(rule.is_some());
+                }
+            }
+            BlobRows::new(settings, secret, false)
+        }
+    };
+    Ok((hash, Converted::Rows(rows)))
+}
 
 /// The type of a stored `value_type`.
 fn value_type(name: &str) -> ValueType {
@@ -85,6 +148,22 @@ fn setting(path: &str, value: &str, ty: &str, start: i32, end: i32) -> Option<Fl
     })
 }
 
+/// As [`setting`], with the value given by value (it is moved into the setting).
+fn setting_owned(path: &str, value: String, ty: &str, start: i32, end: i32) -> Option<FlatSetting> {
+    let ty = value_type(ty);
+    let flag = flag_of(ty, &value);
+    Some(FlatSetting {
+        path: SettingPath::parse(path).ok()?,
+        value: SettingValue {
+            text: value,
+            ty,
+            flag,
+        },
+        lines: LineRange::new(u32::try_from(start).ok()?, u32::try_from(end).ok()?).ok()?,
+        via_alias: false,
+    })
+}
+
 /// The rows of a blob that was indexed here, in memory.
 fn rows_from_index(indexed: Indexed) -> BlobRows {
     match indexed {
@@ -112,8 +191,10 @@ impl Inner {
     ) -> Result<HashMap<ContentHash, Arc<BlobRows>>, ReadError> {
         let mut found: HashMap<ContentHash, Arc<BlobRows>> = HashMap::with_capacity(wanted.len());
         let mut missing: Vec<(ContentHash, Syntax)> = Vec::new();
+        let mut asked: std::collections::HashSet<ContentHash> =
+            std::collections::HashSet::with_capacity(wanted.len());
         for (hash, syntax) in wanted {
-            if found.contains_key(hash) || missing.iter().any(|(h, _)| h == hash) {
+            if !asked.insert(*hash) {
                 continue;
             }
             if let Some(rows) = self.caches.rows.get(hash) {
@@ -124,17 +205,38 @@ impl Inner {
                 missing.push((*hash, *syntax));
             }
         }
-        for chunk in missing.chunks(ROWS_PER_STATEMENT) {
-            self.load_rows(chunk, &mut found).await?;
+        // The statements run side by side, and each answer is turned into rows on the read pool, off the async threads (rule 4): a large
+        // blob is tens of thousands of strings.
+        let loaded: Vec<Loaded> = stream::iter(
+            missing
+                .chunks(ROWS_PER_STATEMENT)
+                .map(<[(ContentHash, Syntax)]>::to_vec),
+        )
+        .map(|chunk| async move { self.load_rows(chunk).await })
+        .buffer_unordered(STATEMENTS_AT_ONCE)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<_, _>>()?;
+        let mut unindexed: Vec<(ContentHash, Syntax)> = Vec::new();
+        for Loaded {
+            rows,
+            unindexed: more,
+        } in loaded
+        {
+            for (hash, blob_rows) in rows {
+                self.keep(&mut found, hash, blob_rows);
+            }
+            unindexed.extend(more);
+        }
+        if !unindexed.is_empty() {
+            self.index_in_memory(&unindexed, &mut found).await?;
         }
         Ok(found)
     }
 
-    async fn load_rows(
-        &self,
-        chunk: &[(ContentHash, Syntax)],
-        found: &mut HashMap<ContentHash, Arc<BlobRows>>,
-    ) -> Result<(), ReadError> {
+    /// One statement: the rows of these blobs, converted. The blobs the index has not reached are returned for the caller to index.
+    async fn load_rows(&self, chunk: Vec<(ContentHash, Syntax)>) -> Result<Loaded, ReadError> {
         let hashes: Vec<Vec<u8>> = chunk.iter().map(|(h, _)| h.as_bytes().to_vec()).collect();
         let fetched = self
             .db
@@ -146,60 +248,33 @@ impl Inner {
                     .fetch_all(self.db.pool()),
             )
             .await?;
-        let mut unindexed: Vec<(ContentHash, Syntax)> = Vec::new();
-        for row in fetched {
-            use sqlx::Row as _;
-            let raw: Vec<u8> = row.get("hash");
-            let hash = crate::read::rows::hash(&raw)?;
-            let parse_ok: Option<bool> = row.get("parse_ok");
-            match parse_ok {
-                None => {
+        let pool = Arc::clone(&self.pool);
+        let converted = tokio::task::spawn_blocking(move || {
+            use rayon::prelude::*;
+            pool.install(|| {
+                fetched
+                    .into_par_iter()
+                    .map(|row| convert_row(&row))
+                    .collect::<Result<Vec<_>, ReadError>>()
+            })
+        })
+        .await
+        .map_err(|_| {
+            warn!("a row conversion task on the blocking pool did not finish");
+            ReadError::Unavailable
+        })??;
+        let mut loaded = Loaded::default();
+        for (hash, outcome) in converted {
+            match outcome {
+                Converted::Unindexed => {
                     if let Some((_, syntax)) = chunk.iter().find(|(h, _)| *h == hash) {
-                        unindexed.push((hash, *syntax));
+                        loaded.unindexed.push((hash, *syntax));
                     }
                 }
-                Some(false) => {
-                    self.keep(&mut *found, hash, BlobRows::new(Vec::new(), Vec::new(), true));
-                }
-                Some(true) => {
-                    let paths: Option<Vec<String>> = row.get("paths");
-                    let vals: Option<Vec<String>> = row.get("vals");
-                    let types: Option<Vec<String>> = row.get("types");
-                    let starts: Option<Vec<i32>> = row.get("starts");
-                    let ends: Option<Vec<i32>> = row.get("ends");
-                    let rules: Option<Vec<Option<String>>> = row.get("rules");
-                    let (paths, vals, types, starts, ends, rules) = (
-                        paths.unwrap_or_default(),
-                        vals.unwrap_or_default(),
-                        types.unwrap_or_default(),
-                        starts.unwrap_or_default(),
-                        ends.unwrap_or_default(),
-                        rules.unwrap_or_default(),
-                    );
-                    let n = paths.len();
-                    if [vals.len(), types.len(), starts.len(), ends.len(), rules.len()]
-                        .iter()
-                        .any(|len| *len != n)
-                    {
-                        warn!(rows = n, "the columns of an index row do not line up");
-                        return Err(ReadError::Unavailable);
-                    }
-                    let mut settings = Vec::with_capacity(n);
-                    let mut secret = Vec::with_capacity(n);
-                    for i in 0..n {
-                        if let Some(s) = setting(&paths[i], &vals[i], &types[i], starts[i], ends[i]) {
-                            settings.push(s);
-                            secret.push(rules[i].is_some());
-                        }
-                    }
-                    self.keep(&mut *found, hash, BlobRows::new(settings, secret, false));
-                }
+                Converted::Rows(rows) => loaded.rows.push((hash, rows)),
             }
         }
-        if !unindexed.is_empty() {
-            self.index_in_memory(&unindexed, found).await?;
-        }
-        Ok(())
+        Ok(loaded)
     }
 
     fn keep(&self, found: &mut HashMap<ContentHash, Arc<BlobRows>>, hash: ContentHash, rows: BlobRows) {

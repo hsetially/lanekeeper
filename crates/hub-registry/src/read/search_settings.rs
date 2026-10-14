@@ -31,8 +31,10 @@ use super::service::Inner;
 use super::settings::flag_of;
 use crate::error::RegistryError;
 
-/// The matching settings of current blobs: `$1` the `LIKE` pattern, `$2` the swimlanes, `$3` a logical file or `NULL`, `$4` and `$5` the
-/// blob and setting path to resume at (inclusive; empty for the first page), `$6` how many to read, `$7` the longest path a cursor holds.
+/// The matching settings of current blobs, tested in SQL: `$1` the `LIKE` pattern, `$2` the swimlanes, `$3` a logical file or `NULL`,
+/// `$4` and `$5` the blob and setting path to resume at (inclusive; empty for the first page), `$6` how many to read, `$7` the longest
+/// path a cursor holds. Used when the swimlanes or the file are few: the planner then takes the primary key's order when matches are
+/// dense and the trigram index when they are rare, and the test is a probe of a few swimlanes.
 pub const PAIRS_SQL: &str = "\
 SELECT si.blob_hash::bytea AS blob, si.setting_path, si.value_text, si.value_type, si.start_line, si.end_line \
 FROM settings_index si \
@@ -44,6 +46,21 @@ WHERE si.setting_path ILIKE $1 \
         WHERE swimlane_id = ANY($2::text[]) AND nfs_hash IS NOT NULL AND NOT denied \
           AND ($3::text IS NULL OR logical_file = $3)) \
 ORDER BY si.blob_hash, si.setting_path LIMIT $6";
+
+/// The matching settings, not tested: `$1` the `LIKE` pattern, `$2` and `$3` the blob and setting path to resume at (inclusive), `$4`
+/// how many to read, `$5` the longest path a cursor holds. Used over many swimlanes with no file: the places of the blobs found (one
+/// probe of `file_state` each, `PLACES_SQL`) are what says which are current, and the search asks for more while a batch has too few.
+pub const PAIRS_UNTESTED_SQL: &str = "\
+SELECT si.blob_hash::bytea AS blob, si.setting_path, si.value_text, si.value_type, si.start_line, si.end_line \
+FROM settings_index si \
+WHERE si.setting_path ILIKE $1 \
+  AND octet_length(si.setting_path) <= $5 \
+  AND (si.blob_hash, si.setting_path) >= ($2::bytea, $3::text) \
+ORDER BY si.blob_hash, si.setting_path LIMIT $4";
+
+/// The most batches of settings one request looks at when the batches are not tested in SQL: a request does a bounded amount of work, and
+/// a page that the batches did not fill is returned short, with the cursor of where the search got to.
+const MAX_BATCHES: usize = 16;
 
 /// The files that have these blobs as their current version: `$1` the swimlanes, `$2` the blobs, `$3` a logical file or `NULL`. At most
 /// 10,000 places are listed for one blob: a blob that is the current version of more files than that (an empty file in thousands of
@@ -74,6 +91,13 @@ struct Positioned {
     lane: String,
     seq: i64,
     hit: SettingHit,
+}
+
+/// What the batches found: the hits, where the search got to, and whether there is nothing after it.
+struct Scan {
+    hits: Vec<Positioned>,
+    scanned: Option<(Vec<u8>, String)>,
+    exhausted: bool,
 }
 
 /// The key a cursor resumes after: blob, setting path, swimlane, file sequence.
@@ -148,30 +172,46 @@ impl Inner {
         Ok(asked.into_iter().map(str::to_owned).collect())
     }
 
-    /// The next `want` matching (blob, setting) pairs at or after the key.
+    /// The next `want` matching (blob, setting) pairs at or after the key; those that belong to a current file when `tested`.
     async fn setting_pairs(
         &self,
+        tested: bool,
         pattern: &str,
         lanes: &[String],
         file: Option<&str>,
         start: (&[u8], &str),
         want: i64,
     ) -> Result<Vec<Pair>, ReadError> {
-        let fetched = self
-            .db
-            .run(
-                "read_setting_pairs",
-                sqlx::query(PAIRS_SQL)
-                    .bind(pattern)
-                    .bind(lanes)
-                    .bind(file)
-                    .bind(start.0)
-                    .bind(start.1)
-                    .bind(want)
-                    .bind(i32::try_from(MAX_BYTES_FIELD).unwrap_or(255))
-                    .fetch_all(self.db.pool()),
-            )
-            .await?;
+        let max_path = i32::try_from(MAX_BYTES_FIELD).unwrap_or(255);
+        let fetched = if tested {
+            self.db
+                .run(
+                    "read_setting_pairs",
+                    sqlx::query(PAIRS_SQL)
+                        .bind(pattern)
+                        .bind(lanes)
+                        .bind(file)
+                        .bind(start.0)
+                        .bind(start.1)
+                        .bind(want)
+                        .bind(max_path)
+                        .fetch_all(self.db.pool()),
+                )
+                .await?
+        } else {
+            self.db
+                .run(
+                    "read_setting_pairs",
+                    sqlx::query(PAIRS_UNTESTED_SQL)
+                        .bind(pattern)
+                        .bind(start.0)
+                        .bind(start.1)
+                        .bind(want)
+                        .bind(max_path)
+                        .fetch_all(self.db.pool()),
+                )
+                .await?
+        };
         let mut pairs: Vec<Pair> = Vec::with_capacity(fetched.len());
         for row in &fetched {
             let blob: Vec<u8> = row.get("blob");
@@ -227,6 +267,75 @@ impl Inner {
         Ok(by_blob)
     }
 
+    /// The hits from the key on, at least `limit + 1` of them if there are that many (and if the batches allowed are enough).
+    ///
+    /// A batch is `limit + 2` settings: the first may be the cursor's own with nothing left of it. Tested in SQL, every setting of a
+    /// batch has a place, so one batch gives `limit + 1` hits if there are that many; not tested, a batch may have settings of blobs that
+    /// are no file's now, and the next batch is read (a bounded number of times) until there are enough.
+    async fn scan_settings(
+        &self,
+        tested: bool,
+        pattern: &str,
+        (lanes, file): (&[String], Option<&str>),
+        (start_blob, start_path): (&[u8], &str),
+        after: Option<&After>,
+        limit: usize,
+    ) -> Result<Scan, ReadError> {
+        let batch = limit + 2;
+        let mut hits: Vec<Positioned> = Vec::new();
+        let mut at = (start_blob.to_vec(), start_path.to_owned());
+        let mut scanned: Option<(Vec<u8>, String)> = None;
+        let mut exhausted = false;
+        for round in 0..if tested { 1 } else { MAX_BATCHES } {
+            let mut pairs = self
+                .setting_pairs(
+                    tested,
+                    pattern,
+                    lanes,
+                    file,
+                    (&at.0, &at.1),
+                    i64::try_from(batch).unwrap_or(i64::MAX),
+                )
+                .await?;
+            let fetched = pairs.len();
+            // A later batch starts at the last setting of the one before, which is not read twice.
+            if let Some((blob, path)) = &scanned {
+                if pairs
+                    .first()
+                    .is_some_and(|p| p.blob.as_bytes().as_slice() == blob.as_slice() && p.path == *path)
+                {
+                    pairs.remove(0);
+                }
+            }
+            if pairs.is_empty() {
+                exhausted = true;
+                break;
+            }
+            let by_blob = self.setting_places(lanes, &pairs, file).await?;
+            hits.extend(positioned(
+                &pairs,
+                &by_blob,
+                if round == 0 { after } else { None },
+            )?);
+            if let Some(last) = pairs.last() {
+                scanned = Some((last.blob.as_bytes().to_vec(), last.path.clone()));
+                at = (last.blob.as_bytes().to_vec(), last.path.clone());
+            }
+            if hits.len() > limit {
+                break;
+            }
+            if fetched < batch {
+                exhausted = true;
+                break;
+            }
+        }
+        Ok(Scan {
+            hits,
+            scanned,
+            exhausted,
+        })
+    }
+
     pub async fn search_settings(&self, q: &SettingsQuery) -> Result<Paged<SettingHit>, ReadError> {
         let needle = q.path_contains.as_str();
         if needle.is_empty() {
@@ -253,45 +362,49 @@ impl Inner {
         let (start_blob, start_path) = after
             .as_ref()
             .map_or((&[][..], ""), |(b, p, _, _)| (b.as_slice(), p.as_str()));
-
-        // Read `limit + 2` settings: the first may be the cursor's own with nothing left, and every setting of a current blob has at
-        // least one place, so the rest give at least `limit + 1` hits.
-        let want_pairs = i64::try_from(limit + 2).unwrap_or(i64::MAX);
-        let pairs = self
-            .setting_pairs(
+        let tested = file.is_some() || lanes.len() <= self.config.search_semijoin_lanes;
+        let Scan {
+            mut hits,
+            scanned,
+            exhausted,
+        } = self
+            .scan_settings(
+                tested,
                 &pattern,
-                &lanes,
-                file.as_deref(),
+                (&lanes, file.as_deref()),
                 (start_blob, start_path),
-                want_pairs,
+                after.as_ref(),
+                limit,
             )
             .await?;
-        if pairs.is_empty() {
-            return Ok(Paged::last(Vec::new()));
-        }
-        let by_blob = self.setting_places(&lanes, &pairs, file.as_deref()).await?;
-
-        let mut hits = positioned(&pairs, &by_blob, after.as_ref())?;
         let more = hits.len() > limit;
         hits.truncate(limit);
-        let next = if more {
-            hits.last()
-                .map(|h| {
-                    cursor::issue(
-                        Kind::SettingsSearch,
-                        &context,
-                        vec![
-                            Field::Bytes(h.blob.clone()),
-                            Field::text(&h.path),
-                            Field::text(&h.lane),
-                            Field::Int(h.seq),
-                        ],
-                    )
-                })
-                .transpose()?
+        let key = if more {
+            hits.last().map(|h| {
+                vec![
+                    Field::Bytes(h.blob.clone()),
+                    Field::text(&h.path),
+                    Field::text(&h.lane),
+                    Field::Int(h.seq),
+                ]
+            })
+        } else if !exhausted && !tested {
+            // The batches did not fill the page: it is returned as it is, with the cursor of the setting the search got to (after all
+            // of its places: `~` sorts after every swimlane id).
+            scanned.as_ref().map(|(blob, path)| {
+                vec![
+                    Field::Bytes(blob.clone()),
+                    Field::text(path),
+                    Field::text("~"),
+                    Field::Int(i64::MAX),
+                ]
+            })
         } else {
             None
         };
+        let next = key
+            .map(|k| cursor::issue(Kind::SettingsSearch, &context, k))
+            .transpose()?;
         Ok(Paged {
             items: hits.into_iter().map(|h| h.hit).collect(),
             next,
