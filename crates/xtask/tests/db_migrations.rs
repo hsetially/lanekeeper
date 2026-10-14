@@ -1586,29 +1586,107 @@ async fn approvals_reject_self_approval() {
 // ---------------------------------------------------------------------------------------------------------------
 // 0004_write_additions.sql (prompt 06): notify proposals, the credential expiry, and the approvals hardening
 
-/// `0004_write_additions.sql` drops nothing but the two constraints it replaces, and deletes, truncates and renames
-/// nothing. It does not touch the audit tables, and its only privilege change is the REVOKE on `approvals`.
+/// `sql` without comments, string literals (their text) and dollar-quoted bodies, split into statements of upper-case words.
+/// A body (`DO $$ ... $$`, `AS $$ ... $$`) is not one of the statement's words: it is checked on its own, below.
+fn statements_of(sql: &str) -> Vec<Vec<String>> {
+    let code = code_lines(sql).join("\n");
+    // Dollar-quoted bodies first (a literal inside one could hold a `;`), then literals.
+    let mut bodiless = String::new();
+    let mut rest = code.as_str();
+    while let Some(open) = rest.find("$$") {
+        bodiless.push_str(&rest[..open]);
+        let after = &rest[open + 2..];
+        let close = after.find("$$").expect("a dollar-quoted body is closed");
+        rest = &after[close + 2..];
+    }
+    bodiless.push_str(rest);
+    let mut out = Vec::new();
+    for statement in without_literals(&bodiless).split(';') {
+        let words = sql_words(statement);
+        if !words.is_empty() {
+            out.push(words);
+        }
+    }
+    out
+}
+
+/// `sql` with the text of every single-quoted literal removed.
+fn without_literals(sql: &str) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for c in sql.chars() {
+        if c == '\'' {
+            inside = !inside;
+        } else if !inside {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn sql_words(sql: &str) -> Vec<String> {
+    sql.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+        .map(str::to_uppercase)
+        .collect()
+}
+
+/// The first row-writing statement in `sql`, bodies included, if there is one: INSERT INTO, UPDATE t SET, DELETE FROM, MERGE
+/// INTO, TRUNCATE or COPY. (`UPDATE` as a trigger event, a privilege or `ON DELETE` as a key action are not that.)
+fn row_writing_statement(sql: &str) -> Option<String> {
+    let code = without_literals(&code_lines(sql).join("\n"));
+    let words = sql_words(&code);
+    words.iter().enumerate().find_map(|(i, w)| {
+        let next = |n: usize| words.get(i + n).map(String::as_str);
+        let writes = match w.as_str() {
+            "TRUNCATE" | "COPY" => true,
+            "INSERT" | "MERGE" => next(1) == Some("INTO"),
+            "DELETE" => next(1) == Some("FROM"),
+            "UPDATE" => next(2) == Some("SET"),
+            _ => false,
+        };
+        writes.then(|| words[i..words.len().min(i + 4)].join(" "))
+    })
+}
+
+/// `0004_write_additions.sql` is exactly the statements it was reviewed with: no row is written or removed, no table is
+/// created or dropped, nothing is renamed, and the audit tables are not touched. A new statement of any kind, in or out of
+/// a DO block or a function body, fails here until a human adds it to the list on purpose.
 #[test]
 fn migration_0004_is_expand_only() {
     let sql = migration_file("0004_write_additions.sql");
-    // The phrases that name DELETE on purpose: the action 'delete', the one REVOKE and the key that no longer cascades.
-    let code = code_lines(&sql)
-        .join("\n")
-        .to_uppercase()
-        .replace("'DELETE'", "'X'")
-        .replace(
-            "REVOKE UPDATE, DELETE ON APPROVALS",
-            "REVOKE UPDATE, X ON APPROVALS",
-        )
-        .replace("ON DELETE RESTRICT", "ON X RESTRICT");
+    assert_eq!(
+        row_writing_statement(&sql),
+        None,
+        "0004 changes the schema and no row: no INSERT, UPDATE, DELETE, MERGE, TRUNCATE or COPY, in a DO block or a function \
+         body either"
+    );
+    let allowed: [&str; 7] = [
+        // The guard.
+        "DO",
+        // 1. Notify proposals: one statement, so no row is ever unchecked.
+        "ALTER TABLE PROPOSALS DROP CONSTRAINT PROPOSALS_ACTION_CHECK ADD CONSTRAINT PROPOSALS_ACTION_CHECK CHECK ACTION IN",
+        // 2. The token expiry.
+        "ALTER TABLE GITHUB_CREDENTIALS ADD COLUMN EXPIRES_AT TIMESTAMPTZ",
+        // 3. Approvals are written once.
+        "REVOKE UPDATE DELETE ON APPROVALS FROM LANEKEEPER_APP",
+        "ALTER TABLE APPROVALS DROP CONSTRAINT APPROVALS_PROPOSAL_ID_FKEY ADD CONSTRAINT APPROVALS_PROPOSAL_ID_FKEY FOREIGN KEY PROPOSAL_ID REFERENCES PROPOSALS ID ON DELETE RESTRICT",
+        "CREATE FUNCTION PROPOSALS_AUTHOR_IMMUTABLE RETURNS TRIGGER LANGUAGE PLPGSQL SET SEARCH_PATH PG_CATALOG PG_TEMP AS",
+        "CREATE TRIGGER PROPOSALS_AUTHOR_IMMUTABLE BEFORE UPDATE OF AUTHOR_TID AUTHOR_OID ON PROPOSALS FOR EACH ROW EXECUTE FUNCTION PROPOSALS_AUTHOR_IMMUTABLE",
+    ];
+    let found: Vec<String> = statements_of(&sql).iter().map(|w| w.join(" ")).collect();
+    assert_eq!(
+        found, allowed,
+        "0004 has exactly the statements it was reviewed with, in this order (a new statement is a new review)"
+    );
+    // The words that no statement of an expand-only migration contains, wherever they are (a body, a comment aside).
+    let code = without_literals(&code_lines(&sql).join("\n")).to_uppercase();
     for banned in [
         "DROP TABLE",
         "DROP COLUMN",
         "DROP TRIGGER",
         "DROP FUNCTION",
         "DROP INDEX",
-        "TRUNCATE",
-        "DELETE",
         "RENAME",
         "GRANT ",
         "CASCADE",
@@ -1616,26 +1694,69 @@ fn migration_0004_is_expand_only() {
         "AUDIT_CHECKPOINTS",
         "CREATE TABLE",
         "SECURITY DEFINER",
+        "ENABLE ",
+        "DISABLE ",
     ] {
         assert!(
             !code.contains(banned),
             "0004 must not contain `{banned}` outside comments"
         );
     }
-    assert_eq!(
-        code.matches("DROP CONSTRAINT").count(),
-        2,
-        "the action CHECK and the approvals key, replaced in the same statement as they are added"
-    );
-    assert_eq!(code.matches("REVOKE ").count(), 1, "one REVOKE");
     assert!(
-        code.contains("REVOKE UPDATE, X ON APPROVALS FROM LANEKEEPER_APP"),
-        "the app loses UPDATE and DELETE on approvals, nothing else"
-    );
-    assert!(
-        code.contains("ON X RESTRICT") && !code.contains("ON UPDATE"),
+        code.contains("ON DELETE RESTRICT") && !code.contains("ON UPDATE"),
         "the approvals key restricts a delete of its proposal"
     );
+}
+
+/// The checks of `migration_0004_is_expand_only` have teeth: each of these changes to 0004 is refused by one of them.
+#[test]
+fn the_expand_only_checks_see_row_writes_and_new_statements() {
+    let real = migration_file("0004_write_additions.sql");
+    assert_eq!(row_writing_statement(&real), None);
+    let base = statements_of(&real).len();
+    for (sql, what) in [
+        ("UPDATE proposals SET status = 'x';", "an UPDATE"),
+        (
+            "INSERT INTO approvals (decision) VALUES ('approved');",
+            "an INSERT",
+        ),
+        ("DELETE FROM proposals;", "a DELETE"),
+        ("TRUNCATE approvals;", "a TRUNCATE"),
+        (
+            "DO $$ BEGIN DELETE FROM proposals; END $$;",
+            "a DELETE in a DO block",
+        ),
+        (
+            "CREATE FUNCTION f() RETURNS void LANGUAGE sql AS $$ UPDATE users SET role = 'admin' $$;",
+            "an UPDATE in a function body",
+        ),
+    ] {
+        assert!(
+            row_writing_statement(&format!("{real}\n{sql}\n")).is_some(),
+            "{what} must be seen"
+        );
+    }
+    // Text that only looks like a row write is not one: the CHECK literal, the key action, the trigger event.
+    assert_eq!(
+        row_writing_statement(
+            "ALTER TABLE t ADD CHECK (a IN ('delete', 'update t set'));\n-- UPDATE t SET x\nREVOKE UPDATE, DELETE ON t FROM r;"
+        ),
+        None
+    );
+    // A new statement of any other kind changes the list.
+    for sql in [
+        "CREATE INDEX i ON proposals (status);",
+        "ALTER TABLE proposals DROP COLUMN paths;",
+        "DROP TABLE approvals;",
+        "GRANT DELETE ON approvals TO lanekeeper_app;",
+        "ALTER TABLE approvals DISABLE TRIGGER approvals_no_self_approval;",
+    ] {
+        assert_eq!(
+            statements_of(&format!("{real}\n{sql}\n")).len(),
+            base + 1,
+            "{sql} is a statement of its own, so the exact list refuses it"
+        );
+    }
 }
 
 /// The migrator owns every object, so `0004` carries the guard of `0001`, `0002` and `0003`.
@@ -1879,6 +2000,68 @@ async fn the_app_cannot_change_or_remove_an_approval() {
         .execute(&mut app)
         .await
         .unwrap();
+}
+
+/// G10, a consequence the README states: a swimlane that has a decided proposal cannot be deleted (SQLSTATE 23503), because
+/// its proposals cascade and a decided proposal cannot go. A swimlane whose proposals nobody decided still can.
+#[tokio::test]
+async fn a_swimlane_with_a_decided_proposal_cannot_be_deleted() {
+    let db = db!();
+    let mut app = db.app().await;
+    let mut owner = db.migrator().await;
+    seed_proposal_world(&mut app).await;
+    sqlx::query("INSERT INTO swimlanes (id, project_id, display_name) VALUES ('sit2', 'p1', 'SIT 2')")
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let propose = |swimlane: &'static str| {
+        sqlx::query_scalar::<_, i64>(
+            "INSERT INTO proposals (author_tid, author_oid, action, swimlane_id, paths, via, expires_at) \
+             VALUES ('t', 'alice', 'edit', $1, ARRAY['a.yml'], 'ui', now() + interval '72 hours') RETURNING id",
+        )
+        .bind(swimlane)
+    };
+    let decided = propose("sit1").fetch_one(&mut app).await.unwrap();
+    sqlx::query("INSERT INTO approvals (proposal_id, decision, approver_tid, approver_oid) VALUES ($1, 'approved', 't', 'bob')")
+        .bind(decided)
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let undecided = propose("sit2").fetch_one(&mut app).await.unwrap();
+
+    // The app and the owner alike: the key refuses, not a missing privilege.
+    for conn in [&mut app, &mut owner] {
+        let err = sqlx::query("DELETE FROM swimlanes WHERE id = 'sit1'")
+            .execute(&mut *conn)
+            .await
+            .expect_err("a swimlane with a decided proposal stays");
+        assert_eq!(sqlstate(&err).as_deref(), Some(FOREIGN_KEY_VIOLATION), "{err}");
+    }
+    let kept: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM swimlanes WHERE id = 'sit1') \
+              + (SELECT count(*) FROM proposals WHERE id = $1) \
+              + (SELECT count(*) FROM approvals WHERE proposal_id = $1)",
+    )
+    .bind(decided)
+    .fetch_one(&mut owner)
+    .await
+    .unwrap();
+    assert_eq!(
+        kept, 3,
+        "the swimlane, its proposal and the decision are all still there"
+    );
+
+    // Nobody decided its proposals: the swimlane goes, and they go with it.
+    sqlx::query("DELETE FROM swimlanes WHERE id = 'sit2'")
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM proposals WHERE id = $1")
+        .bind(undecided)
+        .fetch_one(&mut owner)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
 }
 
 /// G10: the author of a proposal is fixed when it is written, for the app and for the owner alike.
