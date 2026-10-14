@@ -428,8 +428,8 @@ registry-fuzz: fuzz-tools-check
 # only. The full registry needs every other prompt's benchmarks to have run (`just bench`), and `bench-check` has no filter, so the
 # recipe cuts a registry with just the budgets below and judges that; the full `cargo xtask bench-check` is run by the FINAL step
 # after `just bench`. A budget that is not registered yet is judged too: it is listed as UNMET with the number the benchmark
-# measured and does not fail the recipe (plans/05-registry-read-api.blockers.md says why P15 is one). The benchmarks need a database
-# (Docker, or LK_TEST_PG_ADMIN_URL) for the Postgres they measure.
+# measured and does not fail the recipe. The benchmarks need a database (Docker, or LK_TEST_PG_ADMIN_URL) for the Postgres they
+# measure.
 # `tests/justfile_gate.rs` fails if this list and the benchmark files of the crate drift apart.
 registry_budgets := "P15.registry_ingest_versions_per_s P5 P5.per_file_per_swimlane P6.hub_full_recompute P1.hub_delta_to_drift P2.hub_head_moved_to_drift"
 registry-bench:
