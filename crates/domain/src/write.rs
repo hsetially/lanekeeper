@@ -1,5 +1,7 @@
 //! Write-path DTOs. There is no blind write: every request states what it expects to find (rule 11).
 
+use std::num::NonZeroU32;
+
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
@@ -221,9 +223,9 @@ impl std::fmt::Debug for ChangePreview {
 #[serde(deny_unknown_fields)]
 pub struct ValidationIssue {
     pub kind: IssueKind,
-    /// 1-based, when the issue has a place.
+    /// 1-based, when the issue has a place. Zero is not a line: it is refused when read and cannot be built.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub line: Option<u32>,
+    pub line: Option<NonZeroU32>,
     /// The secret rule's name for [`IssueKind::SecretMatch`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rule: Option<ShortText>,

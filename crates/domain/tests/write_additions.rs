@@ -11,7 +11,7 @@ use domain::{
 fn issue(kind: IssueKind, line: Option<u32>, rule: Option<&str>) -> ValidationIssue {
     ValidationIssue {
         kind,
-        line,
+        line: line.map(|l| std::num::NonZeroU32::new(l).unwrap()),
         rule: rule.map(|r| ShortText::parse(r).unwrap()),
     }
 }
@@ -124,6 +124,20 @@ fn validation_issue_carries_a_place_and_a_rule_but_never_text() {
         assert_eq!(serde_json::from_str::<ValidationIssue>(&json).unwrap(), i);
     }
     assert!(serde_json::from_str::<ValidationIssue>(r#"{"kind":"secret_match","text":"AKIA..."}"#).is_err());
+}
+
+#[test]
+fn a_line_is_one_based_and_zero_is_refused() {
+    let one: ValidationIssue = serde_json::from_str(r#"{"kind":"duplicate_key","line":1}"#).unwrap();
+    assert_eq!(one.line.map(std::num::NonZeroU32::get), Some(1));
+    let largest: ValidationIssue =
+        serde_json::from_str(r#"{"kind":"duplicate_key","line":4294967295}"#).unwrap();
+    assert_eq!(largest.line.map(std::num::NonZeroU32::get), Some(u32::MAX));
+    assert!(
+        serde_json::from_str::<ValidationIssue>(r#"{"kind":"duplicate_key","line":0}"#).is_err(),
+        "lines count from 1 (the OpenAPI minimum)"
+    );
+    assert!(serde_json::from_str::<ValidationIssue>(r#"{"kind":"duplicate_key","line":-1}"#).is_err());
 }
 
 #[test]

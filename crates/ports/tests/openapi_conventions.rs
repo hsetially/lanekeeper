@@ -951,7 +951,7 @@ fn rejection_detail_is_optional_and_matches_the_domain() {
     );
     let issue = ValidationIssue {
         kind: IssueKind::SecretMatch,
-        line: Some(3),
+        line: std::num::NonZeroU32::new(3),
         rule: Some(ShortText::parse("jwt").unwrap()),
     };
     let declared: BTreeSet<String> = properties(&d, &schemas["ValidationIssue"])
