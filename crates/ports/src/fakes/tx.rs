@@ -5,14 +5,15 @@ use domain::{AuditId, DomainEvent};
 
 use super::audit_log::AuditInner;
 use super::event_bus::BusInner;
-use super::tool_writes::ToolWritesInner;
+use super::tool_writes::Reservation;
 use crate::{AuditEvent, OwnedTx, ToolWriteEntry, Tx, TxError, TxFactory};
 
 /// What a fake port parked in a transaction, to apply on commit.
 pub(crate) enum Pending {
     Audit(Arc<AuditInner>, AuditId, Box<AuditEvent>),
     Publish(Arc<BusInner>, Box<DomainEvent>),
-    ToolWrite(Arc<ToolWritesInner>, Box<ToolWriteEntry>),
+    /// A place in the tool-write registry, taken at `register`; committing fills it, dropping gives it back.
+    ToolWrite(Reservation),
 }
 
 /// The in-memory stand-in for a database transaction: fakes park their writes here and they take effect
@@ -39,13 +40,21 @@ impl FakeTxState {
         self.pending.push(p);
     }
 
+    /// The tool writes parked in this transaction.
+    pub(crate) fn parked_tool_writes(&self) -> impl Iterator<Item = &ToolWriteEntry> {
+        self.pending.iter().filter_map(|p| match p {
+            Pending::ToolWrite(r) => r.entry(),
+            _ => None,
+        })
+    }
+
     /// Make everything parked in this transaction visible, in the order it was parked.
     pub fn commit(self) {
         for p in self.pending {
             match p {
                 Pending::Audit(log, id, event) => log.append_committed(id, *event),
                 Pending::Publish(bus, event) => bus.fan_out(*event),
-                Pending::ToolWrite(registry, entry) => registry.append_committed(*entry),
+                Pending::ToolWrite(reservation) => reservation.commit(),
             }
         }
     }

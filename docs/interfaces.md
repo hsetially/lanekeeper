@@ -156,7 +156,7 @@ pub trait GitReader {                                    // sync; call via spawn
 
 /// Called by 06 inside the transaction that carries a write's audit event; implemented by 05 (D73).
 /// A registration becomes visible at commit and 06 commits after the file is written (`WriteFile`), so 05 also matches an
-/// observation that arrives before the commit is visible, and an unmatched registration expires (see the port's docs).
+/// observation that arrives before the commit is visible, and an unmatched registration expires after `ToolWriteEntry::TTL_SECS` (15 minutes), or at once when a newer observation of the path has another hash (see the port's docs).
 #[async_trait] pub trait ToolWrites {
     async fn register(&self, tx: &mut Tx<'_>, swimlane: &SwimlaneId, path: &NfsPath, new_hash: &ContentHash,
                       user: &UserId, request_id: &RequestId) -> Result<(), ToolWriteError>;
