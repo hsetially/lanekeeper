@@ -1,7 +1,7 @@
 # Plan 06: Write paths, approvals, token vault, PRs and notifications
 
-Status: DRAFT
-Contract-change: needed
+Status: APPROVED
+Contract-change: APPROVED
 Extra-paths: `crates/xtask/tests/budgets_registry.rs`, `docs/performance.md`, `deny.toml`
 Prompt: prompts/06-write-paths.md
 Branch: agent/06-write-paths
