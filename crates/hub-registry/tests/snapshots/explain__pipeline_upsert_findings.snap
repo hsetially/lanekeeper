@@ -1,0 +1,22 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: upsert_findings
+---
+[
+  {
+    "arbiters": [
+      "findings_open_fingerprint"
+    ],
+    "node": "ModifyTable",
+    "relation": "findings"
+  },
+  {
+    "node": "Function Scan"
+  },
+  {
+    "node": "ProjectSet"
+  },
+  {
+    "node": "Result"
+  }
+]

@@ -499,6 +499,9 @@ fn only_budgets_with_a_harness_are_registered() {
     // Prompt 04 (fact engine): `cargo bench -p engine` produces P6.parse_flatten (T2), P7.compare and P7.engine_grid (T5),
     // P7.engine_text_search (T7), P6.index_settings (T3; threshold set by a human, plans/04-fact-engine.blockers.md), and P6,
     // P5.engine_base and P5.engine_per_file_per_swimlane (T8; the last is a harness that writes `target/perf-results/`).
+    // Prompt 05 (registry): `cargo bench -p hub-registry` produces P5 (`incremental_recompute_base`, criterion), P5.per_file_per_swimlane,
+    // P6.hub_full_recompute, P1.hub_delta_to_drift and P2.hub_head_moved_to_drift (T3; harnesses that write `target/perf-results/`).
+    // P15.registry_ingest_versions_per_s (T1) is not registered: plans/05-registry-read-api.blockers.md says why.
     const REGISTERED: &[&str] = &[
         "P6.parse_flatten",
         "P6.index_settings",
@@ -525,6 +528,11 @@ fn only_budgets_with_a_harness_are_registered() {
         "P13",
         "P15.spool_replay_versions_per_s",
         "P15.hub_ack_versions_per_s",
+        "P5",
+        "P5.per_file_per_swimlane",
+        "P6.hub_full_recompute",
+        "P1.hub_delta_to_drift",
+        "P2.hub_head_moved_to_drift",
     ];
     let reg = registry();
     let registered: BTreeSet<&str> = reg

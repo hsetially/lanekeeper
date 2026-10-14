@@ -248,6 +248,57 @@ async fn a_new_file_after_the_inventory_is_a_change_in_a_new_folder() {
     assert!(!rig.observations("fresh/dir/new.yml").await[0].initial);
 }
 
+/// The pipeline (T3) gives a path Git has and NFS does not a row of its own, with no NFS observation. For what NFS says about the path
+/// that row is no state: the file is new on NFS, and its folders are dated by it, exactly as if the row were not there.
+#[tokio::test]
+async fn a_file_that_only_git_had_is_new_on_nfs_and_dates_its_folders() {
+    let Some(rig) = Rig::new().await else { return };
+    rig.first_scan(&[("a.yml", "x: 1")]).await;
+    sqlx::query(
+        "INSERT INTO file_state (swimlane_id, path, logical_file, kind, class, state, git_hash) \
+         VALUES ('sit1', 'gitonly/dir/new.yml', 'gitonly/dir/new.yml', 'base', 'structured', 'unknown', $1::bytea::sha256_hash)",
+    )
+    .bind(content_hash(b"g: 1").as_bytes().as_slice())
+    .execute(&rig.pool)
+    .await
+    .unwrap();
+    rig.delta(delta(
+        2,
+        Some(root(1)),
+        root(2),
+        vec![entry("gitonly/dir/new.yml", b"n: 1", T + 9_000)],
+    ))
+    .await
+    .unwrap();
+    let folders: Vec<(String, bool, i64)> = sqlx::query_as(
+        "SELECT dir_path, initial, (EXTRACT(EPOCH FROM first_seen_at) * 1000)::bigint \
+         FROM swimlane_folders ORDER BY dir_path",
+    )
+    .fetch_all(&rig.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        folders,
+        vec![
+            ("gitonly".to_owned(), false, T + 9_000),
+            ("gitonly/dir".to_owned(), false, T + 9_000)
+        ],
+        "C11: the folder is new on NFS, whatever Git knew of the file"
+    );
+    let state: (Option<Vec<u8>>, bool) = sqlx::query_as(
+        "SELECT nfs_hash::bytea, observed_at IS NOT NULL FROM file_state WHERE swimlane_id = 'sit1' AND path = 'gitonly/dir/new.yml'",
+    )
+    .fetch_one(&rig.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        state,
+        (Some(content_hash(b"n: 1").as_bytes().to_vec()), true),
+        "the NFS columns are filled"
+    );
+    assert!(!rig.observations("gitonly/dir/new.yml").await[0].initial);
+}
+
 #[tokio::test]
 async fn an_out_of_band_change_is_audited_and_its_author_is_unknown() {
     let Some(rig) = Rig::new().await else { return };

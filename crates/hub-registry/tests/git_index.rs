@@ -435,18 +435,23 @@ async fn the_normalised_hash_of_a_git_file_is_read_once_per_object() {
         "the cache is keyed by the object, not the commit"
     );
 
-    // The class is part of the key: the same object as a binary file is its raw hash.
+    // The class changes the answer: the same object as a binary file is its raw hash. That hash is the tree index's own SHA-256, so
+    // it needs no read at all (T3: a binary file is not read, and a denied one must never be).
     let raw = get(&c1, "pic.bmp", FileClass::Binary).unwrap();
     assert_ne!(raw, h, "a binary file is hashed as it is");
     assert_eq!(
         Some(raw),
         drift_hash(Some(&Bytes::from_static(b"a: 1\r\nb: 2\r\n")), FileClass::Binary)
     );
-    assert_eq!(s.git.reads(), 3);
+    assert_eq!(
+        s.git.reads(),
+        2,
+        "the raw hash comes from the index, not from the blob"
+    );
 
     // A path the commit does not have is nothing, and reads nothing.
     assert_eq!(get(&c1, "missing.yml", FileClass::Structured), None);
-    assert_eq!(s.git.reads(), 3);
+    assert_eq!(s.git.reads(), 2);
     assert!(
         s.index
             .git_hash(
@@ -457,6 +462,42 @@ async fn the_normalised_hash_of_a_git_file_is_read_once_per_object() {
             )
             .is_err()
     );
+}
+
+/// D79, S17: the content of a denied file is never read, not even from Git. Its hash for comparing is the raw SHA-256 that the tree
+/// index already holds, so the answer is the same as reading it would give, and no key committed to a repository passes through the
+/// hub's memory because a drift check asked about it. The same holds for a binary file, for the cost of it.
+#[tokio::test]
+async fn a_denied_or_binary_file_is_never_read_from_git() {
+    let Some(s) = setup(RegistryConfig::default()).await else {
+        return;
+    };
+    let secret = b"-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\r\n";
+    let c1 = commit_files(
+        s.git.git(),
+        &[("server.key", secret), ("pic.bmp", b"BM\x00\x01\r\n")],
+    );
+    let hash = |path: &str, class: FileClass| {
+        s.index
+            .git_hash(RepoKind::Base, &c1, &repo_path(path), class)
+            .unwrap()
+    };
+    assert_eq!(
+        hash("server.key", FileClass::Denied),
+        drift_hash(Some(&Bytes::from_static(secret)), FileClass::Denied),
+        "the hash is what reading the file would give"
+    );
+    assert_eq!(
+        hash("pic.bmp", FileClass::Binary),
+        drift_hash(Some(&Bytes::from_static(b"BM\x00\x01\r\n")), FileClass::Binary)
+    );
+    assert_eq!(s.git.reads(), 0, "no blob was read from the repository");
+    assert_eq!(
+        s.metrics.git_hash_count(CacheResult::Miss),
+        0,
+        "and the cache of read blobs was not involved"
+    );
+    assert_eq!(hash("absent.key", FileClass::Denied), None);
 }
 
 #[tokio::test]

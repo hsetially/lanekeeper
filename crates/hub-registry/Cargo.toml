@@ -28,11 +28,13 @@ prometheus-client.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The fingerprint of the rules a swimlane is computed under (T3). Already pinned.
+sha2.workspace = true
 thiserror.workspace = true
 # Runtime-checked queries with binds (plan A39): `query!` needs a live database or `.sqlx` metadata at compile time, which the xtask
 # harness does not have. `json` is for the `jsonb` columns.
 sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json"] }
-tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing.workspace = true
 
 [dev-dependencies]
@@ -48,9 +50,36 @@ testcontainers.workspace = true
 xtask.workspace = true
 tempfile.workspace = true
 proptest.workspace = true
+# The benchmark of the base cost of an incremental recompute (T3, P5) is criterion's; the others write their own results.
+criterion.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 
 # P15 (T1): the registry applying a replayed spool of 360 messages of 50 versions, audit and outbox included, over a real Postgres.
 [[bench]]
 name = "ingest_versions_per_s"
+harness = false
+
+# P5 (T3), the base cost of an incremental recompute of one changed file, criterion.
+[[bench]]
+name = "incremental_recompute_base"
+harness = false
+
+# P5 (T3), 100 changed files in each of 10 swimlanes in one batch.
+[[bench]]
+name = "incremental_recompute_per_file_per_swimlane"
+harness = false
+
+# P6 (T3), the nightly full recompute of 40 swimlanes with the database reads and writes.
+[[bench]]
+name = "full_recompute_target_scale"
+harness = false
+
+# P1 (T3), a scan delta to DriftChanged in the outbox, through the job and the real event bus.
+[[bench]]
+name = "delta_to_drift_changed"
+harness = false
+
+# P2 (T3), a moved head to DriftChanged for all 40 swimlanes.
+[[bench]]
+name = "head_moved_to_drift"
 harness = false

@@ -16,6 +16,10 @@ pub struct PgBlobs {
     fail: AtomicBool,
     fail_reads: AtomicBool,
     hang: AtomicBool,
+    /// The hashes `get_many` was asked for, in order, for tests that say which content was read.
+    requested: std::sync::Mutex<Vec<ContentHash>>,
+    /// Calls to `get_many`.
+    many_calls: AtomicU64,
 }
 
 impl PgBlobs {
@@ -26,7 +30,24 @@ impl PgBlobs {
             fail: AtomicBool::new(false),
             fail_reads: AtomicBool::new(false),
             hang: AtomicBool::new(false),
+            requested: std::sync::Mutex::new(Vec::new()),
+            many_calls: AtomicU64::new(0),
         }
+    }
+
+    /// The hashes asked for through `get_many` since the last `forget_requests`.
+    pub fn requested(&self) -> Vec<ContentHash> {
+        self.requested.lock().unwrap().clone()
+    }
+
+    pub fn forget_requests(&self) {
+        self.requested.lock().unwrap().clear();
+        self.many_calls.store(0, Ordering::SeqCst);
+    }
+
+    /// Calls to `get_many` since the last `forget_requests`.
+    pub fn many_calls(&self) -> u64 {
+        self.many_calls.load(Ordering::SeqCst)
     }
 
     /// Calls to `put`, whether or not the blob was new.
@@ -106,9 +127,24 @@ impl BlobStore for PgBlobs {
         if hs.len() > MAX_GET_MANY {
             return Err(BlobError::TooMany);
         }
+        if self.fail_reads.load(Ordering::SeqCst) {
+            return Err(BlobError::Unavailable);
+        }
+        self.many_calls.fetch_add(1, Ordering::SeqCst);
+        self.requested.lock().unwrap().extend_from_slice(hs);
+        // One statement for the whole batch, like the real store, in the order first requested, each at most once.
+        let wanted: Vec<Vec<u8>> = hs.iter().map(|h| h.as_bytes().to_vec()).collect();
+        let rows: Vec<(Vec<u8>, Vec<u8>)> =
+            sqlx::query_as("SELECT hash::bytea, content::bytea FROM blobs WHERE hash = ANY($1::bytea[])")
+                .bind(&wanted)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|_| BlobError::Unavailable)?;
+        let mut found: std::collections::HashMap<Vec<u8>, Bytes> =
+            rows.into_iter().map(|(h, c)| (h, Bytes::from(c))).collect();
         let mut out = Vec::new();
         for h in hs {
-            if let Some(b) = self.get(h).await? {
+            if let Some(b) = found.remove(h.as_bytes().as_slice()) {
                 out.push((*h, b));
             }
         }

@@ -12,6 +12,10 @@
 //!   drift (which swimlane paths a moved head changes, and the normalised hash of a Git file), and the effective tree hashes. Derived
 //!   facts, idempotent, and off the acknowledgement path.
 //!
+//! - [`pipeline`] (T3): the incremental pipeline. It subscribes to `FileObserved` and `GitHeadMoved`, recomputes only the (swimlane, path)
+//!   pairs they affect with the engine, and writes drift, findings and the effective tree hashes with their events in one transaction for
+//!   each swimlane; a reconcile finds what an event missed, and a nightly job recomputes everything and repairs any divergence.
+//!
 //! Nothing here reads a clock or an environment variable directly: instants come from a [`clock::Clock`] and every limit is a
 //! field of [`config::RegistryConfig`] with a tested default. Queries are runtime-checked `sqlx::query` with binds (plan A39);
 //! no SQL is built from input. Errors carry no input text (S21), and logs carry ids, paths, hashes and counts, never content (S10).
@@ -30,6 +34,7 @@ pub mod error;
 pub mod index;
 pub mod ingest;
 pub mod metrics;
+pub mod pipeline;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{ConfigError, RegistryConfig};
@@ -41,3 +46,6 @@ pub use index::{
 };
 pub use ingest::{AgentIngest, IngestDeps, ToolWriteRecord, ToolWrites, fuzzing};
 pub use metrics::RegistryMetrics;
+pub use pipeline::{
+    BatchReport, LaneReport, NightlyReport, Pipeline, PipelineDeps, PipelineHandle, ReconcileOutcome, Work,
+};

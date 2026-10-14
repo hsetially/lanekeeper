@@ -118,7 +118,7 @@ fn json_text<T: serde::Serialize>(v: &T) -> Result<String, RegistryError> {
 }
 
 /// A row of `file_state`, as `stored` reads it.
-type StoredRow = (String, Option<Vec<u8>>, String, bool, i64);
+type StoredRow = (String, Option<Vec<u8>>, String, bool, bool, i64);
 /// A row of `file_observations` of source `tool_write`, as `tool_writes` reads it.
 type ToolWriteRow = (String, Option<Vec<u8>>, i64, Option<serde_json::Value>);
 /// The key of an observation: its path, its time and its hash (`None` for a removal).
@@ -574,7 +574,7 @@ impl Inner {
         paths: &[String],
     ) -> Result<HashMap<NfsPath, Stored>, RegistryError> {
         let sql = format!(
-            "SELECT path, nfs_hash::bytea, class, denied, COALESCE({}, 0) \
+            "SELECT path, nfs_hash::bytea, class, denied, observed_at IS NOT NULL, COALESCE({}, 0) \
              FROM file_state WHERE swimlane_id = $1 AND path = ANY($2::text[])",
             ms("observed_at")
         );
@@ -589,11 +589,12 @@ impl Inner {
             )
             .await?;
         let mut out = HashMap::with_capacity(rows.len());
-        for (path, hash, class, denied, observed_at_ms) in rows {
+        for (path, hash, class, denied, observed, observed_at_ms) in rows {
             out.insert(
                 NfsPath::parse(&path).map_err(|_| RegistryError::Corrupt)?,
                 Stored {
                     hash: opt_hash(hash)?,
+                    observed,
                     observed_at_ms,
                     class: FileClass::from_str(&class).map_err(|_| RegistryError::Corrupt)?,
                     denied,

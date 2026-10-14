@@ -97,7 +97,7 @@ statistic = "p95"
 threshold = 50
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P5.per_file_per_swimlane"
@@ -107,7 +107,7 @@ statistic = "p95"
 threshold = 2
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P6"
@@ -529,7 +529,7 @@ statistic = "p95"
 threshold = 2000
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 # P2 is 10 s from the push to the drift through the webhook; prompt 03b spends the webhook, the fetch and the tree index
 # (`P2`, `hub-platform/push_to_drift_webhook`). The registry gets 1 s from `GitHeadMoved` to the drift in the outbox.
@@ -541,7 +541,7 @@ statistic = "p95"
 threshold = 1000
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 # The nightly full recompute of docs/performance.md (P6, 3 minutes), as the hub runs it: the engine's `recompute_all` plus the
 # database reads of the file lists and blobs and the diff-only writes. The engine's own share is `P6` (`engine/`).
@@ -553,7 +553,7 @@ statistic = "p95"
 threshold = 180000
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 # Prompt 05, T5: ranking the deployable branches of one swimlane over the tree indexes, without re-reading Git.
 [[budget]]

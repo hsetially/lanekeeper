@@ -37,8 +37,12 @@ impl PgTestBus {
                 .fetch_all(&self.pool)
                 .await
                 .unwrap();
+        // The registry's own tests write plain events; the real bus writes `{"v":1,"event":{...}}`. Both are read.
         rows.into_iter()
-            .map(|v| serde_json::from_value(v).unwrap())
+            .map(|v| match v.get("event") {
+                Some(inner) if v.get("v").is_some() => serde_json::from_value(inner.clone()).unwrap(),
+                _ => serde_json::from_value(v).unwrap(),
+            })
             .collect()
     }
 

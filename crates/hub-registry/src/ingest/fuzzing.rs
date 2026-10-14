@@ -127,6 +127,7 @@ pub fn plan_versions(
     };
     let stored = stored.map(|(hash, observed_at_ms)| Stored {
         hash,
+        observed: true,
         observed_at_ms,
         class: FileClass::Structured,
         denied: false,

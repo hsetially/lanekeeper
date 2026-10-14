@@ -82,6 +82,37 @@ pub enum CacheResult {
     Miss,
 }
 
+/// What the pipeline did with a swimlane in one batch (T3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum LaneResult {
+    /// Only the affected paths were recomputed.
+    Incremental,
+    /// The whole swimlane was loaded and computed (first sight, a rules change, too many paths, a nightly run).
+    Whole,
+    /// The swimlane has no inventory yet, so there is nothing to compare.
+    NoInventory,
+    /// The batch for the swimlane failed; its memory is dropped and the next batch starts from the database.
+    Failed,
+}
+
+/// An in-process signal to the pipeline (T3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum SignalResult {
+    Accepted,
+    /// The queue was full: the reconcile finds the change.
+    Dropped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct LaneLabels {
+    result: LaneResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct SignalLabels {
+    result: SignalResult,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
 struct IndexLabels {
     result: IndexResult,
@@ -126,6 +157,18 @@ pub struct RegistryMetrics {
     head_moves: Family<MoveLabels, Counter>,
     git_hashes: Family<CacheLabels, Counter>,
     tree_rows: Counter,
+    pipeline_lanes: Family<LaneLabels, Counter>,
+    pipeline_paths: Counter,
+    pipeline_rows: Counter,
+    pipeline_findings: Counter,
+    pipeline_drift_paths: Counter,
+    pipeline_baselines: Counter,
+    pipeline_marks_cleared: Counter,
+    pipeline_divergences: Counter,
+    pipeline_reconciles: Counter,
+    pipeline_signals: Family<SignalLabels, Counter>,
+    pipeline_lanes_in_memory: Gauge,
+    pipeline_seconds: Histogram,
 }
 
 impl Default for RegistryMetrics {
@@ -148,11 +191,25 @@ impl Default for RegistryMetrics {
             head_moves: Family::default(),
             git_hashes: Family::default(),
             tree_rows: Counter::default(),
+            pipeline_lanes: Family::default(),
+            pipeline_paths: Counter::default(),
+            pipeline_rows: Counter::default(),
+            pipeline_findings: Counter::default(),
+            pipeline_drift_paths: Counter::default(),
+            pipeline_baselines: Counter::default(),
+            pipeline_marks_cleared: Counter::default(),
+            pipeline_divergences: Counter::default(),
+            pipeline_reconciles: Counter::default(),
+            pipeline_signals: Family::default(),
+            pipeline_lanes_in_memory: Gauge::default(),
+            // 1 ms to about 8 s; a whole swimlane takes seconds, an incremental batch milliseconds.
+            pipeline_seconds: Histogram::new(exponential_buckets(0.001, 2.0, 14)),
         }
     }
 }
 
 impl RegistryMetrics {
+    #[allow(clippy::too_many_lines)] // one registration per metric
     pub fn register(&self, registry: &mut Registry) {
         registry.register(
             "registry_ingest_messages",
@@ -228,6 +285,66 @@ impl RegistryMetrics {
             "registry_tree_rows_written",
             "Rows of effective_tree_hashes and effective_files written or deleted",
             self.tree_rows.clone(),
+        );
+        registry.register(
+            "registry_pipeline_lanes",
+            "Swimlanes handled by the pipeline, by how much of each was recomputed",
+            self.pipeline_lanes.clone(),
+        );
+        registry.register(
+            "registry_pipeline_paths",
+            "Affected paths the pipeline recomputed",
+            self.pipeline_paths.clone(),
+        );
+        registry.register(
+            "registry_pipeline_rows_written",
+            "file_state rows the pipeline wrote or deleted",
+            self.pipeline_rows.clone(),
+        );
+        registry.register(
+            "registry_pipeline_findings_written",
+            "Findings the pipeline opened, changed or resolved",
+            self.pipeline_findings.clone(),
+        );
+        registry.register(
+            "registry_pipeline_drift_paths",
+            "Paths named in DriftChanged events",
+            self.pipeline_drift_paths.clone(),
+        );
+        registry.register(
+            "registry_pipeline_baselines_set",
+            "Baselines set because NFS and Git converged",
+            self.pipeline_baselines.clone(),
+        );
+        registry.register(
+            "registry_pipeline_marks_cleared",
+            "Intentional-divergence marks cleared because the file moved on",
+            self.pipeline_marks_cleared.clone(),
+        );
+        registry.register(
+            "registry_pipeline_divergences",
+            "Paths where a full recompute or the reconcile found the stored state wrong and repaired it",
+            self.pipeline_divergences.clone(),
+        );
+        registry.register(
+            "registry_pipeline_reconciles",
+            "Reconcile scans run",
+            self.pipeline_reconciles.clone(),
+        );
+        registry.register(
+            "registry_pipeline_signals",
+            "In-process signals to the pipeline, by outcome",
+            self.pipeline_signals.clone(),
+        );
+        registry.register(
+            "registry_pipeline_lanes_in_memory",
+            "Swimlane states the pipeline holds in memory",
+            self.pipeline_lanes_in_memory.clone(),
+        );
+        registry.register(
+            "registry_pipeline_batch_seconds",
+            "Time to bring one batch of swimlanes up to date",
+            self.pipeline_seconds.clone(),
         );
     }
 
@@ -307,6 +424,123 @@ impl RegistryMetrics {
         if n > 0 {
             self.tree_rows.inc_by(n);
         }
+    }
+
+    pub(crate) fn pipeline_lane(&self, result: LaneResult) {
+        self.pipeline_lanes.get_or_create(&LaneLabels { result }).inc();
+    }
+
+    pub(crate) fn pipeline_paths(&self, n: u64) {
+        if n > 0 {
+            self.pipeline_paths.inc_by(n);
+        }
+    }
+
+    pub(crate) fn pipeline_rows(&self, n: u64) {
+        if n > 0 {
+            self.pipeline_rows.inc_by(n);
+        }
+    }
+
+    pub(crate) fn pipeline_findings(&self, n: u64) {
+        if n > 0 {
+            self.pipeline_findings.inc_by(n);
+        }
+    }
+
+    pub(crate) fn pipeline_drift_paths(&self, n: u64) {
+        if n > 0 {
+            self.pipeline_drift_paths.inc_by(n);
+        }
+    }
+
+    pub(crate) fn pipeline_baselines(&self, n: u64) {
+        if n > 0 {
+            self.pipeline_baselines.inc_by(n);
+        }
+    }
+
+    pub(crate) fn pipeline_marks_cleared(&self, n: u64) {
+        if n > 0 {
+            self.pipeline_marks_cleared.inc_by(n);
+        }
+    }
+
+    pub(crate) fn pipeline_divergences(&self, n: u64) {
+        if n > 0 {
+            self.pipeline_divergences.inc_by(n);
+        }
+    }
+
+    pub(crate) fn pipeline_reconcile(&self) {
+        self.pipeline_reconciles.inc();
+    }
+
+    pub(crate) fn pipeline_signal(&self, result: SignalResult) {
+        self.pipeline_signals
+            .get_or_create(&SignalLabels { result })
+            .inc();
+    }
+
+    pub(crate) fn pipeline_lanes_in_memory(&self, n: usize) {
+        self.pipeline_lanes_in_memory
+            .set(i64::try_from(n).unwrap_or(i64::MAX));
+    }
+
+    pub(crate) fn pipeline_batch_seconds(&self, seconds: f64) {
+        self.pipeline_seconds.observe(seconds);
+    }
+
+    /// Swimlanes handled by the pipeline, by result, for tests.
+    pub fn pipeline_lane_count(&self, result: LaneResult) -> u64 {
+        self.pipeline_lanes.get_or_create(&LaneLabels { result }).get()
+    }
+
+    /// Paths recomputed by the pipeline, for tests.
+    pub fn pipeline_paths_count(&self) -> u64 {
+        self.pipeline_paths.get()
+    }
+
+    /// `file_state` rows written or deleted by the pipeline, for tests.
+    pub fn pipeline_rows_count(&self) -> u64 {
+        self.pipeline_rows.get()
+    }
+
+    /// Paths named in `DriftChanged` events, for tests.
+    pub fn pipeline_drift_paths_count(&self) -> u64 {
+        self.pipeline_drift_paths.get()
+    }
+
+    /// Baselines set by convergence, for tests.
+    pub fn pipeline_baselines_count(&self) -> u64 {
+        self.pipeline_baselines.get()
+    }
+
+    /// Marks cleared, for tests.
+    pub fn pipeline_marks_cleared_count(&self) -> u64 {
+        self.pipeline_marks_cleared.get()
+    }
+
+    /// Paths repaired by a full recompute or the reconcile, for tests.
+    pub fn pipeline_divergences_count(&self) -> u64 {
+        self.pipeline_divergences.get()
+    }
+
+    /// Reconcile scans, for tests.
+    pub fn pipeline_reconciles_count(&self) -> u64 {
+        self.pipeline_reconciles.get()
+    }
+
+    /// Signals by outcome, for tests.
+    pub fn pipeline_signal_count(&self, result: SignalResult) -> u64 {
+        self.pipeline_signals
+            .get_or_create(&SignalLabels { result })
+            .get()
+    }
+
+    /// Swimlane states in memory, for tests.
+    pub fn pipeline_lanes_in_memory_count(&self) -> i64 {
+        self.pipeline_lanes_in_memory.get()
     }
 
     /// The count of blobs by what became of them in the settings index, for tests.

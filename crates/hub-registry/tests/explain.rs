@@ -7,12 +7,21 @@ mod support;
 
 use hub_registry::index::settings::{MARKED_SQL, UNINDEXED_SQL};
 use hub_registry::index::tree_hashes::{LOAD_DIRS_SQL, LOAD_FILES_SQL};
+use hub_registry::pipeline::lane_loader::{
+    BASELINES_OF_LANE_SQL, BASELINES_OF_PATHS_SQL, MARKS_OF_LANE_SQL, MARKS_OF_PATHS_SQL, ROWS_OF_LANE_SQL,
+    ROWS_OF_PATHS_SQL,
+};
+use hub_registry::pipeline::persist::{
+    DELETE_ROWS_SQL, OPEN_FINDINGS_SQL, RESOLVE_FINDINGS_SQL, UPSERT_BASELINES_SQL, UPSERT_FINDINGS_SQL,
+    UPSERT_ROWS_SQL,
+};
 use serde_json::Value;
 use sqlx::PgPool;
 use support::pg::TestDb;
 
 /// Tables that hold thousands of rows at design scale. A sequential scan of one of these is a failure.
-const LARGE: [&str; 9] = [
+const LARGE: [&str; 10] = [
+    "findings",
     "file_state",
     "file_observations",
     "settings_index",
@@ -48,6 +57,26 @@ async fn seeded() -> Option<(TestDb, PgPool)> {
          FROM generate_series(1, 40) l, generate_series(0, 50) d",
         "INSERT INTO effective_files (swimlane_id, logical_file, hash) \
          SELECT swimlane_id, logical_file, nfs_hash FROM file_state",
+        // T3. Two observations of every file (the history keeps every version); the newest is the one the row points at, and one in ten
+        // of those moved a state, so the row has a previous state.
+        "INSERT INTO file_observations (swimlane_id, path, hash, source, class, observed_at, previous_state, previous_hash) \
+         SELECT swimlane_id, path, nfs_hash, 'scan', class, now() - (k || ' minutes')::interval, \
+                CASE WHEN k = 1 AND hashtext(path || swimlane_id) % 10 = 0 THEN 'in_sync' END, \
+                CASE WHEN k = 1 AND hashtext(path || swimlane_id) % 10 = 0 THEN nfs_hash END \
+         FROM file_state, generate_series(1, 2) k",
+        "UPDATE file_state fs SET last_observation_id = \
+           (SELECT max(o.id) FROM file_observations o WHERE o.swimlane_id = fs.swimlane_id AND o.path = fs.path)",
+        // Half of the files have a baseline (an adopted swimlane); 300 findings per swimlane; 1 file in 100 is a deliberate divergence.
+        "INSERT INTO baselines (swimlane_id, path, hash, repo, commit_id) \
+         SELECT swimlane_id, path, nfs_hash, 'base', 'c1' FROM file_state WHERE hashtext(path || swimlane_id) % 2 = 0",
+        "INSERT INTO findings (swimlane_id, kind, path, severity, message, fingerprint) \
+         SELECT 'lane' || l, 'drift', 'dir' || (f % 50) || '/file' || f || '.yml', 'low', 'a finding', 'fp' || f \
+         FROM generate_series(1, 40) l, generate_series(1, 300) f",
+        // The users the marks name are not seeded: the foreign key is not what is measured.
+        "SET session_replication_role = replica",
+        "INSERT INTO intentional_divergence (swimlane_id, path, nfs_hash, git_hash, marked_by_tid, marked_by_oid) \
+         SELECT swimlane_id, path, nfs_hash, nfs_hash, 't', 'o' FROM file_state WHERE hashtext(path || swimlane_id) % 100 = 0",
+        "SET session_replication_role = DEFAULT",
         "ANALYZE",
     ] {
         sqlx::raw_sql(sql).execute(&mut admin).await.unwrap();
@@ -65,6 +94,10 @@ fn nodes(plan: &Value, out: &mut Vec<Value>) {
     if let Some(index) = plan.get("Index Name") {
         node.insert("index".into(), index.clone());
     }
+    // The index an INSERT ... ON CONFLICT decides on.
+    if let Some(arbiters) = plan.get("Conflict Arbiter Indexes") {
+        node.insert("arbiters".into(), arbiters.clone());
+    }
     out.push(Value::Object(node));
     if let Some(children) = plan.get("Plans").and_then(Value::as_array) {
         for child in children {
@@ -79,6 +112,10 @@ enum Arg<'a> {
     Bytes(&'a [u8]),
     Int(i64),
     ByteaArray(Vec<Vec<u8>>),
+    TextArray(Vec<String>),
+    OptTextArray(Vec<Option<String>>),
+    OptByteaArray(Vec<Option<Vec<u8>>>),
+    BoolArray(Vec<bool>),
 }
 
 async fn explain(pool: &PgPool, sql: &str, args: &[Arg<'_>]) -> Value {
@@ -90,6 +127,10 @@ async fn explain(pool: &PgPool, sql: &str, args: &[Arg<'_>]) -> Value {
             Arg::Bytes(b) => query.bind(*b),
             Arg::Int(i) => query.bind(*i),
             Arg::ByteaArray(a) => query.bind(a.clone()),
+            Arg::TextArray(a) => query.bind(a.clone()),
+            Arg::OptTextArray(a) => query.bind(a.clone()),
+            Arg::OptByteaArray(a) => query.bind(a.clone()),
+            Arg::BoolArray(a) => query.bind(a.clone()),
         };
     }
     let row: Value = query.fetch_one(pool).await.unwrap();
@@ -143,6 +184,146 @@ async fn hot_queries_have_no_sequential_scan_on_large_tables() {
     let files = explain(&pool, LOAD_FILES_SQL, &[Arg::Text("lane7"), Arg::Int(200_000)]).await;
     no_large_sequential_scan("stored files", &files);
     insta::assert_json_snapshot!("stored_files_of_a_swimlane", files);
+}
+
+/// The first `n` paths of the swimlane `lane7` (every tenth of its files, so that they are spread over the table).
+fn some_paths(n: usize) -> Vec<String> {
+    (1..=n)
+        .map(|i| format!("dir{}/file{}.yml", (i * 10) % 50, i * 10))
+        .collect()
+}
+
+#[tokio::test]
+async fn pipeline_queries_have_no_sequential_scan_on_large_tables() {
+    let Some((_db, pool)) = seeded().await else { return };
+    let paths = some_paths(50);
+    let lanes: Vec<String> = vec!["lane7".to_owned(); paths.len()];
+    let paths_or_lanes = || {
+        [
+            Arg::TextArray(lanes.clone()),
+            Arg::TextArray(paths.clone()),
+            Arg::Int(200_000),
+        ]
+    };
+
+    // T3. The load of a whole swimlane (a takeover, the nightly run, a rules change): its rows with the observation they point at.
+    let rows = explain(&pool, ROWS_OF_LANE_SQL, &[Arg::Text("lane7"), Arg::Int(200_001)]).await;
+    no_large_sequential_scan("rows of a swimlane", &rows);
+    insta::assert_json_snapshot!("pipeline_rows_of_a_swimlane", rows);
+    let baselines = explain(
+        &pool,
+        BASELINES_OF_LANE_SQL,
+        &[Arg::Text("lane7"), Arg::Int(200_001)],
+    )
+    .await;
+    no_large_sequential_scan("baselines of a swimlane", &baselines);
+    insta::assert_json_snapshot!("pipeline_baselines_of_a_swimlane", baselines);
+    let marks = explain(&pool, MARKS_OF_LANE_SQL, &[Arg::Text("lane7"), Arg::Int(200_001)]).await;
+    no_large_sequential_scan("marks of a swimlane", &marks);
+    insta::assert_json_snapshot!("pipeline_marks_of_a_swimlane", marks);
+
+    // T3. An incremental batch: the rows, baselines and marks of a few paths, by key.
+    let rows = explain(&pool, ROWS_OF_PATHS_SQL, &paths_or_lanes()).await;
+    no_large_sequential_scan("rows of paths", &rows);
+    insta::assert_json_snapshot!("pipeline_rows_of_paths", rows);
+    let baselines = explain(&pool, BASELINES_OF_PATHS_SQL, &paths_or_lanes()).await;
+    no_large_sequential_scan("baselines of paths", &baselines);
+    insta::assert_json_snapshot!("pipeline_baselines_of_paths", baselines);
+    let marks = explain(&pool, MARKS_OF_PATHS_SQL, &paths_or_lanes()).await;
+    no_large_sequential_scan("marks of paths", &marks);
+    insta::assert_json_snapshot!("pipeline_marks_of_paths", marks);
+
+    // T3. The open findings of the engine's kinds, compared with a computation.
+    let kinds = vec!["drift".to_owned(), "orphan_file".to_owned()];
+    let findings = explain(
+        &pool,
+        OPEN_FINDINGS_SQL,
+        &[Arg::Text("lane7"), Arg::TextArray(kinds), Arg::Int(100_000)],
+    )
+    .await;
+    no_large_sequential_scan("open findings", &findings);
+    insta::assert_json_snapshot!("pipeline_open_findings", findings);
+
+    // T3. What a batch writes: rows by their key, findings by their open fingerprint.
+    let n = paths.len();
+    let upsert_rows = explain(
+        &pool,
+        UPSERT_ROWS_SQL,
+        &[
+            Arg::Text("lane7"),
+            Arg::TextArray(paths.clone()),
+            Arg::TextArray(paths.clone()),
+            Arg::TextArray(vec!["base".to_owned(); n]),
+            Arg::TextArray(vec!["structured".to_owned(); n]),
+            Arg::OptTextArray(vec![None; n]),
+            Arg::OptByteaArray(vec![Some(vec![7; 32]); n]),
+            Arg::OptByteaArray(vec![None; n]),
+            Arg::TextArray(vec!["unknown".to_owned(); n]),
+            Arg::Int(1_700_000_000_000),
+            Arg::BoolArray(vec![false; n]),
+        ],
+    )
+    .await;
+    no_large_sequential_scan("upsert rows", &upsert_rows);
+    insta::assert_json_snapshot!("pipeline_upsert_rows", upsert_rows);
+    let delete_rows = explain(
+        &pool,
+        DELETE_ROWS_SQL,
+        &[Arg::Text("lane7"), Arg::TextArray(paths.clone())],
+    )
+    .await;
+    no_large_sequential_scan("delete rows", &delete_rows);
+    insta::assert_json_snapshot!("pipeline_delete_rows", delete_rows);
+    let upsert_baselines = explain(
+        &pool,
+        UPSERT_BASELINES_SQL,
+        &[
+            Arg::Text("lane7"),
+            Arg::TextArray(paths.clone()),
+            Arg::ByteaArray(vec![vec![7; 32]; n]),
+            Arg::TextArray(vec!["base".to_owned(); n]),
+            Arg::OptTextArray(vec![None; n]),
+            Arg::TextArray(vec!["c1".to_owned(); n]),
+            Arg::OptByteaArray(vec![None; n]),
+            Arg::Int(1_700_000_000_000),
+        ],
+    )
+    .await;
+    no_large_sequential_scan("upsert baselines", &upsert_baselines);
+    insta::assert_json_snapshot!("pipeline_upsert_baselines", upsert_baselines);
+    let fingerprints: Vec<String> = (1..=50).map(|f| format!("fp{f}")).collect();
+    let upsert_findings = explain(
+        &pool,
+        UPSERT_FINDINGS_SQL,
+        &[
+            Arg::Text("lane7"),
+            Arg::TextArray(vec!["drift".to_owned(); n]),
+            Arg::TextArray(paths.clone()),
+            Arg::TextArray(vec!["low".to_owned(); n]),
+            Arg::TextArray(vec!["[]".to_owned(); n]),
+            Arg::TextArray(vec!["a finding".to_owned(); n]),
+            Arg::TextArray(vec!["[]".to_owned(); n]),
+            Arg::TextArray(vec!["{}".to_owned(); n]),
+            Arg::TextArray(fingerprints.clone()),
+            Arg::Int(1_700_000_000_000),
+        ],
+    )
+    .await;
+    no_large_sequential_scan("upsert findings", &upsert_findings);
+    insta::assert_json_snapshot!("pipeline_upsert_findings", upsert_findings);
+    let resolve_findings = explain(
+        &pool,
+        RESOLVE_FINDINGS_SQL,
+        &[
+            Arg::Text("lane7"),
+            Arg::TextArray(vec!["drift".to_owned(); n]),
+            Arg::TextArray(fingerprints),
+            Arg::Int(1_700_000_000_000),
+        ],
+    )
+    .await;
+    no_large_sequential_scan("resolve findings", &resolve_findings);
+    insta::assert_json_snapshot!("pipeline_resolve_findings", resolve_findings);
 }
 
 #[tokio::test]

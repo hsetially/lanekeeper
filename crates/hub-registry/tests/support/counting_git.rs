@@ -51,6 +51,11 @@ impl CountingGit {
         self.reads.load(Ordering::SeqCst)
     }
 
+    /// Start counting reads again from zero.
+    pub fn reset_reads(&self) {
+        self.reads.store(0, Ordering::SeqCst);
+    }
+
     pub fn diffs(&self) -> u64 {
         self.diffs.load(Ordering::SeqCst)
     }

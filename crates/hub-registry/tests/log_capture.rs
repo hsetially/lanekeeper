@@ -255,3 +255,132 @@ async fn planted_secret_never_reaches_a_log_line_of_the_index() {
         }
     }
 }
+
+/// The pipeline reads the content of every file it recomputes, and every message it logs is about a swimlane, a count or an error
+/// class. Values planted in a file on NFS, in Git (base and tenant), in a file that does not parse, in a duplicated key and in a denied
+/// file, through a whole load, an incremental batch, a blob store that fails and one that has lost a blob, a Git head that moves, a
+/// reconcile, the nightly recompute and a lost lease: none of them may show in a log line, and no line holds SQL text.
+#[tokio::test]
+async fn planted_secret_never_reaches_a_log_line_of_the_pipeline() {
+    use std::time::Duration;
+
+    use domain::{DomainEvent, GitRef, RepoKind};
+    use hub_platform::jobs::{JobContext, JobError};
+    use ports::EventBus;
+    use support::world::{RunningJob, World, wait_until};
+
+    const IN_NFS: &str = "PLANTED-NFS-VALUE-31c4";
+    const IN_BASE: &str = "PLANTED-BASE-VALUE-52d8";
+    const IN_TENANT: &str = "PLANTED-TENANT-VALUE-77e1";
+    const BROKEN: &str = "PLANTED-BROKEN-VALUE-90fa";
+    const DUPLICATED: &str = "PLANTED-DUPLICATE-VALUE-a3b6";
+    const DENIED: &str = "PLANTED-DENIED-KEY-c9d0";
+    const LATER: &str = "PLANTED-LATER-VALUE-e5f2";
+    const PLANTED: [&str; 7] = [IN_NFS, IN_BASE, IN_TENANT, BROKEN, DUPLICATED, DENIED, LATER];
+
+    let Some(mut w) = World::new(&["sit1"]).await else {
+        return;
+    };
+    let (capture, _guard) = LogCapture::install();
+
+    let base = format!("password: {IN_BASE}\n");
+    let tenant = format!("token: {IN_TENANT}\n");
+    w.base_commit(&[
+        ("config/app/core.yml", Some(base.as_str())),
+        ("config/server.key", Some("KEY")),
+    ]);
+    w.tenant_commit("sit1", &[("data/config/app/core.yml", Some(tenant.as_str()))]);
+    let nfs = format!("password: {IN_NFS}\n");
+    let broken = format!("a: [{BROKEN}\n");
+    let duplicated = format!("key: {DUPLICATED}\nkey: {DUPLICATED}-2\n");
+    let denied = format!("KEY {DENIED}");
+    w.inventory(&[
+        ("app/core.yml", nfs.as_str()),
+        ("app/core-sit1.yml", tenant.as_str()),
+        ("app/broken.yml", broken.as_str()),
+        ("app/duplicated.yml", duplicated.as_str()),
+        ("server.key", denied.as_str()),
+    ])
+    .await;
+
+    // A whole load and an incremental batch.
+    w.whole().await;
+    let changed = format!("password: {LATER}\n");
+    w.nfs_change(&[("app/core.yml", changed.as_str())]).await;
+    w.paths(&["app/core.yml"]).await;
+
+    // A blob store that fails, and one that has lost the blob.
+    w.nfs_change(&[("app/core.yml", nfs.as_str())]).await;
+    w.rig.blobs.set_failing_reads(true);
+    let _ = w
+        .pipeline
+        .process(vec![(
+            w.lane(),
+            hub_registry::Work::Paths([support::rig::path("app/core.yml")].into()),
+        )])
+        .await;
+    w.rig.blobs.set_failing_reads(false);
+    sqlx::query("DELETE FROM blobs WHERE hash = $1::bytea::sha256_hash")
+        .bind(ports::content_hash(nfs.as_bytes()).as_bytes().as_slice())
+        .execute(&w.rig.pool)
+        .await
+        .unwrap();
+    let _ = w
+        .pipeline
+        .process(vec![(
+            w.lane(),
+            hub_registry::Work::Paths([support::rig::path("app/core.yml")].into()),
+        )])
+        .await;
+
+    // The nightly recompute, and the job: a moved Git head, a reconcile, a lost lease.
+    let _ = w.pipeline.refresh_all().await;
+    let job = RunningJob::start(&w.pipeline);
+    wait_until("the job to start", Duration::from_secs(20), || async {
+        !w.pipeline.lanes_in_memory().await.is_empty()
+    })
+    .await;
+    let from = w.head(RepoKind::Base, "master");
+    let to = w.base_commit(&[("config/app/core.yml", Some("password: x\n"))]);
+    w.rig
+        .events
+        .as_ref()
+        .unwrap()
+        .publish(DomainEvent::GitHeadMoved {
+            repo: RepoKind::Base,
+            branch: GitRef::parse("master").unwrap(),
+            from: Some(from),
+            to,
+        })
+        .await
+        .unwrap();
+    let _ = w.pipeline.reconcile().await;
+    assert!(matches!(job.lose_lease().await, Err(JobError::LeaseLost)));
+    let nightly = w.pipeline.nightly_job();
+    let (ctx, lease): (JobContext, _) =
+        JobContext::held_until_told_otherwise(hub_registry::pipeline::NIGHTLY_JOB);
+    lease.send_replace(tokio::time::Instant::now() - Duration::from_secs(1));
+    assert_eq!(nightly.run(&ctx).await, Err(JobError::LeaseLost));
+
+    let text = capture.text();
+    let ours: Vec<&str> = text.lines().filter(|l| l.contains(" hub_registry")).collect();
+    assert!(
+        ours.iter().any(|l| l.contains("the pipeline job")),
+        "the capture sees the job: {ours:?}"
+    );
+    assert!(
+        ours.iter().any(|l| l.contains("pipeline batch")),
+        "and a batch: {ours:?}"
+    );
+    for secret in PLANTED {
+        assert!(!text.contains(secret), "{secret} reached the log: {text}");
+    }
+    for line in ours {
+        for sql in ["SELECT", "INSERT", "UPDATE", "unnest", "file_state"] {
+            assert!(
+                !line.contains(sql),
+                "SQL text reached a log line of the registry: {line}"
+            );
+        }
+    }
+}

@@ -32,6 +32,10 @@ pub(crate) const TOOL_WRITE_SLACK_MS: i64 = 60_000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Stored {
     pub hash: Option<ContentHash>,
+    /// NFS has reported this path at some time (a file, or the trace of a removed one). A row that Git alone gave the path (the pipeline
+    /// creates one for every file a repository has and NFS does not) has no observation, and for what NFS says about the path it is
+    /// as good as no row.
+    pub observed: bool,
     pub observed_at_ms: i64,
     pub class: domain::FileClass,
     pub denied: bool,
@@ -148,6 +152,7 @@ pub(crate) fn plan_path(
     });
     let removals = versions.iter().filter(|v| matches!(v, Version::Removal));
 
+    let stored = stored.filter(|s| s.observed);
     let existed = stored.is_some();
     let mut cur_hash = stored.and_then(|s| s.hash);
     let mut cur_at = stored.map_or(-1, |s| s.observed_at_ms);
@@ -325,6 +330,7 @@ mod tests {
     fn stored(hash: Option<&str>, at: i64) -> Stored {
         Stored {
             hash: hash.map(h),
+            observed: true,
             observed_at_ms: at,
             class: FileClass::Structured,
             denied: false,

@@ -27,7 +27,9 @@
 //! Drift compares normalised hashes (line endings, `drift_hash`), but the tree index holds the raw SHA-256. [`GitIndex::git_hash`] reads
 //! the blob once and caches the normalised hash by `(repo, object id, class)`, in a cache bounded in bytes. A nightly run therefore
 //! reads each distinct Git blob once, however many swimlanes and commits name it. The class is part of the key because the same bytes
-//! under a `.yml` and a `.png` name hash differently.
+//! under a `.yml` and a `.png` name hash differently. Only a `structured` or `text` file needs the blob, to normalise its line endings:
+//! a `binary` or `denied` file is compared as it is, so its hash is the index's own SHA-256 and the blob is never read (for a denied
+//! file that is a rule: its content is not read for anyone, D79).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -265,6 +267,12 @@ impl GitIndex {
         let Some(entry) = index.get(path) else {
             return Ok(None);
         };
+        // A binary or denied file is compared as it is, so its hash for drift is the SHA-256 the index already holds: no read, and
+        // no cache entry. For a denied file this is a rule, not a saving: its content is never read for anyone (D79, S17), and a key
+        // that is committed to a repository must not pass through the hub's memory because a drift check asked about it.
+        if matches!(class, FileClass::Binary | FileClass::Denied) {
+            return Ok(Some(entry.sha256));
+        }
         let key = (repo, entry.git_oid.clone(), class);
         if let Some(hash) = inner.hashes.get(&key) {
             inner.metrics.git_hash(CacheResult::Hit);

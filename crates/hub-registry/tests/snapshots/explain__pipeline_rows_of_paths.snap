@@ -1,0 +1,31 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: rows
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Function Scan"
+  },
+  {
+    "index": "file_state_prefix_idx",
+    "node": "Index Scan",
+    "relation": "file_state"
+  },
+  {
+    "node": "Limit"
+  },
+  {
+    "index": "file_observations_pkey",
+    "node": "Index Scan",
+    "relation": "file_observations"
+  }
+]

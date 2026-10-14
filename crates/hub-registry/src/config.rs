@@ -95,6 +95,30 @@ pub struct RegistryConfig {
     /// One Git operation (a tree diff, a tree index, a blob read), as seen by the caller. The operation itself runs in
     /// `spawn_blocking` and cannot be cancelled, so a timeout frees the caller and not the thread.
     pub git_timeout: Duration,
+
+    // ---------------------------------------------------------------------------------------------- the pipeline (T3)
+    /// How long a swimlane's changes are gathered before they are recomputed together (D66, P13): a burst is one recompute.
+    pub coalesce_window: Duration,
+    /// Swimlanes with changes waiting in the coalescer. Past it a swimlane's changes are not kept; the next reconcile finds them.
+    pub max_coalesced_lanes: usize,
+    /// Swimlanes whose state the pipeline keeps in memory (hashes and findings, never content). The least recently used goes first.
+    pub max_lanes_in_memory: usize,
+    /// How often the pipeline compares its memory with the database and with Git, and so finds what an event missed.
+    pub reconcile_interval: Duration,
+    /// How often it looks for a swimlane whose first inventory is done and that has not been computed yet.
+    pub inventory_poll_interval: Duration,
+    /// In-process signals (a baseline or a mark changed) waiting for the pipeline. A full queue drops the signal and counts it; the
+    /// reconcile finds the change.
+    pub signal_queue: usize,
+    /// How long one run of the pipeline job goes on before it ends and starts again (always shorter than the job's `max_run`).
+    pub pipeline_run: Duration,
+    /// Swimlane commits in flight at once (each is one transaction, on its own connection). A push to the base repository concerns every
+    /// swimlane, and what a commit mostly waits for is the disk.
+    pub persist_concurrency: usize,
+    /// How often the leased nightly job runs, and how many swimlanes it recomputes in one batch (a batch holds the content of
+    /// the distinct files of its swimlanes in memory).
+    pub nightly_interval: Duration,
+    pub nightly_batch_lanes: usize,
 }
 
 impl Default for RegistryConfig {
@@ -128,12 +152,23 @@ impl Default for RegistryConfig {
             max_affected_paths: 5_000,
             git_hash_cache_bytes: 24 * 1024 * 1024,
             git_timeout: Duration::from_secs(30),
+            coalesce_window: Duration::from_millis(200),
+            max_coalesced_lanes: 10_000,
+            max_lanes_in_memory: 256,
+            reconcile_interval: Duration::from_secs(60),
+            inventory_poll_interval: Duration::from_secs(5),
+            signal_queue: 4_096,
+            pipeline_run: Duration::from_secs(50 * 60),
+            persist_concurrency: 4,
+            nightly_interval: Duration::from_secs(24 * 3600),
+            nightly_batch_lanes: 4,
         }
     }
 }
 
 impl RegistryConfig {
     /// Checks every field against what the rest of the system can carry.
+    #[allow(clippy::too_many_lines)] // one range check per field, in the order of the fields
     pub fn validate(&self) -> Result<(), ConfigError> {
         fn within(name: &'static str, value: u64, low: u64, high: u64) -> Result<(), ConfigError> {
             if (low..=high).contains(&value) {
@@ -219,6 +254,37 @@ impl RegistryConfig {
             1024 * 1024 * 1024,
         )?;
         within("git_timeout", millis(self.git_timeout), 100, 600_000)?;
+        within("coalesce_window", millis(self.coalesce_window), 10, 10_000)?;
+        within(
+            "max_coalesced_lanes",
+            self.max_coalesced_lanes as u64,
+            1,
+            1_000_000,
+        )?;
+        within("max_lanes_in_memory", self.max_lanes_in_memory as u64, 1, 10_000)?;
+        within(
+            "reconcile_interval",
+            millis(self.reconcile_interval),
+            1_000,
+            24 * 3600 * 1000,
+        )?;
+        within(
+            "inventory_poll_interval",
+            millis(self.inventory_poll_interval),
+            100,
+            3600 * 1000,
+        )?;
+        within("signal_queue", self.signal_queue as u64, 1, 1_000_000)?;
+        // The job's own `max_run` is this plus a minute, and the runner allows an hour at most.
+        within("pipeline_run", millis(self.pipeline_run), 1_000, 55 * 60 * 1000)?;
+        within(
+            "nightly_interval",
+            millis(self.nightly_interval),
+            60_000,
+            7 * 24 * 3600 * 1000,
+        )?;
+        within("persist_concurrency", self.persist_concurrency as u64, 1, 16)?;
+        within("nightly_batch_lanes", self.nightly_batch_lanes as u64, 1, 1_000)?;
         // The globs travel to the agent as `ShortText` (256 bytes) and must compile.
         if self.extra_deny_globs.iter().any(|g| g.len() > 256) {
             return Err(ConfigError::Invalid("extra_deny_globs"));
@@ -294,6 +360,61 @@ mod tests {
             "about 20 MB of normalised hashes (plan, risk 6)"
         );
         assert!(c.index_batch <= MAX_GET_MANY, "one get_many per batch");
+    }
+
+    #[test]
+    fn the_pipeline_defaults_are_pinned() {
+        let c = RegistryConfig::default();
+        assert_eq!(
+            c.coalesce_window,
+            Duration::from_millis(200),
+            "the prompt: bursts are coalesced per swimlane in 200 ms windows"
+        );
+        assert_eq!(c.max_lanes_in_memory, 256);
+        assert_eq!(c.reconcile_interval, Duration::from_secs(60));
+        assert_eq!(c.nightly_interval, Duration::from_secs(24 * 3600));
+        assert!(
+            c.pipeline_run < Duration::from_secs(3600),
+            "a run ends before the runner's one hour limit on a run"
+        );
+        assert!(c.nightly_batch_lanes >= 1 && c.persist_concurrency >= 1);
+    }
+
+    #[test]
+    fn every_pipeline_bound_is_enforced() {
+        out_of_range("coalesce_window", |c| {
+            c.coalesce_window = Duration::from_millis(1);
+        });
+        out_of_range("max_coalesced_lanes", |c| {
+            c.max_coalesced_lanes = 0;
+        });
+        out_of_range("max_lanes_in_memory", |c| {
+            c.max_lanes_in_memory = 0;
+        });
+        out_of_range("reconcile_interval", |c| {
+            c.reconcile_interval = Duration::from_millis(5);
+        });
+        out_of_range("inventory_poll_interval", |c| {
+            c.inventory_poll_interval = Duration::from_millis(1);
+        });
+        out_of_range("signal_queue", |c| {
+            c.signal_queue = 0;
+        });
+        out_of_range("pipeline_run", |c| {
+            c.pipeline_run = Duration::from_secs(3600);
+        });
+        out_of_range("persist_concurrency", |c| {
+            c.persist_concurrency = 0;
+        });
+        out_of_range("persist_concurrency", |c| {
+            c.persist_concurrency = 17;
+        });
+        out_of_range("nightly_interval", |c| {
+            c.nightly_interval = Duration::from_secs(1);
+        });
+        out_of_range("nightly_batch_lanes", |c| {
+            c.nightly_batch_lanes = 0;
+        });
     }
 
     fn out_of_range(name: &'static str, change: impl FnOnce(&mut RegistryConfig)) {

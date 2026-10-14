@@ -10,11 +10,15 @@ use domain::{
     AgentConfig, ClusterReport, ContentHash, Heartbeat, HeartbeatAction, Hello, NfsPath, ScanDelta,
     ScanEntry, ShortText, SwimlaneId, Timestamp,
 };
+use hub_platform::events::bus::{BusSettings, PgEventBus};
+use hub_platform::events::metrics::EventMetrics;
 use hub_registry::{
-    AgentIngest, IndexDeps, IngestDeps, ManualClock, RegistryConfig, RegistryMetrics, SettingsIndexer,
+    AgentIngest, IndexDeps, IngestDeps, ManualClock, Pipeline, PipelineDeps, PipelineHandle, RegistryConfig,
+    RegistryMetrics, SettingsIndexer,
 };
-use ports::{AgentIdentity, ReportSink, SinkError, content_hash};
+use ports::{AgentIdentity, EventBus, GitReader, ReportSink, SinkError, content_hash};
 use sqlx::{PgPool, Row};
+use tokio::sync::watch;
 
 use super::pg::TestDb;
 use super::pg_audit::PgTestAudit;
@@ -34,6 +38,10 @@ pub struct Rig {
     pub identity: AgentIdentity,
     /// The settings index that ingestion offers its blobs to, when the rig was built `with_index`; its worker runs as a task.
     pub indexer: Option<SettingsIndexer>,
+    /// The real event bus over the outbox (the one the hub runs), when the rig was built `with_event_bus`: ingestion publishes
+    /// through it and the pipeline subscribes to it. `bus` stays the reader of the outbox for the assertions.
+    pub events: Option<PgEventBus>,
+    _stop: Option<watch::Sender<bool>>,
 }
 
 /// `observed_at` of the first scan in a test: a moment before the clock's `T0_MS`.
@@ -76,11 +84,34 @@ impl Rig {
         .unwrap()
     }
 
+    /// A rig whose ingestion publishes through the real `PgEventBus` (NOTIFY, relay, broadcast), so that a pipeline subscribed to it
+    /// hears what ingestion publishes, as in the hub.
+    pub async fn with_event_bus(swimlane: &str, config: RegistryConfig) -> Option<Self> {
+        Self::build_with(swimlane, config, false, true).await
+    }
+
     async fn build(swimlane: &str, config: RegistryConfig, index: bool) -> Option<Self> {
+        Self::build_with(swimlane, config, index, false).await
+    }
+
+    async fn build_with(swimlane: &str, config: RegistryConfig, index: bool, real_bus: bool) -> Option<Self> {
         let db = TestDb::ready().await?;
         let pool = db.app_pool().await;
         db.seed_swimlane(&pool, swimlane).await;
+        let (events, stop) = if real_bus {
+            let bus = PgEventBus::new(pool.clone(), BusSettings::default(), EventMetrics::default());
+            let (tx, rx) = watch::channel(false);
+            // The tasks end when the sender in the rig is dropped; their handles are not needed.
+            let _tasks = bus.start(rx).await;
+            (Some(bus), Some(tx))
+        } else {
+            (None, None)
+        };
         let bus = Arc::new(PgTestBus::new(pool.clone()));
+        let ingest_bus: Arc<dyn EventBus> = events.clone().map_or_else(
+            || Arc::clone(&bus) as Arc<dyn EventBus>,
+            |e| Arc::new(e) as Arc<dyn EventBus>,
+        );
         let audit = Arc::new(PgTestAudit::default());
         let blobs = Arc::new(PgBlobs::new(pool.clone()));
         let clock = Arc::new(ManualClock::at_t0());
@@ -102,7 +133,7 @@ impl Rig {
         let ingest = AgentIngest::new(IngestDeps {
             pool: pool.clone(),
             blobs: Arc::clone(&blobs) as _,
-            bus: Arc::clone(&bus) as _,
+            bus: ingest_bus,
             audit: Arc::clone(&audit) as _,
             clock: Arc::clone(&clock) as _,
             config,
@@ -125,7 +156,39 @@ impl Rig {
             ingest,
             swimlane,
             indexer,
+            events,
+            _stop: stop,
         })
+    }
+
+    /// The pipeline over this rig's database, blobs, audit log, clock and metrics, reading `git`, on the real event bus when the
+    /// rig has one and on the outbox reader (which delivers nothing) when it does not.
+    pub fn pipeline(&self, git: Arc<dyn GitReader>, config: RegistryConfig) -> (Pipeline, PipelineHandle) {
+        self.pipeline_with(git, config, Arc::clone(&self.audit) as _)
+    }
+
+    /// The same, with an audit log of its own (a test can make it fail without ingestion failing too).
+    pub fn pipeline_with(
+        &self,
+        git: Arc<dyn GitReader>,
+        config: RegistryConfig,
+        audit: Arc<dyn ports::AuditLog>,
+    ) -> (Pipeline, PipelineHandle) {
+        let bus: Arc<dyn EventBus> = self.events.clone().map_or_else(
+            || Arc::clone(&self.bus) as Arc<dyn EventBus>,
+            |e| Arc::new(e) as Arc<dyn EventBus>,
+        );
+        Pipeline::new(PipelineDeps {
+            pool: self.pool.clone(),
+            blobs: Arc::clone(&self.blobs) as _,
+            git,
+            bus,
+            audit,
+            clock: Arc::clone(&self.clock) as _,
+            config,
+            metrics: self.metrics.clone(),
+        })
+        .unwrap()
     }
 
     /// Another swimlane in the same database, with its tenants, and (when `inventory`) a `swimlane_registry` row that says its first
@@ -196,8 +259,8 @@ impl Rig {
 
     pub async fn state(&self, path: &str) -> Option<StateRow> {
         let row = sqlx::query(
-            "SELECT nfs_hash::bytea, nfs_drift_hash::bytea, class, size, denied, logical_file, kind, role, state, eol_style, \
-                    encoding, bom, (EXTRACT(EPOCH FROM observed_at) * 1000)::bigint AS at \
+            "SELECT nfs_hash::bytea, nfs_drift_hash::bytea, git_hash::bytea, baseline_hash::bytea, class, size, denied, logical_file, \
+                    kind, role, state, eol_style, encoding, bom, (EXTRACT(EPOCH FROM observed_at) * 1000)::bigint AS at \
              FROM file_state WHERE swimlane_id = $1 AND path = $2",
         )
         .bind(self.swimlane.as_str())
@@ -209,6 +272,8 @@ impl Rig {
         Some(StateRow {
             hash: h(row.get("nfs_hash")),
             drift_hash: h(row.get("nfs_drift_hash")),
+            git_hash: h(row.get("git_hash")),
+            baseline_hash: h(row.get("baseline_hash")),
             class: row.get("class"),
             size: row.get("size"),
             denied: row.get("denied"),
@@ -279,6 +344,8 @@ impl Rig {
 pub struct StateRow {
     pub hash: Option<ContentHash>,
     pub drift_hash: Option<ContentHash>,
+    pub git_hash: Option<ContentHash>,
+    pub baseline_hash: Option<ContentHash>,
     pub class: String,
     pub size: Option<i64>,
     pub denied: bool,

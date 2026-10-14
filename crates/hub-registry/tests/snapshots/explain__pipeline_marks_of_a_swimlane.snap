@@ -1,0 +1,20 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: marks
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "intentional_divergence"
+  },
+  {
+    "index": "intentional_divergence_pkey",
+    "node": "Bitmap Index Scan"
+  }
+]
