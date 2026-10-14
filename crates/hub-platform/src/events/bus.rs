@@ -10,12 +10,17 @@
 //!
 //! Every event, plain or inside a transaction, is a row, so every event has one cluster-wide, ordered id (the SSE event id) and can be
 //! replayed. A plain `publish` is one autocommit `INSERT`; `publish_in_tx` is the same `INSERT` on the caller's transaction, so it
-//! commits or rolls back with the change. Delivery is at least once. Nothing is fanned out before the commit.
+//! commits or rolls back with the change. `publish_many_in_tx` is one `INSERT` of a row for each event of a batch, in the order of
+//! the batch, on the caller's transaction: the same rows, bounded per event in the same way, with the ids of the batch increasing
+//! in its order. Delivery is at least once. Nothing is fanned out before the commit.
 //!
 //! Events are delivered in id order, except that a row whose transaction commits after a higher id has been read is delivered when
 //! the relay first sees it (see [`super::relay`]): two replicas may hear two such events in different orders, and the events of one
 //! publisher, which commit one after the other, are always heard in order. A subscriber made just before an event commits may or
-//! may not hear it, and one made just after may hear it: "from now" is accurate to the relay's last read.
+//! may not hear it, and one made just after may hear it: "from now" is accurate to the relay's last read. A batch is written by one
+//! statement, so its ids are consecutive unless another session draws ids from the sequence in the same instant; if it does, the
+//! relay may hear the two parts of the batch in two reads, as it hears any rows that commit after a higher id was read. The rows
+//! of events published one at a time in a transaction are far likelier to be apart.
 //!
 //! Subscribers share one bounded broadcast channel per replica: the relay never waits for a subscriber, and a subscriber that is
 //! `capacity` events behind loses the oldest and is told to refetch ([`DomainEvent::Resync`]) before it sees anything newer.
@@ -27,7 +32,7 @@ use async_trait::async_trait;
 use domain::DomainEvent;
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use ports::{BusError, EventBus, EventFilter, Tx};
+use ports::{BusError, EventBus, EventFilter, MAX_EVENT_BATCH, Tx};
 use sqlx::PgPool;
 use tokio::sync::{Notify, broadcast, watch};
 use tokio::task::JoinHandle;
@@ -201,6 +206,22 @@ impl PgEventBus {
     }
 }
 
+impl PgEventBus {
+    /// Count the events of a batch, and turn the result of its one insert into the port's error. `replaced` says, for each event
+    /// in order, whether it was stored as a `Resync`. A failed insert wrote none of them.
+    fn written_many(&self, result: Result<(), OutboxError>, replaced: &[bool]) -> Result<(), BusError> {
+        for was_replaced in replaced {
+            let outcome = match (&result, was_replaced) {
+                (Ok(()), false) => PublishOutcome::Stored,
+                (Ok(()), true) => PublishOutcome::StoredAsResync,
+                (Err(_), _) => PublishOutcome::Failed,
+            };
+            self.inner.metrics.published(outcome);
+        }
+        result.map_err(|_| BusError::Unavailable)
+    }
+}
+
 #[async_trait]
 impl EventBus for PgEventBus {
     async fn publish(&self, e: DomainEvent) -> Result<(), BusError> {
@@ -214,6 +235,29 @@ impl EventBus for PgEventBus {
         let conn = tx.pg().map_err(|_| BusError::WrongTx)?;
         let result = outbox::insert(conn, &text).await;
         self.written(result, replaced)
+    }
+
+    async fn publish_many_in_tx(&self, tx: &mut Tx<'_>, events: Vec<DomainEvent>) -> Result<(), BusError> {
+        // Nothing to write: no statement, and no look at the transaction.
+        if events.is_empty() {
+            return Ok(());
+        }
+        // Refused whole, before the database. The limit is the port's.
+        if events.len() > MAX_EVENT_BATCH {
+            return Err(BusError::BatchTooLarge);
+        }
+        // Every event is bounded exactly as `publish_in_tx` bounds it (one over the cap is stored as a `Resync` at its place), before
+        // anything is written.
+        let mut texts = Vec::with_capacity(events.len());
+        let mut replaced = Vec::with_capacity(events.len());
+        for e in &events {
+            let (text, was_replaced) = outbox::prepare(e, self.inner.settings.max_event_bytes)?;
+            texts.push(text);
+            replaced.push(was_replaced);
+        }
+        let conn = tx.pg().map_err(|_| BusError::WrongTx)?;
+        let result = outbox::insert_many(conn, &texts).await;
+        self.written_many(result, &replaced)
     }
 
     fn subscribe(&self, f: EventFilter) -> BoxStream<'static, DomainEvent> {
