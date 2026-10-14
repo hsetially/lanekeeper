@@ -504,7 +504,11 @@ fn only_budgets_with_a_harness_are_registered() {
     // P15.registry_ingest_versions_per_s (T1, `ingest_versions_per_s`: the registry applying a replayed spool over the real audit
     // log and event bus; registered once the batch calls of the ports brought it from 587 to over 1,000, see
     // plans/05-registry-read-api.blockers.md), and P6.adoption_rank (T5, `adoption_rank_per_swimlane`: `AdoptionService::start` over
-    // each of the 40 swimlanes of the target scale, 120 samples; p95 48.8 ms on a quiet machine against the 5,000 ms of the prompt).
+    // each of the 40 swimlanes of the target scale, 120 samples; p95 48.8 ms on a quiet machine against the 5,000 ms of the prompt),
+    // and the read API of T6, every one through the router over the 40 swimlanes of the target scale: P7.swimlane_list, P7.file_tree,
+    // P7.file_content_cached, P7.file_content_cold, P7.compare_api, P7.grid (cold: the service has nothing cached), P7.whole_swimlane_compare,
+    // P7.settings_search and P12.steady_state_query_ms (every read statement, p95 under 50 ms). `P7.text_search` is not registered: its cold
+    // search misses, and the warm one is within it (plans/05-registry-read-api.blockers.md).
     const REGISTERED: &[&str] = &[
         "P6.parse_flatten",
         "P6.index_settings",
@@ -538,6 +542,15 @@ fn only_budgets_with_a_harness_are_registered() {
         "P2.hub_head_moved_to_drift",
         "P15.registry_ingest_versions_per_s",
         "P6.adoption_rank",
+        "P7.swimlane_list",
+        "P7.file_tree",
+        "P7.file_content_cached",
+        "P7.file_content_cold",
+        "P7.compare_api",
+        "P7.grid",
+        "P7.whole_swimlane_compare",
+        "P7.settings_search",
+        "P12.steady_state_query_ms",
     ];
     let reg = registry();
     let registered: BTreeSet<&str> = reg

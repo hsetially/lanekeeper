@@ -157,7 +157,7 @@ statistic = "p95"
 threshold = 50
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P7.file_tree"
@@ -167,7 +167,7 @@ statistic = "p95"
 threshold = 100
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P7.file_content_cached"
@@ -177,7 +177,7 @@ statistic = "p95"
 threshold = 30
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P7.file_content_cold"
@@ -187,7 +187,7 @@ statistic = "p95"
 threshold = 80
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P7.compare"
@@ -266,7 +266,7 @@ statistic = "p95"
 threshold = 150
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P7.whole_swimlane_compare"
@@ -276,7 +276,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P7.settings_search"
@@ -286,7 +286,7 @@ statistic = "p95"
 threshold = 200
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P7.text_search"
@@ -468,7 +468,7 @@ statistic = "p95"
 threshold = 50
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P13"
@@ -576,7 +576,7 @@ statistic = "p95"
 threshold = 100
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 # The registry's half of P15, next to `P15.hub_ack_versions_per_s` (the platform's acknowledgement): the registry applies a
 # replayed spool of out-of-band versions, audit events included, at the rate the agent replays it (a lower bound).

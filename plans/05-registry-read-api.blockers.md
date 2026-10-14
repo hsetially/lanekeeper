@@ -241,3 +241,140 @@ audit path of the batch apart from the commit's events.
 - The measurement is on one quiet machine; the first run of an invocation is sometimes the slowest. If CI is noisier than this machine,
   the margin is 13 % at the lowest of the 12 runs on the final code (1134) and 10 % at the lowest of the 21 runs since the trims (1103);
   with the batch calls alone it was one invocation in three below the budget (939).
+
+## T6: `P7.text_search` (400 ms, p95) is not met when the corpus has to be built: cold 577 ms, rebuilt 481 ms (warm: 191 ms)
+
+Everything else in T6 is done and green, and nine of its ten budgets are registered and met (table below). This one is not registered
+(`registered = false` in `perf/budgets.toml`); `bench-check` lists it as UNMET with the cold number. Nothing was loosened and the
+benchmark's workload was not changed to flatter the number. The approved plan expected this: risk 3 says that 400 ms "is reachable only
+warm" and that "if cold misses the budget this is an escalation, not a loosening".
+
+### The budget and the benchmark
+
+`docs/performance.md` P7: "Text search across all swimlanes | 400 ms", measured on the server. `perf/budgets.toml`: `P7.text_search`, bench
+`hub-registry/search_text_all_swimlanes`, p95, 400 ms, scale target. The bench (`crates/hub-registry/benches/search_text_all_swimlanes.rs`)
+runs the engine's twenty queries (frequent, rare and absent literals, case-insensitive ones, regexes) over the stored blobs of the 40
+swimlanes of the read bed (80,120 files, 23,533 distinct blobs, 53.5 MB stored) through the axum router and the real blob store, and
+checks every answer against the first one. It measures three states, all logged; **the budget takes the cold one**, because the
+budget entry says the database read of the blobs is inside the number and because it is the slowest the user meets:
+
+- **cold**: the hub has just started (every cache empty). File lists of 40 swimlanes, the blobs read from `blobs`, the corpus made, the
+  search, the JSON. 40 samples.
+- **rebuilt**: the corpus is made again with the blobs in the blob cache and the file lists cached. This is what the next search is after
+  *any* applied change to *any* swimlane: the corpus is keyed by the (swimlane, version) pairs of every swimlane it covers
+  (`swimlane_registry.version` moves on every applied change). On a busy fleet this, not warm, is the usual state. 40 samples.
+- **warm**: the corpus is cached; the search itself. 60 samples.
+
+### Measurement (final series, quiet 4-core machine with Postgres on it, release build)
+
+| State | p50 | p95 | max |
+|---|---|---|---|
+| cold | 500.3 ms | **576.6 ms** | 705.8 ms |
+| rebuilt | 396.3 ms | **480.6 ms** | 488.2 ms |
+| warm | 126.4 ms | 191.1 ms | 223.3 ms |
+
+The same measurement three times on earlier states of the code (twice before the corpus was assembled off the async threads, once
+after it and before the last commit, which does not touch text search): cold p95 763, 757, 716 ms; rebuilt 635, 628, 570 ms; warm 218, 210, 186 ms. The spread between runs on this
+machine is about 20 %, so no single change below can be told from it; all of them are above 400 ms.
+
+### Where the time goes
+
+From an instrumented run (timers around each step of the corpus build; removed again, not in the commits). Means over the 81 builds of
+that run, in ms, and the first cold request of it:
+
+| Step | mean | first cold request |
+|---|---|---|
+| 40 file lists (`FILES_SQL`, 8 at once, 80,120 rows in all; cold only) | 151.7 | 173.0 |
+| places: swimlane and path of each of the 80,120 places, grouped by blob (before it ran in a hash map off the async threads) | 51.3 | 61.2 |
+| blobs read through `BlobStore::get_many` (1,000 a batch, 4 batches at once; cold only; 23.5 k blobs) | 107.8 | 231.6 |
+| assembling the blobs | 6.1 | 6.0 |
+| `engine::SearchCorpus::new` (sorts the 80,120 places by swimlane and path, through two levels of indirection and string compares) | 103.8 (max 173.6) | about 86 |
+| the search itself, corpus cached | 126 to 160 | 150 |
+
+Added up for the first cold request: 3 + 558 (corpus) + 150 = 711 ms, of which the database (file lists and blobs) is 405 ms and the
+engine's sort 86 ms. Even with the places and the assembly at nothing, cold is file lists + blobs + sort + search, about 640 ms in that
+run. For rebuilt it is places + sort + search.
+
+### What was tried
+
+- The corpus is built once for a set of swimlane versions, concurrent first searches share one build (singleflight), the blobs are read
+  in batches of 1,000, four at once, the file lists eight at once (all in T6 from the start).
+- The place map was a `BTreeMap` built on an async thread (60 ms of CPU, against rule 4); it is a `HashMap` built, with the blobs
+  assembled and handed to the engine, inside `spawn_blocking`. Rebuilt moved from 520 to 544 ms p50 before that to 396 to 468 ms after,
+  inside the 20 % spread.
+- Not done, because it cannot reach 400 ms alone and adds a second query: reading the distinct blob hashes with their own statement so
+  that the blob reads start while the file lists are still loading. It would hide most of the file lists (up to about 150 ms) behind the
+  blob reads; cold would still be about 430 to 480 ms at p95.
+
+### Options (a human picks; none is taken here)
+
+1. **Define the budget as the warm search** (191 ms p95 against 400, with room to spare) and register the warm result file
+   (`hub-registry_search_text_all_swimlanes_warm.json`) instead. That changes what the budget measures; it is not mine to change.
+2. **Make the corpus survive a change to one swimlane** (per-swimlane corpora, searched one after the other and merged with the caps; or
+   an incremental corpus). On a busy fleet the corpus is invalidated by every applied change anywhere, so "rebuilt" (p95 481 ms) is the
+   usual state, and this is the option that changes what users meet. It is a registry change (and a design change to the caps and the
+   order of results).
+3. **A faster `SearchCorpus::new`** (prompt 04, `crates/engine`): sort the places by integers computed once (a swimlane's ordinal and a
+   path's rank, which the registry already has from its sorted file lists) instead of comparing strings through two indirections. About
+   100 ms of the rebuilt and the cold search; I estimate under 15 ms. Not mine to edit.
+4. **Warm the corpus in the background** after start-up and after changes (debounced), so a user's search is a warm one. It spends CPU
+   and holds the corpus (about 60 MB at the target scale: 53.5 MB of blobs and the place lists; the plan's 230 MB was a larger guess) for as long as the hub runs; a product decision within P11's memory budget.
+5. **Read the blobs faster**: 107.8 ms mean and 231.6 ms for the first request, for 23.5 k blobs, are in `hub-platform`'s blob store (not
+   mine); a larger batch or more batches at once might help (the settings are `search_blob_batch` 1,000 and `search_blob_parallel` 4 in
+   `RegistryConfig`, both tunable now, within the port's limit of 1,000 a call).
+6. **Raise the budget for the cold search.** A human decision; the cold search is at 577 ms p95 and 500 ms p50.
+
+## T6: the read budgets that were measured and registered
+
+All through the axum router over real Postgres at the target scale (40 swimlanes, 80,120 files, 23,533 blobs, 867,285 settings), release
+build, one quiet machine, one series run after the last code change (`cargo bench -p hub-registry`, every bench once, in the order of
+`Cargo.toml`), checked with `cargo xtask bench-check` on the registry's budgets (the recipe's filter).
+
+| Budget | Result (p95) | Threshold | What a sample is |
+|---|---|---|---|
+| P7.swimlane_list | 2.6 ms | 50 ms | the whole list of 40 |
+| P7.file_tree | 6.8 ms | 100 ms | root, folder, filtered and all views |
+| P7.file_content_cached | 1.7 ms | 30 ms | 80 files, the largest 146 kB |
+| P7.file_content_cold | 1.7 ms | 80 ms | 628 distinct blobs, blob cache cold |
+| P7.compare_api | 32.5 ms | 100 ms | two versions of a 6,173-line file, 40 pairs, cold (309 hunks, 103 setting changes) |
+| P7.grid | 129.3 ms | 150 ms | one 6,000-line file across 40 swimlanes, a page of 500 rows of 40 cells (2.7 MB), **cold**: the service has nothing cached (warm: 27.6 ms) |
+| P7.whole_swimlane_compare | 27.5 ms | 300 ms | 2,500 differing entries; 24 subtrees skipped |
+| P7.settings_search | 63.2 ms | 200 ms | 20 needles, five rounds, a page of 100 (see the note on short needles below) |
+| P12.steady_state_query_ms | 18.2 ms (the slowest statement's p95: 27.9 ms) | 50 ms | every statement of the read side, 39 of them, 20 runs each, as the service issues them |
+
+The grid is the one with the least room (14 %). It was 389 to 439 ms before this task's optimisations. What moved it: the setting rows
+are read in short statements that run side by side (`ROWS_PER_STATEMENT` 2, `STATEMENTS_AT_ONCE` 4); the arrays of a row are read in
+place from the server's binary format (`array_bin`, a statement of four 6,000-setting blobs converts in about 5 ms instead of 10 to
+30); and the group query asks for the application names that a file's name and folders can ask about instead of every service's
+(12,000 rows for 40 swimlanes; 28 ms to 9 ms, for the warm grid too). The read pool is two threads, the figure of the plan (the hub pod has
+2 vCPU); the merge of 40 effective configs (about 45 ms cold) and the rows are bound by it and by Postgres sharing the four cores here.
+
+## T6: for the human
+
+- **Short needles in the settings search are slow, and the 200 ms is met by the statistic, not by every request.** `q` may be one
+  character (`minLength: 1` in `api/openapi.yaml`). The trigram index needs three, so a needle of one or two characters that matches few
+  settings reads the whole index: a parallel sequential scan of 867,285 rows, 220 to 290 ms here. The bench's twenty needles include one
+  of two characters (`id`, which matches nothing in the fixtures), five rounds, so exactly 5 of the 100 samples are that scan (220 to
+  237 ms in the final series) and they sit above the p95 line; p95 is 63.2 ms. If one more request were that slow, the p95 would be
+  about 235 ms. That workload was written before the first measurement and was not changed. The same scan is measured as a series of its
+  own (`hub-registry/search_settings_short_needles`, 8 needles of one and two characters, no budget): p50 7.0 ms (dense ones are fast),
+  p95 253.5 ms, max 290.2 ms. Options: a minimum needle length of three in the contract (`minLength: 3`, a contract change); a table of the
+  distinct setting paths (a migration); or accept it. It is also a cheap request for a viewer to repeat, which the threat model should say.
+- **A prepared statement that has run five times gets one plan for all values, and for a rare needle that plan walked the whole primary
+  key** (1.0 to 1.4 s, against 0.3 ms to 9 ms for the plan made for the needle). The settings-search statements therefore run unnamed
+  (`persistent(false)`), and `tests/explain.rs` now also asks for the generic plan of every read statement and refuses a sequential scan
+  of a large table in it. It does not catch an ordered scan that is slow only for some values (that was this case), so the benches are
+  the check for that. Other statements of the read side were not found to have it (the steady-state bench runs each 20 times, past the
+  switch), but nothing proves that they cannot.
+- **`SwimlaneSummary.tenants` has `minItems: 1`, but a swimlane that is not adopted has no tenants yet.** The service answers `[]`, which is
+  what the domain says; `tests/http_contract.rs` pins exactly that one deviation from the schema walker. Either the schema or the data
+  has to give.
+- **An index on `file_state (nfs_hash)` (a migration, a contract path) would make the places of a setting one probe per blob, not one per
+  blob and swimlane asked for.** The covering index is `(swimlane_id, nfs_hash)`, so a page of settings over 40 swimlanes probes it 40 times for every blob.
+  Not needed for the budgets (the statement is 10 ms p95 in chunks of 25 blobs); noted for a later change.
+- **Residual risks for the threat model (T10):** cursors are bound to their query by a tag and are not MACed (a client can forge one for
+  the same query; it cannot reach another query's data, which a test holds); raw file text, blobs, diff hunks and text-search lines are not
+  masked (A28); `only_differing` on the grid and the effective view hides a change between two *different* secrets of the same length and
+  rule, because the index stores one marker for both (the compare reads the bytes and is not affected); text search keeps a corpus of up
+  to `corpus_cache_bytes` (256 MiB by default; the target scale's corpus is about 60 MB) per distinct set of swimlane versions; the short-needle scan above; the
+  served-file route is limited to 16 concurrent calls per replica and one agent round trip each (A36).
