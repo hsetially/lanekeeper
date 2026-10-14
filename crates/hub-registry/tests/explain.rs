@@ -5,6 +5,8 @@
 
 mod support;
 
+use hub_registry::adoption::{ADOPT_BASELINES_SQL, ADOPT_MARKS_SQL, CURRENT_NFS_SQL, NFS_FILES_SQL};
+use hub_registry::baselines::{CURRENT_BLOBS_SQL, DROP_REFS_SQL, INSERT_REFS_SQL};
 use hub_registry::index::settings::{MARKED_SQL, UNINDEXED_SQL};
 use hub_registry::index::tree_hashes::{LOAD_DIRS_SQL, LOAD_FILES_SQL};
 use hub_registry::pipeline::lane_loader::{
@@ -20,7 +22,7 @@ use sqlx::PgPool;
 use support::pg::TestDb;
 
 /// Tables that hold thousands of rows at design scale. A sequential scan of one of these is a failure.
-const LARGE: [&str; 10] = [
+const LARGE: [&str; 11] = [
     "findings",
     "file_state",
     "file_observations",
@@ -31,13 +33,14 @@ const LARGE: [&str; 10] = [
     "effective_tree_hashes",
     "git_tree_index",
     "baselines",
+    "blob_refs",
 ];
 
 /// The tables the seeding fills. Autovacuum is switched off for them, because a vacuum that runs between the seeding and the
 /// EXPLAIN sets their visibility maps, and the planner then reads a plan with an index-only scan where it read a bitmap heap scan a
 /// moment before: the plan snapshots below would be right or wrong by the timing of a background worker, as they were (one run in
 /// three failed on `markers_of_a_batch`). With no vacuum the maps stay empty and the plans are those of the snapshots every time.
-const SEEDED: [&str; 11] = [
+const SEEDED: [&str; 12] = [
     "projects",
     "swimlanes",
     "blobs",
@@ -47,6 +50,7 @@ const SEEDED: [&str; 11] = [
     "effective_files",
     "file_observations",
     "baselines",
+    "blob_refs",
     "findings",
     "intentional_divergence",
 ];
@@ -91,8 +95,11 @@ async fn seeded() -> Option<(TestDb, PgPool)> {
         "UPDATE file_state fs SET last_observation_id = \
            (SELECT max(o.id) FROM file_observations o WHERE o.swimlane_id = fs.swimlane_id AND o.path = fs.path)",
         // Half of the files have a baseline (an adopted swimlane); 300 findings per swimlane; 1 file in 100 is a deliberate divergence.
-        "INSERT INTO baselines (swimlane_id, path, hash, repo, commit_id) \
-         SELECT swimlane_id, path, nfs_hash, 'base', 'c1' FROM file_state WHERE hashtext(path || swimlane_id) % 2 = 0",
+        "INSERT INTO baselines (swimlane_id, path, hash, repo, commit_id, blob_hash) \
+         SELECT swimlane_id, path, nfs_hash, 'base', 'c1', nfs_hash FROM file_state WHERE hashtext(path || swimlane_id) % 2 = 0",
+        // Each of those baselines holds a reference to the raw version behind it (A24, D78).
+        "INSERT INTO blob_refs (hash, ref_kind, ref_id) \
+         SELECT nfs_hash, 'baseline', swimlane_id || ':' || path FROM file_state WHERE hashtext(path || swimlane_id) % 2 = 0",
         "INSERT INTO findings (swimlane_id, kind, path, severity, message, fingerprint) \
          SELECT 'lane' || l, 'drift', 'dir' || (f % 50) || '/file' || f || '.yml', 'low', 'a finding', 'fp' || f \
          FROM generate_series(1, 40) l, generate_series(1, 300) f",
@@ -315,6 +322,93 @@ async fn pipeline_queries_have_no_sequential_scan_on_large_tables() {
     .await;
     no_large_sequential_scan("upsert baselines", &upsert_baselines);
     insta::assert_json_snapshot!("pipeline_upsert_baselines", upsert_baselines);
+    // The references that keep the raw versions behind baselines (A24, D78): the raw versions that the baselines of some paths stand on
+    // now, the references dropped for the versions they replaced, and the ones added for the new versions.
+    let current_blobs = explain(
+        &pool,
+        CURRENT_BLOBS_SQL,
+        &[Arg::Text("lane7"), Arg::TextArray(paths.clone())],
+    )
+    .await;
+    no_large_sequential_scan("baseline blobs", &current_blobs);
+    insta::assert_json_snapshot!("baselines_current_blobs", current_blobs);
+    // The blobs of the first fifty of lane7's files that `some_paths` names: file number `f` of lane 7 is blob `6 * 2000 + f`.
+    let blob_hashes: Vec<Vec<u8>> = (1..=n)
+        .map(|i| {
+            ports::content_hash(format!("blob-{}", 12_000 + i * 10).as_bytes())
+                .as_bytes()
+                .to_vec()
+        })
+        .collect();
+    let ref_ids: Vec<String> = paths.iter().map(|p| format!("lane7:{p}")).collect();
+    let drop_refs = explain(
+        &pool,
+        DROP_REFS_SQL,
+        &[
+            Arg::ByteaArray(blob_hashes.clone()),
+            Arg::TextArray(ref_ids.clone()),
+        ],
+    )
+    .await;
+    no_large_sequential_scan("drop baseline refs", &drop_refs);
+    insta::assert_json_snapshot!("baselines_drop_refs", drop_refs);
+    let insert_refs = explain(
+        &pool,
+        INSERT_REFS_SQL,
+        &[Arg::ByteaArray(blob_hashes), Arg::TextArray(ref_ids)],
+    )
+    .await;
+    no_large_sequential_scan("insert baseline refs", &insert_refs);
+    insta::assert_json_snapshot!("baselines_insert_refs", insert_refs);
+    // T5. What an adoption confirmation reads and writes: the swimlane's files, the planned files as they are under the lock, the
+    // baselines (the pipeline's statement and the admin who adopted them) and the marks.
+    let nfs_files = explain(&pool, NFS_FILES_SQL, &[Arg::Text("lane7"), Arg::Int(200_001)]).await;
+    no_large_sequential_scan("adoption files", &nfs_files);
+    insta::assert_json_snapshot!("adoption_nfs_files", nfs_files);
+    let current_nfs = explain(
+        &pool,
+        CURRENT_NFS_SQL,
+        &[Arg::Text("lane7"), Arg::TextArray(paths.clone())],
+    )
+    .await;
+    no_large_sequential_scan("adoption current hashes", &current_nfs);
+    insta::assert_json_snapshot!("adoption_current_nfs", current_nfs);
+    let adopt_baselines = explain(
+        &pool,
+        ADOPT_BASELINES_SQL,
+        &[
+            Arg::Text("lane7"),
+            Arg::TextArray(paths.clone()),
+            Arg::ByteaArray(vec![vec![7; 32]; n]),
+            Arg::TextArray(vec!["base".to_owned(); n]),
+            Arg::OptTextArray(vec![None; n]),
+            Arg::TextArray(vec!["c1".to_owned(); n]),
+            Arg::OptByteaArray(vec![None; n]),
+            Arg::Int(1_700_000_000_000),
+            Arg::Text("tid"),
+            Arg::Text("oid"),
+        ],
+    )
+    .await;
+    no_large_sequential_scan("adoption baselines", &adopt_baselines);
+    insta::assert_json_snapshot!("adoption_baselines", adopt_baselines);
+    let adopt_marks = explain(
+        &pool,
+        ADOPT_MARKS_SQL,
+        &[
+            Arg::Text("lane7"),
+            Arg::TextArray(paths.clone()),
+            Arg::ByteaArray(vec![vec![7; 32]; n]),
+            Arg::ByteaArray(vec![vec![8; 32]; n]),
+            Arg::TextArray(vec!["on purpose".to_owned(); n]),
+            Arg::Text("tid"),
+            Arg::Text("oid"),
+            Arg::Int(1_700_000_000_000),
+        ],
+    )
+    .await;
+    no_large_sequential_scan("adoption marks", &adopt_marks);
+    insta::assert_json_snapshot!("adoption_marks", adopt_marks);
     let fingerprints: Vec<String> = (1..=50).map(|f| format!("fp{f}")).collect();
     let upsert_findings = explain(
         &pool,

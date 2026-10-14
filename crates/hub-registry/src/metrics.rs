@@ -135,6 +135,38 @@ pub enum RematchResult {
     Failed,
 }
 
+/// What a call of the adoption service was (T5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum AdoptionAction {
+    Start,
+    ChooseBranches,
+    ChooseBase,
+    Resolve,
+    ScanSecrets,
+    Confirm,
+    Cancel,
+    Mark,
+    Clear,
+}
+
+/// How a call of the adoption service ended (T5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum AdoptionOutcome {
+    Ok,
+    /// The caller is not an active user with the role the call needs (S4).
+    Forbidden,
+    /// The call was understood and refused: a wrong step, an unresolved file, a file that changed, an unknown branch.
+    Rejected,
+    /// The database, the mirror, the blob store, the audit log or the outbox failed.
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct AdoptionLabels {
+    action: AdoptionAction,
+    outcome: AdoptionOutcome,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
 struct SyncLabels {
     result: SyncResult,
@@ -216,6 +248,10 @@ pub struct RegistryMetrics {
     sync_baselines: Counter,
     sync_seconds: Histogram,
     rematches: Family<RematchLabels, Counter>,
+    adoptions: Family<AdoptionLabels, Counter>,
+    adoption_rank_seconds: Histogram,
+    adoption_secret_hits: Counter,
+    adoption_baselines: Counter,
 }
 
 impl Default for RegistryMetrics {
@@ -257,6 +293,11 @@ impl Default for RegistryMetrics {
             // 10 ms to about 80 s: most of a sync's time is the agent's scan.
             sync_seconds: Histogram::new(exponential_buckets(0.01, 2.0, 14)),
             rematches: Family::default(),
+            adoptions: Family::default(),
+            // 1 ms to about 8 s: the ranking of one swimlane over 60 tree indexes is milliseconds, the budget is 5 s.
+            adoption_rank_seconds: Histogram::new(exponential_buckets(0.001, 2.0, 14)),
+            adoption_secret_hits: Counter::default(),
+            adoption_baselines: Counter::default(),
         }
     }
 }
@@ -424,6 +465,26 @@ impl RegistryMetrics {
             "Reviews raised or refreshed because the tenant suffixes on NFS changed, by outcome",
             self.rematches.clone(),
         );
+        registry.register(
+            "registry_adoption_calls",
+            "Calls of the adoption service and of the intentional-divergence marks, by action and outcome",
+            self.adoptions.clone(),
+        );
+        registry.register(
+            "registry_adoption_rank_seconds",
+            "Time to rank the deployable branches against one swimlane",
+            self.adoption_rank_seconds.clone(),
+        );
+        registry.register(
+            "registry_adoption_secret_hits",
+            "Places the adoption secret scan flagged (locations only, never values)",
+            self.adoption_secret_hits.clone(),
+        );
+        registry.register(
+            "registry_adoption_baselines",
+            "Baselines written by adoption confirmations",
+            self.adoption_baselines.clone(),
+        );
     }
 
     pub(crate) fn message(&self, kind: MessageKind, outcome: Outcome) {
@@ -590,6 +651,45 @@ impl RegistryMetrics {
         self.rematches.get_or_create(&RematchLabels { result }).inc();
     }
 
+    pub(crate) fn adoption(&self, action: AdoptionAction, outcome: AdoptionOutcome) {
+        self.adoptions
+            .get_or_create(&AdoptionLabels { action, outcome })
+            .inc();
+    }
+
+    pub(crate) fn adoption_ranked(&self, seconds: f64) {
+        self.adoption_rank_seconds.observe(seconds);
+    }
+
+    pub(crate) fn adoption_secrets(&self, n: u64) {
+        if n > 0 {
+            self.adoption_secret_hits.inc_by(n);
+        }
+    }
+
+    pub(crate) fn adoption_baselines(&self, n: u64) {
+        if n > 0 {
+            self.adoption_baselines.inc_by(n);
+        }
+    }
+
+    /// Adoption calls by action and outcome, for tests.
+    pub fn adoption_count(&self, action: AdoptionAction, outcome: AdoptionOutcome) -> u64 {
+        self.adoptions
+            .get_or_create(&AdoptionLabels { action, outcome })
+            .get()
+    }
+
+    /// Places the secret scans flagged, for tests.
+    pub fn adoption_secret_hits_count(&self) -> u64 {
+        self.adoption_secret_hits.get()
+    }
+
+    /// Baselines written by confirmations, for tests.
+    pub fn adoption_baselines_count(&self) -> u64 {
+        self.adoption_baselines.get()
+    }
+
     /// Sync reports by how they ended, for tests.
     pub fn sync_count(&self, result: SyncResult) -> u64 {
         self.syncs.get_or_create(&SyncLabels { result }).get()
@@ -738,6 +838,16 @@ mod tests {
         m.sync_overwritten(0);
         m.sync_baselines(7);
         m.rematch(RematchResult::Raised);
+        m.adoption(AdoptionAction::Confirm, AdoptionOutcome::Ok);
+        m.adoption(AdoptionAction::Confirm, AdoptionOutcome::Forbidden);
+        m.adoption_ranked(0.01);
+        m.adoption_secrets(3);
+        m.adoption_secrets(0);
+        m.adoption_baselines(9);
+        assert_eq!(m.adoption_count(AdoptionAction::Confirm, AdoptionOutcome::Ok), 1);
+        assert_eq!(m.adoption_count(AdoptionAction::Start, AdoptionOutcome::Ok), 0);
+        assert_eq!(m.adoption_secret_hits_count(), 3);
+        assert_eq!(m.adoption_baselines_count(), 9);
         assert_eq!(m.sync_count(SyncResult::Recorded), 1);
         assert_eq!(m.sync_count(SyncResult::ScanTimeout), 0);
         assert_eq!(m.sync_overwritten_count(), 2);
@@ -757,6 +867,8 @@ mod tests {
         assert!(text.contains("registry_index_blobs_total"), "{text}");
         assert!(text.contains("registry_sync_reports_total"), "{text}");
         assert!(text.contains("registry_tenant_rematches_total"), "{text}");
+        assert!(text.contains("registry_adoption_calls_total"), "{text}");
+        assert!(text.contains("registry_adoption_rank_seconds"), "{text}");
         assert!(!text.contains("sit1"), "no swimlane id is ever a label");
     }
 }

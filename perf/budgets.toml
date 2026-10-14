@@ -564,7 +564,7 @@ statistic = "p95"
 threshold = 5000
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 # The compare of two versions of a 6,000-line file through the router and the database (docs/performance.md, P7). The engine's
 # own share is `P7.compare` (`engine/compare_6000_lines`).

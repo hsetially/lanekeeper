@@ -89,3 +89,8 @@ harness = false
 [[bench]]
 name = "head_moved_to_drift"
 harness = false
+
+# P6 (T5), ranking the deployable branches of one swimlane for the adoption pass: 120 starts over the 40 swimlanes of the target scale.
+[[bench]]
+name = "adoption_rank_per_swimlane"
+harness = false

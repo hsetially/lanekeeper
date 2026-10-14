@@ -501,9 +501,10 @@ fn only_budgets_with_a_harness_are_registered() {
     // P5.engine_base and P5.engine_per_file_per_swimlane (T8; the last is a harness that writes `target/perf-results/`).
     // Prompt 05 (registry): `cargo bench -p hub-registry` produces P5 (`incremental_recompute_base`, criterion), P5.per_file_per_swimlane,
     // P6.hub_full_recompute, P1.hub_delta_to_drift and P2.hub_head_moved_to_drift (T3; harnesses that write `target/perf-results/`),
-    // and P15.registry_ingest_versions_per_s (T1, `ingest_versions_per_s`: the registry applying a replayed spool over the real audit
+    // P15.registry_ingest_versions_per_s (T1, `ingest_versions_per_s`: the registry applying a replayed spool over the real audit
     // log and event bus; registered once the batch calls of the ports brought it from 587 to over 1,000, see
-    // plans/05-registry-read-api.blockers.md).
+    // plans/05-registry-read-api.blockers.md), and P6.adoption_rank (T5, `adoption_rank_per_swimlane`: `AdoptionService::start` over
+    // each of the 40 swimlanes of the target scale, 120 samples; p95 48.8 ms on a quiet machine against the 5,000 ms of the prompt).
     const REGISTERED: &[&str] = &[
         "P6.parse_flatten",
         "P6.index_settings",
@@ -536,6 +537,7 @@ fn only_budgets_with_a_harness_are_registered() {
         "P1.hub_delta_to_drift",
         "P2.hub_head_moved_to_drift",
         "P15.registry_ingest_versions_per_s",
+        "P6.adoption_rank",
     ];
     let reg = registry();
     let registered: BTreeSet<&str> = reg

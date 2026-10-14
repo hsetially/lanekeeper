@@ -12,44 +12,38 @@
 //!    nothing when nothing changed) and in the newest review row of the swimlane (so that another replica, or a restart, does not raise
 //!    the same review twice).
 //! 2. The deployable branches are ranked against what is on NFS with the engine's `adoption_rank` (D22), on the registry's rayon pool,
-//!    over the mirror's tree indexes. A template, the docs branch and any branch the registry's rule does not make deployable are never
-//!    ranked ([`crate::branches`]). Both sides are compared by the raw SHA-256 the tree index holds: a swimlane whose files have other
-//!    line endings than Git's scores lower on every branch alike, and the order, which is what an admin is shown, is what matters.
+//!    over the mirror's tree indexes (`crate::adoption::rank`, the ranking the adoption pass uses too). A template, the docs branch and
+//!    any branch the registry's rule does not make deployable are never ranked ([`crate::branches`]). Both sides are compared by the raw
+//!    SHA-256 the tree index holds: a swimlane whose files have other line endings than Git's scores lower on every branch alike, and
+//!    the order, which is what an admin is shown, is what matters.
 //! 3. An `adoptions` row with the reason `tenant_suffix_changed` and the status `review` holds the ranking and the suffixes. At most one
 //!    such review is open for a swimlane (the table's unique index): a new suffix refreshes it while it waits, and an admin who has
 //!    started on it (`in_progress`) is not disturbed. A cancelled or confirmed review is closed: the same suffixes do not raise it again,
 //!    different ones do. The row is audited (one `SettingsChanged` event, rule 8) and carries ids only.
 //!
-//! Nothing here touches `swimlane_tenants`, baselines or any file: confirming is the adoption pass's (T5).
+//! Nothing here touches `swimlane_tenants`, baselines or any file: confirming is the adoption pass's (T5, `crate::adoption`), which works
+//! these rows with the same steps as the first pass.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{MutexGuard, PoisonError};
 
-use domain::{
-    BranchKind, CommitId, ContentHash, FindingKind, GitRef, NfsPath, RepoKind, RepoPath, ReverseMapping,
-    ShortText, SwimlaneId, TenantId, TenantSet, Timestamp,
-};
-use engine::{AdoptionCandidate, BatchError, adoption_rank};
+use domain::{FindingKind, ShortText, SwimlaneId, TenantId, Timestamp};
 use ports::{AuditAction, AuditActor, AuditEvent, AuditVia, Tx};
 use serde_json::{Value, json};
 use tracing::warn;
 
 use super::batch::BatchReport;
 use super::findings_sync::{FindingKey, FindingRow};
-use super::{Exec, Inner, blocking};
-use crate::branches::BranchClassifier;
+use super::{Exec, Inner};
+use crate::adoption::rank::{Ranked, Ranker};
 use crate::db::ts;
 use crate::error::RegistryError;
-use crate::ingest::rules::rule_of;
 use crate::metrics::RematchResult;
 
 /// The component named as the actor of the review's audit event.
 const COMPONENT: &str = "registry-pipeline";
 /// The most swimlanes whose last look is remembered in memory. Past it a look is made every batch, which costs a query and nothing else.
 const MAX_REMEMBERED: usize = 10_000;
-/// The most files of a swimlane read for the ranking.
-const MAX_FILES: i64 = 200_001;
-
 /// What to review for one swimlane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Check {
@@ -222,102 +216,22 @@ impl Inner {
         })
     }
 
-    /// The deployable branches ranked against the tenant files on the swimlane's NFS, best first, as the JSON the review stores.
+    /// The deployable branches ranked against the tenant files on the swimlane's NFS, best first, as the JSON the review stores. The ranking
+    /// is the adoption pass's (`crate::adoption`): one implementation, so a review and a pass cannot rank differently.
     async fn rank(&self, swimlane: &SwimlaneId) -> Result<Vec<Value>, RegistryError> {
-        let roots: Vec<(String, String)> = self
-            .db
-            .run(
-                "rematch_mapping",
-                sqlx::query_as("SELECT repo, repo_root FROM path_mappings ORDER BY repo LIMIT 8")
-                    .fetch_all(self.db.pool()),
-            )
-            .await?;
-        let rule = rule_of(&roots);
-        let classifier = BranchClassifier::load(&self.db).await?;
-        let files: Vec<(String, Vec<u8>)> = self
-            .db
-            .run(
-                "rematch_files",
-                sqlx::query_as(
-                    "SELECT path, nfs_hash::bytea FROM file_state \
-                     WHERE swimlane_id = $1 AND nfs_hash IS NOT NULL ORDER BY path LIMIT $2",
-                )
-                .bind(swimlane.as_str())
-                .bind(MAX_FILES)
-                .fetch_all(self.db.pool()),
-            )
-            .await?;
-        if files.len() >= usize::try_from(MAX_FILES).unwrap_or(usize::MAX) {
-            return Err(RegistryError::Capacity);
-        }
-        let (git, pool, keep) = (
-            std::sync::Arc::clone(&self.git),
-            std::sync::Arc::clone(&self.pool),
-            self.config.rematch_ranking,
-        );
-        blocking(
-            self.config.git_timeout.max(std::time::Duration::from_secs(60)),
-            move || {
-                let branches = git.branches(RepoKind::Tenant)?;
-                let mut deployable: Vec<(GitRef, TenantId, CommitId)> = Vec::new();
-                for branch in branches {
-                    if let Some(tenant) = classifier.tenant_of(branch.name.as_str()) {
-                        deployable.push((branch.name, tenant, branch.head));
-                    }
-                }
-                let set = TenantSet::new(deployable.iter().map(|(_, t, _)| t.clone()))
-                    .map_err(|_| RegistryError::Capacity)?;
-                // The swimlane's side: the files whose names carry the suffix of a deployable branch.
-                let mut ours: Vec<(NfsPath, ContentHash)> = Vec::new();
-                for (path, hash) in files {
-                    let (Ok(path), Ok(hash)) = (NfsPath::parse(&path), <[u8; 32]>::try_from(hash)) else {
-                        continue;
-                    };
-                    if matches!(rule.reverse(&path, &set), Ok(ReverseMapping::Tenant { .. })) {
-                        ours.push((path, ContentHash::from_bytes(hash)));
-                    }
-                }
-                // The branches' side: every file at the head, by the hash the tree index holds.
-                let mut trees: Vec<Vec<(RepoPath, ContentHash)>> = Vec::with_capacity(deployable.len());
-                for (_, _, head) in &deployable {
-                    let index = git.tree_index(RepoKind::Tenant, head)?;
-                    trees.push(
-                        index
-                            .entries()
-                            .iter()
-                            .map(|e| (e.path.clone(), e.sha256))
-                            .collect(),
-                    );
-                }
-                let candidates: Vec<AdoptionCandidate<'_>> = deployable
-                    .iter()
-                    .zip(&trees)
-                    .map(|((name, tenant, _), files)| AdoptionCandidate {
-                        branch: name,
-                        kind: BranchKind::Deployable,
-                        tenant,
-                        files,
-                    })
-                    .collect();
-                let scores = adoption_rank(&pool, &rule, &ours, &candidates).map_err(|e| match e {
-                    BatchError::TooManyCandidates | BatchError::TooManyFiles => RegistryError::Capacity,
-                    _ => RegistryError::Invalid,
-                })?;
-                Ok(scores
-                    .into_iter()
-                    .take(keep)
-                    .map(|s| {
-                        json!({
-                            "branch": s.branch.as_str(),
-                            "tenant": s.tenant.as_str(),
-                            "shared": s.similarity.shared(),
-                            "union": s.similarity.union(),
-                        })
-                    })
-                    .collect())
-            },
-        )
-        .await
+        let ranker = Ranker {
+            db: self.db.clone(),
+            git: std::sync::Arc::clone(&self.git),
+            pool: std::sync::Arc::clone(&self.pool),
+            timeout: self.config.git_timeout,
+        };
+        Ok(ranker
+            .rank(swimlane)
+            .await?
+            .iter()
+            .take(self.config.rematch_ranking)
+            .map(Ranked::to_json)
+            .collect())
     }
 }
 

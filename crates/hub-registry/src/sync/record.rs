@@ -20,6 +20,7 @@ use domain::{ContentHash, FileClass, NfsPath, RepoKind, RepoPath, ReverseMapping
 use ports::{AuditAction, AuditEvent, AuditVia, Tx};
 
 use super::{Inner, Report};
+use crate::baselines::{self, RefChange};
 use crate::db::Txn;
 use crate::error::RegistryError;
 use crate::ingest::apply::LOCK_SQL;
@@ -385,59 +386,22 @@ impl Inner {
     }
 
     /// The reference that keeps the raw version behind each baseline from being collected (D78), and the reference of the version it
-    /// replaced dropped. A reference is named by the path it belongs to.
+    /// replaced dropped. A reference is named by the path it belongs to. The rule is `crate::baselines`', shared with the pipeline.
     async fn blob_refs(
         &self,
         tx: &mut Txn,
         swimlane: &SwimlaneId,
         writes: &[Write<'_>],
     ) -> Result<(), RegistryError> {
-        let ref_id = |w: &Write<'_>| format!("{swimlane}:{}", w.item.row.path);
-        let (mut old_hashes, mut old_ids): (Vec<Vec<u8>>, Vec<String>) = (Vec::new(), Vec::new());
-        let (mut new_hashes, mut new_ids): (Vec<Vec<u8>>, Vec<String>) = (Vec::new(), Vec::new());
-        for w in writes {
-            let new = w.blob.map(|b| b.as_bytes().to_vec());
-            if let Some(old) = &w.old_blob {
-                if new.as_ref() != Some(old) {
-                    old_hashes.push(old.clone());
-                    old_ids.push(ref_id(w));
-                }
-            }
-            if let Some(new) = new {
-                new_hashes.push(new);
-                new_ids.push(ref_id(w));
-            }
-        }
-        if !old_hashes.is_empty() {
-            self.db
-                .run(
-                    "sync_blob_refs_drop",
-                    sqlx::query(
-                        "DELETE FROM blob_refs r USING unnest($1::bytea[], $2::text[]) AS x(hash, ref_id) \
-                         WHERE r.hash = x.hash AND r.ref_kind = 'baseline' AND r.ref_id = x.ref_id",
-                    )
-                    .bind(&old_hashes)
-                    .bind(&old_ids)
-                    .execute(&mut **tx),
-                )
-                .await?;
-        }
-        if !new_hashes.is_empty() {
-            self.db
-                .run(
-                    "sync_blob_refs",
-                    sqlx::query(
-                        "INSERT INTO blob_refs (hash, ref_kind, ref_id) \
-                         SELECT x.hash, 'baseline', x.ref_id FROM unnest($1::bytea[], $2::text[]) AS x(hash, ref_id) \
-                         ON CONFLICT DO NOTHING",
-                    )
-                    .bind(&new_hashes)
-                    .bind(&new_ids)
-                    .execute(&mut **tx),
-                )
-                .await?;
-        }
-        Ok(())
+        let changes: Vec<RefChange> = writes
+            .iter()
+            .map(|w| RefChange {
+                path: w.item.row.path.as_str().to_owned(),
+                old: w.old_blob.clone(),
+                new: w.blob.map(|b| b.as_bytes().to_vec()),
+            })
+            .collect();
+        baselines::replace_refs(&self.db, tx, swimlane, &changes).await
     }
 }
 

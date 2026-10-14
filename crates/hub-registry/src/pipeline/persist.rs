@@ -6,7 +6,8 @@
 //! 1. `file_state`: the derived columns of the rows whose signature changed (new rows for the files only Git has), and the rows of
 //!    paths that are on neither side any more (only a row that has no file on NFS: a guard in the statement, so a file that came
 //!    back since the recompute began is never deleted);
-//! 2. `baselines`: a path where NFS and Git converged gets its baseline (after adoption only), and the stale marks are deleted;
+//! 2. `baselines`: a path where NFS and Git converged gets its baseline (after adoption only) with the reference that keeps the raw version
+//!    behind it from being collected ([`crate::baselines`]), and the stale marks are deleted;
 //! 3. `findings`, by fingerprint ([`super::findings_sync`]);
 //! 4. `effective_tree_hashes` and `effective_files` ([`TreeHashStore`]);
 //! 5. `swimlane_registry`: the version a read's `ETag` uses, the counts per state, the number of open findings and the fingerprint of the
@@ -36,6 +37,7 @@ use serde_json::Value;
 
 use super::findings_sync::{FindingRow, FindingsDelta, engine_kind_names};
 use super::lane_store::RowSig;
+use crate::baselines::{self, RefChange};
 use crate::clock::Clock;
 use crate::db::{Db, Txn};
 use crate::error::RegistryError;
@@ -404,6 +406,8 @@ impl Persist {
         let branches: Vec<Option<&str>> = rows.iter().map(|r| r.branch.as_deref()).collect();
         let commits: Vec<&str> = rows.iter().map(|r| r.commit.as_str()).collect();
         let blobs: Vec<Option<Vec<u8>>> = rows.iter().map(|r| raw(r.blob)).collect();
+        // The raw versions the baselines stand on now, read before they are replaced (A24, D78).
+        let before = baselines::current_blobs(&self.db, tx, swimlane, &paths).await?;
         self.db
             .run(
                 "persist_baselines",
@@ -419,7 +423,18 @@ impl Persist {
                     .execute(&mut **tx),
             )
             .await?;
-        Ok(())
+        // The reference that keeps the raw version behind each baseline from being collected, and the one of the version it replaced
+        // dropped: the same rule as a sync report's baselines (`record_sync`), through the same code.
+        let changes: Vec<RefChange> = rows
+            .iter()
+            .zip(blobs)
+            .map(|(r, new)| RefChange {
+                path: r.path.as_str().to_owned(),
+                old: before.get(r.path.as_str()).cloned(),
+                new,
+            })
+            .collect();
+        baselines::replace_refs(&self.db, tx, swimlane, &changes).await
     }
 
     async fn clear_marks(

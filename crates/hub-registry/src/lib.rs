@@ -16,6 +16,11 @@
 //!   pairs they affect with the engine, and writes drift, findings and the effective tree hashes with their events in one transaction for
 //!   each swimlane; a reconcile finds what an event missed, and a nightly job recomputes everything and repairs any divergence.
 //!
+//! - [`adoption`] (T5): the adoption pass (`AdoptionService`): the branch ranking, the hints, the best-matching base commit, the secret scan,
+//!   the per-file resolutions and the confirmation that sets the baselines and unlocks editing, and the marks of an intentional
+//!   divergence. Every call requires an active Admin (an Operator for the marks). [`baselines`] is the rule for the raw version behind a
+//!   baseline that the pipeline, a sync report and a confirmation share.
+//!
 //! - [`sync`] (T4): what the hub does when a sync Job has put Git's content on NFS (`record_sync`): the full scan, C7 first, baselines at the
 //!   commits the report names, and the deployment record. [`branches`] says which tenant branches are deployable.
 //!
@@ -30,6 +35,8 @@
     clippy::module_name_repetitions
 )]
 
+pub mod adoption;
+pub mod baselines;
 pub(crate) mod batch;
 pub mod branches;
 pub mod clock;
@@ -42,6 +49,11 @@ pub mod metrics;
 pub mod pipeline;
 pub mod sync;
 
+pub use adoption::{
+    AdoptionDeps, AdoptionError, AdoptionReason, AdoptionService, AdoptionStatus, AdoptionStep, AdoptionView,
+    Bulk, ConfirmOutcome, DifferingFile, DifferingFiles, Hint, HintSource, RankedBranch, Reason, Resolution,
+    ResolutionKind, ResolutionView, SecretHit,
+};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{ConfigError, RegistryConfig};
 pub use error::RegistryError;

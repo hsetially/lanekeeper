@@ -130,8 +130,29 @@ pub struct RegistryConfig {
     pub sync_request_timeout: Duration,
     /// How long a notification may take (the notifier talks to a webhook): a slow channel is logged and the report goes on (rule 5).
     pub notify_timeout: Duration,
-    /// Branches kept in the ranking of a tenant-suffix review (`adoptions.ranking`), best first.
+    /// Branches kept in the ranking of a tenant-suffix review and of an adoption pass (`adoptions.ranking`), best first.
     pub rematch_ranking: usize,
+
+    // ---------------------------------------------------------------------------------------------- adoption (T5)
+    /// Commits of the base repository scored when the best-matching base commit is looked for: the head, the commits that changed the
+    /// files that differ from it, and the tagged ones, in that order, cut here.
+    pub adoption_base_candidates: usize,
+    /// Files that differ between NFS and the base head whose history is read to find candidate commits (spread over the list).
+    pub adoption_history_paths: usize,
+    /// Commits read from the history of each of those files.
+    pub adoption_history_depth: usize,
+    /// Hints (environment and release) kept for one adoption pass.
+    pub adoption_hints: usize,
+    /// Files read and scanned together for secrets: the count, and the bytes (a file is at most `max_file_bytes`, so a batch never
+    /// holds more than this in memory).
+    pub adoption_scan_batch_files: usize,
+    pub adoption_scan_batch_bytes: u64,
+    /// Locations kept from one secret scan. A scan with more hits keeps this many and says so with a last entry.
+    pub adoption_secret_hits: usize,
+    /// The whole secret scan of one pass (the reads and the scanning).
+    pub adoption_scan_timeout: Duration,
+    /// Resolutions one call may record.
+    pub adoption_resolutions_per_call: usize,
 }
 
 impl Default for RegistryConfig {
@@ -180,6 +201,15 @@ impl Default for RegistryConfig {
             sync_request_timeout: Duration::from_secs(10),
             notify_timeout: Duration::from_secs(10),
             rematch_ranking: 20,
+            adoption_base_candidates: 64,
+            adoption_history_paths: 16,
+            adoption_history_depth: 32,
+            adoption_hints: 200,
+            adoption_scan_batch_files: 200,
+            adoption_scan_batch_bytes: 32 * 1024 * 1024,
+            adoption_secret_hits: 10_000,
+            adoption_scan_timeout: Duration::from_secs(5 * 60),
+            adoption_resolutions_per_call: 5_000,
         }
     }
 }
@@ -318,6 +348,55 @@ impl RegistryConfig {
         )?;
         within("notify_timeout", millis(self.notify_timeout), 100, 120_000)?;
         within("rematch_ranking", self.rematch_ranking as u64, 1, 100)?;
+        within(
+            "adoption_base_candidates",
+            self.adoption_base_candidates as u64,
+            1,
+            1_000,
+        )?;
+        within(
+            "adoption_history_paths",
+            self.adoption_history_paths as u64,
+            0,
+            256,
+        )?;
+        within(
+            "adoption_history_depth",
+            self.adoption_history_depth as u64,
+            1,
+            1_000,
+        )?;
+        within("adoption_hints", self.adoption_hints as u64, 1, 10_000)?;
+        within(
+            "adoption_scan_batch_files",
+            self.adoption_scan_batch_files as u64,
+            1,
+            MAX_GET_MANY as u64,
+        )?;
+        within(
+            "adoption_scan_batch_bytes",
+            self.adoption_scan_batch_bytes,
+            MAX_BLOB_BYTES as u64,
+            512 * 1024 * 1024,
+        )?;
+        within(
+            "adoption_secret_hits",
+            self.adoption_secret_hits as u64,
+            1,
+            100_000,
+        )?;
+        within(
+            "adoption_scan_timeout",
+            millis(self.adoption_scan_timeout),
+            1_000,
+            3600 * 1000,
+        )?;
+        within(
+            "adoption_resolutions_per_call",
+            self.adoption_resolutions_per_call as u64,
+            1,
+            100_000,
+        )?;
         // The globs travel to the agent as `ShortText` (256 bytes) and must compile.
         if self.extra_deny_globs.iter().any(|g| g.len() > 256) {
             return Err(ConfigError::Invalid("extra_deny_globs"));
@@ -492,6 +571,61 @@ mod tests {
         });
         out_of_range("rematch_ranking", |c| {
             c.rematch_ranking = 101;
+        });
+    }
+
+    #[test]
+    fn the_adoption_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(c.adoption_base_candidates, 64);
+        assert_eq!(c.adoption_history_paths, 16);
+        assert_eq!(c.adoption_history_depth, 32);
+        assert_eq!(c.adoption_hints, 200);
+        assert_eq!(c.adoption_scan_batch_files, 200);
+        assert_eq!(
+            c.adoption_scan_batch_bytes,
+            32 * 1024 * 1024,
+            "a batch of files read for the scan never holds more than this"
+        );
+        assert!(
+            c.adoption_scan_batch_bytes >= c.max_file_bytes,
+            "one file always fits a batch"
+        );
+        assert_eq!(c.adoption_secret_hits, 10_000);
+        assert_eq!(c.adoption_scan_timeout, Duration::from_secs(300));
+        assert_eq!(c.adoption_resolutions_per_call, 5_000);
+        out_of_range("adoption_base_candidates", |c| {
+            c.adoption_base_candidates = 0;
+        });
+        out_of_range("adoption_base_candidates", |c| {
+            c.adoption_base_candidates = 1_001;
+        });
+        out_of_range("adoption_history_paths", |c| {
+            c.adoption_history_paths = 257;
+        });
+        out_of_range("adoption_history_depth", |c| {
+            c.adoption_history_depth = 0;
+        });
+        out_of_range("adoption_hints", |c| {
+            c.adoption_hints = 0;
+        });
+        out_of_range("adoption_scan_batch_files", |c| {
+            c.adoption_scan_batch_files = 0;
+        });
+        out_of_range("adoption_scan_batch_files", |c| {
+            c.adoption_scan_batch_files = MAX_GET_MANY + 1;
+        });
+        out_of_range("adoption_scan_batch_bytes", |c| {
+            c.adoption_scan_batch_bytes = 1024;
+        });
+        out_of_range("adoption_secret_hits", |c| {
+            c.adoption_secret_hits = 0;
+        });
+        out_of_range("adoption_scan_timeout", |c| {
+            c.adoption_scan_timeout = Duration::from_millis(10);
+        });
+        out_of_range("adoption_resolutions_per_call", |c| {
+            c.adoption_resolutions_per_call = 0;
         });
     }
 

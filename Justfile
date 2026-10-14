@@ -423,7 +423,7 @@ registry-fuzz: fuzz-tools-check
     done
     echo "registry-fuzz: {{registry_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
 
-# P15 (T1), P1, P2, P5 and P6 (T3), and from the later tasks P7, P12 and P14: the benchmarks at target scale (the fixtures are generated into
+# P15 (T1), P1, P2, P5 and P6 (T3), P6.adoption_rank (T5), and from the later tasks P7, P12 and P14: the benchmarks at target scale (the fixtures are generated into
 # target/fixtures/target when missing), then `cargo xtask bench-check` on the budgets whose benchmark is in crates/hub-registry/benches/
 # only. The full registry needs every other prompt's benchmarks to have run (`just bench`), and `bench-check` has no filter, so the
 # recipe cuts a registry with just the budgets below and judges that; the full `cargo xtask bench-check` is run by the FINAL step
@@ -431,7 +431,7 @@ registry-fuzz: fuzz-tools-check
 # measured and does not fail the recipe. The benchmarks need a database (Docker, or LK_TEST_PG_ADMIN_URL) for the Postgres they
 # measure.
 # `tests/justfile_gate.rs` fails if this list and the benchmark files of the crate drift apart.
-registry_budgets := "P15.registry_ingest_versions_per_s P5 P5.per_file_per_swimlane P6.hub_full_recompute P1.hub_delta_to_drift P2.hub_head_moved_to_drift"
+registry_budgets := "P15.registry_ingest_versions_per_s P5 P5.per_file_per_swimlane P6.hub_full_recompute P1.hub_delta_to_drift P2.hub_head_moved_to_drift P6.adoption_rank"
 registry-bench:
     #!/usr/bin/env bash
     set -euo pipefail

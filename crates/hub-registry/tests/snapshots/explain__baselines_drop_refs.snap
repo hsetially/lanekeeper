@@ -1,0 +1,21 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: drop_refs
+---
+[
+  {
+    "node": "ModifyTable",
+    "relation": "blob_refs"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Function Scan"
+  },
+  {
+    "index": "blob_refs_pkey",
+    "node": "Index Scan",
+    "relation": "blob_refs"
+  }
+]
