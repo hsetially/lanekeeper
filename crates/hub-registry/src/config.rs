@@ -153,6 +153,39 @@ pub struct RegistryConfig {
     pub adoption_scan_timeout: Duration,
     /// Resolutions one call may record.
     pub adoption_resolutions_per_call: usize,
+
+    // ---------------------------------------------------------------------------------------------- reads (T6)
+    /// How recently a replica must have renewed an agent's connection row for the swimlane list to say "connected". The gateway's
+    /// own rule is the same shape: a row that was not renewed for this long counts as not connected.
+    pub agent_live_window: Duration,
+    /// Threads of the read pool (rule 4: text search runs on rayon inside `spawn_blocking`). The plan's figure for the 400 ms of
+    /// P7 is two threads, as the engine's own benchmark.
+    pub read_pool_threads: usize,
+    /// The caches of the read side, each weighed in bytes and bounded (rule 5). Every key is a content hash, so an entry is never
+    /// stale and nothing invalidates it: the setting rows of a blob, the effective config of a set of layers, a diff of two blobs,
+    /// the file list of a swimlane at a version, and the text-search corpus of a set of swimlane versions. 256 MiB in all for the
+    /// parsed and rendered values (the plan), and the corpus on top of 03b's blob cache whose `Bytes` it shares.
+    pub row_cache_bytes: u64,
+    pub effective_cache_bytes: u64,
+    pub diff_cache_bytes: u64,
+    pub file_list_cache_bytes: u64,
+    pub corpus_cache_bytes: u64,
+    /// The ceilings on a text search (A27): the prompt's 1,000 matches in all and 50 for one file. A larger request is clamped, and
+    /// `truncated` says so. The REST spec keeps its own, lower limits (500 and 100), so over REST the lower of each pair applies.
+    pub search_max_total: u32,
+    pub search_max_per_file: u32,
+    /// A text search that runs longer is cancelled and answers 503 (the prompt: a 5 second timeout).
+    pub search_timeout: Duration,
+    /// Blobs read from the blob store in one call when a search corpus is built, and how many such calls run at once.
+    pub search_blob_batch: usize,
+    pub search_blob_parallel: usize,
+    /// One `FetchServed` round trip to the config-server through the agent (A36).
+    pub served_timeout: Duration,
+    /// `FetchServed` calls in flight at once on this replica. The config-server answers one request at a time per agent, so a user
+    /// who clicks fast must not queue a hundred of them: past this the call is refused (503) rather than waited for.
+    pub served_concurrency: usize,
+    /// The most rows the children of one tree prefix may be read from (a guard: a swimlane has at most `MAX_LANE_FILES` files).
+    pub tree_scan_rows: u32,
 }
 
 impl Default for RegistryConfig {
@@ -210,6 +243,21 @@ impl Default for RegistryConfig {
             adoption_secret_hits: 10_000,
             adoption_scan_timeout: Duration::from_secs(5 * 60),
             adoption_resolutions_per_call: 5_000,
+            agent_live_window: Duration::from_secs(30),
+            read_pool_threads: 2,
+            row_cache_bytes: 96 * 1024 * 1024,
+            effective_cache_bytes: 64 * 1024 * 1024,
+            diff_cache_bytes: 48 * 1024 * 1024,
+            file_list_cache_bytes: 16 * 1024 * 1024,
+            corpus_cache_bytes: 256 * 1024 * 1024,
+            search_max_total: 1_000,
+            search_max_per_file: 50,
+            search_timeout: Duration::from_secs(5),
+            search_blob_batch: MAX_GET_MANY,
+            search_blob_parallel: 4,
+            served_timeout: Duration::from_secs(10),
+            served_concurrency: 16,
+            tree_scan_rows: 200_001,
         }
     }
 }
@@ -396,6 +444,52 @@ impl RegistryConfig {
             self.adoption_resolutions_per_call as u64,
             1,
             100_000,
+        )?;
+        within(
+            "agent_live_window",
+            millis(self.agent_live_window),
+            1_000,
+            3600 * 1000,
+        )?;
+        within("read_pool_threads", self.read_pool_threads as u64, 1, 64)?;
+        let mib = 1024 * 1024;
+        within("row_cache_bytes", self.row_cache_bytes, mib, 8 * 1024 * mib)?;
+        within(
+            "effective_cache_bytes",
+            self.effective_cache_bytes,
+            mib,
+            8 * 1024 * mib,
+        )?;
+        within("diff_cache_bytes", self.diff_cache_bytes, mib, 8 * 1024 * mib)?;
+        within(
+            "file_list_cache_bytes",
+            self.file_list_cache_bytes,
+            mib,
+            8 * 1024 * mib,
+        )?;
+        within("corpus_cache_bytes", self.corpus_cache_bytes, mib, 8 * 1024 * mib)?;
+        within("search_max_total", u64::from(self.search_max_total), 1, 100_000)?;
+        within(
+            "search_max_per_file",
+            u64::from(self.search_max_per_file),
+            1,
+            10_000,
+        )?;
+        within("search_timeout", millis(self.search_timeout), 100, 120_000)?;
+        within(
+            "search_blob_batch",
+            self.search_blob_batch as u64,
+            1,
+            MAX_GET_MANY as u64,
+        )?;
+        within("search_blob_parallel", self.search_blob_parallel as u64, 1, 64)?;
+        within("served_timeout", millis(self.served_timeout), 100, 120_000)?;
+        within("served_concurrency", self.served_concurrency as u64, 1, 1_024)?;
+        within(
+            "tree_scan_rows",
+            u64::from(self.tree_scan_rows),
+            1_000,
+            10_000_000,
         )?;
         // The globs travel to the agent as `ShortText` (256 bytes) and must compile.
         if self.extra_deny_globs.iter().any(|g| g.len() > 256) {
@@ -627,6 +721,54 @@ mod tests {
         out_of_range("adoption_resolutions_per_call", |c| {
             c.adoption_resolutions_per_call = 0;
         });
+    }
+
+    #[test]
+    fn the_read_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(c.validate(), Ok(()));
+        // A27: the ceilings of the prompt, which the REST spec's own lower limits sit under.
+        assert_eq!((c.search_max_total, c.search_max_per_file), (1_000, 50));
+        assert_eq!(
+            c.search_timeout,
+            Duration::from_secs(5),
+            "the prompt: a 5 second timeout"
+        );
+        assert_eq!(
+            c.read_pool_threads, 2,
+            "the plan's figure for the 400 ms of P7 is two threads"
+        );
+        assert!(c.search_blob_batch <= MAX_GET_MANY, "one get_many per batch");
+        assert_eq!(
+            c.tree_scan_rows, 200_001,
+            "MAX_LANE_FILES and one more: a swimlane over it cannot exist"
+        );
+        let caches =
+            c.row_cache_bytes + c.effective_cache_bytes + c.diff_cache_bytes + c.file_list_cache_bytes;
+        assert_eq!(
+            caches,
+            224 * 1024 * 1024,
+            "within the plan's 256 MiB for the parsed and rendered values"
+        );
+        out_of_range("agent_live_window", |c| {
+            c.agent_live_window = Duration::from_millis(1);
+        });
+        out_of_range("read_pool_threads", |c| c.read_pool_threads = 0);
+        out_of_range("row_cache_bytes", |c| c.row_cache_bytes = 1);
+        out_of_range("effective_cache_bytes", |c| c.effective_cache_bytes = 1);
+        out_of_range("diff_cache_bytes", |c| c.diff_cache_bytes = 1);
+        out_of_range("file_list_cache_bytes", |c| c.file_list_cache_bytes = 1);
+        out_of_range("corpus_cache_bytes", |c| c.corpus_cache_bytes = 1);
+        out_of_range("search_max_total", |c| c.search_max_total = 0);
+        out_of_range("search_max_per_file", |c| c.search_max_per_file = 0);
+        out_of_range("search_timeout", |c| c.search_timeout = Duration::from_millis(1));
+        out_of_range("search_timeout", |c| c.search_timeout = Duration::from_secs(3600));
+        out_of_range("search_blob_batch", |c| c.search_blob_batch = 0);
+        out_of_range("search_blob_batch", |c| c.search_blob_batch = MAX_GET_MANY + 1);
+        out_of_range("search_blob_parallel", |c| c.search_blob_parallel = 0);
+        out_of_range("served_timeout", |c| c.served_timeout = Duration::from_millis(1));
+        out_of_range("served_concurrency", |c| c.served_concurrency = 0);
+        out_of_range("tree_scan_rows", |c| c.tree_scan_rows = 10);
     }
 
     fn out_of_range(name: &'static str, change: impl FnOnce(&mut RegistryConfig)) {

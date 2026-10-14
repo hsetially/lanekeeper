@@ -4,7 +4,7 @@
 //! log as a fixed word (see [`crate::db::Db`]), with the ids the caller already has. At the edge the closed [`ports::SinkError`]
 //! set (or, from T6, the closed problem set of the REST edge) is all a caller ever sees.
 
-use ports::{AuditError, BlobError, BusError, GitError, SinkError, TxError, WrongTxKind};
+use ports::{AuditError, BlobError, BusError, GitError, ReadError, SinkError, TxError, WrongTxKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum RegistryError {
@@ -143,9 +143,50 @@ impl From<RegistryError> for SinkError {
     }
 }
 
+/// What a reader sees is the closed [`ReadError`] set (T6): a missing thing, a request that is not valid, or "try later". The cause
+/// of the last was logged by whoever failed, as a fixed word.
+impl From<RegistryError> for ReadError {
+    fn from(e: RegistryError) -> Self {
+        match e {
+            RegistryError::NotFound => Self::NotFound,
+            RegistryError::Invalid | RegistryError::TooLarge => Self::BadRequest,
+            RegistryError::Database
+            | RegistryError::Timeout
+            | RegistryError::Corrupt
+            | RegistryError::Audit(_)
+            | RegistryError::Bus(_)
+            | RegistryError::Blob(_)
+            | RegistryError::Git(_)
+            | RegistryError::WrongTx
+            | RegistryError::Capacity
+            | RegistryError::HelloRequired
+            | RegistryError::IdentityMismatch
+            | RegistryError::Internal => Self::Unavailable,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_a_reader_sees_is_the_closed_read_set() {
+        assert_eq!(ReadError::from(RegistryError::NotFound), ReadError::NotFound);
+        assert_eq!(ReadError::from(RegistryError::Invalid), ReadError::BadRequest);
+        assert_eq!(ReadError::from(RegistryError::TooLarge), ReadError::BadRequest);
+        for internal in [
+            RegistryError::Database,
+            RegistryError::Timeout,
+            RegistryError::Corrupt,
+            RegistryError::Blob(BlobError::Unavailable),
+            RegistryError::Git(GitError::Unavailable),
+            RegistryError::Internal,
+            RegistryError::Capacity,
+        ] {
+            assert_eq!(ReadError::from(internal), ReadError::Unavailable, "{internal}");
+        }
+    }
 
     #[test]
     fn what_a_caller_sees_is_the_closed_sink_set() {

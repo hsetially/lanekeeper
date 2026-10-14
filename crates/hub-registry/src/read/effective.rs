@@ -1,0 +1,618 @@
+//! Effective config (T6, D82, D83, A28, A30): what a service gets for a file, a tenant and a channel, from the engine, over setting
+//! rows that are read once per blob and cached by hash.
+//!
+//! # Which files are the layers
+//!
+//! The same three the engine's lane computation uses (`engine::batch`, `spring_hash`), so a read and the pipeline agree:
+//!
+//! - **a property source** (`spring_merge`): the tenant's copy (`<name>-<tenant>.<ext>`), the base file, and below them the root
+//!   `application.*` files, merged setting by setting;
+//! - **a resource** (`whole_file`): the whole file, the tenant's copy or else the base copy, the channel folder's first when a channel
+//!   is asked for. Its `hash` is the hash of the *rendered* file (`${KEY}` replaced where the application's property view has the key,
+//!   `render_file`), and it has no settings (the domain type: "empty for resource files").
+//!
+//! A layer that does not parse falls back to the file as it is (the engine's own fallback: the hash of the file that is served).
+//!
+//! # A30: one tenant stands for a swimlane
+//!
+//! The port has no tenant, so the first tenant in sorted order stands for the swimlane in `effective`, `grid` and `compare`, and the
+//! response names it. REST's `effective` takes the tenant. C3 and C4 use the whole set.
+//!
+//! # What is cached, and by what
+//!
+//! An [`EffectiveEntry`] is keyed by a hash of the layers it was made from (their paths, the hashes of their normalised content, the
+//! mode), never by a swimlane, so 40 swimlanes that read the same files share one entry, and a changed file is a new key.
+//!
+//! # Resource rendering is an approximation of the config-server's (T10 owns the exact one)
+//!
+//! The application whose property view renders a resource is the folder it is in, when that is one of the swimlane's applications
+//! (D88 `SPRING_APPLICATION_NAME`), and `application` (the root files alone) otherwise. The search locations are every folder of the
+//! swimlane except the requested channel's; `channels.yml` is not read here, so the folders of other channels are searched. T10's
+//! verification compares the engine's rendering with what the config-server really serves, and is where this is made exact.
+
+use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
+
+use domain::{
+    AppName, ChannelName, ContentHash, EffectiveConfig, EffectiveSetting, EffectiveSource, FileClass,
+    FileKind, FileRole, LogicalFile, MergeMode, NfsPath, SettingLocation, SwimlaneId, TenantId,
+};
+use engine::{
+    Effective, FlatSetting, Layer, Layers, Syntax, effective, logical_file_role, merge_mode, resolve_resource,
+};
+use ports::ReadError;
+use sha2::{Digest, Sha256};
+use sqlx::Row;
+use tracing::warn;
+
+use super::api::Tagged;
+use super::cache::{BlobRows, EffectiveEntry};
+use super::etag;
+use super::rows;
+use super::service::Inner;
+use crate::error::RegistryError;
+use crate::metrics::CacheName;
+
+/// The root files of a swimlane: the lowest layer of every property source (the engine's `ROOT_FILES`).
+pub const ROOT_FILES: [&str; 3] = ["application.properties", "application.yml", "application.yaml"];
+
+/// A file row, as far as the layers need it.
+#[derive(Debug, Clone)]
+pub struct LayerRow {
+    pub path: NfsPath,
+    pub kind: FileKind,
+    pub class: FileClass,
+    /// The raw content, the key of the blob and of its setting rows.
+    pub blob: Option<ContentHash>,
+    /// The content with line endings normalised: the hash a layer is named by.
+    pub norm: Option<ContentHash>,
+    pub size: u64,
+    pub denied: bool,
+}
+
+/// What one swimlane has for one logical file.
+#[derive(Debug, Clone)]
+pub struct Group {
+    pub swimlane: SwimlaneId,
+    /// Sorted.
+    pub tenants: Vec<TenantId>,
+    /// The applications its Deployments run (D88), sorted, without repeats.
+    pub apps: Vec<AppName>,
+    /// The files of the logical file's group: the base file and the tenants' copies.
+    pub files: Vec<LayerRow>,
+    /// The root `application.*` files that are on NFS, strongest first.
+    pub roots: Vec<LayerRow>,
+}
+
+/// The layers a tenant reads.
+#[derive(Debug, Clone)]
+pub struct Layering {
+    pub role: FileRole,
+    pub mode: MergeMode,
+    pub tenant: Option<LayerRow>,
+    pub base: Option<LayerRow>,
+    /// Only for a property source, and not when the base file is itself a root file.
+    pub roots: Vec<LayerRow>,
+}
+
+/// `$1` swimlanes, `$2` the logical file, `$3` the names of the root files: the rows of the group and the root files.
+pub const GROUP_ROWS_SQL: &str = "\
+SELECT swimlane_id, path, kind, class, nfs_hash::bytea AS blob, nfs_drift_hash::bytea AS norm, COALESCE(size, 0) AS size, denied, (logical_file = $2) AS in_group \
+FROM file_state \
+WHERE swimlane_id = ANY($1::text[]) AND (logical_file = $2 OR path = ANY($3::text[])) AND nfs_hash IS NOT NULL";
+
+pub const TENANTS_SQL: &str = "\
+SELECT swimlane_id, array_agg(tenant_id ORDER BY tenant_id) AS tenants FROM swimlane_tenants \
+WHERE swimlane_id = ANY($1::text[]) GROUP BY swimlane_id";
+
+pub const APPS_SQL: &str = "\
+SELECT swimlane_id, env_values ->> 'SPRING_APPLICATION_NAME' AS app FROM services \
+WHERE swimlane_id = ANY($1::text[]) AND removed_at IS NULL AND env_values ? 'SPRING_APPLICATION_NAME' LIMIT 100000";
+
+pub const EXISTING_SQL: &str = "SELECT id FROM swimlanes WHERE id = ANY($1::text[])";
+
+pub(crate) fn layer_row(row: &sqlx::postgres::PgRow) -> Result<LayerRow, RegistryError> {
+    let path: String = row.get("path");
+    let kind: String = row.get("kind");
+    let class: String = row.get("class");
+    let blob: Option<Vec<u8>> = row.get("blob");
+    let norm: Option<Vec<u8>> = row.get("norm");
+    Ok(LayerRow {
+        path: NfsPath::parse(&path).map_err(|_| RegistryError::Corrupt)?,
+        kind: rows::kind(&kind)?,
+        class: rows::class(&class)?,
+        blob: rows::opt_hash(blob.as_deref())?,
+        norm: rows::opt_hash(norm.as_deref())?,
+        size: u64::try_from(row.get::<i64, _>("size")).unwrap_or(0),
+        denied: row.get("denied"),
+    })
+}
+
+/// Whether `path` is the copy of `file` that `tenant` reads (`<name>-<tenant>.<ext>`), by the engine's own rule for choosing one.
+pub(crate) fn is_tenant_copy(file: &LogicalFile, tenant: &TenantId, path: &NfsPath) -> bool {
+    let only: BTreeSet<NfsPath> = std::iter::once(path.clone()).collect();
+    resolve_resource(file, Some(tenant), None, &only).is_some_and(|c| c.tenant_copy && c.path == *path)
+}
+
+/// The layers `tenant` reads out of what the swimlane has.
+pub fn layering(group: &Group, file: &LogicalFile, tenant: &TenantId) -> Layering {
+    let role = logical_file_role(file, &group.apps);
+    let mode = merge_mode(role);
+    // The tenant's copy is found by its name, whatever the row's `kind` says: the pipeline sets `kind` from what Git has, so a tenant file
+    // that Git does not have is `untracked`, and it is still the file that tenant reads.
+    let tenant_layer = group
+        .files
+        .iter()
+        .find(|r| r.path != *file.as_path() && is_tenant_copy(file, tenant, &r.path))
+        .cloned();
+    let base = group.files.iter().find(|r| r.path == *file.as_path()).cloned();
+    // The root files are below the base file of a property source, and not below a root file itself (it is a file of its own).
+    let base_is_root = base
+        .as_ref()
+        .is_some_and(|b| group.roots.iter().any(|r| r.path == b.path));
+    let roots = if mode == MergeMode::SpringMerge && !base_is_root {
+        group.roots.clone()
+    } else {
+        Vec::new()
+    };
+    Layering {
+        role,
+        mode,
+        tenant: tenant_layer,
+        base,
+        roots,
+    }
+}
+
+/// A hash of the layers an effective config is made of: the mode, and each layer's path and hash. The key of the cache and the
+/// material of the entity tag.
+pub fn key_of(l: &Layering) -> ContentHash {
+    let mut h = Sha256::new();
+    h.update(b"lanekeeper/effective-key/v1\n");
+    h.update([u8::from(l.mode == MergeMode::SpringMerge)]);
+    let mut layer = |tag: &[u8], row: Option<&LayerRow>| {
+        h.update(tag);
+        if let Some(row) = row {
+            h.update((row.path.as_str().len() as u64).to_be_bytes());
+            h.update(row.path.as_str().as_bytes());
+            h.update(row.norm.map_or([0_u8; 32], |n| *n.as_bytes()));
+            h.update(row.blob.map_or([0_u8; 32], |n| *n.as_bytes()));
+        }
+    };
+    layer(b"t", l.tenant.as_ref());
+    layer(b"b", l.base.as_ref());
+    for root in &l.roots {
+        layer(b"r", Some(root));
+    }
+    ContentHash::from_bytes(h.finalize().into())
+}
+
+/// The blobs whose rows a layering reads, each with how to read it.
+fn wanted(l: &Layering) -> Vec<(ContentHash, Syntax)> {
+    l.tenant
+        .iter()
+        .chain(l.base.iter())
+        .chain(l.roots.iter())
+        .filter(|r| r.class == FileClass::Structured && !r.denied)
+        .filter_map(|r| Some((r.blob?, Syntax::of_path(&r.path)?)))
+        .collect()
+}
+
+/// The merged settings of the root files, as one layer: a single file's own settings, or several merged with the stronger one on top
+/// (`.properties` over `.yml` over `.yaml`), the way the engine's lane computation does.
+fn merged_roots<S: std::hash::BuildHasher>(
+    roots: &[LayerRow],
+    rows: &HashMap<ContentHash, Arc<BlobRows>, S>,
+) -> Option<(NfsPath, ContentHash, Vec<FlatSetting>)> {
+    let first = roots.first()?;
+    let settings_of = |r: &LayerRow| -> Option<&[FlatSetting]> {
+        let rows = rows.get(&r.blob?)?;
+        (!rows.unparseable).then_some(rows.settings.as_slice())
+    };
+    let hash_of = |r: &LayerRow| r.norm;
+    let settings = if let [only] = roots {
+        settings_of(only)?.to_vec()
+    } else {
+        let layers: Option<Vec<Layer<'_>>> = roots
+            .iter()
+            .map(|r| {
+                Some(Layer {
+                    path: &r.path,
+                    hash: hash_of(r)?,
+                    settings: settings_of(r)?,
+                })
+            })
+            .collect();
+        let mut layers = layers?.into_iter();
+        let merged = effective(
+            MergeMode::SpringMerge,
+            &Layers {
+                tenant: layers.next(),
+                base: layers.next(),
+                root: layers.next(),
+            },
+        )?;
+        merged
+            .settings
+            .into_iter()
+            .map(|v| FlatSetting {
+                path: v.path,
+                value: v.value,
+                lines: v.origin.lines,
+                via_alias: false,
+            })
+            .collect()
+    };
+    Some((first.path.clone(), hash_of(first)?, settings))
+}
+
+/// A layer with its settings in hand.
+struct Held<'a> {
+    row: &'a LayerRow,
+    settings: Vec<FlatSetting>,
+    /// False for a structured file whose rows say it does not parse (or that has none): it is compared by hash only.
+    parsed: bool,
+}
+
+impl Held<'_> {
+    fn layer(&self) -> Option<Layer<'_>> {
+        Some(Layer {
+            path: &self.row.path,
+            hash: self.row.norm?,
+            settings: &self.settings,
+        })
+    }
+}
+
+fn held<'a, S: std::hash::BuildHasher>(
+    row: &'a LayerRow,
+    rows: &HashMap<ContentHash, Arc<BlobRows>, S>,
+) -> Held<'a> {
+    if row.class != FileClass::Structured {
+        return Held {
+            row,
+            settings: Vec::new(),
+            parsed: true,
+        };
+    }
+    match row.blob.and_then(|b| rows.get(&b)) {
+        Some(r) if !r.unparseable => Held {
+            row,
+            settings: r.settings.clone(),
+            parsed: true,
+        },
+        _ => Held {
+            row,
+            settings: Vec::new(),
+            parsed: false,
+        },
+    }
+}
+
+/// The effective config of a layering. `None` when there is no layer at all. Pure: the rows are given.
+pub fn compute<S: std::hash::BuildHasher>(
+    l: &Layering,
+    rows: &HashMap<ContentHash, Arc<BlobRows>, S>,
+) -> Option<Effective> {
+    let tenant = l.tenant.as_ref().map(|r| held(r, rows));
+    let base = l.base.as_ref().map(|r| held(r, rows));
+    let parsed = tenant.as_ref().is_none_or(|t| t.parsed) && base.as_ref().is_none_or(|b| b.parsed);
+    if l.mode == MergeMode::SpringMerge && parsed {
+        let root = merged_roots(&l.roots, rows);
+        let root_layer = root.as_ref().map(|(path, hash, settings)| Layer {
+            path,
+            hash: *hash,
+            settings,
+        });
+        // A root file that is on NFS but does not parse: the engine falls back to the file that is served, and so does this.
+        if l.roots.is_empty() || root_layer.is_some() {
+            let layers = Layers {
+                tenant: tenant.as_ref().and_then(Held::layer),
+                base: base.as_ref().and_then(Held::layer),
+                root: root_layer,
+            };
+            if let Some(e) = effective(MergeMode::SpringMerge, &layers) {
+                return Some(e);
+            }
+        }
+    }
+    effective(
+        MergeMode::WholeFile,
+        &Layers {
+            tenant: tenant.as_ref().and_then(Held::layer),
+            base: base.as_ref().and_then(Held::layer),
+            root: None,
+        },
+    )
+}
+
+/// The settings of an effective config in the contract's shape. Values the scan flagged are already redaction markers (A28).
+fn settings_of(e: &Effective) -> Vec<EffectiveSetting> {
+    e.settings
+        .iter()
+        .map(|v| EffectiveSetting {
+            path: v.path.clone(),
+            value: v.value.text.clone(),
+            source: v.origin.file.clone(),
+            location: Some(SettingLocation {
+                path: v.path.clone(),
+                lines: v.origin.lines,
+            }),
+        })
+        .collect()
+}
+
+fn weight_of(e: &Effective) -> u32 {
+    let bytes: usize = e
+        .settings
+        .iter()
+        .map(|s| 200 + s.path.as_str().len() + s.value.text.len() + s.origin.file.as_str().len())
+        .sum::<usize>()
+        + 256;
+    u32::try_from(bytes).unwrap_or(u32::MAX)
+}
+
+impl Inner {
+    /// The swimlanes of `ids` that exist.
+    pub async fn existing(&self, ids: &[&str]) -> Result<BTreeSet<String>, ReadError> {
+        let found: Vec<String> = self
+            .db
+            .run(
+                "read_existing",
+                sqlx::query_scalar(EXISTING_SQL)
+                    .bind(ids)
+                    .fetch_all(self.db.pool()),
+            )
+            .await?;
+        Ok(found.into_iter().collect())
+    }
+
+    /// What each of these swimlanes has for `file`. A swimlane that does not exist is not in the answer.
+    pub async fn groups_of(
+        &self,
+        swimlanes: &[SwimlaneId],
+        file: &LogicalFile,
+    ) -> Result<HashMap<SwimlaneId, Group>, ReadError> {
+        let ids: Vec<&str> = swimlanes.iter().map(SwimlaneId::as_str).collect();
+        let existing = self.existing(&ids).await?;
+        if existing.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let ids: Vec<&str> = existing.iter().map(String::as_str).collect();
+        let roots: Vec<&str> = ROOT_FILES.to_vec();
+        let (file_rows, tenant_rows, app_rows) = tokio::try_join!(
+            async {
+                self.db
+                    .run(
+                        "read_group_rows",
+                        sqlx::query(GROUP_ROWS_SQL)
+                            .bind(&ids)
+                            .bind(file.as_str())
+                            .bind(&roots)
+                            .fetch_all(self.db.pool()),
+                    )
+                    .await
+                    .map_err(ReadError::from)
+            },
+            async {
+                self.db
+                    .run(
+                        "read_group_tenants",
+                        sqlx::query(TENANTS_SQL).bind(&ids).fetch_all(self.db.pool()),
+                    )
+                    .await
+                    .map_err(ReadError::from)
+            },
+            async {
+                self.db
+                    .run(
+                        "read_group_apps",
+                        sqlx::query(APPS_SQL).bind(&ids).fetch_all(self.db.pool()),
+                    )
+                    .await
+                    .map_err(ReadError::from)
+            },
+        )?;
+
+        let mut out: HashMap<SwimlaneId, Group> = HashMap::with_capacity(ids.len());
+        for id in &existing {
+            let swimlane = SwimlaneId::parse(id).map_err(|_| ReadError::from(RegistryError::Corrupt))?;
+            out.insert(
+                swimlane.clone(),
+                Group {
+                    swimlane,
+                    tenants: Vec::new(),
+                    apps: Vec::new(),
+                    files: Vec::new(),
+                    roots: Vec::new(),
+                },
+            );
+        }
+        for row in &tenant_rows {
+            let id: String = row.get("swimlane_id");
+            let tenants: Vec<String> = row.get("tenants");
+            if let Some(g) = SwimlaneId::parse(&id).ok().and_then(|s| out.get_mut(&s)) {
+                g.tenants = tenants.iter().filter_map(|t| TenantId::parse(t).ok()).collect();
+            }
+        }
+        for row in &app_rows {
+            let id: String = row.get("swimlane_id");
+            let app: Option<String> = row.get("app");
+            if let (Some(g), Some(app)) = (SwimlaneId::parse(&id).ok().and_then(|s| out.get_mut(&s)), app) {
+                if let Ok(app) = AppName::parse(&app) {
+                    g.apps.push(app);
+                }
+            }
+        }
+        for g in out.values_mut() {
+            g.apps.sort();
+            g.apps.dedup();
+        }
+        for row in &file_rows {
+            let id: String = row.get("swimlane_id");
+            let in_group: bool = row.get("in_group");
+            let layer = layer_row(row)?;
+            let Some(g) = SwimlaneId::parse(&id).ok().and_then(|s| out.get_mut(&s)) else {
+                continue;
+            };
+            let is_root = layer.path.parent().is_root() && ROOT_FILES.contains(&layer.path.as_str());
+            if is_root {
+                g.roots.push(layer.clone());
+            }
+            if in_group {
+                g.files.push(layer);
+            }
+        }
+        for g in out.values_mut() {
+            // Strongest first: `.properties` over `.yml` over `.yaml`.
+            g.roots.sort_by_key(|r| {
+                ROOT_FILES
+                    .iter()
+                    .position(|n| *n == r.path.as_str())
+                    .unwrap_or(usize::MAX)
+            });
+        }
+        Ok(out)
+    }
+
+    /// The effective configs of these (group, tenant) pairs, computed together: one statement for the setting rows of every blob they
+    /// read and one pass of the read pool over the merges that are not cached. `None` for a pair that has no layer.
+    pub async fn effectives_of(
+        &self,
+        jobs: &[(&Group, &LogicalFile, &TenantId)],
+    ) -> Result<Vec<Option<(Layering, Arc<EffectiveEntry>)>>, ReadError> {
+        let layerings: Vec<Layering> = jobs.iter().map(|(g, f, t)| layering(g, f, t)).collect();
+        let keys: Vec<ContentHash> = layerings.iter().map(key_of).collect();
+
+        let mut hits: Vec<Option<Arc<EffectiveEntry>>> = Vec::with_capacity(jobs.len());
+        let mut want_rows: Vec<(ContentHash, Syntax)> = Vec::new();
+        for (l, key) in layerings.iter().zip(&keys) {
+            let hit = self.caches.effective.get(key);
+            self.caches.count(CacheName::Effective, hit.is_some());
+            if hit.is_none() && (l.tenant.is_some() || l.base.is_some()) {
+                want_rows.extend(wanted(l));
+            }
+            hits.push(hit);
+        }
+        let rows = if want_rows.is_empty() {
+            HashMap::new()
+        } else {
+            self.rows_of(&want_rows).await?
+        };
+
+        // The merges that are not cached, on the read pool (rule 4), in parallel; the answer does not depend on the pool.
+        let todo: Vec<usize> = (0..jobs.len())
+            .filter(|i| {
+                hits[*i].is_none() && (layerings[*i].tenant.is_some() || layerings[*i].base.is_some())
+            })
+            .collect();
+        if !todo.is_empty() {
+            let (pool, work) = (
+                Arc::clone(&self.pool),
+                todo.iter().map(|i| layerings[*i].clone()).collect::<Vec<_>>(),
+            );
+            let computed = tokio::task::spawn_blocking(move || {
+                use rayon::prelude::*;
+                pool.install(|| work.par_iter().map(|l| compute(l, &rows)).collect::<Vec<_>>())
+            })
+            .await
+            .map_err(|_| {
+                warn!("a merge task on the blocking pool did not finish");
+                ReadError::Unavailable
+            })?;
+            for (i, e) in todo.into_iter().zip(computed) {
+                if let Some(e) = e {
+                    let entry = Arc::new(EffectiveEntry {
+                        weight: weight_of(&e),
+                        effective: e,
+                    });
+                    self.caches.effective.insert(keys[i], Arc::clone(&entry));
+                    hits[i] = Some(entry);
+                }
+            }
+        }
+        Ok(layerings
+            .into_iter()
+            .zip(hits)
+            .map(|(l, hit)| hit.map(|h| (l, h)))
+            .collect())
+    }
+
+    /// The first tenant, in sorted order, that stands for a swimlane (A30).
+    pub fn standing_tenant(group: &Group) -> Result<TenantId, ReadError> {
+        group.tenants.first().cloned().ok_or(ReadError::NotFound)
+    }
+
+    /// `getEffectiveConfig`.
+    pub async fn effective_config(
+        &self,
+        swimlane: &SwimlaneId,
+        file: &LogicalFile,
+        tenant: Option<&TenantId>,
+        channel: Option<&ChannelName>,
+        if_none_match: Option<&str>,
+    ) -> Result<Tagged<EffectiveConfig>, ReadError> {
+        let groups = self.groups_of(std::slice::from_ref(swimlane), file).await?;
+        let group = groups.get(swimlane).ok_or(ReadError::NotFound)?;
+        let tenant = match tenant {
+            Some(t) if group.tenants.contains(t) => t.clone(),
+            Some(_) => return Err(ReadError::NotFound),
+            None => Self::standing_tenant(group)?,
+        };
+        let layering = layering(group, file, &tenant);
+        if layering.tenant.is_none() && layering.base.is_none() && layering.role == FileRole::PropertySource {
+            return Err(ReadError::NotFound);
+        }
+        if [&layering.tenant, &layering.base]
+            .into_iter()
+            .flatten()
+            .any(|r| r.denied || r.class == FileClass::Denied)
+        {
+            // A denied file has no effective config (D79).
+            return Err(ReadError::NotFound);
+        }
+        if layering.role == FileRole::Resource {
+            return self
+                .effective_resource(group, file, &tenant, channel, if_none_match)
+                .await;
+        }
+        let key = key_of(&layering);
+        let tag = etag::tag(
+            "effective",
+            &[
+                swimlane.as_str(),
+                file.as_str(),
+                tenant.as_str(),
+                channel.map_or("", ChannelName::as_str),
+                &key.to_string(),
+            ],
+        );
+        if etag::matches(if_none_match, &tag) {
+            return Ok(Tagged::NotModified { etag: tag });
+        }
+        let computed = self.effectives_of(&[(group, file, &tenant)]).await?;
+        let Some((_, entry)) = computed.into_iter().next().flatten() else {
+            return Err(ReadError::NotFound);
+        };
+        let e = &entry.effective;
+        let value = EffectiveConfig {
+            swimlane: swimlane.clone(),
+            file: file.clone(),
+            tenant,
+            channel: channel.cloned(),
+            role: layering.role,
+            hash: e.hash,
+            sources: e
+                .sources
+                .iter()
+                .map(|s| EffectiveSource {
+                    path: s.path.clone(),
+                    rank: s.rank,
+                })
+                .collect(),
+            settings: settings_of(e),
+            unresolved_placeholders: Vec::new(),
+        };
+        Ok(Tagged::Fresh { etag: tag, value })
+    }
+}

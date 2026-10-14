@@ -20,6 +20,8 @@ pub struct PgBlobs {
     requested: std::sync::Mutex<Vec<ContentHash>>,
     /// Calls to `get_many`.
     many_calls: AtomicU64,
+    /// Calls to `get`.
+    gets: AtomicU64,
 }
 
 impl PgBlobs {
@@ -32,6 +34,7 @@ impl PgBlobs {
             hang: AtomicBool::new(false),
             requested: std::sync::Mutex::new(Vec::new()),
             many_calls: AtomicU64::new(0),
+            gets: AtomicU64::new(0),
         }
     }
 
@@ -43,6 +46,12 @@ impl PgBlobs {
     pub fn forget_requests(&self) {
         self.requested.lock().unwrap().clear();
         self.many_calls.store(0, Ordering::SeqCst);
+        self.gets.store(0, Ordering::SeqCst);
+    }
+
+    /// Calls to `get` since the last `forget_requests`.
+    pub fn gets(&self) -> u64 {
+        self.gets.load(Ordering::SeqCst)
     }
 
     /// Calls to `get_many` since the last `forget_requests`.
@@ -111,6 +120,7 @@ impl BlobStore for PgBlobs {
     }
 
     async fn get(&self, h: &ContentHash) -> Result<Option<Bytes>, BlobError> {
+        self.gets.fetch_add(1, Ordering::SeqCst);
         if self.fail_reads.load(Ordering::SeqCst) {
             return Err(BlobError::Unavailable);
         }

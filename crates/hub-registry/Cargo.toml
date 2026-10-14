@@ -19,8 +19,16 @@ engine.workspace = true
 # hub-platform for these and for `GuardedRouter`, `ApiError` and `BlobPolicy` (T6), and for nothing else.
 hub-platform.workspace = true
 async-trait.workspace = true
+# The read API's routes (T6, plan A9): handlers, the typed query extraction and the response types. `GuardedRouter` is hub-platform's.
+axum.workspace = true
+# Cursors (T6, A31): base64url of a small binary key, never of a path.
+base64.workspace = true
 bytes.workspace = true
 futures.workspace = true
+# The tags of the content reads (T6) are hex of a SHA-256 prefix.
+hex.workspace = true
+# `Method`, `HeaderMap`, `StatusCode`, `ETag` headers of the REST edge (the same crate axum and hub-platform use).
+http.workspace = true
 # The admin's branch patterns (`path_mappings.branch_include` and `branch_exclude`, T4) are globs, matched with the crate the engine and the
 # agent already use for their globs. Already pinned.
 globset.workspace = true
@@ -49,6 +57,11 @@ hub-platform = { workspace = true, features = ["fakes"] }
 hub-identity.workspace = true
 # `EXPLAIN (FORMAT JSON)` snapshots of the hot queries (P12, T2 on).
 insta = { workspace = true, features = ["json"] }
+# The HTTP tests and benchmarks (T6) call the real router with `oneshot` and read the whole body.
+tower = { workspace = true, features = ["util"] }
+http-body-util.workspace = true
+# The OpenAPI schema walker of `tests/support/openapi.rs` (plan A43) reads `api/openapi.yaml` with the YAML reader the workspace already pins.
+serde-saphyr.workspace = true
 # Real Postgres 16 with pgvector (a container, or `LK_TEST_PG_ADMIN_URL`), migrated as lanekeeper_migrator and used as lanekeeper_app.
 sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json", "migrate"] }
 testcontainers.workspace = true

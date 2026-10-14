@@ -43,10 +43,12 @@ pub mod clock;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod http;
 pub mod index;
 pub mod ingest;
 pub mod metrics;
 pub mod pipeline;
+pub mod read;
 pub mod sync;
 
 pub use adoption::{
@@ -67,4 +69,5 @@ pub use metrics::RegistryMetrics;
 pub use pipeline::{
     BatchReport, LaneReport, NightlyReport, Pipeline, PipelineDeps, PipelineHandle, ReconcileOutcome, Work,
 };
+pub use read::{Named, ReadDeps, RegistryApi, RegistryService, Tagged};
 pub use sync::{SyncDeps, SyncError, SyncOutcome, SyncService, SyncSource};

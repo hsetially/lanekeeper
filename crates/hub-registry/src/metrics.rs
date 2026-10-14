@@ -161,6 +161,66 @@ pub enum AdoptionOutcome {
     Failed,
 }
 
+/// One operation of the read API (T6). A closed set of fifteen: the labels never grow with the traffic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum ReadOp {
+    Swimlanes,
+    Swimlane,
+    Tree,
+    Drift,
+    Content,
+    History,
+    Compare,
+    CompareTree,
+    Grid,
+    SearchSettings,
+    SearchText,
+    Findings,
+    Effective,
+    PendingRestarts,
+    Served,
+}
+
+/// How a read ended (T6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum ReadOutcome {
+    Ok,
+    /// The caller's `If-None-Match` matched: no body.
+    NotModified,
+    Forbidden,
+    NotFound,
+    BadRequest,
+    /// The database, the blob store, the mirror, the agent or a deadline failed.
+    Unavailable,
+}
+
+/// A cache of the read side (T6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum CacheName {
+    Rows,
+    Effective,
+    Diff,
+    Files,
+    Corpus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct ReadLabels {
+    op: ReadOp,
+    outcome: ReadOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct ReadOpLabels {
+    op: ReadOp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct ReadCacheLabels {
+    cache: CacheName,
+    result: CacheResult,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
 struct AdoptionLabels {
     action: AdoptionAction,
@@ -252,6 +312,15 @@ pub struct RegistryMetrics {
     adoption_rank_seconds: Histogram,
     adoption_secret_hits: Counter,
     adoption_baselines: Counter,
+    reads: Family<ReadLabels, Counter>,
+    read_seconds: Family<ReadOpLabels, Histogram, fn() -> Histogram>,
+    read_cache: Family<ReadCacheLabels, Counter>,
+    read_search_truncated: Counter,
+}
+
+/// 1 ms to about 8 s per read: the budgets are tens of milliseconds, a cold text search is hundreds.
+fn read_histogram() -> Histogram {
+    Histogram::new(exponential_buckets(0.001, 2.0, 14))
 }
 
 impl Default for RegistryMetrics {
@@ -298,6 +367,10 @@ impl Default for RegistryMetrics {
             adoption_rank_seconds: Histogram::new(exponential_buckets(0.001, 2.0, 14)),
             adoption_secret_hits: Counter::default(),
             adoption_baselines: Counter::default(),
+            reads: Family::default(),
+            read_seconds: Family::new_with_constructor(read_histogram as fn() -> Histogram),
+            read_cache: Family::default(),
+            read_search_truncated: Counter::default(),
         }
     }
 }
@@ -484,6 +557,26 @@ impl RegistryMetrics {
             "registry_adoption_baselines",
             "Baselines written by adoption confirmations",
             self.adoption_baselines.clone(),
+        );
+        registry.register(
+            "registry_reads",
+            "Reads of the read API, by operation and outcome",
+            self.reads.clone(),
+        );
+        registry.register(
+            "registry_read_seconds",
+            "Time of a read, by operation",
+            self.read_seconds.clone(),
+        );
+        registry.register(
+            "registry_read_cache",
+            "Lookups of the read caches, by cache and hit or miss",
+            self.read_cache.clone(),
+        );
+        registry.register(
+            "registry_read_search_truncated",
+            "Text searches whose result was cut by a cap",
+            self.read_search_truncated.clone(),
         );
     }
 
@@ -690,6 +783,40 @@ impl RegistryMetrics {
         self.adoption_baselines.get()
     }
 
+    pub(crate) fn read(&self, op: ReadOp, outcome: ReadOutcome, seconds: f64) {
+        self.reads.get_or_create(&ReadLabels { op, outcome }).inc();
+        self.read_seconds
+            .get_or_create(&ReadOpLabels { op })
+            .observe(seconds);
+    }
+
+    pub(crate) fn read_cache(&self, cache: CacheName, result: CacheResult) {
+        self.read_cache
+            .get_or_create(&ReadCacheLabels { cache, result })
+            .inc();
+    }
+
+    pub(crate) fn read_search_truncated(&self) {
+        self.read_search_truncated.inc();
+    }
+
+    /// Reads by operation and outcome, for tests.
+    pub fn read_count(&self, op: ReadOp, outcome: ReadOutcome) -> u64 {
+        self.reads.get_or_create(&ReadLabels { op, outcome }).get()
+    }
+
+    /// Lookups of one read cache, for tests.
+    pub fn read_cache_count(&self, cache: CacheName, result: CacheResult) -> u64 {
+        self.read_cache
+            .get_or_create(&ReadCacheLabels { cache, result })
+            .get()
+    }
+
+    /// Text searches that were cut by a cap, for tests.
+    pub fn read_search_truncated_count(&self) -> u64 {
+        self.read_search_truncated.get()
+    }
+
     /// Sync reports by how they ended, for tests.
     pub fn sync_count(&self, result: SyncResult) -> u64 {
         self.syncs.get_or_create(&SyncLabels { result }).get()
@@ -844,6 +971,14 @@ mod tests {
         m.adoption_secrets(3);
         m.adoption_secrets(0);
         m.adoption_baselines(9);
+        m.read(ReadOp::Grid, ReadOutcome::Ok, 0.01);
+        m.read(ReadOp::Grid, ReadOutcome::Forbidden, 0.0);
+        m.read_cache(CacheName::Rows, CacheResult::Hit);
+        m.read_search_truncated();
+        assert_eq!(m.read_count(ReadOp::Grid, ReadOutcome::Ok), 1);
+        assert_eq!(m.read_count(ReadOp::Tree, ReadOutcome::Ok), 0);
+        assert_eq!(m.read_cache_count(CacheName::Rows, CacheResult::Hit), 1);
+        assert_eq!(m.read_search_truncated_count(), 1);
         assert_eq!(m.adoption_count(AdoptionAction::Confirm, AdoptionOutcome::Ok), 1);
         assert_eq!(m.adoption_count(AdoptionAction::Start, AdoptionOutcome::Ok), 0);
         assert_eq!(m.adoption_secret_hits_count(), 3);
@@ -869,6 +1004,9 @@ mod tests {
         assert!(text.contains("registry_tenant_rematches_total"), "{text}");
         assert!(text.contains("registry_adoption_calls_total"), "{text}");
         assert!(text.contains("registry_adoption_rank_seconds"), "{text}");
+        assert!(text.contains("registry_reads_total"), "{text}");
+        assert!(text.contains("registry_read_seconds"), "{text}");
+        assert!(text.contains("registry_read_cache_total"), "{text}");
         assert!(!text.contains("sit1"), "no swimlane id is ever a label");
     }
 }

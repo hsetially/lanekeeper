@@ -12,6 +12,7 @@ pub mod pg;
 pub mod pg_audit;
 pub mod pg_blobs;
 pub mod pg_bus;
+pub mod reads;
 pub mod rig;
 pub mod statements;
 pub mod sync;
