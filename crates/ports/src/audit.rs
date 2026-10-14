@@ -114,7 +114,7 @@ pub const MAX_AUDIT_BATCH: usize = 200;
 /// is 5 s): hashing the batch, one insert of it, and the commit. At the budget the real log held the lock for 19 to 58 ms,
 /// whatever the shape of the batch (a release build on a 4-vCPU VM, Postgres 16.15 on the same machine; `docs/interfaces.md` has
 /// the shapes and how it was measured), against the 5 s of the other writers. Without the budget, 200 events of control
-/// characters were 67 MiB and seconds of work under the lock.
+/// characters were about 76 MiB and seconds of work under the lock.
 pub const MAX_AUDIT_BATCH_BYTES: usize = 1024 * 1024;
 
 /// The size in bytes of the canonical JSON of the largest event that can exist, derived from the limits of its fields; the

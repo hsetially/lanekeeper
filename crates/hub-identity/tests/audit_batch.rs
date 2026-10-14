@@ -293,7 +293,7 @@ async fn the_rows_of_a_batch_are_the_rows_record_writes() {
 
 // -------------------------------------------------------------------------------------------------------------------
 // The bound on the work under the lock is bytes, not events. A control character is six bytes of canonical JSON, a diff is
-// untrusted text of up to 64 KiB, so one event is up to 398,673 bytes and 200 of them were 67 MiB. These tests use the worst case:
+// untrusted text of up to 64 KiB, so one event is up to 398,673 bytes and 200 of them were about 76 MiB. These tests use the worst case:
 // events of control characters, not plain ones.
 
 /// The bytes of canonical JSON that the table holds for the events of the batch (what the budget counts).

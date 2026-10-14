@@ -118,7 +118,7 @@ const _: () = {
     // Two of the largest fit, three do not: the point of a budget of bytes.
     assert!(2 * MAX_AUDIT_EVENT_BYTES <= MAX_AUDIT_BATCH_BYTES);
     assert!(3 * MAX_AUDIT_EVENT_BYTES > MAX_AUDIT_BATCH_BYTES);
-    // 200 of the largest would have been 67 MiB.
+    // 200 of the largest would have been about 76 MiB.
     assert!(MAX_AUDIT_BATCH * MAX_AUDIT_EVENT_BYTES > 60 * 1024 * 1024);
 };
 
