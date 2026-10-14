@@ -10,7 +10,7 @@
 //! 3. **Event type.** `push` goes on, `pull_request` goes on when a [`PrLinks`] is configured, `ping` answers 200, and every
 //!    other event is acknowledged with 202 and ignored.
 //! 4. **Replay guard.** The delivery's key is inserted into `webhook_deliveries`; one seen before is a 202 that does nothing. The
-//!    key is the HMAC-SHA256 of the body that step 2 just verified (see [`replay_key`]), not `X-GitHub-Delivery`: that header is
+//!    key is the HMAC-SHA256 of the body that step 2 just verified (see `replay_key`), not `X-GitHub-Delivery`: that header is
 //!    not covered by the signature, so whoever holds one captured signed body could send it again under any id. GitHub's own
 //!    redelivery carries the same body, so it has the same key. The header is still required (and checked for form), as GitHub
 //!    always sends it.
@@ -77,7 +77,7 @@ pub enum DeliveryError {
     Unavailable,
 }
 
-/// The record of deliveries already seen (`webhook_deliveries`). The "id" is the delivery's [`replay_key`].
+/// The record of deliveries already seen (`webhook_deliveries`). The "id" is the delivery's `replay_key`.
 #[async_trait]
 pub trait DeliveryLog: Send + Sync + 'static {
     /// Records `id`. `true` if it was new, `false` if it had been seen.

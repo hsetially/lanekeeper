@@ -42,9 +42,56 @@ fn bare(at: i64) -> AuditEvent {
 
 // ------------------------------------------------------------------------------------------------ the largest event
 
+/// A drift guard for `MAX_AUDIT_EVENT_BYTES`. The constant is derived, by hand, from the fields of `AuditEvent` and of the types
+/// inside it. This destructures every struct and matches every enum that the derivation covers, with no `..` and no wildcard, so
+/// adding a field to `AuditEvent`, `Attribution` or `Evidence`, or a variant to `AuditActor` or `Actor`, stops this file from
+/// compiling. When it does: add the new field's largest form to `max_event_json_bytes` in `ports/src/audit.rs` and to
+/// `worst_case_audit_event`, and let the test below check the sum to the byte. (The enums `AuditAction`, `AuditVia`,
+/// `AttributionSource` and `Confidence` have the same guard in `the_enum_names_the_constant_assumes_are_the_longest`.)
+fn the_shape_the_constant_was_derived_from(e: &AuditEvent) {
+    let AuditEvent {
+        at: _,
+        actor,
+        action: _,
+        via: _,
+        swimlane: _,
+        path: _,
+        hash_before: _,
+        hash_after: _,
+        diff: _,
+        github_login: _,
+        approval: _,
+        request_id: _,
+        attribution,
+    } = e;
+    match actor {
+        AuditActor::User { user: _ }
+        | AuditActor::Agent { swimlane: _ }
+        | AuditActor::Sentinel { name: _ }
+        | AuditActor::System { component: _ } => {}
+    }
+    if let Some(Attribution {
+        source: _,
+        confidence: _,
+        actor,
+        evidence,
+    }) = attribution
+    {
+        match actor {
+            None | Some(Actor::User { user: _ } | Actor::OsLogin { login: _ } | Actor::Job { job: _ }) => {}
+        }
+        let Evidence {
+            executable: _,
+            login_identity: _,
+            observed_at: _,
+        } = evidence;
+    }
+}
+
 #[test]
 fn the_largest_event_is_what_the_constant_says() {
     let e = worst_case_audit_event(0);
+    the_shape_the_constant_was_derived_from(&e);
     assert_eq!(json_len(&e), MAX_AUDIT_EVENT_BYTES, "to the byte");
     assert_eq!(canonical_size(&e), Ok(MAX_AUDIT_EVENT_BYTES));
     assert_eq!(MAX_AUDIT_EVENT_BYTES, 398_588, "the number the docs quote");

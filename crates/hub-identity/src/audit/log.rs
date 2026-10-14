@@ -24,7 +24,7 @@
 //!    [`next_link`] folded over the batch, and `record` uses [`next_link`] too: there is one definition of a link);
 //! 5. one `INSERT ... SELECT FROM unnest(...) ORDER BY ordinality` writes the rows, so that their `seq` runs in input order. The
 //!    statement returns each row's `seq` and `hash`, and the ids are matched to the batch by hash and checked to be increasing
-//!    along the chain ([`ids_in_chain_order`]). If they are not, the call returns [`AuditError::Unavailable`] and the caller must
+//!    along the chain (`ids_in_chain_order`, private). If they are not, the call returns [`AuditError::Unavailable`] and the caller must
 //!    roll back, as after any error from a call that has taken the lock; nothing here commits for it.
 //!
 //! Three round trips for any batch, against three for every event. The two hops to the blocking pool cost tens of microseconds
@@ -76,6 +76,13 @@ pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The table refuses an `event_json` over this size. The bounded fields of an event cannot reach it; this is the backstop.
 pub(crate) const MAX_EVENT_JSON_BYTES: usize = 1024 * 1024;
+
+// An event that `prepare` accepts (up to the limit above) is accepted alone by `record_many`: the byte budget of a batch holds at
+// least one. If either number moves, this stops the build until the other is looked at.
+const _: () = assert!(
+    MAX_AUDIT_BATCH_BYTES >= MAX_EVENT_JSON_BYTES,
+    "the batch budget must hold the largest event that `prepare` accepts"
+);
 
 /// `at` is built by parsing the interval from text, which is integer arithmetic. `$4::bigint * interval '1 millisecond'` multiplies in
 /// floating point and is off by microseconds from the year 2255 on, and the nightly verifier compares `at` to the microsecond.
@@ -466,7 +473,12 @@ impl AuditLog for PgAuditLog {
         self.lock_chain(conn).await?;
         let head = chain_head(conn).await?;
 
-        // 4, for all of them, in input order, off the runtime: SHA-256 of up to the budget, inside the lock.
+        // 4, for all of them, in input order, off the runtime: SHA-256 of up to the budget, inside the lock. The hop is made for every
+        // batch, small ones too, and that was measured (release build, local Postgres, the ignored test `report_hashing_...` in
+        // tests/audit_batch.rs): hashing in place is cheaper below about 25 KB, by 0.1 to 0.2 ms (50 typical events, 24.5 KB: 140 to
+        // 250 microseconds in place, 230 to 310 for the hop hot and 330 to 380 spaced; 10 events, 4.9 KB: 30 against 75 to 190;
+        // 1 MiB: 5.4 ms either way), against a lock hold of several milliseconds. So one path is kept for every size, and rule 4
+        // holds from one event to the budget.
         let (prepared, links) = off_the_runtime("link", move || {
             let links = link_chain(head, &prepared);
             (prepared, links)

@@ -365,6 +365,11 @@ fn diff_too_large(e: &AuditEvent) -> bool {
 /// This canonicalises each event once to count it, and `record_many` does it again to record it. That is the price of not
 /// guessing the sizes; it is the work of one `record_many` call, done outside the chain lock.
 ///
+/// **It is CPU-bound and synchronous**, and it encodes every event with no early stop (the events are already in memory, and
+/// each is bounded: a few KB, or up to [`MAX_AUDIT_EVENT_BYTES`] for one made of control characters, so a list of 200 of the
+/// largest is tens of milliseconds in a release build and seconds in a debug one). A caller on the async runtime calls it from
+/// the blocking pool (`tokio::task::spawn_blocking`), as `record_many` does for its own encoding and hashing (AGENTS.md rule 4).
+///
 /// # Errors
 /// What [`canonical_size`] says about the first event that cannot be recorded, whatever its place, and
 /// [`AuditError::TooLarge`] for an event that is alone over [`MAX_AUDIT_BATCH_BYTES`] (no valid event is).
