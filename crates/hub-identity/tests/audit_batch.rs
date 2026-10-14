@@ -497,9 +497,13 @@ async fn hashing_inside_the_lock_runs_off_the_async_thread() {
 /// encoded, and queues for it; then the holder lets go and the clock starts. It stops when the batch's transaction has committed:
 /// the time from the lock being granted to its release, which is what the next writer waits for.
 async fn lock_hold_of(pool: &PgPool, batch: Vec<AuditEvent>) -> Duration {
+    /// Nothing here waits for longer than this: a batch that never queues for the lock, or never finishes, is a failure and not a
+    /// hang. The default lock timeout of the audit log is 5 s, so a healthy batch is far inside it.
+    const DEADLINE: Duration = Duration::from_secs(20);
+
     let holder = hold_chain_lock(pool).await;
     let batch_pool = pool.clone();
-    let batch_task = tokio::spawn(async move {
+    let mut batch_task = tokio::spawn(async move {
         let mut tx = batch_pool.begin().await.unwrap();
         PgAuditLog::new()
             .record_many(&mut Tx::from_pg(&mut tx), batch)
@@ -508,23 +512,69 @@ async fn lock_hold_of(pool: &PgPool, batch: Vec<AuditEvent>) -> Duration {
         tx.commit().await.unwrap();
         Instant::now()
     });
-    // The batch is queued for the lock when a request for it is waiting in this database.
-    loop {
-        let waiting: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted \
-             AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap();
-        if waiting == 1 {
-            break;
+    // The batch is queued for the lock when a request for it is waiting in this database. The poll is raced against the batch's own
+    // task: the task is expected to block on the lock, so one that has ended (it panicked, or was refused) will never queue, and the
+    // wait must stop at once and say why instead of polling for ever.
+    let queued = async {
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted \
+                 AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            if waiting == 1 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
-        tokio::time::sleep(Duration::from_millis(2)).await;
+    };
+    tokio::select! {
+        ended = &mut batch_task => {
+            panic!("the batch ended before it queued for the chain lock, which another transaction holds: {ended:?}");
+        }
+        waited = tokio::time::timeout(DEADLINE, queued) => {
+            assert!(waited.is_ok(), "the batch did not queue for the chain lock within {DEADLINE:?}");
+        }
     }
     let granted = Instant::now();
     holder.rollback().await.unwrap();
-    batch_task.await.unwrap() - granted
+    let committed = tokio::time::timeout(DEADLINE, batch_task)
+        .await
+        .unwrap_or_else(|_| panic!("the batch did not commit within {DEADLINE:?} of the lock being released"))
+        .unwrap();
+    committed - granted
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_lock_hold_measurement_fails_fast_when_the_batch_cannot_queue() {
+    // A batch one byte over the budget is refused before it takes the lock, so it never queues behind the holder. The measurement
+    // must stop at once and say so: a regression in the budget check showed up as a test that hung for 18 minutes.
+    let db = db!();
+    let pool = db.app_pool(4).await;
+    let refused = audit_events_totalling(3, MAX_AUDIT_BATCH_BYTES + 1);
+    let measurement = tokio::spawn({
+        let pool = pool.clone();
+        async move { lock_hold_of(&pool, refused).await }
+    });
+    let ended = tokio::time::timeout(Duration::from_secs(10), measurement)
+        .await
+        .expect("the measurement hung instead of failing")
+        .expect_err("the measurement of a refused batch cannot succeed");
+    assert!(ended.is_panic());
+    let message = ended.into_panic();
+    let message = message
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| message.downcast_ref::<&str>().copied())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        message.contains("the batch ended before it queued for the chain lock")
+            && message.contains("BatchTooLarge"),
+        "{message}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
