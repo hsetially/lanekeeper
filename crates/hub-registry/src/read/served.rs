@@ -103,20 +103,12 @@ impl Inner {
         }
     }
 
-    /// One round trip to the agent: the bytes the config-server answered with.
+    /// One round trip to the agent: the bytes the config-server answered with. The caller holds a slot of `served_slots`.
     async fn fetch_served(
         &self,
         swimlane: &SwimlaneId,
         request: &ServeRequest,
     ) -> Result<bytes::Bytes, ReadError> {
-        let Ok(_slot) = self.served_slots.try_acquire() else {
-            warn!(
-                op = "served",
-                why = "busy",
-                "too many served-file calls in flight"
-            );
-            return Err(ReadError::Unavailable);
-        };
         let id = self.request_seq.fetch_add(1, Ordering::Relaxed);
         let request_id = RequestId::parse(&format!("served-{}-{id}", self.clock.now().unix_millis()))
             .map_err(|_| ReadError::Unavailable)?;
@@ -172,11 +164,21 @@ impl Inner {
         }
         let row = self.file_row(swimlane, &request.file).await?;
         let denied = row.as_ref().is_some_and(|r| r.denied) || self.deny.is_denied(&request.file);
-        let (role, sources) = self.served_context(swimlane, request).await?;
         if denied {
+            let (role, _) = self.served_context(swimlane, request).await?;
             let hash = row.and_then(|r| r.hash).ok_or(ReadError::NotFound)?;
             return Ok(Self::withheld(swimlane, request, role, hash));
         }
+        // A replica makes at most `served_concurrency` round trips at once; the rest are refused now, before any work is done for them.
+        let Ok(_slot) = self.served_slots.try_acquire() else {
+            warn!(
+                op = "served",
+                why = "busy",
+                "too many served-file calls in flight"
+            );
+            return Err(ReadError::Unavailable);
+        };
+        let (role, sources) = self.served_context(swimlane, request).await?;
         let bytes = self.fetch_served(swimlane, request).await?;
         let hash = ports::content_hash(&bytes);
         let tag = etag::tag(

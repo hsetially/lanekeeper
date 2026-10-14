@@ -100,6 +100,11 @@ pub enum CursorError {
 pub struct Context([u8; 8]);
 
 impl Context {
+    /// The tag itself, for building and inspecting a cursor without a context to check against (the fuzz target's entry point).
+    pub fn tag(&self) -> [u8; 8] {
+        self.0
+    }
+
     /// `parts` are everything that selects the rows of the list (the swimlane, the prefix, the filters, in a fixed order). Each is
     /// length-prefixed, so a byte moved from one part to the next is another context.
     pub fn of(kind: Kind, parts: &[&str]) -> Self {

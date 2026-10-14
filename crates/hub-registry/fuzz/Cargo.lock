@@ -2029,10 +2029,15 @@ name = "hub-registry"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
+ "base64 0.22.1",
  "bytes",
  "domain",
  "engine",
  "futures",
+ "globset",
+ "hex",
+ "http",
  "hub-platform",
  "moka",
  "ports",
@@ -2040,6 +2045,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "thiserror",
  "tokio",

@@ -512,10 +512,9 @@ impl Inner {
         };
         let repo_path = RepoPath::parse(&format!("{}/{}", root.as_str(), file.as_str()))
             .map_err(|_| ReadError::BadRequest)?;
-        let bytes = match self.git_read(repo, git_ref, &repo_path).await {
-            Ok(b) => b,
-            Err(ReadError::NotFound) => return Ok(Side::absent("git")),
-            Err(e) => return Err(e),
+        // A mistyped ref is `NotFound` (nothing is compared with it); a file that is not in the tree at a ref that exists is an absent side.
+        let Some(bytes) = self.git_read_opt(repo, git_ref, &repo_path).await? else {
+            return Ok(Side::absent("git"));
         };
         let class = classify(file.as_path(), Some(&bytes), &self.deny);
         let hash = ports::content_hash(&bytes);

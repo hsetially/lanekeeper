@@ -290,13 +290,27 @@ impl Inner {
         self.git_read(repo, git_ref, &repo_path).await
     }
 
-    /// A repository file at a ref (a commit id, a branch or a tag), on the blocking pool with the Git timeout.
+    /// A repository file at a ref (a commit id, a branch or a tag), on the blocking pool with the Git timeout. A ref that names nothing
+    /// is `NotFound`, and so is a file that is not in the tree at that ref.
     pub async fn git_read(
         &self,
         repo: RepoKind,
         git_ref: &GitRef,
         repo_path: &RepoPath,
     ) -> Result<Bytes, ReadError> {
+        self.git_read_opt(repo, git_ref, repo_path)
+            .await?
+            .ok_or(ReadError::NotFound)
+    }
+
+    /// As [`Self::git_read`], but a file that is not in the tree at a ref that exists is `None`: the caller can tell a mistyped ref from a
+    /// file that is not there.
+    pub async fn git_read_opt(
+        &self,
+        repo: RepoKind,
+        git_ref: &GitRef,
+        repo_path: &RepoPath,
+    ) -> Result<Option<Bytes>, ReadError> {
         let (git, git_ref, repo_path) = (
             std::sync::Arc::clone(&self.git),
             git_ref.clone(),
@@ -313,8 +327,8 @@ impl Inner {
                 ReadError::Unavailable
             })?;
         match result {
-            Ok(Ok(Some(bytes))) => Ok(bytes),
-            Ok(Ok(None) | Err(GitError::NotFound | GitError::InvalidRef)) => Err(ReadError::NotFound),
+            Ok(Ok(found)) => Ok(found),
+            Ok(Err(GitError::NotFound | GitError::InvalidRef)) => Err(ReadError::NotFound),
             Ok(Err(GitError::Unavailable)) | Err(_) => {
                 warn!(op = "read_git", "git read failed");
                 Err(ReadError::Unavailable)

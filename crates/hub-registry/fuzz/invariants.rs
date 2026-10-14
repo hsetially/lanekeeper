@@ -23,10 +23,12 @@
 )]
 
 use bytes::Bytes;
-use domain::{ContentHash, NfsPath, ScanDelta, ScanEntry, ShortText, SkippedEntry, Timestamp};
+use domain::{ContentHash, Cursor, NfsPath, Page, ScanDelta, ScanEntry, ShortText, SkippedEntry, Timestamp};
 use engine::DenyMatcher;
 use hub_registry::RegistryError;
 use hub_registry::fuzzing::{add_part, check_message, plan_versions};
+use hub_registry::http::query;
+use hub_registry::read::cursor::{self as rc, Context, CursorError, Field, Kind, Parsed};
 use ports::content_hash;
 
 /// A seed corpus needs at least this many files per target (`MIN_SEEDS` in the replay test).
@@ -338,5 +340,607 @@ pub fn describe(data: &[u8]) -> String {
     match check_message(delta, &deny, MAX_FILE_BYTES, NOW, SKEW) {
         Ok(c) => format!("accepted {} entries, {} bytes kept", c.entries.len(), c.bytes),
         Err(e) => format!("refused {e:?}"),
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ registry_cursor
+
+/// The bounds of a key, from `docs` and the plan (A31), written here and not read from the code under test.
+const KEY_FIELDS: usize = 6;
+const KEY_BYTES: usize = 255;
+/// The raw bytes a 512-character cursor can hold (`512 * 3 / 4`).
+const KEY_RAW: usize = 384;
+
+const KINDS: [Kind; 9] = [
+    Kind::Swimlanes,
+    Kind::Tree,
+    Kind::Drift,
+    Kind::History,
+    Kind::Findings,
+    Kind::SettingsSearch,
+    Kind::Grid,
+    Kind::CompareTree,
+    Kind::Restarts,
+];
+
+/// The text of a cursor, the way the REST edge hands it over: at most 512 characters of the cursor alphabet.
+pub fn registry_cursor(data: &[u8]) -> Result<(), String> {
+    // 1. The bytes as the text of a cursor (a lossy reading, so that every input is some text).
+    let text = String::from_utf8_lossy(&data[..data.len().min(700)]).into_owned();
+    parsed_text_is_canonical(&text)?;
+    // 2. The bytes as a program that builds a cursor.
+    cursor_program(data).map(|_| ())
+}
+
+fn parsed_text_is_canonical(text: &str) -> Result<(), String> {
+    let Ok(parsed) = rc::parse(text) else {
+        return Ok(());
+    };
+    if Cursor::parse(text).is_err() || text.len() > 512 {
+        return Err("a text that parses is not a cursor of at most 512 characters".to_owned());
+    }
+    if parsed.fields.len() > KEY_FIELDS {
+        return Err("a cursor with too many fields parsed".to_owned());
+    }
+    if parsed
+        .fields
+        .iter()
+        .any(|f| matches!(f, Field::Bytes(b) if b.len() > KEY_BYTES))
+    {
+        return Err("a cursor with a field over the bound parsed".to_owned());
+    }
+    match rc::assemble(&parsed) {
+        Ok(again) if again.as_str() == text => Ok(()),
+        Ok(_) => Err("a cursor has a second spelling".to_owned()),
+        Err(e) => Err(format!("a cursor that parsed does not assemble: {e}")),
+    }
+}
+
+/// `Ok("refused")` when the key the program describes does not fit a cursor, `Ok("made")` when it was made and held every invariant.
+fn cursor_program(data: &[u8]) -> Result<&'static str, String> {
+    let mut r = Reader { data, at: 0 };
+    let kind = KINDS[usize::from(r.byte()) % KINDS.len()];
+    let parts: Vec<String> = (0..usize::from(r.byte() % 4))
+        .map(|_| {
+            let len = usize::from(r.byte() % 9);
+            (0..len)
+                .map(|_| char::from(ALPHABET[usize::from(r.byte()) % ALPHABET.len()]))
+                .collect()
+        })
+        .collect();
+    let part_refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+    let context = Context::of(kind, &part_refs);
+    let count = usize::from(r.byte() % 9);
+    let mut fields = Vec::new();
+    for _ in 0..count {
+        if r.byte() % 2 == 0 {
+            let mut n = [0_u8; 8];
+            n.iter_mut().for_each(|b| *b = r.byte());
+            fields.push(Field::Int(i64::from_be_bytes(n)));
+        } else {
+            let len = match r.byte() % 4 {
+                0 => usize::from(r.byte() % 4),
+                1 => usize::from(r.byte() % 40),
+                2 => 253 + usize::from(r.byte() % 5),
+                _ => usize::from(r.byte()) + 100 * usize::from(r.byte() % 2),
+            };
+            fields.push(Field::Bytes((0..len).map(|_| r.byte()).collect()));
+        }
+    }
+    let parsed = Parsed {
+        kind,
+        context: context.tag(),
+        fields: fields.clone(),
+    };
+
+    // The oracle: a key fits when it has at most six fields, none of them a byte string over 255 bytes, and its raw form (version, kind,
+    // tag and count, then 9 bytes for a number and 3 + length for a byte string) is at most 384 bytes.
+    let raw_len: usize = 1
+        + 1
+        + 8
+        + 1
+        + fields
+            .iter()
+            .map(|f| match f {
+                Field::Int(_) => 9,
+                Field::Bytes(b) => 3 + b.len(),
+            })
+            .sum::<usize>();
+    let fits = fields.len() <= KEY_FIELDS
+        && fields
+            .iter()
+            .all(|f| !matches!(f, Field::Bytes(b) if b.len() > KEY_BYTES))
+        && raw_len <= KEY_RAW;
+    let cursor = match rc::assemble(&parsed) {
+        Ok(c) if fits => c,
+        Ok(_) => {
+            return Err(format!(
+                "a key that does not fit was assembled ({} fields, {raw_len} raw bytes)",
+                fields.len()
+            ));
+        }
+        Err(CursorError::TooLarge) if !fits => return Ok("refused"),
+        Err(e) => {
+            return Err(format!(
+                "a key that fits was refused or refused wrongly: {e} (fits: {fits})"
+            ));
+        }
+    };
+    if cursor.as_str().len() > 512 {
+        return Err("a cursor of more than 512 characters was made".to_owned());
+    }
+    if rc::parse(cursor.as_str()) != Ok(parsed.clone()) {
+        return Err("a cursor does not parse back to its parts".to_owned());
+    }
+    if rc::decode(&cursor, kind, &context) != Ok(fields.clone()) {
+        return Err("a cursor does not decode under its own kind and query".to_owned());
+    }
+    let other_kind = KINDS[(KINDS.iter().position(|k| *k == kind).unwrap_or(0) + 1) % KINDS.len()];
+    if rc::decode(&cursor, other_kind, &context) != Err(CursorError::WrongKind) {
+        return Err("a cursor was accepted for another list".to_owned());
+    }
+    let other = Context::of(kind, &["a query that is not the one it was issued for"]);
+    if other.tag() != context.tag() && rc::decode(&cursor, kind, &other) != Err(CursorError::WrongContext) {
+        return Err("a cursor was accepted for another query".to_owned());
+    }
+    let page = Page::new(1, Some(cursor.clone())).map_err(|e| e.to_string())?;
+    if rc::resume(&page, kind, &context) != Ok(Some(fields.clone())) {
+        return Err("resume did not give the key back".to_owned());
+    }
+    if other.tag() != context.tag() && rc::resume(&page, kind, &other).is_ok() {
+        return Err("resume accepted a cursor of another query".to_owned());
+    }
+    // No proper prefix of a cursor is a cursor, and a changed character is refused or is another cursor in its one canonical spelling.
+    let text = cursor.as_str();
+    for cut in [1, text.len() / 3, text.len() / 2, text.len() - 1] {
+        if cut > 0 && cut < text.len() && rc::parse(&text[..cut]).is_ok() {
+            return Err("a prefix of a cursor parsed".to_owned());
+        }
+    }
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_=.";
+    for _ in 0..8 {
+        let at = usize::from(r.byte()) % text.len();
+        let with = alphabet[usize::from(r.byte()) % alphabet.len()];
+        let mut changed = text.as_bytes().to_vec();
+        changed[at] = with;
+        let changed = String::from_utf8(changed).map_err(|e| e.to_string())?;
+        parsed_text_is_canonical(&changed)?;
+    }
+    Ok("made")
+}
+
+// ------------------------------------------------------------------------------------------------ registry_query
+
+/// Each parser of `hub_registry::http::query`, with the parameter names its operation has.
+const OPERATIONS: [(&str, &[&str]); 14] = [
+    ("page_only", &["cursor", "limit"]),
+    ("none", &[]),
+    ("tree", &["prefix", "drift", "cursor", "limit"]),
+    ("drift", &["state", "prefix", "cursor", "limit"]),
+    ("content", &["path", "source", "hash", "repo", "ref"]),
+    ("history", &["path", "cursor", "limit"]),
+    ("compare", &["left", "right", "file", "channel"]),
+    ("compare_tree", &["left", "right", "prefix", "cursor", "limit"]),
+    (
+        "grid",
+        &[
+            "file",
+            "swimlanes",
+            "channel",
+            "only_differing",
+            "cursor",
+            "limit",
+        ],
+    ),
+    ("search_settings", &["q", "swimlanes", "file", "cursor", "limit"]),
+    (
+        "search_text",
+        &[
+            "pattern",
+            "regex",
+            "case_sensitive",
+            "swimlanes",
+            "path_glob",
+            "max_total",
+            "max_per_file",
+        ],
+    ),
+    (
+        "findings",
+        &["swimlane", "kinds", "min_severity", "cursor", "limit"],
+    ),
+    ("effective", &["file", "tenant", "channel"]),
+    ("served", &["application", "tenant", "channel", "file"]),
+];
+
+/// Values that are awkward in one way or another, for any parameter.
+const POOL: [&str; 40] = [
+    "",
+    "1",
+    "0",
+    "5",
+    "500",
+    "501",
+    "-1",
+    "+1",
+    "1.0",
+    "99999999999",
+    "true",
+    "false",
+    "yes",
+    "TRUE",
+    "sit1",
+    "sit1,sit2",
+    "sit1,sit1",
+    "sit1,,sit2",
+    "a/b",
+    "a/b/c.yml",
+    "../x",
+    "%2e%2e",
+    "%2e%2e%2fetc",
+    "%00",
+    "%FF%FE",
+    "core.yml",
+    "nfs:sit1",
+    "git:base@main",
+    "git:tenant@v1.2",
+    "ghp_abcdef",
+    "A",
+    "a b",
+    "git_ahead",
+    "high",
+    "drift,orphan_file",
+    "nfs",
+    "blob",
+    "git",
+    "base",
+    "x*",
+];
+
+const QUERY_ALPHABET: &[u8] = b"ab/./-_01,%2F=&+: ";
+
+/// The operation and the raw query a program stands for.
+fn query_program(data: &[u8]) -> (usize, String) {
+    let mut r = Reader { data, at: 0 };
+    let first = r.byte();
+    let op = usize::from(first & 0x0f) % OPERATIONS.len();
+    if first & 0x80 != 0 {
+        let raw = String::from_utf8_lossy(&data[1.min(data.len())..data.len().min(9_001)]).into_owned();
+        return (op, raw);
+    }
+    let names = OPERATIONS[op].1;
+    let pairs = usize::from(r.byte() % 9);
+    let mut parts: Vec<String> = Vec::new();
+    for _ in 0..pairs {
+        let pick = usize::from(r.byte()) % (names.len() + 4);
+        let name = match names.get(pick) {
+            Some(name) => *name,
+            None => ["unknown", "", "limit", "x%20y"][pick - names.len()],
+        };
+        let value = match usize::from(r.byte()) % (POOL.len() + 3) {
+            n if n < POOL.len() => POOL[n].to_owned(),
+            n if n == POOL.len() => {
+                let len = usize::from(r.byte() % 32);
+                (0..len)
+                    .map(|_| char::from(QUERY_ALPHABET[usize::from(r.byte()) % QUERY_ALPHABET.len()]))
+                    .collect()
+            }
+            n if n == POOL.len() + 1 => "a".repeat(usize::from(r.byte()) * 4),
+            _ => format!("sit{}", r.byte() % 70),
+        };
+        parts.push(format!("{name}={value}"));
+    }
+    (op, parts.join("&"))
+}
+
+fn enc(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() {
+                char::from(b).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+fn page_ok(p: &Page) -> Result<(), String> {
+    if !(1..=500).contains(&p.limit()) {
+        return Err(format!("a limit of {} was accepted", p.limit()));
+    }
+    if let Some(c) = p.cursor() {
+        if c.as_str().is_empty() || c.as_str().len() > 512 {
+            return Err("a cursor outside 1 to 512 characters was accepted".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn page_text(p: &Page) -> String {
+    match p.cursor() {
+        Some(c) => format!("limit={}&cursor={}", p.limit(), c.as_str()),
+        None => format!("limit={}", p.limit()),
+    }
+}
+
+/// A path that is relative, has no empty or `..` component, no control character and no backslash, and is at most 1,024 bytes.
+fn path_ok(p: &NfsPath, what: &str) -> Result<(), String> {
+    let s = p.as_str();
+    let bad = s.len() > 1_024
+        || s.starts_with('/')
+        || s.contains('\\')
+        || s.chars().any(char::is_control)
+        || (!s.is_empty() && s.split('/').any(|c| c.is_empty() || c == ".." || c == "."));
+    if bad {
+        Err(format!(
+            "{what}: a path that is not a clean relative path was accepted: {s:?}"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn list_ok<T: Ord>(items: &[T], max: usize, what: &str) -> Result<(), String> {
+    let unique: std::collections::BTreeSet<&T> = items.iter().collect();
+    if items.len() > max || unique.len() != items.len() {
+        Err(format!(
+            "{what}: a list over its bound or with a repeat was accepted"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Parse `raw` as operation `op`: `Ok(Some(debug))` when it is accepted and holds every invariant, `Ok(None)` when it is refused.
+fn run_operation(op: usize, raw: Option<&str>) -> Result<Option<String>, String> {
+    use domain::ContentSource;
+    macro_rules! parsed {
+        ($call:expr, |$v:ident| $check:block) => {
+            match $call {
+                Ok($v) => {
+                    $check
+                    Ok(Some(format!("{:?}", $v)))
+                }
+                Err(_) => Ok(None),
+            }
+        };
+    }
+    match op {
+        0 => parsed!(query::page_only(raw), |p| {
+            page_ok(&p)?;
+            let again = query::page_only(Some(&page_text(&p)))
+                .map_err(|_| "a page did not parse again".to_owned())?;
+            if again != p {
+                return Err("a page changed when it was written and read again".to_owned());
+            }
+        }),
+        1 => match query::none(raw) {
+            // No parameters: only a query of empty pairs (`&&`) is the same as none.
+            Ok(()) if plain_names(raw.unwrap_or("")).is_some_and(|names| !names.is_empty()) => {
+                Err("a parameter was accepted where there are none".to_owned())
+            }
+            Ok(()) => Ok(Some(String::new())),
+            Err(_) => Ok(None),
+        },
+        2 => parsed!(query::tree(raw), |t| {
+            page_ok(&t.page)?;
+            path_ok(&t.prefix, "tree prefix")?;
+            let mut again = format!("prefix={}&{}", enc(t.prefix.as_str()), page_text(&t.page));
+            if let Some(d) = t.drift {
+                again.push_str(&format!("&drift={}", d.as_str()));
+            }
+            let again =
+                query::tree(Some(&again)).map_err(|_| "a tree request did not parse again".to_owned());
+            if t.prefix.is_root() {
+                // The root is written as no prefix at all.
+            } else if again? != t {
+                return Err("a tree request changed when it was written and read again".to_owned());
+            }
+        }),
+        3 => parsed!(query::drift(raw), |d| {
+            page_ok(&d.page)?;
+            path_ok(&d.prefix, "drift prefix")?;
+        }),
+        4 => parsed!(query::content(raw), |c| {
+            path_ok(&c.path, "content path")?;
+            // A source has exactly its own parameters: the query is written back with them, and is refused with any other.
+            let s = raw.unwrap_or("");
+            let has = |name: &str| s.split('&').any(|p| p.split('=').next() == Some(name));
+            // (A name written with an escape is the decoder's business; the oracle reads plain names only.)
+            let plain = !s.contains(['%', '+']);
+            match &c.source {
+                _ if !plain => {}
+                ContentSource::Nfs | ContentSource::Baseline => {
+                    if has("hash") || has("repo") || has("ref") {
+                        return Err("a parameter of another source was accepted".to_owned());
+                    }
+                }
+                ContentSource::Blob { .. } => {
+                    if !has("hash") || has("repo") || has("ref") {
+                        return Err("a blob source with the wrong parameters was accepted".to_owned());
+                    }
+                }
+                ContentSource::Git { .. } => {
+                    if has("hash") || !has("repo") || !has("ref") {
+                        return Err("a git source with the wrong parameters was accepted".to_owned());
+                    }
+                }
+            }
+        }),
+        5 => parsed!(query::history(raw), |h| {
+            page_ok(&h.page)?;
+            path_ok(&h.path, "history path")?;
+        }),
+        6 => parsed!(query::compare(raw), |c| {
+            path_ok(c.file.as_path(), "compare file")?;
+            let again = format!(
+                "left={}&right={}&file={}",
+                enc(&c.left.to_string()),
+                enc(&c.right.to_string()),
+                enc(c.file.as_str())
+            );
+            let again = match &c.channel {
+                Some(ch) => format!("{again}&channel={}", enc(ch.as_str())),
+                None => again,
+            };
+            if query::compare(Some(&again)).map_err(|_| "a compare did not parse again".to_owned())? != c {
+                return Err("a compare changed when it was written and read again".to_owned());
+            }
+        }),
+        7 => parsed!(query::compare_tree(raw), |c| {
+            page_ok(&c.page)?;
+            path_ok(&c.prefix, "compare prefix")?;
+        }),
+        8 => parsed!(query::grid(raw), |g| {
+            page_ok(&g.page)?;
+            path_ok(g.file.as_path(), "grid file")?;
+            if g.swimlanes.is_empty() {
+                return Err("a grid of no swimlanes was accepted".to_owned());
+            }
+            list_ok(&g.swimlanes, 64, "grid swimlanes")?;
+            let lanes: Vec<&str> = g.swimlanes.iter().map(|s| s.as_str()).collect();
+            let again = format!(
+                "file={}&swimlanes={}&only_differing={}&{}",
+                enc(g.file.as_str()),
+                lanes.join(","),
+                g.only_differing,
+                page_text(&g.page)
+            );
+            let again = match &g.channel {
+                Some(ch) => format!("{again}&channel={}", enc(ch.as_str())),
+                None => again,
+            };
+            if query::grid(Some(&again)).map_err(|_| "a grid did not parse again".to_owned())? != g {
+                return Err("a grid changed when it was written and read again".to_owned());
+            }
+        }),
+        9 => parsed!(query::search_settings(raw), |q| {
+            page_ok(&q.page)?;
+            let needle = q.path_contains.as_str();
+            if needle.is_empty() || needle.len() > 256 || needle.chars().any(char::is_control) {
+                return Err("a settings needle outside its bounds was accepted".to_owned());
+            }
+            list_ok(&q.swimlanes, 64, "settings swimlanes")?;
+            if let Some(f) = &q.file {
+                path_ok(f.as_path(), "settings file")?;
+            }
+        }),
+        10 => parsed!(query::search_text(raw), |t| {
+            if t.pattern.is_empty()
+                || t.pattern.len() > 512
+                || t.pattern.chars().any(|c| c.is_control() && c != '\t')
+            {
+                return Err("a text pattern outside its bounds was accepted".to_owned());
+            }
+            if !(1..=500).contains(&t.max_total) || !(1..=100).contains(&t.max_per_file) {
+                return Err("a cap outside its range was accepted".to_owned());
+            }
+            list_ok(&t.swimlanes, 64, "text swimlanes")?;
+            if t.path_glob.as_ref().is_some_and(|g| g.as_str().is_empty()) {
+                return Err("an empty glob was accepted".to_owned());
+            }
+            let lanes: Vec<&str> = t.swimlanes.iter().map(|s| s.as_str()).collect();
+            let mut again = format!(
+                "pattern={}&regex={}&case_sensitive={}&max_total={}&max_per_file={}",
+                enc(&t.pattern),
+                t.regex,
+                t.case_sensitive,
+                t.max_total,
+                t.max_per_file
+            );
+            if !lanes.is_empty() {
+                again.push_str(&format!("&swimlanes={}", lanes.join(",")));
+            }
+            if let Some(g) = &t.path_glob {
+                again.push_str(&format!("&path_glob={}", enc(g.as_str())));
+            }
+            if query::search_text(Some(&again)).map_err(|_| "a text search did not parse again".to_owned())?
+                != t
+            {
+                return Err("a text search changed when it was written and read again".to_owned());
+            }
+        }),
+        11 => parsed!(query::findings(raw), |f| {
+            page_ok(&f.page)?;
+            list_ok(&f.kinds, 12, "finding kinds")?;
+        }),
+        12 => parsed!(query::effective(raw), |e| {
+            path_ok(e.file.as_path(), "effective file")?;
+        }),
+        _ => parsed!(query::served(raw), |s| {
+            path_ok(&s.file, "served file")?;
+        }),
+    }
+}
+
+/// The names of the pairs of a raw query that the oracle can read without decoding: `None` when the text has an escape, a plus, a
+/// fragment mark or a space (decoding them is the code's business, and the oracle does not repeat it).
+fn plain_names(raw: &str) -> Option<Vec<String>> {
+    if raw.is_empty() {
+        return Some(Vec::new());
+    }
+    if raw.contains(['%', '+', '#', ' ']) || raw.chars().any(char::is_control) {
+        return None;
+    }
+    // An empty pair (`a=1&&b=2`) is skipped by the decoder, so it has no name.
+    Some(
+        raw.split('&')
+            .filter(|p| !p.is_empty())
+            .map(|p| p.split('=').next().unwrap_or_default().to_owned())
+            .collect(),
+    )
+}
+
+pub fn registry_query(data: &[u8]) -> Result<(), String> {
+    let (op, raw) = query_program(data);
+    let (name, allowed) = OPERATIONS[op];
+    let query = (!raw.is_empty()).then_some(raw.as_str());
+    let first = run_operation(op, query).map_err(|why| format!("{name}: {why} ({raw:?})"))?;
+    // The same answer twice.
+    let second = run_operation(op, query).map_err(|why| format!("{name}: {why}"))?;
+    if first != second {
+        return Err(format!("{name}: two readings of {raw:?} differ"));
+    }
+    // A query over 8 KiB is refused whatever it holds.
+    if raw.len() > 8 * 1024 && first.is_some() {
+        return Err(format!("{name}: a query of {} bytes was accepted", raw.len()));
+    }
+    // A name the operation does not have, and a name twice, are refused: the oracle splits the text itself.
+    if let Some(names) = plain_names(&raw) {
+        let unknown = names.iter().any(|n| !allowed.contains(&n.as_str()));
+        let mut seen = std::collections::BTreeSet::new();
+        let repeated = names.iter().any(|n| !seen.insert(n.as_str()));
+        if (unknown || repeated) && first.is_some() {
+            return Err(format!(
+                "{name}: {raw:?} has a name that is not the operation's or is given twice, and was accepted"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// One line saying what a program is and what became of it, for the test that the seeds reach the cases they are named for.
+pub fn describe_query(data: &[u8]) -> String {
+    let (op, raw) = query_program(data);
+    let query = (!raw.is_empty()).then_some(raw.as_str());
+    let verdict = match run_operation(op, query) {
+        Ok(Some(_)) => "accepted",
+        Ok(None) => "refused",
+        Err(_) => "VIOLATION",
+    };
+    format!("{} {verdict}", OPERATIONS[op].0)
+}
+
+/// What a cursor program makes: `refused` when the key does not fit, else the length of the cursor text.
+pub fn describe_cursor(data: &[u8]) -> String {
+    let text = String::from_utf8_lossy(&data[..data.len().min(700)]).into_owned();
+    if rc::parse(&text).is_ok() {
+        return "text parses".to_owned();
+    }
+    match cursor_program(data) {
+        Ok(what) => format!("program {what}"),
+        Err(why) => format!("VIOLATION {why}"),
     }
 }

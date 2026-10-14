@@ -35,3 +35,17 @@ path = "fuzz_targets/registry_delta.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "registry_cursor"
+path = "fuzz_targets/registry_cursor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "registry_query"
+path = "fuzz_targets/registry_query.rs"
+test = false
+doc = false
+bench = false

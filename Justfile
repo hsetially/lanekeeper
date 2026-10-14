@@ -410,7 +410,7 @@ registry-slow-test:
 # cargo audit (S19), then each target runs {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in
 # crates/hub-registry/fuzz/artifacts/. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart. The committed seeds
 # also replay on stable in `cargo test -p hub-registry --test corpus_replay`.
-registry_fuzz_targets := "registry_delta"
+registry_fuzz_targets := "registry_delta registry_cursor registry_query"
 registry-fuzz: fuzz-tools-check
     #!/usr/bin/env bash
     set -euo pipefail
