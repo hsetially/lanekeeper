@@ -424,70 +424,139 @@ async fn a_batch_over_the_byte_budget_is_refused_before_the_lock_and_after_work_
     assert_eq!(count(&pool).await, 0);
 }
 
+// Rule 4: CPU-heavy work does not run on the async runtime. `prepare_batch` (checks and canonical JSON, before the lock) and
+// `link_chain` (SHA-256, inside the lock) of a batch at the byte budget cost tens of milliseconds in a debug build and a few in a
+// release build. These tests run on a current-thread runtime, the one thread that runs the test, and compare the CPU time that the
+// calls use on it with the CPU time of the same work done in place: done in place, it would be that much of this thread's.
+//
+// They read the thread's CPU time from `/proc`, so they run on Linux only. They run in any profile: the work is repeated until it
+// has cost 40 ms of CPU, so how fast the build is does not decide whether there is anything to measure, and a build so fast that
+// 4,096 repetitions are not enough fails the test instead of passing it.
+
 /// The CPU time that this thread has used, in nanoseconds, from `/proc` (the first field of `schedstat`). It does not move while the
 /// thread waits, so it is not subject to the scheduling noise of a loaded machine.
+#[cfg(target_os = "linux")]
 fn thread_cpu_ns() -> u64 {
     let stat = std::fs::read_to_string("/proc/thread-self/schedstat").unwrap();
     stat.split(' ').next().unwrap().parse().unwrap()
 }
 
-// Rule 4: CPU-heavy work does not run on the async runtime. `prepare_batch` (checks and canonical JSON, before the lock) and
-// `link_chain` (SHA-256, inside the lock) of a batch at the byte budget each cost tens of milliseconds in a debug build. These
-// tests run on a current-thread runtime, the one thread that runs the test, and compare the CPU time that the call uses on it with
-// the CPU time of the work done in place: done in place, it would be that much of this thread's.
+/// Run `work` until it has used at least 40 ms of this thread's CPU, doubling the number of runs. Returns how many runs that took and
+/// the CPU time they used.
+#[cfg(target_os = "linux")]
+fn repeated_until_measurable(mut work: impl FnMut()) -> (usize, u64) {
+    const TARGET_NS: u64 = 40_000_000;
+    const MOST: usize = 4_096;
+    let mut runs = 1;
+    loop {
+        let before = thread_cpu_ns();
+        for _ in 0..runs {
+            work();
+        }
+        let used = thread_cpu_ns() - before;
+        if used >= TARGET_NS {
+            return (runs, used);
+        }
+        assert!(
+            runs < MOST,
+            "the work is too small to measure: {used} ns of CPU in {runs} runs"
+        );
+        runs *= 2;
+    }
+}
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn checking_and_encoding_run_off_the_async_thread() {
     // Three of the largest events pass the budget at the third, which refuses the batch. That path takes no database at all (a
     // transaction of another store is never looked at), so the only CPU of this thread in the call is what it does itself.
     let batch: Vec<AuditEvent> = (0..3).map(worst_case_audit_event).collect();
-    let before = thread_cpu_ns();
-    for e in &batch {
-        hub_identity::audit::log::prepare(e).unwrap();
-    }
-    let in_place = thread_cpu_ns() - before;
-    println!("checking and encoding three of the largest events: {in_place} ns of CPU, in place");
-    if in_place < 8_000_000 {
-        println!("too fast to tell where it ran (a debug build shows it)");
-        return;
-    }
+    let (runs, in_place) = repeated_until_measurable(|| {
+        for e in &batch {
+            hub_identity::audit::log::prepare(e).unwrap();
+        }
+    });
+    println!(
+        "checking and encoding three of the largest events, {runs} times: {in_place} ns of CPU, in place"
+    );
+    let batches: Vec<Vec<AuditEvent>> = (0..runs).map(|_| batch.clone()).collect();
     let mut state = ports::fakes::FakeTxState::default();
     let before = thread_cpu_ns();
-    let result = PgAuditLog::new()
-        .record_many(&mut Tx::in_memory(&mut state), batch)
-        .await;
+    for batch in batches {
+        let result = PgAuditLog::new()
+            .record_many(&mut Tx::in_memory(&mut state), batch)
+            .await;
+        assert_eq!(result, Err(AuditError::BatchTooLarge));
+    }
     let on_this_thread = thread_cpu_ns() - before;
-    println!("the refused call used {on_this_thread} ns of CPU on the async thread");
-    assert_eq!(result, Err(AuditError::BatchTooLarge));
+    println!("the {runs} refused calls used {on_this_thread} ns of CPU on the async thread");
     assert!(
         on_this_thread * 4 < in_place,
         "{on_this_thread} ns of CPU on the async thread for work that costs {in_place} ns"
     );
 }
 
-#[tokio::test]
-async fn hashing_inside_the_lock_runs_off_the_async_thread() {
-    let db = db!();
-    let pool = db.app_pool(4).await;
-    let batch = audit_events_totalling(3, MAX_AUDIT_BATCH_BYTES);
-    let prepared = hub_identity::audit::log::prepare_batch(&batch).unwrap();
-    let before = thread_cpu_ns();
-    let _links = hub_identity::audit::log::link_chain(genesis_hash(), &prepared);
-    let hashing = thread_cpu_ns() - before;
-    println!("hashing a batch at the budget: {hashing} ns of CPU, in place");
-    if hashing < 8_000_000 {
-        println!("too fast to tell where it ran (a debug build shows it)");
-        return;
+/// The CPU time that the threads of the runtime's blocking pool, named `name`, have used in all, in nanoseconds.
+#[cfg(target_os = "linux")]
+fn named_threads_cpu_ns(name: &str) -> (usize, u64) {
+    let (mut threads, mut ns) = (0, 0);
+    for task in std::fs::read_dir("/proc/self/task").unwrap() {
+        let dir = task.unwrap().path();
+        let Ok(comm) = std::fs::read_to_string(dir.join("comm")) else {
+            continue;
+        };
+        if comm.trim_end() == name {
+            let stat = std::fs::read_to_string(dir.join("schedstat")).unwrap();
+            ns += stat.split(' ').next().unwrap().parse::<u64>().unwrap();
+            threads += 1;
+        }
     }
-    let before = thread_cpu_ns();
-    let ids = many(&pool, batch).await;
-    let on_this_thread = thread_cpu_ns() - before;
-    println!("the whole call, with its I/O, used {on_this_thread} ns of CPU on the async thread");
-    assert_eq!(ids.len(), 3);
-    assert!(
-        on_this_thread * 2 < hashing,
-        "{on_this_thread} ns of CPU on the async thread for a call that hashes for {hashing} ns"
-    );
+    (threads, ns)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn hashing_inside_the_lock_runs_off_the_async_thread() {
+    // On the call's success path the async thread has its own work, the database's I/O, which is not small next to the hashing in a
+    // release build (a megabyte through the protocol is about as much CPU as hashing it). So this asks the other question: where did
+    // the hashing happen? The runtime is built here with its blocking pool's threads named, and the CPU of those threads over the
+    // calls must include the hashing as well as the checking and encoding that also run there. With the hashing done in place it
+    // would include only the checking and encoding, and the half of the hashing that the bound allows for is missing.
+    const NAME: &str = "lk-hop-test";
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .thread_name(NAME)
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let db = db!();
+        let pool = db.app_pool(4).await;
+        let batch = audit_events_totalling(3, MAX_AUDIT_BATCH_BYTES);
+        let prepared = hub_identity::audit::log::prepare_batch(&batch).unwrap();
+        let (runs, hashing) = repeated_until_measurable(|| {
+            std::hint::black_box(hub_identity::audit::log::link_chain(genesis_hash(), &prepared));
+        });
+        let before = thread_cpu_ns();
+        for _ in 0..runs {
+            std::hint::black_box(hub_identity::audit::log::prepare_batch(&batch).unwrap());
+        }
+        let checking = thread_cpu_ns() - before;
+        println!("{runs} runs in place: hashing {hashing} ns of CPU, checking and encoding {checking} ns");
+
+        let batches: Vec<Vec<AuditEvent>> = (0..runs).map(|_| batch.clone()).collect();
+        let (_, pool_before) = named_threads_cpu_ns(NAME);
+        for batch in batches {
+            assert_eq!(many(&pool, batch).await.len(), 3);
+        }
+        let (threads, pool_after) = named_threads_cpu_ns(NAME);
+        assert!(threads > 0, "no blocking thread of this runtime was found by its name");
+        let on_the_pool = pool_after - pool_before;
+        println!("the {runs} calls used {on_the_pool} ns of CPU on the blocking pool");
+        assert!(
+            on_the_pool >= checking + hashing / 2,
+            "{on_the_pool} ns of CPU on the blocking pool for calls whose checking and encoding cost {checking} ns and hashing {hashing} ns: the hashing did not run there"
+        );
+    });
 }
 
 // -------------------------------------------------------------------------------------------------------------------
@@ -497,9 +566,13 @@ async fn hashing_inside_the_lock_runs_off_the_async_thread() {
 /// encoded, and queues for it; then the holder lets go and the clock starts. It stops when the batch's transaction has committed:
 /// the time from the lock being granted to its release, which is what the next writer waits for.
 async fn lock_hold_of(pool: &PgPool, batch: Vec<AuditEvent>) -> Duration {
+    /// Nothing here waits for longer than this: a batch that never queues for the lock, or never finishes, is a failure and not a
+    /// hang. The default lock timeout of the audit log is 5 s, so a healthy batch is far inside it.
+    const DEADLINE: Duration = Duration::from_secs(20);
+
     let holder = hold_chain_lock(pool).await;
     let batch_pool = pool.clone();
-    let batch_task = tokio::spawn(async move {
+    let mut batch_task = tokio::spawn(async move {
         let mut tx = batch_pool.begin().await.unwrap();
         PgAuditLog::new()
             .record_many(&mut Tx::from_pg(&mut tx), batch)
@@ -508,23 +581,69 @@ async fn lock_hold_of(pool: &PgPool, batch: Vec<AuditEvent>) -> Duration {
         tx.commit().await.unwrap();
         Instant::now()
     });
-    // The batch is queued for the lock when a request for it is waiting in this database.
-    loop {
-        let waiting: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted \
-             AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap();
-        if waiting == 1 {
-            break;
+    // The batch is queued for the lock when a request for it is waiting in this database. The poll is raced against the batch's own
+    // task: the task is expected to block on the lock, so one that has ended (it panicked, or was refused) will never queue, and the
+    // wait must stop at once and say why instead of polling for ever.
+    let queued = async {
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted \
+                 AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            if waiting == 1 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
-        tokio::time::sleep(Duration::from_millis(2)).await;
+    };
+    tokio::select! {
+        ended = &mut batch_task => {
+            panic!("the batch ended before it queued for the chain lock, which another transaction holds: {ended:?}");
+        }
+        waited = tokio::time::timeout(DEADLINE, queued) => {
+            assert!(waited.is_ok(), "the batch did not queue for the chain lock within {DEADLINE:?}");
+        }
     }
     let granted = Instant::now();
     holder.rollback().await.unwrap();
-    batch_task.await.unwrap() - granted
+    let committed = tokio::time::timeout(DEADLINE, batch_task)
+        .await
+        .unwrap_or_else(|_| panic!("the batch did not commit within {DEADLINE:?} of the lock being released"))
+        .unwrap();
+    committed - granted
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_lock_hold_measurement_fails_fast_when_the_batch_cannot_queue() {
+    // A batch one byte over the budget is refused before it takes the lock, so it never queues behind the holder. The measurement
+    // must stop at once and say so: a regression in the budget check showed up as a test that hung for 18 minutes.
+    let db = db!();
+    let pool = db.app_pool(4).await;
+    let refused = audit_events_totalling(3, MAX_AUDIT_BATCH_BYTES + 1);
+    let measurement = tokio::spawn({
+        let pool = pool.clone();
+        async move { lock_hold_of(&pool, refused).await }
+    });
+    let ended = tokio::time::timeout(Duration::from_secs(10), measurement)
+        .await
+        .expect("the measurement hung instead of failing")
+        .expect_err("the measurement of a refused batch cannot succeed");
+    assert!(ended.is_panic());
+    let message = ended.into_panic();
+    let message = message
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| message.downcast_ref::<&str>().copied())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        message.contains("the batch ended before it queued for the chain lock")
+            && message.contains("BatchTooLarge"),
+        "{message}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1121,5 +1240,83 @@ async fn report_the_time_of_a_batch_against_the_same_events_one_by_one() {
                 "a batch of {n} is not faster than {n} calls: {b:?} against {a:?}"
             );
         }
+    }
+}
+
+/// Hashing a batch where it is (on the async thread) against the hop to the blocking pool that `record_many` makes, inside the
+/// chain lock. No database: the question is what the hop costs against what it saves. Each size is measured hot (calls back to
+/// back, the blocking thread is awake) and spaced (5 ms between calls, as audited writes arrive in service, the blocking thread
+/// asleep). `cargo test --release -p hub-identity --test audit_batch -- --ignored --nocapture report_hashing`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "a measurement: run with --release --ignored --nocapture"]
+async fn report_hashing_inline_against_the_hop_to_the_blocking_pool() {
+    use hub_identity::audit::log::{link_chain, prepare_batch};
+
+    fn percentile(v: &mut [Duration], p: usize) -> f64 {
+        v.sort();
+        v[(v.len() * p / 100).min(v.len() - 1)].as_secs_f64() * 1e6
+    }
+    let shapes: [(&str, Vec<AuditEvent>); 5] = [
+        ("1 typical event", events(0, 1)),
+        ("10 typical events", events(0, 10)),
+        ("50 typical events", events(0, 50)),
+        (
+            "3 events at the budget",
+            audit_events_totalling(3, MAX_AUDIT_BATCH_BYTES),
+        ),
+        (
+            "200 events at the budget",
+            audit_events_totalling(MAX_AUDIT_BATCH, MAX_AUDIT_BATCH_BYTES),
+        ),
+    ];
+    println!("\nhash the links of a batch, microseconds (median / p95 of 400 calls)");
+    println!(
+        "{:<26} {:>10} | {:>14} | {:>14} | {:>14}",
+        "batch", "bytes", "inline", "hop, hot", "hop, spaced"
+    );
+    for (what, batch) in shapes {
+        let mut prepared = prepare_batch(&batch).unwrap();
+        let bytes: usize = batch.iter().map(|e| ports::canonical_size(e).unwrap()).sum();
+        let (mut inline, mut hot, mut spaced) = (Vec::new(), Vec::new(), Vec::new());
+        for _ in 0..400 {
+            let started = Instant::now();
+            let links = link_chain(genesis_hash(), &prepared);
+            inline.push(started.elapsed());
+            std::hint::black_box(links);
+        }
+        for _ in 0..400 {
+            let started = Instant::now();
+            let (back, links) = tokio::task::spawn_blocking(move || {
+                let links = link_chain(genesis_hash(), &prepared);
+                (prepared, links)
+            })
+            .await
+            .unwrap();
+            hot.push(started.elapsed());
+            prepared = back;
+            std::hint::black_box(links);
+        }
+        for _ in 0..400 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            let started = Instant::now();
+            let (back, links) = tokio::task::spawn_blocking(move || {
+                let links = link_chain(genesis_hash(), &prepared);
+                (prepared, links)
+            })
+            .await
+            .unwrap();
+            spaced.push(started.elapsed());
+            prepared = back;
+            std::hint::black_box(links);
+        }
+        println!(
+            "{what:<26} {bytes:>10} | {:>6.0} /{:>6.0} | {:>6.0} /{:>6.0} | {:>6.0} /{:>6.0}",
+            percentile(&mut inline, 50),
+            percentile(&mut inline, 95),
+            percentile(&mut hot, 50),
+            percentile(&mut hot, 95),
+            percentile(&mut spaced, 50),
+            percentile(&mut spaced, 95)
+        );
     }
 }
