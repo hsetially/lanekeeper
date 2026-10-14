@@ -71,6 +71,28 @@ pub(crate) async fn insert(conn: &mut PgConnection, text: &str) -> Result<EventI
     EventId::new(id).ok_or(OutboxError::Unavailable)
 }
 
+/// Insert the envelopes `texts` on `conn` with one statement, in order: the rows get increasing ids in the order of `texts`
+/// (`WITH ORDINALITY ... ORDER BY` fixes the order that the identity column is drawn in). The same expression as [`insert`] for
+/// each text, and the same trigger, so each row sends its own notification when the connection's transaction commits.
+/// The caller bounds `texts`.
+pub(crate) async fn insert_many(conn: &mut PgConnection, texts: &[String]) -> Result<(), OutboxError> {
+    let done = within(
+        sqlx::query(
+            "INSERT INTO outbox (event) \
+             SELECT t.e::text::jsonb FROM unnest($1::text[]) WITH ORDINALITY AS t(e, ord) ORDER BY t.ord",
+        )
+        .bind(texts)
+        .execute(conn),
+    )
+    .await?;
+    // Every envelope is a row, or the batch did not do what it was asked.
+    if usize::try_from(done.rows_affected()).ok() == Some(texts.len()) {
+        Ok(())
+    } else {
+        Err(OutboxError::Unavailable)
+    }
+}
+
 /// Insert one envelope in its own statement (and so its own transaction).
 pub(crate) async fn insert_autocommit(pool: &PgPool, text: &str) -> Result<EventId, OutboxError> {
     let id: i64 = within(
