@@ -10,3 +10,36 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+domain.workspace = true
+# `postgres` gives `Tx::from_pg`: the registry hands its open transaction to `AuditLog::record` and `EventBus::publish_in_tx` (D80).
+ports = { workspace = true, features = ["postgres"] }
+# The fact engine (D33): the class of a file, its format, the drift hash, the path mapping and the roles. No other crate computes them.
+engine.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+prometheus-client.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# Runtime-checked queries with binds (plan A39): `query!` needs a live database or `.sqlx` metadata at compile time, which the xtask
+# harness does not have. `json` is for the `jsonb` columns.
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json"] }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+ports = { workspace = true, features = ["fakes", "postgres"] }
+# Real Postgres 16 with pgvector (a container, or `LK_TEST_PG_ADMIN_URL`), migrated as lanekeeper_migrator and used as lanekeeper_app.
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json", "migrate"] }
+testcontainers.workspace = true
+# The synthetic fixtures (`xtask::fixtures::generate`): tests and benchmarks ingest real-shaped files, never toy data (rule 12).
+xtask.workspace = true
+tempfile.workspace = true
+proptest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+
+# P15 (T1): the registry applying a replayed spool of 360 messages of 50 versions, audit and outbox included, over a real Postgres.
+[[bench]]
+name = "ingest_versions_per_s"
+harness = false

@@ -1,0 +1,2 @@
+# Seeds keep their exact bytes: they are programs for the fuzz target (`invariants.rs` reads them), and the replay test reads them as they are.
+corpus/** -text

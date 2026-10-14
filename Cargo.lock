@@ -2757,6 +2757,25 @@ dependencies = [
 [[package]]
 name = "hub-registry"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "domain",
+ "engine",
+ "futures",
+ "ports",
+ "prometheus-client",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "testcontainers",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "xtask",
+]
 
 [[package]]
 name = "hub-writes"

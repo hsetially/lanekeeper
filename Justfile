@@ -381,8 +381,71 @@ engine-bench:
     if [ "$found" -ne "$wanted" ]; then echo "engine-bench: found $found of $wanted budgets in perf/budgets.toml"; exit 1; fi
     cargo xtask bench-check --budgets "$tmp/budgets.toml"
 
-verify-05:
-    @echo "verify-05 not implemented yet" && exit 1
+# Prompt 05 gate (the registry: ingestion, indexes, the incremental pipeline, adoption, the read API; S4, S10, S11, S13, S21, S22; P1, P2,
+# P5 to P7, P12 to P15): every sub-recipe, in order, stopping at the first failure. Later tasks add to the sub-recipes below and never
+# skip one. Run `just verify` and `cargo xtask bench-check` after it (AGENTS.md, protocol step 4). Not part of the gate, and said so
+# rather than skipped silently: osv-scanner (not installed here).
+verify-05: registry-tools-check registry-lint registry-test registry-slow-test registry-fuzz registry-bench
+
+# The pinned tools the gate needs, and a Docker daemon (the database tests start Postgres 16 with pgvector through testcontainers),
+# or the command that fixes it. Never skips.
+registry-tools-check: platform-tools-check
+
+registry-lint:
+    cargo fmt --all -- --check
+    cargo clippy -p hub-registry --all-targets --all-features -- -D warnings
+
+# Unit, property, golden and integration tests of the registry, over a real Postgres 16 with pgvector. LK_REQUIRE_DOCKER=1 turns a
+# missing Docker daemon into a failure, never a skip. The committed seeds of the fuzz corpora replay here too
+# (tests/corpus_replay.rs).
+registry-test:
+    LK_REQUIRE_DOCKER=1 cargo test -p hub-registry --lib --tests
+
+# The tests whose time bounds are the point, in release mode and one at a time (marked `#[ignore]`), so that a bound is checked
+# without the load of the rest of the suite. Nothing is ignored in the other recipe: these only run here.
+registry-slow-test:
+    LK_REQUIRE_DOCKER=1 cargo test -p hub-registry --release --tests -- --ignored --test-threads=1
+
+# S22: the registry's own fuzz crate (plan A40; `fuzz-smoke` does not run it). Its lockfile is complete and passes cargo deny and
+# cargo audit (S19), then each target runs {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in
+# crates/hub-registry/fuzz/artifacts/. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart. The committed seeds
+# also replay on stable in `cargo test -p hub-registry --test corpus_replay`.
+registry_fuzz_targets := "registry_delta"
+registry-fuzz: fuzz-tools-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo +{{fuzz_nightly}} metadata --locked --format-version 1 --manifest-path crates/hub-registry/fuzz/Cargo.toml > /dev/null
+    cargo deny --manifest-path crates/hub-registry/fuzz/Cargo.toml check --config deny.toml
+    cargo audit --file crates/hub-registry/fuzz/Cargo.lock
+    for target in {{registry_fuzz_targets}}; do
+        mkdir -p "target/fuzz-corpus/$target"
+        cargo +{{fuzz_nightly}} fuzz run "$target" --fuzz-dir crates/hub-registry/fuzz "target/fuzz-corpus/$target" "crates/hub-registry/fuzz/corpus/$target" -- -max_total_time={{fuzz_seconds}}
+    done
+    echo "registry-fuzz: {{registry_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
+
+# P15 (T1), and from the later tasks P1, P2, P5, P6, P7, P12 and P14: the benchmarks at target scale (the fixtures are generated into
+# target/fixtures/target when missing), then `cargo xtask bench-check` on the budgets whose benchmark is in crates/hub-registry/benches/
+# only. The full registry needs every other prompt's benchmarks to have run (`just bench`), and `bench-check` has no filter, so the
+# recipe cuts a registry with just the budgets below and judges that; the full `cargo xtask bench-check` is run by the FINAL step
+# after `just bench`. A budget that is not registered yet is judged too: it is listed as UNMET with the number the benchmark
+# measured and does not fail the recipe (plans/05-registry-read-api.blockers.md says why P15 is one). The benchmarks need a database
+# (Docker, or LK_TEST_PG_ADMIN_URL) for the Postgres they measure.
+# `tests/justfile_gate.rs` fails if this list and the benchmark files of the crate drift apart.
+registry_budgets := "P15.registry_ingest_versions_per_s"
+registry-bench:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Only this run's numbers may satisfy the check: a benchmark that dies at teardown must not pass on an earlier run's data.
+    rm -rf target/criterion/hub-registry
+    rm -f target/perf-results/hub-registry_*.json
+    cargo bench -p hub-registry
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    awk -v ids="{{registry_budgets}}" 'BEGIN { RS = ""; ORS = "\n\n"; n = split(ids, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 } /(^|\n)\[\[budget\]\]/ { if (match($0, /\nid = "[^"]+"/)) { id = substr($0, RSTART + 7, RLENGTH - 8); if (id in want) print } }' perf/budgets.toml > "$tmp/budgets.toml"
+    found="$(grep -c '^\[\[budget\]\]' "$tmp/budgets.toml" || true)"
+    wanted="$(wc -w <<< "{{registry_budgets}}")"
+    if [ "$found" -ne "$wanted" ]; then echo "registry-bench: found $found of $wanted budgets in perf/budgets.toml"; exit 1; fi
+    cargo xtask bench-check --budgets "$tmp/budgets.toml"
 verify-06:
     @echo "verify-06 not implemented yet" && exit 1
 verify-07:

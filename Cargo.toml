@@ -19,6 +19,7 @@ rust-version = "1.88"
 # Workspace crates. The version keeps `cargo deny` from flagging them as wildcard dependencies.
 domain = { path = "crates/domain", version = "0.1.0" }
 ports = { path = "crates/ports", version = "0.1.0" }
+engine = { path = "crates/engine", version = "0.1.0" }
 proto = { path = "crates/proto", version = "0.1.0" }
 xtask = { path = "crates/xtask", version = "0.1.0" }
 hub-platform = { path = "crates/hub-platform", version = "0.1.0" }
