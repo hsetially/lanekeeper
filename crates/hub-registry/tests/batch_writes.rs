@@ -467,6 +467,64 @@ async fn a_chunk_over_the_limits_of_a_batch_is_cut_in_order_and_is_still_one_cha
     assert_eq!(paths, sorted);
 }
 
+// ------------------------------------------------------------------------------------------------ transactions
+
+#[tokio::test]
+async fn a_message_of_one_chunk_is_one_transaction() {
+    // The chunk, the root, the agent's acknowledgement and the staged parts' removal commit together: one `COMMIT` (one flush of the
+    // write-ahead log) and one transaction's `set_config` for a message of 50 versions, and the rules of the swimlane are read in that
+    // transaction and not in one of their own. A last small transaction of its own was a third of the registry's commits.
+    let Some(rig) = Rig::new().await else { return };
+    let all = statements_of_a_delta(&rig, 60, 50).await;
+    assert_eq!(inserts(&all, "COMMIT").len(), 1, "one commit for the message");
+    assert_eq!(
+        inserts(&all, "SELECT set_config(").len(),
+        1,
+        "one transaction for the message"
+    );
+    assert_eq!(
+        inserts(&all, "SELECT repo, repo_root FROM").len(),
+        1,
+        "the rules are read once"
+    );
+    // And it is the whole of the delta: the root moved, the acknowledgement too.
+    assert_eq!(rig.root().await, Some(root(2)));
+}
+
+#[tokio::test]
+async fn the_last_chunk_carries_the_root_and_each_chunk_before_it_commits_alone() {
+    // 50 paths in chunks of 20: three transactions, the last of which also moves the root. The first two cannot, or a crash after them
+    // would leave a root that says the delta is applied.
+    let Some(rig) = Rig::with("sit1", chunks_of(20)).await else {
+        return;
+    };
+    let all = statements_of_a_delta(&rig, 60, 50).await;
+    assert_eq!(inserts(&all, "COMMIT").len(), 3);
+    assert_eq!(inserts(&all, "SELECT set_config(").len(), 3);
+    assert_eq!(
+        inserts(&all, "INSERT INTO swimlane_merkle").len(),
+        1,
+        "the root moves once, with the last chunk"
+    );
+    assert_eq!(
+        inserts(&all, "SELECT repo, repo_root FROM").len(),
+        1,
+        "the rules are read once for the three chunks"
+    );
+    assert_eq!(rig.root().await, Some(root(2)));
+    assert_eq!(rig.count("SELECT count(*) FROM audit_events").await, 50);
+}
+
+#[tokio::test]
+async fn a_delta_with_no_path_still_moves_the_root_in_a_transaction_of_its_own() {
+    let Some(rig) = Rig::new().await else { return };
+    rig.first_scan(&[("a.yml", "x: 1")]).await;
+    rig.delta(delta(2, Some(root(1)), root(2), Vec::new()))
+        .await
+        .unwrap();
+    assert_eq!(rig.root().await, Some(root(2)));
+}
+
 // ------------------------------------------------------------------------------------------------ errors
 
 #[tokio::test]

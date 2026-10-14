@@ -3,9 +3,10 @@
 //!
 //! # Shape
 //!
-//! A logical delta (all its parts) is applied in **chunks of at most `chunk_paths` paths, one transaction each**, then a last
-//! small transaction moves the root. Every step is idempotent, so a crash between two transactions is repaired by the agent
-//! sending the same delta again (it is not acknowledged until the last transaction commits):
+//! A logical delta (all its parts) is applied in **chunks of at most `chunk_paths` paths, one transaction each**, and the **last
+//! chunk also moves the root**, the agent's acknowledgement and the staged parts' removal, in its own transaction (a delta with no path
+//! at all has a small transaction of its own for them). Every step is idempotent, so a crash between two transactions is repaired by
+//! the agent sending the same delta again (it is not acknowledged until the last transaction commits):
 //!
 //! - an observation is keyed by `(swimlane, path, observed_at, hash)`, so inserting it twice is one row (the history of a
 //!   replay is the history that was);
@@ -13,7 +14,8 @@
 //!   version equal to the stored one is skipped before anything is written, a version older than the stored one is history only,
 //!   and a version that is newer moves the state, audits and publishes. A chunk that committed before a crash therefore finds its
 //!   paths equal to the delta and does nothing, and a replay of old deltas over newer state changes nothing;
-//! - the root, the acknowledgement and the staging rows move last.
+//! - the root, the acknowledgement and the staging rows move last: in the last transaction, after everything else of that chunk. A
+//!   message of 50 versions is one transaction, one flush of the write-ahead log, where it was two (P15).
 //!
 //! # One chunk
 //!
@@ -139,6 +141,20 @@ struct Decided<'p> {
     plans: Vec<(&'p NfsPath, PathPlan)>,
 }
 
+/// What every chunk of one apply shares.
+struct Scope<'a> {
+    swimlane: &'a SwimlaneId,
+    initial_inventory: bool,
+    delta_time_ms: i64,
+}
+
+/// What the last chunk of an apply also does: the root, the agent's record, the acknowledgement and the staged parts.
+#[derive(Clone, Copy)]
+struct Finish<'a> {
+    logical: &'a Logical,
+    gap: bool,
+}
+
 /// A path whose state moves in a chunk: its first and its last version there, and the observation of the last.
 struct Move<'a> {
     first: &'a Candidate,
@@ -242,42 +258,54 @@ impl Inner {
             gap = gap.or(part.gap);
         }
 
-        let rules = {
-            let mut tx = self.db.begin().await?;
-            let rules = super::rules::load(&self.db, &mut tx, swimlane).await?;
-            drop(tx);
-            rules
+        // A full scan names every file there is: a file the hub has that the scan does not mention is gone (D63). The files it lists
+        // are all in `seen`, which no chunk of the scan's other files touches, so the answer is the same before the first chunk as
+        // after the last, and the last chunk is known when it is applied.
+        let gone = if l.base_root.is_none() && !initial_inventory {
+            self.vanished(swimlane, &seen).await?
+        } else {
+            Vec::new()
         };
 
         let paths: Vec<NfsPath> = work.keys().cloned().collect();
-        for batch in paths.chunks(self.config.chunk_paths) {
-            let items: Vec<(&NfsPath, &[Version])> = batch
+        let size = self.config.chunk_paths;
+        let removal = [Version::Removal];
+        let mut chunks: Vec<Vec<(&NfsPath, &[Version])>> = paths
+            .chunks(size)
+            .map(|batch| {
+                batch
+                    .iter()
+                    .filter_map(|p| work.get(p).map(|v| (p, v.as_slice())))
+                    .collect()
+            })
+            .collect();
+        chunks.extend(gone.chunks(size).map(|batch| {
+            batch
                 .iter()
-                .filter_map(|p| work.get(p).map(|v| (p, v.as_slice())))
-                .collect();
-            let r = self
-                .apply_chunk(swimlane, &rules, &items, initial_inventory, delta_time)
-                .await?;
+                .map(|p| (p, removal.as_slice()))
+                .collect::<Vec<(&NfsPath, &[Version])>>()
+        }));
+
+        let scope = Scope {
+            swimlane,
+            initial_inventory,
+            delta_time_ms: delta_time,
+        };
+        // The names of the swimlane's paths are read in the transaction of the first chunk that moves a file, and kept for the others.
+        let mut rules: Option<LaneRules> = None;
+        let last = chunks.len().checked_sub(1);
+        for (i, items) in chunks.iter().enumerate() {
+            let finish = (Some(i) == last).then_some(Finish {
+                logical: l,
+                gap: gap.is_some(),
+            });
+            let r = self.apply_chunk(&scope, &mut rules, items, finish).await?;
             progress.chunks += r.chunks;
             report.add(r);
         }
-
-        // A full scan names every file there is: a file the hub has that the scan does not mention is gone (D63).
-        if l.base_root.is_none() && !initial_inventory {
-            let gone = self.vanished(swimlane, &seen).await?;
-            for batch in gone.chunks(self.config.chunk_paths) {
-                let removal = [Version::Removal];
-                let items: Vec<(&NfsPath, &[Version])> =
-                    batch.iter().map(|p| (p, removal.as_slice())).collect();
-                let r = self
-                    .apply_chunk(swimlane, &rules, &items, initial_inventory, delta_time)
-                    .await?;
-                progress.chunks += r.chunks;
-                report.add(r);
-            }
+        if chunks.is_empty() {
+            self.finish(l, gap.is_some()).await?;
         }
-
-        self.finish(l, gap.is_some()).await?;
 
         self.metrics.version(VersionResult::Recorded, report.recorded);
         self.metrics.version(VersionResult::Removed, report.removed);
@@ -349,12 +377,12 @@ impl Inner {
 
     async fn apply_chunk(
         &self,
-        swimlane: &SwimlaneId,
-        rules: &LaneRules,
+        scope: &Scope<'_>,
+        rules: &mut Option<LaneRules>,
         items: &[(&NfsPath, &[Version])],
-        initial_inventory: bool,
-        delta_time_ms: i64,
+        finish: Option<Finish<'_>>,
     ) -> Result<ApplyReport, RegistryError> {
+        let swimlane = scope.swimlane;
         let now_ms = self.clock.now().unix_millis();
         let mut tx = self.db.begin().await?;
         self.db
@@ -365,7 +393,13 @@ impl Inner {
             .await?;
 
         let Decided { stored, plans } = self
-            .decide(&mut tx, swimlane, items, initial_inventory, delta_time_ms)
+            .decide(
+                &mut tx,
+                swimlane,
+                items,
+                scope.initial_inventory,
+                scope.delta_time_ms,
+            )
             .await?;
         let mut report = ApplyReport {
             chunks: 1,
@@ -377,10 +411,21 @@ impl Inner {
             .await?;
         let moves = moves_of(&plans, &ids, &mut report)?;
         if !moves.is_empty() {
-            self.move_state(&mut tx, swimlane, rules, &moves, &stored, now_ms)
-                .await?;
+            if rules.is_none() {
+                *rules = Some(super::rules::load(&self.db, &mut tx, swimlane).await?);
+            }
+            if let Some(rules) = rules.as_ref() {
+                self.move_state(&mut tx, swimlane, rules, &moves, &stored, now_ms)
+                    .await?;
+            }
         }
         self.publish_moves(&mut tx, swimlane, &moves).await?;
+        // The root moves in the transaction of the last chunk, after the chunk's own writes (it counts the files, and the count must
+        // see them) and before the audit events, whose lock is the last thing taken.
+        if let Some(finish) = finish {
+            self.finish_in(&mut tx, finish.logical, finish.gap, now_ms)
+                .await?;
+        }
         // The audit chain's lock is taken here, last, and held until the commit.
         self.audit_moves(&mut tx, swimlane, &moves, now_ms).await?;
         self.db.commit(tx).await?;
@@ -958,18 +1003,32 @@ impl Inner {
         Ok(())
     }
 
-    /// The last transaction of a logical delta: the root, the agent's record, the acknowledgement, the pipeline's flags, and the
-    /// staged parts gone. Only after this does the delta count as applied.
+    /// The transaction of a logical delta that has no path to apply (a part that only moves the root, as a delta of nothing does):
+    /// [`Inner::finish_in`] in a transaction of its own. A delta with paths does it in the transaction of its last chunk.
     async fn finish(&self, l: &Logical, gap: bool) -> Result<(), RegistryError> {
         let now_ms = self.clock.now().unix_millis();
-        let swimlane = &l.swimlane;
         let mut tx = self.db.begin().await?;
         self.db
             .run(
                 "finish_lock",
-                sqlx::query(LOCK_SQL).bind(swimlane.as_str()).execute(&mut *tx),
+                sqlx::query(LOCK_SQL).bind(l.swimlane.as_str()).execute(&mut *tx),
             )
             .await?;
+        self.finish_in(&mut tx, l, gap, now_ms).await?;
+        self.db.commit(tx).await
+    }
+
+    /// The end of a logical delta, in the caller's transaction, which holds the swimlane's lock: the root, the agent's record, the
+    /// acknowledgement, the pipeline's flags, and the staged parts gone. Only when that transaction commits does the delta count as
+    /// applied.
+    async fn finish_in(
+        &self,
+        tx: &mut Txn,
+        l: &Logical,
+        gap: bool,
+        now_ms: i64,
+    ) -> Result<(), RegistryError> {
+        let swimlane = &l.swimlane;
         let known: Option<Vec<u8>> = self
             .db
             .run(
@@ -978,7 +1037,7 @@ impl Inner {
                     "SELECT hash::bytea FROM swimlane_merkle WHERE swimlane_id = $1 AND dir_path = ''",
                 )
                 .bind(swimlane.as_str())
-                .fetch_optional(&mut *tx),
+                .fetch_optional(&mut **tx),
             )
             .await?;
         let known = opt_hash(known)?;
@@ -1003,7 +1062,7 @@ impl Inner {
                 .bind(swimlane.as_str())
                 .bind(l.new_root.as_bytes().as_slice())
                 .bind(now_ms)
-                .execute(&mut *tx),
+                .execute(&mut **tx),
             )
             .await?;
         self.db
@@ -1012,7 +1071,7 @@ impl Inner {
                 sqlx::query("UPDATE agents SET merkle_root = $2::bytea WHERE swimlane_id = $1")
                     .bind(swimlane.as_str())
                     .bind(l.new_root.as_bytes().as_slice())
-                    .execute(&mut *tx),
+                    .execute(&mut **tx),
             )
             .await?;
         let last_seq = l.seqs.iter().copied().max().unwrap_or(0);
@@ -1028,7 +1087,7 @@ impl Inner {
                 .bind(swimlane.as_str())
                 .bind(i64::try_from(last_seq).map_err(|_| RegistryError::Invalid)?)
                 .bind(now_ms)
-                .execute(&mut *tx),
+                .execute(&mut **tx),
             )
             .await?;
         self.db
@@ -1046,7 +1105,7 @@ impl Inner {
                 .bind(full)
                 .bind(broken)
                 .bind(now_ms)
-                .execute(&mut *tx),
+                .execute(&mut **tx),
             )
             .await?;
         let seqs: Vec<i64> = l.seqs.iter().filter_map(|s| i64::try_from(*s).ok()).collect();
@@ -1056,10 +1115,10 @@ impl Inner {
                 sqlx::query("DELETE FROM delta_staging WHERE swimlane_id = $1 AND seq = ANY($2::bigint[])")
                     .bind(swimlane.as_str())
                     .bind(&seqs)
-                    .execute(&mut *tx),
+                    .execute(&mut **tx),
             )
             .await?;
-        self.db.commit(tx).await
+        Ok(())
     }
 
     /// Mark the swimlane so that the next heartbeat asks for a full scan. Best effort: used when an apply failed after some of
