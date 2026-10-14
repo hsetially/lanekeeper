@@ -24,6 +24,7 @@ use ports::{AuditError, BusError, SinkError, Tx, content_hash};
 use sqlx::{PgPool, Row};
 use support::log_capture::LogCapture;
 use support::rig::{Rig, T, delta, entry, path, root};
+use support::statements::{Statement, inserts, statements};
 
 fn chunks_of(n: usize) -> RegistryConfig {
     RegistryConfig {
@@ -341,41 +342,6 @@ async fn the_batch_path_writes_what_the_per_event_path_wrote() {
 
 // ------------------------------------------------------------------------------------------------ statements
 
-/// One statement that sqlx logged: its text and the rows it touched or returned.
-struct Statement {
-    text: String,
-    rows: u64,
-}
-
-fn number_after(line: &str, key: &str) -> u64 {
-    line.split_once(key)
-        .map(|(_, rest)| rest.chars().take_while(char::is_ascii_digit).collect::<String>())
-        .and_then(|digits| digits.parse().ok())
-        .unwrap_or(0)
-}
-
-/// The statements sqlx logged on this thread (its `sqlx::query` events), which is every statement of a test on the current-thread
-/// runtime that `#[tokio::test]` makes.
-fn statements(capture: &LogCapture) -> Vec<Statement> {
-    capture
-        .text()
-        .lines()
-        .filter(|l| l.contains(" sqlx::query "))
-        .map(|l| Statement {
-            text: l.to_owned(),
-            rows: number_after(l, "rows_affected=").max(number_after(l, "rows_returned=")),
-        })
-        .collect()
-}
-
-/// The statements that start with `what` (after sqlx's summary of four words), with their row counts.
-fn inserts(all: &[Statement], what: &str) -> Vec<u64> {
-    all.iter()
-        .filter(|s| s.text.contains(&format!("summary=\"{what}")))
-        .map(|s| s.rows)
-        .collect()
-}
-
 /// An inventory of `n` files, then a delta that changes the first `changed` of them, with the statements of that delta counted.
 async fn statements_of_a_delta(rig: &Rig, n: usize, changed: usize) -> Vec<Statement> {
     rig.hello().await;
@@ -523,6 +489,60 @@ async fn a_delta_with_no_path_still_moves_the_root_in_a_transaction_of_its_own()
         .await
         .unwrap();
     assert_eq!(rig.root().await, Some(root(2)));
+}
+
+// ------------------------------------------------------------------------------------------------ the cluster report
+
+#[tokio::test]
+async fn the_events_of_a_cluster_report_are_one_batch_in_order() {
+    // Two sync windows that open and a Deployment that appears: three outbox events in the transaction of the report, in the order the
+    // report names them (the windows, then the services), written with one statement.
+    use domain::{
+        ClusterReport, DeploymentInfo, DomainEvent, ServiceRef, SyncWindowEvent, SyncWindowKind, Timestamp,
+    };
+    let Some(rig) = Rig::new().await else { return };
+    rig.hello().await;
+    let window = |uid: &str, at: i64| SyncWindowEvent {
+        kind: SyncWindowKind::Opened,
+        job: JobRef::new("sync-sit1", uid).unwrap(),
+        at: Timestamp::from_unix_millis(at),
+    };
+    let report = ClusterReport {
+        full: false,
+        deployments: vec![DeploymentInfo {
+            service: ServiceRef::new("csp", "tx-infinity-api").unwrap(),
+            pods: Vec::new(),
+            env_values: Vec::new(),
+            env_names: Vec::new(),
+            removed: false,
+        }],
+        release_hints: Vec::new(),
+        config_server_started_at: None,
+        sync_windows: vec![
+            window("uid-1", hub_registry::ManualClock::T0_MS - 60_000),
+            window("uid-2", hub_registry::ManualClock::T0_MS - 50_000),
+        ],
+    };
+    let (capture, _guard) = LogCapture::install();
+    rig.cluster(report).await.unwrap();
+    let all = statements(&capture);
+    assert_eq!(
+        inserts(&all, "INSERT INTO outbox"),
+        vec![3],
+        "one insert of the three events, not one for each"
+    );
+    let kinds: Vec<&str> = rig
+        .bus
+        .published()
+        .await
+        .iter()
+        .map(|e| match e {
+            DomainEvent::SyncWindowOpened { .. } => "window_opened",
+            DomainEvent::PendingRestartChanged { .. } => "restart_changed",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(kinds, ["window_opened", "window_opened", "restart_changed"]);
 }
 
 // ------------------------------------------------------------------------------------------------ errors

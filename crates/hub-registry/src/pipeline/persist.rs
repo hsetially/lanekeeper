@@ -504,33 +504,28 @@ impl Persist {
         paths: &[NfsPath],
         findings: &FindingsDelta,
     ) -> Result<usize, RegistryError> {
-        let mut sent = 0;
+        let mut events: Vec<DomainEvent> = Vec::new();
         let mut dropped = false;
         for chunk in paths.chunks(DRIFT_EVENT_PATHS) {
-            if sent == MAX_DRIFT_EVENTS {
+            if events.len() == MAX_DRIFT_EVENTS {
                 dropped = true;
                 break;
             }
-            let event = DomainEvent::DriftChanged {
+            events.push(DomainEvent::DriftChanged {
                 swimlane: swimlane.clone(),
                 paths: chunk.to_vec(),
-            };
-            let mut handle = Tx::from_pg(tx);
-            self.bus.publish_in_tx(&mut handle, event).await?;
-            sent += 1;
+            });
         }
+        let sent = events.len();
         // The paths that did not fit are still news: the swimlane is refetched, which is what this event says.
         if dropped || !findings.is_empty() {
-            let mut handle = Tx::from_pg(tx);
-            self.bus
-                .publish_in_tx(
-                    &mut handle,
-                    DomainEvent::FindingsChanged {
-                        swimlane: swimlane.clone(),
-                    },
-                )
-                .await?;
+            events.push(DomainEvent::FindingsChanged {
+                swimlane: swimlane.clone(),
+            });
         }
+        // All of them, in order, as one batch (P15): a commit has one `DriftChanged` for each 500 paths and at most 21 events.
+        let mut handle = Tx::from_pg(tx);
+        crate::batch::publish_all(&*self.bus, &mut handle, events).await?;
         Ok(sent)
     }
 
@@ -547,6 +542,7 @@ impl Persist {
                 .map(|component| AuditActor::System { component })
                 .map_err(|_| RegistryError::Invalid)
         };
+        let mut events: Vec<AuditEvent> = Vec::with_capacity(1 + marks.len());
         if !baselines.is_empty() {
             let mut event = AuditEvent::new(
                 Timestamp::from_unix_millis(now_ms),
@@ -556,8 +552,7 @@ impl Persist {
             );
             event.swimlane = Some(swimlane.clone());
             event.diff = Some(listed(baselines.iter().map(|b| b.path.as_str())));
-            let mut handle = Tx::from_pg(tx);
-            self.audit.record(&mut handle, event).await?;
+            events.push(event);
         }
         for path in marks {
             let mut event = AuditEvent::new(
@@ -568,10 +563,11 @@ impl Persist {
             );
             event.swimlane = Some(swimlane.clone());
             event.path = Some(path.clone());
-            let mut handle = Tx::from_pg(tx);
-            self.audit.record(&mut handle, event).await?;
+            events.push(event);
         }
-        Ok(())
+        // One event for each decision (rule 8), recorded as one batch (P15): one chain lock and one insert for all of them.
+        let mut handle = Tx::from_pg(tx);
+        crate::batch::record_all(&*self.audit, &mut handle, events).await
     }
 }
 

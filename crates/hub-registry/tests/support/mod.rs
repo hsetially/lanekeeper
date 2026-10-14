@@ -12,4 +12,5 @@ pub mod pg_audit;
 pub mod pg_blobs;
 pub mod pg_bus;
 pub mod rig;
+pub mod statements;
 pub mod world;

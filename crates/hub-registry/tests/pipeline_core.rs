@@ -8,7 +8,9 @@ use domain::{ContentHash, DomainEvent, RepoKind};
 use engine::drift_hash;
 use hub_registry::metrics::LaneResult;
 use ports::content_hash;
+use support::log_capture::LogCapture;
 use support::pg_audit::{AuditRow, audit_rows};
+use support::statements::{inserts, statements};
 use support::world::{World, state_of};
 
 /// The audit events with this action. Ingestion audits the out-of-band changes the tests make, which is not what is asked about.
@@ -548,6 +550,68 @@ async fn a_mark_that_holds_overrides_the_state_and_one_that_no_longer_holds_is_c
     let audit = audited(&w, "drift_mark_cleared").await;
     assert_eq!(audit.len(), 1);
     assert_eq!(audit[0].path.as_deref(), Some("app/drifted.yml"));
+}
+
+#[tokio::test]
+async fn the_events_and_audit_events_of_a_commit_are_written_as_batches_in_order() {
+    // P15: a commit that clears two marks has three audit events (one for each mark, rule 8) and two outbox events (the paths that
+    // changed, and the findings). Each kind is one insert, in the order the commit's code names them: marks in path order.
+    let Some(mut w) = World::new(&["sit1"]).await else {
+        return;
+    };
+    w.base_commit(&[
+        ("config/app/drifted-a.yml", Some("d: 0\n")),
+        ("config/app/drifted-b.yml", Some("e: 0\n")),
+    ]);
+    w.inventory(&[("app/drifted-a.yml", "d: 1\n"), ("app/drifted-b.yml", "e: 1\n")])
+        .await;
+    w.whole().await;
+    w.mark("app/drifted-a.yml", Some(drift("d: 1\n")), Some(drift("d: 0\n")))
+        .await;
+    w.mark("app/drifted-b.yml", Some(drift("e: 1\n")), Some(drift("e: 0\n")))
+        .await;
+    w.paths(&["app/drifted-a.yml", "app/drifted-b.yml"]).await;
+    assert_eq!(
+        state_of(&w, "app/drifted-a.yml").await.as_deref(),
+        Some("intentional_divergence")
+    );
+    assert_eq!(
+        state_of(&w, "app/drifted-b.yml").await.as_deref(),
+        Some("intentional_divergence")
+    );
+
+    w.nfs_change(&[("app/drifted-a.yml", "d: 2\n"), ("app/drifted-b.yml", "e: 2\n")])
+        .await;
+    let outbox_before = w.rig.count("SELECT count(*) FROM outbox").await;
+    let audit_before = audited(&w, "drift_mark_cleared").await.len();
+    let (capture, _guard) = LogCapture::install();
+    let report = w.paths(&["app/drifted-a.yml", "app/drifted-b.yml"]).await;
+    assert_eq!(report.lanes[0].marks_cleared, 2, "{report:?}");
+
+    let all = statements(&capture);
+    assert_eq!(
+        inserts(&all, "INSERT INTO audit_events"),
+        vec![2],
+        "the two marks' audit events are one insert (and the audit log is asked once)"
+    );
+    let events = w.rig.count("SELECT count(*) FROM outbox").await - outbox_before;
+    assert!(events >= 2, "the paths and the findings: {events} events");
+    assert_eq!(
+        inserts(&all, "INSERT INTO outbox"),
+        vec![u64::try_from(events).unwrap()],
+        "the commit's outbox events are one insert"
+    );
+    let cleared = audited(&w, "drift_mark_cleared").await;
+    assert_eq!(cleared.len() - audit_before, 2);
+    let paths: Vec<_> = cleared[audit_before..].iter().map(|a| a.path.clone()).collect();
+    assert_eq!(
+        paths,
+        [
+            Some("app/drifted-a.yml".to_owned()),
+            Some("app/drifted-b.yml".to_owned())
+        ],
+        "in the order of the marks"
+    );
 }
 
 // ------------------------------------------------------------------------------------------------ findings

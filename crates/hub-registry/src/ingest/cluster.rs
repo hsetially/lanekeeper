@@ -196,10 +196,9 @@ impl<'a> ClusterApplier<'a> {
                 services: chunk.to_vec(),
             });
         }
-        for event in events {
-            let mut handle = Tx::from_pg(&mut tx);
-            self.inner.bus.publish_in_tx(&mut handle, event).await?;
-        }
+        // The events of the report, in order, as one batch (P15).
+        let mut handle = Tx::from_pg(&mut tx);
+        crate::batch::publish_all(&*self.inner.bus, &mut handle, events).await?;
         self.inner.db.commit(tx).await
     }
 
