@@ -11,12 +11,13 @@
 //! 4. `effective_tree_hashes` and `effective_files` ([`TreeHashStore`]);
 //! 5. `swimlane_registry`: the version a read's `ETag` uses, the counts per state, the number of open findings and the fingerprint of the
 //!    rules this state was computed under;
-//! 6. the events, through `publish_in_tx` (D80: nothing is fanned out before the commit): `DriftChanged` for the paths whose row
-//!    changed, in chunks of [`DRIFT_EVENT_PATHS`], at most [`MAX_DRIFT_EVENTS`] per commit, then `FindingsChanged` (also when the paths
-//!    did not all fit, so that clients refetch the swimlane instead of waiting for what was never sent);
-//! 7. the audit events, last, because the chain's lock is held until the commit: `BaselineAdopted` once for the commit with the paths
-//!    in its bounded `diff` (A12: a batch of convergences is one decision of the system), and `DriftMarkCleared` for each mark that
-//!    no longer holds (rule 8: one audit event for each state change).
+//! 6. the events, in the outbox in this transaction (D80: nothing is fanned out before the commit), as one batch
+//!    (`publish_many_in_tx`, [`crate::batch`]): `DriftChanged` for the paths whose row changed, in chunks of [`DRIFT_EVENT_PATHS`], at
+//!    most [`MAX_DRIFT_EVENTS`] per commit, then `FindingsChanged` (also when the paths did not all fit, so that clients refetch the
+//!    swimlane instead of waiting for what was never sent);
+//! 7. the audit events, last, because the chain's lock is held until the commit, as one batch (`record_many`): `BaselineAdopted` once
+//!    for the commit with the paths in its bounded `diff` (A12: a batch of convergences is one decision of the system), and
+//!    `DriftMarkCleared` for each mark that no longer holds (rule 8: one audit event for each state change, in the order of the marks).
 //!
 //! The derived columns, the findings and the tree are all reproducible from the source facts and Git, which is what the nightly job
 //! and the reconcile rely on; the baselines and marks are decisions, which is why they are audited.
