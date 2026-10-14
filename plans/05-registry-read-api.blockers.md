@@ -120,3 +120,124 @@ round trips.
 - Unused dependencies (`sha2`, `insta`, `criterion`, `tracing-subscriber`) were removed from `crates/hub-registry/Cargo.toml`; later
   tasks add them when they use them. The registry's fuzz lockfile is refreshed to match and gets the `.gitignore` and
   `.gitattributes` that the other fuzz crates have.
+
+## Resolved: T1, `P15.registry_ingest_versions_per_s` is met (FIX after the batched audit and outbox contract)
+
+A human chose option 1. Its contract (`AuditLog::record_many`, `EventBus::publish_many_in_tx`, the 200-event and 1 MiB limits,
+`canonical_size` and `split_batches`, real one-statement overrides in `PgAuditLog` and `PgEventBus`) was merged into this branch
+(5a9065c), and the registry now uses it. Nothing was loosened: the threshold is 1,000, the workload is the one above (18,000 versions in
+360 messages of 50, distinct paths, every one audited), and the entry is registered (`df82516`).
+
+### What changed (all in `crates/hub-registry`, plus the flag, its pin and a Justfile comment)
+
+| Commit | What |
+|---|---|
+| `e2bec86` | The crate did not compile against the merged ports (`BusError::BatchTooLarge` in an exhaustive match). A port refusing a batch for size is a bug of the registry, which cuts its batches itself: `RegistryError::Internal`, `SinkError::Unavailable`, logged by stage (`audit_batch`, `event_batch`) with nothing of the batch. |
+| `b4abbbb` | The test stand-ins `PgTestAudit` and `PgTestBus` were implementations of their own, so they could never take the real batch path (a stand-in that forwards only `record` and `publish_in_tx` runs the ports' default loops, silently). They are now decorators over the real `PgAuditLog` (hub-identity, a dev-dependency; Cargo.toml and Cargo.lock) and `PgEventBus` that forward all four calls and keep the test hooks; `per_event()` is the old one-at-a-time behaviour on purpose, the reference of the equivalence test. The P15 benchmark hands the registry the real `PgAuditLog` and `PgEventBus` with no decorator. `IngestDeps` and `PipelineDeps` take `Arc<dyn AuditLog>` and `Arc<dyn EventBus>` and store them unwrapped (there is no `Registry::build` yet). |
+| `d5b3230` | `crate::batch::{record_all, publish_all}`; the apply path builds the events of a chunk and writes them with one `record_many` (cut by `ports::split_batches` on the blocking pool, so both limits hold) and one `publish_many_in_tx`; one event is the single call. The outbox is written before the audit events, so the chain lock is held for the audit insert and the commit only. |
+| `9b45161` | The last chunk's transaction also moves the root, the acknowledgement and the staged parts (one transaction and one flush of the write-ahead log for a message, where it was two and a third that only read the rules); the rules are read in the first chunk's transaction instead of a throwaway one. |
+| `449166b`, `2674c7b` | The other writers of several events in one transaction use the same calls (below). |
+| `0509cd7` | Not part of P15: the EXPLAIN snapshot test (T2) failed on about one run in three because of when autovacuum ran (below). |
+| `df82516` | `registered = true`, the pin in `crates/xtask/tests/budgets_registry.rs`. |
+
+### Same data as before (rule 8, D92/D93)
+
+`tests/batch_writes.rs`, over a real Postgres: the same script (inventory, an increment with a path changed three times and a removal, a
+sync job, a tool write, a replay of a delta, a full scan with two files gone and one changed; in chunks of 3, so batches of 3, 3, 2, 2 and
+single calls for the chunks of one) runs through the batch ports and through the per-event reference, and the two are equal in every column
+of `audit_events` but `recorded_at` and in `outbox` but `created_at` and `published_at` (a test fails if a column is added and neither
+compared nor known to be time-derived); both pass the nightly chain verifier (S9: 13 events checked, clean); and the rows equal a snapshot
+(`tests/snapshots/batch_writes__the_rows_of_the_script.snap`) recorded by the code of `e2bec86`, which called `record` and `publish_in_tx`
+once for each path, hashes of the chain included. Reversing the audit order in the registry makes it fail (checked). One audit event per
+path per delta, one outbox event per `FileObserved`.
+
+No silent fallback: the statements of a chunk of 50 paths are counted from sqlx's own statement log (`tests/support/statements.rs`): one
+`INSERT INTO audit_events` of 50 rows, one `INSERT INTO outbox` of 50, one read of the chain head, one chain lock, `record_many` called once
+and `record` never; on the per-event reference the same count reads 50 inserts of one row, so a decorator that forwarded only the single
+calls fails it (this was seen on the code before `d5b3230`: 50 inserts of 1 row). A chunk of 450 paths is three inserts of 200, 200, 50 and
+one valid chain.
+
+### Measurements
+
+Machine: 4 vCPU, 16 GB, Postgres 16.15 over loopback, fsync on, `shared_buffers` 128 MB. Before every series `uptime` and
+`pgrep -af 'cargo|rustc|criterion'` were checked and the series waited until the 1-minute load average was under 0.3 to 0.5 and no
+other build or test ran: the series started at a load average of 0.45 (the 587 series), 0.21 (batch calls only), 0.29 (its two
+repeats), 0.23 (with the last-chunk change), 0.29 (the official three) and 0.29 (the recipe). Every number is versions per second of
+one run on a fresh database; the benchmark takes the minimum of its three runs.
+
+```
+before, as in the blocked section (a test stand-in for the log, one event at a time):      724  843  805
+before, with the real PgAuditLog and PgEventBus, one event at a time (same code as above): 590  588  587    (min 587)
+
+batch calls only (d5b3230), three invocations:                   939 1196 1149 | 1079 1184 1202 | 1143 1163 1082   (min 939)
+batch calls and the last chunk carrying the root (9b45161):     1190 1150 1286 | 1110 1103 1171 | 1174 1297 1368   (min 1103)
+
+final code, three invocations, the official ones:               1232 1342 1274 | 1327 1197 1319 | 1284 1297 1247   (min 1197)
+final code, inside the registry-bench recipe:                   1313 1182 1134                                   (min 1134)
+```
+
+The batch calls alone met the budget in two of three invocations and missed it in one (939; the first run of an invocation was the
+slowest in four of the ten invocations, by up to 21 %), so two of the trims the blockers file had estimated were done as well, for a
+margin: with them the lowest of the 21 runs is 1103, and of the 12 runs on the final code 1134. Not done, and not needed: replacing the root's `count(*)` by a running count (a count that is wrong
+after a crash between two chunks stays wrong; the statement is 1.1 ms), one statement with data-modifying CTEs for the end of a delta
+(about 1.8 ms), and a partial index for the tool-write read (a migration). The join-on-`unnest` form of the two read statements was tried
+and is no better (the planner without statistics picks the same bitmap scan).
+
+Where the time goes, per message of 50 versions (release build, sqlx's statement log, 30 messages after 10 of warm-up; the elapsed time
+of each statement, the blobs overlap 16 at a time):
+
+```
+                                       blocked section     batch calls only (44.0 ms, 79 statements)
+audit events                           29 ms (50 x 0.58)    4.4 ms: lock 0.40, head 0.67, insert of 50 rows 3.28
+outbox events                           8 ms (50 x 0.155)   1.2 ms: one insert of 50 rows
+blob puts (16 at a time)                8 ms                about 8 ms (50 inserts, 1.7 ms each)
+the registry's own statements         about 20 ms           about 20 ms; two commits 2.5 ms
+```
+
+and after the last-chunk change one `COMMIT`, one `set_config`, one lock and one read of the rules for the message (75 statements; the
+transactions are counted by `tests/batch_writes.rs`). Audit and outbox events went from 37 ms of a 67 ms message to about 5.6 ms.
+
+The other benchmarks, rerun on the final code (`cargo bench -p hub-registry`, then twice more for P1, P2 and P6; their budgets are
+p95 of the harness's samples):
+
+```
+P5   incremental_recompute_base                 32.4 ms of 50      (T3 reported 36.4)
+P5   per_file_per_swimlane                      0.48 ms of 2       (0.48)
+P1   hub_delta_to_drift                         273, 275, 259 ms of 2,000   (251)
+P2   hub_head_moved_to_drift                    736, 706, 735, 644 ms of 1,000   (644)
+P6   hub_full_recompute (cold run, 80,120 paths) 15.4, 12.4, 13.4 s of 180 s   (12.9)
+```
+
+P1, P2 and P6 differ from T3's single numbers by what they differ from run to run (P2 ranged 644 to 736 here); none of them is on the
+audit path of the batch apart from the commit's events.
+
+### Other registry places that write several events in one transaction
+
+- T1 apply (`apply_chunk`): done above.
+- T1 cluster report (`cluster.rs`): the sync-window and `PendingRestartChanged` events of one report now go through `publish_all`
+  (three events are one insert; order tested).
+- T3 pipeline commit (`persist.rs`): `DriftChanged` (one for each 500 paths, at most 20) and `FindingsChanged` through `publish_all`;
+  `BaselineAdopted` and one `DriftMarkCleared` for each mark that no longer holds through `record_all` (two cleared marks are one insert;
+  order tested in `pipeline_core.rs`). The typical commit has two outbox events and no audit event, so this saves one round trip there;
+  it saves the most when many marks clear at once.
+- T1 `ToolWrites::record`: one observation and one event for each call, in the caller's transaction; nothing to batch.
+- T2 (the settings index, the Git side of drift, the tree hashes): no audit or outbox write at all.
+- Nothing wraps the ports: `IngestDeps`, `PipelineDeps` and `Inner` hold the `Arc<dyn AuditLog>` and `Arc<dyn EventBus>` they are given.
+
+### For the human
+
+- `hub-identity` is a **dev-dependency** of `hub-registry` (and a workspace dependency in the root `Cargo.toml`), for the real `PgAuditLog` in
+  tests and in the P15 benchmark. Plan A9 says the registry depends on hub-platform "and for nothing else"; that is true of the library,
+  and a test or benchmark of P15 over a stand-in cannot say whether `record_many` is the real batch. If it is not wanted, the alternative
+  is a copy of the batch insert in the stand-in, which proves nothing about the real log.
+- The outbox is now written before the audit events in a chunk (it was after), and a full scan reads the files it lost before the first
+  chunk instead of after the last (the same list: none of them is a file that a chunk of the scan touches). Both are for the lock and for
+  the last chunk to be known; neither changes what is written (the snapshot holds).
+- A crash in the last chunk now leaves nothing of the delta (it used to leave the chunk without its root, and asked for a full scan); a
+  crash between earlier chunks is repaired by the agent sending the delta again, as before.
+- `tests/explain.rs` (T2) flaked, one run in three, before and independently of this change: the plan of `markers_of_a_batch` was an
+  index-only scan in the failing runs because the insert-triggered autovacuum had run before the EXPLAIN. The seeded tables now have
+  autovacuum off (`0509cd7`); eight runs in a row passed; the snapshots are unchanged.
+- The measurement is on one quiet machine; the first run of an invocation is sometimes the slowest. If CI is noisier than this machine,
+  the margin is 13 % at the lowest of the 12 runs on the final code (1134) and 10 % at the lowest of the 21 runs since the trims (1103);
+  with the batch calls alone it was one invocation in three below the budget (939).
