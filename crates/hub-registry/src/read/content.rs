@@ -38,13 +38,13 @@ use super::rows;
 use super::service::Inner;
 use crate::error::RegistryError;
 
-const FILE_SQL: &str = "SELECT nfs_hash::bytea AS hash, class, size, eol_style, encoding, bom, denied \
+pub const FILE_SQL: &str = "SELECT nfs_hash::bytea AS hash, class, size, eol_style, encoding, bom, denied \
                         FROM file_state WHERE swimlane_id = $1 AND path = $2";
-const BASELINE_SQL: &str =
+pub const BASELINE_SQL: &str =
     "SELECT blob_hash::bytea AS blob FROM baselines WHERE swimlane_id = $1 AND path = $2";
-const TENANTS_SQL: &str =
+pub const TENANTS_SQL: &str =
     "SELECT tenant_id FROM swimlane_tenants WHERE swimlane_id = $1 ORDER BY tenant_id LIMIT 129";
-const MAPPING_SQL: &str = "SELECT repo, repo_root FROM path_mappings ORDER BY repo LIMIT 8";
+pub const MAPPING_SQL: &str = "SELECT repo, repo_root FROM path_mappings ORDER BY repo LIMIT 8";
 
 /// A file's row in `file_state`, as far as a content read needs it.
 #[derive(Debug, Clone)]

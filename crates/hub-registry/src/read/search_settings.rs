@@ -45,11 +45,18 @@ WHERE si.setting_path ILIKE $1 \
           AND ($3::text IS NULL OR logical_file = $3)) \
 ORDER BY si.blob_hash, si.setting_path LIMIT $6";
 
-/// The files that have these blobs as their current version.
+/// The files that have these blobs as their current version: `$1` the swimlanes, `$2` the blobs, `$3` a logical file or `NULL`. At most
+/// 10,000 places are listed for one blob: a blob that is the current version of more files than that (an empty file in thousands of
+/// folders) lists its first places in (swimlane, sequence) order; no real configuration comes near it, and the bound is rule 5's. Each blob
+/// is probed on its own (`LATERAL` with a `LIMIT`, which keeps the planner from turning the probes into one scan of the table): the
+/// covering index `(swimlane_id, nfs_hash)` answers every probe, so no plan reads the whole of `file_state`.
 pub const PLACES_SQL: &str = "\
-SELECT swimlane_id, seq, path, nfs_hash::bytea AS blob FROM file_state \
-WHERE swimlane_id = ANY($1::text[]) AND nfs_hash = ANY($2::bytea[]) AND NOT denied \
-  AND ($3::text IS NULL OR logical_file = $3)";
+SELECT fs.swimlane_id, fs.seq, fs.path, b.h::bytea AS blob \
+FROM unnest($2::bytea[]) AS b(h) \
+CROSS JOIN LATERAL ( \
+  SELECT f.swimlane_id, f.seq, f.path FROM file_state f \
+  WHERE f.swimlane_id = ANY($1::text[]) AND f.nfs_hash = b.h AND NOT f.denied AND ($3::text IS NULL OR f.logical_file = $3) \
+  ORDER BY f.swimlane_id, f.seq LIMIT 10000) fs";
 
 struct Pair {
     blob: ContentHash,

@@ -1,0 +1,11 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: plan
+---
+[
+  {
+    "index": "baselines_pkey",
+    "node": "Index Scan",
+    "relation": "baselines"
+  }
+]

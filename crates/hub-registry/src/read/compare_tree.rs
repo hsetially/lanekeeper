@@ -45,7 +45,7 @@ const MAX_PATH_KEY: usize = 300;
 /// The most rounds of the walk: a directory is at most 512 levels deep.
 const MAX_DEPTH: usize = 520;
 
-const DIR_HASH_SQL: &str =
+pub const DIR_HASH_SQL: &str =
     "SELECT hash::bytea FROM effective_tree_hashes WHERE swimlane_id = $1 AND dir_path = $2";
 
 /// The child directories of the directories `$2` (the root is `''`) and their hashes.

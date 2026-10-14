@@ -29,18 +29,18 @@ use super::service::Inner;
 use crate::error::RegistryError;
 
 /// Rows of files by exact path, in the shape the layers use.
-const ROWS_BY_PATH_SQL: &str = "\
+pub const ROWS_BY_PATH_SQL: &str = "\
 SELECT swimlane_id, path, kind, class, nfs_hash::bytea AS blob, nfs_drift_hash::bytea AS norm, COALESCE(size, 0) AS size, denied, false AS in_group \
 FROM file_state WHERE swimlane_id = $1 AND path = ANY($2::text[]) AND nfs_hash IS NOT NULL";
 
 /// The property sources of an application and tenant, by file name, in any folder.
-const PROPERTY_ROWS_SQL: &str = "\
+pub const PROPERTY_ROWS_SQL: &str = "\
 SELECT swimlane_id, path, kind, class, nfs_hash::bytea AS blob, nfs_drift_hash::bytea AS norm, COALESCE(size, 0) AS size, denied, false AS in_group \
 FROM file_state \
 WHERE swimlane_id = $1 AND class = 'structured' AND NOT denied AND nfs_hash IS NOT NULL \
   AND regexp_replace(path, '^.*/', '') = ANY($2::text[])";
 
-const ALL_PATHS_SQL: &str =
+pub const ALL_PATHS_SQL: &str =
     "SELECT path FROM file_state WHERE swimlane_id = $1 AND nfs_hash IS NOT NULL LIMIT 200001";
 
 /// The file names a property view of `(application, tenant)` reads.

@@ -7,6 +7,7 @@ mod support;
 
 use hub_registry::adoption::{ADOPT_BASELINES_SQL, ADOPT_MARKS_SQL, CURRENT_NFS_SQL, NFS_FILES_SQL};
 use hub_registry::baselines::{CURRENT_BLOBS_SQL, DROP_REFS_SQL, INSERT_REFS_SQL};
+use hub_registry::blob_policy::DENIED_HASH_SQL;
 use hub_registry::index::settings::{MARKED_SQL, UNINDEXED_SQL};
 use hub_registry::index::tree_hashes::{LOAD_DIRS_SQL, LOAD_FILES_SQL};
 use hub_registry::pipeline::lane_loader::{
@@ -17,6 +18,24 @@ use hub_registry::pipeline::persist::{
     DELETE_ROWS_SQL, OPEN_FINDINGS_SQL, RESOLVE_FINDINGS_SQL, UPSERT_BASELINES_SQL, UPSERT_FINDINGS_SQL,
     UPSERT_ROWS_SQL,
 };
+use hub_registry::read::compare::BASELINE_BLOB_SQL;
+use hub_registry::read::compare_tree::{
+    BASELINE_MAP_SQL, CHILD_DIRS_SQL, DIR_FILES_SQL, DIR_HASH_SQL, EFFECTIVE_MAP_SQL, NFS_MAP_SQL,
+};
+use hub_registry::read::content::{
+    BASELINE_SQL as CONTENT_BASELINE_SQL, FILE_SQL as CONTENT_FILE_SQL, MAPPING_SQL,
+    TENANTS_SQL as CONTENT_TENANTS_SQL,
+};
+use hub_registry::read::effective::{APPS_SQL, EXISTING_SQL, GROUP_ROWS_SQL, TENANTS_SQL};
+use hub_registry::read::findings::findings_sql;
+use hub_registry::read::history::history_sql;
+use hub_registry::read::resource::{ALL_PATHS_SQL, PROPERTY_ROWS_SQL, ROWS_BY_PATH_SQL};
+use hub_registry::read::restarts::services_sql;
+use hub_registry::read::search_settings::{PAIRS_SQL, PLACES_SQL};
+use hub_registry::read::search_text::{FILES_SQL, VERSIONS_SQL};
+use hub_registry::read::settings::ROWS_SQL;
+use hub_registry::read::swimlanes::{SWIMLANE_SQL, SWIMLANES_SQL};
+use hub_registry::read::tree::{CHILDREN_SQL, DRIFT_SQL, FILE_ROWS_SQL};
 use serde_json::Value;
 use sqlx::PgPool;
 use support::pg::TestDb;
@@ -147,6 +166,11 @@ enum Arg<'a> {
     OptTextArray(Vec<Option<String>>),
     OptByteaArray(Vec<Option<Vec<u8>>>),
     BoolArray(Vec<bool>),
+    Int32(i32),
+    Float(f64),
+    Bool(bool),
+    OptText(Option<&'a str>),
+    OptInt(Option<i64>),
 }
 
 async fn explain(pool: &PgPool, sql: &str, args: &[Arg<'_>]) -> Value {
@@ -162,6 +186,11 @@ async fn explain(pool: &PgPool, sql: &str, args: &[Arg<'_>]) -> Value {
             Arg::OptTextArray(a) => query.bind(a.clone()),
             Arg::OptByteaArray(a) => query.bind(a.clone()),
             Arg::BoolArray(a) => query.bind(a.clone()),
+            Arg::Int32(i) => query.bind(*i),
+            Arg::Float(f) => query.bind(*f),
+            Arg::Bool(b) => query.bind(*b),
+            Arg::OptText(t) => query.bind(*t),
+            Arg::OptInt(i) => query.bind(*i),
         };
     }
     let row: Value = query.fetch_one(pool).await.unwrap();
@@ -476,4 +505,329 @@ async fn the_sweeper_finds_the_unindexed_few_among_many() {
         "one row per unmarked blob (each blob is in one file here)"
     );
     assert!(rows.windows(2).all(|w| w[0].0 < w[1].0), "in hash order");
+}
+
+// ------------------------------------------------------------------------------------------------ T6: the read API
+
+/// The design-scale database with what the reads add: the settings of every structured blob (three each), the tenants and the
+/// registry row of each swimlane, a few services, and the path mapping.
+async fn seeded_for_reads() -> Option<(TestDb, PgPool)> {
+    let (db, pool) = seeded().await?;
+    let mut admin = db.admin().await;
+    for table in [
+        "settings_index",
+        "swimlane_tenants",
+        "swimlane_registry",
+        "services",
+        "service_state",
+    ] {
+        sqlx::raw_sql(&format!("ALTER TABLE {table} SET (autovacuum_enabled = false)"))
+            .execute(&mut admin)
+            .await
+            .unwrap();
+    }
+    for sql in [
+        "INSERT INTO settings_index (blob_hash, setting_path, value_text, value_type, start_line, end_line) \
+         SELECT b.h, p.path, 'v', 'string', 1, 1 \
+         FROM (SELECT DISTINCT nfs_hash AS h FROM file_state WHERE class = 'structured') b, \
+              (VALUES ('server.port'), ('server.name'), ('app.timeout')) AS p(path)",
+        "INSERT INTO swimlane_tenants (swimlane_id, tenant_id) SELECT id, 'sit' || substr(id, 5) FROM swimlanes",
+        "INSERT INTO swimlane_registry (swimlane_id, version, state_counts, finding_count) \
+         SELECT id, 5, '{\"in_sync\": 1900, \"git_ahead\": 100}', 300 FROM swimlanes",
+        "INSERT INTO services (swimlane_id, namespace, name, env_values) \
+         SELECT id, 'ns', 'svc' || n, '{\"SPRING_APPLICATION_NAME\": \"core\"}' FROM swimlanes, generate_series(1, 5) n",
+        "INSERT INTO service_state (service_id, pickup_state) SELECT id, 'live' FROM services",
+        "INSERT INTO path_mappings (repo, repo_root) VALUES ('base', 'config'), ('tenant', 'data/config')",
+        "ANALYZE",
+    ] {
+        sqlx::raw_sql(sql).execute(&mut admin).await.unwrap();
+    }
+    Some((db, pool))
+}
+
+fn blob_hashes(n: usize) -> Vec<Vec<u8>> {
+    (1..=n)
+        .map(|i| {
+            ports::content_hash(format!("blob-{i}").as_bytes())
+                .as_bytes()
+                .to_vec()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn read_queries_have_no_sequential_scan_on_large_tables() {
+    let Some((_db, pool)) = seeded_for_reads().await else {
+        return;
+    };
+    let lane = "lane7";
+    let lanes = |n: usize| -> Vec<String> { (1..=n).map(|i| format!("lane{i}")).collect() };
+    let page_paths: Vec<String> = (1..=101)
+        .map(|i| format!("dir3/file{}.yml", 3 + 50 * (i % 40)))
+        .collect();
+
+    macro_rules! check {
+        ($name:literal, $sql:expr, $args:expr) => {{
+            let plan = explain(&pool, $sql, &$args).await;
+            no_large_sequential_scan($name, &plan);
+            insta::assert_json_snapshot!(concat!("read_", $name), plan);
+        }};
+    }
+
+    // The swimlane list and one swimlane.
+    check!(
+        "swimlanes",
+        SWIMLANES_SQL,
+        [Arg::OptText(None), Arg::Int(101), Arg::Float(30.0)]
+    );
+    check!("swimlane", SWIMLANE_SQL, [Arg::Text(lane), Arg::Float(30.0)]);
+    check!("existing_swimlanes", EXISTING_SQL, [Arg::TextArray(lanes(40))]);
+
+    // The tree: the children of the root and of a folder, the rows of a page, the drift list.
+    check!(
+        "tree_children_of_the_root",
+        CHILDREN_SQL,
+        [
+            Arg::Text(lane),
+            Arg::Text("%"),
+            Arg::Int32(1),
+            Arg::OptText(None),
+            Arg::Int(200_001),
+            Arg::OptText(None),
+            Arg::Int(101)
+        ]
+    );
+    check!(
+        "tree_children_of_a_folder",
+        CHILDREN_SQL,
+        [
+            Arg::Text(lane),
+            Arg::Text("dir3/%"),
+            Arg::Int32(6),
+            Arg::OptText(Some("in_sync")),
+            Arg::Int(200_001),
+            Arg::OptText(Some("file1")),
+            Arg::Int(101)
+        ]
+    );
+    check!(
+        "tree_file_rows",
+        FILE_ROWS_SQL,
+        [Arg::Text(lane), Arg::TextArray(page_paths.clone())]
+    );
+    check!(
+        "drift_first_page",
+        DRIFT_SQL,
+        [
+            Arg::Text(lane),
+            Arg::Int(0),
+            Arg::OptText(None),
+            Arg::Text("%"),
+            Arg::Int(101)
+        ]
+    );
+    check!(
+        "drift_of_a_state_in_a_folder",
+        DRIFT_SQL,
+        [
+            Arg::Text(lane),
+            Arg::Int(1500),
+            Arg::OptText(Some("git_ahead")),
+            Arg::Text("dir3/%"),
+            Arg::Int(101)
+        ]
+    );
+
+    // History, findings, services.
+    check!(
+        "history",
+        &history_sql(),
+        [
+            Arg::Text(lane),
+            Arg::Text("dir3/file3.yml"),
+            Arg::OptInt(None),
+            Arg::OptInt(None),
+            Arg::Int(101)
+        ]
+    );
+    check!(
+        "history_second_page",
+        &history_sql(),
+        [
+            Arg::Text(lane),
+            Arg::Text("dir3/file3.yml"),
+            Arg::OptInt(Some(1_700_000_000_000)),
+            Arg::OptInt(Some(5)),
+            Arg::Int(101)
+        ]
+    );
+    check!(
+        "findings_of_a_swimlane",
+        &findings_sql(),
+        [
+            Arg::OptText(Some(lane)),
+            Arg::TextArray(vec![]),
+            Arg::Int32(0),
+            Arg::OptInt(None),
+            Arg::Int(101)
+        ]
+    );
+    check!(
+        "findings_of_all_swimlanes_by_kind_and_severity",
+        &findings_sql(),
+        [
+            Arg::OptText(None),
+            Arg::TextArray(vec!["drift".to_owned()]),
+            Arg::Int32(2),
+            Arg::OptInt(Some(9_000)),
+            Arg::Int(101)
+        ]
+    );
+    check!(
+        "services_pending",
+        &services_sql(),
+        [Arg::Text(lane), Arg::Int(0), Arg::Bool(false), Arg::Int(101)]
+    );
+
+    // Content: one file by its key, a baseline, the tenants and the mapping.
+    check!(
+        "content_file",
+        CONTENT_FILE_SQL,
+        [Arg::Text(lane), Arg::Text("dir3/file3.yml")]
+    );
+    check!(
+        "content_baseline",
+        CONTENT_BASELINE_SQL,
+        [Arg::Text(lane), Arg::Text("dir3/file3.yml")]
+    );
+    check!(
+        "compare_baseline_blob",
+        BASELINE_BLOB_SQL,
+        [Arg::Text(lane), Arg::Text("dir3/file3.yml")]
+    );
+    check!("tenants_of_a_swimlane", CONTENT_TENANTS_SQL, [Arg::Text(lane)]);
+    check!("path_mapping", MAPPING_SQL, []);
+
+    // The setting rows of a page of blobs, read once per blob.
+    check!(
+        "setting_rows_of_blobs",
+        ROWS_SQL,
+        [Arg::ByteaArray(blob_hashes(200)), Arg::Int(1_000)]
+    );
+
+    // Effective config: the group of a logical file in many swimlanes, their tenants and applications, a resource's candidates.
+    check!(
+        "effective_group_rows",
+        GROUP_ROWS_SQL,
+        [
+            Arg::TextArray(lanes(40)),
+            Arg::Text("dir3/file3.yml"),
+            Arg::TextArray(vec![
+                "application.yml".to_owned(),
+                "application.yaml".to_owned(),
+                "application.properties".to_owned()
+            ])
+        ]
+    );
+    check!("effective_tenants", TENANTS_SQL, [Arg::TextArray(lanes(40))]);
+    check!("effective_applications", APPS_SQL, [Arg::TextArray(lanes(40))]);
+    check!(
+        "resource_rows_by_path",
+        ROWS_BY_PATH_SQL,
+        [
+            Arg::Text(lane),
+            Arg::TextArray(vec![
+                "dir3/chan/file3-sit7.yml".to_owned(),
+                "dir3/chan/file3.yml".to_owned()
+            ])
+        ]
+    );
+    check!(
+        "resource_property_rows",
+        PROPERTY_ROWS_SQL,
+        [
+            Arg::Text(lane),
+            Arg::TextArray((0..12).map(|i| format!("core-{i}.yml")).collect())
+        ]
+    );
+    check!("resource_all_paths", ALL_PATHS_SQL, [Arg::Text(lane)]);
+
+    // The whole-tree compare.
+    check!(
+        "compare_tree_directory_hash",
+        DIR_HASH_SQL,
+        [Arg::Text(lane), Arg::Text("dir3")]
+    );
+    check!(
+        "compare_tree_child_directories",
+        CHILD_DIRS_SQL,
+        [Arg::Text(lane), Arg::TextArray(vec![String::new()])]
+    );
+    check!(
+        "compare_tree_files_of_directories",
+        DIR_FILES_SQL,
+        [
+            Arg::Text(lane),
+            Arg::TextArray(vec!["dir3".to_owned(), "dir4".to_owned()])
+        ]
+    );
+    check!(
+        "compare_tree_effective_map",
+        EFFECTIVE_MAP_SQL,
+        [Arg::Text(lane), Arg::Text("dir3/%")]
+    );
+    check!(
+        "compare_tree_nfs_map",
+        NFS_MAP_SQL,
+        [Arg::Text(lane), Arg::Text("dir3/%")]
+    );
+    check!(
+        "compare_tree_baseline_map",
+        BASELINE_MAP_SQL,
+        [Arg::Text(lane), Arg::Text("dir3/%")]
+    );
+
+    // Settings search: a part of a path across all swimlanes, in one swimlane, and the places of the blobs found.
+    check!(
+        "settings_search_pairs_all_swimlanes",
+        PAIRS_SQL,
+        [
+            Arg::Text("%port%"),
+            Arg::TextArray(lanes(40)),
+            Arg::OptText(None),
+            Arg::Bytes(&[]),
+            Arg::Text(""),
+            Arg::Int(102),
+            Arg::Int32(255)
+        ]
+    );
+    check!(
+        "settings_search_pairs_one_swimlane_and_file",
+        PAIRS_SQL,
+        [
+            Arg::Text("%timeout%"),
+            Arg::TextArray(lanes(1)),
+            Arg::OptText(Some("dir3/file3.yml")),
+            Arg::Bytes(&[]),
+            Arg::Text(""),
+            Arg::Int(102),
+            Arg::Int32(255)
+        ]
+    );
+    check!(
+        "settings_search_places",
+        PLACES_SQL,
+        [
+            Arg::TextArray(lanes(40)),
+            Arg::ByteaArray(blob_hashes(102)),
+            Arg::OptText(None)
+        ]
+    );
+
+    // Text search: the readable files of a swimlane and the versions of the swimlanes.
+    check!("text_search_files_of_a_swimlane", FILES_SQL, [Arg::Text(lane)]);
+    check!("text_search_versions", VERSIONS_SQL, [Arg::TextArray(lanes(40))]);
+
+    // The blob policy: is this hash a denied file's?
+    check!("blob_policy_denied_hash", DENIED_HASH_SQL, [Arg::Bytes(&[7; 32])]);
 }

@@ -1,0 +1,55 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: plan
+---
+[
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "swimlanes"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "agents"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "agent_acks"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "swimlane_registry"
+  },
+  {
+    "node": "Aggregate"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "swimlane_tenants"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "agent_connections"
+  },
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "adoptions"
+  }
+]

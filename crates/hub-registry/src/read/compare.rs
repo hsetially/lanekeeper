@@ -49,7 +49,8 @@ use super::rows;
 use super::service::Inner;
 use crate::metrics::CacheName;
 
-const BASELINE_BLOB_SQL: &str = "SELECT blob_hash::bytea FROM baselines WHERE swimlane_id = $1 AND path = $2";
+pub const BASELINE_BLOB_SQL: &str =
+    "SELECT blob_hash::bytea FROM baselines WHERE swimlane_id = $1 AND path = $2";
 
 /// What a side has as text.
 enum Text {
