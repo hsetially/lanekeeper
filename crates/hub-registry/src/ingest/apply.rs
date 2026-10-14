@@ -18,10 +18,15 @@
 //! # One chunk
 //!
 //! Lock the swimlane, read the stored state, the tool writes and the sync windows of the chunk's paths, decide what becomes of
-//! each path ([`super::plan`]), insert the observations, upsert `file_state`, note new folders, write the audit events, write the
-//! outbox events, commit.
-//! The audit events come last among the writes because `AuditLog::record` holds the audit chain's lock until the transaction ends
-//! (A12): everything slow is done by then, so the lock is held for the audit inserts, the events and the commit.
+//! each path ([`super::plan`]), insert the observations, upsert `file_state`, note new folders, write the outbox events, write the
+//! audit events, commit.
+//! The audit events come last among the writes because `AuditLog::record` and `record_many` hold the audit chain's lock until the
+//! transaction ends (A12): everything else is done by then, so the lock is held for the audit insert and the commit only.
+//!
+//! The events of a chunk are written as batches (P15, [`crate::batch`]): one `record_many` for the audit events (three round trips
+//! whatever their number) and one `publish_many_in_tx` for the outbox events (one statement), where a loop of `record` and
+//! `publish_in_tx` took three round trips and one for each path. Each path still has its own audit event and its own link in the
+//! chain, and each `FileObserved` its own outbox row, in the order of the paths: the batch writes what the loop wrote.
 //!
 //! # What this does not do
 //!
@@ -375,9 +380,9 @@ impl Inner {
             self.move_state(&mut tx, swimlane, rules, &moves, &stored, now_ms)
                 .await?;
         }
+        self.publish_moves(&mut tx, swimlane, &moves).await?;
         // The audit chain's lock is taken here, last, and held until the commit.
         self.audit_moves(&mut tx, swimlane, &moves, now_ms).await?;
-        self.publish_moves(&mut tx, swimlane, &moves).await?;
         self.db.commit(tx).await?;
         self.offer_to_index(&moves);
         Ok(report)
@@ -506,7 +511,7 @@ impl Inner {
         Ok(())
     }
 
-    /// One audit event for each path whose change nobody else audits (A12).
+    /// One audit event for each path whose change nobody else audits (A12), recorded as one batch (P15).
     async fn audit_moves(
         &self,
         tx: &mut Txn,
@@ -514,56 +519,62 @@ impl Inner {
         moves: &[Move<'_>],
         now_ms: i64,
     ) -> Result<(), RegistryError> {
-        for m in moves.iter().filter(|m| m.audited) {
-            let last = m.last;
-            let via = if last.attribution.source == AttributionSource::SyncJob {
-                AuditVia::Sync
-            } else {
-                AuditVia::AgentDetected
-            };
-            let mut event = AuditEvent::new(
-                Timestamp::from_unix_millis(now_ms),
-                AuditActor::Agent {
-                    swimlane: swimlane.clone(),
-                },
-                AuditAction::FileChangeDetected,
-                via,
-            );
-            event.swimlane = Some(swimlane.clone());
-            event.path = Some(last.path.clone());
-            event.hash_before = m.first.before;
-            event.hash_after = last.hash;
-            event.attribution = Some(last.attribution.clone());
-            let mut handle = Tx::from_pg(tx);
-            self.audit.record(&mut handle, event).await?;
-        }
-        Ok(())
+        let events: Vec<AuditEvent> = moves
+            .iter()
+            .filter(|m| m.audited)
+            .map(|m| {
+                let last = m.last;
+                let via = if last.attribution.source == AttributionSource::SyncJob {
+                    AuditVia::Sync
+                } else {
+                    AuditVia::AgentDetected
+                };
+                let mut event = AuditEvent::new(
+                    Timestamp::from_unix_millis(now_ms),
+                    AuditActor::Agent {
+                        swimlane: swimlane.clone(),
+                    },
+                    AuditAction::FileChangeDetected,
+                    via,
+                );
+                event.swimlane = Some(swimlane.clone());
+                event.path = Some(last.path.clone());
+                event.hash_before = m.first.before;
+                event.hash_after = last.hash;
+                event.attribution = Some(last.attribution.clone());
+                event
+            })
+            .collect();
+        let mut handle = Tx::from_pg(tx);
+        crate::batch::record_all(&*self.audit, &mut handle, events).await
     }
 
-    /// One `FileObserved` for each path whose state moved, in the transaction of the change (D80).
+    /// One `FileObserved` for each path whose state moved, in the transaction of the change (D80), published as one batch (P15).
     async fn publish_moves(
         &self,
         tx: &mut Txn,
         swimlane: &SwimlaneId,
         moves: &[Move<'_>],
     ) -> Result<(), RegistryError> {
-        for m in moves {
-            let last = m.last;
-            let event = DomainEvent::FileObserved {
-                swimlane: swimlane.clone(),
-                path: last.path.clone(),
-                // A removal has no hash: the event names the version that went away.
-                hash: last.hash.or(m.first.before).ok_or(RegistryError::Corrupt)?,
-                source: if last.source == ObservationSource::Sync {
-                    ObservationSource::Sync
-                } else {
-                    ObservationSource::Scan
-                },
-            };
-            let mut handle = Tx::from_pg(tx);
-            self.bus.publish_in_tx(&mut handle, event).await?;
-        }
-        Ok(())
+        let events = moves
+            .iter()
+            .map(|m| {
+                let last = m.last;
+                Ok(DomainEvent::FileObserved {
+                    swimlane: swimlane.clone(),
+                    path: last.path.clone(),
+                    // A removal has no hash: the event names the version that went away.
+                    hash: last.hash.or(m.first.before).ok_or(RegistryError::Corrupt)?,
+                    source: if last.source == ObservationSource::Sync {
+                        ObservationSource::Sync
+                    } else {
+                        ObservationSource::Scan
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>, RegistryError>>()?;
+        let mut handle = Tx::from_pg(tx);
+        crate::batch::publish_all(&*self.bus, &mut handle, events).await
     }
 
     /// The stored state of these paths.

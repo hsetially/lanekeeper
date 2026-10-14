@@ -46,9 +46,10 @@ pub enum RegistryError {
     /// The payload names a swimlane other than the sender's own.
     #[error("the payload does not match the sender identity")]
     IdentityMismatch,
-    /// An invariant of the registry itself did not hold: a bug here, never something a caller did. Today there is one cause, a batch
-    /// of audit or outbox events that a port refused as too large after the registry had cut it to the port's limits itself. The
-    /// error says nothing more; the stage that failed is in the log (see [`RegistryError::batch_bug`]).
+    /// An invariant of the registry itself did not hold: a bug here, never something a caller did. Two causes: a batch of audit or
+    /// outbox events that a port refused as too large after the registry had cut it to the port's limits itself, and a task on the
+    /// blocking pool that did not finish. The error says nothing more; the stage that failed is in the log (see
+    /// [`RegistryError::batch_bug`]).
     #[error("an internal error")]
     Internal,
 }
@@ -62,6 +63,13 @@ impl RegistryError {
             stage,
             "a batch the registry cut is over a port limit: a bug in the registry"
         );
+        Self::Internal
+    }
+
+    /// A task on the blocking pool did not finish (it panicked, or the runtime is shutting down). Nothing of its input is known here,
+    /// so the error is [`RegistryError::Internal`] and the `stage` is the one word that goes to the log.
+    pub(crate) fn off_runtime(stage: &'static str) -> Self {
+        tracing::error!(stage, "a task on the blocking pool did not finish");
         Self::Internal
     }
 }

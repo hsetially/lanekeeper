@@ -27,6 +27,7 @@
     clippy::module_name_repetitions
 )]
 
+pub(crate) mod batch;
 pub mod clock;
 pub mod config;
 pub mod db;
