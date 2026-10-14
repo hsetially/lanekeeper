@@ -905,35 +905,59 @@ fn write_request_additions_are_optional_and_match_the_domain() {
     assert_optional(&d, "RevealRequest", "reason");
 }
 
+/// Every [`domain::RejectReason`], walked as a chain: `next` has one arm per variant and names the variant after it, so
+/// a new variant does not compile until it is placed in the chain, and the chain is the list the document is held to.
+fn every_reject_reason() -> Vec<domain::RejectReason> {
+    use domain::RejectReason as R;
+    fn next(r: R) -> Option<R> {
+        match r {
+            R::Denied => Some(R::TooLarge),
+            R::TooLarge => Some(R::InvalidContent),
+            R::InvalidContent => Some(R::UnknownSwimlane),
+            R::UnknownSwimlane => Some(R::AgentUnavailable),
+            R::AgentUnavailable => Some(R::NotAllowed),
+            R::NotAllowed => Some(R::SecretDetected),
+            R::SecretDetected => Some(R::ParseError),
+            R::ParseError => None,
+        }
+    }
+    let mut all = vec![R::Denied];
+    while let Some(n) = all.last().copied().and_then(next) {
+        all.push(n);
+    }
+    all
+}
+
+/// Every [`domain::PreviewWarning`], walked the same way (see [`every_reject_reason`]).
+fn every_preview_warning() -> Vec<domain::PreviewWarning> {
+    use domain::{PreviewWarning as W, TenantId};
+    fn next(w: &W) -> Option<W> {
+        match w {
+            W::FallsBackToBase => Some(W::NoFileLeft),
+            W::NoFileLeft => Some(W::ForksFromBase),
+            W::ForksFromBase => Some(W::NeverRead {
+                suffix: TenantId::parse("sit9").ok()?,
+            }),
+            W::NeverRead { .. } => Some(W::NeedsNotifyOrRestart),
+            W::NeedsNotifyOrRestart => Some(W::NewFolderNeedsConfigServerRestart),
+            W::NewFolderNeedsConfigServerRestart => Some(W::ChannelsYmlNeedsConfigServerRestart),
+            W::ChannelsYmlNeedsConfigServerRestart => None,
+        }
+    }
+    let mut all = vec![W::FallsBackToBase];
+    while let Some(n) = all.last().and_then(next) {
+        all.push(n);
+    }
+    all
+}
+
 /// Prompt 06's contract change (G6): the rejection reasons, the issue shape and the warnings on a write.
 #[test]
 fn rejection_detail_is_optional_and_matches_the_domain() {
-    use domain::{AuditId, IssueKind, RejectReason, ShortText, ValidationIssue, WriteOutcome};
+    use domain::{AuditId, IssueKind, ShortText, ValidationIssue, WriteOutcome};
     let d = doc();
     let schemas = &d["components"]["schemas"];
-    // An exhaustive match: a new variant must be listed here, and so in the document.
-    let all = [
-        RejectReason::Denied,
-        RejectReason::TooLarge,
-        RejectReason::InvalidContent,
-        RejectReason::UnknownSwimlane,
-        RejectReason::AgentUnavailable,
-        RejectReason::NotAllowed,
-        RejectReason::SecretDetected,
-        RejectReason::ParseError,
-    ];
-    for r in all {
-        match r {
-            RejectReason::Denied
-            | RejectReason::TooLarge
-            | RejectReason::InvalidContent
-            | RejectReason::UnknownSwimlane
-            | RejectReason::AgentUnavailable
-            | RejectReason::NotAllowed
-            | RejectReason::SecretDetected
-            | RejectReason::ParseError => {}
-        }
-    }
+    let all = every_reject_reason();
     let reasons: BTreeSet<String> = all
         .iter()
         .map(|r| serde_json::to_value(r).unwrap().as_str().unwrap().to_owned())
@@ -983,7 +1007,7 @@ fn rejection_detail_is_optional_and_matches_the_domain() {
 /// Prompt 06's contract change (G1): the preview's wire fields, scopes and warnings are the domain's.
 #[test]
 fn change_preview_schema_matches_the_domain() {
-    use domain::{ChangePreview, PreviewId, PreviewScope, PreviewWarning, TenantId, Timestamp};
+    use domain::{ChangePreview, PreviewId, PreviewScope, PreviewWarning, Timestamp};
     let d = doc();
     let schemas = &d["components"]["schemas"];
     let preview = ChangePreview {
@@ -1002,25 +1026,49 @@ fn change_preview_schema_matches_the_domain() {
     assert_eq!(wire_keys(&serde_json::to_value(&preview).unwrap()), declared);
     assert_eq!(required_of(&schemas["ChangePreview"]), declared, "all required");
 
-    let warning_kinds: BTreeSet<String> = [
-        PreviewWarning::FallsBackToBase,
-        PreviewWarning::NoFileLeft,
-        PreviewWarning::ForksFromBase,
-        PreviewWarning::NeedsNotifyOrRestart,
-        PreviewWarning::NewFolderNeedsConfigServerRestart,
-        PreviewWarning::ChannelsYmlNeedsConfigServerRestart,
-        PreviewWarning::NeverRead {
-            suffix: TenantId::parse("sit9").unwrap(),
+    // A flagged value is masked, and the entry says so: `changes` holds `PreviewedChange`, not a bare change.
+    assert_eq!(
+        schemas["ChangePreview"]["properties"]["changes"]["items"]["$ref"],
+        "#/components/schemas/PreviewedChange"
+    );
+    let previewed = domain::PreviewedChange {
+        change: domain::SettingChange {
+            path: domain::SettingPath::parse("aws.key").unwrap(),
+            kind: domain::ChangeKind::Added,
+            left: None,
+            right: None,
+            left_location: None,
+            right_location: None,
         },
-    ]
-    .iter()
-    .map(|w| {
-        serde_json::to_value(w).unwrap()["kind"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-    })
-    .collect();
+        flagged: true,
+    };
+    let declared_entry: BTreeSet<String> = properties(&d, &schemas["PreviewedChange"])
+        .into_keys()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        wire_keys(&serde_json::to_value(&previewed).unwrap()),
+        declared_entry
+    );
+    assert_eq!(required_of(&schemas["PreviewedChange"]), declared_entry);
+    assert_eq!(
+        schemas["PreviewedChange"]["properties"]["flagged"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        schemas["PreviewedChange"]["properties"]["change"]["$ref"],
+        "#/components/schemas/SettingChange"
+    );
+
+    let warning_kinds: BTreeSet<String> = every_preview_warning()
+        .iter()
+        .map(|w| {
+            serde_json::to_value(w).unwrap()["kind"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
     let mut documented = BTreeSet::new();
     for variant in schemas["PreviewWarning"]["oneOf"].as_array().unwrap() {
         let kind = &variant["properties"]["kind"];
@@ -1087,11 +1135,32 @@ fn preview_operation_and_upload_text() {
     let upload_form = &upload.def["requestBody"]["content"]["multipart/form-data"]["schema"];
     assert!(upload_form["properties"].get("preview_id").is_some());
     assert!(!required_of(upload_form).contains("preview_id"));
+    // The limit is the engine's `Limits::input_bytes` (docs/performance.md): 2 MiB, for the preview and the upload alike.
     let file_text = upload_form["properties"]["file"]["description"].as_str().unwrap();
     assert!(
-        file_text.contains("3 MiB") && file_text.contains("413"),
+        file_text.contains("2 MiB") && file_text.contains("413") && !file_text.contains("3 MiB"),
         "{file_text}"
     );
+    let preview_text = form["properties"]["file"]["description"].as_str().unwrap();
+    assert!(
+        preview_text.contains("2 MiB") && !preview_text.contains("3 MiB"),
+        "{preview_text}"
+    );
+    assert!(
+        !SPEC.contains("3 MiB"),
+        "no 3 MiB limit is stated for uploads or edits"
+    );
+    assert!(
+        !SPEC.contains("4 MiB"),
+        "no 4 MiB limit is stated for uploads or edits"
+    );
+    for schema in ["EditFileRequest", "DraftRequest"] {
+        assert_eq!(
+            d["components"]["schemas"][schema]["properties"]["content"]["maxLength"],
+            2 * 1024 * 1024,
+            "{schema}.content is held to the same 2 MiB"
+        );
+    }
     assert!(!SPEC.contains("25 MiB"), "the 25 MiB claim is gone (A3)");
     assert!(upload.response(&d, "413").is_some());
     let delete = find(&ops, "DELETE", "/api/v1/swimlanes/{id}/files");
@@ -1167,6 +1236,17 @@ fn mcp_write_definitions_match_the_rest_document() {
             })
             .collect::<BTreeSet<_>>()
     });
+    // One limit for the content of an edit, a draft and an upload: 2 MiB, as in the REST document.
+    assert!(
+        !MCP.contains("4 MiB"),
+        "the MCP document states no 4 MiB content limit"
+    );
+    assert!(!MCP.contains("\"maxLength\": 4194304") && !MCP.contains("\"maxLength\": 4194304,"));
+    assert_eq!(
+        MCP.matches("\"maxLength\": 2097152").count(),
+        2,
+        "propose_change and upload"
+    );
     // Additions are optional in the MCP outputs too.
     assert!(defs["WriteOutcome"]["properties"].get("warnings").is_some());
     assert!(!required_of(&defs["WriteOutcome"]).contains("warnings"));

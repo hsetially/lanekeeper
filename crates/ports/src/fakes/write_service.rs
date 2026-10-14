@@ -1,13 +1,14 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use domain::{
-    AuditId, ChangeEol, ChangePreview, ContentHash, DeleteRequest, Draft, DraftId, EditRequest, Expected,
-    IdempotencyKey, NfsPath, NotifyRequest, PrRequest, PreviewChange, PreviewId, PreviewRequest,
-    PreviewScope, ProposalId, ProposalStatus, RejectReason, RestartRequest, RevertRequest, Role, ServiceRef,
-    SwimlaneId, Timestamp, UploadRequest, UserId, WriteCtx, WriteOutcome,
+    AuditId, ChangeEol, ChangeKind, ChangePreview, ContentHash, DeleteRequest, Draft, DraftId, EditRequest,
+    Expected, IdempotencyKey, NfsPath, NotifyRequest, PrRequest, PreviewChange, PreviewId, PreviewRequest,
+    PreviewScope, PreviewedChange, ProposalId, ProposalStatus, RejectReason, RestartRequest, RevertRequest,
+    Role, ServiceRef, SettingChange, SettingPath, SettingValue, SwimlaneId, Timestamp, UploadRequest, UserId,
+    ValueType, WriteCtx, WriteOutcome,
 };
 
 use super::util::lock;
@@ -26,8 +27,11 @@ const MAX_PREVIEWS: usize = 10_000;
 const MAX_NOTIFICATIONS: usize = 1_000;
 /// Drafts live for a day.
 const DRAFT_TTL_MS: i64 = 24 * 60 * 60 * 1000;
-/// The fake's clock stands still, so tests are deterministic.
-const NOW_MS: i64 = 1_700_000_000_000;
+/// Where the fake's clock starts. It stands still until a test moves it with [`FakeWriteService::advance_clock`], so
+/// tests are deterministic.
+const START_MS: i64 = 1_700_000_000_000;
+/// Setting changes a preview lists (`changes_total` counts the rest).
+const MAX_PREVIEW_CHANGES: usize = 50;
 
 #[derive(Default)]
 struct SwimlaneData {
@@ -41,7 +45,6 @@ struct StoredDraft {
     content: Bytes,
 }
 
-#[derive(Default)]
 struct State {
     swimlanes: HashMap<SwimlaneId, SwimlaneData>,
     idempotency: HashMap<(UserId, IdempotencyKey), (ContentHash, WriteOutcome)>,
@@ -51,8 +54,28 @@ struct State {
     next_draft: u64,
     restarts: Vec<(SwimlaneId, ServiceRef)>,
     proposals: usize,
-    previews: HashSet<PreviewId>,
+    /// Issued preview tokens and when each runs out (unix milliseconds).
+    previews: HashMap<PreviewId, i64>,
     notifications: Vec<(SwimlaneId, Vec<NfsPath>)>,
+    now_ms: i64,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            swimlanes: HashMap::new(),
+            idempotency: HashMap::new(),
+            drafts: HashMap::new(),
+            next_audit: 0,
+            next_proposal: 0,
+            next_draft: 0,
+            restarts: Vec::new(),
+            proposals: 0,
+            previews: HashMap::new(),
+            notifications: Vec::new(),
+            now_ms: START_MS,
+        }
+    }
 }
 
 /// An in-memory NFS per swimlane behind the write rules: role floors, approvals become proposals, no blind
@@ -101,6 +124,13 @@ impl FakeWriteService {
         lock(&self.state).proposals
     }
 
+    /// Move the fake's clock forward: previews run out [`ChangePreview::TTL_SECS`] after they were issued.
+    pub fn advance_clock(&self, secs: u64) {
+        let ms = i64::try_from(secs.saturating_mul(1000)).unwrap_or(i64::MAX);
+        let mut st = lock(&self.state);
+        st.now_ms = st.now_ms.saturating_add(ms);
+    }
+
     /// The config-server notifications that were carried out, oldest first.
     pub fn notifications(&self) -> Vec<(SwimlaneId, Vec<NfsPath>)> {
         lock(&self.state).notifications.clone()
@@ -122,58 +152,108 @@ fn applied(hash: Option<ContentHash>, audit_id: AuditId) -> WriteOutcome {
     }
 }
 
-/// The line ending style of text that has one: all CRLF or all LF. Mixed text and text with no line break have none.
-fn style_of(text: &[u8]) -> Option<ChangeEol> {
-    let (mut crlf, mut lf) = (0usize, 0usize);
-    for (i, b) in text.iter().enumerate() {
-        if *b == b'\n' {
-            if i > 0 && text[i - 1] == b'\r' {
-                crlf += 1;
-            } else {
-                lf += 1;
+/// A line terminator, by the engine's rule (D17): CRLF, LF, or a CR that is not followed by LF.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Term {
+    Crlf,
+    Lf,
+    Cr,
+}
+
+/// Where each terminator of `text` is and how many bytes it takes.
+fn terminators(text: &[u8]) -> impl Iterator<Item = (usize, Term)> + '_ {
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        while let Some(b) = text.get(at) {
+            let here = at;
+            at += 1;
+            match b {
+                b'\r' if text.get(at) == Some(&b'\n') => {
+                    at += 1;
+                    return Some((here, Term::Crlf));
+                }
+                b'\r' => return Some((here, Term::Cr)),
+                b'\n' => return Some((here, Term::Lf)),
+                _ => {}
             }
         }
-    }
-    match (crlf, lf) {
-        (0, 0) => None,
-        (_, 0) => Some(ChangeEol::Crlf),
-        (0, _) => Some(ChangeEol::Lf),
-        _ => None,
+        None
+    })
+}
+
+/// How many terminators of each kind: `(crlf, lf, cr)`.
+fn count_terminators(text: &[u8]) -> (usize, usize, usize) {
+    terminators(text).fold((0, 0, 0), |(crlf, lf, cr), (_, t)| match t {
+        Term::Crlf => (crlf + 1, lf, cr),
+        Term::Lf => (crlf, lf + 1, cr),
+        Term::Cr => (crlf, lf, cr + 1),
+    })
+}
+
+/// The style a file is written with, like the engine's `dominant_eol`: CRLF when CRLF terminators outnumber the rest
+/// together (LF and lone CR), LF otherwise. A file with no line ending, or as many of each, is LF.
+fn dominant((crlf, lf, cr): (usize, usize, usize)) -> ChangeEol {
+    if crlf > lf + cr {
+        ChangeEol::Crlf
+    } else {
+        ChangeEol::Lf
     }
 }
 
-/// What the file's content becomes: `change` wins; otherwise, when `restore` is set, the style the file already has;
-/// otherwise the content as it is. Binary content (it has a NUL byte) is never touched. The real service also restores
-/// the encoding and the BOM; the fake handles line endings only.
-fn restyle(existing: Option<&Bytes>, content: &Bytes, change: Option<ChangeEol>, restore: bool) -> Bytes {
-    if content.contains(&0) {
-        return content.clone();
+/// The style a write is converted to: `change` wins; otherwise, when `restore` is set, the dominant style of the file
+/// that is there, or for a new file the dominant style of the files in its folder; otherwise none (the content as it
+/// is). A folder with no line endings in it gives none either.
+fn target_style(
+    sw: &SwimlaneData,
+    path: &NfsPath,
+    change: Option<ChangeEol>,
+    restore: bool,
+) -> Option<ChangeEol> {
+    if change.is_some() || !restore {
+        return change;
     }
-    let target = change.or_else(|| {
-        if restore {
-            existing.and_then(|b| style_of(b))
-        } else {
-            None
-        }
-    });
+    if let Some(existing) = sw.files.get(path) {
+        return Some(dominant(count_terminators(existing)));
+    }
+    let folder = path.parent();
+    let total = sw
+        .files
+        .iter()
+        .filter(|(p, _)| p.parent() == folder)
+        .map(|(_, b)| count_terminators(b))
+        .fold((0, 0, 0), |a, c| (a.0 + c.0, a.1 + c.1, a.2 + c.2));
+    (total != (0, 0, 0)).then(|| dominant(total))
+}
+
+/// What the file's content becomes in the style `target`. Binary content (it has a NUL byte) is never touched. The real
+/// service also restores the encoding and the BOM; the fake handles line endings only.
+fn restyle(content: &Bytes, target: Option<ChangeEol>) -> Bytes {
     let Some(target) = target else {
         return content.clone();
     };
-    let mut out = Vec::with_capacity(content.len() + content.len() / 16);
-    for (i, b) in content.iter().enumerate() {
-        match *b {
-            // The CR of a CRLF pair is dropped here and written back below when the target is CRLF.
-            b'\r' if content.get(i + 1) == Some(&b'\n') => {}
-            b'\n' => {
-                if target == ChangeEol::Crlf {
-                    out.push(b'\r');
-                }
-                out.push(b'\n');
-            }
-            other => out.push(other),
-        }
+    if content.contains(&0) {
+        return content.clone();
     }
+    let mut out = Vec::with_capacity(content.len() + content.len() / 16);
+    let mut copied = 0;
+    for (at, term) in terminators(content) {
+        out.extend_from_slice(content.get(copied..at).unwrap_or_default());
+        out.extend_from_slice(if target == ChangeEol::Crlf { b"\r\n" } else { b"\n" });
+        copied = at + if term == Term::Crlf { 2 } else { 1 };
+    }
+    out.extend_from_slice(content.get(copied..).unwrap_or_default());
     Bytes::from(out)
+}
+
+/// `content` as it will be written to `path` of `sw`.
+fn styled(
+    sw: &SwimlaneData,
+    path: &NfsPath,
+    content: &Bytes,
+    change: Option<ChangeEol>,
+    restore: bool,
+) -> Bytes {
+    restyle(content, target_style(sw, path, change, restore))
 }
 
 /// The token the fake hands out for a change: bound to the user, the swimlane, the path and the hashes.
@@ -214,7 +294,10 @@ impl State {
     /// exactly this change.
     fn preview_is_valid(&self, presented: Option<&PreviewId>, expected_id: Option<&PreviewId>) -> bool {
         match (presented, expected_id) {
-            (Some(p), Some(e)) => p == e && self.previews.contains(p),
+            // Good until `expires_at`, which is `issued + TTL_SECS`: at that moment it is gone.
+            (Some(p), Some(e)) => {
+                p == e && self.previews.get(p).is_some_and(|expires| self.now_ms < *expires)
+            }
             _ => false,
         }
     }
@@ -232,10 +315,10 @@ impl State {
         if content.len() > MAX_FILE_BYTES {
             return rejected(RejectReason::TooLarge);
         }
-        let Some(existing) = self.swimlanes.get(s).map(|sw| sw.files.get(path).cloned()) else {
+        let Some(sw) = self.swimlanes.get(s) else {
             return rejected(RejectReason::UnknownSwimlane);
         };
-        let content = &restyle(existing.as_ref(), content, change, restore);
+        let content = &styled(sw, path, content, change, restore);
         if content.len() > MAX_FILE_BYTES {
             return rejected(RejectReason::TooLarge);
         }
@@ -425,11 +508,10 @@ impl WriteService for FakeWriteService {
         if !st.swimlanes.contains_key(&r.swimlane) || st.drafts.len() >= MAX_DRAFTS {
             return Err(WriteError::BadRequest);
         }
-        let existing = st
-            .swimlanes
-            .get(&r.swimlane)
-            .and_then(|sw| sw.files.get(&r.path).cloned());
-        let content = restyle(existing.as_ref(), &r.content, r.change_eol, true);
+        let Some(sw) = st.swimlanes.get(&r.swimlane) else {
+            return Err(WriteError::BadRequest);
+        };
+        let content = styled(sw, &r.path, &r.content, r.change_eol, true);
         if content.len() > MAX_FILE_BYTES {
             return Err(WriteError::BadRequest);
         }
@@ -445,7 +527,7 @@ impl WriteService for FakeWriteService {
             hunks: Vec::new(),
             setting_changes: Vec::new(),
             status: ProposalStatus::Draft,
-            expires_at: Timestamp::from_unix_millis(NOW_MS + DRAFT_TTL_MS),
+            expires_at: Timestamp::from_unix_millis(st.now_ms + DRAFT_TTL_MS),
         };
         st.drafts.insert(
             id,
@@ -515,6 +597,78 @@ impl WriteService for FakeWriteService {
     }
 }
 
+/// The `key: value` pairs of a flat YAML-like text: unindented lines with a `: `. The fake computes no real facts (the
+/// engine does); this is enough for a preview to have changes to list and to mask.
+fn flat_settings(text: &[u8]) -> BTreeMap<String, String> {
+    let text = String::from_utf8_lossy(text);
+    text.split('\n')
+        .map(|l| l.trim_end_matches('\r'))
+        .filter(|l| !l.starts_with(['#', ' ', '\t']))
+        .filter_map(|l| l.split_once(": "))
+        .map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned()))
+        .filter(|(k, _)| !k.is_empty())
+        .collect()
+}
+
+/// The marker `[REDACTED: N chars, rule]` when `value` is something the secret scan flags. The fake knows one rule, the
+/// AWS access key id (`AKIA` and 16 upper case letters or digits); the real service uses the engine's whole scan.
+fn flagged_marker(value: &str) -> Option<String> {
+    let rest = value.strip_prefix("AKIA")?;
+    let is_key = rest.len() == 16 && rest.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
+    is_key.then(|| format!("[REDACTED: {} chars, aws_access_key]", value.chars().count()))
+}
+
+/// One side of a change; a flagged value is its marker and nothing else.
+fn side(value: Option<&String>) -> (Option<SettingValue>, bool) {
+    let Some(value) = value else {
+        return (None, false);
+    };
+    let marker = flagged_marker(value);
+    let flagged = marker.is_some();
+    let text = marker.unwrap_or_else(|| value.clone());
+    (
+        Some(SettingValue {
+            text,
+            ty: ValueType::String,
+            flag: None,
+        }),
+        flagged,
+    )
+}
+
+/// The settings that differ between two texts, sorted by path, with flagged values masked.
+fn preview_changes(old: &[u8], new: &[u8]) -> Vec<PreviewedChange> {
+    let (old, new) = (flat_settings(old), flat_settings(new));
+    let paths: std::collections::BTreeSet<&String> = old.keys().chain(new.keys()).collect();
+    let mut out = Vec::new();
+    for key in paths {
+        let (before, after) = (old.get(key), new.get(key));
+        let kind = match (before, after) {
+            (Some(b), Some(a)) if b == a => continue,
+            (Some(_), Some(_)) => ChangeKind::Changed,
+            (None, Some(_)) => ChangeKind::Added,
+            _ => ChangeKind::Removed,
+        };
+        let Ok(path) = SettingPath::parse(key) else {
+            continue;
+        };
+        let (left, left_flagged) = side(before);
+        let (right, right_flagged) = side(after);
+        out.push(PreviewedChange {
+            change: SettingChange {
+                path,
+                kind,
+                left,
+                right,
+                left_location: None,
+                right_location: None,
+            },
+            flagged: left_flagged || right_flagged,
+        });
+    }
+    out
+}
+
 impl FakeWriteService {
     fn preview(&self, ctx: &WriteCtx, r: &PreviewRequest) -> Result<ChangePreview, WriteError> {
         if !ctx.user.allows(Role::Editor) {
@@ -524,38 +678,53 @@ impl FakeWriteService {
         let Some(sw) = st.swimlanes.get(&r.swimlane) else {
             return Err(WriteError::NotFound);
         };
-        let current = sw.files.get(&r.path).map(|b| content_hash(b));
-        let (action, expected, new_hash, effective_changed) = match &r.change {
+        let current = sw.files.get(&r.path);
+        // The same limit as an upload, on the content as it would be written: the preview and the upload agree.
+        let (action, expected, new_hash, changes, effective_changed) = match &r.change {
             PreviewChange::Upload { expected, content } => {
                 if content.len() > MAX_FILE_BYTES {
                     return Err(WriteError::BadRequest);
                 }
-                let new = content_hash(content);
+                let new = styled(sw, &r.path, content, None, true);
+                if new.len() > MAX_FILE_BYTES {
+                    return Err(WriteError::BadRequest);
+                }
+                let changes = preview_changes(current.map_or(&[], |b| &b[..]), &new);
                 (
                     "upload",
                     expected_label(expected),
-                    new.to_string(),
-                    current != Some(new),
+                    content_hash(content).to_string(),
+                    changes,
+                    current != Some(&new),
                 )
             }
-            PreviewChange::Delete { expected } => ("delete", expected.to_string(), "none".to_owned(), true),
+            PreviewChange::Delete { expected } => (
+                "delete",
+                expected.to_string(),
+                "none".to_owned(),
+                preview_changes(current.map_or(&[], |b| &b[..]), &[]),
+                // A file that is not there cannot change anything by going away.
+                current.is_some(),
+            ),
         };
         let id = preview_token(&ctx.user.id, &r.swimlane, &r.path, action, &expected, &new_hash)
             .ok_or(WriteError::Unavailable)?;
+        let expires_ms = st
+            .now_ms
+            .saturating_add(i64::try_from(ChangePreview::TTL_SECS * 1000).unwrap_or(0));
         if st.previews.len() >= MAX_PREVIEWS {
             st.previews.clear();
         }
-        st.previews.insert(id.clone());
+        st.previews.insert(id.clone(), expires_ms);
+        let changes_total = u32::try_from(changes.len()).unwrap_or(u32::MAX);
         Ok(ChangePreview {
             preview_id: id,
-            expires_at: Timestamp::from_unix_millis(
-                NOW_MS + i64::try_from(ChangePreview::TTL_SECS * 1000).unwrap_or(0),
-            ),
+            expires_at: Timestamp::from_unix_millis(expires_ms),
             // The fake computes no facts: the real service takes these from the engine.
             scope: PreviewScope::EveryService,
             warnings: Vec::new(),
-            changes: Vec::new(),
-            changes_total: 0,
+            changes: changes.into_iter().take(MAX_PREVIEW_CHANGES).collect(),
+            changes_total,
             effective_changed,
         })
     }
@@ -569,5 +738,9 @@ impl WriteScenario for FakeWriteService {
 
     async fn nfs_content(&self, s: &SwimlaneId, p: &NfsPath) -> Option<Bytes> {
         Self::nfs_content(self, s, p)
+    }
+
+    async fn advance_clock(&self, secs: u64) {
+        Self::advance_clock(self, secs);
     }
 }

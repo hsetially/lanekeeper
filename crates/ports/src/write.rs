@@ -33,9 +33,14 @@ pub enum WriteError {
 /// change nothing.
 ///
 /// `upload` and `delete` need a valid preview (D46): the `preview` of the request must be one that `preview_effect`
-/// issued to the same user, for the same swimlane, path, expected state and content, less than
-/// [`ChangePreview::TTL_SECS`] ago. Without one the outcome is [`domain::RejectReason::NotAllowed`] and nothing is
-/// written. Both doors need it: REST and MCP (07 calls `preview_effect` to build its confirmation text).
+/// issued to the same user, less than [`ChangePreview::TTL_SECS`] ago, for the same swimlane and path and the same
+/// expected state: for an `upload`, `expected` (absent, or a hash) and the content; for a `delete`, the hash. A token
+/// presented with any of those changed is as good as no token. Without a valid one the outcome is
+/// [`domain::RejectReason::NotAllowed`] (never a `Conflict`) and nothing is written; a refused attempt does not use the
+/// token up. Both doors need it: REST and MCP (07 calls `preview_effect` to build its confirmation text).
+///
+/// Content (an edit, a draft, an upload, a preview) is at most 2 MiB, the engine's `Limits::input_bytes`
+/// (`docs/performance.md`), or less when the agent's `max_file_bytes` is lower.
 #[async_trait]
 pub trait WriteService: Send + Sync + 'static {
     async fn edit(&self, ctx: &WriteCtx, r: EditRequest) -> Result<WriteOutcome, WriteError>;
@@ -49,9 +54,15 @@ pub trait WriteService: Send + Sync + 'static {
     /// Applies a draft written by the same user, re-checking its expected hash.
     async fn apply_draft(&self, ctx: &WriteCtx, id: DraftId) -> Result<WriteOutcome, WriteError>;
     /// What an upload or a delete would do, from the engine, and the token that lets that upload or delete
-    /// through. No side effects: nothing is written, audited or recorded, so it is not idempotency-keyed.
+    /// through. It writes nothing to NFS and records no audit event, so it is not idempotency-keyed; the only state it
+    /// may keep is the issued token, until it runs out. `effective_changed` is judged on the content as it would be
+    /// written (after the file's line endings are restored) against the file as it is now, so a delete of a file that
+    /// is not there is no change. A value the secret scan flags is masked in `changes` ([`domain::PreviewedChange`]).
+    /// Content over the size limit is refused.
     async fn preview_effect(&self, ctx: &WriteCtx, r: PreviewRequest) -> Result<ChangePreview, WriteError>;
     /// Tells the config-server that these files changed (D86). Audited, and Operator only, because its endpoint
-    /// has no authentication (Q37). For a user who `requires_approval` it becomes a proposal.
+    /// has no authentication (Q37). For a user who `requires_approval` it becomes a proposal. Not to be confused with
+    /// [`crate::Notifier::notify`], the port that sends Teams and other notifications; the two share a verb and
+    /// nothing else.
     async fn notify(&self, ctx: &WriteCtx, r: NotifyRequest) -> Result<WriteOutcome, WriteError>;
 }

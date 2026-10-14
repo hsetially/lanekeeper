@@ -2752,7 +2752,8 @@ paths:
                 file:
                   type: string
                   format: binary
-                  description: The file to upload, at most 3 MiB. Required for `upload`, absent for `delete`.
+                  description: The file to upload, at most 2 MiB (the engine's input limit). Required for `upload`,
+                    absent for `delete`.
               additionalProperties: false
               required:
               - action
@@ -2898,8 +2899,8 @@ paths:
                 file:
                   type: string
                   format: binary
-                  description: At most 3 MiB (a larger file is refused with 413 and nothing is written). Binary
-                    images and other non-text files are allowed; denied globs are refused.
+                  description: At most 2 MiB, the same limit as the preview (a larger file is refused with 413 and
+                    nothing is written). Binary images and other non-text files are allowed; denied globs are refused.
               additionalProperties: false
               required:
               - path
@@ -4718,8 +4719,9 @@ components:
       enum:
       - lf
       - crlf
-      description: Convert the file to this line ending style. Absent keeps the style the file has (a new file takes
-        the dominant style of its folder). Only an explicit value ever changes a file's style.
+      description: Convert the file to this line ending style. Absent, an edit preserves an existing file's style (the
+        dominant one, if its endings are mixed) and gives a new file the dominant style of its folder; a revert writes
+        the stored version as it was. Only an explicit value ever changes a file's style.
     PreviewId:
       type: string
       pattern: ^[A-Za-z0-9._-]{1,128}$
@@ -4832,6 +4834,21 @@ components:
         - kind
         - suffix
       description: A consequence the person confirming the change should see (D46, D83, D85).
+    PreviewedChange:
+      type: object
+      properties:
+        change:
+          $ref: '#/components/schemas/SettingChange'
+          description: 'The change, with every flagged value replaced by its marker `[REDACTED: N chars, rule]`.'
+        flagged:
+          type: boolean
+          description: True when the secret scan flagged the left or the right value of `change`; that side's `text`
+            is the marker.
+      additionalProperties: false
+      required:
+      - change
+      - flagged
+      description: One setting a preview says would differ. A flagged value is masked (S14b, D79).
     ChangePreview:
       type: object
       properties:
@@ -4849,9 +4866,10 @@ components:
         changes:
           type: array
           items:
-            $ref: '#/components/schemas/SettingChange'
+            $ref: '#/components/schemas/PreviewedChange'
           maxItems: 50
-          description: The settings that would differ in the effective config, sorted by path.
+          description: The settings that would differ in the effective config, sorted by path. A value the secret
+            scan flags is masked here, never shown; `/files/reveal` is the one audited way to see it.
         changes_total:
           type: integer
           minimum: 0
@@ -4879,8 +4897,9 @@ components:
           $ref: '#/components/schemas/Expected'
         content:
           type: string
-          maxLength: 4194304
-          description: The whole new text, at most 4 MiB. The server restores the file's line endings, encoding
+          maxLength: 2097152
+          description: The whole new text, at most 2 MiB of UTF-8 (`maxLength` counts characters, which are never
+            fewer than the bytes; the server checks the bytes). The server restores the file's line endings, encoding
             and BOM.
         change_eol:
           $ref: '#/components/schemas/ChangeEol'
@@ -5235,7 +5254,8 @@ components:
           $ref: '#/components/schemas/Expected'
         content:
           type: string
-          maxLength: 4194304
+          maxLength: 2097152
+          description: The whole new text, at most 2 MiB of UTF-8.
       additionalProperties: false
       required:
       - swimlane

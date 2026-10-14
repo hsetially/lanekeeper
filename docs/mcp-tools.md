@@ -205,7 +205,7 @@ JSON Schema (2020-12). Tool schemas refer to these as `#/$defs/<Name>`. Names an
       "type": "string",
       "maxLength": 4,
       "enum": ["lf", "crlf"],
-      "description": "Convert the file to this line ending style. Absent keeps the style the file has. Only an explicit value ever changes a file's style."
+      "description": "Convert the file to this line ending style. Absent preserves an existing file's style (the dominant one, if its endings are mixed); for a new file the server uses the dominant style of its folder. Only an explicit value ever changes a file's style."
     },
     "PrTarget": {
       "oneOf": [
@@ -1511,8 +1511,8 @@ The draft is only a record; nothing is written to NFS. Drafts expire (`expires_a
     "expected": {"$ref": "#/$defs/Expected"},
     "content": {
       "type": "string",
-      "maxLength": 4194304,
-      "description": "The whole new text, at most 4 MiB. The server restores the file's line endings, encoding and BOM."
+      "maxLength": 2097152,
+      "description": "The whole new text, at most 2 MiB of UTF-8 (the engine's input limit). The server restores the file's line endings, encoding and BOM."
     },
     "change_eol": {"$ref": "#/$defs/ChangeEol"}
   },
@@ -1604,7 +1604,7 @@ Creates or replaces a text file. Binary uploads are made in the web UI.
 - pagination: none
 - rest: uploadFile
 
-Denied globs (D79) are refused with `unprocessable`. The file keeps the line endings, encoding and BOM of the file it replaces.
+Denied globs (D79) are refused with `unprocessable`. The file keeps the line endings, encoding and BOM of the file it replaces; a new file takes the dominant line ending style of its folder.
 
 **Input schema**
 
@@ -1615,7 +1615,7 @@ Denied globs (D79) are refused with `unprocessable`. The file keeps the line end
     "swimlane": {"$ref": "#/$defs/SwimlaneId"},
     "path": {"$ref": "#/$defs/NfsPath"},
     "expected": {"$ref": "#/$defs/Expected"},
-    "content": {"type": "string", "maxLength": 4194304, "description": "UTF-8 text, at most 4 MiB."}
+    "content": {"type": "string", "maxLength": 2097152, "description": "UTF-8 text, at most 2 MiB (the engine's input limit)."}
   },
   "required": ["swimlane", "path", "expected", "content"],
   "additionalProperties": false

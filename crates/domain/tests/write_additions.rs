@@ -221,17 +221,20 @@ fn change_preview_debug_never_prints_values() {
         warnings: vec![PreviewWarning::NeverRead {
             suffix: TenantId::parse("sit9").unwrap(),
         }],
-        changes: vec![domain::SettingChange {
-            path: domain::SettingPath::parse("db.password").unwrap(),
-            kind: domain::ChangeKind::Changed,
-            left: Some(domain::SettingValue {
-                text: "hunter2-secret".to_owned(),
-                ty: domain::ValueType::String,
-                flag: None,
-            }),
-            right: None,
-            left_location: None,
-            right_location: None,
+        changes: vec![domain::PreviewedChange {
+            change: domain::SettingChange {
+                path: domain::SettingPath::parse("db.password").unwrap(),
+                kind: domain::ChangeKind::Changed,
+                left: Some(domain::SettingValue {
+                    text: "hunter2-secret".to_owned(),
+                    ty: domain::ValueType::String,
+                    flag: None,
+                }),
+                right: None,
+                left_location: None,
+                right_location: None,
+            },
+            flagged: false,
         }],
         changes_total: 1,
         effective_changed: true,
@@ -319,4 +322,39 @@ fn requests_gain_their_new_fields_as_options() {
         swimlane: s,
         paths: vec![p],
     };
+}
+
+#[test]
+fn a_previewed_change_carries_the_flag_next_to_the_change() {
+    let masked = domain::PreviewedChange {
+        change: domain::SettingChange {
+            path: domain::SettingPath::parse("aws.key").unwrap(),
+            kind: domain::ChangeKind::Added,
+            left: None,
+            right: Some(domain::SettingValue {
+                text: "[REDACTED: 20 chars, aws_access_key]".to_owned(),
+                ty: domain::ValueType::String,
+                flag: None,
+            }),
+            left_location: None,
+            right_location: None,
+        },
+        flagged: true,
+    };
+    let v = serde_json::to_value(&masked).unwrap();
+    assert_eq!(v["flagged"], true);
+    assert_eq!(
+        v["change"]["right"]["text"],
+        "[REDACTED: 20 chars, aws_access_key]"
+    );
+    let json = serde_json::to_string(&masked).unwrap();
+    assert_eq!(
+        serde_json::from_str::<domain::PreviewedChange>(&json).unwrap(),
+        masked
+    );
+    // The flag is not optional: an entry that does not say is refused, not read as unflagged.
+    let without = serde_json::json!({"change": v["change"]}).to_string();
+    assert!(serde_json::from_str::<domain::PreviewedChange>(&without).is_err());
+    let extra = serde_json::json!({"change": v["change"], "flagged": false, "reveal": "x"}).to_string();
+    assert!(serde_json::from_str::<domain::PreviewedChange>(&extra).is_err());
 }

@@ -80,6 +80,6 @@ pub use wire::{
 };
 pub use write::{
     ChangePreview, DeleteRequest, Draft, EditRequest, Expected, NotifyRequest, PrRequest, PrTarget,
-    PreviewChange, PreviewRequest, PreviewScope, PreviewWarning, RejectReason, RestartRequest, RevertRequest,
-    UploadRequest, ValidationIssue, WriteCtx, WriteOutcome,
+    PreviewChange, PreviewRequest, PreviewScope, PreviewWarning, PreviewedChange, RejectReason,
+    RestartRequest, RevertRequest, UploadRequest, ValidationIssue, WriteCtx, WriteOutcome,
 };

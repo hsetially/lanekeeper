@@ -55,14 +55,14 @@ pub struct EditRequest {
     pub change_eol: Option<ChangeEol>,
 }
 
-/// Upload a (possibly binary) file.
+/// Upload a (possibly binary) file, at most 2 MiB (the engine's `Limits::input_bytes`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadRequest {
     pub swimlane: SwimlaneId,
     pub path: NfsPath,
     pub expected: Expected,
     pub content: Bytes,
-    /// From `WriteService::preview_effect` for this user, path, expected state and content. An upload without a
+    /// From `WriteService::preview_effect` for this user, swimlane, path, expected state and content. An upload without a
     /// valid one is refused ([`RejectReason::NotAllowed`]); it is an `Option` so that the refusal is an outcome
     /// and not a parse failure.
     pub preview: Option<PreviewId>,
@@ -74,7 +74,8 @@ pub struct DeleteRequest {
     pub path: NfsPath,
     /// The hash being deleted. Deleting needs a hash; there is no "delete whatever is there".
     pub expected: ContentHash,
-    /// From `WriteService::preview_effect` for this user, path and hash. Same rule as for an upload.
+    /// From `WriteService::preview_effect` for this user, swimlane, path and hash. Same rule as for an upload, which a
+    /// preview also binds to the content.
     pub preview: Option<PreviewId>,
 }
 
@@ -180,6 +181,19 @@ pub enum PreviewWarning {
     ChannelsYmlNeedsConfigServerRestart,
 }
 
+/// One setting a preview says would differ. A value the secret scan flags is **masked**: the side of the change that
+/// holds it has the marker `[REDACTED: N chars, rule]` as its `text` (the engine's `SecretMatch::marker`, the same text
+/// the MCP tools use, S14b), and `flagged` is true. Nothing in a preview reveals a flagged value; revealing stays the one
+/// audited action, `/files/reveal` (D79).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewedChange {
+    /// The change, with every flagged value replaced by its marker.
+    pub change: SettingChange,
+    /// True when the scan flagged `change.left` or `change.right`.
+    pub flagged: bool,
+}
+
 /// The answer to a [`PreviewRequest`]: what the engine says the change does, and the token that later lets the
 /// upload or delete through. Facts come from the engine (rule 7); this is their wire form.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,8 +203,9 @@ pub struct ChangePreview {
     pub expires_at: Timestamp,
     pub scope: PreviewScope,
     pub warnings: Vec<PreviewWarning>,
-    /// The settings that would differ in the effective config, sorted by path, bounded by the engine.
-    pub changes: Vec<SettingChange>,
+    /// The settings that would differ in the effective config, sorted by path, bounded by the engine. A flagged value
+    /// is masked (see [`PreviewedChange`]); an unmasked secret in this list is a defect.
+    pub changes: Vec<PreviewedChange>,
     /// All of them, listed or not.
     pub changes_total: u32,
     /// What the services get would differ.

@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use domain::{
-    ChangeEol, DeleteRequest, EditRequest, Expected, NfsPath, NotifyRequest, PrRequest, PrTarget,
-    PreviewChange, PreviewId, PreviewRequest, RejectReason, RestartRequest, RevertRequest, Role, ServiceRef,
-    ShortText, SwimlaneId, TenantId, UploadRequest, UserStatus, WriteCtx, WriteOutcome,
+    ChangeEol, ChangePreview, DeleteRequest, EditRequest, Expected, NfsPath, NotifyRequest, PrRequest,
+    PrTarget, PreviewChange, PreviewId, PreviewRequest, RejectReason, RestartRequest, RevertRequest, Role,
+    ServiceRef, ShortText, SwimlaneId, TenantId, UploadRequest, User, UserStatus, WriteCtx, WriteOutcome,
 };
 
 use super::sample::{active, files, hash, nfs, swimlane, user, write_ctx};
@@ -16,6 +16,8 @@ pub trait WriteScenario: WriteService {
     async fn seed(&self, s: &SwimlaneId, files: &[(NfsPath, Bytes)]);
     /// The file's current content on NFS.
     async fn nfs_content(&self, s: &SwimlaneId, p: &NfsPath) -> Option<Bytes>;
+    /// Move the service's clock forward by `secs`, so that a preview can run out without the suite sleeping.
+    async fn advance_clock(&self, secs: u64);
 }
 
 fn edit(s: &SwimlaneId, path: &str, expected: Expected, content: &str) -> EditRequest {
@@ -71,6 +73,54 @@ async fn preview_delete<W: WriteScenario + ?Sized>(
     w.preview_effect(ctx, r).await.unwrap().preview_id
 }
 
+/// A value the secret scan flags in every implementation: an AWS access key id (`AKIA` and 16 upper case letters or
+/// digits; the example key of the AWS documentation). Built from two parts so that no scanner reads this file as a leak.
+fn aws_key() -> String {
+    ["AKIA", "IOSFODNN7EXAMPLE"].concat()
+}
+
+/// A second key of the same shape.
+fn other_aws_key() -> String {
+    ["AKIA", "IOSFODNN7EXAMPL2"].concat()
+}
+
+/// Everything a preview says, as text: what a leak anywhere in it would show up in.
+fn shown(p: &ChangePreview) -> String {
+    serde_json::to_string(p).unwrap_or_default()
+}
+
+/// What the preview of an upload says.
+async fn upload_preview<W: WriteScenario + ?Sized>(
+    w: &W,
+    ctx: &WriteCtx,
+    s: &SwimlaneId,
+    path: &str,
+    expected: Expected,
+    content: &[u8],
+) -> ChangePreview {
+    let r = PreviewRequest {
+        swimlane: s.clone(),
+        path: nfs(path),
+        change: PreviewChange::Upload {
+            expected,
+            content: Bytes::copy_from_slice(content),
+        },
+    };
+    w.preview_effect(ctx, r).await.unwrap()
+}
+
+/// The change entry for a setting path.
+fn change_of<'a>(p: &'a ChangePreview, path: &str) -> &'a domain::PreviewedChange {
+    p.changes
+        .iter()
+        .find(|c| c.change.path.as_str() == path)
+        .unwrap_or_else(|| panic!("the preview lists a change for `{path}`: {p:?}"))
+}
+
+fn is_marker(v: Option<&domain::SettingValue>) -> bool {
+    v.is_some_and(|v| v.text.starts_with("[REDACTED: ") && v.text.ends_with(']'))
+}
+
 fn nowhere_swimlane() -> SwimlaneId {
     swimlane("nowhere")
 }
@@ -94,6 +144,11 @@ fn applied_hash(o: &WriteOutcome) -> Option<domain::ContentHash> {
 /// - An upload or a delete needs a preview issued to the same user for the same change, or it is `NotAllowed` and
 ///   writes nothing; previewing needs Editor and changes nothing.
 /// - Notify needs Operator, takes 1-100 paths, and becomes a proposal for a user who `requires_approval`.
+/// - A preview is bound to the user, swimlane, path, expected state and content (an upload) or hash (a delete) it was
+///   issued for, runs out after [`ChangePreview::TTL_SECS`], and writes nothing.
+/// - A preview never shows a value the secret scan flags: the value is masked and the entry says `flagged` (S14b, D79).
+/// - A new file takes the line endings of its folder; a file with mixed endings takes the dominant ones; a lone CR is a
+///   line ending.
 /// - A draft has no side effects until applied, only its author can apply it, and applying re-checks the hash.
 /// - Revert restores a known earlier version only; a PR names 1-100 paths.
 pub async fn write_service<W: WriteScenario + ?Sized>(w: &W) {
@@ -106,6 +161,15 @@ pub async fn write_service<W: WriteScenario + ?Sized>(w: &W) {
             ("a.yml", "x: 1\n"),
             ("b.yml", "k: v\n"),
             ("crlf.yml", "k: 1\r\nj: 2\r\n"),
+            ("bound/one.yml", "k: v\n"),
+            ("bound/two.yml", "k: v\n"),
+            ("secrets/keys.yml", &format!("aws_key: {}\nplain: 1\n", aws_key())),
+            ("eol/same.yml", "k: 1\r\nj: 2\r\n"),
+            ("eol/mixed-crlf.yml", "a: 1\r\nb: 2\r\nc: 3\n"),
+            ("eol/mixed-lf.yml", "a: 1\nb: 2\r\nc: 3\n"),
+            ("eol/lone.yml", "a: 1\nb: 2\n"),
+            ("crlf-dir/one.yml", "a: 1\r\nb: 2\r\n"),
+            ("crlf-dir/two.yml", "c: 3\r\n"),
         ]),
     )
     .await;
@@ -719,5 +783,497 @@ pub async fn write_service<W: WriteScenario + ?Sized>(w: &W) {
             .await
             .unwrap_err(),
         WriteError::Forbidden
+    );
+
+    previews_are_bound_and_expire(w, &s).await;
+    previews_write_nothing_and_mask_secrets(w, &s).await;
+    line_endings_follow_the_file_the_folder_and_the_majority(w, &s).await;
+}
+
+/// A token is good for the user, swimlane, path, expected state and content (a delete: the hash) it was issued for, and
+/// only until it runs out. Failed attempts neither write nor use the token up.
+async fn previews_are_bound_and_expire<W: WriteScenario + ?Sized>(w: &W, s: &SwimlaneId) {
+    let editor = active(1, Role::Editor);
+    let other_user = active(8, Role::Editor);
+    let s2 = swimlane("sit2");
+    w.seed(
+        &s2,
+        &files(&[("bound/one.yml", "k: v\n"), ("bound/two.yml", "k: v\n")]),
+    )
+    .await;
+    let content = Bytes::from_static(b"n: 1\n");
+    let upload =
+        |user: &User, key: &str, sw: &SwimlaneId, path: &str, expected: Expected, token: &PreviewId| {
+            let ctx = write_ctx(user, key);
+            let req = UploadRequest {
+                swimlane: sw.clone(),
+                path: nfs(path),
+                expected,
+                content: content.clone(),
+                preview: Some(token.clone()),
+            };
+            async move { w.upload(&ctx, req).await.unwrap() }
+        };
+
+    // An upload: the swimlane and the expected state are bound too (the user, path and content are, above).
+    let token = preview_upload(
+        w,
+        &write_ctx(&editor, "pb-1"),
+        s,
+        "bound/new.yml",
+        Expected::Absent,
+        &content,
+    )
+    .await;
+    let elsewhere = upload(&editor, "pb-2", &s2, "bound/new.yml", Expected::Absent, &token).await;
+    assert_eq!(
+        rejection(&elsewhere),
+        RejectReason::NotAllowed,
+        "bound to the swimlane"
+    );
+    let other_state = Expected::Hash { hash: hash(b"old") };
+    let stale = upload(&editor, "pb-3", s, "bound/new.yml", other_state, &token).await;
+    assert_eq!(
+        rejection(&stale),
+        RejectReason::NotAllowed,
+        "bound to the expected state, so not a conflict either"
+    );
+    assert_eq!(w.nfs_content(s, &nfs("bound/new.yml")).await, None);
+    assert_eq!(w.nfs_content(&s2, &nfs("bound/new.yml")).await, None);
+    let done = upload(&editor, "pb-4", s, "bound/new.yml", Expected::Absent, &token).await;
+    assert!(
+        done.is_success(),
+        "the refusals did not use the token up: {done:?}"
+    );
+
+    // A delete: bound to the user, swimlane, path and hash.
+    let h = hash(b"k: v\n");
+    let delete = |user: &User, key: &str, sw: &SwimlaneId, path: &str, expected, token: &PreviewId| {
+        let ctx = write_ctx(user, key);
+        let req = DeleteRequest {
+            swimlane: sw.clone(),
+            path: nfs(path),
+            expected,
+            preview: Some(token.clone()),
+        };
+        async move { w.delete(&ctx, req).await.unwrap() }
+    };
+    let token = preview_delete(w, &write_ctx(&editor, "pb-5"), s, "bound/one.yml", h).await;
+    let attempts = [
+        (
+            delete(&other_user, "pb-6", s, "bound/one.yml", h, &token).await,
+            "the user",
+        ),
+        (
+            delete(&editor, "pb-7", &s2, "bound/one.yml", h, &token).await,
+            "the swimlane",
+        ),
+        (
+            delete(&editor, "pb-8", s, "bound/two.yml", h, &token).await,
+            "the path",
+        ),
+        (
+            delete(&editor, "pb-9", s, "bound/one.yml", hash(b"k: w\n"), &token).await,
+            "the hash, so not a conflict either",
+        ),
+    ];
+    for (outcome, bound_to) in attempts {
+        assert_eq!(
+            rejection(&outcome),
+            RejectReason::NotAllowed,
+            "a delete preview is bound to {bound_to}"
+        );
+    }
+    for (sw, path) in [
+        (s, "bound/one.yml"),
+        (s, "bound/two.yml"),
+        (&s2, "bound/one.yml"),
+        (&s2, "bound/two.yml"),
+    ] {
+        assert!(
+            w.nfs_content(sw, &nfs(path)).await.is_some(),
+            "{path}: refused deletes delete nothing"
+        );
+    }
+    assert!(
+        delete(&editor, "pb-10", s, "bound/one.yml", h, &token)
+            .await
+            .is_success(),
+        "the refusals did not use the token up"
+    );
+
+    // A preview runs out: still good one second before `TTL_SECS`, gone at `TTL_SECS`.
+    let ttl = ChangePreview::TTL_SECS;
+    let late = Bytes::from_static(b"late: 1\n");
+    let upload_late = |key: &str, path: &str, token: &PreviewId| {
+        let ctx = write_ctx(&editor, key);
+        let req = UploadRequest {
+            swimlane: s.clone(),
+            path: nfs(path),
+            expected: Expected::Absent,
+            content: late.clone(),
+            preview: Some(token.clone()),
+        };
+        async move { w.upload(&ctx, req).await.unwrap() }
+    };
+    let issued = upload_preview(
+        w,
+        &write_ctx(&editor, "pt-1"),
+        s,
+        "bound/ttl-1.yml",
+        Expected::Absent,
+        &late,
+    )
+    .await;
+    w.advance_clock(ttl - 1).await;
+    let in_time = upload_late("pt-2", "bound/ttl-1.yml", &issued.preview_id).await;
+    assert!(in_time.is_success(), "one second before it runs out: {in_time:?}");
+    let issued = upload_preview(
+        w,
+        &write_ctx(&editor, "pt-3"),
+        s,
+        "bound/ttl-2.yml",
+        Expected::Absent,
+        &late,
+    )
+    .await;
+    w.advance_clock(ttl).await;
+    let too_late = upload_late("pt-4", "bound/ttl-2.yml", &issued.preview_id).await;
+    assert_eq!(rejection(&too_late), RejectReason::NotAllowed, "after TTL_SECS");
+    assert_eq!(
+        w.nfs_content(s, &nfs("bound/ttl-2.yml")).await,
+        None,
+        "an expired preview writes nothing"
+    );
+    let again = upload_preview(
+        w,
+        &write_ctx(&editor, "pt-5"),
+        s,
+        "bound/ttl-2.yml",
+        Expected::Absent,
+        &late,
+    )
+    .await;
+    assert!(
+        upload_late("pt-6", "bound/ttl-2.yml", &again.preview_id)
+            .await
+            .is_success(),
+        "a new preview works"
+    );
+    let gone = Bytes::from_static(b"k: v\n");
+    let issued = preview_delete(w, &write_ctx(&editor, "pt-7"), s, "bound/two.yml", hash(&gone)).await;
+    w.advance_clock(ttl).await;
+    let expired_delete = w
+        .delete(
+            &write_ctx(&editor, "pt-8"),
+            DeleteRequest {
+                swimlane: s.clone(),
+                path: nfs("bound/two.yml"),
+                expected: hash(&gone),
+                preview: Some(issued),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        rejection(&expired_delete),
+        RejectReason::NotAllowed,
+        "a delete preview runs out too"
+    );
+    assert!(w.nfs_content(s, &nfs("bound/two.yml")).await.is_some());
+}
+
+/// A preview reads and tells; it does not write, and it does not show a value the secret scan flags.
+async fn previews_write_nothing_and_mask_secrets<W: WriteScenario + ?Sized>(w: &W, s: &SwimlaneId) {
+    let editor = active(1, Role::Editor);
+    let secrets = nfs("secrets/keys.yml");
+    let same = nfs("eol/same.yml");
+    let key = aws_key();
+    let seeded = format!("aws_key: {key}\nplain: 1\n");
+    let h_secrets = hash(seeded.as_bytes());
+    let before = (
+        w.nfs_content(s, &secrets).await,
+        w.nfs_content(s, &same).await,
+        w.nfs_content(s, &nfs("secrets/fresh.yml")).await,
+    );
+
+    // The limit is the upload's: 2 MiB, no more.
+    let at_limit = vec![b'a'; 2 * 1024 * 1024];
+    let big = PreviewRequest {
+        swimlane: s.clone(),
+        path: nfs("big/big.yml"),
+        change: PreviewChange::Upload {
+            expected: Expected::Absent,
+            content: Bytes::from(at_limit.clone()),
+        },
+    };
+    assert!(
+        w.preview_effect(&write_ctx(&editor, "pm-0"), big).await.is_ok(),
+        "2 MiB is allowed"
+    );
+    let too_big = PreviewRequest {
+        swimlane: s.clone(),
+        path: nfs("big/big.yml"),
+        change: PreviewChange::Upload {
+            expected: Expected::Absent,
+            content: Bytes::from([at_limit, vec![b'a']].concat()),
+        },
+    };
+    assert_eq!(
+        w.preview_effect(&write_ctx(&editor, "pm-0"), too_big)
+            .await
+            .map(|p| p.preview_id),
+        Err(WriteError::BadRequest),
+        "one byte over 2 MiB is not"
+    );
+
+    // A removed secret: the left side is the marker.
+    let removed = upload_preview(
+        w,
+        &write_ctx(&editor, "pm-1"),
+        s,
+        "secrets/keys.yml",
+        Expected::Hash { hash: h_secrets },
+        b"plain: 2\n",
+    )
+    .await;
+    assert!(
+        !shown(&removed).contains(&key),
+        "a removed secret is not shown: {removed:?}"
+    );
+    let entry = change_of(&removed, "aws_key");
+    assert!(
+        entry.flagged && is_marker(entry.change.left.as_ref()),
+        "{entry:?}"
+    );
+    let plain = change_of(&removed, "plain");
+    assert!(!plain.flagged, "a value nobody flagged is shown and not flagged");
+    assert_eq!(plain.change.left.as_ref().map(|v| v.text.as_str()), Some("1"));
+    assert_eq!(plain.change.right.as_ref().map(|v| v.text.as_str()), Some("2"));
+
+    // A changed secret: both sides are markers, and neither key is shown.
+    let other = other_aws_key();
+    let swapped_text = format!("aws_key: {other}\nplain: 1\n");
+    let swapped = upload_preview(
+        w,
+        &write_ctx(&editor, "pm-2"),
+        s,
+        "secrets/keys.yml",
+        Expected::Hash { hash: h_secrets },
+        swapped_text.as_bytes(),
+    )
+    .await;
+    let text = shown(&swapped);
+    assert!(
+        !text.contains(&key) && !text.contains(&other),
+        "a changed secret is not shown: {swapped:?}"
+    );
+    let entry = change_of(&swapped, "aws_key");
+    assert!(
+        entry.flagged && is_marker(entry.change.left.as_ref()) && is_marker(entry.change.right.as_ref()),
+        "{entry:?}"
+    );
+
+    // A new secret, in a new file.
+    let added_text = format!("token: {key}\n");
+    let added = upload_preview(
+        w,
+        &write_ctx(&editor, "pm-3"),
+        s,
+        "secrets/fresh.yml",
+        Expected::Absent,
+        added_text.as_bytes(),
+    )
+    .await;
+    assert!(
+        !shown(&added).contains(&key),
+        "an added secret is not shown: {added:?}"
+    );
+    let entry = change_of(&added, "token");
+    assert!(
+        entry.flagged && is_marker(entry.change.right.as_ref()),
+        "{entry:?}"
+    );
+
+    // A delete lists what goes away, and never a secret.
+    let deleted = preview_delete_full(w, &write_ctx(&editor, "pm-4"), s, "secrets/keys.yml", h_secrets).await;
+    assert!(
+        !shown(&deleted).contains(&key),
+        "a deleted secret is not shown: {deleted:?}"
+    );
+
+    // `effective_changed` is about what the services get: the same text with the file's own line endings is no change,
+    // another value is one, and deleting a file that is not there changes nothing.
+    let unchanged = upload_preview(
+        w,
+        &write_ctx(&editor, "pm-5"),
+        s,
+        "eol/same.yml",
+        Expected::Hash {
+            hash: hash(b"k: 1\r\nj: 2\r\n"),
+        },
+        b"k: 1\nj: 2\n",
+    )
+    .await;
+    assert!(
+        !unchanged.effective_changed,
+        "LF text for a CRLF file that is the same text: {unchanged:?}"
+    );
+    let changed = upload_preview(
+        w,
+        &write_ctx(&editor, "pm-6"),
+        s,
+        "eol/same.yml",
+        Expected::Hash {
+            hash: hash(b"k: 1\r\nj: 2\r\n"),
+        },
+        b"k: 1\nj: 9\n",
+    )
+    .await;
+    assert!(changed.effective_changed, "{changed:?}");
+    let nothing_to_delete = preview_delete_full(
+        w,
+        &write_ctx(&editor, "pm-7"),
+        s,
+        "no-such-file.yml",
+        hash(b"k: v\n"),
+    )
+    .await;
+    assert!(
+        !nothing_to_delete.effective_changed,
+        "an absent file: {nothing_to_delete:?}"
+    );
+
+    // After all of that, nothing was written.
+    assert_eq!(
+        before,
+        (
+            w.nfs_content(s, &secrets).await,
+            w.nfs_content(s, &same).await,
+            w.nfs_content(s, &nfs("secrets/fresh.yml")).await,
+        ),
+        "previews write nothing"
+    );
+    assert!(w.nfs_content(s, &nfs("big/big.yml")).await.is_none());
+    assert!(w.nfs_content(s, &nfs("no-such-file.yml")).await.is_none());
+}
+
+/// The whole answer of a delete preview.
+async fn preview_delete_full<W: WriteScenario + ?Sized>(
+    w: &W,
+    ctx: &WriteCtx,
+    s: &SwimlaneId,
+    path: &str,
+    expected: domain::ContentHash,
+) -> ChangePreview {
+    let r = PreviewRequest {
+        swimlane: s.clone(),
+        path: nfs(path),
+        change: PreviewChange::Delete { expected },
+    };
+    w.preview_effect(ctx, r).await.unwrap()
+}
+
+/// Rule 11, D17: a file is written back in the style it has. For a file with mixed endings that is the style most of its
+/// lines have; for a new file it is the style of the folder; a lone CR is a line ending like any other.
+async fn line_endings_follow_the_file_the_folder_and_the_majority<W: WriteScenario + ?Sized>(
+    w: &W,
+    s: &SwimlaneId,
+) {
+    let editor = active(1, Role::Editor);
+    let edit_to =
+        |key: &str, path: &str, expected: Expected, content: &str, change_eol: Option<ChangeEol>| {
+            let ctx = write_ctx(&editor, key);
+            let req = EditRequest {
+                change_eol,
+                ..edit(s, path, expected, content)
+            };
+            async move { applied_hash(&w.edit(&ctx, req).await.unwrap()) }
+        };
+    let on = |h: &str| Expected::Hash {
+        hash: hash(h.as_bytes()),
+    };
+
+    // Mixed: two CRLF and one LF is a CRLF file; two LF and one CRLF is an LF file.
+    assert_eq!(
+        edit_to(
+            "le-1",
+            "eol/mixed-crlf.yml",
+            on("a: 1\r\nb: 2\r\nc: 3\n"),
+            "a: 1\nb: 9\nc: 3\n",
+            None
+        )
+        .await,
+        Some(hash(b"a: 1\r\nb: 9\r\nc: 3\r\n")),
+        "mostly CRLF: the file is written with CRLF"
+    );
+    assert_eq!(
+        edit_to(
+            "le-2",
+            "eol/mixed-lf.yml",
+            on("a: 1\nb: 2\r\nc: 3\n"),
+            "a: 1\r\nb: 9\r\nc: 3\r\n",
+            None
+        )
+        .await,
+        Some(hash(b"a: 1\nb: 9\nc: 3\n")),
+        "mostly LF: the file is written with LF"
+    );
+
+    // A lone CR is a line ending in a conversion, so it becomes one.
+    assert_eq!(
+        edit_to(
+            "le-3",
+            "eol/lone.yml",
+            on("a: 1\nb: 2\n"),
+            "a: 1\rb: 2\rc: 3\r",
+            Some(ChangeEol::Lf)
+        )
+        .await,
+        Some(hash(b"a: 1\nb: 2\nc: 3\n")),
+        "lone CR to LF"
+    );
+    assert_eq!(
+        edit_to(
+            "le-4",
+            "eol/lone.yml",
+            on("a: 1\nb: 2\nc: 3\n"),
+            "a: 1\rb: 2\r\nc: 3\n",
+            Some(ChangeEol::Crlf)
+        )
+        .await,
+        Some(hash(b"a: 1\r\nb: 2\r\nc: 3\r\n")),
+        "lone CR to CRLF, and a CRLF pair is not doubled"
+    );
+
+    // A new file takes the style of its folder.
+    assert_eq!(
+        edit_to("le-5", "crlf-dir/new.yml", Expected::Absent, "n: 1\nm: 2\n", None).await,
+        Some(hash(b"n: 1\r\nm: 2\r\n")),
+        "a folder of CRLF files: a new file is CRLF"
+    );
+    assert_eq!(
+        edit_to(
+            "le-6",
+            "crlf-dir/new2.yml",
+            Expected::Absent,
+            "n: 1\nm: 2\n",
+            Some(ChangeEol::Lf)
+        )
+        .await,
+        Some(hash(b"n: 1\nm: 2\n")),
+        "an explicit style wins over the folder's"
+    );
+    assert_eq!(
+        edit_to(
+            "le-7",
+            "empty-dir/new.yml",
+            Expected::Absent,
+            "n: 1\r\nm: 2\r\n",
+            None
+        )
+        .await,
+        Some(hash(b"n: 1\r\nm: 2\r\n")),
+        "no files in the folder: the content as it is"
     );
 }
