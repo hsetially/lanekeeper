@@ -38,6 +38,7 @@
 pub mod adoption;
 pub mod baselines;
 pub(crate) mod batch;
+pub mod blob_policy;
 pub mod branches;
 pub mod clock;
 pub mod config;
@@ -56,9 +57,11 @@ pub use adoption::{
     Bulk, ConfirmOutcome, DifferingFile, DifferingFiles, Hint, HintSource, RankedBranch, Reason, Resolution,
     ResolutionKind, ResolutionView, SecretHit,
 };
+pub use blob_policy::RegistryBlobPolicy;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{ConfigError, RegistryConfig};
 pub use error::RegistryError;
+pub use http::{registry_route_specs, registry_routes};
 pub use index::{
     Affected, GitIndex, GitIndexDeps, IndexDeps, IndexJob, IndexReport, Indexed, LaneImpact, Offer, Row,
     SettingsIndexer, SettingsSweeper, SettingsWorker, StoredTree, SweepReport, TreeHashStore, TreeWrite,

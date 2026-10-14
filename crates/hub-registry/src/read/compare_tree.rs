@@ -33,6 +33,7 @@ use ports::ReadError;
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 
+use super::api::Named;
 use super::content::resolve_ref;
 use super::cursor::{self, Context, Field, Kind};
 use super::service::Inner;
@@ -72,6 +73,9 @@ pub const BASELINE_MAP_SQL: &str = "\
 SELECT fs.path, fs.logical_file, b.blob_hash::bytea AS raw, b.hash::bytea AS norm FROM baselines b \
 JOIN file_state fs ON fs.swimlane_id = b.swimlane_id AND fs.path = b.path \
 WHERE b.swimlane_id = $1 AND fs.logical_file LIKE $2 AND NOT fs.denied LIMIT 200001";
+
+/// A side's files by logical file, and the tenant that stood for its swimlane where the side has one.
+type SideMap = (BTreeMap<String, ContentHash>, Option<(SwimlaneId, TenantId)>);
 
 fn hash_of(bytes: &[u8]) -> Result<ContentHash, RegistryError> {
     super::rows::hash(bytes)
@@ -182,20 +186,21 @@ impl Inner {
         Ok(out)
     }
 
-    /// A side as a map from logical file to hash. `raw`: the hash of the bytes, not the one for comparing.
+    /// A side as a map from logical file to hash, and the tenant that stood for the swimlane (A30) where the side has one. `raw`: the
+    /// hash of the bytes, not the one for comparing.
     async fn side_map(
         &self,
         reference: &CompareRef,
         prefix: &NfsPath,
         raw: bool,
-    ) -> Result<BTreeMap<String, ContentHash>, ReadError> {
+    ) -> Result<SideMap, ReadError> {
         match reference {
             CompareRef::Effective(s) => {
                 if raw {
                     // An effective hash is not the hash of any bytes, so it has nothing to be compared with in Git.
                     return Err(ReadError::BadRequest);
                 }
-                self.effective_map(s, prefix).await
+                Ok((self.effective_map(s, prefix).await?, None))
             }
             CompareRef::Nfs(s) => self.path_map(s, prefix, NFS_MAP_SQL, raw).await,
             CompareRef::Baseline(s) => self.path_map(s, prefix, BASELINE_MAP_SQL, raw).await,
@@ -208,7 +213,7 @@ impl Inner {
                 } else {
                     RepoKind::Tenant
                 };
-                self.git_map(repo, r, prefix).await
+                Ok((self.git_map(repo, r, prefix).await?, None))
             }
         }
     }
@@ -247,7 +252,7 @@ impl Inner {
         prefix: &NfsPath,
         sql: &'static str,
         raw: bool,
-    ) -> Result<BTreeMap<String, ContentHash>, ReadError> {
+    ) -> Result<SideMap, ReadError> {
         self.require_swimlane(swimlane).await?;
         let tenant = self.tenants_of(swimlane).await?.into_iter().next();
         let fetched = self
@@ -274,7 +279,10 @@ impl Inner {
                 *slot = (rank, hash);
             }
         }
-        Ok(chosen.into_iter().map(|(k, (_, h))| (k, h)).collect())
+        Ok((
+            chosen.into_iter().map(|(k, (_, h))| (k, h)).collect(),
+            tenant.map(|t| (swimlane.clone(), t)),
+        ))
     }
 
     /// The files of a repository at a ref below a prefix, with the SHA-256 of their content.
@@ -336,13 +344,17 @@ impl Inner {
         r: &CompareRef,
         prefix: &NfsPath,
         page: &Page,
-    ) -> Result<TreeComparison, ReadError> {
+    ) -> Result<Named<TreeComparison>, ReadError> {
+        let mut tenants: Vec<(SwimlaneId, TenantId)> = Vec::new();
         let (mut entries, skipped) = if let (CompareRef::Effective(a), CompareRef::Effective(b)) = (l, r) {
             self.effective_walk(a, b, prefix).await?
         } else {
             let raw = matches!(l, CompareRef::GitBase(_) | CompareRef::GitTenant(_))
                 || matches!(r, CompareRef::GitBase(_) | CompareRef::GitTenant(_));
-            let (ml, mr) = tokio::try_join!(self.side_map(l, prefix, raw), self.side_map(r, prefix, raw))?;
+            let ((ml, tl), (mr, tr)) =
+                tokio::try_join!(self.side_map(l, prefix, raw), self.side_map(r, prefix, raw))?;
+            tenants.extend(tl);
+            tenants.extend(tr);
             let mut entries = Vec::new();
             diff_maps(&ml, &mr, &mut entries);
             (entries, 0)
@@ -391,12 +403,15 @@ impl Inner {
         } else {
             None
         };
-        Ok(TreeComparison {
-            entries: Paged {
-                items: entries[start..end].to_vec(),
-                next,
+        Ok(Named {
+            value: TreeComparison {
+                entries: Paged {
+                    items: entries[start..end].to_vec(),
+                    next,
+                },
+                skipped_identical_subtrees: skipped,
             },
-            skipped_identical_subtrees: skipped,
+            tenants,
         })
     }
 }

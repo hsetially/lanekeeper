@@ -15,6 +15,7 @@ use domain::{
     SettingHit, SettingsQuery, SwimlaneId, SwimlaneSummary, TenantId, TextQuery, TextResults, TreeComparison,
     User, Version,
 };
+use engine::Limits;
 use ports::{ReadError, RegistryRead};
 
 use super::authz::require_viewer;
@@ -95,7 +96,7 @@ pub trait RegistryApi: RegistryRead {
         r: CompareRef,
         prefix: &NfsPath,
         page: Page,
-    ) -> Result<TreeComparison, ReadError>;
+    ) -> Result<Named<TreeComparison>, ReadError>;
 
     async fn grid_named(&self, u: &User, q: GridQuery) -> Result<Named<Grid>, ReadError>;
 
@@ -116,6 +117,9 @@ pub trait RegistryApi: RegistryRead {
         s: &SwimlaneId,
         page: Page,
     ) -> Result<Paged<ServiceState>, ReadError>;
+
+    /// The engine's limits the answers are made under: what a handler needs to turn a file's bytes into the text of its response.
+    fn limits(&self) -> &Limits;
 
     /// A file as the config-server serves it (plan A4).
     async fn served(
@@ -196,7 +200,10 @@ impl RegistryRead for RegistryService {
         r: CompareRef,
         page: Page,
     ) -> Result<TreeComparison, ReadError> {
-        self.compare_tree_under(u, l, r, &NfsPath::root(), page).await
+        Ok(self
+            .compare_tree_under(u, l, r, &NfsPath::root(), page)
+            .await?
+            .value)
     }
 
     async fn grid(&self, u: &User, q: GridQuery) -> Result<Grid, ReadError> {
@@ -346,7 +353,7 @@ impl RegistryApi for RegistryService {
         r: CompareRef,
         prefix: &NfsPath,
         page: Page,
-    ) -> Result<TreeComparison, ReadError> {
+    ) -> Result<Named<TreeComparison>, ReadError> {
         require_viewer(u)?;
         self.inner
             .timed(
@@ -389,6 +396,10 @@ impl RegistryApi for RegistryService {
         self.inner
             .timed(ReadOp::PendingRestarts, self.inner.services_page(s, true, &page))
             .await
+    }
+
+    fn limits(&self) -> &Limits {
+        &self.inner.limits
     }
 
     async fn served(

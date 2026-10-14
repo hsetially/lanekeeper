@@ -2767,6 +2767,8 @@ dependencies = [
  "engine",
  "futures",
  "globset",
+ "grep-matcher",
+ "grep-regex",
  "hex",
  "http",
  "http-body-util",

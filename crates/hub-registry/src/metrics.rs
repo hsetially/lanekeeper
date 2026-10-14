@@ -316,6 +316,7 @@ pub struct RegistryMetrics {
     read_seconds: Family<ReadOpLabels, Histogram, fn() -> Histogram>,
     read_cache: Family<ReadCacheLabels, Counter>,
     read_search_truncated: Counter,
+    blob_withheld: Counter,
 }
 
 /// 1 ms to about 8 s per read: the budgets are tens of milliseconds, a cold text search is hundreds.
@@ -371,6 +372,7 @@ impl Default for RegistryMetrics {
             read_seconds: Family::new_with_constructor(read_histogram as fn() -> Histogram),
             read_cache: Family::default(),
             read_search_truncated: Counter::default(),
+            blob_withheld: Counter::default(),
         }
     }
 }
@@ -577,6 +579,11 @@ impl RegistryMetrics {
             "registry_read_search_truncated",
             "Text searches whose result was cut by a cap",
             self.read_search_truncated.clone(),
+        );
+        registry.register(
+            "registry_blob_withheld",
+            "Blob requests refused because the hash is the content of a denied file",
+            self.blob_withheld.clone(),
         );
     }
 
@@ -800,6 +807,10 @@ impl RegistryMetrics {
         self.read_search_truncated.inc();
     }
 
+    pub(crate) fn blob_withheld(&self) {
+        self.blob_withheld.inc();
+    }
+
     /// Reads by operation and outcome, for tests.
     pub fn read_count(&self, op: ReadOp, outcome: ReadOutcome) -> u64 {
         self.reads.get_or_create(&ReadLabels { op, outcome }).get()
@@ -810,6 +821,11 @@ impl RegistryMetrics {
         self.read_cache
             .get_or_create(&ReadCacheLabels { cache, result })
             .get()
+    }
+
+    /// Blob requests refused for a denied file's hash, for tests.
+    pub fn blob_withheld_count(&self) -> u64 {
+        self.blob_withheld.get()
     }
 
     /// Text searches that were cut by a cap, for tests.
@@ -975,6 +991,8 @@ mod tests {
         m.read(ReadOp::Grid, ReadOutcome::Forbidden, 0.0);
         m.read_cache(CacheName::Rows, CacheResult::Hit);
         m.read_search_truncated();
+        m.blob_withheld();
+        assert_eq!(m.blob_withheld_count(), 1);
         assert_eq!(m.read_count(ReadOp::Grid, ReadOutcome::Ok), 1);
         assert_eq!(m.read_count(ReadOp::Tree, ReadOutcome::Ok), 0);
         assert_eq!(m.read_cache_count(CacheName::Rows, CacheResult::Hit), 1);

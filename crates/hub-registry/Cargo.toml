@@ -62,6 +62,9 @@ tower = { workspace = true, features = ["util"] }
 http-body-util.workspace = true
 # The OpenAPI schema walker of `tests/support/openapi.rs` (plan A43) reads `api/openapi.yaml` with the YAML reader the workspace already pins.
 serde-saphyr.workspace = true
+# `pattern` of the schema walker: ripgrep's matcher, which the engine already builds its searches on (linear time, no new crate).
+grep-regex.workspace = true
+grep-matcher.workspace = true
 # Real Postgres 16 with pgvector (a container, or `LK_TEST_PG_ADMIN_URL`), migrated as lanekeeper_migrator and used as lanekeeper_app.
 sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json", "migrate"] }
 testcontainers.workspace = true
