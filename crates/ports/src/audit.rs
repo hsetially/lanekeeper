@@ -97,8 +97,10 @@ pub enum AuditAction {
 /// The chain lock is held from the batch to the end of the caller's transaction, so every other writer waits at
 /// least as long as the batch takes. 200 is four times the 50 versions of one agent message, the largest unit of
 /// work that audits many paths in one transaction (D93), so a caller never needs to split a unit, and it keeps the
-/// longest hold to tens of milliseconds: the one statement carries at most 200 events of at most
-/// [`AuditEvent::MAX_DIFF_BYTES`] each, 12.8 MiB at the very worst and a few hundred KiB for real events.
+/// longest hold short: the real log writes 200 typical events in about 12 ms (50 in about 4 ms, `record` once per event
+/// takes 22 ms for 50 and 104 ms for 200; a release build against a local Postgres, `tests/audit_batch.rs` in
+/// `hub-identity` reports it). The one statement carries at most 200 events of at most [`AuditEvent::MAX_DIFF_BYTES`]
+/// each: 12.8 MiB at the very worst, a few hundred KiB for real events.
 pub const MAX_AUDIT_BATCH: usize = 200;
 
 /// The facts of one audited action. Contains no secret and no file content other than the bounded `diff`.

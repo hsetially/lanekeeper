@@ -88,8 +88,18 @@ pub trait GitReader {                                    // sync; call via spawn
 
 #[async_trait] pub trait AuditLog {
     async fn record(&self, tx: &mut Tx<'_>, e: AuditEvent) -> Result<AuditId, AuditError>; // chained
+    async fn record_many(&self, tx: &mut Tx<'_>, events: Vec<AuditEvent>) -> Result<Vec<AuditId>, AuditError>; // chained, batched
 }
 ```
+
+`AuditLog::record_many` (additive, P15; it has a default that calls `record` once per event, so an implementation that does not override it keeps working):
+
+- **Same chain.** It writes exactly the chain that one `record` call per event writes: one entry per event (rule 8 is unchanged), the same links and hashes, the same checks per event. The ids come back in input order, and they are the entries' ids.
+- **Ordering.** The events are chained in input order, and the batch is consecutive in the chain: another writer's entry never falls inside it, because the chain lock is held from the batch to the end of the caller's transaction. Calls of `record` and `record_many` interleave freely, in one transaction and across transactions, into one valid chain.
+- **Atomic with the transaction.** The entries exist only if `tx` commits. A rollback leaves no entry and no chain advance: the next entry chains to the old head.
+- **Size.** At most `MAX_AUDIT_BATCH` (200) events. A bigger batch is refused whole with `AuditError::BatchTooLarge`, never truncated, and nothing is recorded. 200 is four times the 50 versions of one agent message, the largest unit that audits many paths in one transaction (D93), and it bounds how long the chain lock is held for one call (the batch is one statement of at most 200 events of at most 64 KiB each; the real log writes 200 typical events in about 12 ms and 50 in about 4 ms, against 104 ms and 22 ms for one `record` call per event). An empty batch is `Ok` with no ids; it takes no lock and does not look at `tx`.
+- **Failure.** An event that `record` would refuse (`TooLarge`, `Encode`) is refused the same way before anything of the batch is recorded: the transaction stays usable, and committing it keeps nothing of the batch. Any other error (`Unavailable`: the lock timed out, the store failed) leaves the transaction in an unknown state, so the caller rolls back, as after a failed `record`.
+- **Call it last,** like `record`: the lock is held until the transaction ends.
 
 ## Domain services (implemented by 05, 06 and 14; used by REST and MCP)
 
@@ -179,6 +189,7 @@ The batch functions must be called from a blocking context.
 // EventBus gains outbox publishing (D80); plain publish() remains, for events with no database change.
 #[async_trait] pub trait EventBus {
     async fn publish_in_tx(&self, tx: &mut Tx<'_>, e: DomainEvent) -> Result<(), BusError>; // fanned out after commit
+    async fn publish_many_in_tx(&self, tx: &mut Tx<'_>, events: Vec<DomainEvent>) -> Result<(), BusError>; // the same, batched
     // ...existing methods
 }
 
@@ -190,6 +201,13 @@ The batch functions must be called from a blocking context.
 pub struct Attribution { source: AttributionSource, confidence: Confidence, actor: Option<Actor>, evidence: Evidence }
 // The engine gains severity(&ChangeContext, &[SeverityRule]) -> Severity, and inline change ranges in diff hunks.
 ```
+
+`EventBus::publish_many_in_tx` (additive, P15; it has a default that calls `publish_in_tx` once per event):
+
+- **Same events.** Each event of the batch gets what `publish_in_tx` gives it: the same payload bound (the outbox bus stores an event over its size cap as a `Resync` at its place, and counts it), the same filters and swimlane rule for its subscribers (internal events included), fan-out only after the commit and never on a rollback, and at-least-once delivery.
+- **Ordering.** The events of a batch take outbox positions in input order, and in order with the other `publish_in_tx` and `publish_many_in_tx` calls of the same transaction. The outbox bus writes a batch with one statement, so its ids are consecutive unless another session draws ids in the same instant; the relay's rule for rows that commit after a higher id was read (`events::relay`) applies to a batch as to any rows.
+- **Atomic with the transaction,** as `publish_in_tx`: parked until the commit, gone on a rollback.
+- **Size.** At most `MAX_EVENT_BATCH` (200) events; a bigger batch is `BusError::BatchTooLarge`, refused whole, nothing published. An empty batch is `Ok`, writes nothing and does not look at `tx`. On any other error the caller rolls back, as after a failed `publish_in_tx`; a batch refused before it is written (too many, or a transaction of another store) writes none of it.
 
 New domain events:
 
