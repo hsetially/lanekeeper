@@ -119,6 +119,19 @@ pub struct RegistryConfig {
     /// the distinct files of its swimlanes in memory).
     pub nightly_interval: Duration,
     pub nightly_batch_lanes: usize,
+
+    // ---------------------------------------------------------------------------------------------- syncs (T4)
+    /// How long `record_sync` waits for the full scan it asked for to be applied before it gives up. The scan stays requested (the
+    /// swimlane is flagged, so the next heartbeat asks again) and nothing is written: the caller reports the sync again.
+    pub sync_scan_timeout: Duration,
+    /// How often `record_sync` looks whether the scan has been applied.
+    pub sync_poll_interval: Duration,
+    /// How long the request for the scan may take to reach the agent's stream (the gateway acknowledges it at once).
+    pub sync_request_timeout: Duration,
+    /// How long a notification may take (the notifier talks to a webhook): a slow channel is logged and the report goes on (rule 5).
+    pub notify_timeout: Duration,
+    /// Branches kept in the ranking of a tenant-suffix review (`adoptions.ranking`), best first.
+    pub rematch_ranking: usize,
 }
 
 impl Default for RegistryConfig {
@@ -162,6 +175,11 @@ impl Default for RegistryConfig {
             persist_concurrency: 4,
             nightly_interval: Duration::from_secs(24 * 3600),
             nightly_batch_lanes: 4,
+            sync_scan_timeout: Duration::from_secs(120),
+            sync_poll_interval: Duration::from_millis(250),
+            sync_request_timeout: Duration::from_secs(10),
+            notify_timeout: Duration::from_secs(10),
+            rematch_ranking: 20,
         }
     }
 }
@@ -285,6 +303,21 @@ impl RegistryConfig {
         )?;
         within("persist_concurrency", self.persist_concurrency as u64, 1, 16)?;
         within("nightly_batch_lanes", self.nightly_batch_lanes as u64, 1, 1_000)?;
+        within(
+            "sync_scan_timeout",
+            millis(self.sync_scan_timeout),
+            1_000,
+            3600 * 1000,
+        )?;
+        within("sync_poll_interval", millis(self.sync_poll_interval), 10, 10_000)?;
+        within(
+            "sync_request_timeout",
+            millis(self.sync_request_timeout),
+            100,
+            120_000,
+        )?;
+        within("notify_timeout", millis(self.notify_timeout), 100, 120_000)?;
+        within("rematch_ranking", self.rematch_ranking as u64, 1, 100)?;
         // The globs travel to the agent as `ShortText` (256 bytes) and must compile.
         if self.extra_deny_globs.iter().any(|g| g.len() > 256) {
             return Err(ConfigError::Invalid("extra_deny_globs"));
@@ -414,6 +447,51 @@ mod tests {
         });
         out_of_range("nightly_batch_lanes", |c| {
             c.nightly_batch_lanes = 0;
+        });
+    }
+
+    #[test]
+    fn the_sync_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(
+            c.sync_scan_timeout,
+            Duration::from_secs(120),
+            "a full scan of a swimlane takes the agent a walk of 10 s and a quiet period of 3 s"
+        );
+        assert_eq!(c.sync_poll_interval, Duration::from_millis(250));
+        assert_eq!(c.sync_request_timeout, Duration::from_secs(10));
+        assert_eq!(c.notify_timeout, Duration::from_secs(10));
+        assert_eq!(c.rematch_ranking, 20);
+        assert!(c.sync_poll_interval < c.sync_scan_timeout);
+        out_of_range("sync_scan_timeout", |c| {
+            c.sync_scan_timeout = Duration::from_millis(10);
+        });
+        out_of_range("sync_scan_timeout", |c| {
+            c.sync_scan_timeout = Duration::from_secs(3601);
+        });
+        out_of_range("sync_poll_interval", |c| {
+            c.sync_poll_interval = Duration::from_millis(1);
+        });
+        out_of_range("sync_poll_interval", |c| {
+            c.sync_poll_interval = Duration::from_secs(11);
+        });
+        out_of_range("sync_request_timeout", |c| {
+            c.sync_request_timeout = Duration::from_millis(1);
+        });
+        out_of_range("sync_request_timeout", |c| {
+            c.sync_request_timeout = Duration::from_secs(3600);
+        });
+        out_of_range("notify_timeout", |c| {
+            c.notify_timeout = Duration::from_millis(1);
+        });
+        out_of_range("notify_timeout", |c| {
+            c.notify_timeout = Duration::from_secs(3600);
+        });
+        out_of_range("rematch_ranking", |c| {
+            c.rematch_ranking = 0;
+        });
+        out_of_range("rematch_ranking", |c| {
+            c.rematch_ranking = 101;
         });
     }
 

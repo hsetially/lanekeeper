@@ -131,6 +131,8 @@ pub fn plan_versions(
         observed_at_ms,
         class: FileClass::Structured,
         denied: false,
+        state: None,
+        drift_hash: None,
     });
     let mut all: Vec<Version> = versions
         .iter()

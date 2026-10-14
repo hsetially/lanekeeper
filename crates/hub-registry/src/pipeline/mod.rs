@@ -22,6 +22,7 @@
 //! | the difference into the database, by transaction | [`persist`], [`findings_sync`] |
 //! | the comparison of memory with the database and Git | [`reconcile`] |
 //! | the nightly full recompute that repairs any divergence | [`nightly`] |
+//! | a swimlane whose NFS carries the suffix of a branch it does not deploy: the ranking and the admin's review (T4) | [`tenant_rematch`] |
 //!
 //! # One lease, one holder of the state
 //!
@@ -59,13 +60,14 @@ pub mod nightly;
 pub mod persist;
 pub mod reconcile;
 pub mod rules;
+pub mod tenant_rematch;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use domain::{CommitId, ContentHash, RepoKind, SwimlaneId};
+use domain::{CommitId, ContentHash, RepoKind, SwimlaneId, TenantId};
 use engine::{DenyMatcher, SeverityRules};
 use hub_platform::jobs::{Job, JobSpec, SpecError};
 use ports::{AuditLog, BlobStore, EventBus, GitReader};
@@ -126,6 +128,9 @@ pub(crate) struct Inner {
     pub git: Arc<dyn GitReader>,
     pub git_index: GitIndex,
     pub bus: Arc<dyn EventBus>,
+    /// For the audit event of a tenant-suffix review ([`tenant_rematch`]); the rest of the pipeline audits through `persist`.
+    pub audit: Arc<dyn AuditLog>,
+    pub clock: Arc<dyn Clock>,
     pub loader: LaneLoader,
     pub persist: Persist,
     pub rules: RuleSource,
@@ -143,6 +148,9 @@ pub(crate) struct Inner {
     pub clean_end: AtomicBool,
     /// Where each deployable branch was when the last move was handled: what the reconcile compares the mirror with.
     pub processed: std::sync::Mutex<BTreeMap<(RepoKind, String), CommitId>>,
+    /// The suffixes of each adopted swimlane's NFS that its tenants do not include, as the last tenant-suffix review saw them
+    /// ([`tenant_rematch`]). Only what saves a batch a query: the review's own rows are the truth.
+    pub rematched: std::sync::Mutex<BTreeMap<SwimlaneId, BTreeSet<TenantId>>>,
 }
 
 /// The pipeline. Cloning shares it.
@@ -202,7 +210,7 @@ impl Pipeline {
         let persist = Persist::new(
             db.clone(),
             Arc::clone(&bus),
-            audit,
+            Arc::clone(&audit),
             Arc::clone(&clock),
             tree,
             metrics.clone(),
@@ -216,6 +224,8 @@ impl Pipeline {
             git,
             git_index,
             bus,
+            audit,
+            clock,
             persist,
             severity: Arc::new(severity),
             exec: Mutex::new(Exec {
@@ -225,6 +235,7 @@ impl Pipeline {
             _signal_tx: signal_tx.clone(),
             clean_end: AtomicBool::new(false),
             processed: std::sync::Mutex::new(BTreeMap::new()),
+            rematched: std::sync::Mutex::new(BTreeMap::new()),
             pool: Arc::new(threads),
             limits: Arc::new(engine::Limits::default()),
             config,

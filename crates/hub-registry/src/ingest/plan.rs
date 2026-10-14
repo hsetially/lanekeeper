@@ -22,6 +22,7 @@ use domain::{
 };
 
 use super::validate::StagedEntry;
+use crate::sync::overwrite::{Previous, previous_of};
 
 /// A tool write whose observation is older than the state it would explain by more than this does not explain it. Clocks of the
 /// hub (tool writes) and the agent (scans) differ a little, and a scan that sees the old content a moment before a write is
@@ -39,6 +40,11 @@ pub(crate) struct Stored {
     pub observed_at_ms: i64,
     pub class: domain::FileClass,
     pub denied: bool,
+    /// The drift state the pipeline last computed for the path (`None`: it has not computed one, or the column holds a word this code
+    /// does not know), and the hash for comparing that it computed it from (N, `nfs_drift_hash`). What a sync job's change replaces
+    /// (the C7 context, [`crate::sync::overwrite`]).
+    pub state: Option<domain::DriftState>,
+    pub drift_hash: Option<ContentHash>,
 }
 
 /// A registered tool write of a hash (A10), as the database has it.
@@ -113,6 +119,8 @@ pub(crate) struct Candidate {
     pub out_of_band: bool,
     /// The hash the path had before this version moved it.
     pub before: Option<ContentHash>,
+    /// What a sync job's version replaced, for C7 ([`crate::sync::overwrite::previous_of`]). Stored on the observation.
+    pub previous: Option<Previous>,
 }
 
 impl Candidate {
@@ -178,6 +186,9 @@ pub(crate) fn plan_path(
                 };
                 let explained = explained_by_tool_write(ctx, Some(entry.hash), cur_at);
                 let (attribution, source, job) = attribute(explained, during_job.as_ref(), ctx.windows, at);
+                let previous = moves_state
+                    .then(|| previous_of(stored, cur_hash, &attribution))
+                    .flatten();
                 plan.candidates.push(Candidate {
                     path: path.clone(),
                     hash: Some(entry.hash),
@@ -192,6 +203,7 @@ pub(crate) fn plan_path(
                     moves_state,
                     origin,
                     before: cur_hash,
+                    previous,
                 });
                 if moves_state {
                     cur_hash = Some(entry.hash);
@@ -225,6 +237,8 @@ pub(crate) fn plan_path(
                     moves_state: true,
                     origin: Origin::Known,
                     before: Some(before),
+                    // A sync does not delete (Q3): a removal replaces no content that a sync could have overwritten.
+                    previous: None,
                 });
                 cur_hash = None;
                 cur_at = at;
@@ -334,7 +348,26 @@ mod tests {
             observed_at_ms: at,
             class: FileClass::Structured,
             denied: false,
+            state: None,
+            drift_hash: None,
         }
+    }
+
+    /// A stored path that the pipeline has computed: `state`, from the hash for comparing `drift`.
+    fn computed(hash: &str, drift: &str, at: i64, state: domain::DriftState) -> Stored {
+        Stored {
+            state: Some(state),
+            drift_hash: Some(h(drift)),
+            ..stored(Some(hash), at)
+        }
+    }
+
+    fn by_job(version: &str, at: i64) -> Version {
+        let mut v = file(version, at);
+        if let Version::File { during_job, .. } = &mut v {
+            *during_job = Some(JobRef::new("sync-sit1", "uid-1").unwrap());
+        }
+        v
     }
 
     fn ctx<'a>(
@@ -543,6 +576,105 @@ mod tests {
         let c = &p.candidates[0];
         assert!(c.moves_state && !c.first_sight(), "the path has been seen before");
         assert_eq!(c.before, None);
+    }
+
+    // ------------------------------------------------------------------------------------------ what a sync replaced (C7)
+
+    #[test]
+    fn a_sync_change_to_a_file_that_was_ahead_on_nfs_carries_what_it_replaced() {
+        use domain::DriftState::{Conflict, NfsAhead};
+        for state in [NfsAhead, Conflict] {
+            let p = plan(
+                Some(&computed("edited", "edited-for-drift", 10, state)),
+                &[by_job("git", 20)],
+                false,
+            );
+            let c = &p.candidates[0];
+            assert_eq!(c.attribution.source, AttributionSource::SyncJob);
+            assert_eq!(
+                c.previous,
+                Some(Previous {
+                    state,
+                    hash: Some(h("edited-for-drift")),
+                }),
+                "the state the pipeline had, and N: the hash for comparing, not the raw hash"
+            );
+        }
+    }
+
+    #[test]
+    fn the_context_is_kept_for_every_state_the_file_was_in() {
+        // The engine decides which states make C7; the observation records what was there.
+        let p = plan(
+            Some(&computed("a", "a", 10, domain::DriftState::InSync)),
+            &[by_job("b", 20)],
+            false,
+        );
+        assert_eq!(
+            p.candidates[0].previous,
+            Some(Previous {
+                state: domain::DriftState::InSync,
+                hash: Some(h("a")),
+            })
+        );
+    }
+
+    #[test]
+    fn only_a_sync_job_s_change_carries_it() {
+        // The same file in the same state, changed out of band: nothing was overwritten by a sync.
+        let p = plan(
+            Some(&computed("a", "a", 10, domain::DriftState::NfsAhead)),
+            &[file("b", 20)],
+            false,
+        );
+        assert_eq!(p.candidates[0].previous, None);
+    }
+
+    #[test]
+    fn a_path_the_pipeline_has_not_computed_has_no_context() {
+        // The row is the placeholder ingestion wrote (`unknown`, no state read back): there is nothing to say it replaced.
+        let p = plan(Some(&stored(Some("a"), 10)), &[by_job("b", 20)], false);
+        assert_eq!(p.candidates[0].previous, None);
+    }
+
+    #[test]
+    fn a_new_file_or_one_that_comes_back_replaces_no_content() {
+        assert_eq!(plan(None, &[by_job("a", 20)], false).candidates[0].previous, None);
+        let gone = Stored {
+            state: Some(domain::DriftState::NfsAhead),
+            drift_hash: None,
+            ..stored(None, 10)
+        };
+        assert_eq!(
+            plan(Some(&gone), &[by_job("a", 20)], false).candidates[0].previous,
+            None,
+            "a file that was not there"
+        );
+    }
+
+    #[test]
+    fn only_the_version_that_replaces_the_stored_one_carries_it() {
+        // a (stored, ahead) -> b by the job -> c by the job in one delta: b replaced what the hub knows, c replaced b, which the hub
+        // never computed a state for.
+        let p = plan(
+            Some(&computed("a", "a", 5, domain::DriftState::NfsAhead)),
+            &[by_job("b", 20), by_job("c", 30)],
+            false,
+        );
+        assert_eq!(p.candidates.len(), 2);
+        assert!(p.candidates[0].previous.is_some());
+        assert_eq!(p.candidates[1].previous, None);
+    }
+
+    #[test]
+    fn a_version_that_is_only_history_carries_none() {
+        let p = plan(
+            Some(&computed("b", "b", 100, domain::DriftState::NfsAhead)),
+            &[by_job("a", 50)],
+            false,
+        );
+        assert!(!p.candidates[0].moves_state);
+        assert_eq!(p.candidates[0].previous, None);
     }
 
     #[test]

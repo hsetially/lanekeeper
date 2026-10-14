@@ -16,6 +16,9 @@
 //!   pairs they affect with the engine, and writes drift, findings and the effective tree hashes with their events in one transaction for
 //!   each swimlane; a reconcile finds what an event missed, and a nightly job recomputes everything and repairs any divergence.
 //!
+//! - [`sync`] (T4): what the hub does when a sync Job has put Git's content on NFS (`record_sync`): the full scan, C7 first, baselines at the
+//!   commits the report names, and the deployment record. [`branches`] says which tenant branches are deployable.
+//!
 //! Nothing here reads a clock or an environment variable directly: instants come from a [`clock::Clock`] and every limit is a
 //! field of [`config::RegistryConfig`] with a tested default. Queries are runtime-checked `sqlx::query` with binds (plan A39);
 //! no SQL is built from input. Errors carry no input text (S21), and logs carry ids, paths, hashes and counts, never content (S10).
@@ -28,6 +31,7 @@
 )]
 
 pub(crate) mod batch;
+pub mod branches;
 pub mod clock;
 pub mod config;
 pub mod db;
@@ -36,6 +40,7 @@ pub mod index;
 pub mod ingest;
 pub mod metrics;
 pub mod pipeline;
+pub mod sync;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{ConfigError, RegistryConfig};
@@ -50,3 +55,4 @@ pub use metrics::RegistryMetrics;
 pub use pipeline::{
     BatchReport, LaneReport, NightlyReport, Pipeline, PipelineDeps, PipelineHandle, ReconcileOutcome, Work,
 };
+pub use sync::{SyncDeps, SyncError, SyncOutcome, SyncService, SyncSource};

@@ -454,6 +454,11 @@ impl Inner {
             }
         }
         self.metrics.pipeline_lanes_in_memory(exec.store.len());
+        // The tenant-suffix review (T4) reads what the batch computed, then lets go of the memory: a ranking over the mirror's trees
+        // must not hold up the next batch.
+        let checks = self.tenant_checks(&exec, &report);
+        drop(exec);
+        self.review_tenants(checks).await;
         self.metrics
             .pipeline_batch_seconds(started.elapsed().as_secs_f64());
         debug!(

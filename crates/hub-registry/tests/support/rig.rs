@@ -312,7 +312,8 @@ impl Rig {
     pub async fn observations(&self, path: &str) -> Vec<ObservationRow> {
         let rows = sqlx::query(
             "SELECT hash::bytea, source, class, initial, attribution_source, attribution_confidence, attribution_actor, \
-                    during_job, (EXTRACT(EPOCH FROM observed_at) * 1000)::bigint AS at \
+                    during_job, previous_state, previous_hash::bytea AS previous_hash, \
+                    (EXTRACT(EPOCH FROM observed_at) * 1000)::bigint AS at \
              FROM file_observations WHERE swimlane_id = $1 AND path = $2 ORDER BY observed_at, id LIMIT 1000",
         )
         .bind(self.swimlane.as_str())
@@ -332,6 +333,10 @@ impl Rig {
                 attribution_confidence: row.get("attribution_confidence"),
                 attribution_actor: row.get("attribution_actor"),
                 during_job: row.get("during_job"),
+                previous_state: row.get("previous_state"),
+                previous_hash: row
+                    .get::<Option<Vec<u8>>, _>("previous_hash")
+                    .map(|b| ContentHash::from_bytes(b.try_into().unwrap())),
                 observed_at_ms: row.get("at"),
             })
             .collect()
@@ -390,6 +395,9 @@ pub struct ObservationRow {
     pub attribution_confidence: String,
     pub attribution_actor: Option<serde_json::Value>,
     pub during_job: Option<String>,
+    /// The C7 context (T4): the drift state a sync job's version replaced, and N, the hash for comparing, it had.
+    pub previous_state: Option<String>,
+    pub previous_hash: Option<ContentHash>,
     pub observed_at_ms: i64,
 }
 

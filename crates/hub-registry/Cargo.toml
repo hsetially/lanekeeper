@@ -21,6 +21,9 @@ hub-platform.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 futures.workspace = true
+# The admin's branch patterns (`path_mappings.branch_include` and `branch_exclude`, T4) are globs, matched with the crate the engine and the
+# agent already use for their globs. Already pinned.
+globset.workspace = true
 # The bounded cache of normalised Git hashes (T2, plan A23): weighed in bytes, never more than `git_hash_cache_bytes`. Already pinned.
 moka.workspace = true
 prometheus-client.workspace = true

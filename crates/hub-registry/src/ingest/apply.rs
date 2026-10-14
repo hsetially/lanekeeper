@@ -40,8 +40,8 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use domain::{
-    Actor, AttributionSource, ContentHash, DomainEvent, FileClass, JobRef, NfsPath, ObservationSource,
-    SwimlaneId, Timestamp,
+    Actor, AttributionSource, ContentHash, DomainEvent, DriftState, FileClass, JobRef, NfsPath,
+    ObservationSource, SwimlaneId, Timestamp,
 };
 use ports::{AuditAction, AuditActor, AuditEvent, AuditVia, Tx};
 
@@ -60,7 +60,7 @@ const MAX_LANE_PATHS: i64 = 1_000_000;
 
 /// The advisory lock that serialises the writes of one swimlane's applies, across replicas. A separate key space from the audit
 /// chain's (03a): the swimlane's lock is always taken first, the chain's last.
-const LOCK_SQL: &str =
+pub(crate) const LOCK_SQL: &str =
     "SELECT pg_advisory_xact_lock(hashtextextended('lanekeeper.registry.apply.' || $1, 0))";
 
 /// What an apply did, in counts. Nothing in it is content.
@@ -125,7 +125,16 @@ fn json_text<T: serde::Serialize>(v: &T) -> Result<String, RegistryError> {
 }
 
 /// A row of `file_state`, as `stored` reads it.
-type StoredRow = (String, Option<Vec<u8>>, String, bool, bool, i64);
+type StoredRow = (
+    String,
+    Option<Vec<u8>>,
+    String,
+    bool,
+    bool,
+    i64,
+    String,
+    Option<Vec<u8>>,
+);
 /// A row of `file_observations` of source `tool_write`, as `tool_writes` reads it.
 type ToolWriteRow = (String, Option<Vec<u8>>, i64, Option<serde_json::Value>);
 /// The key of an observation: its path, its time and its hash (`None` for a removal).
@@ -630,7 +639,7 @@ impl Inner {
         paths: &[String],
     ) -> Result<HashMap<NfsPath, Stored>, RegistryError> {
         let sql = format!(
-            "SELECT path, nfs_hash::bytea, class, denied, observed_at IS NOT NULL, COALESCE({}, 0) \
+            "SELECT path, nfs_hash::bytea, class, denied, observed_at IS NOT NULL, COALESCE({}, 0), state, nfs_drift_hash::bytea \
              FROM file_state WHERE swimlane_id = $1 AND path = ANY($2::text[])",
             ms("observed_at")
         );
@@ -645,7 +654,7 @@ impl Inner {
             )
             .await?;
         let mut out = HashMap::with_capacity(rows.len());
-        for (path, hash, class, denied, observed, observed_at_ms) in rows {
+        for (path, hash, class, denied, observed, observed_at_ms, state, drift_hash) in rows {
             out.insert(
                 NfsPath::parse(&path).map_err(|_| RegistryError::Corrupt)?,
                 Stored {
@@ -654,6 +663,9 @@ impl Inner {
                     observed_at_ms,
                     class: FileClass::from_str(&class).map_err(|_| RegistryError::Corrupt)?,
                     denied,
+                    // A word this code does not know reads as "no state": nothing is claimed about what was replaced.
+                    state: DriftState::from_str(&state).ok(),
+                    drift_hash: opt_hash(drift_hash)?,
                 },
             );
         }
@@ -700,6 +712,7 @@ impl Inner {
     }
 
     /// Insert the observations; returns the ids of those that were new, by their key.
+    #[allow(clippy::too_many_lines)] // one array for each column of the insert, and the statement that binds them
     async fn insert_observations(
         &self,
         tx: &mut Txn,
@@ -726,6 +739,8 @@ impl Inner {
         let mut a_actor: Vec<Option<String>> = Vec::new();
         let mut a_evid = Vec::new();
         let mut initial = Vec::new();
+        let mut prev_state: Vec<Option<String>> = Vec::new();
+        let mut prev_hash: Vec<Option<Vec<u8>>> = Vec::new();
         for c in rows {
             paths.push(c.path.as_str().to_owned());
             hashes.push(c.hash.map(|h| h.as_bytes().to_vec()));
@@ -756,19 +771,23 @@ impl Inner {
             a_actor.push(c.attribution.actor.as_ref().map(json_text).transpose()?);
             a_evid.push(json_text(&c.attribution.evidence)?);
             initial.push(c.initial());
+            // What a sync job's version replaced, for C7 (T4): only a sync's version carries it.
+            prev_state.push(c.previous.map(|p| p.state.as_str().to_owned()));
+            prev_hash.push(c.previous.and_then(|p| p.hash).map(|h| h.as_bytes().to_vec()));
         }
         let sql = format!(
             "INSERT INTO file_observations \
                (swimlane_id, path, hash, size, source, class, eol_style, encoding, bom, mtime, observed_at, during_job, \
-                attribution_source, attribution_confidence, attribution_actor, attribution_evidence, initial) \
+                attribution_source, attribution_confidence, attribution_actor, attribution_evidence, initial, \
+                previous_state, previous_hash) \
              SELECT $1, x.path, x.hash, x.size, x.source, x.class, x.eol, x.enc, x.bom, \
                     CASE WHEN x.mtime IS NULL THEN NULL ELSE {mtime} END, {observed}, x.job, \
-                    x.a_src, x.a_conf, x.a_actor::jsonb, x.a_evid::jsonb, x.initial \
+                    x.a_src, x.a_conf, x.a_actor::jsonb, x.a_evid::jsonb, x.initial, x.prev_state, x.prev_hash \
              FROM unnest($2::text[], $3::bytea[], $4::bigint[], $5::text[], $6::text[], $7::text[], $8::text[], \
                          $9::boolean[], $10::bigint[], $11::bigint[], $12::text[], $13::text[], $14::text[], \
-                         $15::text[], $16::text[], $17::boolean[]) \
+                         $15::text[], $16::text[], $17::boolean[], $18::text[], $19::bytea[]) \
                   AS x(path, hash, size, source, class, eol, enc, bom, mtime, observed, job, a_src, a_conf, a_actor, \
-                       a_evid, initial) \
+                       a_evid, initial, prev_state, prev_hash) \
              ON CONFLICT DO NOTHING \
              RETURNING id, path, hash::bytea, {observed_back}",
             mtime = ts("x.mtime"),
@@ -797,6 +816,8 @@ impl Inner {
                     .bind(&a_actor)
                     .bind(&a_evid)
                     .bind(&initial)
+                    .bind(&prev_state)
+                    .bind(&prev_hash)
                     .fetch_all(&mut **tx),
             )
             .await?;

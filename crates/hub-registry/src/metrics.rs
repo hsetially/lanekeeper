@@ -103,6 +103,48 @@ pub enum SignalResult {
     Dropped,
 }
 
+/// How a `record_sync` ended (T4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum SyncResult {
+    /// Baselines set, the deployment recorded.
+    Recorded,
+    /// The swimlane has no confirmed baseline yet: only the deployment was recorded.
+    DeploymentOnly,
+    /// The report named a swimlane, branch, tenant or commit the hub does not accept.
+    Rejected,
+    /// The agent is not connected, so no scan could be asked for.
+    AgentNotConnected,
+    /// The scan was asked for and not applied in time.
+    ScanTimeout,
+    /// The database, the mirror, the audit log or the outbox failed.
+    Failed,
+}
+
+/// What a tenant-suffix review did (T4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum RematchResult {
+    /// A new review was raised.
+    Raised,
+    /// The open review was refreshed with the new suffixes.
+    Refreshed,
+    /// The same suffixes were seen before: nothing to do.
+    Unchanged,
+    /// An admin is working on the open review, so it was left as it is; the next batch looks again.
+    Deferred,
+    /// The ranking could not be made (the mirror, the database).
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct SyncLabels {
+    result: SyncResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct RematchLabels {
+    result: RematchResult,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
 struct LaneLabels {
     result: LaneResult,
@@ -169,6 +211,11 @@ pub struct RegistryMetrics {
     pipeline_signals: Family<SignalLabels, Counter>,
     pipeline_lanes_in_memory: Gauge,
     pipeline_seconds: Histogram,
+    syncs: Family<SyncLabels, Counter>,
+    sync_overwritten: Counter,
+    sync_baselines: Counter,
+    sync_seconds: Histogram,
+    rematches: Family<RematchLabels, Counter>,
 }
 
 impl Default for RegistryMetrics {
@@ -204,6 +251,12 @@ impl Default for RegistryMetrics {
             pipeline_lanes_in_memory: Gauge::default(),
             // 1 ms to about 8 s; a whole swimlane takes seconds, an incremental batch milliseconds.
             pipeline_seconds: Histogram::new(exponential_buckets(0.001, 2.0, 14)),
+            syncs: Family::default(),
+            sync_overwritten: Counter::default(),
+            sync_baselines: Counter::default(),
+            // 10 ms to about 80 s: most of a sync's time is the agent's scan.
+            sync_seconds: Histogram::new(exponential_buckets(0.01, 2.0, 14)),
+            rematches: Family::default(),
         }
     }
 }
@@ -345,6 +398,31 @@ impl RegistryMetrics {
             "registry_pipeline_batch_seconds",
             "Time to bring one batch of swimlanes up to date",
             self.pipeline_seconds.clone(),
+        );
+        registry.register(
+            "registry_sync_reports",
+            "Sync reports handled by record_sync, by how they ended",
+            self.syncs.clone(),
+        );
+        registry.register(
+            "registry_sync_overwritten_changes",
+            "Changes made only on NFS that a sync replaced (C7)",
+            self.sync_overwritten.clone(),
+        );
+        registry.register(
+            "registry_sync_baselines_set",
+            "Baselines set by a sync report because NFS equals Git at the reported commits",
+            self.sync_baselines.clone(),
+        );
+        registry.register(
+            "registry_sync_seconds",
+            "Time to record one sync report, including the wait for the scan",
+            self.sync_seconds.clone(),
+        );
+        registry.register(
+            "registry_tenant_rematches",
+            "Reviews raised or refreshed because the tenant suffixes on NFS changed, by outcome",
+            self.rematches.clone(),
         );
     }
 
@@ -491,6 +569,47 @@ impl RegistryMetrics {
         self.pipeline_seconds.observe(seconds);
     }
 
+    pub(crate) fn sync(&self, result: SyncResult, seconds: f64) {
+        self.syncs.get_or_create(&SyncLabels { result }).inc();
+        self.sync_seconds.observe(seconds);
+    }
+
+    pub(crate) fn sync_overwritten(&self, n: u64) {
+        if n > 0 {
+            self.sync_overwritten.inc_by(n);
+        }
+    }
+
+    pub(crate) fn sync_baselines(&self, n: u64) {
+        if n > 0 {
+            self.sync_baselines.inc_by(n);
+        }
+    }
+
+    pub(crate) fn rematch(&self, result: RematchResult) {
+        self.rematches.get_or_create(&RematchLabels { result }).inc();
+    }
+
+    /// Sync reports by how they ended, for tests.
+    pub fn sync_count(&self, result: SyncResult) -> u64 {
+        self.syncs.get_or_create(&SyncLabels { result }).get()
+    }
+
+    /// Changes a sync overwrote (C7), for tests.
+    pub fn sync_overwritten_count(&self) -> u64 {
+        self.sync_overwritten.get()
+    }
+
+    /// Baselines set by sync reports, for tests.
+    pub fn sync_baselines_count(&self) -> u64 {
+        self.sync_baselines.get()
+    }
+
+    /// Tenant-suffix reviews by outcome, for tests.
+    pub fn rematch_count(&self, result: RematchResult) -> u64 {
+        self.rematches.get_or_create(&RematchLabels { result }).get()
+    }
+
     /// Swimlanes handled by the pipeline, by result, for tests.
     pub fn pipeline_lane_count(&self, result: LaneResult) -> u64 {
         self.pipeline_lanes.get_or_create(&LaneLabels { result }).get()
@@ -614,6 +733,16 @@ mod tests {
         m.head_move(MoveResult::Whole);
         m.git_hash(CacheResult::Hit);
         m.tree_rows(3);
+        m.sync(SyncResult::Recorded, 0.5);
+        m.sync_overwritten(2);
+        m.sync_overwritten(0);
+        m.sync_baselines(7);
+        m.rematch(RematchResult::Raised);
+        assert_eq!(m.sync_count(SyncResult::Recorded), 1);
+        assert_eq!(m.sync_count(SyncResult::ScanTimeout), 0);
+        assert_eq!(m.sync_overwritten_count(), 2);
+        assert_eq!(m.sync_baselines_count(), 7);
+        assert_eq!(m.rematch_count(RematchResult::Raised), 1);
         assert_eq!(m.index_count(IndexResult::Indexed), 2);
         assert_eq!(m.index_count(IndexResult::Dropped), 0);
         assert_eq!(m.index_rows_count(), 5);
@@ -626,6 +755,8 @@ mod tests {
         prometheus_client::encoding::text::encode(&mut text, &registry).unwrap_or_default();
         assert!(text.contains("registry_ingest_messages_total"), "{text}");
         assert!(text.contains("registry_index_blobs_total"), "{text}");
+        assert!(text.contains("registry_sync_reports_total"), "{text}");
+        assert!(text.contains("registry_tenant_rematches_total"), "{text}");
         assert!(!text.contains("sit1"), "no swimlane id is ever a label");
     }
 }

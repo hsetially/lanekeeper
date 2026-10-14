@@ -13,4 +13,5 @@ pub mod pg_blobs;
 pub mod pg_bus;
 pub mod rig;
 pub mod statements;
+pub mod sync;
 pub mod world;
