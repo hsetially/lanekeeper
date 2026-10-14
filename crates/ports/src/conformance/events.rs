@@ -329,8 +329,10 @@ pub async fn event_bus_batch<B: EventBus + ?Sized>(bus: &B, txf: &dyn TxFactory)
         "nothing of a refused batch is published"
     );
 
-    // Exactly the limit is accepted. A subscriber with a small buffer may lag on so many events, and is then told to resync; what it
-    // does hear is in order, and with no lag it hears all of them.
+    // Exactly the limit is accepted. A subscriber with a small buffer may lag on so many events, and is then told to resync: a
+    // `Resync` is the only way for it to miss an event. So what it heard is runs of the batch, in order, with nothing missing
+    // inside a run; the first run starts at the first event unless a `Resync` came first; and it ends at the last event, or with a
+    // `Resync` (told to refetch, and nothing newer lost). An implementation that drops events without saying so fails here.
     let mut tx = txf.begin().await.unwrap();
     let full: Vec<DomainEvent> = (0..MAX_EVENT_BATCH as i64)
         .map(|i| proposal(60_000 + i))
@@ -339,13 +341,48 @@ pub async fn event_bus_batch<B: EventBus + ?Sized>(bus: &B, txf: &dyn TxFactory)
     bus.publish_in_tx(&mut tx.tx(), marker(32)).await.unwrap();
     tx.commit().await.unwrap();
     let heard = until(&mut all, &marker(32)).await;
-    let proposals: Vec<&DomainEvent> = heard.iter().filter(|e| **e != DomainEvent::Resync).collect();
-    let in_order = full.iter().filter(|e| proposals.contains(e));
-    assert!(
-        proposals.iter().copied().eq(in_order),
-        "what arrives of a full batch is in input order"
-    );
-    if proposals.len() == heard.len() {
-        assert_eq!(heard, full, "no lag, so every event of a full batch arrives");
+    assert_no_silent_loss(&heard, &full);
+}
+
+/// `heard`, which ends where a marker followed the batch `full`, lost nothing without a `Resync`: see the caller.
+fn assert_no_silent_loss(heard: &[DomainEvent], full: &[DomainEvent]) {
+    let mut runs: Vec<Vec<usize>> = vec![Vec::new()];
+    for e in heard {
+        if *e == DomainEvent::Resync {
+            runs.push(Vec::new());
+        } else {
+            let at = full
+                .iter()
+                .position(|f| f == e)
+                .unwrap_or_else(|| panic!("an event of the full batch is not one that was published: {e:?}"));
+            runs.last_mut().expect("there is always a run").push(at);
+        }
     }
+    for run in &runs {
+        assert!(
+            run.windows(2).all(|w| w[1] == w[0] + 1),
+            "silent loss or disorder inside a run of a full batch (no Resync between): {run:?}"
+        );
+    }
+    let first = runs.first().expect("there is always a run");
+    assert!(
+        runs.len() > 1 || first.first() == Some(&0),
+        "silent loss: without a Resync, a full batch is heard from its first event, not from {:?}",
+        first.first()
+    );
+    if runs.len() > 1 {
+        // A Resync came: whatever is heard before it starts at the first event.
+        assert!(
+            first.is_empty() || first.first() == Some(&0),
+            "silent loss before the Resync: the first run starts at {:?}",
+            first.first()
+        );
+    }
+    let ends_with_resync = heard.last() == Some(&DomainEvent::Resync);
+    let last_run = runs.last().expect("there is always a run");
+    assert!(
+        ends_with_resync || last_run.last() == Some(&(full.len() - 1)),
+        "silent loss at the end: a full batch is heard to its last event or a Resync comes last, not {:?}",
+        last_run.last()
+    );
 }

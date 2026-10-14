@@ -40,7 +40,8 @@ pub mod fakes;
 
 pub use audit::{
     AuditAction, AuditActor, AuditEntry, AuditError, AuditEvent, AuditLog, AuditVia, MAX_AUDIT_BATCH,
-    canonical_json, chain_hash, genesis_hash, verify_chain,
+    MAX_AUDIT_BATCH_BYTES, MAX_AUDIT_EVENT_BYTES, canonical_json, canonical_size, chain_hash, genesis_hash,
+    split_batches, verify_chain,
 };
 pub use auth::{AuthError, MAX_TOKEN_BYTES, TokenVerifier, UserError, Users};
 pub use blob::{BlobError, BlobStore, MAX_BLOB_BYTES, MAX_GET_MANY, content_hash};

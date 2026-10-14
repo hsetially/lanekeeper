@@ -101,9 +101,9 @@ impl EventFilter {
 /// The most events one [`EventBus::publish_many_in_tx`] call takes. A bigger batch is refused whole with
 /// [`BusError::BatchTooLarge`], never truncated.
 ///
-/// The same unit as [`crate::MAX_AUDIT_BATCH`]: a caller that audits a batch publishes the events of the same batch, so
-/// the two limits are one number. Every event is at most a few KiB (the platform caps an envelope at 4 KiB), so 200 of
-/// them are well under a megabyte in one statement.
+/// The same number as [`crate::MAX_AUDIT_BATCH`]: a caller that audits a batch publishes the events of the same batch, so the
+/// two limits go together. The outbox bus caps an envelope at 4 KiB, so 200 events are under a megabyte in one statement, and
+/// there is no byte budget as there is for the audit chain: nothing here is held under a lock that other writers wait for.
 pub const MAX_EVENT_BATCH: usize = 200;
 
 /// Why an event could not be published. Carries no event content.
@@ -115,6 +115,10 @@ pub enum BusError {
     #[error("event bus is unavailable")]
     Unavailable,
     /// `publish_many_in_tx` was given more than [`MAX_EVENT_BATCH`] events. Nothing was published; split the batch.
+    ///
+    /// New with the batch methods: an exhaustive `match` on `BusError` (and on `AuditError`, which gained a variant of the same
+    /// name) needs an arm for it. `hub-registry`'s error mapping (`crates/hub-registry/src/error.rs`, in the 05 branch) matches
+    /// only `WrongTx` and `Unavailable`, and must add one when it adopts `publish_many_in_tx`.
     #[error("event batch is too large")]
     BatchTooLarge,
 }
@@ -139,6 +143,14 @@ pub trait EventBus: Send + Sync + 'static {
     /// - More than [`MAX_EVENT_BATCH`] events is [`BusError::BatchTooLarge`], and nothing is published.
     /// - On any error the caller rolls the transaction back, as after a failed `publish_in_tx`. A batch that fails
     ///   before its events are written (too many, or a transaction of another store) writes none of them.
+    ///
+    /// A batch of one event is no faster than `publish_in_tx`: use `publish_in_tx` for a single event. The gain is for many
+    /// events, in one statement instead of one round trip for each.
+    ///
+    /// **A wrapper or decorator of an `EventBus` must forward this method** (and override it too, if it changes what
+    /// `publish_in_tx` stores or checks, so that the two give an event the same treatment). The default calls
+    /// `publish_in_tx`, so a wrapper that forwards only `publish_in_tx` still works, but it silently falls back to the slow
+    /// loop of one statement per event.
     ///
     /// The default calls `publish_in_tx` once per event, after the checks above. Overriding is for the cost of a call,
     /// not for a different result.

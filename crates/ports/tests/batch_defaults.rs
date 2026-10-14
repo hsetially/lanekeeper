@@ -12,11 +12,11 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use domain::{AuditId, DomainEvent, ProposalId, ProposalStatus, Timestamp};
 use futures::stream::BoxStream;
-use ports::conformance::sample::user_id;
+use ports::conformance::sample::{audit_events_totalling, user_id, worst_case_audit_event};
 use ports::fakes::FakeTxState;
 use ports::{
     AuditAction, AuditActor, AuditError, AuditEvent, AuditLog, AuditVia, BusError, EventBus, EventFilter,
-    MAX_AUDIT_BATCH, MAX_EVENT_BATCH, Tx,
+    MAX_AUDIT_BATCH, MAX_AUDIT_BATCH_BYTES, MAX_EVENT_BATCH, Tx,
 };
 
 fn audit_event(n: i64) -> AuditEvent {
@@ -236,4 +236,49 @@ async fn default_publish_many_in_tx_stops_at_the_first_error_and_reports_it() {
 fn the_batch_limits_are_what_the_docs_say() {
     assert_eq!(MAX_AUDIT_BATCH, 200);
     assert_eq!(MAX_EVENT_BATCH, 200);
+}
+
+#[tokio::test]
+async fn default_record_many_refuses_a_batch_over_the_byte_budget_before_recording_anything() {
+    let log = SingleAudit::default();
+    let mut state = FakeTxState::new();
+    // Small events first, then enough of the largest to pass the budget: three events at the end, 1.2 MB, 192 KiB of diff.
+    let mut events: Vec<AuditEvent> = (1..=4).map(audit_event).collect();
+    events.extend((0..3).map(worst_case_audit_event));
+    assert_eq!(
+        log.record_many(&mut Tx::in_memory(&mut state), events).await,
+        Err(AuditError::BatchTooLarge)
+    );
+    assert!(
+        log.seen.lock().unwrap().is_empty(),
+        "the four small events before the one that passed the budget were not recorded either"
+    );
+}
+
+#[tokio::test]
+async fn default_record_many_takes_the_byte_budget_to_the_byte_and_the_largest_event_alone() {
+    let mut state = FakeTxState::new();
+    let log = SingleAudit::default();
+    let at_budget = audit_events_totalling(3, MAX_AUDIT_BATCH_BYTES);
+    let ids = log
+        .record_many(&mut Tx::in_memory(&mut state), at_budget)
+        .await
+        .unwrap();
+    assert_eq!(ids.len(), 3);
+
+    let log = SingleAudit::default();
+    let over = audit_events_totalling(3, MAX_AUDIT_BATCH_BYTES + 1);
+    assert_eq!(
+        log.record_many(&mut Tx::in_memory(&mut state), over).await,
+        Err(AuditError::BatchTooLarge)
+    );
+    assert!(log.seen.lock().unwrap().is_empty());
+
+    // The invariant behind the budget: what `record` accepts, `record_many` accepts alone.
+    let log = SingleAudit::default();
+    let ids = log
+        .record_many(&mut Tx::in_memory(&mut state), vec![worst_case_audit_event(0)])
+        .await
+        .unwrap();
+    assert_eq!(ids.len(), 1);
 }

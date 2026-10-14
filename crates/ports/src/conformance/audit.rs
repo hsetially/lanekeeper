@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use domain::{ContentHash, Timestamp};
 
-use super::sample::{hash, nfs, swimlane, user_id};
+use super::sample::{audit_events_totalling, hash, nfs, storable_worst_case_audit_event, swimlane, user_id};
 use crate::{
     AuditAction, AuditActor, AuditEntry, AuditError, AuditEvent, AuditLog, AuditVia, MAX_AUDIT_BATCH,
-    TxFactory, canonical_json, chain_hash, genesis_hash, verify_chain,
+    MAX_AUDIT_BATCH_BYTES, TxFactory, canonical_json, chain_hash, genesis_hash, verify_chain,
 };
 
 /// What the audit conformance suite needs to see.
@@ -156,6 +156,10 @@ fn assert_written(chain: &[AuditEntry], base: usize, prev: ContentHash, events: 
 /// - An event that cannot be stored is reported before anything is recorded: nothing of the batch is written, the transaction
 ///   stays usable, and committing it keeps nothing of the failed batch.
 /// - An empty batch is a no-op; [`MAX_AUDIT_BATCH`] events are accepted and one more is `BatchTooLarge`, recording nothing.
+/// - The byte budget: events whose canonical JSON adds up to exactly [`MAX_AUDIT_BATCH_BYTES`] are accepted, one byte more is
+///   `BatchTooLarge` (also with few events: the budget counts the canonical bytes, in which a control character is six, and not
+///   the characters), nothing of a refused batch is recorded, and the largest event that can exist is accepted alone, by
+///   `record_many` and by `record`.
 pub async fn audit_log_batch<A: AuditProbe + ?Sized>(a: &A, txf: &dyn TxFactory) {
     let head = |chain: &[AuditEntry]| chain.last().map_or_else(genesis_hash, |e| e.hash);
     let start = a.committed().await;
@@ -299,4 +303,82 @@ pub async fn audit_log_batch<A: AuditProbe + ?Sized>(a: &A, txf: &dyn TxFactory)
     let chain = a.committed().await;
     assert_written(&chain, base, prev, &full, "a batch of exactly the limit");
     assert_eq!(chain[base..].iter().map(|e| e.id).collect::<Vec<_>>(), ids);
+
+    // The byte budget. Three events of the largest size are 3 events and 1.2 MB: under the count limit and over the budget, and
+    // their diffs are 192 KiB of characters, which is what a count of characters would see.
+    let (chain, marker) = (a.committed().await, events(460, 1));
+    let (base, prev) = (chain.len(), head(&chain));
+    let largest: Vec<AuditEvent> = (0..3).map(storable_worst_case_audit_event).collect();
+    let mut tx = txf.begin().await.unwrap();
+    assert_eq!(
+        a.record_many(&mut tx.tx(), largest.clone()).await,
+        Err(AuditError::BatchTooLarge),
+        "over the byte budget with three events: refused, in canonical bytes and not in characters"
+    );
+    let one_more = audit_events_totalling(3, MAX_AUDIT_BATCH_BYTES + 1);
+    assert_eq!(
+        a.record_many(&mut tx.tx(), one_more).await,
+        Err(AuditError::BatchTooLarge),
+        "one byte over the byte budget"
+    );
+    a.record_many(&mut tx.tx(), marker.clone()).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_written(
+        &a.committed().await,
+        base,
+        prev,
+        &marker,
+        "after batches over the byte budget (only the later marker)",
+    );
+
+    // The largest event that can exist is accepted alone, by both methods: the budget is at least one such event.
+    let (chain, one) = (a.committed().await, vec![storable_worst_case_audit_event(7)]);
+    let (base, prev) = (chain.len(), head(&chain));
+    let mut tx = txf.begin().await.unwrap();
+    a.record_many(&mut tx.tx(), one.clone()).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_written(
+        &a.committed().await,
+        base,
+        prev,
+        &one,
+        "the largest event, by record_many",
+    );
+    let (chain, one) = (a.committed().await, vec![storable_worst_case_audit_event(8)]);
+    let (base, prev) = (chain.len(), head(&chain));
+    let mut tx = txf.begin().await.unwrap();
+    a.record(&mut tx.tx(), one[0].clone()).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_written(
+        &a.committed().await,
+        base,
+        prev,
+        &one,
+        "the largest event, by record",
+    );
+
+    // What fits: two of the largest, and the budget to the byte, in three events and in as many as the count allows.
+    let at_the_edge: [(Vec<AuditEvent>, &str); 3] = [
+        (
+            (10..12).map(storable_worst_case_audit_event).collect(),
+            "two of the largest",
+        ),
+        (
+            audit_events_totalling(3, MAX_AUDIT_BATCH_BYTES),
+            "exactly the byte budget, in three events",
+        ),
+        (
+            audit_events_totalling(MAX_AUDIT_BATCH, MAX_AUDIT_BATCH_BYTES),
+            "exactly the byte budget, in as many events as the count allows",
+        ),
+    ];
+    for (batch, what) in at_the_edge {
+        let chain = a.committed().await;
+        let (base, prev) = (chain.len(), head(&chain));
+        let mut tx = txf.begin().await.unwrap();
+        let ids = a.record_many(&mut tx.tx(), batch.clone()).await.unwrap();
+        assert_eq!(ids.len(), batch.len(), "{what}");
+        tx.commit().await.unwrap();
+        assert_written(&a.committed().await, base, prev, &batch, what);
+    }
 }

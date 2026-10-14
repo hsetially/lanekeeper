@@ -17,10 +17,15 @@
 //! Events are delivered in id order, except that a row whose transaction commits after a higher id has been read is delivered when
 //! the relay first sees it (see [`super::relay`]): two replicas may hear two such events in different orders, and the events of one
 //! publisher, which commit one after the other, are always heard in order. A subscriber made just before an event commits may or
-//! may not hear it, and one made just after may hear it: "from now" is accurate to the relay's last read. A batch is written by one
-//! statement, so its ids are consecutive unless another session draws ids from the sequence in the same instant; if it does, the
-//! relay may hear the two parts of the batch in two reads, as it hears any rows that commit after a higher id was read. The rows
-//! of events published one at a time in a transaction are far likelier to be apart.
+//! may not hear it, and one made just after may hear it: "from now" is accurate to the relay's last read.
+//!
+//! A batch commits atomically, so the relay sees all of its rows or none, and it delivers what it reads in id order: a batch is heard
+//! in the order of its ids, which is the order it was published in. One case lies outside that, and it is the relay's and not the
+//! batch's: while the relay works through a backlog of more than `RelaySettings::batch` rows, ids that another transaction drew
+//! between the rows of the batch can turn the lower rows into gaps that are read in the next poll, after the higher ones. A single
+//! statement draws its ids one after the other, so that needs another session to draw ids at the same instant; the rows of events
+//! published one at a time in a transaction are far likelier to be apart. An event is a prompt to refetch, so the order within one
+//! batch does not decide what a client shows.
 //!
 //! Subscribers share one bounded broadcast channel per replica: the relay never waits for a subscriber, and a subscriber that is
 //! `capacity` events behind loses the oldest and is told to refetch ([`DomainEvent::Resync`]) before it sees anything newer.

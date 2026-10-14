@@ -364,10 +364,22 @@ async fn a_committed_batch_is_delivered_once_per_subscriber_on_every_replica_in_
 
 /// Batches of 1 to 40 events from writers on two replicas, committing in an order that has nothing to do with their ids, some of them
 /// rolled back. Every subscriber hears the events of each committed batch in the order of the batch, each once, and nothing from a
-/// rolled-back one.
+/// rolled-back one: every batch, whether or not other sessions drew ids between its rows.
+///
+/// The relay reads up to 10,000 rows in a poll, more than this test writes. A relay that works through a backlog of more than its read
+/// size can deliver the lower rows of a batch after the higher ones, when another transaction's ids fall between them (see the module
+/// doc of `events::bus`); that is a property of the relay and not of the batch, and this test keeps it out of the way.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_batches_are_each_heard_once_in_order_and_rollbacks_never() {
-    let Some(cluster) = EventCluster::start(2, fast_relay(), SseSettings::default()).await else {
+    let settings = BusSettings {
+        relay: RelaySettings {
+            batch: 10_000,
+            tick: Duration::from_millis(50),
+            ..RelaySettings::default()
+        },
+        ..BusSettings::default()
+    };
+    let Some(cluster) = EventCluster::start(2, settings, SseSettings::default()).await else {
         return;
     };
     let mut subscribers: Vec<_> = cluster
@@ -427,19 +439,7 @@ async fn concurrent_batches_are_each_heard_once_in_order_and_rollbacks_never() {
         .flat_map(|(base, n)| (0..*n as i64).map(move |i| base + i))
         .collect();
     assert_eq!(stored.iter().map(|(_, e)| *e).collect::<BTreeSet<_>>(), expected);
-    // A batch whose rows no other row falls between: one statement drew its ids one after the other.
-    let mut contiguous = Vec::new();
     for (base, n) in &batches {
-        let ids: Vec<i64> = stored
-            .iter()
-            .filter(|(_, e)| (*base..*base + *n as i64).contains(e))
-            .map(|(id, _)| *id)
-            .collect();
-        assert_eq!(
-            ids.iter().copied().collect::<BTreeSet<_>>().len(),
-            *n,
-            "the batch at {base}: a row for each event"
-        );
         let in_input_order: Vec<i64> = (0..*n as i64)
             .map(|i| stored.iter().find(|(_, e)| *e == base + i).unwrap().0)
             .collect();
@@ -447,10 +447,6 @@ async fn concurrent_batches_are_each_heard_once_in_order_and_rollbacks_never() {
             in_input_order.windows(2).all(|w| w[0] < w[1]),
             "the batch at {base}: ids increase in the order of the batch"
         );
-        let (lowest, highest) = (in_input_order[0], in_input_order[n - 1]);
-        if highest - lowest + 1 == *n as i64 {
-            contiguous.push((*base, *n));
-        }
     }
 
     for s in &mut subscribers {
@@ -465,8 +461,8 @@ async fn concurrent_batches_are_each_heard_once_in_order_and_rollbacks_never() {
         let unique: BTreeSet<i64> = heard.iter().copied().collect();
         assert_eq!(unique.len(), heard.len(), "no event twice");
         assert_eq!(unique, expected, "exactly the committed events");
-        // A batch with consecutive ids became visible in one piece and is read in id order.
-        for (base, n) in &contiguous {
+        // Every batch is heard in its order, however its ids fell among those of the others.
+        for (base, n) in &batches {
             let of_batch: Vec<i64> = heard
                 .iter()
                 .copied()
@@ -478,10 +474,6 @@ async fn concurrent_batches_are_each_heard_once_in_order_and_rollbacks_never() {
                 "the batch at {base}, in its order"
             );
         }
-        assert!(
-            !contiguous.is_empty(),
-            "most batches are consecutive, so this checks something"
-        );
     }
 }
 

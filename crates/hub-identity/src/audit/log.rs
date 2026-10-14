@@ -12,22 +12,34 @@
 //!    that the table's `CHECK`, the nightly verifier and the fakes share;
 //! 5. the `INSERT`, with the columns that copy the event for querying.
 //!
-//! [`AuditLog::record_many`] is the same five steps for a batch, with steps 2, 3 and 5 done once: every event is checked and
-//! encoded first (step 1, for all of them, before the lock), then one lock acquisition and one read of the head, then the links
-//! are hashed in Rust, in input order, by [`link_chain`] (which is [`next_link`] folded over the batch, and `record` uses
-//! [`next_link`] too: there is one definition of a link), and one `INSERT ... SELECT FROM unnest(...) ORDER BY ordinality` writes
-//! the rows, so that their `seq` runs in input order. The statement returns each row's `seq` and `hash`, and the ids are
-//! matched to the batch by hash and checked to be increasing along the chain ([`ids_in_chain_order`]): a batch whose rows did
-//! not land in chain order fails and rolls back instead of being committed. Three round trips for any batch, against three
-//! for every event.
+//! [`AuditLog::record_many`] is the same five steps for a batch, with steps 2, 3 and 5 done once, and with the CPU-heavy parts
+//! off the async runtime (rule 4):
+//!
+//! 1. every event is checked and encoded, in order ([`prepare_batch`], on the blocking pool), before the lock. The sum of the
+//!    canonical JSON bytes is held to [`ports::MAX_AUDIT_BATCH_BYTES`] as the events are encoded, so a batch over it is refused
+//!    after the work of about the budget and not of the whole batch, and with [`AuditError::BatchTooLarge`], before the lock;
+//! 2. one lock acquisition;
+//! 3. one read of the head;
+//! 4. the links are hashed in Rust, in input order, by [`link_chain`] (on the blocking pool, inside the lock; it is
+//!    [`next_link`] folded over the batch, and `record` uses [`next_link`] too: there is one definition of a link);
+//! 5. one `INSERT ... SELECT FROM unnest(...) ORDER BY ordinality` writes the rows, so that their `seq` runs in input order. The
+//!    statement returns each row's `seq` and `hash`, and the ids are matched to the batch by hash and checked to be increasing
+//!    along the chain ([`ids_in_chain_order`]). If they are not, the call returns [`AuditError::Unavailable`] and the caller must
+//!    roll back, as after any error from a call that has taken the lock; nothing here commits for it.
+//!
+//! Three round trips for any batch, against three for every event. The two hops to the blocking pool cost tens of microseconds
+//! each and the pool is not the runtime's workers; the one inside the lock is a few milliseconds at the byte budget in a release
+//! build (`docs/interfaces.md` has the measured hold).
 //!
 //! # Call `record` last
 //!
 //! The lock is held until the caller commits or rolls back, so every audited transaction is serialised from `record` to its end.
 //! Call `record` as the last statement before `COMMIT`, and do no slow work (a network call, a file write) after it. That is
 //! what keeps the cost of the chain to a few milliseconds at the design scale, and it is checked by the contended benchmark
-//! `hub-identity/audit_record` (budget `P12.audit_record`). The same holds for `record_many`, for the whole batch: it is at most
-//! [`ports::MAX_AUDIT_BATCH`] events, so the hold added by a batch is bounded.
+//! `hub-identity/audit_record` (budget `P12.audit_record`). The same holds for `record_many`, for the whole batch, and the lock is
+//! held to the end of the caller's transaction, so a transaction that makes several batches holds it for all of them. A batch is
+//! at most [`ports::MAX_AUDIT_BATCH`] events and [`ports::MAX_AUDIT_BATCH_BYTES`] of canonical JSON, which bounds the work that one
+//! call adds under the lock.
 //!
 //! # Failure
 //!
@@ -37,7 +49,8 @@
 //! call fails the same way. Callers run at READ COMMITTED.
 //!
 //! The batch is one statement, so a row the table refuses refuses the whole batch, and the transaction is aborted as after a
-//! failed `record`. An event that fails the checks of step 1 fails the batch before the lock and leaves the transaction usable.
+//! failed `record`. An event that fails the checks of step 1, or a batch over the byte budget, fails before the lock and leaves the
+//! transaction usable.
 //!
 //! No error and no log line carries event content, only the stage and the SQLSTATE (S10, S21).
 
@@ -47,8 +60,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use domain::{AuditId, ContentHash};
 use ports::{
-    AuditActor, AuditError, AuditEvent, AuditLog, MAX_AUDIT_BATCH, Tx, canonical_json, chain_hash,
-    genesis_hash,
+    AuditActor, AuditError, AuditEvent, AuditLog, MAX_AUDIT_BATCH, MAX_AUDIT_BATCH_BYTES, Tx, canonical_json,
+    chain_hash, genesis_hash,
 };
 use sqlx::{PgConnection, Row};
 
@@ -281,6 +294,38 @@ pub fn prepare(e: &AuditEvent) -> Result<Prepared, AuditError> {
     })
 }
 
+/// Check and encode the events of a batch, in order: [`prepare`] for each, and the bytes of their canonical JSON added up as
+/// they go. It stops at the first event that cannot be stored, and at the first event that takes the sum over
+/// [`MAX_AUDIT_BATCH_BYTES`], so the work is that of the budget and one event, whatever the size of the batch.
+///
+/// # Errors
+/// What [`prepare`] says about an event, or [`AuditError::BatchTooLarge`] for a batch over the byte budget.
+pub fn prepare_batch(events: &[AuditEvent]) -> Result<Vec<Prepared>, AuditError> {
+    let mut bytes = 0_usize;
+    let mut prepared = Vec::with_capacity(events.len());
+    for e in events {
+        let p = prepare(e)?;
+        bytes = bytes.saturating_add(p.json.len());
+        if bytes > MAX_AUDIT_BATCH_BYTES {
+            return Err(AuditError::BatchTooLarge);
+        }
+        prepared.push(p);
+    }
+    Ok(prepared)
+}
+
+/// Run CPU-bound `work` on the blocking pool and wait for it, so that it never runs on the async runtime (AGENTS.md rule 4). If
+/// the work does not finish (the pool is shut down, or it panicked), the call fails as unavailable; the stage is logged.
+async fn off_the_runtime<T: Send + 'static>(
+    stage: &'static str,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, AuditError> {
+    tokio::task::spawn_blocking(work).await.map_err(|_| {
+        tracing::error!(stage, "audit batch work did not finish on the blocking pool");
+        AuditError::Unavailable
+    })
+}
+
 /// Log the stage and SQLSTATE of a database failure, and turn it into the port's error. Nothing from the message is kept: it
 /// can quote a row.
 fn db_error(stage: &'static str, e: &sqlx::Error) -> AuditError {
@@ -412,16 +457,21 @@ impl AuditLog for PgAuditLog {
         if events.len() > MAX_AUDIT_BATCH {
             return Err(AuditError::BatchTooLarge);
         }
-        // 1, for every event, before the lock: nothing of a batch with one bad event is written, and nobody waits for it.
-        let prepared = events.iter().map(prepare).collect::<Result<Vec<_>, _>>()?;
+        // 1, for every event, before the lock and off the runtime: nothing of a batch with one bad event, or over the byte
+        // budget, is written, and nobody waits for it.
+        let prepared = off_the_runtime("prepare", move || prepare_batch(&events)).await??;
         let conn = tx.pg().map_err(|_| AuditError::WrongTx)?;
 
         // 2 and 3, once.
         self.lock_chain(conn).await?;
         let head = chain_head(conn).await?;
 
-        // 4, for all of them, in input order.
-        let links = link_chain(head, &prepared);
+        // 4, for all of them, in input order, off the runtime: SHA-256 of up to the budget, inside the lock.
+        let (prepared, links) = off_the_runtime("link", move || {
+            let links = link_chain(head, &prepared);
+            (prepared, links)
+        })
+        .await?;
 
         // 5, once.
         let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(INSERT_MANY)

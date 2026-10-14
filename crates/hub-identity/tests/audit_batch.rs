@@ -21,7 +21,13 @@ use std::time::{Duration, Instant};
 use domain::{AuditId, Timestamp};
 use hub_identity::audit::verify::NightlyOutcome;
 use hub_identity::audit::{CHAIN_LOCK_KEY, PgAuditLog};
-use ports::{AuditError, AuditEvent, AuditLog, MAX_AUDIT_BATCH, Tx, genesis_hash, verify_chain};
+use ports::conformance::sample::{
+    audit_events_totalling, storable_worst_case_audit_event as worst_case_audit_event,
+};
+use ports::{
+    AuditError, AuditEvent, AuditLog, MAX_AUDIT_BATCH, MAX_AUDIT_BATCH_BYTES, MAX_AUDIT_EVENT_BYTES, Tx,
+    genesis_hash, verify_chain,
+};
 use sqlx::PgPool;
 use support::audit_rig::{AuditRig, bare_event, event, full_event};
 use support::log_capture;
@@ -285,26 +291,303 @@ async fn the_rows_of_a_batch_are_the_rows_record_writes() {
     assert_eq!(verify_chain(&committed(&pool).await), Ok(()));
 }
 
+// -------------------------------------------------------------------------------------------------------------------
+// The bound on the work under the lock is bytes, not events. A control character is six bytes of canonical JSON, a diff is
+// untrusted text of up to 64 KiB, so one event is up to 398,588 bytes and 200 of them were 67 MiB. These tests use the worst case:
+// events of control characters, not plain ones.
+
+/// The bytes of canonical JSON that the table holds for the events of the batch (what the budget counts).
+async fn stored_bytes(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT coalesce(sum(octet_length(event_json)), 0)::bigint FROM audit_events")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
-async fn a_batch_of_the_largest_events_fits_the_limit() {
-    // The worst case that the limit is justified with: 200 events, each with the largest diff.
+async fn the_largest_event_that_can_exist_is_accepted_alone_by_record_many_and_by_record() {
+    // The invariant behind the budget: what `record` accepts, `record_many` accepts alone.
     let db = db!();
     let pool = db.app_pool(4).await;
-    let big: Vec<AuditEvent> = (0..MAX_AUDIT_BATCH as i64)
-        .map(|i| {
-            let mut e = full_event(i);
-            e.diff = Some("x".repeat(AuditEvent::MAX_DIFF_BYTES));
-            e
-        })
-        .collect();
+    let by_batch = worst_case_audit_event(1);
+    let by_record = worst_case_audit_event(2);
+    assert_eq!(many(&pool, vec![by_batch.clone()]).await.len(), 1);
+    single(&pool, by_record.clone()).await;
+    let chain = committed(&pool).await;
+    assert_eq!(chain.len(), 2);
+    assert_eq!(chain[0].event, by_batch);
+    assert_eq!(chain[1].event, by_record);
+    assert_eq!(verify_chain(&chain), Ok(()));
+    // Both are stored as 398,584 bytes (the constant's 398,588, less four: the table holds no time as long as `i64::MIN`), and the table accepts them (its limit is 1 MiB per event).
+    let sizes: Vec<i64> =
+        sqlx::query_scalar("SELECT octet_length(event_json)::bigint FROM audit_events ORDER BY seq")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(sizes, [MAX_AUDIT_EVENT_BYTES as i64 - 4; 2]);
+}
+
+#[tokio::test]
+async fn a_batch_may_be_exactly_the_byte_budget_and_not_one_byte_more() {
+    let db = db!();
+    let pool = db.app_pool(4).await;
+    // Exactly the budget, in three events and in as many as the count allows; the size is checked on what the table holds.
+    for (n, what) in [
+        (3, "three events"),
+        (MAX_AUDIT_BATCH, "as many events as the count limit allows"),
+    ] {
+        let batch = audit_events_totalling(n, MAX_AUDIT_BATCH_BYTES);
+        let before = stored_bytes(&pool).await;
+        assert_eq!(many(&pool, batch).await.len(), n, "{what}");
+        assert_eq!(
+            stored_bytes(&pool).await - before,
+            MAX_AUDIT_BATCH_BYTES as i64,
+            "{what}: the table holds exactly the budget"
+        );
+    }
+    assert_eq!(verify_chain(&committed(&pool).await), Ok(()));
+
+    // One byte more is refused whole, in a transaction that stays usable, and nothing is written.
+    let rows = count(&pool).await;
+    for n in [3, MAX_AUDIT_BATCH] {
+        let mut tx = pool.begin().await.unwrap();
+        let result = PgAuditLog::new()
+            .record_many(
+                &mut Tx::from_pg(&mut tx),
+                audit_events_totalling(n, MAX_AUDIT_BATCH_BYTES + 1),
+            )
+            .await;
+        assert_eq!(
+            result,
+            Err(AuditError::BatchTooLarge),
+            "{n} events, one byte over"
+        );
+        sqlx::query("SELECT 1").execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+    assert_eq!(count(&pool).await, rows);
+}
+
+#[tokio::test]
+async fn three_of_the_largest_events_are_refused_by_their_bytes_though_they_are_three() {
+    // 3 events, 192 KiB of diff, and 1.2 MB of canonical JSON: a count of events or characters would have let them through.
+    let db = db!();
+    let pool = db.app_pool(4).await;
+    let mut tx = pool.begin().await.unwrap();
+    let result = PgAuditLog::new()
+        .record_many(
+            &mut Tx::from_pg(&mut tx),
+            (0..3).map(worst_case_audit_event).collect(),
+        )
+        .await;
+    assert_eq!(result, Err(AuditError::BatchTooLarge));
+    tx.rollback().await.unwrap();
+    // Two of them fit.
+    let two = many(&pool, (0..2).map(worst_case_audit_event).collect()).await;
+    assert_eq!(two.len(), 2);
+    assert_eq!(stored_bytes(&pool).await, 2 * (MAX_AUDIT_EVENT_BYTES as i64 - 4));
+}
+
+#[tokio::test]
+async fn a_batch_over_the_byte_budget_is_refused_before_the_lock_and_after_work_of_about_the_budget() {
+    let db = db!();
+    let pool = db.app_pool(4).await;
+    // 190 of the largest events: 76 MB of canonical JSON, if all were encoded. The refusal comes when the sum passes the budget,
+    // after the third event, so the work is that of three and not of 190.
+    let hostile: Vec<AuditEvent> = (0..190).map(worst_case_audit_event).collect();
     let started = Instant::now();
-    let ids = many(&pool, big).await;
-    assert_eq!(ids.len(), MAX_AUDIT_BATCH);
+    for e in &hostile {
+        hub_identity::audit::log::prepare(e).unwrap();
+    }
+    let encode_everything = started.elapsed();
+
+    let holder = hold_chain_lock(&pool).await;
+    let mut tx = pool.begin().await.unwrap();
+    let started = Instant::now();
+    let result = PgAuditLog::new()
+        .record_many(&mut Tx::from_pg(&mut tx), hostile)
+        .await;
+    let refused_in = started.elapsed();
+    assert_eq!(result, Err(AuditError::BatchTooLarge));
+    // The lock is held by someone else (the default lock timeout is 5 s): nobody waited for it. And the encoding stopped at the
+    // budget: the refusal took a small part of what encoding all 190 takes.
     assert!(
-        started.elapsed() < Duration::from_secs(20),
-        "12.8 MiB in one statement took {:?}",
-        started.elapsed()
+        refused_in < Duration::from_secs(2),
+        "the refusal waited for the lock: {refused_in:?}"
     );
+    assert!(
+        refused_in * 4 < encode_everything,
+        "the refusal took {refused_in:?}, and encoding all 190 events takes {encode_everything:?}: the work was not cut at the budget"
+    );
+    tx.rollback().await.unwrap();
+    holder.rollback().await.unwrap();
+    assert_eq!(count(&pool).await, 0);
+}
+
+/// The CPU time that this thread has used, in nanoseconds, from `/proc` (the first field of `schedstat`). It does not move while the
+/// thread waits, so it is not subject to the scheduling noise of a loaded machine.
+fn thread_cpu_ns() -> u64 {
+    let stat = std::fs::read_to_string("/proc/thread-self/schedstat").unwrap();
+    stat.split(' ').next().unwrap().parse().unwrap()
+}
+
+// Rule 4: CPU-heavy work does not run on the async runtime. `prepare_batch` (checks and canonical JSON, before the lock) and
+// `link_chain` (SHA-256, inside the lock) of a batch at the byte budget each cost tens of milliseconds in a debug build. These
+// tests run on a current-thread runtime, the one thread that runs the test, and compare the CPU time that the call uses on it with
+// the CPU time of the work done in place: done in place, it would be that much of this thread's.
+
+#[tokio::test]
+async fn checking_and_encoding_run_off_the_async_thread() {
+    // Three of the largest events pass the budget at the third, which refuses the batch. That path takes no database at all (a
+    // transaction of another store is never looked at), so the only CPU of this thread in the call is what it does itself.
+    let batch: Vec<AuditEvent> = (0..3).map(worst_case_audit_event).collect();
+    let before = thread_cpu_ns();
+    for e in &batch {
+        hub_identity::audit::log::prepare(e).unwrap();
+    }
+    let in_place = thread_cpu_ns() - before;
+    println!("checking and encoding three of the largest events: {in_place} ns of CPU, in place");
+    if in_place < 8_000_000 {
+        println!("too fast to tell where it ran (a debug build shows it)");
+        return;
+    }
+    let mut state = ports::fakes::FakeTxState::default();
+    let before = thread_cpu_ns();
+    let result = PgAuditLog::new()
+        .record_many(&mut Tx::in_memory(&mut state), batch)
+        .await;
+    let on_this_thread = thread_cpu_ns() - before;
+    println!("the refused call used {on_this_thread} ns of CPU on the async thread");
+    assert_eq!(result, Err(AuditError::BatchTooLarge));
+    assert!(
+        on_this_thread * 4 < in_place,
+        "{on_this_thread} ns of CPU on the async thread for work that costs {in_place} ns"
+    );
+}
+
+#[tokio::test]
+async fn hashing_inside_the_lock_runs_off_the_async_thread() {
+    let db = db!();
+    let pool = db.app_pool(4).await;
+    let batch = audit_events_totalling(3, MAX_AUDIT_BATCH_BYTES);
+    let prepared = hub_identity::audit::log::prepare_batch(&batch).unwrap();
+    let before = thread_cpu_ns();
+    let _links = hub_identity::audit::log::link_chain(genesis_hash(), &prepared);
+    let hashing = thread_cpu_ns() - before;
+    println!("hashing a batch at the budget: {hashing} ns of CPU, in place");
+    if hashing < 8_000_000 {
+        println!("too fast to tell where it ran (a debug build shows it)");
+        return;
+    }
+    let before = thread_cpu_ns();
+    let ids = many(&pool, batch).await;
+    let on_this_thread = thread_cpu_ns() - before;
+    println!("the whole call, with its I/O, used {on_this_thread} ns of CPU on the async thread");
+    assert_eq!(ids.len(), 3);
+    assert!(
+        on_this_thread * 2 < hashing,
+        "{on_this_thread} ns of CPU on the async thread for a call that hashes for {hashing} ns"
+    );
+}
+
+// -------------------------------------------------------------------------------------------------------------------
+// How long the chain lock is held
+
+/// How long another writer waits for the chain lock behind `batch`. Another transaction holds the lock; the batch is checked and
+/// encoded, and queues for it; then the holder lets go and the clock starts. It stops when the batch's transaction has committed:
+/// the time from the lock being granted to its release, which is what the next writer waits for.
+async fn lock_hold_of(pool: &PgPool, batch: Vec<AuditEvent>) -> Duration {
+    let holder = hold_chain_lock(pool).await;
+    let batch_pool = pool.clone();
+    let batch_task = tokio::spawn(async move {
+        let mut tx = batch_pool.begin().await.unwrap();
+        PgAuditLog::new()
+            .record_many(&mut Tx::from_pg(&mut tx), batch)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        Instant::now()
+    });
+    // The batch is queued for the lock when a request for it is waiting in this database.
+    loop {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted \
+             AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if waiting == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    let granted = Instant::now();
+    holder.rollback().await.unwrap();
+    batch_task.await.unwrap() - granted
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_chain_lock_is_held_for_a_short_time_by_a_batch_at_the_byte_budget() {
+    // The worst cases at the budget, all made of control characters (six bytes each in canonical JSON): the fewest, largest
+    // events, the most events the count allows, the largest events and a rest, and the usual: 50 typical events.
+    let db = db!();
+    let pool = db.app_pool(8).await;
+    for n in 0..30 {
+        single(&pool, event(n)).await;
+    }
+    let two_largest_and_a_rest = {
+        let mut v: Vec<AuditEvent> = (0..2).map(worst_case_audit_event).collect();
+        v.extend(audit_events_totalling(
+            1,
+            MAX_AUDIT_BATCH_BYTES - 2 * (MAX_AUDIT_EVENT_BYTES - 4),
+        ));
+        v
+    };
+    let shapes: [(&str, Vec<AuditEvent>); 4] = [
+        (
+            "3 events at the budget",
+            audit_events_totalling(3, MAX_AUDIT_BATCH_BYTES),
+        ),
+        ("2 of the largest and a rest", two_largest_and_a_rest),
+        (
+            "200 events at the budget",
+            audit_events_totalling(MAX_AUDIT_BATCH, MAX_AUDIT_BATCH_BYTES),
+        ),
+        ("50 typical events", events(10_000, 50)),
+    ];
+    let optimised = !cfg!(debug_assertions);
+    println!(
+        "\nchain lock held behind a batch (build: {}):",
+        if optimised { "release" } else { "debug" }
+    );
+    for (what, batch) in shapes {
+        let bytes: usize = batch.iter().map(|e| ports::canonical_size(e).unwrap()).sum();
+        assert!(
+            bytes <= MAX_AUDIT_BATCH_BYTES,
+            "{what}: {bytes} bytes is over the budget"
+        );
+        let count = batch.len();
+        // The fastest and the slowest of five: the numbers are those of a machine that is doing other things too.
+        let mut held = Vec::new();
+        for _ in 0..5 {
+            held.push(lock_hold_of(&pool, batch.clone()).await);
+        }
+        held.sort();
+        println!(
+            "  {what:<30} {count:>3} events {bytes:>9} bytes   hold min {:>6.1} ms  median {:>6.1} ms  max {:>6.1} ms",
+            held[0].as_secs_f64() * 1000.0,
+            held[2].as_secs_f64() * 1000.0,
+            held[4].as_secs_f64() * 1000.0
+        );
+        // Against a lock timeout of 5 s. Debug builds hash and encode ten times slower, so the bounds differ.
+        let bound = if optimised {
+            Duration::from_millis(250)
+        } else {
+            Duration::from_millis(1_500)
+        };
+        assert!(held[4] < bound, "{what}: the lock was held for {:?}", held[4]);
+    }
     assert_eq!(verify_chain(&committed(&pool).await), Ok(()));
 }
 
@@ -547,6 +830,65 @@ async fn a_rolled_back_batch_leaves_no_row_and_the_next_batch_chains_correctly()
         chain[3].prev_hash, chain[2].hash,
         "the rolled-back batch is not in the chain"
     );
+    assert_eq!(verify_chain(&chain), Ok(()));
+}
+
+#[tokio::test]
+async fn rows_that_do_not_land_in_chain_order_fail_the_call_and_the_caller_rolls_back() {
+    // The guard of `ids_in_chain_order`, through the public path. The insert draws the `seq` of the rows in chain order; if a
+    // sequence ran backwards (an owner changed it), the batch would be stored in an order that the verifier, which reads by `seq`,
+    // calls a broken chain. The call must say so and not hand back ids.
+    let db = db!();
+    let pool = db.app_pool(4).await;
+    many(&pool, events(0, 2)).await;
+    let mut admin = db.admin().await;
+    sqlx::query(
+        "ALTER SEQUENCE audit_events_seq_seq INCREMENT BY -1 MINVALUE 1 MAXVALUE 100000 RESTART WITH 5000",
+    )
+    .execute(&mut admin)
+    .await
+    .unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let result = PgAuditLog::new()
+        .record_many(&mut Tx::from_pg(&mut tx), events(100, 3))
+        .await;
+    assert_eq!(
+        result,
+        Err(AuditError::Unavailable),
+        "no ids for rows that are not in chain order"
+    );
+    // The rows are in the caller's transaction: only a rollback removes them, which is what the error is for.
+    let inside: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(inside, 5);
+    // And a caller that committed anyway would have written a chain that fails verification: the guard is not a formality.
+    tx.commit().await.unwrap();
+    assert!(verify_chain(&committed(&pool).await).is_err());
+}
+
+#[tokio::test]
+async fn a_rollback_after_rows_out_of_chain_order_leaves_the_chain_as_it_was() {
+    let db = db!();
+    let pool = db.app_pool(4).await;
+    many(&pool, events(0, 2)).await;
+    let mut admin = db.admin().await;
+    sqlx::query(
+        "ALTER SEQUENCE audit_events_seq_seq INCREMENT BY -1 MINVALUE 1 MAXVALUE 100000 RESTART WITH 5000",
+    )
+    .execute(&mut admin)
+    .await
+    .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let result = PgAuditLog::new()
+        .record_many(&mut Tx::from_pg(&mut tx), events(100, 3))
+        .await;
+    assert_eq!(result, Err(AuditError::Unavailable));
+    tx.rollback().await.unwrap();
+    let chain = committed(&pool).await;
+    assert_eq!(chain.len(), 2);
     assert_eq!(verify_chain(&chain), Ok(()));
 }
 
