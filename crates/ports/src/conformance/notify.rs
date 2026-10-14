@@ -26,9 +26,15 @@ fn note(kind: NotificationKind, title: &str) -> Notification {
 /// registry (`DriftDetected`, `SyncWindowStale`) included.
 pub async fn notifier<N: NotifierProbe + ?Sized>(n: &N) {
     let before = n.delivered().await.len();
+    // One of every kind, in the order of the enum.
     let sent = [
+        note(NotificationKind::AccessRequested, "Access requested"),
         note(NotificationKind::ProposalPending, "Proposal waiting"),
+        note(NotificationKind::ProposalDecided, "Proposal decided"),
         note(NotificationKind::ServiceRestarted, "Service restarted"),
+        note(NotificationKind::PrRaised, "PR raised"),
+        note(NotificationKind::AgentDisconnected, "Agent disconnected"),
+        note(NotificationKind::CriticalFinding, "Critical finding"),
         note(NotificationKind::DriftDetected, "Drift detected"),
         note(NotificationKind::SyncWindowStale, "Sync window open too long"),
     ];
@@ -36,11 +42,12 @@ pub async fn notifier<N: NotifierProbe + ?Sized>(n: &N) {
         n.notify(note.clone()).await.expect("notify");
     }
     let delivered = n.delivered().await;
-    // A bounded probe may have dropped its oldest entries, so compare the tail.
-    assert!(delivered.len() >= sent.len() && delivered.len() <= before + sent.len());
+    // A bounded probe may have dropped its oldest entries, so compare the tail: whatever it kept, it kept in order, once.
+    let tail_len = delivered.len().min(sent.len());
+    assert!(tail_len > 0 && delivered.len() <= before + sent.len());
     assert_eq!(
-        &delivered[delivered.len() - sent.len()..],
-        &sent,
+        &delivered[delivered.len() - tail_len..],
+        &sent[sent.len() - tail_len..],
         "delivered once, in order"
     );
 }

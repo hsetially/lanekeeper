@@ -117,8 +117,7 @@ pub enum BusError {
     /// `publish_many_in_tx` was given more than [`MAX_EVENT_BATCH`] events. Nothing was published; split the batch.
     ///
     /// New with the batch methods: an exhaustive `match` on `BusError` (and on `AuditError`, which gained a variant of the same
-    /// name) needs an arm for it. `hub-registry`'s error mapping (`crates/hub-registry/src/error.rs`, in the 05 branch) matches
-    /// only `WrongTx` and `Unavailable`, and must add one when it adopts `publish_many_in_tx`.
+    /// name) needs an arm for it.
     #[error("event batch is too large")]
     BatchTooLarge,
 }

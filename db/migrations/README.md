@@ -62,7 +62,7 @@ They come from `deploy/dev/init.sql` (dev and tests) and from CloudNativePG mana
 
 ## The registry's tables and columns (`0003_registry.sql`, prompt 05)
 
-Expand-only: new columns and indexes on existing tables, eight new tables, one grant, and one CHECK widened in the same transaction. Nothing is dropped, renamed, re-typed or deleted, `0001` and `0002` are untouched, and every new column is nullable or has a default, so an older binary ignores them. Deploy the migration before the 05 code. `migration_0003_changes_existing_objects_only_by_adding` compares the catalog before and after and fails if anything that existed changed.
+Expand-only: new columns and indexes on existing tables, eight new tables, one grant, and one CHECK widened in the same transaction. Apart from replacing the `findings.kind` CHECK with its wider version (dropped and re-added in the same transaction), no existing object is dropped, renamed, re-typed or deleted, `0001` and `0002` are untouched, and every new column is nullable or has a default, so an older binary ignores them. Deploy the migration before the 05 code. `migration_0003_changes_existing_objects_only_by_adding` compares the catalog before and after and fails if any existing object other than the `findings.kind` CHECK changed.
 
 | Where | What | Why |
 |---|---|---|
@@ -84,6 +84,7 @@ Expand-only: new columns and indexes on existing tables, eight new tables, one g
 
 - **Grants.** All eight new tables are `mutable` (SELECT, INSERT, UPDATE, DELETE). The pipeline upserts and prunes them, and each hangs off `swimlanes` with `ON DELETE CASCADE`, which `no_cascading_foreign_key_touches_a_protected_table` allows only for tables the app may delete from. Their decision is in `grant_decisions` in `db_migrations.rs` (`REGISTRY_TABLES`).
 - **Vocabularies.** `adoptions.reason` is `initial` or `tenant_suffix_changed`; `status` is `in_progress`, `review`, `confirmed` or `cancelled`; `step` is `branch`, `base_version`, `files`, `secrets` or `confirm`; `adoption_resolutions.resolution` is `nfs_is_right`, `git_is_right` or `intentional`. At most one adoption per `(swimlane, reason)` is open (`in_progress` or `review`) at a time. A new value is a new migration that widens the CHECK.
+- **Who did it.** `adoptions.started_by_*`, `adoptions.confirmed_by_*` and `adoption_resolutions.resolved_by_*` are a user's `(tid, oid)`: both set (and then a real user, by the foreign key) or both `NULL`. A foreign key on two columns is not checked when one is `NULL`, so a CHECK on each pair (`adoptions_started_by_pair`, `adoptions_confirmed_by_pair`, `adoption_resolutions_resolved_by_pair`) stops half an identity from being stored as attribution.
 - **Not relaxed (plan 05, A16).** The `sentinel_records.operation` CHECK still allows only `create`, `write`, `delete` and `rename`: an `Attribute` record (chmod, chown) is acknowledged and counted, not stored. Storing them would be a later contract change.
 - **Cursors.** A `Cursor` is at most 512 characters and a path up to 1,024 bytes, so keyset lists over files page on `file_state.seq` (or a time and an id), never on a path (A31).
 

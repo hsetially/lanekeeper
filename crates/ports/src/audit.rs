@@ -331,8 +331,7 @@ pub enum AuditError {
     /// [`MAX_AUDIT_BATCH_BYTES`]. Nothing was recorded; split the batch ([`split_batches`] does it for both limits).
     ///
     /// New with the batch methods: an exhaustive `match` on `AuditError` (and on `BusError`, which gained a variant of the same
-    /// name) needs an arm for it. `hub-registry`'s error mapping (`crates/hub-registry/src/error.rs`, in the 05 branch) matches
-    /// only the older variants, and must add one when it adopts `record_many`.
+    /// name) needs an arm for it.
     #[error("audit batch is too large")]
     BatchTooLarge,
 }
@@ -429,9 +428,9 @@ pub trait AuditLog: Send + Sync + 'static {
     ///   [`AuditError::BatchTooLarge`], and nothing is recorded. Every event that `record` accepts is accepted alone.
     ///   [`split_batches`] cuts a list of events into batches that respect both limits.
     /// - An event that `record` would refuse (`TooLarge`, `Encode`) is refused the same way, before anything of the
-    ///   batch is recorded: the transaction stays usable and committing it keeps nothing of the batch. Any other
-    ///   error (the store is unavailable) leaves the transaction in an unknown state, and the caller must roll it
-    ///   back, as after a failed `record`.
+    ///   batch is recorded: the transaction stays usable and committing it keeps nothing of the batch. So is `WrongTx`, which
+    ///   is returned before any database work. Any other error (the store is unavailable) leaves the transaction in an
+    ///   unknown state, and the caller must roll it back, as after a failed `record`.
     /// - All of this is checked before the chain lock is taken, so a refused batch never makes another writer wait.
     ///
     /// **The chain lock is held to the end of the caller's transaction,** as for `record`, not to the end of this call: every
@@ -447,8 +446,9 @@ pub trait AuditLog: Send + Sync + 'static {
     /// forwards only `record` still works, but it silently falls back to the slow loop of one lock, head read and insert per
     /// event.
     ///
-    /// The default calls `record` once per event, after every event has been checked, so an implementation that does not
-    /// override it keeps working. Overriding is for the cost of a call, not for a different result.
+    /// The default calls `record` once per event, after every event has been checked (on the blocking pool, so that encoding
+    /// a full batch never holds an async worker), so an implementation that does not override it keeps working. Overriding is
+    /// for the cost of a call, not for a different result.
     async fn record_many(
         &self,
         tx: &mut Tx<'_>,
@@ -457,8 +457,12 @@ pub trait AuditLog: Send + Sync + 'static {
         if events.is_empty() {
             return Ok(Vec::new());
         }
-        // All of it before the first `record`: a batch with one bad event records none of its events.
-        check_batch(&events)?;
+        // All of it before the first `record`: a batch with one bad event records none of its events. Encoding up to the byte
+        // budget is CPU-bound, so it runs on the blocking pool and not on the async runtime (AGENTS.md rule 4), as
+        // `record_many` of the real log does; the events go in and come back out, so nothing is cloned.
+        let events = tokio::task::spawn_blocking(move || check_batch(&events).map(|()| events))
+            .await
+            .map_err(|_| AuditError::Unavailable)??;
         let mut ids = Vec::with_capacity(events.len());
         for e in events {
             ids.push(self.record(tx, e).await?);
