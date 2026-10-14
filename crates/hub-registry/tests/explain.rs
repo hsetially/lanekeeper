@@ -33,10 +33,34 @@ const LARGE: [&str; 10] = [
     "baselines",
 ];
 
+/// The tables the seeding fills. Autovacuum is switched off for them, because a vacuum that runs between the seeding and the
+/// EXPLAIN sets their visibility maps, and the planner then reads a plan with an index-only scan where it read a bitmap heap scan a
+/// moment before: the plan snapshots below would be right or wrong by the timing of a background worker, as they were (one run in
+/// three failed on `markers_of_a_batch`). With no vacuum the maps stay empty and the plans are those of the snapshots every time.
+const SEEDED: [&str; 11] = [
+    "projects",
+    "swimlanes",
+    "blobs",
+    "file_state",
+    "settings_index_blobs",
+    "effective_tree_hashes",
+    "effective_files",
+    "file_observations",
+    "baselines",
+    "findings",
+    "intentional_divergence",
+];
+
 async fn seeded() -> Option<(TestDb, PgPool)> {
     let db = TestDb::ready().await?;
     let pool = db.app_pool().await;
     let mut admin = db.admin().await;
+    for table in SEEDED {
+        sqlx::raw_sql(&format!("ALTER TABLE {table} SET (autovacuum_enabled = false)"))
+            .execute(&mut admin)
+            .await
+            .unwrap();
+    }
     for sql in [
         "INSERT INTO projects (id, display_name) VALUES ('p1', 'Project 1')",
         "INSERT INTO swimlanes (id, project_id, display_name) SELECT 'lane' || n, 'p1', 'lane' FROM generate_series(1, 40) n",
