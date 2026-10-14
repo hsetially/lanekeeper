@@ -38,7 +38,7 @@ use crate::metrics::CacheName;
 
 /// The rows of up to this many blobs are read in one statement: a few, so that a read of many blobs is several statements that the
 /// database works on at once, and a single large blob (6,000 settings and more) is a statement of its own.
-const ROWS_PER_STATEMENT: usize = 4;
+pub const ROWS_PER_STATEMENT: usize = 2;
 /// How many of those statements are in flight at once for one read.
 const STATEMENTS_AT_ONCE: usize = 4;
 

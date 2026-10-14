@@ -36,9 +36,11 @@ use hub_registry::read::findings::findings_sql;
 use hub_registry::read::history::history_sql;
 use hub_registry::read::resource::{ALL_PATHS_SQL, PROPERTY_ROWS_SQL, ROWS_BY_PATH_SQL};
 use hub_registry::read::restarts::services_sql;
-use hub_registry::read::search_settings::{LANE_BLOBS_SQL, PAIRS_SQL, PAIRS_UNTESTED_SQL, PLACES_SQL};
+use hub_registry::read::search_settings::{
+    LANE_BLOBS_SQL, PAIRS_SQL, PAIRS_UNTESTED_SQL, PLACES_PER_STATEMENT, PLACES_SQL,
+};
 use hub_registry::read::search_text::{FILES_SQL, VERSIONS_SQL};
-use hub_registry::read::settings::ROWS_SQL;
+use hub_registry::read::settings::{ROWS_PER_STATEMENT, ROWS_SQL};
 use hub_registry::read::swimlanes::{SWIMLANE_SQL, SWIMLANES_SQL};
 use hub_registry::read::tree::{CHILDREN_SQL, DRIFT_SQL, FILE_ROWS_SQL};
 
@@ -74,20 +76,22 @@ async fn main() {
     .fetch_all(&pool)
     .await
     .unwrap();
-    let hashes102: Vec<Vec<u8>> = hashes.iter().take(102).cloned().collect();
+    let places_blobs: Vec<Vec<u8>> = hashes.iter().take(PLACES_PER_STATEMENT).cloned().collect();
     let largest: Vec<Vec<u8>> = sqlx::query_scalar(
-        "SELECT blob_hash::bytea FROM settings_index GROUP BY blob_hash ORDER BY count(*) DESC, blob_hash LIMIT 4",
+        "SELECT blob_hash::bytea FROM settings_index GROUP BY blob_hash ORDER BY count(*) DESC, blob_hash LIMIT $1",
     )
+    .bind(i64::try_from(ROWS_PER_STATEMENT).unwrap())
     .fetch_all(&pool)
     .await
     .unwrap();
     let typical: Vec<Vec<u8>> = sqlx::query_scalar(
-        "SELECT blob_hash::bytea FROM settings_index GROUP BY blob_hash HAVING count(*) BETWEEN 30 AND 50 ORDER BY blob_hash LIMIT 4",
+        "SELECT blob_hash::bytea FROM settings_index GROUP BY blob_hash HAVING count(*) BETWEEN 30 AND 50 ORDER BY blob_hash LIMIT $1",
     )
+    .bind(i64::try_from(ROWS_PER_STATEMENT).unwrap())
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert!(largest.len() == 4 && typical.len() == 4);
+    assert!(largest.len() == ROWS_PER_STATEMENT && typical.len() == ROWS_PER_STATEMENT);
     let like_folder = format!("{folder}/%");
     let logical = path.clone();
     let candidates = app_candidates(&domain::LogicalFile::parse(&logical).unwrap());
@@ -211,14 +215,14 @@ async fn main() {
         sqlx::query(CONTENT_TENANTS_SQL).bind(lane_s)
     );
     measure!("path_mapping", sqlx::query(MAPPING_SQL));
-    // The statements that read the settings of blobs take a few blobs each (`ROWS_PER_STATEMENT`, four): the biggest such statement is
-    // four of the biggest blobs (about 6,000 settings each), a typical one four blobs of a few dozen settings.
+    // The statements that read the settings of blobs take a few blobs each (`ROWS_PER_STATEMENT`): the biggest such statement is that
+    // many of the biggest blobs (about 6,000 settings each), a typical one that many blobs of a few dozen settings.
     measure!(
-        "setting_rows_of_4_largest_blobs",
+        "setting_rows_of_the_largest_blobs",
         sqlx::query(ROWS_SQL).bind(&largest).bind(1_000_i64)
     );
     measure!(
-        "setting_rows_of_4_typical_blobs",
+        "setting_rows_of_typical_blobs",
         sqlx::query(ROWS_SQL).bind(&typical).bind(1_000_i64)
     );
     measure!(
@@ -330,7 +334,7 @@ async fn main() {
         "settings_search_places",
         sqlx::query(PLACES_SQL)
             .bind(&lanes)
-            .bind(&hashes102)
+            .bind(&places_blobs)
             .bind(None::<&str>)
     );
     measure!(

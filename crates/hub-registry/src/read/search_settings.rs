@@ -24,6 +24,7 @@ use domain::{
     ContentHash, LineRange, NfsPath, Paged, SettingHit, SettingLocation, SettingPath, SettingValue,
     SettingsQuery, SwimlaneId, ValueType,
 };
+use futures::stream::{self, StreamExt};
 use ports::ReadError;
 use sqlx::Row;
 
@@ -63,6 +64,10 @@ WHERE si.setting_path ILIKE $1 \
   AND octet_length(si.setting_path) <= $5 \
   AND (si.blob_hash, si.setting_path) >= ($2::bytea, $3::text) \
 ORDER BY si.blob_hash, si.setting_path LIMIT $4";
+
+/// How many blobs one statement of places asks about, and how many such statements run at once for a page.
+pub const PLACES_PER_STATEMENT: usize = 25;
+const PLACES_AT_ONCE: usize = 4;
 
 /// The most batches of settings one request looks at when the batches are not tested in SQL: a request does a bounded amount of work, and
 /// a page that the batches did not fill is returned short, with the cursor of where the search got to.
@@ -279,18 +284,31 @@ impl Inner {
                 seen.push(p.blob);
             }
         }
+        // A page of settings is up to 102 blobs, each probed in every swimlane asked for: several statements of a few blobs each, side
+        // by side, so that no statement is long and the page waits for the longest of them, not the sum.
         let blobs: Vec<Vec<u8>> = seen.iter().map(|b| b.as_bytes().to_vec()).collect();
-        let places = self
-            .db
-            .run(
-                "read_setting_places",
-                sqlx::query(PLACES_SQL)
-                    .bind(lanes)
-                    .bind(&blobs)
-                    .bind(file)
-                    .fetch_all(self.db.pool()),
-            )
-            .await?;
+        let places: Vec<sqlx::postgres::PgRow> =
+            stream::iter(blobs.chunks(PLACES_PER_STATEMENT).map(<[Vec<u8>]>::to_vec))
+                .map(|chunk| async move {
+                    self.db
+                        .run(
+                            "read_setting_places",
+                            sqlx::query(PLACES_SQL)
+                                .bind(lanes)
+                                .bind(&chunk)
+                                .bind(file)
+                                .fetch_all(self.db.pool()),
+                        )
+                        .await
+                })
+                .buffer_unordered(PLACES_AT_ONCE)
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect();
         let mut by_blob: HashMap<ContentHash, Vec<(String, i64, String)>> = HashMap::new();
         for row in &places {
             let blob: Vec<u8> = row.get("blob");

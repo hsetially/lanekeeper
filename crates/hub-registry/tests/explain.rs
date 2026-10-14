@@ -859,7 +859,7 @@ async fn read_queries_have_no_sequential_scan_on_large_tables() {
         PLACES_SQL,
         [
             Arg::TextArray(lanes(40)),
-            Arg::ByteaArray(blob_hashes(102)),
+            Arg::ByteaArray(blob_hashes(25)),
             Arg::OptText(None)
         ]
     );
