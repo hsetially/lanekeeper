@@ -46,11 +46,34 @@ pub enum RegistryError {
     /// The payload names a swimlane other than the sender's own.
     #[error("the payload does not match the sender identity")]
     IdentityMismatch,
+    /// An invariant of the registry itself did not hold: a bug here, never something a caller did. Today there is one cause, a batch
+    /// of audit or outbox events that a port refused as too large after the registry had cut it to the port's limits itself. The
+    /// error says nothing more; the stage that failed is in the log (see [`RegistryError::batch_bug`]).
+    #[error("an internal error")]
+    Internal,
+}
+
+impl RegistryError {
+    /// A port refused a batch for size, which the registry's own splitting should make impossible (`ports::split_batches` for the
+    /// audit chain, `MAX_EVENT_BATCH` for the outbox). It is a bug in the registry and not the caller's doing, so it is
+    /// [`RegistryError::Internal`], and the `stage` goes to the log as a fixed word, with nothing of the batch.
+    fn batch_bug(stage: &'static str) -> Self {
+        tracing::error!(
+            stage,
+            "a batch the registry cut is over a port limit: a bug in the registry"
+        );
+        Self::Internal
+    }
 }
 
 impl From<AuditError> for RegistryError {
     fn from(e: AuditError) -> Self {
-        Self::Audit(e)
+        match e {
+            AuditError::BatchTooLarge => Self::batch_bug("audit_batch"),
+            AuditError::TooLarge | AuditError::WrongTx | AuditError::Encode | AuditError::Unavailable => {
+                Self::Audit(e)
+            }
+        }
     }
 }
 
@@ -58,6 +81,7 @@ impl From<BusError> for RegistryError {
     fn from(e: BusError) -> Self {
         match e {
             BusError::WrongTx => Self::WrongTx,
+            BusError::BatchTooLarge => Self::batch_bug("event_batch"),
             BusError::Unavailable => Self::Bus(e),
         }
     }
@@ -105,6 +129,7 @@ impl From<RegistryError> for SinkError {
             | RegistryError::Blob(_)
             | RegistryError::Git(_)
             | RegistryError::Capacity
+            | RegistryError::Internal
             | RegistryError::WrongTx => Self::Unavailable,
         }
     }
@@ -139,10 +164,51 @@ mod tests {
             RegistryError::Blob(BlobError::Unavailable),
             RegistryError::Git(GitError::Unavailable),
             RegistryError::Capacity,
+            RegistryError::Internal,
             RegistryError::WrongTx,
         ] {
             assert_eq!(SinkError::from(internal), SinkError::Unavailable, "{internal}");
         }
+    }
+
+    #[test]
+    fn a_batch_the_registry_cut_too_big_is_an_internal_error_and_not_the_callers() {
+        // The registry splits its batches itself, so a port that refuses one for size has found a bug in the registry. It is neither a
+        // client error (`Invalid`, `TooLarge`: the agent would drop the delta) nor a port that is down (`Audit`, `Bus`).
+        assert_eq!(
+            RegistryError::from(AuditError::BatchTooLarge),
+            RegistryError::Internal
+        );
+        assert_eq!(
+            RegistryError::from(BusError::BatchTooLarge),
+            RegistryError::Internal
+        );
+        // What the agent is told is the closed set, and a bug is "try again later", with nothing of the batch.
+        assert_eq!(
+            SinkError::from(RegistryError::from(AuditError::BatchTooLarge)),
+            SinkError::Unavailable
+        );
+        assert_eq!(
+            SinkError::from(RegistryError::from(BusError::BatchTooLarge)),
+            SinkError::Unavailable
+        );
+    }
+
+    #[test]
+    fn the_other_port_errors_keep_their_meaning() {
+        for e in [
+            AuditError::TooLarge,
+            AuditError::WrongTx,
+            AuditError::Encode,
+            AuditError::Unavailable,
+        ] {
+            assert_eq!(RegistryError::from(e), RegistryError::Audit(e));
+        }
+        assert_eq!(RegistryError::from(BusError::WrongTx), RegistryError::WrongTx);
+        assert_eq!(
+            RegistryError::from(BusError::Unavailable),
+            RegistryError::Bus(BusError::Unavailable)
+        );
     }
 
     #[test]
@@ -165,6 +231,7 @@ mod tests {
             RegistryError::NotFound,
             RegistryError::Git(GitError::NotFound),
             RegistryError::Capacity,
+            RegistryError::Internal,
             RegistryError::WrongTx,
         ] {
             let text = e.to_string();
