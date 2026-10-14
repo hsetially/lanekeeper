@@ -77,6 +77,13 @@ pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 /// The table refuses an `event_json` over this size. The bounded fields of an event cannot reach it; this is the backstop.
 pub(crate) const MAX_EVENT_JSON_BYTES: usize = 1024 * 1024;
 
+// An event that `prepare` accepts (up to the limit above) is accepted alone by `record_many`: the byte budget of a batch holds at
+// least one. If either number moves, this stops the build until the other is looked at.
+const _: () = assert!(
+    MAX_AUDIT_BATCH_BYTES >= MAX_EVENT_JSON_BYTES,
+    "the batch budget must hold the largest event that `prepare` accepts"
+);
+
 /// `at` is built by parsing the interval from text, which is integer arithmetic. `$4::bigint * interval '1 millisecond'` multiplies in
 /// floating point and is off by microseconds from the year 2255 on, and the nightly verifier compares `at` to the microsecond.
 const INSERT: &str = "INSERT INTO audit_events \
