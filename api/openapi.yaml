@@ -2572,6 +2572,14 @@ paths:
         schema:
           $ref: '#/components/schemas/ContentHash'
         description: The hash the caller believes is there.
+      - name: preview_id
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/PreviewId'
+        description: From `POST /swimlanes/{id}/files/preview` for this path and hash, at most 10 minutes old. A
+          delete without a valid one is refused with 422 (`not_allowed`) and nothing is deleted. Optional in the
+          schema so that the refusal is a problem response and not a parse failure.
       - $ref: '#/components/parameters/CsrfToken'
       - $ref: '#/components/parameters/IdempotencyKey'
       responses:
@@ -2704,6 +2712,73 @@ paths:
           $ref: '#/components/responses/NotFound'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/files/preview:
+    post:
+      operationId: previewFileEffect
+      summary: Preview what an upload or a delete would do
+      description: 'Computed by the engine from the current files, before anybody confirms. Nothing is written, audited
+        or recorded. The answer carries a `preview_id` that the upload or the delete must present: it is bound to the
+        user, the swimlane, the path, the action and the hashes, and it expires at `expires_at` (10 minutes). The
+        `Idempotency-Key` is required like on every write, and not recorded.'
+      tags:
+      - writes
+      x-required-role: editor
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                action:
+                  type: string
+                  enum:
+                  - upload
+                  - delete
+                path:
+                  $ref: '#/components/schemas/NfsPath'
+                expected_state:
+                  type: string
+                  enum:
+                  - absent
+                  - hash
+                  description: A delete needs `hash`.
+                expected_hash:
+                  $ref: '#/components/schemas/ContentHash'
+                file:
+                  type: string
+                  format: binary
+                  description: The file to upload, at most 3 MiB. Required for `upload`, absent for `delete`.
+              additionalProperties: false
+              required:
+              - action
+              - path
+              - expected_state
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangePreview'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/swimlanes/{id}/files/reveal:
     post:
       operationId: revealValue
@@ -2791,6 +2866,10 @@ paths:
     post:
       operationId: uploadFile
       summary: Upload a file
+      description: Needs the `preview_id` of `POST /swimlanes/{id}/files/preview` for this path, expected state and
+        file, at most 10 minutes old. Without a valid one the upload is refused with 422 (`not_allowed`) and nothing
+        is written. `preview_id` is optional in the schema so that the refusal is a problem response and not a
+        parse failure.
       tags:
       - writes
       x-required-role: editor
@@ -2814,11 +2893,13 @@ paths:
                   - hash
                 expected_hash:
                   $ref: '#/components/schemas/ContentHash'
+                preview_id:
+                  $ref: '#/components/schemas/PreviewId'
                 file:
                   type: string
                   format: binary
-                  description: At most 25 MiB. Binary images and other non-text files are allowed; denied globs
-                    are refused.
+                  description: At most 3 MiB (a larger file is refused with 413 and nothing is written). Binary
+                    images and other non-text files are allowed; denied globs are refused.
               additionalProperties: false
               required:
               - path
@@ -3634,6 +3715,8 @@ components:
       - unknown_swimlane
       - agent_unavailable
       - not_allowed
+      - secret_detected
+      - parse_error
     NotificationKind:
       type: string
       enum:
@@ -3673,6 +3756,13 @@ components:
         reason:
           $ref: '#/components/schemas/RejectReason'
           description: Why a write was refused (422), when it was.
+        issues:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationIssue'
+          maxItems: 50
+          description: With `reason`, where in the content the problem is. Lines and rule names, never the text of a
+            line.
       required:
       - type
       - title
@@ -4618,6 +4708,163 @@ components:
           hash: '#/components/schemas/ExpectedHash'
       description: 'What the caller expects to find. There is no blind write: a mismatch returns 409 and writes
         nothing.'
+    ChangeEol:
+      type: string
+      enum:
+      - lf
+      - crlf
+      description: Convert the file to this line ending style. Absent keeps the style the file has (a new file takes
+        the dominant style of its folder). Only an explicit value ever changes a file's style.
+    PreviewId:
+      type: string
+      pattern: ^[A-Za-z0-9._-]{1,128}$
+      description: Issued by `POST /swimlanes/{id}/files/preview`. Opaque. Bound to the user, the swimlane, the path,
+        the action and the hashes; it expires after 10 minutes.
+    PrTargetTenant:
+      type: object
+      properties:
+        kind:
+          const: tenant
+        branch:
+          $ref: '#/components/schemas/TenantId'
+      additionalProperties: false
+      required:
+      - kind
+      - branch
+    PrTargetBase:
+      type: object
+      properties:
+        kind:
+          const: base
+      additionalProperties: false
+      required:
+      - kind
+    PrTarget:
+      oneOf:
+      - $ref: '#/components/schemas/PrTargetTenant'
+      - $ref: '#/components/schemas/PrTargetBase'
+      discriminator:
+        propertyName: kind
+        mapping:
+          tenant: '#/components/schemas/PrTargetTenant'
+          base: '#/components/schemas/PrTargetBase'
+      description: The branch the PR goes to, chosen by the person (D43). Absent, a tenant file goes to its own
+        tenant's branch and a base file to the base branch.
+    ValidationIssue:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum:
+          - parse_error
+          - duplicate_key
+          - secret_match
+        line:
+          type: integer
+          minimum: 1
+          maximum: 4294967295
+        rule:
+          $ref: '#/components/schemas/ShortText'
+          description: The secret rule's name for `secret_match`.
+      additionalProperties: false
+      required:
+      - kind
+      description: One thing the validation of content found. It never holds the text of the line, because the line
+        may be the secret.
+    PreviewScope:
+      oneOf:
+      - type: object
+        properties:
+          kind:
+            const: every_service
+        additionalProperties: false
+        required:
+        - kind
+      - type: object
+        properties:
+          kind:
+            const: application
+          app:
+            $ref: '#/components/schemas/AppName'
+        additionalProperties: false
+        required:
+        - kind
+        - app
+      - type: object
+        properties:
+          kind:
+            const: folder
+          path:
+            $ref: '#/components/schemas/NfsPath'
+        additionalProperties: false
+        required:
+        - kind
+        - path
+      description: Who reads the file the change touches.
+    PreviewWarning:
+      oneOf:
+      - type: object
+        properties:
+          kind:
+            enum:
+            - falls_back_to_base
+            - no_file_left
+            - forks_from_base
+            - needs_notify_or_restart
+            - new_folder_needs_config_server_restart
+            - channels_yml_needs_config_server_restart
+        additionalProperties: false
+        required:
+        - kind
+      - type: object
+        properties:
+          kind:
+            const: never_read
+          suffix:
+            $ref: '#/components/schemas/TenantId'
+        additionalProperties: false
+        required:
+        - kind
+        - suffix
+      description: A consequence the person confirming the change should see (D46, D83, D85).
+    ChangePreview:
+      type: object
+      properties:
+        preview_id:
+          $ref: '#/components/schemas/PreviewId'
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+        scope:
+          $ref: '#/components/schemas/PreviewScope'
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreviewWarning'
+          maxItems: 20
+        changes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SettingChange'
+          maxItems: 50
+          description: The settings that would differ in the effective config, sorted by path.
+        changes_total:
+          type: integer
+          minimum: 0
+          description: All of them, listed or not.
+        effective_changed:
+          type: boolean
+          description: What the services get would differ.
+      additionalProperties: false
+      required:
+      - preview_id
+      - expires_at
+      - scope
+      - warnings
+      - changes
+      - changes_total
+      - effective_changed
+      description: What an upload or a delete would do, from the engine, and the token that lets that upload or delete
+        through.
     EditFileRequest:
       type: object
       properties:
@@ -4630,6 +4877,8 @@ components:
           maxLength: 4194304
           description: The whole new text, at most 4 MiB. The server restores the file's line endings, encoding
             and BOM.
+        change_eol:
+          $ref: '#/components/schemas/ChangeEol'
       additionalProperties: false
       required:
       - path
@@ -4644,6 +4893,8 @@ components:
           $ref: '#/components/schemas/Expected'
         to:
           $ref: '#/components/schemas/ContentHash'
+        change_eol:
+          $ref: '#/components/schemas/ChangeEol'
       additionalProperties: false
       required:
       - path
@@ -4656,6 +4907,10 @@ components:
           $ref: '#/components/schemas/NfsPath'
         setting:
           $ref: '#/components/schemas/SettingPath'
+        reason:
+          $ref: '#/components/schemas/ShortText'
+          description: Why the person needs to see it. Recorded in the audit event. Without one the audit event says
+            `masked_value_reveal`.
       additionalProperties: false
       required:
       - path
@@ -4699,6 +4954,13 @@ components:
         audit_id:
           type: integer
           format: int64
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationIssue'
+          maxItems: 50
+          description: Things worth knowing that did not stop the write, such as a duplicate key. Absent when there
+            are none.
       additionalProperties: false
       required:
       - outcome
@@ -4746,6 +5008,8 @@ components:
           - type: string
             maxLength: 65536
           - type: 'null'
+        target:
+          $ref: '#/components/schemas/PrTarget'
       additionalProperties: false
       required:
       - swimlane
@@ -4776,6 +5040,13 @@ components:
           oneOf:
           - $ref: '#/components/schemas/ShortText'
           - type: 'null'
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/ShortText'
+          maxItems: 20
+          description: What the person should know about where this PR goes, such as a new tenant file that forks
+            from base or a tenant file copied into base. Absent when there is nothing to say.
         created_at:
           $ref: '#/components/schemas/Timestamp'
         updated_at:

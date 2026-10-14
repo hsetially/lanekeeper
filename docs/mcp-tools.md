@@ -200,6 +200,41 @@ JSON Schema (2020-12). Tool schemas refer to these as `#/$defs/<Name>`. Names an
       ],
       "description": "What the caller expects to find. There is no blind write (rule 11): a mismatch is a `conflict` error and nothing is written."
     },
+    "ChangeEol": {
+      "type": "string",
+      "maxLength": 4,
+      "enum": ["lf", "crlf"],
+      "description": "Convert the file to this line ending style. Absent keeps the style the file has. Only an explicit value ever changes a file's style."
+    },
+    "PrTarget": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {"kind": {"const": "tenant"}, "branch": {"$ref": "#/$defs/TenantId"}},
+          "required": ["kind", "branch"],
+          "additionalProperties": false
+        },
+        {"type": "object", "properties": {"kind": {"const": "base"}}, "required": ["kind"], "additionalProperties": false}
+      ],
+      "description": "The branch a PR goes to, chosen by the person (D43). Absent: a tenant file goes to its own tenant's branch and a base file to the base branch."
+    },
+    "RejectReason": {
+      "type": "string",
+      "maxLength": 24,
+      "enum": ["denied", "too_large", "invalid_content", "unknown_swimlane", "agent_unavailable", "not_allowed", "secret_detected", "parse_error"],
+      "description": "Why a write was refused (`unprocessable`)."
+    },
+    "ValidationIssue": {
+      "type": "object",
+      "properties": {
+        "kind": {"type": "string", "maxLength": 16, "enum": ["parse_error", "duplicate_key", "secret_match"]},
+        "line": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+        "rule": {"$ref": "#/$defs/ShortText", "description": "The secret rule's name for `secret_match`."}
+      },
+      "required": ["kind"],
+      "additionalProperties": false,
+      "description": "One thing the validation of content found: a place and a rule, never the text of the line (S13, S14b)."
+    },
     "Actor": {
       "type": "object",
       "properties": {"kind": {"type": "string", "maxLength": 16, "enum": ["user", "os_login", "job"]}, "id": {"$ref": "#/$defs/ShortText"}},
@@ -366,7 +401,13 @@ JSON Schema (2020-12). Tool schemas refer to these as `#/$defs/<Name>`. Names an
         },
         "hash": {"oneOf": [{"$ref": "#/$defs/ContentHash"}, {"type": "null"}]},
         "audit_id": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]},
-        "proposal_id": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]}
+        "proposal_id": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]},
+        "warnings": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/ValidationIssue"},
+          "maxItems": 50,
+          "description": "With `applied`: things worth knowing that did not stop the write, such as a duplicate key. Absent when there are none."
+        }
       },
       "required": ["outcome", "hash", "audit_id", "proposal_id"],
       "additionalProperties": false
@@ -396,7 +437,14 @@ JSON Schema (2020-12). Tool schemas refer to these as `#/$defs/<Name>`. Names an
         "retryable": {"type": "boolean"},
         "request_id": {"$ref": "#/$defs/ShortText"},
         "current_hash": {"oneOf": [{"$ref": "#/$defs/ContentHash"}, {"type": "null"}], "description": "With `conflict`: the hash that is there now."},
-        "retry_after_secs": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 86400}, {"type": "null"}], "description": "With `rate_limited`."}
+        "retry_after_secs": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 86400}, {"type": "null"}], "description": "With `rate_limited`."},
+        "reason": {"$ref": "#/$defs/RejectReason", "description": "With `unprocessable`: why the write was refused, when it was."},
+        "issues": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/ValidationIssue"},
+          "maxItems": 50,
+          "description": "With `reason`: where in the content the problem is (lines and rule names, never the text)."
+        }
       },
       "required": ["code", "message", "retryable", "request_id"],
       "additionalProperties": false
@@ -1464,7 +1512,8 @@ The draft is only a record; nothing is written to NFS. Drafts expire (`expires_a
       "type": "string",
       "maxLength": 4194304,
       "description": "The whole new text, at most 4 MiB. The server restores the file's line endings, encoding and BOM."
-    }
+    },
+    "change_eol": {"$ref": "#/$defs/ChangeEol"}
   },
   "required": ["swimlane", "path", "expected", "content"],
   "additionalProperties": false
@@ -1624,7 +1673,8 @@ Raises a pull request for changed files, using the caller's own GitHub token. A 
     "swimlane": {"$ref": "#/$defs/SwimlaneId"},
     "paths": {"type": "array", "items": {"$ref": "#/$defs/NfsPath"}, "maxItems": 100, "minItems": 1, "uniqueItems": true},
     "title": {"$ref": "#/$defs/ShortText"},
-    "body": {"oneOf": [{"type": "string", "maxLength": 65536}, {"type": "null"}]}
+    "body": {"oneOf": [{"type": "string", "maxLength": 65536}, {"type": "null"}]},
+    "target": {"$ref": "#/$defs/PrTarget"}
   },
   "required": ["swimlane", "paths", "title"],
   "additionalProperties": false

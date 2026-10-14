@@ -248,6 +248,7 @@ fn roles_follow_the_approved_inventory() {
         ("POST", "/api/v1/swimlanes/{id}/files/reveal", Role::Editor),
         ("PUT", "/api/v1/swimlanes/{id}/files", Role::Editor),
         ("POST", "/api/v1/swimlanes/{id}/files/upload", Role::Editor),
+        ("POST", "/api/v1/swimlanes/{id}/files/preview", Role::Editor),
         ("DELETE", "/api/v1/swimlanes/{id}/files", Role::Editor),
         ("POST", "/api/v1/swimlanes/{id}/files/revert", Role::Editor),
         ("POST", "/api/v1/swimlanes/{id}/restart", Role::Operator),
@@ -750,4 +751,334 @@ fn internal_events_are_not_in_the_sse_event_kinds() {
         .collect();
     assert!(!kinds.contains(&"user_sessions_revoked"));
     assert_eq!(kinds.len(), 15);
+}
+
+fn required_of(schema: &Value) -> BTreeSet<String> {
+    schema["required"]
+        .as_array()
+        .map(|r| r.iter().map(|v| v.as_str().unwrap().to_owned()).collect())
+        .unwrap_or_default()
+}
+
+fn strings(v: &Value) -> BTreeSet<String> {
+    v.as_array()
+        .unwrap_or_else(|| panic!("not an array: {v}"))
+        .iter()
+        .map(|x| x.as_str().unwrap().to_owned())
+        .collect()
+}
+
+fn assert_optional(d: &Value, schema: &str, prop: &str) {
+    let s = &d["components"]["schemas"][schema];
+    assert!(properties(d, s).contains_key(prop), "{schema}.{prop} is missing");
+    assert!(
+        !required_of(resolve(d, s)).contains(prop),
+        "{schema}.{prop} must stay optional: an old client does not send it"
+    );
+}
+
+fn wire_keys(v: &Value) -> BTreeSet<String> {
+    v.as_object().unwrap().keys().cloned().collect()
+}
+
+/// Prompt 06's contract change (G2, G3, G11): the new request fields are optional, so a client built from the old
+/// document keeps working, and their values are the ones the domain types serialise.
+#[test]
+fn write_request_additions_are_optional_and_match_the_domain() {
+    use domain::{ChangeEol, PrTarget, TenantId};
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+    assert_optional(&d, "EditFileRequest", "change_eol");
+    assert_optional(&d, "RevertFileRequest", "change_eol");
+    let eol: BTreeSet<String> = ChangeEol::ALL.iter().map(|e| e.as_str().to_owned()).collect();
+    assert_eq!(strings(&schemas["ChangeEol"]["enum"]), eol);
+
+    assert_optional(&d, "CreatePrRequest", "target");
+    assert_optional(&d, "PrJob", "warnings");
+    let tenant = serde_json::to_value(PrTarget::Tenant {
+        branch: TenantId::parse("sit1").unwrap(),
+    })
+    .unwrap();
+    let base = serde_json::to_value(PrTarget::Base).unwrap();
+    assert_eq!(
+        schemas["PrTargetTenant"]["properties"]["kind"]["const"],
+        tenant["kind"]
+    );
+    assert_eq!(
+        schemas["PrTargetBase"]["properties"]["kind"]["const"],
+        base["kind"]
+    );
+    assert_eq!(required_of(&schemas["PrTargetTenant"]), wire_keys(&tenant));
+    assert_eq!(required_of(&schemas["PrTargetBase"]), wire_keys(&base));
+
+    assert_optional(&d, "RevealRequest", "reason");
+}
+
+/// Prompt 06's contract change (G6): the rejection reasons, the issue shape and the warnings on a write.
+#[test]
+fn rejection_detail_is_optional_and_matches_the_domain() {
+    use domain::{AuditId, IssueKind, RejectReason, ShortText, ValidationIssue, WriteOutcome};
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+    // An exhaustive match: a new variant must be listed here, and so in the document.
+    let all = [
+        RejectReason::Denied,
+        RejectReason::TooLarge,
+        RejectReason::InvalidContent,
+        RejectReason::UnknownSwimlane,
+        RejectReason::AgentUnavailable,
+        RejectReason::NotAllowed,
+        RejectReason::SecretDetected,
+        RejectReason::ParseError,
+    ];
+    for r in all {
+        match r {
+            RejectReason::Denied
+            | RejectReason::TooLarge
+            | RejectReason::InvalidContent
+            | RejectReason::UnknownSwimlane
+            | RejectReason::AgentUnavailable
+            | RejectReason::NotAllowed
+            | RejectReason::SecretDetected
+            | RejectReason::ParseError => {}
+        }
+    }
+    let reasons: BTreeSet<String> = all
+        .iter()
+        .map(|r| serde_json::to_value(r).unwrap().as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(strings(&schemas["RejectReason"]["enum"]), reasons);
+
+    let kinds: BTreeSet<String> = IssueKind::ALL.iter().map(|k| k.as_str().to_owned()).collect();
+    assert_eq!(
+        strings(&schemas["ValidationIssue"]["properties"]["kind"]["enum"]),
+        kinds
+    );
+    assert_eq!(
+        required_of(&schemas["ValidationIssue"]),
+        BTreeSet::from(["kind".to_owned()])
+    );
+    let issue = ValidationIssue {
+        kind: IssueKind::SecretMatch,
+        line: Some(3),
+        rule: Some(ShortText::parse("jwt").unwrap()),
+    };
+    let declared: BTreeSet<String> = properties(&d, &schemas["ValidationIssue"])
+        .into_keys()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        wire_keys(&serde_json::to_value(&issue).unwrap()),
+        declared,
+        "the issue's wire fields are the document's"
+    );
+
+    assert_optional(&d, "WriteApplied", "warnings");
+    let applied = serde_json::to_value(WriteOutcome::Applied {
+        hash: None,
+        audit_id: AuditId::from(1),
+        warnings: vec![issue],
+    })
+    .unwrap();
+    for key in applied.as_object().unwrap().keys() {
+        assert!(
+            properties(&d, &schemas["WriteApplied"]).contains_key(key.as_str()),
+            "WriteApplied lacks `{key}`"
+        );
+    }
+    assert_optional(&d, "Problem", "issues");
+}
+
+/// Prompt 06's contract change (G1): the preview's wire fields, scopes and warnings are the domain's.
+#[test]
+fn change_preview_schema_matches_the_domain() {
+    use domain::{ChangePreview, PreviewId, PreviewScope, PreviewWarning, TenantId, Timestamp};
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+    let preview = ChangePreview {
+        preview_id: PreviewId::parse("tok").unwrap(),
+        expires_at: Timestamp::from_unix_millis(1),
+        scope: PreviewScope::EveryService,
+        warnings: vec![PreviewWarning::FallsBackToBase],
+        changes: Vec::new(),
+        changes_total: 0,
+        effective_changed: false,
+    };
+    let declared: BTreeSet<String> = properties(&d, &schemas["ChangePreview"])
+        .into_keys()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(wire_keys(&serde_json::to_value(&preview).unwrap()), declared);
+    assert_eq!(required_of(&schemas["ChangePreview"]), declared, "all required");
+
+    let warning_kinds: BTreeSet<String> = [
+        PreviewWarning::FallsBackToBase,
+        PreviewWarning::NoFileLeft,
+        PreviewWarning::ForksFromBase,
+        PreviewWarning::NeedsNotifyOrRestart,
+        PreviewWarning::NewFolderNeedsConfigServerRestart,
+        PreviewWarning::ChannelsYmlNeedsConfigServerRestart,
+        PreviewWarning::NeverRead {
+            suffix: TenantId::parse("sit9").unwrap(),
+        },
+    ]
+    .iter()
+    .map(|w| {
+        serde_json::to_value(w).unwrap()["kind"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    })
+    .collect();
+    let mut documented = BTreeSet::new();
+    for variant in schemas["PreviewWarning"]["oneOf"].as_array().unwrap() {
+        let kind = &variant["properties"]["kind"];
+        if let Some(c) = kind.get("const") {
+            documented.insert(c.as_str().unwrap().to_owned());
+        } else {
+            documented.extend(strings(&kind["enum"]));
+        }
+    }
+    assert_eq!(documented, warning_kinds);
+    let scope_kinds: BTreeSet<String> = schemas["PreviewScope"]["oneOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["properties"]["kind"]["const"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        scope_kinds,
+        BTreeSet::from([
+            "every_service".to_owned(),
+            "application".to_owned(),
+            "folder".to_owned()
+        ])
+    );
+    assert_eq!(
+        schemas["PreviewId"]["pattern"].as_str().unwrap(),
+        "^[A-Za-z0-9._-]{1,128}$",
+        "the same shape as the domain's token ids"
+    );
+}
+
+/// Prompt 06's contract change (G1, A3): the preview operation exists, an upload and a delete may carry its id, and the
+/// upload size is stated as the hub enforces it.
+#[test]
+fn preview_operation_and_upload_text() {
+    let d = doc();
+    let ops = operations(&d);
+    let preview_op = find(&ops, "POST", "/api/v1/swimlanes/{id}/files/preview");
+    assert!(preview_op.has_tag("writes"));
+    assert_eq!(
+        json_schema(preview_op.response(&d, "200").unwrap()).unwrap()["$ref"],
+        "#/components/schemas/ChangePreview"
+    );
+    for code in ["403", "413", "422"] {
+        assert!(
+            preview_op.response(&d, code).is_some(),
+            "preview documents {code}"
+        );
+    }
+    let form = &preview_op.def["requestBody"]["content"]["multipart/form-data"]["schema"];
+    assert_eq!(
+        required_of(form),
+        BTreeSet::from([
+            "action".to_owned(),
+            "path".to_owned(),
+            "expected_state".to_owned()
+        ])
+    );
+    assert_eq!(
+        strings(&form["properties"]["action"]["enum"]),
+        BTreeSet::from(["upload".to_owned(), "delete".to_owned()])
+    );
+    let upload = find(&ops, "POST", "/api/v1/swimlanes/{id}/files/upload");
+    let upload_form = &upload.def["requestBody"]["content"]["multipart/form-data"]["schema"];
+    assert!(upload_form["properties"].get("preview_id").is_some());
+    assert!(!required_of(upload_form).contains("preview_id"));
+    let file_text = upload_form["properties"]["file"]["description"].as_str().unwrap();
+    assert!(
+        file_text.contains("3 MiB") && file_text.contains("413"),
+        "{file_text}"
+    );
+    assert!(!SPEC.contains("25 MiB"), "the 25 MiB claim is gone (A3)");
+    assert!(upload.response(&d, "413").is_some());
+    let delete = find(&ops, "DELETE", "/api/v1/swimlanes/{id}/files");
+    let id_param = delete
+        .query_param(&d, "preview_id")
+        .expect("delete takes preview_id");
+    assert_ne!(id_param["required"], true);
+}
+
+/// The MCP document names the same values as the REST document for the write additions: an assistant and the web app
+/// must see one set of rejection reasons, issue kinds and line ending styles.
+#[test]
+fn mcp_write_definitions_match_the_rest_document() {
+    const MCP: &str = include_str!("../../../docs/mcp-tools.md");
+    let defs_text = MCP
+        .split("## Shared definitions")
+        .nth(1)
+        .and_then(|rest| rest.split("```json\n").nth(1))
+        .and_then(|rest| rest.split("\n```").next())
+        .expect("the shared definitions block");
+    let mcp: Value = serde_json::from_str(defs_text).expect("shared definitions are JSON");
+    let defs = &mcp["$defs"];
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+
+    assert_eq!(
+        strings(&defs["ChangeEol"]["enum"]),
+        strings(&schemas["ChangeEol"]["enum"])
+    );
+    assert_eq!(
+        strings(&defs["RejectReason"]["enum"]),
+        strings(&schemas["RejectReason"]["enum"])
+    );
+    assert_eq!(
+        strings(&defs["ValidationIssue"]["properties"]["kind"]["enum"]),
+        strings(&schemas["ValidationIssue"]["properties"]["kind"]["enum"])
+    );
+    assert_eq!(
+        defs["ValidationIssue"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<BTreeSet<_>>(),
+        schemas["ValidationIssue"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<BTreeSet<_>>()
+    );
+    let kinds = |v: &Value| -> BTreeSet<String> {
+        v["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["properties"]["kind"]["const"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(
+        kinds(&defs["PrTarget"]),
+        BTreeSet::from(["tenant".to_owned(), "base".to_owned()])
+    );
+    assert_eq!(kinds(&defs["PrTarget"]), {
+        // REST names its variants by reference.
+        schemas["PrTarget"]["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                resolve(&d, r)["properties"]["kind"]["const"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<BTreeSet<_>>()
+    });
+    // Additions are optional in the MCP outputs too.
+    assert!(defs["WriteOutcome"]["properties"].get("warnings").is_some());
+    assert!(!required_of(&defs["WriteOutcome"]).contains("warnings"));
+    assert!(!required_of(&defs["ToolError"]).contains("issues"));
+    assert!(!required_of(&defs["ToolError"]).contains("reason"));
 }
