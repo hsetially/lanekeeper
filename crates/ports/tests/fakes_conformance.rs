@@ -5,7 +5,7 @@ use ports::conformance::{self, GitExpectation, TokenFixtures};
 use ports::fakes::{
     FakeAgentGateway, FakeAuditLog, FakeBlobStore, FakeDocSearch, FakeEventBus, FakeGit, FakeKmsEnvelope,
     FakeKmsSigner, FakeLeases, FakeNotifier, FakeRegistry, FakeReportSink, FakeSecretSource,
-    FakeSentinelSink, FakeTokenVerifier, FakeTxFactory, FakeUsers, FakeWriteService,
+    FakeSentinelSink, FakeTokenVerifier, FakeToolWrites, FakeTxFactory, FakeUsers, FakeWriteService,
 };
 use ports::{KeyRef, TxFactory};
 
@@ -103,4 +103,11 @@ async fn fake_doc_search_conforms() {
 #[tokio::test(start_paused = true)]
 async fn fake_sentinel_sink_conforms() {
     conformance::sentinel_sink(&FakeSentinelSink::new()).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn fake_tool_writes_conforms() {
+    let registry = FakeToolWrites::new();
+    let txf: &dyn TxFactory = &FakeTxFactory::new();
+    conformance::tool_writes(&registry, txf).await;
 }

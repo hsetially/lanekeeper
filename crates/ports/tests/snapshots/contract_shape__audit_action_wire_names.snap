@@ -16,6 +16,7 @@ expression: names
   "proposal_approved",
   "proposal_rejected",
   "proposal_expired",
+  "proposal_stale",
   "draft_applied",
   "baseline_adopted",
   "drift_marked_intentional",

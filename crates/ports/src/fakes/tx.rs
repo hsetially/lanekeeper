@@ -5,12 +5,14 @@ use domain::{AuditId, DomainEvent};
 
 use super::audit_log::AuditInner;
 use super::event_bus::BusInner;
-use crate::{AuditEvent, OwnedTx, Tx, TxError, TxFactory};
+use super::tool_writes::ToolWritesInner;
+use crate::{AuditEvent, OwnedTx, ToolWriteEntry, Tx, TxError, TxFactory};
 
 /// What a fake port parked in a transaction, to apply on commit.
 pub(crate) enum Pending {
     Audit(Arc<AuditInner>, AuditId, Box<AuditEvent>),
     Publish(Arc<BusInner>, Box<DomainEvent>),
+    ToolWrite(Arc<ToolWritesInner>, Box<ToolWriteEntry>),
 }
 
 /// The in-memory stand-in for a database transaction: fakes park their writes here and they take effect
@@ -43,6 +45,7 @@ impl FakeTxState {
             match p {
                 Pending::Audit(log, id, event) => log.append_committed(id, *event),
                 Pending::Publish(bus, event) => bus.fan_out(*event),
+                Pending::ToolWrite(registry, entry) => registry.append_committed(*entry),
             }
         }
     }

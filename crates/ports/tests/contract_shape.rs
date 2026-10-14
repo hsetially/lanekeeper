@@ -12,8 +12,8 @@ use ports::conformance::sample::{swimlane, user_id};
 use ports::{
     AckSeq, AgentGateway, AuditAction, AuditActor, AuditEvent, AuditLog, AuditVia, BlobStore, DocSearch,
     EventBus, EventFilter, EventKind, GitReader, KeyRef, KeyRefError, KmsEnvelope, KmsSigner, Leases,
-    Notifier, RegistryRead, ReportSink, SecretSource, SentinelSink, TokenVerifier, Users, WriteService,
-    canonical_json, chain_hash, genesis_hash,
+    Notifier, RegistryRead, ReportSink, SecretSource, SentinelSink, TokenVerifier, ToolWrites, Users,
+    WriteService, canonical_json, chain_hash, genesis_hash,
 };
 use static_assertions::{assert_impl_all, assert_obj_safe};
 
@@ -48,6 +48,7 @@ ports!(
     AuditLog,
     RegistryRead,
     WriteService,
+    ToolWrites,
     DocSearch,
     SentinelSink,
 );
@@ -70,7 +71,7 @@ fn every_interfaces_md_trait_is_covered() {
         in_doc, ours,
         "docs/interfaces.md and the ports crate list the same traits"
     );
-    assert_eq!(ours.len(), 17);
+    assert_eq!(ours.len(), 18);
 }
 
 #[test]
@@ -241,6 +242,7 @@ fn all_actions() -> Vec<AuditAction> {
         ProposalApproved,
         ProposalRejected,
         ProposalExpired,
+        ProposalStale,
         DraftApplied,
         BaselineAdopted,
         DriftMarkedIntentional,
@@ -281,6 +283,7 @@ fn all_actions() -> Vec<AuditAction> {
             | ProposalApproved
             | ProposalRejected
             | ProposalExpired
+            | ProposalStale
             | DraftApplied
             | BaselineAdopted
             | DriftMarkedIntentional
@@ -344,6 +347,24 @@ fn audit_canonical_json_and_chain_hash_are_pinned() {
         "audit_canonical_json",
         format!("{json}\nchain_hash(genesis) = {hash}")
     );
+}
+
+#[test]
+fn audit_author_is_omitted_when_absent_and_written_after_the_approval_when_set() {
+    // The canonical JSON of an event without an author has no `author` key, so every stored chain is unchanged.
+    let without = String::from_utf8(canonical_json(&fixed_event()).unwrap()).unwrap();
+    assert!(!without.contains("author"), "{without}");
+    let mut with = fixed_event();
+    with.author = Some(user_id(2));
+    let with = String::from_utf8(canonical_json(&with).unwrap()).unwrap();
+    let approval = with.find("\"approval\"").unwrap();
+    let author = with.find("\"author\"").unwrap();
+    let request_id = with.find("\"request_id\"").unwrap();
+    assert!(approval < author && author < request_id, "{with}");
+    insta::assert_snapshot!("audit_canonical_json_with_author", with);
+    // An event stored before the field existed still reads, with no author.
+    let old: AuditEvent = serde_json::from_str(&without).unwrap();
+    assert_eq!(old, fixed_event());
 }
 
 #[test]

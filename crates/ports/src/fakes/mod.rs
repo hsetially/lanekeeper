@@ -6,7 +6,9 @@
 //! - the gateway fake supports timeouts; the blob store is content-addressed and has a capacity;
 //! - the event bus has bounded subscribers and emits `Resync` when one lags; leases expire;
 //! - the audit fake keeps the real hash chain, and a rolled-back transaction leaves nothing behind;
-//! - the write fake never writes blind, honours idempotency keys and role floors.
+//! - the write fake never writes blind, honours idempotency keys and role floors, and asks for a preview
+//!   before an upload or a delete;
+//! - the tool-write fake parks a registration in the caller's transaction, like the audit fake.
 //!
 //! They do not compute facts (diffs, drift, effective config): that is `crates/engine`'s job. Every fake
 //! passes the matching suite in [`crate::conformance`].
@@ -25,6 +27,7 @@ mod report_sink;
 mod secret_source;
 mod sentinel_sink;
 mod token_verifier;
+mod tool_writes;
 mod tx;
 mod users;
 mod util;
@@ -44,6 +47,7 @@ pub use report_sink::FakeReportSink;
 pub use secret_source::FakeSecretSource;
 pub use sentinel_sink::FakeSentinelSink;
 pub use token_verifier::FakeTokenVerifier;
+pub use tool_writes::FakeToolWrites;
 pub use tx::{FakeOwnedTx, FakeTxFactory, FakeTxState};
 pub use users::FakeUsers;
 pub use write_service::FakeWriteService;

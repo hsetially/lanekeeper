@@ -64,6 +64,9 @@ pub enum AuditAction {
     ProposalApproved,
     ProposalRejected,
     ProposalExpired,
+    /// A proposal's file changed before an admin decided, so it can no longer be applied (D37). Written by the
+    /// approval re-check and recorded with the `stale` status in one transaction.
+    ProposalStale,
     DraftApplied,
     BaselineAdopted,
     DriftMarkedIntentional,
@@ -109,6 +112,11 @@ pub struct AuditEvent {
     pub github_login: Option<ShortText>,
     /// The approving proposal, when the action followed an approval.
     pub approval: Option<ProposalId>,
+    /// Who proposed the change, when the action followed an approval: the event's `actor` is then the approver
+    /// (D38). Omitted from the canonical JSON when `None`, so every event written before this field existed keeps
+    /// its bytes and its hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<UserId>,
     pub request_id: Option<RequestId>,
     pub attribution: Option<Attribution>,
 }
@@ -130,6 +138,7 @@ impl AuditEvent {
             diff: None,
             github_login: None,
             approval: None,
+            author: None,
             request_id: None,
             attribution: None,
         }

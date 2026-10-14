@@ -45,9 +45,9 @@ pub use compare::{
 pub use compare_ref::{CompareRef, CompareRefError, GitRef, GitRefError};
 pub use docs::{DocGrepHit, DocHit, DocText, FeatureQuery, FeatureStatus, FlagStatus, FlagValue};
 pub use enums::{
-    AgentStatus, AttributionSource, Confidence, DriftState, EolStyle, FileClass, FileKind, FileRole,
-    FindingKind, MergeMode, ObservationSource, PickupState, PrJobState, PrState, ProposalStatus, RepoKind,
-    Role, Severity, TextEncoding, UnknownVariant, UserStatus, Via,
+    AgentStatus, AttributionSource, ChangeEol, Confidence, DriftState, EolStyle, FileClass, FileKind,
+    FileRole, FindingKind, IssueKind, MergeMode, ObservationSource, PickupState, PrJobState, PrState,
+    ProposalStatus, RepoKind, Role, Severity, TextEncoding, UnknownVariant, UserStatus, Via,
 };
 pub use events::DomainEvent;
 pub use files::{
@@ -61,7 +61,7 @@ pub use git::{
 };
 pub use ids::{
     AuditId, CommitId, ContentHash, DocId, DraftId, FindingId, Guid, IdError, IdempotencyKey, JobRef,
-    PrJobId, PrLinkId, ProposalId, RequestId, ServiceRef, SwimlaneId, TenantId, UserId,
+    PrJobId, PrLinkId, PreviewId, ProposalId, RequestId, ServiceRef, SwimlaneId, TenantId, UserId,
 };
 pub use mapping::{MapError, PathMappingRule, ReverseMapping, TenantSet, TenantSetError};
 pub use page::{Cursor, Page, PageError, Paged};
@@ -79,6 +79,7 @@ pub use wire::{
     SyncWindowKind,
 };
 pub use write::{
-    DeleteRequest, Draft, EditRequest, Expected, PrRequest, RejectReason, RestartRequest, RevertRequest,
-    UploadRequest, WriteCtx, WriteOutcome,
+    ChangePreview, DeleteRequest, Draft, EditRequest, Expected, NotifyRequest, PrRequest, PrTarget,
+    PreviewChange, PreviewRequest, PreviewScope, PreviewWarning, RejectReason, RestartRequest, RevertRequest,
+    UploadRequest, ValidationIssue, WriteCtx, WriteOutcome,
 };

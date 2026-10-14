@@ -6,8 +6,8 @@
 
 use async_trait::async_trait;
 use domain::{
-    DeleteRequest, Draft, DraftId, EditRequest, PrRequest, RestartRequest, RevertRequest, UploadRequest,
-    WriteCtx, WriteOutcome,
+    ChangePreview, DeleteRequest, Draft, DraftId, EditRequest, NotifyRequest, PrRequest, PreviewRequest,
+    RestartRequest, RevertRequest, UploadRequest, WriteCtx, WriteOutcome,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -15,7 +15,7 @@ pub enum WriteError {
     /// The user's role is too low, or the user is pending or disabled (S4).
     #[error("not allowed")]
     Forbidden,
-    /// A draft that does not exist or is not the caller's.
+    /// A draft that does not exist or is not the caller's, or (for `preview_effect`) a swimlane that does not exist.
     #[error("not found")]
     NotFound,
     #[error("request is not valid")]
@@ -27,9 +27,15 @@ pub enum WriteError {
     Unavailable,
 }
 
-/// Role floors: `edit`, `upload`, `delete`, `revert`, `raise_pr`, `propose_draft` and `apply_draft` need
-/// Editor; `restart` needs Operator. Users with `requires_approval` get [`WriteOutcome::ProposalCreated`]
-/// instead of a write, except for `propose_draft`.
+/// Role floors: `edit`, `upload`, `delete`, `revert`, `raise_pr`, `propose_draft`, `apply_draft` and
+/// `preview_effect` need Editor; `restart` and `notify` need Operator. Users with `requires_approval` get
+/// [`WriteOutcome::ProposalCreated`] instead of a write, except for `propose_draft` and `preview_effect`, which
+/// change nothing.
+///
+/// `upload` and `delete` need a valid preview (D46): the `preview` of the request must be one that `preview_effect`
+/// issued to the same user, for the same swimlane, path, expected state and content, less than
+/// [`ChangePreview::TTL_SECS`] ago. Without one the outcome is [`domain::RejectReason::NotAllowed`] and nothing is
+/// written. Both doors need it: REST and MCP (07 calls `preview_effect` to build its confirmation text).
 #[async_trait]
 pub trait WriteService: Send + Sync + 'static {
     async fn edit(&self, ctx: &WriteCtx, r: EditRequest) -> Result<WriteOutcome, WriteError>;
@@ -42,4 +48,10 @@ pub trait WriteService: Send + Sync + 'static {
     async fn propose_draft(&self, ctx: &WriteCtx, r: EditRequest) -> Result<Draft, WriteError>;
     /// Applies a draft written by the same user, re-checking its expected hash.
     async fn apply_draft(&self, ctx: &WriteCtx, id: DraftId) -> Result<WriteOutcome, WriteError>;
+    /// What an upload or a delete would do, from the engine, and the token that lets that upload or delete
+    /// through. No side effects: nothing is written, audited or recorded, so it is not idempotency-keyed.
+    async fn preview_effect(&self, ctx: &WriteCtx, r: PreviewRequest) -> Result<ChangePreview, WriteError>;
+    /// Tells the config-server that these files changed (D86). Audited, and Operator only, because its endpoint
+    /// has no authentication (Q37). For a user who `requires_approval` it becomes a proposal.
+    async fn notify(&self, ctx: &WriteCtx, r: NotifyRequest) -> Result<WriteOutcome, WriteError>;
 }

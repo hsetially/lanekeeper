@@ -327,6 +327,13 @@ token_id!(
     /// A draft created by MCP `propose_change`.
     DraftId
 );
+token_id!(
+    /// The token `WriteService::preview_effect` hands out and an upload or a delete must present (D46). Opaque to
+    /// every caller: only the writer that issued it reads what is inside. It is bound to the user, the path and the
+    /// hashes, and it expires ([`crate::ChangePreview::TTL_SECS`]). It is not a secret, but it is not a capability
+    /// either: the expected hash still has to match for the write to happen.
+    PreviewId
+);
 
 /// Defines a numeric database id.
 macro_rules! numeric_id {

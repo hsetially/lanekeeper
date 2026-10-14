@@ -30,6 +30,7 @@ mod lease;
 mod notify;
 mod read;
 mod sink;
+mod tool_writes;
 mod tx;
 mod write;
 
@@ -59,6 +60,7 @@ pub use lease::{
 pub use notify::{Notification, NotificationKind, Notifier, NotifyError};
 pub use read::{ReadError, RegistryRead};
 pub use sink::{ReportSink, SentinelSink, SinkError};
+pub use tool_writes::{ToolWriteEntry, ToolWriteError, ToolWrites};
 pub use tx::{OwnedTx, Tx, TxError, TxFactory, WrongTxKind};
 pub use write::{WriteError, WriteService};
 

@@ -38,6 +38,7 @@ mod lease;
 mod notify;
 mod read;
 mod sink;
+mod tool_writes;
 mod write;
 
 pub mod route_guard;
@@ -55,4 +56,5 @@ pub use lease::leases;
 pub use notify::{NotifierProbe, notifier};
 pub use read::{RegistryScenario, registry_read};
 pub use sink::{SentinelProbe, report_sink, sentinel_sink};
+pub use tool_writes::{ToolWritesProbe, tool_writes};
 pub use write::{WriteScenario, write_service};

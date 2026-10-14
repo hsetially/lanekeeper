@@ -118,9 +118,22 @@ pub trait GitReader {                                    // sync; call via spawn
     async fn raise_pr(&self, ctx: &WriteCtx, r: PrRequest) -> Result<WriteOutcome, WriteError>;
     async fn propose_draft(&self, ctx: &WriteCtx, r: EditRequest) -> Result<Draft, WriteError>; // no side effects
     async fn apply_draft(&self, ctx: &WriteCtx, id: DraftId) -> Result<WriteOutcome, WriteError>;
+    async fn preview_effect(&self, ctx: &WriteCtx, r: PreviewRequest) -> Result<ChangePreview, WriteError>; // no side effects
+    async fn notify(&self, ctx: &WriteCtx, r: NotifyRequest) -> Result<WriteOutcome, WriteError>; // Operator
 }
 // WriteCtx carries the user, via (Ui | Mcp), an idempotency key and a request id.
-// WriteOutcome is one of Applied, ProposalCreated, Conflict{current}, Locked or Rejected{reason}.
+// WriteOutcome is one of Applied{hash, audit_id, warnings}, ProposalCreated, Conflict{current}, Locked or
+// Rejected{reason, issues}. `warnings` and `issues` are ValidationIssue{kind, line, rule}: a place and a rule name,
+// never the text of the line.
+// EditRequest and RevertRequest carry an optional `change_eol` (lf | crlf); absent keeps the file's style (D17).
+// UploadRequest and DeleteRequest carry the `preview` that preview_effect issued: without a valid one they are
+// Rejected{not_allowed} (D46). PrRequest carries an optional `target` (a tenant branch, or the base).
+
+/// Called by 06 inside the transaction that carries a write's audit event; implemented by 05 (D73).
+#[async_trait] pub trait ToolWrites {
+    async fn register(&self, tx: &mut Tx<'_>, swimlane: &SwimlaneId, path: &NfsPath, new_hash: &ContentHash,
+                      user: &UserId, request_id: &RequestId) -> Result<(), ToolWriteError>;
+}
 
 #[async_trait] pub trait DocSearch {
     async fn search(&self, u: &User, q: &str, limit: usize) -> Result<Vec<DocHit>, DocError>;
