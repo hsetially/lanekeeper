@@ -37,7 +37,7 @@ use hub_registry::read::settings::ROWS_SQL;
 use hub_registry::read::swimlanes::{SWIMLANE_SQL, SWIMLANES_SQL};
 use hub_registry::read::tree::{CHILDREN_SQL, DRIFT_SQL, FILE_ROWS_SQL};
 use serde_json::Value;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row as _};
 use support::pg::TestDb;
 
 /// Tables that hold thousands of rows at design scale. A sequential scan of one of these is a failure.
@@ -132,6 +132,18 @@ async fn seeded() -> Option<(TestDb, PgPool)> {
         sqlx::raw_sql(sql).execute(&mut admin).await.unwrap();
     }
     Some((db, pool))
+}
+
+/// The generic plan of a statement (the one a prepared statement is given after it has run a few times), or the error when the server
+/// cannot make one without the values.
+async fn explain_generic(pool: &PgPool, sql: &str) -> Result<Value, sqlx::Error> {
+    let text = format!("EXPLAIN (GENERIC_PLAN, FORMAT JSON) {sql}");
+    // The simple protocol: the statement keeps its `$n`, and the server plans it for no values at all.
+    let row = sqlx::raw_sql(&text).fetch_one(pool).await?;
+    let plan: Value = row.try_get(0)?;
+    let mut out = Vec::new();
+    nodes(&plan[0]["Plan"], &mut out);
+    Ok(Value::Array(out))
 }
 
 /// The nodes of a plan, depth first, as `{node, relation?, index?}`.
@@ -571,6 +583,11 @@ async fn read_queries_have_no_sequential_scan_on_large_tables() {
             let plan = explain(&pool, $sql, &$args).await;
             no_large_sequential_scan($name, &plan);
             insta::assert_json_snapshot!(concat!("read_", $name), plan);
+            // A prepared statement that has run a few times is given one plan for all values: that one reads no large table whole either.
+            let generic = explain_generic(&pool, $sql)
+                .await
+                .unwrap_or_else(|e| panic!("{}: no generic plan to look at: {e}", $name));
+            no_large_sequential_scan(concat!($name, " (generic plan)"), &generic);
         }};
     }
 
