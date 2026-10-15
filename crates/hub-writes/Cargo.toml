@@ -33,6 +33,9 @@ base64.workspace = true
 bytes.workspace = true
 # Retry and wait jitter (rule 5).
 fastrand.workspace = true
+# The event stream the pull-request state watcher follows (`EventBus::subscribe`). Already a dev-dependency of this crate and in
+# the graph through `ports`; no new crate.
+futures.workspace = true
 http.workspace = true
 serde.workspace = true
 serde_json.workspace = true

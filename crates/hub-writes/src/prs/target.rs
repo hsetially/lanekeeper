@@ -21,7 +21,8 @@ use engine::reverse_map;
 use crate::github::BranchName;
 
 /// Which of the two repositories.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Side {
     /// `configuration-base-saas`.
     Base,
@@ -41,7 +42,7 @@ impl Side {
 }
 
 /// The repository and the branch a pull request is opened against.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Destination {
     pub side: Side,
     pub branch: BranchName,

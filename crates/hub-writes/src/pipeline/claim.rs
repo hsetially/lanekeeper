@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use domain::{WriteCtx, WriteOutcome};
+use domain::{PrJobId, WriteCtx, WriteOutcome};
 use ports::WriteError;
 use tokio::time::Instant;
 
@@ -23,6 +23,14 @@ pub(crate) enum Claimed {
     Replay(WriteOutcome),
 }
 
+/// [`Claimed`] for a request whose answer can be a job: a pull request (T9).
+pub(crate) enum ClaimedAny {
+    Mine(Claim),
+    Replay(WriteOutcome),
+    /// An earlier request with this key and this request was accepted as this job.
+    Job(PrJobId),
+}
+
 /// How often a request that waits for another one looks at the row again, with jitter so replicas do not look in step.
 const POLL_BASE_MS: u64 = 25;
 const POLL_JITTER_MS: u64 = 25;
@@ -36,6 +44,20 @@ const POLL_JITTER_MS: u64 = 25;
 ///   gave up without knowing whether the write landed (or one that began more than `stale_claim_after` ago) is not waited for:
 ///   the file is looked at and the write is completed or the claim cleared.
 pub(crate) async fn claim(hub: &Inner, ctx: &WriteCtx, hash: RequestHash) -> Result<Claimed, WriteError> {
+    match claim_any(hub, ctx, hash).await? {
+        ClaimedAny::Mine(c) => Ok(Claimed::Mine(c)),
+        ClaimedAny::Replay(o) => Ok(Claimed::Replay(o)),
+        // A key is bound to one request hash and a write's hash carries its own action: a job cannot be what it was given.
+        ClaimedAny::Job(_) => Err(WriteError::IdempotencyConflict),
+    }
+}
+
+/// [`claim`] for a request that can also be answered with a job.
+pub(crate) async fn claim_any(
+    hub: &Inner,
+    ctx: &WriteCtx,
+    hash: RequestHash,
+) -> Result<ClaimedAny, WriteError> {
     let key = ClaimKey::of(ctx);
     let ttl = millis(hub.cfg.idempotency_ttl);
     let stale_after = millis(hub.cfg.stale_claim_after);
@@ -46,8 +68,9 @@ pub(crate) async fn claim(hub: &Inner, ctx: &WriteCtx, hash: RequestHash) -> Res
         .await??;
     loop {
         match state {
-            Stored::Fresh => return Ok(Claimed::Mine(Claim { key })),
-            Stored::Replay(outcome) => return Ok(Claimed::Replay(outcome)),
+            Stored::Fresh => return Ok(ClaimedAny::Mine(Claim { key })),
+            Stored::Replay(outcome) => return Ok(ClaimedAny::Replay(outcome)),
+            Stored::ReplayJob(id) => return Ok(ClaimedAny::Job(id)),
             Stored::Conflict => return Err(WriteError::IdempotencyConflict),
             Stored::InFlight { created_ms, body } => {
                 let abandoned = body
@@ -57,7 +80,7 @@ pub(crate) async fn claim(hub: &Inner, ctx: &WriteCtx, hash: RequestHash) -> Res
                 let aged = hub.now_ms().saturating_sub(created_ms) >= stale_after;
                 if abandoned || aged {
                     match resolve(hub, &key, body.as_deref()).await {
-                        Resolved::Completed(outcome) => return Ok(Claimed::Replay(outcome)),
+                        Resolved::Completed(outcome) => return Ok(ClaimedAny::Replay(outcome)),
                         Resolved::Cleared => {
                             state = hub
                                 .within("claim", hub.idem.claim(&key, &hash, hub.now_ms(), ttl))

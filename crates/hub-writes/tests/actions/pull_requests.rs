@@ -23,16 +23,16 @@ use crate::support::log_capture;
 use crate::support::pg::TestDb;
 use crate::support::rig::{Rig, at, ctx, edit};
 
-const BASE: &str = "acme/configuration-base-saas";
-const TENANT: &str = "acme/csp-tenant-data";
+pub(crate) const BASE: &str = "acme/configuration-base-saas";
+pub(crate) const TENANT: &str = "acme/csp-tenant-data";
 
 /// A well-formed fine-grained token, distinct for each `n`. Not a real token.
-fn tok(n: u32) -> String {
+pub(crate) fn tok(n: u32) -> String {
     format!("github_pat_11P{n:03}{}", "Qz9_".repeat(15))
 }
 
 /// The same bounds as in service, with waits short enough for a test.
-fn fast() -> GithubClientConfig {
+pub(crate) fn fast() -> GithubClientConfig {
     GithubClientConfig {
         attempt_timeout: Duration::from_millis(150),
         total_timeout: Duration::from_secs(5),
@@ -44,18 +44,21 @@ fn fast() -> GithubClientConfig {
     }
 }
 
-struct Prs {
-    rig: Rig,
-    sim: GitSim,
-    server: LocalGithub,
-    svc: PrService,
-    editor: User,
-    s: SwimlaneId,
-    gh: FakeGithub,
-    vault: hub_writes::vault::TokenVault,
+pub(crate) struct Prs {
+    pub(crate) rig: Rig,
+    pub(crate) sim: GitSim,
+    pub(crate) server: LocalGithub,
+    pub(crate) svc: PrService,
+    pub(crate) editor: User,
+    pub(crate) s: SwimlaneId,
+    pub(crate) gh: FakeGithub,
+    pub(crate) vault: hub_writes::vault::TokenVault,
+    pub(crate) kms: Arc<FakeKmsEnvelope>,
+    pub(crate) repos: PolicyRepos,
+    pub(crate) deps: PrDeps,
 }
 
-async fn fixture() -> Option<Prs> {
+pub(crate) async fn fixture() -> Option<Prs> {
     let rig = Rig::new(TestDb::ready().await?).await;
     let s = rig.swimlane("sit1", true).await;
     rig.tenant(&s, "sit1").await;
@@ -67,8 +70,9 @@ async fn fixture() -> Option<Prs> {
         base: RepoRef::parse(BASE).unwrap(),
         tenant: RepoRef::parse(TENANT).unwrap(),
     };
+    let kms = Arc::new(FakeKmsEnvelope::new());
     let vault = rig.hub.token_vault(VaultDeps {
-        kms: Arc::new(FakeKmsEnvelope::new()),
+        kms: kms.clone(),
         github: Arc::new(gh.clone()),
         repos: repos.clone(),
     });
@@ -81,15 +85,16 @@ async fn fixture() -> Option<Prs> {
     sim.expect_token(&tok(1));
     let server = LocalGithub::start(sim.handler()).await;
     let client = GithubClient::for_tests(&server.base(), fast()).unwrap();
-    let svc = rig.hub.pull_requests(PrDeps {
+    let deps = PrDeps {
         vault: vault.clone(),
         git: Arc::new(client),
         settings: PrSettings {
-            repos,
+            repos: repos.clone(),
             base_branch: BranchName::parse("master").unwrap(),
             max_total_bytes: PrSettings::DEFAULT_MAX_TOTAL_BYTES,
         },
-    });
+    };
+    let svc = rig.hub.pull_requests(deps.clone());
     Some(Prs {
         rig,
         sim,
@@ -99,15 +104,18 @@ async fn fixture() -> Option<Prs> {
         s,
         gh,
         vault,
+        kms,
+        repos,
+        deps,
     })
 }
 
 impl Prs {
-    fn ctx(&self, key: &str) -> WriteCtx {
+    pub(crate) fn ctx(&self, key: &str) -> WriteCtx {
         ctx(&self.editor, key)
     }
 
-    fn request(&self, paths: &[&str], target: Option<PrTarget>) -> PrRequest {
+    pub(crate) fn request(&self, paths: &[&str], target: Option<PrTarget>) -> PrRequest {
         PrRequest {
             swimlane: self.s.clone(),
             paths: paths.iter().map(|p| nfs(p)).collect(),
@@ -136,7 +144,7 @@ impl Prs {
     }
 }
 
-fn sit1() -> PrTarget {
+pub(crate) fn sit1() -> PrTarget {
     PrTarget::Tenant {
         branch: TenantId::parse("sit1").unwrap(),
     }

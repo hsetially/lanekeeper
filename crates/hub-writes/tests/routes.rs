@@ -22,14 +22,15 @@ use axum::body::Body;
 use bytes::Bytes;
 use domain::{
     ChangePreview, ContentHash, DeleteRequest, Draft, DraftId, EditRequest, Expected, NotifyRequest, Paged,
-    PrRequest, PreviewChange, PreviewId, PreviewRequest, PreviewScope, ProposalId, ProposalStatus,
-    RejectReason, RestartRequest, RevertRequest, Role, ServiceRef, ShortText, Timestamp, UploadRequest, User,
-    UserStatus, ValidationIssue, WriteCtx, WriteOutcome,
+    PrJobId, PrJobState, PrRequest, PrState, PreviewChange, PreviewId, PreviewRequest, PreviewScope,
+    ProposalId, ProposalStatus, RejectReason, RestartRequest, RevertRequest, Role, ServiceRef, ShortText,
+    Timestamp, UploadRequest, User, UserStatus, ValidationIssue, WriteCtx, WriteOutcome,
 };
 use http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt;
 use hub_platform::{FakeSessionAuth, GuardedRouter, RouteSpec, TEST_USER_HEADER};
 use hub_writes::github::TokenShapeError;
+use hub_writes::prs::{LinkQuery, PrDesk, PrJobView, PrLinkView, Raised};
 use hub_writes::routes::{MAX_EDIT_BODY, WRITE_ROUTES, WriteState, mount};
 use hub_writes::vault::{PolicyRepos, StoredToken, TokenDesk, TokenError, VaultDeps};
 use hub_writes::{ProposalDesk, ProposalQuery, ProposalView, RejectResult};
@@ -218,6 +219,124 @@ impl ScriptedTokens {
     }
 }
 
+/// What the routes asked of the pull-request desk.
+#[derive(Debug, Clone)]
+enum PrCall {
+    Raise(PrRequest, WriteCtx),
+    Job(User, PrJobId),
+    Links(User, LinkQuery),
+}
+
+/// A pull-request desk that answers what it is told and remembers what it was asked.
+#[derive(Default)]
+struct ScriptedPrs {
+    calls: Mutex<Vec<PrCall>>,
+    started: Mutex<Vec<PrJobId>>,
+    raise: Mutex<Option<Result<Raised, WriteError>>>,
+    job: Mutex<Option<Result<Option<PrJobView>, WriteError>>>,
+}
+
+impl std::fmt::Debug for ScriptedPrs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScriptedPrs").finish_non_exhaustive()
+    }
+}
+
+impl ScriptedPrs {
+    fn calls(&self) -> Vec<PrCall> {
+        self.calls.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn started(&self) -> Vec<PrJobId> {
+        self.started
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn says_raise(&self, reply: Result<Raised, WriteError>) {
+        *self.raise.lock().unwrap_or_else(PoisonError::into_inner) = Some(reply);
+    }
+
+    fn says_job(&self, reply: Result<Option<PrJobView>, WriteError>) {
+        *self.job.lock().unwrap_or_else(PoisonError::into_inner) = Some(reply);
+    }
+
+    fn push(&self, call: PrCall) {
+        self.calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(call);
+    }
+}
+
+fn sample_job(state: PrJobState) -> PrJobView {
+    PrJobView {
+        id: 7,
+        swimlane: domain::SwimlaneId::parse("sit1").unwrap(),
+        state,
+        paths: vec![ports::conformance::sample::nfs("a.yml")],
+        pr_url: (state == PrJobState::Completed)
+            .then(|| "https://github.com/acme/csp-tenant-data/pull/3".to_owned()),
+        error: None,
+        warnings: Vec::new(),
+        created_at: Timestamp::from_unix_millis(1_000),
+        updated_at: Timestamp::from_unix_millis(2_000),
+    }
+}
+
+fn sample_link() -> PrLinkView {
+    PrLinkView {
+        id: 11,
+        swimlane: domain::SwimlaneId::parse("sit1").unwrap(),
+        path: ports::conformance::sample::nfs("a.yml"),
+        nfs_hash: hash_of("x: 1\n"),
+        state: PrState::Open,
+        pr_url: "https://github.com/acme/csp-tenant-data/pull/3".to_owned(),
+        pr_number: 3,
+        author: ports::conformance::sample::user_id(2),
+        created_at: Timestamp::from_unix_millis(1_000),
+        closed_at: None,
+    }
+}
+
+#[async_trait]
+impl PrDesk for ScriptedPrs {
+    async fn raise(&self, ctx: &WriteCtx, r: PrRequest) -> Result<Raised, WriteError> {
+        self.push(PrCall::Raise(r, ctx.clone()));
+        self.raise
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .unwrap_or_else(|| Ok(Raised::Job(sample_job(PrJobState::Pending))))
+    }
+
+    async fn job(&self, user: &User, id: PrJobId) -> Result<Option<PrJobView>, WriteError> {
+        self.push(PrCall::Job(user.clone(), id));
+        self.job
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .unwrap_or_else(|| Ok(Some(sample_job(PrJobState::Opening))))
+    }
+
+    async fn links(&self, user: &User, q: LinkQuery) -> Result<Paged<PrLinkView>, WriteError> {
+        self.push(PrCall::Links(user.clone(), q));
+        Ok(Paged {
+            items: vec![sample_link()],
+            next: domain::Cursor::parse("11").ok(),
+        })
+    }
+
+    fn start(&self, id: PrJobId) -> bool {
+        self.started
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(id);
+        true
+    }
+}
+
 fn sample_stored() -> StoredToken {
     StoredToken {
         github_login: "octocat".to_owned(),
@@ -357,11 +476,30 @@ fn app_with_all(
     desk: Arc<dyn ProposalDesk>,
     tokens: Arc<dyn TokenDesk>,
 ) -> (Router, Vec<RouteSpec>) {
-    let state = WriteState::new(service, desk, tokens, 2 * 1024 * 1024);
+    app_with_prs(service, desk, tokens, Arc::new(ScriptedPrs::default()))
+}
+
+fn app_with_prs(
+    service: Arc<dyn WriteService>,
+    desk: Arc<dyn ProposalDesk>,
+    tokens: Arc<dyn TokenDesk>,
+    prs: Arc<dyn PrDesk>,
+) -> (Router, Vec<RouteSpec>) {
+    let state = WriteState::new(service, desk, tokens, prs, 2 * 1024 * 1024);
     let (router, specs) = mount(GuardedRouter::new(auth(), None), state)
         .into_parts()
         .unwrap();
     (router, specs)
+}
+
+fn pr_app(prs: &Arc<ScriptedPrs>) -> Router {
+    app_with_prs(
+        Arc::new(Scripted::default()),
+        Arc::new(ScriptedDesk::default()),
+        Arc::new(ScriptedTokens::default()),
+        prs.clone(),
+    )
+    .0
 }
 
 fn token_app(tokens: &Arc<ScriptedTokens>) -> Router {
@@ -542,12 +680,7 @@ fn write_operations() -> BTreeSet<(String, String)> {
 
 /// The `writes` operations that later tasks of prompt 06 mount, with the task. When one is mounted its line goes, and
 /// `every_write_operation_is_mounted_or_waits_for_its_task` fails until it does.
-const LATER: [(&str, &str, &str); 4] = [
-    ("POST", "/api/v1/prs", "T9"),
-    ("GET", "/api/v1/prs", "T9"),
-    ("GET", "/api/v1/pr-jobs/{id}", "T9"),
-    ("POST", "/api/v1/swimlanes/{id}/notify", "T11"),
-];
+const LATER: [(&str, &str, &str); 1] = [("POST", "/api/v1/swimlanes/{id}/notify", "T11")];
 
 #[test]
 fn route_table_matches_openapi_for_writes() {
@@ -606,7 +739,15 @@ async fn viewer_gets_403_on_every_write_route() {
     let router = app(&service);
     let (ct, body) = multipart(&upload_fields("n.yml", b"x", &[]));
     for (method, template, floor) in WRITE_ROUTES {
-        let uri = template.replace("{id}", SWIMLANE);
+        // The id of a pull-request job is a number; every other `{id}` here is the swimlane.
+        let uri = template.replace(
+            "{id}",
+            if template.contains("pr-jobs") {
+                "7"
+            } else {
+                SWIMLANE
+            },
+        );
         for (user, expected) in [
             // The list of proposals is for a viewer too; every other route is above that.
             (
@@ -1365,6 +1506,7 @@ async fn the_routes_drive_the_real_hub_end_to_end() {
         Arc::new(rig.hub.clone()),
         Arc::new(rig.hub.clone()),
         Arc::new(ScriptedTokens::default()),
+        Arc::new(ScriptedPrs::default()),
         rig.hub.max_content_bytes(),
     );
     let (router, _) = mount(GuardedRouter::new(auth(), None), state)
@@ -1944,6 +2086,7 @@ async fn the_proposal_routes_drive_the_real_hub_end_to_end() {
         Arc::new(rig.hub.clone()),
         Arc::new(rig.hub.clone()),
         Arc::new(ScriptedTokens::default()),
+        Arc::new(ScriptedPrs::default()),
         rig.hub.max_content_bytes(),
     );
     let (router, _) = mount(GuardedRouter::new(auth(), None), state)
@@ -2445,6 +2588,7 @@ async fn token_never_appears_in_logs_errors_audit_or_responses() {
         Arc::new(Scripted::default()),
         Arc::new(ScriptedDesk::default()),
         vault.clone(),
+        Arc::new(ScriptedPrs::default()),
         2 * 1024 * 1024,
     );
     let (router, _) = mount(GuardedRouter::new(auth(), None), state)
@@ -2580,4 +2724,367 @@ async fn token_never_appears_in_logs_errors_audit_or_responses() {
         rig.chain().await.len() >= 3,
         "the audit events this test depends on were not written"
     );
+}
+
+// ------------------------------------------------------------------------------------------------ pull requests (T9)
+
+const PRS: &str = "/api/v1/prs";
+
+fn pr_body() -> Value {
+    json!({
+        "swimlane": "sit1",
+        "paths": ["tx-api/a-sit1.yml", "tx-api/b.yml"],
+        "title": "Sync the NFS changes",
+        "body": "Please review.",
+        "target": { "kind": "tenant", "branch": "sit1" },
+    })
+}
+
+#[tokio::test]
+async fn a_pull_request_is_accepted_as_a_job_with_202_and_started() {
+    let prs = Arc::new(ScriptedPrs::default());
+    let router = pr_app(&prs);
+    let r = send(&router, Req::new(Method::POST, PRS).json(&pr_body())).await;
+    assert_eq!(
+        r.status,
+        StatusCode::ACCEPTED,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    assert_eq!(r.headers[header::CONTENT_TYPE], "application/json");
+    let body = r.json();
+    assert_eq!(body["id"], 7);
+    assert_eq!(body["state"], "pending");
+    assert_eq!(body["swimlane"], "sit1");
+    assert_eq!(body["paths"], json!(["a.yml"]));
+    assert_eq!(body["pr_url"], Value::Null);
+    assert_eq!(body["error"], Value::Null);
+    assert!(
+        body.get("warnings").is_none(),
+        "absent when there is nothing to say: {body}"
+    );
+    assert_eq!(
+        prs.started(),
+        vec![PrJobId::from(7)],
+        "the job runs in the background"
+    );
+
+    // What the desk was asked: typed values, the key of the request, and the door.
+    let calls = prs.calls();
+    let [PrCall::Raise(request, ctx)] = calls.as_slice() else {
+        panic!("{calls:?}");
+    };
+    assert_eq!(request.swimlane.as_str(), "sit1");
+    assert_eq!(
+        request
+            .paths
+            .iter()
+            .map(domain::NfsPath::as_str)
+            .collect::<Vec<_>>(),
+        vec!["tx-api/a-sit1.yml", "tx-api/b.yml"]
+    );
+    assert_eq!(request.title.as_str(), "Sync the NFS changes");
+    assert_eq!(request.body.as_deref(), Some("Please review."));
+    assert_eq!(
+        request.target,
+        Some(domain::PrTarget::Tenant {
+            branch: domain::TenantId::parse("sit1").unwrap()
+        })
+    );
+    assert_eq!(ctx.idempotency_key.as_str(), "key-1");
+    assert_eq!(ctx.via, domain::Via::Ui);
+
+    // The target and the text are optional.
+    let r = send(
+        &router,
+        Req::new(Method::POST, PRS).json(&json!({ "swimlane": "sit1", "paths": ["a.yml"], "title": "t" })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    let target_base = send(
+        &router,
+        Req::new(Method::POST, PRS).json(&json!({ "swimlane": "sit1", "paths": ["a.yml"], "title": "t", "target": { "kind": "base" }, "body": null })),
+    )
+    .await;
+    assert_eq!(target_base.status, StatusCode::ACCEPTED);
+
+    // A retry that finds the job finished starts nothing.
+    prs.says_raise(Ok(Raised::Job(sample_job(PrJobState::Completed))));
+    let before = prs.started().len();
+    let r = send(&router, Req::new(Method::POST, PRS).json(&pr_body())).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    assert_eq!(
+        r.json()["pr_url"],
+        "https://github.com/acme/csp-tenant-data/pull/3"
+    );
+    assert_eq!(prs.started().len(), before);
+}
+
+#[tokio::test]
+async fn a_second_pull_request_for_a_change_is_409_with_the_link_of_the_first() {
+    let prs = Arc::new(ScriptedPrs::default());
+    let router = pr_app(&prs);
+    prs.says_raise(Ok(Raised::Duplicate(sample_link())));
+    let r = send(&router, Req::new(Method::POST, PRS).json(&pr_body())).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    assert_eq!(r.headers[header::CONTENT_TYPE], "application/problem+json");
+    let body = r.json();
+    assert_eq!(body["code"], "conflict");
+    assert_eq!(body["reason"], "duplicate_pr");
+    assert_eq!(body["link"]["id"], 11);
+    assert_eq!(body["link"]["pr_number"], 3);
+    assert_eq!(body["link"]["state"], "open");
+    assert_eq!(
+        body["link"]["pr_url"],
+        "https://github.com/acme/csp-tenant-data/pull/3"
+    );
+    assert_eq!(body["link"]["path"], "a.yml");
+    assert_eq!(body["link"]["closed_at"], Value::Null);
+    assert!(prs.started().is_empty(), "nothing was accepted");
+}
+
+#[tokio::test]
+async fn the_other_answers_to_a_pull_request_request_are_the_contracts() {
+    let prs = Arc::new(ScriptedPrs::default());
+    let router = pr_app(&prs);
+    let go = || send(&router, Req::new(Method::POST, PRS).json(&pr_body()));
+
+    // A user who requires approval: a proposal, as for any write.
+    prs.says_raise(Ok(Raised::Proposal(ProposalId::from(9))));
+    let r = go().await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json(), json!({ "outcome": "proposal_created", "id": 9 }));
+
+    // A request that cannot become a pull request.
+    prs.says_raise(Ok(Raised::Refused(WriteOutcome::Rejected {
+        reason: RejectReason::UnknownSwimlane,
+        issues: Vec::new(),
+    })));
+    let r = go().await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(r.json()["reason"], "unknown_swimlane");
+
+    for (error, status) in [
+        (WriteError::Forbidden, StatusCode::FORBIDDEN),
+        (WriteError::IdempotencyConflict, StatusCode::UNPROCESSABLE_ENTITY),
+        (WriteError::Unavailable, StatusCode::SERVICE_UNAVAILABLE),
+    ] {
+        prs.says_raise(Err(error));
+        let r = go().await;
+        assert_eq!(r.status, status, "{error:?}");
+        let keys: BTreeSet<String> = r.json().as_object().unwrap().keys().cloned().collect();
+        assert_eq!(
+            keys,
+            BTreeSet::from(["code", "status", "title", "type"].map(str::to_owned)),
+            "{error:?}: a fixed problem"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_pull_request_request_that_is_not_well_formed_never_reaches_the_desk() {
+    let prs = Arc::new(ScriptedPrs::default());
+    let router = pr_app(&prs);
+    let many: Vec<String> = (0..=100).map(|i| format!("tx-api/f{i}.yml")).collect();
+    let bad: Vec<(&str, Value)> = vec![
+        (
+            "no paths",
+            json!({ "swimlane": "sit1", "paths": [], "title": "t" }),
+        ),
+        (
+            "101 paths",
+            json!({ "swimlane": "sit1", "paths": many, "title": "t" }),
+        ),
+        (
+            "a path twice",
+            json!({ "swimlane": "sit1", "paths": ["a.yml", "a.yml"], "title": "t" }),
+        ),
+        (
+            "a path that climbs",
+            json!({ "swimlane": "sit1", "paths": ["../etc/passwd"], "title": "t" }),
+        ),
+        (
+            "an absolute path",
+            json!({ "swimlane": "sit1", "paths": ["/etc/passwd"], "title": "t" }),
+        ),
+        (
+            "a blank title",
+            json!({ "swimlane": "sit1", "paths": ["a.yml"], "title": "   " }),
+        ),
+        (
+            "a title with a control character",
+            json!({ "swimlane": "sit1", "paths": ["a.yml"], "title": "a\nb" }),
+        ),
+        (
+            "a long title",
+            json!({ "swimlane": "sit1", "paths": ["a.yml"], "title": "x".repeat(257) }),
+        ),
+        (
+            "a text with a NUL",
+            json!({ "swimlane": "sit1", "paths": ["a.yml"], "title": "t", "body": "a\u{0}b" }),
+        ),
+        (
+            "a text over the limit",
+            json!({ "swimlane": "sit1", "paths": ["a.yml"], "title": "t", "body": "x".repeat(65_537) }),
+        ),
+        (
+            "an unknown field",
+            json!({ "swimlane": "sit1", "paths": ["a.yml"], "title": "t", "draft": true }),
+        ),
+        (
+            "an unknown target",
+            json!({ "swimlane": "sit1", "paths": ["a.yml"], "title": "t", "target": { "kind": "fork" } }),
+        ),
+        (
+            "a target with a field too many",
+            json!({ "swimlane": "sit1", "paths": ["a.yml"], "title": "t", "target": { "kind": "base", "branch": "x" } }),
+        ),
+        (
+            "a bad swimlane",
+            json!({ "swimlane": "Sit 1", "paths": ["a.yml"], "title": "t" }),
+        ),
+        ("no swimlane", json!({ "paths": ["a.yml"], "title": "t" })),
+        ("an array", json!(["sit1", ["a.yml"], "t"])),
+    ];
+    for (what, body) in &bad {
+        let r = send(&router, Req::new(Method::POST, PRS).json(body)).await;
+        assert_eq!(
+            r.status,
+            StatusCode::BAD_REQUEST,
+            "{what}: {}",
+            String::from_utf8_lossy(&r.body)
+        );
+    }
+    // Not JSON at all, the wrong media type, no key, and a body over its limit.
+    let r = send(
+        &router,
+        Req::new(Method::POST, PRS).raw("application/json", b"{".to_vec()),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let r = send(
+        &router,
+        Req::new(Method::POST, PRS).raw("text/plain", b"{}".to_vec()),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    let r = send(&router, Req::new(Method::POST, PRS).key(None).json(&pr_body())).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let r = send(
+        &router,
+        Req::new(Method::POST, PRS).raw(
+            "application/json",
+            vec![b' '; hub_writes::routes::MAX_PR_BODY + 1],
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(prs.calls().is_empty(), "{:?}", prs.calls());
+
+    // The largest request the contract allows fits: 100 paths and 65,536 characters of text, all of them escaped.
+    let paths: Vec<String> = (0..100)
+        .map(|i| format!("{}/f{i}.yml", "d".repeat(200)))
+        .collect();
+    let r = send(
+        &router,
+        Req::new(Method::POST, PRS).json(
+            &json!({ "swimlane": "sit1", "paths": paths, "title": "t", "body": "\u{1}".repeat(65_536) }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        r.status,
+        StatusCode::ACCEPTED,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+}
+
+#[tokio::test]
+async fn a_pull_request_job_is_read_by_its_number() {
+    let prs = Arc::new(ScriptedPrs::default());
+    let router = pr_app(&prs);
+    let r = send(
+        &router,
+        Req::new(Method::GET, "/api/v1/pr-jobs/7").user(Some("viewer")),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(r.json()["state"], "opening");
+    let calls = prs.calls();
+    assert!(
+        matches!(calls.as_slice(), [PrCall::Job(who, id)] if *id == PrJobId::from(7) && who.id == hub_platform::session_auth::user_id("viewer")),
+        "{calls:?}"
+    );
+
+    prs.says_job(Ok(None));
+    let r = send(&router, Req::new(Method::GET, "/api/v1/pr-jobs/8")).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    prs.says_job(Err(WriteError::Unavailable));
+    let r = send(&router, Req::new(Method::GET, "/api/v1/pr-jobs/8")).await;
+    assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);
+
+    let before = prs.calls().len();
+    for id in ["0", "-1", "abc", "7x", "1.5", "9223372036854775808"] {
+        let r = send(&router, Req::new(Method::GET, &format!("/api/v1/pr-jobs/{id}"))).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{id}");
+    }
+    assert_eq!(prs.calls().len(), before, "a bad id never reaches the desk");
+}
+
+#[tokio::test]
+async fn the_pull_request_links_are_listed_by_swimlane_and_state_with_a_cursor() {
+    let prs = Arc::new(ScriptedPrs::default());
+    let router = pr_app(&prs);
+    let r = send(
+        &router,
+        Req::new(
+            Method::GET,
+            "/api/v1/prs?swimlane=sit1&state=merged&cursor=40&limit=5",
+        )
+        .user(Some("viewer")),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.headers[header::CACHE_CONTROL], "no-store");
+    let body = r.json();
+    assert_eq!(body["items"][0]["pr_number"], 3);
+    assert_eq!(body["next"], "11");
+    let calls = prs.calls();
+    let [PrCall::Links(who, q)] = calls.as_slice() else {
+        panic!("{calls:?}");
+    };
+    assert_eq!(
+        who.id,
+        hub_platform::session_auth::user_id("viewer"),
+        "the caller as the session knows them"
+    );
+    assert_eq!(q.swimlane.as_ref().map(domain::SwimlaneId::as_str), Some("sit1"));
+    assert_eq!(q.state, Some(PrState::Merged));
+    assert_eq!(q.page.limit(), 5);
+    assert_eq!(q.page.cursor().map(domain::Cursor::as_str), Some("40"));
+
+    // Without a query: every swimlane and state, the default page.
+    let r = send(&router, Req::new(Method::GET, PRS).user(Some("viewer"))).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let calls = prs.calls();
+    assert!(
+        matches!(calls.last(), Some(PrCall::Links(_, q)) if q.state.is_none() && q.swimlane.is_none() && q.page.limit() == 100)
+    );
+
+    let before = prs.calls().len();
+    for query in [
+        "state=gone",
+        "swimlane=Sit%201",
+        "limit=0",
+        "limit=501",
+        "limit=x",
+        "cursor=%00",
+        "other=1",
+    ] {
+        let r = send(&router, Req::new(Method::GET, &format!("{PRS}?{query}"))).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{query}");
+    }
+    assert_eq!(prs.calls().len(), before);
 }

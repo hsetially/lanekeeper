@@ -49,6 +49,8 @@ struct State {
     repos: BTreeMap<String, Repo>,
     tokens: Vec<String>,
     faults: Vec<Fault>,
+    /// Hooks run after the simulator has answered (and changed what it holds): `Some(reply)` is sent instead of the answer.
+    after: Vec<Fault>,
     /// The contents call leaves the bytes out of a file longer than this (GitHub does over 1 MB).
     none_over: Option<usize>,
     counter: u64,
@@ -136,6 +138,12 @@ impl GitSim {
     /// A fault hook, run first on every request: `Some(reply)` answers instead of the simulator.
     pub fn inject(&self, f: impl FnMut(&Seen) -> Option<Reply> + Send + 'static) {
         self.state().faults.push(Box::new(f));
+    }
+
+    /// A hook run after the simulator has handled a request, and has changed what it holds: `Some(reply)` is sent instead of its
+    /// answer. A reply that is slow, or never comes, is a GitHub that did the work and whose answer was lost.
+    pub fn inject_after(&self, f: impl FnMut(&Seen) -> Option<Reply> + Send + 'static) {
+        self.state().after.push(Box::new(f));
     }
 
     /// Contents answers leave out the bytes of a file longer than `n` (as GitHub does over 1 MB).
@@ -242,6 +250,17 @@ impl GitSim {
     }
 
     fn answer(&self, seen: &Seen) -> Reply {
+        let reply = self.answer_first(seen);
+        let mut st = self.state();
+        for hook in &mut st.after {
+            if let Some(replaced) = hook(seen) {
+                return replaced;
+            }
+        }
+        reply
+    }
+
+    fn answer_first(&self, seen: &Seen) -> Reply {
         let mut st = self.state();
         for fault in &mut st.faults {
             if let Some(reply) = fault(seen) {

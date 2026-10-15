@@ -60,6 +60,17 @@ fn until(at: Option<Timestamp>) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// A second pull request for a change that has an open one (D77): 409, with the link of the one that is there.
+pub(crate) fn duplicate_pr(link: &crate::prs::PrLinkView) -> Response {
+    let mut extra = Map::new();
+    extra.insert("reason".to_owned(), Value::String("duplicate_pr".to_owned()));
+    extra.insert(
+        "link".to_owned(),
+        serde_json::to_value(link).unwrap_or(Value::Null),
+    );
+    api(ApiError::Conflict, extra)
+}
+
 /// An error of the write service, as the response the contract promises.
 pub(crate) fn write_error(error: WriteError) -> Response {
     match error {

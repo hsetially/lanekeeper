@@ -13,9 +13,9 @@
 use std::fmt;
 
 use domain::{
-    ContentHash, DeleteRequest, DraftId, EditRequest, Expected, NfsPath, ProposalId, RequestId,
-    RestartRequest, RevertRequest, SwimlaneId, UploadRequest, UserId, ValidationIssue, WriteCtx,
-    WriteOutcome,
+    ContentHash, DeleteRequest, DraftId, EditRequest, Expected, NfsPath, PrJobId, PrRequest, PrTarget,
+    ProposalId, RequestId, RestartRequest, RevertRequest, SwimlaneId, UploadRequest, UserId, ValidationIssue,
+    WriteCtx, WriteOutcome,
 };
 use ports::AuditEvent;
 use serde::{Deserialize, Serialize};
@@ -118,6 +118,25 @@ impl RequestHash {
     /// The hash of removing the caller's GitHub token: the action alone (the key already names the user).
     pub(crate) fn of_delete_github_token() -> Self {
         HashBuilder::new("delete_github_token/1").finish()
+    }
+
+    /// The hash of raising a pull request: the swimlane, the paths in the order given, the title, a digest of the text and the
+    /// target. The text is hashed first, so the row holds nothing of what the person wrote (S10).
+    pub(crate) fn of_raise_pr(r: &PrRequest) -> Self {
+        let mut b = HashBuilder::new("raise_pr/1");
+        b.field(r.swimlane.as_str().as_bytes());
+        b.field(&(r.paths.len() as u64).to_be_bytes());
+        for p in &r.paths {
+            b.field(p.as_str().as_bytes());
+        }
+        b.field(r.title.as_str().as_bytes());
+        b.field(&Sha256::digest(r.body.as_deref().unwrap_or("").as_bytes()));
+        match &r.target {
+            None => b.field(b"default"),
+            Some(PrTarget::Base) => b.field(b"base"),
+            Some(PrTarget::Tenant { branch }) => b.field(b"tenant").field(branch.as_str().as_bytes()),
+        };
+        b.finish()
     }
 
     /// The hash of a `restart`: the swimlane and the service.
@@ -285,6 +304,8 @@ pub(crate) enum Claim {
     Fresh,
     /// Another request used the key for this request and finished: its response.
     Replay(WriteOutcome),
+    /// The request was a pull request and it was accepted as this job.
+    ReplayJob(PrJobId),
     /// Another request used the key for another request.
     Conflict,
     /// The same request is running (or was abandoned): the intent it has left, if any, and when it began.
@@ -366,6 +387,32 @@ pub(crate) fn queries() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+/// What a finished claim holds: the outcome of a write, or the job that a pull request was accepted as (T9). A job has no
+/// [`WriteOutcome`] to hold: the pull request does not exist yet when the request is answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Response {
+    Outcome(WriteOutcome),
+    Job(PrJobId),
+}
+
+/// The stored form of an accepted job. Its `outcome` is a word no [`WriteOutcome`] has, so the two cannot be mistaken.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredJob {
+    outcome: String,
+    job: i64,
+}
+
+const JOB_OUTCOME: &str = "pr_job";
+
+fn read_response(body: &[u8]) -> Option<Response> {
+    if let Ok(o) = serde_json::from_slice::<WriteOutcome>(body) {
+        return Some(Response::Outcome(o));
+    }
+    let job: StoredJob = serde_json::from_slice(body).ok()?;
+    (job.outcome == JOB_OUTCOME && job.job > 0).then(|| Response::Job(PrJobId::from(job.job)))
+}
+
 /// The status stored with a response, for people reading the table: the HTTP status the outcome maps to.
 pub(crate) fn status_of(o: &WriteOutcome) -> i32 {
     match o {
@@ -439,10 +486,11 @@ impl IdempotencyStore {
             return Claim::Conflict;
         }
         match (row.status, row.body) {
-            (Some(_), Some(body)) => match serde_json::from_slice::<WriteOutcome>(&body) {
-                Ok(o) => Claim::Replay(o),
+            (Some(_), Some(body)) => match read_response(&body) {
+                Some(Response::Outcome(o)) => Claim::Replay(o),
+                Some(Response::Job(id)) => Claim::ReplayJob(id),
                 // A stored response that does not read is a defect of ours: do not guess, ask the caller to retry later.
-                Err(_) => Claim::InFlight {
+                None => Claim::InFlight {
                     created_ms: row.created_ms,
                     body: None,
                 },
@@ -562,12 +610,12 @@ struct Row {
     expires_ms: i64,
 }
 
-/// Lock the claim of the transaction and read its state: `Some(outcome)` when it is already finished (the transaction has
+/// Lock the claim of the transaction and read its state: `Some(response)` when it is already finished (the transaction has
 /// nothing to record), `None` when it is still unfinished and now locked until the transaction ends.
-pub(crate) async fn lock_claim(
+pub(crate) async fn lock_claim_any(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     key: &ClaimKey,
-) -> Res<Option<WriteOutcome>> {
+) -> Res<Option<Response>> {
     let row: Option<(Option<i32>, Option<Vec<u8>>)> = sqlx::query_as(LOCK_CLAIM)
         .bind(&key.tid)
         .bind(&key.oid)
@@ -580,10 +628,50 @@ pub(crate) async fn lock_claim(
         // reports the failure; the write itself is on NFS and is found by the next scan.
         None => Err(Internal::new("lock_claim", "claim missing")),
         Some((None, _)) => Ok(None),
-        Some((Some(_), Some(body))) => serde_json::from_slice(&body)
+        Some((Some(_), Some(body))) => read_response(&body)
             .map(Some)
-            .map_err(|_| Internal::new("lock_claim", "stored response")),
+            .ok_or_else(|| Internal::new("lock_claim", "stored response")),
         Some((Some(_), None)) => Err(Internal::new("lock_claim", "stored response")),
+    }
+}
+
+/// [`lock_claim_any`] for a write, whose response is always an outcome.
+pub(crate) async fn lock_claim(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    key: &ClaimKey,
+) -> Res<Option<WriteOutcome>> {
+    match lock_claim_any(tx, key).await? {
+        None => Ok(None),
+        Some(Response::Outcome(o)) => Ok(Some(o)),
+        // A key is bound to one request hash, and a write's hash carries its own action: it cannot hold a job.
+        Some(Response::Job(_)) => Err(Internal::new("lock_claim", "stored response")),
+    }
+}
+
+/// Store the job a pull request was accepted as, inside the transaction that made the job.
+pub(crate) async fn finish_job_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    key: &ClaimKey,
+    job: PrJobId,
+) -> Res<()> {
+    let body = serde_json::to_vec(&StoredJob {
+        outcome: JOB_OUTCOME.to_owned(),
+        job: job.get(),
+    })
+    .map_err(|_| Internal::new("finish", "encode"))?;
+    let done = sqlx::query(FINISH_IN_TX)
+        .bind(&key.tid)
+        .bind(&key.oid)
+        .bind(&key.key)
+        .bind(202_i32)
+        .bind(body)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| Internal::db("finish", &e))?;
+    if done.rows_affected() == 1 {
+        Ok(())
+    } else {
+        Err(Internal::new("finish", "claim changed"))
     }
 }
 
@@ -651,6 +739,84 @@ mod tests {
         ];
         for o in others {
             assert_ne!(h0, RequestHash::of_edit(&o));
+        }
+    }
+
+    fn pr(paths: &[&str], title: &str, body: Option<&str>, target: Option<PrTarget>) -> PrRequest {
+        PrRequest {
+            swimlane: SwimlaneId::parse("sit1").unwrap(),
+            paths: paths.iter().map(|p| NfsPath::parse(p).unwrap()).collect(),
+            title: domain::ShortText::parse(title).unwrap(),
+            body: body.map(str::to_owned),
+            target,
+        }
+    }
+
+    #[test]
+    fn the_hash_of_a_pull_request_changes_with_every_part_of_the_request() {
+        let sit1 = PrTarget::Tenant {
+            branch: domain::TenantId::parse("sit1").unwrap(),
+        };
+        let base = pr(&["a.yml", "b.yml"], "t", Some("text"), None);
+        let h0 = RequestHash::of_raise_pr(&base);
+        assert_eq!(h0, RequestHash::of_raise_pr(&base.clone()));
+        for other in [
+            pr(&["a.yml", "c.yml"], "t", Some("text"), None),
+            pr(&["b.yml", "a.yml"], "t", Some("text"), None),
+            pr(&["a.yml"], "t", Some("text"), None),
+            pr(&["a.yml", "b.yml"], "u", Some("text"), None),
+            pr(&["a.yml", "b.yml"], "t", Some("other"), None),
+            pr(&["a.yml", "b.yml"], "t", None, None),
+            pr(&["a.yml", "b.yml"], "t", Some("text"), Some(PrTarget::Base)),
+            pr(&["a.yml", "b.yml"], "t", Some("text"), Some(sit1.clone())),
+            PrRequest {
+                swimlane: SwimlaneId::parse("sit2").unwrap(),
+                ..base.clone()
+            },
+        ] {
+            assert_ne!(h0, RequestHash::of_raise_pr(&other), "{other:?}");
+        }
+        // No text and an empty text are one request; a target of the base and of a tenant are two.
+        assert_eq!(
+            RequestHash::of_raise_pr(&pr(&["a.yml"], "t", None, None)),
+            RequestHash::of_raise_pr(&pr(&["a.yml"], "t", Some(""), None))
+        );
+        assert_ne!(
+            RequestHash::of_raise_pr(&pr(&["a.yml"], "t", None, Some(PrTarget::Base))),
+            RequestHash::of_raise_pr(&pr(&["a.yml"], "t", None, Some(sit1)))
+        );
+        // The tag keeps it from being any other action's hash, and the text is not in it.
+        assert_ne!(
+            h0,
+            RequestHash::of_restart(&RestartRequest {
+                swimlane: SwimlaneId::parse("sit1").unwrap(),
+                service: domain::ServiceRef::new("sit1", "payments").unwrap(),
+            })
+        );
+        assert!(!format!("{h0:?}").contains("text"));
+    }
+
+    #[test]
+    fn a_stored_job_is_not_a_write_outcome_and_the_other_way_round() {
+        let job = read_response(br#"{"outcome":"pr_job","job":7}"#);
+        assert_eq!(job, Some(Response::Job(PrJobId::from(7))));
+        let outcome = WriteOutcome::ProposalCreated {
+            id: ProposalId::from(7),
+        };
+        let json = serde_json::to_vec(&outcome).unwrap();
+        assert_eq!(read_response(&json), Some(Response::Outcome(outcome)));
+        // A job needs a positive id and nothing else in the object; another word for the outcome is not a job.
+        for bad in [
+            &br#"{"outcome":"pr_job","job":0}"#[..],
+            br#"{"outcome":"pr_job","job":-3}"#,
+            br#"{"outcome":"pr_job","job":7,"x":1}"#,
+            br#"{"outcome":"job","job":7}"#,
+            br#"{"job":7}"#,
+            b"{}",
+            b"",
+            b"[]",
+        ] {
+            assert_eq!(read_response(bad), None, "{}", String::from_utf8_lossy(bad));
         }
     }
 

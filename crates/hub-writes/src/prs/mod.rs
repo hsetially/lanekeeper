@@ -13,13 +13,22 @@
 //!    the body is then replaced with the audit id added.
 //!
 //! [`PrService::create`] runs steps 1 to 3 in one request. A user who `requires_approval`, the link records, the job and the audit
-//! event belong to the caller (T9): this service does what a pull request needs from GitHub and decides nothing about who may
-//! raise one beyond the Editor floor of the token vault.
+//! event belong to the job (T9, [`runner`]): this service does what a pull request needs from GitHub and decides nothing about who
+//! may raise one beyond the Editor floor of the token vault.
+//!
+//! **The job** ([`job`], [`runner`], [`submit`]): a request for a pull request is accepted as a persisted job, answered with its id,
+//! and run one durable step at a time (`pending`, `preparing`, `committing`, `opening`, `completed` or `failed`), so that a crash
+//! at any point resumes where the job stands. **The links** ([`links`]): each file of a pull request is linked to the swimlane,
+//! the path and the NFS hash it came from; a second pull request for the same change is refused with the first one's link.
 //!
 //! Every GitHub call is made inside [`TokenVault::with_token`], so the token is decrypted for this user's request, handed to the
 //! call and zeroized when the call ends (S8). Nothing in a plan, an error or a log holds a token or the content of a file.
 
+pub mod job;
+pub mod links;
 pub mod plan;
+pub mod runner;
+pub mod submit;
 pub mod target;
 pub mod text;
 
@@ -34,7 +43,11 @@ use domain::{
 use engine::{file_role, merge_mode};
 use ports::{ReadError, content_hash};
 
+pub use job::PrJobView;
+pub use links::{LinkQuery, PrLinkView, PrStateWatcher, Watched};
 pub use plan::{MAX_WARNINGS, PlannedFile, PrPlan};
+pub use runner::{Advanced, Driven, PrJobRunner, RunReport};
+pub use submit::{PrDesk, Raised};
 pub use target::{Destination, Routed, Side, TargetError, route_all};
 pub use text::{commit_message, pull_body, short_id};
 
@@ -115,6 +128,7 @@ impl PrSettings {
 }
 
 /// What a [`PrService`] is built from.
+#[derive(Clone)]
 pub struct PrDeps {
     pub vault: TokenVault,
     pub git: Arc<dyn GitDataApi>,
@@ -175,6 +189,14 @@ impl WriteHub {
             settings: Arc::new(deps.settings),
         }
     }
+}
+
+/// What a request is checked against before it becomes a job.
+pub(crate) struct Preflight {
+    /// The user, as the directory has them now.
+    pub user: User,
+    /// The hash of each requested path's NFS file, in request order.
+    pub hashes: Vec<ContentHash>,
 }
 
 /// What the destination repository holds, as of one commit.
@@ -344,6 +366,30 @@ impl PrService {
         })
         .await
         .map_err(|_| PrError::Unavailable)?
+    }
+
+    /// What a request needs before a job can be made for it: who may ask, where the paths go, and the hash of each NFS file (the
+    /// change the pull request is linked to, D77). No outside call is made.
+    ///
+    /// # Errors
+    /// [`PrError`]; nothing was written anywhere.
+    pub(crate) async fn preflight(&self, ctx: &WriteCtx, r: &PrRequest) -> Result<Preflight, PrError> {
+        let (user, _facts, routed) = self.route(ctx, r).await?;
+        let mut hashes = Vec::with_capacity(routed.len());
+        let mut total = 0_usize;
+        for (index, row) in routed.iter().enumerate() {
+            let (hash, bytes) = self.read_nfs(&user, &r.swimlane, &row.nfs, index).await?;
+            total = total.saturating_add(bytes.len());
+            if total > self.settings.max_total_bytes {
+                return Err(PrError::Rejected {
+                    index,
+                    reason: RejectReason::TooLarge,
+                    issues: Vec::new(),
+                });
+            }
+            hashes.push(hash);
+        }
+        Ok(Preflight { user, hashes })
     }
 
     /// Step 1: what the pull request will contain.

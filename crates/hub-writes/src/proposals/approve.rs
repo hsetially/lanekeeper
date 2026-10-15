@@ -45,6 +45,8 @@ use crate::pipeline::{Abort, Done, Step};
 use crate::service::Inner;
 use std::time::Duration;
 
+mod pr;
+
 /// How long the lease on a proposal is held: longer than the agent's timeout, so it outlives the command it guards.
 const LEASE_TTL: Duration = Duration::from_secs(60);
 
@@ -135,8 +137,8 @@ async fn decide_locked(
     }
 }
 
-/// The action of a proposal, carried out for the admin. Actions that other tasks wire (a PR, a notify) are not carried out yet:
-/// the admin is told the service is unavailable and nothing changes.
+/// The action of a proposal, carried out for the admin. A notify (T11) is not carried out yet: the admin is told the service is
+/// unavailable and nothing changes.
 async fn apply(
     hub: &Inner,
     ctx: &WriteCtx,
@@ -150,6 +152,8 @@ async fn apply(
         "edit" | "upload" | "revert" => apply_content(hub, ctx, admin, claim, &p, comment).await,
         "delete" => apply_delete(hub, ctx, admin, claim, &p, comment).await,
         "restart" => apply_restart(hub, ctx, admin, claim, &p, comment).await,
+        // A pull request announces itself: its approval only makes the job.
+        "pr" => return pr::apply_pr(hub, ctx, admin, claim, &p, comment).await,
         _ => Err(Abort::release(WriteError::Unavailable)),
     };
     if matches!(done, Ok(Done::Stored(WriteOutcome::Applied { .. }))) {

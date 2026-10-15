@@ -15,7 +15,10 @@
 //! - **Previews** (`preview`): what an upload or a delete would do, from the engine, and the HMAC token bound to the user, the
 //!   swimlane, the path, the action and the hashes that lets it through (D46).
 //! - **Pull requests** ([`prs`]): the NFS paths reverse-mapped to the repository, the files put into the form of the repository's
-//!   own, and the commit and the pull request made through the Git Data API with the raising user's own token (D41, D43).
+//!   own, and the commit and the pull request made through the Git Data API with the raising user's own token (D41, D43). A request
+//!   is accepted as a persisted, resumable **job** (`pending`, `preparing`, `committing`, `opening`, `completed` or `failed`) that
+//!   [`WriteHub::pr_jobs`] hands out and a leased scan takes up after a crash; each pull request is **linked** to the swimlane, path
+//!   and NFS hash it came from, and a second one for the same change is refused with the first one's link (D77).
 //! - **Teams** ([`teams`]): [`teams::TeamsNotifier`], the [`ports::Notifier`] that posts an Adaptive Card to a Workflows webhook
 //!   (D49, Q9). `notify` only queues; a worker sends with bounded retries and a breaker, and a failure never reaches the action.
 //! - **Routes** ([`routes`]): the REST face of the actions above, registered through the platform's guarded router (S4), with
@@ -80,5 +83,7 @@ pub fn hot_queries() -> Vec<(&'static str, &'static str)> {
     all.push(("draft_open_count", drafts::OPEN_COUNT));
     all.push(("draft_expiry", drafts::EXPIRE));
     all.extend(vault::store_queries());
+    all.extend(prs::job::queries());
+    all.extend(prs::links::queries());
     all
 }

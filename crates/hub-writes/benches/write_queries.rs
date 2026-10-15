@@ -3,11 +3,12 @@
 //! The statements the write path runs on every request, at target-scale row counts: the idempotency claim (an insert that
 //! checks the key), the read of a retry that finds a finished claim, the completion of a claim, the editing-lock read, the
 //! reconcile job's scan for unfinished claims, one page of the expiry sweep, and (from T4) a page of the list of proposals, the
-//! expiry job's scan and the read of one proposal. Each sample is one statement, taken in turn, so the registered p95 is over the
-//! whole set. Later tasks add the open-PR lookup and the credential load to the set.
+//! expiry job's scan and the read of one proposal, and (from T9) the open-pull-request lookup of a request for a pull request and the
+//! scan for pull-request jobs that need a runner. Each sample is one statement, taken in turn, so the registered p95 is over the
+//! whole set. A later task adds the credential load to the set.
 //!
-//! The tables hold 60,000 idempotency rows (a busy day's writes and some days of unswept rows), 40 swimlanes and 10,000 proposals,
-//! over a real Postgres (a container, or `LK_TEST_PG_ADMIN_URL`). Loopback: this bounds the statements and the database, not the
+//! The tables hold 60,000 idempotency rows (a busy day's writes and some days of unswept rows), 40 swimlanes, 10,000 proposals,
+//! 20,000 pull-request links and 5,000 pull-request jobs, over a real Postgres (a container, or `LK_TEST_PG_ADMIN_URL`). Loopback: this bounds the statements and the database, not the
 //! network; prompt 16 measures staging.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -62,6 +63,7 @@ fn bench(c: &mut Criterion) {
         .execute(&rig.pool)
         .await
         .unwrap();
+        rig.seed_pr_rows(&user).await;
     });
     // Planner statistics, as autovacuum would have made them in service. The app role does not own the tables, so it cannot.
     rt.block_on(async {
@@ -76,8 +78,8 @@ fn bench(c: &mut Criterion) {
         .sample_size(500)
         .warm_up_time(Duration::from_secs(1))
         .measurement_time(Duration::from_millis(100));
-    // A multiple of ten less one, so that the first step is a claim and the steps that read a claim follow one.
-    let mut n = 6_999_999_u64;
+    // A multiple of twelve less one, so that the first step is a claim and the steps that read a claim follow one.
+    let mut n = 7_000_007_u64;
     group.bench_function("write_queries", |b| {
         b.iter_custom(|iters| {
             rt.block_on(async {
@@ -85,7 +87,7 @@ fn bench(c: &mut Criterion) {
                 for _ in 0..iters {
                     n += 1;
                     let started = Instant::now();
-                    let ok = match n % 10 {
+                    let ok = match n % 12 {
                         // A claim, the read of the row a step later while it is unfinished, and its completion a step after.
                         0 => probe.claim(&user, &format!("probe-{n}"), n).await,
                         1 => probe.replay(&user, &format!("probe-{}", n - 1), n - 1).await,
@@ -102,14 +104,17 @@ fn bench(c: &mut Criterion) {
                         // The list of proposals, the expiry job's scan, and one proposal, among the 10,000.
                         7 => probe.proposal_page().await == 25,
                         8 => probe.proposal_expiry_scan().await == 0,
-                        _ => {
+                        9 => {
                             probe
                                 .proposal_get(i64::try_from(1 + n % 10_000).unwrap_or(1))
                                 .await
                         }
+                        // The open-pull-request lookup among the 20,000 links, and the scan for jobs that need a runner among the 5,000.
+                        10 => probe.open_pr_lookup(1 + n % 20_000).await,
+                        _ => probe.pr_job_resume_scan().await == 10,
                     };
                     total += started.elapsed();
-                    assert!(ok, "statement {} failed at step {n}", n % 10);
+                    assert!(ok, "statement {} failed at step {n}", n % 12);
                 }
                 total.max(Duration::from_nanos(1))
             })

@@ -28,7 +28,7 @@ pub(super) struct ListQuery {
     limit: Option<u32>,
 }
 
-fn json_response(status: StatusCode, value: &impl serde::Serialize) -> Response {
+pub(super) fn json_response(status: StatusCode, value: &impl serde::Serialize) -> Response {
     match serde_json::to_vec(value) {
         Ok(body) => {
             let mut response = Response::new(Body::from(body));

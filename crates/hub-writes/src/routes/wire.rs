@@ -6,15 +6,16 @@
 
 use bytes::Bytes;
 use domain::{
-    ChangeEol, ContentHash, Cursor, DeleteRequest, EditRequest, Expected, NfsPath, Page, PreviewChange,
-    PreviewId, PreviewRequest, ProposalId, ProposalStatus, RestartRequest, RevertRequest, Secret, ServiceRef,
-    ShortText, SwimlaneId, UploadRequest,
+    ChangeEol, ContentHash, Cursor, DeleteRequest, EditRequest, Expected, NfsPath, Page, PrJobId, PrRequest,
+    PrState, PrTarget, PreviewChange, PreviewId, PreviewRequest, ProposalId, ProposalStatus, RestartRequest,
+    RevertRequest, Secret, ServiceRef, ShortText, SwimlaneId, UploadRequest,
 };
 use serde::Deserialize;
 
 use super::multipart::{Form, MultipartError, parse};
 use crate::ProposalQuery;
 use crate::github::MAX_TOKEN_LEN;
+use crate::prs::LinkQuery;
 
 /// Why a request was refused before the service saw it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -185,6 +186,97 @@ pub fn proposal_query(
             .map_err(|_| Refusal::BadRequest)?,
         swimlane: swimlane
             .map(SwimlaneId::parse)
+            .transpose()
+            .map_err(|_| Refusal::BadRequest)?,
+        page,
+    })
+}
+
+/// A target, read strictly: `PrTarget` is the domain's type, and serde does not deny the unknown fields of its unit variant, so
+/// `{"kind": "base", "branch": "x"}` would be read as `base`. The contract has `additionalProperties: false` (S11).
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum TargetBody {
+    Tenant { branch: domain::TenantId },
+    Base {},
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrBody {
+    swimlane: SwimlaneId,
+    paths: Vec<NfsPath>,
+    title: ShortText,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    target: Option<TargetBody>,
+}
+
+/// The most characters of a pull request's text (`maxLength` of the contract, and of `pr_jobs.body`).
+pub const MAX_PR_TEXT: usize = 65_536;
+
+/// The JSON body of `POST /prs`: the swimlane, one to 100 distinct paths, a title that says something, the person's text and the
+/// target. A request that is not valid is refused whole, and says nothing about why.
+pub fn pr_request(body: &[u8]) -> Read<PrRequest> {
+    let b: PrBody = object(body)?;
+    let mut seen = std::collections::BTreeSet::new();
+    let distinct = b.paths.iter().all(|p| seen.insert(p.as_str()));
+    let text_ok = b
+        .body
+        .as_deref()
+        // The text is stored in a column that cannot hold a NUL, and the contract caps it in characters.
+        .is_none_or(|t| !t.contains('\0') && t.chars().count() <= MAX_PR_TEXT);
+    if b.paths.is_empty()
+        || b.paths.len() > PrRequest::MAX_PATHS
+        || !distinct
+        || b.title.as_str().trim().is_empty()
+        || !text_ok
+    {
+        return Err(Refusal::BadRequest);
+    }
+    Ok(PrRequest {
+        swimlane: b.swimlane,
+        paths: b.paths,
+        title: b.title,
+        body: b.body,
+        target: b.target.map(|t| match t {
+            TargetBody::Tenant { branch } => PrTarget::Tenant { branch },
+            TargetBody::Base {} => PrTarget::Base,
+        }),
+    })
+}
+
+/// The id of a pull-request job from its path segment: a positive integer.
+pub fn pr_job_id(text: &str) -> Read<PrJobId> {
+    match text.parse::<i64>() {
+        Ok(n) if n >= 1 && text.bytes().all(|b| b.is_ascii_digit()) => Ok(PrJobId::from(n)),
+        _ => Err(Refusal::BadRequest),
+    }
+}
+
+/// The query of a list of pull-request links: each value is parsed into its type, and the limit is the contract's.
+pub fn pr_link_query(
+    swimlane: Option<&str>,
+    state: Option<&str>,
+    cursor: Option<&str>,
+    limit: Option<u32>,
+) -> Read<LinkQuery> {
+    let page = Page::new(
+        limit.unwrap_or(Page::DEFAULT_LIMIT),
+        cursor
+            .map(Cursor::parse)
+            .transpose()
+            .map_err(|_| Refusal::BadRequest)?,
+    )
+    .map_err(|_| Refusal::BadRequest)?;
+    Ok(LinkQuery {
+        swimlane: swimlane
+            .map(SwimlaneId::parse)
+            .transpose()
+            .map_err(|_| Refusal::BadRequest)?,
+        state: state
+            .map(str::parse::<PrState>)
             .transpose()
             .map_err(|_| Refusal::BadRequest)?,
         page,

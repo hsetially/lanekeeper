@@ -11,7 +11,8 @@
 //!   built goes in the section's prose, and its Proof cell starts with `None`);
 //! - the residual risks name the limits that the earlier tasks recorded (a landed write that is overwritten before the reconcile
 //!   job looks, a restart whose answer is lost, the buffers that hold the GitHub token, the KMS call inside a transaction, a
-//!   proposal that stops being pending, JSON arrays read as structs, the Teams hosts, and the parts not built yet);
+//!   proposal that stops being pending, JSON arrays read as structs, the Teams hosts, the limits of the pull-request jobs (T9), and the
+//!   parts not built yet);
 //! - the numbers the section states (the lifetimes, the timeouts, the limits, the default hosts) are the ones in the code;
 //! - each residual risk still describes what the code does: the places in the source that a bullet's mechanism rests on are
 //!   still there, in the order the bullet says. A change to one of them has to change the model with it.
@@ -44,7 +45,7 @@ const MIN_RESIDUAL_RISKS: usize = 11;
 
 /// The limits that earlier tasks recorded for the threat model. Each topic needs one residual-risk bullet that contains every
 /// needle, so a topic cannot be "covered" by words scattered over unrelated bullets.
-const CARRY_FORWARD: [(&str, &[&str]); 10] = [
+const CARRY_FORWARD: [(&str, &[&str]); 15] = [
     (
         "a landed write overwritten before the reconcile job looks is not audited as ours (T1)",
         &[
@@ -116,14 +117,34 @@ const CARRY_FORWARD: [(&str, &[&str]); 10] = [
         &["users.github_login", "unique", "reset_github_link"],
     ),
     (
-        "pull request jobs, the reveal action and notify are not built yet (T9, T10, T11)",
-        &["T9", "T10", "T11", "Q37", "Q35"],
+        "the reveal action and notify are not built yet (T10, T11)",
+        &["T10", "T11", "Q37", "Q35"],
+    ),
+    (
+        "a job uses its author's token in the background, after the request (T9)",
+        &["pr_jobs", "background", "require_active", "D42", "S8"],
+    ),
+    (
+        "a pull request that cannot be recorded is on GitHub with no link (T9)",
+        &["pr_links_one_open", "no link", "no audit event of ours", "30 s"],
+    ),
+    (
+        "raising a pull request leaves no audit event until it exists (T9)",
+        &["Accepting a job writes none", "pr_jobs.failure"],
+    ),
+    (
+        "a failed approval leaves the proposal approved, and the job's reads can lag NFS (T9)",
+        &["stays `approved`", "may lag NFS"],
+    ),
+    (
+        "`raise_pr` through `WriteService` cannot say why a job failed (T9)",
+        &["WriteOutcome", "30 s", "NotAllowed", "createPr"],
     ),
 ];
 
 /// Numbers the section states, with where the code holds them: (the words in the section, the file under the repository root, the
 /// text the file must still contain).
-const FACTS: [(&str, &str, &str); 14] = [
+const FACTS: [(&str, &str, &str); 19] = [
     (
         "60 s",
         "crates/hub-writes/src/config.rs",
@@ -193,6 +214,31 @@ const FACTS: [(&str, &str, &str); 14] = [
         "migration 0004",
         "db/migrations/0004_write_additions.sql",
         "REVOKE UPDATE, DELETE ON approvals FROM lanekeeper_app;",
+    ),
+    (
+        "five tries",
+        "crates/hub-writes/src/prs/runner.rs",
+        "pub const MAX_ATTEMPTS: i32 = 5;",
+    ),
+    (
+        "a step takes at most 60 s",
+        "crates/hub-writes/src/prs/runner.rs",
+        "const STEP_TIMEOUT: Duration = Duration::from_secs(60);",
+    ),
+    (
+        "a job nobody has touched for 30 s",
+        "crates/hub-writes/src/prs/runner.rs",
+        "const STALE_AFTER: Duration = Duration::from_secs(30);",
+    ),
+    (
+        "at most four jobs in the background",
+        "crates/hub-writes/src/prs/runner.rs",
+        "const MAX_RUNNING: usize = 4;",
+    ),
+    (
+        "for five seconds before it publishes",
+        "crates/hub-writes/src/prs/links.rs",
+        "const ANNOUNCE_LEASE: Duration = Duration::from_secs(5);",
     ),
 ];
 

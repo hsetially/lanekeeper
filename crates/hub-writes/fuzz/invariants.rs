@@ -7,7 +7,7 @@
 //!
 //! | Target | Input | What must hold |
 //! |---|---|---|
-//! | `writes_request_json` | bytes read as the JSON body of an edit, a revert, a restart, a draft, an approval and a rejection, and as the lines `path`, `expected`, `preview_id` of a delete and `status`, `swimlane`, `cursor`, `limit` of a list of proposals | reading never panics; an accepted request names a valid path and typed hashes, holds no more content than the input had, and survives a round trip through its canonical JSON (or lines) unchanged |
+//! | `writes_request_json` | bytes read as the JSON body of an edit, a revert, a restart, a draft, a pull request, an approval and a rejection, and as the lines `path`, `expected`, `preview_id` of a delete and `status`, `swimlane`, `cursor`, `limit` of a list of proposals | reading never panics; an accepted request names a valid path and typed hashes, holds no more content than the input had, and survives a round trip through its canonical JSON (or lines) unchanged |
 //! | `writes_upload_multipart` | a content type, a line end, and a multipart body, read as an upload form and as a preview form | reading never panics; an accepted request has a valid path, a file within the limit, an `Expected` that agrees with its fields, and survives a round trip through a canonical form unchanged |
 //! | `writes_github_token` | bytes read as the body of `PUT /me/github-token`, and the same bytes as the text of a token | reading never panics; an accepted body holds a token of one to 512 bytes and survives a round trip through its canonical JSON unchanged; the shape check accepts only `github_pat_` followed by letters, digits and underscores within 512 bytes, never calls a fine-grained prefix classic, and its errors are the fixed words, none of which holds the input |
 //! | `writes_github_responses` | bytes read as the answer of `GET /user`, as the answer of `GET /repos/{o}/{r}`, and as the value of the expiry header | reading never panics; an accepted login is valid and is the one an independent JSON read finds; `push` is `true` only when an independent read finds exactly `permissions.push == true`; every error is `Unexpected`; an accepted expiry lies in 2000 to 2200 and survives being written out and read again |
@@ -35,8 +35,9 @@ use hub_writes::github::types::{
     check_token_shape, encode_path,
 };
 use hub_writes::routes::wire::{
-    approve_comment, delete_request, draft_request, edit_request, github_token_request, preview_request,
-    proposal_id, proposal_query, reject_reason, restart_request, revert_request, upload_request,
+    approve_comment, delete_request, draft_request, edit_request, github_token_request, pr_job_id,
+    pr_link_query, pr_request, preview_request, proposal_id, proposal_query, reject_reason, restart_request,
+    revert_request, upload_request,
 };
 use serde_json::json;
 
@@ -121,6 +122,7 @@ pub fn request_json_accepted(data: &[u8]) -> bool {
         || revert_request(swimlane(), data).is_ok()
         || restart_request(swimlane(), data).is_ok()
         || draft_request(data).is_ok()
+        || pr_request(data).is_ok()
         // An approval may have no body at all; the empty input is not a seed of "accepted".
         || (!data.is_empty() && approve_comment(data).is_ok())
         || reject_reason(data).is_ok()
@@ -186,6 +188,48 @@ pub fn writes_request_json(data: &[u8]) -> Result<(), String> {
             .map_err(|e| format!("an accepted draft is refused when written canonically: {e}"))?;
         ensure(again == r, || "a draft changes in a round trip".into())?;
     }
+    if let Ok(r) = pr_request(data) {
+        ensure(
+            (1..=domain::PrRequest::MAX_PATHS).contains(&r.paths.len()),
+            || "a pull request has no paths, or more than 100".into(),
+        )?;
+        let distinct: std::collections::BTreeSet<&str> =
+            r.paths.iter().map(domain::NfsPath::as_str).collect();
+        ensure(distinct.len() == r.paths.len(), || {
+            "a pull request names a path twice".into()
+        })?;
+        ensure(
+            r.paths
+                .iter()
+                .all(|p| domain::NfsPath::parse(p.as_str()).as_ref() == Ok(p)),
+            || "a pull request names a path that is not in its normal form".into(),
+        )?;
+        ensure(!r.title.as_str().trim().is_empty(), || {
+            "a pull request has a blank title".into()
+        })?;
+        ensure(
+            r.body
+                .as_deref()
+                .is_none_or(|t| !t.contains('\0') && t.chars().count() <= 65_536),
+            || "a pull request has a text a row cannot hold".into(),
+        )?;
+        let body = json!({
+            "swimlane": r.swimlane.as_str(),
+            "paths": r.paths.iter().map(domain::NfsPath::as_str).collect::<Vec<_>>(),
+            "title": r.title.as_str(),
+            "body": r.body,
+            "target": r.target,
+        });
+        let again = pr_request(&serde_json::to_vec(&body).unwrap())
+            .map_err(|e| format!("an accepted pull request is refused when written canonically: {e}"))?;
+        ensure(again == r, || "a pull request changes in a round trip".into())?;
+    }
+    if let Ok(id) = pr_job_id(&String::from_utf8_lossy(data)) {
+        ensure(id.get() >= 1, || "a job id below one".into())?;
+        ensure(pr_job_id(&id.to_string()) == Ok(id), || {
+            "a job id changes in a round trip".into()
+        })?;
+    }
     if !data.is_empty() {
         if let Ok(comment) = approve_comment(data) {
             if let Some(c) = &comment {
@@ -226,6 +270,21 @@ pub fn writes_request_json(data: &[u8]) -> Result<(), String> {
             ensure(
                 q.swimlane.as_ref().map(SwimlaneId::as_str) == lane.as_deref(),
                 || "a list changes its swimlane".into(),
+            )?;
+        }
+    }
+    if wellformed {
+        if let Ok(q) = pr_link_query(lane.as_deref(), status.as_deref(), cursor.as_deref(), limit) {
+            ensure((1..=500).contains(&q.page.limit()), || {
+                "a list of links asks for a page outside 1 to 500".into()
+            })?;
+            ensure(
+                q.page.cursor().map(domain::Cursor::as_str) == cursor.as_deref(),
+                || "a list of links changes its cursor".into(),
+            )?;
+            ensure(
+                q.swimlane.as_ref().map(SwimlaneId::as_str) == lane.as_deref(),
+                || "a list of links changes its swimlane".into(),
             )?;
         }
     }

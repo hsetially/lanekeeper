@@ -2103,6 +2103,7 @@ dependencies = [
  "domain",
  "engine",
  "fastrand",
+ "futures",
  "http",
  "http-body-util",
  "hub-platform",

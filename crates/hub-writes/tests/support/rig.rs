@@ -261,6 +261,35 @@ impl Rig {
             .unwrap()
     }
 
+    /// 20,000 pull-request links, a quarter of them merged, each for its own swimlane (`sit0` to `sit39`, which must exist), path
+    /// and hash; and 5,000 jobs, every 500th of them unfinished. The rows the P12 benchmark reads, and the tests that run its probes.
+    pub async fn seed_pr_rows(&self, user: &domain::UserId) {
+        sqlx::query(
+            "INSERT INTO pr_links (swimlane_id, path, nfs_hash, repo, branch, pr_number, state, url, author_tid, author_oid) \
+             SELECT 'sit' || (g % 40), 'a/' || g || '.yml', sha256(g::text::bytea), 'tenant', 'lanekeeper/x/' || g, g, \
+                    CASE WHEN g % 4 = 0 THEN 'merged' ELSE 'open' END, 'https://github.com/acme/r/pull/' || g, $1, $2 \
+             FROM generate_series(1, 20000) g",
+        )
+        .bind(user.tid().as_str())
+        .bind(user.oid().as_str())
+        .execute(&self.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO pr_jobs (author_tid, author_oid, swimlane_id, paths, title, state, step_data, created_at, updated_at) \
+             SELECT $1, $2, 'sit' || (g % 40), ARRAY['a/' || g || '.yml'], 't', \
+                    CASE WHEN g % 500 = 0 THEN 'committing' ELSE 'completed' END, '{}', \
+                    to_timestamp($3::bigint / 1000.0) - interval '1 hour', to_timestamp($3::bigint / 1000.0) - interval '1 hour' \
+             FROM generate_series(1, 5000) g",
+        )
+        .bind(user.tid().as_str())
+        .bind(user.oid().as_str())
+        .bind(START)
+        .execute(&self.pool)
+        .await
+        .unwrap();
+    }
+
     pub fn advance_secs(&self, secs: i64) {
         self.clock.advance_secs(secs);
     }

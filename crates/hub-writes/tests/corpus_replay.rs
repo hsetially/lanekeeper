@@ -251,6 +251,57 @@ fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
     );
     add(
         t,
+        "accepted_pr_tenant_target",
+        json(
+            json!({ "swimlane": "sit1", "paths": ["tx-api/a-sit1.yml", "tx-api/b.yml"], "title": "Sync the NFS changes", "body": "Please review.\n", "target": { "kind": "tenant", "branch": "sit1" } }),
+        ),
+    );
+    add(
+        t,
+        "accepted_pr_minimal",
+        json(json!({ "swimlane": "sit1", "paths": ["a.yml"], "title": "t" })),
+    );
+    add(
+        t,
+        "accepted_pr_base_target_null_text",
+        json(
+            json!({ "swimlane": "sit1", "paths": ["a.yml"], "title": "t", "body": null, "target": { "kind": "base" } }),
+        ),
+    );
+    add(
+        t,
+        "rejected_pr_no_paths",
+        json(json!({ "swimlane": "sit1", "paths": [], "title": "t" })),
+    );
+    add(
+        t,
+        "rejected_pr_path_twice",
+        json(json!({ "swimlane": "sit1", "paths": ["a.yml", "a.yml"], "title": "t" })),
+    );
+    add(
+        t,
+        "rejected_pr_blank_title",
+        json(json!({ "swimlane": "sit1", "paths": ["a.yml"], "title": "  " })),
+    );
+    add(
+        t,
+        "rejected_pr_text_with_nul",
+        b"{\"swimlane\":\"sit1\",\"paths\":[\"a.yml\"],\"title\":\"t\",\"body\":\"a\\u0000b\"}".to_vec(),
+    );
+    add(
+        t,
+        "rejected_pr_base_target_with_a_branch",
+        json(
+            json!({ "swimlane": "sit1", "paths": ["a.yml"], "title": "t", "target": { "kind": "base", "branch": "sit1" } }),
+        ),
+    );
+    add(
+        t,
+        "rejected_pr_as_array",
+        json(json!(["sit1", ["a.yml"], "t", null, null])),
+    );
+    add(
+        t,
         "accepted_approve_with_comment",
         json(json!({ "comment": "looks right" })),
     );

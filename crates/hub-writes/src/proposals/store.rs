@@ -278,6 +278,24 @@ pub(crate) async fn set_status(
     Ok(done.rows_affected() == 1)
 }
 
+const MARK_APPLIED: &str = concat!(
+    "UPDATE proposals SET status = 'applied', applied_at = ",
+    ts!("2"),
+    " WHERE id = $1 AND status = 'approved'"
+);
+
+/// An approved proposal whose work is done is applied. Only the approval of a pull request leaves a proposal `approved`: the job
+/// that carries it out finishes later. Returns whether it moved.
+pub(crate) async fn mark_applied(conn: &mut PgConnection, id: ProposalId, now_ms: i64) -> Res<bool> {
+    let done = sqlx::query(MARK_APPLIED)
+        .bind(id.get())
+        .bind(now_ms)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| Internal::db("proposal_applied", &e))?;
+    Ok(done.rows_affected() == 1)
+}
+
 const INSERT_DECISION: &str = concat!(
     "INSERT INTO approvals (proposal_id, decision, approver_tid, approver_oid, reason, rechecked_hash, decided_at) \
      VALUES ($1, $2, $3, $4, $5, $6, ",

@@ -148,3 +148,56 @@ async fn explain_credential_cleanup_is_bounded() {
         "the user is found by its key"
     );
 }
+
+/// T9 (D77): the one-open-pull-request check joins the (path, hash) pairs of a request to the partial unique index made for it, and
+/// the scan for jobs that need a runner reads the index of the unfinished states, a bounded page at a time.
+#[tokio::test]
+async fn explain_open_pr_lookup_uses_pr_links_one_open() {
+    let db = db!();
+    let queries = hub_writes::hot_queries();
+    let (_, sql) = queries.iter().find(|(n, _)| *n == "pr_link_open").unwrap();
+    let p = plan(&db, sql).await;
+    assert!(p.contains("pr_links_one_open"), "{p}");
+    assert!(p.contains("\"Limit\""), "{p}");
+    // The list of links is read in id order, newest first, through the primary key; the watcher finds a link by it.
+    for name in ["pr_link_list", "pr_link_place"] {
+        let (_, sql) = queries.iter().find(|(n, _)| *n == name).unwrap();
+        assert!(plan(&db, sql).await.contains("pr_links_pkey"), "{name}");
+    }
+}
+
+#[tokio::test]
+async fn explain_pr_job_resume_uses_pr_jobs_state_idx() {
+    let db = db!();
+    let queries = hub_writes::hot_queries();
+    for name in ["pr_job_resume", "pr_job_active"] {
+        let (_, sql) = queries.iter().find(|(n, _)| *n == name).unwrap();
+        let p = plan(&db, sql).await;
+        assert!(p.contains("pr_jobs_state_idx"), "{name}: {p}");
+        assert!(p.contains("\"Limit\""), "{name} has no LIMIT: {p}");
+    }
+    for name in ["pr_job_get", "pr_job_lock"] {
+        let (_, sql) = queries.iter().find(|(n, _)| *n == name).unwrap();
+        assert!(plan(&db, sql).await.contains("pr_jobs_pkey"), "{name}");
+    }
+}
+
+/// The statements the benchmark adds in T9 run against the rows it seeds: the lookup finds a link that is there and none that is
+/// not, and the scan finds exactly the unfinished jobs.
+#[tokio::test]
+async fn the_pull_request_probes_of_the_benchmark_read_what_it_seeds() {
+    let db = db!();
+    let rig = support::rig::Rig::new(db).await;
+    for i in 0..40 {
+        rig.swimlane(&format!("sit{i}"), true).await;
+    }
+    let editor = rig.user(1, domain::Role::Editor).await;
+    rig.seed_pr_rows(&editor.id).await;
+    assert_eq!(rig.count("pr_links").await, 20_000);
+    assert_eq!(rig.count("pr_jobs").await, 5_000);
+    let probe = rig.hub.probe();
+    assert!(probe.open_pr_lookup(1).await);
+    assert!(probe.open_pr_lookup(19_999).await);
+    // The scan skips the finished jobs (they are 4,990 of the 5,000) and a job touched an hour ago needs a runner.
+    assert_eq!(probe.pr_job_resume_scan().await, 10);
+}

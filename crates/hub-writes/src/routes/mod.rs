@@ -19,6 +19,9 @@
 //! | `POST /api/v1/drafts/{id}/apply` | Editor | apply a draft |
 //! | `PUT /api/v1/me/github-token` | Editor | store or replace the caller's GitHub token |
 //! | `DELETE /api/v1/me/github-token` | Editor | remove the caller's GitHub token |
+//! | `POST /api/v1/prs` | Editor | raise a pull request (accepts a job, 202) |
+//! | `GET /api/v1/prs` | Viewer | list pull-request links |
+//! | `GET /api/v1/pr-jobs/{id}` | Viewer | a pull-request job |
 //!
 //! A route does four things and nothing else: read the request into typed values (a bad one is 400 and says nothing about why),
 //! build the [`WriteCtx`], call the service and map its answer to a response. Authorization is the guard's and the service's; the
@@ -30,6 +33,7 @@ mod me;
 pub mod multipart;
 mod problem;
 mod proposals;
+mod prs;
 mod upload;
 pub mod wire;
 
@@ -47,6 +51,7 @@ use hub_platform::{ApiError, AuthenticatedUser, GuardedRouter};
 use ports::WriteService;
 
 use crate::ProposalDesk;
+use crate::prs::PrDesk;
 use crate::vault::TokenDesk;
 
 /// The path of the edit and delete routes.
@@ -61,10 +66,12 @@ pub const REJECT_PATH: &str = "/api/v1/proposals/{id}/reject";
 pub const DRAFTS_PATH: &str = "/api/v1/drafts";
 pub const APPLY_DRAFT_PATH: &str = "/api/v1/drafts/{id}/apply";
 pub const GITHUB_TOKEN_PATH: &str = "/api/v1/me/github-token";
+pub const PRS_PATH: &str = "/api/v1/prs";
+pub const PR_JOB_PATH: &str = "/api/v1/pr-jobs/{id}";
 
 /// Every route this task mounts, with its method and the lowest role that may call it. The route-table test compares this list
 /// with `api/openapi.yaml` and with what [`mount`] registers.
-pub const WRITE_ROUTES: [(&str, &str, Role); 13] = [
+pub const WRITE_ROUTES: [(&str, &str, Role); 16] = [
     ("PUT", FILES_PATH, Role::Editor),
     ("DELETE", FILES_PATH, Role::Editor),
     ("POST", PREVIEW_PATH, Role::Editor),
@@ -78,6 +85,9 @@ pub const WRITE_ROUTES: [(&str, &str, Role); 13] = [
     ("POST", APPLY_DRAFT_PATH, Role::Editor),
     ("PUT", GITHUB_TOKEN_PATH, Role::Editor),
     ("DELETE", GITHUB_TOKEN_PATH, Role::Editor),
+    ("POST", PRS_PATH, Role::Editor),
+    ("GET", PRS_PATH, Role::Viewer),
+    ("GET", PR_JOB_PATH, Role::Viewer),
 ];
 
 /// A JSON string can be six times its text (`\u0000`), so a 2 MiB text can need 12 MiB of body. The limit is that, plus the
@@ -90,6 +100,10 @@ pub const MAX_SMALL_BODY: usize = 16 * 1024;
 /// The body of a token request: a token of at most 512 characters, which JSON may write as six bytes each, and the field name.
 pub const MAX_TOKEN_BODY: usize = 6 * crate::github::MAX_TOKEN_LEN + 256;
 
+/// The body of `POST /prs`: the person's text of 65,536 characters (a JSON string can be six times its text), 100 paths of up to
+/// 1,024 characters (the same), the title and the framing.
+pub const MAX_PR_BODY: usize = 6 * wire::MAX_PR_TEXT + 100 * (6 * 1024 + 8) + 4096;
+
 /// What a multipart body may hold besides the file: the small text fields and the framing.
 pub const MULTIPART_OVERHEAD: usize = 64 * 1024;
 
@@ -98,6 +112,7 @@ pub struct WriteState {
     service: Arc<dyn WriteService>,
     proposals: Arc<dyn ProposalDesk>,
     tokens: Arc<dyn TokenDesk>,
+    prs: Arc<dyn PrDesk>,
     max_file_bytes: usize,
 }
 
@@ -116,12 +131,14 @@ impl WriteState {
         service: Arc<dyn WriteService>,
         proposals: Arc<dyn ProposalDesk>,
         tokens: Arc<dyn TokenDesk>,
+        prs: Arc<dyn PrDesk>,
         max_file_bytes: usize,
     ) -> Arc<Self> {
         Arc::new(Self {
             service,
             proposals,
             tokens,
+            prs,
             max_file_bytes,
         })
     }
@@ -318,6 +335,40 @@ pub fn mount(router: GuardedRouter, state: Arc<WriteState>) -> GuardedRouter {
             move |user: Extension<AuthenticatedUser>, headers: HeaderMap| {
                 let s = Arc::clone(&s);
                 async move { me::delete(&s, user.0.0, &headers).await }
+            }
+        })
+        .route(&Method::POST, PRS_PATH, Role::Editor, {
+            let s = Arc::clone(&s);
+            (move |user: Extension<AuthenticatedUser>,
+                   headers: HeaderMap,
+                   body: Result<Bytes, BytesRejection>| {
+                let s = Arc::clone(&s);
+                async move {
+                    match body_of(body) {
+                        Ok(body) => prs::create(&s, user.0.0, &headers, &body).await,
+                        Err(e) => *e,
+                    }
+                }
+            })
+            .layer(DefaultBodyLimit::max(MAX_PR_BODY))
+        })
+        .route(&Method::GET, PRS_PATH, Role::Viewer, {
+            let s = Arc::clone(&s);
+            move |user: Extension<AuthenticatedUser>, query: Result<Query<prs::ListQuery>, QueryRejection>| {
+                let s = Arc::clone(&s);
+                async move {
+                    match query {
+                        Ok(Query(query)) => prs::list(&s, user.0.0, query).await,
+                        Err(_) => ApiError::BadRequest.into_response(),
+                    }
+                }
+            }
+        })
+        .route(&Method::GET, PR_JOB_PATH, Role::Viewer, {
+            let s = Arc::clone(&s);
+            move |Path(id): Path<String>, user: Extension<AuthenticatedUser>| {
+                let s = Arc::clone(&s);
+                async move { prs::job(&s, &id, user.0.0).await }
             }
         })
 }

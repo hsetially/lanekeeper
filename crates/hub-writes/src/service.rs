@@ -1,7 +1,7 @@
 //! `WriteHub`: the `WriteService` implementation, and the state its steps share.
 
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -25,6 +25,7 @@ use crate::error::{ConfigError, Internal, Res};
 use crate::idempotency::IdempotencyStore;
 use crate::pipeline::authorize::authorize;
 use crate::preview::token::PreviewKey;
+use crate::prs::{PrDeps, PrJobRunner, PrStateWatcher};
 use crate::reconcile::ReconcileWrites;
 
 /// What the write hub is built from: the ports it uses, the pool for its own tables, and the settings.
@@ -113,6 +114,8 @@ pub(crate) fn millis(d: Duration) -> i64 {
 #[derive(Clone)]
 pub struct WriteHub {
     pub(crate) inner: Arc<Inner>,
+    /// The pull-request jobs, once [`WriteHub::pr_jobs`] has wired them. Shared by every clone of the hub.
+    prs: Arc<OnceLock<PrJobRunner>>,
 }
 
 impl std::fmt::Debug for WriteHub {
@@ -151,6 +154,7 @@ impl WriteHub {
                 limits,
                 checks: Semaphore::new(max_checks),
             }),
+            prs: Arc::new(OnceLock::new()),
         })
     }
 
@@ -163,6 +167,24 @@ impl WriteHub {
     /// lease (D63).
     pub fn reconciler(&self) -> ReconcileWrites {
         ReconcileWrites::new(self.inner.clone())
+    }
+
+    /// The pull-request jobs of this hub (T9): runs the jobs that raise pull requests (`pending` to `completed`), and answers
+    /// [`ports::WriteService::raise_pr`] and the pull-request routes. The first call wires `raise_pr` to the runner it returns;
+    /// until then `raise_pr` authorizes the caller and answers `Unavailable`.
+    ///
+    /// Run [`PrJobRunner::run_once`] under a lease (`pr-jobs`, D63) every few seconds: it takes up the jobs a crash or a restart
+    /// left, and the ones that were approved. Run [`PrStateWatcher::run`] as a task of the process.
+    pub fn pr_jobs(&self, deps: PrDeps) -> PrJobRunner {
+        let runner = PrJobRunner::new(self.pull_requests(deps));
+        let _ = self.prs.set(runner.clone());
+        runner
+    }
+
+    /// Reacts to `PrStateChanged` (published by the pull-request webhook) by publishing `DriftChanged` for the link's path, so that
+    /// a merged pull request shows as "fix merged; awaiting sync" (D77, plan A17).
+    pub fn pr_state_watcher(&self) -> PrStateWatcher {
+        PrStateWatcher::new(Arc::clone(&self.inner))
     }
 
     /// The services a "restart all" confirmation lists for a change to `path` (D49): every service of the swimlane for a file in
@@ -181,8 +203,9 @@ impl WriteHub {
     }
 }
 
-/// Actions that are authorized but not yet carried out by this build (later tasks of prompt 06 wire them): the caller is
-/// told the service is unavailable, after the role check, with nothing claimed, sent or recorded.
+/// Actions that are authorized but not carried out by this build (a notify until T11 wires it, a pull request until
+/// [`WriteHub::pr_jobs`] has been called): the caller is told the service is unavailable, after the role check, with nothing
+/// claimed, sent or recorded.
 async fn not_wired<T>(hub: &WriteHub, ctx: &WriteCtx, floor: Role) -> Result<T, WriteError> {
     authorize(&hub.inner, ctx, floor).await?;
     Err(WriteError::Unavailable)
@@ -252,8 +275,11 @@ impl WriteService for WriteHub {
             .await
     }
 
-    async fn raise_pr(&self, ctx: &WriteCtx, _r: PrRequest) -> Result<WriteOutcome, WriteError> {
-        not_wired(self, ctx, Role::Editor).await
+    async fn raise_pr(&self, ctx: &WriteCtx, r: PrRequest) -> Result<WriteOutcome, WriteError> {
+        match self.prs.get() {
+            Some(runner) => runner.raise_and_wait(ctx, r).await,
+            None => not_wired(self, ctx, Role::Editor).await,
+        }
     }
 
     async fn propose_draft(&self, ctx: &WriteCtx, r: EditRequest) -> Result<Draft, WriteError> {

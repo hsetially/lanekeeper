@@ -5,6 +5,7 @@ use domain::{SwimlaneId, UserId};
 
 use crate::idempotency::{ClaimKey, RequestHash};
 use crate::pipeline::lock;
+use crate::prs::{job, links};
 use crate::service::{Inner, WriteHub, millis};
 
 /// Runs the statements of the write path against the hub's own pool, as the pipeline does.
@@ -124,5 +125,34 @@ impl QueryProbe<'_> {
         crate::proposals::store::get(&mut conn, domain::ProposalId::from(id))
             .await
             .is_ok()
+    }
+
+    /// The open-pull-request lookup of a request for a pull request (D77): two (path, hash) pairs of one swimlane, as the
+    /// benchmark seeds them (`g` names a seeded link; the second pair is one that is not linked).
+    pub async fn open_pr_lookup(&self, g: u64) -> bool {
+        let Ok(mut conn) = self.hub.pool.acquire().await else {
+            return false;
+        };
+        let Ok(swimlane) = SwimlaneId::parse(&format!("sit{}", g % 40)) else {
+            return false;
+        };
+        let pairs = vec![
+            (
+                format!("a/{g}.yml"),
+                ports::content_hash(g.to_string().as_bytes()),
+            ),
+            (format!("a/{}.yml", g + 1), ports::content_hash(b"not linked")),
+        ];
+        links::find_open(&mut conn, &swimlane, &pairs).await.is_ok()
+    }
+
+    /// The scan of the pull-request jobs that need a runner: the jobs nobody has touched for 30 s, at most 50.
+    pub async fn pr_job_resume_scan(&self) -> usize {
+        let Ok(mut conn) = self.hub.pool.acquire().await else {
+            return usize::MAX;
+        };
+        job::needing_a_runner(&mut conn, self.hub.now_ms().saturating_sub(30_000), 50)
+            .await
+            .map_or(usize::MAX, |ids| ids.len())
     }
 }
