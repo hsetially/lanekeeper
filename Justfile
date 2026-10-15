@@ -381,12 +381,35 @@ engine-bench:
     if [ "$found" -ne "$wanted" ]; then echo "engine-bench: found $found of $wanted budgets in perf/budgets.toml"; exit 1; fi
     cargo xtask bench-check --budgets "$tmp/budgets.toml"
 
+# Prompt 07 gate (the MCP server; S4, S11, S14, S14b, S15, S21; P9): every sub-recipe, in order, stopping at the first failure. T0
+# starts it with the tools check, lint, tests and the status of the Cursor results; later tasks append their own sub-recipes
+# (fuzz, bench, the Postgres-backed tests with `docker-check`). Run `just verify` and `cargo xtask bench-check` after it (AGENTS.md,
+# protocol step 4). Not part of the gate and said so: the Cursor 3.22.12 checks of T0 need a human (see `mcp-t0-status`).
+verify-07: mcp-tools-check mcp-lint mcp-test mcp-t0-status
+
+# The pinned tools the gate needs, or the command that installs them. Never skips.
+mcp-tools-check: agent-tools-check
+
+mcp-lint:
+    cargo fmt --all -- --check
+    cargo clippy -p hub-mcp --all-targets -- -D warnings
+
+# Unit, property, golden and protocol tests of the MCP crate, including the compatibility stub driven in process (no sockets, a
+# paused clock) and the rmcp spike of plan A19.
+mcp-test:
+    cargo test -p hub-mcp --lib --tests
+
+# T0 (A4): what is recorded of the Cursor 3.22.12 compatibility test (D91 in docs/decisions.md). The checks need a human with
+# Cursor on Windows and on macOS (`crates/hub-mcp/t0/README.md`), so an agent run says NOT RUN per operating system, and NOT RUN is
+# never counted as a pass. This prints the table and exits 0; a table it cannot read is an error. A human runs
+# `just mcp-t0-status --strict` before go-live: it exits 1 until every cell is filled and the decisions follow the outcome rules.
+mcp-t0-status *args:
+    cargo run --quiet -p hub-mcp --example t0_status -- {{args}}
+
 verify-05:
     @echo "verify-05 not implemented yet" && exit 1
 verify-06:
     @echo "verify-06 not implemented yet" && exit 1
-verify-07:
-    @echo "verify-07 not implemented yet" && exit 1
 verify-08:
     @echo "verify-08 not implemented yet" && exit 1
 verify-09:

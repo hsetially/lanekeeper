@@ -167,6 +167,11 @@ similar = "=2.7.0"
 grep-regex = "=0.1.14"
 grep-searcher = "=0.1.17"
 grep-matcher = "=0.1.9"
+# MCP server (prompt 07, T0, plan A19). rmcp 3.5.0 (2026-09-28, 17 days old on 2026-10-15, MSRV 1.88, Apache-2.0) is the MCP SDK. No
+# default features: `macros` stays off (the server implements `ServerHandler` by hand, so no tool schema is derived from a Rust type
+# that could drift from docs/mcp-tools.md), and so do `auth`, `client` and every `reqwest` feature (no HTTP client and no second TLS
+# stack). hub-mcp turns on `server`, `transport-streamable-http-server` and `elicitation`. 3.5.1 is 10 days old and refused.
+rmcp = { version = "=3.5.0", default-features = false }
 # Test tooling
 proptest = "=1.11.0"
 insta = "=1.48.0"

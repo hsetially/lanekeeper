@@ -10,3 +10,29 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+thiserror.workspace = true
+
+# T0 (plan 07, A19): everything below is used by the compatibility stub (`examples/t0_stub.rs`) and its tests only. The library
+# does not link rmcp yet. T1 moves into `[dependencies]` what the server itself needs.
+[dev-dependencies]
+axum.workspace = true
+base64.workspace = true
+bytes.workspace = true
+domain.workspace = true
+futures.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+insta.workspace = true
+moka = { workspace = true, features = ["sync"] }
+proptest.workspace = true
+# Server side of the Streamable HTTP transport and server-initiated elicitation. No `macros` (the handler is written by hand),
+# no `auth`, no `client`, no `reqwest` (workspace comment).
+rmcp = { workspace = true, features = ["server", "transport-streamable-http-server", "elicitation"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
+tower = { workspace = true, features = ["util"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["fmt", "std", "registry"] }
