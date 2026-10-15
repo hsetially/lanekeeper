@@ -1,7 +1,8 @@
 -- 0006_mcp_tokens_created_not_future.sql: holds `mcp_tokens.created_at` to the moment of the insert (follow-up to 0005, prompt 07).
 -- A contract: never edit it once merged. Run it as `lanekeeper_migrator`.
 --
--- One function and one BEFORE INSERT trigger on the table 0005 made. No table, column, index or grant changes and no row is written.
+-- One function and one BEFORE INSERT trigger on the table 0005 made, and a scan of the rows already there. No table, column, index
+-- or grant changes and no row is written.
 --
 -- Why. The header of 0005 says "A token lives at most 31 days in the schema ... so no row can be a bearer credential without an
 -- end". That is only true from this migration on. `mcp_tokens_lifetime` bounds `expires_at` relative to `created_at`
@@ -24,12 +25,23 @@
 -- disable it and a superuser can bypass it with `session_replication_role = replica`; neither is the role the hub connects as.
 -- It is not a catalog constraint, so `pg_constraint` does not list it; the trigger is the guard.
 --
+-- Order. The role guard runs first, so a wrong role creates nothing. Then the function and the trigger. Only then does the scan
+-- look for a row that is already there. The scan must come after the trigger: `lanekeeper_app` can INSERT while this runs, and a row
+-- that it commits between a scan and a later CREATE TRIGGER would escape both. CREATE TRIGGER takes a SHARE ROW EXCLUSIVE lock on
+-- `mcp_tokens`, which holds off every INSERT, UPDATE and DELETE until the transaction ends; an INSERT that is already in flight is
+-- waited for. The scan, which runs after that lock is held, therefore sees every row that was committed, and any INSERT that comes
+-- after is checked by the trigger. This relies on two things the repo has: sqlx's Migrator applies each file in one transaction (a
+-- file would have to begin with `-- no-transaction` to be exempt, and none does), and READ COMMITTED, the PostgreSQL default, under
+-- which the scan takes a fresh snapshot after the lock is held. A runner that did not wrap the file would still have the trigger
+-- guarding new inserts when the scan runs, but it would leave the function and the trigger behind when the scan fails.
+--
 -- Compatibility. It tightens what the table accepts, so it is not purely additive: an INSERT that 0005 took is now refused when its
--- `created_at` is more than a minute ahead. A trigger does not look at rows that are already there, so the migration does: a row
--- whose `created_at` is more than a minute ahead of the moment it runs makes it fail (23514) and a person looks. None exists unless a
--- client of the table put it there; the hub inserts with the default `created_at`, and the 07 code that inserts is not written, so
--- nothing in use is affected. Deploy it before the 07 code; binaries from before it never touch the table. The grants, the trigger
--- and the constraints of 0005 are untouched.
+-- `created_at` is more than a minute ahead. A trigger does not look at rows that are already there, so the migration does, at the
+-- end: a row whose `created_at` is more than a minute ahead of the moment it runs makes it fail (23514), the whole transaction rolls
+-- back, the function and the trigger with it, and a person looks. None exists unless a client of the table put it there; the hub
+-- inserts with the default `created_at`, and the 07 code that inserts is not written, so nothing in use is affected. Deploy it
+-- before the 07 code; binaries from before it never touch the table. The grants, the trigger and the constraints of 0005 are
+-- untouched.
 
 DO $$
 BEGIN
@@ -41,11 +53,6 @@ BEGIN
   IF current_user <> 'lanekeeper_migrator' THEN
     RAISE EXCEPTION 'run migrations as lanekeeper_migrator (current user: %); objects must be owned by it', current_user
       USING ERRCODE = '55000';
-  END IF;
-  -- The trigger below guards inserts; a row that is already there with a created_at ahead of the slack would keep its long life.
-  IF EXISTS (SELECT 1 FROM mcp_tokens WHERE created_at > now() + interval '1 minute') THEN
-    RAISE EXCEPTION 'mcp_tokens has a row whose created_at is in the future; look at it before migrating'
-      USING ERRCODE = '23514';
   END IF;
 END
 $$;
@@ -64,3 +71,14 @@ END
 $$;
 CREATE TRIGGER mcp_tokens_created_not_future BEFORE INSERT ON mcp_tokens
   FOR EACH ROW EXECUTE FUNCTION mcp_tokens_created_not_future();
+
+-- Last, and only after the trigger exists (see "Order"): a row that is already there with a created_at ahead of the slack would
+-- keep its long life, because the trigger only looks at inserts. Fail, and roll the function and the trigger back with it.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM mcp_tokens WHERE created_at > now() + interval '1 minute') THEN
+    RAISE EXCEPTION 'mcp_tokens has a row whose created_at is in the future; look at it before migrating'
+      USING ERRCODE = '23514';
+  END IF;
+END
+$$;

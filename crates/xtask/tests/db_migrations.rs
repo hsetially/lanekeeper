@@ -4171,9 +4171,10 @@ async fn mcp_token_lookups_have_an_index() {
 
 const MIGRATION_0006: &str = "0006_mcp_tokens_created_not_future.sql";
 
-/// `0006` is exactly the statements it was reviewed with: the guard, one function and one BEFORE INSERT trigger. No row is
-/// written, nothing is dropped, renamed or granted, the audit tables are not named, and nothing in it fires on an UPDATE. A new
-/// statement of any kind fails here until a human adds it to the list on purpose.
+/// `0006` is exactly the statements it was reviewed with: the guard, one function, one BEFORE INSERT trigger and the scan of
+/// the rows already there, in that order. No row is written, nothing is dropped, renamed or granted, the audit tables are not
+/// named, and nothing in it fires on an UPDATE. A new statement of any kind fails here until a human adds it to the list on
+/// purpose.
 #[test]
 fn migration_0006_is_expand_only() {
     let sql = migration_file(MIGRATION_0006);
@@ -4190,6 +4191,7 @@ fn migration_0006_is_expand_only() {
             "DO",
             "CREATE FUNCTION MCP_TOKENS_CREATED_NOT_FUTURE RETURNS TRIGGER LANGUAGE PLPGSQL SET SEARCH_PATH PG_CATALOG PG_TEMP AS",
             "CREATE TRIGGER MCP_TOKENS_CREATED_NOT_FUTURE BEFORE INSERT ON MCP_TOKENS FOR EACH ROW EXECUTE FUNCTION MCP_TOKENS_CREATED_NOT_FUTURE",
+            "DO",
         ],
         "0006 has exactly the statements it was reviewed with, in this order (a new statement is a new review)"
     );
@@ -4227,6 +4229,60 @@ fn migration_0006_is_expand_only() {
     assert!(
         text.contains("ERRCODE = '23514'"),
         "check_violation, as the tests expect"
+    );
+}
+
+/// The order inside `0006`, which is what closes the race between the scan and the trigger. The scan for a row that is already
+/// there runs only after the trigger exists: the trigger takes a lock that holds off every writer until the migration's
+/// transaction ends, so the scan then sees every row that was committed, and a later INSERT meets the trigger. Run the other way
+/// round, an INSERT by `lanekeeper_app` that commits between the scan and `CREATE TRIGGER` escapes both. The role guard stays
+/// first, so a wrong role creates nothing. The scan still fails with 23514 and says why.
+#[test]
+fn migration_0006_scans_for_bad_rows_after_the_trigger_exists() {
+    let sql = migration_file(MIGRATION_0006);
+    let code = code_lines(&sql).join("\n");
+    let once = |needle: &str| -> usize {
+        let hits: Vec<usize> = code.match_indices(needle).map(|(i, _)| i).collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "0006 holds `{needle}` exactly once, in code and not in a comment"
+        );
+        hits[0]
+    };
+    let role_guard = once("current_user <> 'lanekeeper_migrator'");
+    let function = once("CREATE FUNCTION mcp_tokens_created_not_future()");
+    let trigger = once("CREATE TRIGGER mcp_tokens_created_not_future BEFORE INSERT ON mcp_tokens");
+    let scan = once("FROM mcp_tokens WHERE created_at > now() + interval '1 minute'");
+    assert!(
+        role_guard < function && function < trigger,
+        "the role guard comes first, then the function, then the trigger"
+    );
+    assert!(
+        trigger < scan,
+        "the scan for a row already there comes after CREATE TRIGGER, not before it: a write that commits between them would \
+         escape both"
+    );
+    // The scan is a block of its own that starts after the trigger statement, and it is the last thing in the file.
+    let after_trigger = code[trigger..scan]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        after_trigger.contains("DO $$"),
+        "the scan is a DO block that opens after CREATE TRIGGER"
+    );
+    let block = &code[scan..];
+    let end = block.find("$$").expect("the scan block is closed");
+    let (block, tail) = (&block[..end], &block[end + 2..]);
+    assert!(
+        block.contains("RAISE EXCEPTION 'mcp_tokens has a row whose created_at is in the future; look at it before migrating'")
+            && block.contains("ERRCODE = '23514'"),
+        "the scan fails loudly: 23514 and the same message"
+    );
+    assert!(
+        tail.trim() == ";",
+        "nothing follows the scan: no statement sits between the check and the commit that could write a row"
     );
 }
 
@@ -4537,6 +4593,15 @@ async fn migration_0006_closes_the_gap_in_0005_and_refuses_a_bad_row() {
     .await
     .unwrap();
     assert_eq!(triggers, 0, "the failed migration left no trigger behind");
+    let functions: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM pg_proc WHERE proname = 'mcp_tokens_created_not_future'")
+            .fetch_one(&mut owner)
+            .await
+            .unwrap();
+    assert_eq!(
+        functions, 0,
+        "nor a function: the trigger exists before the scan runs, so the failure must roll both back"
+    );
 
     // A person looks at the row and removes it (the owner may; the app may not), and then 0006 applies.
     sqlx::query("DELETE FROM mcp_tokens WHERE id = $1")
