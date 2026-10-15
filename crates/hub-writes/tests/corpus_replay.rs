@@ -87,6 +87,16 @@ fn corpus_replay_writes_preview_id() {
 }
 
 #[test]
+fn corpus_replay_writes_github_token() {
+    replay("writes_github_token");
+}
+
+#[test]
+fn corpus_replay_writes_github_responses() {
+    replay("writes_github_responses");
+}
+
+#[test]
 fn every_target_has_a_fuzz_binary_and_a_corpus() {
     let manifest = fs::read_to_string(fuzz_dir().join("Cargo.toml")).unwrap();
     for (name, _, _) in invariants::TARGETS {
@@ -420,6 +430,150 @@ fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
     add(t, "rejected_not_base64", b"not-a-token!!".to_vec());
     add(t, "rejected_short", b"AQAAAABq".to_vec());
     add(t, "rejected_non_utf8", vec![0xff, 0xfe, 0xfd]);
+
+    // ---- writes_github_token. Made-up tokens: the right shape and no account behind them.
+    let t = "writes_github_token";
+    let fine = format!("github_pat_11SEED{}", "Ab1_".repeat(15));
+    let body = |token: &str| json(json!({ "token": token }));
+    add(t, "accepted_fine_grained_token", body(&fine));
+    add(
+        t,
+        "accepted_token_at_512_bytes",
+        body(&format!("github_pat_{}", "a".repeat(512 - 11))),
+    );
+    add(
+        t,
+        "accepted_classic_token_body_is_read_and_judged_later",
+        body("ghp_0123456789abcdefghijklmnopqrstuvwxyz"),
+    );
+    add(
+        t,
+        "accepted_token_with_escapes",
+        b"{\"token\":\"github_pat_\\u0031\\u0031abcdefghij0123456789ABCDEF\"}".to_vec(),
+    );
+    add(t, "rejected_empty_body", Vec::new());
+    add(t, "rejected_empty_token", body(""));
+    add(
+        t,
+        "rejected_token_over_512_bytes",
+        body(&format!("github_pat_{}", "a".repeat(512))),
+    );
+    add(
+        t,
+        "rejected_unknown_field",
+        json(json!({ "token": fine, "extra": 1 })),
+    );
+    add(t, "rejected_missing_token", json(json!({})));
+    add(t, "rejected_token_is_a_number", json(json!({ "token": 1 })));
+    add(t, "rejected_array", b"[\"github_pat_x\"]".to_vec());
+    add(
+        t,
+        "rejected_broken_json",
+        format!("{{\"token\": \"{fine}").into_bytes(),
+    );
+    add(
+        t,
+        "rejected_raw_fine_grained_token_text",
+        fine.clone().into_bytes(),
+    );
+    add(
+        t,
+        "rejected_raw_classic_token_text",
+        b"ghp_0123456789abcdefghijklmnopqrstuvwxyz".to_vec(),
+    );
+    add(
+        t,
+        "rejected_raw_forty_hex_classic_token",
+        b"0123456789abcdef0123456789abcdef01234567".to_vec(),
+    );
+    add(t, "rejected_non_utf8", vec![0xff, 0xfe, b'{', 0x80]);
+
+    // ---- writes_github_responses
+    let t = "writes_github_responses";
+    add(
+        t,
+        "accepted_user",
+        json(json!({ "login": "octocat", "id": 1, "plan": { "name": "free" } })),
+    );
+    add(
+        t,
+        "accepted_user_with_capitals_and_hyphens",
+        json(json!({ "login": "Mona-Lisa-2" })),
+    );
+    add(
+        t,
+        "accepted_repository_with_push",
+        json(json!({ "name": "r", "permissions": { "admin": false, "push": true, "pull": true } })),
+    );
+    add(
+        t,
+        "accepted_repository_without_push",
+        json(json!({ "permissions": { "push": false } })),
+    );
+    add(
+        t,
+        "accepted_repository_without_permissions",
+        json(json!({ "name": "r" })),
+    );
+    add(t, "accepted_expiry_header", b"2026-11-20 12:00:00 UTC".to_vec());
+    add(
+        t,
+        "accepted_expiry_header_with_spaces_around",
+        b" 2028-02-29 23:59:59 UTC ".to_vec(),
+    );
+    add(t, "rejected_empty", Vec::new());
+    add(t, "rejected_not_json", b"<html>Bad gateway</html>".to_vec());
+    add(t, "rejected_array", b"[]".to_vec());
+    // A bad login, and a bad push flag beside it, so that neither reader takes the answer.
+    let bad_flag = json!({ "push": 1 });
+    add(
+        t,
+        "rejected_login_is_a_number",
+        json(json!({ "login": 1, "permissions": bad_flag })),
+    );
+    add(
+        t,
+        "rejected_login_with_a_space",
+        json(json!({ "login": "octo cat", "permissions": bad_flag })),
+    );
+    add(
+        t,
+        "rejected_login_with_a_leading_hyphen",
+        json(json!({ "login": "-octocat", "permissions": bad_flag })),
+    );
+    add(
+        t,
+        "rejected_login_too_long",
+        json(json!({ "login": "a".repeat(40), "permissions": bad_flag })),
+    );
+    add(t, "rejected_login_in_an_array", b"[\"octocat\"]".to_vec());
+    add(
+        t,
+        "rejected_push_flag_is_text",
+        json(json!({ "permissions": { "push": "true" } })),
+    );
+    add(
+        t,
+        "rejected_expiry_in_another_zone",
+        b"2026-11-20 12:00:00 PST".to_vec(),
+    );
+    add(
+        t,
+        "rejected_expiry_on_a_day_that_is_not",
+        b"2027-02-29 00:00:00 UTC".to_vec(),
+    );
+    add(
+        t,
+        "rejected_expiry_in_the_year_1999",
+        b"1999-12-31 23:59:59 UTC".to_vec(),
+    );
+    add(t, "rejected_non_utf8", vec![0xff, 0xfe, 0x00]);
+    // Found by the fuzzer: a good login, and bytes that are not text in a field nobody reads.
+    add(
+        t,
+        "rejected_login_with_invalid_utf8_in_a_skipped_field",
+        b"{\"id\":1,\"login\":\"octocat\",\"plan\":{\"name\":\"fr\x9b\xa2\"}}".to_vec(),
+    );
     let _ = ContentHash::from_bytes([0; 32]);
     out
 }

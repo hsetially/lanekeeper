@@ -7,13 +7,14 @@
 use bytes::Bytes;
 use domain::{
     ChangeEol, ContentHash, Cursor, DeleteRequest, EditRequest, Expected, NfsPath, Page, PreviewChange,
-    PreviewId, PreviewRequest, ProposalId, ProposalStatus, RestartRequest, RevertRequest, ServiceRef,
+    PreviewId, PreviewRequest, ProposalId, ProposalStatus, RestartRequest, RevertRequest, Secret, ServiceRef,
     ShortText, SwimlaneId, UploadRequest,
 };
 use serde::Deserialize;
 
 use super::multipart::{Form, MultipartError, parse};
 use crate::ProposalQuery;
+use crate::github::MAX_TOKEN_LEN;
 
 /// Why a request was refused before the service saw it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -301,4 +302,28 @@ pub fn preview_request(
         path: path(&form)?,
         change,
     })
+}
+
+// ------------------------------------------------------------------------------------------------------- the GitHub token
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TokenBody {
+    token: Secret<String>,
+}
+
+/// The body of `PUT /me/github-token`: `{"token": text}`, one to 512 bytes. It is read straight into a [`Secret`], so the text is
+/// redacted if anything prints it and zeroized when it is dropped. Whether it has the shape of a token is the vault's judgement
+/// (it can tell a classic token from a fine-grained one and the answer cites the policy); this only reads the request.
+pub fn github_token_request(body: &[u8]) -> Read<Secret<String>> {
+    // Not `["token"]`: serde would read an array as the struct, and the contract says an object.
+    if !crate::github::api::is_object(body) {
+        return Err(Refusal::BadRequest);
+    }
+    let body: TokenBody = serde_json::from_slice(body).map_err(|_| Refusal::BadRequest)?;
+    let len = body.token.expose().len();
+    if len == 0 || len > MAX_TOKEN_LEN {
+        return Err(Refusal::BadRequest);
+    }
+    Ok(body.token)
 }

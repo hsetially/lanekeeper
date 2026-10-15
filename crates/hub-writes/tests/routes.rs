@@ -12,6 +12,7 @@
 mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -28,7 +29,9 @@ use domain::{
 use http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt;
 use hub_platform::{FakeSessionAuth, GuardedRouter, RouteSpec, TEST_USER_HEADER};
+use hub_writes::github::TokenShapeError;
 use hub_writes::routes::{MAX_EDIT_BODY, WRITE_ROUTES, WriteState, mount};
+use hub_writes::vault::{PolicyRepos, StoredToken, TokenDesk, TokenError, VaultDeps};
 use hub_writes::{ProposalDesk, ProposalQuery, ProposalView, RejectResult};
 use ports::conformance::route_guard::{
     Allowances, SpecOperation, assert_route_table, spec_operations_from_openapi,
@@ -180,6 +183,81 @@ impl ScriptedDesk {
     }
 }
 
+/// What the routes asked of the token desk.
+#[derive(Debug, Clone)]
+enum TokenCall {
+    Put(String, WriteCtx),
+    Delete(WriteCtx),
+}
+
+/// A token desk that answers what it is told and remembers what it was asked.
+#[derive(Default)]
+struct ScriptedTokens {
+    calls: Mutex<Vec<TokenCall>>,
+    put: Mutex<Option<Result<StoredToken, TokenError>>>,
+    delete: Mutex<Option<Result<(), TokenError>>>,
+}
+
+impl std::fmt::Debug for ScriptedTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScriptedTokens").finish_non_exhaustive()
+    }
+}
+
+impl ScriptedTokens {
+    fn calls(&self) -> Vec<TokenCall> {
+        self.calls.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn says_put(&self, reply: Result<StoredToken, TokenError>) {
+        *self.put.lock().unwrap_or_else(PoisonError::into_inner) = Some(reply);
+    }
+
+    fn says_delete(&self, reply: Result<(), TokenError>) {
+        *self.delete.lock().unwrap_or_else(PoisonError::into_inner) = Some(reply);
+    }
+}
+
+fn sample_stored() -> StoredToken {
+    StoredToken {
+        github_login: "octocat".to_owned(),
+        verified_at: Timestamp::from_unix_millis(1_791_936_000_000),
+        scopes: vec![
+            "push:acme/configuration-base-saas".to_owned(),
+            "push:acme/csp-tenant-data".to_owned(),
+        ],
+        expires_at: Some(Timestamp::from_unix_millis(1_793_000_000_000)),
+        expires_soon: true,
+    }
+}
+
+#[async_trait]
+impl TokenDesk for ScriptedTokens {
+    async fn put_token(
+        &self,
+        ctx: &WriteCtx,
+        token: domain::Secret<String>,
+    ) -> Result<StoredToken, TokenError> {
+        self.calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(TokenCall::Put(token.expose().clone(), ctx.clone()));
+        self.put
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .unwrap_or_else(|| Ok(sample_stored()))
+    }
+
+    async fn delete_token(&self, ctx: &WriteCtx) -> Result<(), TokenError> {
+        self.calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(TokenCall::Delete(ctx.clone()));
+        (*self.delete.lock().unwrap_or_else(PoisonError::into_inner)).unwrap_or(Ok(()))
+    }
+}
+
 fn sample_view(id: i64) -> ProposalView {
     ProposalView {
         id,
@@ -271,11 +349,28 @@ fn app_with(service: Arc<dyn WriteService>) -> (Router, Vec<RouteSpec>) {
 }
 
 fn app_with_desk(service: Arc<dyn WriteService>, desk: Arc<dyn ProposalDesk>) -> (Router, Vec<RouteSpec>) {
-    let state = WriteState::new(service, desk, 2 * 1024 * 1024);
+    app_with_all(service, desk, Arc::new(ScriptedTokens::default()))
+}
+
+fn app_with_all(
+    service: Arc<dyn WriteService>,
+    desk: Arc<dyn ProposalDesk>,
+    tokens: Arc<dyn TokenDesk>,
+) -> (Router, Vec<RouteSpec>) {
+    let state = WriteState::new(service, desk, tokens, 2 * 1024 * 1024);
     let (router, specs) = mount(GuardedRouter::new(auth(), None), state)
         .into_parts()
         .unwrap();
     (router, specs)
+}
+
+fn token_app(tokens: &Arc<ScriptedTokens>) -> Router {
+    app_with_all(
+        Arc::new(Scripted::default()),
+        Arc::new(ScriptedDesk::default()),
+        tokens.clone(),
+    )
+    .0
 }
 
 fn app(service: &Arc<Scripted>) -> Router {
@@ -431,10 +526,12 @@ fn write_operations() -> BTreeSet<(String, String)> {
     let mut out = BTreeSet::new();
     for (path, item) in doc.paths {
         for (method, op) in item {
-            let tagged = op
-                .get("tags")
-                .and_then(Value::as_array)
-                .is_some_and(|tags| tags.iter().any(|t| t == "writes"));
+            // The token routes are tagged `me` in the spec (they are the signed-in user's), and are this crate's.
+            let tagged = path == "/api/v1/me/github-token"
+                || op
+                    .get("tags")
+                    .and_then(Value::as_array)
+                    .is_some_and(|tags| tags.iter().any(|t| t == "writes"));
             if tagged {
                 out.insert((method.to_uppercase(), path.clone()));
             }
@@ -1198,6 +1295,7 @@ async fn the_routes_drive_the_real_hub_end_to_end() {
     let state = WriteState::new(
         Arc::new(rig.hub.clone()),
         Arc::new(rig.hub.clone()),
+        Arc::new(ScriptedTokens::default()),
         rig.hub.max_content_bytes(),
     );
     let (router, _) = mount(GuardedRouter::new(auth(), None), state)
@@ -1776,6 +1874,7 @@ async fn the_proposal_routes_drive_the_real_hub_end_to_end() {
     let state = WriteState::new(
         Arc::new(rig.hub.clone()),
         Arc::new(rig.hub.clone()),
+        Arc::new(ScriptedTokens::default()),
         rig.hub.max_content_bytes(),
     );
     let (router, _) = mount(GuardedRouter::new(auth(), None), state)
@@ -1905,4 +2004,511 @@ async fn the_proposal_routes_drive_the_real_hub_end_to_end() {
     );
     assert_eq!(rejected.json()["status"], "rejected");
     assert_eq!(rig.nfs_of(&s, "a.yml").as_deref(), Some(&b"x: 2\n"[..]));
+}
+
+// ------------------------------------------------------------------------------------------------------- the GitHub token
+
+const ME_TOKEN: &str = "/api/v1/me/github-token";
+
+/// A well-formed fine-grained token. Not a real one.
+const TOKEN: &str = "github_pat_11ROUTETEST0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOP";
+
+fn put_token(token: &str) -> Req {
+    Req::new(Method::PUT, ME_TOKEN).json(&json!({ "token": token }))
+}
+
+#[tokio::test]
+async fn putting_a_token_hands_it_to_the_vault_and_answers_without_it() {
+    let tokens = Arc::new(ScriptedTokens::default());
+    let reply = send(&token_app(&tokens), put_token(TOKEN)).await;
+    assert_eq!(
+        reply.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&reply.body)
+    );
+    // Exactly the fields the contract names: the expiry stays inside (the spec closes the object).
+    assert_eq!(
+        reply.json(),
+        json!({
+            "github_login": "octocat",
+            "verified_at": Timestamp::from_unix_millis(1_791_936_000_000),
+            "scopes": ["push:acme/configuration-base-saas", "push:acme/csp-tenant-data"],
+        })
+    );
+    assert_eq!(reply.headers.get(header::CACHE_CONTROL).unwrap(), "no-store");
+    assert!(!String::from_utf8_lossy(&reply.body).contains("github_pat_"));
+    let calls = tokens.calls();
+    assert_eq!(calls.len(), 1);
+    let TokenCall::Put(token, ctx) = &calls[0] else {
+        panic!("{calls:?}")
+    };
+    assert_eq!(token, TOKEN);
+    assert_eq!(ctx.idempotency_key.as_str(), "key-1");
+    assert_eq!(ctx.user.role, Some(Role::Editor));
+    assert_eq!(ctx.via, domain::Via::Ui);
+}
+
+#[tokio::test]
+async fn deleting_a_token_is_204_with_no_body() {
+    let tokens = Arc::new(ScriptedTokens::default());
+    let reply = send(&token_app(&tokens), Req::new(Method::DELETE, ME_TOKEN)).await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert!(reply.body.is_empty());
+    assert!(
+        matches!(tokens.calls().as_slice(), [TokenCall::Delete(c)] if c.idempotency_key.as_str() == "key-1")
+    );
+}
+
+#[tokio::test]
+async fn classic_token_is_rejected_with_the_policy_message() {
+    let tokens = Arc::new(ScriptedTokens::default());
+    tokens.says_put(Err(TokenError::Shape(TokenShapeError::Classic)));
+    let classic = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
+    let reply = send(&token_app(&tokens), put_token(classic)).await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let body = reply.json();
+    assert_eq!(body["code"], "classic_token");
+    let detail = body["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("fine-grained") && detail.contains("policy"),
+        "{detail}"
+    );
+    assert!(!String::from_utf8_lossy(&reply.body).contains("ghp_"));
+}
+
+#[tokio::test]
+async fn every_token_error_is_a_fixed_problem() {
+    let cases: [(TokenError, StatusCode, &str); 13] = [
+        (TokenError::Forbidden, StatusCode::FORBIDDEN, "forbidden"),
+        (
+            TokenError::IdempotencyConflict,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "idempotency_conflict",
+        ),
+        (
+            TokenError::Shape(TokenShapeError::Empty),
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+        ),
+        (
+            TokenError::Shape(TokenShapeError::TooLong),
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+        ),
+        (
+            TokenError::Shape(TokenShapeError::Classic),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "classic_token",
+        ),
+        (
+            TokenError::Shape(TokenShapeError::NotFineGrained),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "not_fine_grained_token",
+        ),
+        (
+            TokenError::Shape(TokenShapeError::BadChars),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "not_fine_grained_token",
+        ),
+        (
+            TokenError::Rejected,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "token_rejected",
+        ),
+        (
+            TokenError::NoPushAccess {
+                base: true,
+                tenant: false,
+            },
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "token_missing_access",
+        ),
+        (
+            TokenError::LoginMismatch,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "github_account_mismatch",
+        ),
+        (
+            TokenError::GithubUnavailable,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+        ),
+        (
+            TokenError::Unavailable,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+        ),
+        (TokenError::NoToken, StatusCode::NOT_FOUND, "not_found"),
+    ];
+    for (error, status, code) in cases {
+        let tokens = Arc::new(ScriptedTokens::default());
+        tokens.says_put(Err(error));
+        let reply = send(&token_app(&tokens), put_token(TOKEN)).await;
+        assert_eq!(reply.status, status, "{error:?}");
+        assert_eq!(reply.json()["code"], code, "{error:?}");
+        assert_eq!(
+            reply.headers.get(header::CONTENT_TYPE).unwrap(),
+            "application/problem+json"
+        );
+        // The policy text names the prefix; it must not carry the token that was sent.
+        assert!(
+            !String::from_utf8_lossy(&reply.body).contains(&TOKEN["github_pat_".len()..]),
+            "{error:?}"
+        );
+        if status == StatusCode::SERVICE_UNAVAILABLE {
+            assert!(reply.headers.contains_key(header::RETRY_AFTER), "{error:?}");
+        }
+    }
+    // The missing access says which repository is the problem, and nothing else.
+    let tokens = Arc::new(ScriptedTokens::default());
+    tokens.says_put(Err(TokenError::NoPushAccess {
+        base: true,
+        tenant: false,
+    }));
+    let body = send(&token_app(&tokens), put_token(TOKEN)).await.json();
+    assert_eq!(
+        (body["base"].clone(), body["tenant"].clone()),
+        (json!(true), json!(false))
+    );
+    // And deleting maps the same way.
+    let tokens = Arc::new(ScriptedTokens::default());
+    tokens.says_delete(Err(TokenError::Forbidden));
+    assert_eq!(
+        send(&token_app(&tokens), Req::new(Method::DELETE, ME_TOKEN))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+}
+
+/// A request that is not a token request is refused before the vault sees it, and the refusal does not repeat what was sent.
+#[tokio::test]
+async fn bad_token_requests_never_reach_the_vault_and_are_not_echoed() {
+    let marker = "echo-marker-3c9e";
+    let long = "a".repeat(513);
+    let cases: Vec<(&str, Req, StatusCode)> = vec![
+        ("no key", put_token(TOKEN).key(None), StatusCode::BAD_REQUEST),
+        (
+            "bad key",
+            put_token(TOKEN).key(Some("a b")),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "not json",
+            Req::new(Method::PUT, ME_TOKEN).raw("text/plain", TOKEN.as_bytes().to_vec()),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        ),
+        (
+            "broken json",
+            Req::new(Method::PUT, ME_TOKEN).raw(
+                "application/json",
+                format!("{{\"token\": \"{marker}").into_bytes(),
+            ),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "missing field",
+            Req::new(Method::PUT, ME_TOKEN).json(&json!({})),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "unknown field",
+            Req::new(Method::PUT, ME_TOKEN).json(&json!({ "token": TOKEN, "extra": marker })),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "token is a number",
+            Req::new(Method::PUT, ME_TOKEN).json(&json!({ "token": 1 })),
+            StatusCode::BAD_REQUEST,
+        ),
+        ("empty token", put_token(""), StatusCode::BAD_REQUEST),
+        ("token over 512", put_token(&long), StatusCode::BAD_REQUEST),
+        (
+            "huge body",
+            Req::new(Method::PUT, ME_TOKEN).raw("application/json", vec![b' '; 64 * 1024]),
+            StatusCode::PAYLOAD_TOO_LARGE,
+        ),
+        (
+            "delete without a key",
+            Req::new(Method::DELETE, ME_TOKEN).key(None),
+            StatusCode::BAD_REQUEST,
+        ),
+    ];
+    for (what, req, status) in cases {
+        let tokens = Arc::new(ScriptedTokens::default());
+        let reply = send(&token_app(&tokens), req).await;
+        assert_eq!(
+            reply.status,
+            status,
+            "{what}: {}",
+            String::from_utf8_lossy(&reply.body)
+        );
+        assert!(tokens.calls().is_empty(), "{what}: the vault was called");
+        let text = String::from_utf8_lossy(&reply.body);
+        assert!(
+            !text.contains(marker) && !text.contains("github_pat_"),
+            "{what}: the request came back: {text}"
+        );
+    }
+}
+
+/// The token routes are the signed-in user's own: they need an editor, and a refusal comes before the body is read.
+#[tokio::test]
+async fn token_routes_need_an_editor_and_a_session() {
+    let tokens = Arc::new(ScriptedTokens::default());
+    let router = token_app(&tokens);
+    for method in [Method::PUT, Method::DELETE] {
+        for (user, status) in [
+            (Some("viewer"), StatusCode::FORBIDDEN),
+            (Some("pending"), StatusCode::FORBIDDEN),
+            (Some("disabled"), StatusCode::FORBIDDEN),
+            (None, StatusCode::UNAUTHORIZED),
+            (Some("editor"), StatusCode::OK),
+            (Some("operator"), StatusCode::OK),
+            (Some("admin"), StatusCode::OK),
+        ] {
+            let req = if method == Method::PUT {
+                put_token(TOKEN)
+            } else {
+                Req::new(Method::DELETE, ME_TOKEN)
+            }
+            .user(user);
+            let reply = send(&router, req).await;
+            let expected = if status == StatusCode::OK && method == Method::DELETE {
+                StatusCode::NO_CONTENT
+            } else {
+                status
+            };
+            assert_eq!(reply.status, expected, "{method} as {user:?}");
+        }
+    }
+    // Only the three allowed users per method reached the vault.
+    assert_eq!(tokens.calls().len(), 6);
+}
+
+// ------------------------------------------------------------------------------------------- the token leaves no trace
+
+/// A distinctive run inside a token, searched for in everything the system writes. The prefix is left out: the policy text names it.
+fn body_of_token(token: &str) -> &str {
+    &token["github_pat_".len()..]
+}
+
+/// A GitHub that answers by the token it is shown, and whose every error repeats the token back (a hostile or careless server).
+fn echoing_github(tokens: &'static [(&'static str, &'static str, bool)]) -> support::fake_github::Handler {
+    use support::fake_github::Reply;
+    std::sync::Arc::new(move |seen, _| {
+        let bearer = seen
+            .header("authorization")
+            .unwrap_or_default()
+            .trim_start_matches("Bearer ")
+            .to_owned();
+        let echo = format!(r#"{{"message":"Bad credentials {bearer} {}"}}"#, seen.path);
+        let Some((_, login, pushes_tenant)) = tokens.iter().find(|(t, _, _)| *t == bearer) else {
+            return Reply::json(401, &echo);
+        };
+        if *login == "down" {
+            return Reply::json(503, &echo);
+        }
+        if seen.path == "/user" {
+            Reply::json(200, &format!(r#"{{"login":"{login}"}}"#)).with_header(
+                "github-authentication-token-expiration",
+                "2026-10-20 00:00:00 UTC",
+            )
+        } else if seen.path.ends_with("csp-tenant-data") && !pushes_tenant {
+            Reply::json(404, &echo)
+        } else {
+            Reply::json(200, r#"{"permissions":{"push":true}}"#)
+        }
+    })
+}
+
+/// S8, S10, S21: whatever happens to a token, success or any refusal, it is in no log line, no error, no response, no audit event
+/// and no stored row except as the ciphertext. The GitHub side is the real client against a server that echoes tokens back.
+#[tokio::test]
+async fn token_never_appears_in_logs_errors_audit_or_responses() {
+    const GOOD: &str = "github_pat_11LEAKGOOD0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMN";
+    const GOOD2: &str = "github_pat_11LEAKGOOD2_9876543210zyxwvutsrqponmlkjihgfedcba_ABCDEFGHIJKLM";
+    const UNKNOWN: &str = "github_pat_11LEAKUNKNOWN0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJK";
+    const NO_TENANT: &str = "github_pat_11LEAKNOTENANT0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJ";
+    const OTHER: &str = "github_pat_11LEAKOTHERLOGIN0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHI";
+    const DOWN: &str = "github_pat_11LEAKGITHUBDOWN0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHI";
+    const CLASSIC: &str = "ghp_LEAKCLASSIC0123456789abcdefghijklmnopqr";
+    const BROKEN: &str = "github_pat_11LEAKBROKENJSON0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGH";
+    const AUDITFAIL: &str = "github_pat_11LEAKAUDITFAIL0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHI";
+    static ACCOUNTS: [(&str, &str, bool); 6] = [
+        (GOOD, "octocat", true),
+        (GOOD2, "octocat", true),
+        (NO_TENANT, "octocat", false),
+        (OTHER, "someone-else", true),
+        (DOWN, "down", true),
+        (AUDITFAIL, "octocat", true),
+    ];
+
+    let (capture, _guard) = support::log_capture::install();
+    let db = db!();
+    let rig = support::rig::Rig::new(db).await;
+    let mut editor = ports::conformance::sample::active(1, Role::Editor);
+    editor.id = hub_platform::session_auth::user_id("editor");
+    rig.add_user(&editor).await;
+
+    let server = support::fake_github::LocalGithub::start(echoing_github(&ACCOUNTS)).await;
+    let client = hub_writes::github::GithubClient::for_tests(
+        &server.base(),
+        hub_writes::github::GithubClientConfig {
+            attempt_timeout: std::time::Duration::from_millis(500),
+            total_timeout: std::time::Duration::from_secs(5),
+            backoff_base: std::time::Duration::from_millis(1),
+            backoff_cap: std::time::Duration::from_millis(5),
+            ..hub_writes::github::GithubClientConfig::default()
+        },
+    )
+    .unwrap();
+    let vault = Arc::new(rig.hub.token_vault(VaultDeps {
+        kms: Arc::new(ports::fakes::FakeKmsEnvelope::new()),
+        github: Arc::new(client),
+        repos: PolicyRepos {
+            base: hub_writes::github::RepoRef::parse("acme/configuration-base-saas").unwrap(),
+            tenant: hub_writes::github::RepoRef::parse("acme/csp-tenant-data").unwrap(),
+        },
+    }));
+    let state = WriteState::new(
+        Arc::new(Scripted::default()),
+        Arc::new(ScriptedDesk::default()),
+        vault.clone(),
+        2 * 1024 * 1024,
+    );
+    let (router, _) = mount(GuardedRouter::new(auth(), None), state)
+        .into_parts()
+        .unwrap();
+
+    let mut seen_bodies: Vec<String> = Vec::new();
+    let mut statuses = Vec::new();
+    let mut go = |reply: Reply| {
+        let mut text = String::from_utf8_lossy(&reply.body).into_owned();
+        for (n, v) in &reply.headers {
+            let _ = write!(text, "\n{n}: {}", v.to_str().unwrap_or_default());
+        }
+        seen_bodies.push(text);
+        statuses.push(reply.status.as_u16());
+    };
+
+    // Each way a token can go, through the real routes, the real vault and the real client.
+    go(send(&router, put_token(GOOD).key(Some("t-1"))).await); // stored
+    go(send(&router, put_token(GOOD).key(Some("t-1"))).await); // replayed
+    go(send(&router, put_token(GOOD2).key(Some("t-1"))).await); // same key, another token
+    go(send(&router, put_token(CLASSIC).key(Some("t-2"))).await); // policy
+    go(send(&router, put_token(UNKNOWN).key(Some("t-3"))).await); // GitHub says 401 and repeats the token
+    go(send(&router, put_token(NO_TENANT).key(Some("t-4"))).await); // no push to the tenant repository
+    go(send(&router, put_token(OTHER).key(Some("t-5"))).await); // another account than the linked one
+    go(send(&router, put_token(DOWN).key(Some("t-6"))).await); // GitHub 503 repeating the token
+    go(send(
+        &router,
+        Req::new(Method::PUT, ME_TOKEN)
+            .key(Some("t-7"))
+            .raw("application/json", format!(r#"{{"token":"{BROKEN}"#).into_bytes()),
+    )
+    .await); // broken JSON
+    go(send(
+        &router,
+        Req::new(Method::PUT, ME_TOKEN)
+            .key(Some("t-8"))
+            .json(&json!({"token": BROKEN, "x": 1})),
+    )
+    .await); // unknown field
+    rig.audit.fail_next();
+    go(send(&router, put_token(AUDITFAIL).key(Some("t-9"))).await); // the audit log fails after the token was checked
+    go(send(&router, put_token(GOOD2).key(Some("t-10"))).await); // replaced
+    go(send(&router, Req::new(Method::DELETE, ME_TOKEN).key(Some("t-11"))).await);
+    go(send(&router, put_token(GOOD).key(Some("t-12")).user(Some("viewer"))).await); // not allowed
+    assert_eq!(
+        statuses,
+        [
+            200, 200, 422, 422, 422, 422, 422, 503, 400, 400, 503, 200, 204, 403
+        ],
+        "the paths this test means to drive are not the ones it drove: {seen_bodies:?}"
+    );
+
+    // Use it once, inside a request, and drop it.
+    let ctx = {
+        let mut u = editor.clone();
+        u.role = Some(Role::Editor);
+        support::rig::ctx(&u, "use-1")
+    };
+    let _ = send(&router, put_token(GOOD).key(Some("t-13"))).await;
+    let used = vault
+        .with_token(&ctx, |t| -> hub_writes::vault::TokenFuture<'_, usize> {
+            Box::pin(async move { t.expose().len() })
+        })
+        .await
+        .unwrap();
+    assert_eq!(used, GOOD.len());
+
+    let everything = {
+        let mut all = seen_bodies.join("\n");
+        all.push_str(&capture.text());
+        all.push_str(
+            &serde_json::to_string(&rig.chain().await.iter().map(|e| &e.event).collect::<Vec<_>>()).unwrap(),
+        );
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT encode(request_hash, 'hex'), coalesce(convert_from(response_body, 'UTF8'), '') FROM idempotency_keys",
+        )
+        .fetch_all(&rig.pool)
+        .await
+        .unwrap();
+        for (a, b) in rows {
+            all.push_str(&a);
+            all.push_str(&b);
+        }
+        let users: Vec<Option<String>> = sqlx::query_scalar("SELECT github_login FROM users")
+            .fetch_all(&rig.pool)
+            .await
+            .unwrap();
+        let _ = write!(all, "{users:?}");
+        let outbox: Vec<String> = sqlx::query_scalar("SELECT to_jsonb(o)::text FROM outbox o")
+            .fetch_all(&rig.pool)
+            .await
+            .unwrap();
+        all.push_str(&outbox.join("\n"));
+        all
+    };
+    assert!(
+        !everything.is_empty() && capture.text().len() > 100,
+        "nothing was captured: the test would pass for any code"
+    );
+    for token in [
+        GOOD, GOOD2, UNKNOWN, NO_TENANT, OTHER, DOWN, CLASSIC, BROKEN, AUDITFAIL,
+    ] {
+        let needle = body_of_token(token);
+        assert!(
+            !everything.contains(needle),
+            "a token ({}...) reached a log, a response, the audit log or a stored row",
+            &token[..16]
+        );
+        assert!(!everything.contains(token));
+    }
+    // Only the ciphertext is in the table.
+    let sealed: Vec<(Vec<u8>, Vec<u8>)> =
+        sqlx::query_as("SELECT wrapped_dek, ciphertext FROM github_credentials")
+            .fetch_all(&rig.pool)
+            .await
+            .unwrap();
+    for (wrapped, ciphertext) in sealed {
+        for needle in [body_of_token(GOOD), body_of_token(GOOD2)] {
+            assert!(
+                !ciphertext
+                    .windows(12)
+                    .any(|w| needle.as_bytes().windows(12).any(|n| n == w))
+            );
+            assert!(
+                !wrapped
+                    .windows(12)
+                    .any(|w| needle.as_bytes().windows(12).any(|n| n == w))
+            );
+        }
+    }
+    assert!(
+        rig.chain().await.len() >= 3,
+        "the audit events this test depends on were not written"
+    );
 }

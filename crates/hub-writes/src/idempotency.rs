@@ -107,6 +107,19 @@ impl RequestHash {
         b.finish()
     }
 
+    /// The hash of storing a GitHub token: a digest of the token and nothing else. The row keeps 32 bytes that cannot be turned back
+    /// into a token of 80 random characters, and the same key with another token is another request.
+    pub(crate) fn of_put_github_token(token: &domain::Secret<String>) -> Self {
+        let mut b = HashBuilder::new("put_github_token/1");
+        b.field(&Sha256::digest(token.expose().as_bytes()));
+        b.finish()
+    }
+
+    /// The hash of removing the caller's GitHub token: the action alone (the key already names the user).
+    pub(crate) fn of_delete_github_token() -> Self {
+        HashBuilder::new("delete_github_token/1").finish()
+    }
+
     /// The hash of a `restart`: the swimlane and the service.
     pub(crate) fn of_restart(r: &RestartRequest) -> Self {
         let mut b = HashBuilder::new("restart/1");

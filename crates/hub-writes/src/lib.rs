@@ -30,6 +30,7 @@ mod db;
 mod drafts;
 mod error;
 mod fidelity;
+pub mod github;
 mod hex;
 mod idempotency;
 mod ops;
@@ -40,6 +41,7 @@ mod proposals;
 mod reconcile;
 pub mod routes;
 mod service;
+pub mod vault;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{MAX_EXTRA_DENY_GLOBS, PREVIEW_KEY_SECRET, WriteConfig};
@@ -71,5 +73,6 @@ pub fn hot_queries() -> Vec<(&'static str, &'static str)> {
     all.push(("draft_get", drafts::GET));
     all.push(("draft_open_count", drafts::OPEN_COUNT));
     all.push(("draft_expiry", drafts::EXPIRE));
+    all.extend(vault::store_queries());
     all
 }

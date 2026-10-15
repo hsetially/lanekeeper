@@ -9,6 +9,8 @@
 //! |---|---|---|
 //! | `writes_request_json` | bytes read as the JSON body of an edit, a revert, a restart, a draft, an approval and a rejection, and as the lines `path`, `expected`, `preview_id` of a delete and `status`, `swimlane`, `cursor`, `limit` of a list of proposals | reading never panics; an accepted request names a valid path and typed hashes, holds no more content than the input had, and survives a round trip through its canonical JSON (or lines) unchanged |
 //! | `writes_upload_multipart` | a content type, a line end, and a multipart body, read as an upload form and as a preview form | reading never panics; an accepted request has a valid path, a file within the limit, an `Expected` that agrees with its fields, and survives a round trip through a canonical form unchanged |
+//! | `writes_github_token` | bytes read as the body of `PUT /me/github-token`, and the same bytes as the text of a token | reading never panics; an accepted body holds a token of one to 512 bytes and survives a round trip through its canonical JSON unchanged; the shape check accepts only `github_pat_` followed by letters, digits and underscores within 512 bytes, never calls a fine-grained prefix classic, and its errors are the fixed words, none of which holds the input |
+//! | `writes_github_responses` | bytes read as the answer of `GET /user`, as the answer of `GET /repos/{o}/{r}`, and as the value of the expiry header | reading never panics; an accepted login is valid and is the one an independent JSON read finds; `push` is `true` only when an independent read finds exactly `permissions.push == true`; every error is `Unexpected`; an accepted expiry lies in 2000 to 2200 and survives being written out and read again |
 //! | `writes_preview_id` | text read as a preview id presented with a fixed request at a fixed time | checking never panics; an id is accepted only if it is exactly the one the service issues for that request at the second it names (so each request has one id for each second), and that second is within the ten minutes before now |
 
 #![allow(
@@ -22,9 +24,15 @@
 use bytes::Bytes;
 use domain::{Expected, PreviewChange, SwimlaneId};
 use hub_writes::fuzz_hooks;
+use hub_writes::github::api::{
+    GithubError, MAX_BODY_BYTES, parse_push_permission, parse_user, status_error, token_expiry,
+};
+use hub_writes::github::types::{
+    FINE_GRAINED_PREFIX, GithubLogin, MAX_TOKEN_LEN, TokenShapeError, check_token_shape,
+};
 use hub_writes::routes::wire::{
-    approve_comment, delete_request, draft_request, edit_request, preview_request, proposal_id,
-    proposal_query, reject_reason, restart_request, revert_request, upload_request,
+    approve_comment, delete_request, draft_request, edit_request, github_token_request, preview_request,
+    proposal_id, proposal_query, reject_reason, restart_request, revert_request, upload_request,
 };
 use serde_json::json;
 
@@ -35,7 +43,7 @@ pub type Check = fn(&[u8]) -> Result<(), String>;
 pub type Accepts = fn(&[u8]) -> bool;
 
 /// Every fuzz target: its name (also the file name in `fuzz_targets` and the corpus directory), its check and its reader.
-pub const TARGETS: [(&str, Check, Accepts); 3] = [
+pub const TARGETS: [(&str, Check, Accepts); 5] = [
     ("writes_request_json", writes_request_json, request_json_accepted),
     (
         "writes_upload_multipart",
@@ -43,6 +51,12 @@ pub const TARGETS: [(&str, Check, Accepts); 3] = [
         upload_multipart_accepted,
     ),
     ("writes_preview_id", writes_preview_id, preview_id_accepted),
+    ("writes_github_token", writes_github_token, github_token_accepted),
+    (
+        "writes_github_responses",
+        writes_github_responses,
+        github_responses_accepted,
+    ),
 ];
 
 /// Every seed corpus must hold at least this many inputs, so deleting the seeds cannot go unnoticed.
@@ -387,4 +401,186 @@ pub fn writes_preview_id(data: &[u8]) -> Result<(), String> {
 /// The token the service issues for the fixed request at `now_ms`, for the generator of the seeds.
 pub fn fuzz_hooks_issue(now_ms: i64) -> String {
     fuzz_hooks::issue_token(PREVIEW_KEY, now_ms).unwrap()
+}
+
+// ------------------------------------------------------------------------------------------------------- the GitHub token
+
+pub fn github_token_accepted(data: &[u8]) -> bool {
+    github_token_request(data).is_ok()
+}
+
+/// The words a refused shape is allowed to say: fixed, none of them holds the input.
+const SHAPE_WORDS: [&str; 5] = [
+    "the token is empty",
+    "the token is too long",
+    "classic tokens are not accepted",
+    "the token is not a fine-grained token",
+    "the token holds a character a token cannot hold",
+];
+
+fn shape_checks(text: &str) -> Result<(), String> {
+    match check_token_shape(text) {
+        Ok(()) => {
+            ensure(text.starts_with(FINE_GRAINED_PREFIX), || {
+                "a token without the fine-grained prefix is accepted".into()
+            })?;
+            ensure(text.len() <= MAX_TOKEN_LEN, || {
+                "a token over the limit is accepted".into()
+            })?;
+            ensure(
+                text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+                || "a token with a character outside letters, digits and underscore is accepted".into(),
+            )?;
+            ensure(text.len() >= FINE_GRAINED_PREFIX.len() + 20, || {
+                "a token too short to be one is accepted".into()
+            })?;
+        }
+        Err(e) => {
+            let shown = format!("{e}");
+            ensure(SHAPE_WORDS.contains(&shown.as_str()), || {
+                "a shape error says something other than its fixed words".into()
+            })?;
+            // A token with the fine-grained prefix is never told it is a classic one, and a classic one is never accepted.
+            if text.starts_with(FINE_GRAINED_PREFIX) {
+                ensure(e != TokenShapeError::Classic, || {
+                    "a fine-grained prefix is called classic".into()
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn writes_github_token(data: &[u8]) -> Result<(), String> {
+    // The body of the request.
+    if let Ok(token) = github_token_request(data) {
+        let text = token.expose();
+        ensure(!text.is_empty() && text.len() <= MAX_TOKEN_LEN, || {
+            "an accepted body holds a token outside one to 512 bytes".into()
+        })?;
+        ensure(text.len() <= data.len(), || {
+            "an accepted token is longer than the body".into()
+        })?;
+        let canonical = serde_json::to_vec(&json!({ "token": text })).map_err(|e| e.to_string())?;
+        let again = github_token_request(&canonical)
+            .map_err(|_| "an accepted body is refused when written canonically".to_owned())?;
+        ensure(again.expose() == text, || {
+            "a token changes in a round trip".into()
+        })?;
+        shape_checks(text)?;
+    }
+    // The same bytes as the text of a token.
+    shape_checks(&String::from_utf8_lossy(data))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------------- GitHub's answers
+
+pub fn github_responses_accepted(data: &[u8]) -> bool {
+    parse_user(data).is_ok() || parse_push_permission(data).is_ok() || token_expiry(Some(data)).is_some()
+}
+
+/// Days since 1970-01-01 to a civil date: the inverse of the parser's own conversion, written again here (Hinnant), so the check
+/// does not trust the code it checks.
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+pub fn writes_github_responses(data: &[u8]) -> Result<(), String> {
+    let independent: Option<serde_json::Value> = serde_json::from_slice(data).ok();
+
+    match parse_user(data) {
+        Ok(login) => {
+            ensure(data.len() <= MAX_BODY_BYTES, || {
+                "a body over the cap is read".into()
+            })?;
+            ensure(GithubLogin::parse(login.as_str()).as_ref() == Ok(&login), || {
+                "an accepted login is not a valid one".into()
+            })?;
+            ensure(login.as_str().len() <= 39, || {
+                "an accepted login is too long".into()
+            })?;
+            let found = independent
+                .as_ref()
+                .and_then(|v| v.get("login"))
+                .and_then(serde_json::Value::as_str);
+            ensure(found == Some(login.as_str()), || {
+                "the login is not the one an independent read finds".into()
+            })?;
+        }
+        Err(e) => ensure(e == GithubError::Unexpected, || {
+            "a login error is not 'unexpected'".into()
+        })?,
+    }
+
+    match parse_push_permission(data) {
+        Ok(push) => {
+            ensure(data.len() <= MAX_BODY_BYTES, || {
+                "a body over the cap is read".into()
+            })?;
+            let found = independent
+                .as_ref()
+                .and_then(|v| v.get("permissions"))
+                .and_then(|p| p.get("push"))
+                .and_then(serde_json::Value::as_bool);
+            ensure(push == (found == Some(true)), || {
+                "push is not what an independent read finds".into()
+            })?;
+        }
+        Err(e) => ensure(e == GithubError::Unexpected, || {
+            "a repository error is not 'unexpected'".into()
+        })?,
+    }
+
+    if let Some(at) = token_expiry(Some(data)) {
+        let ms = at.unix_millis();
+        ensure((946_684_800_000..=7_258_118_400_000).contains(&ms), || {
+            "an accepted expiry is outside 2000 to 2200".into()
+        })?;
+        ensure(ms % 1_000 == 0, || {
+            "an accepted expiry has a fraction of a second".into()
+        })?;
+        let secs = ms / 1_000;
+        let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
+        let rem = secs.rem_euclid(86_400);
+        let written = format!(
+            "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02} UTC",
+            rem / 3_600,
+            rem % 3_600 / 60,
+            rem % 60
+        );
+        ensure(
+            token_expiry(Some(written.as_bytes())).map(domain::Timestamp::unix_millis) == Some(ms),
+            || "an accepted expiry changes when written out and read again".into(),
+        )?;
+        // And the text it was read from was that time, with nothing else around it but spaces.
+        let text = std::str::from_utf8(data).map_err(|_| "a non-text expiry is accepted".to_owned())?;
+        ensure(text.trim() == written, || {
+            "the expiry text is not the time it names".into()
+        })?;
+    }
+
+    // The status table is total: any status and flag give an answer, and only a 200 gives none.
+    for chunk in data.chunks(3).take(64) {
+        let status = u16::from(chunk[0]) << 8 | u16::from(*chunk.get(1).unwrap_or(&0));
+        let limited = chunk.get(2).is_some_and(|b| b & 1 == 1);
+        let got = status_error(status, limited);
+        ensure(got.is_none() == (status == 200), || {
+            "only a 200 is a success".into()
+        })?;
+        ensure(
+            (got == Some(GithubError::Unavailable)) == (500..=599).contains(&status),
+            || "only a 5xx is unavailable".into(),
+        )?;
+    }
+    Ok(())
 }

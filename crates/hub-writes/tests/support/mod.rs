@@ -11,6 +11,7 @@
 )]
 
 pub mod fake_agent;
+pub mod fake_github;
 pub mod live_registry;
 pub mod log_capture;
 pub mod pg;

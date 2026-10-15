@@ -14,6 +14,9 @@ default = []
 # Hooks for the fuzz targets (S22): the preview token for one fixed request, so the target can ask what the service accepts. Off in
 # every build of the hub; the crate's own tests and its fuzz crate switch it on.
 fuzz-hooks = []
+# Test doubles of the GitHub client: a constructor for a plain-HTTP local server. Off in every build of the hub; the crate's own
+# tests switch it on.
+test-doubles = []
 
 [dependencies]
 domain.workspace = true
@@ -38,16 +41,24 @@ sha2.workspace = true
 # build). No TLS feature: TLS comes from the pool options.
 sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json"] }
 thiserror.workspace = true
+# The GitHub leg (T5, plan A9): octocrab over our own TLS 1.3-only connector. See the workspace manifest for the pins and why.
+octocrab.workspace = true
+hyper-rustls.workspace = true
+hyper-util = { workspace = true, features = ["client-legacy", "http1", "tokio"] }
+http-body-util.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tracing.workspace = true
+# The data key and the plaintext token are zeroized (S8); `Secret` does it on drop, and the cipher buffer is wiped by hand.
+zeroize.workspace = true
 
 [dev-dependencies]
 # This crate's own tests need the fuzz hooks its feature switches on (the corpus replay).
-hub-writes = { path = ".", version = "0.1.0", features = ["fuzz-hooks"] }
+hub-writes = { path = ".", version = "0.1.0", features = ["fuzz-hooks", "test-doubles"] }
 ports = { workspace = true, features = ["fakes", "postgres", "conformance"] }
 # `FakeSessionAuth` and `RouteSpec::registered`, for the route tests (S4).
 hub-platform = { workspace = true, features = ["fakes"] }
-http-body-util.workspace = true
 tower = { workspace = true, features = ["util"] }
 # Reads the OpenAPI operations (tags) in the route-table test.
 serde-saphyr.workspace = true
@@ -59,7 +70,11 @@ futures.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "std"] }
 proptest.workspace = true
 criterion.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
+# The local GitHub server of the client tests: a TLS 1.3 server, a TLS 1.2-only one (which the client must refuse, S6) and their
+# certificate. Both are in the graph already.
+tokio-rustls.workspace = true
+rcgen.workspace = true
 
 # P8 (T1): the whole `edit` call through a fake agent, over a real Postgres.
 [[bench]]

@@ -98,3 +98,53 @@ async fn explain_proposal_reads_use_the_primary_key_and_the_decision_is_joined_b
     let (_, sql) = queries.iter().find(|(n, _)| *n == "draft_get").unwrap();
     assert!(plan(&db, sql).await.contains("drafts_pkey"));
 }
+
+#[tokio::test]
+async fn explain_credential_reads_use_their_keys() {
+    let db = db!();
+    let queries = hub_writes::hot_queries();
+    for name in [
+        "credential_load",
+        "credential_lock_user",
+        "credential_linked_login",
+    ] {
+        assert!(
+            queries.iter().any(|(n, _)| *n == name),
+            "{name} is not registered as a hot query"
+        );
+    }
+    let (_, sql) = queries.iter().find(|(n, _)| *n == "credential_load").unwrap();
+    assert!(
+        plan(&db, sql)
+            .await
+            .contains("github_credentials_user_tid_user_oid_key"),
+        "a credential is found by its owner's unique key"
+    );
+    for name in ["credential_lock_user", "credential_linked_login"] {
+        let (_, sql) = queries.iter().find(|(n, _)| *n == name).unwrap();
+        assert!(plan(&db, sql).await.contains("users_pkey"), "{name}");
+    }
+}
+
+/// The nightly job reads the credentials in id order, a bounded page at a time, through the primary key, and finds each user by
+/// theirs: no scan of either table, however many rows there are.
+#[tokio::test]
+async fn explain_credential_cleanup_is_bounded() {
+    let db = db!();
+    let queries = hub_writes::hot_queries();
+    for name in ["credential_stale", "credential_expiring"] {
+        let (_, sql) = queries.iter().find(|(n, _)| *n == name).unwrap();
+        let p = plan(&db, sql).await;
+        assert!(p.contains("\"Limit\""), "{name} has no LIMIT: {p}");
+        assert!(
+            p.contains("github_credentials_pkey"),
+            "{name} is not read in id order: {p}"
+        );
+        assert!(!p.contains("\"Sort\""), "{name} sorts the table: {p}");
+    }
+    let (_, sql) = queries.iter().find(|(n, _)| *n == "credential_stale").unwrap();
+    assert!(
+        plan(&db, sql).await.contains("users_pkey"),
+        "the user is found by its key"
+    );
+}

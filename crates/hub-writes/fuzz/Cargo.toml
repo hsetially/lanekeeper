@@ -49,3 +49,17 @@ path = "fuzz_targets/writes_preview_id.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "writes_github_token"
+path = "fuzz_targets/writes_github_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "writes_github_responses"
+path = "fuzz_targets/writes_github_responses.rs"
+test = false
+doc = false
+bench = false

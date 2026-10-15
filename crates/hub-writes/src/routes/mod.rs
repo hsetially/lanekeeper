@@ -17,6 +17,8 @@
 //! | `POST /api/v1/proposals/{id}/reject` | Admin | reject a proposal |
 //! | `POST /api/v1/drafts` | Editor | create a draft |
 //! | `POST /api/v1/drafts/{id}/apply` | Editor | apply a draft |
+//! | `PUT /api/v1/me/github-token` | Editor | store or replace the caller's GitHub token |
+//! | `DELETE /api/v1/me/github-token` | Editor | remove the caller's GitHub token |
 //!
 //! A route does four things and nothing else: read the request into typed values (a bad one is 400 and says nothing about why),
 //! build the [`WriteCtx`], call the service and map its answer to a response. Authorization is the guard's and the service's; the
@@ -24,6 +26,7 @@
 //! an unauthenticated request cannot make the server read a large one (S11).
 
 mod files;
+mod me;
 pub mod multipart;
 mod problem;
 mod proposals;
@@ -44,6 +47,7 @@ use hub_platform::{ApiError, AuthenticatedUser, GuardedRouter};
 use ports::WriteService;
 
 use crate::ProposalDesk;
+use crate::vault::TokenDesk;
 
 /// The path of the edit and delete routes.
 pub const FILES_PATH: &str = "/api/v1/swimlanes/{id}/files";
@@ -56,10 +60,11 @@ pub const APPROVE_PATH: &str = "/api/v1/proposals/{id}/approve";
 pub const REJECT_PATH: &str = "/api/v1/proposals/{id}/reject";
 pub const DRAFTS_PATH: &str = "/api/v1/drafts";
 pub const APPLY_DRAFT_PATH: &str = "/api/v1/drafts/{id}/apply";
+pub const GITHUB_TOKEN_PATH: &str = "/api/v1/me/github-token";
 
 /// Every route this task mounts, with its method and the lowest role that may call it. The route-table test compares this list
 /// with `api/openapi.yaml` and with what [`mount`] registers.
-pub const WRITE_ROUTES: [(&str, &str, Role); 11] = [
+pub const WRITE_ROUTES: [(&str, &str, Role); 13] = [
     ("PUT", FILES_PATH, Role::Editor),
     ("DELETE", FILES_PATH, Role::Editor),
     ("POST", PREVIEW_PATH, Role::Editor),
@@ -71,6 +76,8 @@ pub const WRITE_ROUTES: [(&str, &str, Role); 11] = [
     ("POST", REJECT_PATH, Role::Admin),
     ("POST", DRAFTS_PATH, Role::Editor),
     ("POST", APPLY_DRAFT_PATH, Role::Editor),
+    ("PUT", GITHUB_TOKEN_PATH, Role::Editor),
+    ("DELETE", GITHUB_TOKEN_PATH, Role::Editor),
 ];
 
 /// A JSON string can be six times its text (`\u0000`), so a 2 MiB text can need 12 MiB of body. The limit is that, plus the
@@ -80,6 +87,9 @@ pub const MAX_EDIT_BODY: usize = 12 * 1024 * 1024 + 64 * 1024;
 /// The bodies of the small JSON requests (revert, restart).
 pub const MAX_SMALL_BODY: usize = 16 * 1024;
 
+/// The body of a token request: a token of at most 512 characters, which JSON may write as six bytes each, and the field name.
+pub const MAX_TOKEN_BODY: usize = 6 * crate::github::MAX_TOKEN_LEN + 256;
+
 /// What a multipart body may hold besides the file: the small text fields and the framing.
 pub const MULTIPART_OVERHEAD: usize = 64 * 1024;
 
@@ -87,6 +97,7 @@ pub const MULTIPART_OVERHEAD: usize = 64 * 1024;
 pub struct WriteState {
     service: Arc<dyn WriteService>,
     proposals: Arc<dyn ProposalDesk>,
+    tokens: Arc<dyn TokenDesk>,
     max_file_bytes: usize,
 }
 
@@ -104,11 +115,13 @@ impl WriteState {
     pub fn new(
         service: Arc<dyn WriteService>,
         proposals: Arc<dyn ProposalDesk>,
+        tokens: Arc<dyn TokenDesk>,
         max_file_bytes: usize,
     ) -> Arc<Self> {
         Arc::new(Self {
             service,
             proposals,
+            tokens,
             max_file_bytes,
         })
     }
@@ -283,6 +296,28 @@ pub fn mount(router: GuardedRouter, state: Arc<WriteState>) -> GuardedRouter {
             move |Path(id): Path<String>, user: Extension<AuthenticatedUser>, headers: HeaderMap| {
                 let s = Arc::clone(&s);
                 async move { proposals::apply_draft(&s, &id, user.0.0, &headers).await }
+            }
+        })
+        .route(&Method::PUT, GITHUB_TOKEN_PATH, Role::Editor, {
+            let s = Arc::clone(&s);
+            (move |user: Extension<AuthenticatedUser>,
+                   headers: HeaderMap,
+                   body: Result<Bytes, BytesRejection>| {
+                let s = Arc::clone(&s);
+                async move {
+                    match body_of(body) {
+                        Ok(body) => me::put(&s, user.0.0, &headers, &body).await,
+                        Err(e) => *e,
+                    }
+                }
+            })
+            .layer(DefaultBodyLimit::max(MAX_TOKEN_BODY))
+        })
+        .route(&Method::DELETE, GITHUB_TOKEN_PATH, Role::Editor, {
+            let s = Arc::clone(&s);
+            move |user: Extension<AuthenticatedUser>, headers: HeaderMap| {
+                let s = Arc::clone(&s);
+                async move { me::delete(&s, user.0.0, &headers).await }
             }
         })
 }

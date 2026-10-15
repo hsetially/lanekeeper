@@ -14,6 +14,10 @@ mod support;
 mod approvals;
 #[path = "actions/drafts.rs"]
 mod drafts;
+#[path = "actions/github_client.rs"]
+mod github_client;
+#[path = "actions/vault.rs"]
+mod vault;
 
 use std::time::Duration;
 
