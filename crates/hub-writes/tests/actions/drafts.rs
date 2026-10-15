@@ -364,6 +364,77 @@ async fn a_careful_users_draft_becomes_a_proposal_and_its_approval_applies_the_d
     );
 }
 
+/// What happened is what is recorded: a draft whose change was applied reads `applied`, also when the sweeper had marked it
+/// `expired` in the meantime (its day ran out while the change was on its way to the agent, or while its proposal waited for an
+/// admin, which has three days).
+#[tokio::test]
+async fn a_draft_that_expires_while_its_change_is_being_applied_reads_applied() {
+    let Some((rig, s)) = lane().await else { return };
+    let editor = rig.user(1, Role::Editor).await;
+    let d = rig
+        .hub
+        .propose_draft(
+            &ctx(&editor, "d-1"),
+            edit(&s, "a.yml", at("x: 1\nok: 1\n"), "x: 2\nok: 1\n"),
+        )
+        .await
+        .unwrap();
+    let gate = rig.agent.hold_writes();
+    let apply_ctx = ctx(&editor, "a-1");
+    let apply = rig.hub.apply_draft(&apply_ctx, d.id.clone());
+    let meanwhile = async {
+        // The command is at the agent; the draft's day runs out and the sweeper marks it.
+        rig.agent.entered.notified().await;
+        sqlx::query("UPDATE drafts SET status = 'expired' WHERE id = $1")
+            .bind(d.id.as_str())
+            .execute(&rig.pool)
+            .await
+            .unwrap();
+        gate.add_permits(1);
+    };
+    let (out, ()) = tokio::join!(apply, meanwhile);
+    assert!(matches!(out.unwrap(), WriteOutcome::Applied { .. }));
+    assert_eq!(rig.nfs_of(&s, "a.yml").as_deref(), Some(&b"x: 2\nok: 1\n"[..]));
+    assert_eq!(draft_status(&rig, &d.id).await, "applied");
+    assert_eq!(rig.chain().await.len(), 1, "and the write is audited once");
+}
+
+#[tokio::test]
+async fn a_draft_whose_day_ran_out_while_its_proposal_waited_reads_applied_when_the_proposal_is() {
+    let Some((rig, s)) = lane().await else { return };
+    let careful = rig.approval_user(1, Role::Editor).await;
+    let admin = rig.user(2, Role::Admin).await;
+    let d = rig
+        .hub
+        .propose_draft(
+            &ctx(&careful, "d-1"),
+            edit(&s, "a.yml", at("x: 1\nok: 1\n"), "x: 2\nok: 1\n"),
+        )
+        .await
+        .unwrap();
+    let WriteOutcome::ProposalCreated { id } = rig
+        .hub
+        .apply_draft(&ctx(&careful, "a-1"), d.id.clone())
+        .await
+        .unwrap()
+    else {
+        panic!("a proposal was expected")
+    };
+    // The draft lives a day, the proposal three: the sweeper marks the draft while the proposal still waits.
+    rig.advance_secs(25 * 3600);
+    assert_eq!(rig.hub.expirer().run_once(&|| true).await.drafts, 1);
+    assert_eq!(draft_status(&rig, &d.id).await, "expired");
+
+    let done = rig
+        .hub
+        .approve_proposal(&ctx(&admin, "k-1"), id, None)
+        .await
+        .unwrap();
+    assert!(matches!(done, WriteOutcome::Applied { .. }), "{done:?}");
+    assert_eq!(rig.nfs_of(&s, "a.yml").as_deref(), Some(&b"x: 2\nok: 1\n"[..]));
+    assert_eq!(draft_status(&rig, &d.id).await, "applied");
+}
+
 #[tokio::test]
 async fn a_rejected_proposal_rejects_its_draft() {
     let Some((rig, s)) = lane().await else { return };

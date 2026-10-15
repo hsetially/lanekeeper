@@ -76,12 +76,28 @@ pub(crate) const EXPIRE: &str = concat!(
 
 const MARK: &str = "UPDATE drafts SET status = $2 WHERE id = $1 AND status IN ('draft', 'pending')";
 
+/// The write a draft led to has happened, so the draft is `applied` whatever else was said of it meanwhile: it may have been
+/// marked `expired` by the sweeper while its change was on its way to the agent, or while its proposal waited for an admin (a draft
+/// lives a day, a proposal three). A draft that went stale, was rejected or was applied already is left as it is.
+const MARK_APPLIED: &str =
+    "UPDATE drafts SET status = 'applied' WHERE id = $1 AND status IN ('draft', 'pending', 'expired')";
+
 /// Move an open draft to `to` (it waits with its proposal, is applied, goes stale, is rejected or expires). A draft that is no
 /// longer open is left as it is.
 pub(crate) async fn mark(conn: &mut PgConnection, id: &str, to: ProposalStatus) -> Res<()> {
     sqlx::query(MARK)
         .bind(id)
         .bind(to.as_str())
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| Internal::db("draft_mark", &e))?;
+    Ok(())
+}
+
+/// Record that the draft's change was written. See [`MARK_APPLIED`].
+pub(crate) async fn mark_applied(conn: &mut PgConnection, id: &str) -> Res<()> {
+    sqlx::query(MARK_APPLIED)
+        .bind(id)
         .execute(&mut *conn)
         .await
         .map_err(|e| Internal::db("draft_mark", &e))?;

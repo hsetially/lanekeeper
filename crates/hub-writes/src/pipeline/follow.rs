@@ -2,6 +2,9 @@
 //! the decision on the proposal the action carries out, or the draft it applies. They commit together or not at all, so a
 //! proposal is never "applied" without its audit event and an audit event is never recorded for a proposal that stays pending.
 //!
+//! A draft whose change was written reads `applied` even if the sweeper marked it `expired` while the command was on its way or
+//! while its proposal waited: what happened is what is recorded.
+//!
 //! A proposal that is no longer pending when this runs (its time ran out and the expiry job marked it, while the command was on its
 //! way) has had its file written already: the audit event is still recorded, because the change happened, and the proposal is
 //! left as it is. That is logged. It cannot happen between two deciders (a lease serialises approvals and rejections alike), nor with
@@ -20,7 +23,7 @@ use crate::service::Inner;
 
 pub(crate) async fn apply(hub: &Inner, tx: &mut Transaction<'_, Postgres>, follow: &Follow) -> Res<()> {
     match follow {
-        Follow::Draft { id } => drafts::mark(&mut *tx, id, ProposalStatus::Applied).await,
+        Follow::Draft { id } => drafts::mark_applied(&mut *tx, id).await,
         Follow::Decided {
             proposal,
             approver,
@@ -51,7 +54,7 @@ pub(crate) async fn apply(hub: &Inner, tx: &mut Transaction<'_, Postgres>, follo
             .await?;
             store::set_status(&mut *tx, *proposal, ProposalStatus::Applied, now).await?;
             if let Some(draft) = draft {
-                drafts::mark(&mut *tx, draft, ProposalStatus::Applied).await?;
+                drafts::mark_applied(&mut *tx, draft).await?;
             }
             hub.bus
                 .publish_in_tx(
