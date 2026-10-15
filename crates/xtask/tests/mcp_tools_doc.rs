@@ -5,10 +5,11 @@
 //! that parse and resolve their `$ref`s, bounded inputs, the role floor, the confirmation rule and the output caps.
 //! It also ties each tool to the REST operation it wraps, so a role cannot drift away from `api/openapi.yaml`.
 //!
-//! Q37: the config-server's `/update-resources` endpoint is unauthenticated, so exactly one tool reaches it,
+//! Q37: the config-server's `/update-resources` endpoint is unauthenticated. Exactly one tool requests a notification,
 //! `notify_services`: Operator only, confirmation required, audited by the write service, and shipped disabled until Q37
-//! is answered (contract change `contract/07-mcp`, A2 of plan 07). `only_notify_services_reaches_the_config_server`
-//! pins that.
+//! is answered (contract change `contract/07-mcp`, A2 of plan 07). Auto-notify is a separate Admin setting that no tool
+//! changes; while it is on, the write service notifies after a committed write whichever client made it (D85).
+//! `only_notify_services_requests_a_notification` pins both.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -338,11 +339,12 @@ fn exactly_the_27_specified_tools_have_a_section() {
     assert_eq!((READ_TOOLS.len(), WRITE_TOOLS.len()), (20, 7));
 }
 
-/// Q37: `/update-resources` is unauthenticated, so the only way to it is the one tool that is Operator only, asks the
-/// user first, is audited by the write service, ships disabled and is never on the client allowlist. Auto-notify (an
-/// Admin setting) is not a tool at all.
+/// Q37: `/update-resources` is unauthenticated. The only tool that REQUESTS a notification is `notify_services`: Operator only,
+/// asks the user first, audited by the write service, off by default and never on the client allowlist. Auto-notify is an
+/// Admin setting of the swimlane and not a tool; while it is on, the write service itself notifies after a committed write
+/// (D85), so the write tools cause one too, and the document says so rather than claiming the endpoint is reached by one tool.
 #[test]
-fn only_notify_services_reaches_the_config_server() {
+fn only_notify_services_requests_a_notification() {
     let doc = parse_doc();
     let notifying: BTreeSet<&str> = doc
         .tools
@@ -358,7 +360,7 @@ fn only_notify_services_reaches_the_config_server() {
     assert_eq!(
         notifying,
         BTreeSet::from(["notify_services"]),
-        "exactly one tool notifies the config-server"
+        "exactly one tool requests a notification"
     );
     for t in &doc.tools {
         assert!(
@@ -411,6 +413,10 @@ fn only_notify_services_reaches_the_config_server() {
         "tools.notify_services.enabled",
         "absent from `tools/list`",
         "never on the client allowlist",
+        "is the only tool that requests a notification",
+        "auto-notify setting (D85)",
+        "the write service itself notifies after a committed write, whichever client made the write",
+        "also after `apply_change`, `upload_file` and `delete_file`",
     ] {
         assert!(
             doc.text.contains(needle),
@@ -422,6 +428,8 @@ fn only_notify_services_reaches_the_config_server() {
         "No tool notifies the config-server",
         "There is no tool that notifies services",
         "deliberately not exposed to AI clients",
+        // Auto-notify makes the write tools cause a notification, so no sentence may say that one tool reaches the endpoint.
+        "Exactly one tool reaches it",
     ] {
         assert!(!doc.text.contains(stale), "stale text: {stale}");
     }
@@ -517,6 +525,13 @@ fn get_served_config_is_the_redacted_as_served_view() {
         "no text for a denied or non-text file"
     );
     assert_eq!(doc.defs["AppName"]["pattern"], doc.defs["ChannelName"]["pattern"]);
+    // A denied file reveals its name, size and hash and nothing else (D79).
+    assert!(
+        doc.text.contains(
+            "When `content_withheld` is true, `text` is null and `sources` and `unresolved_placeholders` are empty"
+        ),
+        "the withheld answer is defined"
+    );
     assert!(
         doc.text.contains("`get_served_config`") && !doc.text.contains("separate served-file tool"),
         "the effective-config section points to the served tool and no longer says it replaces one"

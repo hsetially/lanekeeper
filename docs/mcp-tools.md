@@ -63,7 +63,7 @@ Six write tools change something outside the hub's database: `apply_change`, `up
 
 **`propose_change`** has no side effects: it only records a draft and returns a semantic summary. It says `confirmation: none` for that reason, and the user confirms when `apply_change` runs.
 
-**Notifying the config-server (Q37).** The REST API has a notify and an auto-notify operation, and both end at the config-server's `/update-resources` endpoint, which is unauthenticated. Exactly one tool reaches it: `notify_services`. It is Operator only and needs confirmation, and it does nothing but call the write service's `notify`, which audits every call and is the only route to the endpoint (through the swimlane's agent, never from the hub). No tool turns auto-notify on or off; that stays an Admin action in the web UI. `notify_services` ships disabled (`tools.notify_services.enabled`, default `false`; configuration owned by prompt 07) and stays disabled until Q37 is answered: while it is off the tool is absent from `tools/list` and a call to it is refused as `forbidden`. It is never on the client allowlist. `get_pending_restarts` returns the pickup state (D85) so an assistant can tell the user what is needed.
+**Notifying the config-server (Q37).** The config-server's `/update-resources` endpoint is unauthenticated. A notification reaches it in two ways, and both go through the write service, which audits it and sends it through the swimlane's agent, never from the hub. The first is a request: `notify_services` is the only tool that requests a notification. It is Operator only and needs confirmation, and it does nothing but call the write service's `notify`. It ships disabled (`tools.notify_services.enabled`, default `false`; configuration owned by prompt 07) and stays disabled until Q37 is answered: while it is off the tool is absent from `tools/list` and a call to it is refused as `forbidden`. It is never on the client allowlist. The second is the swimlane's auto-notify setting (D85), which is separate: an Admin turns it on or off in the web UI and no tool does. While it is on, the write service itself notifies after a committed write, whichever client made the write, so also after `apply_change`, `upload_file` and `delete_file`. `get_swimlane` shows the setting, and `get_pending_restarts` returns the pickup state (D85) so an assistant can tell the user what is needed.
 
 ## Errors
 
@@ -738,7 +738,7 @@ What the config-server actually serves to a service for an application, tenant, 
 - pagination: none
 - rest: getServedFile
 
-The answer is `unavailable` (retryable) when the agent or the config-server cannot be reached or the agent's rate limit is reached. A denied file (D79) returns `content_withheld: true` and `text: null`, and so does a served file that is not text. `${KEY}` is replaced only where the property view has the key, and never from an environment value; the keys that were not found are listed in `unresolved_placeholders`. Flagged values in `text` are replaced by `[REDACTED: N chars, rule]` and counted in `redacted_values` (S14b).
+The answer is `unavailable` (retryable) when the agent or the config-server cannot be reached or the agent's rate limit is reached. A denied file (D79) returns `content_withheld: true` and `text: null`, and so does a served file that is not text. When `content_withheld` is true, `text` is null and `sources` and `unresolved_placeholders` are empty, so a denied file reveals nothing beyond its name, size and hash (D79). `${KEY}` is replaced only where the property view has the key, and never from an environment value; the keys that were not found are listed in `unresolved_placeholders`. Flagged values in `text` are replaced by `[REDACTED: N chars, rule]` and counted in `redacted_values` (S14b).
 
 **Input schema**
 
@@ -1833,7 +1833,7 @@ Tells the config-server that files changed, so that services with notifications 
 - pagination: none
 - rest: notifyServices
 
-The config-server's `/update-resources` endpoint has no authentication (Q37), so this call goes through the write service, which audits it and sends it through the swimlane's agent; the tool never calls the endpoint itself. It ships disabled (see Confirmation) until Q37 is answered. A user with `requires_approval` gets `proposal_created` after confirming, as for every write. The Idempotency-Key is derived like that of every write tool other than `apply_change`.
+The config-server's `/update-resources` endpoint has no authentication (Q37), so this call goes through the write service, which audits it and sends it through the swimlane's agent; the tool never calls the endpoint itself. It is the only tool that requests a notification; where the swimlane has auto-notify on, the write tools cause one too, after their writes (see Confirmation). It ships disabled (see Confirmation) until Q37 is answered. A user with `requires_approval` gets `proposal_created` after confirming, as for every write. The Idempotency-Key is derived like that of every write tool other than `apply_change`.
 
 **Input schema**
 

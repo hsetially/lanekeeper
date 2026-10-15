@@ -96,7 +96,8 @@ pub struct ServedFile {
     pub role: FileRole,
     /// Hash of what was served.
     pub hash: ContentHash,
-    /// True for a denied file (D79): `text` is `None` and the hash stays.
+    /// True for a denied file (D79): `text` is `None`, `sources` and `unresolved_placeholders` are empty, and the hash stays, so
+    /// the answer reveals nothing beyond the file's name, size and hash.
     pub content_withheld: bool,
     /// `None` when `content_withheld` is true or the served file is not text. Always serialised, as `null` when absent.
     pub text: Option<String>,
