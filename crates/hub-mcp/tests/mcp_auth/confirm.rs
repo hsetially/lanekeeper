@@ -317,6 +317,115 @@ async fn retry_with_the_same_request_applies_once() {
     assert_eq!(rig.writes.log.of("upload").len(), 1);
 }
 
+/// Send `tool` again with the JSON-RPC id `id`, and answer the question it asks with `reply`. Fails the test, with what came
+/// instead, when the server answers without asking.
+async fn send_again_and_answer(client: &Client, id: i64, tool: &str, args: &Value, reply: &Value) -> Called {
+    let body = json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": tool, "arguments": args}});
+    let mut sse = Sse::new(client.post(&body).await.into_body());
+    let question = sse.next().await.expect("a message first");
+    assert_eq!(
+        question["method"], "elicitation/create",
+        "{tool} was answered without asking again; a refusal was remembered: {question}"
+    );
+    assert!(client.answer(&question["id"], reply).await.is_success());
+    let (_, response) = sse.until_response(id).await.expect("a response");
+    Called {
+        tool: tool.to_owned(),
+        response,
+    }
+}
+
+/// D68: the memory of finished writes spares the person a second question after a write that went through. It must not remember a
+/// refusal: a person whose write was refused and who tries the same request again is asked again, and the write service is tried
+/// again (it keeps the idempotency key, and decides what a retry gets: that is its job and not this memory's).
+#[tokio::test]
+async fn a_refused_write_is_not_stored_in_the_replay_map() {
+    let rig = rig();
+    seed(&rig);
+
+    // 1. A refusal that is a conflict: the file changes while the person decides. The key of `apply_change` is the draft's.
+    let mut ed = forms(&rig, "ed", Role::Editor).await;
+    let draft = draft_by(&rig, "ed", NEW).await;
+    let args = apply_args(&draft);
+    let asked = ask(&mut ed, "apply_change", &args).await;
+    let other = "name: one\nlevel: 9\n";
+    let changed = rig
+        .writes
+        .inner
+        .edit(
+            &write_ctx("someone", 2),
+            EditRequest {
+                swimlane: sid("sit1"),
+                path: np(PATH),
+                expected: Expected::Hash {
+                    hash: hash_of(OLD.as_bytes()),
+                },
+                content: Bytes::copy_from_slice(other.as_bytes()),
+                change_eol: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(changed.is_success());
+    let refused = answer(&ed, asked, &accept(), "apply_change").await;
+    assert_eq!(refused.err(), "conflict");
+    assert_eq!(rig.writes.log.of("apply_draft").len(), 1);
+    // The same request again: a stored refusal would be returned at once, without a question (`ask` fails the test if it is).
+    let asked = ask(&mut ed, "apply_change", &args).await;
+    let again = answer(&ed, asked, &accept(), "apply_change").await;
+    assert_eq!(again.err(), "conflict");
+    assert_eq!(
+        rig.writes.log.of("apply_draft").len(),
+        2,
+        "the second attempt did not reach the write service"
+    );
+    assert_eq!(nfs(&rig), other, "and nothing of the draft was written");
+
+    // 2. A refusal that is a rejection by the write service: a swimlane it does not know. The key of `restart_service` is made from
+    // the user, the session, the JSON-RPC id and the tool, so the same id is the same request.
+    let mut op = forms(&rig, "op", Role::Operator).await;
+    let unknown = json!({"swimlane": "nowhere", "service": {"namespace": "apps", "name": "core"}});
+    let asked = ask(&mut op, "restart_service", &unknown).await;
+    let id = asked.id;
+    let refused = answer(&op, asked, &accept(), "restart_service").await;
+    assert_eq!(refused.err(), "not_found");
+    assert_eq!(rig.writes.log.of("restart").len(), 1);
+    let again = send_again_and_answer(&op, id, "restart_service", &unknown, &accept()).await;
+    assert_eq!(again.err(), "not_found");
+    assert_eq!(
+        rig.writes.log.of("restart").len(),
+        2,
+        "the second attempt did not reach the write service"
+    );
+    assert!(rig.writes.inner.restarts().is_empty());
+
+    // 3. A refusal that is an error of the write service and not an outcome: the id of a request that went through is used for
+    // other arguments, which the write service will not take for the first request under the same key (an idempotency conflict).
+    let core = json!({"swimlane": "sit1", "service": {"namespace": "apps", "name": "core"}});
+    let asked = ask(&mut op, "restart_service", &core).await;
+    let id = asked.id;
+    assert_eq!(
+        answer(&op, asked, &accept(), "restart_service").await.ok()["result"]["outcome"],
+        "applied"
+    );
+    let other = json!({"swimlane": "sit1", "service": {"namespace": "apps", "name": "other"}});
+    let first = send_again_and_answer(&op, id, "restart_service", &other, &accept()).await;
+    assert_eq!(first.err(), "conflict");
+    let calls = rig.writes.log.of("restart").len();
+    let second = send_again_and_answer(&op, id, "restart_service", &other, &accept()).await;
+    assert_eq!(second.err(), "conflict");
+    assert_eq!(
+        rig.writes.log.of("restart").len(),
+        calls + 1,
+        "the second attempt did not reach the write service"
+    );
+    assert_eq!(
+        rig.writes.inner.restarts().len(),
+        1,
+        "and only the first request was applied"
+    );
+}
+
 #[tokio::test]
 async fn accept_with_confirm_false_is_declined_and_writes_nothing() {
     let rig = rig();
