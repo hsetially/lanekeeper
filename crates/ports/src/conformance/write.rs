@@ -795,7 +795,7 @@ pub async fn write_service<W: WriteScenario + ?Sized>(w: &W) {
 
 /// `WriteService::draft`: the author reads their draft exactly as `propose_draft` returned it, nobody else can, a viewer
 /// and the users who are not active are `Forbidden`, an unknown id is `NotFound`, and reading changes nothing. After an apply
-/// the draft says `Applied`.
+/// the draft says `Applied`, and after its expiry it is still readable, by its author only.
 async fn drafts_can_be_read_by_their_author<W: WriteScenario + ?Sized>(w: &W) {
     let editor = active(1, Role::Editor);
     let other_editor = active(7, Role::Editor);
@@ -876,6 +876,44 @@ async fn drafts_can_be_read_by_their_author<W: WriteScenario + ?Sized>(w: &W) {
         (after.id, after.swimlane, after.path, after.new_hash),
         (proposed.id, proposed.swimlane, proposed.path, proposed.new_hash),
         "an applied draft is still the draft that was proposed"
+    );
+
+    // An expired draft is still readable by its author, and still not by anybody else: expiry ends what can be applied, not what
+    // can be read (the sweeper, not the read, sets the status, so none is asserted). The clock moves a year, far past any draft's
+    // `expires_at`; reading changes nothing.
+    let pending = w
+        .propose_draft(
+            &write_ctx(&editor, "rd-9"),
+            edit(
+                &s,
+                "a.yml",
+                Expected::Hash {
+                    hash: hash(b"x: 2\n"),
+                },
+                "x: 3\n",
+            ),
+        )
+        .await
+        .unwrap();
+    w.advance_clock(366 * 24 * 60 * 60).await;
+    let read = w
+        .draft(&write_ctx(&editor, "rd-10"), pending.id.clone())
+        .await
+        .expect("an expired draft is still readable by its author");
+    assert_eq!(
+        read.id, pending.id,
+        "an expired draft is still the draft that was proposed"
+    );
+    assert_eq!(
+        w.draft(&write_ctx(&other_editor, "rd-11"), pending.id.clone())
+            .await,
+        Err(WriteError::NotFound),
+        "an expired draft is still only the author's"
+    );
+    assert_eq!(
+        w.nfs_content(&s, &a).await.as_deref(),
+        Some(&b"x: 2\n"[..]),
+        "reading an expired draft writes nothing"
     );
 }
 

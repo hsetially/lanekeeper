@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -136,11 +137,13 @@ macro_rules! writes {
             inner: FakeWriteService,
             /// Every draft this wrapper has seen proposed, whoever it belonged to.
             seen: Mutex<HashMap<DraftId, Draft>>,
+            /// How many seconds the suite has moved the clock by.
+            advanced: AtomicU64,
         }
 
         impl $name {
             fn new() -> Self {
-                Self { inner: FakeWriteService::new(), seen: Mutex::new(HashMap::new()) }
+                Self { inner: FakeWriteService::new(), seen: Mutex::new(HashMap::new()), advanced: AtomicU64::new(0) }
             }
         }
 
@@ -190,6 +193,7 @@ macro_rules! writes {
                 FakeWriteService::nfs_content(&self.inner, s, p)
             }
             async fn advance_clock(&self, secs: u64) {
+                self.advanced.fetch_add(secs, Ordering::Relaxed);
                 FakeWriteService::advance_clock(&self.inner, secs);
             }
         }
@@ -418,6 +422,24 @@ writes!(AnEditorReadsAnyDraft {
         self.seen.lock().unwrap().get(&id).cloned().ok_or(WriteError::NotFound)
     }
 });
+
+// Reads drafts correctly until the clock has moved a day (the fake's draft life), then answers `NotFound` for every draft.
+writes!(ExpiredDraftsAreGone {
+    async fn draft(&self, ctx: &WriteCtx, id: DraftId) -> Result<Draft, WriteError> {
+        let honest = self.inner.draft(ctx, id).await;
+        if self.advanced.load(Ordering::Relaxed) >= 24 * 60 * 60 {
+            honest.and(Err(WriteError::NotFound))
+        } else {
+            honest
+        }
+    }
+});
+
+#[tokio::test(start_paused = true)]
+#[should_panic(expected = "an expired draft is still readable by its author")]
+async fn a_write_service_that_forgets_an_expired_draft_fails() {
+    conformance::write_service(&ExpiredDraftsAreGone::new()).await;
+}
 
 #[tokio::test(start_paused = true)]
 #[should_panic(expected = "Unavailable")]

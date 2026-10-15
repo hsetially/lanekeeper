@@ -1,5 +1,5 @@
 //! Integration tests for `db/migrations` (prompt 01, T6; S9, S21; `0002_audit_verify_state.sql` for prompt 03a;
-//! `0003_registry.sql` for prompt 05; `0004_write_additions.sql` for prompt 06; `0005_mcp_tokens.sql` for prompt 07).
+//! `0003_registry.sql` for prompt 05; `0004_write_additions.sql` for prompt 06; `0005_mcp_tokens.sql` and `0006_mcp_tokens_created_not_future.sql` for prompt 07).
 //!
 //! They run against a real Postgres 16 with pgvector, started with testcontainers from the same image digest as
 //! `deploy/dev/compose.yaml`. The tests use the runtime `sqlx::migrate::Migrator` and no `query!` macros, so no
@@ -692,7 +692,7 @@ async fn migration_applies_on_pg16() {
     assert_eq!(tables, expected);
 
     // Re-running is a no-op: each migration is recorded once, each applied on top of the one before it (0002 on 0001, 0003 on
-    // 0002, 0004 on 0003, 0005 on 0004). The schema is owned by the migrator, never by the app.
+    // 0002, 0004 on 0003, 0005 on 0004, 0006 on 0005). The schema is owned by the migrator, never by the app.
     db.migrate().await;
     let applied: Vec<i64> =
         sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
@@ -701,7 +701,7 @@ async fn migration_applies_on_pg16() {
             .unwrap();
     let files: Vec<i64> = migration_files().iter().map(|(v, _, _)| i64::from(*v)).collect();
     assert_eq!(applied, files);
-    assert_eq!(applied, [1, 2, 3, 4, 5]);
+    assert_eq!(applied, [1, 2, 3, 4, 5, 6]);
     let foreign: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tableowner <> 'lanekeeper_migrator'",
     )
@@ -4164,4 +4164,459 @@ async fn mcp_token_lookups_have_an_index() {
         assert!(text.contains(index), "{sql}: {text}");
         assert!(!text.contains("Seq Scan"), "{sql}: {text}");
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// 0006_mcp_tokens_created_not_future.sql (prompt 07 follow-up): `created_at` is held to the moment of the insert
+
+const MIGRATION_0006: &str = "0006_mcp_tokens_created_not_future.sql";
+
+/// `0006` is exactly the statements it was reviewed with: the guard, one function, one BEFORE INSERT trigger and the scan of
+/// the rows already there, in that order. No row is written, nothing is dropped, renamed or granted, the audit tables are not
+/// named, and nothing in it fires on an UPDATE. A new statement of any kind fails here until a human adds it to the list on
+/// purpose.
+#[test]
+fn migration_0006_is_expand_only() {
+    let sql = migration_file(MIGRATION_0006);
+    assert_eq!(
+        row_writing_statement(&sql),
+        None,
+        "0006 changes a guard and writes no row: no INSERT, UPDATE, DELETE, MERGE, TRUNCATE, COPY or dynamic EXECUTE, in a DO \
+         block or a function body either"
+    );
+    let found: Vec<String> = statements_of(&sql).iter().map(|w| w.join(" ")).collect();
+    assert_eq!(
+        found,
+        [
+            "DO",
+            "CREATE FUNCTION MCP_TOKENS_CREATED_NOT_FUTURE RETURNS TRIGGER LANGUAGE PLPGSQL SET SEARCH_PATH PG_CATALOG PG_TEMP AS",
+            "CREATE TRIGGER MCP_TOKENS_CREATED_NOT_FUTURE BEFORE INSERT ON MCP_TOKENS FOR EACH ROW EXECUTE FUNCTION MCP_TOKENS_CREATED_NOT_FUTURE",
+            "DO",
+        ],
+        "0006 has exactly the statements it was reviewed with, in this order (a new statement is a new review)"
+    );
+    let code = without_literals(&code_lines(&sql).join("\n")).to_uppercase();
+    for banned in [
+        "CREATE TABLE",
+        "DROP ",
+        "ALTER ",
+        "RENAME",
+        "CASCADE",
+        "TRUNCATE",
+        "GRANT",
+        "REVOKE",
+        "AUDIT_EVENTS",
+        "AUDIT_CHECKPOINTS",
+        "SECURITY DEFINER",
+        "ENABLE ",
+        "DISABLE ",
+        // Insert only: an UPDATE of `revoked_at` or `last_used_at` must never meet a clock-dependent rule.
+        "UPDATE",
+        "AFTER ",
+        "CHECK",
+    ] {
+        assert!(
+            !code.contains(banned),
+            "0006 must not contain `{banned}` outside comments (insert only, and not a CHECK)"
+        );
+    }
+    // The bound and the code the existing expectations rely on.
+    let text = code_lines(&sql).join("\n");
+    assert!(
+        text.contains("NEW.created_at > now() + interval '1 minute'"),
+        "the bound is a minute ahead of now()"
+    );
+    assert!(
+        text.contains("ERRCODE = '23514'"),
+        "check_violation, as the tests expect"
+    );
+}
+
+/// The order inside `0006`, which is what closes the race between the scan and the trigger. The scan for a row that is already
+/// there runs only after the trigger exists: the trigger takes a lock that holds off every writer until the migration's
+/// transaction ends, so the scan then sees every row that was committed, and a later INSERT meets the trigger. Run the other way
+/// round, an INSERT by `lanekeeper_app` that commits between the scan and `CREATE TRIGGER` escapes both. The role guard stays
+/// first, so a wrong role creates nothing. The scan still fails with 23514 and says why.
+#[test]
+fn migration_0006_scans_for_bad_rows_after_the_trigger_exists() {
+    let sql = migration_file(MIGRATION_0006);
+    let code = code_lines(&sql).join("\n");
+    let once = |needle: &str| -> usize {
+        let hits: Vec<usize> = code.match_indices(needle).map(|(i, _)| i).collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "0006 holds `{needle}` exactly once, in code and not in a comment"
+        );
+        hits[0]
+    };
+    let role_guard = once("current_user <> 'lanekeeper_migrator'");
+    let function = once("CREATE FUNCTION mcp_tokens_created_not_future()");
+    let trigger = once("CREATE TRIGGER mcp_tokens_created_not_future BEFORE INSERT ON mcp_tokens");
+    let scan = once("FROM mcp_tokens WHERE created_at > now() + interval '1 minute'");
+    assert!(
+        role_guard < function && function < trigger,
+        "the role guard comes first, then the function, then the trigger"
+    );
+    assert!(
+        trigger < scan,
+        "the scan for a row already there comes after CREATE TRIGGER, not before it: a write that commits between them would \
+         escape both"
+    );
+    // The scan is a block of its own that starts after the trigger statement, and it is the last thing in the file.
+    let after_trigger = code[trigger..scan]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        after_trigger.contains("DO $$"),
+        "the scan is a DO block that opens after CREATE TRIGGER"
+    );
+    let block = &code[scan..];
+    let end = block.find("$$").expect("the scan block is closed");
+    let (block, tail) = (&block[..end], &block[end + 2..]);
+    assert!(
+        block.contains("RAISE EXCEPTION 'mcp_tokens has a row whose created_at is in the future; look at it before migrating'")
+            && block.contains("ERRCODE = '23514'"),
+        "the scan fails loudly: 23514 and the same message"
+    );
+    assert!(
+        tail.trim() == ";",
+        "nothing follows the scan: no statement sits between the check and the commit that could write a row"
+    );
+}
+
+/// The migrator owns every object, so `0006` carries the guard of `0001` to `0005`.
+#[tokio::test]
+async fn migration_0006_refuses_to_run_as_another_role() {
+    let db = db!();
+    let sql = migration_file(MIGRATION_0006);
+    for role in [APP, ("postgres", SUPERUSER_PASSWORD)] {
+        let mut conn = if role.0 == "postgres" {
+            db.admin().await
+        } else {
+            db.as_role(role).await
+        };
+        let err = sqlx::raw_sql(&sql)
+            .execute(&mut conn)
+            .await
+            .expect_err("must refuse");
+        assert_eq!(sqlstate(&err).as_deref(), Some("55000"), "{}: {err}", role.0);
+        assert!(
+            err.to_string().contains("lanekeeper_migrator"),
+            "{}: {err}",
+            role.0
+        );
+    }
+}
+
+/// 0006 adds one function and one trigger and changes nothing else: every relation (so every ACL, the grants of 0005 included),
+/// constraint, column and function that 0005 left is still there and unchanged, and the one new trigger is a BEFORE INSERT one.
+#[tokio::test]
+async fn migration_0006_adds_one_function_and_one_trigger_and_nothing_else() {
+    let Some(db) = TestDb::bootstrap().await else {
+        return;
+    };
+    db.migrate_upto(5).await;
+    let snapshot = |sql: &'static str| async {
+        let mut c = db.admin().await;
+        sqlx::query_scalar::<_, String>(sql)
+            .fetch_all(&mut c)
+            .await
+            .unwrap()
+            .into_iter()
+            .collect::<BTreeSet<String>>()
+    };
+    let queries: [&'static str; 5] = [
+        "SELECT c.relname::text || ' ' || c.relkind::text || ' ' || c.relowner::regrole::text || ' ' || coalesce(c.relacl::text, '-') \
+         FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace",
+        "SELECT t.tgrelid::regclass::text || ' ' || pg_get_triggerdef(t.oid, true) || ' ' || t.tgenabled::text \
+         FROM pg_trigger t WHERE NOT t.tgisinternal",
+        "SELECT conrelid::regclass::text || ' ' || conname || ' ' || pg_get_constraintdef(oid) FROM pg_constraint \
+         WHERE connamespace = 'public'::regnamespace",
+        "SELECT attrelid::regclass::text || ' ' || attname || ' ' || format_type(atttypid, atttypmod) || ' ' || attnotnull::text \
+         FROM pg_attribute WHERE attnum > 0 AND NOT attisdropped AND attrelid IN (SELECT oid FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r', 'p'))",
+        "SELECT p.proname || ' ' || p.proowner::regrole::text || ' ' || coalesce(p.proacl::text, '-') || ' ' || md5(p.prosrc) \
+         FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace",
+    ];
+    let mut before = Vec::new();
+    for q in queries {
+        before.push(snapshot(q).await);
+    }
+    db.migrate_upto(6).await;
+    let mut added = Vec::new();
+    for (q, b) in queries.iter().zip(&before) {
+        let after = snapshot(q).await;
+        assert!(
+            b.difference(&after).next().is_none(),
+            "0006 changed or removed something that existed: {:?}",
+            b.difference(&after).collect::<Vec<_>>()
+        );
+        added.push(after.difference(b).cloned().collect::<Vec<String>>());
+    }
+    for (i, what) in [(0, "relations"), (2, "constraints"), (3, "columns")] {
+        assert!(added[i].is_empty(), "0006 adds no {what}: {:?}", added[i]);
+    }
+    assert_eq!(added[4].len(), 1, "one new function: {:?}", added[4]);
+    assert!(
+        added[4][0].starts_with("mcp_tokens_created_not_future lanekeeper_migrator "),
+        "owned by the migrator: {:?}",
+        added[4]
+    );
+    assert_eq!(added[1].len(), 1, "one new trigger: {:?}", added[1]);
+    let trigger = &added[1][0];
+    assert!(
+        trigger.starts_with("mcp_tokens CREATE TRIGGER mcp_tokens_created_not_future BEFORE INSERT ON ")
+            && trigger.contains("FOR EACH ROW EXECUTE FUNCTION mcp_tokens_created_not_future()"),
+        "a BEFORE INSERT trigger, and nothing that fires on an UPDATE: {trigger}"
+    );
+    // No SECURITY DEFINER, and a pinned search_path, like the trigger of 0005.
+    let mut owner = db.migrator().await;
+    let (definer, config): (bool, String) = sqlx::query_as(
+        "SELECT prosecdef, coalesce(proconfig::text, '') FROM pg_proc WHERE proname = 'mcp_tokens_created_not_future'",
+    )
+    .fetch_one(&mut owner)
+    .await
+    .unwrap();
+    assert!(
+        !definer,
+        "an ordinary trigger function, run with the caller's rights"
+    );
+    assert!(config.contains("search_path=pg_catalog, pg_temp"), "{config}");
+}
+
+/// What the trigger does. Each refused row satisfies `mcp_tokens_lifetime`, so the refusal is the trigger's, with SQLSTATE 23514, and
+/// it names `mcp_tokens_created_not_future`. Back-dating only shortens the life the other bound allows, so it is accepted and cannot
+/// lengthen a life.
+#[tokio::test]
+async fn mcp_tokens_created_at_is_held_to_the_insert() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_proposal_world(&mut app).await;
+    let with_created = |hmac: String, created: &str, expires: &str| {
+        format!(
+            "INSERT INTO mcp_tokens (user_tid, user_oid, token_hmac, label, created_at, expires_at) \
+             VALUES ('t', 'alice', {hmac}, 'x', {created}, {expires})"
+        )
+    };
+    for (n, what, created, expires) in [
+        (
+            1,
+            "a created_at ten years ahead with a 30-day life",
+            "now() + interval '3683 days'",
+            "now() + interval '3683 days' + interval '30 days'",
+        ),
+        (
+            2,
+            "a created_at two minutes ahead",
+            "now() + interval '2 minutes'",
+            "now() + interval '7 days'",
+        ),
+        (
+            3,
+            "a created_at an hour ahead",
+            "now() + interval '1 hour'",
+            "now() + interval '1 hour' + interval '1 day'",
+        ),
+    ] {
+        let err = sqlx::query(&with_created(h(n), created, expires))
+            .execute(&mut app)
+            .await
+            .expect_err(what);
+        assert_eq!(sqlstate(&err).as_deref(), Some(CHECK_VIOLATION), "{what}: {err}");
+        assert_eq!(
+            err.as_database_error().and_then(|d| d.constraint()),
+            Some("mcp_tokens_created_not_future"),
+            "{what}: {err}"
+        );
+    }
+    // What still goes in: the default, a back-dated `created_at`, and a few seconds ahead (the hub's clock may run ahead).
+    for (n, what, created, expires) in [
+        (
+            4,
+            "the default created_at",
+            "DEFAULT",
+            "now() + interval '7 days'",
+        ),
+        (
+            5,
+            "a created_at a day back",
+            "now() - interval '1 day'",
+            "now() + interval '7 days'",
+        ),
+        (
+            6,
+            "a created_at 30 seconds ahead",
+            "now() + interval '30 seconds'",
+            "now() + interval '7 days'",
+        ),
+    ] {
+        sqlx::query(&with_created(h(n), created, expires))
+            .execute(&mut app)
+            .await
+            .unwrap_or_else(|e| panic!("{what}: {e}"));
+    }
+    // A back-dated token still ends within 31 days of its own `created_at`, so back-dating cannot lengthen a life.
+    let err = sqlx::query(&with_created(
+        h(7),
+        "now() - interval '1 day'",
+        "now() + interval '31 days'",
+    ))
+    .execute(&mut app)
+    .await
+    .expect_err("31 days from now is 32 days after a created_at a day back");
+    assert_eq!(
+        err.as_database_error().and_then(|d| d.constraint()),
+        Some("mcp_tokens_lifetime"),
+        "{err}"
+    );
+    // The guard is a trigger on INSERT and not a constraint.
+    let mut owner = db.migrator().await;
+    let events: Vec<(String, i16)> = sqlx::query_as(
+        "SELECT tgname::text, tgtype FROM pg_trigger WHERE tgrelid = 'mcp_tokens'::regclass AND tgname = 'mcp_tokens_created_not_future'",
+    )
+    .fetch_all(&mut owner)
+    .await
+    .unwrap();
+    // tgtype bits: 1 row, 2 before, 4 insert, 8 delete, 16 update, 32 truncate.
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].1 & (4 | 8 | 16 | 32),
+        4,
+        "it fires on INSERT and on nothing else"
+    );
+    let constraint: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_constraint WHERE conrelid = 'mcp_tokens'::regclass AND conname = 'mcp_tokens_created_not_future'",
+    )
+    .fetch_one(&mut owner)
+    .await
+    .unwrap();
+    assert_eq!(constraint, 0, "a CHECK would be re-evaluated on every UPDATE");
+}
+
+/// The reason the rule is a trigger on INSERT: a database clock that steps back leaves a token whose `created_at` is now ahead
+/// of `now()` by more than the slack, and revoking it, or noting a use of it, must still work. The row is made with the trigger
+/// switched off by the owner (which is the state such a step leaves behind), the trigger is switched on again, and the app's two
+/// UPDATEs pass. With a CHECK on `created_at` instead, both would fail: a token that cannot be revoked.
+#[tokio::test]
+async fn a_clock_that_steps_back_never_blocks_a_revocation_or_a_use() {
+    let db = db!();
+    let mut app = db.app().await;
+    let mut owner = db.migrator().await;
+    seed_proposal_world(&mut app).await;
+    let insert = |n: u8| {
+        format!(
+            "INSERT INTO mcp_tokens (user_tid, user_oid, token_hmac, label, created_at, expires_at) \
+             VALUES ('t', 'alice', {}, 'x', now() + interval '10 days', now() + interval '17 days') RETURNING id",
+            h(n)
+        )
+    };
+    sqlx::query("ALTER TABLE mcp_tokens DISABLE TRIGGER mcp_tokens_created_not_future")
+        .execute(&mut owner)
+        .await
+        .unwrap();
+    let used: i64 = sqlx::query_scalar(&insert(1)).fetch_one(&mut app).await.unwrap();
+    let revoked: i64 = sqlx::query_scalar(&insert(2)).fetch_one(&mut app).await.unwrap();
+    sqlx::query("ALTER TABLE mcp_tokens ENABLE TRIGGER mcp_tokens_created_not_future")
+        .execute(&mut owner)
+        .await
+        .unwrap();
+
+    // The guard is back: the same insert is refused now.
+    let err = sqlx::query(&insert(3))
+        .fetch_one(&mut app)
+        .await
+        .expect_err("a created_at ten days ahead is refused");
+    assert_eq!(sqlstate(&err).as_deref(), Some(CHECK_VIOLATION), "{err}");
+
+    // And the rows made while it was off can still be used and revoked, by the app, with the statements the hub runs.
+    let touched = sqlx::query("UPDATE mcp_tokens SET last_used_at = now() WHERE id = $1")
+        .bind(used)
+        .execute(&mut app)
+        .await
+        .expect("noting a use of a token whose created_at is ahead of the clock")
+        .rows_affected();
+    assert_eq!(touched, 1);
+    let ended = sqlx::query("UPDATE mcp_tokens SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL")
+        .bind(revoked)
+        .execute(&mut app)
+        .await
+        .expect("revoking a token whose created_at is ahead of the clock")
+        .rows_affected();
+    assert_eq!(ended, 1);
+    let both = sqlx::query("UPDATE mcp_tokens SET last_used_at = now(), revoked_at = now() WHERE id = $1")
+        .bind(used)
+        .execute(&mut app)
+        .await
+        .expect("both columns at once")
+        .rows_affected();
+    assert_eq!(both, 1);
+}
+
+/// The gap `0006` closes, and what it does about it. With `0005` alone the app can write a token that lives ten years (so the
+/// "at most 31 days in the schema" of the `0005` header is not true there); `0006` refuses to run over such a row, loudly and
+/// without changing the table, and once the row is gone it applies and the same insert is refused.
+#[tokio::test]
+async fn migration_0006_closes_the_gap_in_0005_and_refuses_a_bad_row() {
+    let Some(db) = TestDb::bootstrap().await else {
+        return;
+    };
+    db.migrate_upto(5).await;
+    let mut app = db.app().await;
+    seed_proposal_world(&mut app).await;
+    let far = format!(
+        "INSERT INTO mcp_tokens (user_tid, user_oid, token_hmac, label, created_at, expires_at) \
+         VALUES ('t', 'alice', {}, 'far', now() + interval '3683 days', now() + interval '3683 days' + interval '30 days') RETURNING id",
+        h(1)
+    );
+    let id: i64 = sqlx::query_scalar(&far).fetch_one(&mut app).await.unwrap();
+    let lives: i64 = sqlx::query_scalar(
+        "SELECT (extract(epoch FROM (expires_at - now())) / 86400)::bigint FROM mcp_tokens WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    assert!(lives > 3000, "with 0005 alone a token lives {lives} days");
+
+    let sql = migration_file(MIGRATION_0006);
+    let mut owner = db.migrator().await;
+    let err = sqlx::raw_sql(&sql)
+        .execute(&mut owner)
+        .await
+        .expect_err("0006 refuses to run over a row it would not have accepted");
+    assert_eq!(sqlstate(&err).as_deref(), Some(CHECK_VIOLATION), "{err}");
+    let triggers: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'mcp_tokens'::regclass AND tgname = 'mcp_tokens_created_not_future'",
+    )
+    .fetch_one(&mut owner)
+    .await
+    .unwrap();
+    assert_eq!(triggers, 0, "the failed migration left no trigger behind");
+    let functions: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM pg_proc WHERE proname = 'mcp_tokens_created_not_future'")
+            .fetch_one(&mut owner)
+            .await
+            .unwrap();
+    assert_eq!(
+        functions, 0,
+        "nor a function: the trigger exists before the scan runs, so the failure must roll both back"
+    );
+
+    // A person looks at the row and removes it (the owner may; the app may not), and then 0006 applies.
+    sqlx::query("DELETE FROM mcp_tokens WHERE id = $1")
+        .bind(id)
+        .execute(&mut owner)
+        .await
+        .unwrap();
+    sqlx::raw_sql(&sql).execute(&mut owner).await.unwrap();
+    let err = sqlx::query(&far)
+        .fetch_one(&mut app)
+        .await
+        .expect_err("now refused");
+    assert_eq!(
+        err.as_database_error().and_then(|d| d.constraint()),
+        Some("mcp_tokens_created_not_future"),
+        "{err}"
+    );
 }
