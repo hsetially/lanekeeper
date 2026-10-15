@@ -1,0 +1,13 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: insert
+---
+[
+  {
+    "node": "ModifyTable",
+    "relation": "sentinel_records"
+  },
+  {
+    "node": "Function Scan"
+  }
+]

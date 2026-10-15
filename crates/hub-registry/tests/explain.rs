@@ -6,6 +6,10 @@
 mod support;
 
 use hub_registry::adoption::{ADOPT_BASELINES_SQL, ADOPT_MARKS_SQL, CURRENT_NFS_SQL, NFS_FILES_SQL};
+use hub_registry::attribution::statements::{
+    ACK_SQL, ADMIN_MAP_SQL, EMAIL_SQL, FROM_BATCH_SQL, FROM_OBSERVATIONS_SQL, HELLO_SQL, INSERT_RECORDS_SQL,
+    LANES_SQL as ATTRIBUTION_LANES_SQL, NFS_CLIENT_SQL, SENTINEL_SQL, UPGRADE_SQL,
+};
 use hub_registry::baselines::{CURRENT_BLOBS_SQL, DROP_REFS_SQL, INSERT_REFS_SQL};
 use hub_registry::blob_policy::DENIED_HASH_SQL;
 use hub_registry::index::settings::{MARKED_SQL, UNINDEXED_SQL};
@@ -229,7 +233,10 @@ async fn explain(pool: &PgPool, sql: &str, args: &[Arg<'_>]) -> Value {
 fn no_large_sequential_scan(name: &str, plan: &Value) {
     for node in plan.as_array().unwrap() {
         let seq = node["node"] == "Seq Scan" || node["node"] == "Parallel Seq Scan";
-        let large = node["relation"].as_str().is_some_and(|r| LARGE.contains(&r));
+        // The partitions of `sentinel_records` are named after their month: any of them is the large table.
+        let large = node["relation"]
+            .as_str()
+            .is_some_and(|r| LARGE.contains(&r) || r.starts_with("sentinel_records"));
         assert!(
             !(seq && large),
             "{name}: a sequential scan of {}: {plan:#}",
@@ -1170,4 +1177,180 @@ async fn tool_write_queries_have_no_sequential_scan_on_large_tables() {
     let sweep = explain(&pool, SWEEP_SQL, &[Arg::Int(cutoff), Arg::Int(1_000)]).await;
     no_large_sequential_scan("sweep", &sweep);
     insta::assert_json_snapshot!("tool_write_sweep", sweep);
+}
+
+/// T7 (A17, A19, P14): the statements of the sentinel's sink, the correlator and the grace job, on a database with the observations of 40
+/// swimlanes (80,000), 300,000 records of the sentinels spread over every partition (the months' and the default one),
+/// 2,000 users and 100 mapped logins, and no statement may read a large table with a sequential scan.
+#[tokio::test]
+async fn attribution_queries_have_no_sequential_scan_on_large_tables() {
+    let Some(db) = TestDb::ready().await else { return };
+    let pool = db.app_pool().await;
+    let mut admin = db.admin().await;
+    for table in [
+        "projects",
+        "swimlanes",
+        "file_observations",
+        "sentinels",
+        "users",
+        "os_login_user_map",
+    ] {
+        sqlx::raw_sql(&format!("ALTER TABLE {table} SET (autovacuum_enabled = false)"))
+            .execute(&mut admin)
+            .await
+            .unwrap();
+    }
+    for sql in [
+        "INSERT INTO projects (id, display_name) VALUES ('p1', 'Project 1')",
+        "INSERT INTO swimlanes (id, project_id, display_name, nfs_export) SELECT 'lane' || n, 'p1', 'lane', '/export' FROM generate_series(1, 40) n",
+        "INSERT INTO sentinels (vm, swimlane_id, export_root, last_seen_at) \
+         SELECT 'vm' || n, 'lane' || n, '/export', now() FROM generate_series(1, 40) n",
+        // 500 files of each swimlane, four observations of each over the last hour, the newest of each with no attribution beyond unknown
+        // (the state the job is for) and the others already attributed (the state history is mostly in).
+        "INSERT INTO file_observations (swimlane_id, path, hash, source, observed_at, recorded_at, attribution_source, attribution_confidence) \
+         SELECT 'lane' || l, 'dir' || (f % 50) || '/file' || f || '.yml', sha256(('v' || l || '-' || f || '-' || k)::bytea), 'scan', \
+                now() - (k * 15 || ' minutes')::interval, now() - (k * 15 || ' minutes')::interval, \
+                CASE WHEN k = 1 THEN 'unknown' ELSE 'sync_job' END, CASE WHEN k = 1 THEN 'low' ELSE 'high' END \
+         FROM generate_series(1, 40) l, generate_series(1, 500) f, generate_series(1, 4) k",
+        // 300,000 records: 7,500 for each sentinel, over 150 days around now, so that every month's partition and the default one hold
+        // rows (an empty partition is read by a sequential scan, rightly, and says nothing about the table).
+        "INSERT INTO sentinel_records (sentinel_id, batch_seq, record_index, observed_at, path, operation, success, login_user, effective_user, exe, comm) \
+         SELECT s.id, (r / 50) + 1, r % 50, now() + ((r * 7919) % 216000 - 108000) * interval '1 minute', \
+                'dir' || (r % 50) || '/file' || (r % 500) || '.yml', 'write', true, 'ada_example_com', 'root', '/usr/bin/vim', 'vim' \
+         FROM sentinels s, generate_series(1, 7500) r",
+        "INSERT INTO users (tid, oid, email, display_name, role, status) \
+         SELECT '72f988bf-86f1-41af-91ab-2d7cd011db47', lpad(n::text, 36, '0'), 'user' || n || '@example.com', 'User', 'viewer', \
+                CASE WHEN n % 10 = 0 THEN 'disabled' ELSE 'active' END FROM generate_series(1, 2000) n",
+        "INSERT INTO os_login_user_map (os_login, user_tid, user_oid) \
+         SELECT 'local_' || n, '72f988bf-86f1-41af-91ab-2d7cd011db47', lpad(n::text, 36, '0') FROM generate_series(1, 100) n",
+        "ANALYZE",
+    ] {
+        sqlx::raw_sql(sql).execute(&mut admin).await.unwrap();
+    }
+    let now_ms: i64 = sqlx::query_scalar("SELECT (EXTRACT(EPOCH FROM now()) * 1000)::bigint")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let window = 60_000_i64;
+    let weak = || Arg::TextArray(vec!["low".to_owned(), "medium".to_owned()]);
+
+    // The sink: the sentinel's row (locked and stamped), the hello, the records, the acknowledgement.
+    let sentinel = explain(&pool, SENTINEL_SQL, &[Arg::Text("vm7"), Arg::Int(now_ms)]).await;
+    no_large_sequential_scan("the sentinel's row", &sentinel);
+    insta::assert_json_snapshot!("attribution_sentinel_row", sentinel);
+    let hello = explain(
+        &pool,
+        HELLO_SQL,
+        &[
+            Arg::Text("vm7"),
+            Arg::Text("0.1.0"),
+            Arg::Int(now_ms),
+            Arg::Text("/export"),
+        ],
+    )
+    .await;
+    no_large_sequential_scan("hello", &hello);
+    insta::assert_json_snapshot!("attribution_hello", hello);
+    let n = 50_usize;
+    let insert = explain(
+        &pool,
+        INSERT_RECORDS_SQL,
+        &[
+            Arg::Int(7),
+            Arg::Int(9_999),
+            Arg::Int(now_ms),
+            Arg::IntArray((0..50).collect()),
+            Arg::IntArray(vec![now_ms; n]),
+            Arg::TextArray((0..n).map(|i| format!("dir{i}/file{i}.yml")).collect()),
+            Arg::TextArray(vec!["write".to_owned(); n]),
+            Arg::BoolArray(vec![true; n]),
+            Arg::OptTextArray(vec![Some("ada_example_com".to_owned()); n]),
+            Arg::OptTextArray(vec![Some("root".to_owned()); n]),
+            Arg::OptTextArray(vec![Some("/usr/bin/vim".to_owned()); n]),
+            Arg::OptTextArray(vec![Some("vim".to_owned()); n]),
+        ],
+    )
+    .await;
+    no_large_sequential_scan("the records of a batch", &insert);
+    insta::assert_json_snapshot!("attribution_insert_records", insert);
+    let ack = explain(&pool, ACK_SQL, &[Arg::Int(7), Arg::Int(9_999)]).await;
+    no_large_sequential_scan("the acknowledgement", &ack);
+    insta::assert_json_snapshot!("attribution_ack", ack);
+
+    // The correlator, from the records of a batch to the observations they explain.
+    let from_batch = explain(
+        &pool,
+        FROM_BATCH_SQL,
+        &[
+            Arg::Int(7),
+            Arg::Text("lane7"),
+            Arg::Int(3),
+            weak(),
+            Arg::Int(5_000),
+            Arg::Int(window),
+        ],
+    )
+    .await;
+    no_large_sequential_scan("observations from a batch", &from_batch);
+    insta::assert_json_snapshot!("attribution_from_batch", from_batch);
+    // The job: from the observations of a swimlane to the records stored for them, and the NFS clients.
+    let from_observations = explain(
+        &pool,
+        FROM_OBSERVATIONS_SQL,
+        &[
+            Arg::Text("lane7"),
+            Arg::IntArray(vec![7]),
+            Arg::Int(now_ms - 2 * 3600 * 1000),
+            Arg::TextArray(vec!["low".to_owned()]),
+            Arg::Int(5_000),
+            Arg::Int(window),
+        ],
+    )
+    .await;
+    no_large_sequential_scan("observations from the records", &from_observations);
+    insta::assert_json_snapshot!("attribution_from_observations", from_observations);
+    let nfs = explain(
+        &pool,
+        NFS_CLIENT_SQL,
+        &[
+            Arg::Text("lane7"),
+            Arg::Int(now_ms - 10 * 60 * 1000),
+            Arg::Int(now_ms - 30 * 1000),
+            Arg::TextArray(vec!["low".to_owned()]),
+            Arg::Int(5_000),
+            Arg::Int(window),
+        ],
+    )
+    .await;
+    no_large_sequential_scan("the NFS clients", &nfs);
+    insta::assert_json_snapshot!("attribution_nfs_client", nfs);
+    let upgrade = explain(
+        &pool,
+        UPGRADE_SQL,
+        &[
+            Arg::Text("lane7"),
+            Arg::IntArray(vec![1, 2, 3]),
+            Arg::TextArray(vec!["sentinel_login".to_owned(); 3]),
+            Arg::TextArray(vec!["high".to_owned(); 3]),
+            Arg::OptTextArray(vec![None; 3]),
+            Arg::TextArray(vec!["{}".to_owned(); 3]),
+            weak(),
+        ],
+    )
+    .await;
+    no_large_sequential_scan("the upgrade", &upgrade);
+    insta::assert_json_snapshot!("attribution_upgrade", upgrade);
+    let lanes = explain(&pool, ATTRIBUTION_LANES_SQL, &[Arg::Int(201)]).await;
+    no_large_sequential_scan("the swimlanes with a sentinel", &lanes);
+    insta::assert_json_snapshot!("attribution_lanes", lanes);
+
+    // The OS Login map: the admin's rows by key, then the active users by the form of their email (a table of thousands, not of
+    // millions: it is read by a scan, once for the logins of a run that the admin's map did not answer).
+    let logins = vec!["local_7".to_owned(), "ada_example_com".to_owned()];
+    let admin_map = explain(&pool, ADMIN_MAP_SQL, &[Arg::TextArray(logins.clone())]).await;
+    no_large_sequential_scan("the admin's map", &admin_map);
+    insta::assert_json_snapshot!("attribution_admin_map", admin_map);
+    let email = explain(&pool, EMAIL_SQL, &[Arg::TextArray(logins)]).await;
+    no_large_sequential_scan("the email match", &email);
+    insta::assert_json_snapshot!("attribution_email_match", email);
 }

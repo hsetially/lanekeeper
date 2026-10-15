@@ -1,0 +1,19 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: lanes
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Aggregate"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "sentinels"
+  }
+]

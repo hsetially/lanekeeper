@@ -1,0 +1,75 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: from_observations
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Result"
+  },
+  {
+    "node": "Unique"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Hash Join"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "file_observations"
+  },
+  {
+    "index": "file_observations_swimlane_time_idx",
+    "node": "Bitmap Index Scan"
+  },
+  {
+    "node": "Hash"
+  },
+  {
+    "node": "Append"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "sentinel_records_y2026m10"
+  },
+  {
+    "index": "sentinel_records_y2026m10_sentinel_id_path_observed_at_idx",
+    "node": "Bitmap Index Scan"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "sentinel_records_y2026m11"
+  },
+  {
+    "index": "sentinel_records_y2026m11_sentinel_id_path_observed_at_idx",
+    "node": "Bitmap Index Scan"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "sentinel_records_y2026m12"
+  },
+  {
+    "index": "sentinel_records_y2026m12_sentinel_id_path_observed_at_idx",
+    "node": "Bitmap Index Scan"
+  },
+  {
+    "index": "sentinel_records_default_sentinel_id_path_observed_at_idx",
+    "node": "Index Scan",
+    "relation": "sentinel_records_default"
+  },
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "index": "file_observations_history_idx",
+    "node": "Index Scan",
+    "relation": "file_observations"
+  }
+]

@@ -1,0 +1,83 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: nfs
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Result"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "index": "file_observations_swimlane_time_idx",
+    "node": "Index Scan",
+    "relation": "file_observations"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "sentinels"
+  },
+  {
+    "node": "Append"
+  },
+  {
+    "index": "sentinel_records_y2026m09_sentinel_id_path_observed_at_idx",
+    "node": "Index Scan",
+    "relation": "sentinel_records_y2026m09"
+  },
+  {
+    "index": "sentinel_records_y2026m10_sentinel_id_path_observed_at_idx",
+    "node": "Index Scan",
+    "relation": "sentinel_records_y2026m10"
+  },
+  {
+    "index": "sentinel_records_y2026m11_sentinel_id_path_observed_at_idx",
+    "node": "Index Scan",
+    "relation": "sentinel_records_y2026m11"
+  },
+  {
+    "index": "sentinel_records_y2026m12_sentinel_id_path_observed_at_idx",
+    "node": "Index Scan",
+    "relation": "sentinel_records_y2026m12"
+  },
+  {
+    "index": "sentinel_records_default_sentinel_id_path_observed_at_idx",
+    "node": "Index Scan",
+    "relation": "sentinel_records_default"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "sentinels"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "sentinels"
+  },
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "index": "file_observations_history_idx",
+    "node": "Index Scan",
+    "relation": "file_observations"
+  }
+]

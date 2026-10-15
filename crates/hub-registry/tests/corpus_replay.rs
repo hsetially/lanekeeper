@@ -57,6 +57,11 @@ fn corpus_replay_registry_query() {
     replay("registry_query", invariants::registry_query);
 }
 
+#[test]
+fn corpus_replay_registry_sentinel_path() {
+    replay("registry_sentinel_path", invariants::registry_sentinel_path);
+}
+
 fn seed(target: &str, name: &str) -> Vec<u8> {
     fs::read(fuzz_dir().join("corpus").join(target).join(name)).unwrap()
 }
@@ -131,6 +136,28 @@ fn registry_query_seeds_reach_the_cases_they_are_named_for() {
     assert_eq!(probe("raw_empty_pairs"), "page_only accepted");
     assert_eq!(probe("raw_plus_and_equals"), "search_settings accepted");
     assert_eq!(probe("raw_non_utf8"), "tree refused");
+}
+
+/// The sentinel-path seeds reach what they are named for: the prefix is stripped, a name that only starts like the prefix is outside it,
+/// every form of traversal is refused, and roots that are not clean absolute paths map nothing.
+#[test]
+fn registry_sentinel_path_seeds_reach_the_cases_they_are_named_for() {
+    let probe = |name: &str| invariants::describe_sentinel_path(&seed("registry_sentinel_path", name));
+    assert_eq!(probe("prefix_and_a_file_below_it"), "prefix, mapped");
+    assert_eq!(probe("sit10_is_not_under_sit1"), "prefix, outside");
+    assert_eq!(probe("traversal_inside_the_prefix"), "prefix, invalid path");
+    assert_eq!(probe("path_equal_to_the_prefix"), "prefix, outside");
+    assert_eq!(probe("no_export_means_as_is"), "no prefix, mapped");
+    assert_eq!(probe("export_not_under_the_root"), "no prefix, mapped");
+    assert_eq!(probe("root_without_a_slash"), "roots refused");
+    assert_eq!(probe("export_with_a_traversal"), "roots refused");
+    assert_eq!(probe("raw_text_with_a_nul"), "prefix, invalid path");
+    assert_eq!(probe("raw_text_with_a_backslash"), "prefix, invalid path");
+    assert_eq!(probe("absolute_path"), "prefix, invalid path");
+    assert_eq!(probe("dots_and_double_slashes_are_cleaned"), "prefix, mapped");
+    assert_eq!(probe("empty_program"), "roots refused");
+    assert_eq!(probe("export_equal_to_the_root"), "no prefix, mapped");
+    assert_eq!(probe("names_that_only_look_like_dotdot"), "prefix, mapped");
 }
 
 /// The seeds are only worth having if each reaches the part of the checks it is named for. Each seed here is decoded and its
@@ -211,6 +238,22 @@ proptest! {
         let mut data = vec![0x80 | op];
         data.extend_from_slice(text.as_bytes());
         if let Err(why) = invariants::registry_query(&data) {
+            panic!("{why}");
+        }
+    }
+
+    /// Whatever the bytes are, a sentinel's path is mapped as the rules say or dropped.
+    #[test]
+    fn random_sentinel_path_programs_hold_every_invariant(data in proptest::collection::vec(any::<u8>(), 0..64)) {
+        if let Err(why) = invariants::registry_sentinel_path(&data) {
+            panic!("{why}");
+        }
+    }
+
+    /// Programs of small numbers: every flag, every component of the pool, short raw texts.
+    #[test]
+    fn small_sentinel_path_programs_hold_every_invariant(data in proptest::collection::vec(0u8..16, 0..48)) {
+        if let Err(why) = invariants::registry_sentinel_path(&data) {
             panic!("{why}");
         }
     }

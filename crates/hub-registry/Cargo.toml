@@ -151,3 +151,8 @@ harness = false
 [[bench]]
 name = "steady_state_queries"
 harness = false
+
+# P14 (T7): a sentinel's record attributes a change within 30 s, with the leased job running at its interval, at the scale of one target swimlane.
+[[bench]]
+name = "sentinel_attribution"
+harness = false

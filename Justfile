@@ -410,7 +410,7 @@ registry-slow-test:
 # cargo audit (S19), then each target runs {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in
 # crates/hub-registry/fuzz/artifacts/. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart. The committed seeds
 # also replay on stable in `cargo test -p hub-registry --test corpus_replay`.
-registry_fuzz_targets := "registry_delta registry_cursor registry_query"
+registry_fuzz_targets := "registry_delta registry_cursor registry_query registry_sentinel_path"
 registry-fuzz: fuzz-tools-check
     #!/usr/bin/env bash
     set -euo pipefail
@@ -423,7 +423,7 @@ registry-fuzz: fuzz-tools-check
     done
     echo "registry-fuzz: {{registry_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
 
-# P15 (T1), P1, P2, P5 and P6 (T3), P6.adoption_rank (T5), P7 and P12 (T6; from the read bed, through the router), and from the later tasks P14: the benchmarks at target scale (the fixtures are generated into
+# P15 (T1), P1, P2, P5 and P6 (T3), P6.adoption_rank (T5), P7 and P12 (T6; from the read bed, through the router), and P14 (T7; the sentinel's attribution, with the leased job running at its interval): the benchmarks at target scale (the fixtures are generated into
 # target/fixtures/target when missing), then `cargo xtask bench-check` on the budgets whose benchmark is in crates/hub-registry/benches/
 # only. The full registry needs every other prompt's benchmarks to have run (`just bench`), and `bench-check` has no filter, so the
 # recipe cuts a registry with just the budgets below and judges that; the full `cargo xtask bench-check` is run by the FINAL step
@@ -431,7 +431,7 @@ registry-fuzz: fuzz-tools-check
 # measured and does not fail the recipe. The benchmarks need a database (Docker, or LK_TEST_PG_ADMIN_URL) for the Postgres they
 # measure.
 # `tests/justfile_gate.rs` fails if this list and the benchmark files of the crate drift apart.
-registry_budgets := "P15.registry_ingest_versions_per_s P5 P5.per_file_per_swimlane P6.hub_full_recompute P1.hub_delta_to_drift P2.hub_head_moved_to_drift P6.adoption_rank P7.swimlane_list P7.file_tree P7.file_content_cached P7.file_content_cold P7.compare_api P7.grid P7.whole_swimlane_compare P7.settings_search P7.text_search P12.steady_state_query_ms"
+registry_budgets := "P15.registry_ingest_versions_per_s P5 P5.per_file_per_swimlane P6.hub_full_recompute P1.hub_delta_to_drift P2.hub_head_moved_to_drift P6.adoption_rank P7.swimlane_list P7.file_tree P7.file_content_cached P7.file_content_cold P7.compare_api P7.grid P7.whole_swimlane_compare P7.settings_search P7.text_search P12.steady_state_query_ms P14"
 registry-bench:
     #!/usr/bin/env bash
     set -euo pipefail

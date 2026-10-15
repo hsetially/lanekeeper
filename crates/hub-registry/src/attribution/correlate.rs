@@ -163,7 +163,12 @@ pub const FROM_OBSERVATIONS_SQL: &str = concat!(
     " FROM file_observations o \
      JOIN sentinel_records r ON r.sentinel_id = ANY($2::bigint[]) AND r.path = o.path AND ",
     record_near!(),
-    " WHERE o.swimlane_id = $1 AND o.observed_at > ",
+    // Implied by the two conditions around it, and said so that the records read are those of the look-back and nothing older: the
+    // partitions before it are pruned, and a hash join over a sentinel's records cannot cost more than its look-back holds.
+    " AND r.observed_at >= ",
+    at!("$3"),
+    " - ($6::bigint::text || ' milliseconds')::interval \
+     WHERE o.swimlane_id = $1 AND o.observed_at > ",
     at!("$3"),
     " AND NOT o.initial AND o.attribution_confidence = ANY($4::text[]) AND ",
     fits!(),

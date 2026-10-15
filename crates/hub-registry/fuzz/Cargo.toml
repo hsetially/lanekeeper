@@ -49,3 +49,10 @@ path = "fuzz_targets/registry_query.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "registry_sentinel_path"
+path = "fuzz_targets/registry_sentinel_path.rs"
+test = false
+doc = false
+bench = false

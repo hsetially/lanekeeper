@@ -799,3 +799,38 @@ async fn the_order_in_which_the_scan_the_record_and_the_job_come_does_not_change
         assert_eq!(rig.attribution_updates().await.len(), upgrades, "{order}");
     }
 }
+
+#[tokio::test]
+async fn a_denied_files_change_is_attributed_by_name_and_no_content_or_blob_is_involved() {
+    // T9's rule (D79, D104): a denied file's history shows who changed it, never what it holds. A sentinel sends no content and the
+    // registry's sink has no blob store, so attributing the change touches no blob; the audit event has no diff.
+    let Some(rig) = Rig::new().await else { return };
+    let mut agent = world(&rig, &[("keys/app.pem", "key: 0")]).await;
+    rig.sentinel_hello().await.unwrap();
+    rig.clock.advance_secs(26);
+    agent.change_denied("keys/app.pem", "key: 1", T0 + 25 * S).await;
+    let blobs = rig.count("SELECT count(*) FROM blobs").await;
+    let denied = rig.state("keys/app.pem").await.unwrap();
+    assert!(denied.denied, "the setup: the file is denied");
+
+    rig.records(batch(1, vec![record("keys/app.pem", T0 + 10 * S)]))
+        .await
+        .unwrap();
+    let a = rig.attribution("keys/app.pem", 1).await;
+    assert!(a.is("sentinel_login", "high"), "{a:?}");
+    assert!(a.user().is_some());
+    assert_eq!(
+        rig.count("SELECT count(*) FROM blobs").await,
+        blobs,
+        "no blob was read or written for it"
+    );
+    let diff: Option<String> = sqlx::query_scalar(
+        "SELECT event_json::jsonb ->> 'diff' FROM audit_events WHERE action = 'attribution_upgraded'",
+    )
+    .fetch_one(&rig.pool)
+    .await
+    .unwrap();
+    assert_eq!(diff, None, "the audit event carries a name and a hash, no text");
+    // The stored record carries a path, an operation and names, and nothing that is a file's content.
+    assert_eq!(rig.stored_records().await.len(), 1);
+}

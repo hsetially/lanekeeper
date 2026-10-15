@@ -6,11 +6,15 @@
 //! `T0 + 25 s` is the agent finding it.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use async_trait::async_trait;
 use domain::{
     AuditOperation, AuditRecord, AuditRecordBatch, DomainEvent, Guid, NfsPath, SentinelConfig, SentinelHello,
     ShortText, Timestamp, UserId,
 };
+use hub_registry::SentinelIngest;
+use ports::conformance::SentinelProbe;
 use ports::{AckSeq, SentinelIdentity, SentinelSink, SinkError};
+use sqlx::PgPool;
 use sqlx::Row;
 
 use domain::ContentHash;
@@ -291,6 +295,18 @@ impl<'a> Agent<'a> {
         self.rig.delta(d).await.unwrap();
     }
 
+    /// `content` at `path`, a file the agent calls denied: its name, size and hash, and no bytes (D79).
+    pub async fn change_denied(&mut self, path: &str, content: &str, seen_ms: i64) {
+        let (seq, base, new) = self.next();
+        let mut e = entry(path, content.as_bytes(), seen_ms);
+        e.denied = true;
+        e.bytes = None;
+        self.rig
+            .delta(delta(seq, Some(base), new, vec![e]))
+            .await
+            .unwrap();
+    }
+
     /// Several files at once, all seen at `seen_ms`.
     pub async fn change_all(&mut self, changes: &[(&str, &str)], seen_ms: i64) {
         let (seq, base, new) = self.next();
@@ -316,5 +332,47 @@ impl<'a> Agent<'a> {
         );
         d.removed = vec![nfs(path)];
         self.rig.delta(d).await.unwrap();
+    }
+}
+
+/// The registry's sentinel sink with a way to count what it stored, so that `ports::conformance::sentinel_sink` runs against the real
+/// implementation over a real Postgres. It **forwards both calls** to the sink.
+pub struct PgSentinelProbe {
+    pub sink: SentinelIngest,
+    pub pool: PgPool,
+}
+
+#[async_trait]
+impl SentinelSink for PgSentinelProbe {
+    async fn hello(&self, id: &SentinelIdentity, h: SentinelHello) -> Result<SentinelConfig, SinkError> {
+        self.sink.hello(id, h).await
+    }
+
+    async fn records(&self, id: &SentinelIdentity, b: AuditRecordBatch) -> Result<AckSeq, SinkError> {
+        self.sink.records(id, b).await
+    }
+}
+
+#[async_trait]
+impl SentinelProbe for PgSentinelProbe {
+    async fn applied_records(&self, id: &SentinelIdentity) -> usize {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sentinel_records r JOIN sentinels s ON s.id = r.sentinel_id WHERE s.vm = $1",
+        )
+        .bind(id.name().as_str())
+        .fetch_one(&self.pool)
+        .await
+        .unwrap();
+        usize::try_from(n).unwrap()
+    }
+}
+
+impl Rig {
+    /// The sink with a probe over this rig's database.
+    pub fn sentinel_probe(&self) -> PgSentinelProbe {
+        PgSentinelProbe {
+            sink: self.sentinel.clone(),
+            pool: self.pool.clone(),
+        }
     }
 }

@@ -13,6 +13,7 @@
 //! | Target | Input | What must hold |
 //! |---|---|---|
 //! | `registry_delta` | bytes read as a program: one to four messages of a scan delta, each with files (a path, whether the agent called it denied, its bytes or none, whether the hash and the size are true, a time that is sane, negative, beyond year 9999 or a year ahead), removals and skips | the checks never panic; a message is accepted exactly when an oracle written from the rules accepts it, and refused with the oracle's error otherwise (the first bad entry decides); an accepted message equals the entries given, in order, with the hashes, sizes and paths given; content is kept only for an entry that is neither marked denied nor matched by the hub's own globs, and then it hashes to the entry's hash; a denied entry is class `denied` and keeps no content; no time is below 0 or above the hub's clock plus the skew; the staged form survives JSON; the totals of a logical delta never pass a bound that was accepted, and a part that would pass it is refused; the plan for the versions of a path chains (each moving version replaces the one before it), never moves the state to the hash it already has, never moves it back to an older time, and orders a removal after what it removes |
+//! | `registry_sentinel_path` | bytes read as a program: the root a sentinel watches and the export of its swimlane (each an absolute path built from components that include `..`, `.`, empty names, a backslash and a control character, or text with no slash at all), and the path of one record (components, raw text, a path under the swimlane's own prefix, or an absolute one) | the mapping never panics; a mapping exists exactly when an oracle written from the rules says both roots are clean absolute paths; a record's path is mapped exactly when the oracle says it is a clean relative path strictly below the prefix (compared by component, so `sit10` is not under `sit1`), and to the part below it; what comes out is a clean `NfsPath` (no `..`, no empty or `.` component, no control character, no backslash, at most 1,024 bytes, parses back to itself) that is never longer than what went in |
 
 #![allow(
     dead_code,
@@ -26,6 +27,7 @@ use bytes::Bytes;
 use domain::{ContentHash, Cursor, NfsPath, Page, ScanDelta, ScanEntry, ShortText, SkippedEntry, Timestamp};
 use engine::DenyMatcher;
 use hub_registry::RegistryError;
+use hub_registry::attribution::Mapper;
 use hub_registry::fuzzing::{add_part, check_message, plan_versions};
 use hub_registry::http::query;
 use hub_registry::read::cursor::{self as rc, Context, CursorError, Field, Kind, Parsed};
@@ -943,5 +945,246 @@ pub fn describe_cursor(data: &[u8]) -> String {
     match cursor_program(data) {
         Ok(what) => format!("program {what}"),
         Err(why) => format!("VIOLATION {why}"),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------- registry_sentinel_path
+
+/// The components a program picks from. They include everything a path can be hostile with: parent and current directory, an empty
+/// name (a doubled slash), a name that only looks like `..`, a backslash, a control character, a non-ASCII name, and a prefix that
+/// another name starts with (`sit1` and `sit10`).
+const COMPONENTS: [&str; 14] = [
+    "export", "sit1", "sit10", "csp", "a", "b.yml", ".", "..", "", "x y", "..a", "a..b", "a\\b", "a\nb",
+];
+
+/// The characters of a raw path text: slashes and dots in every arrangement, a backslash, a space, a NUL and a newline.
+const PATH_ALPHABET: &[u8] = b"ab/./-_\\ \0\nsit1";
+
+/// What the program says: the two roots as text, and the path of the record.
+struct PathProgram {
+    root: String,
+    export: Option<String>,
+    /// The components of the prefix the oracle expects, when the swimlane's export is under the root.
+    path: String,
+}
+
+fn components(r: &mut Reader<'_>, count: usize) -> Vec<&'static str> {
+    (0..count)
+        .map(|_| COMPONENTS[usize::from(r.byte()) % COMPONENTS.len()])
+        .collect()
+}
+
+fn path_program(data: &[u8]) -> PathProgram {
+    let mut r = Reader { data, at: 0 };
+    let flags = r.byte();
+    let has_export = flags & 1 != 0;
+    let export_extends_root = flags & 2 != 0;
+    let root_slash = flags & 4 != 0;
+    let export_slash = flags & 8 != 0;
+    let style = (flags >> 4) & 3;
+
+    let root_n = usize::from(r.byte() % 4);
+    let root_comps = components(&mut r, root_n);
+    let root = format!("{}{}", if root_slash { "/" } else { "" }, root_comps.join("/"));
+
+    let export = has_export.then(|| {
+        let extra_n = usize::from(r.byte() % 4);
+        let extra = components(&mut r, extra_n);
+        let mut comps: Vec<&str> = if export_extends_root {
+            root_comps.clone()
+        } else {
+            Vec::new()
+        };
+        comps.extend(extra);
+        format!("{}{}", if export_slash { "/" } else { "" }, comps.join("/"))
+    });
+
+    let path = match style {
+        0 => {
+            let n = usize::from(r.byte() % 6);
+            components(&mut r, n).join("/")
+        }
+        1 => {
+            let n = usize::from(r.byte() % 48);
+            let text: Vec<u8> = (0..n)
+                .map(|_| PATH_ALPHABET[usize::from(r.byte()) % PATH_ALPHABET.len()])
+                .collect();
+            String::from_utf8_lossy(&text).into_owned()
+        }
+        2 => {
+            // Under the prefix the export gives, when there is one: the case the mapping is for.
+            let tail_n = usize::from(r.byte() % 4);
+            let tail = components(&mut r, tail_n);
+            let prefix = export
+                .as_deref()
+                .and_then(|e| e.strip_prefix(root.as_str()))
+                .unwrap_or_default()
+                .trim_matches('/')
+                .to_owned();
+            if prefix.is_empty() {
+                tail.join("/")
+            } else {
+                format!("{prefix}/{}", tail.join("/"))
+            }
+        }
+        _ => {
+            let n = usize::from(r.byte() % 4);
+            format!("/{}", components(&mut r, n).join("/"))
+        }
+    };
+    PathProgram { root, export, path }
+}
+
+/// The clean components of a relative path, by the rules written in `domain::paths`: no control character, no backslash, not absolute,
+/// no `..`, empty and `.` components dropped, a component at most 255 bytes, 1,024 bytes in all, and raw text of at most 8,192 bytes.
+/// `None` when the path is not clean. An empty result is the root.
+fn clean_components(raw: &str) -> Option<Vec<String>> {
+    if raw.len() > 8192 || raw.chars().any(char::is_control) || raw.contains('\\') || raw.starts_with('/') {
+        return None;
+    }
+    let mut out = Vec::new();
+    for c in raw.split('/') {
+        match c {
+            "" | "." => {}
+            ".." => return None,
+            c if c.len() > 255 => return None,
+            c => out.push(c.to_owned()),
+        }
+    }
+    if out.join("/").len() > 1024 {
+        return None;
+    }
+    Some(out)
+}
+
+/// An absolute path's components: it starts with a slash and the rest is a clean path (which may be empty: `/`).
+fn absolute_components(raw: &str) -> Option<Vec<String>> {
+    clean_components(raw.strip_prefix('/')?)
+}
+
+/// What the oracle says the mapping of the program is: `None` when the roots cannot be mapped, else the prefix as components.
+fn oracle_prefix(p: &PathProgram) -> Option<Vec<String>> {
+    let root = absolute_components(&p.root)?;
+    let Some(export) = &p.export else {
+        return Some(Vec::new());
+    };
+    let export = absolute_components(export)?;
+    if export.len() >= root.len() && export[..root.len()] == root[..] {
+        Some(export[root.len()..].to_vec())
+    } else {
+        Some(Vec::new())
+    }
+}
+
+/// The oracle's answer for the path: `Err("invalid")` for text that is not a clean relative path, `Ok(None)` when it is outside the
+/// prefix, `Ok(Some(path))` when it is mapped.
+fn oracle_map(prefix: &[String], path: &str) -> Result<Option<String>, &'static str> {
+    let comps = clean_components(path).ok_or("invalid")?;
+    // The root itself is not a file (`NfsPath::parse` refuses it).
+    if comps.is_empty() {
+        return Err("invalid");
+    }
+    if prefix.is_empty() {
+        return Ok(Some(comps.join("/")));
+    }
+    if comps.len() > prefix.len() && comps[..prefix.len()] == prefix[..] {
+        Ok(Some(comps[prefix.len()..].join("/")))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn registry_sentinel_path(data: &[u8]) -> Result<(), String> {
+    let p = path_program(data);
+    let mapper = Mapper::new(&p.root, p.export.as_deref());
+    let expected = oracle_prefix(&p);
+    match (&mapper, &expected) {
+        (None, None) => return Ok(()),
+        (Some(_), Some(_)) => {}
+        (Some(_), None) => {
+            return Err(format!(
+                "a mapping was made for roots that are not clean: {:?} {:?}",
+                p.root, p.export
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(format!(
+                "roots that are clean were refused: {:?} {:?}",
+                p.root, p.export
+            ));
+        }
+    }
+    let (Some(mapper), Some(prefix)) = (mapper, expected) else {
+        return Ok(());
+    };
+    if mapper
+        .prefix()
+        .components()
+        .map(str::to_owned)
+        .collect::<Vec<_>>()
+        != prefix
+    {
+        return Err(format!(
+            "the prefix of {:?} {:?} is {:?}, the rules say {prefix:?}",
+            p.root,
+            p.export,
+            mapper.prefix().as_str()
+        ));
+    }
+    let got = mapper.map_str(&p.path);
+    // The same answer twice.
+    if mapper.map_str(&p.path) != got {
+        return Err(format!("two mappings of {:?} differ", p.path));
+    }
+    // Text that is not a clean path is dropped, as one outside the prefix is: either way nothing comes out.
+    let want = oracle_map(&prefix, &p.path).unwrap_or_default();
+    let got_text = got.as_ref().map(|g| g.as_str().to_owned());
+    if got_text != want {
+        return Err(format!(
+            "{:?} under {prefix:?} was mapped to {got_text:?}, the rules say {want:?}",
+            p.path
+        ));
+    }
+    if let Some(mapped) = got {
+        let text = mapped.as_str();
+        if text.is_empty()
+            || text.starts_with('/')
+            || text.ends_with('/')
+            || text.contains("//")
+            || text.contains('\\')
+            || text.chars().any(char::is_control)
+            || text.split('/').any(|c| c == ".." || c == "." || c.len() > 255)
+            || text.len() > 1024
+        {
+            return Err(format!("a mapped path is not clean: {text:?}"));
+        }
+        if NfsPath::parse(text).as_ref() != Ok(&mapped) {
+            return Err(format!("a mapped path does not parse back to itself: {text:?}"));
+        }
+        if text.len() > p.path.len() {
+            return Err(format!(
+                "a mapped path {text:?} is longer than what came in {:?}",
+                p.path
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// One line saying what a program is and what became of it, for the test that the seeds reach the cases they are named for.
+pub fn describe_sentinel_path(data: &[u8]) -> String {
+    let p = path_program(data);
+    let Some(mapper) = Mapper::new(&p.root, p.export.as_deref()) else {
+        return "roots refused".to_owned();
+    };
+    let prefixed = if mapper.prefix().is_root() {
+        "no prefix"
+    } else {
+        "prefix"
+    };
+    match (clean_components(&p.path), mapper.map_str(&p.path)) {
+        (None, _) => format!("{prefixed}, invalid path"),
+        (Some(_), Some(_)) => format!("{prefixed}, mapped"),
+        (Some(_), None) => format!("{prefixed}, outside"),
     }
 }
