@@ -118,13 +118,23 @@ pub fn parse_push_permission(body: &[u8]) -> Result<bool, GithubError> {
     Ok(repo.permissions.and_then(|p| p.push).unwrap_or(false))
 }
 
-/// The expiry of the token, from the header's value; `None` when GitHub sent none (a token that does not expire) or sent
-/// something unreadable.
-#[must_use]
-pub fn token_expiry(header: Option<&[u8]>) -> Option<Timestamp> {
-    header
-        .and_then(|v| std::str::from_utf8(v).ok())
+/// The expiry of the token, from the header's value: `Ok(None)` only when GitHub sent no header (a token that does not expire).
+/// A header that is there and cannot be read (not text, not `YYYY-MM-DD HH:MM:SS UTC`, a date that is not one) is
+/// [`GithubError::Unexpected`], not `None`: reading it as "never expires" would leave a token that does expire without the guard
+/// that stops a job from using it after it has.
+///
+/// # Errors
+///
+/// [`GithubError::Unexpected`] for a header whose value is unreadable.
+pub fn token_expiry(header: Option<&[u8]>) -> Result<Option<Timestamp>, GithubError> {
+    let Some(raw) = header else {
+        return Ok(None);
+    };
+    std::str::from_utf8(raw)
+        .ok()
         .and_then(|v| parse_expiry(v.trim()))
+        .map(Some)
+        .ok_or(GithubError::Unexpected)
 }
 
 /// The meaning of an HTTP status for these calls, before the body is looked at.
@@ -647,11 +657,26 @@ mod tests {
     }
 
     #[test]
-    fn the_expiry_header_is_optional() {
-        assert!(token_expiry(Some(b"2026-11-20 12:00:00 UTC")).is_some());
-        assert!(token_expiry(Some(b" 2026-11-20 12:00:00 UTC ")).is_some());
-        assert!(token_expiry(Some(b"soon")).is_none());
-        assert!(token_expiry(Some(&[0xff, 0xfe])).is_none());
-        assert!(token_expiry(None).is_none());
+    fn the_expiry_header_is_optional_and_never_misread() {
+        assert!(matches!(
+            token_expiry(Some(b"2026-11-20 12:00:00 UTC")),
+            Ok(Some(_))
+        ));
+        assert!(matches!(
+            token_expiry(Some(b" 2026-11-20 12:00:00 UTC ")),
+            Ok(Some(_))
+        ));
+        // No header is a token that does not expire; a header that cannot be read is not.
+        assert_eq!(token_expiry(None), Ok(None));
+        for bad in [
+            &b"soon"[..],
+            &[0xff, 0xfe],
+            b"",
+            b"   ",
+            b"2026-11-20 12:00:00 -0500",
+            b"2026-02-30 12:00:00 UTC",
+        ] {
+            assert_eq!(token_expiry(Some(bad)), Err(GithubError::Unexpected), "{bad:?}");
+        }
     }
 }

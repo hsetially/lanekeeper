@@ -67,6 +67,23 @@ async fn a_token_without_an_expiry_has_none() {
     assert_eq!(client(&server).user(&token()).await.unwrap().expires_at, None);
 }
 
+/// A header that is there and cannot be read is not "no expiry": taking it for one would leave a token that does expire without
+/// the guard that stops a job from using it.
+#[tokio::test]
+async fn an_expiry_header_that_cannot_be_read_is_an_unexpected_answer() {
+    for bad in ["soon", "2026-11-20 12:00:00 -0500", "2026-02-30 12:00:00 UTC", ""] {
+        let server = LocalGithub::start(always(
+            Reply::json(200, USER).with_header("github-authentication-token-expiration", bad),
+        ))
+        .await;
+        assert_eq!(
+            client(&server).user(&token()).await.unwrap_err(),
+            GithubError::Unexpected,
+            "{bad:?}"
+        );
+    }
+}
+
 /// S8, S21: the token travels in the `Authorization` header and in nothing else the server can see.
 #[tokio::test]
 async fn the_token_is_sent_in_the_authorization_header_only() {

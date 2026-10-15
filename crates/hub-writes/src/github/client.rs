@@ -41,7 +41,7 @@ use super::types::{GithubLogin, RepoRef};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GithubUser {
     pub login: GithubLogin,
-    /// From the expiry header; `None` when GitHub sent none or sent something unreadable.
+    /// From the expiry header; `None` only when GitHub sent none. A header that cannot be read fails the call.
     pub expires_at: Option<Timestamp>,
 }
 
@@ -421,7 +421,7 @@ impl GithubApi for GithubClient {
     async fn user(&self, token: &Secret<String>) -> Result<GithubUser, GithubError> {
         let reply = self.get(token, "/user").await?;
         let login = parse_user(&reply.body)?;
-        let expires_at = token_expiry(reply.headers.get(EXPIRY_HEADER).map(HeaderValue::as_bytes));
+        let expires_at = token_expiry(reply.headers.get(EXPIRY_HEADER).map(HeaderValue::as_bytes))?;
         Ok(GithubUser { login, expires_at })
     }
 

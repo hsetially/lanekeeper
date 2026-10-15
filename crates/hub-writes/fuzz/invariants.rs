@@ -10,7 +10,7 @@
 //! | `writes_request_json` | bytes read as the JSON body of an edit, a revert, a restart, a notify, a reveal, a draft, a pull request, an approval and a rejection, and as the lines `path`, `expected`, `preview_id` of a delete and `status`, `swimlane`, `cursor`, `limit` of a list of proposals | reading never panics; an accepted request names a valid path and typed hashes, holds no more content than the input had, and survives a round trip through its canonical JSON (or lines) unchanged |
 //! | `writes_upload_multipart` | a content type, a line end, and a multipart body, read as an upload form and as a preview form | reading never panics; an accepted request has a valid path, a file within the limit, an `Expected` that agrees with its fields, and survives a round trip through a canonical form unchanged |
 //! | `writes_github_token` | bytes read as the body of `PUT /me/github-token`, and the same bytes as the text of a token | reading never panics; an accepted body holds a token of one to 512 bytes and survives a round trip through its canonical JSON unchanged; the shape check accepts only `github_pat_` followed by letters, digits and underscores within 512 bytes, never calls a fine-grained prefix classic, and its errors are the fixed words, none of which holds the input |
-//! | `writes_github_responses` | bytes read as the answer of `GET /user`, as the answer of `GET /repos/{o}/{r}`, and as the value of the expiry header | reading never panics; an accepted login is valid and is the one an independent JSON read finds; `push` is `true` only when an independent read finds exactly `permissions.push == true`; every error is `Unexpected`; an accepted expiry lies in 2000 to 2200 and survives being written out and read again |
+//! | `writes_github_responses` | bytes read as the answer of `GET /user`, as the answer of `GET /repos/{o}/{r}`, and as the value of the expiry header | reading never panics; an accepted login is valid and is the one an independent JSON read finds; `push` is `true` only when an independent read finds exactly `permissions.push == true`; every error is `Unexpected`; an accepted expiry lies in 2000 to 2200 and survives being written out and read again, an absent header is no expiry, and a header that is there is read or refused as `Unexpected`, never taken for no expiry |
 //! | `writes_git_data_responses` | bytes read as the answers of the Git Data calls (a branch head, a commit, a created object, a blob, a file's contents, a pull request and a list of them), and as the text of a branch name, a Git object id and a repository path | reading never panics; every error is `Unexpected`; an accepted object id is 40 lowercase hexadecimal digits and the one an independent JSON read finds; an accepted blob or file holds exactly the number of bytes its `size` says and no more than its text can encode; an accepted pull request has a number from 1 to 2147483647 and an `https` address of at most 512 characters without a space or a control character, as an independent read finds them; an accepted branch name holds only letters, digits, `.`, `_`, `-` and single `/`; an encoded path decodes to the path |
 //! | `writes_preview_id` | text read as a preview id presented with a fixed request at a fixed time | checking never panics; an id is accepted only if it is exactly the one the service issues for that request at the second it names (so each request has one id for each second), and that second is within the ten minutes before now |
 
@@ -618,7 +618,9 @@ pub fn writes_github_token(data: &[u8]) -> Result<(), String> {
 // ---------------------------------------------------------------------------------------------------- GitHub's answers
 
 pub fn github_responses_accepted(data: &[u8]) -> bool {
-    parse_user(data).is_ok() || parse_push_permission(data).is_ok() || token_expiry(Some(data)).is_some()
+    parse_user(data).is_ok()
+        || parse_push_permission(data).is_ok()
+        || matches!(token_expiry(Some(data)), Ok(Some(_)))
 }
 
 /// Days since 1970-01-01 to a civil date: the inverse of the parser's own conversion, written again here (Hinnant), so the check
@@ -682,32 +684,42 @@ pub fn writes_github_responses(data: &[u8]) -> Result<(), String> {
         })?,
     }
 
-    if let Some(at) = token_expiry(Some(data)) {
-        let ms = at.unix_millis();
-        ensure((946_684_800_000..=7_258_118_400_000).contains(&ms), || {
-            "an accepted expiry is outside 2000 to 2200".into()
-        })?;
-        ensure(ms % 1_000 == 0, || {
-            "an accepted expiry has a fraction of a second".into()
-        })?;
-        let secs = ms / 1_000;
-        let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
-        let rem = secs.rem_euclid(86_400);
-        let written = format!(
-            "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02} UTC",
-            rem / 3_600,
-            rem % 3_600 / 60,
-            rem % 60
-        );
-        ensure(
-            token_expiry(Some(written.as_bytes())).map(domain::Timestamp::unix_millis) == Some(ms),
-            || "an accepted expiry changes when written out and read again".into(),
-        )?;
-        // And the text it was read from was that time, with nothing else around it but spaces.
-        let text = std::str::from_utf8(data).map_err(|_| "a non-text expiry is accepted".to_owned())?;
-        ensure(text.trim() == written, || {
-            "the expiry text is not the time it names".into()
-        })?;
+    // No header is no expiry; a header that is there is read or refused (as `Unexpected`), never taken for none.
+    ensure(token_expiry(None) == Ok(None), || {
+        "an absent expiry header is not 'no expiry'".into()
+    })?;
+    match token_expiry(Some(data)) {
+        Ok(None) => return Err("a header that is there is read as no expiry".into()),
+        Err(e) => ensure(e == GithubError::Unexpected, || {
+            "an expiry error is not 'unexpected'".into()
+        })?,
+        Ok(Some(at)) => {
+            let ms = at.unix_millis();
+            ensure((946_684_800_000..=7_258_118_400_000).contains(&ms), || {
+                "an accepted expiry is outside 2000 to 2200".into()
+            })?;
+            ensure(ms % 1_000 == 0, || {
+                "an accepted expiry has a fraction of a second".into()
+            })?;
+            let secs = ms / 1_000;
+            let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
+            let rem = secs.rem_euclid(86_400);
+            let written = format!(
+                "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02} UTC",
+                rem / 3_600,
+                rem % 3_600 / 60,
+                rem % 60
+            );
+            ensure(
+                token_expiry(Some(written.as_bytes())) == Ok(Some(domain::Timestamp::from_unix_millis(ms))),
+                || "an accepted expiry changes when written out and read again".into(),
+            )?;
+            // And the text it was read from was that time, with nothing else around it but spaces.
+            let text = std::str::from_utf8(data).map_err(|_| "a non-text expiry is accepted".to_owned())?;
+            ensure(text.trim() == written, || {
+                "the expiry text is not the time it names".into()
+            })?;
+        }
     }
 
     // The status table is total: any status and flag give an answer, and only a 200 gives none.

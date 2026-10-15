@@ -329,8 +329,8 @@ fn days_in_month(y: i64, m: i64) -> i64 {
     }
 }
 
-/// Reads the `github-authentication-token-expiration` header: `2026-11-20 12:00:00 UTC`. A value in any other shape is `None`,
-/// which the vault stores as "expiry unknown". The year is held to 2000 to 2200, so a hostile header cannot make a time that
+/// Reads the `github-authentication-token-expiration` header: `2026-11-20 12:00:00 UTC`. A value in any other shape is `None`;
+/// `api::token_expiry` turns that into an error for a header that is there (it is not "never expires"). The year is held to 2000 to 2200, so a hostile header cannot make a time that
 /// overflows anything downstream.
 #[must_use]
 pub fn parse_expiry(value: &str) -> Option<Timestamp> {
