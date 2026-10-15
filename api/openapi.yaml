@@ -2075,8 +2075,8 @@ paths:
       operationId: createMcpToken
       summary: Create a personal MCP token
       description: Personal-token mode only (D52); otherwise 404. The token is `lkpat_` plus 256 random bits, valid for
-        7 days, shown once in this response and stored only as a keyed hash (S7). A user has at most five live tokens;
-        past that, 409. Audited. Revoke a token that is lost or no longer needed.
+        7 days, shown once in this response and stored only as a keyed hash (S7). A user has a limited number of live
+        tokens, five by default; past that, 409. Audited. Revoke a token that is lost or no longer needed.
       tags:
       - me
       x-required-role: viewer
