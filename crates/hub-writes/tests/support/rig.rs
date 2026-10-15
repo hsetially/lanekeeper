@@ -147,6 +147,26 @@ impl Rig {
         .unwrap()
     }
 
+    /// A hub over the same database, agent and doubles that keeps its blobs in `blobs` (a store that counts, or one that fails).
+    pub fn hub_with_blobs(&self, blobs: Arc<dyn ports::BlobStore>) -> WriteHub {
+        WriteHub::new(WriteHubDeps {
+            pool: self.pool.clone(),
+            users: self.users.clone(),
+            audit: self.audit.clone(),
+            bus: Arc::new(self.bus.clone()),
+            gateway: Arc::new(self.agent.clone()),
+            blobs,
+            registry: self.registry.clone(),
+            tool_writes: Arc::new(PgToolWrites),
+            notifier: self.notifier.clone(),
+            secrets: self.secrets.clone(),
+            leases: self.leases.clone(),
+            clock: self.clock.clone(),
+            config: WriteConfig::default(),
+        })
+        .unwrap()
+    }
+
     /// A hub over the same database, agent and doubles that tells its admins through `notifier`.
     pub fn hub_with_notifier(&self, notifier: Arc<dyn ports::Notifier>) -> WriteHub {
         WriteHub::new(WriteHubDeps {

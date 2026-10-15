@@ -92,6 +92,7 @@ pub fn hot_queries() -> Vec<(&'static str, &'static str)> {
     all.push(("proposal_get", proposals::store::GET_SQL));
     all.push(("proposal_list", proposals::store::LIST_SQL));
     all.push(("proposal_lock", proposals::store::LOCK_SQL));
+    all.push(("proposal_blob_sizes", proposals::list::SIZES_SQL));
     all.push(("proposal_expiry", proposals::store::EXPIRED_SQL));
     all.push(("draft_get", drafts::GET));
     all.push(("draft_open_count", drafts::OPEN_COUNT));

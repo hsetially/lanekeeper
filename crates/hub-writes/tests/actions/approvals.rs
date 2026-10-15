@@ -3,6 +3,8 @@
 //! approved change names both the author and the approver. All of it over a real Postgres, with the production grants.
 #![allow(clippy::too_many_lines)]
 
+use std::sync::Arc;
+
 use bytes::Bytes;
 use domain::{
     DomainEvent, Page, ProposalId, ProposalStatus, RejectReason, RestartRequest, Role, ServiceRef, ShortText,
@@ -1114,6 +1116,81 @@ async fn a_proposal_the_job_cannot_move_does_not_hold_up_the_ones_behind_it() {
     let report = l.rig.hub.expirer().run_once(&|| true).await;
     assert_eq!(report.proposals, 1, "{report:?}");
     assert_eq!(l.status(first).await, "expired");
+}
+
+/// A blob store that remembers which versions were read from it.
+struct CountingBlobs {
+    inner: Arc<dyn BlobStore>,
+    read: std::sync::Mutex<Vec<domain::ContentHash>>,
+}
+
+#[async_trait::async_trait]
+impl BlobStore for CountingBlobs {
+    async fn put(&self, bytes: Bytes) -> Result<domain::ContentHash, ports::BlobError> {
+        self.inner.put(bytes).await
+    }
+
+    async fn get(&self, h: &domain::ContentHash) -> Result<Option<Bytes>, ports::BlobError> {
+        self.read.lock().unwrap().push(*h);
+        self.inner.get(h).await
+    }
+
+    async fn get_many(
+        &self,
+        hs: &[domain::ContentHash],
+    ) -> Result<Vec<(domain::ContentHash, Bytes)>, ports::BlobError> {
+        self.read.lock().unwrap().extend_from_slice(hs);
+        self.inner.get_many(hs).await
+    }
+}
+
+/// A page reads at most 16 MiB of versions to make its diffs, and that bound is checked against the sizes the store records
+/// before a version is read: the proposal that would pass it is not loaded to find out.
+#[tokio::test]
+async fn a_page_does_not_read_the_versions_of_the_proposal_that_would_pass_its_byte_budget() {
+    let Some(l) = lane().await else { return };
+    let big = |n: u8| format!("{}\n", char::from(b'a' + n).to_string().repeat(1_900_000));
+    let mut ids = Vec::new();
+    for n in 0..9_u8 {
+        let path = format!("big{n}.txt");
+        l.rig
+            .agent
+            .put(&l.s, &ports::conformance::sample::nfs(&path), b"x\n");
+        l.rig.catch_up_registry(&l.s);
+        ids.push((l.propose(&format!("p-{n}"), &path, "x\n", &big(n)).await, big(n)));
+    }
+    let counting = Arc::new(CountingBlobs {
+        inner: l.rig.blobs.clone(),
+        read: std::sync::Mutex::new(Vec::new()),
+    });
+    let hub = l.rig.hub_with_blobs(counting.clone());
+    let viewer = l.rig.user(5, Role::Viewer).await;
+    let page = hub
+        .list_proposals(
+            &viewer,
+            ProposalQuery {
+                status: None,
+                swimlane: None,
+                page: Page::new(25, None).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+    // Newest first: the page ends before the oldest, which would pass 16 MiB, and says where it stopped.
+    assert_eq!(
+        page.items.len(),
+        8,
+        "{:?}",
+        page.items.iter().map(|v| v.id).collect::<Vec<_>>()
+    );
+    assert!(page.next.is_some());
+    let read = counting.read.lock().unwrap().clone();
+    let (last_id, last_content) = &ids[0];
+    assert!(
+        !read.contains(&h(last_content)),
+        "the version of proposal {last_id:?} was read although the page could not hold it"
+    );
+    assert!(read.contains(&h(&ids[8].1)), "and the first one was read");
 }
 
 // -------------------------------------------------------------------------------------------------------------- events

@@ -5,8 +5,10 @@
 //! most [`MAX_PAGE_BYTES`]: a page that would read more ends early and says where it stopped. And every diff is made on the
 //! blocking pool, in one hop for the page.
 
+use std::collections::HashMap;
+
 use bytes::Bytes;
-use domain::{Expected, NfsPath, Paged, Role, ShortText, Timestamp, User};
+use domain::{ContentHash, Expected, NfsPath, Paged, Role, ShortText, Timestamp, User};
 use ports::WriteError;
 
 use super::store::{self, Base, Filter, Stored};
@@ -75,12 +77,17 @@ pub(crate) async fn views_of(hub: &Inner, rows: Vec<Stored>) -> Result<(Vec<Prop
     let mut works: Vec<Work> = Vec::new();
     let mut spent = 0_usize;
     let mut stopped = false;
+    // The sizes of the versions, read from the store's own record before any version is: the budget is kept by not reading the
+    // proposal that would pass it, not by reading it and throwing it away.
+    let sizes = sizes_of(hub, &rows).await;
     for p in rows {
-        let work = if matches!(p.action.as_str(), "edit" | "upload" | "revert") {
-            fetch(hub, &p).await
-        } else {
-            None
-        };
+        let has_diff = matches!(p.action.as_str(), "edit" | "upload" | "revert");
+        if has_diff && !included.is_empty() && spent.saturating_add(planned_cost(&sizes, &p)) > MAX_PAGE_BYTES
+        {
+            stopped = true;
+            break;
+        }
+        let work = if has_diff { fetch(hub, &p).await } else { None };
         if let Some(w) = &work {
             let cost = w.new.len()
                 + match &w.old {
@@ -122,6 +129,57 @@ pub(crate) async fn views_of(hub: &Inner, rows: Vec<Stored>) -> Result<(Vec<Prop
         })
         .collect();
     Ok((out, stopped))
+}
+
+/// The recorded size of each of the versions `$1`, read through the primary key of `blobs`.
+pub(crate) const SIZES_SQL: &str = "SELECT hash, size FROM blobs WHERE hash = ANY($1::bytea[])";
+
+/// What the blob store records of the size of each version that the diffs of `rows` need. A version it does not list is left out
+/// (a blob that was collected), and so is every version when the store cannot be asked: the budget is then kept on the sizes of
+/// what is read, as before.
+async fn sizes_of(hub: &Inner, rows: &[Stored]) -> HashMap<ContentHash, usize> {
+    let mut wanted: Vec<Vec<u8>> = Vec::new();
+    for p in rows
+        .iter()
+        .filter(|p| matches!(p.action.as_str(), "edit" | "upload" | "revert"))
+    {
+        if let Some(h) = p.new_hash {
+            wanted.push(h.as_bytes().to_vec());
+        }
+        if let Some(Base::At(h)) = p.paths.first().and_then(|path| p.expected_at(path)) {
+            wanted.push(h.as_bytes().to_vec());
+        }
+    }
+    if wanted.is_empty() {
+        return HashMap::new();
+    }
+    let asked = async {
+        sqlx::query_as::<_, (Vec<u8>, i64)>(SIZES_SQL)
+            .bind(&wanted)
+            .fetch_all(&hub.pool)
+            .await
+            .map_err(|e| Internal::db("proposal_sizes", &e))
+    };
+    let Ok(Ok(found)) = hub.within("proposal_sizes", asked).await else {
+        return HashMap::new();
+    };
+    found
+        .into_iter()
+        .filter_map(|(hash, size)| {
+            let hash = <[u8; 32]>::try_from(hash.as_slice()).ok()?;
+            Some((ContentHash::from_bytes(hash), usize::try_from(size).ok()?))
+        })
+        .collect()
+}
+
+/// The bytes that making the diff of `p` reads: its new version and the one it replaces.
+fn planned_cost(sizes: &HashMap<ContentHash, usize>, p: &Stored) -> usize {
+    let new = p.new_hash.and_then(|h| sizes.get(&h)).copied().unwrap_or(0);
+    let old = match p.paths.first().and_then(|path| p.expected_at(path)) {
+        Some(Base::At(h)) => sizes.get(&h).copied().unwrap_or(0),
+        _ => 0,
+    };
+    new.saturating_add(old)
 }
 
 /// The new version and the one it replaces, read from the blob store. `None` when the proposal has nothing to diff.
