@@ -186,7 +186,7 @@ async fn explain_open_pr_lookup_uses_pr_links_one_open() {
 async fn explain_pr_job_resume_uses_pr_jobs_state_idx() {
     let db = db!();
     let queries = hub_writes::hot_queries();
-    for name in ["pr_job_resume", "pr_job_active"] {
+    for name in ["pr_job_resume", "pr_job_active", "pr_job_covering"] {
         let (_, sql) = queries.iter().find(|(n, _)| *n == name).unwrap();
         let p = plan(&db, sql).await;
         assert!(p.contains("pr_jobs_state_idx"), "{name}: {p}");

@@ -78,6 +78,8 @@ enum Made {
     Existing(WriteOutcome),
     NotPending,
     Duplicate,
+    /// An unfinished job already covers one of the files: there is no pull request yet to make this one a duplicate of.
+    Busy,
 }
 
 pub(super) async fn apply_pr(
@@ -126,6 +128,8 @@ pub(super) async fn apply_pr(
         }
         Ok(Made::Existing(outcome)) => Ok(Done::Stored(outcome)),
         Ok(Made::NotPending | Made::Duplicate) => Ok(Done::Store(rejected(RejectReason::NotAllowed))),
+        // Not stored: when the other job is done the same approval can be made.
+        Ok(Made::Busy) => Ok(Done::Release(WriteOutcome::Locked { until: None })),
         Err(e) => Err(Abort::release(e)),
     }
 }
@@ -166,6 +170,12 @@ async fn approve_tx(
     if links::find_open(&mut tx, &p.swimlane, &pairs).await?.is_some() {
         let _ = tx.rollback().await;
         return Ok(Made::Duplicate);
+    }
+    // A job that has not opened its pull request has no link yet. A second job for the same files would open a second pull
+    // request; the proposal stays pending until that job is done.
+    if job::covering(&mut tx, &p.swimlane, &p.paths).await?.is_some() {
+        let _ = tx.rollback().await;
+        return Ok(Made::Busy);
     }
 
     let now = hub.now_ms();

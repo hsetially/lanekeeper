@@ -277,6 +277,10 @@ pub(crate) const INSERT_SQL: &str = concat!(
 pub(crate) const ACTIVE_SQL: &str = "SELECT id FROM pr_jobs WHERE state NOT IN ('completed', 'failed') \
      AND author_tid = $1 AND author_oid = $2 AND swimlane_id = $3 AND paths = $4::text[] ORDER BY state, id LIMIT 1";
 
+/// An unfinished job of the swimlane, by anybody, that has any of these paths. Read through the index on the unfinished states.
+pub(crate) const COVERING_SQL: &str = "SELECT id FROM pr_jobs WHERE state NOT IN ('completed', 'failed') \
+     AND swimlane_id = $1 AND paths && $2::text[] ORDER BY state, id LIMIT 1";
+
 /// The jobs that need a runner: `pending` ones at once, the others when nobody has touched them since `$1` (a runner that is
 /// working on a job moves it, or renews its lease, well inside that time). `$2` is the most rows. Read through the index on the
 /// unfinished states, in the order of that index (`state`, `id`): the finished jobs, which are nearly all of the table, are not in it.
@@ -403,6 +407,22 @@ pub(crate) async fn active_for(
     Ok(id.map(PrJobId::from))
 }
 
+/// The unfinished job that already covers any of these paths in this swimlane, whoever asked for it: it has no pull request yet, so
+/// no link says that the change is taken.
+pub(crate) async fn covering(
+    conn: &mut PgConnection,
+    swimlane: &SwimlaneId,
+    paths: &[String],
+) -> Res<Option<PrJobId>> {
+    let id: Option<i64> = sqlx::query_scalar(COVERING_SQL)
+        .bind(swimlane.as_str())
+        .bind(paths)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|e| Internal::db("pr_job_covering", &e))?;
+    Ok(id.map(PrJobId::from))
+}
+
 /// The jobs that need a runner, oldest first, at most `limit`.
 pub(crate) async fn needing_a_runner(
     conn: &mut PgConnection,
@@ -503,6 +523,7 @@ pub(crate) fn queries() -> Vec<(&'static str, &'static str)> {
         ("pr_job_lock", LOCK_SQL),
         ("pr_job_insert", INSERT_SQL),
         ("pr_job_active", ACTIVE_SQL),
+        ("pr_job_covering", COVERING_SQL),
         ("pr_job_resume", RESUME_SQL),
     ]
 }

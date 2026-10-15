@@ -1106,6 +1106,82 @@ async fn approval_of_a_pull_request_rechecks_the_files_and_the_one_open_rule() {
     ));
 }
 
+/// Two proposals for the same files, both approved before the first job has opened its pull request: no link exists yet, so the
+/// open-pull-request check alone lets the second approval make a second job and a second pull request.
+#[tokio::test]
+async fn an_approval_for_files_an_unfinished_job_already_covers_makes_no_second_job() {
+    let Some(t) = jobs().await else { return };
+    let careful = t.f.rig.approval_user(5, Role::Editor).await;
+    let admin = t.f.rig.user(6, Role::Admin).await;
+    t.f.gh.token(&tok(5), "careful", &[BASE, TENANT]);
+    t.f.sim.expect_token(&tok(5));
+    t.f.vault
+        .put(&ctx(&careful, "k-token"), Secret::new(tok(5)))
+        .await
+        .unwrap();
+    let mut proposals = Vec::new();
+    for key in ["k-1", "k-2"] {
+        let Raised::Proposal(id) = t
+            .runner
+            .raise(&ctx(&careful, key), t.f.request(&[ENTRY, OTHER], None))
+            .await
+            .unwrap()
+        else {
+            panic!("a proposal");
+        };
+        proposals.push(id);
+    }
+    assert_ne!(proposals[0], proposals[1]);
+
+    let first =
+        t.f.rig
+            .hub
+            .approve_proposal(&ctx(&admin, "k-a1"), proposals[0], None)
+            .await
+            .unwrap();
+    assert!(matches!(first, WriteOutcome::Applied { .. }), "{first:?}");
+    // The first job has not run: there is no pull request and no link.
+    assert_eq!(t.f.rig.count("pr_jobs").await, 1);
+    assert_eq!(t.f.rig.count("pr_links").await, 0);
+
+    let second =
+        t.f.rig
+            .hub
+            .approve_proposal(&ctx(&admin, "k-a2"), proposals[1], None)
+            .await
+            .unwrap();
+    assert!(
+        matches!(second, WriteOutcome::Locked { .. }),
+        "the second approval waits for the first job: {second:?}"
+    );
+    assert_eq!(t.f.rig.count("pr_jobs").await, 1, "no second job");
+    let status: String = sqlx::query_scalar("SELECT status FROM proposals WHERE id = $1")
+        .bind(proposals[1].get())
+        .fetch_one(&t.f.rig.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "pending", "the proposal is still there to decide");
+
+    // The first job runs and opens its pull request; the second proposal, decided now, is a duplicate of an open pull request.
+    let report = t.runner.run_once(&|| true).await;
+    assert_eq!((report.driven, report.finished), (1, 1), "{report:?}");
+    assert_eq!(t.pulls().len(), 1);
+    let again =
+        t.f.rig
+            .hub
+            .approve_proposal(&ctx(&admin, "k-a2"), proposals[1], None)
+            .await
+            .unwrap();
+    assert_eq!(
+        again,
+        WriteOutcome::Rejected {
+            reason: RejectReason::NotAllowed,
+            issues: Vec::new()
+        }
+    );
+    assert_eq!(t.pulls().len(), 1, "one pull request for one change");
+}
+
 // -------------------------------------------------------------------------------------------------------- the trait
 
 #[tokio::test]
