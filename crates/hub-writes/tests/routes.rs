@@ -3332,6 +3332,8 @@ async fn a_pull_request_job_is_read_by_its_number() {
     prs.says_job(Ok(None));
     let r = send(&router, Req::new(Method::GET, "/api/v1/pr-jobs/8")).await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
+    // A 404 may be cached by default; the number can be allocated a moment later, so nothing may keep the answer.
+    assert_eq!(r.headers[header::CACHE_CONTROL], "no-store");
     prs.says_job(Err(WriteError::Unavailable));
     let r = send(&router, Req::new(Method::GET, "/api/v1/pr-jobs/8")).await;
     assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);

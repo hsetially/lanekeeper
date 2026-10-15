@@ -94,7 +94,14 @@ pub(super) async fn job(state: &WriteState, id: &str, user: User) -> Response {
                 .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             response
         }
-        Ok(None) => ApiError::NotFound.into_response(),
+        // A 404 can be kept by a cache that nobody told otherwise, and the number may be allocated a moment later.
+        Ok(None) => {
+            let mut response = ApiError::NotFound.into_response();
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            response
+        }
         Err(e) => write_error(e),
     }
 }
