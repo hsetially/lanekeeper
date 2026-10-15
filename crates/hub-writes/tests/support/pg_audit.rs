@@ -18,11 +18,22 @@ const CHAIN_LOCK_KEY: i64 = 0x004C_4B41_5544_4955;
 #[derive(Debug, Default)]
 pub struct PgTestAudit {
     fail_next: AtomicBool,
+    /// Run at the start of the next `record`, on a connection of its own: the swimlane whose auto-notify switch to turn on.
+    switch_on_next: std::sync::Mutex<Option<(PgPool, String)>>,
 }
 
 impl PgTestAudit {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// While the next `record` runs (inside its transaction, which has read nothing of the swimlane's row yet to wait for), an
+    /// admin turns the swimlane's auto-notify on, in a transaction of their own that commits at once.
+    pub fn turn_auto_notify_on_during_next_record(&self, pool: PgPool, swimlane: &str) {
+        *self
+            .switch_on_next
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((pool, swimlane.to_owned()));
     }
 
     /// The next `record` fails with `Unavailable`.
@@ -50,6 +61,18 @@ fn wire<T: serde::Serialize>(v: &T) -> String {
 #[async_trait]
 impl AuditLog for PgTestAudit {
     async fn record(&self, tx: &mut Tx<'_>, e: AuditEvent) -> Result<AuditId, AuditError> {
+        let hook = self
+            .switch_on_next
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some((pool, swimlane)) = hook {
+            sqlx::query("UPDATE swimlanes SET auto_notify = true WHERE id = $1")
+                .bind(swimlane)
+                .execute(&pool)
+                .await
+                .map_err(|_| AuditError::Unavailable)?;
+        }
         if self.fail_next.swap(false, Ordering::SeqCst) {
             return Err(AuditError::Unavailable);
         }

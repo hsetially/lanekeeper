@@ -1026,6 +1026,54 @@ async fn auto_notify_is_off_unless_the_swimlane_turns_it_on_and_only_for_an_oper
     );
 }
 
+/// The switch is the one a write found when it committed (D85): a write that committed while it was off is not announced
+/// because an admin turned it on a moment later. The admin turns it on while the write is being recorded, after the transaction
+/// has read the switch and before it commits; the next write, which finds it on, is the first that is announced.
+#[tokio::test]
+async fn a_write_is_announced_only_if_the_switch_was_on_when_it_committed() {
+    let Some((rig, s)) = rig_with(quick()).await else {
+        return;
+    };
+    let operator = rig.user(1, Role::Operator).await;
+    let (stop, task) = run(rig.hub.auto_notifier().unwrap());
+
+    rig.audit
+        .turn_auto_notify_on_during_next_record(rig.pool.clone(), s.as_str());
+    let out = rig
+        .hub
+        .edit(
+            &ctx(&operator, "e-1"),
+            edit(&s, "application.yml", at("a: 1\n"), "a: 2\n"),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(out, WriteOutcome::Applied { .. }), "{out:?}");
+    let on: bool = sqlx::query_scalar("SELECT auto_notify FROM swimlanes WHERE id = $1")
+        .bind(s.as_str())
+        .fetch_one(&rig.pool)
+        .await
+        .unwrap();
+    assert!(on, "the admin turned it on during the write");
+
+    rig.hub
+        .edit(
+            &ctx(&operator, "e-2"),
+            edit(&s, "tx-api/tx-api.yml", at("k: 1\n"), "k: 2\n"),
+        )
+        .await
+        .unwrap();
+    until_notified(&rig, 1).await;
+    let sent = rig.agent.notified_paths();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0].iter().map(domain::NfsPath::as_str).collect::<Vec<_>>(),
+        ["tx-api/tx-api.yml"],
+        "only the write that found the switch on"
+    );
+    let _ = stop.send(());
+    task.await.unwrap();
+}
+
 #[tokio::test]
 async fn auto_notify_never_runs_for_a_user_who_is_no_longer_an_operator() {
     let Some((rig, s)) = rig_with(quick()).await else {

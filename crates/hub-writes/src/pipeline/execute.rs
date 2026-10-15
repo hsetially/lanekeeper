@@ -285,21 +285,35 @@ pub(crate) struct Recording<'a> {
 pub(crate) async fn record(hub: &Inner, rec: Recording<'_>) -> Res<Committed> {
     // What the batcher would announce, read before the event is consumed.
     let announce = crate::autonotify::AutoItem::of(&rec.event);
-    let committed = hub.within("commit", record_inner(hub, rec)).await??;
-    // Only a write this request recorded is announced: one that another request already recorded (`Lost`) was announced there.
-    if let (Committed::Done(_), Some(item)) = (&committed, announce) {
-        hub.auto.offer(hub, item).await;
+    let (committed, switch_on) = hub
+        .within("commit", record_inner(hub, rec, announce.as_ref()))
+        .await??;
+    // Only a write this request recorded is announced: one that another request already recorded (`Lost`) was announced there. And
+    // only one that committed with the swimlane's switch on, as the transaction read it.
+    if let (Committed::Done(_), Some(item), true) = (&committed, announce, switch_on) {
+        hub.auto.queue(item);
     }
     Ok(committed)
 }
 
-async fn record_inner(hub: &Inner, rec: Recording<'_>) -> Res<Committed> {
+/// The recording transaction. Besides how it ended it says whether the swimlane's auto-notify was on in it, for a write the batcher
+/// would announce.
+async fn record_inner(
+    hub: &Inner,
+    rec: Recording<'_>,
+    announce: Option<&crate::autonotify::AutoItem>,
+) -> Res<(Committed, bool)> {
     let mut tx = hub.pool.begin().await.map_err(|e| Internal::db("commit", &e))?;
 
     if let Some(done) = crate::idempotency::lock_claim(&mut tx, rec.key).await? {
         let _ = tx.rollback().await;
-        return Ok(Committed::Lost(done));
+        return Ok((Committed::Lost(done), false));
     }
+    // Read before anything else of the write is recorded: this is the switch the write commits under.
+    let switch_on = match announce {
+        Some(item) if hub.auto.is_on() => hub.auto.switch_in_tx(&mut tx, &item.swimlane).await,
+        _ => false,
+    };
 
     if let Some(follow) = &rec.follow {
         super::follow::apply(hub, &mut tx, follow).await?;
@@ -354,7 +368,7 @@ async fn record_inner(hub: &Inner, rec: Recording<'_>) -> Res<Committed> {
         swimlane = %rec.swimlane,
         "action recorded"
     );
-    Ok(Committed::Done(outcome))
+    Ok((Committed::Done(outcome), switch_on))
 }
 
 /// Record a write or a delete that landed, from the intent kept with its claim: the second transaction of the pipeline.

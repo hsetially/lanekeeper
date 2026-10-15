@@ -1,8 +1,8 @@
 //! Auto-notify (T11, D85): when an admin has turned it on for a swimlane, the config-server is told about the files an Operator
 //! has written, once, a couple of seconds after the writes, with all the paths of those writes in the one call.
 //!
-//! - **Off by default** (`swimlanes.auto_notify`). The switch is read when a write commits, so a write made before the switch
-//!   was turned on is not announced afterwards.
+//! - **Off by default** (`swimlanes.auto_notify`). The switch is read inside the transaction that records a write, so it is the
+//!   switch the write committed under: a write made before the switch was turned on is not announced afterwards.
 //! - **Operator or above** (plan A13, Q37). The config-server's update endpoint has no authentication, so a call to it is a
 //!   call by a person who may make it. The batch is kept for the user whose write it holds, the role is read from the directory
 //!   when the call is made (a user demoted in the meantime is not announced), and a user who needs approval is never announced:
@@ -108,28 +108,33 @@ impl AutoQueue {
         self.dropped.load(Ordering::Relaxed)
     }
 
-    /// Queue a path a write has committed, if the swimlane has auto-notify on. Never fails the write: the write has been
-    /// recorded and answered as far as the caller is concerned.
-    pub async fn offer(&self, hub: &Inner, item: AutoItem) {
-        if !self.enabled.load(Ordering::SeqCst) {
-            return;
-        }
-        let on = hub
-            .within(
-                "auto_notify_switch",
-                sqlx::query_scalar::<_, bool>(SWITCH)
-                    .bind(item.swimlane.as_str())
-                    .fetch_optional(&hub.pool),
+    /// Whether the batcher is running, so that a write needs to find out if its swimlane has auto-notify on.
+    pub fn is_on(&self) -> bool {
+        self.enabled.load(Ordering::SeqCst)
+    }
+
+    /// The swimlane's switch as the recording transaction of a write sees it, read inside that transaction (so it is the switch the
+    /// write committed under, and an admin who turns it on after that does not make the write announced). Never fails the write: a
+    /// switch that cannot be read is off, and the "Notify services" button is still there.
+    pub async fn switch_in_tx(&self, conn: &mut sqlx::PgConnection, swimlane: &SwimlaneId) -> bool {
+        sqlx::query_scalar::<_, bool>(SWITCH)
+            .bind(swimlane.as_str())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_or_else(
+                |_| {
+                    tracing::warn!("the auto-notify switch could not be read");
+                    false
+                },
+                |found| found == Some(true),
             )
-            .await;
-        match on {
-            Ok(Ok(Some(true))) => {}
-            Ok(Ok(_)) => return,
-            // Without the switch the write is not announced; the button is still there.
-            Ok(Err(_)) | Err(_) => {
-                tracing::warn!("the auto-notify switch could not be read");
-                return;
-            }
+    }
+
+    /// Queue a path of a write that committed with the swimlane's auto-notify on (see [`Self::switch_in_tx`]). Never fails the
+    /// write: it has been recorded and answered as far as the caller is concerned.
+    pub fn queue(&self, item: AutoItem) {
+        if !self.is_on() {
+            return;
         }
         if self.sender.try_send(item).is_err() {
             let total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;

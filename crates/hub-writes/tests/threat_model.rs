@@ -1022,13 +1022,33 @@ fn anchor_problems(source: &dyn Fn(&str) -> String) -> Vec<String> {
             &record_fn,
             &[
                 "AutoItem::of(&rec.event)",
-                "record_inner(hub, rec)",
+                "record_inner(hub, rec, announce.as_ref())",
                 "Committed::Done(_)",
-                "hub.auto.offer(hub, item).await",
+                "hub.auto.queue(item)",
             ],
         ),
         "auto-notify is best effort",
-        "`record` in execute.rs offers a path to the auto-notify queue only after the transaction that recorded the write has committed",
+        "`record` in execute.rs queues a path for auto-notify only after the transaction that recorded the write has committed, and only if the switch it read inside that transaction was on",
+    );
+    let record_inner = between(
+        &source("crates/hub-writes/src/pipeline/execute.rs"),
+        "async fn record_inner(",
+        "\n}\n",
+    )
+    .unwrap_or_default()
+    .to_owned();
+    check(
+        in_order(
+            &record_inner,
+            &[
+                "lock_claim(&mut tx, rec.key)",
+                "hub.auto.switch_in_tx(&mut tx, &item.swimlane)",
+                ".record(&mut Tx::from_pg(&mut tx), rec.event)",
+                "tx.commit()",
+            ],
+        ),
+        "auto-notify is best effort",
+        "`record_inner` in execute.rs reads the auto-notify switch inside the recording transaction, before the audit event and the commit",
     );
     let auto = source("crates/hub-writes/src/autonotify.rs");
     let announce = between(&auto, "async fn announce(", "\n}\n").unwrap_or_default();
@@ -1045,19 +1065,24 @@ fn anchor_problems(source: &dyn Fn(&str) -> String) -> Vec<String> {
         "auto-notify is best effort",
         "`announce` in autonotify.rs reads the role when the window closes, skips a user who needs approval, and notifies through `notify_as` with `via = system`",
     );
-    let offer = between(&auto, "pub async fn offer(", "\n    }\n").unwrap_or_default();
+    let queue = between(&auto, "pub fn queue(", "\n    }\n").unwrap_or_default();
     check(
         in_order(
-            offer,
+            queue,
             &[
-                "self.enabled.load(",
-                "\"auto_notify_switch\"",
+                "self.is_on()",
                 "self.sender.try_send(item)",
                 "self.dropped.fetch_add(",
             ],
         ),
         "auto-notify is best effort",
-        "`offer` in autonotify.rs does nothing until a batcher exists, reads the swimlane's switch, and drops and counts a path that does not fit the bounded queue",
+        "`queue` in autonotify.rs does nothing until a batcher exists, and drops and counts a path that does not fit the bounded queue",
+    );
+    let switch = between(&auto, "pub async fn switch_in_tx(", "\n    }\n").unwrap_or_default();
+    check(
+        switch.contains("sqlx::query_scalar::<_, bool>(SWITCH)") && switch.contains("found == Some(true)"),
+        "auto-notify is best effort",
+        "`switch_in_tx` in autonotify.rs reads the swimlane's switch on the connection it is given, and anything but `true` is off",
     );
 
     // 14. A notification leaves alone a service that waits for the config-server to restart, and reads a lifetime it cannot parse as
@@ -1521,8 +1546,14 @@ fn planted_gaps_are_found() {
         ),
         (
             "crates/hub-writes/src/pipeline/execute.rs",
-            "hub.auto.offer(hub, item).await",
-            "hub.auto.offer_before_commit(hub, item).await",
+            "hub.auto.queue(item);",
+            "hub.auto.queue_before_commit(item);",
+            "auto-notify is best effort",
+        ),
+        (
+            "crates/hub-writes/src/pipeline/execute.rs",
+            "Some(item) if hub.auto.is_on() => hub.auto.switch_in_tx(&mut tx, &item.swimlane).await,",
+            "Some(item) if hub.auto.is_on() => hub.auto.is_on_after_commit(&item.swimlane).await,",
             "auto-notify is best effort",
         ),
         (
