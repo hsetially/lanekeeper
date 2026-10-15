@@ -25,6 +25,10 @@ use crate::service::Inner;
 /// The most batches one run works through: with the default batch, 10,000 proposals.
 const MAX_BATCHES: usize = 100;
 
+/// The most proposals one run passes over (it could not move them) before it gives up: the statement carries their ids, so the
+/// list is bounded, and a store that fails every row ends the run after this many failures instead of after all of them.
+const MAX_PASSED_OVER: usize = 100;
+
 /// How long the job's lease on one proposal is held: the time one transaction takes, with room for a slow database.
 const LEASE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -64,34 +68,39 @@ impl ExpireProposals {
         let mut report = ExpireReport::default();
         let batch = i64::try_from(hub.cfg.expire_batch).unwrap_or(100);
 
+        // The proposals this run could not move: the scan passes over them, so that a row that fails every time (or is busy) does
+        // not hold up the rows behind it, whatever the batch.
+        let mut passed_over: Vec<i64> = Vec::new();
         'batches: for _ in 0..MAX_BATCHES {
             let ids = async {
                 let mut conn = hub.pool.acquire().await.map_err(|e| Internal::db("expire", &e))?;
-                store::expired(&mut conn, hub.now_ms(), batch).await
+                store::expired(&mut conn, hub.now_ms(), batch, &passed_over).await
             };
             let Ok(Ok(ids)) = hub.within("expire", ids).await else {
                 break;
             };
             let full = ids.len() >= hub.cfg.expire_batch;
-            let mut progressed = false;
             for id in ids {
                 if !still_held() {
                     return report;
                 }
                 match hub.within("expire", expire_leased(hub, id)).await {
-                    Ok(Ok(Expiry::Moved)) => {
-                        report.proposals += 1;
-                        progressed = true;
+                    Ok(Ok(Expiry::Moved)) => report.proposals += 1,
+                    // Decided in the meantime: it will not be listed again.
+                    Ok(Ok(Expiry::Gone)) => {}
+                    // Being decided: it is listed again until the decision is made, so it is passed over for this run.
+                    Ok(Ok(Expiry::Busy)) => {
+                        report.busy += 1;
+                        passed_over.push(id.get());
                     }
-                    // Decided in the meantime: nothing to do, and it will not be listed again.
-                    Ok(Ok(Expiry::Gone)) => progressed = true,
-                    // Being decided: it is listed again until the decision is made, so it must not count as progress.
-                    Ok(Ok(Expiry::Busy)) => report.busy += 1,
-                    _ => report.failed += 1,
+                    _ => {
+                        report.failed += 1;
+                        passed_over.push(id.get());
+                    }
                 }
             }
-            // A batch that moved nothing would be read again for ever.
-            if !full || !progressed {
+            // Every batch moves a proposal or adds to the ones passed over, so this ends.
+            if !full || passed_over.len() >= MAX_PASSED_OVER {
                 break 'batches;
             }
         }

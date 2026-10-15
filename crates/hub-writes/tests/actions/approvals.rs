@@ -9,7 +9,9 @@ use domain::{
     SwimlaneId, User, UserStatus, WriteOutcome,
 };
 use hub_writes::{NO_HASH, ProposalDesk, ProposalQuery, RejectResult};
-use ports::{AuditAction, AuditActor, AuditVia, BlobStore, WriteError, WriteService, verify_chain};
+use ports::{
+    AuditAction, AuditActor, AuditVia, BlobStore, Leases as _, WriteError, WriteService, verify_chain,
+};
 
 use crate::support::pg::sqlstate;
 use crate::support::rig::{Rig, applied, at, ctx, edit, h};
@@ -1014,6 +1016,48 @@ async fn the_expiry_job_works_in_batches() {
     for id in ids {
         assert_eq!(l.status(id).await, "expired");
     }
+}
+
+/// A proposal that the job cannot move (here its lease is held; a row that fails every time is the same to the scan) is passed
+/// over for the rest of the run, so it does not hold up the ones behind it even when a batch is one proposal. It is looked at
+/// again by the next run.
+#[tokio::test]
+async fn a_proposal_the_job_cannot_move_does_not_hold_up_the_ones_behind_it() {
+    let Some(l) = lane_with(hub_writes::WriteConfig {
+        expire_batch: 1,
+        ..hub_writes::WriteConfig::default()
+    })
+    .await
+    else {
+        return;
+    };
+    let first = l.propose("p-1", "a.yml", "x: 1\n", "x: 2\n").await;
+    l.rig.advance_secs(1);
+    let second = l.propose("p-2", "b.yml", "y: 1\n", "y: 2\n").await;
+    l.rig.advance_secs(1);
+    let third = l.propose("p-3", "c.yml", "z: 1\n", "z: 2\n").await;
+    l.rig.advance_secs(60 * 60 * 73);
+
+    let held = l
+        .rig
+        .leases
+        .try_acquire(
+            &format!("proposal:{}", first.get()),
+            std::time::Duration::from_secs(600),
+        )
+        .await
+        .unwrap()
+        .expect("the lease is free");
+    let report = l.rig.hub.expirer().run_once(&|| true).await;
+    assert_eq!((report.proposals, report.busy), (2, 1), "{report:?}");
+    assert_eq!(l.status(first).await, "pending");
+    assert_eq!(l.status(second).await, "expired");
+    assert_eq!(l.status(third).await, "expired");
+
+    held.release().await.unwrap();
+    let report = l.rig.hub.expirer().run_once(&|| true).await;
+    assert_eq!(report.proposals, 1, "{report:?}");
+    assert_eq!(l.status(first).await, "expired");
 }
 
 // -------------------------------------------------------------------------------------------------------------- events

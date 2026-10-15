@@ -329,18 +329,25 @@ pub(crate) async fn insert_decision(conn: &mut PgConnection, d: &NewDecision<'_>
     Ok(())
 }
 
-/// Pending proposals whose time has run out, oldest first: `$1` is now, `$2` the most rows. Read through the partial index on
-/// `expires_at`.
+/// Pending proposals whose time has run out, oldest first: `$1` is now, `$2` the most rows, `$3` the ids to pass over (the ones
+/// the job could not move earlier in its run, so that they do not hold up the proposals behind them). Read through the partial
+/// index on `expires_at`.
 pub(crate) const EXPIRED_SQL: &str = concat!(
     "SELECT id FROM proposals WHERE status = 'pending' AND expires_at <= ",
     ts!("1"),
-    " ORDER BY expires_at LIMIT $2"
+    " AND id <> ALL($3::bigint[]) ORDER BY expires_at LIMIT $2"
 );
 
-pub(crate) async fn expired(conn: &mut PgConnection, now_ms: i64, limit: i64) -> Res<Vec<ProposalId>> {
+pub(crate) async fn expired(
+    conn: &mut PgConnection,
+    now_ms: i64,
+    limit: i64,
+    skip: &[i64],
+) -> Res<Vec<ProposalId>> {
     let ids: Vec<i64> = sqlx::query_scalar(EXPIRED_SQL)
         .bind(now_ms)
         .bind(limit)
+        .bind(skip)
         .fetch_all(&mut *conn)
         .await
         .map_err(|e| Internal::db("proposal_expired", &e))?;

@@ -112,6 +112,7 @@ impl QueryProbe<'_> {
             &mut conn,
             self.hub.now_ms(),
             i64::try_from(self.hub.cfg.expire_batch).unwrap_or(100),
+            &[],
         )
         .await
         .map_or(usize::MAX, |ids| ids.len())
