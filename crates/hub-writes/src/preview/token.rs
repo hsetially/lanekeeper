@@ -154,7 +154,8 @@ pub(crate) fn verify(
     if issued.saturating_sub(now) > MAX_LEAD_SECS {
         return Err(TokenError::FromTheFuture);
     }
-    if now.saturating_sub(issued) > i64::try_from(ChangePreview::TTL_SECS).unwrap_or(600) {
+    // `>=`: the answer names `issued + TTL` as `expires_at`, and a clock that has reached it is past the last second of the token.
+    if now.saturating_sub(issued) >= i64::try_from(ChangePreview::TTL_SECS).unwrap_or(600) {
         return Err(TokenError::Expired);
     }
     Ok(())
@@ -320,7 +321,10 @@ mod tests {
         let c = Case::upload();
         let b = c.binding(PreviewAction::Upload);
         let (id, _) = issue(&key(), &b, NOW).unwrap();
-        assert_eq!(verify(&key(), &b, &id, NOW + 600_000), Ok(()));
+        assert_eq!(verify(&key(), &b, &id, NOW + 599_000), Ok(()));
+        // At the instant the answer named as `expires_at` the token is already out: a token is valid while its age is below the
+        // time to live, so the clock reaching `expires_at` is not a second of grace.
+        assert_eq!(verify(&key(), &b, &id, NOW + 600_000), Err(TokenError::Expired));
         assert_eq!(verify(&key(), &b, &id, NOW + 601_000), Err(TokenError::Expired));
         // Another replica whose clock is a little behind still accepts it; one that is far behind does not.
         assert_eq!(verify(&key(), &b, &id, NOW - 29_000), Ok(()));

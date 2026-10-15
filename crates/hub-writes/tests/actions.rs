@@ -322,16 +322,17 @@ async fn preview_older_than_10_minutes_is_refused() {
         "the token says when it runs out"
     );
 
-    rig.advance_secs(600);
+    rig.advance_secs(599);
     let req = || upload_req(&s, "new.yml", Expected::Absent, b"n: 1\n", Some(&pv));
     let still = rig.hub.upload(&ctx(&editor, "k-1"), req()).await.unwrap();
     assert!(
         matches!(still, WriteOutcome::Applied { .. }),
-        "at exactly ten minutes: {still:?}"
+        "one second before it runs out: {still:?}"
     );
 
     let pv2 = preview(&rig, &editor, "p-2", delete_preview(&s, "new.yml", h("n: 1\n"))).await;
-    rig.advance_secs(601);
+    // At exactly the `expires_at` the answer named (age equal to the time to live) the token is out.
+    rig.advance_secs(600);
     let late = rig
         .hub
         .delete(
