@@ -41,6 +41,7 @@ struct Inner {
     duration: Family<ToolLabel, Histogram>,
     rate_limited: Family<ClassLabel, Counter>,
     redactions: Counter,
+    redactions_late: Counter,
     cache_lookups: Family<ClassLabel, Counter>,
     confirmations: Family<OutcomeLabel, Counter>,
     tools_list_bytes: Gauge,
@@ -72,6 +73,7 @@ impl McpMetrics {
                 duration: Family::new_with_constructor(latency_histogram as fn() -> Histogram),
                 rate_limited: Family::default(),
                 redactions: Counter::default(),
+                redactions_late: Counter::default(),
                 cache_lookups: Family::default(),
                 confirmations: Family::default(),
                 tools_list_bytes: Gauge::default(),
@@ -100,6 +102,11 @@ impl McpMetrics {
             "mcp_redacted_values",
             "Values the secret scan replaced in MCP results",
             i.redactions.clone(),
+        );
+        registry.register(
+            "mcp_redaction_late",
+            "Results in which the final sweep replaced a value after the tool had built them: each one is a defect, a field the typed path missed",
+            i.redactions_late.clone(),
         );
         registry.register(
             "mcp_scan_cache_lookups",
@@ -135,6 +142,11 @@ impl McpMetrics {
 
     pub(crate) fn redacted(&self, values: u32) {
         self.inner.redactions.inc_by(u64::from(values));
+    }
+
+    /// One result needed the final sweep.
+    pub(crate) fn redaction_late(&self) {
+        self.inner.redactions_late.inc();
     }
 
     pub(crate) fn cache(&self, result: &'static str) {
@@ -179,6 +191,12 @@ impl McpMetrics {
     #[must_use]
     pub fn redacted_values(&self) -> u64 {
         self.inner.redactions.get()
+    }
+
+    /// Results in which the final sweep replaced a value, since the start; zero while every field takes the typed path (for tests).
+    #[must_use]
+    pub fn late_redactions(&self) -> u64 {
+        self.inner.redactions_late.get()
     }
 
     /// Calls refused for being over a limit, since the start (for tests).

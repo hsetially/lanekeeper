@@ -49,9 +49,19 @@ struct DraftData<'a> {
     label: &'static str,
 }
 
+/// A write of a denied file is refused before anything is asked or recorded (D79): not drafted, not put to the user, and not given a
+/// link to a web page that would only say no. The write service refuses it too; this is the early, certain no.
+fn refuse_denied<'a>(cx: &CallCx<'_>, paths: impl IntoIterator<Item = &'a NfsPath>) -> Result<(), ToolError> {
+    if paths.into_iter().any(|p| cx.host.denied.path(p)) {
+        return Err(ToolError::denied());
+    }
+    Ok(())
+}
+
 /// `propose_change` records a draft of a whole-file edit and returns what it would change. It has no side effect: the file is not
 /// written, and nobody is asked, because the change is confirmed when `apply_change` runs (D52).
 pub async fn propose_change(cx: &CallCx<'_>, args: ProposeChange) -> ToolResult {
+    refuse_denied(cx, [&args.path.0])?;
     let key = cx
         .session_id
         .zip(cx.rpc_id)
@@ -163,6 +173,7 @@ pub async fn apply_change(cx: &CallCx<'_>, args: ApplyChange) -> ToolResult {
 }
 
 pub async fn upload_file(cx: &CallCx<'_>, args: UploadFile) -> ToolResult {
+    refuse_denied(cx, [&args.path.0])?;
     let link = cx.host.links.file(&args.swimlane.0, &args.path.0);
     gate(
         cx,
@@ -180,6 +191,7 @@ pub async fn upload_file(cx: &CallCx<'_>, args: UploadFile) -> ToolResult {
 }
 
 pub async fn delete_file(cx: &CallCx<'_>, args: DeleteFile) -> ToolResult {
+    refuse_denied(cx, [&args.path.0])?;
     let link = cx.host.links.file(&args.swimlane.0, &args.path.0);
     gate(
         cx,
@@ -196,6 +208,7 @@ pub async fn delete_file(cx: &CallCx<'_>, args: DeleteFile) -> ToolResult {
 }
 
 pub async fn raise_pr(cx: &CallCx<'_>, args: RaisePr) -> ToolResult {
+    refuse_denied(cx, args.paths.iter().map(|p| &p.0))?;
     let link = cx.host.links.pull_requests(&args.swimlane.0);
     gate(
         cx,

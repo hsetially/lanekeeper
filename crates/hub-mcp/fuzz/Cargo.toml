@@ -86,3 +86,10 @@ path = "fuzz_targets/mcp_elicitation_result.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "mcp_redactor"
+path = "fuzz_targets/mcp_redactor.rs"
+test = false
+doc = false
+bench = false

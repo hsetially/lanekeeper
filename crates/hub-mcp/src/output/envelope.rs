@@ -60,6 +60,13 @@ pub struct Rendered {
     pub bytes: usize,
 }
 
+/// What the cap counts for a result: `structuredContent` plus `content`. `content` is an array of blocks on the wire, so the
+/// brackets count.
+#[must_use]
+pub fn measure(structured: &Value, content: &str) -> usize {
+    json_len(structured).saturating_add(json_len(&[ContentBlock::text(content)]))
+}
+
 fn nonce() -> Option<String> {
     let mut bytes = [0_u8; 16];
     fill(&mut bytes).ok()?;
@@ -107,8 +114,7 @@ pub fn render(shape: &Shape, parts: Parts) -> Rendered {
         parts.web_link.map_or(Value::Null, Value::String),
     );
     let structured = Value::Object(envelope);
-    // `content` is an array of blocks on the wire, so the brackets count.
-    let bytes = json_len(&structured).saturating_add(json_len(&[ContentBlock::text(content.as_str())]));
+    let bytes = measure(&structured, &content);
     Rendered {
         structured,
         content,

@@ -43,7 +43,14 @@ pub async fn search_settings(cx: &CallCx<'_>, args: SearchSettings) -> ToolResul
     let port_next = paged.next.map(|c| c.as_str().to_owned());
     let mut redacted_values = 0_u32;
     let mut items = Vec::new();
-    for hit in paged.items.iter().skip(start.skip as usize) {
+    // A hit in a denied file is left out (D79). The hits that are left are what the cursor counts, so the page still ends where the
+    // next one starts: the filter is the same on every call for the same port page.
+    for hit in paged
+        .items
+        .iter()
+        .filter(|hit| !cx.host.denied.path(&hit.file))
+        .skip(start.skip as usize)
+    {
         let (value, n) = setting_value(&cx.host.redactor, &hit.value, LIST_VALUE_CHARS)?;
         redacted_values += n;
         items.push(SettingHitDto {
@@ -116,7 +123,7 @@ pub async fn search_text(cx: &CallCx<'_>, args: SearchText) -> ToolResult {
     let results = cx.host.registry.search_text(cx.user, query).await?;
     let mut redacted_values = 0_u32;
     let mut items = Vec::with_capacity(results.hits.len());
-    for hit in &results.hits {
+    for hit in results.hits.iter().filter(|hit| !cx.host.denied.path(&hit.path)) {
         let redacted = cx.host.redactor.text(&hit.text)?;
         redacted_values += redacted.redacted;
         // The byte ranges are positions in the line as the engine found it. They stay true only while the text is untouched: a

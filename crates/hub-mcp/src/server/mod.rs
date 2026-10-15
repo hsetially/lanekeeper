@@ -323,6 +323,7 @@ impl McpState {
             writes,
             users: Arc::clone(&users),
             redactor: Redactor::new(),
+            denied: crate::tools::denied::Denied::new(),
             links: WebLinks::new(settings.public_origin.clone(), settings.links.clone()),
             limits: Limits::new(settings.limits.clone(), Arc::clone(&clock)),
             content_mode: settings.config.content_mode,

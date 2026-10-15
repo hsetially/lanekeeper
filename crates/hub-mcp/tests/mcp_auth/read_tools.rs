@@ -571,7 +571,7 @@ async fn read_file_withholds_a_denied_file_and_says_so() {
 // Config
 // ---------------------------------------------------------------------------------------------------------------------
 
-fn effective_fixture(secret: &str) -> EffectiveConfig {
+pub(crate) fn effective_fixture(secret: &str) -> EffectiveConfig {
     EffectiveConfig {
         swimlane: sid("sit1"),
         file: lf("tx-core/app.yml"),
@@ -668,7 +668,7 @@ async fn get_effective_config_passes_tenant_channel_and_prefix() {
     assert!(missing.error()["message"].as_str().unwrap().contains("`tenant`"));
 }
 
-fn served_fixture(text: Option<&str>, withheld: bool) -> ServedFile {
+pub(crate) fn served_fixture(text: Option<&str>, withheld: bool) -> ServedFile {
     ServedFile {
         swimlane: sid("sit1"),
         application: domain::AppName::parse("tx-core").unwrap(),
@@ -746,7 +746,7 @@ async fn served_unavailable_is_unavailable() {
 // Compare
 // ---------------------------------------------------------------------------------------------------------------------
 
-fn comparison(class: FileClass) -> domain::Comparison {
+pub(crate) fn comparison(class: FileClass) -> domain::Comparison {
     domain::Comparison {
         left: "nfs:sit1".parse().unwrap(),
         right: "nfs:sit2".parse().unwrap(),

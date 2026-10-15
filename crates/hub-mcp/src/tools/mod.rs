@@ -22,10 +22,12 @@ use crate::metrics::McpMetrics;
 use crate::output::Redactor;
 use crate::output::envelope::{Rendered, Shape};
 use crate::output::links::WebLinks;
+use crate::output::sweep::sweep;
 use crate::schemas::{Contract, SchemaError, ToolSpec};
 
 pub mod args;
 pub mod cache;
+pub mod denied;
 pub mod dto;
 pub mod error;
 pub mod paging;
@@ -46,6 +48,8 @@ pub struct ToolHost {
     pub writes: Arc<dyn WriteService>,
     pub users: Arc<dyn Users>,
     pub redactor: Redactor,
+    /// The floor under the port's own word on which files are denied (D79).
+    pub denied: denied::Denied,
     pub links: WebLinks,
     pub limits: Limits,
     pub content_mode: ContentMode,
@@ -198,7 +202,10 @@ impl ToolHost {
     /// The last check of the cap is here: whatever a tool built, a result over the cap is not sent (D58). A tool that builds one
     /// has a defect, which `output_cap` tests look for at the worst case; this is what keeps the defect from reaching a client.
     pub async fn run(&self, cx: &CallCx<'_>, args: ToolArgs) -> ToolResult {
-        let result = self.dispatch(cx, args).await;
+        let result = self
+            .dispatch(cx, args)
+            .await
+            .and_then(|rendered| self.sweep(cx, rendered));
         match result {
             Ok(rendered) if rendered.bytes > cx.shape(false).cap => {
                 tracing::error!(target: "hub_mcp::call", tool = cx.spec.name(), bytes = rendered.bytes, "a result was over the cap and was not sent");
@@ -206,6 +213,23 @@ impl ToolHost {
             }
             other => other,
         }
+    }
+
+    /// The last look at what is about to leave (S14b): whatever the scan still finds is replaced, and counted as the defect it is.
+    /// A result that cannot be scanned is not sent.
+    fn sweep(&self, cx: &CallCx<'_>, rendered: Rendered) -> ToolResult {
+        let swept = sweep(&self.redactor, self.content_mode, rendered).map_err(ToolError::from)?;
+        if swept.late > 0 {
+            self.metrics.redaction_late();
+            // The tool, and how many values. Never the values, and never where they were.
+            tracing::error!(
+                target: "hub_mcp::call",
+                tool = cx.spec.name(),
+                values = swept.late,
+                "the final sweep replaced a secret that the tool had let through"
+            );
+        }
+        Ok(swept.rendered)
     }
 
     async fn dispatch(&self, cx: &CallCx<'_>, args: ToolArgs) -> ToolResult {

@@ -48,16 +48,28 @@ pub async fn compare(cx: &CallCx<'_>, args: Compare) -> ToolResult {
         channel: args.channel.map(|c| c.0),
     };
     let comparison = cx.host.registry.compare_in(cx.user, &query).await?;
+    // A denied file is known by name, size and hash: the class says so, the hashes stay, and there are no changes and no lines. The
+    // class the port gave, the file the port answered about and the file asked for are all looked at (D79).
+    let withheld = comparison.class == FileClass::Denied
+        || cx.host.denied.file(&args.file.0)
+        || comparison.file.as_ref().is_some_and(|f| cx.host.denied.file(f));
+    let class = if withheld {
+        FileClass::Denied
+    } else {
+        comparison.class
+    };
     let settings_view = match args.detail.unwrap_or(DetailArg::Auto) {
         DetailArg::Settings => true,
         DetailArg::Lines => false,
-        DetailArg::Auto => comparison.class == FileClass::Structured,
+        DetailArg::Auto => class == FileClass::Structured,
     };
     let redactor = &cx.host.redactor;
     let mut redacted_values = 0_u32;
     let mut changes: Vec<SettingChangeDto> = Vec::new();
     let mut hunks: Vec<DiffHunkDto> = Vec::new();
-    if settings_view {
+    if withheld {
+        // Nothing of the content is read, shaped or counted.
+    } else if settings_view {
         for change in comparison.setting_changes.iter().take(MAX_CHANGES) {
             let (dto, n) = setting_change(redactor, change, LIST_VALUE_CHARS)?;
             redacted_values += n;
@@ -93,21 +105,33 @@ pub async fn compare(cx: &CallCx<'_>, args: Compare) -> ToolResult {
         untrusted: bool,
         label: &'static str,
     }
-    let setting_change_count = comparison.setting_changes.len() as u64;
-    let hunk_count = comparison.hunks.len() as u64;
+    // A count of changes in a file whose content is not shown would say something about the content.
+    let setting_change_count = if withheld {
+        0
+    } else {
+        comparison.setting_changes.len() as u64
+    };
+    let hunk_count = if withheld {
+        0
+    } else {
+        comparison.hunks.len() as u64
+    };
     let binary = comparison.binary.as_ref().map(BinaryDto::from);
     let summary = |shown: usize, more: bool| {
-        let what = if settings_view {
-            format!("{shown} of {setting_change_count} setting changes")
-        } else {
-            format!("{shown} of {hunk_count} hunks")
-        };
         let state = if comparison.identical {
             "The files are identical"
         } else if comparison.eol_only {
             "The files differ only in line endings"
         } else {
             "The files differ"
+        };
+        if withheld {
+            return format!("{state}; the content of a denied file is not shown.");
+        }
+        let what = if settings_view {
+            format!("{shown} of {setting_change_count} setting changes")
+        } else {
+            format!("{shown} of {hunk_count} hunks")
         };
         format!(
             "{state}; {what} shown{}{}.",
@@ -121,7 +145,7 @@ pub async fn compare(cx: &CallCx<'_>, args: Compare) -> ToolResult {
     };
     let shape = cx.shape(true);
     if settings_view {
-        let more = comparison.setting_changes.len() > MAX_CHANGES;
+        let more = !withheld && comparison.setting_changes.len() > MAX_CHANGES;
         Ok(capped_result(
             &shape,
             &changes,
@@ -131,7 +155,7 @@ pub async fn compare(cx: &CallCx<'_>, args: Compare) -> ToolResult {
                     left: &comparison.left,
                     right: &comparison.right,
                     file: &comparison.file,
-                    class: comparison.class,
+                    class,
                     identical: comparison.identical,
                     eol_only: comparison.eol_only,
                     setting_change_count,
@@ -149,7 +173,7 @@ pub async fn compare(cx: &CallCx<'_>, args: Compare) -> ToolResult {
     } else {
         // Hunks are cut by their lines, not as whole hunks, since one hunk can be longer than the whole result.
         let total_lines: usize = hunks.iter().map(|h| h.lines.len()).sum();
-        let more_hunks = comparison.hunks.len() > MAX_HUNKS;
+        let more_hunks = !withheld && comparison.hunks.len() > MAX_HUNKS;
         let build = |k: u32| {
             let mut left = k as usize;
             let mut shown: Vec<DiffHunkDto> = Vec::new();
@@ -174,7 +198,7 @@ pub async fn compare(cx: &CallCx<'_>, args: Compare) -> ToolResult {
                     left: &comparison.left,
                     right: &comparison.right,
                     file: &comparison.file,
-                    class: comparison.class,
+                    class,
                     identical: comparison.identical,
                     eol_only: comparison.eol_only,
                     setting_change_count,
@@ -281,6 +305,10 @@ pub async fn compare_grid(cx: &CallCx<'_>, args: CompareGrid) -> ToolResult {
     )?;
     let page = start.port_page()?;
     let file = args.file.0;
+    // The values of a denied file are its content (D79): not asked for.
+    if cx.host.denied.file(&file) {
+        return Err(crate::tools::error::ToolError::denied());
+    }
     let swimlanes: Vec<SwimlaneId> = args.swimlanes.into_iter().map(|s| s.0).collect();
     let query = GridQuery {
         file: file.clone(),

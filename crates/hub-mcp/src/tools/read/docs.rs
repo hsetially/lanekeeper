@@ -14,6 +14,8 @@ use crate::tools::paging::capped_result;
 use crate::tools::{CallCx, ToolResult};
 
 const SNIPPET_CHARS: usize = 1024;
+/// The contract's `ShortText`: 256 characters.
+const TITLE_CHARS: usize = 256;
 const LINE_CHARS: usize = 512;
 const MAX_HEADINGS: usize = 8;
 const MAX_RELATED: usize = 20;
@@ -23,8 +25,9 @@ const DEFAULT_LINES: u32 = 200;
 #[derive(Serialize)]
 struct DocHitDto {
     path: DocPath,
-    title: ShortText,
-    heading_path: Vec<ShortText>,
+    /// The title and the headings are written by the author of the doc, so they are doc text and are scanned like the snippet.
+    title: RedactedText,
+    heading_path: Vec<RedactedText>,
     snippet: RedactedText,
     score: f64,
     related_files: Vec<LogicalFile>,
@@ -36,10 +39,18 @@ fn doc_hits(redactor: &Redactor, hits: &[domain::DocHit]) -> Result<(Vec<DocHitD
     for hit in hits {
         let redacted = redactor.text(&hit.snippet)?;
         count += redacted.redacted;
+        let title = redactor.text(hit.title.as_str())?;
+        count += title.redacted;
+        let mut heading_path = Vec::with_capacity(hit.heading_path.len().min(MAX_HEADINGS));
+        for heading in hit.heading_path.iter().take(MAX_HEADINGS) {
+            let heading = redactor.text(heading.as_str())?;
+            count += heading.redacted;
+            heading_path.push(heading.text.truncated(TITLE_CHARS));
+        }
         out.push(DocHitDto {
             path: hit.path.clone(),
-            title: hit.title.clone(),
-            heading_path: hit.heading_path.iter().take(MAX_HEADINGS).cloned().collect(),
+            title: title.text.truncated(TITLE_CHARS),
+            heading_path,
             snippet: redacted.text.truncated(SNIPPET_CHARS),
             // A score is a number between 0 and 1000 in the contract; anything else (NaN, a negative) is no score.
             score: if hit.score.is_finite() {

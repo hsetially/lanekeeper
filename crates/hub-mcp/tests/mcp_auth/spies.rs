@@ -54,6 +54,8 @@ impl Log {
 // RegistryRead
 // ---------------------------------------------------------------------------------------------------------------------
 
+type Histories = HashMap<(SwimlaneId, NfsPath), Vec<Version>>;
+
 #[derive(Clone, Default)]
 pub struct SpyRegistry {
     pub inner: FakeRegistry,
@@ -64,6 +66,8 @@ pub struct SpyRegistry {
     pub unavailable: Arc<Mutex<Vec<&'static str>>>,
     /// File contents the fake cannot make (a denied file, a binary one, a file without bytes).
     contents: Arc<Mutex<HashMap<(SwimlaneId, NfsPath), FileContent>>>,
+    /// Versions the fake cannot make (it records no attribution): the history of a file, as scripted.
+    histories: Arc<Mutex<Histories>>,
 }
 
 impl std::fmt::Debug for SpyRegistry {
@@ -83,6 +87,11 @@ impl SpyRegistry {
 
     pub fn set_content(&self, s: &SwimlaneId, p: &NfsPath, content: FileContent) {
         lock(&self.contents).insert((s.clone(), p.clone()), content);
+    }
+
+    /// The history of a file is exactly these versions, newest first, on one page.
+    pub fn set_history(&self, s: &SwimlaneId, p: &NfsPath, versions: Vec<Version>) {
+        lock(&self.histories).insert((s.clone(), p.clone()), versions);
     }
 
     pub fn delay_every_call(&self, by: Duration) {
@@ -156,6 +165,9 @@ impl RegistryRead for SpyRegistry {
     ) -> Result<Paged<Version>, ReadError> {
         self.enter("history", format!("{s} {p} {}", page_text(&page)))
             .await?;
+        if let Some(versions) = lock(&self.histories).get(&(s.clone(), p.clone())) {
+            return Ok(Paged::last(versions.clone()));
+        }
         self.inner.history(u, s, p, page).await
     }
 
@@ -361,6 +373,8 @@ pub struct SpyDocs {
     pub inner: FakeDocSearch,
     pub log: Log,
     failures: Arc<Mutex<HashMap<&'static str, DocError>>>,
+    /// Hits the fake cannot make (it has no headings): `search` answers exactly these.
+    search_hits: Arc<Mutex<Option<Vec<DocHit>>>>,
 }
 
 impl std::fmt::Debug for SpyDocs {
@@ -376,6 +390,11 @@ impl SpyDocs {
 
     pub fn fail(&self, method: &'static str, error: DocError) {
         lock(&self.failures).insert(method, error);
+    }
+
+    /// `search` answers exactly these hits, whatever is asked.
+    pub fn script_search(&self, hits: Vec<DocHit>) {
+        *lock(&self.search_hits) = Some(hits);
     }
 
     fn enter(&self, method: &'static str, detail: String) -> Result<(), DocError> {
@@ -395,6 +414,9 @@ impl SpyDocs {
 impl DocSearch for SpyDocs {
     async fn search(&self, u: &User, q: &str, limit: usize) -> Result<Vec<DocHit>, DocError> {
         self.enter("search", format!("limit={limit}"))?;
+        if let Some(hits) = lock(&self.search_hits).clone() {
+            return Ok(hits);
+        }
         self.inner.search(u, q, limit).await
     }
 
@@ -471,12 +493,17 @@ impl DocSearch for SpyDocs {
 // WriteService
 // ---------------------------------------------------------------------------------------------------------------------
 
+/// The setting changes and the hunks that a draft holds.
+type DraftFacts = (Vec<domain::SettingChange>, Vec<domain::DiffHunk>);
+
 #[derive(Clone, Default)]
 pub struct SpyWrites {
     pub inner: FakeWriteService,
     /// One entry per call: the method, then for the writes the idempotency key, the door and the user (`method key=.. via=.. user=..`).
     pub log: Log,
     delay: Arc<Mutex<Option<Duration>>>,
+    /// What a draft made by `propose_draft` also holds, for tests of what the tool shows of it: the fake computes no facts.
+    draft_facts: Arc<Mutex<Option<DraftFacts>>>,
 }
 
 impl std::fmt::Debug for SpyWrites {
@@ -505,6 +532,11 @@ impl SpyWrites {
     /// Every write method waits this long before it runs (a slow write service).
     pub fn delay_writes(&self, by: Duration) {
         *lock(&self.delay) = Some(by);
+    }
+
+    /// Every draft that `propose_draft` makes from now on holds these setting changes and hunks (the engine's work, in 06).
+    pub fn script_draft_facts(&self, changes: Vec<domain::SettingChange>, hunks: Vec<domain::DiffHunk>) {
+        *lock(&self.draft_facts) = Some((changes, hunks));
     }
 
     /// The calls of the mutating methods, in order.
@@ -567,7 +599,12 @@ impl WriteService for SpyWrites {
     }
     async fn propose_draft(&self, ctx: &WriteCtx, r: EditRequest) -> Result<Draft, WriteError> {
         self.note("propose_draft", ctx);
-        self.inner.propose_draft(ctx, r).await
+        let mut draft = self.inner.propose_draft(ctx, r).await?;
+        if let Some((changes, hunks)) = lock(&self.draft_facts).clone() {
+            draft.setting_changes = changes;
+            draft.hunks = hunks;
+        }
+        Ok(draft)
     }
     async fn apply_draft(&self, ctx: &WriteCtx, id: DraftId) -> Result<WriteOutcome, WriteError> {
         self.note("apply_draft", ctx);

@@ -39,7 +39,26 @@ pub async fn get_effective_config(cx: &CallCx<'_>, args: GetEffectiveConfig) -> 
         channel: args.channel.map(|c| c.0),
         setting_prefix: args.setting_prefix.map(|p| p.0),
     };
+    // The values of a denied file are its content (D79): not asked for, and not shown if they come back.
+    if cx.host.denied.file(&query.file) {
+        return Err(ToolError::denied());
+    }
     let effective = cx.host.registry.effective_for(cx.user, &swimlane, &query).await?;
+    // Only what is shown is looked at (the first settings and the first sources), which bounds the cost of the check.
+    if cx.host.denied.file(&effective.file)
+        || effective
+            .settings
+            .iter()
+            .take(MAX_SETTINGS)
+            .any(|s| cx.host.denied.path(&s.source))
+        || effective
+            .sources
+            .iter()
+            .take(MAX_SOURCES)
+            .any(|s| cx.host.denied.path(&s.path))
+    {
+        return Err(ToolError::denied());
+    }
     let settings_total = effective.settings.len();
     let more = settings_total > MAX_SETTINGS;
     let mut redacted_values = 0_u32;
@@ -159,7 +178,8 @@ pub async fn get_served_config(cx: &CallCx<'_>, args: GetServedConfig) -> ToolRe
         served.tenant.as_str(),
         &served.file,
     );
-    let withheld = served.content_withheld;
+    // The flag of the port, and the name of the file as the floor (D79).
+    let withheld = served.content_withheld || cx.host.denied.path(&served.file);
 
     // The text: scanned as a whole, off the async threads, and only if the file is shown at all.
     let (text, redacted_values, lines) = match (&served.text, withheld) {
@@ -200,11 +220,12 @@ pub async fn get_served_config(cx: &CallCx<'_>, args: GetServedConfig) -> ToolRe
     }
     let shape = cx.shape(true);
     // The sources and the placeholders get a share of the cap each, and the text gets what is left.
+    // A withheld file reveals its name, size and hash and nothing else: no sources and no placeholders (the contract, D79).
     let (sources, sources_cut) = take_fitting(
         served
             .sources
             .iter()
-            .take(16)
+            .take(if withheld { 0 } else { 16 })
             .map(SourceDto::from)
             .collect::<Vec<_>>(),
         shape.cap / 6,
@@ -213,7 +234,7 @@ pub async fn get_served_config(cx: &CallCx<'_>, args: GetServedConfig) -> ToolRe
         served
             .unresolved_placeholders
             .iter()
-            .take(MAX_PLACEHOLDERS)
+            .take(if withheld { 0 } else { MAX_PLACEHOLDERS })
             .cloned()
             .collect::<Vec<ShortText>>(),
         shape.cap / 4,

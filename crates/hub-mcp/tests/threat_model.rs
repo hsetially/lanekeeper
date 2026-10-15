@@ -1137,18 +1137,37 @@ fn planted_gaps_are_found() {
     // A marker that the code no longer supports, and a gap that the section no longer reports.
     let fixed: Gaps = code
         .iter()
-        .map(|&(marker, still_true)| (marker, still_true && marker != "None (T6): the final sweep"))
+        .map(|&(marker, still_true)| {
+            (
+                marker,
+                still_true && marker != "None (T7): notify_services through the gate",
+            )
+        })
         .collect();
     assert!(
         marker_problems(&doc, &fixed)
             .iter()
-            .any(|p| p.contains("final sweep"))
+            .any(|p| p.contains("notify_services"))
     );
-    let forgotten = edited(&doc, |s| s.replace("None (T6): the planted-key matrix", "Done"));
+    let forgotten = edited(&doc, |s| {
+        s.replace("None (T7): notify_services through the gate", "Done")
+    });
     assert!(
         marker_problems(&forgotten, &code)
             .iter()
-            .any(|p| p.contains("planted-key matrix"))
+            .any(|p| p.contains("notify_services"))
+    );
+    // A control that T6 built and that the section goes back to calling missing.
+    let regressed = edited(&doc, |s| {
+        s.replace(
+            "### Residual risks\n",
+            "### Residual risks\n\nNone (T6): the final sweep\n",
+        )
+    });
+    assert!(
+        marker_problems(&regressed, &code)
+            .iter()
+            .any(|p| p.contains("final sweep"))
     );
 
     // The component dropped from the list.

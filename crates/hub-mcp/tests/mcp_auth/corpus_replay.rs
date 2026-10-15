@@ -35,6 +35,8 @@ mod invariants_cursor;
 mod invariants_elicitation;
 #[path = "../../fuzz/invariants_http.rs"]
 mod invariants_http;
+#[path = "../../fuzz/invariants_redactor.rs"]
+mod invariants_redactor;
 #[path = "../../fuzz/invariants_tool_args.rs"]
 mod invariants_tool_args;
 
@@ -93,6 +95,11 @@ fn replay_all_mcp_targets() {
         invariants_elicitation::mcp_elicitation_result,
         invariants_elicitation::MIN_SEEDS,
     );
+    replay_at_least(
+        "mcp_redactor",
+        invariants_redactor::mcp_redactor,
+        invariants_redactor::MIN_SEEDS,
+    );
 }
 
 #[test]
@@ -106,6 +113,7 @@ fn every_fuzz_target_has_a_corpus_and_a_source_file_and_no_other_exists() {
         "mcp_cursor",
         "mcp_http_body",
         "mcp_elicitation_result",
+        "mcp_redactor",
     ]
     .map(str::to_owned)
     .into();
@@ -407,6 +415,88 @@ proptest! {
         let wrapped = hub_mcp::output::cursor::decode(&cursor, &tag).unwrap();
         prop_assert_eq!(wrapped.skip, skip);
         prop_assert_eq!(wrapped.inner.unwrap_or_default(), inner);
+    }
+}
+
+#[test]
+fn every_kit_of_the_redactor_target_is_something_the_scan_flags() {
+    // Without this a kit that the scan no longer knows would make the fuzz target pass on nothing.
+    let redactor = hub_mcp::output::Redactor::new();
+    for n in 0..invariants_redactor::KITS {
+        let kit = invariants_redactor::kit(n);
+        let found = redactor.scan(&kit).unwrap();
+        assert!(!found.is_empty(), "kit {n} is not flagged");
+        let out = redactor.text(&kit).unwrap().text;
+        assert!(!out.as_str().contains(&kit), "kit {n} survives its own redaction");
+    }
+}
+
+#[test]
+fn the_redactor_seeds_hold_what_they_are_named_for() {
+    let read = |name: &str| fs::read(fuzz_dir().join("corpus/mcp_redactor").join(name)).unwrap();
+    let redactor = hub_mcp::output::Redactor::new();
+    let found = |name: &str| {
+        let text = invariants_redactor::expanded(&read(name));
+        redactor.text(&text).unwrap().redacted
+    };
+    // Nothing to find in the plain ones, and something in each that asks for a kit.
+    for plain in ["plain_yaml", "empty_input_padded", "markers_in_the_text_no_kit"] {
+        assert_eq!(found(plain), 0, "{plain}");
+    }
+    assert!(found("github_token_in_yaml") >= 1);
+    assert_eq!(
+        found("one_very_long_line"),
+        2,
+        "two kits on lines of their own among 3,500 characters"
+    );
+    assert_eq!(
+        found("markers_already_in_the_text_and_a_kit"),
+        1,
+        "a marker is not a secret, and the kit is"
+    );
+    assert!(found("aws_slack_jwt") >= 3);
+    assert_eq!(
+        found("private_key_block_in_the_middle"),
+        5,
+        "a private key is hidden line by line: the header and four lines of body"
+    );
+    assert!(found("every_kit") >= 9);
+    assert!(found("every_kit_in_data_block_mode_deeply_nested") >= 9);
+    assert!(found("crlf_lines") >= 1);
+    assert!(found("lone_cr_lines_with_a_kit") >= 1);
+    assert!(found("hostile_unicode") >= 1);
+    assert!(
+        found("unterminated_private_block") >= 3,
+        "the block runs to the end of the text"
+    );
+    // A public block is skipped whole by the scan, and the kit after it is still found.
+    assert_eq!(found("public_block_then_a_kit"), 1);
+    // The seeds hold no key: nothing in a file of the corpus is a thing the scan flags on its own.
+    for entry in fs::read_dir(fuzz_dir().join("corpus/mcp_redactor")).unwrap() {
+        let bytes = fs::read(entry.unwrap().path()).unwrap();
+        let text = String::from_utf8_lossy(bytes.get(3..).unwrap_or_default()).into_owned();
+        let name_free =
+            !text.contains("-----BEGIN") || text.contains("CERTIFICATE") || text.contains("PRIVATE");
+        assert!(name_free);
+    }
+}
+
+proptest! {
+    #[test]
+    fn arbitrary_text_satisfies_the_redactor_invariants(bytes in proptest::collection::vec(any::<u8>(), 0..700)) {
+        prop_assert_eq!(invariants_redactor::mcp_redactor(&bytes), Ok(()));
+    }
+
+    #[test]
+    fn text_with_secrets_spliced_in_satisfies_the_redactor_invariants(
+        mask in any::<u8>(),
+        first in any::<u8>(),
+        last in any::<u8>(),
+        text in "[ -~\n\r]{0,400}",
+    ) {
+        let mut data = vec![mask, first, last];
+        data.extend_from_slice(text.as_bytes());
+        prop_assert_eq!(invariants_redactor::mcp_redactor(&data), Ok(()));
     }
 }
 

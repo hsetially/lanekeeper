@@ -49,7 +49,7 @@ pub async fn list_files(cx: &CallCx<'_>, args: ListFiles) -> ToolResult {
         .items
         .iter()
         .skip(start.skip as usize)
-        .map(FileEntryDto::from)
+        .map(|e| FileEntryDto::new(e, &cx.host.denied))
         .collect();
     Ok(files_page(
         cx, &start, port_next, &items, link, &swimlane, "entries",
@@ -74,7 +74,7 @@ pub async fn get_drift(cx: &CallCx<'_>, args: GetDrift) -> ToolResult {
         .items
         .iter()
         .skip(start.skip as usize)
-        .map(FileEntryDto::from)
+        .map(|e| FileEntryDto::new(e, &cx.host.denied))
         .collect();
     Ok(files_page(
         cx,
@@ -335,12 +335,17 @@ pub async fn read_file(cx: &CallCx<'_>, args: ReadFile) -> ToolResult {
     let link = cx.host.links.file(&swimlane, &path);
     let summary_of = |text: String| text;
 
-    // A denied file is never read: its class, or the port's flag, is the rule (D79).
-    if content.withheld || content.class == FileClass::Denied {
+    // A denied file is never read: its class, or the port's flag, is the rule (D79), and its name is the floor under them, for every
+    // source (NFS, the baseline, Git) alike.
+    if content.withheld
+        || content.class == FileClass::Denied
+        || cx.host.denied.path(&path)
+        || cx.host.denied.path(&content.path)
+    {
         let data = FileData {
             path: content.path.clone(),
             hash: content.hash,
-            class: content.class,
+            class: FileClass::Denied,
             size: safe(content.size),
             total_lines: None,
             content_withheld: true,

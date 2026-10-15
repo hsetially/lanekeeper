@@ -18,6 +18,7 @@ use serde::Serialize;
 
 use crate::output::cap::cut_chars;
 use crate::output::{RedactError, RedactedText, Redactor};
+use crate::tools::denied::Denied;
 
 /// The largest integer a JSON number carries without loss: the contract's cap on sizes and ids.
 pub const MAX_SAFE_INT: u64 = 9_007_199_254_740_991;
@@ -166,19 +167,27 @@ pub struct FileEntryDto {
     pub pickup_state: Option<PickupState>,
 }
 
-impl From<&FileEntry> for FileEntryDto {
-    fn from(e: &FileEntry) -> Self {
+impl FileEntryDto {
+    /// The entry as the contract shows it. A file that is denied by its class, by the port's flag or by its name (D79) shows as
+    /// `denied`, withheld, with the name, size and hash it is known by.
+    #[must_use]
+    pub fn new(e: &FileEntry, denied: &Denied) -> Self {
+        let is_denied = e.class == FileClass::Denied || e.content_withheld || denied.path(&e.path);
         Self {
             path: e.path.clone(),
             is_dir: e.is_dir,
             kind: e.kind,
-            class: e.class,
+            class: if is_denied && !e.is_dir {
+                FileClass::Denied
+            } else {
+                e.class
+            },
             role: e.role,
             size: safe(e.size),
             hash: e.hash,
             drift: e.drift,
-            // A denied file is withheld whatever the entry's flag says: the class is the rule (D79).
-            content_withheld: e.content_withheld || e.class == FileClass::Denied,
+            // A denied file is withheld whatever the entry's flag says: the class is the rule (D79). A folder has no content.
+            content_withheld: is_denied && !e.is_dir,
             attribution: e.attribution.as_ref().map(AttributionDto::from),
             severity: e.severity,
             pickup_state: e.pickup_state,

@@ -5,6 +5,7 @@ pub mod cursor;
 pub mod envelope;
 pub mod links;
 pub mod redact;
+pub mod sweep;
 
 pub use redact::{CUT_MARK, RedactError, Redacted, RedactedText, Redactor, cut_with_mark, line_count};
 

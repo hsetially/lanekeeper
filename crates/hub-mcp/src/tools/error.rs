@@ -138,6 +138,18 @@ impl ToolError {
         }
     }
 
+    /// A question about the content of a denied file (D79): not answered, and not passed to the port. The reason says why.
+    #[must_use]
+    pub fn denied() -> Self {
+        Self {
+            reason: Some(RejectReason::Denied),
+            ..Self::with_detail(
+                Code::Unprocessable,
+                "This file is denied (D79): only its name, size and hash are known, and its content is never shown or changed.",
+            )
+        }
+    }
+
     /// The `structuredContent` and the sentence for the `content` block.
     #[must_use]
     pub fn render(&self, request_id: &str) -> (Value, String) {
