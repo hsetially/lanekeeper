@@ -198,7 +198,7 @@ The reviewer ran `prompts/REVIEW.md` on this branch twice. I do not have the rev
 
 Non-blocking findings fixed: NB1 `set_intent` ignores `rows_affected` (`18a7ef2`, test `a_request_whose_claim_was_cleared_before_the_send_does_not_send`); NB3 expiry takes no `proposal:{id}` lease (`be664fa`, test `the_expiry_job_skips_a_proposal_whose_approval_is_at_the_agent`); NB6 and NB11 evidence wording. NB10 (a timed-out command can still run at the agent) is added to the threat model in `b9b518c`; a fix is a proto change.
 
-**Round 2: APPROVE for the fix commits** (the `06/review:` commits `2b8ccfc`, `18a7ef2`, `be664fa`, `b9b518c`). **Merge is still held by the open human decision (decision 1).** Approval of the fixes is not approval to merge while the S8/D42 versus D77 question stands.
+**Round 2: APPROVE for the fix commits** (the five `06/review:` commits `2b8ccfc`, `18a7ef2`, `be664fa`, `b9b518c`, `e52e13e`, reviewed as `93e5d56..e52e13e`; the later `06/PR: text` commit was not part of that review). **Merge is still held by the open human decision (decision 1).** Approval of the fixes is not approval to merge while the S8/D42 versus D77 question stands.
 
 ## Contract follow-ups needed
 
