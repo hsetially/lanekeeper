@@ -517,7 +517,7 @@ registered = true
 # the HTTP layer) at target scale. Bench names are unique, so each has its own id next to the engine's or the platform's. All
 # are unregistered here: each flips to `registered = true` in the commit of the benchmark that produces its number, together with
 # the list in crates/xtask/tests/budgets_registry.rs. The thresholds of the first two are proposals that a human approved with
-# the plan (plans/05-registry-read-api.md, A42): no document divides P1 and P2.
+# the plan of prompt 05: no document divides P1 and P2.
 
 # P1 is 15 s from the change to the UI. The agent's 10 s stat walk and 3 s quiet period (D75) leave 2 s for the hub, from a scan
 # delta arriving to `DriftChanged` in the outbox.

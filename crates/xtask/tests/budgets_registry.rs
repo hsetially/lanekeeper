@@ -474,8 +474,8 @@ fn registry_shares_of_p1_and_p2_are_what_the_other_components_leave() {
     assert_eq!((share.unit.as_str(), share.statistic), ("ms", whole.statistic));
 
     // P2: 10 s from the push to the drift, through the webhook. Prompt 03b spends the webhook, the fetch and the tree index;
-    // the registry gets 1 s from `GitHeadMoved` to the drift in the outbox (plans/05-registry-read-api.md, A42: a figure a
-    // human approved with the plan, because no document divides P2).
+    // the registry gets 1 s from `GitHeadMoved` to the drift in the outbox (a figure a human approved with the plan of
+    // prompt 05, because no document divides P2).
     let (whole, share) = (find(&reg, "P2"), find(&reg, "P2.hub_head_moved_to_drift"));
     assert!(close(share.threshold, 1_000.0), "{}", share.threshold);
     assert!(share.threshold < whole.threshold);

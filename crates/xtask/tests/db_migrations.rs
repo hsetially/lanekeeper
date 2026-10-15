@@ -2641,8 +2641,11 @@ async fn file_state_has_the_prefix_denied_and_current_hash_indexes() {
     assert!(current.contains("WHERE"), "{current}");
 }
 
-/// A listing of one folder is a prefix range, and the two prefix indexes (`file_state` and `effective_files`) serve it: with a
-/// realistic number of rows and fresh statistics the planner picks them, even though a sequential scan is not forbidden.
+/// A listing of one folder is a prefix range, and the two prefix indexes (`file_state` and `effective_files`) can serve it.
+/// This asks whether the index is usable for the query, not whether the planner finds it cheaper at the size of this fixture:
+/// with 4,000 rows (about 80 of them match) a cost-based choice between an index and a sequential scan is not stable across
+/// versions and settings. So sequential scans are switched off for the connection, and the plan must then be built on the index
+/// if the index can serve the query at all (a `LIKE` prefix on a column without `text_pattern_ops` cannot, and fails here).
 #[tokio::test]
 async fn folder_listings_use_the_prefix_indexes() {
     let db = db!();
@@ -2659,6 +2662,10 @@ async fn folder_listings_use_the_prefix_indexes() {
     ] {
         sqlx::query(sql).execute(&mut admin).await.unwrap();
     }
+    sqlx::query("SET enable_seqscan = off")
+        .execute(&mut admin)
+        .await
+        .unwrap();
     for (query, index) in [
         (
             "SELECT path FROM file_state WHERE swimlane_id = 'sit1' AND path LIKE 'dir7/%'",
@@ -2902,6 +2909,18 @@ async fn registry_tables_enforce_their_constraints_and_cascade_with_the_swimlane
         CHECK_VIOLATION,
     )
     .await;
+    // A user is named by both halves or by neither: a foreign key on two columns is not checked when one is NULL, so the
+    // CHECK is what stops half an identity from being stored as attribution.
+    for who in ["started_by", "confirmed_by"] {
+        for half in ["tid", "oid"] {
+            expect_sqlstate(
+                &mut app,
+                &format!("UPDATE adoptions SET {who}_{half} = 'half' WHERE id = {review}"),
+                CHECK_VIOLATION,
+            )
+            .await;
+        }
+    }
 
     // adoption_resolutions: the three choices, one per (adoption, path); they go with their adoption.
     let resolution = |path: &str, choice: &str| {
@@ -2933,6 +2952,14 @@ async fn registry_tables_enforce_their_constraints_and_cascade_with_the_swimlane
         CHECK_VIOLATION,
     )
     .await;
+    for half in ["tid", "oid"] {
+        expect_sqlstate(
+            &mut app,
+            &format!("UPDATE adoption_resolutions SET resolved_by_{half} = 'half' WHERE adoption_id = {review} AND path = 'c.yml'"),
+            CHECK_VIOLATION,
+        )
+        .await;
+    }
 
     // delta_staging: one staged message per (swimlane, seq).
     let staged = |seq: i64, part: i32| {

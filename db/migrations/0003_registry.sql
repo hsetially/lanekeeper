@@ -214,7 +214,10 @@ CREATE TABLE adoptions (
   confirmed_by_oid text,
   confirmed_at     timestamptz,
   FOREIGN KEY (started_by_tid, started_by_oid) REFERENCES users (tid, oid),
-  FOREIGN KEY (confirmed_by_tid, confirmed_by_oid) REFERENCES users (tid, oid)
+  FOREIGN KEY (confirmed_by_tid, confirmed_by_oid) REFERENCES users (tid, oid),
+  -- A foreign key on two columns is not checked when either is NULL, so half an identity would pass it: both or neither.
+  CONSTRAINT adoptions_started_by_pair CHECK ((started_by_tid IS NULL) = (started_by_oid IS NULL)),
+  CONSTRAINT adoptions_confirmed_by_pair CHECK ((confirmed_by_tid IS NULL) = (confirmed_by_oid IS NULL))
 );
 CREATE UNIQUE INDEX adoptions_one_open ON adoptions (swimlane_id, reason) WHERE status IN ('in_progress', 'review');
 CREATE INDEX adoptions_swimlane_idx ON adoptions (swimlane_id, id DESC);
@@ -232,7 +235,8 @@ CREATE TABLE adoption_resolutions (
   resolved_by_oid text,
   resolved_at     timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (adoption_id, path),
-  FOREIGN KEY (resolved_by_tid, resolved_by_oid) REFERENCES users (tid, oid)
+  FOREIGN KEY (resolved_by_tid, resolved_by_oid) REFERENCES users (tid, oid),
+  CONSTRAINT adoption_resolutions_resolved_by_pair CHECK ((resolved_by_tid IS NULL) = (resolved_by_oid IS NULL))
 );
 
 -- The parts of a multi-part scan delta that arrived and were acknowledged but not yet applied (T1, A14, P15). A part is
