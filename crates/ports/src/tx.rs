@@ -15,6 +15,12 @@ use async_trait::async_trait;
 use crate::fakes::FakeTxState;
 
 /// A transaction in progress. It borrows the underlying connection, so it cannot outlive it.
+///
+/// The handle is opaque on purpose: a caller hands it to a port and can see nothing inside it, so it cannot know what a port
+/// runs, nor rely on that failing cleanly. A port whose failure must not abort the caller's transaction therefore opens a
+/// savepoint of its own: that is the contract of `ToolWrites::register` and `register_delete` (see the docs of
+/// [`crate::ToolWrites`]). A caller that holds the sqlx transaction can also wrap the call in a savepoint of its own, as
+/// defence in depth.
 pub struct Tx<'a> {
     inner: Inner<'a>,
 }
@@ -24,7 +30,8 @@ enum Inner<'a> {
     Pg(&'a mut sqlx::PgConnection),
     #[cfg(feature = "fakes")]
     Mem(&'a mut FakeTxState),
-    /// Never built. Keeps `'a` in use when no backend feature is enabled.
+    /// Built only by `Tx::detached`, with feature `conformance`, for the tool-write conformance suites; never built otherwise,
+    /// and then it only keeps `'a` in use when no backend feature is enabled.
     #[allow(dead_code)]
     Detached(PhantomData<&'a mut ()>),
 }
@@ -54,7 +61,32 @@ impl<'a> Tx<'a> {
         }
     }
 
+    /// A transaction backed by nothing: neither a Postgres connection nor an in-memory state, so `pg` and `mem` refuse it, and
+    /// an implementation that checks its transaction answers `WrongTx`, whatever store it is built on. Only the tool-write
+    /// conformance suites (`tool_writes`, `tool_writes_with_deletes`, which call `register` and `register_delete` with it)
+    /// build one and exercise that; no other port's suite does. Not public, so nothing else can make one.
+    #[cfg(feature = "conformance")]
+    pub(crate) fn detached() -> Self {
+        Self {
+            inner: Inner::Detached(PhantomData),
+        }
+    }
+
     /// The Postgres connection, for real implementations.
+    ///
+    /// In Postgres a failed statement aborts the whole transaction (SQLSTATE `25P02` for every later statement, the caller's
+    /// audit insert included). An implementation that must leave the caller's transaction usable when its statements fail
+    /// (`ToolWrites`) opens a savepoint of its own on this connection, runs its statements in it, and rolls back to it before
+    /// it returns an error. That is the implementation's contract; a caller may also wrap the call in a savepoint of its own.
+    ///
+    /// - `sqlx::Connection::begin` on the connection opens a savepoint only inside a transaction **opened by sqlx** (as every
+    ///   production caller does, through `Tx::from_pg(&mut tx)`). After a raw `BEGIN`, `begin()` issues a second `BEGIN`, and
+    ///   its rollback ends the caller's whole transaction. An implementation that cannot rely on sqlx having opened the
+    ///   transaction issues `SAVEPOINT`, `RELEASE` and `ROLLBACK TO` itself.
+    /// - A `SET LOCAL` (a `lock_timeout`, say) made inside the savepoint is reverted by a rollback to it but persists after
+    ///   `RELEASE`, into the caller's later statements. A registration needs a bounded wait, so the implementation restores
+    ///   the previous value after it releases the savepoint, or uses another bound.
+    /// - A lost connection is not covered: the transaction is gone with the connection.
     #[cfg(feature = "postgres")]
     pub fn pg(&mut self) -> Result<&mut sqlx::PgConnection, WrongTxKind> {
         if let Inner::Pg(conn) = &mut self.inner {

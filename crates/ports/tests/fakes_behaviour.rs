@@ -312,3 +312,106 @@ async fn tool_write_registry_is_full_at_register_never_at_commit() {
     tx_e.commit().await.unwrap();
     assert_eq!(reg.entries().len(), MAX);
 }
+
+/// A delete registration takes a place in the same queue as a hash registration, held by the open transaction that made it:
+/// hash and delete registrations parked in two transactions fill the registry together, a repeat of either is not `Full`,
+/// a rollback gives its places back, and a commit drops nothing that was accepted.
+#[tokio::test]
+async fn tool_write_deletes_share_the_bound_with_hash_registrations() {
+    use ports::fakes::FakeToolWrites;
+    use ports::{ToolWriteError, ToolWrites};
+    const MAX: usize = 10;
+    let reg = FakeToolWrites::with_capacity(MAX);
+    let txf = FakeTxFactory::new();
+    let s = swimlane("sit1");
+    let (user, path, h) = (
+        ports::conformance::sample::user_id(1),
+        nfs("svc/app.yml"),
+        hash(b"x"),
+    );
+
+    // Half of the places go to hash registrations parked in one transaction, half to delete registrations parked in another.
+    let mut tx_hash = txf.begin().await.unwrap();
+    let mut tx_delete = txf.begin().await.unwrap();
+    for i in 0..MAX / 2 {
+        reg.register(
+            &mut tx_hash.tx(),
+            &s,
+            &path,
+            &h,
+            &user,
+            &request_id(&format!("h-{i}")),
+        )
+        .await
+        .unwrap();
+        reg.register_delete(
+            &mut tx_delete.tx(),
+            &s,
+            &path,
+            &h,
+            &user,
+            &request_id(&format!("d-{i}")),
+        )
+        .await
+        .unwrap();
+    }
+    // Both kinds are refused now: a parked registration of either kind holds its place.
+    let mut tx_other = txf.begin().await.unwrap();
+    assert_eq!(
+        reg.register(&mut tx_other.tx(), &s, &path, &h, &user, &request_id("h-over"))
+            .await,
+        Err(ToolWriteError::Full)
+    );
+    assert_eq!(
+        reg.register_delete(&mut tx_other.tx(), &s, &path, &h, &user, &request_id("d-over"))
+            .await,
+        Err(ToolWriteError::Full)
+    );
+    // A repeat in the transaction that made it is a no-op, for either kind.
+    reg.register(&mut tx_hash.tx(), &s, &path, &h, &user, &request_id("h-0"))
+        .await
+        .unwrap();
+    reg.register_delete(&mut tx_delete.tx(), &s, &path, &h, &user, &request_id("d-0"))
+        .await
+        .unwrap();
+
+    // The delete registrations are rolled back: their places go back, and the hash registrations commit with nothing lost.
+    tx_delete.rollback().await.unwrap();
+    tx_hash.commit().await.unwrap();
+    assert_eq!(reg.entries().len(), MAX / 2);
+    assert!(reg.delete_entries().is_empty());
+    for i in 0..MAX / 2 {
+        reg.register_delete(
+            &mut tx_other.tx(),
+            &s,
+            &path,
+            &h,
+            &user,
+            &request_id(&format!("e-{i}")),
+        )
+        .await
+        .expect("the rolled-back delete registrations gave their places back");
+    }
+    tx_other.commit().await.unwrap();
+    assert_eq!(
+        reg.delete_entries().len(),
+        MAX / 2,
+        "every accepted delete registration is kept"
+    );
+
+    // Full of both kinds: a repeat of either is still a no-op, a new one of either is refused.
+    let mut tx = txf.begin().await.unwrap();
+    reg.register(&mut tx.tx(), &s, &path, &h, &user, &request_id("h-1"))
+        .await
+        .expect("a repeat of a held hash registration is not Full");
+    reg.register_delete(&mut tx.tx(), &s, &path, &h, &user, &request_id("e-1"))
+        .await
+        .expect("a repeat of a held delete registration is not Full");
+    assert_eq!(
+        reg.register_delete(&mut tx.tx(), &s, &path, &h, &user, &request_id("e-new"))
+            .await,
+        Err(ToolWriteError::Full)
+    );
+    tx.commit().await.unwrap();
+    assert_eq!(reg.entries().len() + reg.delete_entries().len(), MAX);
+}

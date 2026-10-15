@@ -56,5 +56,5 @@ pub use lease::leases;
 pub use notify::{NotifierProbe, notifier};
 pub use read::{RegistryScenario, registry_read};
 pub use sink::{SentinelProbe, report_sink, sentinel_sink};
-pub use tool_writes::{ToolWritesProbe, tool_writes};
+pub use tool_writes::{ToolWritesProbe, tool_writes, tool_writes_bounded, tool_writes_with_deletes};
 pub use write::{WriteScenario, write_service};
