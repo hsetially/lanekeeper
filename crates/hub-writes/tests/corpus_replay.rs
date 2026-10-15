@@ -578,7 +578,12 @@ fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
     );
     add(
         t,
-        "accepted_token_at_the_edge_of_ten_minutes",
+        "accepted_token_a_second_before_ten_minutes",
+        at(invariants::NOW_MS - 599_000).into_bytes(),
+    );
+    add(
+        t,
+        "rejected_token_at_exactly_ten_minutes",
         at(invariants::NOW_MS - 600_000).into_bytes(),
     );
     add(

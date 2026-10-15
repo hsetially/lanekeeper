@@ -480,23 +480,23 @@ pub fn preview_id_accepted(data: &[u8]) -> bool {
 
 pub fn writes_preview_id(data: &[u8]) -> Result<(), String> {
     let token = String::from_utf8_lossy(data).into_owned();
-    // The service's own token is always accepted now, and not a second after its ten minutes.
+    // The service's own token is always accepted now, and not at the instant its ten minutes are over.
     let own = fuzz_hooks::issue_token(PREVIEW_KEY, NOW_MS).ok_or("no token could be issued")?;
     ensure(fuzz_hooks::accepts(PREVIEW_KEY, &own, NOW_MS), || {
         "the service refuses its own token".into()
     })?;
-    ensure(fuzz_hooks::accepts(PREVIEW_KEY, &own, NOW_MS + 600_000), || {
-        "the service refuses its own token at ten minutes".into()
+    ensure(fuzz_hooks::accepts(PREVIEW_KEY, &own, NOW_MS + 599_000), || {
+        "the service refuses its own token a second before ten minutes".into()
     })?;
-    ensure(!fuzz_hooks::accepts(PREVIEW_KEY, &own, NOW_MS + 601_000), || {
-        "the service accepts a token after ten minutes".into()
+    ensure(!fuzz_hooks::accepts(PREVIEW_KEY, &own, NOW_MS + 600_000), || {
+        "the service accepts a token at ten minutes".into()
     })?;
 
     if fuzz_hooks::accepts(PREVIEW_KEY, &token, NOW_MS) {
         let secs = fuzz_hooks::issued_secs(&token).ok_or("an accepted token does not name a time")?;
         let issued_ms = i64::try_from(secs).map_err(|_| "time out of range".to_owned())? * 1000;
         ensure(
-            issued_ms <= NOW_MS + 30_000 && NOW_MS - issued_ms <= 600_000,
+            issued_ms <= NOW_MS + 30_000 && NOW_MS - issued_ms < 600_000,
             || "an accepted token is outside the window".into(),
         )?;
         // The id for a request and a second is one string: no other text is accepted for it.
