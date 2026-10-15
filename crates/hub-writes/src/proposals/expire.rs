@@ -5,12 +5,18 @@
 //! first, so a decision made at the same moment either wins (the proposal is no longer pending when the job looks) or loses (it
 //! finds `expired`), and the job's audit event, status change and event commit together (rule 8, D80). The scan reads the partial
 //! index on `expires_at`, oldest first, at most `expire_batch` at a time.
+//!
+//! For each proposal the job also takes the lease that deciders take (`proposal:{id}`), and skips a proposal whose lease is held:
+//! an approval is at the agent, and the approval is what moves the proposal. Without it the job could mark `expired` a proposal
+//! whose file the approval was writing. The skipped proposal is looked at again by the next run, which finds it decided (or, when
+//! the approval gave up, expires it).
 
 use std::sync::Arc;
 
 use domain::{DomainEvent, NfsPath, ProposalStatus, ShortText};
 use ports::{AuditAction, AuditActor, AuditEvent, AuditVia, Tx};
 
+use super::approve::lease_name;
 use super::store;
 use crate::drafts;
 use crate::error::{Internal, Res};
@@ -18,6 +24,9 @@ use crate::service::Inner;
 
 /// The most batches one run works through: with the default batch, 10,000 proposals.
 const MAX_BATCHES: usize = 100;
+
+/// How long the job's lease on one proposal is held: the time one transaction takes, with room for a slow database.
+const LEASE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// What one run did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -28,6 +37,8 @@ pub struct ExpireReport {
     pub drafts: u64,
     /// Proposals the run could not mark (the store did not answer); the next run tries again.
     pub failed: usize,
+    /// Proposals the run left alone because a decision on them was under way (their lease was held); the next run looks again.
+    pub busy: usize,
 }
 
 /// The leased job.
@@ -67,13 +78,15 @@ impl ExpireProposals {
                 if !still_held() {
                     return report;
                 }
-                match hub.within("expire", expire_one(hub, id)).await {
-                    Ok(Ok(true)) => {
+                match hub.within("expire", expire_leased(hub, id)).await {
+                    Ok(Ok(Expiry::Moved)) => {
                         report.proposals += 1;
                         progressed = true;
                     }
                     // Decided in the meantime: nothing to do, and it will not be listed again.
-                    Ok(Ok(false)) => progressed = true,
+                    Ok(Ok(Expiry::Gone)) => progressed = true,
+                    // Being decided: it is listed again until the decision is made, so it must not count as progress.
+                    Ok(Ok(Expiry::Busy)) => report.busy += 1,
                     _ => report.failed += 1,
                 }
             }
@@ -94,6 +107,29 @@ impl ExpireProposals {
         }
         report
     }
+}
+
+/// What the job did with one proposal.
+enum Expiry {
+    Moved,
+    /// Not pending any more, or not yet due.
+    Gone,
+    /// A decision on it is under way.
+    Busy,
+}
+
+/// [`expire_one`] with the lease on the proposal held, so that it does not run beside a decision.
+async fn expire_leased(hub: &Inner, id: domain::ProposalId) -> Res<Expiry> {
+    let lease = match hub.leases.try_acquire(&lease_name(id), LEASE_TTL).await {
+        Ok(Some(guard)) => guard,
+        Ok(None) => return Ok(Expiry::Busy),
+        Err(_) => return Err(Internal::new("expire", "lease")),
+    };
+    let moved = expire_one(hub, id).await;
+    if lease.release().await.is_err() {
+        tracing::warn!("a proposal lease could not be released; it runs out by itself");
+    }
+    Ok(if moved? { Expiry::Moved } else { Expiry::Gone })
 }
 
 /// Mark one proposal expired, if it is still pending and its time has run out. Returns whether it moved.

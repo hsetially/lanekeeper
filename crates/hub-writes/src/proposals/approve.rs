@@ -51,7 +51,8 @@ mod pr;
 /// How long the lease on a proposal is held: longer than the agent's timeout, so it outlives the command it guards.
 const LEASE_TTL: Duration = Duration::from_secs(60);
 
-fn lease_name(id: ProposalId) -> String {
+/// The lease that serialises everything that moves a proposal: the deciders and the expiry job.
+pub(super) fn lease_name(id: ProposalId) -> String {
     format!("proposal:{}", id.get())
 }
 

@@ -903,11 +903,10 @@ async fn a_proposal_past_its_time_cannot_be_approved_before_the_job_runs() {
     assert_eq!(l.rig.nfs_of(&l.s, "a.yml").as_deref(), Some(&b"x: 1\n"[..]));
 }
 
-/// A residual risk of the threat model (06 T8): the expiry job does not take the lease that deciders take, so it can mark a proposal
-/// `expired` while an approval's command is at the agent. The file has changed by then, so the write is still audited (naming the
-/// approver, the author and the proposal) and the proposal is left as it is: `expired`, with no approval row.
+/// The expiry job takes the lease that deciders take (review of 06, NB3): a proposal whose approval is at the agent is skipped, so
+/// the approval is the only thing that moves it. The job finds it decided on its next run and has nothing to do.
 #[tokio::test]
-async fn a_proposal_that_expires_while_its_write_is_on_the_way_is_still_audited_and_left_expired() {
+async fn the_expiry_job_skips_a_proposal_whose_approval_is_at_the_agent() {
     let Some(l) = lane().await else { return };
     let id = l.propose("p-1", "a.yml", "x: 1\n", "x: 2\n").await;
     // An hour before it runs out: the approval is not refused for its age.
@@ -915,7 +914,7 @@ async fn a_proposal_that_expires_while_its_write_is_on_the_way_is_still_audited_
     let gate = l.rig.agent.hold_writes();
     let approval = l.approve(&l.admin, "k-1", id);
     let meanwhile = async {
-        // The command is at the agent. The time runs out and the expiry job gets to the proposal first.
+        // The command is at the agent. The time runs out and the expiry job looks at the proposal.
         l.rig.agent.entered.notified().await;
         l.rig.advance_secs(60 * 60 * 2);
         let report = l.rig.hub.expirer().run_once(&|| true).await;
@@ -923,25 +922,69 @@ async fn a_proposal_that_expires_while_its_write_is_on_the_way_is_still_audited_
         report
     };
     let (outcome, report) = tokio::join!(approval, meanwhile);
-    assert_eq!(report.proposals, 1, "the job marked it expired");
+    assert_eq!(
+        report.proposals, 0,
+        "the job marked a proposal that was being approved: {report:?}"
+    );
+    assert_eq!(report.busy, 1, "{report:?}");
+    assert!(matches!(outcome.unwrap(), WriteOutcome::Applied { .. }));
+
+    // The approval decided it, and the screens were told so.
+    assert_eq!(l.rig.nfs_of(&l.s, "a.yml").as_deref(), Some(&b"x: 2\n"[..]));
+    assert_eq!(l.status(id).await, "applied");
+    assert_eq!(l.rig.count("approvals").await, 1);
+    assert_eq!(
+        l.transitions(id).await,
+        vec![ProposalStatus::Pending, ProposalStatus::Applied]
+    );
+    let chain = l.rig.chain().await;
+    assert_eq!(chain.len(), 2, "the proposal and the write; no expiry");
+    assert!(verify_chain(&chain).is_ok());
+
+    // Nothing is left for the job.
+    assert_eq!(l.rig.hub.expirer().run_once(&|| true).await.proposals, 0);
+}
+
+/// What remains of the race (a residual risk of the threat model, 06 T8): the lease on a proposal lasts 60 seconds, so a command
+/// that outlasts it leaves the proposal open to the job. This puts the proposal in that state by hand while the command is at the
+/// agent. The file has changed by then, so the write is still audited (naming the approver, the author and the proposal) and the
+/// proposal is left as it is: `expired`, with no approval row.
+#[tokio::test]
+async fn a_proposal_that_expires_while_its_write_is_on_the_way_is_still_audited_and_left_expired() {
+    let Some(l) = lane().await else { return };
+    let id = l.propose("p-1", "a.yml", "x: 1\n", "x: 2\n").await;
+    l.rig.advance_secs(60 * 60 * 71);
+    let gate = l.rig.agent.hold_writes();
+    let approval = l.approve(&l.admin, "k-1", id);
+    let meanwhile = async {
+        // The command is at the agent and its lease has run out: whatever expires the proposal now is not stopped by it.
+        l.rig.agent.entered.notified().await;
+        sqlx::query("UPDATE proposals SET status = 'expired' WHERE id = $1")
+            .bind(id.get())
+            .execute(&l.rig.pool)
+            .await
+            .unwrap();
+        gate.add_permits(1);
+    };
+    let (outcome, ()) = tokio::join!(approval, meanwhile);
     assert!(
         matches!(outcome.unwrap(), WriteOutcome::Applied { .. }),
         "the admin is told the change was applied"
     );
 
-    // The file changed, and the proposal is as the job left it.
+    // The file changed, and the proposal is as it was left.
     assert_eq!(l.rig.nfs_of(&l.s, "a.yml").as_deref(), Some(&b"x: 2\n"[..]));
     assert_eq!(l.status(id).await, "expired");
     assert_eq!(l.rig.count("approvals").await, 0, "no decision was written");
     assert_eq!(
         l.transitions(id).await,
-        vec![ProposalStatus::Pending, ProposalStatus::Expired],
+        vec![ProposalStatus::Pending],
         "and the screens were never told it was applied"
     );
 
-    // One audit event for the write, after the proposal and the expiry, naming the approver, the author and the proposal.
+    // One audit event for the write, after the proposal, naming the approver, the author and the proposal.
     let chain = l.rig.chain().await;
-    assert_eq!(chain.len(), 3, "the proposal, its expiry and the write");
+    assert_eq!(chain.len(), 2, "the proposal and the write");
     assert!(verify_chain(&chain).is_ok());
     let e = &chain.last().unwrap().event;
     assert_eq!(e.action, AuditAction::FileEdited);

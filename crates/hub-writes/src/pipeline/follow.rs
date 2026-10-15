@@ -4,8 +4,9 @@
 //!
 //! A proposal that is no longer pending when this runs (its time ran out and the expiry job marked it, while the command was on its
 //! way) has had its file written already: the audit event is still recorded, because the change happened, and the proposal is
-//! left as it is. That is logged. It cannot happen between two deciders (a lease serialises approvals and rejections alike); the
-//! expiry job takes no lease, so it is the one that can, and the window is the agent's round trip.
+//! left as it is. That is logged. It cannot happen between two deciders (a lease serialises approvals and rejections alike), nor with
+//! the expiry job while the decider holds the lease (the job takes the same lease and skips a proposal whose lease is held); it
+//! can happen only when a command outlasts the lease's 60 seconds.
 
 use domain::{DomainEvent, ProposalStatus};
 use ports::Tx;
