@@ -45,7 +45,7 @@ const MIN_RESIDUAL_RISKS: usize = 11;
 
 /// The limits that earlier tasks recorded for the threat model. Each topic needs one residual-risk bullet that contains every
 /// needle, so a topic cannot be "covered" by words scattered over unrelated bullets.
-const CARRY_FORWARD: [(&str, &[&str]); 26] = [
+const CARRY_FORWARD: [(&str, &[&str]); 27] = [
     (
         "a landed write overwritten before the reconcile job looks is not audited as ours (T1)",
         &[
@@ -162,6 +162,16 @@ const CARRY_FORWARD: [(&str, &[&str]); 26] = [
     (
         "an approver sees only the first path of a notification, and no action (T11)",
         &["ProposalView", "first path", "approver", "no `action`"],
+    ),
+    (
+        "a proposal deleted elsewhere leaves its blob reference behind (review 2)",
+        &[
+            "blob_refs",
+            "ref_id",
+            "no foreign key",
+            "never deletes a proposal",
+            "contract follow-up",
+        ],
     ),
     (
         "the notify route's answer for an approval user is not in the contract (T11)",
@@ -1083,6 +1093,19 @@ fn anchor_problems(source: &dyn Fn(&str) -> String) -> Vec<String> {
         "`config_server_offer` in ops/restart.rs authorizes an Operator, checks that C11 is open, and offers exactly one Deployment of the configured name",
     );
 
+    // 16. This crate never deletes a proposal, so no `blob_refs` row of a proposal is left behind by it.
+    check(
+        [
+            "crates/hub-writes/src/proposals/store.rs",
+            "crates/hub-writes/src/proposals/expire.rs",
+            "crates/hub-writes/src/proposals/approve.rs",
+        ]
+        .iter()
+        .all(|f| !source(f).contains("DELETE FROM proposals")),
+        "a proposal that is deleted elsewhere",
+        "the proposal code only moves `status` and never issues `DELETE FROM proposals`, which is why only a delete by another crate can leave its `blob_refs` row behind",
+    );
+
     problems
 }
 
@@ -1518,6 +1541,12 @@ fn planted_gaps_are_found() {
             "let [(namespace, name)] = found.as_slice() else {",
             "let Some((namespace, name)) = found.first() else {",
             "Deployment name",
+        ),
+        (
+            "crates/hub-writes/src/proposals/store.rs",
+            "pub(crate) const INSERT_SQL: &str = INSERT;",
+            "pub(crate) const INSERT_SQL: &str = INSERT;\nconst GONE: &str = \"DELETE FROM proposals WHERE id = $1\";",
+            "deleted elsewhere",
         ),
     ] {
         let planted = plant(relative, from, to);
