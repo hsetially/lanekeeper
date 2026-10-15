@@ -874,7 +874,9 @@ fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
         "rejected_pull_request_number_zero",
         json(pull(json!(0), "https://github.com/acme/r/pull/0")),
     );
-    add(t, "rejected_pull_list_without_the_branch", b"[]".to_vec());
+    // A list that does not hold the branch is a valid answer ("no pull request yet"): it is read as `None`, which is not a refusal.
+    add(t, "accepted_pull_list_without_the_branch", b"[]".to_vec());
+    add(t, "rejected_pull_list_of_numbers", b"[1,2]".to_vec());
     add(
         t,
         "rejected_tree_that_github_cut",

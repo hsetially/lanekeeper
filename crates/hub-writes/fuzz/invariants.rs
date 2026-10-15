@@ -753,7 +753,8 @@ pub fn git_data_responses_accepted(data: &[u8]) -> bool {
         || parse_contents(data).is_ok()
         || parse_tree(data).is_ok()
         || parse_pull(data).is_ok()
-        || parse_pull_list(data, &branch).is_ok_and(|found| found.is_some())
+        // A list without the branch is a valid answer (`None`: no pull request yet), so it is accepted, not refused.
+        || parse_pull_list(data, &branch).is_ok()
 }
 
 fn at<'a>(v: &'a Option<serde_json::Value>, path: &[&str]) -> Option<&'a serde_json::Value> {
