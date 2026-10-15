@@ -133,3 +133,64 @@ Verdicts on the flagged items (items 1 to 4). None of them blocks merge on the m
 - Threat model updated: yes. `docs/threat-model.md` has a section "MCP server (07)" with assets, trust boundaries, a STRIDE table with proof cells, and residual risks including D-1, D-2, T0, D92 and Q20 and Q37. `tests/threat_model.rs` passes (11 tests).
 
 Review verdict flips to APPROVE once blocking items 1 to 3 are resolved: a Docker-capable green run attached, the human's T0 waiver or results recorded, and D-1 and D-2 recorded in `docs/decisions.md`.
+
+---
+
+# 07 review, round 2
+
+Reviewer agent output, saved by the orchestrator (condensed only in layout; findings verbatim). Branch `agent/07-mcp-server` at `11f9113`.
+
+VERDICT: CHANGES REQUESTED
+
+Round 1's blocking items 1 and 2 (no Docker run, T0 NOT RUN) are not repeated as blocking. The evidence file, `docs/cursor-admin.md`, the threat model and D91 all state them honestly: nothing is ticked without proof, and NOT RUN is never counted as a pass. Two small code and test defects were found, both reproduced.
+
+## Blocking
+
+1. **Session reservation leaks when a request is dropped.** `crates/hub-mcp/src/server/guard.rs:168-196` violates AGENTS rule 5 and S14 (per-user limits). The gate calls `state.sessions.reserve()` at line 168, then awaits `next.run(request)` at line 179. The release or owner-insert code only runs after that await. If the client disconnects before rmcp returns the response head, hyper drops the future, and the reservation is never released. The only other release path is the owner-table eviction listener (`guard.rs:53`), and no owner entry exists for a dropped request.
+   - Reproduced in a scratch copy of HEAD with `Rig` set to 5 sessions per user: five initialize `oneshot` futures polled once and dropped gave `counted_sessions(alice) == 5`, `live_sessions == 0`, and a real `initialize` then answered 429 (`too_many_sessions`).
+   - The count never falls until the replica restarts. At the default of 5 per user and 200 per replica, spread over enough accounts, it can also lock the whole replica out with 503.
+   - No test covers a dropped request; `tests/mcp_auth/sessions.rs` only covers refused and failed responses (`a_request_that_opens_no_session_holds_no_slot`).
+   - Fix: make the reservation an RAII guard that releases on `Drop` unless it was handed to the owner table. Add a test that polls the gate future once, drops it, and asserts `counted_sessions == 0`.
+
+2. **The logging proofs are flaky and can degrade to a vacuous S10 check.** `crates/hub-mcp/tests/mcp_auth/logging.rs:67,173,256` use `tracing::subscriber::set_default`.
+   - `cargo test -p hub-mcp --test mcp_auth the_` failed 5 of 15 runs at `logging.rs:312` (`one line per call: left: 0, right: 9`), only in `every_call_line_carries_the_stable_user_id_and_nothing_else_about_the_caller`. The captured log held only an rmcp WARN line, so every `hub_mcp::call` event was lost.
+   - The same tests passed 20 of 20 as `logging::` alone and 20 of 20 in the full `mcp_auth` binary, so `just verify-07` usually stays green. It is still a real defect in the test setup, not the product.
+   - The crate already documents the cause three times and avoids it elsewhere (`rmcp_spike.rs:358`, `stub_protocol.rs:64`, `confirm.rs:1386`: a scoped `set_default` loses events when other tests run concurrently; they use one process-wide subscriber). The three `logging.rs` tests did not follow.
+   - `log_capture_has_no_tokens_args_or_output` only asserts absence, plus a line the test emits itself. When events are lost it passes without having captured any product log line, so the S10/S21 proof silently becomes a no-op.
+   - Fix: use the per-thread capture in `confirm::capture` (`confirm.rs:1388`) in all three tests. Add a positive assertion that a product log line was captured in `log_capture_has_no_tokens_args_or_output`.
+
+## Non-blocking
+
+Verdicts on the items the orchestrator asked the reviewer to judge (none should block merge):
+
+1. **D-1 (`/mcp` is a `public` self-authenticating route): accept.** The gate (`guard.rs:119`) runs before rmcp on POST, GET and DELETE. Its order is length, Host, Origin, bearer token, `Users::require_active`, then the session owner. The route-table pins hold: `every_mcp_route_has_a_declared_guard`, `the_routes_of_each_mode_are_exactly_these`, `unmatched_path_under_mcp_is_default_deny` and `every_method_of_the_endpoint_is_gated`. The hub's `mcp_routes_pass_the_hub_route_table_check` and `mcp_default_deny_holds` pass. The loss is that a future `public` method added under `/mcp` would not be caught structurally; the named tests would catch it.
+2. **D-2 (S3 met by the Origin check only): accept, with the condition tracked.** `check_origin` (`auth/routes.rs:133`) requires the exact public origin and runs before the body is read. The cookie is SameSite=Lax, and a forged create only yields a token the attacker cannot read. Nothing is exposed because `main` never mounts `McpModule`, and the hub composes no `CsrfLayer` for any module today. The D109 condition is workable: `crates/hub-identity/src/csrf.rs` lets requests with no session cookie through, so wrapping every non-GET route will not break cookie-less `/mcp`. The PR text should make "compose `CsrfLayer` and assert it in `mcp_module.rs`" a go-live checklist item next to `just mcp-t0-status --strict`.
+3. **D92a (cold `read_file` p95 about 52-63 ms against the 50 ms screen): accept.** The cost is `engine::index_settings`, whose own accepted budget is 60 ms; it is paid once per file version per replica (`tools/cache.rs` keys on the SHA-256 of the bytes). The registered 300 ms budget passes; warm calls take about 2 ms. It is still a parse-at-call-time pattern; the clean fix remains D92 option C.
+4. **D92b (`get_effective_config` returns `text` null and every value typed `other`): accept, with one cheap mitigation.** For a resource file the result reads "0 of 0 settings shown" with `text: null` (`tools/read/effective.rs:153`). A model will read that as an empty file. Add a fixed sentence to the summary when `effective.role == Resource` or `text` is absent, pointing to `get_served_config`. This needs no contract change.
+
+Other findings:
+
+5. **Port calls without a timeout in this crate (rule 5).** `McpHandler::call` (`server/handler.rs:135-139`) and `list_tools` (`handler.rs:230-235`) await `Users::require_active` without one. rmcp has already sent the SSE head, so the hub's head timeout does not apply. `BearerAuth::authenticate` (`auth/mod.rs:106-112`, called at `guard.rs:143`) awaits the verifier and `Users` the same way. The step-5 re-check in `confirm/gate.rs` and every registry call are bounded. 03a's `Users` has a 10 s `DB_TIMEOUT`, so this is bounded in practice. Wrap the three call sites in `tokio::time::timeout(read_timeout)` and map the timeout to `Unavailable`; fold this into the fix round.
+6. **`get_served_config` does superlinear CPU work on the async thread for large files.** `tools/read/served.rs:149` runs `fit_lines` over every line, while `read_doc` caps `available` at 200 lines (`docs.rs:150`). Measured in a debug build, second call: 146 KB took 27 ms, a 2 MiB file took 1.34 s; scaling by the debug-to-release ratio of the P9 bench (about 11x) puts the 2 MiB case near 120 ms of synchronous CPU in release. The P9 bench only covers the 146 KB file, so the budget is not violated at target scale. This is a rule-4 and P9 risk at the 2 MiB upper bound. Apply `DEFAULT_LINES` as `read_doc` does, which also matches the "200 lines or 16 KB" convention in `docs/mcp-tools.md`.
+7. **`ToolHost.writes` is still public.** The gate-only-caller guard (`tests/mcp_auth/confirm.rs:1621-1723`) is now a whole-file scan with positive controls for broken chains, aliases and path calls, and it is adequate. A scan cannot see a macro-generated call, so keep the type-level narrow handle on the follow-up list.
+8. **`tools/list` is about 112 KB with `outputSchema` on** (`server/mod.rs:118`, `advertise_output_schemas: true`), against about 31 KB without. Decide the default with the T0 results; the reviewer would default it off until T0 shows a need. The new bound `(100_000..=125_000)` at `contract_schemas.rs:537` also fails when the schemas shrink, which is odd for a size guard.
+9. **Decision numbers collide with `origin/agent/05-registry-read-api`.** Branch 05 defines its own D91-D108, and its D107 already clashes with main's. `examples/t0_status.rs` parses the literal `- **D91**` heading, and about 25 files reference D91, D92 and D109. Agree the merge order; the second branch to merge must renumber.
+10. **D109 provenance cannot be shown by git.** The text says "Accepted by the human ... (hsetially)", but the commit author is the agent. The human's review of the PR diff of `docs/decisions.md` is the real record; say so in the PR text.
+11. **S15 delimited blocks only exist in `data_block` mode.** The default `summary` mode labels text with `untrusted: true` and `label` but does not delimit it. The threat model says so honestly; decide the mode with the T0 results.
+12. **Plan traceability gaps, both disclosed in the evidence file.** `docs_tree::read_doc_takes_only_doc_paths` and `docs_tree::dotdot_and_backslash_are_refused` do not exist by name; the same cases are in `args::every_path_argument_uses_a_domain_parser` (`args.rs:438-452`). The goldens for the 401 challenge, `tools/list` per role and the cursor are inline assertions, not files. The other 138 of 140 names grep as real `fn`s.
+13. **`message::raise_pr` builds its own `Redactor::new()`** (`confirm/message.rs:403`) instead of the host's. If Q20 tuning ever changes the host's `ScanConfig`, the question would be scanned with the default. The scan runs synchronously on up to 64 KiB, about 0.4 ms.
+14. **Residuals to carry into the PR text:** the `raise_pr` question shows at most 240 characters of the body, the rest is posted unread under the user's GitHub identity (in the threat model); `tools.notify_services.enabled` has no environment key; the plugin package still copies the skill's dev-only `evals/evals.json`; the hub integration must give `Mcp-Session-Id` affinity (prompt 09).
+
+## Evidence re-run (reviewer)
+
+- `cargo fmt --all -- --check`: exit 0. `cargo clippy -p hub-mcp -p hub --all-targets -- -D warnings`: exit 0; `cargo clippy -p hub-mcp -- -D warnings` (no dev features) and `cargo check -p hub`: exit 0.
+- `cargo test -p hub-mcp --lib --tests --no-fail-fast` with `LK_TEST_PG_ADMIN_URL` (PG 16.15, no pgvector): 482 passed, 0 failed, 0 SKIPPED lines (lib 36, config 10, cursor_admin_doc 18, justfile_gate 7, mcp_auth 329, plugin_package 19, rmcp_spike 13, stub_protocol 24, t0_status 15, threat_model 11); the 11 `auth_pat_pg` tests ran on the real server.
+- Flake runs, same `mcp_auth` binary: `logging::` alone 0/20 failed; the full binary 0/20 failed; filter `the_` 5/15 failed (`logging.rs:312`).
+- Scratch probe: five dropped initializes left `counted=5, live=0` and the next `initialize` got 429; `get_served_config` timed as in item 6.
+- `cargo test -p hub --test mcp_module`: 5 passed. `cargo test -p xtask --test mcp_tools_doc --test budgets_registry`: 23 and 8 passed.
+- `cargo deny check` and `cargo audit` clean (workspace and fuzz crate). All 23 new `Cargo.lock` packages at least 15 days old, none yanked.
+- `just verify-07`: fails at `docker-check`. `just mcp-t0-status`: every cell NOT RUN; `--strict` exits 1.
+- `cargo xtask bench-check`: 0 pass, 46 fail, 26 unmet of 72 because `target/criterion` does not exist here; `just mcp-bench` was NOT re-run (disk), the P9 numbers are the implementer's. The round-2 diff does not touch the read path.
+- Not run by the reviewer: `just verify` as one command, `cargo test --workspace`, `just web-verify`, libFuzzer runs, `osv-scanner`, anything needing pgvector or Docker, a full `cargo clippy --workspace`.
+- Spec chain: plan approved at `eeceade`, `git diff eeceade HEAD -- plans/07-mcp-server.md` is empty; commits T0 to T7 in order; only `perf/budgets.toml` changed among contract paths (21 flips, approved by C2); Extra-paths match the plan.
+- Security trace: S4, S7, S9, S11, S14 (gap: dropped-request leak, blocking 1), S14b, S15, S21 (`logging::*` flaky, blocking 2), P9 (numbers not re-run) each traced to code and tests; threat model updated.
