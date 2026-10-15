@@ -1,0 +1,8 @@
+---
+source: crates/hub-mcp/tests/mcp_auth/confirm_golden.rs
+---
+Upload a file to swimlane sit1?
+File (supplied by the assistant): "receipt-sit9.bmp"; this creates it and is 90112 bytes.
+Changes: no setting differs in what the services get.
+Effect: every service reads it; a new tenant file becomes a copy that can fall behind the base file; its suffix "sit9" is not a tenant of this swimlane, so nobody reads it.
+Review it in the web UI: https://hub.example.test/swimlanes/sit1/files?path=receipt-sit9.bmp

@@ -250,6 +250,15 @@ impl Rig {
         uid(key)
     }
 
+    /// Like [`Rig::add_user`], for an active user whose changes need an admin's approval (D37).
+    pub fn add_user_requiring_approval(&self, key: &str, role: Role) -> UserId {
+        let mut record = user(key, Some(role), UserStatus::Active);
+        record.requires_approval = true;
+        self.users.insert(record);
+        self.session_auth.set(key, Some(role), UserStatus::Active);
+        uid(key)
+    }
+
     /// A client that sends `bearer`, at the deployment's host.
     pub fn client(&self, bearer: Option<&str>) -> Client {
         Client::new(self.router.clone(), bearer.map(str::to_owned)).at_host(HOST)

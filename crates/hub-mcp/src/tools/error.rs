@@ -19,7 +19,7 @@
 //! | `internal` | a defect |
 
 use domain::{ContentHash, RejectReason, ValidationIssue};
-use ports::{DocError, ReadError, WriteError};
+use ports::{AuthError, DocError, ReadError, WriteError};
 use serde_json::{Value, json};
 
 use crate::limits::Refusal;
@@ -201,6 +201,16 @@ impl From<WriteError> for ToolError {
             WriteError::IdempotencyConflict => Code::Conflict,
             WriteError::Unavailable => Code::Unavailable,
         })
+    }
+}
+
+impl From<AuthError> for ToolError {
+    /// The directory could not be asked: retry. Anything else it says about the user is a no (S4, D36).
+    fn from(error: AuthError) -> Self {
+        match error {
+            AuthError::Unavailable => Self::new(Code::Unavailable),
+            _ => Self::new(Code::Forbidden),
+        }
     }
 }
 

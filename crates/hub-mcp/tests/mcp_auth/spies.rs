@@ -474,7 +474,9 @@ impl DocSearch for SpyDocs {
 #[derive(Clone, Default)]
 pub struct SpyWrites {
     pub inner: FakeWriteService,
+    /// One entry per call: the method, then for the writes the idempotency key, the door and the user (`method key=.. via=.. user=..`).
     pub log: Log,
+    delay: Arc<Mutex<Option<Duration>>>,
 }
 
 impl std::fmt::Debug for SpyWrites {
@@ -483,56 +485,106 @@ impl std::fmt::Debug for SpyWrites {
     }
 }
 
+/// The methods that change something or ask the world to: the ones that only a confirmed request may reach.
+pub const MUTATING: [&str; 8] = [
+    "edit",
+    "upload",
+    "delete",
+    "revert",
+    "restart",
+    "raise_pr",
+    "apply_draft",
+    "notify",
+];
+
 impl SpyWrites {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Every write method waits this long before it runs (a slow write service).
+    pub fn delay_writes(&self, by: Duration) {
+        *lock(&self.delay) = Some(by);
+    }
+
+    /// The calls of the mutating methods, in order.
+    pub fn mutations(&self) -> Vec<String> {
+        self.log
+            .all()
+            .into_iter()
+            .filter(|e| MUTATING.iter().any(|m| e == m || e.starts_with(&format!("{m} "))))
+            .collect()
+    }
+
+    fn note(&self, method: &str, ctx: &WriteCtx) {
+        self.log.push(format!(
+            "{method} key={} via={} user={}",
+            ctx.idempotency_key,
+            ctx.via.as_str(),
+            ctx.user.id
+        ));
+    }
+
+    async fn wait(&self) {
+        let delay = *lock(&self.delay);
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
     }
 }
 
 #[async_trait]
 impl WriteService for SpyWrites {
     async fn edit(&self, ctx: &WriteCtx, r: EditRequest) -> Result<WriteOutcome, WriteError> {
-        self.log.push("edit".to_owned());
+        self.note("edit", ctx);
+        self.wait().await;
         self.inner.edit(ctx, r).await
     }
     async fn upload(&self, ctx: &WriteCtx, r: UploadRequest) -> Result<WriteOutcome, WriteError> {
-        self.log.push("upload".to_owned());
+        self.note("upload", ctx);
+        self.wait().await;
         self.inner.upload(ctx, r).await
     }
     async fn delete(&self, ctx: &WriteCtx, r: DeleteRequest) -> Result<WriteOutcome, WriteError> {
-        self.log.push("delete".to_owned());
+        self.note("delete", ctx);
+        self.wait().await;
         self.inner.delete(ctx, r).await
     }
     async fn revert(&self, ctx: &WriteCtx, r: RevertRequest) -> Result<WriteOutcome, WriteError> {
-        self.log.push("revert".to_owned());
+        self.note("revert", ctx);
+        self.wait().await;
         self.inner.revert(ctx, r).await
     }
     async fn restart(&self, ctx: &WriteCtx, r: RestartRequest) -> Result<WriteOutcome, WriteError> {
-        self.log.push("restart".to_owned());
+        self.note("restart", ctx);
+        self.wait().await;
         self.inner.restart(ctx, r).await
     }
     async fn raise_pr(&self, ctx: &WriteCtx, r: PrRequest) -> Result<WriteOutcome, WriteError> {
-        self.log.push("raise_pr".to_owned());
+        self.note("raise_pr", ctx);
+        self.wait().await;
         self.inner.raise_pr(ctx, r).await
     }
     async fn propose_draft(&self, ctx: &WriteCtx, r: EditRequest) -> Result<Draft, WriteError> {
-        self.log.push("propose_draft".to_owned());
+        self.note("propose_draft", ctx);
         self.inner.propose_draft(ctx, r).await
     }
     async fn apply_draft(&self, ctx: &WriteCtx, id: DraftId) -> Result<WriteOutcome, WriteError> {
-        self.log.push("apply_draft".to_owned());
+        self.note("apply_draft", ctx);
+        self.wait().await;
         self.inner.apply_draft(ctx, id).await
     }
     async fn preview_effect(&self, ctx: &WriteCtx, r: PreviewRequest) -> Result<ChangePreview, WriteError> {
-        self.log.push("preview_effect".to_owned());
+        self.note("preview_effect", ctx);
         self.inner.preview_effect(ctx, r).await
     }
     async fn notify(&self, ctx: &WriteCtx, r: NotifyRequest) -> Result<WriteOutcome, WriteError> {
-        self.log.push("notify".to_owned());
+        self.note("notify", ctx);
+        self.wait().await;
         self.inner.notify(ctx, r).await
     }
     async fn draft(&self, ctx: &WriteCtx, id: DraftId) -> Result<Draft, WriteError> {
-        self.log.push("draft".to_owned());
+        self.note("draft", ctx);
         self.inner.draft(ctx, id).await
     }
 }

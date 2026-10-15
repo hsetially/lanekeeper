@@ -5,6 +5,9 @@
 //! - [`config`]: the deployment switches (authentication mode, confirmation mode, content mode) and the public origin (T0, T1).
 //! - [`auth`]: who is calling (S14): Entra access tokens or personal tokens, never both, and the REST routes for personal tokens (T1).
 //! - [`server`]: rmcp's Streamable HTTP at `/mcp` behind a gate, and [`server::mount`], the one call the hub makes (T1).
+//! - [`tools`], [`output`], [`limits`]: the 27 tools of the contract, their results, and what one caller may ask of the server (T2).
+//! - [`confirm`]: the confirmation of every write that acts on the world (D52): the question to the user, what the answer means, the
+//!   draft link for a client that cannot be asked, and the keys that make a retry safe (T3).
 //! - [`error`], [`clock`]: the errors this crate answers with, and the time source.
 //!
 //! The compatibility stub of T0 is `examples/t0_stub.rs`. It is not part of this library, so nothing that reads a token without

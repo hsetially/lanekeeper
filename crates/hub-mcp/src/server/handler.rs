@@ -20,7 +20,6 @@ use std::time::Instant;
 
 use aws_lc_rs::rand::fill;
 use domain::{Role, User, UserId};
-use ports::AuthError;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
     InitializeRequestParams, InitializeResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities,
@@ -31,6 +30,7 @@ use rmcp::{ErrorData, RoleServer, ServerHandler};
 
 use super::guard::McpCaller;
 use super::instructions::INSTRUCTIONS;
+use crate::confirm::elicit::RmcpAsker;
 use crate::limits::{Class, Refusal};
 use crate::output::envelope::Rendered;
 use crate::tools::{CallCx, Code, Listed, ToolError, ToolHost, ToolName, parse_args};
@@ -69,13 +69,6 @@ fn failure(error: &ToolError, request_id: &str) -> CallToolResult {
     let mut result = CallToolResult::error(vec![ContentBlock::text(message)]);
     result.structured_content = Some(structured);
     result
-}
-
-fn from_auth(error: AuthError) -> ToolError {
-    match error {
-        AuthError::Unavailable => ToolError::new(Code::Unavailable),
-        _ => ToolError::new(Code::Forbidden),
-    }
 }
 
 impl McpHandler {
@@ -128,7 +121,7 @@ impl McpHandler {
             .users
             .require_active(&caller.id, spec.role())
             .await
-            .map_err(from_auth)?;
+            .map_err(ToolError::from)?;
         // 3. The caller's budget.
         let class = ToolHost::class_of(spec);
         let permit = host.limits.begin(&user.id, class).map_err(|refusal| {
@@ -149,6 +142,12 @@ impl McpHandler {
             .and_then(|parts| parts.headers.get(super::guard::SESSION_HEADER))
             .and_then(|v| v.to_str().ok());
         let rpc_id = context.id.to_string();
+        // The question to the user, for the tools that ask one; the others never use it.
+        let asker = RmcpAsker::new(
+            context,
+            host.stopping.clone(),
+            host.limits.settings().confirm_timeout,
+        );
         let cx = CallCx {
             host,
             user: &user,
@@ -156,13 +155,27 @@ impl McpHandler {
             request_id,
             session_id: session,
             rpc_id: Some(rpc_id.as_str()),
+            asker: Some(&asker),
         };
-        let timeout = host.limits.timeout(class);
-        let outcome = tokio::select! {
-            result = tokio::time::timeout(timeout, host.run(&cx, args)) => {
-                result.unwrap_or_else(|_| Err(ToolError::with_detail(Code::Unavailable, "The tool took too long. Try again, or narrow the request.")))
+        let asks = spec.acts_on_the_world();
+        let deadline = host.limits.call_deadline(class, asks);
+        let too_slow = || {
+            Err(ToolError::with_detail(
+                Code::Unavailable,
+                "The tool took too long. Try again, or narrow the request.",
+            ))
+        };
+        let outcome = if asks {
+            // A tool that asks the user handles a cancel itself: it withdraws its question, and a write that the user confirmed is
+            // not abandoned half way. The deadline is the sum of the bounds of its steps.
+            tokio::time::timeout(deadline, host.run(&cx, args))
+                .await
+                .unwrap_or_else(|_| too_slow())
+        } else {
+            tokio::select! {
+                result = tokio::time::timeout(deadline, host.run(&cx, args)) => result.unwrap_or_else(|_| too_slow()),
+                () = context.ct.cancelled() => Err(ToolError::with_detail(Code::Unavailable, "The call was cancelled.")),
             }
-            () = context.ct.cancelled() => Err(ToolError::with_detail(Code::Unavailable, "The call was cancelled.")),
         };
         drop(permit);
         outcome

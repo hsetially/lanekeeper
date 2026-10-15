@@ -1,0 +1,4 @@
+---
+source: crates/hub-mcp/tests/mcp_auth/confirm_golden.rs
+---
+"line one line two [31m \"quoted\" \\ hidden"

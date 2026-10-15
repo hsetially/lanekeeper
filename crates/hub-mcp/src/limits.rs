@@ -187,6 +187,21 @@ impl Limits {
         }
     }
 
+    /// How long a whole call of this class may take, from the first byte to the answer. For a tool that asks the user it also holds
+    /// the question (`confirm_timeout`), the read-only calls that prepare it, and the check of the user after the answer, so that
+    /// the deadline is the sum of the bounds of its steps and never the thing that cuts one of them short.
+    #[must_use]
+    pub fn call_deadline(&self, class: Class, asks: bool) -> Duration {
+        let base = self.timeout(class);
+        if asks {
+            base.saturating_mul(2)
+                .saturating_add(self.settings.confirm_timeout)
+                .saturating_add(self.settings.read_timeout)
+        } else {
+            base
+        }
+    }
+
     fn bucket_for(&self, user: &UserId, class: Class) -> Arc<Mutex<Bucket>> {
         let burst = match class {
             Class::Read => self.settings.read_burst,

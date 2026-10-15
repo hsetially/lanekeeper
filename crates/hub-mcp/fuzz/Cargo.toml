@@ -79,3 +79,10 @@ path = "fuzz_targets/mcp_http_body.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "mcp_elicitation_result"
+path = "fuzz_targets/mcp_elicitation_result.rs"
+test = false
+doc = false
+bench = false

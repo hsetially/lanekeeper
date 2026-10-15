@@ -407,7 +407,7 @@ mcp-test:
 # S22: the MCP crate's own fuzz crate (decision A10 of plan 07; `fuzz-smoke` does not run it). Its lockfile is complete and passes
 # cargo deny and cargo audit (S19), then each target runs {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in
 # crates/hub-mcp/fuzz/artifacts/. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart.
-mcp_fuzz_targets := "mcp_bearer_header mcp_pat_token mcp_tool_args mcp_cursor mcp_http_body"
+mcp_fuzz_targets := "mcp_bearer_header mcp_pat_token mcp_tool_args mcp_cursor mcp_http_body mcp_elicitation_result"
 mcp-fuzz: fuzz-tools-check
     #!/usr/bin/env bash
     set -euo pipefail

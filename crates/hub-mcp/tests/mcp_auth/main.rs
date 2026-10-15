@@ -38,6 +38,8 @@ mod auth_header;
 mod auth_oauth;
 mod auth_pat;
 mod auth_pat_pg;
+mod confirm;
+mod confirm_golden;
 mod contract_schemas;
 mod corpus_replay;
 mod cursor;

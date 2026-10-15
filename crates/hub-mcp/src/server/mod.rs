@@ -1,8 +1,8 @@
 //! The MCP server in the hub: rmcp's Streamable HTTP at `/mcp`, behind the gate of [`guard`] (S4, S14).
 //!
 //! [`McpState::new`] builds everything once from validated settings; [`mount`] puts the routes on the hub's router. T1 has
-//! authentication, the session binding and the token routes; T2 adds the tools, their limits and the session caps; confirmation
-//! comes with T3.
+//! authentication, the session binding and the token routes; T2 adds the tools, their limits and the session caps; T3 adds the
+//! confirmation of writes (`crate::confirm`).
 //!
 //! **One mode per deployment (D52).** [`Credentials`] holds the verifier *or* the personal-token service, never both, and the
 //! settings must name the same mode, so the router for one mode has no code path for the other. Personal-token mode registers
@@ -20,6 +20,7 @@ use hub_platform::{GuardedRouter, SessionAuth};
 use ports::{DocSearch, RegistryRead, TokenVerifier, Users, WriteService};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
+use tokio::sync::watch;
 
 use crate::auth::oauth::{Challenge, OAuthSettings};
 use crate::auth::pat::PersonalTokens;
@@ -27,6 +28,7 @@ use crate::auth::routes::{self, TokenRoutes};
 use crate::auth::{BearerAuth, metadata};
 use crate::clock::{Clock, SystemClock};
 use crate::config::{AuthMode, ConfigError, McpConfig, OutputSettings, PublicOrigin, ToolSettings};
+use crate::confirm::replay::Replay;
 use crate::limits::{LimitSettings, Limits};
 use crate::metrics::McpMetrics;
 use crate::output::Redactor;
@@ -296,6 +298,9 @@ impl McpState {
         let contract = Contract::embedded()?;
         let listing = Arc::new(ToolHost::listing(&contract, settings.advertise_output_schemas)?);
         let metrics = McpMetrics::new();
+        // The server's own stop signal, which a confirmation waits on (D91: rmcp's token does not wake it).
+        let (stop_signal, stopping) = watch::channel(false);
+        let replay = Replay::new(Arc::clone(&clock));
         let host = Arc::new(ToolHost {
             contract,
             registry,
@@ -312,6 +317,8 @@ impl McpState {
             files: FileCache::new(settings.limits.cache_bytes),
             metrics,
             clock,
+            replay,
+            stopping,
         });
 
         let mut hosts = settings.public_origin.host_values();
@@ -378,7 +385,11 @@ impl McpState {
             host,
             listing,
             token_routes,
-            stop: Arc::new(move || token.cancel()),
+            stop: Arc::new(move || {
+                // Ours first, so that a question that is open sees it before rmcp tears its streams down.
+                stop_signal.send_replace(true);
+                token.cancel();
+            }),
         }))
     }
 
@@ -430,8 +441,8 @@ impl McpState {
         self.gate.owners.run_pending_tasks();
     }
 
-    /// End every session and stream. A handler that waits for an answer is not woken by this (D91): T3 gives a confirmation a stop
-    /// signal of its own.
+    /// End every session and stream, and tell every question that is open that the server is stopping: it is withdrawn and nothing
+    /// is written. rmcp's own token does not wake a handler that waits for an answer (D91), so the signal is ours.
     pub fn stop(&self) {
         (self.stop)();
     }

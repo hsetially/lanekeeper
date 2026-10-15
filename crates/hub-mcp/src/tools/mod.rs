@@ -11,9 +11,12 @@ use std::time::Duration;
 use domain::{Role, User};
 use ports::{DocSearch, RegistryRead, Users, WriteService};
 use rmcp::model::{Tool, ToolAnnotations};
+use tokio::sync::watch;
 
 use crate::clock::Clock;
 use crate::config::{ConfirmMode, ContentMode, OutputSettings, ToolSettings};
+use crate::confirm::Asker;
+use crate::confirm::replay::Replay;
 use crate::limits::{Class, Limits};
 use crate::metrics::McpMetrics;
 use crate::output::Redactor;
@@ -52,6 +55,10 @@ pub struct ToolHost {
     pub files: cache::FileCache,
     pub metrics: McpMetrics,
     pub clock: Arc<dyn Clock>,
+    /// Finished writes, so that a retry is answered and not asked twice (D68).
+    pub replay: Replay,
+    /// The server's own stop signal: `true` once it is stopping. A question that is open is withdrawn when it goes (D91).
+    pub stopping: watch::Receiver<bool>,
 }
 
 impl std::fmt::Debug for ToolHost {
@@ -150,6 +157,8 @@ pub struct CallCx<'a> {
     pub session_id: Option<&'a str>,
     /// The JSON-RPC request id, for idempotency keys (T3).
     pub rpc_id: Option<&'a str>,
+    /// Who can put a question to the user of this call. `None` in a test that has no client: such a call is in draft mode.
+    pub asker: Option<&'a dyn Asker>,
 }
 
 impl std::fmt::Debug for CallCx<'_> {

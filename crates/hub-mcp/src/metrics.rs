@@ -30,6 +30,11 @@ struct ClassLabel {
     class: &'static str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct OutcomeLabel {
+    outcome: &'static str,
+}
+
 #[derive(Debug)]
 struct Inner {
     calls: Family<CallLabels, Counter>,
@@ -37,6 +42,7 @@ struct Inner {
     rate_limited: Family<ClassLabel, Counter>,
     redactions: Counter,
     cache_lookups: Family<ClassLabel, Counter>,
+    confirmations: Family<OutcomeLabel, Counter>,
     tools_list_bytes: Gauge,
 }
 
@@ -67,6 +73,7 @@ impl McpMetrics {
                 rate_limited: Family::default(),
                 redactions: Counter::default(),
                 cache_lookups: Family::default(),
+                confirmations: Family::default(),
                 tools_list_bytes: Gauge::default(),
             }),
         }
@@ -98,6 +105,11 @@ impl McpMetrics {
             "mcp_scan_cache_lookups",
             "Scan and settings-index cache lookups, by result",
             i.cache_lookups.clone(),
+        );
+        registry.register(
+            "mcp_confirmations",
+            "Confirmations of MCP writes, by how each went (asked, accepted, declined, cancelled, timed_out, aborted, terms_changed, draft_link, replayed)",
+            i.confirmations.clone(),
         );
         registry.register(
             "mcp_tools_list_bytes",
@@ -132,6 +144,13 @@ impl McpMetrics {
             .inc();
     }
 
+    pub(crate) fn confirmation(&self, outcome: &'static str) {
+        self.inner
+            .confirmations
+            .get_or_create(&OutcomeLabel { outcome })
+            .inc();
+    }
+
     pub(crate) fn set_tools_list_bytes(&self, bytes: usize) {
         self.inner
             .tools_list_bytes
@@ -144,6 +163,15 @@ impl McpMetrics {
         self.inner
             .calls
             .get_or_create(&CallLabels { tool, outcome })
+            .get()
+    }
+
+    /// Confirmations that ended `outcome` since the start (for tests).
+    #[must_use]
+    pub fn confirmations_of(&self, outcome: &'static str) -> u64 {
+        self.inner
+            .confirmations
+            .get_or_create(&OutcomeLabel { outcome })
             .get()
     }
 

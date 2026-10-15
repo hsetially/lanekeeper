@@ -135,3 +135,120 @@ async fn auth_errors_map_to_the_statuses_the_hub_guard_gives() {
     }
     assert_eq!(McpError::Unauthenticated.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[test]
+fn write_outcomes_map_to_results_and_errors() {
+    // A13: what the write service says is a result of the contract, or one of the contract's errors.
+    use std::num::NonZeroU32;
+
+    use domain::{AuditId, IssueKind, ProposalId, RejectReason, ValidationIssue, WriteOutcome};
+    use hub_mcp::confirm::map_outcome;
+    use hub_mcp::tools::Code;
+    use jsonschema::Validator;
+    use serde_json::{Value, json};
+
+    use crate::fix::{hash_of, st};
+    use crate::tools_rig::{contract, error_schema_problems};
+
+    let validator: Validator = jsonschema::validator_for(&Value::Object(
+        (**contract().tool("apply_change").unwrap().result()).clone(),
+    ))
+    .unwrap();
+    let in_the_envelope = |result: &Value| {
+        let envelope = json!({"summary": "s", "data": {"result": result}, "truncated": false, "next": null, "web_link": null});
+        let problems: Vec<String> = validator.iter_errors(&envelope).map(|e| e.to_string()).collect();
+        assert!(problems.is_empty(), "{result}: {problems:?}");
+    };
+    let issue = ValidationIssue {
+        kind: IssueKind::DuplicateKey,
+        line: NonZeroU32::new(9),
+        rule: None,
+    };
+
+    // The results.
+    let applied = map_outcome(&WriteOutcome::Applied {
+        hash: Some(hash_of(b"x")),
+        audit_id: AuditId::from(7),
+        warnings: Vec::new(),
+    })
+    .unwrap();
+    assert_eq!(applied["outcome"], "applied");
+    assert_eq!(applied["hash"], hash_of(b"x").to_string());
+    assert_eq!(applied["audit_id"], 7);
+    assert_eq!(applied["proposal_id"], Value::Null);
+    assert!(applied.get("warnings").is_none(), "absent when there are none");
+    in_the_envelope(&applied);
+
+    let with_warnings = map_outcome(&WriteOutcome::Applied {
+        hash: None,
+        audit_id: AuditId::from(8),
+        warnings: vec![issue.clone(); 3],
+    })
+    .unwrap();
+    assert_eq!(with_warnings["hash"], Value::Null);
+    assert_eq!(with_warnings["warnings"].as_array().unwrap().len(), 3);
+    in_the_envelope(&with_warnings);
+
+    let proposal = map_outcome(&WriteOutcome::ProposalCreated {
+        id: ProposalId::from(3),
+    })
+    .unwrap();
+    assert_eq!(proposal["outcome"], "proposal_created");
+    assert_eq!(proposal["proposal_id"], 3);
+    assert_eq!(proposal["audit_id"], Value::Null);
+    in_the_envelope(&proposal);
+
+    // The errors.
+    let error_of = |outcome: WriteOutcome| map_outcome(&outcome).unwrap_err();
+    let conflict = error_of(WriteOutcome::Conflict {
+        current: Some(hash_of(b"now")),
+    });
+    assert_eq!(conflict.code, Code::Conflict);
+    assert_eq!(conflict.current_hash, Some(hash_of(b"now")));
+    assert_eq!(
+        error_of(WriteOutcome::Conflict { current: None }).current_hash,
+        None
+    );
+    assert_eq!(error_of(WriteOutcome::Locked { until: None }).code, Code::Locked);
+
+    for (reason, code) in [
+        (RejectReason::Denied, Code::Unprocessable),
+        (RejectReason::InvalidContent, Code::Unprocessable),
+        (RejectReason::SecretDetected, Code::Unprocessable),
+        (RejectReason::ParseError, Code::Unprocessable),
+        (RejectReason::TooLarge, Code::PayloadTooLarge),
+        (RejectReason::UnknownSwimlane, Code::NotFound),
+        (RejectReason::AgentUnavailable, Code::Unavailable),
+        (RejectReason::NotAllowed, Code::Forbidden),
+    ] {
+        let error = error_of(WriteOutcome::Rejected {
+            reason,
+            issues: vec![ValidationIssue {
+                kind: IssueKind::SecretMatch,
+                line: NonZeroU32::new(4),
+                rule: Some(st("github_token")),
+            }],
+        });
+        assert_eq!(error.code, code, "{reason:?}");
+        if code == Code::Unprocessable {
+            // The reason and the places travel; the text of the lines never does (the issue holds a rule name and a line number).
+            assert_eq!(error.reason, Some(reason));
+            assert_eq!(error.issues.len(), 1);
+        } else {
+            assert_eq!(error.reason, None, "{reason:?}");
+        }
+        let (rendered, message) = error.render("req-1");
+        assert!(
+            error_schema_problems(&rendered).is_empty(),
+            "{reason:?}: {rendered}"
+        );
+        assert!(!message.is_empty());
+    }
+    // Only what is retryable says so.
+    assert!(error_of(WriteOutcome::Locked { until: None }).code.retryable());
+    assert!(
+        !error_of(WriteOutcome::Conflict { current: None })
+            .code
+            .retryable()
+    );
+}

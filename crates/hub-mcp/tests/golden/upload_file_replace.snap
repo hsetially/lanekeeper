@@ -1,0 +1,8 @@
+---
+source: crates/hub-mcp/tests/mcp_auth/confirm_golden.rs
+---
+Upload a file to swimlane sit1?
+File (supplied by the assistant): "tx-infinity-api/tx-infinity-core-sit1.yml"; this replaces it and is 2048 bytes.
+Changes: 2 settings differ in what the services get.
+Effect: the application "tx-infinity-api" reads it; a property source changes: services need a notification or a restart.
+Review it in the web UI: https://hub.example.test/swimlanes/sit1/files?path=tx-infinity-api%2Ftx-infinity-core-sit1.yml

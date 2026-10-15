@@ -24,10 +24,15 @@ mod args {
 mod cursor {
     pub use hub_mcp::output::cursor::*;
 }
+mod decision {
+    pub use hub_mcp::confirm::decision::*;
+}
 #[path = "../../fuzz/invariants.rs"]
 mod invariants;
 #[path = "../../fuzz/invariants_cursor.rs"]
 mod invariants_cursor;
+#[path = "../../fuzz/invariants_elicitation.rs"]
+mod invariants_elicitation;
 #[path = "../../fuzz/invariants_http.rs"]
 mod invariants_http;
 #[path = "../../fuzz/invariants_tool_args.rs"]
@@ -83,6 +88,11 @@ fn replay_all_mcp_targets() {
         invariants_http::mcp_http_body,
         invariants_http::MIN_SEEDS,
     );
+    replay_at_least(
+        "mcp_elicitation_result",
+        invariants_elicitation::mcp_elicitation_result,
+        invariants_elicitation::MIN_SEEDS,
+    );
 }
 
 #[test]
@@ -95,6 +105,7 @@ fn every_fuzz_target_has_a_corpus_and_a_source_file_and_no_other_exists() {
         "mcp_tool_args",
         "mcp_cursor",
         "mcp_http_body",
+        "mcp_elicitation_result",
     ]
     .map(str::to_owned)
     .into();
@@ -203,6 +214,72 @@ fn the_files_the_tool_args_and_cursor_targets_include_need_nothing_more_of_the_c
                 assert!(!line.contains(forbidden), "{file} uses `{forbidden}`: {line}");
             }
         }
+    }
+}
+
+#[test]
+fn the_decision_file_the_elicitation_target_includes_needs_nothing_of_the_crate() {
+    // The fuzz target builds `src/confirm/decision.rs` and `serde_json`, and nothing else.
+    let file = "src/confirm/decision.rs";
+    let text = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(file)).unwrap();
+    let code = text.split("#[cfg(test)]").next().unwrap();
+    for line in code.lines().filter(|l| !l.trim_start().starts_with("//")) {
+        for forbidden in [
+            "crate::",
+            "super::",
+            "domain::",
+            "ports::",
+            "hub_platform",
+            "hub_mcp",
+            "tokio",
+            "axum",
+            "rmcp",
+            "serde::",
+        ] {
+            assert!(!line.contains(forbidden), "{file} uses `{forbidden}`: {line}");
+        }
+    }
+}
+
+#[test]
+fn the_elicitation_seeds_hold_what_they_are_named_for() {
+    // The seeds that matter reach the decisions they are named for: one yes, the noes, and everything else cancelled.
+    use decision::{Decision, decide_json};
+    let read = |name: &str| {
+        let bytes = fs::read(fuzz_dir().join("corpus/mcp_elicitation_result").join(name)).unwrap();
+        decide_json(&serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    };
+    assert_eq!(read("accept_confirm_true"), Decision::Proceed);
+    assert_eq!(
+        read("duplicate_keys_last_wins"),
+        Decision::Proceed,
+        "the last of two keys is the one that counts"
+    );
+    for no in ["accept_confirm_false", "decline", "decline_with_a_yes_inside"] {
+        assert_eq!(read(no), Decision::Declined, "{no}");
+    }
+    for cancelled in [
+        "cancel",
+        "cancel_with_a_yes_inside",
+        "accept_without_content",
+        "accept_null_content",
+        "confirm_as_a_string",
+        "confirm_as_a_number",
+        "confirm_in_an_array",
+        "extra_key",
+        "wrong_key_case",
+        "content_is_an_array",
+        "upper_case_action",
+        "action_is_an_array",
+        "no_action",
+        "truncated",
+        "empty_input",
+        "not_json",
+        "hostile_unicode",
+        "deeply_nested",
+        "oversized_key",
+    ] {
+        assert_eq!(read(cancelled), Decision::Cancelled, "{cancelled}");
     }
 }
 
@@ -334,6 +411,28 @@ proptest! {
 }
 
 proptest! {
+    #[test]
+    fn arbitrary_answers_satisfy_the_elicitation_invariants(bytes in proptest::collection::vec(any::<u8>(), 0..400)) {
+        prop_assert_eq!(invariants_elicitation::mcp_elicitation_result(&bytes), Ok(()));
+    }
+
+    #[test]
+    fn answers_built_from_the_protocol_words_satisfy_the_elicitation_invariants(
+        selector in any::<u8>(),
+        action in prop_oneof![Just("accept"), Just("decline"), Just("cancel"), Just("Accept"), Just("")],
+        confirm in prop_oneof![Just("true"), Just("false"), Just("null"), Just("1"), Just("\"true\""), Just("[true]"), Just("{}")],
+        extra in prop::option::of("[a-z]{1,6}"),
+        with_content in any::<bool>(),
+    ) {
+        let extra = extra.map_or_else(String::new, |k| format!(",\"{k}\":1"));
+        let content = if with_content { format!(",\"content\":{{\"confirm\":{confirm}{extra}}}") } else { String::new() };
+        let wire = format!("{{\"action\":\"{action}\"{content}}}");
+        prop_assert_eq!(invariants_elicitation::mcp_elicitation_result(wire.as_bytes()), Ok(()));
+        let mut selected = vec![selector];
+        selected.extend_from_slice(format!("{{\"confirm\":{confirm}{extra}}}").as_bytes());
+        prop_assert_eq!(invariants_elicitation::mcp_elicitation_result(&selected), Ok(()));
+    }
+
     #[test]
     fn arbitrary_bytes_satisfy_every_invariant(bytes in proptest::collection::vec(any::<u8>(), 0..300)) {
         prop_assert_eq!(invariants::mcp_bearer_header(&bytes), Ok(()));

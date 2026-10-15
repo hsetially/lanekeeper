@@ -264,3 +264,20 @@ fn the_settings_are_validated() {
         assert!(l.validate().is_err(), "{l:?}");
     }
 }
+
+#[test]
+fn a_tool_that_asks_the_user_has_a_deadline_that_covers_every_step_of_it() {
+    // The deadline of the whole call is the sum of the bounds of its steps (prepare, the question, the look at the user, the write),
+    // so it is never what cuts one of them short; a tool that does not ask keeps the bound of its class.
+    let settings = LimitSettings::default();
+    let limits = Limits::new(settings.clone(), Arc::new(SystemClock));
+    assert_eq!(limits.call_deadline(Class::Read, false), settings.read_timeout);
+    assert_eq!(limits.call_deadline(Class::Write, false), settings.write_timeout);
+    let asks = limits.call_deadline(Class::Write, true);
+    assert_eq!(
+        asks,
+        settings.write_timeout * 2 + settings.confirm_timeout + settings.read_timeout
+    );
+    assert!(asks > settings.confirm_timeout + settings.write_timeout);
+    assert_eq!(asks, Duration::from_secs(185));
+}
