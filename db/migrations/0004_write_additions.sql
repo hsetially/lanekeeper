@@ -14,7 +14,7 @@
 --        - `approvals.proposal_id` is ON DELETE RESTRICT instead of CASCADE. A cascade changes the child rows without a
 --          privilege check, so with the old key the app could still delete an approval by deleting its proposal. With
 --          RESTRICT a proposal that was decided cannot be deleted; a proposal nobody decided still can;
---        - `proposals.author_tid` and `author_oid` cannot change after the insert, for any role (BEFORE UPDATE trigger).
+--        - `proposals.author_tid` and `author_oid` cannot change after the insert, for `lanekeeper_app` (BEFORE UPDATE trigger; the owner and superusers can disable it).
 --      The insert-time trigger from 0001 (`approvals_no_self_approval`) is unchanged and still the first line of defence.
 --
 -- Compatibility: expand-only apart from the two constraints it replaces. Nothing is dropped from a table, no row is
