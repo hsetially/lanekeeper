@@ -65,4 +65,17 @@ pub trait WriteService: Send + Sync + 'static {
     /// [`crate::Notifier::notify`], the port that sends Teams and other notifications; the two share a verb and
     /// nothing else.
     async fn notify(&self, ctx: &WriteCtx, r: NotifyRequest) -> Result<WriteOutcome, WriteError>;
+
+    /// A draft as it is now, for its author only: the MCP `apply_change` shows the person what they are about to apply
+    /// before they confirm. Editor, like [`WriteService::propose_draft`] and [`WriteService::apply_draft`]. No side effects
+    /// and no audit event (reading is not audited), and it is not idempotency-keyed. [`WriteError::NotFound`] for a draft
+    /// that does not exist or is not the caller's; a draft that was applied or has expired is still returned, with its
+    /// status. `severity` and `effects` are the engine's, as of the call.
+    ///
+    /// Additive (`contract/07-mcp`, G7): the default answers [`WriteError::Unavailable`], and the conformance suite
+    /// ([`crate::conformance::write_service`]) fails an implementation that keeps it. A wrapper of `WriteService` must
+    /// forward it.
+    async fn draft(&self, _ctx: &WriteCtx, _id: DraftId) -> Result<Draft, WriteError> {
+        Err(WriteError::Unavailable)
+    }
 }

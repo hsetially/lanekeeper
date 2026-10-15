@@ -256,10 +256,12 @@ fn the_enum_names_the_constant_assumes_are_the_longest() {
             | AuditAction::AutoNotifyChanged
             | AuditAction::SessionSignedIn
             | AuditAction::SessionSignedOut
-            | AuditAction::PrStateChanged => true,
+            | AuditAction::PrStateChanged
+            | AuditAction::McpTokenCreated
+            | AuditAction::McpTokenRevoked => true,
         }
     }
-    const ALL: [AuditAction; 37] = [
+    const ALL: [AuditAction; 39] = [
         AuditAction::FileEdited,
         AuditAction::FileUploaded,
         AuditAction::FileDeleted,
@@ -297,6 +299,8 @@ fn the_enum_names_the_constant_assumes_are_the_longest() {
         AuditAction::SessionSignedIn,
         AuditAction::SessionSignedOut,
         AuditAction::PrStateChanged,
+        AuditAction::McpTokenCreated,
+        AuditAction::McpTokenRevoked,
     ];
     assert!(ALL.iter().copied().all(listed));
     assert_eq!(ALL.iter().map(name).map(|n| n.len()).max(), Some(25));
