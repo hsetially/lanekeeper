@@ -44,7 +44,7 @@ pub const ALL_PATHS_SQL: &str =
     "SELECT path FROM file_state WHERE swimlane_id = $1 AND nfs_hash IS NOT NULL LIMIT 200001";
 
 /// The file names a property view of `(application, tenant)` reads.
-fn property_names(app: &AppName, tenant: &TenantId) -> Vec<String> {
+pub(crate) fn property_names(app: &AppName, tenant: &TenantId) -> Vec<String> {
     let stems = [
         "application".to_owned(),
         format!("application-{tenant}"),
@@ -62,7 +62,7 @@ fn property_names(app: &AppName, tenant: &TenantId) -> Vec<String> {
 
 /// The application whose view renders a file: the folder it is in when that is one of the swimlane's applications, else `application`
 /// (the root files alone are the view). `None` only if no valid name exists, which `application` rules out.
-fn application_of(file: &LogicalFile, apps: &[AppName]) -> Option<AppName> {
+pub(crate) fn application_of(file: &LogicalFile, apps: &[AppName]) -> Option<AppName> {
     let path = file.as_str();
     let first = path.split_once('/').map(|(folder, _)| folder);
     first

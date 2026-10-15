@@ -15,7 +15,7 @@
 //! states. A row that cannot be used is **skipped and counted**, the others apply: one bad row must not leave a swimlane without
 //! severities or stop a batch (the same rule as the host rules of the pipeline). Nothing about a skipped row is logged but the count.
 //!
-//! - The engine's defaults always apply (D76). An admin's rows are added to them; the engine takes the highest severity, so a row can
+//! - The engine's defaults always apply (D76), with the one rule the registry adds ([`SERVED_MISMATCH_RULE`]: C12 is high). An admin's rows are added to them; the engine takes the highest severity, so a row can
 //!   raise what a default says and never lower it (the engine's choice, plan 04 A16), and a row cannot switch a default off.
 //! - Rows with `is_default` are not read: they stand for the defaults, which the engine has, and a row with the id of a default is
 //!   skipped, so a seeded copy cannot collide with the original.
@@ -64,6 +64,37 @@ use crate::metrics::RegistryMetrics;
 /// The most kinds one condition lists. The contract allows 16 and 8; this only bounds what is read.
 const MAX_KINDS: usize = 32;
 
+/// The id of the registry's own default rule: a mismatch between the engine's rendering and what the config-server serves (C12, D86) is
+/// high. The engine's defaults do not rank C12 (it is the registry's finding: the engine never sees the config-server), so the registry adds
+/// the rule the domain model states ("the finding is high severity and names the file"). Its id is reserved: an admin's row with it is skipped
+/// like a row with the id of an engine default, and an admin can raise a C12 above high with a rule of their own and never lower it.
+pub const SERVED_MISMATCH_RULE: &str = "registry.served_mismatch";
+
+/// The rules the registry adds to the engine's defaults.
+fn registry_defaults() -> Vec<SeverityRule> {
+    ShortText::parse(SERVED_MISMATCH_RULE)
+        .ok()
+        .map(|id| SeverityRule {
+            id,
+            severity: Severity::High,
+            enabled: true,
+            matcher: SeverityMatch {
+                finding_kinds: vec![FindingKind::ServedMismatch],
+                ..SeverityMatch::default()
+            },
+        })
+        .into_iter()
+        .collect()
+}
+
+/// Every default rule in force: the engine's and the registry's. Part of every set (and so of its fingerprint): adding or changing one is a
+/// change of what the registry rates, and every swimlane is computed once again under the new set.
+pub fn all_defaults() -> Vec<SeverityRule> {
+    let mut all = default_rules();
+    all.extend(registry_defaults());
+    all
+}
+
 /// The admin's rules, in the order the contract gives them (`priority`, then the id), at most one more than the engine can take.
 pub const RULES_SQL: &str = "\
 SELECT id, severity, enabled, matcher FROM severity_rules WHERE NOT is_default ORDER BY position, id LIMIT $1";
@@ -73,7 +104,7 @@ type Row = (String, String, bool, Value);
 
 /// The most admin rules the engine can take next to its defaults.
 fn capacity() -> usize {
-    SeverityRules::MAX_RULES.saturating_sub(default_rules().len())
+    SeverityRules::MAX_RULES.saturating_sub(all_defaults().len())
 }
 
 /// The contract's `SeverityMatch`, as stored. Closed: a key the contract does not have is an error, not something that is ignored.
@@ -213,7 +244,7 @@ impl std::fmt::Debug for Loaded {
 impl Loaded {
     /// The engine's defaults and `admin`, or `None` when the engine refuses the set.
     fn of(admin: &[SeverityRule], skipped: usize) -> Option<Self> {
-        let mut all = default_rules();
+        let mut all = all_defaults();
         all.extend(admin.iter().cloned());
         let rules = SeverityRules::new(all.clone()).ok()?;
         Some(Self {
@@ -227,7 +258,7 @@ impl Loaded {
     /// The set of the rows `rows`: the rows that are rules, each checked alone so that one bad glob costs one row. If the engine refuses
     /// the set as a whole (too complex together), the defaults stand and every row counts as skipped.
     fn from_rows(rows: Vec<Row>, defaults: &Self) -> Self {
-        let default_ids: BTreeSet<ShortText> = default_rules().into_iter().map(|r| r.id).collect();
+        let default_ids: BTreeSet<ShortText> = all_defaults().into_iter().map(|r| r.id).collect();
         let room = capacity();
         let mut skipped = rows.len().saturating_sub(room);
         let mut admin = Vec::new();
@@ -566,7 +597,7 @@ mod tests {
             .collect();
         let loaded = Loaded::from_rows(rows, &defaults());
         assert_eq!((loaded.admin, loaded.skipped), (room, 3));
-        assert_eq!(loaded.rules.len(), room + default_rules().len());
+        assert_eq!(loaded.rules.len(), room + all_defaults().len());
     }
 
     #[test]

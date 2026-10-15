@@ -111,11 +111,15 @@ pub const OPEN_FINDINGS_SQL: &str = "\
 SELECT kind, path, severity, rule_ids, message, locations, details, fingerprint FROM findings \
 WHERE swimlane_id = $1 AND resolved_at IS NULL AND kind = ANY($2::text[]) ORDER BY kind, fingerprint LIMIT $3";
 
+/// The swimlane's row: its version, the counts per state, the open findings **of every kind** (counted in this statement, after the
+/// findings of the commit were written in the same transaction: the structure checks, C9 to C11, write their own rows, and a count that only
+/// held this pipeline's kinds would be overwritten by every batch), the rules fingerprint and the time.
 pub const REGISTRY_SQL: &str = "\
-UPDATE swimlane_registry SET version = version + $2::bigint, state_counts = $3::jsonb, finding_count = $4, \
-  rules_fingerprint = COALESCE($5::bytea, rules_fingerprint), \
-  recomputed_at = (timestamptz 'epoch' + ($6::bigint::text || ' milliseconds')::interval), \
-  updated_at = (timestamptz 'epoch' + ($6::bigint::text || ' milliseconds')::interval) \
+UPDATE swimlane_registry SET version = version + $2::bigint, state_counts = $3::jsonb, \
+  finding_count = (SELECT count(*) FROM findings WHERE swimlane_id = $1 AND resolved_at IS NULL)::int, \
+  rules_fingerprint = COALESCE($4::bytea, rules_fingerprint), \
+  recomputed_at = (timestamptz 'epoch' + ($5::bigint::text || ' milliseconds')::interval), \
+  updated_at = (timestamptz 'epoch' + ($5::bigint::text || ' milliseconds')::interval) \
 WHERE swimlane_id = $1";
 
 /// The most findings of one swimlane read back.
@@ -165,7 +169,6 @@ pub(crate) struct LaneCommit<'a> {
     pub findings: FindingsDelta,
     pub tree: TreeMode,
     pub counts: BTreeMap<DriftState, u64>,
-    pub finding_count: usize,
     /// Store the rules the state was computed under (the first time, and when they changed).
     pub fingerprint: Option<ContentHash>,
 }
@@ -331,7 +334,6 @@ impl Persist {
                     .bind(c.swimlane.as_str())
                     .bind(bump)
                     .bind(json_text(&Value::Object(counts)))
-                    .bind(i32::try_from(c.finding_count).unwrap_or(i32::MAX))
                     .bind(c.fingerprint.map(|f| f.as_bytes().to_vec()))
                     .bind(now_ms)
                     .execute(&mut *tx),
@@ -517,53 +519,7 @@ impl Persist {
         delta: &FindingsDelta,
         now_ms: i64,
     ) -> Result<(), RegistryError> {
-        let upserts: Vec<&FindingRow> = delta.insert.iter().chain(&delta.update).collect();
-        for chunk in upserts.chunks(self.rows) {
-            let kinds: Vec<&str> = chunk.iter().map(|r| r.kind.as_str()).collect();
-            let paths: Vec<Option<&str>> = chunk.iter().map(|r| r.path.as_deref()).collect();
-            let severities: Vec<&str> = chunk.iter().map(|r| r.severity.as_str()).collect();
-            let rules: Vec<String> = chunk
-                .iter()
-                .map(|r| serde_json::to_string(&r.rule_ids).unwrap_or_else(|_| "[]".to_owned()))
-                .collect();
-            let messages: Vec<&str> = chunk.iter().map(|r| r.message.as_str()).collect();
-            let locations: Vec<String> = chunk.iter().map(|r| json_text(&r.locations)).collect();
-            let details: Vec<String> = chunk.iter().map(|r| json_text(&r.details)).collect();
-            let fingerprints: Vec<&str> = chunk.iter().map(|r| r.fingerprint.as_str()).collect();
-            self.db
-                .run(
-                    "persist_findings",
-                    sqlx::query(UPSERT_FINDINGS_SQL)
-                        .bind(swimlane.as_str())
-                        .bind(&kinds)
-                        .bind(&paths)
-                        .bind(&severities)
-                        .bind(&rules)
-                        .bind(&messages)
-                        .bind(&locations)
-                        .bind(&details)
-                        .bind(&fingerprints)
-                        .bind(now_ms)
-                        .execute(&mut **tx),
-                )
-                .await?;
-        }
-        for chunk in delta.resolve.chunks(self.rows) {
-            let kinds: Vec<&str> = chunk.iter().map(|(k, _)| k.as_str()).collect();
-            let fingerprints: Vec<&str> = chunk.iter().map(|(_, f)| f.as_str()).collect();
-            self.db
-                .run(
-                    "persist_resolve_findings",
-                    sqlx::query(RESOLVE_FINDINGS_SQL)
-                        .bind(swimlane.as_str())
-                        .bind(&kinds)
-                        .bind(&fingerprints)
-                        .bind(now_ms)
-                        .execute(&mut **tx),
-                )
-                .await?;
-        }
-        Ok(())
+        write_findings(&self.db, tx, swimlane, delta, now_ms, self.rows).await
     }
 
     /// The events of the commit, in the commit's transaction. Returns how many `DriftChanged` there were.
@@ -641,6 +597,64 @@ impl Persist {
     }
 }
 
+/// Write a difference of findings into the caller's transaction: the rows that are new or changed (upserted by fingerprint, so a finding that
+/// stays keeps its `detected_at`), then the ones that are gone, resolved. In chunks of `rows` rows. The pipeline's commit and the structure
+/// checks ([`super::c9_c11`]) write findings through this one function.
+pub(crate) async fn write_findings(
+    db: &Db,
+    tx: &mut Txn,
+    swimlane: &SwimlaneId,
+    delta: &FindingsDelta,
+    now_ms: i64,
+    rows: usize,
+) -> Result<(), RegistryError> {
+    let upserts: Vec<&FindingRow> = delta.insert.iter().chain(&delta.update).collect();
+    for chunk in upserts.chunks(rows.max(1)) {
+        let kinds: Vec<&str> = chunk.iter().map(|r| r.kind.as_str()).collect();
+        let paths: Vec<Option<&str>> = chunk.iter().map(|r| r.path.as_deref()).collect();
+        let severities: Vec<&str> = chunk.iter().map(|r| r.severity.as_str()).collect();
+        let rules: Vec<String> = chunk
+            .iter()
+            .map(|r| serde_json::to_string(&r.rule_ids).unwrap_or_else(|_| "[]".to_owned()))
+            .collect();
+        let messages: Vec<&str> = chunk.iter().map(|r| r.message.as_str()).collect();
+        let locations: Vec<String> = chunk.iter().map(|r| json_text(&r.locations)).collect();
+        let details: Vec<String> = chunk.iter().map(|r| json_text(&r.details)).collect();
+        let fingerprints: Vec<&str> = chunk.iter().map(|r| r.fingerprint.as_str()).collect();
+        db.run(
+            "persist_findings",
+            sqlx::query(UPSERT_FINDINGS_SQL)
+                .bind(swimlane.as_str())
+                .bind(&kinds)
+                .bind(&paths)
+                .bind(&severities)
+                .bind(&rules)
+                .bind(&messages)
+                .bind(&locations)
+                .bind(&details)
+                .bind(&fingerprints)
+                .bind(now_ms)
+                .execute(&mut **tx),
+        )
+        .await?;
+    }
+    for chunk in delta.resolve.chunks(rows.max(1)) {
+        let kinds: Vec<&str> = chunk.iter().map(|(k, _)| k.as_str()).collect();
+        let fingerprints: Vec<&str> = chunk.iter().map(|(_, f)| f.as_str()).collect();
+        db.run(
+            "persist_resolve_findings",
+            sqlx::query(RESOLVE_FINDINGS_SQL)
+                .bind(swimlane.as_str())
+                .bind(&kinds)
+                .bind(&fingerprints)
+                .bind(now_ms)
+                .execute(&mut **tx),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 /// The paths of one decision, one per line, within the audit log's bound: how many there are, then as many as fit.
 pub(crate) fn listed<'a>(paths: impl ExactSizeIterator<Item = &'a str>) -> String {
     let total = paths.len();
@@ -705,7 +719,7 @@ mod tests {
             (CLEAR_MARKS_SQL, 2),
             (UPSERT_FINDINGS_SQL, 10),
             (RESOLVE_FINDINGS_SQL, 4),
-            (REGISTRY_SQL, 6),
+            (REGISTRY_SQL, 5),
             (OPEN_FINDINGS_SQL, 3),
         ] {
             assert!(sql.contains(&format!("${last}")), "{sql}");

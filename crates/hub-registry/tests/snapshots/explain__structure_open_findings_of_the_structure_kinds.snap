@@ -1,0 +1,29 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: plan
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Function Scan"
+  },
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "findings"
+  },
+  {
+    "index": "findings_open_fingerprint",
+    "node": "Bitmap Index Scan"
+  }
+]

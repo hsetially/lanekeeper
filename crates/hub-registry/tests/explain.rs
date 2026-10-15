@@ -19,13 +19,19 @@ use hub_registry::pickup::{
     MAPPINGS_SQL, changed_files_sql, new_folders_sql, services_sql as pickup_services_sql, times_sql,
     write_sql,
 };
+use hub_registry::pipeline::c9_c11::inputs::{
+    ENV_NAMES_SQL, FILES_SQL as STRUCTURE_FILES_SQL, FIRST_OBSERVATION_SQL,
+    SERVICES_SQL as STRUCTURE_SERVICES_SQL, folders_sql, gates_sql, newest_observation_sql,
+    observation_at_sql,
+};
+use hub_registry::pipeline::findings_store::{OPEN_OF_KINDS_SQL, registry_row_sql};
 use hub_registry::pipeline::lane_loader::{
     BASELINES_OF_LANE_SQL, BASELINES_OF_PATHS_SQL, MARKS_OF_LANE_SQL, MARKS_OF_PATHS_SQL, ROWS_OF_LANE_SQL,
     ROWS_OF_PATHS_SQL,
 };
 use hub_registry::pipeline::persist::{
-    DELETE_ROWS_SQL, OPEN_FINDINGS_SQL, RESOLVE_FINDINGS_SQL, STAMP_OBSERVATIONS_SQL, UPSERT_BASELINES_SQL,
-    UPSERT_FINDINGS_SQL, UPSERT_ROWS_SQL,
+    DELETE_ROWS_SQL, OPEN_FINDINGS_SQL, REGISTRY_SQL, RESOLVE_FINDINGS_SQL, STAMP_OBSERVATIONS_SQL,
+    UPSERT_BASELINES_SQL, UPSERT_FINDINGS_SQL, UPSERT_ROWS_SQL,
 };
 use hub_registry::read::compare::BASELINE_BLOB_SQL;
 use hub_registry::read::compare_tree::{
@@ -190,6 +196,8 @@ enum Arg<'a> {
     Int(i64),
     ByteaArray(Vec<Vec<u8>>),
     TextArray(Vec<String>),
+    /// A `NULL` of the type `text[]` (not an array of nulls).
+    NullTextArray,
     OptTextArray(Vec<Option<String>>),
     OptByteaArray(Vec<Option<Vec<u8>>>),
     IntArray(Vec<i64>),
@@ -212,6 +220,7 @@ async fn explain(pool: &PgPool, sql: &str, args: &[Arg<'_>]) -> Value {
             Arg::Int(i) => query.bind(*i),
             Arg::ByteaArray(a) => query.bind(a.clone()),
             Arg::TextArray(a) => query.bind(a.clone()),
+            Arg::NullTextArray => query.bind(None::<Vec<String>>),
             Arg::OptTextArray(a) => query.bind(a.clone()),
             Arg::OptByteaArray(a) => query.bind(a.clone()),
             Arg::IntArray(a) => query.bind(a.clone()),
@@ -1040,6 +1049,140 @@ async fn pickup_queries_are_bounded_and_read_no_large_table_by_a_scan() {
     // The tenants of the swimlane (a computation that reads files reads them too).
     let tenants = explain(&pool, TENANTS_STORED_SQL, &[Arg::Text(lane), Arg::Int(129)]).await;
     insta::assert_json_snapshot!("tenants_stored", tenants);
+}
+
+/// T10 (A45): the statements of the structure checks, over a database with the files of 40 swimlanes (80,000), 300 Deployments and 50 folders
+/// in each, and the observations of every file. A computation reads one swimlane's rows by key (`file_state`, `swimlane_folders`, `services`,
+/// `file_observations` through the history index) and the gates of all of them (40 rows of `swimlane_registry`); none reads a large table by a
+/// sequential scan, and every one has a limit. The write's row statement counts the swimlane's open findings through the open-fingerprint index.
+#[tokio::test]
+async fn structure_queries_are_bounded_and_read_no_large_table_by_a_scan() {
+    let Some((db, pool)) = seeded().await else { return };
+    let mut admin = db.admin().await;
+    for table in ["services", "swimlane_folders", "swimlane_registry"] {
+        sqlx::raw_sql(&format!("ALTER TABLE {table} SET (autovacuum_enabled = false)"))
+            .execute(&mut admin)
+            .await
+            .unwrap();
+    }
+    for sql in [
+        "INSERT INTO swimlane_registry (swimlane_id, first_inventory_at, version, rules_fingerprint) \
+         SELECT id, now(), 5, sha256('rules'::bytea) FROM swimlanes",
+        "INSERT INTO services (swimlane_id, namespace, name, env_values, env_names) \
+         SELECT 'lane' || l, 'csp', 'svc-' || s, jsonb_build_object('SPRING_APPLICATION_NAME', 'app-' || s), \
+                ARRAY['A_' || s, 'B_' || s, 'C_' || s] \
+         FROM generate_series(1, 40) l, generate_series(1, 300) s",
+        "INSERT INTO swimlane_folders (swimlane_id, dir_path, first_seen_at, initial) \
+         SELECT 'lane' || l, 'dir' || d, now(), d % 10 <> 0 FROM generate_series(1, 40) l, generate_series(0, 49) d",
+        // The findings of the structure checks of a swimlane: a few hundred unresolved placeholders (one per key of a file) and a dozen
+        // ambiguous names, next to the 300 findings of the engine's kinds the seeding made.
+        "INSERT INTO findings (swimlane_id, kind, path, severity, message, fingerprint) \
+         SELECT 'lane' || l, 'unresolved_placeholder', 'svc/file' || i || '.yml', 'medium', 'm', 'up-' || i \
+         FROM generate_series(1, 40) l, generate_series(1, 500) i",
+        "INSERT INTO findings (swimlane_id, kind, path, severity, message, fingerprint) \
+         SELECT 'lane' || l, 'ambiguous_file_name', 'svc/name' || i || '.yml', 'medium', 'm', 'af-' || i \
+         FROM generate_series(1, 40) l, generate_series(1, 12) i",
+        "ANALYZE",
+    ] {
+        sqlx::raw_sql(sql).execute(&mut admin).await.unwrap();
+    }
+    let lane = "lane7";
+    let strict = [
+        "file_state",
+        "file_observations",
+        "services",
+        "swimlane_folders",
+        "findings",
+    ];
+    macro_rules! check {
+        ($name:literal, $sql:expr, $args:expr) => {{
+            let plan = explain(&pool, $sql, &$args).await;
+            for node in plan.as_array().unwrap() {
+                let seq = node["node"] == "Seq Scan" || node["node"] == "Parallel Seq Scan";
+                let relation = node["relation"].as_str().unwrap_or_default();
+                assert!(
+                    !(seq && (strict.contains(&relation) || LARGE.contains(&relation))),
+                    "{}: a sequential scan of {relation}: {plan:#}",
+                    $name
+                );
+            }
+            insta::assert_json_snapshot!(concat!("structure_", $name), plan);
+        }};
+    }
+    check!(
+        "gates_of_some",
+        &gates_sql(),
+        [Arg::TextArray(vec![lane.to_owned()]), Arg::Int(2)]
+    );
+    check!(
+        "gates_of_all",
+        &gates_sql(),
+        [Arg::NullTextArray, Arg::Int(100_001)]
+    );
+    check!("files", STRUCTURE_FILES_SQL, [Arg::Text(lane), Arg::Int(200_001)]);
+    check!("folders", &folders_sql(), [Arg::Text(lane), Arg::Int(100_000)]);
+    check!(
+        "services",
+        STRUCTURE_SERVICES_SQL,
+        [Arg::Text(lane), Arg::Int(100_000)]
+    );
+    check!(
+        "env_names",
+        ENV_NAMES_SQL,
+        [
+            Arg::Text(lane),
+            Arg::IntArray((1..=40).collect()),
+            Arg::Int(100_000)
+        ]
+    );
+    check!(
+        "channels_newest_observation",
+        &newest_observation_sql(),
+        [Arg::Text(lane), Arg::Text("channels.yml")]
+    );
+    check!(
+        "channels_observation_at_start",
+        &observation_at_sql(),
+        [
+            Arg::Text(lane),
+            Arg::Text("channels.yml"),
+            Arg::Int(1_800_000_000_000)
+        ]
+    );
+    check!(
+        "channels_first_observation",
+        FIRST_OBSERVATION_SQL,
+        [Arg::Text(lane), Arg::Text("channels.yml")]
+    );
+    check!(
+        "open_findings_of_the_structure_kinds",
+        OPEN_OF_KINDS_SQL,
+        [
+            Arg::Text(lane),
+            Arg::TextArray(vec![
+                "ambiguous_file_name".to_owned(),
+                "unresolved_placeholder".to_owned(),
+                "config_server_restart_required".to_owned()
+            ]),
+            Arg::Int(100_000)
+        ]
+    );
+    check!(
+        "findings_registry_row",
+        &registry_row_sql(),
+        [Arg::Text(lane), Arg::Int(1_800_000_000_000)]
+    );
+    check!(
+        "pipeline_registry_row",
+        REGISTRY_SQL,
+        [
+            Arg::Text(lane),
+            Arg::Int(1),
+            Arg::Text("{}"),
+            Arg::Bytes(&[7; 32]),
+            Arg::Int(1_800_000_000_000)
+        ]
+    );
 }
 
 /// T1 (A10): the statements of the tool-write registrations, on a database with the observations of 40 swimlanes (24,000) and a table of

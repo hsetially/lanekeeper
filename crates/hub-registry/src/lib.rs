@@ -31,6 +31,11 @@
 //!   transaction by a cluster report, by the pipeline's job after a batch and by the leased sweeper (A37). [`tenants`] says what the tenant set
 //!   of a swimlane is, who may change it, and which tenant stands for a swimlane where a view needs one (A30).
 //!
+//! - [`pipeline::c9_c11`] (T10, A45, D113): the structure checks C9 (ambiguous file name), C10 (unresolved placeholder) and C11 (config-server
+//!   restart required), which the engine's lane state does not carry. [`Structure`] computes them in the leased job
+//!   `registry-structure-sweeper`, never inside a pipeline batch, with the engine's check functions, caches C10 by content so that a one-file
+//!   change reads one blob and evaluates one file, and writes them by fingerprint through [`pipeline::findings_store`].
+//!
 //! - [`attribution`] (T7, D72, D73, P14): `SentinelIngest`, the registry's side of the sentinel protocol (`hello` against the admin-registered
 //!   sentinel, batches deduplicated by `seq`, the records mapped to the swimlane and stored), the correlator that makes an `unknown` change a
 //!   `sentinel_login` (high, naming the OS Login user and the application user it maps to) or, after a grace, an `nfs_client`, and the leased jobs
@@ -100,7 +105,8 @@ pub use ingest::{AgentIngest, IngestDeps, fuzzing};
 pub use metrics::RegistryMetrics;
 pub use pickup::{PickupDeps, Pickups, SweepReport as PickupSweepReport};
 pub use pipeline::{
-    BatchReport, LaneReport, NightlyReport, Pipeline, PipelineDeps, PipelineHandle, ReconcileOutcome, Work,
+    BatchReport, LaneReport, NightlyReport, Pipeline, PipelineDeps, PipelineHandle, ReconcileOutcome,
+    Structure, StructureDeps, Work,
 };
 pub use read::warmup::WarmupTask;
 pub use read::{Named, ReadDeps, RegistryApi, RegistryService, Tagged};

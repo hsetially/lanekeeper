@@ -19,6 +19,7 @@ pub struct Dep {
     name: String,
     env: Vec<(String, String)>,
     pods: Vec<(String, i64)>,
+    names: Vec<String>,
 }
 
 pub fn dep(name: &str) -> Dep {
@@ -26,6 +27,7 @@ pub fn dep(name: &str) -> Dep {
         name: name.to_owned(),
         env: Vec::new(),
         pods: Vec::new(),
+        names: Vec::new(),
     }
 }
 
@@ -47,6 +49,12 @@ impl Dep {
 
     pub fn env(mut self, name: &str, value: &str) -> Self {
         self.env.push((name.to_owned(), value.to_owned()));
+        self
+    }
+
+    /// The names of other environment variables (names only: D88, never their values).
+    pub fn names(mut self, names: &[&str]) -> Self {
+        self.names.extend(names.iter().map(|n| (*n).to_owned()));
         self
     }
 
@@ -75,7 +83,7 @@ impl Dep {
                     value: text(v),
                 })
                 .collect(),
-            env_names: Vec::new(),
+            env_names: self.names.iter().map(|n| text(n)).collect(),
             removed: false,
         }
     }

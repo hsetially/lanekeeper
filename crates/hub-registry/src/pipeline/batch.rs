@@ -698,7 +698,6 @@ impl Inner {
                 findings: delta,
                 tree: TreeMode::Sync,
                 counts,
-                finding_count: rows.len(),
                 fingerprint: Some(rules.fingerprint),
             })
             .await?;
@@ -1048,7 +1047,6 @@ impl Inner {
                         findings,
                         tree: TreeMode::Apply(touched),
                         counts,
-                        finding_count: rows.len(),
                         fingerprint: None,
                     })
                     .await

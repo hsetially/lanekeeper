@@ -202,6 +202,24 @@ pub struct RegistryConfig {
     /// oldest pod started is looked at through the newest ones and the metric `registry_pickup_truncated` says so (rule 5).
     pub pickup_max_files: usize,
 
+    // ---------------------------------------------------------------------------------------------- structure checks, C9 to C11 (T10, A45)
+    /// How often the leased job `registry-structure-sweeper` looks at the swimlanes' versions and computes the checks of those that moved
+    /// since it last did (a pipeline commit bumps `swimlane_registry.version`; a new start of the config-server is seen at the same look).
+    /// The job never runs inside the pipeline's batch, so the checks cost the incremental recompute nothing; this is how stale a C9, C10 or
+    /// C11 may be after a change, with the pipeline's own latency in front of it.
+    pub structure_sweep_interval: Duration,
+    /// How often the sweeper computes **every** swimlane that has an inventory whatever its version says: what no version announces
+    /// (a Deployment's environment names, a folder mapping an admin changed, a replica that took over) is found by this one.
+    pub structure_full_interval: Duration,
+    /// Swimlanes one run of the sweeper computes; the rest wait for the next run.
+    pub structure_sweep_lanes: usize,
+    /// What the cache of C10 results and of the property sources' keys may hold, in bytes (a weigher counts keys, paths and messages). A
+    /// result is kept by the content that made it, so a file that did not change is never read again for it.
+    pub structure_cache_bytes: u64,
+    /// The bytes of file content one batch of blob reads may hold (C10 reads a resource only when its result is not cached): a swimlane is
+    /// read in batches of at most this many bytes, so the memory of a check does not depend on how many files changed.
+    pub structure_batch_bytes: u64,
+
     // ---------------------------------------------------------------------------------------------- tool-write registrations (T1, A10)
     /// The bound of the queue of registrations (`ports::ToolWrites`) that no observation has matched yet, hash registrations and delete
     /// registrations together, counting only those younger than `ToolWriteEntry::TTL_SECS`: a new one past it is refused with `Full` at
@@ -374,6 +392,11 @@ impl Default for RegistryConfig {
             pickup_full_interval: Duration::from_secs(10 * 60),
             pickup_sweep_lanes: 1_000,
             pickup_max_files: 20_000,
+            structure_sweep_interval: Duration::from_secs(10),
+            structure_full_interval: Duration::from_secs(10 * 60),
+            structure_sweep_lanes: 1_000,
+            structure_cache_bytes: 64 * 1024 * 1024,
+            structure_batch_bytes: 16 * 1024 * 1024,
             tool_write_max_pending: 10_000,
             tool_write_timeout: Duration::from_secs(2),
             tool_write_match_interval: Duration::from_secs(5),
@@ -663,6 +686,39 @@ impl RegistryConfig {
         }
         within("pickup_sweep_lanes", self.pickup_sweep_lanes as u64, 1, 100_000)?;
         within("pickup_max_files", self.pickup_max_files as u64, 100, 200_000)?;
+        within(
+            "structure_sweep_interval",
+            millis(self.structure_sweep_interval),
+            1_000,
+            3600 * 1000,
+        )?;
+        within(
+            "structure_full_interval",
+            millis(self.structure_full_interval),
+            10_000,
+            24 * 3600 * 1000,
+        )?;
+        if self.structure_full_interval < self.structure_sweep_interval {
+            return Err(ConfigError::OutOfRange("structure_full_interval"));
+        }
+        within(
+            "structure_sweep_lanes",
+            self.structure_sweep_lanes as u64,
+            1,
+            100_000,
+        )?;
+        within(
+            "structure_cache_bytes",
+            self.structure_cache_bytes,
+            1024 * 1024,
+            1024 * 1024 * 1024,
+        )?;
+        within(
+            "structure_batch_bytes",
+            self.structure_batch_bytes,
+            1024 * 1024,
+            256 * 1024 * 1024,
+        )?;
         within(
             "tool_write_max_pending",
             self.tool_write_max_pending as u64,
@@ -1114,6 +1170,52 @@ mod tests {
         });
         out_of_range("pickup_max_files", |c| {
             c.pickup_max_files = 200_001;
+        });
+    }
+
+    #[test]
+    fn the_structure_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(c.structure_sweep_interval, Duration::from_secs(10));
+        assert_eq!(c.structure_full_interval, Duration::from_secs(10 * 60));
+        assert!(c.structure_sweep_interval <= c.structure_full_interval);
+        assert_eq!(c.structure_sweep_lanes, 1_000);
+        assert_eq!(c.structure_cache_bytes, 64 * 1024 * 1024);
+        assert_eq!(c.structure_batch_bytes, 16 * 1024 * 1024);
+        assert_eq!(c.validate(), Ok(()));
+        out_of_range("structure_sweep_interval", |c| {
+            c.structure_sweep_interval = Duration::from_millis(999);
+        });
+        out_of_range("structure_sweep_interval", |c| {
+            c.structure_sweep_interval = Duration::from_secs(3601);
+        });
+        out_of_range("structure_full_interval", |c| {
+            c.structure_full_interval = Duration::from_secs(9);
+        });
+        out_of_range("structure_full_interval", |c| {
+            c.structure_full_interval = Duration::from_secs(25 * 3600);
+        });
+        out_of_range("structure_full_interval", |c| {
+            c.structure_sweep_interval = Duration::from_secs(60);
+            c.structure_full_interval = Duration::from_secs(30);
+        });
+        out_of_range("structure_sweep_lanes", |c| {
+            c.structure_sweep_lanes = 0;
+        });
+        out_of_range("structure_sweep_lanes", |c| {
+            c.structure_sweep_lanes = 100_001;
+        });
+        out_of_range("structure_cache_bytes", |c| {
+            c.structure_cache_bytes = 1024 * 1024 - 1;
+        });
+        out_of_range("structure_cache_bytes", |c| {
+            c.structure_cache_bytes = 1024 * 1024 * 1024 + 1;
+        });
+        out_of_range("structure_batch_bytes", |c| {
+            c.structure_batch_bytes = 1024 * 1024 - 1;
+        });
+        out_of_range("structure_batch_bytes", |c| {
+            c.structure_batch_bytes = 256 * 1024 * 1024 + 1;
         });
     }
 

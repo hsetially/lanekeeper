@@ -24,6 +24,7 @@
 //! | the nightly full recompute that repairs any divergence | [`nightly`] |
 //! | a swimlane whose NFS carries the suffix of a branch it does not deploy: the ranking and the admin's review (T4) | [`tenant_rematch`] |
 //! | the pickup state of the swimlanes a batch brought up to date (T10): run by the job after the batch is committed, never inside `process` | [`crate::pickup`] |
+//! | the structure checks C9 to C11 (T10): their own leased job, never inside `process`, gated by the swimlane's version and cached by content | [`c9_c11`] |
 //!
 //! # One lease, one holder of the state
 //!
@@ -43,7 +44,8 @@
 //! # What it does not do
 //!
 //! - C1 in `whole_file` mode needs the base file's history from Git (`LaneFile::history`); no history is given here, so that check
-//!   reports only dead overrides (`spring_merge`). C9 to C11 and the "as served" check are written by T10.
+//!   reports only dead overrides (`spring_merge`). C9 to C11 are computed by [`c9_c11`], in a job of their own, from what the lane state does
+//!   not carry (A45), and the "as served" check (C12) by the nightly verification of the read service.
 //! - It does not audit what it derives, only what it decides (plan A12): baselines set by convergence (one event for a commit, with
 //!   the paths) and marks cleared.
 //! - It does not decide what is serious: the rules are the engine's defaults and the admin's rows of `severity_rules`
@@ -52,8 +54,10 @@
 
 pub mod affected;
 pub(crate) mod batch;
+pub mod c9_c11;
 pub mod coalesce;
 pub mod events;
+pub mod findings_store;
 pub mod findings_sync;
 pub mod git_side;
 pub mod job;
@@ -78,6 +82,7 @@ use sqlx::PgPool;
 use tokio::sync::{Mutex, mpsc};
 
 pub use self::batch::{BatchReport, LaneReport};
+pub use self::c9_c11::{Structure, StructureDeps};
 pub use self::coalesce::Work;
 pub use self::events::PipelineHandle;
 pub use self::job::PipelineJob;
@@ -145,6 +150,8 @@ pub(crate) struct Inner {
     pub metrics: RegistryMetrics,
     /// The pickup state (T10): computed for the swimlanes of each batch by the job, after the batch is committed.
     pub pickups: Pickups,
+    /// The structure checks C9 to C11 (T10): their own job, which never runs inside a batch.
+    pub structure: Structure,
     pub pool: Arc<rayon::ThreadPool>,
     pub limits: Arc<engine::Limits>,
     pub exec: Mutex<Exec>,
@@ -198,6 +205,16 @@ impl Pipeline {
             metrics: metrics.clone(),
         })?;
         let severity = SeverityRuleSource::new(pool.clone(), &config, metrics.clone())?;
+        // The structure checks (C9 to C11) rate with the same rules and read the same blob store.
+        let structure = Structure::new(StructureDeps {
+            pool: pool.clone(),
+            blobs: Arc::clone(&blobs),
+            bus: Arc::clone(&bus),
+            clock: Arc::clone(&clock),
+            config: config.clone(),
+            metrics: metrics.clone(),
+            severity: severity.clone(),
+        })?;
         let deny = Arc::new(
             DenyMatcher::with_globs(config.extra_deny_globs.iter().map(String::as_str))
                 .map_err(|_| ConfigError::Invalid("extra_deny_globs"))?,
@@ -248,6 +265,7 @@ impl Pipeline {
             limits: Arc::new(engine::Limits::default()),
             config,
             pickups,
+            structure,
             metrics: metrics.clone(),
         };
         let handle = PipelineHandle::new(signal_tx, metrics);
@@ -295,7 +313,12 @@ impl Pipeline {
         self.inner.pickups.clone()
     }
 
-    /// The jobs with their specs, for the hub's job runner: the pipeline, the nightly recompute and the pickup sweeper.
+    /// The structure checks C9 to C11 (T10): the computation and the sweeper's job.
+    pub fn structure(&self) -> Structure {
+        self.inner.structure.clone()
+    }
+
+    /// The jobs with their specs, for the hub's job runner: the pipeline, the nightly recompute, the pickup sweeper and the structure sweeper.
     ///
     /// # Errors
     ///
@@ -305,6 +328,7 @@ impl Pipeline {
             (Self::pipeline_spec(&self.inner.config)?, self.job()),
             (Self::nightly_spec(&self.inner.config)?, self.nightly_job()),
             (Pickups::spec(&self.inner.config)?, self.inner.pickups.job()),
+            (Structure::spec(&self.inner.config)?, self.inner.structure.job()),
         ])
     }
 

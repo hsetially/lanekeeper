@@ -858,7 +858,12 @@ async fn the_job_has_its_spec_and_runs_a_sweep() {
     let names: Vec<&str> = jobs.iter().map(|(spec, _)| spec.name()).collect();
     assert_eq!(
         names,
-        ["registry-pipeline", "registry-nightly", "registry-pickup-sweeper"]
+        [
+            "registry-pipeline",
+            "registry-nightly",
+            "registry-pickup-sweeper",
+            "registry-structure-sweeper"
+        ]
     );
     assert_eq!(
         Pickups::spec(&RegistryConfig::default()).unwrap().name(),

@@ -7,8 +7,10 @@
 //! for one path, the result's place among them in the engine's order. The message is not part of it on purpose: a drifted file that
 //! goes from `git_ahead` to `conflict` is the same finding, worse.
 //!
-//! Only the engine's kinds are touched. C9 to C11 and the "as served" mismatch are written by other tasks and are never resolved
-//! here, because this list does not contain them.
+//! Only the engine's kinds are touched here. C9 to C11 are computed from what the lane state does not carry and written by
+//! [`super::c9_c11`], and the "as served" mismatch (C12) by the nightly verification; both go through the same rows, the same
+//! fingerprint rule and the same statements ([`row_from_result`], [`fingerprint_keyed`], `persist::write_findings`), and neither is ever
+//! resolved by a batch of this pipeline, because the pipeline's list does not contain them.
 //!
 //! Nothing in a row is a setting value, a file's text or an environment value: the engine's results name files, tenants, setting
 //! paths, lines, hashes and host names (S13, S21), and [`detail_json`] copies exactly those.
@@ -43,6 +45,26 @@ pub(crate) fn engine_kind_names() -> Vec<&'static str> {
     FindingKind::ALL
         .into_iter()
         .filter(|k| is_engine_kind(*k))
+        .map(FindingKind::as_str)
+        .collect()
+}
+
+/// The kinds of the structure checks (C9 to C11): what the registry computes from the file list, the property views, the Deployments'
+/// environment names, the folders and `channels.yml` ([`super::c9_c11`], A45), and no batch of this pipeline touches.
+pub(crate) fn is_structure_kind(kind: FindingKind) -> bool {
+    matches!(
+        kind,
+        FindingKind::AmbiguousFileName
+            | FindingKind::UnresolvedPlaceholder
+            | FindingKind::ConfigServerRestartRequired
+    )
+}
+
+/// The wire names of the structure kinds, for the statements that read and resolve them.
+pub(crate) fn structure_kind_names() -> Vec<&'static str> {
+    FindingKind::ALL
+        .into_iter()
+        .filter(|k| is_structure_kind(*k))
         .map(FindingKind::as_str)
         .collect()
 }
@@ -90,6 +112,19 @@ fn restart_name(reason: RestartReason) -> String {
 
 fn hash_text(hash: Option<ContentHash>) -> Value {
     hash.map_or(Value::Null, |h| Value::String(h.to_string()))
+}
+
+/// The facts behind a C10: the names of the keys, the tenants whose view lacks each, and the lines they are on. Never a value.
+fn unresolved_json(keys: &[engine::UnresolvedKey], total: usize) -> Value {
+    json!({
+        "check": "unresolved_placeholder",
+        "keys": keys.iter().map(|k| json!({
+            "key": k.key,
+            "tenants": k.tenants.iter().map(domain::TenantId::as_str).collect::<Vec<_>>(),
+            "lines": k.lines,
+        })).collect::<Vec<_>>(),
+        "total": total,
+    })
 }
 
 /// The facts behind a result, as JSON. Names, hashes, counts and lines; never a value.
@@ -176,11 +211,7 @@ pub(crate) fn detail_json(detail: &CheckDetail) -> Value {
             "folders": folders.iter().map(domain::NfsPath::as_str).collect::<Vec<_>>(),
             "total": total,
         }),
-        CheckDetail::UnresolvedPlaceholders { keys, total } => json!({
-            "check": "unresolved_placeholder",
-            "keys": keys.len(),
-            "total": total,
-        }),
+        CheckDetail::UnresolvedPlaceholders { keys, total } => unresolved_json(keys, *total),
         CheckDetail::ConfigServerRestart {
             reason,
             folders,
@@ -204,6 +235,20 @@ fn fingerprint(kind: FindingKind, path: Option<&str>, ordinal: usize) -> String 
     hash.update(path.unwrap_or("").as_bytes());
     hash.update([0]);
     hash.update((ordinal as u64).to_be_bytes());
+    ContentHash::from_bytes(hash.finalize().into()).to_string()
+}
+
+/// The fingerprint of a result that has an identity of its own: the check, and a key that names what the result is about (the file name of
+/// a C9, the reason of a C11, the file and the request of a C12) and that does not move when other results come and go. A result's place among
+/// its equals ([`fingerprint`]) is the right identity only when nothing else names it: for a C9 the path is the first copy, which changes
+/// when an earlier copy appears, and two C11 results about `channels.yml` would swap identities when one of them goes.
+pub(crate) fn fingerprint_keyed(kind: FindingKind, key: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(kind.as_str().as_bytes());
+    hash.update([0]);
+    hash.update(b"keyed");
+    hash.update([0]);
+    hash.update(key.as_bytes());
     ContentHash::from_bytes(hash.finalize().into()).to_string()
 }
 
@@ -237,12 +282,31 @@ fn row_of(
     fingerprint: String,
 ) -> FindingRow {
     let file = result.path.as_ref().and_then(|p| state.file(p));
+    row_from_result(
+        rules,
+        result,
+        file.map(|f| (f.drift.state, f.class)),
+        path,
+        fingerprint,
+    )
+}
+
+/// A finding's row from an engine result, rated with `rules` in the context the result is about: its kind, its path, and the drift state and
+/// class of the file it names when there is one (`file`). The same context for every kind, so that the rules rate a C10 as they rate a C8 of
+/// the same file.
+pub(crate) fn row_from_result(
+    rules: &SeverityRules,
+    result: &CheckResult,
+    file: Option<(DriftState, domain::FileClass)>,
+    path: Option<String>,
+    fingerprint: String,
+) -> FindingRow {
     let outcome = severity(
         &ChangeContext {
             finding_kind: Some(result.kind),
             path: result.path.as_ref(),
-            drift_state: file.map(|f| f.drift.state),
-            file_class: file.map(|f| f.class),
+            drift_state: file.map(|(state, _)| state),
+            file_class: file.map(|(_, class)| class),
             ..ChangeContext::default()
         },
         rules,

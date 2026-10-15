@@ -180,6 +180,19 @@ pub enum PickupResult {
     Failed,
 }
 
+/// What the structure checks (C9 to C11) did to a swimlane (T10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum StructureResult {
+    /// The checks were computed and the findings are what they say (written or already so).
+    Computed,
+    /// Nothing the checks read had moved since they were last computed: nothing was read or written.
+    Unchanged,
+    /// The swimlane is not ready (no inventory yet, or the pipeline has not computed it): there is nothing to check.
+    NotReady,
+    /// The swimlane could not be computed (the database, the blob store, the outbox); the next run looks at it again.
+    Failed,
+}
+
 /// What became of a tool-write registration, or of an observation that one could explain (T1, A10). A closed set: the labels never
 /// grow with the traffic, and no path, hash or user is ever one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
@@ -327,6 +340,11 @@ struct RematchLabels {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
 struct PickupLabels {
     result: PickupResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct StructureLabels {
+    result: StructureResult,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
@@ -481,6 +499,11 @@ pub struct RegistryMetrics {
     pickup_lanes: Family<PickupLabels, Counter>,
     pickup_services_changed: Counter,
     pickup_truncated: Counter,
+    structure_lanes: Family<StructureLabels, Counter>,
+    structure_findings: Counter,
+    structure_c10_evaluated: Counter,
+    structure_c10_cached: Counter,
+    structure_blobs_read: Counter,
     tool_writes: Family<ToolWriteLabels, Counter>,
     sentinel_messages: Family<SentinelLabels, Counter>,
     sentinel_records: Family<SentinelRecordLabels, Counter>,
@@ -552,6 +575,11 @@ impl Default for RegistryMetrics {
             pickup_lanes: Family::default(),
             pickup_services_changed: Counter::default(),
             pickup_truncated: Counter::default(),
+            structure_lanes: Family::default(),
+            structure_findings: Counter::default(),
+            structure_c10_evaluated: Counter::default(),
+            structure_c10_cached: Counter::default(),
+            structure_blobs_read: Counter::default(),
             tool_writes: Family::default(),
             sentinel_messages: Family::default(),
             sentinel_records: Family::default(),
@@ -818,6 +846,31 @@ impl RegistryMetrics {
             "registry_pickup_truncated",
             "Computations of a swimlane's pickup state that read only the newest changed files because there were more than pickup_max_files",
             self.pickup_truncated.clone(),
+        );
+        registry.register(
+            "registry_structure_lanes",
+            "Swimlanes whose structure checks (C9 to C11) were looked at, by whether they were computed, unchanged, not ready or failed",
+            self.structure_lanes.clone(),
+        );
+        registry.register(
+            "registry_structure_findings",
+            "Findings of C9 to C11 written (new, changed or resolved)",
+            self.structure_findings.clone(),
+        );
+        registry.register(
+            "registry_structure_c10_evaluated",
+            "Resource files whose placeholders C10 evaluated (their result was not cached for this content, these views and these environment names)",
+            self.structure_c10_evaluated.clone(),
+        );
+        registry.register(
+            "registry_structure_c10_cached",
+            "Resource files whose C10 result came from the cache, by content",
+            self.structure_c10_cached.clone(),
+        );
+        registry.register(
+            "registry_structure_blobs_read",
+            "Blobs the structure checks read from the blob store",
+            self.structure_blobs_read.clone(),
         );
         registry.register(
             "registry_tool_writes",
@@ -1181,6 +1234,34 @@ impl RegistryMetrics {
         self.pickup_truncated.inc();
     }
 
+    /// A swimlane's structure checks were looked at (T10).
+    pub(crate) fn structure_lane(&self, result: StructureResult) {
+        self.structure_lanes
+            .get_or_create(&StructureLabels { result })
+            .inc();
+    }
+
+    /// Findings of C9 to C11 written, and the C10 work of a computation: results evaluated and results from the cache, and blobs read
+    /// (T10). Counts only (S10).
+    pub(crate) fn structure_work(&self, findings: usize, evaluated: usize, cached: usize, blobs: usize) {
+        self.structure_findings.inc_by(findings as u64);
+        self.structure_c10_evaluated.inc_by(evaluated as u64);
+        self.structure_c10_cached.inc_by(cached as u64);
+        self.structure_blobs_read.inc_by(blobs as u64);
+    }
+
+    /// Swimlanes whose structure checks were looked at, by result, for tests.
+    pub fn structure_lane_count(&self, result: StructureResult) -> u64 {
+        self.structure_lanes
+            .get_or_create(&StructureLabels { result })
+            .get()
+    }
+
+    /// Blobs the structure checks read, for tests.
+    pub fn structure_blobs_read_count(&self) -> u64 {
+        self.structure_blobs_read.get()
+    }
+
     /// Swimlanes whose pickup state was computed, by result, for tests.
     pub fn pickup_lane_count(&self, result: PickupResult) -> u64 {
         self.pickup_lanes.get_or_create(&PickupLabels { result }).get()
@@ -1401,6 +1482,35 @@ mod tests {
         assert!(text.contains("registry_pickup_truncated_total"), "{text}");
         assert!(
             text.contains("result=\"Changed\""),
+            "a closed set of labels: {text}"
+        );
+    }
+
+    #[test]
+    fn the_structure_counters_count_and_register_with_closed_labels() {
+        let m = RegistryMetrics::default();
+        m.structure_lane(StructureResult::Computed);
+        m.structure_lane(StructureResult::Computed);
+        m.structure_lane(StructureResult::Unchanged);
+        m.structure_work(3, 2, 5, 1);
+        assert_eq!(m.structure_lane_count(StructureResult::Computed), 2);
+        assert_eq!(m.structure_lane_count(StructureResult::Failed), 0);
+        assert_eq!(m.structure_blobs_read_count(), 1);
+        let mut registry = Registry::default();
+        m.register(&mut registry);
+        let mut text = String::new();
+        prometheus_client::encoding::text::encode(&mut text, &registry).unwrap_or_default();
+        for name in [
+            "registry_structure_lanes_total",
+            "registry_structure_findings_total",
+            "registry_structure_c10_evaluated_total",
+            "registry_structure_c10_cached_total",
+            "registry_structure_blobs_read_total",
+        ] {
+            assert!(text.contains(name), "{name}: {text}");
+        }
+        assert!(
+            text.contains("result=\"Computed\""),
             "a closed set of labels: {text}"
         );
     }
