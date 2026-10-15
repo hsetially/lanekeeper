@@ -657,6 +657,16 @@ async fn github_that_does_not_answer_is_retried_a_few_times_and_then_the_job_fai
 
 // ---------------------------------------------------------------------------------------------------------- idempotency
 
+/// The request sorts its files before it acts, so a retry that lists the same files in another order is the same request.
+#[tokio::test]
+async fn a_retry_that_lists_the_files_in_another_order_replays_the_job() {
+    let Some(t) = jobs().await else { return };
+    let first = t.job("k-1", &[ENTRY, OTHER]).await;
+    let replay = t.job("k-1", &[OTHER, ENTRY]).await;
+    assert_eq!(first.id, replay.id);
+    assert_eq!(t.f.rig.count("pr_jobs").await, 1);
+}
+
 #[tokio::test]
 async fn job_is_idempotent_through_its_id() {
     let Some(t) = jobs().await else { return };

@@ -120,14 +120,17 @@ impl RequestHash {
         HashBuilder::new("delete_github_token/1").finish()
     }
 
-    /// The hash of raising a pull request: the swimlane, the paths in the order given, the title, a digest of the text and the
-    /// target. The text is hashed first, so the row holds nothing of what the person wrote (S10).
+    /// The hash of raising a pull request: the swimlane, the paths in sorted order (the request is sorted before it acts, so the
+    /// order given changes nothing), the title, a digest of the text and the target. The text is hashed first, so the row holds
+    /// nothing of what the person wrote (S10).
     pub(crate) fn of_raise_pr(r: &PrRequest) -> Self {
         let mut b = HashBuilder::new("raise_pr/1");
         b.field(r.swimlane.as_str().as_bytes());
         b.field(&(r.paths.len() as u64).to_be_bytes());
-        for p in &r.paths {
-            b.field(p.as_str().as_bytes());
+        let mut paths: Vec<&str> = r.paths.iter().map(NfsPath::as_str).collect();
+        paths.sort_unstable();
+        for p in paths {
+            b.field(p.as_bytes());
         }
         b.field(r.title.as_str().as_bytes());
         b.field(&Sha256::digest(r.body.as_deref().unwrap_or("").as_bytes()));
@@ -835,7 +838,6 @@ mod tests {
         assert_eq!(h0, RequestHash::of_raise_pr(&base.clone()));
         for other in [
             pr(&["a.yml", "c.yml"], "t", Some("text"), None),
-            pr(&["b.yml", "a.yml"], "t", Some("text"), None),
             pr(&["a.yml"], "t", Some("text"), None),
             pr(&["a.yml", "b.yml"], "u", Some("text"), None),
             pr(&["a.yml", "b.yml"], "t", Some("other"), None),
@@ -849,6 +851,12 @@ mod tests {
         ] {
             assert_ne!(h0, RequestHash::of_raise_pr(&other), "{other:?}");
         }
+        // The files are the same set in any order: the request sorts them before it acts, so a retry that lists them in another
+        // order is the same request and replays, not a conflict.
+        assert_eq!(
+            h0,
+            RequestHash::of_raise_pr(&pr(&["b.yml", "a.yml"], "t", Some("text"), None))
+        );
         // No text and an empty text are one request; a target of the base and of a tenant are two.
         assert_eq!(
             RequestHash::of_raise_pr(&pr(&["a.yml"], "t", None, None)),
