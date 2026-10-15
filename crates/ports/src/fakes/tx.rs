@@ -5,14 +5,14 @@ use domain::{AuditId, DomainEvent};
 
 use super::audit_log::AuditInner;
 use super::event_bus::BusInner;
-use super::tool_writes::Reservation;
-use crate::{AuditEvent, OwnedTx, ToolWriteEntry, Tx, TxError, TxFactory};
+use super::tool_writes::{Registration, Reservation};
+use crate::{AuditEvent, OwnedTx, Tx, TxError, TxFactory};
 
 /// What a fake port parked in a transaction, to apply on commit.
 pub(crate) enum Pending {
     Audit(Arc<AuditInner>, AuditId, Box<AuditEvent>),
     Publish(Arc<BusInner>, Box<DomainEvent>),
-    /// A place in the tool-write registry, taken at `register`; committing fills it, dropping gives it back.
+    /// A place in the tool-write registry, taken at `register` or `register_delete`; committing fills it, dropping gives it back.
     ToolWrite(Reservation),
 }
 
@@ -40,10 +40,10 @@ impl FakeTxState {
         self.pending.push(p);
     }
 
-    /// The tool writes parked in this transaction.
-    pub(crate) fn parked_tool_writes(&self) -> impl Iterator<Item = &ToolWriteEntry> {
+    /// The tool-write registrations, of both kinds, parked in this transaction.
+    pub(crate) fn parked_tool_registrations(&self) -> impl Iterator<Item = &Registration> {
         self.pending.iter().filter_map(|p| match p {
-            Pending::ToolWrite(r) => Some(r.entry()),
+            Pending::ToolWrite(r) => Some(r.registration()),
             _ => None,
         })
     }

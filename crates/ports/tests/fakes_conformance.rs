@@ -109,5 +109,17 @@ async fn fake_sentinel_sink_conforms() {
 async fn fake_tool_writes_conforms() {
     let registry = FakeToolWrites::new();
     let txf: &dyn TxFactory = &FakeTxFactory::new();
-    conformance::tool_writes(&registry, txf).await;
+    // The fake registers deletes, so it is held to every delete rule, and cannot pass by keeping the default.
+    conformance::tool_writes_with_deletes(&registry, txf).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn fake_tool_writes_is_bounded_for_hash_and_delete_registrations_together() {
+    // Even and odd bounds: the last registration of the fill is a hash registration for one and a delete registration for
+    // the other.
+    for bound in [2, 7, 8, 40] {
+        let registry = FakeToolWrites::with_capacity(bound);
+        let txf: &dyn TxFactory = &FakeTxFactory::new();
+        conformance::tool_writes_bounded(&registry, txf, bound).await;
+    }
 }
