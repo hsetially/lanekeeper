@@ -56,3 +56,10 @@ Options: (a) an additive contract change that adds the rendered text and a typed
 ### 3. For information: found by the new fuzz target, fixed in T2
 
 `mcp_http_body` found, in 45 seconds, that a second `initialize` on a live session (with a protocol version such as `4050-06-18`) rewrote what the session had negotiated (rmcp's own handler does the same) and left the session where `ping` is "method not found". Only the caller's own session was ever hurt. T2 refuses a repeated `initialize` (`invalid_request`, once per session, in `McpHandler::initialize`) and keeps the input as the seed `initialize_again_with_a_future_version`; test `sessions::a_second_initialize_is_refused_and_the_session_keeps_its_terms`.
+
+## Resolution (decided by the human)
+
+Both blockers of T2 are decided. The plan stays frozen; the decision is recorded as D92 in `docs/decisions.md`. No threshold in `perf/budgets.toml` changed, and nothing in `crates/domain` or `crates/ports` changed.
+
+1. **Cold `read_file` of the largest file (option A, accept).** It measured p95 52 ms (runs of 52 to 63 ms). The plan's internal 50 ms screen (A7) does not apply to the cold default view of the largest file, because its cost is `engine::index_settings`, whose own accepted budget is `P6.index_settings` (60 ms). It is paid once per file version per replica, and only for files over 16 KB or 200 lines. The registered `P9.read_file` budget of 300 ms passes, and warm calls take about 1.9 ms. A later option, outside 07, is an additive `RegistryRead` outline method served from the index that 05 stores (option C).
+2. **`get_effective_config` (option b, accept the gap for now).** It returns `text` null and settings with type `other` and flag null until a later contract PR adds the rendered resource-file text and a typed value to `EffectiveConfig`. That PR is to be done together with the open question of where the hash of a denied served file comes from (prompts 04 and 05). `get_served_config` gives the rendered body meanwhile. Secrets stay redacted either way (S14b).
