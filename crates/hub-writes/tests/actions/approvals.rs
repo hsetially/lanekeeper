@@ -903,6 +903,53 @@ async fn a_proposal_past_its_time_cannot_be_approved_before_the_job_runs() {
     assert_eq!(l.rig.nfs_of(&l.s, "a.yml").as_deref(), Some(&b"x: 1\n"[..]));
 }
 
+/// A residual risk of the threat model (06 T8): the expiry job does not take the lease that deciders take, so it can mark a proposal
+/// `expired` while an approval's command is at the agent. The file has changed by then, so the write is still audited (naming the
+/// approver, the author and the proposal) and the proposal is left as it is: `expired`, with no approval row.
+#[tokio::test]
+async fn a_proposal_that_expires_while_its_write_is_on_the_way_is_still_audited_and_left_expired() {
+    let Some(l) = lane().await else { return };
+    let id = l.propose("p-1", "a.yml", "x: 1\n", "x: 2\n").await;
+    // An hour before it runs out: the approval is not refused for its age.
+    l.rig.advance_secs(60 * 60 * 71);
+    let gate = l.rig.agent.hold_writes();
+    let approval = l.approve(&l.admin, "k-1", id);
+    let meanwhile = async {
+        // The command is at the agent. The time runs out and the expiry job gets to the proposal first.
+        l.rig.agent.entered.notified().await;
+        l.rig.advance_secs(60 * 60 * 2);
+        let report = l.rig.hub.expirer().run_once(&|| true).await;
+        gate.add_permits(1);
+        report
+    };
+    let (outcome, report) = tokio::join!(approval, meanwhile);
+    assert_eq!(report.proposals, 1, "the job marked it expired");
+    assert!(
+        matches!(outcome.unwrap(), WriteOutcome::Applied { .. }),
+        "the admin is told the change was applied"
+    );
+
+    // The file changed, and the proposal is as the job left it.
+    assert_eq!(l.rig.nfs_of(&l.s, "a.yml").as_deref(), Some(&b"x: 2\n"[..]));
+    assert_eq!(l.status(id).await, "expired");
+    assert_eq!(l.rig.count("approvals").await, 0, "no decision was written");
+    assert_eq!(
+        l.transitions(id).await,
+        vec![ProposalStatus::Pending, ProposalStatus::Expired],
+        "and the screens were never told it was applied"
+    );
+
+    // One audit event for the write, after the proposal and the expiry, naming the approver, the author and the proposal.
+    let chain = l.rig.chain().await;
+    assert_eq!(chain.len(), 3, "the proposal, its expiry and the write");
+    assert!(verify_chain(&chain).is_ok());
+    let e = &chain.last().unwrap().event;
+    assert_eq!(e.action, AuditAction::FileEdited);
+    assert!(matches!(&e.actor, AuditActor::User { user } if *user == l.admin.id));
+    assert_eq!(e.author.as_ref(), Some(&l.careful.id));
+    assert_eq!(e.approval, Some(id));
+}
+
 #[tokio::test]
 async fn the_expiry_job_works_in_batches() {
     let Some(l) = lane_with(hub_writes::WriteConfig {

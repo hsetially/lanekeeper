@@ -783,6 +783,75 @@ async fn outcomes_that_are_not_successes_are_problems_with_the_fields_the_contra
 
 // ------------------------------------------------------------------------------------------------- reading the request
 
+/// serde reads a struct from a JSON array too (`["a.yml", ...]` is the fields in order), so a reader that only asks serde accepts a
+/// body that is not the object the contract describes. The readers say so with the same word as for any other malformed body
+/// (S11); a body that arrives as an array is refused by every JSON reader, whatever it holds.
+#[test]
+fn a_json_array_is_not_an_object_for_any_reader() {
+    use hub_writes::routes::wire::{self, Refusal};
+
+    let swimlane = || domain::SwimlaneId::parse("sit1").unwrap();
+    let hash = hash_of("x: 1\n").to_string();
+    let absent = json!({ "state": "absent" });
+    let at_hash = json!({ "state": "hash", "hash": hash });
+    let bytes = |v: &Value| serde_json::to_vec(v).unwrap();
+
+    // Each reader, with the object it reads and the same values as an array in the order of the struct's fields. The object is
+    // the control: it is read, so the refusal of the array is the shape's and not a bad value's.
+    let edit = json!({ "path": "a.yml", "expected": at_hash, "content": "x: 2\n" });
+    assert!(wire::edit_request(swimlane(), &bytes(&edit)).is_ok());
+    assert_eq!(
+        wire::edit_request(swimlane(), &bytes(&json!(["a.yml", at_hash, "x: 2\n", null]))).map(|_| ()),
+        Err(Refusal::BadRequest),
+        "edit"
+    );
+
+    let revert = json!({ "path": "a.yml", "expected": at_hash, "to": hash });
+    assert!(wire::revert_request(swimlane(), &bytes(&revert)).is_ok());
+    assert_eq!(
+        wire::revert_request(swimlane(), &bytes(&json!(["a.yml", at_hash, hash, null]))).map(|_| ()),
+        Err(Refusal::BadRequest),
+        "revert"
+    );
+
+    let restart = json!({ "namespace": "sit1", "name": "payments" });
+    assert!(wire::restart_request(swimlane(), &bytes(&restart)).is_ok());
+    assert_eq!(
+        wire::restart_request(swimlane(), &bytes(&json!(["sit1", "payments"]))).map(|_| ()),
+        Err(Refusal::BadRequest),
+        "restart"
+    );
+
+    let draft = json!({ "swimlane": "sit1", "path": "a.yml", "expected": absent, "content": "x: 2\n" });
+    assert!(wire::draft_request(&bytes(&draft)).is_ok());
+    assert_eq!(
+        wire::draft_request(&bytes(&json!(["sit1", "a.yml", absent, "x: 2\n"]))).map(|_| ()),
+        Err(Refusal::BadRequest),
+        "draft"
+    );
+
+    assert!(wire::approve_comment(&bytes(&json!({ "comment": "ok" }))).is_ok());
+    assert_eq!(
+        wire::approve_comment(&bytes(&json!(["ok"]))).map(|_| ()),
+        Err(Refusal::BadRequest),
+        "approve"
+    );
+
+    assert!(wire::reject_reason(&bytes(&json!({ "reason": "no" }))).is_ok());
+    assert_eq!(
+        wire::reject_reason(&bytes(&json!(["no"]))).map(|_| ()),
+        Err(Refusal::BadRequest),
+        "reject"
+    );
+
+    // An array is no object with leading white space either, and an empty approval body is still "nothing at all".
+    assert_eq!(
+        wire::reject_reason(b" \r\n\t[\"no\"]").map(|_| ()),
+        Err(Refusal::BadRequest)
+    );
+    assert!(wire::approve_comment(b"").is_ok());
+}
+
 #[tokio::test]
 async fn a_request_that_is_not_well_formed_never_reaches_the_service() {
     let service = Arc::new(Scripted::default());

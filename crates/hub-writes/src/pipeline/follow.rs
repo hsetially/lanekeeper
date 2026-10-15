@@ -2,10 +2,10 @@
 //! the decision on the proposal the action carries out, or the draft it applies. They commit together or not at all, so a
 //! proposal is never "applied" without its audit event and an audit event is never recorded for a proposal that stays pending.
 //!
-//! A proposal that is no longer pending when this runs (an admin rejected it, or its time ran out, while the command was on its
+//! A proposal that is no longer pending when this runs (its time ran out and the expiry job marked it, while the command was on its
 //! way) has had its file written already: the audit event is still recorded, because the change happened, and the proposal is
-//! left as it is. That is logged; it cannot happen between two approvals (a lease serialises deciders) and is a few milliseconds
-//! wide for the others.
+//! left as it is. That is logged. It cannot happen between two deciders (a lease serialises approvals and rejections alike); the
+//! expiry job takes no lease, so it is the one that can, and the window is the agent's round trip.
 
 use domain::{DomainEvent, ProposalStatus};
 use ports::Tx;

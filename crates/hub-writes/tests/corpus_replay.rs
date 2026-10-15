@@ -274,6 +274,15 @@ fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
         "rejected_approve_with_control_character",
         b"{\"comment\":\"a\\u0007b\"}".to_vec(),
     );
+    // serde would read an array as the struct, field by field; the contract says an object (S11).
+    add(
+        t,
+        "rejected_edit_as_array",
+        json(json!(["a.yml", { "state": "absent" }, "x: 1\n", null])),
+    );
+    add(t, "rejected_restart_as_array", json(json!(["sit1", "payments"])));
+    add(t, "rejected_approve_as_array", json(json!(["looks right"])));
+    add(t, "rejected_reject_as_array", json(json!(["not now"])));
     add(
         t,
         "rejected_edit_unknown_field",

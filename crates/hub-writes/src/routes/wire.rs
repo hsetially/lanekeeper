@@ -32,6 +32,16 @@ pub enum Refusal {
 
 type Read<T> = Result<T, Refusal>;
 
+/// A JSON request body read as `T`. serde reads a struct from a JSON array too (`["a.yml", ...]` is the fields in order), and
+/// `deny_unknown_fields` does not stop it, so the body has to be an object before serde sees it: the contract describes objects,
+/// and a request in another shape is a request this code did not mean to accept (S11).
+fn object<T: serde::de::DeserializeOwned>(body: &[u8]) -> Read<T> {
+    if !crate::github::api::is_object(body) {
+        return Err(Refusal::BadRequest);
+    }
+    serde_json::from_slice(body).map_err(|_| Refusal::BadRequest)
+}
+
 // ---------------------------------------------------------------------------------------------------------- JSON bodies
 
 /// The body of `PUT /files`. Unknown fields are refused: a typo is not silently ignored.
@@ -47,7 +57,7 @@ struct EditBody {
 
 /// The JSON body of an edit.
 pub fn edit_request(swimlane: SwimlaneId, body: &[u8]) -> Read<EditRequest> {
-    let body: EditBody = serde_json::from_slice(body).map_err(|_| Refusal::BadRequest)?;
+    let body: EditBody = object(body)?;
     Ok(EditRequest {
         swimlane,
         path: body.path,
@@ -69,7 +79,7 @@ struct RevertBody {
 
 /// The JSON body of a revert.
 pub fn revert_request(swimlane: SwimlaneId, body: &[u8]) -> Read<RevertRequest> {
-    let body: RevertBody = serde_json::from_slice(body).map_err(|_| Refusal::BadRequest)?;
+    let body: RevertBody = object(body)?;
     Ok(RevertRequest {
         swimlane,
         path: body.path,
@@ -88,7 +98,7 @@ struct RestartBody {
 
 /// The JSON body of a restart: a `ServiceRef`.
 pub fn restart_request(swimlane: SwimlaneId, body: &[u8]) -> Read<RestartRequest> {
-    let body: RestartBody = serde_json::from_slice(body).map_err(|_| Refusal::BadRequest)?;
+    let body: RestartBody = object(body)?;
     let service = ServiceRef::new(&body.namespace, &body.name).map_err(|_| Refusal::BadRequest)?;
     Ok(RestartRequest { swimlane, service })
 }
@@ -104,7 +114,7 @@ struct DraftBody {
 
 /// The JSON body of a draft: an edit that names its swimlane.
 pub fn draft_request(body: &[u8]) -> Read<EditRequest> {
-    let body: DraftBody = serde_json::from_slice(body).map_err(|_| Refusal::BadRequest)?;
+    let body: DraftBody = object(body)?;
     Ok(EditRequest {
         swimlane: body.swimlane,
         path: body.path,
@@ -126,7 +136,7 @@ pub fn approve_comment(body: &[u8]) -> Read<Option<ShortText>> {
     if body.is_empty() {
         return Ok(None);
     }
-    let body: ApproveBody = serde_json::from_slice(body).map_err(|_| Refusal::BadRequest)?;
+    let body: ApproveBody = object(body)?;
     Ok(body.comment)
 }
 
@@ -138,7 +148,7 @@ struct RejectBody {
 
 /// The body of a rejection: `{"reason": text}`. A rejection says why, so the text is not empty.
 pub fn reject_reason(body: &[u8]) -> Read<ShortText> {
-    let body: RejectBody = serde_json::from_slice(body).map_err(|_| Refusal::BadRequest)?;
+    let body: RejectBody = object(body)?;
     if body.reason.as_str().trim().is_empty() {
         return Err(Refusal::BadRequest);
     }
@@ -317,10 +327,7 @@ struct TokenBody {
 /// (it can tell a classic token from a fine-grained one and the answer cites the policy); this only reads the request.
 pub fn github_token_request(body: &[u8]) -> Read<Secret<String>> {
     // Not `["token"]`: serde would read an array as the struct, and the contract says an object.
-    if !crate::github::api::is_object(body) {
-        return Err(Refusal::BadRequest);
-    }
-    let body: TokenBody = serde_json::from_slice(body).map_err(|_| Refusal::BadRequest)?;
+    let body: TokenBody = object(body)?;
     let len = body.token.expose().len();
     if len == 0 || len > MAX_TOKEN_LEN {
         return Err(Refusal::BadRequest);
