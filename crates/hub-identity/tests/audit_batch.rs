@@ -293,7 +293,7 @@ async fn the_rows_of_a_batch_are_the_rows_record_writes() {
 
 // -------------------------------------------------------------------------------------------------------------------
 // The bound on the work under the lock is bytes, not events. A control character is six bytes of canonical JSON, a diff is
-// untrusted text of up to 64 KiB, so one event is up to 398,588 bytes and 200 of them were 67 MiB. These tests use the worst case:
+// untrusted text of up to 64 KiB, so one event is up to 398,673 bytes and 200 of them were about 76 MiB. These tests use the worst case:
 // events of control characters, not plain ones.
 
 /// The bytes of canonical JSON that the table holds for the events of the batch (what the budget counts).
@@ -318,7 +318,7 @@ async fn the_largest_event_that_can_exist_is_accepted_alone_by_record_many_and_b
     assert_eq!(chain[0].event, by_batch);
     assert_eq!(chain[1].event, by_record);
     assert_eq!(verify_chain(&chain), Ok(()));
-    // Both are stored as 398,584 bytes (the constant's 398,588, less four: the table holds no time as long as `i64::MIN`), and the table accepts them (its limit is 1 MiB per event).
+    // Both are stored as 398,669 bytes (the constant's 398,673, less four: the table holds no time as long as `i64::MIN`), and the table accepts them (its limit is 1 MiB per event).
     let sizes: Vec<i64> =
         sqlx::query_scalar("SELECT octet_length(event_json)::bigint FROM audit_events ORDER BY seq")
             .fetch_all(&pool)

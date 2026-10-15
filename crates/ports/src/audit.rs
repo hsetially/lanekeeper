@@ -64,6 +64,9 @@ pub enum AuditAction {
     ProposalApproved,
     ProposalRejected,
     ProposalExpired,
+    /// A proposal's file changed before an admin decided, so it can no longer be applied (D37). Written by the
+    /// approval re-check and recorded with the `stale` status in one transaction.
+    ProposalStale,
     DraftApplied,
     BaselineAdopted,
     DriftMarkedIntentional,
@@ -111,7 +114,7 @@ pub const MAX_AUDIT_BATCH: usize = 200;
 /// is 5 s): hashing the batch, one insert of it, and the commit. At the budget the real log held the lock for 19 to 58 ms,
 /// whatever the shape of the batch (a release build on a 4-vCPU VM, Postgres 16.15 on the same machine; `docs/interfaces.md` has
 /// the shapes and how it was measured), against the 5 s of the other writers. Without the budget, 200 events of control
-/// characters were 67 MiB and seconds of work under the lock.
+/// characters were about 76 MiB and seconds of work under the lock.
 pub const MAX_AUDIT_BATCH_BYTES: usize = 1024 * 1024;
 
 /// The size in bytes of the canonical JSON of the largest event that can exist, derived from the limits of its fields; the
@@ -125,7 +128,7 @@ pub const MAX_AUDIT_BATCH_BYTES: usize = 1024 * 1024;
 /// - Every `Option` is `Some`, a number is its longest form, and the names are the longest of their enum.
 /// - A [`Timestamp`] is any `i64`, so this counts `-9223372036854775808` for the time. The real log's `timestamptz` column holds
 ///   no such time and refuses the event, and the earliest time it holds is four characters shorter: the largest event it stores
-///   is 398,584 bytes.
+///   is 398,669 bytes.
 pub const MAX_AUDIT_EVENT_BYTES: usize = max_event_json_bytes();
 
 const _: () = assert!(
@@ -209,6 +212,7 @@ const fn max_event_json_bytes() -> usize {
         "diff",
         "github_login",
         "approval",
+        "author",
         "request_id",
         "attribution",
     ]) + int
@@ -221,6 +225,7 @@ const fn max_event_json_bytes() -> usize {
         + json_string(AuditEvent::MAX_DIFF_BYTES, 6)
         + short_text
         + int
+        + user_id
         + json_string(128, 1)
         + attribution
 }
@@ -243,6 +248,11 @@ pub struct AuditEvent {
     pub github_login: Option<ShortText>,
     /// The approving proposal, when the action followed an approval.
     pub approval: Option<ProposalId>,
+    /// Who proposed the change, when the action followed an approval: the event's `actor` is then the approver
+    /// (D38). Omitted from the canonical JSON when `None`, so every event written before this field existed keeps
+    /// its bytes and its hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<UserId>,
     pub request_id: Option<RequestId>,
     pub attribution: Option<Attribution>,
 }
@@ -264,6 +274,7 @@ impl AuditEvent {
             diff: None,
             github_login: None,
             approval: None,
+            author: None,
             request_id: None,
             attribution: None,
         }

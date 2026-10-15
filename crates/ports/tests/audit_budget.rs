@@ -61,6 +61,7 @@ fn the_shape_the_constant_was_derived_from(e: &AuditEvent) {
         diff: _,
         github_login: _,
         approval: _,
+        author: _,
         request_id: _,
         attribution,
     } = e;
@@ -94,7 +95,7 @@ fn the_largest_event_is_what_the_constant_says() {
     the_shape_the_constant_was_derived_from(&e);
     assert_eq!(json_len(&e), MAX_AUDIT_EVENT_BYTES, "to the byte");
     assert_eq!(canonical_size(&e), Ok(MAX_AUDIT_EVENT_BYTES));
-    assert_eq!(MAX_AUDIT_EVENT_BYTES, 398_588, "the number the docs quote");
+    assert_eq!(MAX_AUDIT_EVENT_BYTES, 398_673, "the number the docs quote");
     // Every worst-case event has the same size, whatever control character its diff is made of.
     for n in 0..14 {
         assert_eq!(json_len(&worst_case_audit_event(n)), MAX_AUDIT_EVENT_BYTES);
@@ -117,7 +118,7 @@ const _: () = {
     // Two of the largest fit, three do not: the point of a budget of bytes.
     assert!(2 * MAX_AUDIT_EVENT_BYTES <= MAX_AUDIT_BATCH_BYTES);
     assert!(3 * MAX_AUDIT_EVENT_BYTES > MAX_AUDIT_BATCH_BYTES);
-    // 200 of the largest would have been 67 MiB.
+    // 200 of the largest would have been about 76 MiB.
     assert!(MAX_AUDIT_BATCH * MAX_AUDIT_EVENT_BYTES > 60 * 1024 * 1024);
 };
 
@@ -232,6 +233,7 @@ fn the_enum_names_the_constant_assumes_are_the_longest() {
             | AuditAction::ProposalApproved
             | AuditAction::ProposalRejected
             | AuditAction::ProposalExpired
+            | AuditAction::ProposalStale
             | AuditAction::DraftApplied
             | AuditAction::BaselineAdopted
             | AuditAction::DriftMarkedIntentional
@@ -257,7 +259,7 @@ fn the_enum_names_the_constant_assumes_are_the_longest() {
             | AuditAction::PrStateChanged => true,
         }
     }
-    const ALL: [AuditAction; 36] = [
+    const ALL: [AuditAction; 37] = [
         AuditAction::FileEdited,
         AuditAction::FileUploaded,
         AuditAction::FileDeleted,
@@ -271,6 +273,7 @@ fn the_enum_names_the_constant_assumes_are_the_longest() {
         AuditAction::ProposalApproved,
         AuditAction::ProposalRejected,
         AuditAction::ProposalExpired,
+        AuditAction::ProposalStale,
         AuditAction::DraftApplied,
         AuditAction::BaselineAdopted,
         AuditAction::DriftMarkedIntentional,

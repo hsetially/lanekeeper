@@ -72,6 +72,7 @@ fn write_outcome_wire_shape() {
     let applied = WriteOutcome::Applied {
         hash: Some(ContentHash::from_bytes([1; 32])),
         audit_id: AuditId::from(5),
+        warnings: Vec::new(),
     };
     let v = serde_json::to_value(&applied).unwrap();
     assert_eq!(v["outcome"], "applied");
