@@ -1,5 +1,5 @@
 //! Integration tests for `db/migrations` (prompt 01, T6; S9, S21; `0002_audit_verify_state.sql` for prompt 03a;
-//! `0003_registry.sql` for prompt 05; `0004_write_additions.sql` for prompt 06).
+//! `0003_registry.sql` for prompt 05; `0004_write_additions.sql` for prompt 06; `0005_mcp_tokens.sql` for prompt 07).
 //!
 //! They run against a real Postgres 16 with pgvector, started with testcontainers from the same image digest as
 //! `deploy/dev/compose.yaml`. The tests use the runtime `sqlx::migrate::Migrator` and no `query!` macros, so no
@@ -125,6 +125,8 @@ const LATER_TABLES: &[(&str, &str)] = &[
     ("adoptions", "0003_registry.sql"),
     ("adoption_resolutions", "0003_registry.sql"),
     ("delta_staging", "0003_registry.sql"),
+    // Prompt 07 (MCP server): personal tokens. See `migration_0005_*` and `mcp_tokens_*` below.
+    ("mcp_tokens", "0005_mcp_tokens.sql"),
 ];
 
 /// The tables `0003_registry.sql` creates, all `Grant::Mutable`: the pipeline upserts and prunes them, and every one hangs
@@ -179,6 +181,10 @@ impl Grant {
     }
 }
 
+/// The only column-level `UPDATE` grants `lanekeeper_app` holds: (table, the columns). A column-level grant is invisible to
+/// `has_table_privilege`, so a table that has one is listed here, and no other table may have one.
+const COLUMN_UPDATES: &[(&str, &[&str])] = &[("mcp_tokens", &["revoked_at", "last_used_at"])];
+
 fn grant_decisions() -> BTreeMap<&'static str, Grant> {
     let mut m = BTreeMap::new();
     for t in ["audit_events", "audit_checkpoints", "sentinel_records"] {
@@ -202,8 +208,12 @@ fn grant_decisions() -> BTreeMap<&'static str, Grant> {
         m.insert(t, Grant::Mutable);
     }
     m.insert("audit_verify_state", Grant::StateRow);
-    // 0003: an approval is a decision nobody rewrites or removes, like the audit chain.
+    // 0004: an approval is a decision nobody rewrites or removes, like the audit chain.
     m.insert("approvals", Grant::AppendOnly);
+    // 0005: a personal token is written once and never removed. The app may also set two of its columns, `revoked_at` and
+    // `last_used_at`, which is a column-level grant that `has_table_privilege` does not see: `COLUMN_UPDATES` names it, and
+    // `every_table_has_a_grant_decision` and `the_app_can_revoke_and_touch_a_token_and_change_nothing_else` check it.
+    m.insert("mcp_tokens", Grant::AppendOnly);
     m.insert("_sqlx_migrations", Grant::None);
     m
 }
@@ -682,7 +692,7 @@ async fn migration_applies_on_pg16() {
     assert_eq!(tables, expected);
 
     // Re-running is a no-op: each migration is recorded once, each applied on top of the one before it (0002 on 0001, 0003 on
-    // 0002, 0004 on 0003). The schema is owned by the migrator, never by the app.
+    // 0002, 0004 on 0003, 0005 on 0004). The schema is owned by the migrator, never by the app.
     db.migrate().await;
     let applied: Vec<i64> =
         sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
@@ -691,7 +701,7 @@ async fn migration_applies_on_pg16() {
             .unwrap();
     let files: Vec<i64> = migration_files().iter().map(|(v, _, _)| i64::from(*v)).collect();
     assert_eq!(applied, files);
-    assert_eq!(applied, [1, 2, 3, 4]);
+    assert_eq!(applied, [1, 2, 3, 4, 5]);
     let foreign: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tableowner <> 'lanekeeper_migrator'",
     )
@@ -1348,6 +1358,18 @@ async fn every_table_has_a_grant_decision() {
             held,
             decisions[table.as_str()].privileges(),
             "privileges of lanekeeper_app on {table}"
+        );
+        // A grant on some columns only: the table-level answer above is `false` for it, so ask about the columns.
+        let any_column_update: bool =
+            sqlx::query_scalar("SELECT has_any_column_privilege('lanekeeper_app', $1::regclass, 'UPDATE')")
+                .bind(format!("public.{table}"))
+                .fetch_one(&mut admin)
+                .await
+                .unwrap();
+        let allowed = held.contains("UPDATE") || COLUMN_UPDATES.iter().any(|(t, _)| t == table);
+        assert_eq!(
+            any_column_update, allowed,
+            "column-level UPDATE of lanekeeper_app on {table} (list it in COLUMN_UPDATES, with its columns, or remove it)"
         );
     }
 
@@ -3629,5 +3651,517 @@ async fn registry_tables_enforce_their_constraints_and_cascade_with_the_swimlane
             .await
             .unwrap();
         assert_eq!(n, 0, "{t} follows its swimlane");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// 0005_mcp_tokens.sql (prompt 07): personal tokens for the MCP server
+
+/// `0005_mcp_tokens.sql` is exactly the statements it was reviewed with: one new table, its index, two grants, one function and
+/// one trigger. No row is written, no existing object is altered, dropped or renamed, no cascade is declared, the audit tables are
+/// not named, and the app is granted neither DELETE nor anything beyond SELECT, INSERT and two columns to UPDATE. A new statement of
+/// any kind fails here until a human adds it to the list on purpose.
+#[test]
+fn migration_0005_is_expand_only() {
+    let sql = migration_file("0005_mcp_tokens.sql");
+    assert_eq!(
+        row_writing_statement(&sql),
+        None,
+        "0005 changes the schema and no row: no INSERT, UPDATE, DELETE, MERGE, TRUNCATE, COPY or dynamic EXECUTE, in a DO block \
+         or a function body either"
+    );
+    // A CREATE TABLE is listed by its head (its columns and constraints are proven against the catalog below); every other
+    // statement is listed whole.
+    let found: Vec<String> = statements_of(&sql)
+        .iter()
+        .map(|w| {
+            let create_table = w.len() >= 2 && w[0] == "CREATE" && w[1] == "TABLE";
+            w[..if create_table { 3 } else { w.len() }].join(" ")
+        })
+        .collect();
+    let allowed: [&str; 7] = [
+        // The guard.
+        "DO",
+        "CREATE TABLE MCP_TOKENS",
+        "CREATE INDEX MCP_TOKENS_USER_IDX ON MCP_TOKENS USER_TID USER_OID ID DESC",
+        "GRANT SELECT INSERT ON MCP_TOKENS TO LANEKEEPER_APP",
+        "GRANT UPDATE REVOKED_AT LAST_USED_AT ON MCP_TOKENS TO LANEKEEPER_APP",
+        "CREATE FUNCTION MCP_TOKENS_REVOCATION_IS_FINAL RETURNS TRIGGER LANGUAGE PLPGSQL SET SEARCH_PATH PG_CATALOG PG_TEMP AS",
+        "CREATE TRIGGER MCP_TOKENS_REVOCATION_IS_FINAL BEFORE UPDATE OF REVOKED_AT ON MCP_TOKENS FOR EACH ROW EXECUTE FUNCTION MCP_TOKENS_REVOCATION_IS_FINAL",
+    ];
+    assert_eq!(
+        found, allowed,
+        "0005 has exactly the statements it was reviewed with, in this order (a new statement is a new review)"
+    );
+    let code = without_literals(&code_lines(&sql).join("\n")).to_uppercase();
+    for banned in [
+        "DROP ",
+        "ALTER ",
+        "RENAME",
+        "CASCADE",
+        "TRUNCATE",
+        "AUDIT_EVENTS",
+        "AUDIT_CHECKPOINTS",
+        "SECURITY DEFINER",
+        "ENABLE ",
+        "DISABLE ",
+        "ON UPDATE",
+    ] {
+        assert!(
+            !code.contains(banned),
+            "0005 must not contain `{banned}` outside comments"
+        );
+    }
+    assert!(
+        code.contains("ON DELETE RESTRICT"),
+        "the key to users restricts: a cascade would delete tokens without a privilege check"
+    );
+    // What the app is granted: SELECT and INSERT on the table, UPDATE on two columns, nothing else, to the app only.
+    for statement in statements_of(&sql).iter().filter(|w| w[0] == "GRANT") {
+        let on = statement.iter().position(|w| w == "ON").unwrap();
+        assert!(
+            statement[1..on].iter().all(|w| matches!(
+                w.as_str(),
+                "SELECT" | "INSERT" | "UPDATE" | "REVOKED_AT" | "LAST_USED_AT"
+            )),
+            "{statement:?}: the app gets no DELETE, TRUNCATE, REFERENCES, TRIGGER or ALL on tokens"
+        );
+        assert_eq!(&statement[on..], ["ON", "MCP_TOKENS", "TO", "LANEKEEPER_APP"]);
+    }
+}
+
+/// The migrator owns every object, so `0005` carries the guard of `0001` to `0004`.
+#[tokio::test]
+async fn migration_0005_refuses_to_run_as_another_role() {
+    let db = db!();
+    let sql = migration_file("0005_mcp_tokens.sql");
+    for role in [APP, ("postgres", SUPERUSER_PASSWORD)] {
+        let mut conn = if role.0 == "postgres" {
+            db.admin().await
+        } else {
+            db.as_role(role).await
+        };
+        let err = sqlx::raw_sql(&sql)
+            .execute(&mut conn)
+            .await
+            .expect_err("must refuse");
+        assert_eq!(sqlstate(&err).as_deref(), Some("55000"), "{}: {err}", role.0);
+        assert!(
+            err.to_string().contains("lanekeeper_migrator"),
+            "{}: {err}",
+            role.0
+        );
+    }
+}
+
+/// 0005 adds one table with its indexes, key, constraints, one function and one trigger, and nothing else: every relation,
+/// trigger, constraint, column and function that 0004 left is still there, unchanged (so the ACL of every existing table, the
+/// audit tables included, is the same).
+#[tokio::test]
+async fn migration_0005_changes_nothing_that_exists() {
+    let Some(db) = TestDb::bootstrap().await else {
+        return;
+    };
+    db.migrate_upto(4).await;
+    let snapshot = |sql: &'static str| async {
+        let mut c = db.admin().await;
+        sqlx::query_scalar::<_, String>(sql)
+            .fetch_all(&mut c)
+            .await
+            .unwrap()
+            .into_iter()
+            .collect::<BTreeSet<String>>()
+    };
+    let queries: [&'static str; 5] = [
+        "SELECT c.relname::text || ' ' || c.relkind::text || ' ' || c.relowner::regrole::text || ' ' || coalesce(c.relacl::text, '-') \
+         FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace",
+        "SELECT t.tgrelid::regclass::text || ' ' || pg_get_triggerdef(t.oid, true) || ' ' || t.tgenabled::text \
+         FROM pg_trigger t WHERE NOT t.tgisinternal",
+        "SELECT conrelid::regclass::text || ' ' || conname || ' ' || pg_get_constraintdef(oid) FROM pg_constraint \
+         WHERE connamespace = 'public'::regnamespace",
+        "SELECT attrelid::regclass::text || ' ' || attname || ' ' || format_type(atttypid, atttypmod) || ' ' || attnotnull::text \
+         FROM pg_attribute WHERE attnum > 0 AND NOT attisdropped AND attrelid IN (SELECT oid FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r', 'p'))",
+        "SELECT p.proname || ' ' || p.proowner::regrole::text || ' ' || coalesce(p.proacl::text, '-') || ' ' || md5(p.prosrc) \
+         FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace",
+    ];
+    let mut before = Vec::new();
+    for q in queries {
+        before.push(snapshot(q).await);
+    }
+    db.migrate_upto(5).await;
+    let mut added = Vec::new();
+    for (q, b) in queries.iter().zip(&before) {
+        let after = snapshot(q).await;
+        assert!(
+            b.difference(&after).next().is_none(),
+            "0005 changed or removed something that existed: {:?}",
+            b.difference(&after).collect::<Vec<_>>()
+        );
+        added.push(after.difference(b).cloned().collect::<Vec<String>>());
+    }
+    let first_words = |lines: &[String], n: usize| -> BTreeSet<String> {
+        lines
+            .iter()
+            .map(|l| l.split_whitespace().take(n).collect::<Vec<_>>().join(" "))
+            .collect()
+    };
+    let set = |v: &[&str]| -> BTreeSet<String> { v.iter().map(|s| (*s).to_owned()).collect() };
+    assert_eq!(
+        first_words(&added[0], 1),
+        set(&[
+            "mcp_tokens",
+            "mcp_tokens_id_seq",
+            "mcp_tokens_pkey",
+            "mcp_tokens_token_hmac_key",
+            "mcp_tokens_user_idx"
+        ]),
+        "{:?}",
+        added[0]
+    );
+    assert_eq!(first_words(&added[1], 1), set(&["mcp_tokens"]), "{:?}", added[1]);
+    assert_eq!(added[1].len(), 1, "one new trigger: {:?}", added[1]);
+    assert!(
+        first_words(&added[2], 1) == set(&["mcp_tokens"])
+            && first_words(&added[3], 1) == set(&["mcp_tokens"]),
+        "{:?} {:?}",
+        added[2],
+        added[3]
+    );
+    assert_eq!(
+        first_words(&added[4], 1),
+        set(&["mcp_tokens_revocation_is_final"]),
+        "{:?}",
+        added[4]
+    );
+}
+
+/// A token row for `alice`, with a hash of 32 bytes `n`, that lives for 7 days. Returns its id.
+async fn insert_token(conn: &mut PgConnection, oid: &str, n: u8) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(&format!(
+        "INSERT INTO mcp_tokens (user_tid, user_oid, token_hmac, label, expires_at) \
+         VALUES ('t', $1, {}, 'laptop', now() + interval '7 days') RETURNING id",
+        h(n)
+    ))
+    .bind(oid)
+    .fetch_one(conn)
+    .await
+}
+
+/// A token is a hash of 32 bytes that nobody else has, for a user who exists, with a label and a bounded life. The database
+/// refuses what the application should never write, so a bug in the token store cannot make an immortal or empty token.
+#[tokio::test]
+async fn mcp_tokens_enforce_their_constraints() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_proposal_world(&mut app).await;
+
+    let id = insert_token(&mut app, "alice", 1).await.unwrap();
+    assert!(id > 0);
+    let row = sqlx::query(
+        "SELECT revoked_at IS NULL, last_used_at IS NULL, created_at <= now() FROM mcp_tokens WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    assert!(row.get::<bool, _>(0) && row.get::<bool, _>(1) && row.get::<bool, _>(2));
+
+    // The same hash twice: a hash identifies one token.
+    let err = insert_token(&mut app, "bob", 1)
+        .await
+        .expect_err("duplicate hash");
+    assert_eq!(sqlstate(&err).as_deref(), Some(UNIQUE_VIOLATION), "{err}");
+    // Another user's token is a different row.
+    insert_token(&mut app, "bob", 2).await.unwrap();
+
+    let insert = |hmac: &str, label: &str, expires: &str, user: &str| {
+        format!(
+            "INSERT INTO mcp_tokens (user_tid, user_oid, token_hmac, label, expires_at) \
+             VALUES ('t', '{user}', {hmac}, '{label}', {expires})"
+        )
+    };
+    let week = "now() + interval '7 days'";
+    for (what, sql, want) in [
+        (
+            "a hash of 31 bytes",
+            insert("decode(repeat('aa', 31), 'hex')", "x", week, "alice"),
+            CHECK_VIOLATION,
+        ),
+        (
+            "a hash of 33 bytes",
+            insert("decode(repeat('aa', 33), 'hex')", "x", week, "alice"),
+            CHECK_VIOLATION,
+        ),
+        (
+            "an empty hash",
+            insert("''::bytea", "x", week, "alice"),
+            CHECK_VIOLATION,
+        ),
+        ("no label", insert(&h(3), "", week, "alice"), CHECK_VIOLATION),
+        (
+            "a label of 65 characters",
+            insert(&h(4), &"l".repeat(65), week, "alice"),
+            CHECK_VIOLATION,
+        ),
+        (
+            "a token that is already expired",
+            insert(&h(5), "x", "now() - interval '1 second'", "alice"),
+            CHECK_VIOLATION,
+        ),
+        (
+            "a token with no end",
+            insert(&h(6), "x", "'infinity'::timestamptz", "alice"),
+            CHECK_VIOLATION,
+        ),
+        (
+            "a token that lives 32 days",
+            insert(&h(7), "x", "now() + interval '32 days'", "alice"),
+            CHECK_VIOLATION,
+        ),
+        (
+            "a user who does not exist",
+            insert(&h(8), "x", week, "nobody"),
+            FOREIGN_KEY_VIOLATION,
+        ),
+        (
+            "no expiry",
+            insert(&h(9), "x", "NULL", "alice"),
+            NOT_NULL_VIOLATION,
+        ),
+    ] {
+        let err = sqlx::query(&sql).execute(&mut app).await.expect_err(what);
+        assert_eq!(sqlstate(&err).as_deref(), Some(want), "{what}: {err}");
+    }
+    // The longest life the table allows is 31 days, and 64 characters are a label.
+    sqlx::query(&insert(
+        &h(10),
+        &"l".repeat(64),
+        "now() + interval '31 days' - interval '1 minute'",
+        "alice",
+    ))
+    .execute(&mut app)
+    .await
+    .unwrap();
+    // The id is the database's.
+    let err = sqlx::query(&format!(
+        "INSERT INTO mcp_tokens (id, user_tid, user_oid, token_hmac, label, expires_at) VALUES (99, 't', 'alice', {}, 'x', now() + interval '1 day')",
+        h(11)
+    ))
+    .execute(&mut app)
+    .await
+    .expect_err("id is generated always");
+    assert_eq!(sqlstate(&err).as_deref(), Some(GENERATED_ALWAYS), "{err}");
+}
+
+/// The app writes a token once, reads it, revokes it and notes when it was last used; it can change nothing else about it and
+/// can remove none (S7, S9: a token is evidence, and its owner, hash and life are fixed when it is written).
+#[tokio::test]
+async fn the_app_can_revoke_and_touch_a_token_and_change_nothing_else() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_proposal_world(&mut app).await;
+    let id = insert_token(&mut app, "alice", 1).await.unwrap();
+    let mut admin = db.admin().await;
+
+    // Privileges, as the catalog says them: the whole-table ones, and the columns that can be updated.
+    for (privilege, want) in [
+        ("SELECT", true),
+        ("INSERT", true),
+        ("UPDATE", false),
+        ("DELETE", false),
+        ("TRUNCATE", false),
+        ("REFERENCES", false),
+        ("TRIGGER", false),
+    ] {
+        let has: bool = sqlx::query_scalar("SELECT has_table_privilege('lanekeeper_app', 'mcp_tokens', $1)")
+            .bind(privilege)
+            .fetch_one(&mut admin)
+            .await
+            .unwrap();
+        assert_eq!(has, want, "table privilege {privilege}");
+    }
+    let columns: Vec<String> = sqlx::query_scalar(
+        "SELECT attname::text FROM pg_attribute WHERE attrelid = 'mcp_tokens'::regclass AND attnum > 0 AND NOT attisdropped \
+         AND has_column_privilege('lanekeeper_app', 'mcp_tokens', attname, 'UPDATE') ORDER BY attnum",
+    )
+    .fetch_all(&mut admin)
+    .await
+    .unwrap();
+    assert_eq!(columns, ["revoked_at", "last_used_at"]);
+    let (table, allowed) = COLUMN_UPDATES[0];
+    assert_eq!(table, "mcp_tokens");
+    assert_eq!(
+        columns.iter().map(String::as_str).collect::<BTreeSet<_>>(),
+        allowed.iter().copied().collect::<BTreeSet<_>>(),
+        "the list the grant test uses is the grant"
+    );
+
+    // What the token store does.
+    sqlx::query("UPDATE mcp_tokens SET last_used_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(&mut app)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE mcp_tokens SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL")
+        .bind(id)
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let row =
+        sqlx::query("SELECT revoked_at IS NOT NULL, last_used_at IS NOT NULL FROM mcp_tokens WHERE id = $1")
+            .bind(id)
+            .fetch_one(&mut app)
+            .await
+            .unwrap();
+    assert!(row.get::<bool, _>(0) && row.get::<bool, _>(1));
+
+    // What it cannot do: every other column, and removal.
+    for stmt in [
+        "UPDATE mcp_tokens SET expires_at = now() + interval '30 days' WHERE id = $1",
+        "UPDATE mcp_tokens SET user_oid = 'bob' WHERE id = $1",
+        "UPDATE mcp_tokens SET user_tid = 'other' WHERE id = $1",
+        "UPDATE mcp_tokens SET token_hmac = decode(repeat('ee', 32), 'hex') WHERE id = $1",
+        "UPDATE mcp_tokens SET label = 'renamed' WHERE id = $1",
+        "UPDATE mcp_tokens SET created_at = now() WHERE id = $1",
+        "UPDATE mcp_tokens SET revoked_at = now(), expires_at = now() + interval '30 days' WHERE id = $1",
+        "DELETE FROM mcp_tokens WHERE id = $1",
+    ] {
+        let err = sqlx::query(stmt)
+            .bind(id)
+            .execute(&mut app)
+            .await
+            .expect_err("no privilege");
+        assert_eq!(
+            sqlstate(&err).as_deref(),
+            Some(INSUFFICIENT_PRIVILEGE),
+            "{stmt}: {err}"
+        );
+    }
+    expect_sqlstate(&mut app, "TRUNCATE mcp_tokens", INSUFFICIENT_PRIVILEGE).await;
+    let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM mcp_tokens")
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    assert_eq!(kept, 1);
+}
+
+/// A revoked token stays revoked: the one column that ends a token cannot be cleared or moved, for the app and for the owner.
+/// Setting it to what it is, and noting a use, are still fine, so a repeated revocation is a no-op and not an error.
+#[tokio::test]
+async fn a_revoked_token_stays_revoked() {
+    let db = db!();
+    let mut app = db.app().await;
+    let mut owner = db.migrator().await;
+    seed_proposal_world(&mut app).await;
+    let id = insert_token(&mut app, "alice", 1).await.unwrap();
+    let live = insert_token(&mut app, "alice", 2).await.unwrap();
+
+    // A live token can be revoked, once, at a time of the caller's choosing.
+    sqlx::query("UPDATE mcp_tokens SET revoked_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(&mut app)
+        .await
+        .unwrap();
+    for conn in [&mut app, &mut owner] {
+        for stmt in [
+            "UPDATE mcp_tokens SET revoked_at = NULL WHERE id = $1",
+            "UPDATE mcp_tokens SET revoked_at = now() + interval '1 hour' WHERE id = $1",
+            "UPDATE mcp_tokens SET revoked_at = now() - interval '1 hour', last_used_at = now() WHERE id = $1",
+        ] {
+            let err = sqlx::query(stmt)
+                .bind(id)
+                .execute(&mut *conn)
+                .await
+                .expect_err("revocation is final");
+            assert_eq!(sqlstate(&err).as_deref(), Some(CHECK_VIOLATION), "{stmt}: {err}");
+        }
+    }
+    let still: bool = sqlx::query_scalar("SELECT revoked_at IS NOT NULL FROM mcp_tokens WHERE id = $1")
+        .bind(id)
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    assert!(still);
+    // The same value again, and a use, are not changes of the revocation.
+    sqlx::query("UPDATE mcp_tokens SET revoked_at = revoked_at, last_used_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(&mut app)
+        .await
+        .unwrap();
+    // The other token is untouched and can still be revoked.
+    let other: bool = sqlx::query_scalar("SELECT revoked_at IS NULL FROM mcp_tokens WHERE id = $1")
+        .bind(live)
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    assert!(other);
+    sqlx::query("UPDATE mcp_tokens SET revoked_at = now() WHERE id = $1")
+        .bind(live)
+        .execute(&mut app)
+        .await
+        .unwrap();
+}
+
+/// A user who has a token (revoked or not) cannot be deleted: a cascade would remove evidence without a privilege check. A user
+/// without one still can.
+#[tokio::test]
+async fn a_user_with_a_token_cannot_be_deleted() {
+    let db = db!();
+    let mut app = db.app().await;
+    let mut owner = db.migrator().await;
+    seed_proposal_world(&mut app).await;
+    insert_token(&mut app, "alice", 1).await.unwrap();
+    for conn in [&mut app, &mut owner] {
+        let err = sqlx::query("DELETE FROM users WHERE oid = 'alice'")
+            .execute(&mut *conn)
+            .await
+            .expect_err("the token keeps its user");
+        assert_eq!(sqlstate(&err).as_deref(), Some(FOREIGN_KEY_VIOLATION), "{err}");
+    }
+    let kept: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM users WHERE oid = 'alice') + (SELECT count(*) FROM mcp_tokens)",
+    )
+    .fetch_one(&mut owner)
+    .await
+    .unwrap();
+    assert_eq!(kept, 2);
+    let gone = sqlx::query("DELETE FROM users WHERE oid = 'bob'")
+        .execute(&mut app)
+        .await
+        .unwrap()
+        .rows_affected();
+    assert_eq!(gone, 1, "a user without tokens can go");
+}
+
+/// P12: the authentication lookup (by the hash) and a user's list (newest first) each have an index they can use. A table this
+/// small would be read whole whatever the indexes, so the planner is told not to, and the plan must still be an index scan.
+#[tokio::test]
+async fn mcp_token_lookups_have_an_index() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_proposal_world(&mut app).await;
+    for n in 1..=3 {
+        insert_token(&mut app, "alice", n).await.unwrap();
+    }
+    sqlx::query("SET enable_seqscan = off")
+        .execute(&mut app)
+        .await
+        .unwrap();
+    for (sql, index) in [
+        (
+            format!("EXPLAIN (FORMAT JSON) SELECT id, user_tid, user_oid, expires_at, revoked_at FROM mcp_tokens WHERE token_hmac = {}", h(1)),
+            "mcp_tokens_token_hmac_key",
+        ),
+        (
+            "EXPLAIN (FORMAT JSON) SELECT id, label, created_at, expires_at, revoked_at, last_used_at FROM mcp_tokens \
+             WHERE user_tid = 't' AND user_oid = 'alice' AND id < 100 ORDER BY id DESC LIMIT 50"
+                .to_owned(),
+            "mcp_tokens_user_idx",
+        ),
+    ] {
+        let plan: serde_json::Value = sqlx::query_scalar(&sql).fetch_one(&mut app).await.unwrap();
+        let text = plan.to_string();
+        assert!(text.contains(index), "{sql}: {text}");
+        assert!(!text.contains("Seq Scan"), "{sql}: {text}");
     }
 }

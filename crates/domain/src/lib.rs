@@ -38,9 +38,9 @@ mod write;
 
 pub use attribution::{Actor, Attribution, Evidence};
 pub use compare::{
-    BinaryCompare, ChangeKind, CompareState, Comparison, DiffHunk, DiffLine, DiffLineKind, Grid, GridCell,
-    GridQuery, GridRow, InlineRange, SettingChange, SettingValue, TreeCompareEntry, TreeComparison,
-    ValueFlag, ValueType,
+    BinaryCompare, ChangeKind, CompareQuery, CompareState, Comparison, DiffHunk, DiffLine, DiffLineKind,
+    Grid, GridCell, GridQuery, GridRow, InlineRange, SettingChange, SettingValue, TreeCompareEntry,
+    TreeComparison, ValueFlag, ValueType,
 };
 pub use compare_ref::{CompareRef, CompareRefError, GitRef, GitRefError};
 pub use docs::{DocGrepHit, DocHit, DocText, FeatureQuery, FeatureStatus, FlagStatus, FlagValue};
@@ -51,8 +51,8 @@ pub use enums::{
 };
 pub use events::DomainEvent;
 pub use files::{
-    ContentSource, EffectiveConfig, EffectiveSetting, EffectiveSource, FileContent, FileEntry, FileFormat,
-    ServiceState, SwimlaneSummary, Version,
+    ContentSource, DriftQuery, EffectiveConfig, EffectiveQuery, EffectiveSetting, EffectiveSource,
+    FileContent, FileEntry, FileFormat, ServiceState, SwimlaneSummary, Version,
 };
 pub use findings::{Finding, FindingsQuery, SettingHit, SettingsQuery, TextHit, TextQuery, TextResults};
 pub use git::{
@@ -67,7 +67,7 @@ pub use mapping::{MapError, PathMappingRule, ReverseMapping, TenantSet, TenantSe
 pub use page::{Cursor, Page, PageError, Paged};
 pub use paths::{DocPath, LineRange, LogicalFile, NfsPath, PathError, RepoPath, SettingPath};
 pub use secret::Secret;
-pub use serve::{AppName, ChannelName, ServeRequest};
+pub use serve::{AppName, ChannelName, ServeRequest, ServedFile};
 pub use setting::SettingLocation;
 pub use text::{ShortText, TextError};
 pub use time::Timestamp;
