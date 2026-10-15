@@ -221,6 +221,38 @@ pub struct RegistryConfig {
     /// Expired registrations deleted by one statement of the sweep (the sweep makes at most ten of them in a run).
     pub tool_write_sweep_batch: usize,
 
+    // ---------------------------------------------------------------------------------------------- sentinel and attribution (T7)
+    /// The most records in one batch from a sentinel, which is also what the sentinel is told (`SentinelConfig`): prompt 17 sends at most
+    /// 500. A batch over it is `TooLarge` and nothing of it is applied.
+    pub sentinel_max_batch_records: u32,
+    /// How often the sentinel flushes a batch, as it is told (`SentinelConfig`). A record reaches the hub about this long after the write.
+    pub sentinel_flush_interval_secs: u32,
+    /// The most bytes of text (paths, user names, executables) in one batch. The fields are bounded one by one already (a path 1,024
+    /// bytes, the rest 256 each); this is the sum, so that a batch of the longest records is refused before anything is stored.
+    pub sentinel_max_batch_bytes: usize,
+    /// Sentinels that may have said `hello` on this replica at once (the table is per replica and small: one sentinel per NFS VM).
+    pub sentinel_max_streams: usize,
+    /// How often the leased job `registry-attribution-grace` looks for observations that a sentinel record already stored explains, and
+    /// for the ones that stayed unexplained past the grace. A record that reached the hub before the agent's scan is attributed within
+    /// this interval of the observation being applied (P14 allows 30 s).
+    pub attribution_interval: Duration,
+    /// Swimlanes with a sentinel that one run of the job looks at; the rest wait for the next run.
+    pub attribution_lanes: usize,
+    /// The most observations of one swimlane that one run reads for each question it asks.
+    pub attribution_batch: usize,
+    /// How long after the hub applied a change that nothing explains it waits for a sentinel record before it is called an NFS client's
+    /// (A19: 30 s). The sentinel flushes every `sentinel_flush_interval_secs`, so a record of a local write is long here by then.
+    pub nfs_client_grace: Duration,
+    /// An observation older than this (by the agent's time of seeing it) is never called an NFS client's: a spool replayed after an
+    /// outage carries old changes, and the sentinel's having been seen since says nothing about whether it was up when they were made.
+    pub nfs_client_window: Duration,
+    /// How far back the job looks for observations that a stored sentinel record explains: a change that the agent reported late (a replayed
+    /// spool) still finds the records of its time. By the agent's time of seeing the change.
+    pub sentinel_lookback: Duration,
+    /// How often the leased job that calls `maintain_sentinel_partitions` runs (the function creates the months to come and drops the ones
+    /// past their retention; it must run at least monthly).
+    pub sentinel_partition_interval: Duration,
+
     // ---------------------------------------------------------------------------------------------- reads (T6)
     /// How recently a replica must have renewed an agent's connection row for the swimlane list to say "connected". The gateway's
     /// own rule is the same shape: a row that was not renewed for this long counts as not connected.
@@ -273,6 +305,7 @@ pub struct RegistryConfig {
 }
 
 impl Default for RegistryConfig {
+    #[allow(clippy::too_many_lines)] // one default per field, in the order of the fields
     fn default() -> Self {
         Self {
             query_timeout: Duration::from_secs(10),
@@ -346,6 +379,17 @@ impl Default for RegistryConfig {
             tool_write_match_interval: Duration::from_secs(5),
             tool_write_match_lanes: 200,
             tool_write_sweep_batch: 1_000,
+            sentinel_max_batch_records: 500,
+            sentinel_flush_interval_secs: 1,
+            sentinel_max_batch_bytes: 2 * 1024 * 1024,
+            sentinel_max_streams: 4096,
+            attribution_interval: Duration::from_secs(5),
+            attribution_lanes: 200,
+            attribution_batch: 5_000,
+            nfs_client_grace: Duration::from_secs(30),
+            nfs_client_window: Duration::from_secs(10 * 60),
+            sentinel_lookback: Duration::from_secs(2 * 3600),
+            sentinel_partition_interval: Duration::from_secs(24 * 3600),
             agent_live_window: Duration::from_secs(30),
             read_pool_threads: 2,
             row_cache_bytes: 96 * 1024 * 1024,
@@ -643,6 +687,66 @@ impl RegistryConfig {
             self.tool_write_sweep_batch as u64,
             1,
             100_000,
+        )?;
+        within(
+            "sentinel_max_batch_records",
+            u64::from(self.sentinel_max_batch_records),
+            1,
+            10_000,
+        )?;
+        within(
+            "sentinel_flush_interval_secs",
+            u64::from(self.sentinel_flush_interval_secs),
+            1,
+            3600,
+        )?;
+        within(
+            "sentinel_max_batch_bytes",
+            self.sentinel_max_batch_bytes as u64,
+            64 * 1024,
+            64 * 1024 * 1024,
+        )?;
+        within(
+            "sentinel_max_streams",
+            self.sentinel_max_streams as u64,
+            1,
+            100_000,
+        )?;
+        within(
+            "attribution_interval",
+            millis(self.attribution_interval),
+            1_000,
+            3600 * 1000,
+        )?;
+        within("attribution_lanes", self.attribution_lanes as u64, 1, 100_000)?;
+        within("attribution_batch", self.attribution_batch as u64, 1, 100_000)?;
+        within(
+            "nfs_client_grace",
+            millis(self.nfs_client_grace),
+            1_000,
+            3600 * 1000,
+        )?;
+        within(
+            "nfs_client_window",
+            millis(self.nfs_client_window),
+            1_000,
+            24 * 3600 * 1000,
+        )?;
+        // The window is the time in which a change can still be called an NFS client's, and it starts after the grace.
+        if self.nfs_client_window <= self.nfs_client_grace {
+            return Err(ConfigError::OutOfRange("nfs_client_window"));
+        }
+        within(
+            "sentinel_lookback",
+            millis(self.sentinel_lookback),
+            60_000,
+            7 * 24 * 3600 * 1000,
+        )?;
+        within(
+            "sentinel_partition_interval",
+            millis(self.sentinel_partition_interval),
+            60_000,
+            7 * 24 * 3600 * 1000,
         )?;
         within(
             "agent_live_window",
@@ -1064,6 +1168,95 @@ mod tests {
             ..RegistryConfig::default()
         };
         assert!(small.validate().is_ok());
+    }
+
+    #[test]
+    fn the_sentinel_and_attribution_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(
+            c.sentinel_max_batch_records, 500,
+            "prompt 17: at most 500 records in a batch"
+        );
+        assert_eq!(c.sentinel_flush_interval_secs, 1, "prompt 17: one batch a second");
+        assert_eq!(c.sentinel_max_batch_bytes, 2 * 1024 * 1024);
+        assert_eq!(c.sentinel_max_streams, 4096);
+        assert_eq!(c.attribution_interval, Duration::from_secs(5));
+        assert_eq!(c.attribution_lanes, 200);
+        assert_eq!(c.attribution_batch, 5_000);
+        assert_eq!(c.nfs_client_grace, Duration::from_secs(30), "A19: a 30 s grace");
+        assert_eq!(c.nfs_client_window, Duration::from_secs(10 * 60));
+        assert_eq!(c.sentinel_lookback, Duration::from_secs(2 * 3600));
+        assert_eq!(c.sentinel_partition_interval, Duration::from_secs(24 * 3600));
+        assert!(
+            c.attribution_interval <= Duration::from_secs(10),
+            "P14: a sentinel attribution is attached within 30 s of the change being observed, and a record that was here first waits for the \
+             job's next run: the default leaves most of the 30 s to the run itself"
+        );
+        out_of_range("sentinel_max_batch_records", |c| {
+            c.sentinel_max_batch_records = 0;
+        });
+        out_of_range("sentinel_max_batch_records", |c| {
+            c.sentinel_max_batch_records = 10_001;
+        });
+        out_of_range("sentinel_flush_interval_secs", |c| {
+            c.sentinel_flush_interval_secs = 0;
+        });
+        out_of_range("sentinel_flush_interval_secs", |c| {
+            c.sentinel_flush_interval_secs = 3601;
+        });
+        out_of_range("sentinel_max_batch_bytes", |c| {
+            c.sentinel_max_batch_bytes = 64 * 1024 - 1;
+        });
+        out_of_range("sentinel_max_batch_bytes", |c| {
+            c.sentinel_max_batch_bytes = 64 * 1024 * 1024 + 1;
+        });
+        out_of_range("sentinel_max_streams", |c| {
+            c.sentinel_max_streams = 0;
+        });
+        out_of_range("sentinel_max_streams", |c| {
+            c.sentinel_max_streams = 100_001;
+        });
+        out_of_range("attribution_interval", |c| {
+            c.attribution_interval = Duration::from_millis(999);
+        });
+        out_of_range("attribution_interval", |c| {
+            c.attribution_interval = Duration::from_secs(3601);
+        });
+        out_of_range("attribution_lanes", |c| {
+            c.attribution_lanes = 0;
+        });
+        out_of_range("attribution_batch", |c| {
+            c.attribution_batch = 0;
+        });
+        out_of_range("attribution_batch", |c| {
+            c.attribution_batch = 100_001;
+        });
+        out_of_range("nfs_client_grace", |c| {
+            c.nfs_client_grace = Duration::from_millis(999);
+        });
+        out_of_range("nfs_client_grace", |c| {
+            c.nfs_client_grace = Duration::from_secs(3601);
+        });
+        out_of_range("nfs_client_window", |c| {
+            c.nfs_client_window = Duration::from_secs(25 * 3600);
+        });
+        out_of_range("nfs_client_window", |c| {
+            // The window starts after the grace: one that ends with it leaves no time in which to call a change an NFS client's.
+            c.nfs_client_grace = Duration::from_secs(60);
+            c.nfs_client_window = Duration::from_secs(60);
+        });
+        out_of_range("sentinel_lookback", |c| {
+            c.sentinel_lookback = Duration::from_secs(59);
+        });
+        out_of_range("sentinel_lookback", |c| {
+            c.sentinel_lookback = Duration::from_secs(8 * 24 * 3600);
+        });
+        out_of_range("sentinel_partition_interval", |c| {
+            c.sentinel_partition_interval = Duration::from_secs(59);
+        });
+        out_of_range("sentinel_partition_interval", |c| {
+            c.sentinel_partition_interval = Duration::from_secs(8 * 24 * 3600);
+        });
     }
 
     #[test]

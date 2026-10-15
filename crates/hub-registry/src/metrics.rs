@@ -370,6 +370,63 @@ struct ToolWriteLabels {
     result: ToolWriteResult,
 }
 
+/// The message of a sentinel that was handled (T7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum SentinelKind {
+    Hello,
+    Records,
+}
+
+/// What became of one record of a sentinel's batch (T7). A closed set: no path, user or executable is ever a label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum SentinelRecord {
+    /// Stored in `sentinel_records`.
+    Stored,
+    /// A record of a batch the hub had applied already (a resend): nothing was stored again.
+    Resent,
+    /// A chmod or chown (A16): acknowledged and counted, not stored, because it changes no content.
+    Attribute,
+    /// A path outside the swimlane's tree, or equal to its root (A17): dropped, never stored.
+    Outside,
+    /// The sentinel serves no swimlane, or the paths of its swimlane cannot be mapped (a root or an export that is not a clean absolute
+    /// path): dropped, never stored.
+    Unserved,
+    /// A time more than `max_clock_skew` ahead of the hub's clock: dropped (it could never be pruned from the default partition, and no
+    /// change can be explained by it).
+    Future,
+}
+
+/// What became of an observation that the attribution looked at (T7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum AttributionResult {
+    /// Became `sentinel_login`, by a record that arrived after the observation was applied (the sink's own transaction).
+    SentinelOnRecord,
+    /// Became `sentinel_login`, by a record that was stored before the observation was applied (the job).
+    SentinelByJob,
+    /// Became `nfs_client` after the grace, because a sentinel that has been seen since reported nothing for it.
+    NfsClient,
+    /// Chosen, but already as strong or stronger when the write ran (another writer was first): left as it was.
+    Raced,
+    /// A swimlane whose observations the job could not handle; the next run looks at them again.
+    LaneFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct SentinelLabels {
+    kind: SentinelKind,
+    outcome: Outcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct SentinelRecordLabels {
+    result: SentinelRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct AttributionLabels {
+    result: AttributionResult,
+}
+
 /// Cloning shares the counters.
 #[derive(Debug, Clone)]
 pub struct RegistryMetrics {
@@ -425,6 +482,10 @@ pub struct RegistryMetrics {
     pickup_services_changed: Counter,
     pickup_truncated: Counter,
     tool_writes: Family<ToolWriteLabels, Counter>,
+    sentinel_messages: Family<SentinelLabels, Counter>,
+    sentinel_records: Family<SentinelRecordLabels, Counter>,
+    sentinel_gaps: Counter,
+    attributions: Family<AttributionLabels, Counter>,
 }
 
 /// 1 ms to about 8 s per read: the budgets are tens of milliseconds, a cold text search is hundreds.
@@ -492,6 +553,10 @@ impl Default for RegistryMetrics {
             pickup_services_changed: Counter::default(),
             pickup_truncated: Counter::default(),
             tool_writes: Family::default(),
+            sentinel_messages: Family::default(),
+            sentinel_records: Family::default(),
+            sentinel_gaps: Counter::default(),
+            attributions: Family::default(),
         }
     }
 }
@@ -759,6 +824,26 @@ impl RegistryMetrics {
             "Tool-write registrations and what became of them: registered, repeated, refused, matched on arrival or late, dropped",
             self.tool_writes.clone(),
         );
+        registry.register(
+            "registry_sentinel_messages",
+            "Messages from sentinels handled, by kind and outcome",
+            self.sentinel_messages.clone(),
+        );
+        registry.register(
+            "registry_sentinel_records",
+            "Records of sentinel batches by what became of them: stored, resent, attribute, outside the swimlane, unserved, in the future",
+            self.sentinel_records.clone(),
+        );
+        registry.register(
+            "registry_sentinel_gaps",
+            "Batches from a sentinel whose sequence number skipped one (the sentinel's own spool dropped batches)",
+            self.sentinel_gaps.clone(),
+        );
+        registry.register(
+            "registry_attributions",
+            "Observations the attribution upgraded or left, by what became of them",
+            self.attributions.clone(),
+        );
     }
 
     pub(crate) fn tool_write(&self, result: ToolWriteResult, n: u64) {
@@ -772,6 +857,58 @@ impl RegistryMetrics {
     /// The count of one tool-write result, for tests.
     pub fn tool_write_count(&self, result: ToolWriteResult) -> u64 {
         self.tool_writes.get_or_create(&ToolWriteLabels { result }).get()
+    }
+
+    pub(crate) fn sentinel_message(&self, kind: SentinelKind, outcome: Outcome) {
+        self.sentinel_messages
+            .get_or_create(&SentinelLabels { kind, outcome })
+            .inc();
+    }
+
+    /// The count of the messages of one kind and outcome from sentinels, for tests.
+    pub fn sentinel_message_count(&self, kind: SentinelKind, outcome: Outcome) -> u64 {
+        self.sentinel_messages
+            .get_or_create(&SentinelLabels { kind, outcome })
+            .get()
+    }
+
+    pub(crate) fn sentinel_record(&self, result: SentinelRecord, n: u64) {
+        if n > 0 {
+            self.sentinel_records
+                .get_or_create(&SentinelRecordLabels { result })
+                .inc_by(n);
+        }
+    }
+
+    /// The count of the records of sentinel batches with one result, for tests.
+    pub fn sentinel_record_count(&self, result: SentinelRecord) -> u64 {
+        self.sentinel_records
+            .get_or_create(&SentinelRecordLabels { result })
+            .get()
+    }
+
+    pub(crate) fn sentinel_gap(&self) {
+        self.sentinel_gaps.inc();
+    }
+
+    /// The batches that skipped a sequence number, for tests.
+    pub fn sentinel_gap_count(&self) -> u64 {
+        self.sentinel_gaps.get()
+    }
+
+    pub(crate) fn attribution(&self, result: AttributionResult, n: u64) {
+        if n > 0 {
+            self.attributions
+                .get_or_create(&AttributionLabels { result })
+                .inc_by(n);
+        }
+    }
+
+    /// The count of observations with one attribution result, for tests.
+    pub fn attribution_count(&self, result: AttributionResult) -> u64 {
+        self.attributions
+            .get_or_create(&AttributionLabels { result })
+            .get()
     }
 
     pub(crate) fn message(&self, kind: MessageKind, outcome: Outcome) {
@@ -1264,6 +1401,50 @@ mod tests {
         assert!(text.contains("registry_pickup_truncated_total"), "{text}");
         assert!(
             text.contains("result=\"Changed\""),
+            "a closed set of labels: {text}"
+        );
+    }
+
+    #[test]
+    fn the_sentinel_counters_count_and_register_with_closed_labels() {
+        let m = RegistryMetrics::default();
+        m.sentinel_message(SentinelKind::Records, Outcome::Ok);
+        m.sentinel_message(SentinelKind::Records, Outcome::Ok);
+        m.sentinel_message(SentinelKind::Hello, Outcome::IdentityMismatch);
+        m.sentinel_record(SentinelRecord::Stored, 3);
+        m.sentinel_record(SentinelRecord::Outside, 0);
+        m.sentinel_gap();
+        m.attribution(AttributionResult::SentinelOnRecord, 2);
+        m.attribution(AttributionResult::NfsClient, 0);
+        assert_eq!(m.sentinel_message_count(SentinelKind::Records, Outcome::Ok), 2);
+        assert_eq!(
+            m.sentinel_message_count(SentinelKind::Hello, Outcome::IdentityMismatch),
+            1
+        );
+        assert_eq!(m.sentinel_message_count(SentinelKind::Hello, Outcome::Ok), 0);
+        assert_eq!(m.sentinel_record_count(SentinelRecord::Stored), 3);
+        assert_eq!(
+            m.sentinel_record_count(SentinelRecord::Outside),
+            0,
+            "a count of zero adds nothing"
+        );
+        assert_eq!(m.sentinel_gap_count(), 1);
+        assert_eq!(m.attribution_count(AttributionResult::SentinelOnRecord), 2);
+        assert_eq!(m.attribution_count(AttributionResult::NfsClient), 0);
+        let mut registry = Registry::default();
+        m.register(&mut registry);
+        let mut text = String::new();
+        prometheus_client::encoding::text::encode(&mut text, &registry).unwrap_or_default();
+        for name in [
+            "registry_sentinel_messages_total",
+            "registry_sentinel_records_total",
+            "registry_sentinel_gaps_total",
+            "registry_attributions_total",
+        ] {
+            assert!(text.contains(name), "{name}: {text}");
+        }
+        assert!(
+            text.contains("result=\"Stored\""),
             "a closed set of labels: {text}"
         );
     }

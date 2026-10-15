@@ -17,6 +17,7 @@ pub mod pg_blobs;
 pub mod pg_bus;
 pub mod reads;
 pub mod rig;
+pub mod sentinel;
 pub mod statements;
 pub mod sync;
 pub mod tool_writes;

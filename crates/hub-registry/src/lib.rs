@@ -31,6 +31,12 @@
 //!   transaction by a cluster report, by the pipeline's job after a batch and by the leased sweeper (A37). [`tenants`] says what the tenant set
 //!   of a swimlane is, who may change it, and which tenant stands for a swimlane where a view needs one (A30).
 //!
+//! - [`attribution`] (T7, D72, D73, P14): `SentinelIngest`, the registry's side of the sentinel protocol (`hello` against the admin-registered
+//!   sentinel, batches deduplicated by `seq`, the records mapped to the swimlane and stored), the correlator that makes an `unknown` change a
+//!   `sentinel_login` (high, naming the OS Login user and the application user it maps to) or, after a grace, an `nfs_client`, and the leased jobs
+//!   `registry-attribution-grace` and `registry-sentinel-partitions`. An upgrade is one audit event and one `AttributionUpdated`, in one
+//!   transaction, and never replaces an equal or stronger attribution.
+//!
 //! - [`tool_writes`] (T1, A10): `ports::ToolWrites` over Postgres, the registry's side of the write path's tool-write registrations
 //!   ([`PgToolWrites`]). A registration is made in the caller's transaction inside a savepoint of its own and says which hash prompt 06 is
 //!   about to write, or which version of a file it is about to delete; ingestion explains the next observation of it as a tool write, and
@@ -49,6 +55,7 @@
 )]
 
 pub mod adoption;
+pub mod attribution;
 pub mod baselines;
 pub(crate) mod batch;
 pub mod blob_policy;
@@ -74,6 +81,10 @@ pub use adoption::{
     AdoptionDeps, AdoptionError, AdoptionReason, AdoptionService, AdoptionStatus, AdoptionStep, AdoptionView,
     Bulk, ConfirmOutcome, DifferingFile, DifferingFiles, Hint, HintSource, RankedBranch, Reason, Resolution,
     ResolutionKind, ResolutionView, SecretHit,
+};
+pub use attribution::{
+    AttributionDeps, AttributionGrace, GRACE_JOB, GraceReport, Mapper, PARTITIONS_JOB, PartitionReport,
+    SentinelIngest, SentinelPartitions,
 };
 pub use blob_policy::RegistryBlobPolicy;
 pub use clock::{Clock, ManualClock, SystemClock};

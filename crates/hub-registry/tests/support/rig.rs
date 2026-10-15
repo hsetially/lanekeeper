@@ -13,8 +13,9 @@ use domain::{
 use hub_platform::events::bus::{BusSettings, PgEventBus};
 use hub_platform::events::metrics::EventMetrics;
 use hub_registry::{
-    AgentIngest, IndexDeps, IngestDeps, ManualClock, PgToolWrites, Pipeline, PipelineDeps, PipelineHandle,
-    RegistryConfig, RegistryMetrics, SettingsIndexer, ToolWriteDeps, ToolWriteMatcher,
+    AgentIngest, AttributionDeps, IndexDeps, IngestDeps, ManualClock, PgToolWrites, Pipeline, PipelineDeps,
+    PipelineHandle, RegistryConfig, RegistryMetrics, SentinelIngest, SettingsIndexer, ToolWriteDeps,
+    ToolWriteMatcher,
 };
 use ports::{AgentIdentity, EventBus, GitReader, ReportSink, SinkError, content_hash};
 use sqlx::{PgPool, Row};
@@ -36,6 +37,8 @@ pub struct Rig {
     pub ingest: AgentIngest,
     /// The registry's side of `ports::ToolWrites` (what prompt 06 calls), over the same database, clock and configuration.
     pub tool_writes: PgToolWrites,
+    /// The registry's side of the sentinel protocol (T7), over the same database, bus, audit log, clock and configuration.
+    pub sentinel: SentinelIngest,
     pub swimlane: SwimlaneId,
     pub identity: AgentIdentity,
     /// The settings index that ingestion offers its blobs to, when the rig was built `with_index`; its worker runs as a task.
@@ -162,6 +165,15 @@ impl Rig {
             metrics: metrics.clone(),
         })
         .unwrap();
+        let sentinel = SentinelIngest::new(AttributionDeps {
+            pool: pool.clone(),
+            bus: Arc::clone(&ingest_bus),
+            audit: Arc::clone(&audit) as _,
+            clock: Arc::clone(&clock) as _,
+            config: config.clone(),
+            metrics: metrics.clone(),
+        })
+        .unwrap();
         let ingest = AgentIngest::new(IngestDeps {
             pool: pool.clone(),
             blobs: Arc::clone(&blobs) as _,
@@ -187,6 +199,7 @@ impl Rig {
             metrics,
             ingest,
             tool_writes,
+            sentinel,
             swimlane,
             indexer,
             events,
