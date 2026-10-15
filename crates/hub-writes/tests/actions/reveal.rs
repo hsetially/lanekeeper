@@ -845,3 +845,31 @@ async fn writes_to_denied_paths_are_refused() {
         "only the two proposals were recorded"
     );
 }
+
+async fn preview_new(l: &Lane) -> Result<domain::ChangePreview, WriteError> {
+    l.rig
+        .hub
+        .preview_effect(
+            &ctx(&l.editor, "n-t"),
+            preview_of(&l.s, "tx/new.yml", upload_change(domain::Expected::Absent)),
+        )
+        .await
+}
+
+/// A swimlane has at most `TenantSet::MAX_TENANTS` tenants. The preview reads one more than that, so that a swimlane with more is
+/// refused: with the first 128 only, the files of the other tenants would be taken for base files and the preview would show an
+/// effect that is not the real one.
+#[tokio::test]
+async fn a_swimlane_with_more_tenants_than_the_set_holds_is_not_previewed_on_a_part_of_them() {
+    let Some(l) = lane().await else { return };
+    for n in 0..domain::TenantSet::MAX_TENANTS {
+        l.rig.tenant(&l.s, &format!("t{n:03}")).await;
+    }
+    assert!(preview_new(&l).await.is_ok(), "the most the set can hold is fine");
+    l.rig.tenant(&l.s, "t128").await;
+    assert_eq!(
+        preview_new(&l).await.unwrap_err(),
+        WriteError::Unavailable,
+        "one more is refused, not cut"
+    );
+}

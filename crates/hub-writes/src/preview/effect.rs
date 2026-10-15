@@ -64,7 +64,9 @@ pub(crate) async fn facts(hub: &Inner, swimlane: &SwimlaneId) -> Res<Facts> {
             "preview_tenants",
             sqlx::query_scalar(TENANTS)
                 .bind(swimlane.as_str())
-                .bind(i64::try_from(TenantSet::MAX_TENANTS).unwrap_or(128))
+                // One more than a set can hold: a swimlane with more is refused below, and not cut to the first of them (the files
+                // of the others would be taken for base files).
+                .bind(i64::try_from(TenantSet::MAX_TENANTS).map_or(129, |n| n.saturating_add(1)))
                 .fetch_all(&hub.pool),
         )
         .await?
