@@ -88,6 +88,17 @@ impl Inner {
         locked(&self.locks).remove(s);
     }
 
+    /// The pickup computation over this state (T10): a cluster report computes it in the transaction that stores what it is made of.
+    pub(crate) fn pickup(&self) -> crate::pickup::Compute<'_> {
+        crate::pickup::Compute {
+            db: &self.db,
+            clock: &*self.clock,
+            config: &self.config,
+            deny: &self.deny,
+            metrics: &self.metrics,
+        }
+    }
+
     pub(crate) fn lock_for(&self, s: &SwimlaneId) -> Arc<tokio::sync::Mutex<()>> {
         Arc::clone(locked(&self.locks).entry(s.clone()).or_default())
     }

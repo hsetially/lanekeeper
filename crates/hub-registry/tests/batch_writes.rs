@@ -23,7 +23,7 @@ use hub_registry::{RegistryConfig, ToolWriteRecord};
 use ports::{AuditError, BusError, SinkError, Tx, content_hash};
 use sqlx::{PgPool, Row};
 use support::log_capture::LogCapture;
-use support::rig::{Rig, T, delta, entry, path, root};
+use support::rig::{Rig, T, delta, entry, path, root, text};
 use support::statements::{Statement, inserts, statements};
 
 fn chunks_of(n: usize) -> RegistryConfig {
@@ -495,13 +495,26 @@ async fn a_delta_with_no_path_still_moves_the_root_in_a_transaction_of_its_own()
 
 #[tokio::test]
 async fn the_events_of_a_cluster_report_are_one_batch_in_order() {
-    // Two sync windows that open and a Deployment that appears: three outbox events in the transaction of the report, in the order the
-    // report names them (the windows, then the services), written with one statement.
+    // Two sync windows that open and a Deployment that has a change to pick up: three outbox events in the transaction of the report, in
+    // the order the report names them (the windows, then the pickup state that the Deployment's appearance changed), written with one
+    // statement (T10: `PickupChanged` replaced `PendingRestartChanged`, A2).
     use domain::{
-        ClusterReport, DeploymentInfo, DomainEvent, ServiceRef, SyncWindowEvent, SyncWindowKind, Timestamp,
+        ClusterReport, DeploymentInfo, DomainEvent, EnvValue, PodInfo, ServiceRef, SyncWindowEvent,
+        SyncWindowKind, Timestamp,
     };
     let Some(rig) = Rig::new().await else { return };
-    rig.hello().await;
+    // A resource of the folder `tx-infinity-api` that changed after the first inventory, and is not yet picked up by the Deployment that
+    // appears with a pod from before the change.
+    rig.first_scan(&[("tx-infinity-api/layout.xsl", "<a/>")]).await;
+    rig.delta(delta(
+        2,
+        Some(root(1)),
+        root(2),
+        vec![entry("tx-infinity-api/layout.xsl", b"<b/>", T + 60_000)],
+    ))
+    .await
+    .unwrap();
+    let before = rig.bus.count().await;
     let window = |uid: &str, at: i64| SyncWindowEvent {
         kind: SyncWindowKind::Opened,
         job: JobRef::new("sync-sit1", uid).unwrap(),
@@ -511,8 +524,14 @@ async fn the_events_of_a_cluster_report_are_one_batch_in_order() {
         full: false,
         deployments: vec![DeploymentInfo {
             service: ServiceRef::new("csp", "tx-infinity-api").unwrap(),
-            pods: Vec::new(),
-            env_values: Vec::new(),
+            pods: vec![PodInfo {
+                name: text("tx-infinity-api-1"),
+                started_at: Timestamp::from_unix_millis(T - 3_600_000),
+            }],
+            env_values: vec![EnvValue {
+                name: text("SPRING_APPLICATION_NAME"),
+                value: text("tx-infinity-api"),
+            }],
             env_names: Vec::new(),
             removed: false,
         }],
@@ -531,18 +550,18 @@ async fn the_events_of_a_cluster_report_are_one_batch_in_order() {
         vec![3],
         "one insert of the three events, not one for each"
     );
-    let kinds: Vec<&str> = rig
-        .bus
-        .published()
-        .await
+    let published = rig.bus.published().await;
+    assert_eq!(published.len() - before, 3);
+    let kinds: Vec<&str> = published[published.len() - 3..]
         .iter()
         .map(|e| match e {
             DomainEvent::SyncWindowOpened { .. } => "window_opened",
-            DomainEvent::PendingRestartChanged { .. } => "restart_changed",
+            DomainEvent::PickupChanged { .. } => "pickup_changed",
+            DomainEvent::PendingRestartChanged { .. } => "the old event",
             _ => "other",
         })
         .collect();
-    assert_eq!(kinds, ["window_opened", "window_opened", "restart_changed"]);
+    assert_eq!(kinds, ["window_opened", "window_opened", "pickup_changed"]);
 }
 
 // ------------------------------------------------------------------------------------------------ errors

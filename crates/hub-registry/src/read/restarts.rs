@@ -1,13 +1,17 @@
 //! Services and what they have not picked up yet (T6, D85).
 //!
-//! `service_state.pickup_state` is the pipeline's answer (T10 computes it with the engine's `pickup_state` from the file role, each
-//! Deployment's client settings, the pods' start times and the config-server's start); a service with no state row has picked up
-//! everything. This module only reads. The two client settings a response shows come from the allowlisted environment values the agent
-//! reported (D88), read as `CONFIG_CLIENT_MONITOR_ACTIVEMQ_ENABLED=true` and `CONFIG_CLIENT_CACHE_TTL=<seconds>`, with the engine's
-//! default of 20 minutes when it is absent or is not a number.
+//! `service_state.pickup_state` is the answer of `crate::pickup` (T10: the engine's `pickup_state` from the file role, each Deployment's
+//! client settings, the pods' start times and the config-server's start, computed by the pipeline's job, a cluster report and the sweeper); a
+//! service with no state row has picked up everything. This module only reads: nothing is computed per request. The two client settings a
+//! response shows come from the allowlisted environment values the agent reported (D88), read by `crate::pickup::client_settings` (the
+//! parse that computed the state, so the two cannot disagree): `CONFIG_CLIENT_MONITOR_ACTIVEMQ_ENABLED=true` and
+//! `CONFIG_CLIENT_CACHE_TTL=<seconds>`, with the engine's default of 20 minutes when it is absent or is not a number.
+//!
+//! A denied file is never named (S10, T9): the computation does not list one, and the hub's own deny globs are applied again here, to the
+//! list as stored, for the time between the hub starting with another list and the next computation.
 
 use domain::{NfsPath, Page, Paged, PickupState, ServiceRef, ServiceState, SwimlaneId};
-use engine::DEFAULT_CACHE_TTL_SECS;
+use engine::DenyMatcher;
 use ports::ReadError;
 use serde_json::Value;
 use sqlx::Row;
@@ -37,21 +41,18 @@ pub fn services_sql() -> String {
     )
 }
 
-/// The two client settings of a Deployment from its allowlisted environment values.
+/// The two client settings of a Deployment from its allowlisted environment values: the parse of the pickup computation
+/// ([`crate::pickup::client_settings`]), given the object the row holds.
 pub(crate) fn client_settings(env: &Value) -> (bool, u32) {
-    let notifications = env
-        .get("CONFIG_CLIENT_MONITOR_ACTIVEMQ_ENABLED")
-        .and_then(Value::as_str)
-        .is_some_and(|v| v.trim().eq_ignore_ascii_case("true"));
-    let ttl = env
-        .get("CONFIG_CLIENT_CACHE_TTL")
-        .and_then(Value::as_str)
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .unwrap_or(DEFAULT_CACHE_TTL_SECS);
-    (notifications, ttl)
+    let settings = crate::pickup::client_settings(
+        env.get("CONFIG_CLIENT_MONITOR_ACTIVEMQ_ENABLED")
+            .and_then(Value::as_str),
+        env.get("CONFIG_CLIENT_CACHE_TTL").and_then(Value::as_str),
+    );
+    (settings.notifications_enabled, settings.cache_ttl_secs)
 }
 
-fn service_state(row: &sqlx::postgres::PgRow) -> Result<ServiceState, RegistryError> {
+fn service_state(row: &sqlx::postgres::PgRow, deny: &DenyMatcher) -> Result<ServiceState, RegistryError> {
     let namespace: String = row.get("namespace");
     let name: String = row.get("name");
     let env: Value = row.get("env_values");
@@ -65,6 +66,7 @@ fn service_state(row: &sqlx::postgres::PgRow) -> Result<ServiceState, RegistryEr
         .map(|a| {
             a.iter()
                 .filter_map(|v| v.as_str().and_then(|s| NfsPath::parse(s).ok()))
+                .filter(|p| !deny.is_denied(p))
                 .take(MAX_PENDING_FILES)
                 .collect()
         })
@@ -146,7 +148,10 @@ impl Inner {
             .await?;
         let has_more = fetched.len() > limit;
         let kept = &fetched[..fetched.len().min(limit)];
-        let items = kept.iter().map(service_state).collect::<Result<Vec<_>, _>>()?;
+        let items = kept
+            .iter()
+            .map(|r| service_state(r, &self.deny))
+            .collect::<Result<Vec<_>, _>>()?;
         let ids = kept.iter().map(|r| r.get::<i64, _>("id")).collect();
         Ok((items, ids, has_more))
     }
@@ -155,6 +160,7 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine::DEFAULT_CACHE_TTL_SECS;
     use serde_json::json;
 
     #[test]

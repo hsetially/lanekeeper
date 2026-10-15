@@ -30,6 +30,7 @@ use tokio::time::{Instant, interval, sleep_until};
 use tracing::{debug, info, warn};
 
 use super::affected::{Routed, requeue};
+use super::batch::BatchReport;
 use super::coalesce::{Coalescer, Work};
 use super::events::{Signal, event_filter};
 use super::{Inner, Pipeline};
@@ -103,6 +104,23 @@ impl Inner {
         run.reconcile_at = Instant::now() + self.config.reconcile_interval;
     }
 
+    /// The pickup state of the swimlanes a batch brought up to date (T10): their files may have changed what a service has yet to pick up.
+    /// It runs after the batch is committed and outside its transaction, so the benchmarked pipeline does not wait for it and a failure here
+    /// never fails a batch: the swimlane is counted as failed and the pickup sweeper computes it again.
+    async fn pickups_after(&self, report: &BatchReport) {
+        let lanes: Vec<SwimlaneId> = report.lanes.iter().map(|l| l.swimlane.clone()).collect();
+        if lanes.is_empty() {
+            return;
+        }
+        let done = self.pickups.recompute(&lanes).await;
+        if !done.failed.is_empty() {
+            warn!(
+                swimlanes = done.failed.len(),
+                "the pickup state of some swimlanes could not be computed; the sweeper will"
+            );
+        }
+    }
+
     /// Bring the windows that are due (or all of them) up to date. False when a batch failed.
     async fn flush(&self, run: &mut Run, all: bool) -> bool {
         let now = Instant::now();
@@ -120,6 +138,7 @@ impl Inner {
         match self.process(due.clone()).await {
             Ok(report) => {
                 run.backoff = Duration::ZERO;
+                self.pickups_after(&report).await;
                 if report.failed.is_empty() {
                     return true;
                 }
@@ -155,7 +174,7 @@ impl Inner {
         }
         match self.process(vec![(lane.clone(), Work::Whole)]).await {
             Ok(report) if !report.failed.is_empty() => run.warm.push_back(lane),
-            Ok(_) => {}
+            Ok(report) => self.pickups_after(&report).await,
             Err(error) => {
                 warn!(?error, "the warm-up of a swimlane failed and will be tried again");
                 run.warm.push_back(lane);

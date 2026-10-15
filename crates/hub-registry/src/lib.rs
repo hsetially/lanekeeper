@@ -26,6 +26,11 @@
 //!   holds the swimlane's drift alerts while it is open; when it closes the same processing runs for every tenant of the swimlane with one
 //!   scan, and the alerts are evaluated once ([`sync::alerts`], [`sync::window`]).
 //!
+//! - [`pickup`] (T10, first half): when a change takes effect for each service that reads it (D85): the engine's `pickup_state` per change and
+//!   consuming service, folded into the state the contract has for a service, written to `service_state` with `PickupChanged` in the same
+//!   transaction by a cluster report, by the pipeline's job after a batch and by the leased sweeper (A37). [`tenants`] says what the tenant set
+//!   of a swimlane is, who may change it, and which tenant stands for a swimlane where a view needs one (A30).
+//!
 //! Nothing here reads a clock or an environment variable directly: instants come from a [`clock::Clock`] and every limit is a
 //! field of [`config::RegistryConfig`] with a tested default. Queries are runtime-checked `sqlx::query` with binds (plan A39);
 //! no SQL is built from input. Errors carry no input text (S21), and logs carry ids, paths, hashes and counts, never content (S10).
@@ -51,10 +56,12 @@ pub mod http;
 pub mod index;
 pub mod ingest;
 pub mod metrics;
+pub mod pickup;
 pub mod pipeline;
 pub mod read;
 pub mod severity;
 pub mod sync;
+pub mod tenants;
 
 pub use adoption::{
     AdoptionDeps, AdoptionError, AdoptionReason, AdoptionService, AdoptionStatus, AdoptionStep, AdoptionView,
@@ -73,6 +80,7 @@ pub use index::{
 };
 pub use ingest::{AgentIngest, IngestDeps, ToolWriteRecord, ToolWrites, fuzzing};
 pub use metrics::RegistryMetrics;
+pub use pickup::{PickupDeps, Pickups, SweepReport as PickupSweepReport};
 pub use pipeline::{
     BatchReport, LaneReport, NightlyReport, Pipeline, PipelineDeps, PipelineHandle, ReconcileOutcome, Work,
 };

@@ -254,7 +254,7 @@ impl Inner {
         raw: bool,
     ) -> Result<SideMap, ReadError> {
         self.require_swimlane(swimlane).await?;
-        let tenant = self.tenants_of(swimlane).await?.into_iter().next();
+        let tenant = crate::tenants::standing(&self.tenants_of(swimlane).await?).cloned();
         let fetched = self
             .db
             .run(

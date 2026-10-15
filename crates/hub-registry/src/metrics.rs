@@ -169,6 +169,17 @@ pub enum RematchResult {
     Failed,
 }
 
+/// What the pickup computation did to a swimlane (T10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum PickupResult {
+    /// The state of at least one service changed (and `PickupChanged` was published for it).
+    Changed,
+    /// Every service already had the state the computation gave.
+    Unchanged,
+    /// The swimlane could not be computed (the database, the outbox); the sweeper looks at it again.
+    Failed,
+}
+
 /// What a call of the adoption service was (T5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
 pub enum AdoptionAction {
@@ -285,6 +296,11 @@ struct RematchLabels {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct PickupLabels {
+    result: PickupResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
 struct LaneLabels {
     result: LaneResult,
 }
@@ -371,6 +387,9 @@ pub struct RegistryMetrics {
     blob_withheld: Counter,
     severity_rules_skipped: Counter,
     severity_rules_active: Gauge,
+    pickup_lanes: Family<PickupLabels, Counter>,
+    pickup_services_changed: Counter,
+    pickup_truncated: Counter,
 }
 
 /// 1 ms to about 8 s per read: the budgets are tens of milliseconds, a cold text search is hundreds.
@@ -434,6 +453,9 @@ impl Default for RegistryMetrics {
             blob_withheld: Counter::default(),
             severity_rules_skipped: Counter::default(),
             severity_rules_active: Gauge::default(),
+            pickup_lanes: Family::default(),
+            pickup_services_changed: Counter::default(),
+            pickup_truncated: Counter::default(),
         }
     }
 }
@@ -680,6 +702,21 @@ impl RegistryMetrics {
             "registry_severity_rules_active",
             "Rules from severity_rules in effect on top of the defaults",
             self.severity_rules_active.clone(),
+        );
+        registry.register(
+            "registry_pickup_lanes",
+            "Swimlanes whose pickup state was computed, by whether any service's state changed",
+            self.pickup_lanes.clone(),
+        );
+        registry.register(
+            "registry_pickup_services_changed",
+            "Services whose pickup state changed and for which PickupChanged was published",
+            self.pickup_services_changed.clone(),
+        );
+        registry.register(
+            "registry_pickup_truncated",
+            "Computations of a swimlane's pickup state that read only the newest changed files because there were more than pickup_max_files",
+            self.pickup_truncated.clone(),
         );
     }
 
@@ -936,6 +973,38 @@ impl RegistryMetrics {
         self.severity_rules_skipped.inc_by(skipped as u64);
     }
 
+    /// A swimlane's pickup state was computed (T10).
+    pub(crate) fn pickup_lane(&self, result: PickupResult) {
+        self.pickup_lanes.get_or_create(&PickupLabels { result }).inc();
+    }
+
+    /// Services whose pickup state changed (T10).
+    pub(crate) fn pickup_services_changed(&self, n: usize) {
+        if n > 0 {
+            self.pickup_services_changed.inc_by(n as u64);
+        }
+    }
+
+    /// A computation of the pickup state read only the newest changed files (T10, rule 5).
+    pub(crate) fn pickup_truncated(&self) {
+        self.pickup_truncated.inc();
+    }
+
+    /// Swimlanes whose pickup state was computed, by result, for tests.
+    pub fn pickup_lane_count(&self, result: PickupResult) -> u64 {
+        self.pickup_lanes.get_or_create(&PickupLabels { result }).get()
+    }
+
+    /// Services whose pickup state changed, for tests.
+    pub fn pickup_services_changed_count(&self) -> u64 {
+        self.pickup_services_changed.get()
+    }
+
+    /// Truncated pickup computations, for tests.
+    pub fn pickup_truncated_count(&self) -> u64 {
+        self.pickup_truncated.get()
+    }
+
     /// Rows of `severity_rules` that were not applied, over all the sets compiled, for tests.
     pub fn severity_rules_skipped_count(&self) -> u64 {
         self.severity_rules_skipped.get()
@@ -1116,6 +1185,34 @@ impl RegistryMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pickup_counters_count_and_register() {
+        let m = RegistryMetrics::default();
+        m.pickup_lane(PickupResult::Changed);
+        m.pickup_services_changed(2);
+        m.pickup_services_changed(0);
+        m.pickup_truncated();
+        assert_eq!(m.pickup_lane_count(PickupResult::Changed), 1);
+        assert_eq!(m.pickup_lane_count(PickupResult::Failed), 0);
+        assert_eq!(
+            m.pickup_services_changed_count(),
+            2,
+            "a count of zero adds nothing"
+        );
+        assert_eq!(m.pickup_truncated_count(), 1);
+        let mut registry = Registry::default();
+        m.register(&mut registry);
+        let mut text = String::new();
+        prometheus_client::encoding::text::encode(&mut text, &registry).unwrap_or_default();
+        assert!(text.contains("registry_pickup_lanes_total"), "{text}");
+        assert!(text.contains("registry_pickup_services_changed_total"), "{text}");
+        assert!(text.contains("registry_pickup_truncated_total"), "{text}");
+        assert!(
+            text.contains("result=\"Changed\""),
+            "a closed set of labels: {text}"
+        );
+    }
 
     #[test]
     fn counters_count_and_register() {

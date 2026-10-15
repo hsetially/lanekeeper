@@ -23,6 +23,7 @@
 //! | the comparison of memory with the database and Git | [`reconcile`] |
 //! | the nightly full recompute that repairs any divergence | [`nightly`] |
 //! | a swimlane whose NFS carries the suffix of a branch it does not deploy: the ranking and the admin's review (T4) | [`tenant_rematch`] |
+//! | the pickup state of the swimlanes a batch brought up to date (T10): run by the job after the batch is committed, never inside `process` | [`crate::pickup`] |
 //!
 //! # One lease, one holder of the state
 //!
@@ -91,6 +92,7 @@ use crate::config::{ConfigError, RegistryConfig};
 use crate::db::Db;
 use crate::index::{GitIndex, GitIndexDeps, TreeHashStore};
 use crate::metrics::RegistryMetrics;
+use crate::pickup::{PickupDeps, Pickups};
 use crate::severity::SeverityRuleSource;
 
 /// A job and its spec, as the hub's job runner takes them.
@@ -141,6 +143,8 @@ pub(crate) struct Inner {
     pub rules: RuleSource,
     pub config: RegistryConfig,
     pub metrics: RegistryMetrics,
+    /// The pickup state (T10): computed for the swimlanes of each batch by the job, after the batch is committed.
+    pub pickups: Pickups,
     pub pool: Arc<rayon::ThreadPool>,
     pub limits: Arc<engine::Limits>,
     pub exec: Mutex<Exec>,
@@ -215,6 +219,13 @@ impl Pipeline {
         )
         .with_alerts(alerts);
         let (signal_tx, signal_rx) = mpsc::channel(config.signal_queue);
+        let pickups = Pickups::new(PickupDeps {
+            pool: pool.clone(),
+            bus: Arc::clone(&bus),
+            clock: Arc::clone(&clock),
+            config: config.clone(),
+            metrics: metrics.clone(),
+        })?;
         let inner = Inner {
             loader: LaneLoader::new(db.clone(), blobs, config.blob_timeout),
             rules: RuleSource::new(db.clone(), deny, config.extra_deny_globs.clone(), severity),
@@ -236,6 +247,7 @@ impl Pipeline {
             pool: Arc::new(threads),
             limits: Arc::new(engine::Limits::default()),
             config,
+            pickups,
             metrics: metrics.clone(),
         };
         let handle = PipelineHandle::new(signal_tx, metrics);
@@ -278,7 +290,12 @@ impl Pipeline {
             .with_max_run(Duration::from_secs(3600))
     }
 
-    /// The two jobs with their specs, for the hub's job runner.
+    /// The pickup state of the swimlanes (T10): the computation the job runs after each batch, and the sweeper's job.
+    pub fn pickups(&self) -> Pickups {
+        self.inner.pickups.clone()
+    }
+
+    /// The jobs with their specs, for the hub's job runner: the pipeline, the nightly recompute and the pickup sweeper.
     ///
     /// # Errors
     ///
@@ -287,6 +304,7 @@ impl Pipeline {
         Ok(vec![
             (Self::pipeline_spec(&self.inner.config)?, self.job()),
             (Self::nightly_spec(&self.inner.config)?, self.nightly_job()),
+            (Pickups::spec(&self.inner.config)?, self.inner.pickups.job()),
         ])
     }
 

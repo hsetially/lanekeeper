@@ -13,22 +13,23 @@
 //! value is dropped and counted. A name must look like an environment variable's (`[A-Za-z_][A-Za-z0-9_]*`, 128 bytes at most);
 //! anything else is dropped, so a secret cannot ride in as a "name".
 //!
-//! A change in the Deployments' pods (a Deployment appeared, vanished or restarted) publishes `PendingRestartChanged`, which
-//! prompt 05's T10 replaces by `PickupChanged`: until then it is the hint that a client should read the pending restarts again.
+//! **Pickup (T10, D85, A2).** What a report changes of the Deployments, their environment and the config-server's start is what the pickup
+//! state of a service is made of (`crate::pickup`). So when a report changes any of it, the state is computed in the same transaction, after
+//! the facts it reads were written, and `PickupChanged` names the services whose state changed. A report that changes none of it computes
+//! nothing; one that changes it without changing any state publishes nothing. `PendingRestartChanged` is not published any more.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use domain::{ClusterReport, DomainEvent, JobRef, ServiceRef, SwimlaneId, SyncWindowKind};
+use domain::{ClusterReport, DomainEvent, JobRef, SwimlaneId, SyncWindowKind};
 use ports::{AgentIdentity, Tx};
 
 use super::Inner;
 use crate::db::{Txn, ts};
 use crate::error::RegistryError;
+use crate::pickup;
 
 /// The longest environment variable name kept.
 const MAX_ENV_NAME_BYTES: usize = 128;
-/// Services named in one `PendingRestartChanged` event; more are sent in further events.
-const EVENT_SERVICES: usize = 100;
 
 /// Whether `s` is shaped like an environment variable name.
 pub fn is_env_name(s: &str) -> bool {
@@ -164,37 +165,44 @@ impl<'a> ClusterApplier<'a> {
 
         let now_ms = self.inner.clock.now().unix_millis();
         let mut tx = self.inner.db.begin().await?;
-        let mut changed: Vec<ServiceRef> = Vec::new();
+        // The pickup state of this swimlane is computed under its lock (T10): taken before the first row is written, so that this report and a
+        // sweep never wait for each other in a circle.
+        pickup::lock(&self.inner.db, &mut tx, swimlane).await?;
+        // Whether the report changed anything the pickup state is made of: a Deployment (its pods, its environment, its being gone), or the
+        // config-server's start.
+        let mut touched = false;
         let held = self.held_services(&mut tx, swimlane).await?;
-        self.apply_services(&mut tx, swimlane, &wanted, &held, now_ms, &mut changed)
+        touched |= self
+            .apply_services(&mut tx, swimlane, &wanted, &held, now_ms)
             .await?;
         if c.full {
-            self.retire_services(&mut tx, &wanted, &held, now_ms, &mut changed)
-                .await?;
+            touched |= self.retire_services(&mut tx, &wanted, &held, now_ms).await?;
         }
         self.apply_hints(&mut tx, swimlane, &c, now_ms).await?;
         if let Some(started) = c.config_server_started_at {
-            self.inner
+            // Only a start the hub does not hold yet is a change.
+            let done = self
+                .inner
                 .db
                 .run(
                     "config_server_start",
                     sqlx::query(&format!(
-                        "UPDATE swimlanes SET config_server_started_at = {} WHERE id = $1",
-                        ts("$2")
+                        "UPDATE swimlanes SET config_server_started_at = {started} \
+                         WHERE id = $1 AND config_server_started_at IS DISTINCT FROM {started}",
+                        started = ts("$2")
                     ))
                     .bind(swimlane.as_str())
                     .bind(started.unix_millis())
                     .execute(&mut *tx),
                 )
                 .await?;
+            touched |= done.rows_affected() > 0;
         }
         let mut events: Vec<DomainEvent> = Vec::new();
         self.apply_windows(&mut tx, swimlane, &c, &mut events).await?;
-        for chunk in changed.chunks(EVENT_SERVICES) {
-            events.push(DomainEvent::PendingRestartChanged {
-                swimlane: swimlane.clone(),
-                services: chunk.to_vec(),
-            });
+        if touched {
+            let outcome = self.inner.pickup().lane(&mut tx, swimlane).await?;
+            events.extend(pickup::events(swimlane, &outcome.changed));
         }
         // The events of the report, in order, as one batch (P15).
         let mut handle = Tx::from_pg(&mut tx);
@@ -257,9 +265,9 @@ impl<'a> ClusterApplier<'a> {
         wanted: &BTreeMap<(String, String), Service>,
         held: &Held,
         now_ms: i64,
-        changed: &mut Vec<ServiceRef>,
-    ) -> Result<(), RegistryError> {
+    ) -> Result<bool, RegistryError> {
         let mut seen_ids: Vec<i64> = Vec::new();
+        let mut touched = false;
         for (key, svc) in wanted {
             let existing = held.get(key);
             let same = existing.is_some_and(|(_, h)| {
@@ -274,14 +282,9 @@ impl<'a> ClusterApplier<'a> {
             if same {
                 continue;
             }
-            let pods_changed = existing.is_none_or(|(_, h)| h.pods != svc.pods || h.removed != svc.removed);
             let id = self.upsert_service(tx, swimlane, svc, now_ms).await?;
             seen_ids.push(id);
-            if pods_changed {
-                if let Ok(r) = ServiceRef::new(&svc.key.0, &svc.key.1) {
-                    changed.push(r);
-                }
-            }
+            touched = true;
         }
         // Everything the report names has been seen now; refresh in one statement.
         if !seen_ids.is_empty() {
@@ -299,7 +302,7 @@ impl<'a> ClusterApplier<'a> {
                 )
                 .await?;
         }
-        Ok(())
+        Ok(touched)
     }
 
     /// A full report is the whole list: a Deployment it does not name is gone.
@@ -309,12 +312,13 @@ impl<'a> ClusterApplier<'a> {
         wanted: &BTreeMap<(String, String), Service>,
         held: &Held,
         now_ms: i64,
-        changed: &mut Vec<ServiceRef>,
-    ) -> Result<(), RegistryError> {
+    ) -> Result<bool, RegistryError> {
+        let mut touched = false;
         for (key, (id, h)) in held {
             if wanted.contains_key(key) || h.removed {
                 continue;
             }
+            touched = true;
             self.inner
                 .db
                 .run(
@@ -342,11 +346,8 @@ impl<'a> ClusterApplier<'a> {
                     .execute(&mut **tx),
                 )
                 .await?;
-            if let Ok(r) = ServiceRef::new(&key.0, &key.1) {
-                changed.push(r);
-            }
         }
-        Ok(())
+        Ok(touched)
     }
 
     async fn upsert_service(

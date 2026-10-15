@@ -53,13 +53,14 @@ fn report(full: bool, deployments: Vec<DeploymentInfo>) -> ClusterReport {
     }
 }
 
-async fn restart_events(rig: &Rig) -> Vec<Vec<String>> {
+/// The services each `PickupChanged` in the outbox names (T10, A2).
+async fn pickup_events(rig: &Rig) -> Vec<Vec<String>> {
     rig.bus
         .published()
         .await
         .into_iter()
         .filter_map(|e| match e {
-            DomainEvent::PendingRestartChanged { services, .. } => Some(
+            DomainEvent::PickupChanged { services, .. } => Some(
                 services
                     .iter()
                     .map(|s| format!("{}/{}", s.namespace(), s.name()))
@@ -68,6 +69,16 @@ async fn restart_events(rig: &Rig) -> Vec<Vec<String>> {
             _ => None,
         })
         .collect()
+}
+
+/// `PendingRestartChanged` is superseded by `PickupChanged` (A2): the registry never publishes it again.
+async fn old_restart_events(rig: &Rig) -> usize {
+    rig.bus
+        .published()
+        .await
+        .iter()
+        .filter(|e| matches!(e, DomainEvent::PendingRestartChanged { .. }))
+        .count()
 }
 
 #[tokio::test]
@@ -152,28 +163,22 @@ async fn only_the_allowlisted_environment_values_are_kept() {
 }
 
 #[tokio::test]
-async fn a_change_in_the_pods_publishes_a_pending_restart_hint_and_a_repeat_does_not() {
+async fn a_change_in_the_pods_publishes_no_event_when_no_state_changes_and_never_the_old_one() {
+    // T10, A2: a Deployment that appears, restarts or vanishes with nothing for it to pick up changes no pickup state, so nothing is
+    // published, and `PendingRestartChanged` is not published at all any more. (The reports that do change a state publish
+    // `PickupChanged`: `tests/pickup.rs`.)
     let Some(rig) = Rig::new().await else { return };
     rig.hello().await;
     let report_of = |pods: Vec<PodInfo>| report(false, vec![dep("csp", "a", pods)]);
     rig.cluster(report_of(vec![pod("a-1", T0 - 5_000)]))
         .await
         .unwrap();
-    assert_eq!(
-        restart_events(&rig).await,
-        vec![vec!["csp/a".to_owned()]],
-        "a Deployment appeared"
-    );
     rig.cluster(report_of(vec![pod("a-1", T0 - 5_000)]))
         .await
         .unwrap();
-    assert_eq!(
-        restart_events(&rig).await.len(),
-        1,
-        "the same report changes nothing"
-    );
     rig.cluster(report_of(vec![pod("a-2", T0)])).await.unwrap();
-    assert_eq!(restart_events(&rig).await.len(), 2, "a restart");
+    assert!(pickup_events(&rig).await.is_empty(), "nothing was pending for it");
+    assert_eq!(old_restart_events(&rig).await, 0);
     // A report that is not full does not mention the other Deployments, which are not touched.
     rig.cluster(report(false, vec![dep("csp", "b", vec![pod("b-1", T0)])]))
         .await
@@ -183,6 +188,7 @@ async fn a_change_in_the_pods_publishes_a_pending_restart_hint_and_a_repeat_does
             .await,
         2
     );
+    assert_eq!(old_restart_events(&rig).await, 0);
 }
 
 #[tokio::test]
@@ -206,13 +212,7 @@ async fn a_full_report_is_the_whole_list_and_a_removed_flag_removes() {
         .await
         .unwrap();
     assert_eq!(gone, ["b"]);
-    assert!(
-        restart_events(&rig)
-            .await
-            .last()
-            .unwrap()
-            .contains(&"csp/b".to_owned())
-    );
+    assert_eq!(old_restart_events(&rig).await, 0);
     // In a delta report the flag says the Deployment no longer exists.
     let mut a = dep("csp", "a", vec![]);
     a.removed = true;
@@ -390,14 +390,18 @@ async fn reports_over_the_bounds_are_refused_and_change_nothing() {
 
 #[tokio::test]
 async fn a_failing_bus_rolls_the_whole_report_back() {
+    // A report that has an event to publish (a sync window that opens; the Deployment's pickup state is tested in `tests/pickup.rs`): the
+    // bus cannot take it, so the Deployment is not stored either.
     let Some(rig) = Rig::new().await else { return };
     rig.hello().await;
     rig.bus.set_failing(true);
-    assert_eq!(
-        rig.cluster(report(true, vec![dep("c", "a", vec![pod("p", T0)])]))
-            .await,
-        Err(SinkError::Unavailable)
-    );
+    let mut r = report(true, vec![dep("c", "a", vec![pod("p", T0)])]);
+    r.sync_windows = vec![SyncWindowEvent {
+        kind: SyncWindowKind::Opened,
+        job: JobRef::new("sync-sit1", "uid-9").unwrap(),
+        at: Timestamp::from_unix_millis(T0 - 60_000),
+    }];
+    assert_eq!(rig.cluster(r).await, Err(SinkError::Unavailable));
     assert_eq!(
         rig.count("SELECT count(*) FROM services").await,
         0,

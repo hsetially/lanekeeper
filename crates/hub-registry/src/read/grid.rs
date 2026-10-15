@@ -81,7 +81,7 @@ impl Inner {
         let mut jobs = Vec::new();
         for s in &unique {
             let group = groups.get(s).ok_or(ReadError::NotFound)?;
-            if let Some(t) = group.tenants.first() {
+            if let Some(t) = crate::tenants::standing(&group.tenants) {
                 standing.push((s.clone(), t.clone()));
                 jobs.push((group, &q.file, t));
             }

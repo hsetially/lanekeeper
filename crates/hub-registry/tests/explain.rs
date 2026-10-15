@@ -10,6 +10,11 @@ use hub_registry::baselines::{CURRENT_BLOBS_SQL, DROP_REFS_SQL, INSERT_REFS_SQL}
 use hub_registry::blob_policy::DENIED_HASH_SQL;
 use hub_registry::index::settings::{MARKED_SQL, UNINDEXED_SQL};
 use hub_registry::index::tree_hashes::{LOAD_DIRS_SQL, LOAD_FILES_SQL};
+use hub_registry::pickup::sweeper::{INVENTORIED_LANES_SQL, PENDING_LANES_SQL};
+use hub_registry::pickup::{
+    MAPPINGS_SQL, changed_files_sql, new_folders_sql, services_sql as pickup_services_sql, times_sql,
+    write_sql,
+};
 use hub_registry::pipeline::lane_loader::{
     BASELINES_OF_LANE_SQL, BASELINES_OF_PATHS_SQL, MARKS_OF_LANE_SQL, MARKS_OF_PATHS_SQL, ROWS_OF_LANE_SQL,
     ROWS_OF_PATHS_SQL,
@@ -36,6 +41,7 @@ use hub_registry::read::search_text::{FILES_SQL, VERSIONS_SQL};
 use hub_registry::read::settings::ROWS_SQL;
 use hub_registry::read::swimlanes::{SWIMLANE_SQL, SWIMLANES_SQL};
 use hub_registry::read::tree::{CHILDREN_SQL, DRIFT_SQL, FILE_ROWS_SQL};
+use hub_registry::tenants::STORED_SQL as TENANTS_STORED_SQL;
 use serde_json::Value;
 use sqlx::{PgPool, Row as _};
 use support::pg::TestDb;
@@ -177,6 +183,8 @@ enum Arg<'a> {
     TextArray(Vec<String>),
     OptTextArray(Vec<Option<String>>),
     OptByteaArray(Vec<Option<Vec<u8>>>),
+    IntArray(Vec<i64>),
+    OptIntArray(Vec<Option<i64>>),
     BoolArray(Vec<bool>),
     Int32(i32),
     Float(f64),
@@ -197,6 +205,8 @@ async fn explain(pool: &PgPool, sql: &str, args: &[Arg<'_>]) -> Value {
             Arg::TextArray(a) => query.bind(a.clone()),
             Arg::OptTextArray(a) => query.bind(a.clone()),
             Arg::OptByteaArray(a) => query.bind(a.clone()),
+            Arg::IntArray(a) => query.bind(a.clone()),
+            Arg::OptIntArray(a) => query.bind(a.clone()),
             Arg::BoolArray(a) => query.bind(a.clone()),
             Arg::Int32(i) => query.bind(*i),
             Arg::Float(f) => query.bind(*f),
@@ -882,4 +892,114 @@ async fn read_queries_have_no_sequential_scan_on_large_tables() {
 
     // The blob policy: is this hash a denied file's?
     check!("blob_policy_denied_hash", DENIED_HASH_SQL, [Arg::Bytes(&[7; 32])]);
+}
+
+/// T10: the pickup computation, over a database with 300 Deployments in each of the 40 swimlanes (12,000 services and as many state rows),
+/// 50 folders each, and a confirmed mapping for each of 50 folders. None of its statements reads `file_state`, `file_observations`,
+/// `services` or `swimlane_folders` by a sequential scan, and every one has a limit. The one scan there is, the sweeper's look at the
+/// states that are not live, is of `service_state` (no index serves `pickup_state`, the table is a contract) and runs every 30 seconds,
+/// never for a request: its plan is a snapshot so that a change of it is seen.
+#[tokio::test]
+async fn pickup_queries_are_bounded_and_read_no_large_table_by_a_scan() {
+    let Some((db, pool)) = seeded().await else { return };
+    let mut admin = db.admin().await;
+    for table in [
+        "services",
+        "service_state",
+        "swimlane_folders",
+        "folder_mappings",
+        "swimlane_registry",
+    ] {
+        sqlx::raw_sql(&format!("ALTER TABLE {table} SET (autovacuum_enabled = false)"))
+            .execute(&mut admin)
+            .await
+            .unwrap();
+    }
+    for sql in [
+        "INSERT INTO swimlane_registry (swimlane_id, first_inventory_at) SELECT id, now() FROM swimlanes",
+        "INSERT INTO services (swimlane_id, namespace, name, env_values, env_names) \
+         SELECT 'lane' || l, 'csp', 'svc-' || s, \
+                jsonb_build_object('SPRING_APPLICATION_NAME', 'app-' || s, 'CONFIG_CLIENT_CACHE_TTL', '1200'), '{}' \
+         FROM generate_series(1, 40) l, generate_series(1, 300) s",
+        // One service in forty is waiting for its cache.
+        "INSERT INTO service_state (service_id, pods, oldest_pod_started_at, pickup_state) \
+         SELECT id, '[]', now() - interval '1 hour', CASE WHEN id % 40 = 0 THEN 'live_within_ttl' ELSE 'live' END FROM services",
+        "INSERT INTO swimlane_folders (swimlane_id, dir_path, first_seen_at, initial) \
+         SELECT 'lane' || l, 'dir' || d, now(), d % 10 <> 0 FROM generate_series(1, 40) l, generate_series(0, 49) d",
+        "INSERT INTO folder_mappings (folder_path, namespace, deployment, confirmed) \
+         SELECT 'dir' || d, 'csp', 'svc-' || d, true FROM generate_series(0, 49) d",
+        "ANALYZE",
+    ] {
+        sqlx::raw_sql(sql).execute(&mut admin).await.unwrap();
+    }
+    let lane = "lane7";
+    let strict = ["file_state", "file_observations", "services", "swimlane_folders"];
+    let no_scan = |name: &str, plan: &Value| {
+        for node in plan.as_array().unwrap() {
+            let seq = node["node"] == "Seq Scan" || node["node"] == "Parallel Seq Scan";
+            let relation = node["relation"].as_str().unwrap_or_default();
+            assert!(
+                !(seq && (strict.contains(&relation) || LARGE.contains(&relation))),
+                "{name}: a sequential scan of {relation}: {plan:#}"
+            );
+        }
+    };
+
+    let times = explain(&pool, &times_sql(), &[Arg::Text(lane)]).await;
+    no_scan("times", &times);
+    insta::assert_json_snapshot!("pickup_times", times);
+
+    let services = explain(&pool, &pickup_services_sql(), &[Arg::Text(lane), Arg::Int(5_000)]).await;
+    no_scan("services", &services);
+    insta::assert_json_snapshot!("pickup_services", services);
+
+    let changed = explain(
+        &pool,
+        &changed_files_sql(),
+        &[Arg::Text(lane), Arg::Int(1_800_000_000_000), Arg::Int(20_001)],
+    )
+    .await;
+    no_scan("changed files", &changed);
+    insta::assert_json_snapshot!("pickup_changed_files", changed);
+
+    let folders = explain(
+        &pool,
+        &new_folders_sql(),
+        &[Arg::Text(lane), Arg::Int(1_800_000_000_000), Arg::Int(50_000)],
+    )
+    .await;
+    no_scan("new folders", &folders);
+    insta::assert_json_snapshot!("pickup_new_folders", folders);
+
+    let mappings = explain(&pool, MAPPINGS_SQL, &[Arg::Text(lane), Arg::Int(10_000)]).await;
+    insta::assert_json_snapshot!("pickup_mappings", mappings);
+
+    // The write: the services of one swimlane that are or were pending, by key, with the comparison in the statement.
+    let ids: Vec<i64> = (1..=60).collect();
+    let n = ids.len();
+    let write = explain(
+        &pool,
+        &write_sql(),
+        &[
+            Arg::IntArray(ids),
+            Arg::TextArray(vec!["live_within_ttl".to_owned(); n]),
+            Arg::OptIntArray(vec![Some(1_800_000_000_000); n]),
+            Arg::OptIntArray(vec![Some(1_799_999_000_000); n]),
+            Arg::TextArray(vec!["[\"a.yml\"]".to_owned(); n]),
+            Arg::Int(1_800_000_000_000),
+        ],
+    )
+    .await;
+    no_scan("write", &write);
+    insta::assert_json_snapshot!("pickup_write", write);
+
+    // The sweeper's two looks (every 30 seconds, and every ten minutes).
+    let pending = explain(&pool, PENDING_LANES_SQL, &[Arg::Int(1_001)]).await;
+    insta::assert_json_snapshot!("pickup_sweep_pending_lanes", pending);
+    let inventoried = explain(&pool, INVENTORIED_LANES_SQL, &[Arg::Int(1_001)]).await;
+    insta::assert_json_snapshot!("pickup_sweep_inventoried_lanes", inventoried);
+
+    // The tenants of the swimlane (a computation that reads files reads them too).
+    let tenants = explain(&pool, TENANTS_STORED_SQL, &[Arg::Text(lane), Arg::Int(129)]).await;
+    insta::assert_json_snapshot!("tenants_stored", tenants);
 }

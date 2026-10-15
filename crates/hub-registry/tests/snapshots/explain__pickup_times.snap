@@ -1,0 +1,10 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: times
+---
+[
+  {
+    "node": "Seq Scan",
+    "relation": "swimlanes"
+  }
+]

@@ -224,6 +224,13 @@ async fn the_service_itself_refuses_a_user_who_is_not_an_active_viewer() {
             api.pending_restarts_page(u, &s, page(10)).await.unwrap_err(),
             forbidden
         );
+        // The port's own method (what MCP calls, with no router in front), over the same swimlane.
+        assert_eq!(
+            ports::RegistryRead::pending_restarts(api, u, &s)
+                .await
+                .unwrap_err(),
+            forbidden
+        );
         let request = ServeRequest {
             application: domain::AppName::parse("core").unwrap(),
             tenant: domain::TenantId::parse("sit1").unwrap(),

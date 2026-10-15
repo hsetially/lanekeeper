@@ -343,7 +343,7 @@ impl Inner {
                     CompareRef::Baseline(_) => "baseline",
                     _ => "effective",
                 };
-                let Some(tenant) = group.tenants.first().cloned() else {
+                let Some(tenant) = crate::tenants::standing(&group.tenants).cloned() else {
                     // A swimlane with no tenant has no file to read as: an absent side.
                     return Ok(Side::absent(kind));
                 };

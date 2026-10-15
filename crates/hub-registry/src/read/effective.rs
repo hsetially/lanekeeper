@@ -601,7 +601,9 @@ impl Inner {
 
     /// The first tenant, in sorted order, that stands for a swimlane (A30).
     pub fn standing_tenant(group: &Group) -> Result<TenantId, ReadError> {
-        group.tenants.first().cloned().ok_or(ReadError::NotFound)
+        crate::tenants::standing(&group.tenants)
+            .cloned()
+            .ok_or(ReadError::NotFound)
     }
 
     /// `getEffectiveConfig`.

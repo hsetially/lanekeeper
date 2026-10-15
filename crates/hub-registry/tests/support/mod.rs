@@ -2,6 +2,7 @@
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 pub mod adoption;
+pub mod cluster;
 pub mod counting_git;
 pub mod fixtures;
 pub mod gitload;

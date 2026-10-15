@@ -187,6 +187,21 @@ pub struct RegistryConfig {
     /// Resolutions one call may record.
     pub adoption_resolutions_per_call: usize,
 
+    // ---------------------------------------------------------------------------------------------- pickup (T10)
+    /// How often the leased job `registry-pickup-sweeper` recomputes the swimlanes that still have something to pick up (A37): a change
+    /// that is `live_within_ttl` becomes `live` by the passing of time, with no event, and a notification (prompt 06 writes
+    /// `swimlanes.last_notified_at`) is seen at the next sweep. 30 seconds: the cache's time to live is minutes.
+    pub pickup_sweep_interval: Duration,
+    /// How often the sweeper looks at **every** swimlane that has an inventory, not only those with something pending. The pipeline and the
+    /// cluster report recompute a swimlane when they change what the state is made of, and this is what repairs the rest (a recompute that
+    /// failed, a folder mapping an admin changed, a replica that took over).
+    pub pickup_full_interval: Duration,
+    /// Swimlanes one run of the sweeper recomputes; the rest wait for the next run.
+    pub pickup_sweep_lanes: usize,
+    /// The files of one swimlane the pickup computation reads: the newest changes. A swimlane with more changed files than this since its
+    /// oldest pod started is looked at through the newest ones and the metric `registry_pickup_truncated` says so (rule 5).
+    pub pickup_max_files: usize,
+
     // ---------------------------------------------------------------------------------------------- reads (T6)
     /// How recently a replica must have renewed an agent's connection row for the swimlane list to say "connected". The gateway's
     /// own rule is the same shape: a row that was not renewed for this long counts as not connected.
@@ -303,6 +318,10 @@ impl Default for RegistryConfig {
             adoption_secret_hits: 10_000,
             adoption_scan_timeout: Duration::from_secs(5 * 60),
             adoption_resolutions_per_call: 5_000,
+            pickup_sweep_interval: Duration::from_secs(30),
+            pickup_full_interval: Duration::from_secs(10 * 60),
+            pickup_sweep_lanes: 1_000,
+            pickup_max_files: 20_000,
             agent_live_window: Duration::from_secs(30),
             read_pool_threads: 2,
             row_cache_bytes: 96 * 1024 * 1024,
@@ -559,6 +578,23 @@ impl RegistryConfig {
             1,
             100_000,
         )?;
+        within(
+            "pickup_sweep_interval",
+            millis(self.pickup_sweep_interval),
+            1_000,
+            3600 * 1000,
+        )?;
+        within(
+            "pickup_full_interval",
+            millis(self.pickup_full_interval),
+            10_000,
+            24 * 3600 * 1000,
+        )?;
+        if self.pickup_full_interval < self.pickup_sweep_interval {
+            return Err(ConfigError::OutOfRange("pickup_full_interval"));
+        }
+        within("pickup_sweep_lanes", self.pickup_sweep_lanes as u64, 1, 100_000)?;
+        within("pickup_max_files", self.pickup_max_files as u64, 100, 200_000)?;
         within(
             "agent_live_window",
             millis(self.agent_live_window),
@@ -883,6 +919,49 @@ mod tests {
             ..RegistryConfig::default()
         };
         assert!(zero.validate().is_ok());
+    }
+
+    #[test]
+    fn the_pickup_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(
+            c.pickup_sweep_interval,
+            Duration::from_secs(30),
+            "A37: every 30 seconds"
+        );
+        assert_eq!(c.pickup_full_interval, Duration::from_secs(10 * 60));
+        assert!(c.pickup_sweep_interval <= c.pickup_full_interval);
+        assert_eq!(c.pickup_sweep_lanes, 1_000);
+        assert_eq!(c.pickup_max_files, 20_000);
+        out_of_range("pickup_sweep_interval", |c| {
+            c.pickup_sweep_interval = Duration::from_millis(999);
+        });
+        out_of_range("pickup_sweep_interval", |c| {
+            c.pickup_sweep_interval = Duration::from_secs(3601);
+        });
+        out_of_range("pickup_full_interval", |c| {
+            c.pickup_full_interval = Duration::from_secs(9);
+        });
+        out_of_range("pickup_full_interval", |c| {
+            c.pickup_full_interval = Duration::from_secs(25 * 3600);
+        });
+        out_of_range("pickup_full_interval", |c| {
+            // A full look cannot be more often than the sweep it is part of.
+            c.pickup_sweep_interval = Duration::from_secs(60);
+            c.pickup_full_interval = Duration::from_secs(30);
+        });
+        out_of_range("pickup_sweep_lanes", |c| {
+            c.pickup_sweep_lanes = 0;
+        });
+        out_of_range("pickup_sweep_lanes", |c| {
+            c.pickup_sweep_lanes = 100_001;
+        });
+        out_of_range("pickup_max_files", |c| {
+            c.pickup_max_files = 99;
+        });
+        out_of_range("pickup_max_files", |c| {
+            c.pickup_max_files = 200_001;
+        });
     }
 
     #[test]
