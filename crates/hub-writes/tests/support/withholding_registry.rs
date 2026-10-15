@@ -10,11 +10,21 @@ use domain::{
     SwimlaneSummary, TextQuery, TextResults, TreeComparison, User, Version,
 };
 use ports::{ReadError, RegistryRead};
+use tokio::sync::{Notify, Semaphore};
 
 #[derive(Clone)]
 pub struct WithholdingRegistry {
     inner: Arc<dyn RegistryRead>,
     withheld: Vec<NfsPath>,
+    stall: Option<Stall>,
+}
+
+/// A pause in `content`, for a test that needs time to pass while a request is still before the agent: the registry tells
+/// `entered` that a read has begun and then waits for a permit on `gate`.
+#[derive(Clone)]
+pub struct Stall {
+    pub entered: Arc<Notify>,
+    pub gate: Arc<Semaphore>,
 }
 
 impl std::fmt::Debug for WithholdingRegistry {
@@ -25,7 +35,17 @@ impl std::fmt::Debug for WithholdingRegistry {
 
 impl WithholdingRegistry {
     pub fn new(inner: Arc<dyn RegistryRead>, withheld: Vec<NfsPath>) -> Self {
-        Self { inner, withheld }
+        Self {
+            inner,
+            withheld,
+            stall: None,
+        }
+    }
+
+    /// The same registry, pausing every `content` read until the test lets it go.
+    pub fn stalling(mut self, stall: Stall) -> Self {
+        self.stall = Some(stall);
+        self
     }
 }
 
@@ -52,6 +72,12 @@ impl RegistryRead for WithholdingRegistry {
         p: &NfsPath,
         src: ContentSource,
     ) -> Result<FileContent, ReadError> {
+        if let Some(stall) = &self.stall {
+            stall.entered.notify_one();
+            if let Ok(permit) = stall.gate.acquire().await {
+                permit.forget();
+            }
+        }
         let mut found = self.inner.content(u, s, p, src).await?;
         if self.withheld.contains(p) {
             // Withheld and still carrying the bytes: the flag alone must be enough for the hub to refuse.

@@ -532,10 +532,12 @@ impl IdempotencyStore {
         )
     }
 
-    /// Keep the intent with the claim, before the command is sent.
+    /// Keep the intent with the claim, before the command is sent. It is an error when there is no unfinished claim to keep it
+    /// with: a request whose steps before the agent outlasted `stale_claim_after` may have lost its claim to the reconciler,
+    /// and a command sent then would land with nothing to record it under.
     pub async fn set_intent(&self, key: &ClaimKey, intent: &Intent) -> Res<()> {
         let body = serde_json::to_vec(intent).map_err(|_| Internal::new("intent", "encode"))?;
-        sqlx::query(SET_INTENT)
+        let done = sqlx::query(SET_INTENT)
             .bind(&key.tid)
             .bind(&key.oid)
             .bind(&key.key)
@@ -543,7 +545,11 @@ impl IdempotencyStore {
             .execute(&self.pool)
             .await
             .map_err(|e| Internal::db("intent", &e))?;
-        Ok(())
+        if done.rows_affected() == 1 {
+            Ok(())
+        } else {
+            Err(Internal::new("intent", "claim missing"))
+        }
     }
 
     /// Store the response of a request that changed nothing but has an answer worth replaying (a conflict, a rejection).
