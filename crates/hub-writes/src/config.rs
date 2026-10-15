@@ -44,6 +44,15 @@ pub struct WriteConfig {
     pub reveals_per_minute: u32,
     /// The most users whose reveal window the replica keeps.
     pub reveal_tracked_users: u64,
+    /// How long the batcher waits after the first write for more, before it tells the config-server once about all of them
+    /// (D85: "batched within 2 seconds").
+    pub auto_notify_window: Duration,
+    /// The most written paths the batcher holds at once. A write that finds it full is not announced (the "Notify services"
+    /// button is still there), so a burst cannot grow the queue.
+    pub auto_notify_queue: usize,
+    /// The name of the config-server's Deployment (D83): the one service a restart for check C11 is offered for. The cluster
+    /// report lists the Deployment; when it lists none or several of that name, no restart is offered.
+    pub config_server_deployment: String,
 }
 
 impl Default for WriteConfig {
@@ -63,6 +72,9 @@ impl Default for WriteConfig {
             max_concurrent_checks: 8,
             reveals_per_minute: 30,
             reveal_tracked_users: 10_000,
+            auto_notify_window: Duration::from_secs(2),
+            auto_notify_queue: 1_024,
+            config_server_deployment: "csp-configuration-server".to_owned(),
         }
     }
 }
@@ -108,6 +120,23 @@ impl WriteConfig {
         if self.reveal_tracked_users == 0 || self.reveal_tracked_users > 1_000_000 {
             return Err(ConfigError::Invalid("reveal_tracked_users must be 1 to 1000000"));
         }
+        nonzero(
+            self.auto_notify_window,
+            "auto_notify_window must be more than zero",
+        )?;
+        if self.auto_notify_window > Duration::from_secs(60) {
+            return Err(ConfigError::Invalid(
+                "auto_notify_window must be at most 60 seconds",
+            ));
+        }
+        if self.auto_notify_queue == 0 || self.auto_notify_queue > 100_000 {
+            return Err(ConfigError::Invalid("auto_notify_queue must be 1 to 100000"));
+        }
+        if domain::ServiceRef::new("config-server", &self.config_server_deployment).is_err() {
+            return Err(ConfigError::Invalid(
+                "config_server_deployment must be a Deployment name",
+            ));
+        }
         Ok(())
     }
 }
@@ -126,6 +155,8 @@ mod tests {
         assert_eq!(c.idempotency_wait, Duration::from_secs(3));
         assert_eq!(c.stale_claim_after, Duration::from_secs(60));
         assert_eq!((c.reveals_per_minute, c.reveal_tracked_users), (30, 10_000));
+        assert_eq!(c.auto_notify_window, Duration::from_secs(2));
+        assert_eq!(c.config_server_deployment, "csp-configuration-server");
     }
 
     #[test]
@@ -155,5 +186,11 @@ mod tests {
         bad(&|c| c.reveals_per_minute = 601);
         bad(&|c| c.reveal_tracked_users = 0);
         bad(&|c| c.reveal_tracked_users = 1_000_001);
+        bad(&|c| c.auto_notify_window = Duration::ZERO);
+        bad(&|c| c.auto_notify_window = Duration::from_secs(61));
+        bad(&|c| c.auto_notify_queue = 0);
+        bad(&|c| c.auto_notify_queue = 100_001);
+        bad(&|c| c.config_server_deployment = String::new());
+        bad(&|c| c.config_server_deployment = "Not A Name".to_owned());
     }
 }

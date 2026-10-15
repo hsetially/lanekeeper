@@ -44,6 +44,8 @@ struct State {
     gate: Option<Arc<Semaphore>>,
     commands: Vec<HubCommand>,
     down: bool,
+    /// The status the config-server answers a notification with.
+    notify_status: u16,
 }
 
 #[derive(Clone)]
@@ -51,6 +53,8 @@ pub struct FakeAgent {
     state: Arc<Mutex<State>>,
     /// Signalled each time a `WriteFile` reaches the agent (before it waits at the gate).
     pub entered: Arc<Notify>,
+    /// Signalled (one permit is kept) each time a `NotifyConfigServer` reaches the agent.
+    pub notified: Arc<Notify>,
     writes: Arc<AtomicUsize>,
     deletes: Arc<AtomicUsize>,
     restarts: Arc<AtomicUsize>,
@@ -82,8 +86,10 @@ impl FakeAgent {
                 gate: None,
                 commands: Vec::new(),
                 down: false,
+                notify_status: 200,
             })),
             entered: Arc::new(Notify::new()),
+            notified: Arc::new(Notify::new()),
             writes: Arc::new(AtomicUsize::new(0)),
             deletes: Arc::new(AtomicUsize::new(0)),
             restarts: Arc::new(AtomicUsize::new(0)),
@@ -155,6 +161,22 @@ impl FakeAgent {
         self.restarts.load(Ordering::SeqCst)
     }
 
+    /// What the config-server answers the next notifications with (its HTTP status).
+    pub fn set_notify_status(&self, status: u16) {
+        lock(&self.state).notify_status = status;
+    }
+
+    /// The paths of every `NotifyConfigServer` command that reached the agent, one list for each command, oldest first.
+    pub fn notified_paths(&self) -> Vec<Vec<NfsPath>> {
+        self.commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                HubCommand::NotifyConfigServer { paths, .. } => Some(paths),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn commands(&self) -> Vec<HubCommand> {
         lock(&self.state).commands.clone()
     }
@@ -203,6 +225,7 @@ impl AgentGateway for FakeAgent {
                 HubCommand::WriteFile { .. }
                     | HubCommand::DeleteFile { .. }
                     | HubCommand::RestartDeployment { .. }
+                    | HubCommand::NotifyConfigServer { .. }
             ) {
                 st.faults.pop_front()
             } else {
@@ -300,10 +323,24 @@ impl AgentGateway for FakeAgent {
                     _ => Ok(reply),
                 }
             }
-            HubCommand::NotifyConfigServer { request_id, .. } => Ok(AgentReply::Notify {
-                request_id,
-                status: 200,
-            }),
+            HubCommand::NotifyConfigServer { request_id, .. } => {
+                self.notified.notify_one();
+                match fault {
+                    Some(Fault::Io) => return Ok(Self::op(request_id, false, Some(OpError::Io), None)),
+                    Some(Fault::Denied) => {
+                        return Ok(Self::op(request_id, false, Some(OpError::Denied), None));
+                    }
+                    _ => {}
+                }
+                match fault {
+                    Some(Fault::LandThenTimeout) => Err(GatewayError::Timeout),
+                    Some(Fault::LandThenClosed) => Err(GatewayError::Closed),
+                    _ => Ok(AgentReply::Notify {
+                        request_id,
+                        status: lock(&self.state).notify_status,
+                    }),
+                }
+            }
             HubCommand::RestartDeployment { request_id, .. } => {
                 match fault {
                     Some(Fault::Io) => return Ok(Self::op(request_id, false, Some(OpError::Io), None)),

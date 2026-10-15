@@ -19,8 +19,8 @@
 //! **Rejecting** writes the decision, the status, the event and one audit event in one transaction. Nothing else changes.
 
 use domain::{
-    ContentHash, DomainEvent, Expected, FileClass, NfsPath, ProposalId, ProposalStatus, RejectReason, Role,
-    ServiceRef, Severity, ShortText, User, WriteCtx, WriteOutcome,
+    ContentHash, DomainEvent, Expected, FileClass, NfsPath, NotifyRequest, ProposalId, ProposalStatus,
+    RejectReason, Role, ServiceRef, Severity, ShortText, User, WriteCtx, WriteOutcome,
 };
 use engine::classify;
 use ports::{AuditAction, AuditActor, AuditEvent, Notification, NotificationKind, Tx, WriteError};
@@ -33,6 +33,7 @@ use crate::drafts;
 use crate::error::{Internal, Res};
 use crate::idempotency::{ClaimKey, Follow, Intent, IntentOp, Phase, RequestHash, finish_in_tx, lock_claim};
 use crate::ops::file::{Command, carry_out, rejected};
+use crate::ops::notify;
 use crate::ops::restart::{self, ByApproval};
 use crate::pipeline::approval::via_of;
 use crate::pipeline::authorize::authorize;
@@ -137,8 +138,8 @@ async fn decide_locked(
     }
 }
 
-/// The action of a proposal, carried out for the admin. A notify (T11) is not carried out yet: the admin is told the service is
-/// unavailable and nothing changes.
+/// The action of a proposal, carried out for the admin. A row of an action this code does not know is not carried out: the admin
+/// is told the service is unavailable and nothing changes.
 async fn apply(
     hub: &Inner,
     ctx: &WriteCtx,
@@ -152,6 +153,7 @@ async fn apply(
         "edit" | "upload" | "revert" => apply_content(hub, ctx, admin, claim, &p, comment).await,
         "delete" => apply_delete(hub, ctx, admin, claim, &p, comment).await,
         "restart" => apply_restart(hub, ctx, admin, claim, &p, comment).await,
+        "notify" => apply_notify(hub, ctx, admin, claim, &p, comment).await,
         // A pull request announces itself: its approval only makes the job.
         "pr" => return pr::apply_pr(hub, ctx, admin, claim, &p, comment).await,
         _ => Err(Abort::release(WriteError::Unavailable)),
@@ -399,6 +401,41 @@ async fn apply_restart(
         follow: follow(admin, p, comment, None),
     };
     restart::execute(hub, ctx, admin, claim, &p.swimlane, &service, Some(by)).await
+}
+
+/// A notification of the config-server, sent for the admin whose approval it is. The paths are the proposal's; a row that holds one
+/// that is not a path, or none, was not made by this code and is refused.
+async fn apply_notify(
+    hub: &Inner,
+    ctx: &WriteCtx,
+    admin: &User,
+    claim: &Claim,
+    p: &Stored,
+    comment: Option<String>,
+) -> Step<Done> {
+    let paths: Option<Vec<NfsPath>> = p.paths.iter().map(|t| NfsPath::parse(t).ok()).collect();
+    let Some(paths) = paths.filter(|p| !p.is_empty() && p.len() <= NotifyRequest::MAX_PATHS) else {
+        return Ok(Done::Store(rejected(RejectReason::InvalidContent)));
+    };
+    if matches!(check_lock(hub, &p.swimlane).await?, LockState::UnknownSwimlane) {
+        return Ok(Done::Release(rejected(RejectReason::UnknownSwimlane)));
+    }
+    let by = ByApproval {
+        proposal: p.id,
+        author: p.author.clone(),
+        follow: follow(admin, p, comment, None),
+    };
+    notify::execute(
+        hub,
+        ctx,
+        admin,
+        claim,
+        &p.swimlane,
+        paths,
+        via_of(ctx.via),
+        Some(by),
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------------------------------------------- stale

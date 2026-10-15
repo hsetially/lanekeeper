@@ -53,6 +53,7 @@ enum Call {
     Delete(DeleteRequest),
     Revert(RevertRequest),
     Restart(RestartRequest),
+    Notify(NotifyRequest),
     Preview(PreviewRequest),
     Draft(EditRequest),
     ApplyDraft(DraftId),
@@ -146,8 +147,8 @@ impl WriteService for Scripted {
             .clone()
             .unwrap_or_else(|| Ok(sample_preview()))
     }
-    async fn notify(&self, _: &WriteCtx, _: NotifyRequest) -> Result<WriteOutcome, WriteError> {
-        Err(WriteError::Unavailable)
+    async fn notify(&self, ctx: &WriteCtx, r: NotifyRequest) -> Result<WriteOutcome, WriteError> {
+        self.answer(Call::Notify(r), ctx)
     }
 }
 
@@ -592,6 +593,7 @@ fn app(service: &Arc<Scripted>) -> Router {
 
 const SWIMLANE: &str = "sit1";
 const FILES: &str = "/api/v1/swimlanes/sit1/files";
+const NOTIFY: &str = "/api/v1/swimlanes/sit1/notify";
 
 fn hash_of(text: &str) -> ContentHash {
     ports::content_hash(text.as_bytes())
@@ -754,8 +756,8 @@ fn write_operations() -> BTreeSet<(String, String)> {
 }
 
 /// The `writes` operations that later tasks of prompt 06 mount, with the task. When one is mounted its line goes, and
-/// `every_write_operation_is_mounted_or_waits_for_its_task` fails until it does.
-const LATER: [(&str, &str, &str); 1] = [("POST", "/api/v1/swimlanes/{id}/notify", "T11")];
+/// `every_write_operation_is_mounted_or_waits_for_its_task` fails until it does. Every operation is mounted now (T11 was the last).
+const LATER: [(&str, &str, &str); 0] = [];
 
 #[test]
 fn route_table_matches_openapi_for_writes() {
@@ -1038,6 +1040,14 @@ fn a_json_array_is_not_an_object_for_any_reader() {
         "restart"
     );
 
+    let notify = json!({ "paths": ["a.yml", "tx-api/b.yml"] });
+    assert!(wire::notify_request(swimlane(), &bytes(&notify)).is_ok());
+    assert_eq!(
+        wire::notify_request(swimlane(), &bytes(&json!([["a.yml", "tx-api/b.yml"]]))).map(|_| ()),
+        Err(Refusal::BadRequest),
+        "notify"
+    );
+
     let draft = json!({ "swimlane": "sit1", "path": "a.yml", "expected": absent, "content": "x: 2\n" });
     assert!(wire::draft_request(&bytes(&draft)).is_ok());
     assert_eq!(
@@ -1172,6 +1182,86 @@ async fn a_request_that_is_not_well_formed_never_reaches_the_service() {
             Req::new(Method::POST, "/api/v1/swimlanes/sit1/restart")
                 .user(Some("operator"))
                 .json(&json!({ "namespace": "sit1", "name": "payments", "force": true })),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "notify without paths",
+            Req::new(Method::POST, NOTIFY)
+                .user(Some("operator"))
+                .json(&json!({})),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "notify with an empty list",
+            Req::new(Method::POST, NOTIFY)
+                .user(Some("operator"))
+                .json(&json!({ "paths": [] })),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "notify with a path twice",
+            Req::new(Method::POST, NOTIFY)
+                .user(Some("operator"))
+                .json(&json!({ "paths": ["a.yml", "a.yml"] })),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "notify with 101 paths",
+            Req::new(Method::POST, NOTIFY)
+                .user(Some("operator"))
+                .json(&json!({
+                    "paths": (0..=100).map(|n| format!("d/f{n}.yml")).collect::<Vec<_>>()
+                })),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "notify with a traversal",
+            Req::new(Method::POST, NOTIFY)
+                .user(Some("operator"))
+                .json(&json!({ "paths": ["../etc/passwd"] })),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "notify with an absolute path",
+            Req::new(Method::POST, NOTIFY)
+                .user(Some("operator"))
+                .json(&json!({ "paths": ["/etc/passwd"] })),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "notify with a path that is not text",
+            Req::new(Method::POST, NOTIFY)
+                .user(Some("operator"))
+                .json(&json!({ "paths": [5] })),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "notify with an unknown field",
+            Req::new(Method::POST, NOTIFY)
+                .user(Some("operator"))
+                .json(&json!({ "paths": ["a.yml"], "host": "evil.example" })),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "notify as an array",
+            Req::new(Method::POST, NOTIFY)
+                .user(Some("operator"))
+                .json(&json!([["a.yml"]])),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "notify that is not json",
+            Req::new(Method::POST, NOTIFY)
+                .user(Some("operator"))
+                .raw("text/plain", b"a.yml".to_vec()),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        ),
+        (
+            "notify without an idempotency key",
+            Req::new(Method::POST, NOTIFY)
+                .user(Some("operator"))
+                .key(None)
+                .json(&json!({ "paths": ["a.yml"] })),
             StatusCode::BAD_REQUEST,
         ),
     ];
@@ -1341,6 +1431,138 @@ async fn delete_and_revert_and_restart_read_their_requests() {
         panic!()
     };
     assert_eq!(x.service, ServiceRef::new("sit1", "payments").unwrap());
+}
+
+#[tokio::test]
+async fn a_notify_is_read_into_its_paths_and_answers_what_was_notified() {
+    let service = Arc::new(Scripted::default());
+    service.says(Ok(WriteOutcome::Applied {
+        hash: None,
+        audit_id: domain::AuditId::from(9),
+        warnings: Vec::new(),
+    }));
+    let router = app(&service);
+    let r = send(
+        &router,
+        Req::new(Method::POST, NOTIFY)
+            .user(Some("operator"))
+            .json(&json!({ "paths": ["tx-api/tx-api.yml", "application.yml"] })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    // The contract's `NotifyResult`: how many paths, and the audit event.
+    assert_eq!(r.json(), json!({ "accepted": 2, "audit_id": 9 }));
+    let calls = service.calls();
+    let (Call::Notify(n), ctx) = &calls[0] else {
+        panic!("{calls:?}")
+    };
+    assert_eq!(n.swimlane.as_str(), SWIMLANE);
+    assert_eq!(
+        n.paths.iter().map(domain::NfsPath::as_str).collect::<Vec<_>>(),
+        ["tx-api/tx-api.yml", "application.yml"]
+    );
+    assert_eq!(ctx.idempotency_key.as_str(), "key-1");
+    assert_eq!(ctx.via, domain::Via::Ui);
+
+    // For a user who needs approval it is a proposal, which is what a write route answers too.
+    service.says(Ok(WriteOutcome::ProposalCreated {
+        id: ProposalId::from(4),
+    }));
+    let r = send(
+        &router,
+        Req::new(Method::POST, NOTIFY)
+            .user(Some("operator"))
+            .json(&json!({ "paths": ["application.yml"] })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json(), json!({ "outcome": "proposal_created", "id": 4 }));
+
+    // A refusal of the service becomes its problem, with nothing of the request in it.
+    for (reply, status) in [
+        (Err(WriteError::Forbidden), StatusCode::FORBIDDEN),
+        (Err(WriteError::Unavailable), StatusCode::SERVICE_UNAVAILABLE),
+        (
+            Err(WriteError::IdempotencyConflict),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (Err(WriteError::BadRequest), StatusCode::BAD_REQUEST),
+        (
+            Ok(WriteOutcome::Rejected {
+                reason: domain::RejectReason::UnknownSwimlane,
+                issues: Vec::new(),
+            }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            Ok(WriteOutcome::Rejected {
+                reason: domain::RejectReason::AgentUnavailable,
+                issues: Vec::new(),
+            }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ] {
+        service.says(reply.clone());
+        let r = send(
+            &router,
+            Req::new(Method::POST, NOTIFY)
+                .user(Some("operator"))
+                .json(&json!({ "paths": ["secret-looking/path.yml"] })),
+        )
+        .await;
+        assert_eq!(r.status, status, "{reply:?}");
+        assert!(
+            !String::from_utf8_lossy(&r.body).contains("secret-looking"),
+            "the problem does not echo the request"
+        );
+    }
+    // An editor never reaches the service.
+    let before = service.calls().len();
+    let r = send(
+        &router,
+        Req::new(Method::POST, NOTIFY).json(&json!({ "paths": ["application.yml"] })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert_eq!(service.calls().len(), before);
+}
+
+#[tokio::test]
+async fn the_notify_body_is_limited_before_it_is_read_and_100_paths_fit() {
+    let service = Arc::new(Scripted::default());
+    let router = app(&service);
+    let r = send(
+        &router,
+        Req::new(Method::POST, NOTIFY).user(Some("operator")).raw(
+            "application/json",
+            vec![b' '; hub_writes::routes::MAX_NOTIFY_BODY + 1],
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE);
+    // 100 paths of the longest length the contract allows, written with the escapes that make JSON largest, fit the limit.
+    let long = |n: usize| format!("{0}/{0}/{0}/{0}/f{n:03}{1}.yml", "d".repeat(200), "x".repeat(190));
+    let paths: Vec<String> = (0..100).map(long).collect();
+    assert!(paths.iter().all(|p| p.len() <= 1_024));
+    let r = send(
+        &router,
+        Req::new(Method::POST, NOTIFY)
+            .user(Some("operator"))
+            .json(&json!({ "paths": paths })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(service.calls().len(), 1);
+    // The guard comes first.
+    let r = send(
+        &router,
+        Req::new(Method::POST, NOTIFY).user(Some("viewer")).raw(
+            "application/json",
+            vec![b'a'; hub_writes::routes::MAX_NOTIFY_BODY + 1],
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

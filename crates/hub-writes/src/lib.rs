@@ -7,7 +7,7 @@
 //! blind (rule 11): the agent is sent the hash it must find. Every applied write has exactly one audit event, recorded in the
 //! same transaction as its tool-write registration, its outbox event and its stored response (rules 8 and D80).
 //!
-//! - **Actions** (`ops`): `edit`, `upload`, `delete`, `revert` and `restart`. The three that put content into a file (edit, upload
+//! - **Actions** (`ops`): `edit`, `upload`, `delete`, `revert`, `restart` and `notify`. The three that put content into a file (edit, upload
 //!   and revert) share one tail (`ops::file`); an upload and a delete also need the token of a preview.
 //! - **Approvals** (`proposals`): a change by a user who `requires_approval` waits as a proposal; an admin (never its author)
 //!   approves it, which re-checks the file and applies it, or marks it stale; a leased job expires the ones nobody decided. Every
@@ -25,6 +25,11 @@
 //!   through the web UI, rate limited for each user, one audit event committed before the value is returned, and the value is never
 //!   stored, cached or logged. What can be revealed is exactly what every view masks. Every door of the write path also refuses a
 //!   denied path (the built-in globs and the configured ones, and a file the registry withholds).
+//! - **Notify** (`ops::notify`, `autonotify`, T11): tells the config-server's unauthenticated update endpoint (Q37) which files changed,
+//!   through the agent: Operator only, exactly the paths of the request, one audit event, a proposal for a user who needs approval.
+//!   A notification rewrites the pickup states of the services that read its paths (`ops::pickup`, the engine decides). With
+//!   auto-notify on for a swimlane, [`WriteHub::auto_notifier`] batches the paths of an Operator's writes into one call per two
+//!   seconds. [`WriteHub::config_server_restart_offer`] names the restart that check C11 asks for and the services it takes away.
 //! - **Routes** ([`routes`]): the REST face of the actions above, registered through the platform's guarded router (S4), with
 //!   [`routes::wire`] reading each request into typed values.
 #![forbid(unsafe_code)]
@@ -35,6 +40,7 @@
     clippy::module_name_repetitions
 )]
 
+mod autonotify;
 mod clock;
 mod config;
 mod db;
@@ -57,6 +63,7 @@ mod service;
 pub mod teams;
 pub mod vault;
 
+pub use autonotify::AutoNotifier;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{MAX_EXTRA_DENY_GLOBS, PREVIEW_KEY_SECRET, WriteConfig};
 pub use error::ConfigError;
@@ -72,7 +79,7 @@ pub use proposals::{
 pub use preview::token::fuzzing as fuzz_hooks;
 pub use reconcile::{ReconcileReport, ReconcileWrites};
 pub use reveal::{DEFAULT_REASON, RevealDesk, RevealError, RevealRequest, Revealed};
-pub use service::{WriteHub, WriteHubDeps};
+pub use service::{ConfigServerRestartOffer, WriteHub, WriteHubDeps};
 
 /// The statements the write path runs on every request, by name, for the tests that run `EXPLAIN` on them (P12). Each takes
 /// numbered parameters, so `EXPLAIN (GENERIC_PLAN)` shows its plan for any value.
@@ -88,6 +95,10 @@ pub fn hot_queries() -> Vec<(&'static str, &'static str)> {
     all.push(("draft_get", drafts::GET));
     all.push(("draft_open_count", drafts::OPEN_COUNT));
     all.push(("draft_expiry", drafts::EXPIRE));
+    all.push(("c11_open", ops::restart::C11_OPEN));
+    all.push(("config_server_of", ops::restart::CONFIG_SERVER_OF));
+    all.push(("auto_notify_switch", autonotify::SWITCH));
+    all.extend(ops::pickup::queries());
     all.extend(vault::store_queries());
     all.extend(prs::job::queries());
     all.extend(prs::links::queries());

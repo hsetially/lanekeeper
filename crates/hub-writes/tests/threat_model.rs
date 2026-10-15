@@ -45,7 +45,7 @@ const MIN_RESIDUAL_RISKS: usize = 11;
 
 /// The limits that earlier tasks recorded for the threat model. Each topic needs one residual-risk bullet that contains every
 /// needle, so a topic cannot be "covered" by words scattered over unrelated bullets.
-const CARRY_FORWARD: [(&str, &[&str]); 20] = [
+const CARRY_FORWARD: [(&str, &[&str]); 26] = [
     (
         "a landed write overwritten before the reconcile job looks is not audited as ours (T1)",
         &[
@@ -117,8 +117,55 @@ const CARRY_FORWARD: [(&str, &[&str]); 20] = [
         &["users.github_login", "unique", "reset_github_link"],
     ),
     (
-        "notify and the config-server restart are not built yet (T11)",
-        &["Not built yet", "T11", "Q37", "Q35"],
+        "notify and the config-server restart wait for the answers to Q37, Q35 and Q10 (T11)",
+        &["Q37", "Q35", "Q10", "NetworkPolicy", "no authentication"],
+    ),
+    (
+        "a notification whose answer is lost is not recorded, and a retry notifies again (T11)",
+        &[
+            "NotifyConfigServer",
+            "Unavailable",
+            "a retry",
+            "notifies again",
+            "no audit event",
+        ],
+    ),
+    (
+        "the config-server's 2xx is taken at its word, and the pickup states are the engine's reading of it (T11)",
+        &[
+            "2xx",
+            "last_notified_at",
+            "CONFIG_CLIENT_CACHE_TTL",
+            "pickup_state",
+            "its own small parser",
+        ],
+    ),
+    (
+        "auto-notify is best effort, and its queue is in memory (T11)",
+        &[
+            "auto_notify_queue",
+            "best effort",
+            "not retried",
+            "auto_notify_dropped",
+            "in memory",
+        ],
+    ),
+    (
+        "the config-server is found by its Deployment name (T11)",
+        &[
+            "config_server_deployment",
+            "csp-configuration-server",
+            "several",
+            "no restart is offered",
+        ],
+    ),
+    (
+        "an approver sees only the first path of a notification, and no action (T11)",
+        &["ProposalView", "first path", "approver", "no `action`"],
+    ),
+    (
+        "the notify route's answer for an approval user is not in the contract (T11)",
+        &["NotifyResult", "proposal_created", "oneOf", "contract change"],
     ),
     (
         "the reveal's limit is kept by each replica, in memory (T10)",
@@ -164,7 +211,7 @@ const CARRY_FORWARD: [(&str, &[&str]); 20] = [
 
 /// Numbers the section states, with where the code holds them: (the words in the section, the file under the repository root, the
 /// text the file must still contain).
-const FACTS: [(&str, &str, &str); 22] = [
+const FACTS: [(&str, &str, &str); 30] = [
     (
         "60 s",
         "crates/hub-writes/src/config.rs",
@@ -274,6 +321,46 @@ const FACTS: [(&str, &str, &str); 22] = [
         "for five seconds before it publishes",
         "crates/hub-writes/src/prs/links.rs",
         "const ANNOUNCE_LEASE: Duration = Duration::from_secs(5);",
+    ),
+    (
+        "a window of two seconds",
+        "crates/hub-writes/src/config.rs",
+        "auto_notify_window: Duration::from_secs(2)",
+    ),
+    (
+        "1,024 written paths",
+        "crates/hub-writes/src/config.rs",
+        "auto_notify_queue: 1_024",
+    ),
+    (
+        "at most eight calls at once",
+        "crates/hub-writes/src/autonotify.rs",
+        "const FLUSH_PARALLELISM: usize = 8;",
+    ),
+    (
+        "`csp-configuration-server` unless",
+        "crates/hub-writes/src/config.rs",
+        "config_server_deployment: \"csp-configuration-server\".to_owned()",
+    ),
+    (
+        "up to 2,000",
+        "crates/hub-writes/src/ops/restart.rs",
+        "pub const MAX_RESTART_OFFER: usize = 2_000;",
+    ),
+    (
+        "default of 20 minutes",
+        "crates/engine/src/resolution/pickup.rs",
+        "pub const DEFAULT_CACHE_TTL_SECS: u32 = 20 * 60;",
+    ),
+    (
+        "about 605 KiB",
+        "crates/hub-writes/src/routes/mod.rs",
+        "pub const MAX_NOTIFY_BODY: usize = 100 * (6 * 1024 + 8) + 4096;",
+    ),
+    (
+        "at most 100 paths",
+        "crates/domain/src/write.rs",
+        "pub const MAX_PATHS: usize = 100;",
     ),
 ];
 
@@ -887,6 +974,115 @@ fn anchor_problems(source: &dyn Fn(&str) -> String) -> Vec<String> {
         "the value is a `Secret` from `find` and is serialised with `serde_json::to_vec`",
     );
 
+    // 12. A notification whose answer is lost releases the claim and records nothing; the config-server's `2xx` is what makes it
+    //     a notification.
+    let notify = source("crates/hub-writes/src/ops/notify.rs");
+    let lost = between(&notify, "Sent::Ambiguous", "Sent::Landed").unwrap_or_default();
+    check(
+        lost.contains("Abort::release(WriteError::Unavailable)")
+            && !lost.contains("record(")
+            && !lost.contains("mark_ambiguous"),
+        "a notification whose answer is lost",
+        "`execute` in ops/notify.rs releases the claim and answers `Unavailable` for an ambiguous notification, with no audit event",
+    );
+    check(
+        source("crates/hub-writes/src/pipeline/execute.rs").contains("if (200..300).contains(&status) {"),
+        "the config-server's 2xx is taken at its word",
+        "`send_notify` in execute.rs counts a notification as made exactly when the config-server's status is a `2xx`",
+    );
+
+    // 13. Auto-notify: the switch is read after the write has committed and before anything is queued; the batcher reads the role
+    //     when the window closes and never announces for a user who needs approval; a full queue drops the path.
+    let record_fn = between(
+        &source("crates/hub-writes/src/pipeline/execute.rs"),
+        "pub(crate) async fn record(hub: &Inner",
+        "\n}\n",
+    )
+    .unwrap_or_default()
+    .to_owned();
+    check(
+        in_order(
+            &record_fn,
+            &[
+                "AutoItem::of(&rec.event)",
+                "record_inner(hub, rec)",
+                "Committed::Done(_)",
+                "hub.auto.offer(hub, item).await",
+            ],
+        ),
+        "auto-notify is best effort",
+        "`record` in execute.rs offers a path to the auto-notify queue only after the transaction that recorded the write has committed",
+    );
+    let auto = source("crates/hub-writes/src/autonotify.rs");
+    let announce = between(&auto, "async fn announce(", "\n}\n").unwrap_or_default();
+    check(
+        in_order(
+            announce,
+            &[
+                "authorize_user(hub, &user, Role::Operator)",
+                "user.requires_approval",
+                "notify_as(",
+                "AuditVia::System",
+            ],
+        ),
+        "auto-notify is best effort",
+        "`announce` in autonotify.rs reads the role when the window closes, skips a user who needs approval, and notifies through `notify_as` with `via = system`",
+    );
+    let offer = between(&auto, "pub async fn offer(", "\n    }\n").unwrap_or_default();
+    check(
+        in_order(
+            offer,
+            &[
+                "self.enabled.load(",
+                "\"auto_notify_switch\"",
+                "self.sender.try_send(item)",
+                "self.dropped.fetch_add(",
+            ],
+        ),
+        "auto-notify is best effort",
+        "`offer` in autonotify.rs does nothing until a batcher exists, reads the swimlane's switch, and drops and counts a path that does not fit the bounded queue",
+    );
+
+    // 14. A notification leaves alone a service that waits for the config-server to restart, and reads a lifetime it cannot parse as
+    //     the default.
+    let pickup = source("crates/hub-writes/src/ops/pickup.rs");
+    let apply = between(&pickup, "pub(crate) async fn apply(", "\n}\n").unwrap_or_default();
+    check(
+        in_order(
+            apply,
+            &[
+                "PickupState::NeedsConfigServerRestart.as_str()",
+                "continue;",
+                "recompute(",
+                "bus",
+            ],
+        ),
+        "the config-server's 2xx is taken at its word",
+        "`apply` in ops/pickup.rs skips a service that waits for the config-server's restart before it asks the engine, and publishes the change through the outbox",
+    );
+    check(
+        pickup.contains("_ => DEFAULT_CACHE_TTL_SECS,"),
+        "the config-server's 2xx is taken at its word",
+        "`cache_ttl_secs` in ops/pickup.rs reads a lifetime it cannot parse, or zero, as the default",
+    );
+
+    // 15. The config-server restart is offered only for exactly one Deployment of the configured name, while C11 is open.
+    let restart_offer =
+        between(&restart, "pub(crate) async fn config_server_offer(", "\n}\n").unwrap_or_default();
+    check(
+        in_order(
+            restart_offer,
+            &[
+                "authorize(hub, ctx, Role::Operator)",
+                "C11_OPEN",
+                "CONFIG_SERVER_OF",
+                "let [(namespace, name)] = found.as_slice() else {",
+            ],
+        ),
+        "the config-server is found by its Deployment name",
+        "`config_server_offer` in ops/restart.rs authorizes an Operator, checks that C11 is open, and offers exactly one Deployment of the configured name",
+    );
+
     problems
 }
 
@@ -1224,6 +1420,54 @@ fn planted_gaps_are_found() {
             "return Ok(Route::Off);\n        }\n        Ok(Route::On",
             "return Err(NotifyError::Rejected);\n        }\n        Ok(Route::On",
             "Teams allowlist",
+        ),
+        (
+            "crates/hub-writes/src/ops/notify.rs",
+            "Err(Abort::release(WriteError::Unavailable))\n        }\n        Sent::Landed(_)",
+            "Err(Abort::keep(WriteError::Unavailable))\n        }\n        Sent::Landed(_)",
+            "answer is lost",
+        ),
+        (
+            "crates/hub-writes/src/pipeline/execute.rs",
+            "if (200..300).contains(&status) {",
+            "if status != 0 {",
+            "2xx is taken at its word",
+        ),
+        (
+            "crates/hub-writes/src/pipeline/execute.rs",
+            "hub.auto.offer(hub, item).await",
+            "hub.auto.offer_before_commit(hub, item).await",
+            "auto-notify is best effort",
+        ),
+        (
+            "crates/hub-writes/src/autonotify.rs",
+            "if user.requires_approval {",
+            "if false {",
+            "auto-notify is best effort",
+        ),
+        (
+            "crates/hub-writes/src/autonotify.rs",
+            "self.sender.try_send(item)",
+            "self.sender.send(item)",
+            "auto-notify is best effort",
+        ),
+        (
+            "crates/hub-writes/src/ops/pickup.rs",
+            "if before == PickupState::NeedsConfigServerRestart.as_str() {",
+            "if false {",
+            "2xx is taken at its word",
+        ),
+        (
+            "crates/hub-writes/src/ops/pickup.rs",
+            "_ => DEFAULT_CACHE_TTL_SECS,",
+            "_ => 1,",
+            "2xx is taken at its word",
+        ),
+        (
+            "crates/hub-writes/src/ops/restart.rs",
+            "let [(namespace, name)] = found.as_slice() else {",
+            "let Some((namespace, name)) = found.first() else {",
+            "Deployment name",
         ),
     ] {
         let planted = plant(relative, from, to);

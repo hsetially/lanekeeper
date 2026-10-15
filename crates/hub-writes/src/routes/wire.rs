@@ -6,9 +6,10 @@
 
 use bytes::Bytes;
 use domain::{
-    ChangeEol, ContentHash, Cursor, DeleteRequest, EditRequest, Expected, NfsPath, Page, PrJobId, PrRequest,
-    PrState, PrTarget, PreviewChange, PreviewId, PreviewRequest, ProposalId, ProposalStatus, RestartRequest,
-    RevertRequest, Secret, ServiceRef, SettingPath, ShortText, SwimlaneId, UploadRequest,
+    ChangeEol, ContentHash, Cursor, DeleteRequest, EditRequest, Expected, NfsPath, NotifyRequest, Page,
+    PrJobId, PrRequest, PrState, PrTarget, PreviewChange, PreviewId, PreviewRequest, ProposalId,
+    ProposalStatus, RestartRequest, RevertRequest, Secret, ServiceRef, SettingPath, ShortText, SwimlaneId,
+    UploadRequest,
 };
 use serde::Deserialize;
 
@@ -123,6 +124,27 @@ pub fn restart_request(swimlane: SwimlaneId, body: &[u8]) -> Read<RestartRequest
     let body: RestartBody = object(body)?;
     let service = ServiceRef::new(&body.namespace, &body.name).map_err(|_| Refusal::BadRequest)?;
     Ok(RestartRequest { swimlane, service })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NotifyBody {
+    paths: Vec<NfsPath>,
+}
+
+/// The JSON body of a notify: one to 100 distinct paths, each a root-relative [`NfsPath`]. Nothing else is the caller's to choose:
+/// not a host, not a form field, not a swimlane (the path of the route names it). A request that is not valid is refused whole.
+pub fn notify_request(swimlane: SwimlaneId, body: &[u8]) -> Read<NotifyRequest> {
+    let body: NotifyBody = object(body)?;
+    let mut seen = std::collections::BTreeSet::new();
+    let distinct = body.paths.iter().all(|p| seen.insert(p.as_str()));
+    if body.paths.is_empty() || body.paths.len() > NotifyRequest::MAX_PATHS || !distinct {
+        return Err(Refusal::BadRequest);
+    }
+    Ok(NotifyRequest {
+        swimlane,
+        paths: body.paths,
+    })
 }
 
 #[derive(Deserialize)]

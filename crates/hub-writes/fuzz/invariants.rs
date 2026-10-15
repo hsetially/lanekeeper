@@ -7,7 +7,7 @@
 //!
 //! | Target | Input | What must hold |
 //! |---|---|---|
-//! | `writes_request_json` | bytes read as the JSON body of an edit, a revert, a restart, a reveal, a draft, a pull request, an approval and a rejection, and as the lines `path`, `expected`, `preview_id` of a delete and `status`, `swimlane`, `cursor`, `limit` of a list of proposals | reading never panics; an accepted request names a valid path and typed hashes, holds no more content than the input had, and survives a round trip through its canonical JSON (or lines) unchanged |
+//! | `writes_request_json` | bytes read as the JSON body of an edit, a revert, a restart, a notify, a reveal, a draft, a pull request, an approval and a rejection, and as the lines `path`, `expected`, `preview_id` of a delete and `status`, `swimlane`, `cursor`, `limit` of a list of proposals | reading never panics; an accepted request names a valid path and typed hashes, holds no more content than the input had, and survives a round trip through its canonical JSON (or lines) unchanged |
 //! | `writes_upload_multipart` | a content type, a line end, and a multipart body, read as an upload form and as a preview form | reading never panics; an accepted request has a valid path, a file within the limit, an `Expected` that agrees with its fields, and survives a round trip through a canonical form unchanged |
 //! | `writes_github_token` | bytes read as the body of `PUT /me/github-token`, and the same bytes as the text of a token | reading never panics; an accepted body holds a token of one to 512 bytes and survives a round trip through its canonical JSON unchanged; the shape check accepts only `github_pat_` followed by letters, digits and underscores within 512 bytes, never calls a fine-grained prefix classic, and its errors are the fixed words, none of which holds the input |
 //! | `writes_github_responses` | bytes read as the answer of `GET /user`, as the answer of `GET /repos/{o}/{r}`, and as the value of the expiry header | reading never panics; an accepted login is valid and is the one an independent JSON read finds; `push` is `true` only when an independent read finds exactly `permissions.push == true`; every error is `Unexpected`; an accepted expiry lies in 2000 to 2200 and survives being written out and read again |
@@ -35,9 +35,9 @@ use hub_writes::github::types::{
     check_token_shape, encode_path,
 };
 use hub_writes::routes::wire::{
-    approve_comment, delete_request, draft_request, edit_request, github_token_request, pr_job_id,
-    pr_link_query, pr_request, preview_request, proposal_id, proposal_query, reject_reason, restart_request,
-    reveal_request, revert_request, upload_request,
+    approve_comment, delete_request, draft_request, edit_request, github_token_request, notify_request,
+    pr_job_id, pr_link_query, pr_request, preview_request, proposal_id, proposal_query, reject_reason,
+    restart_request, reveal_request, revert_request, upload_request,
 };
 use serde_json::json;
 
@@ -121,6 +121,7 @@ pub fn request_json_accepted(data: &[u8]) -> bool {
     edit_request(swimlane(), data).is_ok()
         || revert_request(swimlane(), data).is_ok()
         || restart_request(swimlane(), data).is_ok()
+        || notify_request(swimlane(), data).is_ok()
         || reveal_request(swimlane(), data).is_ok()
         || draft_request(data).is_ok()
         || pr_request(data).is_ok()
@@ -168,6 +169,27 @@ pub fn writes_request_json(data: &[u8]) -> Result<(), String> {
         let again = restart_request(swimlane(), &serde_json::to_vec(&body).unwrap())
             .map_err(|e| format!("an accepted restart is refused when written canonically: {e}"))?;
         ensure(again == r, || "a restart changes in a round trip".into())?;
+    }
+    if let Ok(r) = notify_request(swimlane(), data) {
+        ensure(
+            (1..=domain::NotifyRequest::MAX_PATHS).contains(&r.paths.len()),
+            || "a notify has no paths, or more than 100".into(),
+        )?;
+        let distinct: std::collections::BTreeSet<&str> =
+            r.paths.iter().map(domain::NfsPath::as_str).collect();
+        ensure(distinct.len() == r.paths.len(), || {
+            "a notify names a path twice".into()
+        })?;
+        ensure(
+            r.paths
+                .iter()
+                .all(|p| domain::NfsPath::parse(p.as_str()).as_ref() == Ok(p)),
+            || "a notify names a path that is not in its normal form".into(),
+        )?;
+        let body = json!({ "paths": r.paths.iter().map(domain::NfsPath::as_str).collect::<Vec<_>>() });
+        let again = notify_request(swimlane(), &serde_json::to_vec(&body).unwrap())
+            .map_err(|e| format!("an accepted notify is refused when written canonically: {e}"))?;
+        ensure(again == r, || "a notify changes in a round trip".into())?;
     }
     if let Ok(r) = reveal_request(swimlane(), data) {
         ensure(

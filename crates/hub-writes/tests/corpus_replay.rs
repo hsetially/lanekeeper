@@ -234,6 +234,39 @@ fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
     );
     add(
         t,
+        "accepted_notify",
+        json(json!({ "paths": ["tx-api/tx-api.yml", "application.yml", "tx-api/receipt.bmp"] })),
+    );
+    add(t, "accepted_notify_one_path", json(json!({ "paths": ["a.yml"] })));
+    add(t, "rejected_notify_no_paths", json(json!({ "paths": [] })));
+    add(
+        t,
+        "rejected_notify_with_a_single_path",
+        json(json!({ "path": "a.yml" })),
+    );
+    add(
+        t,
+        "rejected_notify_path_twice",
+        json(json!({ "paths": ["a.yml", "a.yml"] })),
+    );
+    add(t, "rejected_notify_as_array", json(json!([["a.yml"]])));
+    add(
+        t,
+        "rejected_notify_with_a_host",
+        json(json!({ "paths": ["a.yml"], "host": "http://config-server.evil.example" })),
+    );
+    add(
+        t,
+        "rejected_notify_with_a_traversing_path",
+        json(json!({ "paths": ["../../etc/passwd"] })),
+    );
+    add(
+        t,
+        "rejected_notify_with_101_paths",
+        json(json!({ "paths": (0..=100).map(|n| format!("d/f{n}.yml")).collect::<Vec<_>>() })),
+    );
+    add(
+        t,
         "accepted_reveal",
         json(json!({ "path": "tx-api/creds-sit1.yml", "setting": "creds.aws" })),
     );

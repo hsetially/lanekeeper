@@ -139,6 +139,17 @@ impl RequestHash {
         b.finish()
     }
 
+    /// The hash of a `notify`: the swimlane and the paths, in order (the order is what is sent).
+    pub(crate) fn of_notify(swimlane: &domain::SwimlaneId, paths: &[domain::NfsPath]) -> Self {
+        let mut b = HashBuilder::new("notify/1");
+        b.field(swimlane.as_str().as_bytes());
+        b.field(&(paths.len() as u64).to_be_bytes());
+        for p in paths {
+            b.field(p.as_str().as_bytes());
+        }
+        b.finish()
+    }
+
     /// The hash of a `restart`: the swimlane and the service.
     pub(crate) fn of_restart(r: &RestartRequest) -> Self {
         let mut b = HashBuilder::new("restart/1");
@@ -794,6 +805,38 @@ mod tests {
             })
         );
         assert!(!format!("{h0:?}").contains("text"));
+    }
+
+    #[test]
+    fn a_notify_hash_covers_the_swimlane_the_paths_and_their_order() {
+        let sit1 = SwimlaneId::parse("sit1").unwrap();
+        let paths = |list: &[&str]| -> Vec<domain::NfsPath> {
+            list.iter().map(|p| domain::NfsPath::parse(p).unwrap()).collect()
+        };
+        let h0 = RequestHash::of_notify(&sit1, &paths(&["a.yml", "b.yml"]));
+        assert_eq!(h0, RequestHash::of_notify(&sit1, &paths(&["a.yml", "b.yml"])));
+        for (swimlane, list) in [
+            ("sit2", &["a.yml", "b.yml"][..]),
+            ("sit1", &["b.yml", "a.yml"]),
+            ("sit1", &["a.yml"]),
+            ("sit1", &["a.yml", "b.yml", "c.yml"]),
+            // Field boundaries cannot be moved: one path "a.yml/b.yml" is not two.
+            ("sit1", &["a.yml/b.yml"]),
+        ] {
+            assert_ne!(
+                h0,
+                RequestHash::of_notify(&SwimlaneId::parse(swimlane).unwrap(), &paths(list)),
+                "{swimlane} {list:?}"
+            );
+        }
+        // And it is no other action's hash.
+        assert_ne!(
+            h0,
+            RequestHash::of_restart(&RestartRequest {
+                swimlane: sit1,
+                service: domain::ServiceRef::new("sit1", "payments").unwrap(),
+            })
+        );
     }
 
     #[test]

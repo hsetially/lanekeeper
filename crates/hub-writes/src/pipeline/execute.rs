@@ -91,12 +91,57 @@ pub(crate) async fn send_restart(
     call(hub, swimlane, cmd, rejected(RejectReason::InvalidContent)).await
 }
 
+/// What the gateway said, or that it said nothing in time.
+type Asked = Result<Result<AgentReply, GatewayError>, tokio::time::error::Elapsed>;
+
+/// Send `NotifyConfigServer` and read the answer (D86). The agent answers with the config-server's HTTP status: a `2xx` is a
+/// notification that happened, any other status is the config-server's refusal. Neither is the caller's fault, and a retry may
+/// succeed, so a refusal is never stored with the key. An agent that cannot call the config-server at all (it has no address for
+/// it) says so; that is a setting somebody can change, so it too is only "unavailable".
+pub(crate) async fn send_notify(
+    hub: &Inner,
+    swimlane: &SwimlaneId,
+    paths: Vec<NfsPath>,
+    request_id: &RequestId,
+) -> Sent {
+    let cmd = HubCommand::NotifyConfigServer {
+        request_id: request_id.clone(),
+        paths,
+    };
+    let unavailable = Sent::Refused {
+        outcome: rejected(RejectReason::AgentUnavailable),
+        transient: true,
+    };
+    match ask(hub, swimlane, cmd).await {
+        Ok(Ok(AgentReply::Notify { status, .. })) => {
+            if (200..300).contains(&status) {
+                Sent::Landed(None)
+            } else {
+                unavailable
+            }
+        }
+        Ok(Ok(AgentReply::Op(OpResult {
+            ok: false,
+            error: Some(OpError::Unsupported),
+            ..
+        }))) => unavailable,
+        other => interpret(&other, rejected(RejectReason::InvalidContent)),
+    }
+}
+
 /// Send a command and turn the answer into what the request does next. `not_found` is the outcome when the agent says the
 /// thing the command names is not there.
 async fn call(hub: &Inner, swimlane: &SwimlaneId, cmd: HubCommand, not_found: WriteOutcome) -> Sent {
+    interpret(&ask(hub, swimlane, cmd).await, not_found)
+}
+
+async fn ask(hub: &Inner, swimlane: &SwimlaneId, cmd: HubCommand) -> Asked {
     // The gateway has its own timeout; this one is the backstop, a little longer, so the gateway's answer wins when both fire.
     let outer = hub.cfg.agent_timeout + std::time::Duration::from_secs(1);
-    let reply = tokio::time::timeout(outer, hub.gateway.request(swimlane, cmd, hub.cfg.agent_timeout)).await;
+    tokio::time::timeout(outer, hub.gateway.request(swimlane, cmd, hub.cfg.agent_timeout)).await
+}
+
+fn interpret(reply: &Asked, not_found: WriteOutcome) -> Sent {
     match reply {
         Ok(Err(GatewayError::NotConnected | GatewayError::Busy | GatewayError::Unavailable)) => {
             Sent::Undelivered
@@ -105,7 +150,7 @@ async fn call(hub: &Inner, swimlane: &SwimlaneId, cmd: HubCommand, not_found: Wr
             ok: true,
             current_hash,
             ..
-        }))) => Sent::Landed(current_hash),
+        }))) => Sent::Landed(*current_hash),
         Ok(Ok(AgentReply::Op(OpResult {
             ok: false,
             error,
@@ -114,7 +159,7 @@ async fn call(hub: &Inner, swimlane: &SwimlaneId, cmd: HubCommand, not_found: Wr
         }))) => match error {
             Some(OpError::Conflict) => Sent::Refused {
                 outcome: WriteOutcome::Conflict {
-                    current: current_hash,
+                    current: *current_hash,
                 },
                 transient: false,
             },
@@ -182,12 +227,21 @@ pub(crate) struct Recording<'a> {
     pub warnings: Vec<ValidationIssue>,
     /// The state change that commits with the action: the decision on the proposal it carries out, or the draft it applies.
     pub follow: Option<Follow>,
+    /// A notification of the config-server (T11): the services' pickup states it changed, written and hinted with the audit event.
+    pub pickups: Option<crate::ops::pickup::PickupUpdate>,
 }
 
 /// Record an action that happened: the second transaction of the pipeline. The claim is locked first, so that a second finisher
 /// (the retry and the reconcile job) waits and then finds it finished.
 pub(crate) async fn record(hub: &Inner, rec: Recording<'_>) -> Res<Committed> {
-    hub.within("commit", record_inner(hub, rec)).await?
+    // What the batcher would announce, read before the event is consumed.
+    let announce = crate::autonotify::AutoItem::of(&rec.event);
+    let committed = hub.within("commit", record_inner(hub, rec)).await??;
+    // Only a write this request recorded is announced: one that another request already recorded (`Lost`) was announced there.
+    if let (Committed::Done(_), Some(item)) = (&committed, announce) {
+        hub.auto.offer(hub, item).await;
+    }
+    Ok(committed)
 }
 
 async fn record_inner(hub: &Inner, rec: Recording<'_>) -> Res<Committed> {
@@ -200,6 +254,9 @@ async fn record_inner(hub: &Inner, rec: Recording<'_>) -> Res<Committed> {
 
     if let Some(follow) = &rec.follow {
         super::follow::apply(hub, &mut tx, follow).await?;
+    }
+    if let Some(update) = &rec.pickups {
+        crate::ops::pickup::apply(hub, &mut tx, rec.swimlane, update).await?;
     }
     if let Some(w) = &rec.tool_write {
         hub.tool_writes
@@ -284,6 +341,7 @@ pub(crate) async fn commit_applied(
                 applied_hash: Some(observed),
                 warnings: intent.warnings.clone(),
                 follow: intent.follow.clone(),
+                pickups: None,
             }
         }
         // A delete leaves no hash to register: the next scan sees the file gone. The drift hint tells the screens to look.
@@ -302,6 +360,7 @@ pub(crate) async fn commit_applied(
                 applied_hash: None,
                 warnings: Vec::new(),
                 follow: intent.follow.clone(),
+                pickups: None,
             }
         }
     };

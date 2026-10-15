@@ -28,7 +28,7 @@ use crate::pipeline::claim::{Claim, Claimed, claim, settle};
 use crate::pipeline::execute::{Committed, Recording, Sent, record, send_restart};
 use crate::pipeline::lock::{LockState, check as check_lock};
 use crate::pipeline::{Abort, Done, Step};
-use crate::service::Inner;
+use crate::service::{ConfigServerRestartOffer, Inner};
 
 /// How long the lease on a service is held: longer than the agent's timeout, so the lease outlives the command it guards, and
 /// short enough that a replica that dies in the middle frees the service quickly.
@@ -219,6 +219,7 @@ async fn send_and_record(
                     applied_hash: None,
                     warnings: Vec::new(),
                     follow,
+                    pickups: None,
                 },
             )
             .await;
@@ -229,6 +230,72 @@ async fn send_and_record(
             }
         }
     }
+}
+
+pub(crate) const C11_OPEN: &str = "SELECT EXISTS (SELECT 1 FROM findings \
+     WHERE swimlane_id = $1 AND kind = 'config_server_restart_required' AND resolved_at IS NULL)";
+
+pub(crate) const CONFIG_SERVER_OF: &str = "SELECT namespace, name FROM services \
+     WHERE swimlane_id = $1 AND name = $2 AND removed_at IS NULL ORDER BY namespace LIMIT 2";
+
+/// The restart that check C11 asks for (D83, D87), for [`crate::WriteHub::config_server_restart_offer`].
+///
+/// Offered only when the swimlane has an open `config_server_restart_required` finding **and** the cluster report lists exactly
+/// one Deployment with the configured config-server name. With none there is nothing to restart, and with several the hub does
+/// not guess which one a person means. The affected services are every other service of the swimlane: they all ask the
+/// config-server for their files (D82), so none can be served while it is down. Operator only, like the restart.
+pub(crate) async fn config_server_offer(
+    hub: &Inner,
+    ctx: &WriteCtx,
+    swimlane: &SwimlaneId,
+) -> Result<Option<ConfigServerRestartOffer>, WriteError> {
+    authorize(hub, ctx, Role::Operator).await?;
+    let open: bool = hub
+        .within(
+            "c11_open",
+            sqlx::query_scalar(C11_OPEN)
+                .bind(swimlane.as_str())
+                .fetch_one(&hub.pool),
+        )
+        .await?
+        .map_err(|e| Internal::db("c11_open", &e))?;
+    if !open {
+        return Ok(None);
+    }
+    let found: Vec<(String, String)> = hub
+        .within(
+            "config_server_of",
+            sqlx::query_as(CONFIG_SERVER_OF)
+                .bind(swimlane.as_str())
+                .bind(&hub.cfg.config_server_deployment)
+                .fetch_all(&hub.pool),
+        )
+        .await?
+        .map_err(|e| Internal::db("config_server_of", &e))?;
+    let [(namespace, name)] = found.as_slice() else {
+        return Ok(None);
+    };
+    let Ok(service) = ServiceRef::new(namespace, name) else {
+        return Ok(None);
+    };
+    let limit = i64::try_from(MAX_RESTART_OFFER + 1).unwrap_or(2_001);
+    let rows: Vec<(String, String)> = hub
+        .within(
+            "restart_offer",
+            sqlx::query_as(SERVICES_OF)
+                .bind(swimlane.as_str())
+                .bind(limit)
+                .fetch_all(&hub.pool),
+        )
+        .await?
+        .map_err(|e| Internal::db("restart_offer", &e))?;
+    let affected = rows
+        .into_iter()
+        .filter_map(|(ns, n)| ServiceRef::new(&ns, &n).ok())
+        .filter(|s| *s != service)
+        .take(MAX_RESTART_OFFER)
+        .collect();
+    Ok(Some(ConfigServerRestartOffer { service, affected }))
 }
 
 /// The services a restart-all confirmation lists for a change to `path`, or none when the change does not call for one.

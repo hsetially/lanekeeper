@@ -13,6 +13,7 @@
 //! | `POST /api/v1/swimlanes/{id}/files/revert` | Editor | revert |
 //! | `POST /api/v1/swimlanes/{id}/files/reveal` | Editor | reveal a masked value (audited, rate limited, never cached) |
 //! | `POST /api/v1/swimlanes/{id}/restart` | Operator | restart a service |
+//! | `POST /api/v1/swimlanes/{id}/notify` | Operator | tell the config-server which files changed |
 //! | `GET /api/v1/proposals` | Viewer | list proposals |
 //! | `POST /api/v1/proposals/{id}/approve` | Admin | approve a proposal |
 //! | `POST /api/v1/proposals/{id}/reject` | Admin | reject a proposal |
@@ -32,6 +33,7 @@
 mod files;
 mod me;
 pub mod multipart;
+mod notify;
 mod problem;
 mod proposals;
 mod prs;
@@ -64,6 +66,7 @@ pub const UPLOAD_PATH: &str = "/api/v1/swimlanes/{id}/files/upload";
 pub const REVERT_PATH: &str = "/api/v1/swimlanes/{id}/files/revert";
 pub const REVEAL_PATH: &str = "/api/v1/swimlanes/{id}/files/reveal";
 pub const RESTART_PATH: &str = "/api/v1/swimlanes/{id}/restart";
+pub const NOTIFY_PATH: &str = "/api/v1/swimlanes/{id}/notify";
 pub const PROPOSALS_PATH: &str = "/api/v1/proposals";
 pub const APPROVE_PATH: &str = "/api/v1/proposals/{id}/approve";
 pub const REJECT_PATH: &str = "/api/v1/proposals/{id}/reject";
@@ -75,7 +78,7 @@ pub const PR_JOB_PATH: &str = "/api/v1/pr-jobs/{id}";
 
 /// Every route this task mounts, with its method and the lowest role that may call it. The route-table test compares this list
 /// with `api/openapi.yaml` and with what [`mount`] registers.
-pub const WRITE_ROUTES: [(&str, &str, Role); 17] = [
+pub const WRITE_ROUTES: [(&str, &str, Role); 18] = [
     ("PUT", FILES_PATH, Role::Editor),
     ("DELETE", FILES_PATH, Role::Editor),
     ("POST", PREVIEW_PATH, Role::Editor),
@@ -83,6 +86,7 @@ pub const WRITE_ROUTES: [(&str, &str, Role); 17] = [
     ("POST", REVERT_PATH, Role::Editor),
     ("POST", REVEAL_PATH, Role::Editor),
     ("POST", RESTART_PATH, Role::Operator),
+    ("POST", NOTIFY_PATH, Role::Operator),
     ("GET", PROPOSALS_PATH, Role::Viewer),
     ("POST", APPROVE_PATH, Role::Admin),
     ("POST", REJECT_PATH, Role::Admin),
@@ -101,6 +105,10 @@ pub const MAX_EDIT_BODY: usize = 12 * 1024 * 1024 + 64 * 1024;
 
 /// The bodies of the small JSON requests (revert, restart).
 pub const MAX_SMALL_BODY: usize = 16 * 1024;
+
+/// The body of `POST /notify`: 100 paths of up to 1,024 characters (a JSON string can be six times its text), the commas and quotes,
+/// and the framing.
+pub const MAX_NOTIFY_BODY: usize = 100 * (6 * 1024 + 8) + 4096;
 
 /// The body of a token request: a token of at most 512 characters, which JSON may write as six bytes each, and the field name.
 pub const MAX_TOKEN_BODY: usize = 6 * crate::github::MAX_TOKEN_LEN + 256;
@@ -271,6 +279,22 @@ pub fn mount(router: GuardedRouter, state: Arc<WriteState>) -> GuardedRouter {
                 }
             })
             .layer(DefaultBodyLimit::max(MAX_SMALL_BODY))
+        })
+        .route(&Method::POST, NOTIFY_PATH, Role::Operator, {
+            let s = Arc::clone(&s);
+            (move |Path(id): Path<String>,
+                   user: Extension<AuthenticatedUser>,
+                   headers: HeaderMap,
+                   body: Result<Bytes, BytesRejection>| {
+                let s = Arc::clone(&s);
+                async move {
+                    match body_of(body) {
+                        Ok(body) => notify::notify(&s, &id, user.0.0, &headers, &body).await,
+                        Err(e) => *e,
+                    }
+                }
+            })
+            .layer(DefaultBodyLimit::max(MAX_NOTIFY_BODY))
         })
         .route(&Method::GET, PROPOSALS_PATH, Role::Viewer, {
             let s = Arc::clone(&s);

@@ -19,6 +19,7 @@ use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use tracing::Instrument;
 
+use crate::autonotify::{AutoNotifier, AutoQueue};
 use crate::clock::Clock;
 use crate::config::{PREVIEW_KEY_SECRET, WriteConfig};
 use crate::error::{ConfigError, Internal, Res};
@@ -77,6 +78,8 @@ pub(crate) struct Inner {
     pub checks: Semaphore,
     /// How often one user may reveal a masked value (T10).
     pub reveals: RevealLimiter,
+    /// The writes that auto-notify will announce (T11).
+    pub auto: AutoQueue,
 }
 
 impl Inner {
@@ -113,6 +116,16 @@ pub(crate) fn millis(d: Duration) -> i64 {
     i64::try_from(d.as_millis()).unwrap_or(i64::MAX)
 }
 
+/// The restart that check C11 asks for, as the confirmation shows it (D83, D87).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigServerRestartOffer {
+    /// The config-server's Deployment: what the restart request names.
+    pub service: ServiceRef,
+    /// The other services of the swimlane, which read the config-server and cannot be served while it restarts. Bounded by
+    /// [`crate::MAX_RESTART_OFFER`].
+    pub affected: Vec<ServiceRef>,
+}
+
 /// The write service (`docs/interfaces.md`): every change goes through the pipeline in [`crate::pipeline`].
 #[derive(Clone)]
 pub struct WriteHub {
@@ -135,6 +148,7 @@ impl WriteHub {
         let deny = DenyMatcher::with_globs(deps.config.extra_deny_globs.iter().map(String::as_str))
             .map_err(|_| ConfigError::DenyGlob)?;
         let max_checks = deps.config.max_concurrent_checks;
+        let auto_queue = deps.config.auto_notify_queue;
         let reveals = RevealLimiter::new(deps.config.reveals_per_minute, deps.config.reveal_tracked_users);
         let mut limits = Limits::DEFAULT;
         limits.input_bytes = deps.config.max_content_bytes;
@@ -158,6 +172,7 @@ impl WriteHub {
                 limits,
                 checks: Semaphore::new(max_checks),
                 reveals,
+                auto: AutoQueue::new(auto_queue),
             }),
             prs: Arc::new(OnceLock::new()),
         })
@@ -206,10 +221,38 @@ impl WriteHub {
     ) -> Result<Vec<ServiceRef>, WriteError> {
         crate::ops::restart::restart_offer(&self.inner, ctx, swimlane, path).await
     }
+
+    /// The restart that check C11 asks for (D83, D87): the config-server's Deployment and the services that cannot be served while
+    /// it restarts, for the confirmation. `None` when C11 is not open for the swimlane, or when the cluster report lists no
+    /// Deployment of the configured name, or several (the hub does not guess). The restart itself is the ordinary
+    /// [`ports::WriteService::restart`] of that service: Operator only, one at a time, audited, and a proposal for a user who needs
+    /// approval. Operator only, like the restart.
+    ///
+    /// # Errors
+    /// [`WriteError::Forbidden`] below Operator, [`WriteError::Unavailable`] when the store does not answer.
+    pub async fn config_server_restart_offer(
+        &self,
+        ctx: &WriteCtx,
+        swimlane: &SwimlaneId,
+    ) -> Result<Option<ConfigServerRestartOffer>, WriteError> {
+        crate::ops::restart::config_server_offer(&self.inner, ctx, swimlane).await
+    }
+
+    /// How many written paths auto-notify has not announced because its queue was full, since the hub started. For a metric.
+    pub fn auto_notify_dropped(&self) -> u64 {
+        self.inner.auto.dropped()
+    }
+
+    /// The batcher of auto-notify (T11, D85): hands out the one batcher of this hub, and turns the announcing of writes on. Run
+    /// [`AutoNotifier::run`] as a task of the process; until then (and on a hub that never asks) a committed write announces
+    /// nothing and costs nothing. `None` the second time.
+    pub fn auto_notifier(&self) -> Option<AutoNotifier> {
+        let queue = self.inner.auto.take_receiver()?;
+        Some(AutoNotifier::new(Arc::clone(&self.inner), queue))
+    }
 }
 
-/// Actions that are authorized but not carried out by this build (a notify until T11 wires it, a pull request until
-/// [`WriteHub::pr_jobs`] has been called): the caller is told the service is unavailable, after the role check, with nothing
+/// Actions that are authorized but not carried out by this build (a pull request until [`WriteHub::pr_jobs`] has been called): the caller is told the service is unavailable, after the role check, with nothing
 /// claimed, sent or recorded.
 async fn not_wired<T>(hub: &WriteHub, ctx: &WriteCtx, floor: Role) -> Result<T, WriteError> {
     authorize(&hub.inner, ctx, floor).await?;
@@ -325,7 +368,16 @@ impl WriteService for WriteHub {
             .await
     }
 
-    async fn notify(&self, ctx: &WriteCtx, _r: NotifyRequest) -> Result<WriteOutcome, WriteError> {
-        not_wired(self, ctx, Role::Operator).await
+    async fn notify(&self, ctx: &WriteCtx, r: NotifyRequest) -> Result<WriteOutcome, WriteError> {
+        let span = tracing::info_span!(
+            "write.notify",
+            request_id = %ctx.request_id,
+            user = %ctx.user.id,
+            swimlane = %r.swimlane,
+            paths = r.paths.len(),
+        );
+        crate::ops::notify::notify(&self.inner, ctx, r)
+            .instrument(span)
+            .await
     }
 }
