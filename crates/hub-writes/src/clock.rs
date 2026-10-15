@@ -42,8 +42,16 @@ impl ManualClock {
         self.millis.store(to.unix_millis(), Ordering::SeqCst);
     }
 
+    /// Moves the clock by `secs`, stopping at the ends of the range instead of wrapping: a `fetch_add` from `i64::MAX` would
+    /// give a negative time, and every expiry would be "long ago".
     pub fn advance_secs(&self, secs: i64) {
-        self.millis.fetch_add(secs.saturating_mul(1000), Ordering::SeqCst);
+        let delta = secs.saturating_mul(1000);
+        // The closure always answers, so the update cannot fail; both arms of the result hold the previous value.
+        let _previous = self
+            .millis
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |now| {
+                Some(now.saturating_add(delta))
+            });
     }
 }
 
@@ -73,5 +81,28 @@ mod tests {
         assert_eq!(clock.now().unix_millis(), 8_000);
         clock.set(Timestamp::from_unix_millis(1));
         assert_eq!(clock.now().unix_millis(), 1);
+    }
+
+    /// A clock moved past the end of time stays at the end: a wrap to a negative time would make every expiry "long ago".
+    #[test]
+    fn manual_clock_saturates_at_both_ends() {
+        let clock = ManualClock::at(Timestamp::from_unix_millis(i64::MAX - 500));
+        clock.advance_secs(1);
+        assert_eq!(clock.now().unix_millis(), i64::MAX);
+        clock.advance_secs(1);
+        assert_eq!(clock.now().unix_millis(), i64::MAX);
+        clock.advance_secs(i64::MAX);
+        assert_eq!(clock.now().unix_millis(), i64::MAX);
+
+        let clock = ManualClock::at(Timestamp::from_unix_millis(i64::MIN + 500));
+        clock.advance_secs(-1);
+        assert_eq!(clock.now().unix_millis(), i64::MIN);
+        clock.advance_secs(i64::MIN);
+        assert_eq!(clock.now().unix_millis(), i64::MIN);
+
+        // The seconds themselves overflowing a millisecond count was already clamped; with a start of 1 it must reach the end.
+        let clock = ManualClock::at(Timestamp::from_unix_millis(1));
+        clock.advance_secs(i64::MAX);
+        assert_eq!(clock.now().unix_millis(), i64::MAX);
     }
 }
