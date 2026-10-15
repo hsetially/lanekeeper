@@ -114,7 +114,18 @@ pub(super) async fn apply_pr(
             Err(_) => return Err(Abort::release(ports::WriteError::Unavailable)),
         };
         if current != Some(*expected) {
-            return mark_stale(hub, ctx, claim, admin, p, path, Some(*expected), current).await;
+            return mark_stale(
+                hub,
+                ctx,
+                claim,
+                admin,
+                p,
+                path,
+                Some(*expected),
+                current,
+                comment.as_deref(),
+            )
+            .await;
         }
     }
 

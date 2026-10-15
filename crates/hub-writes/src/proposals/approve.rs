@@ -253,7 +253,18 @@ async fn apply_content(
         AgentFile::Unreachable => return Ok(Done::Release(rejected(RejectReason::AgentUnavailable))),
     };
     if current != expected {
-        return mark_stale(hub, ctx, claim, admin, p, &path, expected, current).await;
+        return mark_stale(
+            hub,
+            ctx,
+            claim,
+            admin,
+            p,
+            &path,
+            expected,
+            current,
+            comment.as_deref(),
+        )
+        .await;
     }
 
     // And the content is validated again, with today's rules: a rule that learned a new secret shape blocks it.
@@ -328,10 +339,32 @@ async fn apply_delete(
     let bytes = match agent_file(hub, &p.swimlane, &path).await {
         AgentFile::Present { hash, bytes } if hash == expected => bytes,
         AgentFile::Present { hash, .. } => {
-            return mark_stale(hub, ctx, claim, admin, p, &path, Some(expected), Some(hash)).await;
+            return mark_stale(
+                hub,
+                ctx,
+                claim,
+                admin,
+                p,
+                &path,
+                Some(expected),
+                Some(hash),
+                comment.as_deref(),
+            )
+            .await;
         }
         AgentFile::Absent => {
-            return mark_stale(hub, ctx, claim, admin, p, &path, Some(expected), None).await;
+            return mark_stale(
+                hub,
+                ctx,
+                claim,
+                admin,
+                p,
+                &path,
+                Some(expected),
+                None,
+                comment.as_deref(),
+            )
+            .await;
         }
         AgentFile::Unreachable => return Ok(Done::Release(rejected(RejectReason::AgentUnavailable))),
     };
@@ -461,11 +494,12 @@ async fn mark_stale(
     path: &NfsPath,
     expected: Option<ContentHash>,
     current: Option<ContentHash>,
+    comment: Option<&str>,
 ) -> Step<Done> {
     match hub
         .within(
             "proposal_stale",
-            stale_tx(hub, ctx, &claim.key, admin, p, path, expected, current),
+            stale_tx(hub, ctx, &claim.key, admin, p, path, expected, current, comment),
         )
         .await?
     {
@@ -488,6 +522,7 @@ async fn stale_tx(
     path: &NfsPath,
     expected: Option<ContentHash>,
     current: Option<ContentHash>,
+    comment: Option<&str>,
 ) -> Res<Marked> {
     let mut tx = hub
         .pool
@@ -509,7 +544,8 @@ async fn stale_tx(
             proposal: p.id,
             approved: true,
             approver: &admin.id,
-            comment: None,
+            // The approver's explanation is part of the decision, whatever the re-check then finds.
+            comment,
             rechecked: current,
             at_ms: now,
         },

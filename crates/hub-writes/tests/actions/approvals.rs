@@ -520,6 +520,86 @@ async fn approval_rechecks_the_hash_and_marks_stale() {
     assert_eq!(l.rig.chain().await.len(), chain_before + 1);
 }
 
+/// The approver's comment is part of the decision whatever the decision turns out to be: a proposal that the re-check finds stale
+/// keeps the explanation that came with the approval, for an edit and for a delete.
+#[tokio::test]
+async fn the_comment_of_an_approval_that_finds_the_proposal_stale_is_kept() {
+    let Some(l) = lane().await else { return };
+    let comment = |id: ProposalId| {
+        let pool = l.rig.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Option<String>>("SELECT reason FROM approvals WHERE proposal_id = $1")
+                .bind(id.get())
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    let edit_id = l.propose("p-1", "a.yml", "x: 1\n", "x: 2\n").await;
+    l.rig
+        .agent
+        .put(&l.s, &ports::conformance::sample::nfs("a.yml"), b"x: 9\n");
+    let out = l
+        .rig
+        .hub
+        .approve_proposal(
+            &ctx(&l.admin, "k-1"),
+            edit_id,
+            Some(text("checked with the owner")),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(out, WriteOutcome::Conflict { .. }), "{out:?}");
+    assert_eq!(l.status(edit_id).await, "stale");
+    assert_eq!(comment(edit_id).await.as_deref(), Some("checked with the owner"));
+
+    let pv = l
+        .rig
+        .hub
+        .preview_effect(
+            &ctx(&l.careful, "pv-1"),
+            domain::PreviewRequest {
+                swimlane: l.s.clone(),
+                path: ports::conformance::sample::nfs("old.txt"),
+                change: domain::PreviewChange::Delete {
+                    expected: h("keep\n"),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let delete_id = match l
+        .rig
+        .hub
+        .delete(
+            &ctx(&l.careful, "d-1"),
+            domain::DeleteRequest {
+                swimlane: l.s.clone(),
+                path: ports::conformance::sample::nfs("old.txt"),
+                expected: h("keep\n"),
+                preview: Some(pv.preview_id),
+            },
+        )
+        .await
+        .unwrap()
+    {
+        WriteOutcome::ProposalCreated { id } => id,
+        other => panic!("{other:?}"),
+    };
+    l.rig
+        .agent
+        .put(&l.s, &ports::conformance::sample::nfs("old.txt"), b"changed\n");
+    let out = l
+        .rig
+        .hub
+        .approve_proposal(&ctx(&l.admin, "k-2"), delete_id, Some(text("go ahead")))
+        .await
+        .unwrap();
+    assert!(matches!(out, WriteOutcome::Conflict { .. }), "{out:?}");
+    assert_eq!(l.status(delete_id).await, "stale");
+    assert_eq!(comment(delete_id).await.as_deref(), Some("go ahead"));
+}
+
 #[tokio::test]
 async fn approval_on_changed_file_marks_stale_and_writes_nothing() {
     let Some(l) = lane().await else { return };
