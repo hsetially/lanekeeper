@@ -7,7 +7,7 @@
 //!
 //! | Target | Input | What must hold |
 //! |---|---|---|
-//! | `writes_request_json` | bytes read as the JSON body of an edit, a revert and a restart, and as the lines `path`, `expected`, `preview_id` of a delete | reading never panics; an accepted request names a valid path and typed hashes, holds no more content than the input had, and survives a round trip through its canonical JSON (or lines) unchanged |
+//! | `writes_request_json` | bytes read as the JSON body of an edit, a revert, a restart, a draft, an approval and a rejection, and as the lines `path`, `expected`, `preview_id` of a delete and `status`, `swimlane`, `cursor`, `limit` of a list of proposals | reading never panics; an accepted request names a valid path and typed hashes, holds no more content than the input had, and survives a round trip through its canonical JSON (or lines) unchanged |
 //! | `writes_upload_multipart` | a content type, a line end, and a multipart body, read as an upload form and as a preview form | reading never panics; an accepted request has a valid path, a file within the limit, an `Expected` that agrees with its fields, and survives a round trip through a canonical form unchanged |
 //! | `writes_preview_id` | text read as a preview id presented with a fixed request at a fixed time | checking never panics; an id is accepted only if it is exactly the one the service issues for that request at the second it names (so each request has one id for each second), and that second is within the ten minutes before now |
 
@@ -23,7 +23,8 @@ use bytes::Bytes;
 use domain::{Expected, PreviewChange, SwimlaneId};
 use hub_writes::fuzz_hooks;
 use hub_writes::routes::wire::{
-    delete_request, edit_request, preview_request, restart_request, revert_request, upload_request,
+    approve_comment, delete_request, draft_request, edit_request, preview_request, proposal_id,
+    proposal_query, reject_reason, restart_request, revert_request, upload_request,
 };
 use serde_json::json;
 
@@ -74,10 +75,32 @@ fn delete_lines(data: &[u8]) -> Option<(String, String, Option<String>)> {
     Some((path, expected, preview))
 }
 
+/// The list of proposals reads the input as four lines: the status, the swimlane, the cursor and the limit. A line may be empty.
+fn query_lines(data: &[u8]) -> (Option<String>, Option<String>, Option<String>, Option<u32>, bool) {
+    let text = String::from_utf8_lossy(data).into_owned();
+    let mut lines = text
+        .split('\n')
+        .map(|l| if l.is_empty() { None } else { Some(l.to_owned()) });
+    let (status, swimlane, cursor) = (
+        lines.next().flatten(),
+        lines.next().flatten(),
+        lines.next().flatten(),
+    );
+    let limit_line = lines.next().flatten();
+    let limit = limit_line.as_deref().and_then(|l| l.parse::<u32>().ok());
+    // A limit that is not a number is not a query at all (the route refuses it before the reader).
+    let wellformed = limit_line.is_none() || limit.is_some();
+    (status, swimlane, cursor, limit, wellformed)
+}
+
 pub fn request_json_accepted(data: &[u8]) -> bool {
     edit_request(swimlane(), data).is_ok()
         || revert_request(swimlane(), data).is_ok()
         || restart_request(swimlane(), data).is_ok()
+        || draft_request(data).is_ok()
+        // An approval may have no body at all; the empty input is not a seed of "accepted".
+        || (!data.is_empty() && approve_comment(data).is_ok())
+        || reject_reason(data).is_ok()
         || delete_lines(data)
             .is_some_and(|(p, e, v)| delete_request(swimlane(), &p, &e, v.as_deref()).is_ok())
 }
@@ -119,6 +142,83 @@ pub fn writes_request_json(data: &[u8]) -> Result<(), String> {
         let again = restart_request(swimlane(), &serde_json::to_vec(&body).unwrap())
             .map_err(|e| format!("an accepted restart is refused when written canonically: {e}"))?;
         ensure(again == r, || "a restart changes in a round trip".into())?;
+    }
+    if let Ok(r) = draft_request(data) {
+        ensure(r.content.len() <= data.len(), || {
+            "a draft holds more content than it was sent".into()
+        })?;
+        ensure(
+            domain::NfsPath::parse(r.path.as_str()).as_ref() == Ok(&r.path),
+            || "a draft names a path that is not in its normal form".into(),
+        )?;
+        let text =
+            String::from_utf8(r.content.to_vec()).map_err(|_| "draft content is not text".to_owned())?;
+        let body = json!({
+            "swimlane": r.swimlane.as_str(),
+            "path": r.path.as_str(),
+            "expected": r.expected,
+            "content": text,
+        });
+        let again = draft_request(&serde_json::to_vec(&body).unwrap())
+            .map_err(|e| format!("an accepted draft is refused when written canonically: {e}"))?;
+        ensure(again == r, || "a draft changes in a round trip".into())?;
+    }
+    if !data.is_empty() {
+        if let Ok(comment) = approve_comment(data) {
+            if let Some(c) = &comment {
+                ensure(
+                    c.as_str().len() <= 256 && !c.as_str().chars().any(char::is_control),
+                    || "an approval comment is not short plain text".into(),
+                )?;
+            }
+            let body = json!({ "comment": comment.as_ref().map(domain::ShortText::as_str) });
+            let again = approve_comment(&serde_json::to_vec(&body).unwrap())
+                .map_err(|e| format!("an accepted approval is refused when written canonically: {e}"))?;
+            ensure(again == comment, || "an approval changes in a round trip".into())?;
+        }
+    }
+    if let Ok(reason) = reject_reason(data) {
+        ensure(!reason.as_str().trim().is_empty(), || {
+            "a rejection has a blank reason".into()
+        })?;
+        let body = json!({ "reason": reason.as_str() });
+        let again = reject_reason(&serde_json::to_vec(&body).unwrap())
+            .map_err(|e| format!("an accepted rejection is refused when written canonically: {e}"))?;
+        ensure(again == reason, || "a rejection changes in a round trip".into())?;
+    }
+    let (status, lane, cursor, limit, wellformed) = query_lines(data);
+    if wellformed {
+        if let Ok(q) = proposal_query(status.as_deref(), lane.as_deref(), cursor.as_deref(), limit) {
+            ensure((1..=500).contains(&q.page.limit()), || {
+                "a list asks for a page outside 1 to 500".into()
+            })?;
+            ensure(
+                q.page.cursor().map(domain::Cursor::as_str) == cursor.as_deref(),
+                || "a list changes its cursor".into(),
+            )?;
+            ensure(
+                q.status.map(domain::ProposalStatus::as_str) == status.as_deref(),
+                || "a list changes its status".into(),
+            )?;
+            ensure(
+                q.swimlane.as_ref().map(SwimlaneId::as_str) == lane.as_deref(),
+                || "a list changes its swimlane".into(),
+            )?;
+        }
+    }
+    let first_line = String::from_utf8_lossy(data)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .to_owned();
+    if let Ok(id) = proposal_id(&first_line) {
+        ensure(id.get() >= 1, || "a proposal id below one".into())?;
+        ensure(first_line.bytes().all(|b| b.is_ascii_digit()), || {
+            "a proposal id with a sign or a space".into()
+        })?;
+        ensure(proposal_id(&id.to_string()) == Ok(id), || {
+            "a proposal id changes in a round trip".into()
+        })?;
     }
     if let Some((path, expected, preview)) = delete_lines(data) {
         if let Ok(r) = delete_request(swimlane(), &path, &expected, preview.as_deref()) {

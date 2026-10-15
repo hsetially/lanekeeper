@@ -296,3 +296,79 @@ async fn edit_as_editor_and_approval_user_are_the_two_outcomes_of_a_normal_edit(
         .unwrap();
     assert!(matches!(proposed, WriteOutcome::ProposalCreated { .. }));
 }
+
+#[tokio::test]
+async fn matrix_decisions_and_the_queue_by_role_and_status() {
+    use domain::ProposalId;
+    use hub_writes::{ProposalDesk, ProposalQuery};
+
+    let Some(rig) = rig().await else { return };
+    let viewer = rig.user(1, Role::Viewer).await;
+    let editor = rig.user(2, Role::Editor).await;
+    let operator = rig.user(3, Role::Operator).await;
+    let admin = rig.user(4, Role::Admin).await;
+    let pending_admin = rig
+        .user_with_status(5, Some(Role::Admin), UserStatus::Pending)
+        .await;
+    let disabled_admin = rig
+        .user_with_status(6, Some(Role::Admin), UserStatus::Disabled)
+        .await;
+    let roleless = rig.user_with_status(7, None, UserStatus::Active).await;
+    let id = ProposalId::from(1);
+    let reason = ShortText::parse("no").unwrap();
+    let queue = || ProposalQuery {
+        status: None,
+        swimlane: None,
+        page: domain::Page::new(10, None).unwrap(),
+    };
+
+    // Approving and rejecting are for admins: everyone else is forbidden, whatever the status or the snapshot.
+    for (who, name) in [
+        (&viewer, "viewer"),
+        (&editor, "editor"),
+        (&operator, "operator"),
+        (&pending_admin, "pending admin"),
+        (&disabled_admin, "disabled admin"),
+        (&roleless, "no role"),
+    ] {
+        assert_eq!(
+            rig.hub.approve_proposal(&ctx(who, "k"), id, None).await,
+            Err(WriteError::Forbidden),
+            "approve as {name}"
+        );
+        assert_eq!(
+            rig.hub.reject_proposal(&ctx(who, "k"), id, reason.clone()).await,
+            Err(WriteError::Forbidden),
+            "reject as {name}"
+        );
+    }
+    // An admin gets past authorization, and finds there is no such proposal.
+    assert_eq!(
+        rig.hub.approve_proposal(&ctx(&admin, "k-1"), id, None).await,
+        Err(WriteError::NotFound)
+    );
+    assert_eq!(
+        rig.hub.reject_proposal(&ctx(&admin, "k-2"), id, reason).await,
+        Err(WriteError::NotFound)
+    );
+    // The queue is for everyone who is active and has a role.
+    for who in [&viewer, &editor, &operator, &admin] {
+        assert!(
+            rig.hub
+                .list_proposals(who, queue())
+                .await
+                .unwrap()
+                .items
+                .is_empty()
+        );
+    }
+    for who in [&pending_admin, &disabled_admin, &roleless] {
+        assert_eq!(
+            rig.hub.list_proposals(who, queue()).await,
+            Err(WriteError::Forbidden)
+        );
+    }
+    assert_eq!(rig.agent.commands().len(), 0, "nothing was sent to the agent");
+    assert_eq!(rig.chain().await.len(), 0, "no audit event");
+    assert_eq!(rig.bus.published().await.len(), 0, "no event");
+}

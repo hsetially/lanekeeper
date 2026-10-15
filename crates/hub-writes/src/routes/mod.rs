@@ -2,7 +2,7 @@
 //! [`hub_platform::GuardedRouter`] so that every route has its guard declared and the route table can be checked against
 //! `api/openapi.yaml`.
 //!
-//! This task mounts the file and service actions:
+//! The file and service actions, and the approvals and drafts:
 //!
 //! | Route | Role | Action |
 //! |---|---|---|
@@ -12,6 +12,11 @@
 //! | `POST /api/v1/swimlanes/{id}/files/upload` | Editor | upload |
 //! | `POST /api/v1/swimlanes/{id}/files/revert` | Editor | revert |
 //! | `POST /api/v1/swimlanes/{id}/restart` | Operator | restart a service |
+//! | `GET /api/v1/proposals` | Viewer | list proposals |
+//! | `POST /api/v1/proposals/{id}/approve` | Admin | approve a proposal |
+//! | `POST /api/v1/proposals/{id}/reject` | Admin | reject a proposal |
+//! | `POST /api/v1/drafts` | Editor | create a draft |
+//! | `POST /api/v1/drafts/{id}/apply` | Editor | apply a draft |
 //!
 //! A route does four things and nothing else: read the request into typed values (a bad one is 400 and says nothing about why),
 //! build the [`WriteCtx`], call the service and map its answer to a response. Authorization is the guard's and the service's; the
@@ -21,6 +26,7 @@
 mod files;
 pub mod multipart;
 mod problem;
+mod proposals;
 mod upload;
 pub mod wire;
 
@@ -37,22 +43,34 @@ use http::{HeaderMap, Method, header};
 use hub_platform::{ApiError, AuthenticatedUser, GuardedRouter};
 use ports::WriteService;
 
+use crate::ProposalDesk;
+
 /// The path of the edit and delete routes.
 pub const FILES_PATH: &str = "/api/v1/swimlanes/{id}/files";
 pub const PREVIEW_PATH: &str = "/api/v1/swimlanes/{id}/files/preview";
 pub const UPLOAD_PATH: &str = "/api/v1/swimlanes/{id}/files/upload";
 pub const REVERT_PATH: &str = "/api/v1/swimlanes/{id}/files/revert";
 pub const RESTART_PATH: &str = "/api/v1/swimlanes/{id}/restart";
+pub const PROPOSALS_PATH: &str = "/api/v1/proposals";
+pub const APPROVE_PATH: &str = "/api/v1/proposals/{id}/approve";
+pub const REJECT_PATH: &str = "/api/v1/proposals/{id}/reject";
+pub const DRAFTS_PATH: &str = "/api/v1/drafts";
+pub const APPLY_DRAFT_PATH: &str = "/api/v1/drafts/{id}/apply";
 
 /// Every route this task mounts, with its method and the lowest role that may call it. The route-table test compares this list
 /// with `api/openapi.yaml` and with what [`mount`] registers.
-pub const WRITE_ROUTES: [(&str, &str, Role); 6] = [
+pub const WRITE_ROUTES: [(&str, &str, Role); 11] = [
     ("PUT", FILES_PATH, Role::Editor),
     ("DELETE", FILES_PATH, Role::Editor),
     ("POST", PREVIEW_PATH, Role::Editor),
     ("POST", UPLOAD_PATH, Role::Editor),
     ("POST", REVERT_PATH, Role::Editor),
     ("POST", RESTART_PATH, Role::Operator),
+    ("GET", PROPOSALS_PATH, Role::Viewer),
+    ("POST", APPROVE_PATH, Role::Admin),
+    ("POST", REJECT_PATH, Role::Admin),
+    ("POST", DRAFTS_PATH, Role::Editor),
+    ("POST", APPLY_DRAFT_PATH, Role::Editor),
 ];
 
 /// A JSON string can be six times its text (`\u0000`), so a 2 MiB text can need 12 MiB of body. The limit is that, plus the
@@ -65,9 +83,10 @@ pub const MAX_SMALL_BODY: usize = 16 * 1024;
 /// What a multipart body may hold besides the file: the small text fields and the framing.
 pub const MULTIPART_OVERHEAD: usize = 64 * 1024;
 
-/// What the routes need: the service they call and the size they allow a file.
+/// What the routes need: the services they call and the size they allow a file.
 pub struct WriteState {
     service: Arc<dyn WriteService>,
+    proposals: Arc<dyn ProposalDesk>,
     max_file_bytes: usize,
 }
 
@@ -82,9 +101,14 @@ impl std::fmt::Debug for WriteState {
 impl WriteState {
     /// `max_file_bytes` is the most one file may weigh (the service's own limit, [`crate::WriteConfig::max_content_bytes`]).
     #[must_use]
-    pub fn new(service: Arc<dyn WriteService>, max_file_bytes: usize) -> Arc<Self> {
+    pub fn new(
+        service: Arc<dyn WriteService>,
+        proposals: Arc<dyn ProposalDesk>,
+        max_file_bytes: usize,
+    ) -> Arc<Self> {
         Arc::new(Self {
             service,
+            proposals,
             max_file_bytes,
         })
     }
@@ -92,6 +116,8 @@ impl WriteState {
 
 /// Register the routes of this task. Every one is guarded; a role below its floor never reaches the handler.
 #[must_use]
+// One registration for each route, in the order of the table above; splitting it would hide which routes exist.
+#[allow(clippy::too_many_lines)]
 pub fn mount(router: GuardedRouter, state: Arc<WriteState>) -> GuardedRouter {
     let multipart_limit = state.max_file_bytes.saturating_add(MULTIPART_OVERHEAD);
     let s = state;
@@ -191,6 +217,73 @@ pub fn mount(router: GuardedRouter, state: Arc<WriteState>) -> GuardedRouter {
                 }
             })
             .layer(DefaultBodyLimit::max(MAX_SMALL_BODY))
+        })
+        .route(&Method::GET, PROPOSALS_PATH, Role::Viewer, {
+            let s = Arc::clone(&s);
+            move |user: Extension<AuthenticatedUser>,
+                  query: Result<Query<proposals::ListQuery>, QueryRejection>| {
+                let s = Arc::clone(&s);
+                async move {
+                    match query {
+                        Ok(Query(query)) => proposals::list(&s, user.0.0, query).await,
+                        Err(_) => ApiError::BadRequest.into_response(),
+                    }
+                }
+            }
+        })
+        .route(&Method::POST, APPROVE_PATH, Role::Admin, {
+            let s = Arc::clone(&s);
+            (move |Path(id): Path<String>,
+                   user: Extension<AuthenticatedUser>,
+                   headers: HeaderMap,
+                   body: Result<Bytes, BytesRejection>| {
+                let s = Arc::clone(&s);
+                async move {
+                    match body_of(body) {
+                        Ok(body) => proposals::approve(&s, &id, user.0.0, &headers, &body).await,
+                        Err(e) => *e,
+                    }
+                }
+            })
+            .layer(DefaultBodyLimit::max(MAX_SMALL_BODY))
+        })
+        .route(&Method::POST, REJECT_PATH, Role::Admin, {
+            let s = Arc::clone(&s);
+            (move |Path(id): Path<String>,
+                   user: Extension<AuthenticatedUser>,
+                   headers: HeaderMap,
+                   body: Result<Bytes, BytesRejection>| {
+                let s = Arc::clone(&s);
+                async move {
+                    match body_of(body) {
+                        Ok(body) => proposals::reject(&s, &id, user.0.0, &headers, &body).await,
+                        Err(e) => *e,
+                    }
+                }
+            })
+            .layer(DefaultBodyLimit::max(MAX_SMALL_BODY))
+        })
+        .route(&Method::POST, DRAFTS_PATH, Role::Editor, {
+            let s = Arc::clone(&s);
+            (move |user: Extension<AuthenticatedUser>,
+                   headers: HeaderMap,
+                   body: Result<Bytes, BytesRejection>| {
+                let s = Arc::clone(&s);
+                async move {
+                    match body_of(body) {
+                        Ok(body) => proposals::create_draft(&s, user.0.0, &headers, &body).await,
+                        Err(e) => *e,
+                    }
+                }
+            })
+            .layer(DefaultBodyLimit::max(MAX_EDIT_BODY))
+        })
+        .route(&Method::POST, APPLY_DRAFT_PATH, Role::Editor, {
+            let s = Arc::clone(&s);
+            move |Path(id): Path<String>, user: Extension<AuthenticatedUser>, headers: HeaderMap| {
+                let s = Arc::clone(&s);
+                async move { proposals::apply_draft(&s, &id, user.0.0, &headers).await }
+            }
         })
 }
 

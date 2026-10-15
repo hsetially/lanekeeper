@@ -71,6 +71,7 @@ async fn run(
             path: &r.path,
             expected: &r.expected,
             restores: None,
+            draft: None,
         },
         prepared,
         checked,

@@ -13,8 +13,9 @@
 use std::fmt;
 
 use domain::{
-    ContentHash, DeleteRequest, EditRequest, Expected, NfsPath, RequestId, RestartRequest, RevertRequest,
-    SwimlaneId, UploadRequest, UserId, ValidationIssue, WriteCtx, WriteOutcome,
+    ContentHash, DeleteRequest, DraftId, EditRequest, Expected, NfsPath, ProposalId, RequestId,
+    RestartRequest, RevertRequest, SwimlaneId, UploadRequest, UserId, ValidationIssue, WriteCtx,
+    WriteOutcome,
 };
 use ports::AuditEvent;
 use serde::{Deserialize, Serialize};
@@ -80,6 +81,29 @@ impl RequestHash {
         b.expected(&r.expected);
         b.field(r.to.as_bytes());
         b.field(r.change_eol.map_or("", |e| e.as_str()).as_bytes());
+        b.finish()
+    }
+
+    /// The hash of an approval: the proposal and the comment.
+    pub(crate) fn of_approve(id: ProposalId, comment: Option<&str>) -> Self {
+        let mut b = HashBuilder::new("approve/1");
+        b.field(&id.get().to_be_bytes());
+        b.field(comment.unwrap_or("").as_bytes());
+        b.finish()
+    }
+
+    /// The hash of a rejection: the proposal and the reason.
+    pub(crate) fn of_reject(id: ProposalId, reason: &str) -> Self {
+        let mut b = HashBuilder::new("reject/1");
+        b.field(&id.get().to_be_bytes());
+        b.field(reason.as_bytes());
+        b.finish()
+    }
+
+    /// The hash of applying a draft: the draft.
+    pub(crate) fn of_apply_draft(id: &DraftId) -> Self {
+        let mut b = HashBuilder::new("apply_draft/1");
+        b.field(id.as_str().as_bytes());
         b.finish()
     }
 
@@ -201,6 +225,28 @@ pub(crate) struct Intent {
     /// The audit event the write will record. Its diff is already redacted.
     pub event: AuditEvent,
     pub warnings: Vec<ValidationIssue>,
+    /// What else the recording transaction does besides the audit event: the decision on the proposal this write carries out,
+    /// or the draft it applies. Absent in an intent written before approvals existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow: Option<Follow>,
+}
+
+/// A state change that has to commit with the write that causes it (rule 8): the same transaction records both, or neither.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum Follow {
+    /// An admin approved a proposal and the write below carries it out: the decision is recorded, and the proposal is applied.
+    Decided {
+        proposal: ProposalId,
+        approver: UserId,
+        comment: Option<String>,
+        /// What the approval's re-check found at the path before the command went out.
+        rechecked: Option<ContentHash>,
+        /// The draft that became this proposal, if one did.
+        draft: Option<String>,
+    },
+    /// A draft was applied by the write below.
+    Draft { id: String },
 }
 
 impl Intent {
@@ -644,6 +690,7 @@ mod tests {
             request_id: RequestId::parse("r").unwrap(),
             event: ev,
             warnings: Vec::new(),
+            follow: None,
         };
         assert!(!format!("{intent:?}").contains("secret-text-marker"));
         let key = ClaimKey {

@@ -249,3 +249,132 @@ async fn upload_delete_revert_restart_and_preview_log_no_content() {
     );
     assert!(!logged.contains("Bearer"), "credentials in the log");
 }
+
+/// Approvals, rejections, expiry and drafts are held to the same rule (S10): the content of a proposal, of a draft and of the
+/// file it replaces, and the text of a comment or a reason, is not in the log, whatever way the decision goes.
+#[tokio::test]
+async fn approvals_drafts_and_expiry_log_no_content() {
+    use hub_writes::ProposalDesk;
+
+    let (capture, _guard) = log_capture::install();
+    let rig = Rig::new(db!()).await;
+    let s: SwimlaneId = rig.swimlane("sit1", true).await;
+    let key = ["AKIA", "IOSFODNN7EXAMPLE"].concat();
+    rig.seed(
+        &s,
+        &[
+            ("a.yml", &format!("x: {MARKER}-a\nk: {key}\n")),
+            ("b.yml", &format!("y: {MARKER}-b\n")),
+            ("c.yml", &format!("z: {MARKER}-c\n")),
+            ("d.yml", &format!("w: {MARKER}-d\n")),
+        ],
+    );
+    let careful = rig.approval_user(1, Role::Editor).await;
+    let admin = rig.user(2, Role::Admin).await;
+    let hub = &rig.hub;
+    let propose = |n: usize, path: &str, from: &str, to: &str| {
+        let r = edit(&s, path, at(from), to);
+        let c = ctx(&careful, &format!("p-{n}"));
+        async move { hub.edit(&c, r).await.unwrap() }
+    };
+    let id = |o: domain::WriteOutcome| match o {
+        domain::WriteOutcome::ProposalCreated { id } => id,
+        other => panic!("{other:?}"),
+    };
+    let to_apply = id(propose(
+        1,
+        "a.yml",
+        &format!("x: {MARKER}-a\nk: {key}\n"),
+        &format!("x: {MARKER}-a2\n"),
+    )
+    .await);
+    let to_reject = id(propose(
+        2,
+        "b.yml",
+        &format!("y: {MARKER}-b\n"),
+        &format!("y: {MARKER}-b2\n"),
+    )
+    .await);
+    let to_stale = id(propose(
+        3,
+        "c.yml",
+        &format!("z: {MARKER}-c\n"),
+        &format!("z: {MARKER}-c2\n"),
+    )
+    .await);
+    id(propose(
+        4,
+        "d.yml",
+        &format!("w: {MARKER}-d\n"),
+        &format!("w: {MARKER}-d2\n"),
+    )
+    .await);
+
+    hub.approve_proposal(
+        &ctx(&admin, "a-1"),
+        to_apply,
+        Some(domain::ShortText::parse(&format!("comment {MARKER}-comment")).unwrap()),
+    )
+    .await
+    .unwrap();
+    hub.reject_proposal(
+        &ctx(&admin, "a-2"),
+        to_reject,
+        domain::ShortText::parse(&format!("reason {MARKER}-reason")).unwrap(),
+    )
+    .await
+    .unwrap();
+    rig.agent
+        .put(&s, &nfs("c.yml"), format!("z: {MARKER}-other\n").as_bytes());
+    hub.approve_proposal(&ctx(&admin, "a-3"), to_stale, None)
+        .await
+        .unwrap();
+    // The queue, with the diffs an approver reads.
+    let queue = hub
+        .list_proposals(
+            &admin,
+            hub_writes::ProposalQuery {
+                status: None,
+                swimlane: None,
+                page: domain::Page::new(10, None).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(queue.items.len(), 4);
+    rig.advance_secs(73 * 3600);
+    assert_eq!(hub.expirer().run_once(&|| true).await.proposals, 1);
+
+    // Drafts: one made over a file that holds a secret, applied; one refused for holding a secret.
+    let editor = rig.user(3, Role::Editor).await;
+    let _ = hub
+        .propose_draft(
+            &ctx(&editor, "d-1"),
+            edit(
+                &s,
+                "b.yml",
+                at(&format!("y: {MARKER}-b\n")),
+                &format!("y: {MARKER}-draft\n"),
+            ),
+        )
+        .await;
+    let _ = hub
+        .propose_draft(
+            &ctx(&editor, "d-2"),
+            edit(
+                &s,
+                "b.yml",
+                at(&format!("y: {MARKER}-b\n")),
+                &format!("y: {key}\n"),
+            ),
+        )
+        .await;
+
+    let logged = capture.text();
+    assert!(
+        !logged.contains(MARKER),
+        "content or a comment in the log:\n{logged}"
+    );
+    assert!(!logged.contains(&key), "a secret in the log");
+    assert!(!logged.contains("Bearer"), "credentials in the log");
+}

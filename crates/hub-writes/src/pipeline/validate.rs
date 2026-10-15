@@ -155,7 +155,7 @@ pub(crate) fn delete_diff(class: FileClass, old: &Old, limits: &Limits) -> Strin
 }
 
 /// The marker for each line the scan flagged: the first match on the line stands for the line.
-fn flagged_lines(matches: &[SecretMatch]) -> BTreeMap<u32, String> {
+pub(crate) fn flagged_lines(matches: &[SecretMatch]) -> BTreeMap<u32, String> {
     let mut out = BTreeMap::new();
     for m in matches {
         out.entry(m.line).or_insert_with(|| m.marker());

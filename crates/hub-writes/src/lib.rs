@@ -9,6 +9,9 @@
 //!
 //! - **Actions** (`ops`): `edit`, `upload`, `delete`, `revert` and `restart`. The three that put content into a file (edit, upload
 //!   and revert) share one tail (`ops::file`); an upload and a delete also need the token of a preview.
+//! - **Approvals** (`proposals`): a change by a user who `requires_approval` waits as a proposal; an admin (never its author)
+//!   approves it, which re-checks the file and applies it, or marks it stale; a leased job expires the ones nobody decided. Every
+//!   transition publishes `ProposalChanged`. **Drafts** (`drafts`) are the same change prepared with no effect.
 //! - **Previews** (`preview`): what an upload or a delete would do, from the engine, and the HMAC token bound to the user, the
 //!   swimlane, the path, the action and the hashes that lets it through (D46).
 //! - **Routes** ([`routes`]): the REST face of the actions above, registered through the platform's guarded router (S4), with
@@ -24,6 +27,7 @@
 mod clock;
 mod config;
 mod db;
+mod drafts;
 mod error;
 mod fidelity;
 mod hex;
@@ -42,6 +46,9 @@ pub use config::{MAX_EXTRA_DENY_GLOBS, PREVIEW_KEY_SECRET, WriteConfig};
 pub use error::ConfigError;
 pub use idempotency::RequestHash;
 pub use probe::QueryProbe;
+pub use proposals::{
+    ExpireProposals, ExpireReport, NO_HASH, ProposalDesk, ProposalQuery, ProposalView, RejectResult,
+};
 
 /// Hooks for the fuzz targets (S22). Not part of the API; only with the `fuzz-hooks` feature.
 #[cfg(feature = "fuzz-hooks")]
@@ -57,5 +64,12 @@ pub fn hot_queries() -> Vec<(&'static str, &'static str)> {
     let mut all = idempotency::queries();
     all.push(("swimlane_lock", pipeline::lock::SWIMLANE_LOCK));
     all.push(("proposal_insert", proposals::store::INSERT_SQL));
+    all.push(("proposal_get", proposals::store::GET_SQL));
+    all.push(("proposal_list", proposals::store::LIST_SQL));
+    all.push(("proposal_lock", proposals::store::LOCK_SQL));
+    all.push(("proposal_expiry", proposals::store::EXPIRED_SQL));
+    all.push(("draft_get", drafts::GET));
+    all.push(("draft_open_count", drafts::OPEN_COUNT));
+    all.push(("draft_expiry", drafts::EXPIRE));
     all
 }

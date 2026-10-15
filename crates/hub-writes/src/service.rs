@@ -256,12 +256,29 @@ impl WriteService for WriteHub {
         not_wired(self, ctx, Role::Editor).await
     }
 
-    async fn propose_draft(&self, ctx: &WriteCtx, _r: EditRequest) -> Result<Draft, WriteError> {
-        not_wired(self, ctx, Role::Editor).await
+    async fn propose_draft(&self, ctx: &WriteCtx, r: EditRequest) -> Result<Draft, WriteError> {
+        let span = tracing::info_span!(
+            "write.propose_draft",
+            request_id = %ctx.request_id,
+            user = %ctx.user.id,
+            swimlane = %r.swimlane,
+            path = %r.path,
+        );
+        crate::drafts::propose_draft(&self.inner, ctx, r)
+            .instrument(span)
+            .await
     }
 
-    async fn apply_draft(&self, ctx: &WriteCtx, _id: DraftId) -> Result<WriteOutcome, WriteError> {
-        not_wired(self, ctx, Role::Editor).await
+    async fn apply_draft(&self, ctx: &WriteCtx, id: DraftId) -> Result<WriteOutcome, WriteError> {
+        let span = tracing::info_span!(
+            "write.apply_draft",
+            request_id = %ctx.request_id,
+            user = %ctx.user.id,
+            draft = %id,
+        );
+        crate::drafts::apply_draft(&self.inner, ctx, id)
+            .instrument(span)
+            .await
     }
 
     async fn preview_effect(&self, ctx: &WriteCtx, r: PreviewRequest) -> Result<ChangePreview, WriteError> {

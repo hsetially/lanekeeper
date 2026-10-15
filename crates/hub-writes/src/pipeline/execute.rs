@@ -18,7 +18,7 @@ use domain::{
 use ports::{AuditEvent, GatewayError, Tx, content_hash};
 
 use crate::error::{Internal, Res};
-use crate::idempotency::{ClaimKey, Intent, IntentOp, Phase};
+use crate::idempotency::{ClaimKey, Follow, Intent, IntentOp, Phase};
 use crate::service::Inner;
 
 /// What the agent said to a write.
@@ -180,6 +180,8 @@ pub(crate) struct Recording<'a> {
     /// The hash the response carries.
     pub applied_hash: Option<ContentHash>,
     pub warnings: Vec<ValidationIssue>,
+    /// The state change that commits with the action: the decision on the proposal it carries out, or the draft it applies.
+    pub follow: Option<Follow>,
 }
 
 /// Record an action that happened: the second transaction of the pipeline. The claim is locked first, so that a second finisher
@@ -196,6 +198,9 @@ async fn record_inner(hub: &Inner, rec: Recording<'_>) -> Res<Committed> {
         return Ok(Committed::Lost(done));
     }
 
+    if let Some(follow) = &rec.follow {
+        super::follow::apply(hub, &mut tx, follow).await?;
+    }
     if let Some(w) = &rec.tool_write {
         hub.tool_writes
             .register(
@@ -278,6 +283,7 @@ pub(crate) async fn commit_applied(
                 keep: before.into_iter().chain([observed]).collect(),
                 applied_hash: Some(observed),
                 warnings: intent.warnings.clone(),
+                follow: intent.follow.clone(),
             }
         }
         // A delete leaves no hash to register: the next scan sees the file gone. The drift hint tells the screens to look.
@@ -295,6 +301,7 @@ pub(crate) async fn commit_applied(
                 keep: before.into_iter().collect(),
                 applied_hash: None,
                 warnings: Vec::new(),
+                follow: intent.follow.clone(),
             }
         }
     };

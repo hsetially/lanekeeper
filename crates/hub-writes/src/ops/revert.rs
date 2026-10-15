@@ -104,6 +104,7 @@ async fn run(hub: &Inner, ctx: &WriteCtx, user: &User, claim: &Claim, r: RevertR
             path: &r.path,
             expected: &r.expected,
             restores: Some(r.to),
+            draft: None,
         },
         prepared,
         checked,

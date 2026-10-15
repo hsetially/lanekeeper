@@ -29,6 +29,10 @@ pub struct WriteConfig {
     pub stale_claim_after: Duration,
     /// How long a proposal waits for an admin (D37).
     pub proposal_ttl: Duration,
+    /// How long a draft lives before it expires.
+    pub draft_ttl: Duration,
+    /// The most proposals (and as many drafts) one run of the expiry job marks.
+    pub expire_batch: usize,
     /// Deny globs in addition to the engine's defaults (D79). A write to a matching path is refused.
     pub extra_deny_globs: Vec<String>,
     /// The most rows one run of the reconcile job looks at.
@@ -48,6 +52,8 @@ impl Default for WriteConfig {
             idempotency_wait: Duration::from_secs(3),
             stale_claim_after: Duration::from_secs(60),
             proposal_ttl: Duration::from_secs(72 * 3600),
+            draft_ttl: Duration::from_secs(24 * 3600),
+            expire_batch: 100,
             extra_deny_globs: Vec::new(),
             reconcile_batch: 100,
             max_concurrent_checks: 8,
@@ -77,6 +83,10 @@ impl WriteConfig {
         nonzero(self.idempotency_wait, "idempotency_wait must be more than zero")?;
         nonzero(self.stale_claim_after, "stale_claim_after must be more than zero")?;
         nonzero(self.proposal_ttl, "proposal_ttl must be more than zero")?;
+        nonzero(self.draft_ttl, "draft_ttl must be more than zero")?;
+        if self.expire_batch == 0 || self.expire_batch > 1_000 {
+            return Err(ConfigError::Invalid("expire_batch must be 1 to 1000"));
+        }
         if self.reconcile_batch == 0 || self.reconcile_batch > 1_000 {
             return Err(ConfigError::Invalid("reconcile_batch must be 1 to 1000"));
         }
@@ -120,6 +130,9 @@ mod tests {
         bad(&|c| c.idempotency_wait = Duration::ZERO);
         bad(&|c| c.stale_claim_after = Duration::ZERO);
         bad(&|c| c.proposal_ttl = Duration::ZERO);
+        bad(&|c| c.draft_ttl = Duration::ZERO);
+        bad(&|c| c.expire_batch = 0);
+        bad(&|c| c.expire_batch = 1_001);
         bad(&|c| c.reconcile_batch = 0);
         bad(&|c| c.reconcile_batch = 1_001);
         bad(&|c| c.max_concurrent_checks = 0);

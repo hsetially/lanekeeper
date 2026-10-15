@@ -20,15 +20,16 @@ use axum::Router;
 use axum::body::Body;
 use bytes::Bytes;
 use domain::{
-    ChangePreview, ContentHash, DeleteRequest, Draft, DraftId, EditRequest, Expected, NotifyRequest,
-    PrRequest, PreviewChange, PreviewId, PreviewRequest, PreviewScope, RejectReason, RestartRequest,
-    RevertRequest, Role, ServiceRef, Timestamp, UploadRequest, UserStatus, ValidationIssue, WriteCtx,
-    WriteOutcome,
+    ChangePreview, ContentHash, DeleteRequest, Draft, DraftId, EditRequest, Expected, NotifyRequest, Paged,
+    PrRequest, PreviewChange, PreviewId, PreviewRequest, PreviewScope, ProposalId, ProposalStatus,
+    RejectReason, RestartRequest, RevertRequest, Role, ServiceRef, ShortText, Timestamp, UploadRequest, User,
+    UserStatus, ValidationIssue, WriteCtx, WriteOutcome,
 };
 use http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt;
 use hub_platform::{FakeSessionAuth, GuardedRouter, RouteSpec, TEST_USER_HEADER};
 use hub_writes::routes::{MAX_EDIT_BODY, WRITE_ROUTES, WriteState, mount};
+use hub_writes::{ProposalDesk, ProposalQuery, ProposalView, RejectResult};
 use ports::conformance::route_guard::{
     Allowances, SpecOperation, assert_route_table, spec_operations_from_openapi,
 };
@@ -47,6 +48,8 @@ enum Call {
     Revert(RevertRequest),
     Restart(RestartRequest),
     Preview(PreviewRequest),
+    Draft(EditRequest),
+    ApplyDraft(DraftId),
 }
 
 /// A write service that answers what it is told and remembers what it was asked, with the context of the call.
@@ -55,6 +58,7 @@ struct Scripted {
     calls: Mutex<Vec<(Call, WriteCtx)>>,
     reply: Mutex<Option<Result<WriteOutcome, WriteError>>>,
     preview: Mutex<Option<Result<ChangePreview, WriteError>>>,
+    draft: Mutex<Option<Result<Draft, WriteError>>>,
 }
 
 impl std::fmt::Debug for Scripted {
@@ -111,11 +115,19 @@ impl WriteService for Scripted {
     async fn raise_pr(&self, _: &WriteCtx, _: PrRequest) -> Result<WriteOutcome, WriteError> {
         Err(WriteError::Unavailable)
     }
-    async fn propose_draft(&self, _: &WriteCtx, _: EditRequest) -> Result<Draft, WriteError> {
-        Err(WriteError::Unavailable)
+    async fn propose_draft(&self, ctx: &WriteCtx, r: EditRequest) -> Result<Draft, WriteError> {
+        self.calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((Call::Draft(r), ctx.clone()));
+        self.draft
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .unwrap_or(Err(WriteError::Unavailable))
     }
-    async fn apply_draft(&self, _: &WriteCtx, _: DraftId) -> Result<WriteOutcome, WriteError> {
-        Err(WriteError::Unavailable)
+    async fn apply_draft(&self, ctx: &WriteCtx, id: DraftId) -> Result<WriteOutcome, WriteError> {
+        self.answer(Call::ApplyDraft(id), ctx)
     }
     async fn preview_effect(&self, ctx: &WriteCtx, r: PreviewRequest) -> Result<ChangePreview, WriteError> {
         self.calls
@@ -130,6 +142,103 @@ impl WriteService for Scripted {
     }
     async fn notify(&self, _: &WriteCtx, _: NotifyRequest) -> Result<WriteOutcome, WriteError> {
         Err(WriteError::Unavailable)
+    }
+}
+
+/// What the routes asked of the proposal desk.
+#[derive(Debug, Clone)]
+enum DeskCall {
+    List(User, ProposalQuery),
+    Approve(ProposalId, Option<ShortText>, WriteCtx),
+    Reject(ProposalId, ShortText, WriteCtx),
+}
+
+/// A proposal desk that answers what it is told and remembers what it was asked.
+#[derive(Default)]
+struct ScriptedDesk {
+    calls: Mutex<Vec<DeskCall>>,
+    approve: Mutex<Option<Result<WriteOutcome, WriteError>>>,
+    reject: Mutex<Option<Result<RejectResult, WriteError>>>,
+}
+
+impl std::fmt::Debug for ScriptedDesk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScriptedDesk").finish_non_exhaustive()
+    }
+}
+
+impl ScriptedDesk {
+    fn calls(&self) -> Vec<DeskCall> {
+        self.calls.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn push(&self, call: DeskCall) {
+        self.calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(call);
+    }
+}
+
+fn sample_view(id: i64) -> ProposalView {
+    ProposalView {
+        id,
+        author: ports::conformance::sample::user_id(2),
+        swimlane: domain::SwimlaneId::parse("sit1").unwrap(),
+        path: ports::conformance::sample::nfs("a.yml"),
+        expected: Expected::Absent,
+        new_hash: hash_of("x: 2\n"),
+        status: ProposalStatus::Rejected,
+        hunks: Vec::new(),
+        setting_changes: Vec::new(),
+        severity: None,
+        created_at: Timestamp::from_unix_millis(1_000),
+        expires_at: Timestamp::from_unix_millis(2_000),
+        decided_by: Some(ports::conformance::sample::user_id(1)),
+        decision_comment: ShortText::parse("not now").ok(),
+    }
+}
+
+#[async_trait]
+impl ProposalDesk for ScriptedDesk {
+    async fn list_proposals(&self, user: &User, q: ProposalQuery) -> Result<Paged<ProposalView>, WriteError> {
+        self.push(DeskCall::List(user.clone(), q));
+        Ok(Paged {
+            items: vec![sample_view(7)],
+            next: domain::Cursor::parse("7").ok(),
+        })
+    }
+
+    async fn approve_proposal(
+        &self,
+        ctx: &WriteCtx,
+        id: ProposalId,
+        comment: Option<ShortText>,
+    ) -> Result<WriteOutcome, WriteError> {
+        self.push(DeskCall::Approve(id, comment, ctx.clone()));
+        self.approve
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .unwrap_or(Ok(WriteOutcome::Applied {
+                hash: None,
+                audit_id: domain::AuditId::from(1),
+                warnings: Vec::new(),
+            }))
+    }
+
+    async fn reject_proposal(
+        &self,
+        ctx: &WriteCtx,
+        id: ProposalId,
+        reason: ShortText,
+    ) -> Result<RejectResult, WriteError> {
+        self.push(DeskCall::Reject(id, reason, ctx.clone()));
+        self.reject
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .unwrap_or_else(|| Ok(RejectResult::Rejected(Box::new(sample_view(7)))))
     }
 }
 
@@ -151,13 +260,18 @@ fn auth() -> Arc<FakeSessionAuth> {
             .with_user("viewer", Some(Role::Viewer), UserStatus::Active)
             .with_user("editor", Some(Role::Editor), UserStatus::Active)
             .with_user("operator", Some(Role::Operator), UserStatus::Active)
+            .with_user("admin", Some(Role::Admin), UserStatus::Active)
             .with_user("pending", None, UserStatus::Pending)
             .with_user("disabled", Some(Role::Admin), UserStatus::Disabled),
     )
 }
 
 fn app_with(service: Arc<dyn WriteService>) -> (Router, Vec<RouteSpec>) {
-    let state = WriteState::new(service, 2 * 1024 * 1024);
+    app_with_desk(service, Arc::new(ScriptedDesk::default()))
+}
+
+fn app_with_desk(service: Arc<dyn WriteService>, desk: Arc<dyn ProposalDesk>) -> (Router, Vec<RouteSpec>) {
+    let state = WriteState::new(service, desk, 2 * 1024 * 1024);
     let (router, specs) = mount(GuardedRouter::new(auth(), None), state)
         .into_parts()
         .unwrap();
@@ -331,12 +445,7 @@ fn write_operations() -> BTreeSet<(String, String)> {
 
 /// The `writes` operations that later tasks of prompt 06 mount, with the task. When one is mounted its line goes, and
 /// `every_write_operation_is_mounted_or_waits_for_its_task` fails until it does.
-const LATER: [(&str, &str, &str); 9] = [
-    ("POST", "/api/v1/drafts", "T4"),
-    ("POST", "/api/v1/drafts/{id}/apply", "T4"),
-    ("GET", "/api/v1/proposals", "T4"),
-    ("POST", "/api/v1/proposals/{id}/approve", "T4"),
-    ("POST", "/api/v1/proposals/{id}/reject", "T4"),
+const LATER: [(&str, &str, &str); 4] = [
     ("POST", "/api/v1/prs", "T9"),
     ("GET", "/api/v1/prs", "T9"),
     ("GET", "/api/v1/pr-jobs/{id}", "T9"),
@@ -399,10 +508,18 @@ async fn viewer_gets_403_on_every_write_route() {
     let service = Arc::new(Scripted::default());
     let router = app(&service);
     let (ct, body) = multipart(&upload_fields("n.yml", b"x", &[]));
-    for (method, template, _) in WRITE_ROUTES {
+    for (method, template, floor) in WRITE_ROUTES {
         let uri = template.replace("{id}", SWIMLANE);
         for (user, expected) in [
-            (Some("viewer"), StatusCode::FORBIDDEN),
+            // The list of proposals is for a viewer too; every other route is above that.
+            (
+                Some("viewer"),
+                if floor == Role::Viewer {
+                    StatusCode::OK
+                } else {
+                    StatusCode::FORBIDDEN
+                },
+            ),
             (Some("pending"), StatusCode::FORBIDDEN),
             (Some("disabled"), StatusCode::FORBIDDEN),
             (None, StatusCode::UNAUTHORIZED),
@@ -1078,7 +1195,11 @@ async fn the_routes_drive_the_real_hub_end_to_end() {
     editor.id = hub_platform::session_auth::user_id("editor");
     rig.add_user(&editor).await;
 
-    let state = WriteState::new(Arc::new(rig.hub.clone()), rig.hub.max_content_bytes());
+    let state = WriteState::new(
+        Arc::new(rig.hub.clone()),
+        Arc::new(rig.hub.clone()),
+        rig.hub.max_content_bytes(),
+    );
     let (router, _) = mount(GuardedRouter::new(auth(), None), state)
         .into_parts()
         .unwrap();
@@ -1197,4 +1318,591 @@ async fn the_routes_drive_the_real_hub_end_to_end() {
         3,
         "an edit, an upload and a delete, one event each"
     );
+}
+
+// ---------------------------------------------------------------------------------------- approvals and drafts (T4)
+
+const PROPOSALS: &str = "/api/v1/proposals";
+
+fn desk_app() -> (Router, Arc<Scripted>, Arc<ScriptedDesk>) {
+    let service = Arc::new(Scripted::default());
+    let desk = Arc::new(ScriptedDesk::default());
+    let (router, _) = app_with_desk(service.clone(), desk.clone());
+    (router, service, desk)
+}
+
+#[tokio::test]
+async fn approve_and_reject_are_for_admins_and_nobody_else() {
+    let (router, _, desk) = desk_app();
+    for template in [format!("{PROPOSALS}/7/approve"), format!("{PROPOSALS}/7/reject")] {
+        for (user, expected) in [
+            (Some("viewer"), StatusCode::FORBIDDEN),
+            (Some("editor"), StatusCode::FORBIDDEN),
+            (Some("operator"), StatusCode::FORBIDDEN),
+            (Some("pending"), StatusCode::FORBIDDEN),
+            (Some("disabled"), StatusCode::FORBIDDEN),
+            (None, StatusCode::UNAUTHORIZED),
+        ] {
+            let r = send(
+                &router,
+                Req::new(Method::POST, &template)
+                    .user(user)
+                    .json(&json!({ "reason": "no" })),
+            )
+            .await;
+            assert_eq!(r.status, expected, "{template} as {user:?}");
+        }
+    }
+    assert!(
+        desk.calls().is_empty(),
+        "the guard answers before the handler or the desk"
+    );
+    let ok = send(
+        &router,
+        Req::new(Method::POST, &format!("{PROPOSALS}/7/approve")).user(Some("admin")),
+    )
+    .await;
+    assert_eq!(ok.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn approve_reads_an_optional_comment_and_a_proposal_id() {
+    let (router, _, desk) = desk_app();
+    let uri = format!("{PROPOSALS}/7/approve");
+    let admin = |req: Req| req.user(Some("admin"));
+
+    // No body, a comment, and an explicit null comment.
+    for (n, req) in [
+        Req::new(Method::POST, &uri),
+        Req::new(Method::POST, &uri).json(&json!({ "comment": "looks right" })),
+        Req::new(Method::POST, &uri).json(&json!({ "comment": null })),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let r = send(&router, admin(req).key(Some(["k-1", "k-2", "k-3"][n]))).await;
+        assert_eq!(r.status, StatusCode::OK, "{n}");
+    }
+    let calls = desk.calls();
+    let comments: Vec<_> = calls
+        .iter()
+        .map(|c| match c {
+            DeskCall::Approve(id, comment, ctx) => {
+                assert_eq!(*id, ProposalId::from(7));
+                assert_eq!(ctx.user.role, Some(Role::Admin));
+                comment.as_ref().map(|c| c.as_str().to_owned())
+            }
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(comments, vec![None, Some("looks right".to_owned()), None]);
+
+    // Refused before the desk: an unknown field, a body that is not JSON said to be, a body with no media type, no key.
+    desk.calls.lock().unwrap().clear();
+    for (what, req, expected) in [
+        (
+            "unknown field",
+            Req::new(Method::POST, &uri).json(&json!({ "comment": "a", "extra": 1 })),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "not json",
+            Req::new(Method::POST, &uri).raw("application/json", b"{oops".to_vec()),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "no media type",
+            Req::new(Method::POST, &uri).raw("text/plain", b"{}".to_vec()),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        ),
+        (
+            "comment with a control character",
+            Req::new(Method::POST, &uri).json(&json!({ "comment": "a\u{0007}b" })),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "no key",
+            Req::new(Method::POST, &uri).key(None),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "not a number",
+            Req::new(Method::POST, &format!("{PROPOSALS}/abc/approve")),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "zero",
+            Req::new(Method::POST, &format!("{PROPOSALS}/0/approve")),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "negative",
+            Req::new(Method::POST, &format!("{PROPOSALS}/-3/approve")),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "signed",
+            Req::new(Method::POST, &format!("{PROPOSALS}/+3/approve")),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "too big",
+            Req::new(Method::POST, &format!("{PROPOSALS}/99999999999999999999/approve")),
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        let r = send(&router, admin(req)).await;
+        assert_eq!(r.status, expected, "{what}");
+        // The problem says what failed and nothing of what was sent.
+        assert!(!String::from_utf8_lossy(&r.body).contains("oops"), "{what}");
+    }
+    assert!(desk.calls().is_empty(), "{:?}", desk.calls());
+
+    // A body over its limit is 413 without being read.
+    let big = vec![b' '; hub_writes::routes::MAX_SMALL_BODY + 1];
+    let r = send(
+        &router,
+        admin(Req::new(Method::POST, &uri).raw("application/json", big)),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn reject_needs_a_reason_and_answers_with_the_proposal() {
+    let (router, _, desk) = desk_app();
+    let uri = format!("{PROPOSALS}/7/reject");
+    for (what, req, expected) in [
+        (
+            "no body",
+            Req::new(Method::POST, &uri),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        ),
+        (
+            "no reason",
+            Req::new(Method::POST, &uri).json(&json!({})),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "empty reason",
+            Req::new(Method::POST, &uri).json(&json!({ "reason": "" })),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "blank reason",
+            Req::new(Method::POST, &uri).json(&json!({ "reason": "   " })),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "unknown field",
+            Req::new(Method::POST, &uri).json(&json!({ "reason": "a", "x": 1 })),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "a reason of the wrong type",
+            Req::new(Method::POST, &uri).json(&json!({ "reason": 5 })),
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        let r = send(&router, req.user(Some("admin"))).await;
+        assert_eq!(r.status, expected, "{what}");
+    }
+    assert!(desk.calls().is_empty());
+
+    let r = send(
+        &router,
+        Req::new(Method::POST, &uri)
+            .user(Some("admin"))
+            .json(&json!({ "reason": "not now" })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let body = r.json();
+    assert_eq!(body["id"], 7);
+    assert_eq!(body["status"], "rejected");
+    assert_eq!(body["decision_comment"], "not now");
+    assert_eq!(body["path"], "a.yml");
+    assert!(body["hunks"].is_array() && body["setting_changes"].is_array());
+    assert!(body["severity"].is_null());
+    match &desk.calls()[0] {
+        DeskCall::Reject(id, reason, ctx) => {
+            assert_eq!(*id, ProposalId::from(7));
+            assert_eq!(reason.as_str(), "not now");
+            assert_eq!(ctx.user.role, Some(Role::Admin));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn the_answers_of_a_decision_become_the_responses_the_contract_promises() {
+    let (router, _, desk) = desk_app();
+    let uri = format!("{PROPOSALS}/7/approve");
+    let rej = format!("{PROPOSALS}/7/reject");
+    let hash = hash_of("x: 9\n");
+    for (answer, status) in [
+        (
+            Ok(WriteOutcome::Conflict { current: Some(hash) }),
+            StatusCode::CONFLICT,
+        ),
+        (Ok(WriteOutcome::Locked { until: None }), StatusCode::LOCKED),
+        (
+            Ok(WriteOutcome::Rejected {
+                reason: RejectReason::NotAllowed,
+                issues: Vec::new(),
+            }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (Err(WriteError::Forbidden), StatusCode::FORBIDDEN),
+        (Err(WriteError::NotFound), StatusCode::NOT_FOUND),
+        (
+            Err(WriteError::IdempotencyConflict),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (Err(WriteError::Unavailable), StatusCode::SERVICE_UNAVAILABLE),
+    ] {
+        *desk.approve.lock().unwrap() = Some(answer.clone());
+        let r = send(&router, Req::new(Method::POST, &uri).user(Some("admin"))).await;
+        assert_eq!(r.status, status, "{answer:?}");
+        if status == StatusCode::CONFLICT {
+            assert_eq!(r.json()["current"], hash.to_string());
+        }
+        // A problem holds no internal detail.
+        let text = String::from_utf8_lossy(&r.body).to_lowercase();
+        assert!(!text.contains("sql") && !text.contains("postgres"), "{text}");
+    }
+    *desk.reject.lock().unwrap() = Some(Ok(RejectResult::Refused(WriteOutcome::Rejected {
+        reason: RejectReason::NotAllowed,
+        issues: Vec::new(),
+    })));
+    let r = send(
+        &router,
+        Req::new(Method::POST, &rej)
+            .user(Some("admin"))
+            .json(&json!({ "reason": "no" })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY);
+    *desk.reject.lock().unwrap() = Some(Err(WriteError::Forbidden));
+    let r = send(
+        &router,
+        Req::new(Method::POST, &rej)
+            .user(Some("admin"))
+            .json(&json!({ "reason": "no" })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn the_list_of_proposals_reads_its_query_into_typed_values() {
+    let (router, _, desk) = desk_app();
+    let r = send(
+        &router,
+        Req::new(
+            Method::GET,
+            &format!("{PROPOSALS}?status=pending&swimlane=sit1&limit=10&cursor=42"),
+        )
+        .user(Some("viewer")),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json()["items"][0]["id"], 7);
+    assert_eq!(r.json()["next"], "7");
+    assert_eq!(
+        r.headers.get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+        Some("no-store")
+    );
+    match &desk.calls()[0] {
+        DeskCall::List(user, q) => {
+            assert_eq!(user.role, Some(Role::Viewer));
+            assert_eq!(q.status, Some(ProposalStatus::Pending));
+            assert_eq!(q.swimlane.as_ref().map(domain::SwimlaneId::as_str), Some("sit1"));
+            assert_eq!(q.page.limit(), 10);
+            assert_eq!(q.page.cursor().map(domain::Cursor::as_str), Some("42"));
+        }
+        other => panic!("{other:?}"),
+    }
+    // No query at all is the first page of the default size.
+    let bare = send(&router, Req::new(Method::GET, PROPOSALS).user(Some("viewer"))).await;
+    assert_eq!(bare.status, StatusCode::OK);
+    match &desk.calls()[1] {
+        DeskCall::List(_, q) => {
+            assert_eq!(q.page.limit(), domain::Page::DEFAULT_LIMIT);
+            assert!(q.status.is_none() && q.swimlane.is_none() && q.page.cursor().is_none());
+        }
+        other => panic!("{other:?}"),
+    }
+    desk.calls.lock().unwrap().clear();
+    for query in [
+        "limit=0",
+        "limit=501",
+        "limit=abc",
+        "status=bogus",
+        "swimlane=NOT%20A%20SLUG",
+        "cursor=bad%20cursor",
+        "page=2",
+        "status=pending&status=applied",
+    ] {
+        let r = send(
+            &router,
+            Req::new(Method::GET, &format!("{PROPOSALS}?{query}")).user(Some("viewer")),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{query}");
+    }
+    assert!(desk.calls().is_empty());
+}
+
+#[tokio::test]
+async fn draft_routes_read_a_draft_and_return_the_draft_and_the_outcome() {
+    let (router, service, _) = desk_app();
+    let draft_body = json!({
+        "swimlane": "sit1",
+        "path": "a.yml",
+        "expected": { "state": "hash", "hash": hash_of("x: 1\n").to_string() },
+        "content": "x: 2\n",
+    });
+    // The service has no draft to give: 503 (the scripted one answers Unavailable).
+    let r = send(
+        &router,
+        Req::new(Method::POST, "/api/v1/drafts").json(&draft_body),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);
+
+    let draft = Draft {
+        id: DraftId::parse("d-1").unwrap(),
+        author: ports::conformance::sample::user_id(1),
+        swimlane: domain::SwimlaneId::parse("sit1").unwrap(),
+        path: ports::conformance::sample::nfs("a.yml"),
+        expected: Expected::Hash {
+            hash: hash_of("x: 1\n"),
+        },
+        new_hash: hash_of("x: 2\n"),
+        hunks: Vec::new(),
+        setting_changes: Vec::new(),
+        status: ProposalStatus::Draft,
+        expires_at: Timestamp::from_unix_millis(5),
+    };
+    *service.draft.lock().unwrap() = Some(Ok(draft.clone()));
+    let r = send(
+        &router,
+        Req::new(Method::POST, "/api/v1/drafts").json(&draft_body),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    assert_eq!(r.json()["id"], "d-1");
+    assert_eq!(r.json()["status"], "draft");
+    match &service.calls().last().unwrap().0 {
+        Call::Draft(req) => {
+            assert_eq!(req.swimlane.as_str(), "sit1");
+            assert_eq!(req.path.as_str(), "a.yml");
+            assert_eq!(req.content, Bytes::from_static(b"x: 2\n"));
+            assert!(req.change_eol.is_none());
+        }
+        other => panic!("{other:?}"),
+    }
+
+    for (what, req, expected) in [
+        ("unknown field", Req::new(Method::POST, "/api/v1/drafts").json(&json!({ "swimlane": "sit1", "path": "a.yml", "expected": { "state": "absent" }, "content": "x", "extra": 1 })), StatusCode::BAD_REQUEST),
+        ("no swimlane", Req::new(Method::POST, "/api/v1/drafts").json(&json!({ "path": "a.yml", "expected": { "state": "absent" }, "content": "x" })), StatusCode::BAD_REQUEST),
+        ("path out of the root", Req::new(Method::POST, "/api/v1/drafts").json(&json!({ "swimlane": "sit1", "path": "../etc/passwd", "expected": { "state": "absent" }, "content": "x" })), StatusCode::BAD_REQUEST),
+        ("wrong media type", Req::new(Method::POST, "/api/v1/drafts").raw("text/plain", b"{}".to_vec()), StatusCode::UNSUPPORTED_MEDIA_TYPE),
+        ("viewer", Req::new(Method::POST, "/api/v1/drafts").user(Some("viewer")).json(&draft_body), StatusCode::FORBIDDEN),
+    ] {
+        let before = service.calls().len();
+        let r = send(&router, req).await;
+        assert_eq!(r.status, expected, "{what}");
+        assert_eq!(service.calls().len(), before, "{what}");
+    }
+
+    // Applying a draft: the id from the path, the key from the header, the service's outcome.
+    let r = send(&router, Req::new(Method::POST, "/api/v1/drafts/d-1/apply")).await;
+    assert_eq!(r.status, StatusCode::OK);
+    match &service.calls().last().unwrap().0 {
+        Call::ApplyDraft(id) => assert_eq!(id.as_str(), "d-1"),
+        other => panic!("{other:?}"),
+    }
+    service.says(Ok(WriteOutcome::Conflict {
+        current: Some(hash_of("x: 9\n")),
+    }));
+    let r = send(&router, Req::new(Method::POST, "/api/v1/drafts/d-1/apply")).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    for bad in ["d%201", "d%2F1", &"d".repeat(129)] {
+        let r = send(
+            &router,
+            Req::new(Method::POST, &format!("/api/v1/drafts/{bad}/apply")),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    let r = send(
+        &router,
+        Req::new(Method::POST, "/api/v1/drafts/d-1/apply").key(None),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let r = send(
+        &router,
+        Req::new(Method::POST, "/api/v1/drafts/d-1/apply").user(Some("viewer")),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn the_proposal_routes_drive_the_real_hub_end_to_end() {
+    let Some(db) = support::pg::TestDb::ready().await else {
+        return;
+    };
+    let rig = support::rig::Rig::new(db).await;
+    let s = rig.swimlane("sit1", true).await;
+    rig.seed(&s, &[("a.yml", "x: 1\n")]);
+    // The users of the session store are the directory's users: an editor who needs approval, and an admin.
+    let mut careful = ports::conformance::sample::active(1, Role::Editor);
+    careful.id = hub_platform::session_auth::user_id("editor");
+    careful.requires_approval = true;
+    rig.add_user(&careful).await;
+    let mut admin = ports::conformance::sample::active(2, Role::Admin);
+    admin.id = hub_platform::session_auth::user_id("admin");
+    rig.add_user(&admin).await;
+    for (n, name, role) in [(3, "viewer", Role::Viewer), (4, "operator", Role::Operator)] {
+        let mut u = ports::conformance::sample::active(n, role);
+        u.id = hub_platform::session_auth::user_id(name);
+        rig.add_user(&u).await;
+    }
+
+    let state = WriteState::new(
+        Arc::new(rig.hub.clone()),
+        Arc::new(rig.hub.clone()),
+        rig.hub.max_content_bytes(),
+    );
+    let (router, _) = mount(GuardedRouter::new(auth(), None), state)
+        .into_parts()
+        .unwrap();
+
+    // The careful editor's edit becomes a proposal (200 with the outcome).
+    let r = send(
+        &router,
+        Req::new(Method::PUT, FILES).key(Some("e-1")).json(&edit_body()),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.json()["outcome"], "proposal_created");
+    let id = r.json()["id"].as_i64().unwrap();
+    assert_eq!(rig.nfs_of(&s, "a.yml").as_deref(), Some(&b"x: 1\n"[..]));
+
+    // Anyone signed in can look at the queue; it shows the proposal.
+    let list = send(
+        &router,
+        Req::new(Method::GET, &format!("{PROPOSALS}?status=pending")).user(Some("viewer")),
+    )
+    .await;
+    assert_eq!(
+        list.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&list.body)
+    );
+    assert_eq!(list.json()["items"][0]["id"], id);
+    assert_eq!(list.json()["items"][0]["path"], "a.yml");
+
+    // The author cannot approve it; the editor role cannot either.
+    let own = send(
+        &router,
+        Req::new(Method::POST, &format!("{PROPOSALS}/{id}/approve")).user(Some("operator")),
+    )
+    .await;
+    assert_eq!(own.status, StatusCode::FORBIDDEN);
+
+    // An admin does, and the file changes. The same key replays; another key finds it decided (422).
+    let ok = send(
+        &router,
+        Req::new(Method::POST, &format!("{PROPOSALS}/{id}/approve"))
+            .user(Some("admin"))
+            .key(Some("a-1"))
+            .json(&json!({ "comment": "ok" })),
+    )
+    .await;
+    assert_eq!(ok.status, StatusCode::OK, "{}", String::from_utf8_lossy(&ok.body));
+    assert_eq!(ok.json()["outcome"], "applied");
+    assert_eq!(ok.json()["hash"], hash_of("x: 2\n").to_string());
+    assert_eq!(rig.nfs_of(&s, "a.yml").as_deref(), Some(&b"x: 2\n"[..]));
+    let again = send(
+        &router,
+        Req::new(Method::POST, &format!("{PROPOSALS}/{id}/approve"))
+            .user(Some("admin"))
+            .key(Some("a-1"))
+            .json(&json!({ "comment": "ok" })),
+    )
+    .await;
+    assert_eq!(again.json(), ok.json());
+    let decided = send(
+        &router,
+        Req::new(Method::POST, &format!("{PROPOSALS}/{id}/approve"))
+            .user(Some("admin"))
+            .key(Some("a-2")),
+    )
+    .await;
+    assert_eq!(decided.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let missing = send(
+        &router,
+        Req::new(Method::POST, &format!("{PROPOSALS}/99999/approve"))
+            .user(Some("admin"))
+            .key(Some("a-3")),
+    )
+    .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    let done = send(
+        &router,
+        Req::new(Method::GET, &format!("{PROPOSALS}?status=applied")).user(Some("viewer")),
+    )
+    .await;
+    assert_eq!(done.json()["items"][0]["status"], "applied");
+    assert_eq!(done.json()["items"][0]["decision_comment"], "ok");
+
+    // A draft by the same route, then rejection of a second proposal.
+    let draft = send(
+        &router,
+        Req::new(Method::POST, "/api/v1/drafts")
+            .key(Some("d-1"))
+            .json(&json!({
+                "swimlane": "sit1",
+                "path": "a.yml",
+                "expected": { "state": "hash", "hash": hash_of("x: 2\n").to_string() },
+                "content": "x: 3\n",
+            })),
+    )
+    .await;
+    assert_eq!(
+        draft.status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&draft.body)
+    );
+    let did = draft.json()["id"].as_str().unwrap().to_owned();
+    let applied_draft = send(
+        &router,
+        Req::new(Method::POST, &format!("/api/v1/drafts/{did}/apply")).key(Some("ad-1")),
+    )
+    .await;
+    assert_eq!(applied_draft.json()["outcome"], "proposal_created");
+    let pid = applied_draft.json()["id"].as_i64().unwrap();
+    let rejected = send(
+        &router,
+        Req::new(Method::POST, &format!("{PROPOSALS}/{pid}/reject"))
+            .user(Some("admin"))
+            .key(Some("r-1"))
+            .json(&json!({ "reason": "later" })),
+    )
+    .await;
+    assert_eq!(
+        rejected.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&rejected.body)
+    );
+    assert_eq!(rejected.json()["status"], "rejected");
+    assert_eq!(rig.nfs_of(&s, "a.yml").as_deref(), Some(&b"x: 2\n"[..]));
 }

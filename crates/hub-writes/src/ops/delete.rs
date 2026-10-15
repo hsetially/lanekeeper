@@ -108,6 +108,7 @@ async fn run(
                 content: None,
                 params: serde_json::json!({}),
                 diff,
+                draft: None,
             },
         )
         .await;
@@ -140,6 +141,7 @@ async fn run(
         request_id: ctx.request_id.clone(),
         event,
         warnings: Vec::new(),
+        follow: None,
     };
     carry_out(hub, claim, intent, Command::Delete { expected: r.expected }).await
 }

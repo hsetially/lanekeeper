@@ -17,11 +17,20 @@ pub(crate) async fn edit(hub: &Inner, ctx: &WriteCtx, r: EditRequest) -> Result<
         Claimed::Replay(outcome) => return Ok(outcome),
         Claimed::Mine(claim) => claim,
     };
-    let result = run(hub, ctx, &user, &claim, r).await;
+    let result = run(hub, ctx, &user, &claim, r, None).await;
     settle(hub, &claim, result).await
 }
 
-async fn run(hub: &Inner, ctx: &WriteCtx, user: &domain::User, claim: &Claim, r: EditRequest) -> Step<Done> {
+/// Steps 3 to 6 for an edit. `draft` is the draft the edit applies, when it applies one (`apply_draft`): the audit event says so,
+/// and the draft is marked with the write.
+pub(crate) async fn run(
+    hub: &Inner,
+    ctx: &WriteCtx,
+    user: &domain::User,
+    claim: &Claim,
+    r: EditRequest,
+    draft: Option<&str>,
+) -> Step<Done> {
     // 3 and the cheap part of 4: the lock, the size, the deny globs.
     if let Some(done) = screen(hub, &r.swimlane, &r.path, r.content.len()).await? {
         return Ok(done);
@@ -40,7 +49,7 @@ async fn run(hub: &Inner, ctx: &WriteCtx, user: &domain::User, claim: &Claim, r:
     finish(
         hub,
         Write {
-            kind: Kind::Edit,
+            kind: if draft.is_some() { Kind::Draft } else { Kind::Edit },
             ctx,
             user,
             claim,
@@ -48,6 +57,7 @@ async fn run(hub: &Inner, ctx: &WriteCtx, user: &domain::User, claim: &Claim, r:
             path: &r.path,
             expected: &r.expected,
             restores: None,
+            draft,
         },
         prepared,
         checked,

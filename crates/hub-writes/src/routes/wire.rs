@@ -6,12 +6,14 @@
 
 use bytes::Bytes;
 use domain::{
-    ChangeEol, ContentHash, DeleteRequest, EditRequest, Expected, NfsPath, PreviewChange, PreviewId,
-    PreviewRequest, RestartRequest, RevertRequest, ServiceRef, SwimlaneId, UploadRequest,
+    ChangeEol, ContentHash, Cursor, DeleteRequest, EditRequest, Expected, NfsPath, Page, PreviewChange,
+    PreviewId, PreviewRequest, ProposalId, ProposalStatus, RestartRequest, RevertRequest, ServiceRef,
+    ShortText, SwimlaneId, UploadRequest,
 };
 use serde::Deserialize;
 
 use super::multipart::{Form, MultipartError, parse};
+use crate::ProposalQuery;
 
 /// Why a request was refused before the service saw it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -88,6 +90,94 @@ pub fn restart_request(swimlane: SwimlaneId, body: &[u8]) -> Read<RestartRequest
     let body: RestartBody = serde_json::from_slice(body).map_err(|_| Refusal::BadRequest)?;
     let service = ServiceRef::new(&body.namespace, &body.name).map_err(|_| Refusal::BadRequest)?;
     Ok(RestartRequest { swimlane, service })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DraftBody {
+    swimlane: SwimlaneId,
+    path: NfsPath,
+    expected: Expected,
+    content: String,
+}
+
+/// The JSON body of a draft: an edit that names its swimlane.
+pub fn draft_request(body: &[u8]) -> Read<EditRequest> {
+    let body: DraftBody = serde_json::from_slice(body).map_err(|_| Refusal::BadRequest)?;
+    Ok(EditRequest {
+        swimlane: body.swimlane,
+        path: body.path,
+        expected: body.expected,
+        content: Bytes::from(body.content.into_bytes()),
+        change_eol: None,
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApproveBody {
+    #[serde(default)]
+    comment: Option<ShortText>,
+}
+
+/// The body of an approval: nothing at all, or `{"comment": text or null}`.
+pub fn approve_comment(body: &[u8]) -> Read<Option<ShortText>> {
+    if body.is_empty() {
+        return Ok(None);
+    }
+    let body: ApproveBody = serde_json::from_slice(body).map_err(|_| Refusal::BadRequest)?;
+    Ok(body.comment)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RejectBody {
+    reason: ShortText,
+}
+
+/// The body of a rejection: `{"reason": text}`. A rejection says why, so the text is not empty.
+pub fn reject_reason(body: &[u8]) -> Read<ShortText> {
+    let body: RejectBody = serde_json::from_slice(body).map_err(|_| Refusal::BadRequest)?;
+    if body.reason.as_str().trim().is_empty() {
+        return Err(Refusal::BadRequest);
+    }
+    Ok(body.reason)
+}
+
+/// The id of a proposal from its path segment: a positive integer.
+pub fn proposal_id(text: &str) -> Read<ProposalId> {
+    match text.parse::<i64>() {
+        Ok(n) if n >= 1 && text.bytes().all(|b| b.is_ascii_digit()) => Ok(ProposalId::from(n)),
+        _ => Err(Refusal::BadRequest),
+    }
+}
+
+/// The query of a list of proposals: each value is parsed into its type, and the limit is the contract's (1 to 500, default 100).
+pub fn proposal_query(
+    status: Option<&str>,
+    swimlane: Option<&str>,
+    cursor: Option<&str>,
+    limit: Option<u32>,
+) -> Read<ProposalQuery> {
+    let page = Page::new(
+        limit.unwrap_or(Page::DEFAULT_LIMIT),
+        cursor
+            .map(Cursor::parse)
+            .transpose()
+            .map_err(|_| Refusal::BadRequest)?,
+    )
+    .map_err(|_| Refusal::BadRequest)?;
+    Ok(ProposalQuery {
+        status: status
+            .map(str::parse::<ProposalStatus>)
+            .transpose()
+            .map_err(|_| Refusal::BadRequest)?,
+        swimlane: swimlane
+            .map(SwimlaneId::parse)
+            .transpose()
+            .map_err(|_| Refusal::BadRequest)?,
+        page,
+    })
 }
 
 /// A delete, from the three values of its query string: `path`, `expected` and the optional `preview_id`.

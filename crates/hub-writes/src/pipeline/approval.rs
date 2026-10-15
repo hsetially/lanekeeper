@@ -38,6 +38,8 @@ pub(crate) struct Proposal<'a> {
     pub params: serde_json::Value,
     /// The diff the audit event keeps. Flagged values are redacted already.
     pub diff: String,
+    /// The draft that became this proposal, when one did: it waits with the proposal.
+    pub draft: Option<&'a str>,
 }
 
 pub(crate) fn via_of(v: domain::Via) -> AuditVia {
@@ -110,6 +112,9 @@ async fn create(hub: &Inner, p: &Proposal<'_>, new_hash: Option<domain::ContentH
         },
     )
     .await?;
+    if let Some(draft) = p.draft {
+        crate::drafts::mark(&mut tx, draft, ProposalStatus::Pending).await?;
+    }
     hub.bus
         .publish_in_tx(
             &mut Tx::from_pg(&mut tx),

@@ -96,6 +96,11 @@ impl FakeAgent {
             .insert((s.clone(), p.clone()), Bytes::copy_from_slice(bytes));
     }
 
+    /// The file disappears from NFS without the hub having done anything (somebody removed it).
+    pub fn remove(&self, s: &SwimlaneId, p: &NfsPath) {
+        lock(&self.state).files.remove(&(s.clone(), p.clone()));
+    }
+
     pub fn content(&self, s: &SwimlaneId, p: &NfsPath) -> Option<Bytes> {
         lock(&self.state).files.get(&(s.clone(), p.clone())).cloned()
     }

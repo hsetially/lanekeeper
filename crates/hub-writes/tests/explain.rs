@@ -69,3 +69,32 @@ async fn explain_the_lock_check_reads_the_swimlane_by_its_key() {
     let (_, sql) = queries.iter().find(|(n, _)| *n == "swimlane_lock").unwrap();
     assert!(plan(&db, sql).await.contains("swimlanes_pkey"));
 }
+
+#[tokio::test]
+async fn explain_proposal_expiry_uses_the_expiry_index() {
+    let db = db!();
+    let queries = hub_writes::hot_queries();
+    let (_, sql) = queries.iter().find(|(n, _)| *n == "proposal_expiry").unwrap();
+    assert!(plan(&db, sql).await.contains("proposals_expiry_idx"));
+    let (_, sql) = queries.iter().find(|(n, _)| *n == "draft_expiry").unwrap();
+    assert!(plan(&db, sql).await.contains("drafts_expiry_idx"));
+}
+
+#[tokio::test]
+async fn explain_proposal_reads_use_the_primary_key_and_the_decision_is_joined_by_its_key() {
+    let db = db!();
+    let queries = hub_writes::hot_queries();
+    for name in ["proposal_get", "proposal_list", "proposal_lock"] {
+        let (_, sql) = queries.iter().find(|(n, _)| *n == name).unwrap();
+        assert!(plan(&db, sql).await.contains("proposals_pkey"), "{name}");
+    }
+    for name in ["proposal_get", "proposal_list"] {
+        let (_, sql) = queries.iter().find(|(n, _)| *n == name).unwrap();
+        assert!(
+            plan(&db, sql).await.contains("approvals_proposal_id_key"),
+            "{name} joins the decision through its unique key"
+        );
+    }
+    let (_, sql) = queries.iter().find(|(n, _)| *n == "draft_get").unwrap();
+    assert!(plan(&db, sql).await.contains("drafts_pkey"));
+}

@@ -13,15 +13,15 @@
 use std::time::Duration;
 
 use domain::{
-    DomainEvent, NfsPath, RejectReason, RestartRequest, Role, ServiceRef, SwimlaneId, User, WriteCtx,
-    WriteOutcome,
+    DomainEvent, NfsPath, ProposalId, RejectReason, RestartRequest, Role, ServiceRef, SwimlaneId, User,
+    UserId, WriteCtx, WriteOutcome,
 };
 use ports::{AuditAction, AuditActor, AuditEvent, WriteError};
 use sha2::{Digest, Sha256};
 
 use super::file::rejected;
 use crate::error::{Internal, Res};
-use crate::idempotency::RequestHash;
+use crate::idempotency::{Follow, RequestHash};
 use crate::pipeline::approval::{Proposal, propose, via_of};
 use crate::pipeline::authorize::authorize;
 use crate::pipeline::claim::{Claim, Claimed, claim, settle};
@@ -71,7 +71,7 @@ pub(crate) async fn restart(
     settle(hub, &claim, result).await
 }
 
-async fn service_known(hub: &Inner, swimlane: &SwimlaneId, service: &ServiceRef) -> Res<bool> {
+pub(crate) async fn service_known(hub: &Inner, swimlane: &SwimlaneId, service: &ServiceRef) -> Res<bool> {
     let row: Option<i32> = hub
         .within(
             "restart_service",
@@ -119,13 +119,35 @@ async fn run(hub: &Inner, ctx: &WriteCtx, user: &User, claim: &Claim, r: Restart
                     "name": r.service.name(),
                 }),
                 diff: note(&r.service),
+                draft: None,
             },
         )
         .await;
     }
 
+    execute(hub, ctx, user, claim, &r.swimlane, &r.service, None).await
+}
+
+/// The proposal a restart carries out, when an admin's approval is what sends it.
+pub(crate) struct ByApproval {
+    pub proposal: ProposalId,
+    pub author: UserId,
+    /// Decided in the transaction that records the restart.
+    pub follow: Follow,
+}
+
+/// Steps 6 of the pipeline for a restart: hold the lease on the service, send the command, record it.
+pub(crate) async fn execute(
+    hub: &Inner,
+    ctx: &WriteCtx,
+    user: &User,
+    claim: &Claim,
+    swimlane: &SwimlaneId,
+    service: &ServiceRef,
+    by: Option<ByApproval>,
+) -> Step<Done> {
     // At most one restart of the service at a time, on any replica.
-    let name = lease_name(&r.swimlane, &r.service);
+    let name = lease_name(swimlane, service);
     let guard = match hub
         .within("restart_lease", hub.leases.try_acquire(&name, LEASE_TTL))
         .await?
@@ -134,7 +156,7 @@ async fn run(hub: &Inner, ctx: &WriteCtx, user: &User, claim: &Claim, r: Restart
         Ok(None) => return Ok(Done::Release(WriteOutcome::Locked { until: None })),
         Err(_) => return Err(Abort::release(WriteError::Unavailable)),
     };
-    let result = send_and_record(hub, ctx, user, claim, &r).await;
+    let result = send_and_record(hub, ctx, user, claim, swimlane, service, by).await;
     // Free the service at once; a failure only means the lease runs out by itself.
     if guard.release().await.is_err() {
         tracing::warn!("a restart lease could not be released; it runs out by itself");
@@ -147,9 +169,11 @@ async fn send_and_record(
     ctx: &WriteCtx,
     user: &User,
     claim: &Claim,
-    r: &RestartRequest,
+    swimlane: &SwimlaneId,
+    service: &ServiceRef,
+    by: Option<ByApproval>,
 ) -> Step<Done> {
-    match send_restart(hub, &r.swimlane, &r.service, &ctx.request_id).await {
+    match send_restart(hub, swimlane, service, &ctx.request_id).await {
         Sent::Undelivered => Ok(Done::Release(rejected(RejectReason::AgentUnavailable))),
         Sent::Refused { outcome, transient } => Ok(if transient {
             Done::Release(outcome)
@@ -160,7 +184,7 @@ async fn send_and_record(
         // request is not recorded and the key is freed: a retry restarts again, which is harmless (a Deployment rolls to the same
         // template), and the residual risk (an unaudited restart) is in the threat model.
         Sent::Ambiguous => {
-            tracing::warn!(swimlane = %r.swimlane, "a restart command was sent and its answer was lost");
+            tracing::warn!(swimlane = %swimlane, "a restart command was sent and its answer was lost");
             Err(Abort::release(WriteError::Unavailable))
         }
         Sent::Landed(_) => {
@@ -172,23 +196,29 @@ async fn send_and_record(
                 AuditAction::ServiceRestarted,
                 via_of(ctx.via),
             );
-            event.swimlane = Some(r.swimlane.clone());
-            event.diff = Some(note(&r.service));
+            event.swimlane = Some(swimlane.clone());
+            event.diff = Some(note(service));
             event.request_id = Some(ctx.request_id.clone());
+            let follow = by.map(|by| {
+                event.author = Some(by.author);
+                event.approval = Some(by.proposal);
+                by.follow
+            });
             let recorded = record(
                 hub,
                 Recording {
                     key: &claim.key,
-                    swimlane: &r.swimlane,
+                    swimlane,
                     event,
                     tool_write: None,
                     events: vec![DomainEvent::PickupChanged {
-                        swimlane: r.swimlane.clone(),
-                        services: vec![r.service.clone()],
+                        swimlane: swimlane.clone(),
+                        services: vec![service.clone()],
                     }],
                     keep: Vec::new(),
                     applied_hash: None,
                     warnings: Vec::new(),
+                    follow,
                 },
             )
             .await;

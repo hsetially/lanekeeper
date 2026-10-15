@@ -4,7 +4,7 @@ The write path's own cargo-fuzz crate. The root `fuzz/` crate belongs to prompt 
 
 | Target | Input | What must hold |
 |---|---|---|
-| `writes_request_json` | bytes read as the JSON body of an edit, a revert and a restart, and as the lines `path`, `expected`, `preview_id` of a delete | reading never panics; an accepted request names a valid path and typed hashes, holds no more content than the input had, and survives a round trip through its canonical JSON (or lines) unchanged |
+| `writes_request_json` | bytes read as the JSON body of an edit, a revert, a restart, a draft, an approval and a rejection, and as the lines `path`, `expected`, `preview_id` of a delete and `status`, `swimlane`, `cursor`, `limit` of a list of proposals | reading never panics; an accepted request names a valid path and typed hashes, holds no more content than the input had, and survives a round trip through its canonical JSON (or lines) unchanged |
 | `writes_upload_multipart` | a content type, a line end, and a multipart body, read as an upload form and as a preview form | reading never panics; an accepted request has a valid path, a file within the limit, an `Expected` that agrees with its fields, and survives a round trip through a canonical form unchanged |
 | `writes_preview_id` | text read as a preview id presented with a fixed request at a fixed time | checking never panics; an id is accepted only if it is exactly the one the service issues for that request at the second it names, and that second is within the ten minutes before now |
 

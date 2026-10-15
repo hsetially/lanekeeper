@@ -182,6 +182,38 @@ fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
     );
     add(
         t,
+        "accepted_draft",
+        json(
+            json!({ "swimlane": "sit1", "path": "tx-api/a.yml", "expected": { "state": "hash", "hash": h("x: 1\n") }, "content": "x: 2\n" }),
+        ),
+    );
+    add(
+        t,
+        "accepted_approve_with_comment",
+        json(json!({ "comment": "looks right" })),
+    );
+    add(
+        t,
+        "accepted_approve_with_null_comment",
+        json(json!({ "comment": null })),
+    );
+    add(
+        t,
+        "accepted_reject_with_reason",
+        json(json!({ "reason": "not now" })),
+    );
+    add(
+        t,
+        "rejected_reject_with_blank_reason",
+        json(json!({ "reason": "   " })),
+    );
+    add(
+        t,
+        "rejected_approve_with_control_character",
+        b"{\"comment\":\"a\\u0007b\"}".to_vec(),
+    );
+    add(
+        t,
         "rejected_edit_unknown_field",
         json(json!({ "path": "a.yml", "expected": { "state": "absent" }, "content": "", "sneaky": true })),
     );

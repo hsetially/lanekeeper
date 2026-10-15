@@ -86,4 +86,43 @@ impl QueryProbe<'_> {
             .await
             .is_ok()
     }
+
+    /// One page of the list of proposals (25 rows, newest first), without the diffs: the statement of the list route.
+    pub async fn proposal_page(&self) -> usize {
+        let Ok(mut conn) = self.hub.pool.acquire().await else {
+            return usize::MAX;
+        };
+        let filter = crate::proposals::store::Filter {
+            below: None,
+            status: Some(domain::ProposalStatus::Pending),
+            swimlane: None,
+        };
+        crate::proposals::store::list(&mut conn, &filter, 25)
+            .await
+            .map_or(usize::MAX, |rows| rows.len())
+    }
+
+    /// The expiry job's scan for pending proposals whose time has run out.
+    pub async fn proposal_expiry_scan(&self) -> usize {
+        let Ok(mut conn) = self.hub.pool.acquire().await else {
+            return usize::MAX;
+        };
+        crate::proposals::store::expired(
+            &mut conn,
+            self.hub.now_ms(),
+            i64::try_from(self.hub.cfg.expire_batch).unwrap_or(100),
+        )
+        .await
+        .map_or(usize::MAX, |ids| ids.len())
+    }
+
+    /// The read of one proposal with its decision, as an approval starts.
+    pub async fn proposal_get(&self, id: i64) -> bool {
+        let Ok(mut conn) = self.hub.pool.acquire().await else {
+            return false;
+        };
+        crate::proposals::store::get(&mut conn, domain::ProposalId::from(id))
+            .await
+            .is_ok()
+    }
 }

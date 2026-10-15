@@ -10,6 +10,11 @@
 
 mod support;
 
+#[path = "actions/approvals.rs"]
+mod approvals;
+#[path = "actions/drafts.rs"]
+mod drafts;
+
 use std::time::Duration;
 
 use bytes::Bytes;

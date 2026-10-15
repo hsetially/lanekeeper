@@ -20,6 +20,7 @@ pub(crate) mod authorize;
 pub(crate) mod claim;
 pub(crate) mod current;
 pub(crate) mod execute;
+pub(crate) mod follow;
 pub(crate) mod lock;
 pub(crate) mod validate;
 

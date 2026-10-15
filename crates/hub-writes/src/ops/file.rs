@@ -13,7 +13,7 @@ use ports::{AuditAction, AuditActor, AuditEvent};
 use serde_json::json;
 
 use crate::fidelity::{Incoming, folder_newline, prepare_checked};
-use crate::idempotency::{Intent, IntentOp, Phase};
+use crate::idempotency::{Follow, Intent, IntentOp, Phase};
 use crate::pipeline::approval::{Proposal, base_hash, expected_hash, propose, via_of};
 use crate::pipeline::claim::Claim;
 use crate::pipeline::current::{Found, old_content};
@@ -38,6 +38,8 @@ pub(crate) enum Kind {
     Edit,
     Upload,
     Revert,
+    /// An edit that a draft prepared; the audit event says so (`DraftApplied`).
+    Draft,
 }
 
 impl Kind {
@@ -46,13 +48,14 @@ impl Kind {
             Self::Edit => AuditAction::FileEdited,
             Self::Upload => AuditAction::FileUploaded,
             Self::Revert => AuditAction::FileReverted,
+            Self::Draft => AuditAction::DraftApplied,
         }
     }
 
     /// The `proposals.action` of the action.
     fn proposal(self) -> &'static str {
         match self {
-            Self::Edit => "edit",
+            Self::Edit | Self::Draft => "edit",
             Self::Upload => "upload",
             Self::Revert => "revert",
         }
@@ -153,6 +156,8 @@ pub(crate) struct Write<'a> {
     pub expected: &'a Expected,
     /// The version a revert restores; recorded with its proposal.
     pub restores: Option<ContentHash>,
+    /// The draft this write applies (kind [`Kind::Draft`]): it is marked applied with the write, or waits with the proposal.
+    pub draft: Option<&'a str>,
 }
 
 /// Steps 5 and 6 for content that is ready: refuse what failed validation, route a user who needs approval to a proposal, and
@@ -164,9 +169,12 @@ pub(crate) async fn finish(hub: &Inner, w: Write<'_>, prepared: Bytes, checked: 
 
     // 5. A user who needs approval proposes; nothing is written.
     if w.user.requires_approval {
-        let params = w
+        let mut params = w
             .restores
             .map_or_else(|| json!({}), |to| json!({ "to": to.to_string() }));
+        if let (Some(draft), Some(map)) = (w.draft, params.as_object_mut()) {
+            map.insert("draft".to_owned(), json!(draft));
+        }
         return propose(
             hub,
             Proposal {
@@ -182,6 +190,7 @@ pub(crate) async fn finish(hub: &Inner, w: Write<'_>, prepared: Bytes, checked: 
                 content: Some(prepared),
                 params,
                 diff: checked.diff,
+                draft: w.draft,
             },
         )
         .await;
@@ -214,6 +223,7 @@ pub(crate) async fn finish(hub: &Inner, w: Write<'_>, prepared: Bytes, checked: 
         request_id: w.ctx.request_id.clone(),
         event,
         warnings: checked.warnings,
+        follow: w.draft.map(|id| Follow::Draft { id: id.to_owned() }),
     };
     carry_out(
         hub,

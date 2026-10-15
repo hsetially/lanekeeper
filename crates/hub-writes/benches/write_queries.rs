@@ -2,9 +2,9 @@
 //!
 //! The statements the write path runs on every request, at target-scale row counts: the idempotency claim (an insert that
 //! checks the key), the read of a retry that finds a finished claim, the completion of a claim, the editing-lock read, the
-//! reconcile job's scan for unfinished claims and one page of the expiry sweep. Each sample is one statement, taken in turn, so the
-//! registered p95 is over the whole set. Later tasks add the open-PR lookup, the proposal list and expiry scan and the credential
-//! load to the set.
+//! reconcile job's scan for unfinished claims, one page of the expiry sweep, and (from T4) a page of the list of proposals, the
+//! expiry job's scan and the read of one proposal. Each sample is one statement, taken in turn, so the registered p95 is over the
+//! whole set. Later tasks add the open-PR lookup and the credential load to the set.
 //!
 //! The tables hold 60,000 idempotency rows (a busy day's writes and some days of unswept rows), 40 swimlanes and 10,000 proposals,
 //! over a real Postgres (a container, or `LK_TEST_PG_ADMIN_URL`). Loopback: this bounds the statements and the database, not the
@@ -76,7 +76,7 @@ fn bench(c: &mut Criterion) {
         .sample_size(500)
         .warm_up_time(Duration::from_secs(1))
         .measurement_time(Duration::from_millis(100));
-    // A multiple of seven less one, so that the first step is a claim and the steps that read a claim follow one.
+    // A multiple of ten less one, so that the first step is a claim and the steps that read a claim follow one.
     let mut n = 6_999_999_u64;
     group.bench_function("write_queries", |b| {
         b.iter_custom(|iters| {
@@ -85,7 +85,7 @@ fn bench(c: &mut Criterion) {
                 for _ in 0..iters {
                     n += 1;
                     let started = Instant::now();
-                    let ok = match n % 7 {
+                    let ok = match n % 10 {
                         // A claim, the read of the row a step later while it is unfinished, and its completion a step after.
                         0 => probe.claim(&user, &format!("probe-{n}"), n).await,
                         1 => probe.replay(&user, &format!("probe-{}", n - 1), n - 1).await,
@@ -95,13 +95,21 @@ fn bench(c: &mut Criterion) {
                         5 => probe.purge_page().await,
                         // A retry that finds a finished row, among the 60,000. The sweep deletes the expired ones (a third of them),
                         // so the rows read are the ones that stay.
-                        _ => {
+                        6 => {
                             let key = format!("filler-{}", 3 * (n % 20_000) + 3);
                             probe.replay(&user, &key, n).await
                         }
+                        // The list of proposals, the expiry job's scan, and one proposal, among the 10,000.
+                        7 => probe.proposal_page().await == 25,
+                        8 => probe.proposal_expiry_scan().await == 0,
+                        _ => {
+                            probe
+                                .proposal_get(i64::try_from(1 + n % 10_000).unwrap_or(1))
+                                .await
+                        }
                     };
                     total += started.elapsed();
-                    assert!(ok, "statement {} failed at step {n}", n % 7);
+                    assert!(ok, "statement {} failed at step {n}", n % 10);
                 }
                 total.max(Duration::from_nanos(1))
             })
