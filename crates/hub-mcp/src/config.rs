@@ -178,3 +178,108 @@ impl McpConfig {
         })
     }
 }
+
+/// The longest public origin accepted.
+const MAX_ORIGIN_LEN: usize = 253 + 8;
+
+/// `scheme://host[:port]`: the origin users and Cursor see (the same value as the identity crate's `public_origin`). It builds the
+/// URLs the server publishes (the resource-metadata link, the web links) and is what `Host` and `Origin` are checked against.
+///
+/// `https` for any host; `http` only for a loopback host, for development. No user information, path, query or fragment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicOrigin {
+    origin: String,
+    authority: String,
+}
+
+impl PublicOrigin {
+    /// # Errors
+    ///
+    /// [`ConfigError::Invalid`] naming `public_origin` for anything that is not an origin.
+    pub fn parse(text: &str) -> Result<Self, ConfigError> {
+        const NAME: &str = "public_origin";
+        let invalid = || ConfigError::Invalid(NAME);
+        if text.is_empty()
+            || text.len() > MAX_ORIGIN_LEN
+            || text.chars().any(|c| c.is_control() || c.is_whitespace())
+        {
+            return Err(invalid());
+        }
+        let (scheme, rest) = text.split_once("://").ok_or_else(invalid)?;
+        if scheme != "https" && scheme != "http" {
+            return Err(invalid());
+        }
+        let authority = rest.strip_suffix('/').unwrap_or(rest);
+        if authority.is_empty() || authority.contains(['/', '?', '#', '@', '\\']) {
+            return Err(invalid());
+        }
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((host, port)) if !host.ends_with(':') && !host.contains(':') => (host, Some(port)),
+            Some(_) => return Err(invalid()),
+            None => (authority, None),
+        };
+        if let Some(port) = port {
+            match port.parse::<u16>() {
+                Ok(n) if n != 0 && !port.starts_with('0') => {}
+                _ => return Err(invalid()),
+            }
+        }
+        let label_ok = |label: &str| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        };
+        if host.is_empty() || host.len() > 253 || !host.split('.').all(label_ok) {
+            return Err(invalid());
+        }
+        let loopback = host == "localhost" || host == "127.0.0.1";
+        if scheme == "http" && !loopback {
+            return Err(invalid());
+        }
+        Ok(Self {
+            origin: format!("{scheme}://{authority}"),
+            authority: authority.to_owned(),
+        })
+    }
+
+    /// `scheme://host[:port]`, no trailing slash.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.origin
+    }
+
+    /// `host[:port]`, as a `Host` header carries it.
+    #[must_use]
+    pub fn authority(&self) -> &str {
+        &self.authority
+    }
+
+    /// The `Host` values that name this origin: the authority as written, and the same host with or without the scheme's default
+    /// port (`:443` for `https`, `:80` for `http`), which a client may or may not write.
+    #[must_use]
+    pub fn host_values(&self) -> Vec<String> {
+        let default = if self.origin.starts_with("https://") {
+            ":443"
+        } else {
+            ":80"
+        };
+        let mut values = vec![self.authority.clone()];
+        match self.authority.strip_suffix(default) {
+            Some(bare) => values.push(bare.to_owned()),
+            // Only an authority without a port gains the default one; `host:8443` names one host and no other.
+            None if !self.authority.contains(':') => values.push(format!("{}{default}", self.authority)),
+            None => {}
+        }
+        values
+    }
+
+    /// `origin` followed by `path`, which starts with `/`.
+    #[must_use]
+    pub fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.origin)
+    }
+}

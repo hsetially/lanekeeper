@@ -9,30 +9,54 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
-[dependencies]
-thiserror.workspace = true
+[features]
+default = []
+# `auth::store::MemoryTokenStore`: the in-memory personal-token store of this crate's tests and the hub's (the Postgres one is
+# `PgTokenStore`). Never enabled in the binary's release build.
+fakes = ["ports/fakes"]
 
-# T0 (plan 07, A19): everything below is used by the compatibility stub (`examples/t0_stub.rs`) and its tests only. The library
-# does not link rmcp yet. T1 moves into `[dependencies]` what the server itself needs.
-[dev-dependencies]
+[dependencies]
+domain.workspace = true
+# `postgres` gives `Tx::from_pg`, which the token transaction hands to `AuditLog::record` (D80).
+ports = { workspace = true, features = ["postgres"] }
+hub-platform.workspace = true
+async-trait.workspace = true
+# HMAC-SHA-256 for the stored token hash and the CSPRNG for new tokens (S7). The stack's one crypto provider, so no `hmac` or `rand` crate of ours.
+aws-lc-rs.workspace = true
 axum.workspace = true
 base64.workspace = true
 bytes.workspace = true
-domain.workspace = true
-futures.workspace = true
 http.workspace = true
 http-body-util.workspace = true
-insta.workspace = true
-moka = { workspace = true, features = ["sync"] }
-proptest.workspace = true
+# Bounded caches: the personal-token cache (5 seconds) and the owners of live sessions.
+moka.workspace = true
 # Server side of the Streamable HTTP transport and server-initiated elicitation. No `macros` (the handler is written by hand),
 # no `auth`, no `client`, no `reqwest` (workspace comment).
 rmcp = { workspace = true, features = ["server", "transport-streamable-http-server", "elicitation"] }
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
+# Personal tokens in Postgres (T1). Runtime-checked queries, as in hub-identity. No TLS feature: TLS comes from the pool options.
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio"] }
+subtle.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tower.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+# This crate's own tests use the in-memory token store and the ports fakes.
+hub-mcp = { path = ".", version = "0.1.0", features = ["fakes"] }
+hub-platform = { workspace = true, features = ["fakes"] }
+ports = { workspace = true, features = ["fakes"] }
+futures.workspace = true
 hex.workspace = true
+insta.workspace = true
+proptest.workspace = true
+sha2.workspace = true
+# Real Postgres 16 in a container (or `LK_TEST_PG_ADMIN_URL`), migrated as lanekeeper_migrator and used as lanekeeper_app.
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "migrate"] }
+testcontainers.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
 tower = { workspace = true, features = ["util"] }
-tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "registry"] }

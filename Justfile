@@ -382,22 +382,43 @@ engine-bench:
     cargo xtask bench-check --budgets "$tmp/budgets.toml"
 
 # Prompt 07 gate (the MCP server; S4, S11, S14, S14b, S15, S21; P9): every sub-recipe, in order, stopping at the first failure. T0
-# starts it with the tools check, lint, tests and the status of the Cursor results; later tasks append their own sub-recipes
-# (fuzz, bench, the Postgres-backed tests with `docker-check`). Run `just verify` and `cargo xtask bench-check` after it (AGENTS.md,
-# protocol step 4). Not part of the gate and said so: the Cursor 3.22.12 checks of T0 need a human (see `mcp-t0-status`).
-verify-07: mcp-tools-check mcp-lint mcp-test mcp-t0-status
+# started it with the tools check, lint, tests and the status of the Cursor results; T1 adds the Docker daemon for the Postgres-backed
+# token tests and the fuzz targets; later tasks append their own sub-recipes (bench). Run `just verify` and `cargo xtask bench-check`
+# after it (AGENTS.md, protocol step 4). Not part of the gate and said so: the Cursor 3.22.12 checks of T0 need a human (see
+# `mcp-t0-status`).
+verify-07: mcp-tools-check mcp-lint mcp-test mcp-fuzz mcp-t0-status
 
-# The pinned tools the gate needs, or the command that installs them. Never skips.
-mcp-tools-check: agent-tools-check
+# The pinned tools the gate needs, or the command that installs them, and the Docker daemon the token store tests start Postgres in.
+# Never skips.
+mcp-tools-check: agent-tools-check docker-check
 
 mcp-lint:
     cargo fmt --all -- --check
     cargo clippy -p hub-mcp --all-targets -- -D warnings
+    cargo clippy -p hub --all-targets -- -D warnings
 
 # Unit, property, golden and protocol tests of the MCP crate, including the compatibility stub driven in process (no sockets, a
-# paused clock) and the rmcp spike of plan A19.
+# paused clock), the rmcp spike of plan A19, the authentication tests, and the token store against a real Postgres 16 (T1).
+# LK_REQUIRE_DOCKER makes a missing Docker daemon a failure and not a skip. Then the hub's module test: the MCP routes in the composed hub.
 mcp-test:
-    cargo test -p hub-mcp --lib --tests
+    LK_REQUIRE_DOCKER=1 cargo test -p hub-mcp --lib --tests
+    cargo test -p hub --test mcp_module
+
+# S22: the MCP crate's own fuzz crate (decision A10 of plan 07; `fuzz-smoke` does not run it). Its lockfile is complete and passes
+# cargo deny and cargo audit (S19), then each target runs {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in
+# crates/hub-mcp/fuzz/artifacts/. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart.
+mcp_fuzz_targets := "mcp_bearer_header mcp_pat_token"
+mcp-fuzz: fuzz-tools-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo +{{fuzz_nightly}} metadata --locked --format-version 1 --manifest-path crates/hub-mcp/fuzz/Cargo.toml > /dev/null
+    cargo deny --manifest-path crates/hub-mcp/fuzz/Cargo.toml check --config deny.toml
+    cargo audit --file crates/hub-mcp/fuzz/Cargo.lock
+    for target in {{mcp_fuzz_targets}}; do
+        mkdir -p "target/fuzz-corpus/$target"
+        cargo +{{fuzz_nightly}} fuzz run "$target" --fuzz-dir crates/hub-mcp/fuzz "target/fuzz-corpus/$target" "crates/hub-mcp/fuzz/corpus/$target" -- -max_total_time={{fuzz_seconds}}
+    done
+    echo "mcp-fuzz: {{mcp_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
 
 # T0 (A4): what is recorded of the Cursor 3.22.12 compatibility test (D91 in docs/decisions.md). The checks need a human with
 # Cursor on Windows and on macOS (`crates/hub-mcp/t0/README.md`), so an agent run says NOT RUN per operating system, and NOT RUN is

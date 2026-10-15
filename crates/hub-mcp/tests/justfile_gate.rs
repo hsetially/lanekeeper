@@ -2,6 +2,7 @@
 //! sub-recipes (fuzz, bench, the Postgres-backed tests); this test keeps the ones that exist from being dropped or skipped.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
@@ -33,7 +34,13 @@ fn verify_07_runs_every_sub_recipe_and_is_no_longer_the_stub() {
         "verify-07 is still the stub"
     );
     let gate = recipe(&text, "verify-07");
-    for dep in ["mcp-tools-check", "mcp-lint", "mcp-test", "mcp-t0-status"] {
+    for dep in [
+        "mcp-tools-check",
+        "mcp-lint",
+        "mcp-test",
+        "mcp-fuzz",
+        "mcp-t0-status",
+    ] {
         assert!(gate.contains(dep), "verify-07 does not run {dep}");
         recipe(&text, dep);
     }
@@ -48,8 +55,20 @@ fn the_gate_never_skips_a_test_and_lints_with_warnings_as_errors() {
         lint.contains("cargo clippy -p hub-mcp --all-targets -- -D warnings"),
         "{lint}"
     );
+    assert!(
+        lint.contains("cargo clippy -p hub --all-targets -- -D warnings"),
+        "the hub's module is part of this prompt: {lint}"
+    );
     let unit_tests = recipe(&text, "mcp-test");
     assert!(unit_tests.contains("cargo test -p hub-mcp"), "{unit_tests}");
+    assert!(
+        unit_tests.contains("LK_REQUIRE_DOCKER=1 cargo test -p hub-mcp"),
+        "a missing database is a failure, not a skip: {unit_tests}"
+    );
+    assert!(
+        unit_tests.contains("cargo test -p hub --test mcp_module"),
+        "{unit_tests}"
+    );
     for skipped in ["--skip", "|| true", "--ignored", "exit 0"] {
         assert!(
             !unit_tests.contains(skipped),
@@ -79,4 +98,52 @@ fn the_tools_check_is_the_one_every_other_gate_uses() {
     let text = justfile();
     let check = recipe(&text, "mcp-tools-check");
     assert!(check.starts_with("mcp-tools-check: agent-tools-check"), "{check}");
+    assert!(
+        check.contains("docker-check"),
+        "the token store tests need Docker: {check}"
+    );
+}
+
+/// The names in `mcp_fuzz_targets` and the files of `crates/hub-mcp/fuzz/fuzz_targets/`, which are also the corpus directories.
+#[test]
+fn fuzz_target_list_matches_directory() {
+    let text = justfile();
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("mcp_fuzz_targets :="))
+        .expect("the recipe lists its targets");
+    let listed: BTreeSet<String> = line
+        .split('"')
+        .nth(1)
+        .expect("the list is quoted")
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    let fuzz = Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz");
+    let on_disk = |dir: &str, strip: &str| -> BTreeSet<String> {
+        fs::read_dir(fuzz.join(dir))
+            .unwrap()
+            .map(|e| {
+                e.unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .trim_end_matches(strip)
+                    .to_owned()
+            })
+            .collect()
+    };
+    assert_eq!(listed, on_disk("fuzz_targets", ".rs"));
+    assert_eq!(listed, on_disk("corpus", ""));
+    let fuzz_recipe = recipe(&text, "mcp-fuzz");
+    for needed in [
+        "cargo +{{fuzz_nightly}} metadata --locked",
+        "cargo deny --manifest-path crates/hub-mcp/fuzz/Cargo.toml",
+        "cargo audit --file crates/hub-mcp/fuzz/Cargo.lock",
+        "--fuzz-dir crates/hub-mcp/fuzz",
+    ] {
+        assert!(
+            fuzz_recipe.contains(needed),
+            "mcp-fuzz lacks `{needed}`: {fuzz_recipe}"
+        );
+    }
 }

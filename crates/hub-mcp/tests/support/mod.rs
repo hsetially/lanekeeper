@@ -135,6 +135,10 @@ pub struct Client {
     pub app: Router,
     pub bearer: Option<String>,
     pub session: Option<String>,
+    /// The `Host` header of every request. The T0 stub's address unless a test says otherwise.
+    pub host: String,
+    /// An `Origin` header to send, if any.
+    pub origin: Option<String>,
     next_id: i64,
 }
 
@@ -144,8 +148,16 @@ impl Client {
             app,
             bearer,
             session: None,
+            host: HOST.to_owned(),
+            origin: None,
             next_id: 0,
         }
+    }
+
+    /// The same client, speaking to another host name.
+    pub fn at_host(mut self, host: &str) -> Self {
+        host.clone_into(&mut self.host);
+        self
     }
 
     pub fn with_session(&self, session: Option<String>) -> Self {
@@ -153,6 +165,8 @@ impl Client {
             app: self.app.clone(),
             bearer: self.bearer.clone(),
             session,
+            host: self.host.clone(),
+            origin: self.origin.clone(),
             next_id: 1000,
         }
     }
@@ -162,7 +176,7 @@ impl Client {
         let mut builder = Request::builder()
             .method(method)
             .uri("/mcp")
-            .header(header::HOST, HOST)
+            .header(header::HOST, &self.host)
             .header(header::ACCEPT, "application/json, text/event-stream")
             .header(header::CONTENT_TYPE, "application/json");
         if let Some(bearer) = &self.bearer {
@@ -170,6 +184,9 @@ impl Client {
         }
         if let Some(session) = &self.session {
             builder = builder.header("mcp-session-id", session);
+        }
+        if let Some(origin) = &self.origin {
+            builder = builder.header(header::ORIGIN, origin);
         }
         builder
     }
@@ -182,7 +199,7 @@ impl Client {
         let request = Request::builder()
             .method(Method::GET)
             .uri(path)
-            .header(header::HOST, HOST)
+            .header(header::HOST, &self.host)
             .body(Body::empty())
             .unwrap();
         self.send(request).await

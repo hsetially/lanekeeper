@@ -2619,6 +2619,7 @@ dependencies = [
  "hex",
  "http",
  "http-body-util",
+ "hub-mcp",
  "hub-platform",
  "hyper",
  "hyper-util",
@@ -2699,6 +2700,8 @@ dependencies = [
 name = "hub-mcp"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "aws-lc-rs",
  "axum",
  "base64 0.22.1",
  "bytes",
@@ -2707,18 +2710,25 @@ dependencies = [
  "hex",
  "http",
  "http-body-util",
+ "hub-mcp",
+ "hub-platform",
  "insta",
  "moka",
+ "ports",
  "proptest",
  "rmcp",
  "serde",
  "serde_json",
  "sha2",
+ "sqlx",
+ "subtle",
+ "testcontainers",
  "thiserror",
  "tokio",
  "tower",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
