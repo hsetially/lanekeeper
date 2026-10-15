@@ -1,0 +1,18 @@
+multipart/form-data; boundary=----seed
+------seed
+Content-Disposition: form-data; name="action"
+
+delete
+------seed
+Content-Disposition: form-data; name="path"
+
+a.yml
+------seed
+Content-Disposition: form-data; name="expected_state"
+
+hash
+------seed
+Content-Disposition: form-data; name="expected_hash"
+
+d09edadd173a8bbc233d47dcafc30cc876af2fb569812f2bbe0e92a1905bbce8
+------seed--

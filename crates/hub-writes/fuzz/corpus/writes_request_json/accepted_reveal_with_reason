@@ -1,0 +1,1 @@
+{"path":"tx-api/creds.yml","reason":"rotating the staging key, ticket 4411","setting":"#1/spring.datasource.password"}
