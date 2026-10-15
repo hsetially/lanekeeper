@@ -688,3 +688,139 @@ Committed: this record only (`05/blocked:`). `db/migrations`, `crates/ports` and
 
 Not run, because the work stopped before it: the conformance suite over Postgres, the registry's bench (no code changed, so there
 are no new numbers; the numbers recorded in the sections above stand).
+
+
+## T9 (second half, retention): STOPPED before any code. The registry cannot delete a blob safely on the contracts as they are; three questions for the human
+
+Stop rule of the brief, met: `ports::BlobStore` has no delete and no way to check references atomically. Checking what the registry
+would have to do instead found two more questions that a conditional delete does not answer. Nothing was built for the second
+half (no `src/retention/`, no config fields, no tests); `src/severity.rs` and `src/denied.rs` (`6e2c02d`) are untouched; no tool-write
+code was touched. `crates/ports`, `crates/hub-platform`, `crates/domain`, `db/` and `perf/budgets.toml` are untouched.
+
+### 1. The port has no delete, and no port could do the check (decision: may the registry delete from `blobs` by SQL?)
+
+- `ports::BlobStore` (`crates/ports/src/blob.rs`) is `put`, `get`, `get_many`. The fake (`ports::fakes::blob_store`) and `PgBlobStore`
+  (`crates/hub-platform/src/blobs/store.rs`) are the same. Nothing else in `ports` deletes a blob.
+- "Delete this blob unless something references it" has to name the tables that reference blobs (`file_state`, `baselines`,
+  `delta_staging`, `adoptions`, ...). Those are the registry's. A port method would either carry the registry's schema into
+  `hub-platform` or take a list of "protected" hashes and lose the atomicity the brief asks for.
+- The database contract already expects the delete to be SQL: `lanekeeper_app` has `SELECT, INSERT, DELETE` on `blobs` and `blob_refs`
+  ("content-addressed or immutable rows that retention or garbage collection may remove", `db/migrations/README.md`),
+  `settings_index` and `settings_index_blobs` cascade on a blob delete ("Rows go when the blob is garbage-collected", 0001), and the
+  registry already reads `blobs` with SQL (`baselines.rs:38`, `sync/record.rs:296`, `adoption/confirm.rs:555`; it writes only through
+  `put`).
+- Side effect of deleting behind the port: `PgBlobStore` keeps a per-process cache by hash. A collected blob stays readable on a replica
+  whose cache holds it until it is evicted and is a 404 on the others. Content is immutable, so this is harmless to correctness, but
+  the blob endpoint answers differently per replica for a while.
+
+Recommendation: yes. The registry's job deletes with one SQL statement under its grant, in `crates/hub-registry`, and records this as
+a D-entry. No contract file changes for this part.
+
+### 2. What does "referenced by an audit event" mean? (decision; it decides whether retention collects anything)
+
+- **Nothing writes `blob_refs` rows of kind `audit_event`.** The CHECK allows the kind (and `proposal`, `draft`, `pr_link`), but
+  `hub-identity`'s audit log, `hub-platform` and `ports` never insert one. The registry writes only `baseline` rows (`baselines.rs`).
+- **Every out-of-band or sync-sourced version is named by an audit event.** D93 / `ingest/apply.rs:596-597`: one `FileChangeDetected`
+  per path and chunk with `hash_before` = the first version's predecessor and `hash_after` = the last version's hash; `sync/record.rs`,
+  `sync/overwrite.rs` and `adoption/marks.rs` do the same, and 06 audits its in-tool writes (plan A12). If "referenced by an audit event" means "its hash is in
+  `audit_events.hash_before` or `hash_after`", then nearly every version the hub ever recorded is kept for ever (only versions
+  that were coalesced inside one chunk, superseded before apply, or staged and never applied are left), so **the keep rules of 50
+  versions and 180 days would never decide anything** and the store would grow without bound. That reading makes D78's own last
+  bullet pointless ("Audit events keep their own diff text, so evidence survives garbage collection").
+- **If that reading is wanted, the check has no index.** `audit_events` has no index on `hash_before` or `hash_after`, and the table
+  is append-only and kept for ever. Measured in a scratch database (migrations 0001 to 0004, `lanekeeper_app`, 500,000 synthetic rows
+  of 600 bytes, heap 434 MB), for one batch of 500 candidates, page cache warm:
+
+  | Form of the check | Plan | Time |
+  |---|---|---|
+  | `WHERE EXISTS (... a.hash_before = c.hash OR a.hash_after = c.hash)` per candidate | nested loop semi join, 250 M comparisons | **51 s and 53 s** (two runs) |
+  | `WHERE hash_before = ANY($1) OR hash_after = ANY($1)`, no index | parallel seq scan, 54,613 pages read | **141 ms and 146 ms**, linear in the table (about 9 GB per batch at 10 M rows) |
+  | the same with two partial indexes (`hash_before IS NOT NULL`, `hash_after IS NOT NULL`) | two bitmap index scans | **11.6 ms**; the indexes are 56 MB at 500,000 rows and cost two more btree inserts per audit event |
+
+  The indexes are a migration on a table 03a owns (additive, `lanekeeper_migrator`); the registry cannot add them.
+
+Options:
+- (a) Audit events pin the blobs they name. Needs the two indexes (contract change, `db/migrations`), costs two btree inserts per audit event,
+  and retention then only collects what no audit event ever named. Honest consequence: almost nothing; say so in D78.
+- (b) Audit events do not pin through their hashes, because they carry their own diff text (D78, last bullet). An audit event pins a
+  blob only through a `blob_refs('audit_event', ...)` row that its writer chose to add (none today; 06 may for the versions an
+  approval or a PR names). Retention works as designed: 50 versions or 180 days, baselines, proposals, drafts and PR links always.
+  No migration. The FK on `blob_refs` makes a mistaken delete of a pinned blob fail instead of succeed.
+- (c) The registry's audit writes also insert `blob_refs('audit_event', seq)` for each named hash that is a stored blob (guarded by
+  `EXISTS`, as `baselines.rs` does). Same outcome as (a) with the FK as a safety net; costs two guarded inserts per event on the
+  P15 path, which was just brought to its budget.
+
+Recommendation: (b), recorded in `docs/decisions.md` as the reading of D78 with the human's confirmation, because it is the only
+reading under which "keep the last 50 versions or 180 days" means anything. If the human wants (a) or (c), the migration (a) or the P15
+re-measurement (c) comes first.
+
+### 3. A conditional delete does not close the race the brief names (decision: how are writers kept from losing a blob they just stored?)
+
+The brief asks for the delete to be conditional on the absence of references inside the same transaction. That is necessary and is
+what I would build (below), but it cannot see a reference that has not committed. Ingestion stores a blob **before** the transaction
+that references it: `ingest/delta.rs` `store_blobs` calls `BlobStore::put` (its own connection, committed at once, `ON CONFLICT DO
+NOTHING`), then the apply transaction (`ingest/apply.rs`) writes `file_observations` and `file_state`, and a non-final part of a delta waits in
+`delta_staging` for up to `staging_ttl` (24 h) with only its hashes in `metadata`. Between the put and the commit of the reference:
+
+1. a blob that already exists, is unreferenced and is beyond the keep rules (a file reverting to content from over 180 days ago whose
+   blob has not been collected yet) is a no-op `put` and keeps its old `created_at`, so an age grace on `blobs.created_at` does not
+   protect it;
+2. GC's conditional delete finds no reference (correct: none has committed) and deletes it;
+3. the apply transaction commits a `file_state.nfs_hash` for a blob that no longer exists. Nothing stops it: `file_state`,
+   `file_observations`, `baselines`, `delta_staging`, `adoptions` and `audit_events` have **no foreign key to `blobs`**. The only
+   tables that do are `blob_refs`, `proposals.new_hash` and `drafts.new_hash` (RESTRICT, so a mistaken delete fails loudly and a late
+   writer gets a clean FK error) and `settings_index`, `settings_index_blobs` (CASCADE).
+
+The result is a current version of a file with no bytes, silently, and the agent will not send the content again because its tree
+has not changed. Reads degrade to 404 (see below), but the data is gone. The window is milliseconds for a single-part delta and
+bounded by a `put` to its staging commit for a multi-part one (staged hashes can be read from `delta_staging.metadata`), and it needs a
+night-time revert of old content; rare, but the consequence is a loss and the brief called this race out.
+
+Options:
+- (W1) Cooperation inside `crates/hub-registry`: the apply transaction takes `SELECT hash FROM blobs WHERE hash = ANY($1) FOR SHARE`
+  on the blobs it is about to reference, before it writes anything, and treats a missing row as "collected between put and commit" (a bounded
+  re-put when the bytes are in hand, which is the single-part case; otherwise fail the message so that the agent sends it again and
+  flag a full scan, as `complete` already does). GC takes the rows `FOR UPDATE SKIP LOCKED` first, so a blob a writer holds is skipped (the
+  bounded skip policy), then runs the reference check as a **second statement** (READ COMMITTED gives it a new snapshot that sees
+  everything committed so far, which a single `DELETE ... WHERE NOT EXISTS` would not after waiting on a lock), then deletes, all in one
+  transaction. Covers the registry's own writers; 06's drafts and proposals are covered by their FKs; anything else that references a hash
+  without an FK (06's PR links, 07's docs) must do the same lock.
+- (W2) One contract change instead: `PgBlobStore::put` refreshes `created_at` when the blob exists and is older than a day
+  (`ON CONFLICT (hash) DO UPDATE SET created_at = now() WHERE blobs.created_at < now() - interval '1 day'`), which needs `UPDATE` on `blobs`
+  for `lanekeeper_app` (a new migration and its grant decision, 03b's `store.rs`), and GC refuses any blob younger than `gc_min_age`
+  (48 h, above `staging_ttl`). Then no writer has to cooperate, and the age grace also covers staged parts. Costs a write only for a
+  re-put of a blob that is over a day old.
+
+Recommendation: W2 if the contract branch that is already open for `ports::ToolWrites` (`0005`) can take a second small migration; W1 if
+not. Either way the conditional delete below is built.
+
+### What I would build once the three answers are in (so that approval covers the whole of it)
+
+- `src/retention/plan.rs`: pure selection of candidates from the keep rules (Q33 defaults read from `retention_settings`: last
+  `keep_versions` versions per file by `file_observations` order, or newer than `keep_days`), the reference classes as SQL over indexed
+  columns, no hash or path ever formatted into a message; `src/retention/job.rs`: the leased `registry-retention` job (`JobSpec`, `run_once()`),
+  at most `gc_batch` (500) blobs and 64 MiB per run, `dry_run` reports and changes nothing, counts and bytes in logs and metrics only,
+  GC deletes not audited (A12, human-approved); `src/retention/mod.rs`: the settings (`RegistryConfig` fields, range-checked).
+- The delete: one transaction, `SELECT ... FOR UPDATE SKIP LOCKED`, then `DELETE FROM blobs WHERE hash = ANY(locked) AND NOT EXISTS (...)`
+  for every class (`blob_refs`, `file_state.nfs_hash`, `baselines.hash` and `blob_hash`, the hashes in `delta_staging.metadata`,
+  `adoptions` and `adoption_resolutions`, the registry's pending pipeline state, and per answer 2 the audit hashes), counting what it deleted.
+- The nightly prune the orchestrator delegated: processed `sync_windows` older than `sync_window_retention` (7 days, range-checked) and expired
+  `delta_staging` in bounded batches; the budget-unchanged test over `sync_windows` before and after pruning.
+- Tests: `tests/retention_gc.rs::{gc_never_deletes_a_referenced_blob (proptest), keeps_the_last_50_versions_and_180_days, dry_run_deletes_nothing}`, the
+  interleavings over real Postgres (a reference committed between plan and delete; a writer holding the row lock; a collected blob
+  met by a writer), S10 in the log-capture test, one lease holder, `run_once` idempotent; and the mutation checks the brief lists.
+
+### Found while looking, independent of the answers
+
+- **`delta_staging` already has a sweep, with no caller.** `IngestInner::sweep_staging` (`ingest/hello.rs:129`, reachable as
+  `AgentIngest::sweep_staging`) is one unbounded `DELETE ... WHERE staged_at < $1`; the comment says "a job may call it too", and none does.
+  Only a `hello` of the same swimlane discards that swimlane's old parts. The nightly job would call it (made batched) and not duplicate it.
+- **A vanished blob does not make a read or a search fail.** Read by code, not yet exercised with a real GC: `read/content.rs:222-230`
+  answers `NotFound` (404) and logs one warning that carries the hash (existing T6 behaviour, S10 allows hashes in logs); the text-search
+  shard asks `get_many`, which leaves unknown hashes out, and `assemble_shard` builds from what came back (T6's remake-the-shard rule).
+  The settings index cascades with the blob. A current file's blob is never a GC candidate, so none of this is reached except through the
+  race in question 3.
+- **A blob of a denied file** is collected like any other once beyond the keep rules; D104 point 2 (the blob endpoint refuses every version
+  a denied file has had) holds until then and is independent of GC.
+- **Scratch state.** The scratch database of the measurements (`lk_t_<pid>_gcprobe`) was dropped. Other `lk_t_*` databases that were
+  already there belong to other pids and were not touched. Nothing was run in release mode; no benchmark was run.
