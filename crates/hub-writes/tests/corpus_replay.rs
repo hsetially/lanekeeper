@@ -173,6 +173,103 @@ fn every_target_has_a_fuzz_binary_and_a_corpus() {
     );
 }
 
+/// The id Git gives a blob of `bytes`: SHA-1 of `blob <length>\0` and the bytes. Written out here (a dozen lines) because the crate
+/// has no SHA-1 and a test is no reason to add a dependency (rule 15); the vectors below check it against ids Git prints.
+fn git_blob_id(bytes: &[u8]) -> String {
+    let mut message = format!("blob {}\0", bytes.len()).into_bytes();
+    message.extend_from_slice(bytes);
+    let bit_length = (message.len() as u64).wrapping_mul(8);
+    message.push(0x80);
+    while message.len() % 64 != 56 {
+        message.push(0);
+    }
+    message.extend_from_slice(&bit_length.to_be_bytes());
+    let mut state: [u32; 5] = [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476, 0xc3d2_e1f0];
+    for block in message.chunks_exact(64) {
+        let mut schedule = [0_u32; 80];
+        for (slot, word) in schedule.iter_mut().zip(block.chunks_exact(4)) {
+            *slot = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+        }
+        for round in 16..80 {
+            schedule[round] =
+                (schedule[round - 3] ^ schedule[round - 8] ^ schedule[round - 14] ^ schedule[round - 16])
+                    .rotate_left(1);
+        }
+        let [mut ra, mut rb, mut rc, mut rd, mut re] = state;
+        for (round, word) in schedule.iter().enumerate() {
+            let (mix, constant) = match round {
+                0..=19 => ((rb & rc) | (!rb & rd), 0x5a82_7999_u32),
+                20..=39 => (rb ^ rc ^ rd, 0x6ed9_eba1),
+                40..=59 => ((rb & rc) | (rb & rd) | (rc & rd), 0x8f1b_bcdc),
+                _ => (rb ^ rc ^ rd, 0xca62_c1d6),
+            };
+            let next = ra
+                .rotate_left(5)
+                .wrapping_add(mix)
+                .wrapping_add(re)
+                .wrapping_add(constant)
+                .wrapping_add(*word);
+            (re, rd, rc, rb, ra) = (rd, rc, rb.rotate_left(30), ra, next);
+        }
+        for (slot, add) in state.iter_mut().zip([ra, rb, rc, rd, re]) {
+            *slot = slot.wrapping_add(add);
+        }
+    }
+    state
+        .iter()
+        .flat_map(|word| word.to_be_bytes())
+        .flat_map(|byte| [byte >> 4, byte & 15])
+        .map(|nibble| char::from_digit(u32::from(nibble), 16).unwrap())
+        .collect()
+}
+
+#[test]
+fn the_blob_id_helper_gives_the_ids_git_prints() {
+    // `git hash-object --stdin`
+    assert_eq!(git_blob_id(b""), "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
+    assert_eq!(
+        git_blob_id(b"k: v\r\n"),
+        "701c3700aa8499eaba8d7df80e6ba23653806ae1"
+    );
+    assert_eq!(
+        git_blob_id(b"hello\n"),
+        "ce013625030ba8dba906f756967f9e9ca394464a"
+    );
+}
+
+/// A seed that is a blob or a file with its bytes says which blob it is. GitHub's answer always holds the real id of the bytes,
+/// so a seed with another one stands for a response GitHub never gives (and a reader that one day checks the id would refuse it).
+#[test]
+fn the_seeds_that_carry_bytes_name_the_blob_id_of_those_bytes() {
+    let dir = corpus("writes_git_data_responses");
+    let mut checked = 0;
+    for name in names(&dir) {
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&fs::read(dir.join(&name)).unwrap())
+        else {
+            continue;
+        };
+        let (Some("base64"), Some(content), Some(sha)) = (
+            value.get("encoding").and_then(serde_json::Value::as_str),
+            value.get("content").and_then(serde_json::Value::as_str),
+            value.get("sha").and_then(serde_json::Value::as_str),
+        ) else {
+            continue;
+        };
+        if !name.starts_with("accepted_") {
+            continue;
+        }
+        let text: String = content.chars().filter(|c| !c.is_whitespace()).collect();
+        let bytes = base64::engine::general_purpose::STANDARD.decode(text).unwrap();
+        assert_eq!(
+            sha,
+            git_blob_id(&bytes),
+            "seed {name} names a blob that is not its bytes"
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 2, "the file and the blob seeds with bytes");
+}
+
 // ------------------------------------------------------------------------------------------------------------- the seeds
 
 fn h(text: &str) -> String {
@@ -791,14 +888,14 @@ fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
         t,
         "accepted_blob_with_line_breaks",
         json(
-            json!({ "sha": a, "size": 10, "encoding": "base64", "content": format!("{}\n", b64(b"a: 1\r\nb: 2")) }),
+            json!({ "sha": git_blob_id(b"a: 1\r\nb: 2"), "size": 10, "encoding": "base64", "content": format!("{}\n", b64(b"a: 1\r\nb: 2")) }),
         ),
     );
     add(
         t,
         "accepted_file_with_its_bytes",
         json(
-            json!({ "type": "file", "encoding": "base64", "size": 6, "sha": a, "content": b64(b"k: v\r\n") }),
+            json!({ "type": "file", "encoding": "base64", "size": 6, "sha": git_blob_id(b"k: v\r\n"), "content": b64(b"k: v\r\n") }),
         ),
     );
     add(
