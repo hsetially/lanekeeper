@@ -290,13 +290,13 @@ registered = true
 
 [[budget]]
 id = "P7.text_search"
-description = "Text search across all swimlanes"
+description = "Text search across all swimlanes, steady state: the first search after an applied change to one swimlane, on a warmed hub (D97)"
 bench = "hub-registry/search_text_all_swimlanes"
 statistic = "p95"
 threshold = 400
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P7.docs_search"
