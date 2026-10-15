@@ -525,12 +525,16 @@ fn get_served_config_is_the_redacted_as_served_view() {
         "no text for a denied or non-text file"
     );
     assert_eq!(doc.defs["AppName"]["pattern"], doc.defs["ChannelName"]["pattern"]);
-    // A denied file reveals its name, size and hash and nothing else (D79).
+    // A denied file reveals at most its name, size and hash (D79): "at most", because the answer does not promise any of them.
     assert!(
         doc.text.contains(
-            "When `content_withheld` is true, `text` is null and `sources` and `unresolved_placeholders` are empty"
+            "When `content_withheld` is true, `text` is null and `sources` and `unresolved_placeholders` are empty, so a denied file reveals at most its name, size and hash (D79)."
         ),
-        "the withheld answer is defined"
+        "the withheld answer is defined, and claims no more than its name, size and hash"
+    );
+    assert!(
+        !doc.text.contains("reveals nothing beyond"),
+        "\"nothing beyond\" reads as a promise that the name, size and hash are all there is to reveal and that they are present"
     );
     assert!(
         doc.text.contains("`get_served_config`") && !doc.text.contains("separate served-file tool"),

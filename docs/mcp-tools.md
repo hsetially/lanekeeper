@@ -738,7 +738,7 @@ What the config-server actually serves to a service for an application, tenant, 
 - pagination: none
 - rest: getServedFile
 
-The answer is `unavailable` (retryable) when the agent or the config-server cannot be reached or the agent's rate limit is reached. A denied file (D79) returns `content_withheld: true` and `text: null`, and so does a served file that is not text. When `content_withheld` is true, `text` is null and `sources` and `unresolved_placeholders` are empty, so a denied file reveals nothing beyond its name, size and hash (D79). `${KEY}` is replaced only where the property view has the key, and never from an environment value; the keys that were not found are listed in `unresolved_placeholders`. Flagged values in `text` are replaced by `[REDACTED: N chars, rule]` and counted in `redacted_values` (S14b).
+The answer is `unavailable` (retryable) when the agent or the config-server cannot be reached or the agent's rate limit is reached. A denied file (D79) returns `content_withheld: true` and `text: null`, and so does a served file that is not text. When `content_withheld` is true, `text` is null and `sources` and `unresolved_placeholders` are empty, so a denied file reveals at most its name, size and hash (D79). `${KEY}` is replaced only where the property view has the key, and never from an environment value; the keys that were not found are listed in `unresolved_placeholders`. Flagged values in `text` are replaced by `[REDACTED: N chars, rule]` and counted in `redacted_values` (S14b).
 
 **Input schema**
 
