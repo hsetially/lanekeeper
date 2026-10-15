@@ -332,6 +332,54 @@ impl Rig {
         .unwrap();
     }
 
+    /// 60,000 finished idempotency rows (`filler-1` to `filler-60000`) as a busy day's writes and some days of unswept rows: spread
+    /// over three days from `START`, so that a third of them (`g % 3 = 2`) has expired by the hub's clock and is for the sweep.
+    /// Row `g` holds the request hash and the stored response that `QueryProbe::replay(.., g)` looks for, so a retry of it is a replay.
+    pub async fn seed_idempotency_rows(&self, user: &domain::UserId) {
+        let hashes: Vec<Vec<u8>> = (1..=60_000_u64)
+            .map(hub_writes::QueryProbe::seeded_hash)
+            .collect();
+        let (status, body) = hub_writes::QueryProbe::seeded_response();
+        sqlx::query(
+            "INSERT INTO idempotency_keys (user_tid, user_oid, key, request_hash, response_status, response_body, created_at, expires_at) \
+             SELECT $1, $2, 'filler-' || g, h, $3, $4, \
+                    to_timestamp($5::bigint / 1000.0) - (g % 3) * interval '1 day', \
+                    to_timestamp($5::bigint / 1000.0) - (g % 3) * interval '1 day' + interval '1 day' \
+             FROM unnest($6::bytea[]) WITH ORDINALITY AS t(h, g)",
+        )
+        .bind(user.tid().as_str())
+        .bind(user.oid().as_str())
+        .bind(status)
+        .bind(body)
+        .bind(START)
+        .bind(hashes)
+        .execute(&self.pool)
+        .await
+        .unwrap();
+    }
+
+    /// Put back `count` expired finished rows, named for `tag`, after a sweep deleted as many: the benchmark measures the sweep over
+    /// the whole set every time, not over what earlier sweeps left.
+    pub async fn refill_expired_idempotency_rows(&self, user: &domain::UserId, count: u64, tag: u64) {
+        let (status, body) = hub_writes::QueryProbe::seeded_response();
+        sqlx::query(
+            "INSERT INTO idempotency_keys (user_tid, user_oid, key, request_hash, response_status, response_body, created_at, expires_at) \
+             SELECT $1, $2, 'refill-' || $3::text || '-' || g, sha256(g::text::bytea), $4, $5, \
+                    to_timestamp($6::bigint / 1000.0) - interval '2 days', to_timestamp($6::bigint / 1000.0) - interval '1 day' \
+             FROM generate_series(1, $7::bigint) g",
+        )
+        .bind(user.tid().as_str())
+        .bind(user.oid().as_str())
+        .bind(i64::try_from(tag).unwrap_or(0))
+        .bind(status)
+        .bind(body)
+        .bind(START)
+        .bind(i64::try_from(count).unwrap_or(0))
+        .execute(&self.pool)
+        .await
+        .unwrap();
+    }
+
     pub fn advance_secs(&self, secs: i64) {
         self.clock.advance_secs(secs);
     }

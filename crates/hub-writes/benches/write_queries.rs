@@ -5,7 +5,9 @@
 //! reconcile job's scan for unfinished claims, one page of the expiry sweep, and (from T4) a page of the list of proposals, the
 //! expiry job's scan and the read of one proposal, and (from T9) the open-pull-request lookup of a request for a pull request and the
 //! scan for pull-request jobs that need a runner. Each sample is one statement, taken in turn, so the registered p95 is over the
-//! whole set. A later task adds the credential load to the set.
+//! whole set. The sweep deletes rows, so the rows it deleted are put back after it, outside the timed part of the sample: every
+//! sample of it, in the warm-up and the measurement, takes a full page of the expired third of the 60,000. A later task adds the
+//! credential load to the set.
 //!
 //! The tables hold 60,000 idempotency rows (a busy day's writes and some days of unswept rows), 40 swimlanes, 10,000 proposals,
 //! 20,000 pull-request links and 5,000 pull-request jobs, over a real Postgres (a container, or `LK_TEST_PG_ADMIN_URL`). Loopback: this bounds the statements and the database, not the
@@ -38,28 +40,21 @@ fn bench(c: &mut Criterion) {
     for i in 0..40 {
         swimlanes.push(rt.block_on(rig.swimlane(&format!("sit{i}"), true)));
     }
+    // 60,000 idempotency rows: finished, spread over three days from the hub's clock; the oldest third has expired and is for the
+    // sweep. Each holds the hash and the response a retry of it looks for (`Rig::seed_idempotency_rows`).
+    rt.block_on(rig.seed_idempotency_rows(&user));
     rt.block_on(async {
-        // 60,000 idempotency rows: finished, spread over three days; the oldest day has expired and is for the sweep.
-        sqlx::query(
-            "INSERT INTO idempotency_keys (user_tid, user_oid, key, request_hash, response_status, response_body, created_at, expires_at) \
-             SELECT $1, $2, 'filler-' || g, sha256(g::text::bytea), 200, '{}'::bytea, \
-                    to_timestamp($3::bigint / 1000.0) - (g % 3) * interval '1 day', \
-                    to_timestamp($3::bigint / 1000.0) - (g % 3) * interval '1 day' + interval '1 day' \
-             FROM generate_series(1, 60000) g",
-        )
-        .bind(user.tid().as_str())
-        .bind(user.oid().as_str())
-        .bind(support::rig::START)
-        .execute(&rig.pool)
-        .await
-        .unwrap();
+        // The proposals live three days from the hub's clock (fixed at `START`), not from the database's: the expiry scan asks the
+        // hub's clock, and finds none whatever day the benchmark runs.
         sqlx::query(
             "INSERT INTO proposals (author_tid, author_oid, action, swimlane_id, paths, status, via, expires_at) \
-             SELECT $1, $2, 'edit', 'sit' || (g % 40), ARRAY['a/' || g || '.yml'], 'pending', 'ui', now() + interval '3 days' \
+             SELECT $1, $2, 'edit', 'sit' || (g % 40), ARRAY['a/' || g || '.yml'], 'pending', 'ui', \
+                    to_timestamp($3::bigint / 1000.0) + interval '3 days' \
              FROM generate_series(1, 10000) g",
         )
         .bind(user.tid().as_str())
         .bind(user.oid().as_str())
+        .bind(support::rig::START)
         .execute(&rig.pool)
         .await
         .unwrap();
@@ -87,19 +82,26 @@ fn bench(c: &mut Criterion) {
                 for _ in 0..iters {
                     n += 1;
                     let started = Instant::now();
+                    // The rows a sweep deleted, to be put back outside the measurement.
+                    let mut swept = 0;
                     let ok = match n % 12 {
                         // A claim, the read of the row a step later while it is unfinished, and its completion a step after.
                         0 => probe.claim(&user, &format!("probe-{n}"), n).await,
-                        1 => probe.replay(&user, &format!("probe-{}", n - 1), n - 1).await,
+                        1 => probe.in_flight(&user, &format!("probe-{}", n - 1), n - 1).await,
                         2 => probe.finish(&user, &format!("probe-{}", n - 2)).await,
                         3 => probe.lock(&swimlanes[(n % 40) as usize]).await,
                         4 => probe.stale_scan().await < usize::MAX,
-                        5 => probe.purge_page().await,
-                        // A retry that finds a finished row, among the 60,000. The sweep deletes the expired ones (a third of them),
-                        // so the rows read are the ones that stay.
+                        // A page of the sweep: a full page of the expired third, every time, because what it deletes is put back.
+                        5 => {
+                            let deleted = probe.purge_page().await;
+                            swept = deleted.unwrap_or(0);
+                            deleted == Some(100)
+                        }
+                        // A retry that finds a finished row, among the 60,000: the row of a request that was answered and
+                        // is read as a replay of it. The rows read are the third that never expires.
                         6 => {
-                            let key = format!("filler-{}", 3 * (n % 20_000) + 3);
-                            probe.replay(&user, &key, n).await
+                            let g = 3 * (n % 20_000) + 3;
+                            probe.replay(&user, &format!("filler-{g}"), g).await
                         }
                         // The list of proposals, the expiry job's scan, and one proposal, among the 10,000.
                         7 => probe.proposal_page().await == 25,
@@ -115,6 +117,9 @@ fn bench(c: &mut Criterion) {
                     };
                     total += started.elapsed();
                     assert!(ok, "statement {} failed at step {n}", n % 12);
+                    if swept > 0 {
+                        rig.refill_expired_idempotency_rows(&user, swept, n).await;
+                    }
                 }
                 total.max(Duration::from_nanos(1))
             })

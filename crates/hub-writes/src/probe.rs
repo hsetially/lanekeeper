@@ -45,10 +45,38 @@ impl QueryProbe<'_> {
         )
     }
 
-    /// The read of a retry: the row of the key, whatever it holds.
+    /// The read of a retry of a finished claim: the row of the key holds the response of this very request (the hash of `n`), and
+    /// the read finds it as a replay. A row of another request, one still running or a missing one is `false`.
     pub async fn replay(&self, user: &UserId, name: &str, n: u64) -> bool {
         let hash = RequestHash::probe(n);
-        matches!(self.hub.idem.peek(&key(user, name), &hash).await, Ok(Some(_)))
+        matches!(
+            self.hub.idem.peek(&key(user, name), &hash).await,
+            Ok(Some(crate::idempotency::Claim::Replay(_)))
+        )
+    }
+
+    /// The read of a retry whose first request is still running: the row of the key is the claim of this very request (the hash
+    /// of `n`) and has no response yet.
+    pub async fn in_flight(&self, user: &UserId, name: &str, n: u64) -> bool {
+        let hash = RequestHash::probe(n);
+        matches!(
+            self.hub.idem.peek(&key(user, name), &hash).await,
+            Ok(Some(crate::idempotency::Claim::InFlight { .. }))
+        )
+    }
+
+    /// The request hash a seeded row must hold for [`Self::replay`] with `n` to find the same request.
+    pub fn seeded_hash(n: u64) -> Vec<u8> {
+        RequestHash::probe(n).as_bytes().to_vec()
+    }
+
+    /// The response a seeded finished row holds, as `finish` stores it, and the status stored with it.
+    pub fn seeded_response() -> (i32, Vec<u8>) {
+        let outcome = domain::WriteOutcome::Conflict { current: None };
+        (
+            crate::idempotency::status_of(&outcome),
+            serde_json::to_vec(&outcome).unwrap_or_default(),
+        )
     }
 
     /// Finish a claim with a stored response.
@@ -76,8 +104,8 @@ impl QueryProbe<'_> {
             .map_or(usize::MAX, |rows| rows.len())
     }
 
-    /// One page of the expiry sweep.
-    pub async fn purge_page(&self) -> bool {
+    /// One page of the expiry sweep. How many rows it deleted, or `None` if it failed.
+    pub async fn purge_page(&self) -> Option<u64> {
         self.hub
             .idem
             .purge(
@@ -85,7 +113,7 @@ impl QueryProbe<'_> {
                 i64::try_from(self.hub.cfg.reconcile_batch).unwrap_or(100),
             )
             .await
-            .is_ok()
+            .ok()
     }
 
     /// One page of the list of proposals (25 rows, newest first), without the diffs: the statement of the list route.

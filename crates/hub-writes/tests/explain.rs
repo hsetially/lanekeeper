@@ -217,3 +217,52 @@ async fn the_pull_request_probes_of_the_benchmark_read_what_it_seeds() {
     // The scan skips the finished jobs (they are 4,990 of the 5,000) and a job touched an hour ago needs a runner.
     assert_eq!(probe.pr_job_resume_scan().await, 10);
 }
+
+/// The idempotency statements of the benchmark do what their names say against the rows it seeds: a retry of a finished claim
+/// replays it (and a different request under the key does not), a claim that is still running is in flight, and the sweep deletes a
+/// full page of expired rows every time because the rows it deleted are put back outside the measurement.
+#[tokio::test]
+async fn the_idempotency_probes_of_the_benchmark_read_and_sweep_what_it_seeds() {
+    let db = db!();
+    let rig = support::rig::Rig::new(db).await;
+    let editor = rig.user(1, domain::Role::Editor).await;
+    let user = editor.id.clone();
+    rig.seed_idempotency_rows(&user).await;
+    assert_eq!(rig.count("idempotency_keys").await, 60_000);
+    let probe = rig.hub.probe();
+
+    // A retry of a finished claim, with the request it was made for, finds the stored answer; another request does not.
+    assert!(
+        probe.replay(&user, "filler-3", 3).await,
+        "a replay of a finished claim"
+    );
+    assert!(probe.replay(&user, "filler-59997", 59_997).await);
+    assert!(
+        !probe.replay(&user, "filler-3", 4).await,
+        "another request under the key is a conflict"
+    );
+    assert!(!probe.replay(&user, "filler-nowhere", 3).await);
+    assert!(!probe.in_flight(&user, "filler-3", 3).await, "it is finished");
+
+    // A claim that is running is in flight for the same request, and not a replay.
+    assert!(probe.claim(&user, "probe-7", 7).await);
+    assert!(probe.in_flight(&user, "probe-7", 7).await);
+    assert!(!probe.replay(&user, "probe-7", 7).await);
+    assert!(probe.finish(&user, "probe-7").await);
+    assert!(
+        probe.replay(&user, "probe-7", 7).await,
+        "finished with the answer the probe stores"
+    );
+
+    // The sweep takes a full page of the expired rows (a third of the 60,000 are), and refilling puts them back: the next page is full
+    // again however many pages the benchmark deletes.
+    for round in 0..3 {
+        assert_eq!(probe.purge_page().await, Some(100), "round {round}");
+        rig.refill_expired_idempotency_rows(&user, 100, round).await;
+        assert_eq!(
+            rig.count("idempotency_keys").await,
+            60_001,
+            "the claim of probe-7 and the rows seeded"
+        );
+    }
+}
