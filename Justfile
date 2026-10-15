@@ -391,8 +391,9 @@ verify-05:
 verify-06: writes-tools-check writes-lint writes-test writes-fuzz writes-bench
 
 # The pinned tools the gate needs, and a database for the tests (a Docker daemon, or `LK_TEST_PG_ADMIN_URL` pointing at a throwaway
-# Postgres 16 server), or the command that fixes it. Never skips.
-writes-tools-check:
+# Postgres 16 server), or the command that fixes it. Never skips. The fuzz step's tools (the pinned nightly, cargo-fuzz, a C++
+# compiler) are looked for here too, so a missing one fails before the database tests and not after them.
+writes-tools-check: fuzz-tools-check
     @cargo deny --version | grep -qx 'cargo-deny {{cargo_deny_version}}' || { echo "need cargo-deny {{cargo_deny_version}}: cargo install --locked cargo-deny --version {{cargo_deny_version}}"; exit 1; }
     @cargo audit --version | grep -qx 'cargo-audit-audit {{cargo_audit_version}}' || { echo "need cargo-audit {{cargo_audit_version}}: cargo install --locked cargo-audit --version {{cargo_audit_version}}"; exit 1; }
     @docker info >/dev/null 2>&1 || [ -n "${LK_TEST_PG_ADMIN_URL:-}" ] || { echo "verify-06 needs a Docker daemon (Postgres 16 with pgvector through testcontainers) or LK_TEST_PG_ADMIN_URL=postgres://postgres:...@host:5432/postgres"; exit 1; }

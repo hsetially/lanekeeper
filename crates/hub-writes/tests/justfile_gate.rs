@@ -32,6 +32,31 @@ fn verify_06_runs_every_sub_recipe() {
     assert!(!text.contains("verify-06 not implemented"));
 }
 
+/// The tools of the fuzz step (the pinned nightly, cargo-fuzz, a C++ compiler) are looked for before the database tests run, like
+/// the other prompts' `*-tools-check` recipes do, so a missing one fails in seconds and not after the tests have finished.
+#[test]
+fn the_preflight_looks_for_the_fuzz_tools_before_the_tests_run() {
+    let text = justfile();
+    let header = text
+        .lines()
+        .find(|l| l.starts_with("writes-tools-check:"))
+        .expect("a writes-tools-check recipe");
+    assert!(
+        header
+            .split_whitespace()
+            .skip(1)
+            .any(|dep| dep == "fuzz-tools-check"),
+        "writes-tools-check does not depend on fuzz-tools-check: {header}"
+    );
+    let verify = text.lines().find(|l| l.starts_with("verify-06:")).unwrap();
+    let order: Vec<&str> = verify.split_whitespace().skip(1).collect();
+    assert_eq!(
+        order.first(),
+        Some(&"writes-tools-check"),
+        "the preflight runs first"
+    );
+}
+
 #[test]
 fn the_writes_test_recipe_requires_docker_rather_than_skipping() {
     assert!(justfile().contains("LK_REQUIRE_DOCKER=1 cargo test -p hub-writes"));
