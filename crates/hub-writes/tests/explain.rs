@@ -1,4 +1,4 @@
-//! P12: the hot statements of the write path use their indexes. `EXPLAIN (GENERIC_PLAN)` shows the plan a prepared statement
+//! P12: the statements of the write path, of its requests and of its background workers, use their indexes. `EXPLAIN (GENERIC_PLAN)` shows the plan a prepared statement
 //! has for any parameter, and `enable_seqscan = off` makes the planner show whether an index could be used at all on a table
 //! that is too small to prefer it.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

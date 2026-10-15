@@ -86,8 +86,10 @@ pub use reconcile::{ReconcileReport, ReconcileWrites};
 pub use reveal::{DEFAULT_REASON, RevealDesk, RevealError, RevealRequest, Revealed};
 pub use service::{ConfigServerRestartOffer, RestartOffer, WriteHub, WriteHubDeps};
 
-/// The statements the write path runs on every request, by name, for the tests that run `EXPLAIN` on them (P12). Each takes
-/// numbered parameters, so `EXPLAIN (GENERIC_PLAN)` shows its plan for any value.
+/// The statements the write path runs, by name, for the tests that run `EXPLAIN` on them (P12). They are the ones of a request
+/// and the ones of the background workers (the expiry of proposals, drafts and idempotency rows, the resume of pull-request
+/// jobs): none of them may scan a table, whichever runs it. Each takes numbered parameters, so `EXPLAIN (GENERIC_PLAN)` shows
+/// its plan for any value.
 #[doc(hidden)]
 pub fn hot_queries() -> Vec<(&'static str, &'static str)> {
     let mut all = idempotency::queries();
