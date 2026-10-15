@@ -51,7 +51,7 @@ impl RegistryRead for LiveRegistry {
         _u: &User,
         s: &SwimlaneId,
         prefix: &NfsPath,
-        _page: Page,
+        page: Page,
     ) -> Result<Paged<FileEntry>, ReadError> {
         let deny = engine::DenyMatcher::with_globs([]).map_err(|_| ReadError::Unavailable)?;
         let mut items: Vec<FileEntry> = self
@@ -76,7 +76,25 @@ impl RegistryRead for LiveRegistry {
             })
             .collect();
         items.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(Paged { items, next: None })
+        // A page at a time, like the real registry: the cursor is the offset of the next entry.
+        let start = page
+            .cursor()
+            .map(|c| {
+                c.as_str()
+                    .strip_prefix('o')
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .ok_or(ReadError::Unavailable)
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let end = start.saturating_add(page.limit() as usize).min(items.len());
+        let next = if end < items.len() {
+            Some(domain::Cursor::parse(&format!("o{end}")).map_err(|_| ReadError::Unavailable)?)
+        } else {
+            None
+        };
+        let items = items.get(start..end).unwrap_or_default().to_vec();
+        Ok(Paged { items, next })
     }
 
     async fn history(

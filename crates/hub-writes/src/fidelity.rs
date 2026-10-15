@@ -144,48 +144,80 @@ pub(crate) fn prepare_content(
     })
 }
 
-/// The line ending most of the text files in a folder have, or `None` when the folder has no text file or is split evenly.
-pub(crate) fn folder_eol_style(entries: &[FileEntry]) -> Option<Newline> {
-    let (mut crlf, mut lf) = (0usize, 0usize);
-    for entry in entries {
-        if entry.is_dir
-            || entry.content_withheld
-            || matches!(entry.class, FileClass::Binary | FileClass::Denied)
-        {
-            continue;
-        }
-        match entry.format.map(|f| f.eol) {
-            Some(EolStyle::Crlf) => crlf += 1,
-            Some(EolStyle::Lf) => lf += 1,
-            // A file that mixes styles votes for neither.
-            Some(EolStyle::Mixed) | None => {}
+/// The votes of the text files of a folder: a file with one style votes for it, and a file that mixes styles, a binary, a denied or
+/// a withheld file, and a directory vote for nothing.
+#[derive(Default)]
+struct Votes {
+    crlf: usize,
+    lf: usize,
+}
+
+impl Votes {
+    fn add(&mut self, entries: &[FileEntry]) {
+        for entry in entries {
+            if entry.is_dir
+                || entry.content_withheld
+                || matches!(entry.class, FileClass::Binary | FileClass::Denied)
+            {
+                continue;
+            }
+            match entry.format.map(|f| f.eol) {
+                Some(EolStyle::Crlf) => self.crlf += 1,
+                Some(EolStyle::Lf) => self.lf += 1,
+                Some(EolStyle::Mixed) | None => {}
+            }
         }
     }
-    match crlf.cmp(&lf) {
-        std::cmp::Ordering::Greater => Some(Newline::Crlf),
-        std::cmp::Ordering::Less => Some(Newline::Lf),
-        std::cmp::Ordering::Equal => None,
+
+    fn style(&self) -> Option<Newline> {
+        match self.crlf.cmp(&self.lf) {
+            std::cmp::Ordering::Greater => Some(Newline::Crlf),
+            std::cmp::Ordering::Less => Some(Newline::Lf),
+            std::cmp::Ordering::Equal => None,
+        }
     }
 }
 
-/// The style of the folder a new file goes into, from the registry's first page of the folder. A registry that does not answer
-/// is no reason to refuse a write: the file is then written as it came.
+/// The line ending most of the text files in a folder have, or `None` when the folder has no text file or is split evenly.
+pub(crate) fn folder_eol_style(entries: &[FileEntry]) -> Option<Newline> {
+    let mut votes = Votes::default();
+    votes.add(entries);
+    votes.style()
+}
+
+/// The most pages of a folder read to find its style: 20 pages of 500 entries.
+const MAX_FOLDER_PAGES: usize = 20;
+
+/// The style of the folder a new file goes into, from the registry's pages of the folder (at most [`MAX_FOLDER_PAGES`]), so that a
+/// big folder is judged by all of it and not by its first 500 entries. A registry that does not answer is no reason to refuse a
+/// write: the file is then written as it came, and a registry that stops answering after some pages leaves the style those pages
+/// show.
 pub(crate) async fn folder_newline(
     hub: &Inner,
     user: &User,
     swimlane: &SwimlaneId,
     path: &NfsPath,
 ) -> Option<Newline> {
-    let page = Page::new(Page::MAX_LIMIT, None).ok()?;
-    let listed = hub
-        .within(
-            "folder_style",
-            hub.registry.tree(user, swimlane, &path.parent(), page),
-        )
-        .await
-        .ok()?
-        .ok()?;
-    folder_eol_style(&listed.items)
+    let mut votes = Votes::default();
+    let mut cursor = None;
+    for _ in 0..MAX_FOLDER_PAGES {
+        let page = Page::new(Page::MAX_LIMIT, cursor.take()).ok()?;
+        let Ok(Ok(listed)) = hub
+            .within(
+                "folder_style",
+                hub.registry.tree(user, swimlane, &path.parent(), page),
+            )
+            .await
+        else {
+            break;
+        };
+        votes.add(&listed.items);
+        match listed.next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    votes.style()
 }
 
 /// What `prepare_checked` is asked to write.

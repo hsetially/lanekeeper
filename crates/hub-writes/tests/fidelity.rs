@@ -270,6 +270,29 @@ async fn new_file_takes_the_dominant_style_of_its_folder() {
     );
 }
 
+/// The registry lists a folder 500 entries at a time; the style of a big folder is the majority of all of it, not of its first page.
+#[tokio::test]
+async fn new_file_takes_the_majority_style_of_the_whole_folder_not_its_first_page() {
+    let Some((rig, s)) = rig().await else { return };
+    // The first 500 entries in path order are LF, the 600 after them CRLF.
+    for n in 0..500 {
+        rig.agent.put(&s, &nfs(&format!("svc/a{n:03}.yml")), b"a: 1\n");
+    }
+    for n in 0..600 {
+        rig.agent.put(&s, &nfs(&format!("svc/b{n:03}.yml")), b"b: 1\r\n");
+    }
+    edit_as_editor(
+        &rig,
+        "k-1",
+        request(&s, "svc/new.yml", Expected::Absent, b"n: 1\nm: 2\n"),
+    )
+    .await;
+    assert_eq!(
+        rig.nfs_of(&s, "svc/new.yml").as_deref(),
+        Some(&b"n: 1\r\nm: 2\r\n"[..])
+    );
+}
+
 #[tokio::test]
 async fn a_new_file_in_an_empty_or_tied_folder_keeps_the_style_it_came_with() {
     let Some((rig, s)) = rig().await else { return };
