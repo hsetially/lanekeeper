@@ -77,6 +77,12 @@ async fn run(
         },
     };
 
+    // The version is kept so that a revert can bring it back, and a revert refuses a version above the size limit: a file above it
+    // is not deleted here, because it would be gone with no way back.
+    if bytes.len() > hub.cfg.max_content_bytes {
+        return Ok(Done::Store(rejected(RejectReason::TooLarge)));
+    }
+
     let diff = hub
         .blocking("delete_diff", {
             let (path, deny, limits) = (r.path.clone(), hub.deny.clone(), hub.limits.clone());

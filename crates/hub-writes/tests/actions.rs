@@ -859,6 +859,46 @@ async fn an_io_error_after_the_unlink_is_found_and_recorded_not_lost() {
     assert_eq!(rig.agent.deletes_applied(), 1);
 }
 
+/// A delete keeps the last version so that a revert can bring it back (D78); a revert refuses a version above the size limit. So
+/// a file above the limit is not deleted through the write path: it would be gone with no way back.
+#[tokio::test]
+async fn a_file_above_the_size_limit_is_not_deleted() {
+    let Some((rig, s)) = rig().await else { return };
+    let editor = rig.user(1, Role::Editor).await;
+    let big = vec![b'a'; 2 * 1024 * 1024 + 1];
+    rig.agent.put(&s, &nfs("big.txt"), &big);
+    rig.catch_up_registry(&s);
+    let hash = ports::content_hash(&big);
+    let pv = preview(&rig, &editor, "p-1", delete_preview(&s, "big.txt", hash)).await;
+
+    let out = rig
+        .hub
+        .delete(&ctx(&editor, "k-1"), delete_req(&s, "big.txt", hash, Some(&pv)))
+        .await
+        .unwrap();
+    assert_eq!(out, rejected(RejectReason::TooLarge));
+    assert_eq!(rig.agent.deletes_applied(), 0);
+    assert!(rig.nfs_of(&s, "big.txt").is_some(), "the file is still there");
+    assert!(
+        rig.blobs.get(&hash).await.unwrap().is_none(),
+        "and nothing was stored"
+    );
+    assert_eq!(rig.chain().await.len(), 0);
+
+    // At the limit it is deleted, and can be reverted.
+    let limit = vec![b'b'; 2 * 1024 * 1024];
+    rig.agent.put(&s, &nfs("limit.txt"), &limit);
+    rig.catch_up_registry(&s);
+    let hash = ports::content_hash(&limit);
+    let pv = preview(&rig, &editor, "p-2", delete_preview(&s, "limit.txt", hash)).await;
+    let out = rig
+        .hub
+        .delete(&ctx(&editor, "k-2"), delete_req(&s, "limit.txt", hash, Some(&pv)))
+        .await
+        .unwrap();
+    assert!(matches!(out, WriteOutcome::Applied { .. }), "{out:?}");
+}
+
 #[tokio::test]
 async fn delete_conflict_is_409() {
     let Some((rig, s)) = rig().await else { return };

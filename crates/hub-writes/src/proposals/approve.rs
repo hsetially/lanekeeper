@@ -335,6 +335,10 @@ async fn apply_delete(
         }
         AgentFile::Unreachable => return Ok(Done::Release(rejected(RejectReason::AgentUnavailable))),
     };
+    // The version is kept for a revert, and a revert refuses what is above the size limit (as `delete` does).
+    if bytes.len() > hub.cfg.max_content_bytes {
+        return Ok(Done::Store(rejected(RejectReason::TooLarge)));
+    }
     let diff = hub
         .blocking("approve_delete_diff", {
             let (path, deny, limits) = (path.clone(), hub.deny.clone(), hub.limits.clone());

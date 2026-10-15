@@ -730,6 +730,62 @@ async fn approving_a_delete_removes_the_file_and_keeps_its_last_version() {
     );
 }
 
+/// The deleted version is kept so that a revert can bring it back, and a revert refuses what is above the size limit: the
+/// approval of a delete is refused for a file above it too (the limit is the approving hub's, and may be lower than it was when
+/// the proposal was made), and deletes nothing.
+#[tokio::test]
+async fn approving_the_delete_of_a_file_above_the_size_limit_deletes_nothing() {
+    let Some(l) = lane().await else { return };
+    let pv = l
+        .rig
+        .hub
+        .preview_effect(
+            &ctx(&l.careful, "pv-1"),
+            domain::PreviewRequest {
+                swimlane: l.s.clone(),
+                path: ports::conformance::sample::nfs("old.txt"),
+                change: domain::PreviewChange::Delete {
+                    expected: h("keep\n"),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let id = match l
+        .rig
+        .hub
+        .delete(
+            &ctx(&l.careful, "d-1"),
+            domain::DeleteRequest {
+                swimlane: l.s.clone(),
+                path: ports::conformance::sample::nfs("old.txt"),
+                expected: h("keep\n"),
+                preview: Some(pv.preview_id),
+            },
+        )
+        .await
+        .unwrap()
+    {
+        WriteOutcome::ProposalCreated { id } => id,
+        other => panic!("{other:?}"),
+    };
+    let strict = l.rig.hub_with(
+        hub_writes::WriteConfig {
+            max_content_bytes: 4,
+            ..hub_writes::WriteConfig::default()
+        },
+        None,
+    );
+    let out = strict
+        .approve_proposal(&ctx(&l.admin, "k-1"), id, None)
+        .await
+        .unwrap();
+    assert_eq!(out, rejected(RejectReason::TooLarge));
+    assert!(l.rig.nfs_of(&l.s, "old.txt").is_some());
+    assert_eq!(l.rig.agent.deletes_applied(), 0);
+    assert!(l.rig.blobs.get(&h("keep\n")).await.unwrap().is_none());
+}
+
 #[tokio::test]
 async fn approving_a_restart_restarts_the_service() {
     let Some(l) = lane().await else { return };
