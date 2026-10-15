@@ -4,6 +4,7 @@ use domain::{EditRequest, Expected, FileClass, RejectReason, Role, WriteCtx, Wri
 use engine::classify;
 use ports::WriteError;
 
+use crate::fidelity::{Incoming, folder_newline, prepare_checked};
 use crate::idempotency::{Intent, Phase, RequestHash};
 use crate::pipeline::approval::{EditProposal, expected_hash, propose_edit, via_of};
 use crate::pipeline::authorize::authorize;
@@ -11,7 +12,7 @@ use crate::pipeline::claim::{Claim, Claimed, claim, settle};
 use crate::pipeline::current::{Found, old_content};
 use crate::pipeline::execute::{Committed, Sent, commit_applied, hash_of, mark_ambiguous, send_write};
 use crate::pipeline::lock::{LockState, check as check_lock};
-use crate::pipeline::validate::{Checked, check as check_content};
+use crate::pipeline::validate::{Checked, Old};
 use crate::pipeline::{Abort, Done, Step};
 use crate::service::Inner;
 use ports::{AuditAction, AuditActor, AuditEvent};
@@ -41,26 +42,50 @@ async fn run(hub: &Inner, ctx: &WriteCtx, user: &domain::User, claim: &Claim, r:
         LockState::UnknownSwimlane => return Ok(Done::Release(rejected(RejectReason::UnknownSwimlane))),
     }
 
-    // 4. Validation: the cheap checks first, then the engine on the blocking pool.
+    // 4. Validation: the cheap checks first, then the content is put into the form of the file it replaces and checked, both
+    //    on the blocking pool (T2: the engine validates, scans and diffs the bytes that will be written).
     if r.content.len() > hub.cfg.max_content_bytes {
         return Ok(Done::Store(rejected(RejectReason::TooLarge)));
     }
     if hub.deny.is_denied(&r.path) {
         return Ok(Done::Store(rejected(RejectReason::Denied)));
     }
-    // T2 replaces this with the file's own line endings, encoding and BOM.
-    let prepared = r.content.clone();
-    let class: FileClass = classify(&r.path, Some(&prepared), &hub.deny);
     let old = match old_content(hub, user, &r.swimlane, &r.path, &r.expected).await {
         Found::Old(old) => old,
         Found::Withheld => return Ok(Done::Store(rejected(RejectReason::Denied))),
     };
-    let checked = hub
+    // A new file follows its folder, unless the request names a style.
+    let folder = if matches!(old, Old::Absent) && r.change_eol.is_none() {
+        folder_newline(hub, user, &r.swimlane, &r.path).await
+    } else {
+        None
+    };
+    let prepared = hub
         .blocking("validate", {
-            let (path, prepared, limits) = (r.path.clone(), prepared.clone(), hub.limits.clone());
-            move || check_content(&path, class, &prepared, &old, &limits)
+            let (path, content, deny) = (r.path.clone(), r.content.clone(), hub.deny.clone());
+            let (limits, change_eol, max_bytes) =
+                (hub.limits.clone(), r.change_eol, hub.cfg.max_content_bytes);
+            move || {
+                let class: FileClass = classify(&path, Some(&content), &deny);
+                prepare_checked(
+                    &Incoming {
+                        path: &path,
+                        class,
+                        content: &content,
+                        folder,
+                        change_eol,
+                        max_bytes,
+                    },
+                    &old,
+                    &limits,
+                )
+            }
         })
         .await?;
+    let (prepared, checked) = match prepared {
+        Ok(ok) => ok,
+        Err(reason) => return Ok(Done::Store(rejected(reason))),
+    };
     if let Some((reason, issues)) = checked.reject {
         return Ok(Done::Store(WriteOutcome::Rejected { reason, issues }));
     }

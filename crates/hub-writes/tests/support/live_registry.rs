@@ -4,10 +4,10 @@
 
 use async_trait::async_trait;
 use domain::{
-    CompareRef, Comparison, ContentSource, EffectiveConfig, EolStyle, FileClass, FileContent, FileEntry,
-    FileFormat, Finding, FindingsQuery, Grid, GridQuery, LogicalFile, NfsPath, Page, Paged, ServiceState,
-    SettingHit, SettingsQuery, SwimlaneId, SwimlaneSummary, TextEncoding, TextQuery, TextResults,
-    TreeComparison, User, Version,
+    CompareRef, Comparison, ContentSource, DriftState, EffectiveConfig, EolStyle, FileClass, FileContent,
+    FileEntry, FileFormat, FileKind, FileRole, Finding, FindingsQuery, Grid, GridQuery, LogicalFile, NfsPath,
+    Page, Paged, ServiceState, SettingHit, SettingsQuery, SwimlaneId, SwimlaneSummary, TextEncoding,
+    TextQuery, TextResults, TreeComparison, User, Version,
 };
 use ports::{ReadError, RegistryRead, content_hash};
 
@@ -45,14 +45,38 @@ impl RegistryRead for LiveRegistry {
         Err(ReadError::Unavailable)
     }
 
+    /// The files directly below `prefix`, with the format their bytes have (so the line endings of a folder can be told).
     async fn tree(
         &self,
         _u: &User,
-        _s: &SwimlaneId,
-        _p: &NfsPath,
+        s: &SwimlaneId,
+        prefix: &NfsPath,
         _page: Page,
     ) -> Result<Paged<FileEntry>, ReadError> {
-        Err(ReadError::Unavailable)
+        let deny = engine::DenyMatcher::with_globs([]).map_err(|_| ReadError::Unavailable)?;
+        let mut items: Vec<FileEntry> = self
+            .0
+            .files_of(s)
+            .into_iter()
+            .filter(|(p, _)| p.parent() == *prefix)
+            .map(|(path, bytes)| FileEntry {
+                class: engine::classify(&path, Some(&bytes), &deny),
+                role: FileRole::Resource,
+                size: bytes.len() as u64,
+                hash: Some(content_hash(&bytes)),
+                format: Some(engine::detect_format(&bytes)),
+                path,
+                is_dir: false,
+                kind: FileKind::Base,
+                drift: DriftState::InSync,
+                content_withheld: false,
+                attribution: None,
+                severity: None,
+                pickup_state: None,
+            })
+            .collect();
+        items.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(Paged { items, next: None })
     }
 
     async fn history(

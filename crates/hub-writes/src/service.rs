@@ -60,7 +60,7 @@ pub(crate) struct Inner {
     pub notifier: Arc<dyn Notifier>,
     pub clock: Arc<dyn Clock>,
     pub cfg: WriteConfig,
-    pub deny: DenyMatcher,
+    pub deny: Arc<DenyMatcher>,
     pub limits: Limits,
     pub idem: IdempotencyStore,
     /// Bounds the validations that run at once on the blocking pool.
@@ -137,7 +137,7 @@ impl WriteHub {
                 notifier: deps.notifier,
                 clock: deps.clock,
                 cfg: deps.config,
-                deny,
+                deny: Arc::new(deny),
                 limits,
                 checks: Semaphore::new(max_checks),
             }),

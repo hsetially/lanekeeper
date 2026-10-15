@@ -18,6 +18,7 @@ mod clock;
 mod config;
 mod db;
 mod error;
+mod fidelity;
 mod idempotency;
 mod ops;
 mod pipeline;
