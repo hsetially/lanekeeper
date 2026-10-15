@@ -201,7 +201,10 @@ pub enum CacheName {
     Effective,
     Diff,
     Files,
+    /// The text-search snapshot as a whole: a hit is a search that needed no build.
     Corpus,
+    /// The shards of a snapshot that is built: a hit is a shard kept from the one before, a miss one that was made again.
+    CorpusShard,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]

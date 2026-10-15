@@ -117,6 +117,22 @@ impl ReadBed {
         self.router = router;
     }
 
+    /// The JSON of a 200 from a service of its own that has nothing cached and a blob store that has nothing cached, over the same database:
+    /// what a request gives on this data when nothing is reused. The reference that an answer from reused state is held to.
+    pub async fn json_from_scratch(&self, uri: &str) -> serde_json::Value {
+        let (_service, _blobs, router) = Self::wire(&self.bed, &self.gateway, &self.config);
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(uri)
+            .header(TEST_USER_HEADER, "viewer")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status().as_u16(), 200, "{uri}");
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&body).unwrap()
+    }
+
     /// A viewer's `GET`, measured from the request to the last byte of the body.
     pub async fn get(&self, uri: &str) -> Reading {
         let request = Request::builder()

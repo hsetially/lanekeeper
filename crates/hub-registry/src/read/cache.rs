@@ -3,15 +3,16 @@
 //! Every key is made of content hashes (a blob, the layers of an effective config, the two sides of a diff, the version of a
 //! swimlane's file list), so an entry is never stale and nothing ever invalidates it: a changed file is a new key. Every cache is
 //! weighed in bytes and bounded by `RegistryConfig`, so the memory they take is a number in the settings (P11), not a result of
-//! the traffic. `moka` evicts by recency and frequency; an entry heavier than the whole cache is not admitted, which is the right
-//! answer for a corpus too big to keep.
+//! the traffic. `moka` evicts by recency and frequency; an entry heavier than the whole cache is not admitted. The text-search corpora
+//! are not a `moka` cache: one snapshot of all swimlanes, in shards, replaced as a whole and kept only while it is inside its bound
+//! (see [`super::corpora`]).
 //!
 //! A hit and a miss are counted by cache name only, never by key (S10): a key names a file.
 
 use std::sync::Arc;
 
 use domain::ContentHash;
-use engine::{Effective, FlatSetting, SearchCorpus};
+use engine::{Effective, FlatSetting};
 use moka::future::Cache as AsyncCache;
 use moka::sync::Cache;
 
@@ -81,20 +82,12 @@ pub struct FileList {
     pub weight: u32,
 }
 
-/// A search corpus and the number of bytes it holds.
-#[derive(Debug)]
-pub struct CorpusEntry {
-    pub corpus: SearchCorpus,
-    pub bytes: u64,
-    pub weight: u32,
-}
-
 pub struct Caches {
     pub rows: Cache<ContentHash, Arc<BlobRows>>,
     pub effective: Cache<ContentHash, Arc<EffectiveEntry>>,
     pub diffs: Cache<ContentHash, Arc<DiffEntry>>,
     pub files: AsyncCache<(String, i64), Arc<FileList>>,
-    pub corpus: AsyncCache<ContentHash, Arc<CorpusEntry>>,
+    pub corpora: super::corpora::Corpora,
     metrics: RegistryMetrics,
 }
 
@@ -123,10 +116,7 @@ impl Caches {
                 .max_capacity(config.file_list_cache_bytes)
                 .weigher(|_, v: &Arc<FileList>| v.weight)
                 .build(),
-            corpus: AsyncCache::builder()
-                .max_capacity(config.corpus_cache_bytes)
-                .weigher(|_, v: &Arc<CorpusEntry>| v.weight)
-                .build(),
+            corpora: super::corpora::Corpora::default(),
             metrics,
         }
     }
@@ -143,7 +133,7 @@ impl Caches {
         self.effective.invalidate_all();
         self.diffs.invalidate_all();
         self.files.invalidate_all();
-        self.corpus.invalidate_all();
+        self.corpora.set(None);
     }
 
     /// Run the cache's deferred work so that counts and weights are exact (tests).

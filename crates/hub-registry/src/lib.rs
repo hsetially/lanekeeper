@@ -72,5 +72,6 @@ pub use metrics::RegistryMetrics;
 pub use pipeline::{
     BatchReport, LaneReport, NightlyReport, Pipeline, PipelineDeps, PipelineHandle, ReconcileOutcome, Work,
 };
+pub use read::warmup::WarmupTask;
 pub use read::{Named, ReadDeps, RegistryApi, RegistryService, Tagged};
 pub use sync::{SyncDeps, SyncError, SyncOutcome, SyncService, SyncSource};

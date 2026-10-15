@@ -31,6 +31,7 @@ pub mod cache;
 pub mod compare;
 pub mod compare_tree;
 pub mod content;
+pub mod corpora;
 pub mod cursor;
 pub mod effective;
 pub mod etag;
@@ -47,6 +48,7 @@ pub mod service;
 pub mod settings;
 pub mod swimlanes;
 pub mod tree;
+pub mod warmup;
 
 pub use api::{Named, RegistryApi, Tagged};
 pub use service::{ReadDeps, RegistryService};

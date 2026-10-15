@@ -163,8 +163,10 @@ pub struct RegistryConfig {
     pub read_pool_threads: usize,
     /// The caches of the read side, each weighed in bytes and bounded (rule 5). Every key is a content hash, so an entry is never
     /// stale and nothing invalidates it: the setting rows of a blob, the effective config of a set of layers, a diff of two blobs,
-    /// the file list of a swimlane at a version, and the text-search corpus of a set of swimlane versions. 256 MiB in all for the
-    /// parsed and rendered values (the plan), and the corpus on top of 03b's blob cache whose `Bytes` it shares.
+    /// the file list of a swimlane at a version, and the text-search corpora (one snapshot of every swimlane's files, in shards: its
+    /// blobs, their places and the lists it was made from, all counted here). 256 MiB in all for the parsed and rendered values (the
+    /// plan), and the corpora on top of 03b's blob cache whose `Bytes` they share. A snapshot over the bound is made for the request and
+    /// not kept.
     pub row_cache_bytes: u64,
     pub effective_cache_bytes: u64,
     pub diff_cache_bytes: u64,
@@ -179,6 +181,13 @@ pub struct RegistryConfig {
     /// Blobs read from the blob store in one call when a search corpus is built, and how many such calls run at once.
     pub search_blob_batch: usize,
     pub search_blob_parallel: usize,
+    /// The text-search corpus is this many shards, the blobs split by their hash (see `read::corpora`). More shards make a change to one
+    /// swimlane cheaper to take in (a shard is made again when its places change) and a search a little dearer.
+    pub search_shards: usize,
+    /// The warm-up task (`read::warmup`) looks at the swimlanes' versions this often, and waits this long after it sees one move before
+    /// it builds, so that a burst of changes is taken in once.
+    pub warmup_poll: Duration,
+    pub warmup_debounce: Duration,
     /// A settings search over at most this many swimlanes, or in one file, first lists the blobs that are the current version of a
     /// file there (a few thousand per swimlane at most) and looks for the settings of those blobs only; over more it finds the
     /// settings first and asks where they are (the list of blobs would be most of the index, and every request would carry it). Zero
@@ -263,6 +272,9 @@ impl Default for RegistryConfig {
             search_timeout: Duration::from_secs(5),
             search_blob_batch: MAX_GET_MANY,
             search_blob_parallel: 4,
+            search_shards: 8,
+            warmup_poll: Duration::from_secs(2),
+            warmup_debounce: Duration::from_millis(500),
             search_tested_lanes: 8,
             search_listed_blobs: 20_000,
             served_timeout: Duration::from_secs(10),
@@ -493,6 +505,9 @@ impl RegistryConfig {
             MAX_GET_MANY as u64,
         )?;
         within("search_blob_parallel", self.search_blob_parallel as u64, 1, 64)?;
+        within("search_shards", self.search_shards as u64, 1, 64)?;
+        within("warmup_poll", millis(self.warmup_poll), 100, 3_600_000)?;
+        within("warmup_debounce", millis(self.warmup_debounce), 0, 60_000)?;
         within("search_tested_lanes", self.search_tested_lanes as u64, 0, 1_000)?;
         within("search_listed_blobs", self.search_listed_blobs as u64, 1, 100_000)?;
         within("served_timeout", millis(self.served_timeout), 100, 120_000)?;
@@ -778,6 +793,10 @@ mod tests {
         out_of_range("search_blob_batch", |c| c.search_blob_batch = 0);
         out_of_range("search_blob_batch", |c| c.search_blob_batch = MAX_GET_MANY + 1);
         out_of_range("search_blob_parallel", |c| c.search_blob_parallel = 0);
+        out_of_range("search_shards", |c| c.search_shards = 0);
+        out_of_range("search_shards", |c| c.search_shards = 65);
+        out_of_range("warmup_poll", |c| c.warmup_poll = Duration::from_millis(10));
+        out_of_range("warmup_debounce", |c| c.warmup_debounce = Duration::from_secs(61));
         out_of_range("search_tested_lanes", |c| c.search_tested_lanes = 1_001);
         out_of_range("search_listed_blobs", |c| c.search_listed_blobs = 0);
         out_of_range("search_listed_blobs", |c| c.search_listed_blobs = 100_001);
