@@ -20,7 +20,8 @@
 //! - [`swimlanes`], [`tree`], [`history`], [`findings`], [`restarts`], [`content`]: plain reads of the registry tables.
 //! - [`settings`]: the setting rows of a blob (from `settings_index`, on demand for a blob that is not indexed yet), cached by hash.
 //! - [`effective`], [`grid`], [`compare`], [`compare_tree`]: the engine's views over those rows.
-//! - [`search_settings`], [`search_text`]: indexed SQL, and the engine's text search over a cached corpus.
+//! - [`search_settings`], [`search_text`]: indexed SQL, and the engine's text search over the corpora ([`corpora`]: shards that survive a
+//!   change to one swimlane; [`warmup`]: the task that keeps them current).
 //! - [`served`]: the config-server's own answer, through the agent.
 //! - [`cache`]: the weighed moka caches. [`api`]: the superset trait and the service.
 

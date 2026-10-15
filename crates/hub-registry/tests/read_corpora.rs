@@ -17,7 +17,7 @@ use domain::{TextQuery, TextResults};
 use hub_registry::RegistryService;
 use hub_registry::config::RegistryConfig;
 use hub_registry::metrics::{CacheName, CacheResult};
-use ports::{ReadError, RegistryRead};
+use ports::{BlobStore, ReadError, RegistryRead};
 use support::reads::{Reads, lane};
 
 const SHARDS: usize = 4;
@@ -367,4 +367,34 @@ async fn a_search_of_some_swimlanes_uses_the_snapshot_of_all_and_finds_only_thei
     let both = r.service.search_text(&Reads::viewer(), two).await.unwrap();
     let want: Vec<_> = found(&all).into_iter().filter(|(l, _, _)| l != "sit2").collect();
     assert_eq!(found(&both), want, "sit1 then sit3, in swimlane order");
+}
+
+#[tokio::test]
+async fn a_blob_the_store_lacked_is_searched_once_it_turns_up_though_no_swimlane_changed() {
+    let Some(r) = world(config()).await else {
+        return;
+    };
+    let content = bytes::Bytes::from_static(b"needle shared 2\n");
+    let hash = ports::content_hash(&content);
+    sqlx::query("DELETE FROM blobs WHERE hash = $1")
+        .bind(hash.as_bytes().as_slice())
+        .execute(&r.world.rig.pool)
+        .await
+        .unwrap();
+    let without = search(&r.service, "shared 2").await;
+    assert!(
+        without.hits.is_empty(),
+        "a blob that is not in the store is left out, with its places: {:?}",
+        found(&without)
+    );
+    // The store has it again (nothing in any swimlane moved): the shard that lacked it is made again by the next build.
+    r.world.rig.blobs.put(content).await.unwrap();
+    r.sql("UPDATE swimlane_registry SET version = version + 1").await;
+    let with = search(&r.service, "shared 2").await;
+    assert_eq!(
+        with.hits.len(),
+        3,
+        "sit1, sit2 and sit3 each have it: {:?}",
+        found(&with)
+    );
 }

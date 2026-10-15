@@ -147,6 +147,9 @@ pub struct Shard {
     pub corpus: SearchCorpus,
     /// The bytes of the blobs and an allowance for each place.
     pub weight: u64,
+    /// Whether every blob of its places was found. A shard that lacks one (the store did not have it) is made again by the next build
+    /// even if its places did not change, so that a blob that turns up later is searched.
+    pub complete: bool,
 }
 
 impl std::fmt::Debug for Shard {
@@ -356,6 +359,7 @@ mod tests {
             contents: HashMap::new(),
             corpus,
             weight: 0,
+            complete: true,
         });
         s.shards = vec![Arc::clone(&shard), shard];
         assert!(s.covers(&need(5)) && s.covers(&need(4)) && s.covers(&[]));

@@ -257,7 +257,7 @@ impl Inner {
             .enumerate()
             .map(|(i, key)| {
                 old.and_then(|s| s.shards.get(i))
-                    .filter(|shard| shard.key == *key)
+                    .filter(|shard| shard.key == *key && shard.complete)
                     .map(Arc::clone)
             })
             .collect();
@@ -448,11 +448,13 @@ fn assemble_shard(
     let mut contents: HashMap<ContentHash, Bytes> = HashMap::with_capacity(places.len());
     let mut blobs: Vec<SearchBlob> = Vec::with_capacity(places.len());
     let (mut bytes, mut place_count) = (0_u64, 0_usize);
+    let mut complete = true;
     for (hash, locations) in places {
         let content = old
             .and_then(|o| o.contents.get(&hash).cloned())
             .or_else(|| fetched.remove(&hash));
         let Some(content) = content else {
+            complete = false;
             continue;
         };
         bytes += content.len() as u64;
@@ -474,6 +476,7 @@ fn assemble_shard(
         weight: bytes
             .saturating_add(place_count as u64 * 100)
             .saturating_add(4096),
+        complete,
     })
 }
 

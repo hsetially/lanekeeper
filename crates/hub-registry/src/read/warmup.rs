@@ -148,6 +148,12 @@ impl RegistryService {
         }
     }
 
+    /// The bytes the text corpora hold now (the blobs, their places and the file lists they were made from), or `None` when there is no
+    /// snapshot. What `corpus_cache_bytes` bounds; for tests, benchmarks and the memory budget (P11).
+    pub fn text_corpora_weight(&self) -> Option<u64> {
+        self.inner.caches.corpora.current().map(|s| s.weight)
+    }
+
     /// Whether the text corpora cover every swimlane at its current version: what the warm-up is for. For tests and benchmarks.
     ///
     /// # Errors

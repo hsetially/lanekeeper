@@ -21,7 +21,12 @@
 //!
 //! The answers are checked, so work that disappears shows as a failure and not as speed: the unchanged-data states against the first
 //! answer of each query, the steady states against a service that has nothing cached.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stderr)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::print_stderr,
+    clippy::cast_precision_loss
+)]
 
 mod common;
 
@@ -190,6 +195,7 @@ async fn main() {
     }
     // The same with the warm-up running and settled before the search: what a user meets when the hub has had a moment.
     let mut steady_warmed = Vec::new();
+    let mut catch_up = Vec::new();
     let warmup = bed.service.spawn_warmup();
     for round in 0..QUERIES.len() {
         let (lane, k) = ((round * 11 + 3) % 40, round % QUERIES.len());
@@ -204,11 +210,13 @@ async fn main() {
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        catch_up.push(started.elapsed().as_secs_f64() * 1000.0);
         let r = bed.get_json_timed(&uri(&QUERIES[k])).await;
         let reference = bed.json_from_scratch(&uri(&QUERIES[k])).await;
         assert_eq!(r.1, reference, "warmed round {round}, query {k}");
         steady_warmed.push(r.0);
     }
+    let weight = bed.service.text_corpora_weight().unwrap();
     warmup.shutdown().await;
 
     let name = "hub-registry/search_text_all_swimlanes";
@@ -217,6 +225,11 @@ async fn main() {
         summary(&steady)
     );
     eprintln!("{name}: steady, warm-up settled {}", summary(&steady_warmed));
+    eprintln!(
+        "{name}: the warm-up took a change in {} after the edit (poll 100 ms, no debounce); the corpora hold {:.1} MiB",
+        summary(&catch_up),
+        weight as f64 / 1_048_576.0
+    );
     eprintln!("{name}: warm (corpora current) {}", summary(&warm));
     eprintln!(
         "{name}: rebuilt-all (every swimlane's version moved) {}",
