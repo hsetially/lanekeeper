@@ -18,7 +18,8 @@
 //! A sync Job's window (D75) is the other way a sync reaches the hub: the agent reports the Job as running and as finished, and the
 //! leased job `registry-sync-watch` ([`window`]) does the same processing for every tenant of the swimlane when the window closes, with
 //! **one** scan request, at the commits that are the heads of the mirrored branches (A33). While a window is open the drift is recorded and
-//! the alerts are held ([`hold`]); when it closes they are evaluated once ([`alerts`]): one notification for each severity, C7 first.
+//! the alerts are held ([`hold`]), within a budget for each swimlane so that a chain of windows cannot hold them for ever; when a window closes
+//! they are evaluated once ([`alerts`]): one notification for each severity, C7 first.
 //!
 //! Everything that changes the database does it in chunks of at most `chunk_paths` paths, one transaction each, under the swimlane's
 //! lock that ingestion's applies take too, with its audit events (one batch, last, so the chain's lock is held briefly) and its outbox

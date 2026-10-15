@@ -356,6 +356,7 @@ pub struct RegistryMetrics {
     sync_seconds: Histogram,
     windows: Family<WindowLabels, Counter>,
     window_stale_warnings: Counter,
+    hold_budget_exhaustions: Counter,
     alerts: Family<AlertLabels, Counter>,
     alert_evaluations: Counter,
     rematches: Family<RematchLabels, Counter>,
@@ -415,6 +416,7 @@ impl Default for RegistryMetrics {
             sync_seconds: Histogram::new(exponential_buckets(0.01, 2.0, 14)),
             windows: Family::default(),
             window_stale_warnings: Counter::default(),
+            hold_budget_exhaustions: Counter::default(),
             alerts: Family::default(),
             alert_evaluations: Counter::default(),
             rematches: Family::default(),
@@ -599,6 +601,11 @@ impl RegistryMetrics {
             "registry_sync_window_stale_warnings",
             "Sync windows open for more than the stale limit that were warned about (once each)",
             self.window_stale_warnings.clone(),
+        );
+        registry.register(
+            "registry_sync_hold_budget_exhausted",
+            "Episodes in which the budget for holding a swimlane's alerts was spent (said once for each episode)",
+            self.hold_budget_exhaustions.clone(),
         );
         registry.register(
             "registry_drift_alerts",
@@ -830,6 +837,10 @@ impl RegistryMetrics {
         self.window_stale_warnings.inc();
     }
 
+    pub(crate) fn hold_budget_exhaustion(&self) {
+        self.hold_budget_exhaustions.inc();
+    }
+
     pub(crate) fn alert(&self, result: AlertResult, n: u64) {
         if n > 0 {
             self.alerts.get_or_create(&AlertLabels { result }).inc_by(n);
@@ -949,6 +960,11 @@ impl RegistryMetrics {
     /// Stale-window warnings sent, for tests.
     pub fn window_stale_warning_count(&self) -> u64 {
         self.window_stale_warnings.get()
+    }
+
+    /// Episodes of an exhausted hold budget that were said, for tests.
+    pub fn hold_budget_exhaustion_count(&self) -> u64 {
+        self.hold_budget_exhaustions.get()
     }
 
     /// Drift alerts by what became of them, for tests.
@@ -1096,6 +1112,7 @@ mod tests {
         m.rematch(RematchResult::Raised);
         m.window(WindowResult::Processed);
         m.window_stale_warning();
+        m.hold_budget_exhaustion();
         m.alert(AlertResult::Held, 3);
         m.alert(AlertResult::Sent, 0);
         m.alert_evaluation();
@@ -1127,6 +1144,7 @@ mod tests {
         assert_eq!(m.window_count(WindowResult::Processed), 1);
         assert_eq!(m.window_count(WindowResult::GivenUp), 0);
         assert_eq!(m.window_stale_warning_count(), 1);
+        assert_eq!(m.hold_budget_exhaustion_count(), 1);
         assert_eq!(m.alert_count(AlertResult::Held), 3);
         assert_eq!(
             m.alert_count(AlertResult::Sent),

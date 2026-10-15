@@ -44,7 +44,7 @@ use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
-use super::hold::{Gate, Span, State};
+use super::hold::{Gate, Policy, Span, State};
 use crate::clock::Clock;
 use crate::config::{ConfigError, RegistryConfig};
 use crate::db::{Db, ts};
@@ -196,12 +196,7 @@ impl Alerts {
         let db = Db::new(deps.pool, deps.config.query_timeout);
         Ok(Self {
             inner: Arc::new(Inner {
-                gate: Gate::new(
-                    db.clone(),
-                    deps.clock,
-                    deps.config.sync_window_stale_after,
-                    deps.config.sync_close_give_up,
-                ),
+                gate: Gate::new(db.clone(), deps.clock, Policy::of(&deps.config)),
                 db,
                 notifier: deps.notifier,
                 metrics: deps.metrics,

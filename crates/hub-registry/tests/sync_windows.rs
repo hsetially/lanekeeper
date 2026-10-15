@@ -17,7 +17,7 @@ use domain::{
 };
 use engine::drift_hash;
 use hub_registry::metrics::{AlertResult, WindowResult};
-use hub_registry::{ManualClock, RegistryConfig, WatchReport};
+use hub_registry::{Alerts, AlertsDeps, ManualClock, RegistryConfig, RegistryMetrics, WatchReport};
 use ports::NotificationKind;
 use support::log_capture::LogCapture;
 use support::pg_audit::audit_rows;
@@ -1278,4 +1278,263 @@ async fn no_content_path_or_hash_reaches_a_log_line_or_a_notification() {
             assert!(!text.contains(forbidden), "{forbidden} in a notification: {text}");
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------- the hold budget
+
+const HOUR: i64 = 3_600_000;
+const MIN: i64 = 60_000;
+
+/// An adopted swimlane `sit1` with the files `app/f1.yml` to `app/f8.yml` in sync with Git, so that editing one of them on NFS is one
+/// drift alert.
+async fn eight_files(cfg: RegistryConfig) -> Option<SyncRig> {
+    let mut s = SyncRig::alerting(&["sit1"], cfg).await?;
+    let names: Vec<String> = (1..=8).map(|i| format!("app/f{i}.yml")).collect();
+    let git: Vec<(String, Option<&str>)> = names
+        .iter()
+        .map(|n| (format!("config/{n}"), Some("v: 1\n")))
+        .collect();
+    let git: Vec<(&str, Option<&str>)> = git.iter().map(|(p, c)| (p.as_str(), *c)).collect();
+    s.w.base_commit(&git);
+    let nfs: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), "v: 1\n")).collect();
+    s.w.inventory(&nfs).await;
+    s.w.adopt().await;
+    for n in &names {
+        s.w.baseline(n, drift("v: 1\n")).await;
+    }
+    s.w.whole().await;
+    Some(s)
+}
+
+/// Edit file `i` on NFS (one drift alert for the pipeline to offer) and let the pipeline see it.
+async fn edit(s: &mut SyncRig, i: usize) {
+    let file = format!("app/f{i}.yml");
+    s.w.nfs_change(&[(file.as_str(), "v: 99\n")]).await;
+    s.w.paths(&[file.as_str()]).await;
+}
+
+fn at(s: &SyncRig, ms_after_now: i64) {
+    s.w.rig.clock.set_ms(NOW + ms_after_now);
+}
+
+/// The notices that the budget of a swimlane is spent, among what the notifier was given.
+fn budget_notices(s: &SyncRig) -> usize {
+    s.notifier
+        .sent()
+        .iter()
+        .filter(|n| {
+            n.kind == NotificationKind::SyncWindowStale && n.title.as_str().contains("no longer held")
+        })
+        .count()
+}
+
+fn stale_notices(s: &SyncRig) -> usize {
+    s.notifier
+        .sent()
+        .iter()
+        .filter(|n| {
+            n.kind == NotificationKind::SyncWindowStale && !n.title.as_str().contains("no longer held")
+        })
+        .count()
+}
+
+fn drift_alerts(s: &SyncRig) -> usize {
+    s.notifier
+        .sent()
+        .iter()
+        .filter(|n| n.kind == NotificationKind::DriftDetected)
+        .count()
+}
+
+#[tokio::test]
+async fn a_chain_of_windows_stops_holding_once_the_budget_is_spent_and_the_notice_is_said_once() {
+    let Some(mut s) = eight_files(config()).await else {
+        return;
+    };
+    let held = |s: &SyncRig| s.w.rig.metrics.alert_count(AlertResult::Held);
+
+    // Two Jobs, one after the other, each left open until it is stale: the hold is [0, 2 h] and [2 h 01, 4 h 01].
+    open(&s, "uid-1", NOW).await;
+    at(&s, HOUR);
+    edit(&mut s, 1).await;
+    assert_eq!(held(&s), 1, "an hour into the first window: held");
+    at(&s, 2 * HOUR + MIN);
+    open(&s, "uid-2", NOW + 2 * HOUR + MIN).await;
+    edit(&mut s, 2).await;
+    assert_eq!(held(&s), 2, "the first window is stale and the second holds");
+    at(&s, 3 * HOUR);
+    edit(&mut s, 3).await;
+    assert_eq!(held(&s), 3);
+    at(&s, 4 * HOUR);
+    edit(&mut s, 4).await;
+    assert_eq!(held(&s), 4, "3 h 59 min have been held: the budget is not spent");
+    assert_eq!(drift_alerts(&s), 0, "nothing has been told: all of it was held");
+
+    // A third window with a new Job uid opens; the budget (4 h in 24 h) is spent, so the hold has ended and the alert flows.
+    at(&s, 4 * HOUR + 2 * MIN);
+    open(&s, "uid-3", NOW + 4 * HOUR + 2 * MIN).await;
+    edit(&mut s, 5).await;
+    wait_until(
+        "the live alert that the budget lets through",
+        Duration::from_secs(10),
+        || async { drift_alerts(&s) == 1 },
+    )
+    .await;
+    assert_eq!(held(&s), 4, "not held although a window is open");
+    assert_eq!(s.w.rig.metrics.alert_count(AlertResult::Sent), 1);
+
+    // The watch job says so, once: a notice that the budget is spent, and the stale warnings of the two windows that are stale.
+    let ran = tick(&s).await;
+    assert_eq!(ran.warned, 2, "uid-1 and uid-2 are stale; uid-3 is not");
+    assert_eq!(budget_notices(&s), 1);
+    assert_eq!(stale_notices(&s), 2);
+    assert_eq!(s.w.rig.metrics.hold_budget_exhaustion_count(), 1);
+    let notice = s
+        .notifier
+        .sent()
+        .into_iter()
+        .find(|n| n.title.as_str().contains("no longer held"))
+        .unwrap();
+    assert_eq!(notice.severity, Severity::Medium);
+    assert_eq!(notice.swimlane, Some(support::sync::lane()));
+    assert!(
+        notice.summary.as_str().contains("of the last 1440 minutes"),
+        "{:?}",
+        notice.summary
+    );
+    assert!(
+        notice.summary.as_str().contains("budget of 240"),
+        "{:?}",
+        notice.summary
+    );
+    let text = format!("{} {}", notice.title, notice.summary);
+    assert!(
+        !text.contains("app/") && !text.contains("uid-"),
+        "ids and counts only (S10): {text}"
+    );
+
+    // Not again: not on the next runs, and not for the next window of the same episode.
+    for _ in 0..3 {
+        tick(&s).await;
+    }
+    at(&s, 4 * HOUR + 3 * MIN);
+    open(&s, "uid-4", NOW + 4 * HOUR + 3 * MIN).await;
+    at(&s, 4 * HOUR + 13 * MIN);
+    edit(&mut s, 6).await;
+    wait_until("the second live alert", Duration::from_secs(10), || async {
+        drift_alerts(&s) == 2
+    })
+    .await;
+    tick(&s).await;
+    assert_eq!(
+        budget_notices(&s),
+        1,
+        "one for the episode, not one for each window"
+    );
+    assert_eq!(held(&s), 4);
+
+    // A replica that has just started (no memory, the same database) sees the same budget and says nothing again.
+    let other = Alerts::new(AlertsDeps {
+        pool: s.w.rig.pool.clone(),
+        notifier: Arc::new(s.notifier.clone()),
+        clock: Arc::clone(&s.w.rig.clock) as _,
+        config: config(),
+        metrics: RegistryMetrics::default(),
+    })
+    .unwrap();
+    other.offer(&support::sync::lane(), &[Severity::Medium]).await;
+    wait_until(
+        "the alert of the other replica",
+        Duration::from_secs(10),
+        || async { drift_alerts(&s) == 3 },
+    )
+    .await;
+    let service = s.service_with(Arc::new(s.notifier.clone()), config());
+    service.watch(|| Ok(())).await.unwrap();
+    assert_eq!(
+        budget_notices(&s),
+        1,
+        "the marker is in the database, not in a process"
+    );
+
+    // The notice did not take the stale warning of the newest window away: when it goes stale it is warned about, once.
+    at(&s, 6 * HOUR + 2 * MIN + 30_000);
+    let later = tick(&s).await;
+    assert_eq!(later.warned, 1, "uid-3 went stale (uid-4 has a minute left)");
+    assert_eq!(stale_notices(&s), 3);
+    assert_eq!(budget_notices(&s), 1);
+}
+
+#[tokio::test]
+async fn the_budget_refills_as_the_rolling_window_moves_and_a_new_episode_is_said_again() {
+    // One hour in three: small enough to walk through with the clock.
+    let cfg = RegistryConfig {
+        sync_hold_budget: Duration::from_secs(3600),
+        sync_hold_budget_window: Duration::from_secs(3 * 3600),
+        ..config()
+    };
+    let Some(mut s) = eight_files(cfg).await else {
+        return;
+    };
+    let held = |s: &SyncRig| s.w.rig.metrics.alert_count(AlertResult::Held);
+
+    open(&s, "uid-1", NOW).await;
+    at(&s, 30 * MIN);
+    edit(&mut s, 1).await;
+    assert_eq!(held(&s), 1, "half the budget is spent");
+    at(&s, 61 * MIN);
+    edit(&mut s, 2).await;
+    wait_until(
+        "the alert that the spent budget lets through",
+        Duration::from_secs(10),
+        || async { drift_alerts(&s) == 1 },
+    )
+    .await;
+    assert_eq!(held(&s), 1);
+    tick(&s).await;
+    assert_eq!(budget_notices(&s), 1, "the first episode");
+
+    // The Job ends at 90 minutes. The window still holds until it is processed or given up (30 min): the hold was [0, 2 h].
+    at(&s, 90 * MIN);
+    close(&s, "uid-1", NOW + 90 * MIN).await;
+    // Ten minutes later the closed window is still in its holding phase, but 100 minutes of it were held: the budget is spent whether
+    // the window is open or closed, and the alert flows.
+    at(&s, 100 * MIN);
+    edit(&mut s, 6).await;
+    wait_until(
+        "the alert while the closed window holds",
+        Duration::from_secs(10),
+        || async { drift_alerts(&s) == 2 },
+    )
+    .await;
+    assert_eq!(held(&s), 1);
+    // At 3 h 30 the rolling window is (30 min, 3 h 30]: 90 minutes of it were held, still over the budget.
+    at(&s, 210 * MIN);
+    edit(&mut s, 3).await;
+    wait_until("still spent", Duration::from_secs(10), || async {
+        drift_alerts(&s) == 3
+    })
+    .await;
+    assert_eq!(held(&s), 1);
+
+    // At 4 h 01 the rolling window is (1 h 01, 4 h 01]: 59 minutes of it were held, under the budget: the next window holds again.
+    at(&s, 241 * MIN);
+    open(&s, "uid-2", NOW + 241 * MIN).await;
+    edit(&mut s, 4).await;
+    assert_eq!(held(&s), 2, "the budget has refilled");
+    assert_eq!(drift_alerts(&s), 3);
+
+    // It is spent again at 5 h 01 (an hour of the new window), and that is a new episode, said again.
+    at(&s, 302 * MIN);
+    edit(&mut s, 5).await;
+    wait_until(
+        "the alert of the second episode",
+        Duration::from_secs(10),
+        || async { drift_alerts(&s) == 3 },
+    )
+    .await;
+    assert_eq!(held(&s), 2);
+    tick(&s).await;
+    assert_eq!(budget_notices(&s), 2, "one for each episode");
+    assert_eq!(s.w.rig.metrics.hold_budget_exhaustion_count(), 2);
 }

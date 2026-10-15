@@ -9,6 +9,7 @@
 //! | Step | What |
 //! |---|---|
 //! | 0 | **Old windows.** A closed window that nobody processed for `sync_window_expire_after` (24 h) is marked done and nothing is said: the hub was down, or the row is older than this job. |
+//! | 0b | **The hold budget.** When a swimlane's windows have held its alerts for `sync_hold_budget` (4 h) within `sync_hold_budget_window` (24 h) the hold has ended (the gate says so from the rows, [`super::hold`]); the job says it once for each episode: a [`NotificationKind::SyncWindowStale`] notice (Medium), a log line and a metric. "Once" is `warned_at` of the swimlane's newest window: the episode has been said when some window of the swimlane has a `warned_at` at or after the instant the episode began, and the claim checks and writes it in one statement. |
 //! | 1 | **Stale windows.** A window open for more than `sync_window_stale_after` (2 h) is warned about **once**: a log line, a metric and a [`NotificationKind::SyncWindowStale`] notification (A35). It stops holding the swimlane's alerts ([`super::hold`]). |
 //! | 2 | **Closed windows.** For each swimlane with closed windows that nobody has processed, and no window still open (a second Job is still running: wait for it), all of its closed windows are processed together, as one. |
 //!
@@ -50,7 +51,7 @@ use ports::{Notification, NotificationKind};
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
-use super::hold::held_spans;
+use super::hold::{Policy, exhaustion_start, held_spans, load_times, spent};
 use super::overwrite::Ahead;
 use super::{Inner, Report, SyncError, SyncService, SyncSource};
 use crate::branches::BranchClassifier;
@@ -145,6 +146,11 @@ impl SyncService {
         held()?;
         report.expired = inner
             .expire_old()
+            .await
+            .map_err(|_| JobError::Failed("registry_sync_watch"))?;
+        held()?;
+        inner
+            .warn_exhausted()
             .await
             .map_err(|_| JobError::Failed("registry_sync_watch"))?;
         held()?;
@@ -260,6 +266,101 @@ impl Inner {
         Ok(n)
     }
 
+    // ------------------------------------------------------------------------------------------------ the hold budget
+
+    /// Say, once for each episode of exhaustion, that a swimlane's budget for holding alerts is spent (see [`super::hold`]): the
+    /// enforcement is the gate's, derived from the windows' rows on every question; this is only the signal to people.
+    ///
+    /// "Once" is durable: the episode began at [`exhaustion_start`], and it has been said when some window of the swimlane has a
+    /// `warned_at` at or after that instant. The claim writes `warned_at` on the swimlane's newest window in the same statement that
+    /// checks it, so two runs (or two replicas) never say it twice, and a restart cannot make it say it again.
+    async fn warn_exhausted(&self) -> Result<(), RegistryError> {
+        let now = self.clock.now().unix_millis();
+        let p = Policy::of(&self.config);
+        // A swimlane can be spent only if some window of it held in the rolling window that ends now.
+        let from = now.saturating_sub(p.within);
+        let sql = format!(
+            "SELECT swimlane_id FROM sync_windows WHERE opened_at > {open} OR closed_at > {closed} \
+             GROUP BY swimlane_id ORDER BY swimlane_id LIMIT $3",
+            open = ts("$1"),
+            closed = ts("$2"),
+        );
+        let names: Vec<String> = self
+            .db
+            .run(
+                "hold_budget_swimlanes",
+                sqlx::query_scalar(&sql)
+                    .bind(from.saturating_sub(p.stale_after))
+                    .bind(from.saturating_sub(p.give_up))
+                    .bind(i64::try_from(self.config.sync_watch_batch.saturating_mul(16)).unwrap_or(i64::MAX))
+                    .fetch_all(self.db.pool()),
+            )
+            .await?;
+        for name in names {
+            let Ok(swimlane) = SwimlaneId::parse(&name) else {
+                continue;
+            };
+            let times = match load_times(&self.db, &swimlane, now, &p).await {
+                Ok(times) => times,
+                // Too many windows to count: the gate counts the budget as spent; there is no instant to say it began.
+                Err(RegistryError::Capacity) => {
+                    debug!(swimlane = %swimlane, "a swimlane has more sync windows than a hold budget can count");
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            let Some(began) = exhaustion_start(&times, now, &p) else {
+                continue;
+            };
+            if !self.claim_exhaustion(&swimlane, began, now).await? {
+                continue;
+            }
+            let used_minutes = spent(&times, now, &p) / 60_000;
+            let (budget_minutes, within_minutes) = (p.budget / 60_000, p.within / 60_000);
+            warn!(
+                swimlane = %swimlane,
+                held_minutes = used_minutes,
+                budget_minutes,
+                within_minutes,
+                "the hold budget of a swimlane is spent: its drift alerts are no longer held until the budget refills"
+            );
+            self.metrics.hold_budget_exhaustion();
+            if let Some(n) = exhausted_notification(&swimlane, used_minutes, budget_minutes, within_minutes) {
+                self.alerts.notify(n).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Claim the notice of the episode that began at `began`: `true` for the one run that writes it.
+    async fn claim_exhaustion(
+        &self,
+        swimlane: &SwimlaneId,
+        began: i64,
+        now: i64,
+    ) -> Result<bool, RegistryError> {
+        let sql = format!(
+            "UPDATE sync_windows SET warned_at = {now} \
+             WHERE id = (SELECT id FROM sync_windows WHERE swimlane_id = $1 ORDER BY opened_at DESC, id DESC LIMIT 1) \
+               AND (warned_at IS NULL OR warned_at < {began}) \
+               AND NOT EXISTS (SELECT 1 FROM sync_windows WHERE swimlane_id = $1 AND warned_at >= {began} LIMIT 1)",
+            now = ts("$2"),
+            began = ts("$3"),
+        );
+        let done = self
+            .db
+            .run(
+                "hold_budget_claim",
+                sqlx::query(&sql)
+                    .bind(swimlane.as_str())
+                    .bind(now)
+                    .bind(began)
+                    .execute(self.db.pool()),
+            )
+            .await?;
+        Ok(done.rows_affected() == 1)
+    }
+
     // ------------------------------------------------------------------------------------------------ stale windows
 
     /// Warn once about every open window past `sync_window_stale_after`. The window is claimed (`warned_at`) before anything is said, so
@@ -267,9 +368,13 @@ impl Inner {
     async fn warn_stale(&self) -> Result<usize, RegistryError> {
         let now = self.clock.now().unix_millis();
         let cutoff = now.saturating_sub(millis(self.config.sync_window_stale_after));
+        // A window is warned about when nobody has said anything about it since it went stale: `warned_at` is also what says that the
+        // budget ran out ([`Inner::warn_exhausted`]), which can be earlier, and must not take the stale warning away.
         let sql = format!(
             "UPDATE sync_windows SET warned_at = {now} WHERE id IN (\
-               SELECT id FROM sync_windows WHERE closed_at IS NULL AND warned_at IS NULL AND opened_at <= {cutoff} \
+               SELECT id FROM sync_windows WHERE closed_at IS NULL \
+                 AND (warned_at IS NULL OR warned_at < opened_at + ($4::bigint::text || ' milliseconds')::interval) \
+                 AND opened_at <= {cutoff} \
                ORDER BY id LIMIT $3) RETURNING swimlane_id, job_name, {opened}",
             now = ts("$1"),
             cutoff = ts("$2"),
@@ -283,6 +388,7 @@ impl Inner {
                     .bind(now)
                     .bind(cutoff)
                     .bind(i64::try_from(self.config.sync_watch_batch.saturating_mul(16)).unwrap_or(i64::MAX))
+                    .bind(millis(self.config.sync_window_stale_after))
                     .fetch_all(self.db.pool()),
             )
             .await?;
@@ -619,6 +725,26 @@ fn stale_notification(swimlane: &SwimlaneId, minutes: i64) -> Option<Notificatio
     })
 }
 
+/// The notice that a swimlane's budget for holding alerts is spent: the swimlane and minutes, never anything else.
+fn exhausted_notification(
+    swimlane: &SwimlaneId,
+    held_minutes: i64,
+    budget_minutes: i64,
+    within_minutes: i64,
+) -> Option<Notification> {
+    Some(Notification {
+        kind: NotificationKind::SyncWindowStale,
+        severity: Severity::Medium,
+        swimlane: Some(swimlane.clone()),
+        title: ShortText::parse("Drift alerts are no longer held for this swimlane").ok()?,
+        summary: ShortText::parse(&format!(
+            "Sync windows held the drift alerts of {swimlane} for {held_minutes} of the last {within_minutes} minutes, which is the whole budget of {budget_minutes}. Alerts for the swimlane are sent as they happen, whatever windows are open, until the budget refills."
+        ))
+        .ok()?,
+        link: ShortText::parse(&format!("/swimlanes/{swimlane}")).ok(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -639,6 +765,22 @@ mod tests {
             ..crate::config::RegistryConfig::default()
         };
         assert!(SyncService::watch_spec(&config).is_err());
+    }
+
+    #[test]
+    fn the_budget_notice_names_the_swimlane_and_minutes_and_nothing_else() {
+        let lane = SwimlaneId::parse("sit1").unwrap();
+        let n = exhausted_notification(&lane, 240, 240, 1440).unwrap();
+        assert_eq!(n.kind, NotificationKind::SyncWindowStale);
+        assert_eq!(n.severity, Severity::Medium);
+        assert_eq!(n.swimlane, Some(lane));
+        assert!(
+            n.summary.as_str().contains("240 of the last 1440 minutes"),
+            "{:?}",
+            n.summary
+        );
+        assert!(n.summary.as_str().contains("until the budget refills"));
+        assert_eq!(n.link.as_ref().map(ShortText::as_str), Some("/swimlanes/sit1"));
     }
 
     #[test]

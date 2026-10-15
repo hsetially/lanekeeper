@@ -141,6 +141,15 @@ pub struct RegistryConfig {
     /// How long a closed window that could not be processed (the agent is not connected, the scan did not come) is retried before it
     /// is given up: the drift alerts it held are then evaluated without the sync's own processing, and the window is marked done.
     pub sync_close_give_up: Duration,
+    /// The most time that a swimlane's alerts may be held by sync windows within any `sync_hold_budget_window`, counted from the windows' own
+    /// spans (open, then closed and not yet processed), so it does not depend on the memory of a process. Once it is spent the hold ends
+    /// and alerts flow whatever windows are open, until the spans slide out of the rolling window; a compromised or buggy agent that
+    /// reports window after window cannot silence a swimlane for more than this. 4 h in 24 h is the figure: a sync window lasts minutes,
+    /// the stale mark (a stuck Job) is 2 h, so a day may hold 24 syncs of ten minutes or two stuck Jobs and still alert as soon as a third
+    /// one appears.
+    pub sync_hold_budget: Duration,
+    /// The rolling window the budget is counted in.
+    pub sync_hold_budget_window: Duration,
     /// How long a closed window that nobody processed is kept for processing: past it the window is marked done and nothing is said (the
     /// hub was down for that long, or the row is older than the job). Also the bound of every retry.
     pub sync_window_expire_after: Duration,
@@ -277,6 +286,8 @@ impl Default for RegistryConfig {
             rematch_ranking: 20,
             sync_window_stale_after: Duration::from_secs(2 * 3600),
             sync_close_give_up: Duration::from_secs(30 * 60),
+            sync_hold_budget: Duration::from_secs(4 * 3600),
+            sync_hold_budget_window: Duration::from_secs(24 * 3600),
             sync_window_expire_after: Duration::from_secs(24 * 3600),
             sync_watch_interval: Duration::from_secs(5),
             sync_watch_batch: 16,
@@ -462,6 +473,21 @@ impl RegistryConfig {
             60_000,
             24 * 3600 * 1000,
         )?;
+        within(
+            "sync_hold_budget_window",
+            millis(self.sync_hold_budget_window),
+            3_600_000,
+            30 * 24 * 3600 * 1000,
+        )?;
+        within(
+            "sync_hold_budget",
+            millis(self.sync_hold_budget),
+            60_000,
+            30 * 24 * 3600 * 1000,
+        )?;
+        if self.sync_hold_budget > self.sync_hold_budget_window {
+            return Err(ConfigError::OutOfRange("sync_hold_budget"));
+        }
         within(
             "sync_window_expire_after",
             millis(self.sync_window_expire_after),
@@ -770,6 +796,9 @@ mod tests {
             "D75 and the prompt: a window open for more than two hours is stale"
         );
         assert_eq!(c.sync_close_give_up, Duration::from_secs(30 * 60));
+        assert_eq!(c.sync_hold_budget, Duration::from_secs(4 * 3600));
+        assert_eq!(c.sync_hold_budget_window, Duration::from_secs(24 * 3600));
+        assert!(c.sync_hold_budget <= c.sync_hold_budget_window);
         assert_eq!(c.sync_window_expire_after, Duration::from_secs(24 * 3600));
         assert_eq!(c.sync_watch_interval, Duration::from_secs(5));
         assert_eq!(c.sync_watch_batch, 16);
@@ -788,6 +817,24 @@ mod tests {
         });
         out_of_range("sync_close_give_up", |c| {
             c.sync_close_give_up = Duration::from_secs(25 * 3600);
+        });
+        out_of_range("sync_hold_budget", |c| {
+            c.sync_hold_budget = Duration::from_secs(59);
+        });
+        out_of_range("sync_hold_budget", |c| {
+            c.sync_hold_budget = Duration::from_secs(31 * 24 * 3600);
+            c.sync_hold_budget_window = Duration::from_secs(30 * 24 * 3600);
+        });
+        out_of_range("sync_hold_budget", |c| {
+            // The budget cannot be more than the rolling window it is counted in.
+            c.sync_hold_budget_window = Duration::from_secs(3 * 3600);
+            c.sync_hold_budget = Duration::from_secs(4 * 3600);
+        });
+        out_of_range("sync_hold_budget_window", |c| {
+            c.sync_hold_budget_window = Duration::from_secs(3599);
+        });
+        out_of_range("sync_hold_budget_window", |c| {
+            c.sync_hold_budget_window = Duration::from_secs(31 * 24 * 3600);
         });
         out_of_range("sync_window_expire_after", |c| {
             c.sync_window_expire_after = Duration::from_secs(59);
