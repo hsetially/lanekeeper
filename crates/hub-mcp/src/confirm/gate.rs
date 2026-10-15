@@ -515,14 +515,10 @@ pub async fn gate(cx: &CallCx<'_>, plan: Plan) -> ToolResult {
     }
 
     // 5. Look at the user again: the question may have been open for minutes.
-    let read_limit = host.limits.timeout(Class::Read);
-    let user = match tokio::time::timeout(read_limit, host.users.require_active(&cx.user.id, cx.spec.role()))
+    let user = host
+        .require_active(&cx.user.id, cx.spec.role())
         .await
-    {
-        Ok(Ok(user)) => user,
-        Ok(Err(error)) => return Err(ToolError::from(error)),
-        Err(_) => return Err(ToolError::new(Code::Unavailable)),
-    };
+        .map_err(ToolError::from)?;
     // The question said whether this becomes a proposal. If that changed while it was open, what was confirmed is not what would
     // happen, and nothing is done.
     if user.requires_approval != ctx.user.requires_approval {

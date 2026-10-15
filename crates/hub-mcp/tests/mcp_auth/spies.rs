@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -18,8 +19,10 @@ use domain::{
     SwimlaneSummary, TextQuery, TextResults, TreeComparison, UploadRequest, User, Version, WriteCtx,
     WriteOutcome,
 };
-use ports::fakes::{FakeDocSearch, FakeRegistry, FakeWriteService};
-use ports::{DocError, DocSearch, ReadError, RegistryRead, WriteError, WriteService};
+use ports::fakes::{FakeDocSearch, FakeRegistry, FakeUsers, FakeWriteService};
+use ports::{
+    AuthError, DocError, DocSearch, ReadError, RegistryRead, UserError, Users, WriteError, WriteService,
+};
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -47,6 +50,64 @@ impl Log {
 
     pub fn clear(&self) {
         lock(&self.0).clear();
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Users
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// The directory of users with a window into it: how many times it was asked, and questions that are never answered.
+#[derive(Clone, Default)]
+pub struct SpyUsers {
+    pub inner: FakeUsers,
+    asked: Arc<AtomicUsize>,
+    /// Questions numbered above this one are never answered.
+    silent_above: Arc<Mutex<Option<usize>>>,
+}
+
+impl std::fmt::Debug for SpyUsers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SpyUsers")
+    }
+}
+
+impl SpyUsers {
+    /// The directory `inner` holds, seen through the spy.
+    pub fn over(inner: FakeUsers) -> Self {
+        Self {
+            inner,
+            ..Self::default()
+        }
+    }
+
+    pub fn asked(&self) -> usize {
+        self.asked.load(Ordering::SeqCst)
+    }
+
+    /// The next `answers` questions are answered, and every one after them never is.
+    pub fn go_silent_after(&self, answers: usize) {
+        *lock(&self.silent_above) = Some(self.asked() + answers);
+    }
+
+    pub fn answer_again(&self) {
+        *lock(&self.silent_above) = None;
+    }
+}
+
+#[async_trait]
+impl Users for SpyUsers {
+    async fn get(&self, id: &domain::UserId) -> Result<Option<User>, UserError> {
+        self.inner.get(id).await
+    }
+
+    async fn require_active(&self, id: &domain::UserId, min: domain::Role) -> Result<User, AuthError> {
+        let number = self.asked.fetch_add(1, Ordering::SeqCst) + 1;
+        let silent = lock(&self.silent_above).is_some_and(|above| number > above);
+        if silent {
+            std::future::pending::<()>().await;
+        }
+        self.inner.require_active(id, min).await
     }
 }
 

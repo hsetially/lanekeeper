@@ -12,7 +12,9 @@
 //! and [`pg_store`] keep them, [`pat`] is the service, [`oauth`] and [`metadata`] are what OAuth mode publishes, and [`routes`]
 //! are the REST routes through which a signed-in user makes, lists and revokes their tokens.
 
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use domain::{Role, User, UserId};
@@ -21,6 +23,7 @@ use hub_platform::SessionAuth;
 use ports::{AuthError, TokenVerifier, Users};
 
 use crate::config::AuthMode;
+use crate::limits::DEFAULT_READ_TIMEOUT;
 
 pub mod header;
 pub mod metadata;
@@ -44,6 +47,8 @@ enum Backend {
 pub struct BearerAuth {
     backend: Backend,
     users: Arc<dyn Users>,
+    /// How long the identity provider and the directory of users have, together, to vouch for a request (rule 5).
+    timeout: Duration,
 }
 
 impl std::fmt::Debug for BearerAuth {
@@ -61,6 +66,7 @@ impl BearerAuth {
         Self {
             backend: Backend::Oauth(verifier),
             users,
+            timeout: DEFAULT_READ_TIMEOUT,
         }
     }
 
@@ -70,7 +76,23 @@ impl BearerAuth {
         Self {
             backend: Backend::Personal(tokens),
             users,
+            timeout: DEFAULT_READ_TIMEOUT,
         }
+    }
+
+    /// How long the ports behind a request may take to answer, in all (the deployment's read timeout). A port that is silent for
+    /// longer is `Unavailable`, which the gate answers with 503: silence is never a pass.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// `check`, within the timeout; a port that does not answer in time is [`AuthError::Unavailable`].
+    async fn bounded<T>(&self, check: impl Future<Output = Result<T, AuthError>>) -> Result<T, AuthError> {
+        tokio::time::timeout(self.timeout, check)
+            .await
+            .unwrap_or(Err(AuthError::Unavailable))
     }
 
     #[must_use]
@@ -105,13 +127,20 @@ impl BearerAuth {
 impl SessionAuth for BearerAuth {
     async fn authenticate(&self, parts: &Parts) -> Result<User, AuthError> {
         let token = header::bearer(&parts.headers).map_err(|_| AuthError::InvalidToken)?;
-        let id = self.identify(token).await?;
-        // Pending and disabled users never pass, whatever their role (D36, S4). Viewer is the floor of every tool; each tool
-        // checks its own role again on every call.
-        self.users.require_active(&id, Role::Viewer).await
+        // One bound for the whole verdict: the credential and then the user. The gate answers within it, whatever the ports do.
+        self.bounded(async {
+            let id = self.identify(token).await?;
+            // Pending and disabled users never pass, whatever their role (D36, S4). Viewer is the floor of every tool; each tool
+            // checks its own role again on every call.
+            self.users.require_active(&id, Role::Viewer).await
+        })
+        .await
     }
 
     async fn still_valid(&self, user: &UserId) -> bool {
-        self.users.require_active(user, Role::Viewer).await.is_ok()
+        // A user the directory cannot vouch for in time is not valid: a stream is cut rather than kept open on a guess.
+        self.bounded(self.users.require_active(user, Role::Viewer))
+            .await
+            .is_ok()
     }
 }

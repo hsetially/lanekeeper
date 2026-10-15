@@ -52,6 +52,10 @@ pub struct LimitSettings {
     pub bucket_capacity: u64,
 }
 
+/// How long a read may take, and so how long the server waits for a port it asks on every request (the directory of users, the
+/// identity provider), unless the deployment sets it.
+pub const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
 impl Default for LimitSettings {
     fn default() -> Self {
         Self {
@@ -62,7 +66,7 @@ impl Default for LimitSettings {
             calls_per_user: 8,
             calls_per_replica: 256,
             inflight_bytes: 64 * 1024 * 1024,
-            read_timeout: Duration::from_secs(5),
+            read_timeout: DEFAULT_READ_TIMEOUT,
             write_timeout: Duration::from_secs(30),
             confirm_timeout: Duration::from_secs(120),
             sessions_per_user: 5,

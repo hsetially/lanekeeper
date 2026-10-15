@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use aws_lc_rs::rand::fill;
 use domain::{Role, User, UserId};
+use ports::AuthError;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
     InitializeRequestParams, InitializeResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities,
@@ -133,7 +134,6 @@ impl McpHandler {
             return Err(ToolError::new(Code::Forbidden));
         }
         let user = host
-            .users
             .require_active(&caller.id, spec.role())
             .await
             .map_err(ToolError::from)?;
@@ -229,10 +229,15 @@ impl ServerHandler for McpHandler {
         // The list is what this user may call, by the record the directory has now (A16).
         let user = self
             .host
-            .users
             .require_active(&caller.id, Role::Viewer)
             .await
-            .map_err(|_| ErrorData::invalid_request("not allowed", None))?;
+            .map_err(|error| match error {
+                // The directory could not say (or did not in time): not a verdict on the user, so not "not allowed".
+                AuthError::Unavailable => {
+                    ErrorData::internal_error("the service is unavailable, try again shortly", None)
+                }
+                _ => ErrorData::invalid_request("not allowed", None),
+            })?;
         let tools: Vec<_> = self
             .host
             .visible(&self.listing, &user)

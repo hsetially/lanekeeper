@@ -281,3 +281,138 @@ fn a_tool_that_asks_the_user_has_a_deadline_that_covers_every_step_of_it() {
     assert!(asks > settings.confirm_timeout + settings.write_timeout);
     assert_eq!(asks, Duration::from_secs(185));
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Rule 5: a port that never answers (round 2, review item 5). The directory of users and the identity provider are asked on every
+// request, and rmcp has already sent the head of the answer to a call, so nothing else bounds the wait. Each of these asks with a
+// port that is silent for good; the outer `timeout` of 60 s only turns a hang into a failure, and fires on the paused clock only if
+// the server's own bound did not.
+// ---------------------------------------------------------------------------------------------------------------------
+
+const GIVE_UP: Duration = Duration::from_secs(60);
+
+fn tools_list() -> serde_json::Value {
+    json!({"jsonrpc": "2.0", "id": 77, "method": "tools/list"})
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_directory_that_never_answers_makes_a_tool_call_unavailable() {
+    let rig = rig_with(|l| l.read_timeout = Duration::from_secs(5));
+    let mut alice = signed_in(&rig, "alice", Role::Viewer).await;
+    // The gate's question is answered; the handler's, for the same request, is not.
+    rig.directory.go_silent_after(1);
+    let started = tokio::time::Instant::now();
+    let called = tokio::time::timeout(GIVE_UP, call(&mut alice, "list_swimlanes", &json!({})))
+        .await
+        .expect("the call never ended: the directory's silence is not bounded");
+    assert_eq!(called.err(), "unavailable");
+    let waited = started.elapsed();
+    assert!(
+        waited >= Duration::from_secs(5) && waited < Duration::from_secs(10),
+        "{waited:?}"
+    );
+    assert!(
+        rig.registry.log.all().is_empty(),
+        "the tool ran without the user being looked at: {:?}",
+        rig.registry.log.all()
+    );
+    // The slot of the call was given back: with the directory back, the user can call again.
+    rig.directory.answer_again();
+    call(&mut alice, "list_swimlanes", &json!({})).await.ok();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_directory_that_never_answers_makes_tools_list_unavailable() {
+    let rig = rig_with(|l| l.read_timeout = Duration::from_secs(5));
+    let alice = signed_in(&rig, "alice", Role::Viewer).await;
+    rig.directory.go_silent_after(1);
+    let started = tokio::time::Instant::now();
+    let response = alice.post(&tools_list()).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let answer = tokio::time::timeout(
+        GIVE_UP,
+        crate::support::Sse::new(response.into_body()).until_response(77),
+    )
+    .await
+    .expect("tools/list never ended: the directory's silence is not bounded")
+    .expect("an answer")
+    .1;
+    assert!(
+        answer.get("result").is_none(),
+        "tools were listed to an unchecked user: {answer}"
+    );
+    assert_eq!(answer["error"]["code"], json!(-32603), "{answer}");
+    assert!(
+        answer["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unavailable"),
+        "{answer}"
+    );
+    let waited = started.elapsed();
+    assert!(
+        waited >= Duration::from_secs(5) && waited < Duration::from_secs(10),
+        "{waited:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_directory_that_never_answers_is_a_503_at_the_gate_and_never_a_pass() {
+    // The bound is the read timeout setting, not a constant.
+    let rig = rig_with(|l| l.read_timeout = Duration::from_secs(2));
+    let alice = signed_in(&rig, "alice", Role::Viewer).await;
+    rig.directory.go_silent_after(0);
+    let started = tokio::time::Instant::now();
+    let response = tokio::time::timeout(
+        GIVE_UP,
+        alice.post(&json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "list_swimlanes", "arguments": {}}})),
+    )
+    .await
+    .expect("the request never ended: the directory's silence is not bounded");
+    assert_eq!(response.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    let waited = started.elapsed();
+    assert!(
+        waited >= Duration::from_secs(2) && waited < Duration::from_secs(4),
+        "{waited:?}"
+    );
+    assert!(rig.registry.log.all().is_empty(), "{:?}", rig.registry.log.all());
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_identity_provider_that_never_answers_is_a_503_and_opens_no_session() {
+    let rig = rig_with(|l| l.read_timeout = Duration::from_secs(5));
+    rig.add_user("alice", Some(Role::Viewer), domain::UserStatus::Active);
+    rig.verifier.accept("tok-alice", "alice");
+    rig.verifier.go_silent(true);
+    let mut alice = rig.client(Some("tok-alice"));
+    let started = tokio::time::Instant::now();
+    let refused = tokio::time::timeout(GIVE_UP, alice.initialize(&json!({})))
+        .await
+        .expect("the request never ended: the identity provider's silence is not bounded");
+    assert_eq!(refused.unwrap_err(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    let waited = started.elapsed();
+    assert!(
+        waited >= Duration::from_secs(5) && waited < Duration::from_secs(10),
+        "{waited:?}"
+    );
+    assert_eq!(rig.state.counted_sessions(None), 0);
+    assert_eq!(rig.state.live_sessions().await, 0);
+    // When it answers again, the same token gets in.
+    rig.verifier.go_silent(false);
+    alice.initialize(&json!({})).await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_directory_that_never_answers_fails_the_stream_check_closed() {
+    let rig = rig_with(|l| l.read_timeout = Duration::from_secs(5));
+    rig.add_user("alice", Some(Role::Viewer), domain::UserStatus::Active);
+    let auth = rig.state.auth();
+    assert!(auth.still_valid(&uid("alice")).await);
+    rig.directory.go_silent_after(0);
+    let started = tokio::time::Instant::now();
+    let valid = tokio::time::timeout(GIVE_UP, auth.still_valid(&uid("alice")))
+        .await
+        .expect("still_valid never ended: the directory's silence is not bounded");
+    assert!(!valid, "a user the directory could not vouch for is not valid");
+    assert!(started.elapsed() >= Duration::from_secs(5));
+}

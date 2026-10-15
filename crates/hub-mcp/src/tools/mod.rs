@@ -197,6 +197,18 @@ impl CallCx<'_> {
 }
 
 impl ToolHost {
+    /// `Users::require_active`, bounded by the read timeout (rule 5). A directory that does not answer in time is `Unavailable`, which
+    /// every caller turns into a refusal to retry: silence is never a pass (S4). By the time this runs, rmcp has already sent the
+    /// head of the answer to a call, so the hub's own timeout does not cover it.
+    pub async fn require_active(&self, id: &domain::UserId, min: Role) -> Result<User, ports::AuthError> {
+        tokio::time::timeout(
+            self.limits.timeout(Class::Read),
+            self.users.require_active(id, min),
+        )
+        .await
+        .unwrap_or(Err(ports::AuthError::Unavailable))
+    }
+
     /// Run a tool. The caller has already admitted the call (role, rate, permits) and holds the timeout.
     ///
     /// The last check of the cap is here: whatever a tool built, a result over the cap is not sent (D58). A tool that builds one

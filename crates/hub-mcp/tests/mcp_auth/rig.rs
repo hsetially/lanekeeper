@@ -22,7 +22,7 @@ use hub_platform::{FakeSessionAuth, GuardedRouter, RouteSpec, TEST_USER_HEADER};
 use ports::fakes::{FakeAuditLog, FakeUsers};
 use ports::{DocSearch, RegistryRead, WriteService};
 
-use crate::spies::{SpyDocs, SpyRegistry, SpyWrites};
+use crate::spies::{SpyDocs, SpyRegistry, SpyUsers, SpyWrites};
 use ports::{AuthError, GoogleIdentity, TokenVerifier, VerifiedUser};
 use tower::ServiceExt;
 
@@ -85,6 +85,8 @@ pub struct ScriptedVerifier {
     script: Mutex<HashMap<String, Result<VerifiedUser, AuthError>>>,
     otherwise: Mutex<Option<AuthError>>,
     calls: AtomicUsize,
+    /// When set, a token is never answered.
+    silent: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for ScriptedVerifier {
@@ -117,12 +119,20 @@ impl ScriptedVerifier {
     pub fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
     }
+
+    /// From now on a token is never answered (or is again, with `false`).
+    pub fn go_silent(&self, silent: bool) {
+        self.silent.store(silent, Ordering::SeqCst);
+    }
 }
 
 #[async_trait]
 impl TokenVerifier for ScriptedVerifier {
     async fn entra_access_token(&self, jwt: &str) -> Result<VerifiedUser, AuthError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.silent.load(Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
         if let Some(answer) = self.script.lock().unwrap().get(jwt) {
             return answer.clone();
         }
@@ -144,6 +154,8 @@ pub struct Rig {
     pub routes: Vec<RouteSpec>,
     pub session_auth: Arc<FakeSessionAuth>,
     pub users: FakeUsers,
+    /// The same directory as `users`, as the server asks it: counted, and able to go silent.
+    pub directory: SpyUsers,
     /// The ports the server stands on: the fakes, with a window into them.
     pub registry: SpyRegistry,
     pub docs: SpyDocs,
@@ -180,6 +192,7 @@ impl Rig {
     ) -> Self {
         let clock = Arc::new(ManualClock::at(SystemClock.now()));
         let users = FakeUsers::new();
+        let directory = SpyUsers::over(users.clone());
         let verifier = Arc::new(ScriptedVerifier::default());
         let audit = FakeAuditLog::new();
         let (credentials, store, tokens) = match mode {
@@ -210,7 +223,7 @@ impl Rig {
         let state = McpState::new(
             McpDeps::new(
                 credentials,
-                Arc::new(users.clone()),
+                Arc::new(directory.clone()),
                 Arc::new(registry.clone()) as Arc<dyn RegistryRead>,
                 Arc::new(docs.clone()) as Arc<dyn DocSearch>,
                 Arc::new(writes.clone()) as Arc<dyn WriteService>,
@@ -232,6 +245,7 @@ impl Rig {
             routes,
             session_auth,
             users,
+            directory,
             registry,
             docs,
             writes,

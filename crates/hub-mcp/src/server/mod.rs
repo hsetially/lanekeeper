@@ -307,7 +307,7 @@ impl McpState {
         if let Some(tokens) = &tokens {
             tokens.settings().validate().map_err(|_| StartError::Tokens)?;
         }
-        let auth = Arc::new(auth);
+        let auth = Arc::new(auth.with_timeout(settings.limits.read_timeout));
 
         // The tools: the contract and the handlers must be the same set, or the server does not start.
         let contract = Contract::embedded()?;
