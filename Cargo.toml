@@ -20,6 +20,7 @@ rust-version = "1.88"
 domain = { path = "crates/domain", version = "0.1.0" }
 ports = { path = "crates/ports", version = "0.1.0" }
 proto = { path = "crates/proto", version = "0.1.0" }
+engine = { path = "crates/engine", version = "0.1.0" }
 xtask = { path = "crates/xtask", version = "0.1.0" }
 hub-platform = { path = "crates/hub-platform", version = "0.1.0" }
 hub-mcp = { path = "crates/hub-mcp", version = "0.1.0" }
@@ -173,6 +174,11 @@ grep-matcher = "=0.1.9"
 # that could drift from docs/mcp-tools.md), and so do `auth`, `client` and every `reqwest` feature (no HTTP client and no second TLS
 # stack). hub-mcp turns on `server`, `transport-streamable-http-server` and `elicitation`. 3.5.1 is 10 days old and refused.
 rmcp = { version = "=3.5.0", default-features = false }
+# JSON Schema validator for the contract tests of the MCP server (prompt 07, T2): tool inputs and results are checked against the schemas
+# of docs/mcp-tools.md by a validator that is not ours. jsonschema 0.58.3 (2026-09-30, 15 days old on 2026-10-15; 0.58.4 to 0.58.6 are newer
+# and refused for their age). Dev-dependency only. No default features: they add an HTTP client (reqwest), a TLS stack and IDNA
+# tables, and the schemas here refer to nothing outside themselves.
+jsonschema = { version = "=0.58.3", default-features = false }
 # Test tooling
 proptest = "=1.11.0"
 insta = "=1.48.0"

@@ -20,6 +20,9 @@ use hub_mcp::config::{AuthMode, McpConfig, PublicOrigin};
 use hub_mcp::{Credentials, McpDeps, McpSettings, McpState, mount};
 use hub_platform::{FakeSessionAuth, GuardedRouter, RouteSpec, TEST_USER_HEADER};
 use ports::fakes::{FakeAuditLog, FakeUsers};
+use ports::{DocSearch, RegistryRead, WriteService};
+
+use crate::spies::{SpyDocs, SpyRegistry, SpyWrites};
 use ports::{AuthError, GoogleIdentity, TokenVerifier, VerifiedUser};
 use tower::ServiceExt;
 
@@ -68,11 +71,12 @@ pub fn settings(mode: AuthMode, mirror: bool) -> McpSettings {
         ..McpConfig::default()
     };
     let oauth = (mode == AuthMode::Oauth).then(|| oauth_settings(mirror));
-    McpSettings {
-        // No keep-alive timer: the tests run on a paused clock, and the timer of the SSE crate is not a tokio one.
-        sse_keep_alive: None,
-        ..McpSettings::new(config, PublicOrigin::parse(ORIGIN).unwrap(), oauth)
-    }
+    let mut settings = McpSettings::new(config, PublicOrigin::parse(ORIGIN).unwrap(), oauth);
+    // No keep-alive timer: the tests run on a paused clock, and the timer of the SSE crate is not a tokio one.
+    settings.sse_keep_alive = None;
+    // The authentication tests open a session with nearly every request; the cap on sessions has tests of its own.
+    settings.limits.sessions_per_user = 1_000;
+    settings
 }
 
 /// A verifier that answers what it was told to, and counts its calls.
@@ -140,6 +144,10 @@ pub struct Rig {
     pub routes: Vec<RouteSpec>,
     pub session_auth: Arc<FakeSessionAuth>,
     pub users: FakeUsers,
+    /// The ports the server stands on: the fakes, with a window into them.
+    pub registry: SpyRegistry,
+    pub docs: SpyDocs,
+    pub writes: SpyWrites,
     pub verifier: Arc<ScriptedVerifier>,
     pub clock: Arc<ManualClock>,
     pub audit: FakeAuditLog,
@@ -196,11 +204,18 @@ impl Rig {
                 )
             }
         };
+        let registry = SpyRegistry::new();
+        let docs = SpyDocs::new();
+        let writes = SpyWrites::new();
         let state = McpState::new(
-            McpDeps {
+            McpDeps::new(
                 credentials,
-                users: Arc::new(users.clone()),
-            },
+                Arc::new(users.clone()),
+                Arc::new(registry.clone()) as Arc<dyn RegistryRead>,
+                Arc::new(docs.clone()) as Arc<dyn DocSearch>,
+                Arc::new(writes.clone()) as Arc<dyn WriteService>,
+            )
+            .with_clock(Arc::clone(&clock) as Arc<dyn Clock>),
             tune(settings(mode, mirror)),
         )
         .unwrap();
@@ -217,6 +232,9 @@ impl Rig {
             routes,
             session_auth,
             users,
+            registry,
+            docs,
+            writes,
             verifier,
             clock,
             audit,

@@ -20,8 +20,14 @@
 pub mod auth;
 pub mod clock;
 pub mod config;
+pub mod confirm;
 pub mod error;
+pub mod limits;
+pub mod metrics;
+pub mod output;
+pub mod schemas;
 pub mod server;
+pub mod tools;
 
 pub use error::McpError;
 pub use server::{Credentials, McpDeps, McpSettings, McpState, StartError, mount};

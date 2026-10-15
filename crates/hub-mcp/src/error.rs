@@ -35,6 +35,9 @@ pub enum McpError {
     /// The user already holds the most live personal tokens the hub allows.
     #[error("too many live tokens")]
     TokenLimit,
+    /// The user already holds the most MCP sessions the server allows.
+    #[error("too many sessions")]
+    TooManySessions,
     /// The database or another dependency is not available. Retryable.
     #[error("the service is unavailable")]
     Unavailable,
@@ -55,6 +58,7 @@ impl McpError {
             Self::PayloadTooLarge => ApiError::PayloadTooLarge,
             Self::UnsupportedMediaType => ApiError::UnsupportedMediaType,
             Self::TokenLimit => ApiError::Conflict,
+            Self::TooManySessions => ApiError::TooManyRequests,
             Self::AuthUnavailable | Self::Unavailable => ApiError::Unavailable,
             Self::Internal => ApiError::Internal,
         }

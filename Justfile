@@ -383,10 +383,10 @@ engine-bench:
 
 # Prompt 07 gate (the MCP server; S4, S11, S14, S14b, S15, S21; P9): every sub-recipe, in order, stopping at the first failure. T0
 # started it with the tools check, lint, tests and the status of the Cursor results; T1 adds the Docker daemon for the Postgres-backed
-# token tests and the fuzz targets; later tasks append their own sub-recipes (bench). Run `just verify` and `cargo xtask bench-check`
-# after it (AGENTS.md, protocol step 4). Not part of the gate and said so: the Cursor 3.22.12 checks of T0 need a human (see
-# `mcp-t0-status`).
-verify-07: mcp-tools-check mcp-lint mcp-test mcp-fuzz mcp-t0-status
+# token tests and the fuzz targets; T2 adds the P9 benchmarks (`mcp-bench`); later tasks append their own sub-recipes. Run `just
+# verify` and `cargo xtask bench-check` after it (AGENTS.md, protocol step 4). Not part of the gate and said so: the Cursor 3.22.12
+# checks of T0 need a human (see `mcp-t0-status`).
+verify-07: mcp-tools-check mcp-lint mcp-test mcp-fuzz mcp-bench mcp-t0-status
 
 # The pinned tools the gate needs, or the command that installs them, and the Docker daemon the token store tests start Postgres in.
 # Never skips.
@@ -407,7 +407,7 @@ mcp-test:
 # S22: the MCP crate's own fuzz crate (decision A10 of plan 07; `fuzz-smoke` does not run it). Its lockfile is complete and passes
 # cargo deny and cargo audit (S19), then each target runs {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in
 # crates/hub-mcp/fuzz/artifacts/. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart.
-mcp_fuzz_targets := "mcp_bearer_header mcp_pat_token"
+mcp_fuzz_targets := "mcp_bearer_header mcp_pat_token mcp_tool_args mcp_cursor mcp_http_body"
 mcp-fuzz: fuzz-tools-check
     #!/usr/bin/env bash
     set -euo pipefail
@@ -419,6 +419,30 @@ mcp-fuzz: fuzz-tools-check
         cargo +{{fuzz_nightly}} fuzz run "$target" --fuzz-dir crates/hub-mcp/fuzz "target/fuzz-corpus/$target" "crates/hub-mcp/fuzz/corpus/$target" -- -max_total_time={{fuzz_seconds}}
     done
     echo "mcp-fuzz: {{mcp_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
+
+# P9 (T2): the read tools of the MCP server at target scale, on fakes, so this layer's share of a call (plan A7). The criterion
+# benchmark `crates/hub-mcp/benches/read_tools.rs` runs the real server in process, then `cargo xtask bench-check` judges a registry
+# cut to the P9 budgets below (the full registry needs every other prompt's benchmarks; the FINAL step runs it after `just bench`).
+# `tests/justfile_gate.rs` fails if this list and the registered `hub-mcp/` budgets drift apart.
+mcp_budgets := "P9 P9.list_swimlanes P9.get_swimlane P9.list_files P9.read_file P9.get_effective_config P9.compare P9.compare_tree P9.compare_grid P9.search_settings P9.search_text P9.find_inconsistencies P9.get_drift P9.get_pending_restarts P9.get_history P9.search_docs P9.read_doc P9.grep_docs P9.get_docs_for_file P9.get_feature_status P9.get_served_config"
+mcp-bench:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Only this run's numbers may satisfy the check: a benchmark that dies at teardown must not pass on an earlier run's data.
+    rm -rf target/criterion/hub-mcp
+    cargo bench -p hub-mcp
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    awk -v ids="{{mcp_budgets}}" 'BEGIN { RS = ""; ORS = "\n\n"; n = split(ids, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 } /^\[\[budget\]\]/ { if (match($0, /\nid = "[^"]+"/)) { id = substr($0, RSTART + 7, RLENGTH - 8); if (id in want) print } }' perf/budgets.toml > "$tmp/budgets.toml"
+    found="$(grep -c '^\[\[budget\]\]' "$tmp/budgets.toml" || true)"
+    wanted="$(wc -w <<< "{{mcp_budgets}}")"
+    if [ "$found" -ne "$wanted" ]; then echo "mcp-bench: found $found of $wanted budgets in perf/budgets.toml"; exit 1; fi
+    cargo xtask bench-check --budgets "$tmp/budgets.toml"
+
+# `crates/hub-mcp/src/schemas/tools.json` is generated from docs/mcp-tools.md and never edited by hand. After a change to the
+# document (a contract PR), this regenerates it; `mcp-test` fails when the file and the document differ.
+mcp-schemas:
+    UPDATE_SCHEMAS=1 cargo test -p hub-mcp --test mcp_auth contract_schemas::embedded_schemas_equal_the_contract_document
 
 # T0 (A4): what is recorded of the Cursor 3.22.12 compatibility test (D91 in docs/decisions.md). The checks need a human with
 # Cursor on Windows and on macOS (`crates/hub-mcp/t0/README.md`), so an agent run says NOT RUN per operating system, and NOT RUN is

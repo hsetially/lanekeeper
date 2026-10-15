@@ -283,3 +283,47 @@ impl PublicOrigin {
         format!("{}{path}", self.origin)
     }
 }
+
+/// The caps on what a result may weigh (D58, P9): 16 KB for a read tool and 4 KB for a write tool, as the contract says. A
+/// deployment may lower them (never raise them past the contract); the tests lower them to page small data sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputSettings {
+    pub read_cap_bytes: usize,
+    pub write_cap_bytes: usize,
+}
+
+impl Default for OutputSettings {
+    fn default() -> Self {
+        Self {
+            read_cap_bytes: crate::schemas::READ_CAP_BYTES,
+            write_cap_bytes: crate::schemas::WRITE_CAP_BYTES,
+        }
+    }
+}
+
+impl OutputSettings {
+    /// The smallest cap that can hold an envelope with nothing in it.
+    pub const MIN_CAP_BYTES: usize = 512;
+
+    /// # Errors
+    ///
+    /// [`ConfigError::Invalid`] naming `output` for a cap below [`Self::MIN_CAP_BYTES`] or above the contract's.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let ok = |cap: usize, max: usize| (Self::MIN_CAP_BYTES..=max).contains(&cap);
+        if ok(self.read_cap_bytes, crate::schemas::READ_CAP_BYTES)
+            && ok(self.write_cap_bytes, crate::schemas::WRITE_CAP_BYTES)
+        {
+            Ok(())
+        } else {
+            Err(ConfigError::Invalid("output"))
+        }
+    }
+}
+
+/// Switches of single tools (`tools.<name>.enabled`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ToolSettings {
+    /// `notify_services` reaches the config-server's unauthenticated `/update-resources` (Q37). Off until Q37 is answered: the tool
+    /// is then absent from `tools/list` and a call to it is `forbidden` (the contract's text).
+    pub notify_services_enabled: bool,
+}

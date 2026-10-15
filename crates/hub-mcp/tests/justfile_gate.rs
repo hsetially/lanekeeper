@@ -39,6 +39,7 @@ fn verify_07_runs_every_sub_recipe_and_is_no_longer_the_stub() {
         "mcp-lint",
         "mcp-test",
         "mcp-fuzz",
+        "mcp-bench",
         "mcp-t0-status",
     ] {
         assert!(gate.contains(dep), "verify-07 does not run {dep}");
@@ -146,4 +147,67 @@ fn fuzz_target_list_matches_directory() {
             "mcp-fuzz lacks `{needed}`: {fuzz_recipe}"
         );
     }
+}
+
+/// The ids in `mcp_budgets` (what `mcp-bench` judges) and the registered `hub-mcp/` budgets of `perf/budgets.toml`.
+#[test]
+fn p9_budgets_match_the_registry() {
+    let text = justfile();
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("mcp_budgets :="))
+        .expect("the recipe lists its budgets");
+    let listed: BTreeSet<String> = line
+        .split('"')
+        .nth(1)
+        .expect("the list is quoted")
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    let registry =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../perf/budgets.toml")).unwrap();
+    // Every `[[budget]]` of the file, as (id, bench, registered).
+    let mut registered_mcp = BTreeSet::new();
+    for block in registry.split("[[budget]]").skip(1) {
+        let field = |name: &str| {
+            block
+                .lines()
+                .find_map(|l| l.strip_prefix(&format!("{name} = ")))
+                .map(|v| v.trim().trim_matches('"').to_owned())
+        };
+        let (id, bench, registered) = (
+            field("id").unwrap(),
+            field("bench").unwrap(),
+            field("registered").unwrap(),
+        );
+        if bench.starts_with("hub-mcp/") && registered == "true" {
+            registered_mcp.insert(id);
+        }
+    }
+    assert_eq!(listed, registered_mcp, "mcp-bench and perf/budgets.toml disagree");
+    assert!(listed.contains("P9") && listed.contains("P9.read_file"));
+    assert_eq!(listed.len(), 21, "the aggregate and the 20 read tools");
+
+    let bench = recipe(&text, "mcp-bench");
+    for needed in [
+        "rm -rf target/criterion/hub-mcp",
+        "cargo bench -p hub-mcp",
+        "cargo xtask bench-check --budgets",
+        "found $found of $wanted",
+    ] {
+        assert!(bench.contains(needed), "mcp-bench lacks `{needed}`: {bench}");
+    }
+    for skipped in ["|| true\n", "exit 0"] {
+        assert!(!bench.contains(skipped), "mcp-bench must not skip: {bench}");
+    }
+}
+
+#[test]
+fn the_schemas_recipe_regenerates_the_file_from_the_document() {
+    let text = justfile();
+    let schemas = recipe(&text, "mcp-schemas");
+    assert!(
+        schemas.contains("UPDATE_SCHEMAS=1 cargo test -p hub-mcp --test mcp_auth contract_schemas::embedded_schemas_equal_the_contract_document"),
+        "{schemas}"
+    );
 }

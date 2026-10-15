@@ -1,7 +1,8 @@
 //! The MCP server in the hub: rmcp's Streamable HTTP at `/mcp`, behind the gate of [`guard`] (S4, S14).
 //!
 //! [`McpState::new`] builds everything once from validated settings; [`mount`] puts the routes on the hub's router. T1 has
-//! authentication, the session binding and the token routes; the tools, limits and confirmation come with T2 and T3.
+//! authentication, the session binding and the token routes; T2 adds the tools, their limits and the session caps; confirmation
+//! comes with T3.
 //!
 //! **One mode per deployment (D52).** [`Credentials`] holds the verifier *or* the personal-token service, never both, and the
 //! settings must name the same mode, so the router for one mode has no code path for the other. Personal-token mode registers
@@ -16,7 +17,7 @@ use axum::middleware::from_fn_with_state;
 use axum::response::Response;
 use http::Method;
 use hub_platform::{GuardedRouter, SessionAuth};
-use ports::{TokenVerifier, Users};
+use ports::{DocSearch, RegistryRead, TokenVerifier, Users, WriteService};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 
@@ -24,13 +25,24 @@ use crate::auth::oauth::{Challenge, OAuthSettings};
 use crate::auth::pat::PersonalTokens;
 use crate::auth::routes::{self, TokenRoutes};
 use crate::auth::{BearerAuth, metadata};
-use crate::config::{AuthMode, ConfigError, McpConfig, PublicOrigin};
+use crate::clock::{Clock, SystemClock};
+use crate::config::{AuthMode, ConfigError, McpConfig, OutputSettings, PublicOrigin, ToolSettings};
+use crate::limits::{LimitSettings, Limits};
+use crate::metrics::McpMetrics;
+use crate::output::Redactor;
+use crate::output::links::{LinkTemplates, WebLinks};
+use crate::schemas::{Contract, SchemaError};
+use crate::tools::cache::FileCache;
+use crate::tools::{HostError, Listed, ToolHost};
 
 pub mod guard;
 pub mod handler;
+pub mod instructions;
+pub mod session;
 
 use guard::{GateState, gate, session_owners};
 use handler::McpHandler;
+use session::{CappedSessionManager, SessionCounts};
 
 /// Where the server is mounted.
 pub const MCP_PATH: &str = "/mcp";
@@ -41,9 +53,8 @@ const MCP_REASON: &str = "bearer token (Entra access token or personal token) ch
 
 /// The longest request body: the hub's cap (S11).
 pub const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
-/// How long an idle MCP session lives, and how long its owner is remembered (a little longer, so a session never outlives it).
-pub const SESSION_IDLE: Duration = Duration::from_secs(30 * 60);
-const OWNERS_IDLE: Duration = Duration::from_secs(35 * 60);
+/// How long an owner is remembered beyond the idle time of a session, so that a session never outlives its owner's record.
+const OWNERS_GRACE: Duration = Duration::from_secs(5 * 60);
 /// The most sessions whose owner is remembered at once. The per-replica session cap of T2 is far below it.
 const OWNERS_CAPACITY: u64 = 4096;
 /// The most extra origins a deployment may allow.
@@ -61,6 +72,17 @@ pub struct McpSettings {
     pub allowed_origins: Vec<String>,
     /// How often an idle event stream gets a comment line, so that proxies keep it open. `None` for tests on a paused clock.
     pub sse_keep_alive: Option<Duration>,
+    /// Rates, concurrency, byte budget, timeouts, session caps and cache size (rule 5, A15).
+    pub limits: LimitSettings,
+    /// The caps on what a result may weigh (D58).
+    pub output: OutputSettings,
+    /// Switches of single tools (`tools.notify_services.enabled`).
+    pub tools: ToolSettings,
+    /// Where the links of a result point in the web UI (A12).
+    pub links: LinkTemplates,
+    /// Put the result schema of each tool in `tools/list` as `outputSchema`. On by default; a deployment can turn it off if Cursor
+    /// puts the schemas in the model's context or rejects results that do not match (T0 records what it does).
+    pub advertise_output_schemas: bool,
 }
 
 impl McpSettings {
@@ -72,6 +94,11 @@ impl McpSettings {
             oauth,
             allowed_origins: Vec::new(),
             sse_keep_alive: Some(Duration::from_secs(15)),
+            limits: LimitSettings::default(),
+            output: OutputSettings::default(),
+            tools: ToolSettings::default(),
+            links: LinkTemplates::default(),
+            advertise_output_schemas: true,
         }
     }
 
@@ -96,6 +123,9 @@ impl McpSettings {
         {
             return Err(ConfigError::Invalid("allowed_origins"));
         }
+        self.limits.validate()?;
+        self.output.validate()?;
+        self.links.validate()?;
         Ok(())
     }
 }
@@ -128,11 +158,43 @@ impl Credentials {
     }
 }
 
-/// What the server consumes from the rest of the hub.
+/// What the server consumes from the rest of the hub: who may call (`credentials`, `users`) and the three services the tools
+/// stand on (`RegistryRead`, `DocSearch`, `WriteService`). The crate depends on those traits and on no sibling's types.
 #[derive(Clone)]
 pub struct McpDeps {
     pub credentials: Credentials,
     pub users: Arc<dyn Users>,
+    pub registry: Arc<dyn RegistryRead>,
+    pub docs: Arc<dyn DocSearch>,
+    pub writes: Arc<dyn WriteService>,
+    /// Time, for the rate limits. The real clock unless a test says otherwise ([`McpDeps::with_clock`]).
+    pub clock: Arc<dyn Clock>,
+}
+
+impl McpDeps {
+    #[must_use]
+    pub fn new(
+        credentials: Credentials,
+        users: Arc<dyn Users>,
+        registry: Arc<dyn RegistryRead>,
+        docs: Arc<dyn DocSearch>,
+        writes: Arc<dyn WriteService>,
+    ) -> Self {
+        Self {
+            credentials,
+            users,
+            registry,
+            docs,
+            writes,
+            clock: Arc::new(SystemClock),
+        }
+    }
+
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
 }
 
 impl std::fmt::Debug for McpDeps {
@@ -152,9 +214,24 @@ pub enum StartError {
     ModeMismatch,
     #[error("the personal-token settings are out of range")]
     Tokens,
+    #[error("the tool contract is not usable, or does not match the handlers")]
+    Tools,
 }
 
-type Service = StreamableHttpService<McpHandler, LocalSessionManager>;
+impl From<HostError> for StartError {
+    fn from(_: HostError) -> Self {
+        Self::Tools
+    }
+}
+
+impl From<SchemaError> for StartError {
+    fn from(_: SchemaError) -> Self {
+        Self::Tools
+    }
+}
+
+type Sessions = CappedSessionManager<LocalSessionManager>;
+type Service = StreamableHttpService<McpHandler, Sessions>;
 
 /// The MCP server, built. Cheap to share: [`mount`] and the tests take an `Arc` of it.
 pub struct McpState {
@@ -162,7 +239,10 @@ pub struct McpState {
     auth: Arc<BearerAuth>,
     gate: Arc<GateState>,
     service: Service,
-    sessions: Arc<LocalSessionManager>,
+    sessions: Arc<Sessions>,
+    session_counts: Arc<SessionCounts>,
+    host: Arc<ToolHost>,
+    listing: Arc<Vec<Listed>>,
     token_routes: TokenRoutes,
     stop: Arc<dyn Fn() + Send + Sync>,
 }
@@ -179,20 +259,28 @@ impl McpState {
     /// # Errors
     ///
     /// [`StartError`] when the settings are not usable, or the credentials are for the other mode than the settings name.
+    #[allow(clippy::too_many_lines)] // the one place that wires the limits, the caches, the host and the transport together
     pub fn new(deps: McpDeps, settings: McpSettings) -> Result<Arc<Self>, StartError> {
         settings.validate()?;
-        let McpDeps { credentials, users } = deps;
+        let McpDeps {
+            credentials,
+            users,
+            registry,
+            docs,
+            writes,
+            clock,
+        } = deps;
         if credentials.mode() != settings.config.auth_mode {
             return Err(StartError::ModeMismatch);
         }
         let (auth, challenge, tokens) = match (credentials, &settings.oauth) {
             (Credentials::Oauth(verifier), Some(oauth)) => (
-                BearerAuth::oauth(verifier, users),
+                BearerAuth::oauth(verifier, Arc::clone(&users)),
                 Challenge::oauth(&settings.public_origin, oauth),
                 None,
             ),
             (Credentials::PersonalToken(tokens), None) => (
-                BearerAuth::personal(Arc::clone(&tokens), users),
+                BearerAuth::personal(Arc::clone(&tokens), Arc::clone(&users)),
                 Challenge::personal_token(),
                 Some(tokens),
             ),
@@ -204,16 +292,48 @@ impl McpState {
         }
         let auth = Arc::new(auth);
 
+        // The tools: the contract and the handlers must be the same set, or the server does not start.
+        let contract = Contract::embedded()?;
+        let listing = Arc::new(ToolHost::listing(&contract, settings.advertise_output_schemas)?);
+        let metrics = McpMetrics::new();
+        let host = Arc::new(ToolHost {
+            contract,
+            registry,
+            docs,
+            writes,
+            users: Arc::clone(&users),
+            redactor: Redactor::new(),
+            links: WebLinks::new(settings.public_origin.clone(), settings.links.clone()),
+            limits: Limits::new(settings.limits.clone(), Arc::clone(&clock)),
+            content_mode: settings.config.content_mode,
+            confirm_mode: settings.config.confirm_mode,
+            output: settings.output,
+            tool_settings: settings.tools,
+            files: FileCache::new(settings.limits.cache_bytes),
+            metrics,
+            clock,
+        });
+
         let mut hosts = settings.public_origin.host_values();
         hosts.iter_mut().for_each(|h| h.make_ascii_lowercase());
         let mut origins = vec![settings.public_origin.as_str().to_owned()];
         origins.extend(settings.allowed_origins.iter().cloned());
+        let session_counts = Arc::new(SessionCounts::new(
+            settings.limits.sessions_per_user,
+            settings.limits.sessions_per_replica,
+        ));
+        let owners = session_owners(
+            OWNERS_CAPACITY,
+            settings.limits.session_idle + OWNERS_GRACE,
+            Arc::clone(&session_counts),
+        );
         let gate = Arc::new(GateState {
             auth: Arc::clone(&auth),
             challenge,
             hosts: hosts.clone(),
             origins: origins.clone(),
-            owners: session_owners(OWNERS_CAPACITY, OWNERS_IDLE),
+            owners: owners.clone(),
+            sessions: Arc::clone(&session_counts),
             max_body: MAX_BODY_BYTES,
         });
 
@@ -226,10 +346,26 @@ impl McpState {
             .with_sse_keep_alive(settings.sse_keep_alive);
         let token = http_config.cancellation_token.clone();
         let mut manager = LocalSessionManager::default();
-        manager.session_config.keep_alive = Some(SESSION_IDLE);
-        let sessions = Arc::new(manager);
-        let service =
-            StreamableHttpService::new(|| Ok(McpHandler::new()), Arc::clone(&sessions), http_config);
+        manager.session_config.keep_alive = Some(settings.limits.session_idle);
+        // When rmcp closes a session (it was idle too long, or the owner ended it) the owner's record goes with it.
+        let forget = owners.clone();
+        let sessions = Arc::new(CappedSessionManager::new(
+            manager,
+            settings.limits.sessions_per_replica as usize,
+            Arc::new(move |id: &str| forget.invalidate(id)),
+        ));
+        let factory_host = Arc::clone(&host);
+        let factory_listing = Arc::clone(&listing);
+        let service = StreamableHttpService::new(
+            move || {
+                Ok(McpHandler::new(
+                    Arc::clone(&factory_host),
+                    Arc::clone(&factory_listing),
+                ))
+            },
+            Arc::clone(&sessions),
+            http_config,
+        );
 
         let token_routes = TokenRoutes::new(tokens, settings.public_origin.clone());
         Ok(Arc::new(Self {
@@ -238,6 +374,9 @@ impl McpState {
             gate,
             service,
             sessions,
+            session_counts,
+            host,
+            listing,
             token_routes,
             stop: Arc::new(move || token.cancel()),
         }))
@@ -256,7 +395,31 @@ impl McpState {
 
     /// How many MCP sessions are open on this replica.
     pub async fn live_sessions(&self) -> usize {
-        self.sessions.sessions.read().await.len()
+        self.sessions.inner().sessions.read().await.len()
+    }
+
+    /// How many sessions the gate counts (open, or being opened) for all users and for `user`.
+    #[must_use]
+    pub fn counted_sessions(&self, user: Option<&domain::UserId>) -> usize {
+        user.map_or_else(|| self.session_counts.total(), |u| self.session_counts.of(u))
+    }
+
+    /// The metrics of the tools; the hub registers them with its own (`McpMetrics::register`).
+    #[must_use]
+    pub fn metrics(&self) -> &McpMetrics {
+        &self.host.metrics
+    }
+
+    /// The tools and what they share (for tests and the benchmarks).
+    #[must_use]
+    pub fn host(&self) -> &Arc<ToolHost> {
+        &self.host
+    }
+
+    /// The tools as `tools/list` shows them to a user with `role` or more, and how many bytes that is.
+    #[must_use]
+    pub fn tools_list_bytes(&self, user: &domain::User) -> usize {
+        crate::output::cap::json_len(&self.host.visible(&self.listing, user))
     }
 
     /// Forget who opened which session, as the memory's own expiry would. Tests use it to show that a session whose owner is not

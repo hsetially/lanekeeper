@@ -109,3 +109,36 @@ fn nothing_secret_is_formatted_into_a_message() {
         }
     }
 }
+
+#[test]
+fn redacted_text_is_made_only_in_redact_rs() {
+    // The type that stands for scanned text has a private constructor. Nothing else in `src/` builds one by hand.
+    for (path, text) in sources() {
+        if path.ends_with("output/redact.rs") {
+            continue;
+        }
+        for line in code(&text) {
+            assert!(
+                !line.contains("RedactedText(")
+                    || line.contains("-> RedactedText(")
+                    || line.contains("RedactedText(Option"),
+                "{} builds a RedactedText: {line}",
+                path.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn every_text_field_of_an_output_type_is_redacted_text() {
+    // A field called `text` or `snippet` in an output type is a RedactedText, never a String.
+    let dto = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tools/dto.rs")).unwrap();
+    for line in code(&dto) {
+        let t = line.trim_start();
+        for field in ["pub text:", "pub snippet:"] {
+            if let Some(rest) = t.strip_prefix(field) {
+                assert!(rest.trim_start().starts_with("RedactedText"), "{line}");
+            }
+        }
+    }
+}

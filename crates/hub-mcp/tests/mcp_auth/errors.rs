@@ -14,7 +14,7 @@ use hub_platform::{GuardedRouter, SessionAuth};
 use ports::AuthError;
 use tower::ServiceExt;
 
-const ALL: [McpError; 10] = [
+const ALL: [McpError; 11] = [
     McpError::Unauthenticated,
     McpError::Forbidden,
     McpError::AuthUnavailable,
@@ -23,6 +23,7 @@ const ALL: [McpError; 10] = [
     McpError::PayloadTooLarge,
     McpError::UnsupportedMediaType,
     McpError::TokenLimit,
+    McpError::TooManySessions,
     McpError::Unavailable,
     McpError::Internal,
 ];
@@ -38,6 +39,7 @@ fn errors_have_stable_statuses_and_codes() {
         (McpError::PayloadTooLarge, 413, "payload_too_large"),
         (McpError::UnsupportedMediaType, 415, "unsupported_media_type"),
         (McpError::TokenLimit, 409, "conflict"),
+        (McpError::TooManySessions, 429, "too_many_requests"),
         (McpError::Unavailable, 503, "unavailable"),
         (McpError::Internal, 500, "internal"),
     ];

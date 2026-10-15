@@ -14,24 +14,49 @@
     clippy::too_many_lines,
     clippy::similar_names,
     clippy::doc_markdown,
-    clippy::semicolon_if_nothing_returned
+    clippy::semicolon_if_nothing_returned,
+    // Tests build text and print sizes for the PR (`tools_list_size_is_reported`), and write out the shapes they probe.
+    clippy::format_collect,
+    clippy::format_push_string,
+    clippy::print_stderr,
+    clippy::many_single_char_names,
+    clippy::items_after_statements,
+    clippy::field_reassign_with_default,
+    clippy::needless_pass_by_value,
+    clippy::redundant_closure_for_method_calls,
+    clippy::single_char_pattern
 )]
 
 #[path = "../support/mod.rs"]
 mod support;
 
 mod rig;
+mod spies;
 
+mod args;
 mod auth_header;
 mod auth_oauth;
 mod auth_pat;
 mod auth_pat_pg;
+mod contract_schemas;
 mod corpus_replay;
+mod cursor;
 mod errors;
+mod fix;
+mod index_facts;
+mod limits;
+mod links;
 mod logging;
+mod output_cap;
 mod pg;
+mod read_tools;
+mod redact;
 mod route_table;
 mod server;
+mod sessions;
 mod source_rules;
 mod token_routes;
 mod token_syntax;
+mod tool_matrix;
+mod tools_rig;
+mod untrusted;

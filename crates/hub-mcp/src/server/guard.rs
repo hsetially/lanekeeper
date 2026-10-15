@@ -27,6 +27,7 @@ use hub_platform::{ApiError, SessionAuth};
 use moka::sync::Cache;
 use ports::AuthError;
 
+use super::session::{SessionCounts, SessionLimit};
 use crate::auth::BearerAuth;
 use crate::auth::oauth::Challenge;
 use crate::error::McpError;
@@ -43,8 +44,14 @@ pub struct McpCaller(pub User);
 /// Who opened each live session. Bounded, and idle entries expire a little after rmcp closes the session itself.
 pub(crate) type SessionOwners = Cache<String, UserId>;
 
-pub(crate) fn session_owners(capacity: u64, idle: Duration) -> SessionOwners {
-    Cache::builder().max_capacity(capacity).time_to_idle(idle).build()
+/// The memory of who opened which session. When an entry goes (the session was deleted, rmcp closed it, or the entry expired) the
+/// owner's session count falls, so the count is the number of entries.
+pub(crate) fn session_owners(capacity: u64, idle: Duration, counts: Arc<SessionCounts>) -> SessionOwners {
+    Cache::builder()
+        .max_capacity(capacity)
+        .time_to_idle(idle)
+        .eviction_listener(move |_key, owner: UserId, _cause| counts.release(&owner))
+        .build()
 }
 
 /// Everything the gate needs, fixed at start-up.
@@ -56,6 +63,8 @@ pub(crate) struct GateState {
     /// Values `Origin` may have when it is sent at all.
     pub origins: Vec<String>,
     pub owners: SessionOwners,
+    /// Sessions open or being opened, per user and in all.
+    pub sessions: Arc<SessionCounts>,
     /// The largest request body, by its declared length (rmcp counts the bytes as they arrive).
     pub max_body: usize,
 }
@@ -153,16 +162,33 @@ pub(crate) async fn gate(State(state): State<Arc<GateState>>, request: Request, 
         }
     }
     let method = request.method().clone();
+    // 5. A request that may open a session counts against the user's and the replica's limits. The count is taken before the session
+    // exists, so two requests at the limit cannot both pass.
+    let opens_session = method == Method::POST && presented.is_none();
+    if opens_session && let Err(limit) = state.sessions.reserve(&user.id) {
+        let mut response = problem(match limit {
+            SessionLimit::User => McpError::TooManySessions,
+            SessionLimit::Replica => McpError::Unavailable,
+        });
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
+        return response;
+    }
     request.extensions_mut().insert(McpCaller(user.clone()));
     let response = next.run(request).await;
     match (&method, &presented) {
-        (&Method::POST, None) if response.status().is_success() => {
-            if let Some(id) = response
+        (&Method::POST, None) => {
+            let id = response
                 .headers()
                 .get(SESSION_HEADER)
                 .and_then(|v| v.to_str().ok())
-            {
-                state.owners.insert(id.to_owned(), user.id);
+                .filter(|_| response.status().is_success())
+                .map(str::to_owned);
+            match id {
+                // The owner's entry now stands for the reserved count: it is released when the entry goes.
+                Some(id) => state.owners.insert(id, user.id),
+                None => state.sessions.release(&user.id),
             }
         }
         (&Method::DELETE, Some(id)) if response.status().is_success() => state.owners.invalidate(id),

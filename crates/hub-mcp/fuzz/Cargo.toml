@@ -8,9 +8,11 @@ publish = false
 # The main workspace stays on stable 1.88; this crate is outside it and has its own lockfile (S19). It is the MCP crate's own fuzz
 # crate, as the identity crate's is (decision A10 of plan 07): the root `fuzz/` crate holds only the domain targets.
 #
-# The targets include the two pure source files they test (`src/auth/header.rs` and `src/auth/token.rs`) with `#[path]` instead of
-# depending on `hub-mcp`: the whole crate pulls in rmcp, axum, sqlx and the hub platform, and a sanitizer build of all of that costs
-# gigabytes and minutes for two small parsers. Both files are written to need nothing of the crate (a test keeps them that way).
+# The targets of T1 include the two pure source files they test (`src/auth/header.rs` and `src/auth/token.rs`) with `#[path]` instead
+# of depending on `hub-mcp`: the whole crate pulls in rmcp, axum, sqlx and the hub platform, and a sanitizer build of all of that
+# costs gigabytes and minutes for two small parsers. `mcp_tool_args` and `mcp_cursor` (T2) do the same with `src/tools/args.rs` and
+# `src/output/cursor.rs`. `mcp_http_body` sends bytes through the whole service, so it needs the crate (with its fakes), and with it
+# the dependencies below it; the build is shared by every target of this crate.
 
 [package.metadata]
 cargo-fuzz = true
@@ -31,6 +33,17 @@ base64 = { version = "=0.22.1", default-features = false, features = ["std"] }
 subtle = { version = "=2.6.1", default-features = false }
 thiserror = "=2.0.20"
 zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
+# T2. The first four are what `src/tools/args.rs` and `src/output/cursor.rs` need; the rest are `mcp_http_body`'s service on fakes.
+domain = { path = "../../domain", version = "0.1.0" }
+serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+hub-mcp = { path = "..", version = "0.1.0", features = ["fakes"] }
+hub-platform = { path = "../../hub-platform", version = "0.1.0", features = ["fakes"] }
+ports = { path = "../../ports", version = "0.1.0", features = ["fakes"] }
+axum = { version = "=0.8.9", default-features = false }
+tower = { version = "=0.5.3", default-features = false, features = ["util"] }
+http-body-util = "=0.1.5"
+tokio = { version = "=1.53.1", default-features = false, features = ["rt", "time"] }
 
 [[bin]]
 name = "mcp_bearer_header"
@@ -42,6 +55,27 @@ bench = false
 [[bin]]
 name = "mcp_pat_token"
 path = "fuzz_targets/mcp_pat_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_tool_args"
+path = "fuzz_targets/mcp_tool_args.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_cursor"
+path = "fuzz_targets/mcp_cursor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_http_body"
+path = "fuzz_targets/mcp_http_body.rs"
 test = false
 doc = false
 bench = false

@@ -17,6 +17,9 @@ fakes = ["ports/fakes"]
 
 [dependencies]
 domain.workspace = true
+# The deterministic fact engine: its secret scan redacts every text a tool returns (S14b), and its decoder, settings index and line
+# normaliser read a file for the window a tool returns. The crate computes no fact of its own (rule 7).
+engine.workspace = true
 # `postgres` gives `Tx::from_pg`, which the token transaction hands to `AuditLog::record` (D80).
 ports = { workspace = true, features = ["postgres"] }
 hub-platform.workspace = true
@@ -26,10 +29,14 @@ aws-lc-rs.workspace = true
 axum.workspace = true
 base64.workspace = true
 bytes.workspace = true
+# The stream types of rmcp's session manager, which `server::session` wraps with a cap.
+futures.workspace = true
 http.workspace = true
 http-body-util.workspace = true
 # Bounded caches: the personal-token cache (5 seconds) and the owners of live sessions.
 moka.workspace = true
+# Red metrics of the tools (calls, errors, duration, redactions), registered with the hub's registry. Low-cardinality labels only.
+prometheus-client.workspace = true
 # Server side of the Streamable HTTP transport and server-initiated elicitation. No `macros` (the handler is written by hand),
 # no `auth`, no `client`, no `reqwest` (workspace comment).
 rmcp = { workspace = true, features = ["server", "transport-streamable-http-server", "elicitation"] }
@@ -52,11 +59,22 @@ ports = { workspace = true, features = ["fakes"] }
 futures.workspace = true
 hex.workspace = true
 insta.workspace = true
+# Checks tool inputs and results against the schemas of docs/mcp-tools.md with a validator that is not ours (T2, S11).
+jsonschema.workspace = true
 proptest.workspace = true
 sha2.workspace = true
+# The synthetic fixtures (`xtask::fixtures`): the benchmarks build a 6,000-line CRLF file of the shape the generator makes, never toy data.
+xtask.workspace = true
+criterion.workspace = true
 # Real Postgres 16 in a container (or `LK_TEST_PG_ADMIN_URL`), migrated as lanekeeper_migrator and used as lanekeeper_app.
 sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "migrate"] }
 testcontainers.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
 tower = { workspace = true, features = ["util"] }
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "registry"] }
+
+# P9 (T2): one benchmark file, with a bench function per read tool and one that rotates through all of them. Registered in
+# perf/budgets.toml as `hub-mcp/<name>`; `just mcp-bench` runs it and `cargo xtask bench-check` reads the results.
+[[bench]]
+name = "read_tools"
+harness = false

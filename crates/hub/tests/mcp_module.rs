@@ -33,7 +33,7 @@ use ports::VerifiedUser;
 use ports::conformance::route_guard::{
     Allowances, RegisteredRoute, SpecOperation, assert_route_table, spec_operations_from_openapi,
 };
-use ports::fakes::{FakeTokenVerifier, FakeUsers};
+use ports::fakes::{FakeDocSearch, FakeRegistry, FakeTokenVerifier, FakeUsers, FakeWriteService};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -96,10 +96,13 @@ fn build(request_timeout: Duration) -> Built {
         )
     };
     let state = McpState::new(
-        McpDeps {
-            credentials: Credentials::Oauth(Arc::new(verifier)),
-            users: Arc::new(users.clone()),
-        },
+        McpDeps::new(
+            Credentials::Oauth(Arc::new(verifier)),
+            Arc::new(users.clone()),
+            Arc::new(FakeRegistry::new()),
+            Arc::new(FakeDocSearch::new()),
+            Arc::new(FakeWriteService::new()),
+        ),
         settings,
     )
     .unwrap();

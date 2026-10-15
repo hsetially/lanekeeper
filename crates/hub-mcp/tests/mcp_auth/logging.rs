@@ -164,3 +164,112 @@ fn debug_output_of_the_secret_bearing_types_is_redacted() {
         assert!(!printed.contains(&token["lkpat_".len()..]));
     }
 }
+
+#[tokio::test]
+async fn tool_calls_log_what_was_called_and_nothing_it_carried() {
+    use bytes::Bytes;
+    use domain::{NfsPath, SwimlaneId};
+    let capture = Capture::default();
+    let _guard = tracing::subscriber::set_default(subscriber(&capture));
+    let rig = Rig::build(
+        hub_mcp::config::AuthMode::Oauth,
+        false,
+        hub_mcp::auth::pat::TokenSettings::default(),
+        |mut s| {
+            s.limits.read_burst = 4;
+            s
+        },
+    );
+    let secret = crate::fix::fake_github_token();
+    let path = "planted/path-3e9a.yml";
+    rig.registry.inner.seed(
+        &SwimlaneId::parse("sit1").unwrap(),
+        &[(
+            NfsPath::parse(path).unwrap(),
+            Bytes::from(format!("name: FILE-TEXT-MARKER-77\ntoken: {secret}\n")),
+        )],
+    );
+    rig.add_user("alice", Some(Role::Viewer), UserStatus::Active);
+    rig.verifier.accept("planted-oauth-token-alice", "alice");
+    let mut client = rig.client(Some("planted-oauth-token-alice"));
+    client.initialize(&json!({})).await.unwrap();
+    // A good read, a search, a call the role forbids, arguments that are wrong, a missing file, and one over the rate.
+    let calls = [
+        ("read_file", json!({"swimlane": "sit1", "path": path})),
+        ("search_text", json!({"pattern": "ARG-PATTERN-5b21"})),
+        (
+            "restart_service",
+            json!({"swimlane": "sit1", "service": {"namespace": "apps", "name": "core"}}),
+        ),
+        ("get_swimlane", json!({"swimlane": "ARG-VALUE-INVALID-1c44!"})),
+        (
+            "read_file",
+            json!({"swimlane": "sit1", "path": "planted/missing-8d01.yml"}),
+        ),
+        ("list_swimlanes", json!({})),
+        ("list_swimlanes", json!({})),
+    ];
+    for (tool, args) in &calls {
+        let _ = client.call_tool_to_end(tool, args).await;
+    }
+    let log = capture.text();
+    for expected in [
+        "tool=\"read_file\"",
+        "tool=\"search_text\"",
+        "tool=\"restart_service\"",
+        "tool=\"get_swimlane\"",
+        "outcome=\"ok\"",
+        "outcome=\"forbidden\"",
+        "outcome=\"invalid_argument\"",
+        "outcome=\"not_found\"",
+        "outcome=\"rate_limited\"",
+    ] {
+        assert!(log.contains(expected), "no `{expected}` in the log:\n{log}");
+    }
+    for never in [
+        "planted-oauth-token",
+        &secret,
+        "ghp_",
+        "FILE-TEXT-MARKER-77",
+        "ARG-PATTERN-5b21",
+        "ARG-VALUE-INVALID",
+        "planted/path-3e9a",
+        "missing-8d01",
+        "bearer",
+        "authorization",
+    ] {
+        assert!(
+            !log.to_ascii_lowercase().contains(&never.to_ascii_lowercase()),
+            "the log holds `{never}`:\n{log}"
+        );
+    }
+}
+
+#[test]
+fn debug_of_write_args_prints_no_content() {
+    use hub_mcp::tools::args::{ToolName, parse_args};
+    let marker = "CONTENT-MARKER-0f5e";
+    let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    for (tool, args) in [
+        (
+            ToolName::ProposeChange,
+            json!({"swimlane": "s", "path": "a", "expected": {"state": "absent"}, "content": marker}),
+        ),
+        (
+            ToolName::UploadFile,
+            json!({"swimlane": "s", "path": "a", "expected": {"state": "hash", "hash": hash}, "content": marker}),
+        ),
+        (
+            ToolName::RaisePr,
+            json!({"swimlane": "s", "paths": ["a"], "title": "t", "body": marker}),
+        ),
+        (ToolName::SearchText, json!({"pattern": marker})),
+        (ToolName::GrepDocs, json!({"pattern": marker})),
+        (ToolName::SearchDocs, json!({"q": marker})),
+    ] {
+        let parsed = parse_args(tool, args.as_object().cloned()).unwrap();
+        let printed = format!("{parsed:?} {parsed:#?}");
+        assert!(!printed.contains(marker), "{tool}: {printed}");
+        assert!(printed.contains("Opaque("), "{tool}: {printed}");
+    }
+}

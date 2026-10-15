@@ -240,10 +240,13 @@ async fn pat_mode_publishes_no_discovery_metadata() {
     let mut settings = crate::rig::settings(hub_mcp::config::AuthMode::PersonalToken, false);
     settings.oauth = Some(crate::rig::oauth_settings(true));
     let started = hub_mcp::McpState::new(
-        hub_mcp::McpDeps {
-            credentials: hub_mcp::Credentials::PersonalToken(rig.tokens.clone().unwrap()),
-            users: Arc::new(rig.users.clone()),
-        },
+        hub_mcp::McpDeps::new(
+            hub_mcp::Credentials::PersonalToken(rig.tokens.clone().unwrap()),
+            Arc::new(rig.users.clone()),
+            Arc::new(rig.registry.clone()),
+            Arc::new(rig.docs.clone()),
+            Arc::new(rig.writes.clone()),
+        ),
         settings,
     );
     assert!(started.is_err());
