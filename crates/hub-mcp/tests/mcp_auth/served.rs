@@ -253,3 +253,83 @@ async fn a_long_served_file_is_cut_at_the_cap_with_a_link_and_a_count() {
         "{envelope}"
     );
 }
+
+/// Round 2, review item 6: `docs/mcp-tools.md` caps file and doc text at "200 lines or 16 KB" by default, and `read_file` and
+/// `read_doc` do. `get_served_config` fitted every line of the file to the cap, a binary search of renders each of which cut and
+/// serialised the text so far: for the 2 MiB a file may be, that is work on the async thread out of all proportion to the 200
+/// lines it can return. This holds what comes back for a file of that size (the work is bounded by `window`, tested in `redact`).
+#[tokio::test]
+async fn a_two_mib_served_file_shows_the_first_200_lines_and_says_how_many_there_are() {
+    const TWO_MIB: usize = 2 * 1024 * 1024;
+    let rig = rig();
+    seed(&rig);
+    // Short lines, so that the 16 KB cap is not what stops the text: 200 of them are about 2 KB. As much as the secret scan takes
+    // (2 MiB; a larger text is withheld whole), to the last line that fits.
+    let mut text = String::with_capacity(TWO_MIB);
+    let mut n = 0_u32;
+    loop {
+        let line = format!("k{n}: v\n");
+        if text.len() + line.len() > TWO_MIB {
+            break;
+        }
+        text.push_str(&line);
+        n += 1;
+    }
+    let total = n;
+    assert!(text.len() > TWO_MIB - 16, "{}", text.len());
+    rig.registry.inner.set_served(served_fixture(Some(&text), false));
+    let mut c = viewer(&rig).await;
+    let called = call(&mut c, "get_served_config", &request()).await;
+    let envelope = called.envelope();
+    assert_eq!(envelope["truncated"], true);
+    assert!(
+        envelope["web_link"]
+            .as_str()
+            .is_some_and(|l| l.starts_with("https://hub.example.test/swimlanes/sit1/served")),
+        "{envelope}"
+    );
+    assert!(
+        envelope.get("next").is_none_or(|n| n.is_null()),
+        "the contract has no cursor here: {envelope}"
+    );
+    assert!(called.bytes() <= 16 * 1024, "{} bytes", called.bytes());
+    // Exactly the first 200 lines, as they are in the file.
+    let shown = envelope["data"]["text"].as_str().unwrap();
+    let expected: Vec<&str> = text.lines().take(200).collect();
+    assert_eq!(shown.lines().count(), 200);
+    assert_eq!(shown, expected.join("\n"));
+    // And it says how many there are: the summary counts the whole file, not the part it looked at.
+    let summary = envelope["summary"].as_str().unwrap();
+    assert!(summary.contains(&format!("200 of {total} lines")), "{summary}");
+}
+
+/// The other bound of "200 lines or 16 KB": long lines. 600 lines of 3 KB are far inside 200 lines and far outside the cap, so the
+/// cap decides, and what is shown is still a whole number of lines from the top.
+#[tokio::test]
+async fn long_lines_of_a_served_file_stop_at_the_16_kb_cap_on_a_line_boundary() {
+    let rig = rig();
+    seed(&rig);
+    let line = |n: usize| format!("key{n}: {}\n", "x".repeat(3_000));
+    let text: String = (0..600).map(line).collect();
+    rig.registry.inner.set_served(served_fixture(Some(&text), false));
+    let mut c = viewer(&rig).await;
+    let called = call(&mut c, "get_served_config", &request()).await;
+    let envelope = called.envelope();
+    assert_eq!(envelope["truncated"], true);
+    assert!(called.bytes() <= 16 * 1024, "{} bytes", called.bytes());
+    let shown = envelope["data"]["text"].as_str().unwrap();
+    let shown_lines = shown.lines().count();
+    assert!(
+        (1..=5).contains(&shown_lines),
+        "{shown_lines} lines of 3 KB in 16 KB"
+    );
+    let expected: Vec<String> = (0..shown_lines).map(|n| line(n).trim_end().to_owned()).collect();
+    assert_eq!(shown, expected.join("\n"));
+    assert!(
+        envelope["summary"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("{shown_lines} of 600 lines")),
+        "{envelope}"
+    );
+}

@@ -1,6 +1,7 @@
 //! S14b: what the redactor does to text, on its own. The tools' use of it is proved by their tests and by `planted_key` (T6).
 
 use engine::{Limits, ScanConfig, secret_scan};
+use hub_mcp::output::envelope::{Parts, Shape, fit_lines};
 use hub_mcp::output::{Redactor, line_count};
 use proptest::prelude::*;
 
@@ -184,5 +185,135 @@ proptest! {
         let left = secret_scan(once.text.as_str(), &ScanConfig::default(), &Limits::DEFAULT).unwrap();
         prop_assert!(left.is_empty(), "{left:?}");
         prop_assert!(!once.text.as_str().contains("ghp_A1b2C3d4"));
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// `RedactedText::window`: the part of a text that a result can show (round 2, review item 6)
+// ---------------------------------------------------------------------------------------------------------------------
+
+fn redacted(text: &str) -> hub_mcp::output::RedactedText {
+    Redactor::new().text(text).unwrap().text
+}
+
+#[test]
+fn a_window_is_whole_lines_from_the_top_within_both_limits() {
+    for (text, max_lines, max_bytes, expected, kept) in [
+        ("", 5, 100, "", 0),
+        ("a", 5, 100, "a", 1),
+        ("a\n", 5, 100, "a", 1),
+        ("a\nb\nc\n", 2, 100, "a\nb", 2),
+        ("a\nb\nc", 5, 100, "a\nb\nc", 3),
+        // The byte limit counts what is kept: `a\nb` is 3 bytes, `a\nb\nc` is 5.
+        ("a\nb\nc\n", 5, 4, "a\nb", 2),
+        ("a\nb\nc\n", 5, 3, "a\nb", 2),
+        ("a\nb\nc\n", 5, 2, "a", 1),
+        ("a\nb\nc\n", 5, 0, "", 0),
+        // A first line that does not fit leaves nothing: lines are not cut in two.
+        ("abcdef\ng\n", 5, 5, "", 0),
+        // CRLF: the `\r` stays with its line, as `first_lines` leaves it.
+        ("a\r\nb\r\nc\r\n", 2, 100, "a\r\nb\r", 2),
+        // A lone `\r` ends a line, as the count of lines has it.
+        ("a\rb\rc", 2, 100, "a\rb", 2),
+        // Empty lines count.
+        ("a\n\nb\n", 2, 100, "a\n", 2),
+        ("a\n\nb\n", 3, 100, "a\n\nb", 3),
+    ] {
+        let (window, lines) = redacted(text).window(max_lines, max_bytes);
+        assert_eq!(
+            (window.as_str(), lines),
+            (expected, kept),
+            "{text:?} {max_lines} {max_bytes}"
+        );
+    }
+}
+
+#[test]
+fn a_window_of_a_two_mib_text_is_as_small_as_the_limits_say() {
+    // What the tool hands to its fitting loop: never more than 200 lines and 16 KB, however large the file.
+    const TWO_MIB: usize = 2 * 1024 * 1024;
+    let many_short: String = (0..)
+        .map(|n| format!("k{n}: v\n"))
+        .scan(0, |len, line| {
+            *len += line.len();
+            (*len <= TWO_MIB).then_some(line)
+        })
+        .collect();
+    let few_long: String = (0..200)
+        .map(|n| format!("k{n}: {}\n", "x".repeat(10_000)))
+        .collect();
+    let one_line = "y".repeat(TWO_MIB);
+    for (name, text) in [
+        ("many short", many_short),
+        ("few long", few_long),
+        ("one line", one_line),
+    ] {
+        assert!(text.len() > 1_900_000, "{name}: {}", text.len());
+        let (window, lines) = redacted(&text).window(200, 16 * 1024);
+        assert!(lines <= 200, "{name}: {lines}");
+        assert!(window.len() <= 16 * 1024, "{name}: {} bytes", window.len());
+        // The work of fitting it, counted and not timed: how many candidates the search renders, and the most text any one of them
+        // cuts and serialises. Both are bounded by the limits and have nothing to do with the 2 MiB.
+        let shape = Shape {
+            mode: hub_mcp::config::ContentMode::default(),
+            cap: 16 * 1024,
+            text_bearing: true,
+        };
+        let (mut steps, mut most) = (0_u32, 0_usize);
+        let _ = fit_lines(&shape, lines, |k| {
+            let shown = window.first_lines(k as usize);
+            steps += 1;
+            most = most.max(shown.len());
+            Parts {
+                summary: format!("{k} lines"),
+                data: serde_json::json!({ "text": shown.as_str() }),
+                truncated: false,
+                next: None,
+                web_link: None,
+            }
+        });
+        assert!(steps <= 10, "{name}: {steps} candidates for {lines} lines");
+        assert!(most <= 16 * 1024, "{name}: a candidate of {most} bytes");
+    }
+    let (window, lines) = redacted(&"y".repeat(TWO_MIB)).window(200, 16 * 1024);
+    assert_eq!(
+        (window.len(), lines),
+        (0, 0),
+        "a line over the limit is not cut in two"
+    );
+}
+
+proptest! {
+    /// Against `first_lines`, which the tool used before: for texts with `\n` and `\r\n` line ends, the first `k` lines of the window
+    /// are the first `k` lines of the text, for every `k` the window has, and the window holds as many lines as the limits allow.
+    #[test]
+    fn the_first_lines_of_a_window_are_the_first_lines_of_the_text(
+        lines in proptest::collection::vec("[ -~]{0,12}", 0..30),
+        crlf in proptest::bool::ANY,
+        trailing in proptest::bool::ANY,
+        max_lines in 0..40_usize,
+        max_bytes in 0..200_usize,
+    ) {
+        let end = if crlf { "\r\n" } else { "\n" };
+        let mut text = lines.join(end);
+        if trailing && !text.is_empty() {
+            text.push_str(end);
+        }
+        let text = redacted(&text);
+        let (window, kept) = text.window(max_lines, max_bytes);
+        let kept_usize = kept as usize;
+        prop_assert!(kept_usize <= max_lines);
+        prop_assert!(kept <= line_count(text.as_str()));
+        prop_assert!(window.len() <= max_bytes);
+        for k in 0..=kept_usize {
+            let (mine, theirs) = (window.first_lines(k), text.first_lines(k));
+            prop_assert_eq!(mine.as_str(), theirs.as_str(), "k = {}", k);
+        }
+        // It is the most lines that the limits allow: one more would pass a limit.
+        if kept < line_count(text.as_str()) && kept_usize < max_lines {
+            let (next, more) = text.window(kept_usize + 1, usize::MAX);
+            prop_assert_eq!(more, kept + 1);
+            prop_assert!(next.len() > max_bytes, "{} lines of {} bytes fit {}", more, next.len(), max_bytes);
+        }
     }
 }

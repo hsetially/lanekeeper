@@ -13,10 +13,11 @@
 use domain::{ChannelName, ContentHash, FileRole, NfsPath, ServeRequest, ShortText, SwimlaneId, TenantId};
 use serde::Serialize;
 
+use super::files::DEFAULT_LINES;
 use super::to_json;
 use crate::output::cap::take_fitting;
 use crate::output::envelope::{DATA_LABEL, Parts, fit_lines, render};
-use crate::output::{RedactedText, line_count};
+use crate::output::{RedactError, RedactedText, line_count};
 use crate::tools::args::GetServedConfig;
 use crate::tools::dto::SourceDto;
 use crate::tools::error::{Code, ToolError};
@@ -44,8 +45,13 @@ pub async fn get_served_config(cx: &CallCx<'_>, args: GetServedConfig) -> ToolRe
     // The flag of the port, and the name of the file as the floor (D79).
     let withheld = served.content_withheld || cx.host.denied.path(&served.file);
 
-    // The text: scanned as a whole, off the async threads, and only if the file is shown at all.
-    let (text, redacted_values, lines) = match (&served.text, withheld) {
+    let shape = cx.shape(true);
+
+    // The text: scanned as a whole, off the async threads, and only if the file is shown at all. The scan, the count of lines and
+    // the cut to what a result can show all happen there, so that what comes back is at most 200 lines and at most the cap in
+    // bytes (`docs/mcp-tools.md`: "200 lines or 16 KB"), however large the file is. Only that part is fitted to the cap below: the
+    // fitting renders the text once per step of a binary search, and a 2 MiB file would make each step a copy of the lot.
+    let (window, available, redacted_values, lines) = match (&served.text, withheld) {
         (Some(text), false) => {
             let _permit = cx
                 .host
@@ -54,13 +60,18 @@ pub async fn get_served_config(cx: &CallCx<'_>, args: GetServedConfig) -> ToolRe
                 .await?;
             let redactor = cx.host.redactor.clone();
             let text = text.clone();
-            let redacted = tokio::task::spawn_blocking(move || redactor.text(&text))
-                .await
-                .map_err(|_| ToolError::new(Code::Internal))??;
-            let lines = line_count(redacted.text.as_str());
-            (Some(redacted.text), redacted.redacted, lines)
+            let cap = shape.cap;
+            let (window, available, redacted, lines) = tokio::task::spawn_blocking(move || {
+                let redacted = redactor.text(&text)?;
+                let lines = line_count(redacted.text.as_str());
+                let (window, available) = redacted.text.window(DEFAULT_LINES as usize, cap);
+                Ok::<_, RedactError>((window, available, redacted.redacted, lines))
+            })
+            .await
+            .map_err(|_| ToolError::new(Code::Internal))??;
+            (Some(window), available, redacted, lines)
         }
-        _ => (None, 0, 0),
+        _ => (None, 0, 0, 0),
     };
     cx.host.metrics.redacted(redacted_values);
 
@@ -81,7 +92,6 @@ pub async fn get_served_config(cx: &CallCx<'_>, args: GetServedConfig) -> ToolRe
         untrusted: bool,
         label: &'static str,
     }
-    let shape = cx.shape(true);
     // The sources and the placeholders get a share of the cap each, and the text gets what is left.
     // A withheld file reveals its name, size and hash and nothing else: no sources and no placeholders (the contract, D79).
     let (sources, sources_cut) = take_fitting(
@@ -104,8 +114,8 @@ pub async fn get_served_config(cx: &CallCx<'_>, args: GetServedConfig) -> ToolRe
     );
     let lists_cut = sources_cut || placeholders_cut;
     let build = |k: u32| {
-        let shown = text.as_ref().map(|t| t.first_lines(k as usize));
-        let truncated = (text.is_some() && k < lines) || lists_cut;
+        let shown = window.as_ref().map(|t| t.first_lines(k as usize));
+        let truncated = (window.is_some() && k < lines) || lists_cut;
         let data = Data {
             swimlane: served.swimlane.clone(),
             application: served.application.clone(),
@@ -125,7 +135,7 @@ pub async fn get_served_config(cx: &CallCx<'_>, args: GetServedConfig) -> ToolRe
         Parts {
             summary: if withheld {
                 format!("Swimlane {swimlane}: the served content of this file is withheld.")
-            } else if text.is_some() {
+            } else if window.is_some() {
                 format!(
                     "Swimlane {swimlane}: {k} of {lines} lines of the served file{}.",
                     if redacted_values > 0 {
@@ -143,8 +153,8 @@ pub async fn get_served_config(cx: &CallCx<'_>, args: GetServedConfig) -> ToolRe
             web_link: if truncated { link.clone() } else { None },
         }
     };
-    if text.is_none() {
+    if window.is_none() {
         return Ok(render(&shape, build(0)));
     }
-    Ok(fit_lines(&shape, lines, build))
+    Ok(fit_lines(&shape, available, build))
 }

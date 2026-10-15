@@ -72,6 +72,44 @@ impl RedactedText {
         }
     }
 
+    /// The first lines of this text that fit both limits: whole lines from the top, at most `max_lines` of them and at most
+    /// `max_bytes` bytes in all. Returns that part and the number of lines in it. Lines end at `\n`, `\r\n` or `\r`, as
+    /// [`line_count`] counts them, and the part ends where [`RedactedText::first_lines`] would cut after the last of them, so for
+    /// every `k` up to the count, `window.first_lines(k)` is `self.first_lines(k)`. A first line over `max_bytes` leaves nothing:
+    /// lines are not cut in two.
+    ///
+    /// The work is bounded by the limits and not by the text: it reads one byte past `max_bytes` at most, and copies what it
+    /// keeps. A result that can show 200 lines or 16 KB of a 2 MiB text therefore fits and renders a part of at most that size.
+    /// Shortening scanned text shows less of it, so the part is as safe as the whole.
+    #[must_use]
+    pub fn window(&self, max_lines: usize, max_bytes: usize) -> (Self, u32) {
+        let bytes = self.0.as_bytes();
+        let len = bytes.len();
+        // A line is looked for only as far as `max_bytes` allows; one that runs past it does not fit.
+        let reach = len.min(max_bytes.saturating_add(1));
+        let (mut start, mut cut, mut kept) = (0_usize, 0_usize, 0_u32);
+        while start < len && (kept as usize) < max_lines {
+            let end = match bytes[start..reach].iter().position(|&b| b == b'\n' || b == b'\r') {
+                Some(at) => start + at,
+                None if reach == len => len,
+                None => break,
+            };
+            // Where this line is cut, and where the next one starts: the `\r` of a `\r\n` stays with its line.
+            let (stop, next) = match (bytes.get(end), bytes.get(end + 1)) {
+                (None, _) => (len, len),
+                (Some(b'\r'), Some(b'\n')) => (end + 1, end + 2),
+                (Some(_), _) => (end, end + 1),
+            };
+            if stop > max_bytes {
+                break;
+            }
+            kept += 1;
+            cut = stop;
+            start = next;
+        }
+        (Self(self.0[..cut].to_owned()), kept)
+    }
+
     /// The lines of this text, split at `\n`. Parts of scanned text are scanned text.
     #[must_use]
     pub fn lines(&self) -> Vec<Self> {
