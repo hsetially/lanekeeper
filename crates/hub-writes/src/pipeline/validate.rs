@@ -53,6 +53,17 @@ fn issue(kind: IssueKind, line: u32, rule: Option<&str>) -> ValidationIssue {
     }
 }
 
+/// The limits for scanning the text of a file that was decoded under `limits`. `decode_text` holds the file's bytes to
+/// `input_bytes`, and the text of a Latin-1 or UTF-16 file can be up to twice as long as those bytes (`é` is one byte in Latin-1
+/// and two in UTF-8), while `secret_scan` holds the text to `input_bytes` again. A valid file near the size limit would be refused
+/// for what it becomes in memory, so the scan gets the room the decoder can make. It is still bounded: at most twice the limit.
+pub(crate) fn text_limits(limits: &Limits) -> Limits {
+    Limits {
+        input_bytes: limits.input_bytes.saturating_mul(2),
+        ..limits.clone()
+    }
+}
+
 /// Validate `new` as the content of `path`.
 pub(crate) fn check(path: &NfsPath, class: FileClass, new: &Bytes, old: &Old, limits: &Limits) -> Checked {
     if class == FileClass::Binary {
@@ -90,7 +101,7 @@ pub(crate) fn check(path: &NfsPath, class: FileClass, new: &Bytes, old: &Old, li
     let mut new_text: Option<String> = None;
     match decode_text(new, limits) {
         Ok(decoded) => {
-            match secret_scan(&decoded.text, &ScanConfig::default(), limits) {
+            match secret_scan(&decoded.text, &ScanConfig::default(), &text_limits(limits)) {
                 Ok(matches) => {
                     for m in &matches {
                         secret_issues.push(issue(IssueKind::SecretMatch, m.line, Some(m.rule.name())));
@@ -183,7 +194,7 @@ fn audit_diff(old: &Old, new_text: &str, new_flags: &BTreeMap<u32, String>, limi
         return "(previous content is not text)".to_owned();
     };
     // If the old file cannot be scanned, its lines cannot be shown: a diff with an unredacted secret is worse than none.
-    let Ok(matches) = secret_scan(&decoded.text, &ScanConfig::default(), limits) else {
+    let Ok(matches) = secret_scan(&decoded.text, &ScanConfig::default(), &text_limits(limits)) else {
         return "(diff withheld: the previous content could not be scanned)".to_owned();
     };
     let old_flags = flagged_lines(&matches);
@@ -276,6 +287,38 @@ mod tests {
 
     fn known(s: &str) -> Old {
         Old::Known(Bytes::copy_from_slice(s.as_bytes()))
+    }
+
+    /// The text of a Latin-1 file can be twice as long as the file (`é` is one byte there and two in the text). The raw size is
+    /// checked against the limit by the decoder; the scan holds the text to its own, doubled, so a valid file is not refused for
+    /// what it becomes in memory.
+    #[test]
+    fn a_latin1_file_whose_text_is_longer_than_the_limit_is_scanned_and_accepted() {
+        let limits = Limits::DEFAULT;
+        let bytes = vec![0xE9_u8; limits.input_bytes * 3 / 4];
+        let text = Bytes::from(bytes);
+        let got = check(&p("notes/x.txt"), FileClass::Text, &text, &Old::Absent, &limits);
+        assert_eq!(
+            got.reject,
+            None,
+            "refused: {:?}",
+            got.reject.as_ref().map(|r| r.0)
+        );
+        // A file over the limit as bytes is still too large.
+        let over = Bytes::from(vec![0xE9_u8; limits.input_bytes + 1]);
+        let got = check(&p("notes/x.txt"), FileClass::Text, &over, &Old::Absent, &limits);
+        assert_eq!(got.reject.map(|r| r.0), Some(RejectReason::InvalidContent));
+        // The diff of a change to such a file is made, not withheld for want of a scan.
+        let old = Old::Known(text);
+        let got = check(
+            &p("notes/x.txt"),
+            FileClass::Text,
+            &Bytes::from_static(b"new\n"),
+            &old,
+            &limits,
+        );
+        assert_eq!(got.reject, None);
+        assert!(!got.diff.starts_with("(diff withheld"), "{}", got.diff);
     }
 
     #[test]

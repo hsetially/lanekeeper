@@ -23,6 +23,7 @@ use engine::{DenyMatcher, Limits, ScanConfig, classify, decode_text, secret_scan
 use super::target::{Destination, Routed, Side};
 use crate::fidelity::{Basis, FileFormatFacts, PrepareError, prepare_content};
 use crate::github::{BranchName, GitSha, RepoFile, RepoRef};
+use crate::pipeline::validate::text_limits;
 
 /// The most warnings one pull request carries (`PrJob.warnings` has `maxItems: 20`).
 pub const MAX_WARNINGS: usize = 20;
@@ -171,7 +172,7 @@ pub(crate) fn prepare_file(
     if class != FileClass::Binary {
         let decoded =
             decode_text(&content, limits).map_err(|_| FileReject::of(RejectReason::InvalidContent))?;
-        match secret_scan(&decoded.text, &ScanConfig::default(), limits) {
+        match secret_scan(&decoded.text, &ScanConfig::default(), &text_limits(limits)) {
             Ok(found) if found.is_empty() => {}
             Ok(found) => {
                 let mut issues: Vec<ValidationIssue> = found
@@ -457,6 +458,22 @@ mod tests {
         assert_eq!(e.issues[0].kind, IssueKind::SecretMatch);
         assert_eq!(e.issues[0].line.map(NonZeroU32::get), Some(2));
         assert!(!format!("{e:?}").contains(&key));
+    }
+
+    #[test]
+    fn a_latin1_file_whose_text_is_longer_than_the_limit_is_prepared() {
+        // 1.5 MiB of `\u{e9}` in Latin-1 is 3 MiB of text: over the limit as text, within it as the file.
+        let bytes = vec![0xE9_u8; LIMITS.input_bytes * 3 / 4];
+        let got = prepare_file(
+            &nfs("a/notes.txt"),
+            &Bytes::from(bytes.clone()),
+            &RepoFile::Absent,
+            &deny(),
+            &LIMITS,
+            2 * 1024 * 1024,
+        )
+        .unwrap();
+        assert_eq!(got.content.len(), bytes.len());
     }
 
     #[test]
