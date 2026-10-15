@@ -122,6 +122,7 @@ pub fn worst_case_audit_event(n: u32) -> AuditEvent {
     e.diff = Some(control.to_string().repeat(AuditEvent::MAX_DIFF_BYTES));
     e.github_login = Some(backslashes(256));
     e.approval = Some(ProposalId::from(i64::MIN));
+    e.author = Some(user_id(u32::MAX));
     e.request_id = Some(RequestId::parse(&"r".repeat(128)).unwrap());
     e.attribution = Some(Attribution {
         source: AttributionSource::SentinelLogin,

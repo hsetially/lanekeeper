@@ -74,7 +74,7 @@ Every requirement here is mandatory. Prompts cite these IDs, and the reviewer ag
   - No tool executes a shell. The docs filesystem is virtual.
 - **S14b Redaction.**
   - MCP output replaces values flagged by the value-based secret scan with `[REDACTED: N chars, rule]`.
-  - The web UI masks flagged values by default. Revealing one is an audited action for Editors and above (D79).
+  - The web UI masks flagged values by default. Revealing one is an audited action for Editors and above (D79). A write preview masks them too: `ChangePreview.changes` holds the marker and `flagged`, never the value.
 - **S15 Prompt injection.** Config and doc text is always treated as data. The skill and MCP outputs say so explicitly. No server-side component sends user content to an LLM.
 
 ## Workload hardening

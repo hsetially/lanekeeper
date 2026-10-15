@@ -1,6 +1,6 @@
 # Migrations
 
-These files are a contract. Prompt 01 (T6) writes `0001_init.sql`; `0002_audit_verify_state.sql` is a contract-change that adds one table for prompt 03a; `0003_registry.sql` is a contract-change that adds the registry's tables and columns for prompt 05.
+These files are a contract. Prompt 01 (T6) writes `0001_init.sql`; `0002_audit_verify_state.sql` is a contract-change that adds one table for prompt 03a; `0003_registry.sql` is a contract-change that adds the registry's tables and columns for prompt 05; `0004_write_additions.sql` is a contract-change for prompt 06 (notify proposals, the token expiry, and the approvals hardening).
 
 - Add new migrations as new files (`0002_<what>.sql`). Never edit a merged one.
 - Follow the lanekeeper-contract-change skill: expand first, contract later.
@@ -36,7 +36,7 @@ They come from `deploy/dev/init.sql` (dev and tests) and from CloudNativePG mana
 
 | Decision | Privileges | Used for |
 |---|---|---|
-| append-only | SELECT, INSERT | `audit_events`, `audit_checkpoints`, `sentinel_records` |
+| append-only | SELECT, INSERT | `audit_events`, `audit_checkpoints`, `sentinel_records`, `approvals` (from `0004`) |
 | write-once | SELECT, INSERT, DELETE | content-addressed or immutable rows that retention or garbage collection may remove (`blobs`, `blob_refs`, `settings_index`, `settings_index_blobs`, `git_tree_index`, `doc_versions`, `webhook_deliveries`) |
 | mutable | SELECT, INSERT, UPDATE, DELETE | everything else |
 | state row | SELECT, UPDATE | a singleton row the migration inserts and the app only reads and updates (`audit_verify_state`) |
@@ -88,11 +88,18 @@ Expand-only: new columns and indexes on existing tables, eight new tables, one g
 - **Not relaxed (plan 05, A16).** The `sentinel_records.operation` CHECK still allows only `create`, `write`, `delete` and `rename`: an `Attribute` record (chmod, chown) is acknowledged and counted, not stored. Storing them would be a later contract change.
 - **Cursors.** A `Cursor` is at most 512 characters and a path up to 1,024 bytes, so keyset lists over files page on `file_state.seq` (or a time and an id), never on a path (A31).
 
+## The write additions (`0004_write_additions.sql`, prompt 06)
+
+- **`proposals.action` accepts `'notify'`** (G8): a notify of the config-server is a write like any other, so a user who requires approval proposes it. The CHECK is replaced by a wider one in a single `ALTER TABLE`.
+- **`github_credentials.expires_at timestamptz NULL`** (G9): when GitHub says the stored fine-grained token expires, read from the `GET /user` response header when the token is stored and again when it is validated. `NULL` means GitHub did not say. The UI warns a week before; nothing is called per page load.
+- **Approvals hardening** (G10): see the `approvals` bullet under "Other database-side guards". This part of the migration is separable: if a human strikes it, delete the `REVOKE`, the key replacement and the trigger from the file and their tests (`the_app_cannot_change_or_remove_an_approval`, `a_proposals_author_cannot_change`, the `approvals` grant decision) together.
+- **Rollout order.** The migration deploys before the 06 code. Binaries from before it never write `'notify'` or `expires_at`, never update an approval and never change a proposal's author, so they run unchanged.
+
 ## Other database-side guards
 
 - Outbox (D80): the `outbox_notify` trigger calls `pg_notify('lanekeeper_outbox', <row id>)`. PostgreSQL delivers it when the inserting transaction commits and drops it on rollback.
 - `pr_links`: a partial unique index allows one `open` PR per (swimlane, path, nfs_hash).
-- `approvals`: a `BEFORE INSERT` trigger refuses an approval by the proposal's author. It guards the insert path against a hub bug. It does not protect against a caller that holds UPDATE or DELETE on `approvals` or `proposals` (`lanekeeper_app` does): that caller can change `approver_oid` or `author_oid` after the insert, or delete a proposal, which cascades to its approvals. Approval enforcement (S4/D37) must also be done in application code (prompt 06). Closing the gap (UPDATE and DELETE restrictions plus an author-immutability trigger) is a possible hardening for prompt 06 or a later contract-change.
+- `approvals` (`0004`): a decision is written once. The app has SELECT and INSERT only, so it cannot re-point `approver_oid` or change a decision after the insert, and `approvals.proposal_id` is `ON DELETE RESTRICT`, so it cannot delete an approval by deleting its proposal either (a cascade would change the child rows without a privilege check). A `BEFORE INSERT` trigger (`approvals_no_self_approval`, `0001`) refuses an approval by the proposal's author, and a `BEFORE UPDATE` trigger on `proposals` (`proposals_author_immutable`, `0004`) refuses any change of `author_tid` or `author_oid` for `lanekeeper_app`, which is the role that runs the hub. Unlike the audit trigger it is an ordinary trigger, not `ENABLE ALWAYS`: the owner (`lanekeeper_migrator`) can disable it with `ALTER TABLE ... DISABLE TRIGGER`, and a superuser can bypass it with `SET session_replication_role = replica`. Neither role is the one the hub connects as, so the protection is against a compromised or buggy app, not against someone who holds the owner or a superuser. Approval enforcement (S4/D37) is still also done in application code (prompt 06), as defence in depth. A consequence: deleting a swimlane that has a decided proposal is refused with `23503`, because the swimlane's proposals cascade and a decided proposal cannot go.
 - Append-only tables and cascades: a foreign key whose action is `CASCADE`, `SET NULL` or `SET DEFAULT` changes child rows without a privilege check on them, so it is a way around the grants. `sentinel_records.sentinel_id` is `ON DELETE RESTRICT`: `lanekeeper_app` has DELETE on `sentinels`, and deleting a sentinel that still has records is refused (`23503`) instead of erasing them. A sentinel with records cannot be removed before its records expire (`maintain_sentinel_partitions`); decommissioning one means keeping the row. `no_cascading_foreign_key_touches_a_protected_table` walks the catalog and fails if any foreign key into or out of a protected table (no DELETE for the app, or guarded by the append-only trigger) has an action other than `NO ACTION` or `RESTRICT`. A new migration that adds such a key must pass it.
 - Sentinel records are partitioned by month. Dropping a partition is DDL, so the hub calls `SELECT * FROM maintain_sentinel_partitions(90)` from a leased job (prompts 05 and 17). It is a `SECURITY DEFINER` function owned by the migrator, with a pinned `search_path` and schema-qualified names. `EXECUTE` is granted to `lanekeeper_app` only (plan Q18). It refuses any `keep_days` below 90 (`22023`), a constant floor in the function body, so the app cannot prune records still inside their 90-day life. It also creates last month, this month and the next two, so the job must run at least monthly.
 

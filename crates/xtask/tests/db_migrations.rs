@@ -1,5 +1,5 @@
 //! Integration tests for `db/migrations` (prompt 01, T6; S9, S21; `0002_audit_verify_state.sql` for prompt 03a;
-//! `0003_registry.sql` for prompt 05).
+//! `0003_registry.sql` for prompt 05; `0004_write_additions.sql` for prompt 06).
 //!
 //! They run against a real Postgres 16 with pgvector, started with testcontainers from the same image digest as
 //! `deploy/dev/compose.yaml`. The tests use the runtime `sqlx::migrate::Migrator` and no `query!` macros, so no
@@ -202,6 +202,8 @@ fn grant_decisions() -> BTreeMap<&'static str, Grant> {
         m.insert(t, Grant::Mutable);
     }
     m.insert("audit_verify_state", Grant::StateRow);
+    // 0003: an approval is a decision nobody rewrites or removes, like the audit chain.
+    m.insert("approvals", Grant::AppendOnly);
     m.insert("_sqlx_migrations", Grant::None);
     m
 }
@@ -679,8 +681,8 @@ async fn migration_applies_on_pg16() {
     let expected: BTreeSet<String> = all_expected_tables().into_iter().map(str::to_owned).collect();
     assert_eq!(tables, expected);
 
-    // Re-running is a no-op: each migration is recorded once, and 0002 and 0003 applied on top of 0001. The schema is
-    // owned by the migrator, never by the app.
+    // Re-running is a no-op: each migration is recorded once, each applied on top of the one before it (0002 on 0001, 0003 on
+    // 0002, 0004 on 0003). The schema is owned by the migrator, never by the app.
     db.migrate().await;
     let applied: Vec<i64> =
         sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
@@ -689,7 +691,7 @@ async fn migration_applies_on_pg16() {
             .unwrap();
     let files: Vec<i64> = migration_files().iter().map(|(v, _, _)| i64::from(*v)).collect();
     assert_eq!(applied, files);
-    assert_eq!(applied, [1, 2, 3]);
+    assert_eq!(applied, [1, 2, 3, 4]);
     let foreign: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tableowner <> 'lanekeeper_migrator'",
     )
@@ -798,7 +800,8 @@ async fn migration_0002_adds_only_audit_verify_state() {
         assert!(!b.is_empty(), "the snapshot must see something: {q}");
     }
 
-    // Up to 0002 only: 0003 changes existing tables on purpose (`migration_0003_changes_existing_objects_only_by_adding`).
+    // Up to 0002 only: 0003 and 0004 change existing tables on purpose (`migration_0003_changes_existing_objects_only_by_adding`,
+    // `migration_0004_changes_only_what_it_names`).
     db.migrate_upto(2).await;
 
     for (q, b) in queries.iter().zip(&before) {
@@ -1580,6 +1583,634 @@ async fn approvals_reject_self_approval() {
         .unwrap();
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// 0004_write_additions.sql (prompt 06): notify proposals, the credential expiry, and the approvals hardening
+
+/// `sql` without comments, string literals (their text) and dollar-quoted bodies, split into statements of upper-case words.
+/// A body (`DO $$ ... $$`, `AS $$ ... $$`) is not one of the statement's words: it is checked on its own, below.
+fn statements_of(sql: &str) -> Vec<Vec<String>> {
+    let code = code_lines(sql).join("\n");
+    // Dollar-quoted bodies first (a literal inside one could hold a `;`), then literals.
+    let mut bodiless = String::new();
+    let mut rest = code.as_str();
+    while let Some(open) = rest.find("$$") {
+        bodiless.push_str(&rest[..open]);
+        let after = &rest[open + 2..];
+        let close = after.find("$$").expect("a dollar-quoted body is closed");
+        rest = &after[close + 2..];
+    }
+    bodiless.push_str(rest);
+    let mut out = Vec::new();
+    for statement in without_literals(&bodiless).split(';') {
+        let words = sql_words(statement);
+        if !words.is_empty() {
+            out.push(words);
+        }
+    }
+    out
+}
+
+/// `sql` with the text of every single-quoted literal removed.
+fn without_literals(sql: &str) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for c in sql.chars() {
+        if c == '\'' {
+            inside = !inside;
+        } else if !inside {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn sql_words(sql: &str) -> Vec<String> {
+    sql.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+        .map(str::to_uppercase)
+        .collect()
+}
+
+/// The first row-writing statement in `sql`, bodies included, if there is one: `INSERT INTO [schema.]t`, `UPDATE [ONLY]
+/// [schema.]t [[AS] alias] SET` (or the `DO UPDATE SET` of an upsert), `DELETE FROM [ONLY] ...`, MERGE INTO, TRUNCATE or
+/// COPY, or any `EXECUTE` that is not `EXECUTE FUNCTION` or `EXECUTE PROCEDURE` (a trigger's): dynamic SQL is a string,
+/// and the text of strings is not read here, so it is refused whatever it holds. (`UPDATE` as a trigger event, in a
+/// privilege list or as an `ON UPDATE` key action is not a write.)
+fn row_writing_statement(sql: &str) -> Option<String> {
+    let code = without_literals(&code_lines(sql).join("\n"));
+    let words = sql_words(&code);
+    words.iter().enumerate().find_map(|(i, w)| {
+        let next = |n: usize| words.get(i + n).map(String::as_str);
+        let writes = match w.as_str() {
+            "TRUNCATE" | "COPY" => true,
+            "INSERT" | "MERGE" => next(1) == Some("INTO"),
+            "DELETE" => next(1) == Some("FROM"),
+            "EXECUTE" => !matches!(next(1), Some("FUNCTION" | "PROCEDURE")),
+            // After the optional ONLY come a name of up to two words (schema, table), an optional alias with or without
+            // AS, and SET; an upsert's `DO UPDATE SET` has no name. A privilege (`UPDATE ON`, `UPDATE (a) ON`), a trigger
+            // event (`UPDATE OF`, `UPDATE OR`) and a key action (`ON UPDATE`) end the search or are skipped.
+            "UPDATE" if i > 0 && words[i - 1] == "ON" => false,
+            "UPDATE" => {
+                let from = i + 1 + usize::from(next(1) == Some("ONLY"));
+                words[from.min(words.len())..]
+                    .iter()
+                    .take(5)
+                    .take_while(|w| !matches!(w.as_str(), "ON" | "OF" | "OR" | "FROM" | "TO" | "FOR"))
+                    .any(|w| w == "SET")
+            }
+            _ => false,
+        };
+        writes.then(|| words[i..words.len().min(i + 4)].join(" "))
+    })
+}
+
+/// `0004_write_additions.sql` is exactly the statements it was reviewed with: no row is written or removed, no table is
+/// created or dropped, nothing is renamed, and the audit tables are not touched. A new statement of any kind, in or out of
+/// a DO block or a function body, fails here until a human adds it to the list on purpose.
+#[test]
+fn migration_0004_is_expand_only() {
+    let sql = migration_file("0004_write_additions.sql");
+    assert_eq!(
+        row_writing_statement(&sql),
+        None,
+        "0004 changes the schema and no row: no INSERT, UPDATE, DELETE, MERGE, TRUNCATE, COPY or dynamic EXECUTE, in a DO \
+         block or a function body either"
+    );
+    let allowed: [&str; 7] = [
+        // The guard.
+        "DO",
+        // 1. Notify proposals: one statement, so no row is ever unchecked.
+        "ALTER TABLE PROPOSALS DROP CONSTRAINT PROPOSALS_ACTION_CHECK ADD CONSTRAINT PROPOSALS_ACTION_CHECK CHECK ACTION IN",
+        // 2. The token expiry.
+        "ALTER TABLE GITHUB_CREDENTIALS ADD COLUMN EXPIRES_AT TIMESTAMPTZ",
+        // 3. Approvals are written once.
+        "REVOKE UPDATE DELETE ON APPROVALS FROM LANEKEEPER_APP",
+        "ALTER TABLE APPROVALS DROP CONSTRAINT APPROVALS_PROPOSAL_ID_FKEY ADD CONSTRAINT APPROVALS_PROPOSAL_ID_FKEY FOREIGN KEY PROPOSAL_ID REFERENCES PROPOSALS ID ON DELETE RESTRICT",
+        "CREATE FUNCTION PROPOSALS_AUTHOR_IMMUTABLE RETURNS TRIGGER LANGUAGE PLPGSQL SET SEARCH_PATH PG_CATALOG PG_TEMP AS",
+        "CREATE TRIGGER PROPOSALS_AUTHOR_IMMUTABLE BEFORE UPDATE OF AUTHOR_TID AUTHOR_OID ON PROPOSALS FOR EACH ROW EXECUTE FUNCTION PROPOSALS_AUTHOR_IMMUTABLE",
+    ];
+    let found: Vec<String> = statements_of(&sql).iter().map(|w| w.join(" ")).collect();
+    assert_eq!(
+        found, allowed,
+        "0004 has exactly the statements it was reviewed with, in this order (a new statement is a new review)"
+    );
+    // The words that no statement of an expand-only migration contains, wherever they are (a body, a comment aside).
+    let code = without_literals(&code_lines(&sql).join("\n")).to_uppercase();
+    for banned in [
+        "DROP TABLE",
+        "DROP COLUMN",
+        "DROP TRIGGER",
+        "DROP FUNCTION",
+        "DROP INDEX",
+        "RENAME",
+        "GRANT ",
+        "CASCADE",
+        "AUDIT_EVENTS",
+        "AUDIT_CHECKPOINTS",
+        "CREATE TABLE",
+        "SECURITY DEFINER",
+        "ENABLE ",
+        "DISABLE ",
+    ] {
+        assert!(
+            !code.contains(banned),
+            "0004 must not contain `{banned}` outside comments"
+        );
+    }
+    assert!(
+        code.contains("ON DELETE RESTRICT") && !code.contains("ON UPDATE"),
+        "the approvals key restricts a delete of its proposal"
+    );
+}
+
+/// The checks of `migration_0004_is_expand_only` have teeth: each of these changes to 0004 is refused by one of them.
+#[test]
+fn the_expand_only_checks_see_row_writes_and_new_statements() {
+    let real = migration_file("0004_write_additions.sql");
+    assert_eq!(row_writing_statement(&real), None);
+    let base = statements_of(&real).len();
+    for (sql, what) in [
+        ("UPDATE proposals SET status = 'x';", "an UPDATE"),
+        (
+            "INSERT INTO approvals (decision) VALUES ('approved');",
+            "an INSERT",
+        ),
+        ("DELETE FROM proposals;", "a DELETE"),
+        ("TRUNCATE approvals;", "a TRUNCATE"),
+        (
+            "DO $$ BEGIN DELETE FROM proposals; END $$;",
+            "a DELETE in a DO block",
+        ),
+        (
+            "CREATE FUNCTION f() RETURNS void LANGUAGE sql AS $$ UPDATE users SET role = 'admin' $$;",
+            "an UPDATE in a function body",
+        ),
+        // Dynamic SQL: the statement is a string, and the strings are not read, so any EXECUTE of one is refused.
+        (
+            "DO $$ BEGIN EXECUTE 'DELETE FROM proposals'; END $$;",
+            "dynamic SQL in a DO block",
+        ),
+        (
+            "DO $$ BEGIN EXECUTE format('DELETE FROM %I', 'proposals'); END $$;",
+            "dynamic SQL built with format",
+        ),
+        (
+            "DO $$ BEGIN EXECUTE 'UPDATE proposals SET status = $1' USING 'x'; END $$;",
+            "dynamic SQL with USING",
+        ),
+        (
+            "CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN EXECUTE 'TRUNCATE approvals'; END $$;",
+            "dynamic SQL in a function body",
+        ),
+        // The target of an UPDATE, DELETE or INSERT: ONLY, a schema, an alias, with or without AS.
+        ("UPDATE ONLY proposals SET status = 'x';", "UPDATE ONLY"),
+        (
+            "UPDATE ONLY public.proposals SET status = 'x';",
+            "UPDATE ONLY, qualified",
+        ),
+        ("UPDATE public.proposals SET status = 'x';", "a qualified UPDATE"),
+        (
+            "UPDATE public.proposals AS p SET status = 'x';",
+            "a qualified UPDATE with AS",
+        ),
+        (
+            "UPDATE public.proposals p SET status = 'x';",
+            "a qualified UPDATE with an alias",
+        ),
+        (
+            "UPDATE \"public\".\"proposals\" SET status = 'x';",
+            "a quoted UPDATE target",
+        ),
+        (
+            "DELETE FROM ONLY public.proposals;",
+            "DELETE FROM ONLY, qualified",
+        ),
+        (
+            "DELETE FROM public.proposals p WHERE p.id = 1;",
+            "a qualified DELETE",
+        ),
+        (
+            "INSERT INTO public.approvals (decision) VALUES ('approved');",
+            "a qualified INSERT",
+        ),
+        (
+            "INSERT INTO approvals (decision) VALUES ('x') ON CONFLICT DO UPDATE SET decision = 'y';",
+            "the UPDATE of an upsert",
+        ),
+        (
+            "WITH gone AS (DELETE FROM public.proposals RETURNING id) SELECT 1 FROM gone;",
+            "a DELETE in a WITH",
+        ),
+    ] {
+        assert!(
+            row_writing_statement(&format!("{real}\n{sql}\n")).is_some(),
+            "{what} must be seen"
+        );
+    }
+    // Text that only looks like a row write is not one: the CHECK literal, the key action, the trigger event.
+    assert_eq!(
+        row_writing_statement(
+            "ALTER TABLE t ADD CHECK (a IN ('delete', 'update t set'));\n-- UPDATE t SET x\nREVOKE UPDATE, DELETE ON t FROM r;"
+        ),
+        None
+    );
+    for sql in [
+        "CREATE TRIGGER t BEFORE UPDATE OF a, b ON public.proposals FOR EACH ROW EXECUTE FUNCTION f();",
+        "CREATE TRIGGER t AFTER UPDATE OR DELETE ON proposals FOR EACH ROW EXECUTE PROCEDURE f();",
+        "CREATE TRIGGER t BEFORE UPDATE ON proposals FOR EACH ROW EXECUTE FUNCTION f();",
+        "GRANT SELECT, UPDATE ON audit_verify_state TO r;",
+        "GRANT UPDATE (a, b) ON t TO r;",
+        "REVOKE UPDATE, DELETE ON ONLY public.approvals FROM r;",
+        "ALTER TABLE a ADD FOREIGN KEY (b) REFERENCES c (id) ON DELETE RESTRICT ON UPDATE CASCADE;",
+        "ALTER TABLE a ADD FOREIGN KEY (b) REFERENCES c (id) ON DELETE SET NULL ON UPDATE SET NULL;",
+        "ALTER TABLE a ALTER COLUMN b SET NOT NULL;",
+    ] {
+        assert_eq!(row_writing_statement(sql), None, "{sql} writes no row");
+    }
+    // A new statement of any other kind changes the list.
+    for sql in [
+        "CREATE INDEX i ON proposals (status);",
+        "ALTER TABLE proposals DROP COLUMN paths;",
+        "DROP TABLE approvals;",
+        "GRANT DELETE ON approvals TO lanekeeper_app;",
+        "ALTER TABLE approvals DISABLE TRIGGER approvals_no_self_approval;",
+    ] {
+        assert_eq!(
+            statements_of(&format!("{real}\n{sql}\n")).len(),
+            base + 1,
+            "{sql} is a statement of its own, so the exact list refuses it"
+        );
+    }
+}
+
+/// The migrator owns every object, so `0004` carries the guard of `0001`, `0002` and `0003`.
+#[tokio::test]
+async fn migration_0004_refuses_to_run_as_another_role() {
+    let db = db!();
+    let sql = migration_file("0004_write_additions.sql");
+    for role in [APP, ("postgres", SUPERUSER_PASSWORD)] {
+        let mut conn = if role.0 == "postgres" {
+            db.admin().await
+        } else {
+            db.as_role(role).await
+        };
+        let err = sqlx::raw_sql(&sql)
+            .execute(&mut conn)
+            .await
+            .expect_err("must refuse");
+        assert_eq!(sqlstate(&err).as_deref(), Some("55000"), "{}: {err}", role.0);
+        assert!(
+            err.to_string().contains("lanekeeper_migrator"),
+            "{}: {err}",
+            role.0
+        );
+    }
+}
+
+/// 0004 changes exactly what it says: the action CHECK, the approvals key, the grants on `approvals`, one column and
+/// one trigger with its function. Every other relation, trigger, constraint, column and function stays as 0003 left it,
+/// the append-only audit tables included.
+#[tokio::test]
+async fn migration_0004_changes_only_what_it_names() {
+    let Some(db) = TestDb::bootstrap().await else {
+        return;
+    };
+    db.migrate_upto(3).await;
+    let snapshot = |sql: &'static str| async {
+        let mut c = db.admin().await;
+        sqlx::query_scalar::<_, String>(sql)
+            .fetch_all(&mut c)
+            .await
+            .unwrap()
+            .into_iter()
+            .collect::<BTreeSet<String>>()
+    };
+    let queries: [&'static str; 5] = [
+        "SELECT c.relname::text || ' ' || c.relkind::text || ' ' || c.relowner::regrole::text || ' ' || coalesce(c.relacl::text, '-') \
+         FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace",
+        "SELECT t.tgrelid::regclass::text || ' ' || pg_get_triggerdef(t.oid, true) || ' ' || t.tgenabled::text \
+         FROM pg_trigger t WHERE NOT t.tgisinternal",
+        "SELECT conrelid::regclass::text || ' ' || conname || ' ' || pg_get_constraintdef(oid) FROM pg_constraint \
+         WHERE connamespace = 'public'::regnamespace",
+        "SELECT attrelid::regclass::text || ' ' || attname || ' ' || format_type(atttypid, atttypmod) || ' ' || attnotnull::text \
+         FROM pg_attribute WHERE attnum > 0 AND NOT attisdropped AND attrelid IN (SELECT oid FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r', 'p'))",
+        "SELECT p.proname || ' ' || p.proowner::regrole::text || ' ' || coalesce(p.proacl::text, '-') || ' ' || md5(p.prosrc) \
+         FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace",
+    ];
+    let mut before = Vec::new();
+    for q in queries {
+        before.push(snapshot(q).await);
+    }
+    db.migrate_upto(4).await;
+    let mut changed = Vec::new();
+    for (q, b) in queries.iter().zip(&before) {
+        let after = snapshot(q).await;
+        let removed: Vec<String> = b.difference(&after).cloned().collect();
+        let added: Vec<String> = after.difference(b).cloned().collect();
+        changed.push((removed, added));
+    }
+    // Which names changed, whatever the rest of each line says.
+    let names = |lines: &[String], n: usize| -> BTreeSet<String> {
+        lines
+            .iter()
+            .map(|l| l.split_whitespace().take(n).collect::<Vec<_>>().join(" "))
+            .collect()
+    };
+    let set = |v: &[&str]| -> BTreeSet<String> { v.iter().map(|s| (*s).to_owned()).collect() };
+    // Relations: only `approvals` changes its ACL.
+    assert_eq!(names(&changed[0].0, 1), set(&["approvals"]), "{:?}", changed[0]);
+    assert_eq!(names(&changed[0].1, 1), set(&["approvals"]), "{:?}", changed[0]);
+    // Triggers: one is added (on proposals), none is removed or changed.
+    assert!(changed[1].0.is_empty(), "no trigger is removed: {:?}", changed[1]);
+    assert_eq!(names(&changed[1].1, 1), set(&["proposals"]), "{:?}", changed[1]);
+    assert_eq!(changed[1].1.len(), 1, "one new trigger: {:?}", changed[1]);
+    // Constraints: the two that are replaced, by name.
+    let keys = |lines: &[String]| -> BTreeSet<String> {
+        lines
+            .iter()
+            .map(|l| l.split_whitespace().take(2).collect::<Vec<_>>().join(" "))
+            .collect()
+    };
+    let replaced = set(&[
+        "proposals proposals_action_check",
+        "approvals approvals_proposal_id_fkey",
+    ]);
+    assert_eq!(keys(&changed[2].0), replaced, "{:?}", changed[2]);
+    assert_eq!(keys(&changed[2].1), replaced, "{:?}", changed[2]);
+    // Columns: one is added.
+    assert!(
+        changed[3].0.is_empty(),
+        "no column is removed or changed: {:?}",
+        changed[3]
+    );
+    assert_eq!(
+        changed[3].1,
+        ["github_credentials expires_at timestamp with time zone false".to_owned()]
+    );
+    // Functions: one is added.
+    assert!(changed[4].0.is_empty(), "no function changes: {:?}", changed[4]);
+    assert_eq!(names(&changed[4].1, 1), set(&["proposals_author_immutable"]));
+}
+
+/// G8: a proposal can be for a notify, and still only for the actions the product has.
+#[tokio::test]
+async fn proposals_accept_notify_and_no_other_new_action() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_proposal_world(&mut app).await;
+    let insert = "INSERT INTO proposals (author_tid, author_oid, action, swimlane_id, paths, via, expires_at) \
+                  VALUES ('t', 'alice', $1, 'sit1', ARRAY['a.yml'], 'ui', now() + interval '72 hours')";
+    for action in ["edit", "upload", "delete", "revert", "restart", "pr", "notify"] {
+        sqlx::query(insert)
+            .bind(action)
+            .execute(&mut app)
+            .await
+            .unwrap_or_else(|e| panic!("{action}: {e}"));
+    }
+    for action in ["Notify", "notify ", "apply", ""] {
+        let err = sqlx::query(insert)
+            .bind(action)
+            .execute(&mut app)
+            .await
+            .expect_err("unknown action");
+        assert_eq!(
+            sqlstate(&err).as_deref(),
+            Some(CHECK_VIOLATION),
+            "{action:?}: {err}"
+        );
+    }
+}
+
+/// G9: the expiry of a stored token is optional, and the app can write and clear it.
+#[tokio::test]
+async fn github_credentials_have_an_optional_expiry() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_proposal_world(&mut app).await;
+    let insert = "INSERT INTO github_credentials (user_tid, user_oid, github_login, wrapped_dek, kms_key_version, nonce, ciphertext) \
+                  VALUES ('t', 'alice', 'alice-gh', '\\x01', 'v1', '\\x000000000000000000000000', '\\x02') RETURNING id";
+    let id: i64 = sqlx::query_scalar(insert).fetch_one(&mut app).await.unwrap();
+    let expires: Option<String> =
+        sqlx::query_scalar("SELECT expires_at::text FROM github_credentials WHERE id = $1")
+            .bind(id)
+            .fetch_one(&mut app)
+            .await
+            .unwrap();
+    assert_eq!(expires, None, "a credential stored without an expiry has none");
+    sqlx::query("UPDATE github_credentials SET expires_at = now() + interval '30 days' WHERE id = $1")
+        .bind(id)
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let in_future: bool =
+        sqlx::query_scalar("SELECT expires_at > now() FROM github_credentials WHERE id = $1")
+            .bind(id)
+            .fetch_one(&mut app)
+            .await
+            .unwrap();
+    assert!(in_future);
+    sqlx::query("UPDATE github_credentials SET expires_at = NULL WHERE id = $1")
+        .bind(id)
+        .execute(&mut app)
+        .await
+        .unwrap();
+}
+
+/// G10: an approval is written once. The app cannot change or remove one, and cannot remove one through its proposal.
+#[tokio::test]
+async fn the_app_cannot_change_or_remove_an_approval() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_proposal_world(&mut app).await;
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO proposals (author_tid, author_oid, action, swimlane_id, paths, via, expires_at) \
+         VALUES ('t', 'alice', 'edit', 'sit1', ARRAY['a.yml'], 'ui', now() + interval '72 hours') RETURNING id",
+    )
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO approvals (proposal_id, decision, approver_tid, approver_oid) VALUES ($1, 'approved', 't', 'bob')")
+        .bind(id)
+        .execute(&mut app)
+        .await
+        .unwrap();
+
+    // Re-pointing the approver (the way round the self-approval trigger) and deleting the approval both lack privilege.
+    for stmt in [
+        "UPDATE approvals SET approver_oid = 'alice' WHERE proposal_id = $1",
+        "UPDATE approvals SET decision = 'rejected' WHERE proposal_id = $1",
+        "DELETE FROM approvals WHERE proposal_id = $1",
+    ] {
+        let err = sqlx::query(stmt)
+            .bind(id)
+            .execute(&mut app)
+            .await
+            .expect_err("no privilege");
+        assert_eq!(
+            sqlstate(&err).as_deref(),
+            Some(INSUFFICIENT_PRIVILEGE),
+            "{stmt}: {err}"
+        );
+    }
+    // Deleting the proposal would have taken the approval with it through the cascade, which checks no privilege.
+    let err = sqlx::query("DELETE FROM proposals WHERE id = $1")
+        .bind(id)
+        .execute(&mut app)
+        .await
+        .expect_err("the approval keeps its proposal");
+    assert_eq!(sqlstate(&err).as_deref(), Some("23503"), "{err}");
+    let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM approvals WHERE proposal_id = $1")
+        .bind(id)
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    assert_eq!(kept, 1);
+
+    // What the write path needs still works: a proposal without a decision can be removed, and its status moves.
+    sqlx::query("UPDATE proposals SET status = 'approved', applied_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let lone: i64 = sqlx::query_scalar(
+        "INSERT INTO proposals (author_tid, author_oid, action, swimlane_id, paths, via, expires_at) \
+         VALUES ('t', 'alice', 'edit', 'sit1', ARRAY['b.yml'], 'ui', now() + interval '72 hours') RETURNING id",
+    )
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM proposals WHERE id = $1")
+        .bind(lone)
+        .execute(&mut app)
+        .await
+        .unwrap();
+}
+
+/// G10, a consequence the README states: a swimlane that has a decided proposal cannot be deleted (SQLSTATE 23503), because
+/// its proposals cascade and a decided proposal cannot go. A swimlane whose proposals nobody decided still can.
+#[tokio::test]
+async fn a_swimlane_with_a_decided_proposal_cannot_be_deleted() {
+    let db = db!();
+    let mut app = db.app().await;
+    let mut owner = db.migrator().await;
+    seed_proposal_world(&mut app).await;
+    sqlx::query("INSERT INTO swimlanes (id, project_id, display_name) VALUES ('sit2', 'p1', 'SIT 2')")
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let propose = |swimlane: &'static str| {
+        sqlx::query_scalar::<_, i64>(
+            "INSERT INTO proposals (author_tid, author_oid, action, swimlane_id, paths, via, expires_at) \
+             VALUES ('t', 'alice', 'edit', $1, ARRAY['a.yml'], 'ui', now() + interval '72 hours') RETURNING id",
+        )
+        .bind(swimlane)
+    };
+    let decided = propose("sit1").fetch_one(&mut app).await.unwrap();
+    sqlx::query("INSERT INTO approvals (proposal_id, decision, approver_tid, approver_oid) VALUES ($1, 'approved', 't', 'bob')")
+        .bind(decided)
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let undecided = propose("sit2").fetch_one(&mut app).await.unwrap();
+
+    // The app and the owner alike: the key refuses, not a missing privilege.
+    for conn in [&mut app, &mut owner] {
+        let err = sqlx::query("DELETE FROM swimlanes WHERE id = 'sit1'")
+            .execute(&mut *conn)
+            .await
+            .expect_err("a swimlane with a decided proposal stays");
+        assert_eq!(sqlstate(&err).as_deref(), Some(FOREIGN_KEY_VIOLATION), "{err}");
+    }
+    let kept: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM swimlanes WHERE id = 'sit1') \
+              + (SELECT count(*) FROM proposals WHERE id = $1) \
+              + (SELECT count(*) FROM approvals WHERE proposal_id = $1)",
+    )
+    .bind(decided)
+    .fetch_one(&mut owner)
+    .await
+    .unwrap();
+    assert_eq!(
+        kept, 3,
+        "the swimlane, its proposal and the decision are all still there"
+    );
+
+    // Nobody decided its proposals: the swimlane goes, and they go with it.
+    sqlx::query("DELETE FROM swimlanes WHERE id = 'sit2'")
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM proposals WHERE id = $1")
+        .bind(undecided)
+        .fetch_one(&mut owner)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+/// G10: the author of a proposal is fixed when it is written, for the app and for the owner alike.
+#[tokio::test]
+async fn a_proposals_author_cannot_change() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_proposal_world(&mut app).await;
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO proposals (author_tid, author_oid, action, swimlane_id, paths, via, expires_at) \
+         VALUES ('t', 'alice', 'edit', 'sit1', ARRAY['a.yml'], 'ui', now() + interval '72 hours') RETURNING id",
+    )
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    let mut owner = db.migrator().await;
+    for conn in [&mut app, &mut owner] {
+        for stmt in [
+            "UPDATE proposals SET author_oid = 'bob' WHERE id = $1",
+            "UPDATE proposals SET author_tid = 'other' WHERE id = $1",
+            "UPDATE proposals SET author_tid = 't', author_oid = 'bob' WHERE id = $1",
+        ] {
+            let err = sqlx::query(stmt)
+                .bind(id)
+                .execute(&mut *conn)
+                .await
+                .expect_err("author is fixed");
+            // The trigger runs before the foreign key is looked at, so a refusal is never the key's.
+            assert_eq!(sqlstate(&err).as_deref(), Some(CHECK_VIOLATION), "{stmt}: {err}");
+        }
+    }
+    // Setting it to what it is, and every other column, are fine.
+    sqlx::query("UPDATE proposals SET author_oid = author_oid, status = 'rejected', params = '{\"x\":1}' WHERE id = $1")
+        .bind(id)
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let author: String = sqlx::query_scalar("SELECT author_oid FROM proposals WHERE id = $1")
+        .bind(id)
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    assert_eq!(author, "alice");
+}
+
+/// Two users, a project and a swimlane: what a proposal, an approval and a stored token need to exist.
+async fn seed_proposal_world(app: &mut PgConnection) {
+    for (oid, name) in [("alice", "Alice"), ("bob", "Bob")] {
+        sqlx::query("INSERT INTO users (tid, oid, email, display_name, status, role) VALUES ('t', $1, $2, $2, 'active', 'admin')")
+            .bind(oid)
+            .bind(name)
+            .execute(&mut *app)
+            .await
+            .unwrap();
+    }
+    sqlx::query("INSERT INTO projects (id, display_name) VALUES ('p1', 'P1')")
+        .execute(&mut *app)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO swimlanes (id, project_id, display_name) VALUES ('sit1', 'p1', 'SIT 1')")
+        .execute(&mut *app)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn sentinel_partition_function_is_the_only_ddl_path() {
     let db = db!();
@@ -2241,7 +2872,7 @@ async fn migration_0003_changes_existing_objects_only_by_adding() {
     db.migrate_upto(2).await;
 
     let (before, kinds_before, operation_before) = catalog_snapshot(&db).await;
-    db.migrate_upto(u32::MAX).await;
+    db.migrate_upto(3).await;
     let (after, kinds_after, operation_after) = catalog_snapshot(&db).await;
 
     for (name, _) in CATALOG {
@@ -2359,7 +2990,7 @@ async fn migration_0003_keeps_existing_rows_and_fills_the_new_columns() {
     }
     drop(app);
 
-    db.migrate_upto(u32::MAX).await;
+    db.migrate_upto(3).await;
     let mut app = db.app().await;
 
     for (table, want) in [

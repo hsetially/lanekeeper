@@ -99,6 +99,24 @@ wire_enum! {
 }
 
 wire_enum! {
+    /// The line ending style a caller asks a write to convert a file to (D17). It is never `mixed`: that is a state a
+    /// file can be in, not a style to write. A write that does not set it keeps the style the file already has.
+    ChangeEol { Lf => "lf", Crlf => "crlf" }
+}
+
+wire_enum! {
+    /// What a [`crate::ValidationIssue`] is about.
+    IssueKind {
+        /// Structured content that does not parse.
+        ParseError => "parse_error",
+        /// The same key twice in one mapping: the last one wins (check C8). A warning, never a block.
+        DuplicateKey => "duplicate_key",
+        /// The value-based secret scan matched (S13). Reports the place and the rule, never the text.
+        SecretMatch => "secret_match",
+    }
+}
+
+wire_enum! {
     /// How tenant settings combine with base ones (C1 differs by mode).
     MergeMode { WholeFile => "whole_file", SpringMerge => "spring_merge" }
 }
