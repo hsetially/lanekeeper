@@ -81,6 +81,28 @@ async fn a_draft_has_no_effect_and_no_audit_event() {
     );
 }
 
+/// A residual risk of the threat model (review of 06, NB5): `POST /drafts` requires an `Idempotency-Key` and does not use it, so
+/// a retry with the key makes a second draft. A draft changes nothing, so the harm is the open-draft limit's to bound.
+#[tokio::test]
+async fn a_retried_draft_with_the_same_key_makes_a_second_draft_within_the_open_limit() {
+    let Some((rig, s)) = lane().await else { return };
+    let editor = rig.user(1, Role::Editor).await;
+    let request = edit(&s, "a.yml", at("x: 1\nok: 1\n"), "x: 2\nok: 1\n");
+    let first = rig
+        .hub
+        .propose_draft(&ctx(&editor, "d-1"), request.clone())
+        .await
+        .unwrap();
+    let again = rig
+        .hub
+        .propose_draft(&ctx(&editor, "d-1"), request)
+        .await
+        .unwrap();
+    assert_ne!(first.id, again.id, "the key is not honoured yet");
+    assert_eq!(rig.count("drafts").await, 2);
+    assert_eq!(rig.count("idempotency_keys").await, 0, "and no claim is made");
+}
+
 #[tokio::test]
 async fn apply_draft_writes_audits_draft_applied_and_marks_it() {
     let Some((rig, s)) = lane().await else { return };
