@@ -140,7 +140,11 @@ async fn concurrent_drafts_cannot_pass_the_open_limit() {
     });
     let results = futures::future::join_all(attempts).await;
     let made = results.iter().filter(|r| r.is_ok()).count();
-    assert_eq!(made as i64, room, "{} of 12 drafts were made", made);
+    assert_eq!(
+        i64::try_from(made).unwrap(),
+        room,
+        "{made} of 12 drafts were made"
+    );
     assert!(
         results
             .iter()
