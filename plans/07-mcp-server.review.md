@@ -194,3 +194,74 @@ Other findings:
 - Not run by the reviewer: `just verify` as one command, `cargo test --workspace`, `just web-verify`, libFuzzer runs, `osv-scanner`, anything needing pgvector or Docker, a full `cargo clippy --workspace`.
 - Spec chain: plan approved at `eeceade`, `git diff eeceade HEAD -- plans/07-mcp-server.md` is empty; commits T0 to T7 in order; only `perf/budgets.toml` changed among contract paths (21 flips, approved by C2); Extra-paths match the plan.
 - Security trace: S4, S7, S9, S11, S14 (gap: dropped-request leak, blocking 1), S14b, S15, S21 (`logging::*` flaky, blocking 2), P9 (numbers not re-run) each traced to code and tests; threat model updated.
+
+---
+
+# 07 review, round 3 (final)
+
+Reviewer agent output, saved by the orchestrator. Branch `agent/07-mcp-server` at `551f4e2`.
+
+VERDICT: APPROVE
+
+No blocking defect in the code, tests, spec chain or docs. The one fact that limits this approval is that the two carried gates are still open. They are environmental or human, and by instruction the reviewer did not count them as blocking (non-blocking 1).
+
+## Blocking
+
+None.
+
+## Non-blocking
+
+1. **Carried gates (not blocking by instruction; merge and go-live conditions).** The evidence file, `docs/cursor-admin.md`, D91, the threat model and the acceptance list state both honestly. Nothing is ticked without proof, and NOT RUN is never counted as a pass. No misstatement found.
+   - (a) No Docker daemon: `just verify-07` stops at `docker-check`. `just verify` was never run as one command. Missing from the sandbox: pgvector-dependent tests, `osv-scanner` and the libFuzzer runs.
+   - (b) T0 on Cursor 3.22.12 (Windows and macOS) is NOT RUN, 25 cells unfilled per OS. `just mcp-t0-status --strict` exits 1, as designed, and is a go-live gate.
+   - (c) P9 numbers: the reviewer did not re-run `just mcp-bench` (benchmark builds were not allowed). `cargo xtask bench-check` on the full registry gives 0 pass, 46 fail, 26 unmet of 72 here because `target/criterion` does not exist. The 21 of 21 pass is the implementer's, measured on `f67bf80`. The only later production change is `dc299b0`: a summary sentence in `get_effective_config`, a signature on the `raise_pr` question, and `RedactedText::window`. The `f67bf80` run does not cover that last item, so the "not on the measured path" claim holds only for the first two. Re-run the benchmarks in the Docker-capable run.
+   - The PR text should quote 505 tests. The per-crate and sub-recipe rows in `plans/07-mcp-server.evidence.md` still say 482, labelled "after round 1".
+
+2. **The four accepted items, judged on the merits. None should block merge.**
+   - `/mcp` as a self-authenticating `public` route (D-1, D109): `server/guard.rs:122-212` runs the gate on POST, GET and DELETE before rmcp (length, Host, Origin, bearer, `Users::require_active`, session owner). `route_table::{every_mcp_route_has_a_declared_guard, the_routes_of_each_mode_are_exactly_these, unmatched_path_under_mcp_is_default_deny, every_method_of_the_endpoint_is_gated}` and the hub's `mcp_routes_pass_the_hub_route_table_check` and `mcp_default_deny_holds` hold the line. The `route_only` allowances in that test are derived from the registered routes, so they are circular; `the_routes_of_each_mode_are_exactly_these` breaks the circle. Lost: no structural proof that the gate is wired. Reversal is a three-line `GuardedRouter::layer` in `hub-platform`.
+   - S3 on the personal-token routes met by the Origin check only (D-2): `auth/routes.rs:133` requires the exact public origin, a missing Origin is a 403 before the body is read. Nothing is exposed, because `main` never mounts `McpModule`. Condition: the hub composes 03a's `CsrfLayer` over `/api/v1/me/mcp-tokens` and asserts it in `crates/hub/tests/mcp_module.rs`; list it next to `mcp-t0-status --strict` in the PR text.
+   - Cold `read_file` p95 of 52 to 63 ms against the 50 ms screen (D92a): the registered 300 ms budget passes with a wide margin; the cost is `engine::index_settings` (own accepted budget 60 ms), paid once per file version per replica (`tools/cache.rs`, keyed by content hash); warm calls take about 2 ms. Still a parse at call time; prompt 16 must measure the real path; D92 option C is the clean fix.
+   - `get_effective_config` with `text` null and typed values `other` (D92b): the output validates against the contract schema, redaction is unaffected. A real functional gap. Round 2's mitigation (a fixed sentence pointing to `get_served_config`) is in place and tested by `read_tools::get_effective_config_of_a_resource_file_points_to_the_served_view`. Track the follow-up contract PR before go-live.
+
+3. **`RedactedText::window` overclaims for a lone CR (`output/redact.rs:75-80`).** The doc says `window.first_lines(k)` equals `self.first_lines(k)` for every k. `window` and `line_count` end a line at `\n`, `\r\n` or a lone `\r`, but `first_lines` (line 65) cuts only at `\n`. For `a\rb\rc\rd\n` with two lines asked for, `window` keeps `a\rb`, and `self.first_lines(1)` returns the whole text. Nothing unsafe happens: the "k of N lines" label stays consistent and the window is only ever a prefix. The proptest covers `\n` and `\r\n` only. Fix the doc or add a lone-CR case.
+
+4. **Nothing stops a future direct `Users::require_active` call.** `ToolHost.users` is `pub` (`tools/mod.rs:49`). Today every call goes through `ToolHost::require_active`, `BearerAuth::bounded` or the gate (all call sites grepped). A source rule like `source_rules.rs` would keep it that way.
+
+5. **Per-user limits cover `tools/call` only.** `initialize`, `tools/list`, GET, DELETE and `ping` take no rate token (`handler.rs:207, 223`). Each costs one to two directory lookups. The threat-model row at `docs/threat-model.md:529` says "per-user limits start after the token is accepted". Say "for tool calls", or add a cheap per-user bucket. Needs a VPN-side authenticated client.
+
+6. **Residual session leaks, all bounded by the 30-minute idle expiry and the caps.** If hyper cannot write the response head to a client that has already left, the owner entry and the rmcp session stay until idle expiry. If rmcp closes a session between its response and `owners.insert` (`guard.rs:203-206`), the owner entry is stale for up to 35 minutes. The second case could not be provoked. Both are covered in substance by the threat-model sentence on idle expiry, but not named.
+
+7. **Carried follow-ups, correctly in the evidence.** The type-level narrow handle for the write service (`ToolHost.writes` is still public; the guard is a source scan); the `advertise_output_schemas` default and the content-mode default, decided with T0 (`tools/list` is 112,340 bytes with output schemas and 31,235 without); decision-number collisions with `origin/agent/05-registry-read-api`; D109 provenance (the git author is the agent); session affinity for prompt 09; `tools.notify_services.enabled` has no environment key; the dev-only `evals/evals.json` in the plugin package; plan test names `docs_tree::read_doc_takes_only_doc_paths` and `docs_tree::dotdot_and_backslash_are_refused` do not exist (of 183 names grepped from the traceability table only these two and the `docs_tree` module name are absent; their cases are in `args::every_path_argument_uses_a_domain_parser`, `args.rs:438-452`; disclosed in the evidence).
+
+## Focus areas (reviewer's findings)
+
+- **RAII `Opening` and the task-local (`server/session.rs`, `server/guard.rs`): sound.** No double release, no leak on any path the reviewer could construct, no session closed that a client learned the id of. Exactly one of two things happens: the `Opening` is dropped and releases, or `hand_over` is called and only the owner-table eviction listener releases; `hand_over` and `owners.insert` are synchronous after the last `.await`. In rmcp 3.5.0 `handle_post` creates the session in the request's own task and `CappedSessionManager::create_session` has no await after the inner create. The listener cannot double-release (invalidate of an unowned session is a no-op; the owner table is at least twice the cap). `a_request_dropped_at_any_poll_leaves_the_count_equal_to_the_sessions` has non-vacuity asserts.
+  Mutations on a scratch copy of HEAD, each caught: skip the close in `Drop` (2 mcp_auth tests fail); skip the release in `Drop` (4 + 3 fail); release also in `hand_over` (10 of 11 `sessions::` fail); `hand_over` does not disarm (10 of 11 fail); remove both port timeouts (all 5 `never_answers` tests fail).
+- **Timeouts: no path turns silence into a pass.** `BearerAuth::bounded` maps a timeout to `Err(Unavailable)` (503 at the gate, `still_valid` false); `ToolHost::require_active` maps it to `Code::Unavailable` on a call and a JSON-RPC internal error on `tools/list`. All `require_active` call sites in `src` are bounded, including the post-confirmation re-check. The five `limits::*never_answers*` tests use a paused clock with an outer 60 s timeout.
+- **`get_served_config` window: correct.** Computed inside the scan's `spawn_blocking`; `fit_lines` binary-searches at most 200 lines of at most 16 KB; no cursor, `next` null with a `web_link` when truncated; `a_two_mib_served_file_shows_the_first_200_lines_and_says_how_many_there_are` asserts the exact first 200 lines and "200 of N lines".
+- **Shared log capture: no longer vacuous.** All five users of `capture::start()` carry positive assertions on product lines; no `mcp_auth` test calls `set_default`.
+- **The gate is the only caller of the mutating `WriteService` methods** (grep of `src`: only `confirm/gate.rs`; the other use of `host.writes` is `propose_draft`, which has no confirmation by contract). Error results carry fixed text; the `hub_mcp::call` log fields are the tool, outcome, elapsed time, stable user id and request id.
+- **Redaction and the final sweep.** The sweep covers the summary and every string in `data`, then `content`, and fails closed. `message::raise_pr` takes the host's redactor; only `server/mod.rs` builds a `Redactor::new()` in production code. The elicitation questions hold no file content, only the assistant-supplied paths, title and service name (quoted), counts, and the first 240 characters of the PR body (scanned).
+- **Personal-token store.** `lkpat_` plus 256 random bits, stored as HMAC-SHA-256, constant-time compare, one audit event in the same transaction; routes on the session guard at Viewer, 404 in OAuth mode, `Cache-Control: no-store`; `auth_pat_pg` ran on a real PG 16 with no SKIPPED line.
+
+## Security trace (S# to implementation to test)
+
+S3 (partial, D109), S4, S7, S9, S11, S14, S14b, S15, S21 and P9 each traced to code and named tests; the full trace is in `plans/07-mcp-server.evidence.md`.
+
+## Spec chain
+
+- `eeceade` is "07/plan: approved by a human"; `git log eeceade..HEAD -- plans/07-mcp-server.md` is empty; the plan header reads Status: APPROVED and Contract-change: APPROVED.
+- Commits T0 to T7 appear in order; the fix, evidence, review, decision, blocked and merge commits sit between them.
+- Outside `crates/hub-mcp/` the diff touches only the shared `Cargo.toml`, `Cargo.lock` and `Justfile`, the four approved hub files, `crates/xtask/tests/budgets_registry.rs`, `docs/cursor-admin.md` (owned), `docs/decisions.md` and `docs/threat-model.md` (approved), `perf/budgets.toml`, and the `plans/07-mcp-server.*` files.
+- Among contract paths only `perf/budgets.toml` changed: exactly 21 lines of `registered = false` became `registered = true`, which C2 approves. `crates/domain`, `crates/ports`, `proto`, `api`, `db`, `docs/mcp-tools.md`, `design` and `skills` are untouched.
+- `git diff 545d0f5..HEAD -- Cargo.toml Cargo.lock crates/hub-mcp/Cargo.toml` is empty, so the dependency set, the 14-day check and `cargo deny` stand from rounds 1 and 2.
+
+## Evidence re-run (reviewer)
+
+- `cargo fmt --all -- --check`: exit 0. `cargo clippy -p hub-mcp -p hub --all-targets -- -D warnings`: exit 0; also `cargo clippy -p hub-mcp -- -D warnings` (no dev features) and `cargo check -p hub`.
+- `cargo test -p hub-mcp --lib --tests --no-fail-fast` with `LK_TEST_PG_ADMIN_URL` (PG 16.15, no pgvector): **505 passed, 0 failed, 0 ignored, no SKIPPED line** (lib 42, config 10, cursor_admin_doc 18, justfile_gate 7, mcp_auth 346, plugin_package 19, rmcp_spike 13, stub_protocol 24, t0_status 15, threat_model 11). `auth_pat_pg`: 11 passed on the real PG 16.
+- Flake runs on the compiled `mcp_auth` binary: filter `the_` (133 tests) 0 of 20 failed (round 2 saw 5 of 15); full binary 0 of 5 (346 tests); `sessions::` and `logging::` pinned to one CPU with 16 test threads 0 of 16; `--test-threads=1` 346 passed.
+- `cargo test -p hub --test mcp_module`: 5 passed. `cargo test -p xtask --test mcp_tools_doc --test budgets_registry`: 23 and 8 passed.
+- `cargo deny check`: advisories, bans, licenses, sources ok. `cargo audit`: exit 0.
+- `just verify-07`: fails at `docker-check` (environmental). `just mcp-t0-status`: every cell NOT RUN; `--strict` exits 1.
+- Not run by the reviewer: `just verify` as one command, `cargo test --workspace`, `just web-verify`, libFuzzer runs, `osv-scanner`, pgvector- and Docker-dependent checks, benchmark builds.
