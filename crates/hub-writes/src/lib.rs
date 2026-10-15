@@ -68,6 +68,7 @@ pub mod vault;
 pub use autonotify::AutoNotifier;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{MAX_EXTRA_DENY_GLOBS, PREVIEW_KEY_SECRET, WriteConfig};
+pub use drafts::MAX_OPEN_DRAFTS;
 pub use error::ConfigError;
 pub use idempotency::RequestHash;
 pub use ops::restart::MAX_RESTART_OFFER;

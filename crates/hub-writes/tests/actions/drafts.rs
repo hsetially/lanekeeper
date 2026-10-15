@@ -106,6 +106,50 @@ async fn a_retried_draft_with_the_same_key_makes_a_second_draft_within_the_open_
     assert_eq!(rig.count("idempotency_keys").await, 0, "and no claim is made");
 }
 
+/// The cap is kept by the insert, not only by a count before the work: requests that all see room at the start cannot all take it.
+#[tokio::test]
+async fn concurrent_drafts_cannot_pass_the_open_limit() {
+    let Some((rig, s)) = lane().await else { return };
+    let editor = rig.user(1, Role::Editor).await;
+    let blob = rig.blobs.put(Bytes::from_static(b"seed\n")).await.unwrap();
+    let room = 5_i64;
+    sqlx::query(
+        "INSERT INTO drafts (id, author_tid, author_oid, swimlane_id, path, expected, new_hash, expires_at) \
+         SELECT 'd-seed-' || g, $1, $2, 'sit1', 'b.yml', $3, $4, to_timestamp($5 / 1000.0) + interval '1 day' \
+         FROM generate_series(1, $6) g",
+    )
+    .bind(editor.id.tid().as_str())
+    .bind(editor.id.oid().as_str())
+    .bind(serde_json::to_value(at("y: 1\n")).unwrap())
+    .bind(blob.as_bytes().as_slice())
+    .bind(crate::support::rig::START)
+    .bind(hub_writes::MAX_OPEN_DRAFTS - room)
+    .execute(&rig.pool)
+    .await
+    .unwrap();
+
+    let attempts = (0..12).map(|n| {
+        let (hub, c) = (rig.hub.clone(), ctx(&editor, &format!("d-{n}")));
+        let r = edit(
+            &s,
+            "a.yml",
+            at("x: 1\nok: 1\n"),
+            &format!("x: {}\nok: 1\n", n + 2),
+        );
+        async move { hub.propose_draft(&c, r).await }
+    });
+    let results = futures::future::join_all(attempts).await;
+    let made = results.iter().filter(|r| r.is_ok()).count();
+    assert_eq!(made as i64, room, "{} of 12 drafts were made", made);
+    assert!(
+        results
+            .iter()
+            .filter_map(|r| r.as_ref().err())
+            .all(|e| *e == WriteError::BadRequest)
+    );
+    assert_eq!(rig.count("drafts").await, hub_writes::MAX_OPEN_DRAFTS);
+}
+
 #[tokio::test]
 async fn apply_draft_writes_audits_draft_applied_and_marks_it() {
     let Some((rig, s)) = lane().await else { return };

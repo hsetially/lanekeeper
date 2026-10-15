@@ -239,16 +239,39 @@ pub(crate) async fn propose_draft(hub: &Inner, ctx: &WriteCtx, r: EditRequest) -
         severity,
         effects,
     };
-    insert(hub, &draft, now).await?;
+    // The count above is only to refuse early; the insert takes the author's lock and counts again, so requests that all saw room
+    // at the start cannot all take it.
+    if !insert(hub, &draft, now).await? {
+        return Err(WriteError::BadRequest);
+    }
     Ok(draft)
 }
 
 /// Keep the draft and the reference that holds its new version, in one transaction. Its severity and effects are not stored.
-async fn insert(hub: &Inner, draft: &Draft, created_ms: i64) -> Res<()> {
+/// Under a lock on the author's drafts the open ones are counted again: `false` means the author has [`MAX_OPEN_DRAFTS`] and
+/// nothing was stored.
+async fn insert(hub: &Inner, draft: &Draft, created_ms: i64) -> Res<bool> {
     let mut tx = hub
         .within("draft_insert", hub.pool.begin())
         .await?
         .map_err(|e| Internal::db("draft_insert", &e))?;
+    let (tid, oid) = (draft.author.tid().as_str(), draft.author.oid().as_str());
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("drafts:{tid}:{oid}"))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Internal::db("draft_insert", &e))?;
+    let open: i64 = sqlx::query_scalar(OPEN_COUNT)
+        .bind(tid)
+        .bind(oid)
+        .bind(created_ms)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| Internal::db("draft_insert", &e))?;
+    if open >= MAX_OPEN_DRAFTS {
+        let _ = tx.rollback().await;
+        return Ok(false);
+    }
     sqlx::query(INSERT)
         .bind(draft.id.as_str())
         .bind(draft.author.tid().as_str())
@@ -274,7 +297,7 @@ async fn insert(hub: &Inner, draft: &Draft, created_ms: i64) -> Res<()> {
         .await
         .map_err(|e| Internal::db("draft_insert", &e))?;
     tx.commit().await.map_err(|e| Internal::db("draft_insert", &e))?;
-    Ok(())
+    Ok(true)
 }
 
 /// A draft as it is now, for its author. No side effect and no audit event (reading is not audited), and no idempotency record. A
