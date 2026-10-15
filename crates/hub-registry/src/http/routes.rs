@@ -208,7 +208,7 @@ async fn list_tree(api: &dyn RegistryApi, call: Call) -> Reply {
 async fn list_drift(api: &dyn RegistryApi, call: Call) -> Reply {
     let q = query::drift(call.query())?;
     let out = api
-        .drift(&call.user, &call.swimlane()?, q.state, &q.prefix, q.page)
+        .drift_ranked(&call.user, &call.swimlane()?, q.state, &q.prefix, q.page)
         .await
         .map_err(api_error)?;
     json(&out, &Meta::default())
@@ -284,7 +284,7 @@ async fn get_served(api: &dyn RegistryApi, call: Call) -> Reply {
     let request = query::served(call.query())?;
     let swimlane = call.swimlane()?;
     let tagged = api
-        .served(&call.user, &swimlane, request, call.if_none_match())
+        .served_tagged(&call.user, &swimlane, &request, call.if_none_match())
         .await
         .map_err(api_error)?;
     match tagged {
@@ -330,7 +330,7 @@ async fn compare_file(api: &dyn RegistryApi, call: Call) -> Reply {
 async fn compare_tree(api: &dyn RegistryApi, call: Call) -> Reply {
     let q = query::compare_tree(call.query())?;
     let Named { value, tenants } = api
-        .compare_tree_under(&call.user, q.left, q.right, &q.prefix, q.page)
+        .compare_tree_named(&call.user, q.left, q.right, &q.prefix, q.page)
         .await
         .map_err(api_error)?;
     json(

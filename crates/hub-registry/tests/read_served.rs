@@ -77,7 +77,7 @@ async fn the_answer_has_the_servers_text_the_engines_role_and_sources_and_the_pl
     let v = Reads::viewer();
     let Tagged::Fresh { etag, value } = r
         .service
-        .served(&v, &sit1(), request("core.yml"), None)
+        .served_tagged(&v, &sit1(), &request("core.yml"), None)
         .await
         .unwrap()
     else {
@@ -109,7 +109,7 @@ async fn the_answer_has_the_servers_text_the_engines_role_and_sources_and_the_pl
     // A matching tag is a 304, after the round trip (the answer is the thing asked for).
     let again = r
         .service
-        .served(&v, &sit1(), request("core.yml"), Some(&etag))
+        .served_tagged(&v, &sit1(), &request("core.yml"), Some(&etag))
         .await
         .unwrap();
     assert!(matches!(again, Tagged::NotModified { .. }));
@@ -117,7 +117,7 @@ async fn the_answer_has_the_servers_text_the_engines_role_and_sources_and_the_pl
     r.gateway.attach(&sit1(), answer(200, b"port: 3\n"));
     let Tagged::Fresh { etag: changed, .. } = r
         .service
-        .served(&v, &sit1(), request("core.yml"), Some(&etag))
+        .served_tagged(&v, &sit1(), &request("core.yml"), Some(&etag))
         .await
         .unwrap()
     else {
@@ -140,7 +140,7 @@ async fn a_denied_file_is_withheld_and_the_agent_is_not_asked() {
     let v = Reads::viewer();
     let Tagged::Fresh { value, .. } = r
         .service
-        .served(&v, &sit1(), request("keys/server.pem"), None)
+        .served_tagged(&v, &sit1(), &request("keys/server.pem"), None)
         .await
         .unwrap()
     else {
@@ -161,7 +161,7 @@ async fn what_the_agent_and_the_config_server_say_become_our_statuses_and_their_
     let v = Reads::viewer();
     let ask = |file: &str| {
         let (service, v, req) = (r.service.clone(), v.clone(), request(file));
-        async move { service.served(&v, &sit1(), req, None).await }
+        async move { service.served_tagged(&v, &sit1(), &req, None).await }
     };
     // No agent attached.
     assert_eq!(ask("core.yml").await.unwrap_err(), ReadError::Unavailable);
@@ -195,12 +195,20 @@ async fn what_the_agent_and_the_config_server_say_become_our_statuses_and_their_
         ..request("core.yml")
     };
     assert_eq!(
-        r.service.served(&v, &sit1(), other, None).await.unwrap_err(),
+        r.service
+            .served_tagged(&v, &sit1(), &other, None)
+            .await
+            .unwrap_err(),
         ReadError::NotFound
     );
     assert_eq!(
         r.service
-            .served(&v, &SwimlaneId::parse("nope").unwrap(), request("core.yml"), None)
+            .served_tagged(
+                &v,
+                &SwimlaneId::parse("nope").unwrap(),
+                &request("core.yml"),
+                None
+            )
             .await
             .unwrap_err(),
         ReadError::NotFound
@@ -208,7 +216,7 @@ async fn what_the_agent_and_the_config_server_say_become_our_statuses_and_their_
     r.gateway.attach(&sit1(), answer(200, &[0xFF, 0xFE, 0x41]));
     let Tagged::Fresh { value, .. } = r
         .service
-        .served(&v, &sit1(), request("core.yml"), None)
+        .served_tagged(&v, &sit1(), &request("core.yml"), None)
         .await
         .unwrap()
     else {
@@ -234,7 +242,7 @@ async fn a_silent_agent_is_given_the_timeout_and_no_more_than_the_limit_are_in_f
     let started = Instant::now();
     assert_eq!(
         r.service
-            .served(&v, &sit1(), request("core.yml"), None)
+            .served_tagged(&v, &sit1(), &request("core.yml"), None)
             .await
             .unwrap_err(),
         ReadError::Unavailable
@@ -251,7 +259,9 @@ async fn a_silent_agent_is_given_the_timeout_and_no_more_than_the_limit_are_in_f
     for _ in 0..4 {
         let (service, v) = (r.service.clone(), v.clone());
         tasks.push(tokio::spawn(async move {
-            service.served(&v, &sit1(), request("core.yml"), None).await
+            service
+                .served_tagged(&v, &sit1(), &request("core.yml"), None)
+                .await
         }));
     }
     for t in tasks {
@@ -266,7 +276,7 @@ async fn a_silent_agent_is_given_the_timeout_and_no_more_than_the_limit_are_in_f
     r.gateway.attach(&sit1(), answer(200, b"port: 2\n"));
     assert!(
         r.service
-            .served(&v, &sit1(), request("core.yml"), None)
+            .served_tagged(&v, &sit1(), &request("core.yml"), None)
             .await
             .is_ok()
     );

@@ -332,7 +332,7 @@ async fn the_tree_pages_by_name_and_a_cursor_belongs_to_its_own_list() {
     );
     assert_eq!(
         r.service
-            .drift(&v, &lane("sit1"), None, &nfs_root(), with(&cursor))
+            .drift_ranked(&v, &lane("sit1"), None, &nfs_root(), with(&cursor))
             .await
             .unwrap_err(),
         ReadError::BadRequest,
@@ -355,7 +355,7 @@ async fn the_drift_list_is_flat_paged_by_sequence_and_filtered() {
     let v = Reads::viewer();
     let all = r
         .service
-        .drift(&v, &lane("sit1"), None, &nfs_root(), page(100))
+        .drift_ranked(&v, &lane("sit1"), None, &nfs_root(), page(100))
         .await
         .unwrap();
     let mut got: Vec<String> = all.items.iter().map(|e| e.path.to_string()).collect();
@@ -372,7 +372,7 @@ async fn the_drift_list_is_flat_paged_by_sequence_and_filtered() {
     loop {
         let p = r
             .service
-            .drift(
+            .drift_ranked(
                 &v,
                 &lane("sit1"),
                 None,
@@ -392,7 +392,7 @@ async fn the_drift_list_is_flat_paged_by_sequence_and_filtered() {
 
     let only = r
         .service
-        .drift(
+        .drift_ranked(
             &v,
             &lane("sit1"),
             Some(DriftState::GitAhead),
@@ -407,13 +407,13 @@ async fn the_drift_list_is_flat_paged_by_sequence_and_filtered() {
     );
     let below = r
         .service
-        .drift(&v, &lane("sit1"), None, &nfs("a/deep"), page(100))
+        .drift_ranked(&v, &lane("sit1"), None, &nfs("a/deep"), page(100))
         .await
         .unwrap();
     assert_eq!(below.items.len(), 1);
     assert_eq!(
         r.service
-            .drift(&v, &lane("nowhere"), None, &nfs_root(), page(1))
+            .drift_ranked(&v, &lane("nowhere"), None, &nfs_root(), page(1))
             .await
             .unwrap_err(),
         ReadError::NotFound

@@ -1202,7 +1202,7 @@ async fn the_denial_is_behind_the_guard_on_the_route_and_on_the_port() {
         assert_eq!(
             h.reads
                 .service
-                .drift(
+                .drift_ranked(
                     &user,
                     &lane,
                     Some(DriftState::NfsAhead),

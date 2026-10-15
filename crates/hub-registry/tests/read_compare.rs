@@ -447,7 +447,7 @@ async fn tree(
         nfs(prefix)
     };
     Ok(r.service
-        .compare_tree_under(&Reads::viewer(), l, rr, &prefix, p)
+        .compare_tree_named(&Reads::viewer(), l, rr, &prefix, p)
         .await?
         .value)
 }

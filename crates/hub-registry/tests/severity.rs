@@ -592,7 +592,7 @@ async fn the_drift_list_is_most_serious_first_then_oldest_and_a_cursor_keeps_tha
 
     let whole = r
         .service
-        .drift(
+        .drift_ranked(
             &v,
             &lane("sit1"),
             None,
@@ -622,7 +622,7 @@ async fn the_drift_list_is_most_serious_first_then_oldest_and_a_cursor_keeps_tha
     loop {
         let p = r
             .service
-            .drift(
+            .drift_ranked(
                 &v,
                 &lane("sit1"),
                 None,
@@ -644,7 +644,7 @@ async fn the_drift_list_is_most_serious_first_then_oldest_and_a_cursor_keeps_tha
     r.world.paths(&[CALM]).await;
     let more = r
         .service
-        .drift(
+        .drift_ranked(
             &v,
             &lane("sit1"),
             None,
@@ -666,7 +666,7 @@ async fn the_drift_list_is_most_serious_first_then_oldest_and_a_cursor_keeps_tha
         .await;
     let nulls = r
         .service
-        .drift(
+        .drift_ranked(
             &v,
             &lane("sit1"),
             Some(DriftState::NfsAhead),
@@ -689,7 +689,7 @@ async fn the_drift_list_is_most_serious_first_then_oldest_and_a_cursor_keeps_tha
     loop {
         let p = r
             .service
-            .drift(
+            .drift_ranked(
                 &v,
                 &lane("sit1"),
                 Some(DriftState::NfsAhead),

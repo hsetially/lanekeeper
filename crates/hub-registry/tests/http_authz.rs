@@ -182,7 +182,7 @@ async fn the_service_itself_refuses_a_user_who_is_not_an_active_viewer() {
             forbidden
         );
         assert_eq!(
-            api.drift(u, &s, None, &domain::NfsPath::root(), page(10))
+            api.drift_ranked(u, &s, None, &domain::NfsPath::root(), page(10))
                 .await
                 .unwrap_err(),
             forbidden
@@ -201,7 +201,7 @@ async fn the_service_itself_refuses_a_user_who_is_not_an_active_viewer() {
             forbidden
         );
         assert_eq!(
-            api.compare_tree_under(u, left, right, &domain::NfsPath::root(), page(10))
+            api.compare_tree_named(u, left, right, &domain::NfsPath::root(), page(10))
                 .await
                 .unwrap_err(),
             forbidden
@@ -237,7 +237,10 @@ async fn the_service_itself_refuses_a_user_who_is_not_an_active_viewer() {
             channel: None,
             file: p.clone(),
         };
-        assert_eq!(api.served(u, &s, request, None).await.unwrap_err(), forbidden);
+        assert_eq!(
+            api.served_tagged(u, &s, &request, None).await.unwrap_err(),
+            forbidden
+        );
     }
     // And the port's own methods are covered by the conformance suite (`read_conformance`).
 }

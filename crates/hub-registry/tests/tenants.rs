@@ -284,7 +284,7 @@ async fn the_first_tenant_in_sorted_order_stands_in_for_the_swimlane_in_every_vi
         named.tenants
     );
     let tree = api
-        .compare_tree_under(
+        .compare_tree_named(
             &v,
             CompareRef::Effective(s.clone()),
             CompareRef::Nfs(s.clone()),

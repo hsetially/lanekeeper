@@ -60,7 +60,9 @@ pub trait RegistryApi: RegistryRead {
         page: Page,
     ) -> Result<Paged<FileEntry>, ReadError>;
 
-    async fn drift(
+    /// The drift list of the REST `listDrift`: the files that are not in sync (or are in `state`) below `prefix`, most serious first
+    /// (D103). The port's [`RegistryRead::drift`] is the same files ordered by path (its documentation says so).
+    async fn drift_ranked(
         &self,
         u: &User,
         s: &SwimlaneId,
@@ -89,7 +91,9 @@ pub trait RegistryApi: RegistryRead {
         if_none_match: Option<&str>,
     ) -> Result<Tagged<Named<Comparison>>, ReadError>;
 
-    async fn compare_tree_under(
+    /// The whole-tree comparison below `prefix`, with the tenant that stood for each swimlane in it (A30). The port's
+    /// [`RegistryRead::compare_tree_under`] is its `value`.
+    async fn compare_tree_named(
         &self,
         u: &User,
         l: CompareRef,
@@ -121,12 +125,13 @@ pub trait RegistryApi: RegistryRead {
     /// The engine's limits the answers are made under: what a handler needs to turn a file's bytes into the text of its response.
     fn limits(&self) -> &Limits;
 
-    /// A file as the config-server serves it (plan A4).
-    async fn served(
+    /// A file as the config-server serves it (plan A4), with its entity tag. The port's [`RegistryRead::served`] is the same
+    /// answer without the tag.
+    async fn served_tagged(
         &self,
         u: &User,
         s: &SwimlaneId,
-        request: ServeRequest,
+        request: &ServeRequest,
         if_none_match: Option<&str>,
     ) -> Result<Tagged<ServedFile>, ReadError>;
 }
@@ -201,7 +206,7 @@ impl RegistryRead for RegistryService {
         page: Page,
     ) -> Result<TreeComparison, ReadError> {
         Ok(self
-            .compare_tree_under(u, l, r, &NfsPath::root(), page)
+            .compare_tree_named(u, l, r, &NfsPath::root(), page)
             .await?
             .value)
     }
@@ -285,7 +290,7 @@ impl RegistryApi for RegistryService {
             .await
     }
 
-    async fn drift(
+    async fn drift_ranked(
         &self,
         u: &User,
         s: &SwimlaneId,
@@ -346,7 +351,7 @@ impl RegistryApi for RegistryService {
             .await
     }
 
-    async fn compare_tree_under(
+    async fn compare_tree_named(
         &self,
         u: &User,
         l: CompareRef,
@@ -402,16 +407,16 @@ impl RegistryApi for RegistryService {
         &self.inner.limits
     }
 
-    async fn served(
+    async fn served_tagged(
         &self,
         u: &User,
         s: &SwimlaneId,
-        request: ServeRequest,
+        request: &ServeRequest,
         if_none_match: Option<&str>,
     ) -> Result<Tagged<ServedFile>, ReadError> {
         require_viewer(u)?;
         self.inner
-            .timed(ReadOp::Served, self.inner.served_file(s, &request, if_none_match))
+            .timed(ReadOp::Served, self.inner.served_file(s, request, if_none_match))
             .await
     }
 }
