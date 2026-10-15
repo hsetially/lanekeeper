@@ -18,6 +18,9 @@ pub const MAX_TEXT_BYTES: usize = 8 * 1024;
 /// The most characters the body is allowed to have: GitHub rejects a body over 65,536, and this leaves some margin.
 pub const MAX_BODY_CHARS: usize = 65_000;
 
+/// Room kept for the line that counts the files left out of the table.
+const LEFT_OUT_ROOM: usize = 96;
+
 /// The most files named one by one in a commit message.
 const MAX_LISTED: usize = 20;
 
@@ -119,7 +122,6 @@ pub fn pull_body(plan: &PrPlan, audit: Option<AuditId>) -> String {
 
     // Bytes, which are never fewer than characters: the limit holds whatever the characters are. The line that counts the rows
     // left out is paid for before the rows, so it always fits.
-    const LEFT_OUT_ROOM: usize = 96;
     let mut room = MAX_BODY_CHARS.saturating_sub(head.len() + tail.len() + LEFT_OUT_ROOM);
     let mut rows = String::new();
     let mut listed = 0usize;
