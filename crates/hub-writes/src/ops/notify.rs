@@ -47,11 +47,12 @@ pub(crate) async fn notify_as(
     via: AuditVia,
 ) -> Result<WriteOutcome, WriteError> {
     let user = authorize(hub, ctx, Role::Operator).await?;
-    // A request of no path, or of more than the contract allows, is not a request the typed API can make.
-    let paths = distinct(r.paths);
-    if paths.is_empty() || paths.len() > NotifyRequest::MAX_PATHS {
+    // A request of no path, or of more than the contract allows as sent, is not a request the typed API can make. The count is of
+    // the paths as given and comes before anything is done with them: a long run of one path is not "one path", and is not read.
+    if r.paths.is_empty() || r.paths.len() > NotifyRequest::MAX_PATHS {
         return Err(WriteError::BadRequest);
     }
+    let paths = distinct(r.paths);
     let claim = match claim(hub, ctx, RequestHash::of_notify(&r.swimlane, &paths)).await? {
         Claimed::Replay(outcome) => return Ok(outcome),
         Claimed::Mine(claim) => claim,

@@ -220,6 +220,34 @@ async fn notify_requests_that_cannot_be_served_send_nothing() {
     assert_eq!(rig.chain().await.len(), 1);
 }
 
+/// The contract is one to 100 paths as sent: a request of more is refused before anything is deduplicated, so a long run of the
+/// same path cannot be made to look like one (and cannot cost a scan of everything that was sent).
+#[tokio::test]
+async fn a_request_of_more_than_the_most_paths_is_refused_even_if_they_are_all_the_same() {
+    let Some((rig, s)) = rig().await else { return };
+    let operator = rig.user(1, Role::Operator).await;
+
+    let same = vec!["application.yml"; NotifyRequest::MAX_PATHS + 1];
+    assert_eq!(
+        rig.hub
+            .notify(&ctx(&operator, "n-1"), notify_req(&s, &same))
+            .await,
+        Err(WriteError::BadRequest)
+    );
+    assert!(rig.agent.notified_paths().is_empty(), "nothing was sent");
+    assert_eq!(rig.chain().await.len(), 0);
+
+    // Up to the most, a repeated path still counts once.
+    let twice = vec!["application.yml"; NotifyRequest::MAX_PATHS];
+    let out = rig
+        .hub
+        .notify(&ctx(&operator, "n-2"), notify_req(&s, &twice))
+        .await
+        .unwrap();
+    assert!(matches!(out, WriteOutcome::Applied { .. }), "{out:?}");
+    assert_eq!(rig.agent.notified_paths().len(), 1);
+}
+
 #[tokio::test]
 async fn the_answer_of_the_config_server_decides_whether_a_notification_happened() {
     let Some((rig, s)) = rig().await else { return };
