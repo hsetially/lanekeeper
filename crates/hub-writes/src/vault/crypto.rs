@@ -6,10 +6,12 @@
 //! by the ciphertext as it is sealed, and zeroized on drop after it is opened) and the `Secret` that [`open`] returns. The data
 //! key is a `Secret<[u8; 32]>`, dropped (and so zeroized) before the function that made it returns.
 
+use std::borrow::Borrow;
+
 use aws_lc_rs::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
 use domain::{Secret, UserId};
 use ports::{KmsEnvelope, KmsError, WrappedKey};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The ciphertext of AES-256-GCM carries a 16-byte tag after the encrypted bytes.
 const TAG_LEN: usize = 16;
@@ -89,27 +91,44 @@ fn cipher(dek: &Secret<[u8; 32]>) -> Result<LessSafeKey, CryptoError> {
     Ok(LessSafeKey::new(key))
 }
 
+/// A fresh data key, as a `Secret`. The bytes it was made from are wiped as soon as they are in the `Secret` (and on an early
+/// return), so the one copy that remains is the one that is zeroized when the `Secret` drops.
+fn new_data_key() -> Result<Secret<[u8; 32]>, CryptoError> {
+    let raw = Zeroizing::new(random::<32>()?);
+    Ok(Secret::new(*raw))
+}
+
 /// Encrypt `token` under a data key made for it, and have KMS wrap that key. `aad` is [`associated_data`].
 pub async fn seal(kms: &dyn KmsEnvelope, token: &Secret<String>, aad: &[u8]) -> Result<Sealed, CryptoError> {
+    seal_with(kms, token, aad, new_data_key).await
+}
+
+/// [`seal`] with the data key's source named, so that a test can watch the key: `new_key` makes the key, and this function owns
+/// it from then on. Whatever happens, the key is dropped (and so zeroized) before this function returns; it is not stored, not
+/// returned and not held across anything that outlives the call.
+async fn seal_with<K: Borrow<Secret<[u8; 32]>>>(
+    kms: &dyn KmsEnvelope,
+    token: &Secret<String>,
+    aad: &[u8],
+    new_key: impl FnOnce() -> Result<K, CryptoError>,
+) -> Result<Sealed, CryptoError> {
     let nonce = random::<NONCE_LEN>()?;
-    let ciphertext = {
-        let mut raw = random::<32>()?;
-        let dek = Secret::new(raw);
-        raw.zeroize();
-        let key = cipher(&dek)?;
+    let (wrapped, ciphertext) = {
+        let dek = new_key()?;
+        let key = cipher(dek.borrow())?;
         // The room for the tag is reserved, so the buffer never moves and no copy of the plaintext is left behind.
         let mut buffer = Vec::with_capacity(token.expose().len() + TAG_LEN);
         buffer.extend_from_slice(token.expose().as_bytes());
         key.seal_in_place_append_tag(Nonce::assume_unique_for_key(nonce), Aad::from(aad), &mut buffer)
             .map_err(|_| CryptoError::Decrypt)?;
-        let wrapped = kms.wrap(&dek, aad).await?;
-        // `dek` is dropped, and so zeroized, at the end of this block.
+        let wrapped = kms.wrap(dek.borrow(), aad).await?;
+        // `dek` is dropped, and so zeroized, at the end of this block, and on every early return above.
         (wrapped, buffer)
     };
     Ok(Sealed {
-        wrapped: ciphertext.0,
+        wrapped,
         nonce,
-        ciphertext: ciphertext.1,
+        ciphertext,
     })
 }
 
@@ -147,7 +166,9 @@ pub async fn open<T: Plaintext>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::borrow::Borrow;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use async_trait::async_trait;
     use ports::conformance::sample::user_id;
@@ -316,12 +337,148 @@ mod tests {
         );
     }
 
-    /// The data key is a `Secret`: `seal` makes it, hands KMS a reference and drops it before it returns. This pins the type, so a
-    /// change to a plain array (which would not zeroize) does not compile.
-    #[test]
-    fn data_key_is_a_secret_that_zeroizes() {
-        fn takes_secret(_: &Secret<[u8; 32]>) {}
-        takes_secret(&Secret::new([7_u8; 32]));
+    /// A data key that tells when it is dropped. `seal_with` owns whatever its key factory returns, so this is what shows how long
+    /// the key lives: `Secret` zeroizes its bytes when it drops, and a `Secret` that has not dropped has not been wiped.
+    struct Probed {
+        key: Secret<[u8; 32]>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Probed {
+        fn new(bytes: [u8; 32]) -> (Self, Arc<AtomicBool>) {
+            let dropped = Arc::new(AtomicBool::new(false));
+            (
+                Self {
+                    key: Secret::new(bytes),
+                    dropped: dropped.clone(),
+                },
+                dropped,
+            )
+        }
+    }
+
+    impl Borrow<Secret<[u8; 32]>> for Probed {
+        fn borrow(&self) -> &Secret<[u8; 32]> {
+            &self.key
+        }
+    }
+
+    impl Drop for Probed {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// A KMS that records the key it is asked to wrap and whether that key is still alive at that moment, then answers `reply`.
+    struct Watching {
+        inner: FakeKmsEnvelope,
+        dropped: Arc<AtomicBool>,
+        seen: std::sync::Mutex<Vec<([u8; 32], bool)>>,
+        refuse: bool,
+    }
+
+    #[async_trait]
+    impl KmsEnvelope for Watching {
+        async fn wrap(&self, dek: &Secret<[u8; 32]>, aad: &[u8]) -> Result<WrappedKey, KmsError> {
+            let alive = !self.dropped.load(Ordering::SeqCst);
+            self.seen.lock().unwrap().push((*dek.expose(), alive));
+            if self.refuse {
+                return Err(KmsError::Unavailable);
+            }
+            self.inner.wrap(dek, aad).await
+        }
+
+        async fn unwrap(&self, w: &WrappedKey, aad: &[u8]) -> Result<Secret<[u8; 32]>, KmsError> {
+            self.inner.unwrap(w, aad).await
+        }
+    }
+
+    const KEY: [u8; 32] = [0xA5; 32];
+
+    fn watching(dropped: &Arc<AtomicBool>, refuse: bool) -> Watching {
+        Watching {
+            inner: FakeKmsEnvelope::new(),
+            dropped: dropped.clone(),
+            seen: std::sync::Mutex::default(),
+            refuse,
+        }
+    }
+
+    /// S8, acceptance 3. The data key is a `Secret`, KMS wraps exactly that key while it is alive, it is the key the token is
+    /// encrypted under, no copy of it is left in what `seal` returns, and it is dropped (which zeroizes it) before `seal` returns.
+    /// What cannot be shown from safe Rust is the wiped memory itself: that is `Secret`'s own property, and the probe shows that
+    /// it is `Secret`'s drop that `seal` relies on and that nothing keeps the key past the call.
+    #[tokio::test]
+    async fn data_key_is_zeroized_after_wrap() {
+        let (key, dropped) = Probed::new(KEY);
+        let kms = watching(&dropped, false);
+        let aad = associated_data(&user_id(1), 7);
+        let sealed = seal_with(&kms, &token(), &aad, || Ok(key)).await.unwrap();
+
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "the data key outlived the call to seal"
+        );
+        let seen = kms.seen.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            vec![(KEY, true)],
+            "KMS is given the key while it is alive, once"
+        );
+
+        // The token was encrypted under that key: the bytes KMS wrapped are the bytes that open it.
+        let mut buffer = sealed.ciphertext.clone();
+        let cipher = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &KEY).unwrap());
+        let plain = cipher
+            .open_in_place(
+                Nonce::assume_unique_for_key(sealed.nonce),
+                Aad::from(&aad[..]),
+                &mut buffer,
+            )
+            .unwrap();
+        assert_eq!(plain, TOKEN.as_bytes());
+
+        // And no copy of it was left in what is returned.
+        for (what, bytes) in [
+            ("nonce", sealed.nonce.to_vec()),
+            ("ciphertext", sealed.ciphertext.clone()),
+            ("wrapped key", sealed.wrapped.ciphertext.to_vec()),
+        ] {
+            assert!(
+                !bytes.windows(8).any(|w| KEY.windows(8).any(|k| k == w)),
+                "{what} holds the key"
+            );
+        }
+    }
+
+    /// The key is wiped when `seal` gives up, too: a KMS that refuses must not leave it behind.
+    #[tokio::test]
+    async fn data_key_is_zeroized_when_kms_refuses() {
+        let (key, dropped) = Probed::new(KEY);
+        let kms = watching(&dropped, true);
+        let got = seal_with(&kms, &token(), &associated_data(&user_id(1), 7), || Ok(key)).await;
+        assert_eq!(got.unwrap_err(), CryptoError::Kms);
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "the data key outlived the failed call"
+        );
+        assert_eq!(kms.seen.lock().unwrap().len(), 1);
+    }
+
+    /// `seal` takes its key from `new_data_key`, which hands out a `Secret` of 32 random bytes and nothing printable.
+    #[tokio::test]
+    async fn the_data_key_seal_uses_is_a_fresh_secret() {
+        let a: Secret<[u8; 32]> = new_data_key().unwrap();
+        let b: Secret<[u8; 32]> = new_data_key().unwrap();
+        assert_ne!(a.expose(), b.expose());
+        assert_ne!(a.expose(), &[0_u8; 32]);
+        assert_eq!(format!("{a:?}"), "[redacted]");
+        // The real `seal` wraps keys made this way: a key that is not a `Secret` does not reach KMS.
+        let spy = Spy::default();
+        seal(&spy, &token(), &associated_data(&user_id(1), 7))
+            .await
+            .unwrap();
+        assert_eq!(spy.keys.lock().unwrap().len(), 1);
     }
 
     #[test]
