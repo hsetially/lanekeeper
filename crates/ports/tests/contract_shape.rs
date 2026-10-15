@@ -12,8 +12,8 @@ use ports::conformance::sample::{swimlane, user_id};
 use ports::{
     AckSeq, AgentGateway, AuditAction, AuditActor, AuditEvent, AuditLog, AuditVia, BlobStore, DocSearch,
     EventBus, EventFilter, EventKind, GitReader, KeyRef, KeyRefError, KmsEnvelope, KmsSigner, Leases,
-    Notifier, RegistryRead, ReportSink, SecretSource, SentinelSink, TokenVerifier, Users, WriteService,
-    canonical_json, chain_hash, genesis_hash,
+    NotificationKind, Notifier, RegistryRead, ReportSink, SecretSource, SentinelSink, TokenVerifier,
+    ToolWriteEntry, ToolWrites, Users, WriteService, canonical_json, chain_hash, genesis_hash,
 };
 use static_assertions::{assert_impl_all, assert_obj_safe};
 
@@ -48,6 +48,7 @@ ports!(
     AuditLog,
     RegistryRead,
     WriteService,
+    ToolWrites,
     DocSearch,
     SentinelSink,
 );
@@ -70,7 +71,7 @@ fn every_interfaces_md_trait_is_covered() {
         in_doc, ours,
         "docs/interfaces.md and the ports crate list the same traits"
     );
-    assert_eq!(ours.len(), 17);
+    assert_eq!(ours.len(), 18);
 }
 
 #[test]
@@ -159,6 +160,10 @@ fn sample_events() -> Vec<DomainEvent> {
             job: job(),
         },
         DomainEvent::UserSessionsRevoked { user: user_id(1) },
+        DomainEvent::PickupChanged {
+            swimlane: sl(),
+            services: vec![ServiceRef::new("ns", "svc").unwrap()],
+        },
     ]
 }
 
@@ -177,8 +182,8 @@ fn event_kind_is_the_wire_type_of_every_domain_event() {
     }
     assert_eq!(
         kinds.len(),
-        16,
-        "5 added by D72-D80, the internal UserSessionsRevoked and the 10 base variants, all distinct"
+        17,
+        "5 added by D72-D80, the internal UserSessionsRevoked, PickupChanged (prompt 05) and the 10 base variants, all distinct"
     );
 }
 
@@ -241,6 +246,7 @@ fn all_actions() -> Vec<AuditAction> {
         ProposalApproved,
         ProposalRejected,
         ProposalExpired,
+        ProposalStale,
         DraftApplied,
         BaselineAdopted,
         DriftMarkedIntentional,
@@ -281,6 +287,7 @@ fn all_actions() -> Vec<AuditAction> {
             | ProposalApproved
             | ProposalRejected
             | ProposalExpired
+            | ProposalStale
             | DraftApplied
             | BaselineAdopted
             | DriftMarkedIntentional
@@ -344,6 +351,24 @@ fn audit_canonical_json_and_chain_hash_are_pinned() {
         "audit_canonical_json",
         format!("{json}\nchain_hash(genesis) = {hash}")
     );
+}
+
+#[test]
+fn audit_author_is_omitted_when_absent_and_written_after_the_approval_when_set() {
+    // The canonical JSON of an event without an author has no `author` key, so every stored chain is unchanged.
+    let without = String::from_utf8(canonical_json(&fixed_event()).unwrap()).unwrap();
+    assert!(!without.contains("author"), "{without}");
+    let mut with = fixed_event();
+    with.author = Some(user_id(2));
+    let with = String::from_utf8(canonical_json(&with).unwrap()).unwrap();
+    let approval = with.find("\"approval\"").unwrap();
+    let author = with.find("\"author\"").unwrap();
+    let request_id = with.find("\"request_id\"").unwrap();
+    assert!(approval < author && author < request_id, "{with}");
+    insta::assert_snapshot!("audit_canonical_json_with_author", with);
+    // An event stored before the field existed still reads, with no author.
+    let old: AuditEvent = serde_json::from_str(&without).unwrap();
+    assert_eq!(old, fixed_event());
 }
 
 #[test]
@@ -432,4 +457,36 @@ fn internal_events_reach_in_process_subscribers_but_are_flagged_for_the_sse_edge
             .filter(|e| !matches!(e, DomainEvent::UserSessionsRevoked { .. }))
             .all(|e| !e.is_internal())
     );
+}
+
+/// The notification kinds are named in snake case on the wire. `DriftDetected` and `SyncWindowStale` were added for the
+/// registry (prompt 05, T8): held drift alerts evaluated when a sync window closes, and a window open for over two hours.
+#[test]
+fn notification_kinds_have_stable_wire_names() {
+    let kinds = [
+        (NotificationKind::AccessRequested, "access_requested"),
+        (NotificationKind::ProposalPending, "proposal_pending"),
+        (NotificationKind::ProposalDecided, "proposal_decided"),
+        (NotificationKind::ServiceRestarted, "service_restarted"),
+        (NotificationKind::PrRaised, "pr_raised"),
+        (NotificationKind::AgentDisconnected, "agent_disconnected"),
+        (NotificationKind::CriticalFinding, "critical_finding"),
+        (NotificationKind::DriftDetected, "drift_detected"),
+        (NotificationKind::SyncWindowStale, "sync_window_stale"),
+    ];
+    for (kind, name) in kinds {
+        assert_eq!(serde_json::to_value(kind).unwrap(), name);
+        assert_eq!(
+            serde_json::from_value::<NotificationKind>(name.into()).unwrap(),
+            kind
+        );
+    }
+    assert!(serde_json::from_value::<NotificationKind>("nope".into()).is_err());
+}
+
+#[test]
+fn tool_write_ttl_is_pinned() {
+    // `docs/interfaces.md` says 15 minutes; a registry and its fake rely on the number, so a change is a contract change.
+    // (`ChangePreview::TTL_SECS`, 10 minutes, is pinned in the domain tests.)
+    assert_eq!(ToolWriteEntry::TTL_SECS, 900);
 }

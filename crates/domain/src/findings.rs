@@ -7,7 +7,7 @@ use crate::{
     SwimlaneId, Timestamp, compare::SettingValue,
 };
 
-/// A result of one of the consistency checks C1-C11.
+/// A result of one of the consistency checks C1-C11, or of the C12 "as served" verification (D86).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finding {
     pub id: FindingId,

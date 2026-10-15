@@ -426,6 +426,11 @@ impl EventBus for Settled {
         self.inner.publish_in_tx(tx, e).await
     }
 
+    /// Forwarded, so that the conformance suite tests the outbox bus's batching and not the default.
+    async fn publish_many_in_tx(&self, tx: &mut Tx<'_>, events: Vec<DomainEvent>) -> Result<(), BusError> {
+        self.inner.publish_many_in_tx(tx, events).await
+    }
+
     fn subscribe(&self, f: EventFilter) -> futures::stream::BoxStream<'static, DomainEvent> {
         self.inner.subscribe(f)
     }

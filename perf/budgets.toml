@@ -511,3 +511,82 @@ unit = "versions_per_s"
 scale = "target"
 direction = "lower"
 registered = true
+
+# Prompt 05 (registry and read API), contract PR `contract/05-registry`. The registry's own shares of budgets that the agent, the
+# platform and the engine measure only in part, on `hub-registry/` benchmarks that go through the database (and, for the reads,
+# the HTTP layer) at target scale. Bench names are unique, so each has its own id next to the engine's or the platform's. All
+# are unregistered here: each flips to `registered = true` in the commit of the benchmark that produces its number, together with
+# the list in crates/xtask/tests/budgets_registry.rs. The thresholds of the first two are proposals that a human approved with
+# the plan of prompt 05: no document divides P1 and P2.
+
+# P1 is 15 s from the change to the UI. The agent's 10 s stat walk and 3 s quiet period (D75) leave 2 s for the hub, from a scan
+# delta arriving to `DriftChanged` in the outbox.
+[[budget]]
+id = "P1.hub_delta_to_drift"
+description = "Registry share of P1: a scan delta arrives, drift is recomputed, DriftChanged is in the outbox (15 s less the agent's 10 s walk and 3 s quiet period)"
+bench = "hub-registry/delta_to_drift_changed"
+statistic = "p95"
+threshold = 2000
+unit = "ms"
+scale = "target"
+registered = false
+
+# P2 is 10 s from the push to the drift through the webhook; prompt 03b spends the webhook, the fetch and the tree index
+# (`P2`, `hub-platform/push_to_drift_webhook`). The registry gets 1 s from `GitHeadMoved` to the drift in the outbox.
+[[budget]]
+id = "P2.hub_head_moved_to_drift"
+description = "Registry share of P2: GitHeadMoved arrives, the changed paths are recomputed, DriftChanged is in the outbox"
+bench = "hub-registry/head_moved_to_drift"
+statistic = "p95"
+threshold = 1000
+unit = "ms"
+scale = "target"
+registered = false
+
+# The nightly full recompute of docs/performance.md (P6, 3 minutes), as the hub runs it: the engine's `recompute_all` plus the
+# database reads of the file lists and blobs and the diff-only writes. The engine's own share is `P6` (`engine/`).
+[[budget]]
+id = "P6.hub_full_recompute"
+description = "Nightly full recompute at design scale, with the database reads and writes (hub-registry)"
+bench = "hub-registry/full_recompute_target_scale"
+statistic = "p95"
+threshold = 180000
+unit = "ms"
+scale = "target"
+registered = false
+
+# Prompt 05, T5: ranking the deployable branches of one swimlane over the tree indexes, without re-reading Git.
+[[budget]]
+id = "P6.adoption_rank"
+description = "Adoption ranking of one swimlane over the tree indexes of 60 tenant branches"
+bench = "hub-registry/adoption_rank_per_swimlane"
+statistic = "p95"
+threshold = 5000
+unit = "ms"
+scale = "target"
+registered = false
+
+# The compare of two versions of a 6,000-line file through the router and the database (docs/performance.md, P7). The engine's
+# own share is `P7.compare` (`engine/compare_6000_lines`).
+[[budget]]
+id = "P7.compare_api"
+description = "Compare two versions of a 6,000-line file through the API, database included"
+bench = "hub-registry/compare_6000_lines"
+statistic = "p95"
+threshold = 100
+unit = "ms"
+scale = "target"
+registered = false
+
+# The registry's half of P15, next to `P15.hub_ack_versions_per_s` (the platform's acknowledgement): the registry applies a
+# replayed spool of out-of-band versions, audit events included, at the rate the agent replays it (a lower bound).
+[[budget]]
+id = "P15.registry_ingest_versions_per_s"
+description = "Registry applying a replayed spool, audit events included (versions per second, lower bound; the registry's half of P15)"
+bench = "hub-registry/ingest_versions_per_s"
+statistic = "min"
+threshold = 1000
+unit = "versions_per_s"
+scale = "target"
+direction = "lower"
+registered = false

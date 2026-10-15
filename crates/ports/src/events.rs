@@ -30,6 +30,8 @@ pub enum EventKind {
     SyncWindowClosed,
     /// Internal (see [`DomainEvent::is_internal`]): never streamed to browsers.
     UserSessionsRevoked,
+    /// D85. Supersedes `PendingRestartChanged`.
+    PickupChanged,
 }
 
 impl EventKind {
@@ -51,6 +53,7 @@ impl EventKind {
             DomainEvent::SyncWindowOpened { .. } => Self::SyncWindowOpened,
             DomainEvent::SyncWindowClosed { .. } => Self::SyncWindowClosed,
             DomainEvent::UserSessionsRevoked { .. } => Self::UserSessionsRevoked,
+            DomainEvent::PickupChanged { .. } => Self::PickupChanged,
         }
     }
 }
@@ -95,6 +98,14 @@ impl EventFilter {
     }
 }
 
+/// The most events one [`EventBus::publish_many_in_tx`] call takes. A bigger batch is refused whole with
+/// [`BusError::BatchTooLarge`], never truncated.
+///
+/// The same number as [`crate::MAX_AUDIT_BATCH`]: a caller that audits a batch publishes the events of the same batch, so the
+/// two limits go together. The outbox bus caps an envelope at 4 KiB, so 200 events are under a megabyte in one statement, and
+/// there is no byte budget as there is for the audit chain: nothing here is held under a lock that other writers wait for.
+pub const MAX_EVENT_BATCH: usize = 200;
+
 /// Why an event could not be published. Carries no event content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum BusError {
@@ -103,6 +114,12 @@ pub enum BusError {
     WrongTx,
     #[error("event bus is unavailable")]
     Unavailable,
+    /// `publish_many_in_tx` was given more than [`MAX_EVENT_BATCH`] events. Nothing was published; split the batch.
+    ///
+    /// New with the batch methods: an exhaustive `match` on `BusError` (and on `AuditError`, which gained a variant of the same
+    /// name) needs an arm for it.
+    #[error("event batch is too large")]
+    BatchTooLarge,
 }
 
 /// Fan-out of domain events. Subscribers are bounded: a slow subscriber loses events and receives
@@ -115,6 +132,39 @@ pub trait EventBus: Send + Sync + 'static {
     /// Writes the event to the outbox inside the caller's transaction (D80). It is fanned out only after
     /// the transaction commits, and never if it rolls back. Delivery is at least once.
     async fn publish_in_tx(&self, tx: &mut Tx<'_>, e: DomainEvent) -> Result<(), BusError>;
+
+    /// `publish_in_tx` for each of `events`, in order, in the caller's transaction. An implementation may write them with
+    /// one statement, but every event must get what `publish_in_tx` gives it: the same bounds on its payload, the same
+    /// rules for who is sent it, an outbox position after the events before it (in this call and in the same
+    /// transaction), fan-out only after the commit and never on a rollback, and at-least-once delivery.
+    ///
+    /// - An empty batch is `Ok`; it writes nothing and does not look at `tx`.
+    /// - More than [`MAX_EVENT_BATCH`] events is [`BusError::BatchTooLarge`], and nothing is published.
+    /// - On any error the caller rolls the transaction back, as after a failed `publish_in_tx`. A batch that fails
+    ///   before its events are written (too many, or a transaction of another store) writes none of them.
+    ///
+    /// A batch of one event is no faster than `publish_in_tx`: use `publish_in_tx` for a single event. The gain is for many
+    /// events, in one statement instead of one round trip for each.
+    ///
+    /// **A wrapper or decorator of an `EventBus` must forward this method** (and override it too, if it changes what
+    /// `publish_in_tx` stores or checks, so that the two give an event the same treatment). The default calls
+    /// `publish_in_tx`, so a wrapper that forwards only `publish_in_tx` still works, but it silently falls back to the slow
+    /// loop of one statement per event.
+    ///
+    /// The default calls `publish_in_tx` once per event, after the checks above. Overriding is for the cost of a call,
+    /// not for a different result.
+    async fn publish_many_in_tx(&self, tx: &mut Tx<'_>, events: Vec<DomainEvent>) -> Result<(), BusError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        if events.len() > MAX_EVENT_BATCH {
+            return Err(BusError::BatchTooLarge);
+        }
+        for e in events {
+            self.publish_in_tx(tx, e).await?;
+        }
+        Ok(())
+    }
 
     /// A bounded stream of events that match `f`, starting from now. On lag it yields
     /// [`DomainEvent::Resync`] before any later event. It ends when the bus shuts down.

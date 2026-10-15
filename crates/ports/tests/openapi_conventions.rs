@@ -248,6 +248,7 @@ fn roles_follow_the_approved_inventory() {
         ("POST", "/api/v1/swimlanes/{id}/files/reveal", Role::Editor),
         ("PUT", "/api/v1/swimlanes/{id}/files", Role::Editor),
         ("POST", "/api/v1/swimlanes/{id}/files/upload", Role::Editor),
+        ("POST", "/api/v1/swimlanes/{id}/files/preview", Role::Editor),
         ("DELETE", "/api/v1/swimlanes/{id}/files", Role::Editor),
         ("POST", "/api/v1/swimlanes/{id}/files/revert", Role::Editor),
         ("POST", "/api/v1/swimlanes/{id}/restart", Role::Operator),
@@ -685,6 +686,7 @@ fn schemas_carry_the_required_fields() {
             "pr_job_progress",
             "sync_window_opened",
             "sync_window_closed",
+            "pickup_changed",
         ])
     );
 }
@@ -749,5 +751,520 @@ fn internal_events_are_not_in_the_sse_event_kinds() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert!(!kinds.contains(&"user_sessions_revoked"));
-    assert_eq!(kinds.len(), 15);
+    assert_eq!(kinds.len(), 16);
+}
+
+/// The `NotificationKind` of the admin API is the port's: the wire names match, in the same order, and a channel can
+/// subscribe to every one of them (its `kinds` bound is at least the number of kinds).
+#[test]
+fn notification_kinds_are_the_ports_and_a_channel_can_name_them_all() {
+    use ports::NotificationKind as K;
+    /// Passes a variant through a match without a wildcard: a variant added to the port and not listed here fails to compile.
+    fn listed(k: K) -> K {
+        match k {
+            K::AccessRequested
+            | K::ProposalPending
+            | K::ProposalDecided
+            | K::ServiceRestarted
+            | K::PrRaised
+            | K::AgentDisconnected
+            | K::CriticalFinding
+            | K::DriftDetected
+            | K::SyncWindowStale => k,
+        }
+    }
+    let d = doc();
+    let rust: Vec<String> = [
+        K::AccessRequested,
+        K::ProposalPending,
+        K::ProposalDecided,
+        K::ServiceRestarted,
+        K::PrRaised,
+        K::AgentDisconnected,
+        K::CriticalFinding,
+        K::DriftDetected,
+        K::SyncWindowStale,
+    ]
+    .map(|k| {
+        serde_json::to_value(listed(k))
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_owned()
+    })
+    .to_vec();
+    let spec: Vec<String> = d["components"]["schemas"]["NotificationKind"]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        spec, rust,
+        "OpenAPI NotificationKind and ports::NotificationKind differ"
+    );
+    for schema in ["NotificationChannelInput", "NotificationChannel"] {
+        let max = d["components"]["schemas"][schema]["properties"]["kinds"]["maxItems"]
+            .as_u64()
+            .unwrap();
+        assert!(
+            max >= u64::try_from(rust.len()).unwrap(),
+            "{schema}.kinds: maxItems {max} cannot hold every notification kind"
+        );
+    }
+}
+
+/// A client can name every kind: the `kinds` filters of the event stream and of the findings list are bounded by the number of
+/// kinds they filter on (S11, `uniqueItems`), so a new kind raises the bound with it.
+#[test]
+fn kind_filters_allow_every_kind() {
+    let d = doc();
+    for (path, schema) in [
+        ("/api/v1/events", "EventKind"),
+        ("/api/v1/findings", "FindingKind"),
+    ] {
+        let kinds = u64::try_from(
+            d["components"]["schemas"][schema]["enum"]
+                .as_array()
+                .unwrap()
+                .len(),
+        )
+        .unwrap();
+        let params = d["paths"][path]["get"]["parameters"].as_array().unwrap();
+        let filter = params
+            .iter()
+            .find(|p| p["name"] == "kinds")
+            .unwrap_or_else(|| panic!("{path} has no kinds filter"));
+        assert_eq!(
+            filter["schema"]["maxItems"].as_u64().unwrap(),
+            kinds,
+            "{path}: maxItems is the number of {schema} values"
+        );
+        assert_eq!(filter["schema"]["uniqueItems"], true, "{path}");
+    }
+}
+
+fn required_of(schema: &Value) -> BTreeSet<String> {
+    schema["required"]
+        .as_array()
+        .map(|r| r.iter().map(|v| v.as_str().unwrap().to_owned()).collect())
+        .unwrap_or_default()
+}
+
+fn strings(v: &Value) -> BTreeSet<String> {
+    v.as_array()
+        .unwrap_or_else(|| panic!("not an array: {v}"))
+        .iter()
+        .map(|x| x.as_str().unwrap().to_owned())
+        .collect()
+}
+
+fn assert_optional(d: &Value, schema: &str, prop: &str) {
+    let s = &d["components"]["schemas"][schema];
+    assert!(properties(d, s).contains_key(prop), "{schema}.{prop} is missing");
+    assert!(
+        !required_of(resolve(d, s)).contains(prop),
+        "{schema}.{prop} must stay optional: an old client does not send it"
+    );
+}
+
+fn wire_keys(v: &Value) -> BTreeSet<String> {
+    v.as_object().unwrap().keys().cloned().collect()
+}
+
+/// Prompt 06's contract change (G2, G3, G11): the new request fields are optional, so a client built from the old
+/// document keeps working, and their values are the ones the domain types serialise.
+#[test]
+fn write_request_additions_are_optional_and_match_the_domain() {
+    use domain::{ChangeEol, PrTarget, TenantId};
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+    assert_optional(&d, "EditFileRequest", "change_eol");
+    assert_optional(&d, "RevertFileRequest", "change_eol");
+    let eol: BTreeSet<String> = ChangeEol::ALL.iter().map(|e| e.as_str().to_owned()).collect();
+    assert_eq!(strings(&schemas["ChangeEol"]["enum"]), eol);
+
+    assert_optional(&d, "CreatePrRequest", "target");
+    assert_optional(&d, "PrJob", "warnings");
+    let tenant = serde_json::to_value(PrTarget::Tenant {
+        branch: TenantId::parse("sit1").unwrap(),
+    })
+    .unwrap();
+    let base = serde_json::to_value(PrTarget::Base).unwrap();
+    assert_eq!(
+        schemas["PrTargetTenant"]["properties"]["kind"]["const"],
+        tenant["kind"]
+    );
+    assert_eq!(
+        schemas["PrTargetBase"]["properties"]["kind"]["const"],
+        base["kind"]
+    );
+    assert_eq!(required_of(&schemas["PrTargetTenant"]), wire_keys(&tenant));
+    assert_eq!(required_of(&schemas["PrTargetBase"]), wire_keys(&base));
+
+    assert_optional(&d, "RevealRequest", "reason");
+}
+
+/// Every [`domain::RejectReason`], walked as a chain: `next` has one arm per variant and names the variant after it, so
+/// a new variant does not compile until it is placed in the chain, and the chain is the list the document is held to.
+fn every_reject_reason() -> Vec<domain::RejectReason> {
+    use domain::RejectReason as R;
+    fn next(r: R) -> Option<R> {
+        match r {
+            R::Denied => Some(R::TooLarge),
+            R::TooLarge => Some(R::InvalidContent),
+            R::InvalidContent => Some(R::UnknownSwimlane),
+            R::UnknownSwimlane => Some(R::AgentUnavailable),
+            R::AgentUnavailable => Some(R::NotAllowed),
+            R::NotAllowed => Some(R::SecretDetected),
+            R::SecretDetected => Some(R::ParseError),
+            R::ParseError => None,
+        }
+    }
+    let mut all = vec![R::Denied];
+    while let Some(n) = all.last().copied().and_then(next) {
+        all.push(n);
+    }
+    all
+}
+
+/// Every [`domain::PreviewWarning`], walked the same way (see [`every_reject_reason`]).
+fn every_preview_warning() -> Vec<domain::PreviewWarning> {
+    use domain::{PreviewWarning as W, TenantId};
+    fn next(w: &W) -> Option<W> {
+        match w {
+            W::FallsBackToBase => Some(W::NoFileLeft),
+            W::NoFileLeft => Some(W::ForksFromBase),
+            W::ForksFromBase => Some(W::NeverRead {
+                suffix: TenantId::parse("sit9").ok()?,
+            }),
+            W::NeverRead { .. } => Some(W::NeedsNotifyOrRestart),
+            W::NeedsNotifyOrRestart => Some(W::NewFolderNeedsConfigServerRestart),
+            W::NewFolderNeedsConfigServerRestart => Some(W::ChannelsYmlNeedsConfigServerRestart),
+            W::ChannelsYmlNeedsConfigServerRestart => None,
+        }
+    }
+    let mut all = vec![W::FallsBackToBase];
+    while let Some(n) = all.last().and_then(next) {
+        all.push(n);
+    }
+    all
+}
+
+/// Prompt 06's contract change (G6): the rejection reasons, the issue shape and the warnings on a write.
+#[test]
+fn rejection_detail_is_optional_and_matches_the_domain() {
+    use domain::{AuditId, IssueKind, ShortText, ValidationIssue, WriteOutcome};
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+    let all = every_reject_reason();
+    let reasons: BTreeSet<String> = all
+        .iter()
+        .map(|r| serde_json::to_value(r).unwrap().as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(strings(&schemas["RejectReason"]["enum"]), reasons);
+
+    let kinds: BTreeSet<String> = IssueKind::ALL.iter().map(|k| k.as_str().to_owned()).collect();
+    assert_eq!(
+        strings(&schemas["ValidationIssue"]["properties"]["kind"]["enum"]),
+        kinds
+    );
+    assert_eq!(
+        required_of(&schemas["ValidationIssue"]),
+        BTreeSet::from(["kind".to_owned()])
+    );
+    let issue = ValidationIssue {
+        kind: IssueKind::SecretMatch,
+        line: std::num::NonZeroU32::new(3),
+        rule: Some(ShortText::parse("jwt").unwrap()),
+    };
+    let declared: BTreeSet<String> = properties(&d, &schemas["ValidationIssue"])
+        .into_keys()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        wire_keys(&serde_json::to_value(&issue).unwrap()),
+        declared,
+        "the issue's wire fields are the document's"
+    );
+
+    assert_optional(&d, "WriteApplied", "warnings");
+    let applied = serde_json::to_value(WriteOutcome::Applied {
+        hash: None,
+        audit_id: AuditId::from(1),
+        warnings: vec![issue],
+    })
+    .unwrap();
+    for key in applied.as_object().unwrap().keys() {
+        assert!(
+            properties(&d, &schemas["WriteApplied"]).contains_key(key.as_str()),
+            "WriteApplied lacks `{key}`"
+        );
+    }
+    assert_optional(&d, "Problem", "issues");
+}
+
+/// Prompt 06's contract change (G1): the preview's wire fields, scopes and warnings are the domain's.
+#[test]
+fn change_preview_schema_matches_the_domain() {
+    use domain::{ChangePreview, PreviewId, PreviewScope, PreviewWarning, Timestamp};
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+    let preview = ChangePreview {
+        preview_id: PreviewId::parse("tok").unwrap(),
+        expires_at: Timestamp::from_unix_millis(1),
+        scope: PreviewScope::EveryService,
+        warnings: vec![PreviewWarning::FallsBackToBase],
+        changes: Vec::new(),
+        changes_total: 0,
+        effective_changed: false,
+    };
+    let declared: BTreeSet<String> = properties(&d, &schemas["ChangePreview"])
+        .into_keys()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(wire_keys(&serde_json::to_value(&preview).unwrap()), declared);
+    assert_eq!(required_of(&schemas["ChangePreview"]), declared, "all required");
+
+    // A flagged value is masked, and the entry says so: `changes` holds `PreviewedChange`, not a bare change.
+    assert_eq!(
+        schemas["ChangePreview"]["properties"]["changes"]["items"]["$ref"],
+        "#/components/schemas/PreviewedChange"
+    );
+    let previewed = domain::PreviewedChange {
+        change: domain::SettingChange {
+            path: domain::SettingPath::parse("aws.key").unwrap(),
+            kind: domain::ChangeKind::Added,
+            left: None,
+            right: None,
+            left_location: None,
+            right_location: None,
+        },
+        flagged: true,
+    };
+    let declared_entry: BTreeSet<String> = properties(&d, &schemas["PreviewedChange"])
+        .into_keys()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        wire_keys(&serde_json::to_value(&previewed).unwrap()),
+        declared_entry
+    );
+    assert_eq!(required_of(&schemas["PreviewedChange"]), declared_entry);
+    assert_eq!(
+        schemas["PreviewedChange"]["properties"]["flagged"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        schemas["PreviewedChange"]["properties"]["change"]["$ref"],
+        "#/components/schemas/SettingChange"
+    );
+
+    let warning_kinds: BTreeSet<String> = every_preview_warning()
+        .iter()
+        .map(|w| {
+            serde_json::to_value(w).unwrap()["kind"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    let mut documented = BTreeSet::new();
+    for variant in schemas["PreviewWarning"]["oneOf"].as_array().unwrap() {
+        let kind = &variant["properties"]["kind"];
+        if let Some(c) = kind.get("const") {
+            documented.insert(c.as_str().unwrap().to_owned());
+        } else {
+            documented.extend(strings(&kind["enum"]));
+        }
+    }
+    assert_eq!(documented, warning_kinds);
+    let scope_kinds: BTreeSet<String> = schemas["PreviewScope"]["oneOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["properties"]["kind"]["const"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        scope_kinds,
+        BTreeSet::from([
+            "every_service".to_owned(),
+            "application".to_owned(),
+            "folder".to_owned()
+        ])
+    );
+    assert_eq!(
+        schemas["PreviewId"]["pattern"].as_str().unwrap(),
+        "^[A-Za-z0-9._-]{1,128}$",
+        "the same shape as the domain's token ids"
+    );
+}
+
+/// Prompt 06's contract change (G1, A3): the preview operation exists, an upload and a delete may carry its id, and the
+/// upload size is stated as the hub enforces it.
+#[test]
+fn preview_operation_and_upload_text() {
+    let d = doc();
+    let ops = operations(&d);
+    let preview_op = find(&ops, "POST", "/api/v1/swimlanes/{id}/files/preview");
+    assert!(preview_op.has_tag("writes"));
+    assert_eq!(
+        json_schema(preview_op.response(&d, "200").unwrap()).unwrap()["$ref"],
+        "#/components/schemas/ChangePreview"
+    );
+    for code in ["403", "413", "422"] {
+        assert!(
+            preview_op.response(&d, code).is_some(),
+            "preview documents {code}"
+        );
+    }
+    let form = &preview_op.def["requestBody"]["content"]["multipart/form-data"]["schema"];
+    assert_eq!(
+        required_of(form),
+        BTreeSet::from([
+            "action".to_owned(),
+            "path".to_owned(),
+            "expected_state".to_owned()
+        ])
+    );
+    assert_eq!(
+        strings(&form["properties"]["action"]["enum"]),
+        BTreeSet::from(["upload".to_owned(), "delete".to_owned()])
+    );
+    let upload = find(&ops, "POST", "/api/v1/swimlanes/{id}/files/upload");
+    let upload_form = &upload.def["requestBody"]["content"]["multipart/form-data"]["schema"];
+    assert!(upload_form["properties"].get("preview_id").is_some());
+    assert!(!required_of(upload_form).contains("preview_id"));
+    // The limit is the engine's `Limits::input_bytes` (docs/performance.md): 2 MiB, for the preview and the upload alike.
+    let file_text = upload_form["properties"]["file"]["description"].as_str().unwrap();
+    assert!(
+        file_text.contains("2 MiB") && file_text.contains("413") && !file_text.contains("3 MiB"),
+        "{file_text}"
+    );
+    let preview_text = form["properties"]["file"]["description"].as_str().unwrap();
+    assert!(
+        preview_text.contains("2 MiB") && !preview_text.contains("3 MiB"),
+        "{preview_text}"
+    );
+    assert!(
+        !SPEC.contains("3 MiB"),
+        "no 3 MiB limit is stated for uploads or edits"
+    );
+    assert!(
+        !SPEC.contains("4 MiB"),
+        "no 4 MiB limit is stated for uploads or edits"
+    );
+    for schema in ["EditFileRequest", "DraftRequest"] {
+        let content = &d["components"]["schemas"][schema]["properties"]["content"];
+        // `maxLength` counts characters, and a UTF-8 character takes up to four bytes: it is a coarse bound of the schema
+        // and is NOT the byte cap. The 2 MiB is a limit of bytes that the server enforces (413).
+        assert_eq!(
+            content["maxLength"],
+            2 * 1024 * 1024,
+            "{schema}.content: `maxLength` is a bound in characters and is not the 2 MiB byte cap (the server counts bytes)"
+        );
+        let text = content["description"].as_str().unwrap();
+        assert!(
+            text.contains("2 MiB")
+                && text.contains("bytes")
+                && text.contains("413")
+                && text.contains("characters"),
+            "{schema}.content says that the 2 MiB is counted in bytes by the server (413) and that `maxLength` counts characters: {text}"
+        );
+        assert!(
+            !text.contains("never fewer than the bytes"),
+            "{schema}.content: characters are never MORE than bytes, so `maxLength` cannot enforce a byte limit: {text}"
+        );
+    }
+    assert!(!SPEC.contains("25 MiB"), "the 25 MiB claim is gone (A3)");
+    assert!(upload.response(&d, "413").is_some());
+    let delete = find(&ops, "DELETE", "/api/v1/swimlanes/{id}/files");
+    let id_param = delete
+        .query_param(&d, "preview_id")
+        .expect("delete takes preview_id");
+    assert_ne!(id_param["required"], true);
+}
+
+/// The MCP document names the same values as the REST document for the write additions: an assistant and the web app
+/// must see one set of rejection reasons, issue kinds and line ending styles.
+#[test]
+fn mcp_write_definitions_match_the_rest_document() {
+    const MCP: &str = include_str!("../../../docs/mcp-tools.md");
+    let defs_text = MCP
+        .split("## Shared definitions")
+        .nth(1)
+        .and_then(|rest| rest.split("```json\n").nth(1))
+        .and_then(|rest| rest.split("\n```").next())
+        .expect("the shared definitions block");
+    let mcp: Value = serde_json::from_str(defs_text).expect("shared definitions are JSON");
+    let defs = &mcp["$defs"];
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+
+    assert_eq!(
+        strings(&defs["ChangeEol"]["enum"]),
+        strings(&schemas["ChangeEol"]["enum"])
+    );
+    assert_eq!(
+        strings(&defs["RejectReason"]["enum"]),
+        strings(&schemas["RejectReason"]["enum"])
+    );
+    assert_eq!(
+        strings(&defs["ValidationIssue"]["properties"]["kind"]["enum"]),
+        strings(&schemas["ValidationIssue"]["properties"]["kind"]["enum"])
+    );
+    assert_eq!(
+        defs["ValidationIssue"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<BTreeSet<_>>(),
+        schemas["ValidationIssue"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<BTreeSet<_>>()
+    );
+    let kinds = |v: &Value| -> BTreeSet<String> {
+        v["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["properties"]["kind"]["const"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(
+        kinds(&defs["PrTarget"]),
+        BTreeSet::from(["tenant".to_owned(), "base".to_owned()])
+    );
+    assert_eq!(kinds(&defs["PrTarget"]), {
+        // REST names its variants by reference.
+        schemas["PrTarget"]["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                resolve(&d, r)["properties"]["kind"]["const"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<BTreeSet<_>>()
+    });
+    // One limit for the content of an edit, a draft and an upload: 2 MiB, as in the REST document.
+    assert!(
+        !MCP.contains("4 MiB"),
+        "the MCP document states no 4 MiB content limit"
+    );
+    assert!(!MCP.contains("\"maxLength\": 4194304") && !MCP.contains("\"maxLength\": 4194304,"));
+    assert_eq!(
+        MCP.matches("\"maxLength\": 2097152").count(),
+        2,
+        "propose_change and upload"
+    );
+    // Additions are optional in the MCP outputs too.
+    assert!(defs["WriteOutcome"]["properties"].get("warnings").is_some());
+    assert!(!required_of(&defs["WriteOutcome"]).contains("warnings"));
+    assert!(!required_of(&defs["ToolError"]).contains("issues"));
+    assert!(!required_of(&defs["ToolError"]).contains("reason"));
 }

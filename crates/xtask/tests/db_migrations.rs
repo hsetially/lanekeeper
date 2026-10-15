@@ -1,4 +1,5 @@
-//! Integration tests for `db/migrations` (prompt 01, T6; S9, S21; `0002_audit_verify_state.sql` for prompt 03a).
+//! Integration tests for `db/migrations` (prompt 01, T6; S9, S21; `0002_audit_verify_state.sql` for prompt 03a;
+//! `0003_registry.sql` for prompt 05; `0004_write_additions.sql` for prompt 06).
 //!
 //! They run against a real Postgres 16 with pgvector, started with testcontainers from the same image digest as
 //! `deploy/dev/compose.yaml`. The tests use the runtime `sqlx::migrate::Migrator` and no `query!` macros, so no
@@ -113,7 +114,32 @@ const EXPECTED_TABLES: &[&str] = &[
 ];
 
 /// Tables added by migrations after `0001_init.sql`: (table, the migration file that creates it).
-const LATER_TABLES: &[(&str, &str)] = &[("audit_verify_state", "0002_audit_verify_state.sql")];
+const LATER_TABLES: &[(&str, &str)] = &[
+    ("audit_verify_state", "0002_audit_verify_state.sql"),
+    // Prompt 05 (registry): see `REGISTRY_TABLES` and `migration_0003_*` below.
+    ("swimlane_registry", "0003_registry.sql"),
+    ("swimlane_deployments", "0003_registry.sql"),
+    ("swimlane_folders", "0003_registry.sql"),
+    ("release_hints", "0003_registry.sql"),
+    ("effective_files", "0003_registry.sql"),
+    ("adoptions", "0003_registry.sql"),
+    ("adoption_resolutions", "0003_registry.sql"),
+    ("delta_staging", "0003_registry.sql"),
+];
+
+/// The tables `0003_registry.sql` creates, all `Grant::Mutable`: the pipeline upserts and prunes them, and every one hangs
+/// off `swimlanes` with `ON DELETE CASCADE`, which `no_cascading_foreign_key_touches_a_protected_table` allows only for tables
+/// the app may delete from.
+const REGISTRY_TABLES: &[&str] = &[
+    "swimlane_registry",
+    "swimlane_deployments",
+    "swimlane_folders",
+    "release_hints",
+    "effective_files",
+    "adoptions",
+    "adoption_resolutions",
+    "delta_staging",
+];
 
 /// Every table the migrations create, `_sqlx_migrations` aside.
 fn all_expected_tables() -> BTreeSet<&'static str> {
@@ -172,7 +198,12 @@ fn grant_decisions() -> BTreeMap<&'static str, Grant> {
     for t in EXPECTED_TABLES {
         m.entry(t).or_insert(Grant::Mutable);
     }
+    for t in REGISTRY_TABLES {
+        m.insert(t, Grant::Mutable);
+    }
     m.insert("audit_verify_state", Grant::StateRow);
+    // 0003: an approval is a decision nobody rewrites or removes, like the audit chain.
+    m.insert("approvals", Grant::AppendOnly);
     m.insert("_sqlx_migrations", Grant::None);
     m
 }
@@ -486,6 +517,9 @@ const RESTRICT_VIOLATION: &str = "23001";
 const UNIQUE_VIOLATION: &str = "23505";
 const CHECK_VIOLATION: &str = "23514";
 const NOT_NULL_VIOLATION: &str = "23502";
+const FOREIGN_KEY_VIOLATION: &str = "23503";
+/// `generated_always`: a value was given for a `GENERATED ALWAYS AS IDENTITY` column.
+const GENERATED_ALWAYS: &str = "428C9";
 
 async fn expect_sqlstate(conn: &mut PgConnection, sql: &str, want: &str) {
     let err = sqlx::query(sql)
@@ -647,8 +681,8 @@ async fn migration_applies_on_pg16() {
     let expected: BTreeSet<String> = all_expected_tables().into_iter().map(str::to_owned).collect();
     assert_eq!(tables, expected);
 
-    // Re-running is a no-op: each migration is recorded once, and 0002 applied on top of 0001. The schema is owned
-    // by the migrator, never by the app.
+    // Re-running is a no-op: each migration is recorded once, each applied on top of the one before it (0002 on 0001, 0003 on
+    // 0002, 0004 on 0003). The schema is owned by the migrator, never by the app.
     db.migrate().await;
     let applied: Vec<i64> =
         sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
@@ -657,7 +691,7 @@ async fn migration_applies_on_pg16() {
             .unwrap();
     let files: Vec<i64> = migration_files().iter().map(|(v, _, _)| i64::from(*v)).collect();
     assert_eq!(applied, files);
-    assert_eq!(applied, [1, 2]);
+    assert_eq!(applied, [1, 2, 3, 4]);
     let foreign: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tableowner <> 'lanekeeper_migrator'",
     )
@@ -766,7 +800,9 @@ async fn migration_0002_adds_only_audit_verify_state() {
         assert!(!b.is_empty(), "the snapshot must see something: {q}");
     }
 
-    db.migrate_upto(u32::MAX).await;
+    // Up to 0002 only: 0003 and 0004 change existing tables on purpose (`migration_0003_changes_existing_objects_only_by_adding`,
+    // `migration_0004_changes_only_what_it_names`).
+    db.migrate_upto(2).await;
 
     for (q, b) in queries.iter().zip(&before) {
         assert_eq!(&snapshot(q).await, b, "0002 changed an existing object: {q}");
@@ -1547,6 +1583,634 @@ async fn approvals_reject_self_approval() {
         .unwrap();
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// 0004_write_additions.sql (prompt 06): notify proposals, the credential expiry, and the approvals hardening
+
+/// `sql` without comments, string literals (their text) and dollar-quoted bodies, split into statements of upper-case words.
+/// A body (`DO $$ ... $$`, `AS $$ ... $$`) is not one of the statement's words: it is checked on its own, below.
+fn statements_of(sql: &str) -> Vec<Vec<String>> {
+    let code = code_lines(sql).join("\n");
+    // Dollar-quoted bodies first (a literal inside one could hold a `;`), then literals.
+    let mut bodiless = String::new();
+    let mut rest = code.as_str();
+    while let Some(open) = rest.find("$$") {
+        bodiless.push_str(&rest[..open]);
+        let after = &rest[open + 2..];
+        let close = after.find("$$").expect("a dollar-quoted body is closed");
+        rest = &after[close + 2..];
+    }
+    bodiless.push_str(rest);
+    let mut out = Vec::new();
+    for statement in without_literals(&bodiless).split(';') {
+        let words = sql_words(statement);
+        if !words.is_empty() {
+            out.push(words);
+        }
+    }
+    out
+}
+
+/// `sql` with the text of every single-quoted literal removed.
+fn without_literals(sql: &str) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for c in sql.chars() {
+        if c == '\'' {
+            inside = !inside;
+        } else if !inside {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn sql_words(sql: &str) -> Vec<String> {
+    sql.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+        .map(str::to_uppercase)
+        .collect()
+}
+
+/// The first row-writing statement in `sql`, bodies included, if there is one: `INSERT INTO [schema.]t`, `UPDATE [ONLY]
+/// [schema.]t [[AS] alias] SET` (or the `DO UPDATE SET` of an upsert), `DELETE FROM [ONLY] ...`, MERGE INTO, TRUNCATE or
+/// COPY, or any `EXECUTE` that is not `EXECUTE FUNCTION` or `EXECUTE PROCEDURE` (a trigger's): dynamic SQL is a string,
+/// and the text of strings is not read here, so it is refused whatever it holds. (`UPDATE` as a trigger event, in a
+/// privilege list or as an `ON UPDATE` key action is not a write.)
+fn row_writing_statement(sql: &str) -> Option<String> {
+    let code = without_literals(&code_lines(sql).join("\n"));
+    let words = sql_words(&code);
+    words.iter().enumerate().find_map(|(i, w)| {
+        let next = |n: usize| words.get(i + n).map(String::as_str);
+        let writes = match w.as_str() {
+            "TRUNCATE" | "COPY" => true,
+            "INSERT" | "MERGE" => next(1) == Some("INTO"),
+            "DELETE" => next(1) == Some("FROM"),
+            "EXECUTE" => !matches!(next(1), Some("FUNCTION" | "PROCEDURE")),
+            // After the optional ONLY come a name of up to two words (schema, table), an optional alias with or without
+            // AS, and SET; an upsert's `DO UPDATE SET` has no name. A privilege (`UPDATE ON`, `UPDATE (a) ON`), a trigger
+            // event (`UPDATE OF`, `UPDATE OR`) and a key action (`ON UPDATE`) end the search or are skipped.
+            "UPDATE" if i > 0 && words[i - 1] == "ON" => false,
+            "UPDATE" => {
+                let from = i + 1 + usize::from(next(1) == Some("ONLY"));
+                words[from.min(words.len())..]
+                    .iter()
+                    .take(5)
+                    .take_while(|w| !matches!(w.as_str(), "ON" | "OF" | "OR" | "FROM" | "TO" | "FOR"))
+                    .any(|w| w == "SET")
+            }
+            _ => false,
+        };
+        writes.then(|| words[i..words.len().min(i + 4)].join(" "))
+    })
+}
+
+/// `0004_write_additions.sql` is exactly the statements it was reviewed with: no row is written or removed, no table is
+/// created or dropped, nothing is renamed, and the audit tables are not touched. A new statement of any kind, in or out of
+/// a DO block or a function body, fails here until a human adds it to the list on purpose.
+#[test]
+fn migration_0004_is_expand_only() {
+    let sql = migration_file("0004_write_additions.sql");
+    assert_eq!(
+        row_writing_statement(&sql),
+        None,
+        "0004 changes the schema and no row: no INSERT, UPDATE, DELETE, MERGE, TRUNCATE, COPY or dynamic EXECUTE, in a DO \
+         block or a function body either"
+    );
+    let allowed: [&str; 7] = [
+        // The guard.
+        "DO",
+        // 1. Notify proposals: one statement, so no row is ever unchecked.
+        "ALTER TABLE PROPOSALS DROP CONSTRAINT PROPOSALS_ACTION_CHECK ADD CONSTRAINT PROPOSALS_ACTION_CHECK CHECK ACTION IN",
+        // 2. The token expiry.
+        "ALTER TABLE GITHUB_CREDENTIALS ADD COLUMN EXPIRES_AT TIMESTAMPTZ",
+        // 3. Approvals are written once.
+        "REVOKE UPDATE DELETE ON APPROVALS FROM LANEKEEPER_APP",
+        "ALTER TABLE APPROVALS DROP CONSTRAINT APPROVALS_PROPOSAL_ID_FKEY ADD CONSTRAINT APPROVALS_PROPOSAL_ID_FKEY FOREIGN KEY PROPOSAL_ID REFERENCES PROPOSALS ID ON DELETE RESTRICT",
+        "CREATE FUNCTION PROPOSALS_AUTHOR_IMMUTABLE RETURNS TRIGGER LANGUAGE PLPGSQL SET SEARCH_PATH PG_CATALOG PG_TEMP AS",
+        "CREATE TRIGGER PROPOSALS_AUTHOR_IMMUTABLE BEFORE UPDATE OF AUTHOR_TID AUTHOR_OID ON PROPOSALS FOR EACH ROW EXECUTE FUNCTION PROPOSALS_AUTHOR_IMMUTABLE",
+    ];
+    let found: Vec<String> = statements_of(&sql).iter().map(|w| w.join(" ")).collect();
+    assert_eq!(
+        found, allowed,
+        "0004 has exactly the statements it was reviewed with, in this order (a new statement is a new review)"
+    );
+    // The words that no statement of an expand-only migration contains, wherever they are (a body, a comment aside).
+    let code = without_literals(&code_lines(&sql).join("\n")).to_uppercase();
+    for banned in [
+        "DROP TABLE",
+        "DROP COLUMN",
+        "DROP TRIGGER",
+        "DROP FUNCTION",
+        "DROP INDEX",
+        "RENAME",
+        "GRANT ",
+        "CASCADE",
+        "AUDIT_EVENTS",
+        "AUDIT_CHECKPOINTS",
+        "CREATE TABLE",
+        "SECURITY DEFINER",
+        "ENABLE ",
+        "DISABLE ",
+    ] {
+        assert!(
+            !code.contains(banned),
+            "0004 must not contain `{banned}` outside comments"
+        );
+    }
+    assert!(
+        code.contains("ON DELETE RESTRICT") && !code.contains("ON UPDATE"),
+        "the approvals key restricts a delete of its proposal"
+    );
+}
+
+/// The checks of `migration_0004_is_expand_only` have teeth: each of these changes to 0004 is refused by one of them.
+#[test]
+fn the_expand_only_checks_see_row_writes_and_new_statements() {
+    let real = migration_file("0004_write_additions.sql");
+    assert_eq!(row_writing_statement(&real), None);
+    let base = statements_of(&real).len();
+    for (sql, what) in [
+        ("UPDATE proposals SET status = 'x';", "an UPDATE"),
+        (
+            "INSERT INTO approvals (decision) VALUES ('approved');",
+            "an INSERT",
+        ),
+        ("DELETE FROM proposals;", "a DELETE"),
+        ("TRUNCATE approvals;", "a TRUNCATE"),
+        (
+            "DO $$ BEGIN DELETE FROM proposals; END $$;",
+            "a DELETE in a DO block",
+        ),
+        (
+            "CREATE FUNCTION f() RETURNS void LANGUAGE sql AS $$ UPDATE users SET role = 'admin' $$;",
+            "an UPDATE in a function body",
+        ),
+        // Dynamic SQL: the statement is a string, and the strings are not read, so any EXECUTE of one is refused.
+        (
+            "DO $$ BEGIN EXECUTE 'DELETE FROM proposals'; END $$;",
+            "dynamic SQL in a DO block",
+        ),
+        (
+            "DO $$ BEGIN EXECUTE format('DELETE FROM %I', 'proposals'); END $$;",
+            "dynamic SQL built with format",
+        ),
+        (
+            "DO $$ BEGIN EXECUTE 'UPDATE proposals SET status = $1' USING 'x'; END $$;",
+            "dynamic SQL with USING",
+        ),
+        (
+            "CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN EXECUTE 'TRUNCATE approvals'; END $$;",
+            "dynamic SQL in a function body",
+        ),
+        // The target of an UPDATE, DELETE or INSERT: ONLY, a schema, an alias, with or without AS.
+        ("UPDATE ONLY proposals SET status = 'x';", "UPDATE ONLY"),
+        (
+            "UPDATE ONLY public.proposals SET status = 'x';",
+            "UPDATE ONLY, qualified",
+        ),
+        ("UPDATE public.proposals SET status = 'x';", "a qualified UPDATE"),
+        (
+            "UPDATE public.proposals AS p SET status = 'x';",
+            "a qualified UPDATE with AS",
+        ),
+        (
+            "UPDATE public.proposals p SET status = 'x';",
+            "a qualified UPDATE with an alias",
+        ),
+        (
+            "UPDATE \"public\".\"proposals\" SET status = 'x';",
+            "a quoted UPDATE target",
+        ),
+        (
+            "DELETE FROM ONLY public.proposals;",
+            "DELETE FROM ONLY, qualified",
+        ),
+        (
+            "DELETE FROM public.proposals p WHERE p.id = 1;",
+            "a qualified DELETE",
+        ),
+        (
+            "INSERT INTO public.approvals (decision) VALUES ('approved');",
+            "a qualified INSERT",
+        ),
+        (
+            "INSERT INTO approvals (decision) VALUES ('x') ON CONFLICT DO UPDATE SET decision = 'y';",
+            "the UPDATE of an upsert",
+        ),
+        (
+            "WITH gone AS (DELETE FROM public.proposals RETURNING id) SELECT 1 FROM gone;",
+            "a DELETE in a WITH",
+        ),
+    ] {
+        assert!(
+            row_writing_statement(&format!("{real}\n{sql}\n")).is_some(),
+            "{what} must be seen"
+        );
+    }
+    // Text that only looks like a row write is not one: the CHECK literal, the key action, the trigger event.
+    assert_eq!(
+        row_writing_statement(
+            "ALTER TABLE t ADD CHECK (a IN ('delete', 'update t set'));\n-- UPDATE t SET x\nREVOKE UPDATE, DELETE ON t FROM r;"
+        ),
+        None
+    );
+    for sql in [
+        "CREATE TRIGGER t BEFORE UPDATE OF a, b ON public.proposals FOR EACH ROW EXECUTE FUNCTION f();",
+        "CREATE TRIGGER t AFTER UPDATE OR DELETE ON proposals FOR EACH ROW EXECUTE PROCEDURE f();",
+        "CREATE TRIGGER t BEFORE UPDATE ON proposals FOR EACH ROW EXECUTE FUNCTION f();",
+        "GRANT SELECT, UPDATE ON audit_verify_state TO r;",
+        "GRANT UPDATE (a, b) ON t TO r;",
+        "REVOKE UPDATE, DELETE ON ONLY public.approvals FROM r;",
+        "ALTER TABLE a ADD FOREIGN KEY (b) REFERENCES c (id) ON DELETE RESTRICT ON UPDATE CASCADE;",
+        "ALTER TABLE a ADD FOREIGN KEY (b) REFERENCES c (id) ON DELETE SET NULL ON UPDATE SET NULL;",
+        "ALTER TABLE a ALTER COLUMN b SET NOT NULL;",
+    ] {
+        assert_eq!(row_writing_statement(sql), None, "{sql} writes no row");
+    }
+    // A new statement of any other kind changes the list.
+    for sql in [
+        "CREATE INDEX i ON proposals (status);",
+        "ALTER TABLE proposals DROP COLUMN paths;",
+        "DROP TABLE approvals;",
+        "GRANT DELETE ON approvals TO lanekeeper_app;",
+        "ALTER TABLE approvals DISABLE TRIGGER approvals_no_self_approval;",
+    ] {
+        assert_eq!(
+            statements_of(&format!("{real}\n{sql}\n")).len(),
+            base + 1,
+            "{sql} is a statement of its own, so the exact list refuses it"
+        );
+    }
+}
+
+/// The migrator owns every object, so `0004` carries the guard of `0001`, `0002` and `0003`.
+#[tokio::test]
+async fn migration_0004_refuses_to_run_as_another_role() {
+    let db = db!();
+    let sql = migration_file("0004_write_additions.sql");
+    for role in [APP, ("postgres", SUPERUSER_PASSWORD)] {
+        let mut conn = if role.0 == "postgres" {
+            db.admin().await
+        } else {
+            db.as_role(role).await
+        };
+        let err = sqlx::raw_sql(&sql)
+            .execute(&mut conn)
+            .await
+            .expect_err("must refuse");
+        assert_eq!(sqlstate(&err).as_deref(), Some("55000"), "{}: {err}", role.0);
+        assert!(
+            err.to_string().contains("lanekeeper_migrator"),
+            "{}: {err}",
+            role.0
+        );
+    }
+}
+
+/// 0004 changes exactly what it says: the action CHECK, the approvals key, the grants on `approvals`, one column and
+/// one trigger with its function. Every other relation, trigger, constraint, column and function stays as 0003 left it,
+/// the append-only audit tables included.
+#[tokio::test]
+async fn migration_0004_changes_only_what_it_names() {
+    let Some(db) = TestDb::bootstrap().await else {
+        return;
+    };
+    db.migrate_upto(3).await;
+    let snapshot = |sql: &'static str| async {
+        let mut c = db.admin().await;
+        sqlx::query_scalar::<_, String>(sql)
+            .fetch_all(&mut c)
+            .await
+            .unwrap()
+            .into_iter()
+            .collect::<BTreeSet<String>>()
+    };
+    let queries: [&'static str; 5] = [
+        "SELECT c.relname::text || ' ' || c.relkind::text || ' ' || c.relowner::regrole::text || ' ' || coalesce(c.relacl::text, '-') \
+         FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace",
+        "SELECT t.tgrelid::regclass::text || ' ' || pg_get_triggerdef(t.oid, true) || ' ' || t.tgenabled::text \
+         FROM pg_trigger t WHERE NOT t.tgisinternal",
+        "SELECT conrelid::regclass::text || ' ' || conname || ' ' || pg_get_constraintdef(oid) FROM pg_constraint \
+         WHERE connamespace = 'public'::regnamespace",
+        "SELECT attrelid::regclass::text || ' ' || attname || ' ' || format_type(atttypid, atttypmod) || ' ' || attnotnull::text \
+         FROM pg_attribute WHERE attnum > 0 AND NOT attisdropped AND attrelid IN (SELECT oid FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r', 'p'))",
+        "SELECT p.proname || ' ' || p.proowner::regrole::text || ' ' || coalesce(p.proacl::text, '-') || ' ' || md5(p.prosrc) \
+         FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace",
+    ];
+    let mut before = Vec::new();
+    for q in queries {
+        before.push(snapshot(q).await);
+    }
+    db.migrate_upto(4).await;
+    let mut changed = Vec::new();
+    for (q, b) in queries.iter().zip(&before) {
+        let after = snapshot(q).await;
+        let removed: Vec<String> = b.difference(&after).cloned().collect();
+        let added: Vec<String> = after.difference(b).cloned().collect();
+        changed.push((removed, added));
+    }
+    // Which names changed, whatever the rest of each line says.
+    let names = |lines: &[String], n: usize| -> BTreeSet<String> {
+        lines
+            .iter()
+            .map(|l| l.split_whitespace().take(n).collect::<Vec<_>>().join(" "))
+            .collect()
+    };
+    let set = |v: &[&str]| -> BTreeSet<String> { v.iter().map(|s| (*s).to_owned()).collect() };
+    // Relations: only `approvals` changes its ACL.
+    assert_eq!(names(&changed[0].0, 1), set(&["approvals"]), "{:?}", changed[0]);
+    assert_eq!(names(&changed[0].1, 1), set(&["approvals"]), "{:?}", changed[0]);
+    // Triggers: one is added (on proposals), none is removed or changed.
+    assert!(changed[1].0.is_empty(), "no trigger is removed: {:?}", changed[1]);
+    assert_eq!(names(&changed[1].1, 1), set(&["proposals"]), "{:?}", changed[1]);
+    assert_eq!(changed[1].1.len(), 1, "one new trigger: {:?}", changed[1]);
+    // Constraints: the two that are replaced, by name.
+    let keys = |lines: &[String]| -> BTreeSet<String> {
+        lines
+            .iter()
+            .map(|l| l.split_whitespace().take(2).collect::<Vec<_>>().join(" "))
+            .collect()
+    };
+    let replaced = set(&[
+        "proposals proposals_action_check",
+        "approvals approvals_proposal_id_fkey",
+    ]);
+    assert_eq!(keys(&changed[2].0), replaced, "{:?}", changed[2]);
+    assert_eq!(keys(&changed[2].1), replaced, "{:?}", changed[2]);
+    // Columns: one is added.
+    assert!(
+        changed[3].0.is_empty(),
+        "no column is removed or changed: {:?}",
+        changed[3]
+    );
+    assert_eq!(
+        changed[3].1,
+        ["github_credentials expires_at timestamp with time zone false".to_owned()]
+    );
+    // Functions: one is added.
+    assert!(changed[4].0.is_empty(), "no function changes: {:?}", changed[4]);
+    assert_eq!(names(&changed[4].1, 1), set(&["proposals_author_immutable"]));
+}
+
+/// G8: a proposal can be for a notify, and still only for the actions the product has.
+#[tokio::test]
+async fn proposals_accept_notify_and_no_other_new_action() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_proposal_world(&mut app).await;
+    let insert = "INSERT INTO proposals (author_tid, author_oid, action, swimlane_id, paths, via, expires_at) \
+                  VALUES ('t', 'alice', $1, 'sit1', ARRAY['a.yml'], 'ui', now() + interval '72 hours')";
+    for action in ["edit", "upload", "delete", "revert", "restart", "pr", "notify"] {
+        sqlx::query(insert)
+            .bind(action)
+            .execute(&mut app)
+            .await
+            .unwrap_or_else(|e| panic!("{action}: {e}"));
+    }
+    for action in ["Notify", "notify ", "apply", ""] {
+        let err = sqlx::query(insert)
+            .bind(action)
+            .execute(&mut app)
+            .await
+            .expect_err("unknown action");
+        assert_eq!(
+            sqlstate(&err).as_deref(),
+            Some(CHECK_VIOLATION),
+            "{action:?}: {err}"
+        );
+    }
+}
+
+/// G9: the expiry of a stored token is optional, and the app can write and clear it.
+#[tokio::test]
+async fn github_credentials_have_an_optional_expiry() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_proposal_world(&mut app).await;
+    let insert = "INSERT INTO github_credentials (user_tid, user_oid, github_login, wrapped_dek, kms_key_version, nonce, ciphertext) \
+                  VALUES ('t', 'alice', 'alice-gh', '\\x01', 'v1', '\\x000000000000000000000000', '\\x02') RETURNING id";
+    let id: i64 = sqlx::query_scalar(insert).fetch_one(&mut app).await.unwrap();
+    let expires: Option<String> =
+        sqlx::query_scalar("SELECT expires_at::text FROM github_credentials WHERE id = $1")
+            .bind(id)
+            .fetch_one(&mut app)
+            .await
+            .unwrap();
+    assert_eq!(expires, None, "a credential stored without an expiry has none");
+    sqlx::query("UPDATE github_credentials SET expires_at = now() + interval '30 days' WHERE id = $1")
+        .bind(id)
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let in_future: bool =
+        sqlx::query_scalar("SELECT expires_at > now() FROM github_credentials WHERE id = $1")
+            .bind(id)
+            .fetch_one(&mut app)
+            .await
+            .unwrap();
+    assert!(in_future);
+    sqlx::query("UPDATE github_credentials SET expires_at = NULL WHERE id = $1")
+        .bind(id)
+        .execute(&mut app)
+        .await
+        .unwrap();
+}
+
+/// G10: an approval is written once. The app cannot change or remove one, and cannot remove one through its proposal.
+#[tokio::test]
+async fn the_app_cannot_change_or_remove_an_approval() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_proposal_world(&mut app).await;
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO proposals (author_tid, author_oid, action, swimlane_id, paths, via, expires_at) \
+         VALUES ('t', 'alice', 'edit', 'sit1', ARRAY['a.yml'], 'ui', now() + interval '72 hours') RETURNING id",
+    )
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO approvals (proposal_id, decision, approver_tid, approver_oid) VALUES ($1, 'approved', 't', 'bob')")
+        .bind(id)
+        .execute(&mut app)
+        .await
+        .unwrap();
+
+    // Re-pointing the approver (the way round the self-approval trigger) and deleting the approval both lack privilege.
+    for stmt in [
+        "UPDATE approvals SET approver_oid = 'alice' WHERE proposal_id = $1",
+        "UPDATE approvals SET decision = 'rejected' WHERE proposal_id = $1",
+        "DELETE FROM approvals WHERE proposal_id = $1",
+    ] {
+        let err = sqlx::query(stmt)
+            .bind(id)
+            .execute(&mut app)
+            .await
+            .expect_err("no privilege");
+        assert_eq!(
+            sqlstate(&err).as_deref(),
+            Some(INSUFFICIENT_PRIVILEGE),
+            "{stmt}: {err}"
+        );
+    }
+    // Deleting the proposal would have taken the approval with it through the cascade, which checks no privilege.
+    let err = sqlx::query("DELETE FROM proposals WHERE id = $1")
+        .bind(id)
+        .execute(&mut app)
+        .await
+        .expect_err("the approval keeps its proposal");
+    assert_eq!(sqlstate(&err).as_deref(), Some("23503"), "{err}");
+    let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM approvals WHERE proposal_id = $1")
+        .bind(id)
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    assert_eq!(kept, 1);
+
+    // What the write path needs still works: a proposal without a decision can be removed, and its status moves.
+    sqlx::query("UPDATE proposals SET status = 'approved', applied_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let lone: i64 = sqlx::query_scalar(
+        "INSERT INTO proposals (author_tid, author_oid, action, swimlane_id, paths, via, expires_at) \
+         VALUES ('t', 'alice', 'edit', 'sit1', ARRAY['b.yml'], 'ui', now() + interval '72 hours') RETURNING id",
+    )
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM proposals WHERE id = $1")
+        .bind(lone)
+        .execute(&mut app)
+        .await
+        .unwrap();
+}
+
+/// G10, a consequence the README states: a swimlane that has a decided proposal cannot be deleted (SQLSTATE 23503), because
+/// its proposals cascade and a decided proposal cannot go. A swimlane whose proposals nobody decided still can.
+#[tokio::test]
+async fn a_swimlane_with_a_decided_proposal_cannot_be_deleted() {
+    let db = db!();
+    let mut app = db.app().await;
+    let mut owner = db.migrator().await;
+    seed_proposal_world(&mut app).await;
+    sqlx::query("INSERT INTO swimlanes (id, project_id, display_name) VALUES ('sit2', 'p1', 'SIT 2')")
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let propose = |swimlane: &'static str| {
+        sqlx::query_scalar::<_, i64>(
+            "INSERT INTO proposals (author_tid, author_oid, action, swimlane_id, paths, via, expires_at) \
+             VALUES ('t', 'alice', 'edit', $1, ARRAY['a.yml'], 'ui', now() + interval '72 hours') RETURNING id",
+        )
+        .bind(swimlane)
+    };
+    let decided = propose("sit1").fetch_one(&mut app).await.unwrap();
+    sqlx::query("INSERT INTO approvals (proposal_id, decision, approver_tid, approver_oid) VALUES ($1, 'approved', 't', 'bob')")
+        .bind(decided)
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let undecided = propose("sit2").fetch_one(&mut app).await.unwrap();
+
+    // The app and the owner alike: the key refuses, not a missing privilege.
+    for conn in [&mut app, &mut owner] {
+        let err = sqlx::query("DELETE FROM swimlanes WHERE id = 'sit1'")
+            .execute(&mut *conn)
+            .await
+            .expect_err("a swimlane with a decided proposal stays");
+        assert_eq!(sqlstate(&err).as_deref(), Some(FOREIGN_KEY_VIOLATION), "{err}");
+    }
+    let kept: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM swimlanes WHERE id = 'sit1') \
+              + (SELECT count(*) FROM proposals WHERE id = $1) \
+              + (SELECT count(*) FROM approvals WHERE proposal_id = $1)",
+    )
+    .bind(decided)
+    .fetch_one(&mut owner)
+    .await
+    .unwrap();
+    assert_eq!(
+        kept, 3,
+        "the swimlane, its proposal and the decision are all still there"
+    );
+
+    // Nobody decided its proposals: the swimlane goes, and they go with it.
+    sqlx::query("DELETE FROM swimlanes WHERE id = 'sit2'")
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM proposals WHERE id = $1")
+        .bind(undecided)
+        .fetch_one(&mut owner)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+/// G10: the author of a proposal is fixed when it is written, for the app and for the owner alike.
+#[tokio::test]
+async fn a_proposals_author_cannot_change() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_proposal_world(&mut app).await;
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO proposals (author_tid, author_oid, action, swimlane_id, paths, via, expires_at) \
+         VALUES ('t', 'alice', 'edit', 'sit1', ARRAY['a.yml'], 'ui', now() + interval '72 hours') RETURNING id",
+    )
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    let mut owner = db.migrator().await;
+    for conn in [&mut app, &mut owner] {
+        for stmt in [
+            "UPDATE proposals SET author_oid = 'bob' WHERE id = $1",
+            "UPDATE proposals SET author_tid = 'other' WHERE id = $1",
+            "UPDATE proposals SET author_tid = 't', author_oid = 'bob' WHERE id = $1",
+        ] {
+            let err = sqlx::query(stmt)
+                .bind(id)
+                .execute(&mut *conn)
+                .await
+                .expect_err("author is fixed");
+            // The trigger runs before the foreign key is looked at, so a refusal is never the key's.
+            assert_eq!(sqlstate(&err).as_deref(), Some(CHECK_VIOLATION), "{stmt}: {err}");
+        }
+    }
+    // Setting it to what it is, and every other column, are fine.
+    sqlx::query("UPDATE proposals SET author_oid = author_oid, status = 'rejected', params = '{\"x\":1}' WHERE id = $1")
+        .bind(id)
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let author: String = sqlx::query_scalar("SELECT author_oid FROM proposals WHERE id = $1")
+        .bind(id)
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    assert_eq!(author, "alice");
+}
+
+/// Two users, a project and a swimlane: what a proposal, an approval and a stored token need to exist.
+async fn seed_proposal_world(app: &mut PgConnection) {
+    for (oid, name) in [("alice", "Alice"), ("bob", "Bob")] {
+        sqlx::query("INSERT INTO users (tid, oid, email, display_name, status, role) VALUES ('t', $1, $2, $2, 'active', 'admin')")
+            .bind(oid)
+            .bind(name)
+            .execute(&mut *app)
+            .await
+            .unwrap();
+    }
+    sqlx::query("INSERT INTO projects (id, display_name) VALUES ('p1', 'P1')")
+        .execute(&mut *app)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO swimlanes (id, project_id, display_name) VALUES ('sit1', 'p1', 'SIT 1')")
+        .execute(&mut *app)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn sentinel_partition_function_is_the_only_ddl_path() {
     let db = db!();
@@ -1984,4 +2648,986 @@ async fn idempotency_and_webhook_replay_keys_are_unique() {
         .await
         .expect_err("duplicate key");
     assert_eq!(sqlstate(&err).as_deref(), Some(UNIQUE_VIOLATION), "{err}");
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// 0003_registry.sql (prompt 05)
+
+/// A project and a swimlane to hang rows on.
+async fn seed_swimlane(conn: &mut PgConnection, id: &str) {
+    sqlx::query("INSERT INTO projects (id, display_name) VALUES ('p1', 'P1') ON CONFLICT DO NOTHING")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO swimlanes (id, project_id, display_name) VALUES ($1, 'p1', $1)")
+        .bind(id)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+}
+
+/// 32 bytes as a SQL expression: `h(1)` is the hash made of `0x11` bytes.
+fn h(n: u8) -> String {
+    format!("decode(repeat('{n:02x}', 32), 'hex')")
+}
+
+/// `0003_registry.sql` is expand-only (the contract-change rule): it adds columns, indexes, tables and one grant, and widens
+/// one CHECK. The single DROP is that CHECK, replaced in the same transaction by a wider one. Nothing is renamed, deleted,
+/// truncated or re-typed, no trigger or function is added, the app gets no more than SELECT, INSERT, UPDATE and DELETE on the
+/// new tables only, and the audit and sentinel tables are not named (A16: the `sentinel_records.operation` CHECK stays).
+#[test]
+fn migration_0003_is_additive_only() {
+    let sql = migration_file("0003_registry.sql");
+    let code = code_lines(&sql).join("\n").to_uppercase();
+    for banned in [
+        "RENAME",
+        "TRUNCATE",
+        "DELETE FROM",
+        "INSERT INTO",
+        "GRANT ALL",
+        "DROP TABLE",
+        "DROP COLUMN",
+        "DROP INDEX",
+        "DROP TYPE",
+        "DROP FUNCTION",
+        "DROP TRIGGER",
+        "ALTER COLUMN",
+        "ALTER DEFAULT",
+        "SET NOT NULL",
+        "CREATE TRIGGER",
+        "CREATE FUNCTION",
+        "AUDIT_EVENTS",
+        "AUDIT_CHECKPOINTS",
+        "SENTINEL_RECORDS",
+        "ON DELETE SET",
+    ] {
+        assert!(
+            !code.contains(banned),
+            "0003 must not contain `{banned}` outside comments"
+        );
+    }
+    assert_eq!(code.matches("DROP ").count(), 1, "one DROP");
+    assert!(
+        code.contains("DROP CONSTRAINT FINDINGS_KIND_CHECK"),
+        "the one DROP is the findings.kind CHECK that is widened"
+    );
+    assert!(
+        code.contains("ADD CONSTRAINT FINDINGS_KIND_CHECK"),
+        "and it is added again, wider, in the same file (one transaction)"
+    );
+    // Every ALTER TABLE adds a column or replaces the one CHECK.
+    for stmt in code
+        .split(';')
+        .map(str::trim)
+        .filter(|s| s.starts_with("ALTER TABLE"))
+    {
+        let adds = stmt.contains("ADD COLUMN")
+            || stmt.contains("ADD CONSTRAINT FINDINGS_KIND_CHECK")
+            || stmt.contains("DROP CONSTRAINT FINDINGS_KIND_CHECK");
+        assert!(adds, "an ALTER TABLE that is not an addition: {stmt}");
+    }
+    // Exactly one GRANT, SELECT/INSERT/UPDATE/DELETE on the new tables to the app, and it names every new table.
+    assert_eq!(code.matches("GRANT ").count(), 1, "one grant");
+    let grant = code
+        .split(';')
+        .map(str::trim)
+        .find(|s| s.starts_with("GRANT "))
+        .expect("the grant");
+    let rest = grant
+        .strip_prefix("GRANT SELECT, INSERT, UPDATE, DELETE ON")
+        .unwrap_or_else(|| panic!("the grant is not SELECT, INSERT, UPDATE, DELETE: {grant}"));
+    let (tables, to) = rest.split_once(" TO ").expect("TO");
+    assert_eq!(to.trim(), "LANEKEEPER_APP");
+    let granted: BTreeSet<String> = tables.split(',').map(|t| t.trim().to_lowercase()).collect();
+    let created: BTreeSet<String> = REGISTRY_TABLES.iter().map(|t| (*t).to_owned()).collect();
+    assert_eq!(
+        granted, created,
+        "the grant names exactly the tables the file creates"
+    );
+    assert_eq!(
+        code.matches("CREATE TABLE ").count(),
+        REGISTRY_TABLES.len(),
+        "the file creates the registry tables and nothing else"
+    );
+}
+
+/// The migrator owns every object, so `0003` carries the same guard as `0001` and `0002`.
+#[tokio::test]
+async fn migration_0003_refuses_to_run_as_another_role() {
+    let db = db!();
+    let sql = migration_file("0003_registry.sql");
+    for role in [APP, ("postgres", SUPERUSER_PASSWORD)] {
+        let mut conn = if role.0 == "postgres" {
+            db.admin().await
+        } else {
+            db.as_role(role).await
+        };
+        let err = sqlx::raw_sql(&sql)
+            .execute(&mut conn)
+            .await
+            .expect_err("must refuse");
+        assert_eq!(sqlstate(&err).as_deref(), Some("55000"), "{}: {err}", role.0);
+        assert!(
+            err.to_string().contains("lanekeeper_migrator"),
+            "{}: {err}",
+            role.0
+        );
+    }
+    let mut admin = db.admin().await;
+    for t in REGISTRY_TABLES {
+        let owner: String = sqlx::query_scalar("SELECT tableowner::text FROM pg_tables WHERE tablename = $1")
+            .bind(t)
+            .fetch_one(&mut admin)
+            .await
+            .unwrap();
+        assert_eq!(owner, "lanekeeper_migrator", "{t}");
+    }
+}
+
+/// What `migration_0003_changes_existing_objects_only_by_adding` compares before and after: (name, query), each query
+/// returning one string per object.
+const CATALOG: [(&str, &str); 7] = [
+    (
+        "relations",
+        "SELECT c.relname::text || ' ' || c.relkind::text || ' ' || c.relowner::regrole::text || ' ' || coalesce(c.relacl::text, '-') \
+         FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace",
+    ),
+    (
+        "triggers",
+        "SELECT t.tgrelid::regclass::text || ' ' || pg_get_triggerdef(t.oid, true) || ' ' || t.tgenabled::text \
+         FROM pg_trigger t WHERE NOT t.tgisinternal",
+    ),
+    (
+        "constraints",
+        "SELECT conrelid::regclass::text || ' ' || conname || ' ' || pg_get_constraintdef(oid) FROM pg_constraint \
+         WHERE connamespace = 'public'::regnamespace AND conname <> 'findings_kind_check'",
+    ),
+    (
+        "columns",
+        "SELECT a.attrelid::regclass::text || '.' || a.attname || ' ' || format_type(a.atttypid, a.atttypmod) || ' ' \
+                || a.attnotnull::text || ' ' || coalesce(nullif(a.attidentity::text, ''), '-') || ' ' \
+                || coalesce(pg_get_expr(d.adbin, d.adrelid), '-') \
+         FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+         WHERE a.attnum > 0 AND NOT a.attisdropped \
+           AND a.attrelid IN (SELECT oid FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r', 'p'))",
+    ),
+    (
+        "indexes",
+        "SELECT indexname::text || ' ' || indexdef FROM pg_indexes WHERE schemaname = 'public'",
+    ),
+    (
+        "index_names",
+        "SELECT tablename::text || ' ' || indexname::text FROM pg_indexes WHERE schemaname = 'public'",
+    ),
+    (
+        "functions",
+        "SELECT p.proname || ' ' || p.proowner::regrole::text || ' ' || coalesce(p.proacl::text, '-') || ' ' || md5(p.prosrc) \
+         FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace",
+    ),
+];
+
+type CatalogSnapshot = (BTreeMap<&'static str, BTreeSet<String>>, String, String);
+
+/// The catalog as `CATALOG` reads it, the definition of the `findings.kind` CHECK, and the definition of the
+/// `sentinel_records.operation` CHECK.
+async fn catalog_snapshot(db: &TestDb) -> CatalogSnapshot {
+    let mut out = BTreeMap::new();
+    let mut c = db.admin().await;
+    for (name, q) in CATALOG {
+        let rows: BTreeSet<String> = sqlx::query_scalar::<_, String>(q)
+            .fetch_all(&mut c)
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert!(!rows.is_empty(), "the snapshot must see something: {name}");
+        out.insert(name, rows);
+    }
+    let check = |table: &'static str, name: &'static str| {
+        sqlx::query_scalar::<_, String>(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = $2 AND conrelid = $1::regclass",
+        )
+        .bind(table)
+        .bind(name)
+    };
+    let kind_check = check("findings", "findings_kind_check")
+        .fetch_one(&mut c)
+        .await
+        .unwrap();
+    let operation_check = check("sentinel_records", "sentinel_records_operation_check")
+        .fetch_one(&mut c)
+        .await
+        .unwrap();
+    (out, kind_check, operation_check)
+}
+
+/// 0003 only adds: everything 0002 left behind (relations with their owner and ACL, triggers, constraints, columns with
+/// their types, nullability and defaults, indexes, functions) is still there exactly as it was. The additions are the ones
+/// the plan lists, and the one CHECK that changed (`findings.kind`) keeps every old value.
+#[tokio::test]
+async fn migration_0003_changes_existing_objects_only_by_adding() {
+    let Some(db) = TestDb::bootstrap().await else {
+        return;
+    };
+    db.migrate_upto(2).await;
+
+    let (before, kinds_before, operation_before) = catalog_snapshot(&db).await;
+    db.migrate_upto(3).await;
+    let (after, kinds_after, operation_after) = catalog_snapshot(&db).await;
+
+    for (name, _) in CATALOG {
+        let gone: Vec<&String> = before[name].difference(&after[name]).collect();
+        assert!(
+            gone.is_empty(),
+            "0003 changed or removed existing {name}: {gone:#?}"
+        );
+    }
+
+    // The quoted values of a CHECK (kind = ANY (ARRAY['a'::text, 'b'::text])).
+    let values =
+        |def: &str| -> BTreeSet<String> { def.split('\'').skip(1).step_by(2).map(str::to_owned).collect() };
+    let mut want = values(&kinds_before);
+    assert_eq!(want.len(), 11, "0001 lists the 11 checks: {kinds_before}");
+    want.insert("served_mismatch".to_owned());
+    assert_eq!(
+        values(&kinds_after),
+        want,
+        "findings.kind gains served_mismatch and loses nothing"
+    );
+    // A16: the sentinel operations CHECK is not relaxed.
+    assert_eq!(operation_after, operation_before);
+    assert_eq!(
+        values(&operation_after),
+        BTreeSet::from(["create", "write", "delete", "rename"].map(str::to_owned)),
+        "no `attribute`"
+    );
+
+    // What 0003 adds to tables that already existed, and nothing else.
+    let on_old_tables = |added: &str| {
+        !REGISTRY_TABLES
+            .iter()
+            .any(|t| added.starts_with(&format!("{t}.")) || added.starts_with(&format!("{t} ")))
+    };
+    let added = |name: &str| -> BTreeSet<String> {
+        after[name]
+            .difference(&before[name])
+            .filter(|s| on_old_tables(s))
+            .cloned()
+            .collect()
+    };
+    let set = |xs: &[&str]| -> BTreeSet<String> { xs.iter().map(|s| (*s).to_owned()).collect() };
+    assert_eq!(
+        added("columns"),
+        set(&[
+            "file_observations.initial boolean true - false",
+            "file_observations.previous_hash sha256_hash false - -",
+            "file_observations.previous_state text false - -",
+            "file_state.seq bigint true a -",
+            "file_state.nfs_drift_hash sha256_hash false - -",
+            "file_state.observed_at timestamp with time zone false - -",
+            "file_state.last_observation_id bigint false - -",
+            "baselines.blob_hash sha256_hash false - -",
+            "sync_windows.warned_at timestamp with time zone false - -",
+            "sync_windows.processed_at timestamp with time zone false - -",
+            "service_state.pending_files jsonb true - '[]'::jsonb",
+            "settings_index.secret_rule text false - -",
+            "swimlanes.last_notified_at timestamp with time zone false - -",
+        ])
+    );
+    assert_eq!(
+        added("index_names"),
+        set(&[
+            "file_observations file_observations_replay_key",
+            "file_state file_state_seq_idx",
+            "file_state file_state_prefix_idx",
+            "file_state file_state_denied_hash_idx",
+            "file_state file_state_current_hash_idx",
+        ])
+    );
+    // New relations: the eight tables with their keys and indexes, and the identity sequences. Nothing is a view or a function.
+    let new_relations: BTreeSet<String> = after["relations"]
+        .difference(&before["relations"])
+        .map(|s| s.split(' ').next().unwrap().to_owned())
+        .collect();
+    for t in REGISTRY_TABLES {
+        assert!(new_relations.contains(*t), "{t} is new");
+        assert!(
+            new_relations.contains(&format!("{t}_pkey")),
+            "{t} has a primary key"
+        );
+    }
+    assert_eq!(after["functions"], before["functions"], "no function is added");
+    assert_eq!(after["triggers"], before["triggers"], "no trigger is added");
+}
+
+/// Rows written under 0002 survive 0003, the new columns take their defaults, and `file_state.seq` is filled in for the
+/// rows that already exist (the identity column is added to a table that has data).
+#[tokio::test]
+async fn migration_0003_keeps_existing_rows_and_fills_the_new_columns() {
+    let Some(db) = TestDb::bootstrap().await else {
+        return;
+    };
+    db.migrate_upto(2).await;
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    let h1 = h(0x11);
+    for sql in [
+        "INSERT INTO blobs (hash, content, size) SELECT sha256(c), c, octet_length(c) FROM (SELECT convert_to('a: 1', 'UTF8') AS c) b".to_owned(),
+        format!("INSERT INTO file_observations (swimlane_id, path, hash, source, observed_at) VALUES \
+                 ('sit1', 'a.yml', {h1}, 'scan', now() - interval '2 minutes'), ('sit1', 'a.yml', NULL, 'scan', now() - interval '1 minute')"),
+        "INSERT INTO file_state (swimlane_id, path, logical_file, kind, class, state) VALUES \
+         ('sit1', 'a.yml', 'a.yml', 'base', 'structured', 'in_sync'), ('sit1', 'b.yml', 'b.yml', 'base', 'text', 'nfs_ahead'), \
+         ('sit1', 'c.bin', 'c.bin', 'untracked', 'binary', 'untracked')".to_owned(),
+        format!("INSERT INTO baselines (swimlane_id, path, hash, repo, commit_id) VALUES ('sit1', 'a.yml', {h1}, 'base', 'abcdef0123')"),
+        "INSERT INTO findings (swimlane_id, kind, severity, message, fingerprint) VALUES ('sit1', 'drift', 'low', 'm', 'f1')".to_owned(),
+        "INSERT INTO sync_windows (swimlane_id, job_name, job_uid, opened_at) VALUES ('sit1', 'sync', 'uid-1', now())".to_owned(),
+        "INSERT INTO services (swimlane_id, namespace, name) VALUES ('sit1', 'csp', 'tx-api')".to_owned(),
+        "INSERT INTO service_state (service_id) SELECT id FROM services".to_owned(),
+        "INSERT INTO settings_index (blob_hash, setting_path, value_text, value_type, start_line, end_line) \
+         SELECT hash, 'a', '1', 'int', 1, 1 FROM blobs".to_owned(),
+    ] {
+        sqlx::query(&sql).execute(&mut app).await.unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
+    drop(app);
+
+    db.migrate_upto(3).await;
+    let mut app = db.app().await;
+
+    for (table, want) in [
+        ("file_observations", 2_i64),
+        ("file_state", 3),
+        ("baselines", 1),
+        ("findings", 1),
+        ("sync_windows", 1),
+        ("service_state", 1),
+        ("settings_index", 1),
+    ] {
+        let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+            .fetch_one(&mut app)
+            .await
+            .unwrap();
+        assert_eq!(n, want, "{table} keeps its rows");
+    }
+    // The new columns take their defaults on the old rows.
+    let row = sqlx::query(
+        "SELECT count(*) FILTER (WHERE initial) AS initial, count(previous_hash) AS ph, count(previous_state) AS ps FROM file_observations",
+    )
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    assert_eq!(
+        (
+            row.get::<i64, _>("initial"),
+            row.get::<i64, _>("ph"),
+            row.get::<i64, _>("ps")
+        ),
+        (0, 0, 0),
+        "an old observation is not an initial one and has no overwrite context"
+    );
+    let row = sqlx::query(
+        "SELECT count(nfs_drift_hash) AS a, count(observed_at) AS b, count(last_observation_id) AS c FROM file_state",
+    )
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    assert_eq!(
+        (
+            row.get::<i64, _>("a"),
+            row.get::<i64, _>("b"),
+            row.get::<i64, _>("c")
+        ),
+        (0, 0, 0),
+        "the pipeline fills these"
+    );
+    let blob_hash: i64 = sqlx::query_scalar("SELECT count(blob_hash) FROM baselines")
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    assert_eq!(blob_hash, 0);
+    let (pending, secret_rule, warned, processed, notified): (
+        serde_json::Value,
+        Option<String>,
+        Option<()>,
+        Option<()>,
+        Option<()>,
+    ) = {
+        let r = sqlx::query(
+            "SELECT (SELECT pending_files FROM service_state) AS p, (SELECT secret_rule FROM settings_index) AS s, \
+                    (SELECT warned_at IS NOT NULL FROM sync_windows) AS w, (SELECT processed_at IS NOT NULL FROM sync_windows) AS q, \
+                    (SELECT last_notified_at IS NOT NULL FROM swimlanes) AS n",
+        )
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+        let none_if_false = |c: &str| r.get::<bool, _>(c).then_some(());
+        (
+            r.get("p"),
+            r.get("s"),
+            none_if_false("w"),
+            none_if_false("q"),
+            none_if_false("n"),
+        )
+    };
+    assert_eq!(pending, serde_json::json!([]));
+    assert_eq!(
+        (secret_rule, warned, processed, notified),
+        (None, None, None, None)
+    );
+
+    // `seq` was filled for the rows that existed: distinct, positive; a new row continues after them.
+    let seqs: Vec<i64> = sqlx::query_scalar("SELECT seq FROM file_state ORDER BY seq")
+        .fetch_all(&mut app)
+        .await
+        .unwrap();
+    assert_eq!(seqs.len(), 3);
+    assert!(seqs.windows(2).all(|w| w[0] < w[1]) && seqs[0] > 0, "{seqs:?}");
+    let next: i64 = sqlx::query_scalar(
+        "INSERT INTO file_state (swimlane_id, path, logical_file, kind, class, state) \
+         VALUES ('sit1', 'd.yml', 'd.yml', 'base', 'text', 'in_sync') RETURNING seq",
+    )
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    assert!(next > seqs[2], "{next} after {seqs:?}");
+}
+
+/// The twelve finding kinds are accepted, an unknown one is not.
+#[tokio::test]
+async fn findings_accept_served_mismatch_and_still_reject_unknown_kinds() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    let kinds = [
+        "missed_base_changes",
+        "redundant_tenant_file",
+        "uneven_tenant_files",
+        "orphan_file",
+        "drift",
+        "environment_host_mismatch",
+        "overwritten_nfs_change",
+        "duplicate_keys",
+        "ambiguous_file_name",
+        "unresolved_placeholder",
+        "config_server_restart_required",
+        "served_mismatch",
+    ];
+    for (i, kind) in kinds.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO findings (swimlane_id, kind, severity, message, fingerprint) VALUES ('sit1', $1, 'high', 'm', $2)",
+        )
+        .bind(kind)
+        .bind(format!("fp-{i}"))
+        .execute(&mut app)
+        .await
+        .unwrap_or_else(|e| panic!("{kind}: {e}"));
+    }
+    expect_sqlstate(
+        &mut app,
+        "INSERT INTO findings (swimlane_id, kind, severity, message, fingerprint) VALUES ('sit1', 'served_mismatch_x', 'high', 'm', 'fp-x')",
+        CHECK_VIOLATION,
+    )
+    .await;
+}
+
+/// `file_observations` gets a unique replay key: the same version of a file at the same instant is recorded once, whether
+/// or not it has a hash (a deletion has none, and two deletions at one instant are one).
+#[tokio::test]
+async fn file_observations_replay_key_makes_a_replayed_version_a_conflict() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    let insert = |hash: String, at: &str| {
+        format!(
+            "INSERT INTO file_observations (swimlane_id, path, hash, source, observed_at) VALUES ('sit1', 'a.yml', {hash}, 'scan', '{at}')"
+        )
+    };
+    let t1 = "2026-10-01 10:00:00+00";
+    let t2 = "2026-10-01 10:00:01+00";
+    sqlx::query(&insert(h(1), t1)).execute(&mut app).await.unwrap();
+    expect_sqlstate(&mut app, &insert(h(1), t1), UNIQUE_VIOLATION).await;
+    // The same instant with another content, and the same content at another instant, are different versions.
+    sqlx::query(&insert(h(2), t1)).execute(&mut app).await.unwrap();
+    sqlx::query(&insert(h(1), t2)).execute(&mut app).await.unwrap();
+    // A deletion has no hash: NULLS NOT DISTINCT makes two of them at one instant one.
+    sqlx::query(&insert("NULL".to_owned(), t1))
+        .execute(&mut app)
+        .await
+        .unwrap();
+    expect_sqlstate(&mut app, &insert("NULL".to_owned(), t1), UNIQUE_VIOLATION).await;
+    // Replaying with the idempotent form the ingestion uses is a no-op.
+    let done = sqlx::query(&format!("{} ON CONFLICT DO NOTHING", insert(h(1), t1)))
+        .execute(&mut app)
+        .await
+        .unwrap();
+    assert_eq!(done.rows_affected(), 0);
+    // The previous state is a drift state.
+    expect_sqlstate(
+        &mut app,
+        &format!(
+            "INSERT INTO file_observations (swimlane_id, path, hash, source, observed_at, previous_state) VALUES ('sit1', 'b.yml', {}, 'sync', now(), 'nope')",
+            h(3)
+        ),
+        CHECK_VIOLATION,
+    )
+    .await;
+    sqlx::query(&format!(
+        "INSERT INTO file_observations (swimlane_id, path, hash, source, observed_at, previous_state, previous_hash, initial) \
+         VALUES ('sit1', 'b.yml', {}, 'sync', now(), 'nfs_ahead', {}, true)",
+        h(3),
+        h(4)
+    ))
+    .execute(&mut app)
+    .await
+    .unwrap();
+}
+
+/// `file_state.seq` is the short keyset surrogate: assigned by the database, increasing, unique within a swimlane, and
+/// not settable by the app.
+#[tokio::test]
+async fn file_state_seq_is_assigned_by_the_database_and_cannot_be_set() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    let insert = "INSERT INTO file_state (swimlane_id, path, logical_file, kind, class, state) \
+                  VALUES ('sit1', $1, $1, 'base', 'text', 'in_sync') RETURNING seq";
+    let a: i64 = sqlx::query_scalar(insert)
+        .bind("a.yml")
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    let b: i64 = sqlx::query_scalar(insert)
+        .bind("b.yml")
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    assert!(b > a, "{a} then {b}");
+    // An upsert that updates an existing row keeps its seq.
+    let again: i64 = sqlx::query_scalar(
+        "INSERT INTO file_state (swimlane_id, path, logical_file, kind, class, state) VALUES ('sit1', 'a.yml', 'a.yml', 'base', 'text', 'nfs_ahead') \
+         ON CONFLICT (swimlane_id, path) DO UPDATE SET state = EXCLUDED.state RETURNING seq",
+    )
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    assert_eq!(again, a, "an update keeps the surrogate");
+    expect_sqlstate(
+        &mut app,
+        "INSERT INTO file_state (swimlane_id, path, logical_file, kind, class, state, seq) VALUES ('sit1', 'c.yml', 'c.yml', 'base', 'text', 'in_sync', 1)",
+        GENERATED_ALWAYS,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        "UPDATE file_state SET seq = 99 WHERE path = 'a.yml'",
+        GENERATED_ALWAYS,
+    )
+    .await;
+    // Unique within the swimlane, by index, so a keyset on (swimlane_id, seq) is a total order.
+    let mut admin = db.admin().await;
+    let def: String =
+        sqlx::query_scalar("SELECT indexdef FROM pg_indexes WHERE indexname = 'file_state_seq_idx'")
+            .fetch_one(&mut admin)
+            .await
+            .unwrap();
+    assert!(
+        def.contains("UNIQUE") && def.contains("(swimlane_id, seq)"),
+        "{def}"
+    );
+}
+
+/// The three indexes that serve the registry's file_state queries: prefix listing (pattern ops, so LIKE 'dir/%' can use
+/// it under any collation), the denied-hash lookup of the blob policy, and the covering index for the text-search file list.
+#[tokio::test]
+async fn file_state_has_the_prefix_denied_and_current_hash_indexes() {
+    let db = db!();
+    let mut admin = db.admin().await;
+    let mut defs = BTreeMap::new();
+    for name in [
+        "file_state_prefix_idx",
+        "file_state_denied_hash_idx",
+        "file_state_current_hash_idx",
+    ] {
+        let d: String = sqlx::query_scalar(
+            "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = $1",
+        )
+        .bind(name)
+        .fetch_one(&mut admin)
+        .await
+        .unwrap();
+        defs.insert(name, d);
+    }
+    assert!(
+        defs["file_state_prefix_idx"].contains("(swimlane_id, path text_pattern_ops)"),
+        "{defs:#?}"
+    );
+    let denied = &defs["file_state_denied_hash_idx"];
+    assert!(
+        denied.contains("(nfs_hash)") && denied.contains("WHERE"),
+        "{denied}"
+    );
+    assert!(denied.contains("denied"), "{denied}");
+    let current = &defs["file_state_current_hash_idx"];
+    assert!(current.contains("(swimlane_id, nfs_hash)"), "{current}");
+    assert!(current.contains("INCLUDE (path, class)"), "{current}");
+    assert!(current.contains("WHERE"), "{current}");
+}
+
+/// A listing of one folder is a prefix range, and the two prefix indexes (`file_state` and `effective_files`) can serve it.
+/// This asks whether the index is usable for the query, not whether the planner finds it cheaper at the size of this fixture:
+/// with 4,000 rows (about 80 of them match) a cost-based choice between an index and a sequential scan is not stable across
+/// versions and settings. So sequential scans are switched off for the connection, and the plan must then be built on the index
+/// if the index can serve the query at all (a `LIKE` prefix on a column without `text_pattern_ops` cannot, and fails here).
+#[tokio::test]
+async fn folder_listings_use_the_prefix_indexes() {
+    let db = db!();
+    let mut admin = db.admin().await;
+    seed_swimlane(&mut admin, "sit1").await;
+    for sql in [
+        "INSERT INTO file_state (swimlane_id, path, logical_file, kind, class, state) \
+         SELECT 'sit1', 'dir' || (i % 50) || '/file' || i || '.yml', 'dir' || (i % 50) || '/file' || i || '.yml', 'base', 'text', 'in_sync' \
+         FROM generate_series(1, 4000) i",
+        "INSERT INTO effective_files (swimlane_id, logical_file, hash) \
+         SELECT 'sit1', 'dir' || (i % 50) || '/file' || i || '.yml', sha256(convert_to(i::text, 'UTF8')) FROM generate_series(1, 4000) i",
+        "ANALYZE file_state",
+        "ANALYZE effective_files",
+    ] {
+        sqlx::query(sql).execute(&mut admin).await.unwrap();
+    }
+    sqlx::query("SET enable_seqscan = off")
+        .execute(&mut admin)
+        .await
+        .unwrap();
+    for (query, index) in [
+        (
+            "SELECT path FROM file_state WHERE swimlane_id = 'sit1' AND path LIKE 'dir7/%'",
+            "file_state_prefix_idx",
+        ),
+        (
+            "SELECT logical_file, hash FROM effective_files WHERE swimlane_id = 'sit1' AND logical_file LIKE 'dir7/%'",
+            "effective_files_prefix_idx",
+        ),
+    ] {
+        let plan: serde_json::Value = sqlx::query_scalar(&format!("EXPLAIN (FORMAT JSON) {query}"))
+            .fetch_one(&mut admin)
+            .await
+            .unwrap();
+        assert!(plan.to_string().contains(index), "{query}: {plan}");
+    }
+}
+
+/// The new tables reject malformed rows (the CHECKs), keep their keys, hang off `swimlanes` with a cascade the app can
+/// follow, and give the app the whole mutable set of privileges and no more (`every_table_has_a_grant_decision` also checks
+/// the grants).
+#[tokio::test]
+async fn registry_tables_enforce_their_constraints_and_cascade_with_the_swimlane() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    let hash = h(7);
+
+    // swimlane_registry: defaults, bounds, one row per swimlane, a known swimlane.
+    sqlx::query("INSERT INTO swimlane_registry (swimlane_id) VALUES ('sit1')")
+        .execute(&mut app)
+        .await
+        .unwrap();
+    let row = sqlx::query(
+        "SELECT first_inventory_at IS NULL AS no_inventory, needs_full_scan, version, state_counts, finding_count, rules_fingerprint IS NULL AS no_rules \
+         FROM swimlane_registry",
+    )
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    assert!(row.get::<bool, _>("no_inventory") && row.get::<bool, _>("no_rules"));
+    assert!(!row.get::<bool, _>("needs_full_scan"));
+    assert_eq!(row.get::<i64, _>("version"), 0);
+    assert_eq!(
+        row.get::<serde_json::Value, _>("state_counts"),
+        serde_json::json!({})
+    );
+    assert_eq!(row.get::<i32, _>("finding_count"), 0);
+    expect_sqlstate(
+        &mut app,
+        "INSERT INTO swimlane_registry (swimlane_id) VALUES ('sit1')",
+        UNIQUE_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        "INSERT INTO swimlane_registry (swimlane_id) VALUES ('nope')",
+        FOREIGN_KEY_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        "UPDATE swimlane_registry SET version = -1",
+        CHECK_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        "UPDATE swimlane_registry SET finding_count = -1",
+        CHECK_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        "UPDATE swimlane_registry SET state_counts = '[]'",
+        CHECK_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        "UPDATE swimlane_registry SET rules_fingerprint = decode('00', 'hex')",
+        CHECK_VIOLATION,
+    )
+    .await;
+
+    // swimlane_deployments: one row per (swimlane, tenant), commit ids of 7 to 64 characters.
+    let deployment = |tenant: &str, commit: &str| {
+        format!(
+            "INSERT INTO swimlane_deployments (swimlane_id, tenant_id, tenant_commit, base_commit, source) VALUES ('sit1', '{tenant}', '{commit}', 'abcdef0', 'sync')"
+        )
+    };
+    sqlx::query(&deployment("sit1", "0123456789abcdef"))
+        .execute(&mut app)
+        .await
+        .unwrap();
+    expect_sqlstate(
+        &mut app,
+        &deployment("sit1", "0123456789abcdef"),
+        UNIQUE_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(&mut app, &deployment("sit2", "abcdef"), CHECK_VIOLATION).await;
+    expect_sqlstate(&mut app, &deployment("", "abcdef0"), CHECK_VIOLATION).await;
+    sqlx::query(&deployment("sit2", "abcdef0"))
+        .execute(&mut app)
+        .await
+        .unwrap();
+
+    // swimlane_folders: a folder is a non-empty directory path, first seen once.
+    sqlx::query(
+        "INSERT INTO swimlane_folders (swimlane_id, dir_path, initial) VALUES ('sit1', 'tx-api', true)",
+    )
+    .execute(&mut app)
+    .await
+    .unwrap();
+    expect_sqlstate(
+        &mut app,
+        "INSERT INTO swimlane_folders (swimlane_id, dir_path) VALUES ('sit1', 'tx-api')",
+        UNIQUE_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        "INSERT INTO swimlane_folders (swimlane_id, dir_path) VALUES ('sit1', '')",
+        CHECK_VIOLATION,
+    )
+    .await;
+
+    // release_hints: a hint per (service, key).
+    let hint = |key: &str| {
+        format!(
+            "INSERT INTO release_hints (swimlane_id, namespace, service, key, value) VALUES ('sit1', 'csp', 'tx-api', '{key}', 'csp-tenant-data-sit1')"
+        )
+    };
+    sqlx::query(&hint("helm.release"))
+        .execute(&mut app)
+        .await
+        .unwrap();
+    expect_sqlstate(&mut app, &hint("helm.release"), UNIQUE_VIOLATION).await;
+    expect_sqlstate(&mut app, &hint(""), CHECK_VIOLATION).await;
+
+    // effective_files: one effective hash per logical file; the hash is 32 bytes.
+    let effective = |hash: &str| {
+        format!(
+            "INSERT INTO effective_files (swimlane_id, logical_file, hash) VALUES ('sit1', 'tx-api/core.yml', {hash})"
+        )
+    };
+    expect_sqlstate(&mut app, &effective("decode('00', 'hex')"), CHECK_VIOLATION).await;
+    sqlx::query(&effective(&hash)).execute(&mut app).await.unwrap();
+    expect_sqlstate(&mut app, &effective(&hash), UNIQUE_VIOLATION).await;
+
+    // adoptions: closed vocabularies, and one open adoption per swimlane and reason.
+    let adoption = |reason: &str, status: &str, step: &str| {
+        format!(
+            "INSERT INTO adoptions (swimlane_id, reason, status, step) VALUES ('sit1', '{reason}', '{status}', '{step}') RETURNING id"
+        )
+    };
+    expect_sqlstate(
+        &mut app,
+        &adoption("whim", "in_progress", "branch"),
+        CHECK_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(&mut app, &adoption("initial", "done", "branch"), CHECK_VIOLATION).await;
+    expect_sqlstate(
+        &mut app,
+        &adoption("initial", "in_progress", "lunch"),
+        CHECK_VIOLATION,
+    )
+    .await;
+    let first: i64 = sqlx::query_scalar(&adoption("initial", "in_progress", "branch"))
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    expect_sqlstate(
+        &mut app,
+        &adoption("initial", "in_progress", "files"),
+        UNIQUE_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        &adoption("initial", "review", "files"),
+        UNIQUE_VIOLATION,
+    )
+    .await;
+    // Another reason may be open at the same time; a finished adoption does not block a new one.
+    let review: i64 = sqlx::query_scalar(&adoption("tenant_suffix_changed", "review", "branch"))
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    assert_ne!(first, review);
+    sqlx::query("UPDATE adoptions SET status = 'confirmed', confirmed_at = now() WHERE id = $1")
+        .bind(first)
+        .execute(&mut app)
+        .await
+        .unwrap();
+    sqlx::query(&adoption("initial", "in_progress", "branch"))
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    let defaults = sqlx::query(
+        "SELECT ranking, hints, tenants, tenant_commits, secret_scan FROM adoptions WHERE id = $1",
+    )
+    .bind(review)
+    .fetch_one(&mut app)
+    .await
+    .unwrap();
+    assert_eq!(
+        defaults.get::<serde_json::Value, _>("ranking"),
+        serde_json::json!([])
+    );
+    assert_eq!(
+        defaults.get::<serde_json::Value, _>("hints"),
+        serde_json::json!({})
+    );
+    assert_eq!(defaults.get::<Vec<String>, _>("tenants"), Vec::<String>::new());
+    assert_eq!(
+        defaults.get::<serde_json::Value, _>("tenant_commits"),
+        serde_json::json!({})
+    );
+    assert_eq!(
+        defaults.get::<serde_json::Value, _>("secret_scan"),
+        serde_json::json!([])
+    );
+    expect_sqlstate(
+        &mut app,
+        &format!("UPDATE adoptions SET ranking = '{{}}' WHERE id = {review}"),
+        CHECK_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        &format!("UPDATE adoptions SET secret_scan = '{{}}' WHERE id = {review}"),
+        CHECK_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        &format!("UPDATE adoptions SET base_commit = 'abc' WHERE id = {review}"),
+        CHECK_VIOLATION,
+    )
+    .await;
+    // A user is named by both halves or by neither: a foreign key on two columns is not checked when one is NULL, so the
+    // CHECK is what stops half an identity from being stored as attribution.
+    for who in ["started_by", "confirmed_by"] {
+        for half in ["tid", "oid"] {
+            expect_sqlstate(
+                &mut app,
+                &format!("UPDATE adoptions SET {who}_{half} = 'half' WHERE id = {review}"),
+                CHECK_VIOLATION,
+            )
+            .await;
+        }
+    }
+
+    // adoption_resolutions: the three choices, one per (adoption, path); they go with their adoption.
+    let resolution = |path: &str, choice: &str| {
+        format!(
+            "INSERT INTO adoption_resolutions (adoption_id, path, resolution, nfs_hash, git_hash) VALUES ({review}, '{path}', '{choice}', {hash}, NULL)"
+        )
+    };
+    expect_sqlstate(&mut app, &resolution("a.yml", "whatever"), CHECK_VIOLATION).await;
+    for (path, choice) in [
+        ("a.yml", "nfs_is_right"),
+        ("b.yml", "git_is_right"),
+        ("c.yml", "intentional"),
+    ] {
+        sqlx::query(&resolution(path, choice))
+            .execute(&mut app)
+            .await
+            .unwrap();
+    }
+    expect_sqlstate(&mut app, &resolution("a.yml", "git_is_right"), UNIQUE_VIOLATION).await;
+    expect_sqlstate(
+        &mut app,
+        "INSERT INTO adoption_resolutions (adoption_id, path, resolution) VALUES (999999, 'a.yml', 'nfs_is_right')",
+        FOREIGN_KEY_VIOLATION,
+    )
+    .await;
+    expect_sqlstate(
+        &mut app,
+        &format!("UPDATE adoption_resolutions SET reason = repeat('x', 2001) WHERE adoption_id = {review} AND path = 'c.yml'"),
+        CHECK_VIOLATION,
+    )
+    .await;
+    for half in ["tid", "oid"] {
+        expect_sqlstate(
+            &mut app,
+            &format!("UPDATE adoption_resolutions SET resolved_by_{half} = 'half' WHERE adoption_id = {review} AND path = 'c.yml'"),
+            CHECK_VIOLATION,
+        )
+        .await;
+    }
+
+    // delta_staging: one staged message per (swimlane, seq).
+    let staged = |seq: i64, part: i32| {
+        format!(
+            "INSERT INTO delta_staging (swimlane_id, seq, part, new_root, metadata) VALUES ('sit1', {seq}, {part}, {hash}, '{{\"entries\": []}}')"
+        )
+    };
+    sqlx::query(&staged(10, 0)).execute(&mut app).await.unwrap();
+    sqlx::query(&staged(11, 1)).execute(&mut app).await.unwrap();
+    expect_sqlstate(&mut app, &staged(10, 0), UNIQUE_VIOLATION).await;
+    expect_sqlstate(&mut app, &staged(-1, 0), CHECK_VIOLATION).await;
+    expect_sqlstate(&mut app, &staged(12, -1), CHECK_VIOLATION).await;
+    let no_root = sqlx::query(
+        "INSERT INTO delta_staging (swimlane_id, seq, part, metadata) VALUES ('sit1', 13, 0, '{}')",
+    )
+    .execute(&mut app)
+    .await
+    .expect_err("a staged message names its new root");
+    assert_eq!(sqlstate(&no_root).as_deref(), Some(NOT_NULL_VIOLATION));
+
+    // Deleting the swimlane takes every row of the new tables with it, with the app's own privileges.
+    for t in REGISTRY_TABLES {
+        let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {t}"))
+            .fetch_one(&mut app)
+            .await
+            .unwrap();
+        assert!(n > 0, "{t} has a row to cascade");
+    }
+    sqlx::query("DELETE FROM swimlanes WHERE id = 'sit1'")
+        .execute(&mut app)
+        .await
+        .unwrap();
+    for t in REGISTRY_TABLES {
+        let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {t}"))
+            .fetch_one(&mut app)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "{t} follows its swimlane");
+    }
 }

@@ -1,0 +1,5 @@
+---
+source: crates/ports/tests/contract_shape.rs
+expression: with
+---
+{"at":1700000000000,"actor":{"kind":"user","user":"72f988bf-86f1-41af-91ab-2d7cd011db47:00000000-0000-4000-8000-000000000001"},"action":"file_edited","via":"mcp","swimlane":"sit1","path":"tx-infinity-api/tx-infinity-core-sit1.yml","hash_before":"0101010101010101010101010101010101010101010101010101010101010101","hash_after":"0202020202020202020202020202020202020202020202020202020202020202","diff":"-a: 1\n+a: 2\n","github_login":null,"approval":7,"author":"72f988bf-86f1-41af-91ab-2d7cd011db47:00000000-0000-4000-8000-000000000002","request_id":null,"attribution":null}

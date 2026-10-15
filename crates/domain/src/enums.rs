@@ -99,6 +99,24 @@ wire_enum! {
 }
 
 wire_enum! {
+    /// The line ending style a caller asks a write to convert a file to (D17). It is never `mixed`: that is a state a
+    /// file can be in, not a style to write. A write that does not set it keeps the style the file already has.
+    ChangeEol { Lf => "lf", Crlf => "crlf" }
+}
+
+wire_enum! {
+    /// What a [`crate::ValidationIssue`] is about.
+    IssueKind {
+        /// Structured content that does not parse.
+        ParseError => "parse_error",
+        /// The same key twice in one mapping: the last one wins (check C8). A warning, never a block.
+        DuplicateKey => "duplicate_key",
+        /// The value-based secret scan matched (S13). Reports the place and the rule, never the text.
+        SecretMatch => "secret_match",
+    }
+}
+
+wire_enum! {
     /// How tenant settings combine with base ones (C1 differs by mode).
     MergeMode { WholeFile => "whole_file", SpringMerge => "spring_merge" }
 }
@@ -145,7 +163,9 @@ wire_enum! {
 }
 
 wire_enum! {
-    /// Consistency checks C1-C11, in numeric order. See [`FindingKind::code`].
+    /// Consistency checks C1-C11, in numeric order, then C12: the "as served" mismatch of D86, where the config-server's
+    /// answer differs from the engine's rendering. New kinds are appended, so the codes already given never move. See
+    /// [`FindingKind::code`].
     FindingKind {
         MissedBaseChanges => "missed_base_changes",
         RedundantTenantFile => "redundant_tenant_file",
@@ -158,11 +178,12 @@ wire_enum! {
         AmbiguousFileName => "ambiguous_file_name",
         UnresolvedPlaceholder => "unresolved_placeholder",
         ConfigServerRestartRequired => "config_server_restart_required",
+        ServedMismatch => "served_mismatch",
     }
 }
 
 impl FindingKind {
-    /// The check id used in the docs: `C1` ... `C11`.
+    /// The check id used in the docs: `C1` ... `C12`.
     pub const fn code(self) -> &'static str {
         match self {
             Self::MissedBaseChanges => "C1",
@@ -176,6 +197,7 @@ impl FindingKind {
             Self::AmbiguousFileName => "C9",
             Self::UnresolvedPlaceholder => "C10",
             Self::ConfigServerRestartRequired => "C11",
+            Self::ServedMismatch => "C12",
         }
     }
 }

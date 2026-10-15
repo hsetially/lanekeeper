@@ -232,3 +232,83 @@ fn proposal_and_status_types_used_by_fakes_are_plain_data() {
     };
     assert_eq!(a.clone(), a);
 }
+
+/// The tool-write fake is bounded without losing what it accepted: a full registry refuses at `register`, a repeat of what
+/// it already holds is still a no-op, and a commit never drops a registration.
+#[tokio::test]
+async fn tool_write_registry_is_full_at_register_never_at_commit() {
+    use ports::fakes::FakeToolWrites;
+    use ports::{ToolWriteError, ToolWrites};
+    // A small bound; committed and parked registrations count together.
+    const MAX: usize = 40;
+    let reg = FakeToolWrites::with_capacity(MAX);
+    let txf = FakeTxFactory::new();
+    let s = swimlane("sit1");
+    let (user, path, h) = (
+        ports::conformance::sample::user_id(1),
+        nfs("svc/app.yml"),
+        hash(b"x"),
+    );
+
+    // Fill it with registrations that are only parked, in two open transactions.
+    let mut tx_a = txf.begin().await.unwrap();
+    let mut tx_b = txf.begin().await.unwrap();
+    for i in 0..MAX {
+        let tx = if i % 2 == 0 { &mut tx_a } else { &mut tx_b };
+        reg.register(&mut tx.tx(), &s, &path, &h, &user, &request_id(&format!("r-{i}")))
+            .await
+            .unwrap();
+    }
+    // Parked registrations hold their place: the next new one is refused now, not dropped later.
+    let mut tx_c = txf.begin().await.unwrap();
+    let refused = reg
+        .register(&mut tx_c.tx(), &s, &path, &h, &user, &request_id("r-over"))
+        .await;
+    assert_eq!(refused, Err(ToolWriteError::Full));
+    // A retry of one already parked in the same transaction is a no-op, not `Full`.
+    reg.register(&mut tx_a.tx(), &s, &path, &h, &user, &request_id("r-0"))
+        .await
+        .unwrap();
+
+    tx_a.commit().await.unwrap();
+    // The place of a rolled-back registration is given back.
+    tx_b.rollback().await.unwrap();
+    assert_eq!(
+        reg.entries().len(),
+        MAX / 2,
+        "every accepted registration of the committed transaction is kept"
+    );
+    reg.register(&mut tx_c.tx(), &s, &path, &h, &user, &request_id("r-over"))
+        .await
+        .unwrap();
+    tx_c.commit().await.unwrap();
+    assert_eq!(reg.entries().len(), MAX / 2 + 1);
+
+    // Fill it with committed ones: a retry of a committed registration is still a no-op, a new one is refused.
+    let mut tx_d = txf.begin().await.unwrap();
+    for i in 0..MAX {
+        let _ = reg
+            .register(
+                &mut tx_d.tx(),
+                &s,
+                &path,
+                &h,
+                &user,
+                &request_id(&format!("d-{i}")),
+            )
+            .await;
+    }
+    tx_d.commit().await.unwrap();
+    assert_eq!(reg.entries().len(), MAX, "full, and nothing accepted was dropped");
+    let mut tx_e = txf.begin().await.unwrap();
+    reg.register(&mut tx_e.tx(), &s, &path, &h, &user, &request_id("r-0"))
+        .await
+        .expect("a retry of a registration the registry holds is not Full");
+    assert_eq!(
+        reg.register(&mut tx_e.tx(), &s, &path, &h, &user, &request_id("d-new"))
+            .await,
+        Err(ToolWriteError::Full)
+    );
+    tx_e.commit().await.unwrap();
+    assert_eq!(reg.entries().len(), MAX);
+}
