@@ -1,5 +1,6 @@
 //! Integration tests for `db/migrations` (prompt 01, T6; S9, S21; `0002_audit_verify_state.sql` for prompt 03a;
-//! `0003_registry.sql` for prompt 05; `0004_write_additions.sql` for prompt 06).
+//! `0003_registry.sql` for prompt 05; `0004_write_additions.sql` for prompt 06; `0005_tool_write_registrations.sql` for
+//! prompts 05 and 06).
 //!
 //! They run against a real Postgres 16 with pgvector, started with testcontainers from the same image digest as
 //! `deploy/dev/compose.yaml`. The tests use the runtime `sqlx::migrate::Migrator` and no `query!` macros, so no
@@ -125,6 +126,8 @@ const LATER_TABLES: &[(&str, &str)] = &[
     ("adoptions", "0003_registry.sql"),
     ("adoption_resolutions", "0003_registry.sql"),
     ("delta_staging", "0003_registry.sql"),
+    // Prompts 05 and 06 (the tool-write port): see `migration_0005_*` and `tool_write_registrations_*` below.
+    ("tool_write_registrations", "0005_tool_write_registrations.sql"),
 ];
 
 /// The tables `0003_registry.sql` creates, all `Grant::Mutable`: the pipeline upserts and prunes them, and every one hangs
@@ -204,6 +207,8 @@ fn grant_decisions() -> BTreeMap<&'static str, Grant> {
     m.insert("audit_verify_state", Grant::StateRow);
     // 0003: an approval is a decision nobody rewrites or removes, like the audit chain.
     m.insert("approvals", Grant::AppendOnly);
+    // 0005: a tool-write registration is never updated; consumption, invalidation and expiry delete it.
+    m.insert("tool_write_registrations", Grant::Immutable);
     m.insert("_sqlx_migrations", Grant::None);
     m
 }
@@ -682,7 +687,7 @@ async fn migration_applies_on_pg16() {
     assert_eq!(tables, expected);
 
     // Re-running is a no-op: each migration is recorded once, each applied on top of the one before it (0002 on 0001, 0003 on
-    // 0002, 0004 on 0003). The schema is owned by the migrator, never by the app.
+    // 0002, 0004 on 0003, 0005 on 0004). The schema is owned by the migrator, never by the app.
     db.migrate().await;
     let applied: Vec<i64> =
         sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
@@ -691,7 +696,7 @@ async fn migration_applies_on_pg16() {
             .unwrap();
     let files: Vec<i64> = migration_files().iter().map(|(v, _, _)| i64::from(*v)).collect();
     assert_eq!(applied, files);
-    assert_eq!(applied, [1, 2, 3, 4]);
+    assert_eq!(applied, [1, 2, 3, 4, 5]);
     let foreign: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tableowner <> 'lanekeeper_migrator'",
     )
@@ -3630,4 +3635,776 @@ async fn registry_tables_enforce_their_constraints_and_cascade_with_the_swimlane
             .unwrap();
         assert_eq!(n, 0, "{t} follows its swimlane");
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// 0005_tool_write_registrations.sql (prompts 05 and 06)
+
+/// `0005_tool_write_registrations.sql` is exactly the statements it was reviewed with: the guard, one table, its age index
+/// and one grant. No row is written, nothing existing is altered, dropped or renamed, no trigger or function is added, the
+/// audit and sentinel tables are not named, and the table has one foreign key (to `swimlanes`) and none to `users`.
+#[test]
+fn migration_0005_is_expand_only() {
+    let sql = migration_file("0005_tool_write_registrations.sql");
+    assert_eq!(
+        row_writing_statement(&sql),
+        None,
+        "0005 changes the schema and no row: no INSERT, UPDATE, DELETE, MERGE, TRUNCATE, COPY or dynamic EXECUTE, in a DO \
+         block or a function body either"
+    );
+    let found: Vec<String> = statements_of(&sql).iter().map(|w| w.join(" ")).collect();
+    assert_eq!(
+        found.len(),
+        4,
+        "the guard, the table, the index and the grant: {found:#?}"
+    );
+    assert_eq!(found[0], "DO", "the guard comes first");
+    assert!(
+        found[1].starts_with(
+            "CREATE TABLE TOOL_WRITE_REGISTRATIONS ID BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY "
+        ),
+        "{}",
+        found[1]
+    );
+    assert_eq!(
+        found[2],
+        "CREATE INDEX TOOL_WRITE_REGISTRATIONS_AGE_IDX ON TOOL_WRITE_REGISTRATIONS REGISTERED_AT ID"
+    );
+    assert_eq!(
+        found[3], "GRANT SELECT INSERT DELETE ON TOOL_WRITE_REGISTRATIONS TO LANEKEEPER_APP",
+        "write-once: SELECT, INSERT, DELETE, and nothing else"
+    );
+    let code = without_literals(&code_lines(&sql).join("\n")).to_uppercase();
+    for banned in [
+        "DROP",
+        "ALTER",
+        "RENAME",
+        "TRUNCATE",
+        "UPDATE",
+        "TRIGGER",
+        "FUNCTION",
+        "SECURITY DEFINER",
+        "GRANT ALL",
+        "ON DELETE SET",
+        "ON DELETE RESTRICT",
+        "ENABLE ",
+        "DISABLE ",
+        "AUDIT_EVENTS",
+        "AUDIT_CHECKPOINTS",
+        "SENTINEL_RECORDS",
+        "NULLS NOT DISTINCT",
+    ] {
+        assert!(
+            !code.contains(banned),
+            "0005 must not contain `{banned}` outside comments"
+        );
+    }
+    assert_eq!(code.matches("CREATE TABLE ").count(), 1, "one table");
+    assert_eq!(code.matches("GRANT ").count(), 1, "one grant");
+    assert_eq!(
+        code.matches("REFERENCES").count(),
+        1,
+        "one foreign key: to swimlanes, not to users"
+    );
+    assert!(
+        code.contains("REFERENCES SWIMLANES (ID) ON DELETE CASCADE"),
+        "the rows go with their swimlane"
+    );
+    assert_eq!(code.matches("CASCADE").count(), 1);
+    assert!(
+        code.contains(
+            "CONSTRAINT TOOL_WRITE_REGISTRATIONS_KEY UNIQUE (SWIMLANE_ID, PATH, HASH, REQUEST_ID, IS_DELETE)"
+        ),
+        "the key names the kind: a write and a delete of one path, hash and request are two registrations"
+    );
+    let flat = code.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("HASH SHA256_HASH NOT NULL,") && flat.contains("IS_DELETE BOOLEAN NOT NULL,"),
+        "both kinds are pinned to a content hash, and the kind is never defaulted"
+    );
+}
+
+/// The migrator owns every object, so `0005` carries the guard of `0001` to `0004`.
+#[tokio::test]
+async fn migration_0005_refuses_to_run_as_another_role() {
+    let db = db!();
+    let sql = migration_file("0005_tool_write_registrations.sql");
+    for role in [APP, ("postgres", SUPERUSER_PASSWORD)] {
+        let mut conn = if role.0 == "postgres" {
+            db.admin().await
+        } else {
+            db.as_role(role).await
+        };
+        let err = sqlx::raw_sql(&sql)
+            .execute(&mut conn)
+            .await
+            .expect_err("must refuse");
+        assert_eq!(sqlstate(&err).as_deref(), Some("55000"), "{}: {err}", role.0);
+        assert!(
+            err.to_string().contains("lanekeeper_migrator"),
+            "{}: {err}",
+            role.0
+        );
+    }
+}
+
+/// 0005 only adds: everything 0004 left behind (relations with their owner and ACL, triggers, constraints, columns with
+/// their types, nullability and defaults, indexes, functions) is still there exactly as it was, and what is new is the one
+/// table with its key, its index and its identity sequence.
+#[tokio::test]
+async fn migration_0005_changes_existing_objects_only_by_adding() {
+    let Some(db) = TestDb::bootstrap().await else {
+        return;
+    };
+    db.migrate_upto(4).await;
+    let (before, kinds_before, operation_before) = catalog_snapshot(&db).await;
+    db.migrate_upto(5).await;
+    let (after, kinds_after, operation_after) = catalog_snapshot(&db).await;
+
+    for (name, _) in CATALOG {
+        let gone: Vec<&String> = before[name].difference(&after[name]).collect();
+        assert!(
+            gone.is_empty(),
+            "0005 changed or removed existing {name}: {gone:#?}"
+        );
+        // Every addition is about the new table, whatever the category says first (a name, `table.column`, `table index`).
+        let elsewhere: Vec<&String> = after[name]
+            .difference(&before[name])
+            .filter(|s| !s.starts_with("tool_write_registrations"))
+            .collect();
+        assert!(
+            elsewhere.is_empty(),
+            "0005 added {name} outside tool_write_registrations: {elsewhere:#?}"
+        );
+    }
+    assert_eq!(kinds_after, kinds_before, "findings.kind is untouched");
+    assert_eq!(
+        operation_after, operation_before,
+        "sentinel_records.operation is untouched"
+    );
+
+    let added_relations: BTreeSet<String> = after["relations"]
+        .difference(&before["relations"])
+        .map(|s| s.split(' ').next().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        added_relations,
+        BTreeSet::from(
+            [
+                "tool_write_registrations",
+                "tool_write_registrations_pkey",
+                "tool_write_registrations_key",
+                "tool_write_registrations_age_idx",
+                "tool_write_registrations_id_seq",
+            ]
+            .map(str::to_owned)
+        ),
+        "the table, its primary key, its key, its age index and the identity sequence"
+    );
+    assert_eq!(after["triggers"], before["triggers"], "no trigger is added");
+    assert_eq!(after["functions"], before["functions"], "no function is added");
+}
+
+/// One registration as the registry inserts it. `hash` is a SQL expression: the hash that was written, or, for a delete,
+/// the hash that was deleted. `is_delete` says which.
+fn registration_insert(swimlane: &str, path: &str, hash: &str, request: &str, is_delete: bool) -> String {
+    format!(
+        "INSERT INTO tool_write_registrations (swimlane_id, path, hash, is_delete, user_tid, user_oid, request_id, registered_at) \
+         VALUES ('{swimlane}', '{path}', {hash}, {is_delete}, 'tid-1', 'oid-1', '{request}', now())"
+    )
+}
+
+/// The same, as the registry does it (`INSERT 0 0` for a registration it already holds).
+fn registration_once(swimlane: &str, path: &str, hash: &str, request: &str, is_delete: bool) -> String {
+    format!(
+        "{} ON CONFLICT DO NOTHING",
+        registration_insert(swimlane, path, hash, request, is_delete)
+    )
+}
+
+async fn rows_affected(conn: &mut PgConnection, sql: &str) -> u64 {
+    sqlx::query(sql).execute(conn).await.unwrap().rows_affected()
+}
+
+async fn registration_count(conn: &mut PgConnection, filter: &str) -> i64 {
+    sqlx::query_scalar(&format!(
+        "SELECT count(*) FROM tool_write_registrations WHERE {filter}"
+    ))
+    .fetch_one(conn)
+    .await
+    .unwrap()
+}
+
+/// `ToolWrites::register`: the same (swimlane, path, hash, request) again is a no-op, and the same hash from another request,
+/// at another path or in another swimlane is another registration. The key is a constraint, so it holds for every writer.
+#[tokio::test]
+async fn a_hash_registration_is_idempotent_by_swimlane_path_hash_and_request() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    seed_swimlane(&mut app, "sit2").await;
+    let (one, two) = (h(1), h(2));
+
+    assert_eq!(
+        rows_affected(
+            &mut app,
+            &registration_once("sit1", "svc/a.yml", &one, "req-1", false)
+        )
+        .await,
+        1,
+        "INSERT 0 1"
+    );
+    assert_eq!(
+        rows_affected(
+            &mut app,
+            &registration_once("sit1", "svc/a.yml", &one, "req-1", false)
+        )
+        .await,
+        0,
+        "the repeat of a key is INSERT 0 0"
+    );
+    expect_sqlstate(
+        &mut app,
+        &registration_insert("sit1", "svc/a.yml", &one, "req-1", false),
+        UNIQUE_VIOLATION,
+    )
+    .await;
+
+    for (what, sql) in [
+        (
+            "another request",
+            registration_once("sit1", "svc/a.yml", &one, "req-2", false),
+        ),
+        (
+            "another hash",
+            registration_once("sit1", "svc/a.yml", &two, "req-1", false),
+        ),
+        (
+            "another path",
+            registration_once("sit1", "svc/b.yml", &one, "req-1", false),
+        ),
+        (
+            "another swimlane",
+            registration_once("sit2", "svc/a.yml", &one, "req-1", false),
+        ),
+    ] {
+        assert_eq!(rows_affected(&mut app, &sql).await, 1, "{what} is a new row");
+    }
+    assert_eq!(registration_count(&mut app, "true").await, 5);
+    assert_eq!(
+        registration_count(
+            &mut app,
+            &format!("swimlane_id = 'sit1' AND path = 'svc/a.yml' AND hash = {one}")
+        )
+        .await,
+        2,
+        "two requests registered the same hash at the same path"
+    );
+}
+
+/// `ToolWrites::register_delete`: a delete registration is pinned to the hash of the file it deletes, like a write is pinned
+/// to the hash it writes. The repeat of one is a no-op, and a delete and a write of the same path, hash and request are two
+/// rows, because the kind is part of the key. A delete of another version of the file is another registration.
+#[tokio::test]
+async fn a_delete_registration_is_distinct_from_a_write_registration_and_idempotent() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    seed_swimlane(&mut app, "sit2").await;
+    let (one, two) = (h(1), h(2));
+
+    assert_eq!(
+        rows_affected(
+            &mut app,
+            &registration_once("sit1", "svc/a.yml", &one, "req-1", true)
+        )
+        .await,
+        1,
+        "a delete registration is a row of the delete kind, with the hash that was deleted"
+    );
+    assert_eq!(
+        rows_affected(
+            &mut app,
+            &registration_once("sit1", "svc/a.yml", &one, "req-1", true)
+        )
+        .await,
+        0,
+        "the repeat of a delete registration is INSERT 0 0"
+    );
+    expect_sqlstate(
+        &mut app,
+        &registration_insert("sit1", "svc/a.yml", &one, "req-1", true),
+        UNIQUE_VIOLATION,
+    )
+    .await;
+
+    // The same path, hash and request, as a write: a registration of its own, with its own repeat.
+    assert_eq!(
+        rows_affected(
+            &mut app,
+            &registration_once("sit1", "svc/a.yml", &one, "req-1", false)
+        )
+        .await,
+        1,
+        "a write registration and a delete registration of one path, hash and request are two rows"
+    );
+    assert_eq!(
+        rows_affected(
+            &mut app,
+            &registration_once("sit1", "svc/a.yml", &one, "req-1", false)
+        )
+        .await,
+        0
+    );
+
+    // Another version, another request, another path, another swimlane: other delete registrations.
+    for (what, sql) in [
+        (
+            "a delete of another version of the file",
+            registration_once("sit1", "svc/a.yml", &two, "req-1", true),
+        ),
+        (
+            "another request",
+            registration_once("sit1", "svc/a.yml", &one, "req-2", true),
+        ),
+        (
+            "another path",
+            registration_once("sit1", "svc/b.yml", &one, "req-1", true),
+        ),
+        (
+            "another swimlane",
+            registration_once("sit2", "svc/a.yml", &one, "req-1", true),
+        ),
+    ] {
+        assert_eq!(rows_affected(&mut app, &sql).await, 1, "{what} is a new row");
+    }
+    assert_eq!(registration_count(&mut app, "is_delete").await, 5);
+    assert_eq!(registration_count(&mut app, "NOT is_delete").await, 1);
+}
+
+/// A registration is visible only if the transaction that made it commits, and a rollback leaves nothing behind
+/// (`ToolWrites::register` and `register_delete` run in the caller's transaction).
+#[tokio::test]
+async fn a_registration_exists_only_if_its_transaction_commits() {
+    let db = db!();
+    let mut app = db.app().await;
+    let mut other = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    let one = h(1);
+
+    let mut tx = app.begin().await.unwrap();
+    sqlx::query(&registration_once("sit1", "svc/a.yml", &one, "req-1", false))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query(&registration_once("sit1", "svc/a.yml", &one, "req-1", true))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(
+        registration_count(&mut other, "true").await,
+        0,
+        "not visible to another connection before the commit"
+    );
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        registration_count(&mut other, "true").await,
+        0,
+        "a rollback leaves nothing"
+    );
+
+    let mut tx = app.begin().await.unwrap();
+    sqlx::query(&registration_once("sit1", "svc/a.yml", &one, "req-1", false))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query(&registration_once("sit1", "svc/a.yml", &one, "req-1", true))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    // A repeat inside the open transaction is a no-op too.
+    assert_eq!(
+        sqlx::query(&registration_once("sit1", "svc/a.yml", &one, "req-1", true))
+            .execute(&mut *tx)
+            .await
+            .unwrap()
+            .rows_affected(),
+        0
+    );
+    tx.commit().await.unwrap();
+    assert_eq!(
+        registration_count(&mut other, "true").await,
+        2,
+        "visible after the commit"
+    );
+}
+
+/// Write-once (README grant convention): the app may read, insert and delete a registration (consumption, invalidation and
+/// expiry are deletes), and never update one or truncate the table. An upsert that updates needs UPDATE, so it is refused.
+#[tokio::test]
+async fn the_app_can_delete_a_registration_but_not_update_it_or_truncate_the_table() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    sqlx::query(&registration_once("sit1", "svc/a.yml", &h(1), "req-1", false))
+        .execute(&mut app)
+        .await
+        .unwrap();
+    sqlx::query(&registration_once("sit1", "svc/a.yml", &h(1), "req-1", true))
+        .execute(&mut app)
+        .await
+        .unwrap();
+
+    for sql in [
+        "UPDATE tool_write_registrations SET user_oid = 'someone-else'",
+        "UPDATE tool_write_registrations SET registered_at = now() + interval '1 day'",
+        "UPDATE tool_write_registrations SET is_delete = NOT is_delete",
+        "UPDATE tool_write_registrations SET hash = decode(repeat('22', 32), 'hex')",
+        "TRUNCATE tool_write_registrations",
+        &format!(
+            "{} ON CONFLICT (swimlane_id, path, hash, request_id, is_delete) DO UPDATE SET user_oid = 'someone-else'",
+            registration_insert("sit1", "svc/a.yml", &h(1), "req-1", false)
+        ),
+    ] {
+        expect_sqlstate(&mut app, sql, INSUFFICIENT_PRIVILEGE).await;
+    }
+    assert_eq!(registration_count(&mut app, "true").await, 2, "nothing changed");
+
+    assert_eq!(
+        rows_affected(&mut app, "DELETE FROM tool_write_registrations WHERE is_delete").await,
+        1,
+        "a delete registration is consumed by a delete"
+    );
+    assert_eq!(
+        rows_affected(
+            &mut app,
+            "DELETE FROM tool_write_registrations WHERE registered_at < now() + interval '1 minute'"
+        )
+        .await,
+        1,
+        "and an expired one by the sweep"
+    );
+    assert_eq!(registration_count(&mut app, "true").await, 0);
+}
+
+/// The registrations go with their swimlane, with the app's own privileges (it may delete from the table, so the cascade does
+/// not get round a protection).
+#[tokio::test]
+async fn registrations_follow_their_swimlane() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    seed_swimlane(&mut app, "sit2").await;
+    for (sw, is_delete) in [("sit1", false), ("sit1", true), ("sit2", false)] {
+        sqlx::query(&registration_once(sw, "svc/a.yml", &h(1), "req-1", is_delete))
+            .execute(&mut app)
+            .await
+            .unwrap();
+    }
+    expect_sqlstate(
+        &mut app,
+        &registration_insert("nope", "svc/a.yml", &h(1), "req-1", false),
+        FOREIGN_KEY_VIOLATION,
+    )
+    .await;
+    sqlx::query("DELETE FROM swimlanes WHERE id = 'sit1'")
+        .execute(&mut app)
+        .await
+        .unwrap();
+    assert_eq!(registration_count(&mut app, "swimlane_id = 'sit1'").await, 0);
+    assert_eq!(registration_count(&mut app, "swimlane_id = 'sit2'").await, 1);
+}
+
+/// The CHECKs, at their edges: a path of 1 to 1,024 characters, a user of 1 to 64 (as `users`), a request of 1 to 128 (as
+/// `idempotency_keys`), a hash of 32 bytes, and every column set, `hash` and `is_delete` included: both kinds are pinned to a
+/// content hash, and the kind is stated by the registry, never defaulted. The user has no foreign key: a registration is a
+/// short-lived expectation, and a row of `users` never decides whether a write was the tool's.
+#[tokio::test]
+async fn registrations_enforce_their_constraints() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    let with = |column: &str, value: &str| {
+        let mut values = [
+            ("swimlane_id", "'sit1'".to_owned()),
+            ("path", "'svc/a.yml'".to_owned()),
+            ("hash", h(1)),
+            ("is_delete", "false".to_owned()),
+            ("user_tid", "'tid-1'".to_owned()),
+            ("user_oid", "'oid-1'".to_owned()),
+            ("request_id", "'req-1'".to_owned()),
+            ("registered_at", "now()".to_owned()),
+        ];
+        for (name, v) in &mut values {
+            if *name == column {
+                *v = value.to_owned();
+            }
+        }
+        let names: Vec<&str> = values.iter().map(|(n, _)| *n).collect();
+        let vals: Vec<&str> = values.iter().map(|(_, v)| v.as_str()).collect();
+        format!(
+            "INSERT INTO tool_write_registrations ({}) VALUES ({})",
+            names.join(", "),
+            vals.join(", ")
+        )
+    };
+    let text = |n: usize| format!("'{}'", "x".repeat(n));
+
+    // Too short and too long.
+    for (column, max) in [
+        ("path", 1024),
+        ("user_tid", 64),
+        ("user_oid", 64),
+        ("request_id", 128),
+    ] {
+        expect_sqlstate(&mut app, &with(column, "''"), CHECK_VIOLATION).await;
+        expect_sqlstate(&mut app, &with(column, &text(max + 1)), CHECK_VIOLATION).await;
+    }
+    expect_sqlstate(&mut app, &with("hash", "decode('00', 'hex')"), CHECK_VIOLATION).await;
+    expect_sqlstate(
+        &mut app,
+        &with("hash", "decode(repeat('11', 33), 'hex')"),
+        CHECK_VIOLATION,
+    )
+    .await;
+    // Exactly at the edge is accepted (each in its own row: the key differs by the path or the request).
+    sqlx::query(&with("path", &text(1024)))
+        .execute(&mut app)
+        .await
+        .unwrap();
+    sqlx::query(&with("path", &text(1)))
+        .execute(&mut app)
+        .await
+        .unwrap();
+    sqlx::query(&with("request_id", &text(128)))
+        .execute(&mut app)
+        .await
+        .unwrap();
+    sqlx::query(&with("user_tid", &text(64)).replace("'req-1'", "'req-2'"))
+        .execute(&mut app)
+        .await
+        .unwrap();
+    sqlx::query(&with("user_oid", &text(64)).replace("'req-1'", "'req-3'"))
+        .execute(&mut app)
+        .await
+        .unwrap();
+
+    // Not null: every column, `hash` (a delete is pinned to the hash it deletes) and `is_delete` included.
+    for column in [
+        "swimlane_id",
+        "path",
+        "hash",
+        "is_delete",
+        "user_tid",
+        "user_oid",
+        "request_id",
+        "registered_at",
+    ] {
+        let err = sqlx::query(&with(column, "NULL"))
+            .execute(&mut app)
+            .await
+            .expect_err("not null");
+        assert_eq!(
+            sqlstate(&err).as_deref(),
+            Some(NOT_NULL_VIOLATION),
+            "{column}: {err}"
+        );
+    }
+    sqlx::query(&with("is_delete", "true").replace("'req-1'", "'req-4'"))
+        .execute(&mut app)
+        .await
+        .unwrap();
+
+    // The identity is the database's.
+    expect_sqlstate(
+        &mut app,
+        "INSERT INTO tool_write_registrations (id, swimlane_id, path, hash, is_delete, user_tid, user_oid, request_id, registered_at) \
+         VALUES (1, 'sit1', 'svc/z.yml', decode(repeat('11', 32), 'hex'), false, 'tid-1', 'oid-1', 'req-1', now())",
+        GENERATED_ALWAYS,
+    )
+    .await;
+    // No foreign key to users: `tid-1`/`oid-1` has no row, and the registrations above were accepted.
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    assert_eq!(users, 0);
+    let ids: i64 = sqlx::query_scalar("SELECT count(DISTINCT id) FROM tool_write_registrations")
+        .fetch_one(&mut app)
+        .await
+        .unwrap();
+    assert_eq!(ids, 6, "the six rows that were accepted");
+}
+
+/// The lookup of ingestion and the matcher (`swimlane_id = $1 AND path = ANY($2)`) is served by the key, and the expiry
+/// sweep and the bound (the oldest first, `LIMIT`) by the age index. This asks whether each index is usable for its query,
+/// not whether the planner prefers it at the size of this fixture (see `folder_listings_use_the_prefix_indexes`): sequential
+/// scans are off, so a query no index can serve fails here.
+#[tokio::test]
+async fn the_lookup_and_the_expiry_sweep_are_served_by_an_index() {
+    let db = db!();
+    let mut admin = db.admin().await;
+    seed_swimlane(&mut admin, "sit1").await;
+    for sql in [
+        "INSERT INTO tool_write_registrations (swimlane_id, path, hash, is_delete, user_tid, user_oid, request_id, registered_at) \
+         SELECT 'sit1', 'dir' || (i % 50) || '/file' || i || '.yml', sha256(convert_to(i::text, 'UTF8')), i % 5 = 0, \
+                't', 'u', 'req-' || i, now() - (i || ' seconds')::interval \
+         FROM generate_series(1, 4000) i",
+        "ANALYZE tool_write_registrations",
+        "SET enable_seqscan = off",
+    ] {
+        sqlx::query(sql).execute(&mut admin).await.unwrap();
+    }
+    for (query, index) in [
+        (
+            "SELECT hash, is_delete, user_tid, user_oid, request_id, registered_at FROM tool_write_registrations \
+             WHERE swimlane_id = 'sit1' AND path = ANY (ARRAY['dir7/file7.yml', 'dir8/file8.yml'])",
+            "tool_write_registrations_key",
+        ),
+        (
+            "SELECT id FROM tool_write_registrations WHERE registered_at < now() - interval '15 minutes' \
+             ORDER BY registered_at, id LIMIT 500",
+            "tool_write_registrations_age_idx",
+        ),
+        (
+            "SELECT count(*) FROM (SELECT 1 FROM tool_write_registrations \
+             WHERE registered_at > now() - interval '15 minutes' LIMIT 10001) bound",
+            "tool_write_registrations_age_idx",
+        ),
+    ] {
+        let plan: serde_json::Value = sqlx::query_scalar(&format!("EXPLAIN (FORMAT JSON) {query}"))
+            .fetch_one(&mut admin)
+            .await
+            .unwrap();
+        assert!(plan.to_string().contains(index), "{query}: {plan}");
+    }
+}
+
+/// The README says the key matches `ON CONFLICT ON CONSTRAINT tool_write_registrations_key`, `ON CONFLICT (swimlane_id, path,
+/// hash, request_id, is_delete)` and a bare `ON CONFLICT DO NOTHING`, for a write registration and for a delete registration.
+/// Each is `INSERT 0 1` and then `INSERT 0 0`, as the app.
+#[tokio::test]
+async fn the_key_serves_every_form_of_on_conflict_do_nothing() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    let forms = [
+        " ON CONFLICT ON CONSTRAINT tool_write_registrations_key DO NOTHING",
+        " ON CONFLICT (swimlane_id, path, hash, request_id, is_delete) DO NOTHING",
+        " ON CONFLICT DO NOTHING",
+    ];
+    for (i, form) in forms.iter().enumerate() {
+        for (kind, is_delete) in [("write", false), ("delete", true)] {
+            let sql = format!(
+                "{}{form}",
+                registration_insert("sit1", &format!("svc/form-{i}.yml"), &h(1), "req-1", is_delete)
+            );
+            assert_eq!(
+                rows_affected(&mut app, &sql).await,
+                1,
+                "{kind} registration, the first time:{form}"
+            );
+            assert_eq!(
+                rows_affected(&mut app, &sql).await,
+                0,
+                "{kind} registration, the repeat:{form}"
+            );
+        }
+    }
+    assert_eq!(registration_count(&mut app, "true").await, 6);
+}
+
+/// No column has a default (the identity is not one), so the registry states the time, the hash and the kind of every
+/// registration: a database default would date one by the database's clock, or call a delete a write.
+#[tokio::test]
+async fn a_registration_has_no_default_time_or_kind() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    let defaults: Vec<String> = sqlx::query_scalar(
+        "SELECT a.attname::text FROM pg_attribute a \
+         JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+         WHERE a.attrelid = 'tool_write_registrations'::regclass AND NOT a.attisdropped",
+    )
+    .fetch_all(&mut app)
+    .await
+    .unwrap();
+    assert!(
+        defaults.is_empty(),
+        "no column of tool_write_registrations has a default: {defaults:?}"
+    );
+    for (what, sql) in [
+        (
+            "a time",
+            "INSERT INTO tool_write_registrations (swimlane_id, path, hash, is_delete, user_tid, user_oid, request_id) \
+             VALUES ('sit1', 'svc/a.yml', decode(repeat('11', 32), 'hex'), false, 'tid-1', 'oid-1', 'req-1')",
+        ),
+        (
+            "a kind",
+            "INSERT INTO tool_write_registrations (swimlane_id, path, hash, user_tid, user_oid, request_id, registered_at) \
+             VALUES ('sit1', 'svc/a.yml', decode(repeat('11', 32), 'hex'), 'tid-1', 'oid-1', 'req-1', now())",
+        ),
+        (
+            "a hash",
+            "INSERT INTO tool_write_registrations (swimlane_id, path, is_delete, user_tid, user_oid, request_id, registered_at) \
+             VALUES ('sit1', 'svc/a.yml', true, 'tid-1', 'oid-1', 'req-1', now())",
+        ),
+    ] {
+        let err = sqlx::query(sql)
+            .execute(&mut app)
+            .await
+            .expect_err("a registration is refused without it");
+        assert_eq!(
+            sqlstate(&err).as_deref(),
+            Some(NOT_NULL_VIOLATION),
+            "without {what}: {err}"
+        );
+    }
+}
+
+/// The app holds no row locks on the table: every locking clause needs UPDATE, which it lacks (SQLSTATE 42501), so an expiry
+/// sweep or a claim by several replicas deletes with `DELETE ... RETURNING` (or a CTE around one), and the database decides
+/// which replica removed a row.
+#[tokio::test]
+async fn the_app_holds_no_row_locks_so_a_sweep_deletes_returning() {
+    let db = db!();
+    let mut app = db.app().await;
+    seed_swimlane(&mut app, "sit1").await;
+    for request in ["req-1", "req-2", "req-3"] {
+        sqlx::query(&registration_once("sit1", "svc/a.yml", &h(1), request, true))
+            .execute(&mut app)
+            .await
+            .unwrap();
+    }
+    for clause in [
+        "FOR UPDATE",
+        "FOR UPDATE SKIP LOCKED",
+        "FOR NO KEY UPDATE",
+        "FOR SHARE",
+        "FOR KEY SHARE",
+    ] {
+        expect_sqlstate(
+            &mut app,
+            &format!("SELECT id FROM tool_write_registrations ORDER BY registered_at, id LIMIT 2 {clause}"),
+            INSUFFICIENT_PRIVILEGE,
+        )
+        .await;
+    }
+    // What the app does instead: delete and get the rows back, alone or in a CTE.
+    let swept: Vec<String> = sqlx::query_scalar(
+        "DELETE FROM tool_write_registrations WHERE id IN \
+           (SELECT id FROM tool_write_registrations ORDER BY registered_at, id LIMIT 2) RETURNING request_id",
+    )
+    .fetch_all(&mut app)
+    .await
+    .unwrap();
+    assert_eq!(swept.len(), 2);
+    let claimed: Vec<String> = sqlx::query_scalar(
+        "WITH gone AS (DELETE FROM tool_write_registrations RETURNING request_id) SELECT request_id FROM gone",
+    )
+    .fetch_all(&mut app)
+    .await
+    .unwrap();
+    assert_eq!(claimed.len(), 1, "the one that is left");
+    assert_eq!(registration_count(&mut app, "true").await, 0);
 }
