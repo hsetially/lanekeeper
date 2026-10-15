@@ -1182,6 +1182,67 @@ async fn an_approval_for_files_an_unfinished_job_already_covers_makes_no_second_
     assert_eq!(t.pulls().len(), 1, "one pull request for one change");
 }
 
+/// The admin approved the files at the hashes the author saw. The job reads them again when it runs; a file that has another hash
+/// by then is not what was approved, and the job must not put it in a pull request.
+#[tokio::test]
+async fn a_job_does_not_carry_a_file_that_changed_after_it_was_approved() {
+    let Some(t) = jobs().await else { return };
+    let careful = t.f.rig.approval_user(5, Role::Editor).await;
+    let admin = t.f.rig.user(6, Role::Admin).await;
+    t.f.gh.token(&tok(5), "careful", &[BASE, TENANT]);
+    t.f.sim.expect_token(&tok(5));
+    t.f.vault
+        .put(&ctx(&careful, "k-token"), Secret::new(tok(5)))
+        .await
+        .unwrap();
+    let Raised::Proposal(proposal) = t
+        .runner
+        .raise(&ctx(&careful, "k-1"), t.f.request(&[ENTRY, OTHER], None))
+        .await
+        .unwrap()
+    else {
+        panic!("a proposal");
+    };
+    let done =
+        t.f.rig
+            .hub
+            .approve_proposal(&ctx(&admin, "k-ok"), proposal, None)
+            .await
+            .unwrap();
+    assert!(matches!(done, WriteOutcome::Applied { .. }), "{done:?}");
+
+    // Somebody changes a file between the approval and the job's first look at it.
+    t.f.rig.agent.put(&t.f.s, &nfs(ENTRY), b"a: 1\nb: 99\n");
+    t.f.rig.catch_up_registry(&t.f.s);
+    let report = t.runner.run_once(&|| true).await;
+    assert_eq!(report.driven, 1, "{report:?}");
+
+    let id: i64 = sqlx::query_scalar("SELECT id FROM pr_jobs")
+        .fetch_one(&t.f.rig.pool)
+        .await
+        .unwrap();
+    let view = t.state_of(PrJobId::from(id)).await;
+    assert_eq!(view.state, PrJobState::Failed, "{view:?}");
+    let error = view
+        .error
+        .as_ref()
+        .map(domain::ShortText::as_str)
+        .unwrap_or_default();
+    assert!(error.contains("changed after"), "{error}");
+    assert_eq!(
+        t.pulls().len(),
+        0,
+        "nothing the admin did not approve reaches GitHub"
+    );
+    assert_eq!(t.made_branches().len(), 0);
+    let status: String = sqlx::query_scalar("SELECT status FROM proposals WHERE id = $1")
+        .bind(proposal.get())
+        .fetch_one(&t.f.rig.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "approved", "not applied: no pull request was made");
+}
+
 // -------------------------------------------------------------------------------------------------------- the trait
 
 #[tokio::test]

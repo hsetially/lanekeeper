@@ -366,6 +366,10 @@ impl PrJobRunner {
             .await
             .map_err(stop_of)?
             .for_job(job.id);
+        if let Some(proposal) = job.step.proposal {
+            self.check_approved(domain::ProposalId::from(proposal), &plan)
+                .await?;
+        }
 
         // The change as it is now: a pull request that is open for any of these files, at these hashes, makes this one a second.
         let pairs: Vec<(String, ContentHash)> = plan
@@ -400,6 +404,31 @@ impl PrJobRunner {
         let mut step = job.step.clone();
         step.plan = Some(StoredPlan::of(&plan, &blobs));
         self.persist(job, PrJobState::Committing, &step, &blobs).await
+    }
+
+    /// A job that carries out an approved proposal makes its pull request from the files the admin approved, at the hashes their
+    /// author saw. The plan has just read each file again; one with another hash is not what was approved, and the pull request
+    /// would carry something nobody looked at.
+    async fn check_approved(&self, id: domain::ProposalId, plan: &PrPlan) -> Result<(), Stop> {
+        let hub = self.hub();
+        let found = async {
+            let mut conn = hub
+                .pool
+                .acquire()
+                .await
+                .map_err(|e| Internal::db("pr_job_proposal", &e))?;
+            crate::proposals::store::get(&mut conn, id).await
+        };
+        let Some(proposal) = hub.within("pr_job_proposal", found).await?? else {
+            return Err(permanent("the proposal of the job is gone"));
+        };
+        for f in &plan.files {
+            match proposal.expected_at(f.nfs.as_str()) {
+                Some(crate::proposals::store::Base::At(approved)) if approved == f.nfs_hash => {}
+                _ => return Err(permanent("a file changed after the proposal was approved")),
+            }
+        }
+        Ok(())
     }
 
     /// `committing`: the commit and the branch.
