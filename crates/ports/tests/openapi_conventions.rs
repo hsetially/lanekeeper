@@ -244,6 +244,9 @@ fn roles_follow_the_approved_inventory() {
         ("GET", "/api/v1/me", Role::Viewer),
         ("PUT", "/api/v1/me/github-token", Role::Editor),
         ("DELETE", "/api/v1/me/github-token", Role::Editor),
+        ("GET", "/api/v1/me/mcp-tokens", Role::Viewer),
+        ("POST", "/api/v1/me/mcp-tokens", Role::Viewer),
+        ("DELETE", "/api/v1/me/mcp-tokens/{id}", Role::Viewer),
         ("GET", "/api/v1/swimlanes/{id}/served", Role::Viewer),
         ("POST", "/api/v1/swimlanes/{id}/files/reveal", Role::Editor),
         ("PUT", "/api/v1/swimlanes/{id}/files", Role::Editor),
@@ -410,6 +413,7 @@ fn every_list_uses_keyset_with_limit_max_500() {
         "GET /api/v1/admin/audit",
         "GET /api/v1/admin/agents",
         "GET /api/v1/admin/sentinels",
+        "GET /api/v1/me/mcp-tokens",
     ] {
         assert!(
             lists.contains(expected),
@@ -573,7 +577,7 @@ fn errors_are_problem_json_and_every_operation_has_a_default() {
 fn secrets_are_write_only() {
     let d = doc();
     // (schema, property): a value that is shown exactly once, with the reason.
-    let shown_once = [("JoinToken", "token")];
+    let shown_once = [("JoinToken", "token"), ("McpTokenCreated", "token")];
     // (schema, property): a boolean about a secret, not the secret, with the reason: whether a token is stored.
     let flags = [("Me", "needs_github_token")];
     let mut checked = 0;
@@ -1267,4 +1271,128 @@ fn mcp_write_definitions_match_the_rest_document() {
     assert!(!required_of(&defs["WriteOutcome"]).contains("warnings"));
     assert!(!required_of(&defs["ToolError"]).contains("issues"));
     assert!(!required_of(&defs["ToolError"]).contains("reason"));
+}
+
+/// Prompt 07's contract change (C3): personal MCP tokens. Any signed-in user may make, list and revoke their own (the role floor
+/// is Viewer; whether personal-token mode is on is the hub's configuration). The token is in the response that creates it and
+/// in no other, the stored hash is in none, and the label has the bounds of the table that keeps it.
+#[test]
+fn personal_mcp_tokens_are_shown_once_and_listed_without_the_secret() {
+    let d = doc();
+    let all = operations(&d);
+    let schemas = &d["components"]["schemas"];
+    let list = find(&all, "GET", "/api/v1/me/mcp-tokens");
+    let create = find(&all, "POST", "/api/v1/me/mcp-tokens");
+    let revoke = find(&all, "DELETE", "/api/v1/me/mcp-tokens/{id}");
+    for (op, id) in [
+        (list, "listMcpTokens"),
+        (create, "createMcpToken"),
+        (revoke, "revokeMcpToken"),
+    ] {
+        assert_eq!(op.def["operationId"], id);
+        assert_eq!(op.def["x-required-role"], "viewer", "{id}");
+        assert!(op.has_tag("me"), "{id}");
+        // The mode is the deployment's: with personal tokens off the routes answer 404, and the spec says so.
+        assert!(op.response(&d, "404").is_some(), "{id} documents 404");
+        assert!(op.response(&d, "403").is_some(), "{id} documents 403");
+    }
+
+    // The list: McpToken entries, which hold no token, no hash and no secret of any kind.
+    assert_eq!(
+        json_schema(list.response(&d, "200").unwrap()).unwrap()["$ref"],
+        "#/components/schemas/McpTokenPage"
+    );
+    assert_eq!(
+        schemas["McpTokenPage"]["properties"]["items"]["items"]["$ref"],
+        "#/components/schemas/McpToken"
+    );
+    let listed: BTreeSet<&str> = properties(&d, &schemas["McpToken"]).into_keys().collect();
+    assert_eq!(
+        listed,
+        BTreeSet::from([
+            "id",
+            "label",
+            "created_at",
+            "expires_at",
+            "revoked_at",
+            "last_used_at"
+        ])
+    );
+    assert_eq!(
+        required_of(&schemas["McpToken"]).len(),
+        listed.len(),
+        "every field is always there"
+    );
+
+    // The create response is the list entry plus the token, once, uncacheable.
+    let created_ok = create.response(&d, "201").expect("201");
+    assert_eq!(
+        json_schema(created_ok).unwrap()["$ref"],
+        "#/components/schemas/McpTokenCreated"
+    );
+    assert_eq!(
+        created_ok["headers"]["Cache-Control"]["schema"]["enum"][0],
+        "no-store"
+    );
+    let created = properties(&d, &schemas["McpTokenCreated"]);
+    assert_eq!(
+        created.keys().copied().collect::<BTreeSet<_>>(),
+        listed.iter().copied().chain(["token"]).collect::<BTreeSet<_>>()
+    );
+    assert_eq!(created["token"]["readOnly"], true, "shown once");
+    assert!(required_of(&schemas["McpTokenCreated"]).contains("token"));
+    // No other schema has a property that could hold the token or the hash the hub keeps; the HMAC is a storage detail.
+    let token_holders = ["JoinToken", "GithubTokenRequest", "McpTokenCreated"];
+    for (name, schema) in schemas.as_object().unwrap() {
+        for prop in properties(&d, schema).into_keys() {
+            assert!(
+                !prop.to_lowercase().contains("hmac"),
+                "{name}.{prop}: the stored hash is not part of the API"
+            );
+            assert!(
+                prop != "token" || token_holders.contains(&name.as_str()),
+                "{name}.{prop}: a personal token is in the response that creates it and nowhere else"
+            );
+        }
+    }
+    // Nor does any word of the token operations and schemas name it (the webhook's own HMAC is another matter).
+    for text in [
+        list.def.to_string(),
+        create.def.to_string(),
+        revoke.def.to_string(),
+        schemas["McpToken"].to_string(),
+        schemas["McpTokenPage"].to_string(),
+        schemas["McpTokenCreate"].to_string(),
+        schemas["McpTokenCreated"].to_string(),
+    ] {
+        assert!(
+            !text.to_lowercase().contains("hmac"),
+            "the stored hash is not part of the API: {text}"
+        );
+    }
+
+    // The request: a label, as long as the table allows (`length(label) BETWEEN 1 AND 64`), and nothing else.
+    let body = &schemas["McpTokenCreate"];
+    assert_eq!(required_of(body), BTreeSet::from(["label".to_owned()]));
+    assert_eq!(body["additionalProperties"], false);
+    assert_eq!(body["properties"]["label"]["minLength"], 1);
+    assert_eq!(body["properties"]["label"]["maxLength"], 64);
+    assert!(
+        include_str!("../../../db/migrations/0005_mcp_tokens.sql").contains("length(label) BETWEEN 1 AND 64"),
+        "the table and the request agree on the label"
+    );
+    assert_eq!(
+        create.def["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/McpTokenCreate"
+    );
+    // A user at the limit of live tokens is told so, and a revocation has no body.
+    assert!(create.response(&d, "409").is_some());
+    assert!(revoke.response(&d, "204").is_some());
+    assert!(revoke.response(&d, "204").unwrap().get("content").is_none());
+    let id = revoke
+        .params(&d)
+        .into_iter()
+        .find(|p| p["in"] == "path")
+        .expect("path parameter");
+    assert_eq!(id["name"], "id");
 }

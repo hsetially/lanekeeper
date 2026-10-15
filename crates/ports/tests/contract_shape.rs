@@ -270,6 +270,8 @@ fn all_actions() -> Vec<AuditAction> {
         SessionSignedIn,
         SessionSignedOut,
         PrStateChanged,
+        McpTokenCreated,
+        McpTokenRevoked,
     ];
     // An exhaustive match: adding a variant without listing it above stops this test from compiling.
     for a in &all {
@@ -310,7 +312,9 @@ fn all_actions() -> Vec<AuditAction> {
             | AutoNotifyChanged
             | SessionSignedIn
             | SessionSignedOut
-            | PrStateChanged => {}
+            | PrStateChanged
+            | McpTokenCreated
+            | McpTokenRevoked => {}
         }
     }
     all
