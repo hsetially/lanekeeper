@@ -185,13 +185,26 @@ pub enum PreviewWarning {
 /// holds it has the marker `[REDACTED: N chars, rule]` as its `text` (the engine's `SecretMatch::marker`, the same text
 /// the MCP tools use, S14b), and `flagged` is true. Nothing in a preview reveals a flagged value; revealing stays the one
 /// audited action, `/files/reveal` (D79).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Debug` prints the setting path, the kind and `flagged`, never either side's text: a value the scan did not flag may
+/// still be a secret, and the text of a change does not belong in a log (S10), like [`ChangePreview`]'s.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreviewedChange {
     /// The change, with every flagged value replaced by its marker.
     pub change: SettingChange,
     /// True when the scan flagged `change.left` or `change.right`.
     pub flagged: bool,
+}
+
+impl std::fmt::Debug for PreviewedChange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreviewedChange")
+            .field("path", &self.change.path)
+            .field("kind", &self.change.kind)
+            .field("flagged", &self.flagged)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The answer to a [`PreviewRequest`]: what the engine says the change does, and the token that later lets the

@@ -358,3 +358,35 @@ fn a_previewed_change_carries_the_flag_next_to_the_change() {
     let extra = serde_json::json!({"change": v["change"], "flagged": false, "reveal": "x"}).to_string();
     assert!(serde_json::from_str::<domain::PreviewedChange>(&extra).is_err());
 }
+
+#[test]
+fn a_previewed_change_debug_never_prints_values() {
+    // A fake value on each side: Debug names the setting, the kind and the flag, and nothing of either value.
+    let value = |text: &str| domain::SettingValue {
+        text: text.to_owned(),
+        ty: domain::ValueType::String,
+        flag: None,
+    };
+    let entry = domain::PreviewedChange {
+        change: domain::SettingChange {
+            path: domain::SettingPath::parse("db.password").unwrap(),
+            kind: domain::ChangeKind::Changed,
+            left: Some(value("hunter2-left-fake")),
+            right: Some(value("hunter2-right-fake")),
+            left_location: None,
+            right_location: None,
+        },
+        flagged: true,
+    };
+    for shown in [
+        format!("{entry:?}"),
+        format!("{entry:#?}"),
+        format!("{:?}", vec![entry]),
+    ] {
+        assert!(!shown.contains("hunter2"), "{shown}");
+        assert!(
+            shown.contains("db.password") && shown.contains("Changed") && shown.contains("flagged: true"),
+            "{shown}"
+        );
+    }
+}
