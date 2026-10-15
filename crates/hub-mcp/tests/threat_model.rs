@@ -834,7 +834,8 @@ fn code_today() -> Gaps {
             missing("src/tools/write/notify.rs"),
         ),
         ("The owner table", settings.validate().is_ok()),
-        ("no user id", !log_line.contains("user")),
+        // The call line must name the caller (`user_id`); the section must not say that it does not.
+        ("no user id", !log_line.contains("user_id")),
         (
             "prompt 09 does not mention it yet",
             !read(&repo().join("prompts/09-deployment-ci.md")).contains("Mcp-Session-Id"),

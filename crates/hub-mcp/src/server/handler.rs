@@ -11,12 +11,12 @@
 //! 5. the tool, under the timeout of its class, with the result cut to the cap and every text through the secret scan.
 //!
 //! A failure is a tool result with `isError: true` and the contract's `ToolError` (rule 3); only a call that cannot be routed
-//! (an unknown tool) is a protocol error. One log line says what was called and how it ended: never the arguments, never the result
-//! (S10).
+//! (an unknown tool) is a protocol error. One log line says what was called, how it ended and who called (the stable user id, never
+//! the email or the name): never the arguments, never the result (S10).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use aws_lc_rs::rand::fill;
 use domain::{Role, User, UserId};
@@ -56,6 +56,21 @@ fn request_id() -> String {
         return "unknown".to_owned();
     }
     crate::output::hex(&bytes)
+}
+
+/// The one line of a call: what was called, how it ended, how long it took, and who called. The caller is the stable internal user
+/// id (`tid:oid`), which says nothing about a person: never the email, never the name. No argument, no result, no path and no text
+/// (S10). A read is not audited anywhere in the design, so this line is the only trace of one, and of a refused call.
+fn log_call(tool: &str, outcome: &str, elapsed: Duration, user: &UserId, request_id: &str) {
+    tracing::info!(
+        target: "hub_mcp::call",
+        tool,
+        outcome,
+        elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+        user_id = %user,
+        request_id = %request_id,
+        "tool call"
+    );
 }
 
 fn success(rendered: Rendered) -> CallToolResult {
@@ -236,11 +251,14 @@ impl ServerHandler for McpHandler {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let caller = self.check_caller(&context)?;
-        // A tool that does not exist cannot be routed: a protocol error, with fixed text.
-        let tool = ToolName::from_name(&request.name)
-            .ok_or_else(|| ErrorData::invalid_params("unknown tool", None))?;
         let id = request_id();
         let started = Instant::now();
+        // A tool that does not exist cannot be routed: a protocol error, with fixed text. It is a refused call and is logged like
+        // one, by the caller and without the name that was asked for (the name is an argument).
+        let Some(tool) = ToolName::from_name(&request.name) else {
+            log_call("unknown", "unknown_tool", started.elapsed(), &caller.id, &id);
+            return Err(ErrorData::invalid_params("unknown tool", None));
+        };
         let outcome = self.call(&caller, tool, request, &context, &id).await;
         let elapsed = started.elapsed();
         let label = match &outcome {
@@ -248,15 +266,7 @@ impl ServerHandler for McpHandler {
             Err(error) => error.code.as_str(),
         };
         self.host.metrics.call(tool.as_str(), label, elapsed);
-        // What was called and how it ended. No argument, no result, no path, no text (S10).
-        tracing::info!(
-            target: "hub_mcp::call",
-            tool = tool.as_str(),
-            outcome = label,
-            elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
-            request_id = %id,
-            "tool call"
-        );
+        log_call(tool.as_str(), label, elapsed, &caller.id, &id);
         Ok(match outcome {
             Ok(rendered) => success(rendered),
             Err(error) => failure(&error, &id),
