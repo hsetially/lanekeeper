@@ -57,8 +57,23 @@ const MCP_REASON: &str = "bearer token (Entra access token or personal token) ch
 pub const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 /// How long an owner is remembered beyond the idle time of a session, so that a session never outlives its owner's record.
 const OWNERS_GRACE: Duration = Duration::from_secs(5 * 60);
-/// The most sessions whose owner is remembered at once. The per-replica session cap of T2 is far below it.
-const OWNERS_CAPACITY: u64 = 4096;
+/// The fewest owners the table that remembers who opened each session holds, whatever the replica cap.
+const MIN_OWNERS_CAPACITY: u64 = 4096;
+
+/// How many owners the table that remembers who opened each session holds, for a replica that allows `sessions_per_replica`.
+///
+/// The table is sized from the cap, so the two bounds cannot disagree: an owner that falls out of the table is a live session that
+/// answers 404 and a count that is lower than the number of real sessions. The gate admits a session only while fewer than
+/// `sessions_per_replica` are counted, and a session is counted exactly while its owner is in the table, so the table never holds
+/// more than that. It has twice the room, because the table's own accounting lags a removal and a table at its limit refuses a new
+/// entry. The memory it may use is bounded by the cap, which `LimitSettings::validate` limits.
+#[must_use]
+pub fn owners_capacity(sessions_per_replica: u32) -> u64 {
+    u64::from(sessions_per_replica)
+        .saturating_mul(2)
+        .max(MIN_OWNERS_CAPACITY)
+}
+
 /// The most extra origins a deployment may allow.
 const MAX_EXTRA_ORIGINS: usize = 8;
 
@@ -330,7 +345,7 @@ impl McpState {
             settings.limits.sessions_per_replica,
         ));
         let owners = session_owners(
-            OWNERS_CAPACITY,
+            owners_capacity(settings.limits.sessions_per_replica),
             settings.limits.session_idle + OWNERS_GRACE,
             Arc::clone(&session_counts),
         );

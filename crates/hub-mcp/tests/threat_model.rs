@@ -635,22 +635,17 @@ fn stated_facts() -> Vec<(&'static str, String)> {
         ),
         (
             "owner table",
-            format!("holds {} entries", thousands(owners_capacity())),
+            format!(
+                "twice the cap and at least {} entries",
+                thousands(owners_capacity(1))
+            ),
         ),
     ]
 }
 
-/// The capacity of the table that remembers who opened each session: a private constant of `src/server/mod.rs`.
-fn owners_capacity() -> u64 {
-    let source = read(&crate_dir().join("src/server/mod.rs"));
-    let line = source
-        .lines()
-        .find(|l| l.contains("const OWNERS_CAPACITY"))
-        .expect("OWNERS_CAPACITY is defined in src/server/mod.rs");
-    line.split('=')
-        .nth(1)
-        .and_then(|v| v.trim().trim_end_matches(';').replace('_', "").parse().ok())
-        .expect("OWNERS_CAPACITY is a number")
+/// The capacity of the table that remembers who opened each session, for a replica cap: the code's own function.
+fn owners_capacity(sessions_per_replica: u32) -> u64 {
+    hub_mcp::server::owners_capacity(sessions_per_replica)
 }
 
 /// Problems with the stated numbers.
@@ -786,13 +781,17 @@ type Gaps = Vec<(&'static str, bool)>;
 /// What the code is like today, for the markers that must come and go with it.
 fn code_today() -> Gaps {
     let root = crate_dir();
-    // The owner table forgets the owner of a live session once it holds more than its capacity; the validator is the check that
-    // would stop a replica cap above it.
-    let beyond = u32::try_from(owners_capacity() + 1).expect("the capacity fits");
-    let settings = LimitSettings {
-        sessions_per_replica: beyond,
-        ..LimitSettings::default()
-    };
+    // The owner table forgets the owner of a live session once a replica may hold more sessions than the table holds. The gap is
+    // open while the validator accepts a replica cap that the table cannot hold (the caps are the edges of what the validator takes).
+    let owner_table_gap = [1_u32, 200, 4_095, 4_096, 4_097, 50_000, 100_000]
+        .into_iter()
+        .any(|cap| {
+            let settings = LimitSettings {
+                sessions_per_replica: cap,
+                ..LimitSettings::default()
+            };
+            settings.validate().is_ok() && owners_capacity(cap) < u64::from(cap)
+        });
     // The one log line of a tool call: the text from `tracing::info!(` with the target `hub_mcp::call` to its message.
     let handler = read(&root.join("src/server/handler.rs"));
     let log_line = handler
@@ -833,7 +832,7 @@ fn code_today() -> Gaps {
             "None (T7): notify_services through the gate",
             missing("src/tools/write/notify.rs"),
         ),
-        ("The owner table", settings.validate().is_ok()),
+        ("The owner table", owner_table_gap),
         // The call line must name the caller (`user_id`); the section must not say that it does not.
         ("no user id", !log_line.contains("user_id")),
         (

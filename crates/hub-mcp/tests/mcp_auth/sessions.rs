@@ -174,3 +174,63 @@ async fn a_second_initialize_is_refused_and_the_session_keeps_its_terms() {
     // It is still one session of alice's.
     assert_eq!(rig.state.counted_sessions(Some(&uid("alice"))), 1);
 }
+
+/// Found by the threat model (T5): the table that remembers who opened each session held 4,096 entries while the validator accepted
+/// a replica cap up to 100,000. A deployment above 4,096 lost the owner of a live session (the session then answered 404, and the
+/// owner's count fell below the real number of sessions). The table is sized from the cap; this opens more sessions than the old
+/// table could hold and asks each user's first and last one for its tools.
+#[tokio::test]
+async fn a_replica_cap_above_the_old_owner_table_still_remembers_every_owner() {
+    const USERS: usize = 5;
+    const PER_USER: usize = 900;
+    let rig = rig(1_000, 4_500);
+    let mut sessions = Vec::new();
+    for u in 0..USERS {
+        let base = user(&rig, &format!("user{u}"));
+        let mut mine = Vec::new();
+        for _ in 0..PER_USER {
+            let mut c = base.with_session(None);
+            c.initialize(&json!({})).await.unwrap();
+            mine.push(c);
+        }
+        sessions.push(mine);
+    }
+    assert_eq!(
+        rig.state.counted_sessions(None),
+        USERS * PER_USER,
+        "a live session lost its owner"
+    );
+    for (u, mine) in sessions.iter_mut().enumerate() {
+        assert_eq!(
+            rig.state.counted_sessions(Some(&uid(&format!("user{u}")))),
+            PER_USER
+        );
+        for index in [0, PER_USER - 1] {
+            let listed = mine[index].call_tool_to_end("list_swimlanes", &json!({})).await;
+            assert!(
+                listed.get("result").is_some(),
+                "user {u}, session {index}: {listed}"
+            );
+        }
+    }
+}
+
+/// The two bounds agree by construction: for every replica cap the validator accepts, the table can hold at least that many owners,
+/// with room to spare (its accounting lags a removal, and a table at its limit refuses new entries).
+#[test]
+fn the_owner_table_is_never_smaller_than_the_replica_cap_the_validator_accepts() {
+    use hub_mcp::limits::LimitSettings;
+    for cap in [1_u32, 5, 200, 2_048, 4_095, 4_096, 4_097, 10_000, 100_000] {
+        let limits = LimitSettings {
+            sessions_per_replica: cap,
+            ..LimitSettings::default()
+        };
+        assert!(limits.validate().is_ok(), "{cap}");
+        let table = hub_mcp::server::owners_capacity(cap);
+        assert!(table >= 2 * u64::from(cap), "cap {cap}: the table holds {table}");
+    }
+    // The default is unchanged.
+    assert_eq!(hub_mcp::server::owners_capacity(200), 4_096);
+    // A cap the validator refuses is not this table's business, but it must not overflow.
+    let _ = hub_mcp::server::owners_capacity(u32::MAX);
+}
