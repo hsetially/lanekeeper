@@ -1631,8 +1631,11 @@ fn sql_words(sql: &str) -> Vec<String> {
         .collect()
 }
 
-/// The first row-writing statement in `sql`, bodies included, if there is one: INSERT INTO, UPDATE t SET, DELETE FROM, MERGE
-/// INTO, TRUNCATE or COPY. (`UPDATE` as a trigger event, a privilege or `ON DELETE` as a key action are not that.)
+/// The first row-writing statement in `sql`, bodies included, if there is one: `INSERT INTO [schema.]t`, `UPDATE [ONLY]
+/// [schema.]t [[AS] alias] SET` (or the `DO UPDATE SET` of an upsert), `DELETE FROM [ONLY] ...`, MERGE INTO, TRUNCATE or
+/// COPY, or any `EXECUTE` that is not `EXECUTE FUNCTION` or `EXECUTE PROCEDURE` (a trigger's): dynamic SQL is a string,
+/// and the text of strings is not read here, so it is refused whatever it holds. (`UPDATE` as a trigger event, in a
+/// privilege list or as an `ON UPDATE` key action is not a write.)
 fn row_writing_statement(sql: &str) -> Option<String> {
     let code = without_literals(&code_lines(sql).join("\n"));
     let words = sql_words(&code);
@@ -1642,7 +1645,19 @@ fn row_writing_statement(sql: &str) -> Option<String> {
             "TRUNCATE" | "COPY" => true,
             "INSERT" | "MERGE" => next(1) == Some("INTO"),
             "DELETE" => next(1) == Some("FROM"),
-            "UPDATE" => next(2) == Some("SET"),
+            "EXECUTE" => !matches!(next(1), Some("FUNCTION" | "PROCEDURE")),
+            // After the optional ONLY come a name of up to two words (schema, table), an optional alias with or without
+            // AS, and SET; an upsert's `DO UPDATE SET` has no name. A privilege (`UPDATE ON`, `UPDATE (a) ON`), a trigger
+            // event (`UPDATE OF`, `UPDATE OR`) and a key action (`ON UPDATE`) end the search or are skipped.
+            "UPDATE" if i > 0 && words[i - 1] == "ON" => false,
+            "UPDATE" => {
+                let from = i + 1 + usize::from(next(1) == Some("ONLY"));
+                words[from.min(words.len())..]
+                    .iter()
+                    .take(5)
+                    .take_while(|w| !matches!(w.as_str(), "ON" | "OF" | "OR" | "FROM" | "TO" | "FOR"))
+                    .any(|w| w == "SET")
+            }
             _ => false,
         };
         writes.then(|| words[i..words.len().min(i + 4)].join(" "))
@@ -1658,8 +1673,8 @@ fn migration_0004_is_expand_only() {
     assert_eq!(
         row_writing_statement(&sql),
         None,
-        "0004 changes the schema and no row: no INSERT, UPDATE, DELETE, MERGE, TRUNCATE or COPY, in a DO block or a function \
-         body either"
+        "0004 changes the schema and no row: no INSERT, UPDATE, DELETE, MERGE, TRUNCATE, COPY or dynamic EXECUTE, in a DO \
+         block or a function body either"
     );
     let allowed: [&str; 7] = [
         // The guard.
@@ -1730,6 +1745,62 @@ fn the_expand_only_checks_see_row_writes_and_new_statements() {
             "CREATE FUNCTION f() RETURNS void LANGUAGE sql AS $$ UPDATE users SET role = 'admin' $$;",
             "an UPDATE in a function body",
         ),
+        // Dynamic SQL: the statement is a string, and the strings are not read, so any EXECUTE of one is refused.
+        (
+            "DO $$ BEGIN EXECUTE 'DELETE FROM proposals'; END $$;",
+            "dynamic SQL in a DO block",
+        ),
+        (
+            "DO $$ BEGIN EXECUTE format('DELETE FROM %I', 'proposals'); END $$;",
+            "dynamic SQL built with format",
+        ),
+        (
+            "DO $$ BEGIN EXECUTE 'UPDATE proposals SET status = $1' USING 'x'; END $$;",
+            "dynamic SQL with USING",
+        ),
+        (
+            "CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN EXECUTE 'TRUNCATE approvals'; END $$;",
+            "dynamic SQL in a function body",
+        ),
+        // The target of an UPDATE, DELETE or INSERT: ONLY, a schema, an alias, with or without AS.
+        ("UPDATE ONLY proposals SET status = 'x';", "UPDATE ONLY"),
+        (
+            "UPDATE ONLY public.proposals SET status = 'x';",
+            "UPDATE ONLY, qualified",
+        ),
+        ("UPDATE public.proposals SET status = 'x';", "a qualified UPDATE"),
+        (
+            "UPDATE public.proposals AS p SET status = 'x';",
+            "a qualified UPDATE with AS",
+        ),
+        (
+            "UPDATE public.proposals p SET status = 'x';",
+            "a qualified UPDATE with an alias",
+        ),
+        (
+            "UPDATE \"public\".\"proposals\" SET status = 'x';",
+            "a quoted UPDATE target",
+        ),
+        (
+            "DELETE FROM ONLY public.proposals;",
+            "DELETE FROM ONLY, qualified",
+        ),
+        (
+            "DELETE FROM public.proposals p WHERE p.id = 1;",
+            "a qualified DELETE",
+        ),
+        (
+            "INSERT INTO public.approvals (decision) VALUES ('approved');",
+            "a qualified INSERT",
+        ),
+        (
+            "INSERT INTO approvals (decision) VALUES ('x') ON CONFLICT DO UPDATE SET decision = 'y';",
+            "the UPDATE of an upsert",
+        ),
+        (
+            "WITH gone AS (DELETE FROM public.proposals RETURNING id) SELECT 1 FROM gone;",
+            "a DELETE in a WITH",
+        ),
     ] {
         assert!(
             row_writing_statement(&format!("{real}\n{sql}\n")).is_some(),
@@ -1743,6 +1814,19 @@ fn the_expand_only_checks_see_row_writes_and_new_statements() {
         ),
         None
     );
+    for sql in [
+        "CREATE TRIGGER t BEFORE UPDATE OF a, b ON public.proposals FOR EACH ROW EXECUTE FUNCTION f();",
+        "CREATE TRIGGER t AFTER UPDATE OR DELETE ON proposals FOR EACH ROW EXECUTE PROCEDURE f();",
+        "CREATE TRIGGER t BEFORE UPDATE ON proposals FOR EACH ROW EXECUTE FUNCTION f();",
+        "GRANT SELECT, UPDATE ON audit_verify_state TO r;",
+        "GRANT UPDATE (a, b) ON t TO r;",
+        "REVOKE UPDATE, DELETE ON ONLY public.approvals FROM r;",
+        "ALTER TABLE a ADD FOREIGN KEY (b) REFERENCES c (id) ON DELETE RESTRICT ON UPDATE CASCADE;",
+        "ALTER TABLE a ADD FOREIGN KEY (b) REFERENCES c (id) ON DELETE SET NULL ON UPDATE SET NULL;",
+        "ALTER TABLE a ALTER COLUMN b SET NOT NULL;",
+    ] {
+        assert_eq!(row_writing_statement(sql), None, "{sql} writes no row");
+    }
     // A new statement of any other kind changes the list.
     for sql in [
         "CREATE INDEX i ON proposals (status);",
