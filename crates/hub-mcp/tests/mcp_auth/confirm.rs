@@ -26,7 +26,7 @@ const OLD: &str = "name: one\nlevel: 1\n";
 const NEW: &str = "name: one\nlevel: 2\nextra: on\n";
 
 /// A deployment whose write budget does not get in the way of a test that makes several calls.
-fn rig() -> Rig {
+pub(crate) fn rig() -> Rig {
     Rig::build(
         AuthMode::Oauth,
         false,
@@ -39,7 +39,7 @@ fn rig() -> Rig {
     )
 }
 
-fn draft_mode_rig() -> Rig {
+pub(crate) fn draft_mode_rig() -> Rig {
     Rig::build(
         AuthMode::Oauth,
         false,
@@ -52,7 +52,7 @@ fn draft_mode_rig() -> Rig {
     )
 }
 
-fn seed(rig: &Rig) {
+pub(crate) fn seed(rig: &Rig) {
     rig.writes.inner.seed(&sid("sit1"), &[(np(PATH), bytes(OLD))]);
 }
 
@@ -98,11 +98,11 @@ async fn draft_by(rig: &Rig, key: &str, content: &str) -> DraftId {
     draft.id
 }
 
-async fn forms(rig: &Rig, key: &str, role: Role) -> Client {
+pub(crate) async fn forms(rig: &Rig, key: &str, role: Role) -> Client {
     signed_in_with(rig, key, role, &elicitation_capabilities()).await
 }
 
-async fn approval_client(rig: &Rig, key: &str, role: Role) -> Client {
+pub(crate) async fn approval_client(rig: &Rig, key: &str, role: Role) -> Client {
     rig.add_user_requiring_approval(key, role);
     rig.verifier.accept(&format!("tok-{key}"), key);
     let mut client = rig.client(Some(&format!("tok-{key}")));
@@ -110,33 +110,33 @@ async fn approval_client(rig: &Rig, key: &str, role: Role) -> Client {
     client
 }
 
-fn accept() -> Value {
+pub(crate) fn accept() -> Value {
     json!({"action": "accept", "content": {"confirm": true}})
 }
 
-fn decline() -> Value {
+pub(crate) fn decline() -> Value {
     json!({"action": "decline"})
 }
 
 /// A call that has asked its question and waits for the answer.
-struct Asked {
-    id: i64,
+pub(crate) struct Asked {
+    pub(crate) id: i64,
     sse: Sse,
-    question: Value,
+    pub(crate) question: Value,
 }
 
 impl Asked {
-    fn message(&self) -> String {
+    pub(crate) fn message(&self) -> String {
         self.question["params"]["message"].as_str().unwrap().to_owned()
     }
 
-    fn question_id(&self) -> &Value {
+    pub(crate) fn question_id(&self) -> &Value {
         &self.question["id"]
     }
 }
 
 /// Start `tool` and wait for the server's question. Fails the test, with what came instead, when the server answers without asking.
-async fn ask(client: &mut Client, tool: &str, args: &Value) -> Asked {
+pub(crate) async fn ask(client: &mut Client, tool: &str, args: &Value) -> Asked {
     let (id, sse) = client.call_tool(tool, args).await;
     let mut sse = sse.expect("the call is accepted");
     loop {
@@ -156,7 +156,7 @@ async fn ask(client: &mut Client, tool: &str, args: &Value) -> Asked {
 }
 
 /// Answer the question and read the response to the call.
-async fn answer(client: &Client, asked: Asked, reply: &Value, tool: &str) -> Called {
+pub(crate) async fn answer(client: &Client, asked: Asked, reply: &Value, tool: &str) -> Called {
     let Asked {
         id,
         mut sse,
@@ -175,7 +175,7 @@ async fn answer(client: &Client, asked: Asked, reply: &Value, tool: &str) -> Cal
 }
 
 /// Wait (on the paused clock) for the response to a call whose question nobody answers.
-async fn finish(asked: Asked, tool: &str) -> Called {
+pub(crate) async fn finish(asked: Asked, tool: &str) -> Called {
     let Asked { id, mut sse, .. } = asked;
     let (_, response) = tokio::time::timeout(Duration::from_secs(600), sse.until_response(id))
         .await
@@ -189,7 +189,7 @@ async fn finish(asked: Asked, tool: &str) -> Called {
 
 /// Send `tool` again with the JSON-RPC id `id` (a client that sends the same request a second time) and read what comes back:
 /// the messages before the response, and the response.
-async fn send_again(client: &Client, id: i64, tool: &str, args: &Value) -> (Vec<Value>, Called) {
+pub(crate) async fn send_again(client: &Client, id: i64, tool: &str, args: &Value) -> (Vec<Value>, Called) {
     let body = json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": tool, "arguments": args}});
     let mut sse = Sse::new(client.post(&body).await.into_body());
     let (before, response) = sse.until_response(id).await.expect("a response");
@@ -206,7 +206,7 @@ fn apply_args(draft: &DraftId) -> Value {
     json!({"draft_id": draft.as_str()})
 }
 
-fn no_mutation(rig: &Rig) {
+pub(crate) fn no_mutation(rig: &Rig) {
     assert!(
         rig.writes.mutations().is_empty(),
         "a mutating method was called: {:?}",
@@ -319,7 +319,13 @@ async fn retry_with_the_same_request_applies_once() {
 
 /// Send `tool` again with the JSON-RPC id `id`, and answer the question it asks with `reply`. Fails the test, with what came
 /// instead, when the server answers without asking.
-async fn send_again_and_answer(client: &Client, id: i64, tool: &str, args: &Value, reply: &Value) -> Called {
+pub(crate) async fn send_again_and_answer(
+    client: &Client,
+    id: i64,
+    tool: &str,
+    args: &Value,
+    reply: &Value,
+) -> Called {
     let body = json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": tool, "arguments": args}});
     let mut sse = Sse::new(client.post(&body).await.into_body());
     let question = sse.next().await.expect("a message first");
@@ -1300,7 +1306,7 @@ async fn confirmation_message_neutralises_untrusted_text() {
 
 /// What this binary's log capture has per test thread. One subscriber is installed for the whole process, once: a scoped
 /// `set_default` loses events when other tests run at the same time (the rmcp spike and the protocol tests say the same).
-mod capture {
+pub(crate) mod capture {
     use std::collections::BTreeMap;
     use std::io;
     use std::sync::{Arc, Mutex, OnceLock};

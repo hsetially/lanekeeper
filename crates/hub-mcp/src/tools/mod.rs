@@ -242,7 +242,7 @@ impl ToolHost {
             ToolArgs::GetDrift(a) => read::files::get_drift(cx, a).await,
             ToolArgs::GetHistory(a) => read::files::get_history(cx, a).await,
             ToolArgs::GetEffectiveConfig(a) => read::effective::get_effective_config(cx, a).await,
-            ToolArgs::GetServedConfig(a) => read::effective::get_served_config(cx, a).await,
+            ToolArgs::GetServedConfig(a) => read::served::get_served_config(cx, a).await,
             ToolArgs::Compare(a) => read::compare::compare(cx, a).await,
             ToolArgs::CompareTree(a) => read::compare::compare_tree(cx, a).await,
             ToolArgs::CompareGrid(a) => read::compare::compare_grid(cx, a).await,

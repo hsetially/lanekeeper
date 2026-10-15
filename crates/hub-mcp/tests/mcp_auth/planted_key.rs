@@ -24,8 +24,9 @@ use hub_mcp::tools::ToolName;
 use serde_json::{Value, json};
 
 use crate::fix::*;
-use crate::read_tools::{comparison, effective_fixture, served_fixture};
+use crate::read_tools::{comparison, effective_fixture};
 use crate::rig::Rig;
+use crate::served::served_fixture;
 use crate::tools_rig::{call, signed_in};
 
 const MODES: [ContentMode; 2] = [ContentMode::Summary, ContentMode::DataBlock];

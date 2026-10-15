@@ -1,18 +1,19 @@
-//! `get_effective_config` and `get_served_config`.
+//! `get_effective_config`: the engine's view of a logical file. What the config-server really serves is `get_served_config`
+//! ([`super::served`]).
 
 use domain::{
-    ChannelName, ContentHash, EffectiveQuery, FileRole, LogicalFile, NfsPath, ServeRequest, SettingLocation,
-    SettingPath, ShortText, SwimlaneId, TenantId, ValueType,
+    ChannelName, ContentHash, EffectiveQuery, FileRole, LogicalFile, NfsPath, SettingLocation, SettingPath,
+    ShortText, SwimlaneId, TenantId, ValueType,
 };
 use serde::Serialize;
 
 use super::to_json;
+use crate::output::RedactedText;
 use crate::output::cap::take_fitting;
-use crate::output::envelope::{DATA_LABEL, Parts, fit_lines, render};
-use crate::output::{RedactedText, line_count};
-use crate::tools::args::{GetEffectiveConfig, GetServedConfig};
+use crate::output::envelope::DATA_LABEL;
+use crate::tools::args::GetEffectiveConfig;
 use crate::tools::dto::{LIST_VALUE_CHARS, SettingValueDto, SourceDto, setting_value};
-use crate::tools::error::{Code, ToolError};
+use crate::tools::error::ToolError;
 use crate::tools::paging::capped_result;
 use crate::tools::{CallCx, ToolResult};
 
@@ -160,128 +161,4 @@ pub async fn get_effective_config(cx: &CallCx<'_>, args: GetEffectiveConfig) -> 
         },
         link,
     ))
-}
-
-#[allow(clippy::too_many_lines)] // one pipeline: ask the port, shape each part, share the cap between them
-pub async fn get_served_config(cx: &CallCx<'_>, args: GetServedConfig) -> ToolResult {
-    let swimlane = args.swimlane.0;
-    let request = ServeRequest {
-        application: args.application.0,
-        tenant: args.tenant.0,
-        channel: args.channel.map(|c| c.0),
-        file: args.file.0,
-    };
-    let served = cx.host.registry.served(cx.user, &swimlane, &request).await?;
-    let link = cx.host.links.served(
-        &swimlane,
-        served.application.as_str(),
-        served.tenant.as_str(),
-        &served.file,
-    );
-    // The flag of the port, and the name of the file as the floor (D79).
-    let withheld = served.content_withheld || cx.host.denied.path(&served.file);
-
-    // The text: scanned as a whole, off the async threads, and only if the file is shown at all.
-    let (text, redacted_values, lines) = match (&served.text, withheld) {
-        (Some(text), false) => {
-            let _permit = cx
-                .host
-                .limits
-                .reserve_bytes((text.len() as u64).saturating_mul(3), cx.byte_wait())
-                .await?;
-            let redactor = cx.host.redactor.clone();
-            let text = text.clone();
-            let redacted = tokio::task::spawn_blocking(move || redactor.text(&text))
-                .await
-                .map_err(|_| ToolError::new(Code::Internal))??;
-            let lines = line_count(redacted.text.as_str());
-            (Some(redacted.text), redacted.redacted, lines)
-        }
-        _ => (None, 0, 0),
-    };
-    cx.host.metrics.redacted(redacted_values);
-
-    #[derive(Serialize)]
-    struct Data {
-        swimlane: SwimlaneId,
-        application: domain::AppName,
-        tenant: TenantId,
-        channel: Option<ChannelName>,
-        file: NfsPath,
-        role: FileRole,
-        hash: ContentHash,
-        content_withheld: bool,
-        text: Option<RedactedText>,
-        sources: Vec<SourceDto>,
-        unresolved_placeholders: Vec<ShortText>,
-        redacted_values: u32,
-        untrusted: bool,
-        label: &'static str,
-    }
-    let shape = cx.shape(true);
-    // The sources and the placeholders get a share of the cap each, and the text gets what is left.
-    // A withheld file reveals its name, size and hash and nothing else: no sources and no placeholders (the contract, D79).
-    let (sources, sources_cut) = take_fitting(
-        served
-            .sources
-            .iter()
-            .take(if withheld { 0 } else { 16 })
-            .map(SourceDto::from)
-            .collect::<Vec<_>>(),
-        shape.cap / 6,
-    );
-    let (placeholders, placeholders_cut) = take_fitting(
-        served
-            .unresolved_placeholders
-            .iter()
-            .take(if withheld { 0 } else { MAX_PLACEHOLDERS })
-            .cloned()
-            .collect::<Vec<ShortText>>(),
-        shape.cap / 4,
-    );
-    let lists_cut = sources_cut || placeholders_cut;
-    let build = |k: u32| {
-        let shown = text.as_ref().map(|t| t.first_lines(k as usize));
-        let truncated = (text.is_some() && k < lines) || lists_cut;
-        let data = Data {
-            swimlane: served.swimlane.clone(),
-            application: served.application.clone(),
-            tenant: served.tenant.clone(),
-            channel: served.channel.clone(),
-            file: served.file.clone(),
-            role: served.role,
-            hash: served.hash,
-            content_withheld: withheld,
-            text: shown,
-            sources: sources.clone(),
-            unresolved_placeholders: placeholders.clone(),
-            redacted_values,
-            untrusted: true,
-            label: DATA_LABEL,
-        };
-        Parts {
-            summary: if withheld {
-                format!("Swimlane {swimlane}: the served content of this file is withheld.")
-            } else if text.is_some() {
-                format!(
-                    "Swimlane {swimlane}: {k} of {lines} lines of the served file{}.",
-                    if redacted_values > 0 {
-                        format!(", {redacted_values} secret values redacted")
-                    } else {
-                        String::new()
-                    }
-                )
-            } else {
-                format!("Swimlane {swimlane}: the served file is not text.")
-            },
-            data: to_json(&data),
-            truncated,
-            next: None,
-            web_link: if truncated { link.clone() } else { None },
-        }
-    };
-    if text.is_none() {
-        return Ok(render(&shape, build(0)));
-    }
-    Ok(fit_lines(&shape, lines, build))
 }

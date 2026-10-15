@@ -1,6 +1,10 @@
 //! The write tools. Each one that acts on the world ends in [`crate::confirm::gate`], the only place that calls a mutating method of
 //! the write service; `propose_change` only records a draft.
 
+pub mod notify;
+
+pub use notify::notify_services;
+
 use bytes::Bytes;
 use domain::{
     ContentHash, DraftId, EditRequest, NfsPath, PrRequest, RestartRequest, Severity, SwimlaneId, Timestamp,
@@ -8,11 +12,9 @@ use domain::{
 use serde::Serialize;
 
 use crate::confirm::gate::{bounded, write_ctx};
-use crate::confirm::{Action, Plan, draft_mode, gate, idempotency};
+use crate::confirm::{Action, Plan, gate, idempotency};
 use crate::output::envelope::DATA_LABEL;
-use crate::tools::args::{
-    ApplyChange, DeleteFile, NotifyServices, ProposeChange, RaisePr, RestartService, UploadFile,
-};
+use crate::tools::args::{ApplyChange, DeleteFile, ProposeChange, RaisePr, RestartService, UploadFile};
 use crate::tools::dto::{SettingChangeDto, setting_change};
 use crate::tools::error::{Code, ToolError};
 use crate::tools::paging::capped_result;
@@ -239,11 +241,4 @@ pub async fn restart_service(cx: &CallCx<'_>, args: RestartService) -> ToolResul
         },
     )
     .await
-}
-
-/// `notify_services` stays in the one safe form of T2 (a link, no write) until T7 puts it through the gate: it is off by default
-/// (A2, Q37) and absent from `tools/list` while it is.
-#[allow(clippy::unused_async)] // the signature of every tool; T7 puts it through the gate, which waits
-pub async fn notify_services(cx: &CallCx<'_>, args: NotifyServices) -> ToolResult {
-    draft_mode::answer(cx, cx.host.links.swimlane(&args.swimlane.0), false)
 }

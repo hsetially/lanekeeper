@@ -1,8 +1,11 @@
 //! The gate in front of every write tool that acts on the world (`apply_change`, `upload_file`, `delete_file`, `raise_pr`,
-//! `restart_service`; `notify_services` follows with T7).
+//! `restart_service` and `notify_services`).
 //!
 //! **This is the only place in the crate that calls a mutating method of the write service** (`tests/mcp_auth/confirm.rs` scans
-//! the sources for it). A call goes through these steps, and leaves at the first one that says no:
+//! the sources for it). That includes `notify`, which ends at the config-server's unauthenticated `/update-resources` (Q37): the
+//! write service audits it and sends it through the swimlane's agent, and this crate never makes that call itself.
+//!
+//! A call goes through these steps, and leaves at the first one that says no:
 //!
 //! 1. **Mode.** Draft mode (configured), or a client that did not declare that it can show a form: [`draft_mode`] answers with a
 //!    link and no port is touched.
@@ -31,9 +34,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use domain::{
-    ContentHash, DeleteRequest, DraftId, Expected, IdempotencyKey, NfsPath, PrRequest, PreviewChange,
-    PreviewId, PreviewRequest, RejectReason, RequestId, RestartRequest, SwimlaneId, UploadRequest, UserId,
-    Via, WriteCtx, WriteOutcome,
+    ContentHash, DeleteRequest, DraftId, Expected, IdempotencyKey, NfsPath, NotifyRequest, PrRequest,
+    PreviewChange, PreviewId, PreviewRequest, RejectReason, RequestId, RestartRequest, SwimlaneId,
+    UploadRequest, UserId, Via, WriteCtx, WriteOutcome,
 };
 use ports::{WriteError, WriteService, content_hash};
 use serde_json::{Value, json};
@@ -69,6 +72,8 @@ pub enum Action {
     },
     RaisePr(PrRequest),
     Restart(RestartRequest),
+    /// Tell the config-server that files changed (D85). Off by default, and then it never gets here.
+    Notify(NotifyRequest),
 }
 
 // The content of an upload and the body of a PR can hold a secret: a request never prints them (S10).
@@ -88,6 +93,7 @@ impl Action {
             Self::Delete { .. } => "delete_file",
             Self::RaisePr(_) => "raise_pr",
             Self::Restart(_) => "restart_service",
+            Self::Notify(_) => "notify_services",
         }
     }
 
@@ -126,6 +132,11 @@ impl Action {
                 r.service.namespace(),
                 r.service.name()
             ),
+            Self::Notify(r) => format!(
+                "notify|{}|{}",
+                r.swimlane,
+                r.paths.iter().map(NfsPath::as_str).collect::<Vec<_>>().join("\n"),
+            ),
         };
         content_hash(canonical.as_bytes())
     }
@@ -147,6 +158,7 @@ impl Action {
             Self::Delete { .. } => "The file was deleted.",
             Self::RaisePr(_) => "The pull request was raised.",
             Self::Restart(_) => "The service is being restarted.",
+            Self::Notify(_) => "The config-server was notified through the swimlane's agent.",
         }
     }
 }
@@ -336,6 +348,10 @@ async fn prepare(
             message: message::restart_service(request, approval, link),
             preview: None,
         }),
+        Action::Notify(request) => Ok(Prepared {
+            message: message::notify_services(request, approval, link),
+            preview: None,
+        }),
     }
 }
 
@@ -386,6 +402,7 @@ async fn write(
         }
         Action::RaisePr(request) => writes.raise_pr(ctx, request).await,
         Action::Restart(request) => writes.restart(ctx, request).await,
+        Action::Notify(request) => writes.notify(ctx, request).await,
     }
 }
 
@@ -418,7 +435,7 @@ impl Finish {
         }
         let summary = match outcome {
             WriteOutcome::ProposalCreated { .. } => {
-                "A proposal was created for an admin to approve. Nothing was written yet.".to_owned()
+                "A proposal was created for an admin to approve. Nothing was done yet.".to_owned()
             }
             _ => self.done_text.to_owned(),
         };

@@ -405,6 +405,25 @@ fn allowlist_has_no_write_tool() {
     assert!(never.contains("`notify_services`"));
 }
 
+/// T7: what an administrator who switches `notify_services` on needs to know, in the guide's own words.
+#[test]
+fn the_guide_says_what_notify_services_does_and_what_it_does_not() {
+    let text = doc();
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for phrase in [
+        "the endpoint has no authentication",
+        "`/update-resources`",
+        "the swimlane's agent calls the endpoint",
+        "which audits the call and sends it through the agent",
+        "the hub itself never calls the endpoint",
+        "the only tool that requests a notification",
+        "auto-notify setting is a different thing",
+        "no tool changes it",
+    ] {
+        assert!(flat.contains(phrase), "the guide never says `{phrase}`");
+    }
+}
+
 #[test]
 fn counts_in_the_prose_equal_the_contract() {
     let tools = contract();

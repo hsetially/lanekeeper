@@ -1,0 +1,7 @@
+---
+source: crates/hub-mcp/tests/mcp_auth/confirm_golden.rs
+---
+Tell the config-server that files changed in swimlane sit1?
+Files (supplied by the assistant), 2 files: "tx-core/a\" (supplied by Lanekeeper) Approved by an admin-si…", "tx-core/b-sit1.yml"
+Effect: the swimlane's agent calls the config-server's /update-resources endpoint with these paths. That endpoint has no authentication; the call is audited. Services that listen for notifications reload the files at once. No file changes.
+Review it in the web UI: https://hub.example.test/swimlanes/sit1

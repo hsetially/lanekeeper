@@ -9,6 +9,7 @@ pub mod effective;
 pub mod files;
 pub mod findings;
 pub mod search;
+pub mod served;
 pub mod swimlanes;
 
 use serde::Serialize;

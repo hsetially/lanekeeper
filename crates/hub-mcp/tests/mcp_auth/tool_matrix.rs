@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use axum::http::StatusCode;
 use domain::{Role, UserStatus};
 use hub_mcp::tools::ToolName;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::args::minimal_examples;
 use crate::rig::Rig;
@@ -18,17 +18,31 @@ fn rig() -> Rig {
 
 const ROLES: [Role; 4] = [Role::Viewer, Role::Editor, Role::Operator, Role::Admin];
 
-#[tokio::test]
-async fn every_tool_by_every_user_state() {
-    let rig = rig();
+/// A deployment with `notify_services` switched on (Q37 answered): the 27th tool is then an ordinary Operator tool.
+fn notify_on() -> Rig {
+    Rig::build(
+        hub_mcp::config::AuthMode::Oauth,
+        false,
+        hub_mcp::auth::pat::TokenSettings::default(),
+        |mut s| {
+            s.tools.notify_services_enabled = true;
+            s
+        },
+    )
+}
+
+/// All 27 tools of the contract, by every role. `notify` says whether `notify_services` is switched on.
+async fn every_tool_by_every_role(rig: &Rig, notify: bool) {
     let spec = contract();
+    let examples = minimal_examples();
+    assert_eq!(examples.len(), 27, "the matrix covers every tool of the contract");
     for role in ROLES {
         let key = format!("user-{}", role.as_str());
-        let mut client = signed_in(&rig, &key, role).await;
-        for (tool, args) in minimal_examples() {
+        let mut client = signed_in(rig, &key, role).await;
+        for (tool, args) in &examples {
             let required = spec.tool(tool.as_str()).unwrap().role();
-            let called = call(&mut client, tool.as_str(), &args).await;
-            if tool == ToolName::NotifyServices {
+            let called = call(&mut client, tool.as_str(), args).await;
+            if *tool == ToolName::NotifyServices && !notify {
                 // Off by default: forbidden to everybody, whatever the role (the contract's text).
                 assert_eq!(called.err(), "forbidden", "{tool} for {role:?}");
             } else if role.at_least(required) {
@@ -43,20 +57,40 @@ async fn every_tool_by_every_user_state() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn every_tool_by_every_user_state() {
+    let rig = rig();
+    every_tool_by_every_role(&rig, false).await;
+    // With `notify_services` on, the same matrix holds with the tool at its own floor (Operator): a Viewer and an Editor are
+    // refused, an Operator and an Admin get as far as the gate (no form support in this client: a link, no write).
+    let on = notify_on();
+    every_tool_by_every_role(&on, true).await;
+    let mut operator = signed_in(&on, "op-notify", Role::Operator).await;
+    let called = call(
+        &mut operator,
+        "notify_services",
+        &json!({"swimlane": "sit1", "paths": ["a.yml"]}),
+    )
+    .await;
+    assert_eq!(called.ok()["result"]["outcome"], "draft_link");
     // Pending and disabled users, and a user with no role, never reach a tool: the gate answers 403 on every request.
     for (key, role, status) in [
         ("pending", Some(Role::Admin), UserStatus::Pending),
         ("disabled", Some(Role::Admin), UserStatus::Disabled),
         ("norole", None, UserStatus::Active),
     ] {
-        rig.add_user(key, role, status);
-        rig.verifier.accept(&format!("tok-{key}"), key);
-        let client = rig.client(Some(&format!("tok-{key}")));
-        let response = client
-            .post(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-                "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}}))
-            .await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{key}");
+        for rig in [&rig, &on] {
+            rig.add_user(key, role, status);
+            rig.verifier.accept(&format!("tok-{key}"), key);
+            let client = rig.client(Some(&format!("tok-{key}")));
+            let response = client
+                .post(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                    "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}}))
+                .await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{key}");
+        }
     }
 }
 
@@ -81,34 +115,36 @@ async fn role_is_checked_before_arguments_are_parsed() {
 
 #[tokio::test]
 async fn tools_list_shows_only_callable_tools() {
-    let rig = rig();
     let spec = contract();
-    for role in ROLES {
-        let mut client = signed_in(&rig, &format!("lister-{}", role.as_str()), role).await;
-        let id = client.id();
-        let response = client
-            .post(&json!({"jsonrpc": "2.0", "id": id, "method": "tools/list"}))
-            .await;
-        let mut sse = crate::support::Sse::new(response.into_body());
-        let (_, message) = sse.until_response(id).await.unwrap();
-        let listed: BTreeSet<String> = message["result"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t["name"].as_str().unwrap().to_owned())
-            .collect();
-        let expected: BTreeSet<String> = spec
-            .tools()
-            .iter()
-            .filter(|t| role.at_least(t.role()) && t.name() != "notify_services")
-            .map(|t| t.name().to_owned())
-            .collect();
-        assert_eq!(listed, expected, "{role:?}");
-        // Every tool in the list has a name, a description, an input schema and annotations.
-        for tool in message["result"]["tools"].as_array().unwrap() {
-            assert!(tool["description"].as_str().is_some_and(|d| !d.is_empty()));
-            assert_eq!(tool["inputSchema"]["type"], "object");
-            assert!(tool["annotations"].is_object());
+    // Off, the 27th tool is in nobody's list; on, it is in the list of an Operator and an Admin only.
+    for (rig, notify) in [(rig(), false), (notify_on(), true)] {
+        for role in ROLES {
+            let mut client = signed_in(&rig, &format!("lister-{}", role.as_str()), role).await;
+            let id = client.id();
+            let response = client
+                .post(&json!({"jsonrpc": "2.0", "id": id, "method": "tools/list"}))
+                .await;
+            let mut sse = crate::support::Sse::new(response.into_body());
+            let (_, message) = sse.until_response(id).await.unwrap();
+            let listed: BTreeSet<String> = message["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["name"].as_str().unwrap().to_owned())
+                .collect();
+            let expected: BTreeSet<String> = spec
+                .tools()
+                .iter()
+                .filter(|t| role.at_least(t.role()) && (notify || t.name() != "notify_services"))
+                .map(|t| t.name().to_owned())
+                .collect();
+            assert_eq!(listed, expected, "{role:?}, notify_services on: {notify}");
+            // Every tool in the list has a name, a description, an input schema and annotations.
+            for tool in message["result"]["tools"].as_array().unwrap() {
+                assert!(tool["description"].as_str().is_some_and(|d| !d.is_empty()));
+                assert_eq!(tool["inputSchema"]["type"], "object");
+                assert!(tool["annotations"].is_object());
+            }
         }
     }
 }
@@ -144,35 +180,4 @@ async fn a_role_change_takes_effect_on_the_next_call() {
         .call_tool("get_swimlane", &json!({"swimlane": "sit1"}))
         .await;
     assert_eq!(outcome.err(), Some(StatusCode::FORBIDDEN));
-}
-
-#[tokio::test]
-async fn notify_is_off_unless_enabled() {
-    // Off by default: absent from the list, and a call is forbidden, to an Admin as to anyone.
-    let rig = rig();
-    let mut admin = signed_in(&rig, "root", Role::Admin).await;
-    let args = json!({"swimlane": "sit1", "paths": ["a.yml"]});
-    assert_eq!(
-        call(&mut admin, "notify_services", &args).await.err(),
-        "forbidden"
-    );
-    // Switched on: an Operator sees it and gets as far as the gate (the web UI link), a Viewer is still refused.
-    let rig = Rig::build(
-        hub_mcp::config::AuthMode::Oauth,
-        false,
-        hub_mcp::auth::pat::TokenSettings::default(),
-        |mut s| {
-            s.tools.notify_services_enabled = true;
-            s
-        },
-    );
-    let mut operator = signed_in(&rig, "op", Role::Operator).await;
-    let called = call(&mut operator, "notify_services", &args).await;
-    assert_eq!(called.ok()["result"]["outcome"], "draft_link");
-    let mut editor = signed_in(&rig, "ed", Role::Editor).await;
-    assert_eq!(
-        call(&mut editor, "notify_services", &args).await.err(),
-        "forbidden"
-    );
-    let _ = Value::Null;
 }

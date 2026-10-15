@@ -259,9 +259,13 @@ These 7 write tools are never allowlisted. 6 of them change something outside th
 <!-- END GENERATED write-tools -->
 
 `notify_services` is **never** on the allowlist, and it ships switched off: `tools.notify_services.enabled` is `false` by default,
-the tool is absent from `tools/list` while it is off, and a call to it is `forbidden`. It reaches the config-server's
-unauthenticated `/update-resources` endpoint (Q37), so it stays off until Q37 is answered. It is Operator only and needs
-confirmation when it is on.
+the tool is absent from `tools/list` while it is off, and a call to it is `forbidden`. It ends at the config-server's unauthenticated
+`/update-resources` endpoint (Q37), so it stays off until Q37 is answered. When it is on, it is Operator only and asks the person
+first: the question names the swimlane, the files (up to 100 paths), that the swimlane's agent calls the endpoint, and that the
+endpoint has no authentication. After a yes it does nothing but call the write service's notify, which audits the call and sends it
+through the agent; the hub itself never calls the endpoint. It is the only tool that requests a notification. The swimlane's
+auto-notify setting is a different thing: an Admin turns it on or off in the web UI, no tool changes it, and while it is on the write
+service notifies after a committed write, whichever client made the write.
 
 T0 checks `C3.read_runs` (an allowlisted read tool runs without Cursor's prompt) and `C3.write_prompts` (a write tool always shows
 it) are NOT RUN.

@@ -9,8 +9,8 @@
 //! which is where the user can read everything, is the last line and is never the part that is cut.
 
 use domain::{
-    ChangePreview, ContentHash, Draft, Expected, NfsPath, PickupState, PrRequest, PrTarget, PreviewScope,
-    PreviewWarning, RestartRequest, ServiceRef, SwimlaneId,
+    ChangePreview, ContentHash, Draft, Expected, NfsPath, NotifyRequest, PickupState, PrRequest, PrTarget,
+    PreviewScope, PreviewWarning, RestartRequest, ServiceRef, SwimlaneId,
 };
 
 use crate::output::cap::cut_chars;
@@ -380,11 +380,48 @@ pub fn restart_service(request: &RestartRequest, approval: bool, link: Option<&s
     )
 }
 
+/// The question for `notify_services` (D85, Q37): which swimlane, which files, and what happens to them. The config-server's
+/// `/update-resources` endpoint has no authentication, so the person is told that, and that the swimlane's agent makes the call
+/// (never the hub) and that it is audited. The paths are the assistant's, so they are quoted and labelled like those of a PR.
+#[must_use]
+pub fn notify_services(request: &NotifyRequest, approval: bool, link: Option<&str>) -> String {
+    let named: Vec<String> = request
+        .paths
+        .iter()
+        .take(PR_FILES_SHOWN)
+        .map(|p| quote(p.as_str(), PR_PATH_CHARS))
+        .collect();
+    let more = request.paths.len().saturating_sub(PR_FILES_SHOWN);
+    let files = if more > 0 {
+        format!("{} and {more} more", named.join(", "))
+    } else {
+        named.join(", ")
+    };
+    finish(
+        &[
+            format!(
+                "Tell the config-server that files changed in swimlane {}?",
+                request.swimlane
+            ),
+            format!(
+                "Files ({LABEL}), {}: {files}",
+                count(request.paths.len(), "file", "files")
+            ),
+            "Effect: the swimlane's agent calls the config-server's /update-resources endpoint with these paths. That endpoint \
+             has no authentication; the call is audited. Services that listen for notifications reload the files at once. \
+             No file changes."
+                .to_owned(),
+        ],
+        approval,
+        link,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use domain::{
-        AppName, ChangeKind, DraftId, PickupState, PreviewId, PreviewScope, PreviewWarning, ProposalStatus,
-        ServiceRef, SettingChange, SettingPath, Severity, ShortText, Timestamp, UserId,
+        AppName, ChangeKind, DraftId, NotifyRequest, PickupState, PreviewId, PreviewScope, PreviewWarning,
+        ProposalStatus, ServiceRef, SettingChange, SettingPath, Severity, ShortText, Timestamp, UserId,
     };
     use proptest::prelude::*;
 
@@ -532,6 +569,7 @@ mod tests {
             apply_change(&draft(1, Vec::new()), true, Some(LINK)),
             raise_pr(&pr(&["a.yml"], "t"), true, Some(LINK)),
             restart_service(&restart(), true, Some(LINK)),
+            notify_services(&notify(&["a.yml"]), true, Some(LINK)),
         ] {
             assert!(text.contains("approval"), "{text}");
             assert!(text.contains("proposal"), "{text}");
@@ -553,6 +591,49 @@ mod tests {
             swimlane: swimlane(),
             service: ServiceRef::new("apps", "core").unwrap(),
         }
+    }
+
+    fn notify(paths: &[&str]) -> NotifyRequest {
+        NotifyRequest {
+            swimlane: swimlane(),
+            paths: paths.iter().map(|p| path(p)).collect(),
+        }
+    }
+
+    #[test]
+    fn notify_names_the_swimlane_the_files_and_the_unauthenticated_endpoint_reached_through_the_agent() {
+        let text = notify_services(
+            &notify(&["tx-core/app-sit1.yml", "channels.yml"]),
+            false,
+            Some(LINK),
+        );
+        assert!(text.contains("swimlane sit1"), "{text}");
+        assert!(text.contains("2 files"), "{text}");
+        assert!(text.contains("\"tx-core/app-sit1.yml\""), "{text}");
+        assert!(text.contains("\"channels.yml\""), "{text}");
+        assert!(text.contains(&format!("({LABEL})")), "{text}");
+        // What happens: the agent, not the hub, calls the config-server's endpoint, which has no authentication (Q37).
+        assert!(text.contains("agent"), "{text}");
+        assert!(text.contains("/update-resources"), "{text}");
+        assert!(text.contains("no authentication"), "{text}");
+        assert!(text.contains("audited"), "{text}");
+        assert!(text.ends_with(LINK), "{text}");
+        assert!(!text.contains("approval"), "{text}");
+        // One file is "1 file".
+        let one = notify_services(&notify(&["a.yml"]), false, None);
+        assert!(one.contains("1 file:"), "{one}");
+        assert!(!one.contains("web UI"), "no link, no mention of one: {one}");
+    }
+
+    #[test]
+    fn a_notification_lists_a_few_files_and_counts_the_rest() {
+        let many: Vec<String> = (0..100).map(|n| format!("dir/file-{n}.yml")).collect();
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        let text = notify_services(&notify(&refs), false, Some(LINK));
+        assert!(text.contains("100 files"), "{text}");
+        assert!(text.contains("\"dir/file-0.yml\""), "{text}");
+        assert!(text.contains("97 more"), "{text}");
+        assert!(!text.contains("file-99"), "{text}");
     }
 
     #[test]
@@ -713,6 +794,11 @@ mod tests {
             branch: domain::TenantId::parse(&"b".repeat(63)).unwrap(),
         });
         messages.push(raise_pr(&request, true, Some(&link)));
+        let long_notify = NotifyRequest {
+            swimlane: SwimlaneId::parse(&"s".repeat(63)).unwrap(),
+            paths: vec![path(long); 100],
+        };
+        messages.push(notify_services(&long_notify, true, Some(&link)));
         for text in messages {
             // Within the budgets of the builders, so that the guard of `finish` that cuts the body is never what keeps it short.
             assert!(

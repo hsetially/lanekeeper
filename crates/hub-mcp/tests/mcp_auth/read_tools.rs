@@ -4,8 +4,7 @@
 use domain::{
     AttributionSource, ChangeKind, Confidence, DiffHunk, DiffLine, DiffLineKind, DriftState, EffectiveConfig,
     EffectiveSetting, EffectiveSource, FileClass, FileContent, FindingKind, Grid, GridCell, GridRow, Paged,
-    PickupState, Role, ServedFile, SettingHit, Severity, TextHit, TextResults, TreeCompareEntry,
-    TreeComparison,
+    PickupState, Role, SettingHit, Severity, TextHit, TextResults, TreeCompareEntry, TreeComparison,
 };
 use serde_json::{Value, json};
 
@@ -666,80 +665,6 @@ async fn get_effective_config_passes_tenant_channel_and_prefix() {
     .await;
     assert_eq!(missing.err(), "invalid_argument");
     assert!(missing.error()["message"].as_str().unwrap().contains("`tenant`"));
-}
-
-pub(crate) fn served_fixture(text: Option<&str>, withheld: bool) -> ServedFile {
-    ServedFile {
-        swimlane: sid("sit1"),
-        application: domain::AppName::parse("tx-core").unwrap(),
-        tenant: tid("sit1"),
-        channel: None,
-        file: np("app.yml"),
-        role: domain::FileRole::PropertySource,
-        hash: hash_of(b"served"),
-        content_withheld: withheld,
-        text: text.map(str::to_owned),
-        sources: vec![EffectiveSource {
-            path: np("tx-core/app.yml"),
-            rank: 1,
-        }],
-        unresolved_placeholders: Vec::new(),
-    }
-}
-
-#[tokio::test]
-async fn get_served_config_is_redacted() {
-    let rig = rig();
-    seed(&rig, "sit1", &[("a.yml", "a: 1\n")]);
-    let secret = fake_github_token();
-    rig.registry.inner.set_served(served_fixture(
-        Some(&format!("a: 1\ntoken: {secret}\nb: 2\n")),
-        false,
-    ));
-    let mut c = viewer(&rig).await;
-    let args = json!({"swimlane": "sit1", "application": "tx-core", "tenant": "sit2", "channel": "x", "file": "app.yml"});
-    let called = call(&mut c, "get_served_config", &args).await;
-    let data = called.ok();
-    assert!(
-        data["text"]
-            .as_str()
-            .unwrap()
-            .contains("token: [REDACTED: 40 chars, github_token]"),
-        "{data}"
-    );
-    assert_eq!(data["redacted_values"], 1);
-    assert!(!called.response.to_string().contains(&secret));
-    assert_eq!(data["tenant"], "sit2", "the answer is for the question asked");
-    assert_eq!(data["untrusted"], true);
-    let logged = rig.registry.log.of("served");
-    assert!(
-        logged[0].contains("app=tx-core")
-            && logged[0].contains("tenant=sit2")
-            && logged[0].contains("Some(\"x\")"),
-        "{logged:?}"
-    );
-
-    // A withheld file has no text, and says so.
-    rig.registry.inner.set_served(served_fixture(None, true));
-    let withheld = call(&mut c, "get_served_config", &args).await;
-    assert_eq!(withheld.ok()["content_withheld"], true);
-    assert_eq!(withheld.ok()["text"], Value::Null);
-}
-
-#[tokio::test]
-async fn served_unavailable_is_unavailable() {
-    let rig = rig();
-    seed(&rig, "sit1", &[("a.yml", "a: 1\n")]);
-    let mut c = viewer(&rig).await;
-    // The fake has no scripted file: as when the agent cannot be reached.
-    let called = call(
-        &mut c,
-        "get_served_config",
-        &json!({"swimlane": "sit1", "application": "tx-core", "tenant": "sit1", "file": "app.yml"}),
-    )
-    .await;
-    assert_eq!(called.err(), "unavailable");
-    assert_eq!(called.error()["retryable"], true);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

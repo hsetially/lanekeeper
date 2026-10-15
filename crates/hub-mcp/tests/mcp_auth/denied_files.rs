@@ -18,8 +18,9 @@ use hub_mcp::tools::ToolName;
 use serde_json::{Value, json};
 
 use crate::fix::*;
-use crate::read_tools::{comparison, effective_fixture, served_fixture};
+use crate::read_tools::{comparison, effective_fixture};
 use crate::rig::Rig;
+use crate::served::served_fixture;
 use crate::support::elicitation_capabilities;
 use crate::tools_rig::{Called, call, signed_in, signed_in_with};
 
@@ -574,7 +575,8 @@ const FILE_TOOLS: [&str; 15] = [
 /// The rest, and why a denied file cannot reach them: they answer with swimlanes, services, findings (a sentence of the engine, never
 /// a value) and drafts by id, or they read the docs (D79 is about the files of the swimlanes, and the docs are not on NFS), or they
 /// are outcomes only. `apply_change` takes a draft that the write service made, and it refuses to make one for a denied file
-/// (`propose_change` refuses first, above).
+/// (`propose_change` refuses first, above). `notify_services` takes paths and sends only those names to the config-server through
+/// the agent; a name is not content (D79 protects the content: never read, sent or written), and its answer is an outcome.
 const OTHER_TOOLS: [&str; 12] = [
     "list_swimlanes",
     "get_swimlane",

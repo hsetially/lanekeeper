@@ -383,9 +383,9 @@ engine-bench:
 
 # Prompt 07 gate (the MCP server; S4, S11, S14, S14b, S15, S21; P9): every sub-recipe, in order, stopping at the first failure. T0
 # started it with the tools check, lint, tests and the status of the Cursor results; T1 adds the Docker daemon for the Postgres-backed
-# token tests and the fuzz targets; T2 adds the P9 benchmarks (`mcp-bench`); later tasks append their own sub-recipes. Run `just
-# verify` and `cargo xtask bench-check` after it (AGENTS.md, protocol step 4). Not part of the gate and said so: the Cursor 3.22.12
-# checks of T0 need a human (see `mcp-t0-status`).
+# token tests and the fuzz targets; T2 adds the P9 benchmarks (`mcp-bench`, which T7 extends with `P9.get_served_config`); T7 closes
+# the list: the gate is complete. Run `just verify` and `cargo xtask bench-check` after it (AGENTS.md, protocol step 4). Not part of
+# the gate and said so: the Cursor 3.22.12 checks of T0 need a human (see `mcp-t0-status`).
 verify-07: mcp-tools-check mcp-lint mcp-test mcp-fuzz mcp-bench mcp-t0-status
 
 # The pinned tools the gate needs, or the command that installs them, and the Docker daemon the token store tests start Postgres in.

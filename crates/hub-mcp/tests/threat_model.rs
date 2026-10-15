@@ -1134,41 +1134,41 @@ fn planted_gaps_are_found() {
             .any(|p| p.contains("restart_service"))
     );
 
-    // A marker that the code no longer supports, and a gap that the section no longer reports.
+    // A marker that the code no longer supports, and a gap that the section no longer reports. The gap used here is one that is
+    // still open today: the hub binary does not mount /mcp yet.
     let fixed: Gaps = code
         .iter()
-        .map(|&(marker, still_true)| {
-            (
-                marker,
-                still_true && marker != "None (T7): notify_services through the gate",
-            )
-        })
+        .map(|&(marker, still_true)| (marker, still_true && marker != "does not mount /mcp yet"))
         .collect();
     assert!(
         marker_problems(&doc, &fixed)
             .iter()
-            .any(|p| p.contains("notify_services"))
+            .any(|p| p.contains("does not mount /mcp yet"))
     );
-    let forgotten = edited(&doc, |s| {
-        s.replace("None (T7): notify_services through the gate", "Done")
-    });
+    let forgotten = edited(&doc, |s| s.replace("does not mount /mcp yet", "mounts it"));
     assert!(
         marker_problems(&forgotten, &code)
             .iter()
-            .any(|p| p.contains("notify_services"))
+            .any(|p| p.contains("does not mount /mcp yet"))
     );
-    // A control that T6 built and that the section goes back to calling missing.
-    let regressed = edited(&doc, |s| {
-        s.replace(
-            "### Residual risks\n",
-            "### Residual risks\n\nNone (T6): the final sweep\n",
-        )
-    });
-    assert!(
-        marker_problems(&regressed, &code)
-            .iter()
-            .any(|p| p.contains("final sweep"))
-    );
+    // Controls that T6 and T7 built, and that the section goes back to calling missing.
+    for (marker, what) in [
+        ("None (T6): the final sweep", "final sweep"),
+        ("None (T7): notify_services through the gate", "notify_services"),
+    ] {
+        let regressed = edited(&doc, |s| {
+            s.replace(
+                "### Residual risks\n",
+                &format!("### Residual risks\n\n{marker}\n"),
+            )
+        });
+        assert!(
+            marker_problems(&regressed, &code)
+                .iter()
+                .any(|p| p.contains(what)),
+            "{marker}"
+        );
+    }
 
     // The component dropped from the list.
     let unlisted = doc.replace(&format!("{COMPONENT_LINE}\n"), "");
