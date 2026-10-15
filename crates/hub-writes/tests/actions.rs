@@ -823,6 +823,41 @@ async fn delete_keeps_content_in_blob_store() {
     );
 }
 
+/// The agent answers `IO` when the unlink happened and the directory could not be synced: the file is gone. The delete is kept as
+/// unfinished, and the retry finds the file gone and records it, with the last version kept.
+#[tokio::test]
+async fn an_io_error_after_the_unlink_is_found_and_recorded_not_lost() {
+    let Some((rig, s)) = rig().await else { return };
+    let editor = rig.user(1, Role::Editor).await;
+    let doomed = "doomed: yes\n";
+    rig.agent.put(&s, &nfs("gone.yml"), doomed.as_bytes());
+    rig.catch_up_registry(&s);
+    let pv = preview(&rig, &editor, "p-1", delete_preview(&s, "gone.yml", h(doomed))).await;
+    rig.agent.fault_next_write(Fault::LandThenIo);
+    let first = rig
+        .hub
+        .delete(
+            &ctx(&editor, "k-1"),
+            delete_req(&s, "gone.yml", h(doomed), Some(&pv)),
+        )
+        .await;
+    assert_eq!(first, Err(WriteError::Unavailable));
+    assert!(rig.nfs_of(&s, "gone.yml").is_none());
+    assert_eq!(rig.chain().await.len(), 0);
+
+    let retry = rig
+        .hub
+        .delete(
+            &ctx(&editor, "k-1"),
+            delete_req(&s, "gone.yml", h(doomed), Some(&pv)),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(retry, WriteOutcome::Applied { .. }), "{retry:?}");
+    assert_eq!(rig.chain().await.len(), 1, "the delete that landed is audited");
+    assert_eq!(rig.agent.deletes_applied(), 1);
+}
+
 #[tokio::test]
 async fn delete_conflict_is_409() {
     let Some((rig, s)) = rig().await else { return };

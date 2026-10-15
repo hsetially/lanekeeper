@@ -24,8 +24,11 @@ pub enum Fault {
     LandThenTimeout,
     /// The file lands, then the stream closes.
     LandThenClosed,
-    /// The agent says it had an I/O error and wrote nothing.
+    /// The agent says it had an I/O error. The file is as it was (the agent could not even begin).
     Io,
+    /// The file lands (or is deleted), then the agent says it had an I/O error: the real agent answers `IO` when it could not sync
+    /// the directory after the rename (or the unlink), and when its own deadline passes while the work goes on.
+    LandThenIo,
     /// The agent refuses (a deny glob on its side).
     Denied,
 }
@@ -33,7 +36,10 @@ pub enum Fault {
 impl Fault {
     /// True for a fault that applies after the command has run (the reply is lost).
     pub fn lands(self) -> bool {
-        matches!(self, Self::LandThenTimeout | Self::LandThenClosed)
+        matches!(
+            self,
+            Self::LandThenTimeout | Self::LandThenClosed | Self::LandThenIo
+        )
     }
 }
 
@@ -264,6 +270,10 @@ impl AgentGateway for FakeAgent {
                     // Held until the test adds a permit.
                     let permit = gate.acquire().await.map_err(|_| GatewayError::Closed)?;
                     permit.forget();
+                    // The stream went away while the command was held: it never reached the agent.
+                    if lock(&self.state).down {
+                        return Err(GatewayError::NotConnected);
+                    }
                 }
                 match fault {
                     Some(Fault::Io) => return Ok(Self::op(request_id, false, Some(OpError::Io), None)),
@@ -273,6 +283,7 @@ impl AgentGateway for FakeAgent {
                     _ => {}
                 }
                 let key = (s.clone(), path);
+                let rid = request_id.clone();
                 let reply = {
                     let mut st = lock(&self.state);
                     let current = st.files.get(&key).map(|b| content_hash(b));
@@ -288,6 +299,7 @@ impl AgentGateway for FakeAgent {
                 match fault {
                     Some(Fault::LandThenTimeout) => Err(GatewayError::Timeout),
                     Some(Fault::LandThenClosed) => Err(GatewayError::Closed),
+                    Some(Fault::LandThenIo) => Ok(Self::op(rid, false, Some(OpError::Io), None)),
                     _ => Ok(reply),
                 }
             }
@@ -304,6 +316,7 @@ impl AgentGateway for FakeAgent {
                     _ => {}
                 }
                 let key = (s.clone(), path);
+                let rid = request_id.clone();
                 let reply = {
                     let mut st = lock(&self.state);
                     let current = st.files.get(&key).map(|b| content_hash(b));
@@ -320,6 +333,7 @@ impl AgentGateway for FakeAgent {
                 match fault {
                     Some(Fault::LandThenTimeout) => Err(GatewayError::Timeout),
                     Some(Fault::LandThenClosed) => Err(GatewayError::Closed),
+                    Some(Fault::LandThenIo) => Ok(Self::op(rid, false, Some(OpError::Io), None)),
                     _ => Ok(reply),
                 }
             }

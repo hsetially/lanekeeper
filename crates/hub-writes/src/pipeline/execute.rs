@@ -21,6 +21,17 @@ use crate::error::{Internal, Res};
 use crate::idempotency::{ClaimKey, Follow, Intent, IntentOp, Phase};
 use crate::service::Inner;
 
+/// What an `IO` answer of the agent says about the thing it was asked to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IoMeans {
+    /// The command did not act, or the agent cannot have: a notification or a restart that did not reach its target.
+    NothingChanged,
+    /// The file may have changed. The agent answers `IO` for "anything else from the file system": it also does after the rename
+    /// (or the unlink) when the directory could not be synced, and when its own deadline passes while the work goes on. Whether
+    /// the file changed is for the file to say, so this is as uncertain as a reply that never came.
+    MayHaveChanged,
+}
+
 /// What the agent said to a write.
 pub(crate) enum Sent {
     /// It wrote the file. The hash is what it found on NFS afterwards.
@@ -56,7 +67,14 @@ pub(crate) async fn send_write(
         bytes,
     };
     // The agent was told to expect a file that is not there.
-    call(hub, swimlane, cmd, WriteOutcome::Conflict { current: None }).await
+    call(
+        hub,
+        swimlane,
+        cmd,
+        WriteOutcome::Conflict { current: None },
+        IoMeans::MayHaveChanged,
+    )
+    .await
 }
 
 /// Send `DeleteFile` and read the answer. The agent compares `expected` with the file and refuses on a mismatch.
@@ -73,7 +91,14 @@ pub(crate) async fn send_delete(
         expected,
     };
     // A file that is not there is not the file the caller meant to delete.
-    call(hub, swimlane, cmd, WriteOutcome::Conflict { current: None }).await
+    call(
+        hub,
+        swimlane,
+        cmd,
+        WriteOutcome::Conflict { current: None },
+        IoMeans::MayHaveChanged,
+    )
+    .await
 }
 
 /// Send `RestartDeployment` and read the answer.
@@ -88,7 +113,14 @@ pub(crate) async fn send_restart(
         service: service.clone(),
     };
     // The cluster has no such Deployment.
-    call(hub, swimlane, cmd, rejected(RejectReason::InvalidContent)).await
+    call(
+        hub,
+        swimlane,
+        cmd,
+        rejected(RejectReason::InvalidContent),
+        IoMeans::NothingChanged,
+    )
+    .await
 }
 
 /// What the gateway said, or that it said nothing in time.
@@ -125,14 +157,24 @@ pub(crate) async fn send_notify(
             error: Some(OpError::Unsupported),
             ..
         }))) => unavailable,
-        other => interpret(&other, rejected(RejectReason::InvalidContent)),
+        other => interpret(
+            &other,
+            rejected(RejectReason::InvalidContent),
+            IoMeans::NothingChanged,
+        ),
     }
 }
 
 /// Send a command and turn the answer into what the request does next. `not_found` is the outcome when the agent says the
 /// thing the command names is not there.
-async fn call(hub: &Inner, swimlane: &SwimlaneId, cmd: HubCommand, not_found: WriteOutcome) -> Sent {
-    interpret(&ask(hub, swimlane, cmd).await, not_found)
+async fn call(
+    hub: &Inner,
+    swimlane: &SwimlaneId,
+    cmd: HubCommand,
+    not_found: WriteOutcome,
+    io: IoMeans,
+) -> Sent {
+    interpret(&ask(hub, swimlane, cmd).await, not_found, io)
 }
 
 async fn ask(hub: &Inner, swimlane: &SwimlaneId, cmd: HubCommand) -> Asked {
@@ -141,7 +183,7 @@ async fn ask(hub: &Inner, swimlane: &SwimlaneId, cmd: HubCommand) -> Asked {
     tokio::time::timeout(outer, hub.gateway.request(swimlane, cmd, hub.cfg.agent_timeout)).await
 }
 
-fn interpret(reply: &Asked, not_found: WriteOutcome) -> Sent {
+fn interpret(reply: &Asked, not_found: WriteOutcome, io: IoMeans) -> Sent {
     match reply {
         Ok(Err(GatewayError::NotConnected | GatewayError::Busy | GatewayError::Unavailable)) => {
             Sent::Undelivered
@@ -175,10 +217,14 @@ fn interpret(reply: &Asked, not_found: WriteOutcome) -> Sent {
                 outcome: rejected(RejectReason::InvalidContent),
                 transient: false,
             },
-            // The agent could not act (its I/O failed) and says nothing changed: try again later.
-            Some(OpError::Io) | None => Sent::Refused {
-                outcome: rejected(RejectReason::AgentUnavailable),
-                transient: true,
+            // The agent's I/O failed. For a notification or a restart, nothing happened that a retry cannot repeat. For a file it
+            // says nothing about the file: it may have been renamed in, or unlinked, before the failure.
+            Some(OpError::Io) | None => match io {
+                IoMeans::NothingChanged => Sent::Refused {
+                    outcome: rejected(RejectReason::AgentUnavailable),
+                    transient: true,
+                },
+                IoMeans::MayHaveChanged => Sent::Ambiguous,
             },
         },
         // No answer in time, a stream that closed, or an answer of another kind (a protocol error): the command may have run.

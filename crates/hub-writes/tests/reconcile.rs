@@ -298,16 +298,13 @@ async fn a_request_that_lost_its_claim_cannot_touch_the_row_of_the_retry_that_re
 }
 
 /// What a request that lost its claim after it had sent its command does when the agent answers: it ends its own row, which is
-/// gone, and not the retry's. `how` is how the agent answers the first command: a conflict (the request stores that answer) or an
-/// I/O error (the request releases its claim).
+/// gone, and not the retry's. `how` is how the first command ends: with a conflict (the request stores that answer) or with a
+/// stream that went away before the agent had it (the request releases its claim).
 async fn the_late_answer_of_a_request_that_lost_its_claim(how: &str) {
     let Some(rig) = rig_with_a().await else { return };
     let editor = rig.user(1, Role::Editor).await;
     let gate = rig.agent.hold_writes();
     let req = || edit(&sit1(), "a.yml", at("x: 1\n"), "x: 2\n");
-    if how == "io" {
-        rig.agent.fault_next_write(Fault::Io);
-    }
     let first = {
         let (hub, editor) = (rig.hub.clone(), editor.clone());
         tokio::spawn(async move { hub.edit(&ctx(&editor, "k-1"), req()).await })
@@ -332,10 +329,12 @@ async fn the_late_answer_of_a_request_that_lost_its_claim(how: &str) {
     .await
     .expect("the retry's command never reached the agent");
 
-    // The first command is answered: with a conflict (somebody changed the file), or with an I/O error.
+    // The first command ends: with a conflict (somebody changed the file), or with a stream that went away.
     if how == "conflict" {
         rig.agent
             .put(&sit1(), &domain::NfsPath::parse("a.yml").unwrap(), b"y: 1\n");
+    } else {
+        rig.agent.set_down(true);
     }
     gate.add_permits(1);
     let answered = first.await.unwrap();
@@ -365,6 +364,7 @@ async fn the_late_answer_of_a_request_that_lost_its_claim(how: &str) {
     );
 
     // The file is as the retry expects it, and its command lands: recorded under its own claim.
+    rig.agent.set_down(false);
     rig.agent
         .put(&sit1(), &domain::NfsPath::parse("a.yml").unwrap(), b"x: 1\n");
     gate.add_permits(1);
@@ -380,5 +380,5 @@ async fn a_conflict_for_a_request_that_lost_its_claim_is_not_stored_on_the_retry
 
 #[tokio::test]
 async fn a_request_that_lost_its_claim_does_not_release_the_retrys_row() {
-    the_late_answer_of_a_request_that_lost_its_claim("io").await;
+    the_late_answer_of_a_request_that_lost_its_claim("gone").await;
 }

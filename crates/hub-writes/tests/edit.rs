@@ -661,20 +661,14 @@ async fn an_agent_that_never_received_the_command_is_rejected_and_the_retry_runs
         .unwrap();
     assert!(matches!(again, WriteOutcome::Applied { .. }), "{again:?}");
 
-    // An I/O error on the agent wrote nothing: also transient. A refusal there is a denial.
+    // An I/O error on the agent does not say whether the file changed (see `an_io_error_after_the_file_changed_...`): the claim is
+    // kept for the retry to settle, and the caller is told to try again. A refusal there is a denial.
     rig.agent.fault_next_write(Fault::Io);
     let io = rig
         .hub
         .edit(&ctx(&editor, "k-2"), edit(&s, "b.yml", at("k: v\n"), "k: w\n"))
-        .await
-        .unwrap();
-    assert_eq!(
-        io,
-        WriteOutcome::Rejected {
-            reason: RejectReason::AgentUnavailable,
-            issues: Vec::new()
-        }
-    );
+        .await;
+    assert_eq!(io, Err(WriteError::Unavailable));
     rig.agent.fault_next_write(Fault::Denied);
     let denied = rig
         .hub
@@ -747,4 +741,63 @@ async fn every_applied_write_has_exactly_one_chained_audit_event() {
     assert!(chain.iter().all(|e| e.event.action == AuditAction::FileEdited));
     assert_eq!(rig.bus.published().await.len(), 3);
     let _ = NfsPath::root();
+}
+
+/// The real agent answers `IO` when it could not sync the directory after the rename: the file has changed. The hub must not take
+/// that for "nothing changed", release the claim and forget the write: it keeps the intent, and the retry (or the reconcile job)
+/// finds the file and records the write.
+#[tokio::test]
+async fn an_io_error_after_the_file_changed_is_found_and_recorded_not_lost() {
+    let Some(rig) = rig_with_a().await else { return };
+    let editor = rig.user(1, Role::Editor).await;
+    let s = domain::SwimlaneId::parse("sit1").unwrap();
+    rig.agent.fault_next_write(Fault::LandThenIo);
+    let first = rig
+        .hub
+        .edit(&ctx(&editor, "k-1"), edit(&s, "a.yml", at("x: 1\n"), "x: 2\n"))
+        .await;
+    assert_eq!(
+        first,
+        Err(WriteError::Unavailable),
+        "the hub cannot know whether it landed"
+    );
+    assert_eq!(rig.nfs_of(&s, "a.yml").as_deref(), Some(&b"x: 2\n"[..]));
+    assert_eq!(
+        rig.count("idempotency_keys").await,
+        1,
+        "the claim, with its intent, is kept"
+    );
+
+    // The retry looks at the file at once, finds what was sent, and records it: the write is audited once.
+    let retry = rig
+        .hub
+        .edit(&ctx(&editor, "k-1"), edit(&s, "a.yml", at("x: 1\n"), "x: 2\n"))
+        .await
+        .unwrap();
+    assert_eq!(applied(&retry).0, Some(h("x: 2\n")), "{retry:?}");
+    assert_eq!(rig.agent.write_commands(), 1, "the retry did not write again");
+    assert_eq!(rig.chain().await.len(), 1);
+}
+
+/// An `IO` for a command that changed nothing (the agent could not begin) is found out the same way, and costs the caller one
+/// retry that runs afresh.
+#[tokio::test]
+async fn an_io_error_that_changed_nothing_is_cleared_by_the_retry() {
+    let Some(rig) = rig_with_a().await else { return };
+    let editor = rig.user(1, Role::Editor).await;
+    let s = domain::SwimlaneId::parse("sit1").unwrap();
+    rig.agent.fault_next_write(Fault::Io);
+    let first = rig
+        .hub
+        .edit(&ctx(&editor, "k-1"), edit(&s, "a.yml", at("x: 1\n"), "x: 2\n"))
+        .await;
+    assert_eq!(first, Err(WriteError::Unavailable));
+    let retry = rig
+        .hub
+        .edit(&ctx(&editor, "k-1"), edit(&s, "a.yml", at("x: 1\n"), "x: 2\n"))
+        .await
+        .unwrap();
+    assert!(matches!(retry, WriteOutcome::Applied { .. }), "{retry:?}");
+    assert_eq!(rig.agent.write_commands(), 2);
+    assert_eq!(rig.chain().await.len(), 1);
 }
