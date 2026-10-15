@@ -1010,6 +1010,60 @@ async fn the_watcher_says_a_change_once_however_many_replicas_hear_it() {
     );
 }
 
+#[tokio::test]
+async fn a_second_close_after_a_reopen_within_the_lease_is_announced_again() {
+    let Some(t) = jobs().await else { return };
+    let job = t.job("k-1", &[ENTRY]).await;
+    t.runner.drive(id_of(&job)).await;
+    let link: i64 = sqlx::query_scalar("SELECT id FROM pr_links")
+        .fetch_one(&t.f.rig.pool)
+        .await
+        .unwrap();
+    let a: PrStateWatcher = t.f.rig.hub.pr_state_watcher();
+    let b: PrStateWatcher = t.f.rig.replica().pr_state_watcher();
+    let event = |state| DomainEvent::PrStateChanged {
+        link_id: domain::PrLinkId::from(link),
+        state,
+    };
+    // The webhook moves the link in a transaction of its own each time, and stamps the row (`updated_at = now()`).
+    let moved = |state: PrState| {
+        let pool = t.f.rig.pool.clone();
+        async move {
+            sqlx::query("UPDATE pr_links SET state = $2, updated_at = now() WHERE id = $1")
+                .bind(link)
+                .bind(state.as_str())
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    };
+
+    // Close, reopen, close, all inside the five seconds a replica holds the right to announce one change.
+    moved(PrState::Closed).await;
+    assert_eq!(a.on_event(&event(PrState::Closed)).await, Watched::Announced);
+    moved(PrState::Open).await;
+    assert_eq!(b.on_event(&event(PrState::Open)).await, Watched::Announced);
+    moved(PrState::Closed).await;
+    assert_eq!(
+        a.on_event(&event(PrState::Closed)).await,
+        Watched::Announced,
+        "the second close is a change of its own: the screens would keep showing the reopened state"
+    );
+    // The replica that hears the same change after that finds it already said.
+    assert_eq!(b.on_event(&event(PrState::Closed)).await, Watched::Duplicate);
+
+    let drift =
+        t.f.rig
+            .bus
+            .published()
+            .await
+            .into_iter()
+            .filter(|e| matches!(e, DomainEvent::DriftChanged { .. }))
+            .count();
+    // One from the recording of the pull request, one for each of the three changes.
+    assert_eq!(drift, 4);
+}
+
 // ------------------------------------------------------------------------------------------------------------ approval
 
 #[tokio::test]

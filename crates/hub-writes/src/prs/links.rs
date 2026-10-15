@@ -114,8 +114,10 @@ pub(crate) const LIST_SQL: &str = concat!(
      AND ($3::text IS NULL OR l.state = $3) ORDER BY l.id DESC LIMIT $4"
 );
 
-/// The swimlane and path of a link, for the watcher.
-pub(crate) const PLACE_SQL: &str = "SELECT swimlane_id, path FROM pr_links WHERE id = $1";
+/// The swimlane and path of a link, for the watcher, and the version of the row: the microsecond the webhook's transaction stamped on
+/// it (`updated_at = now()`), which differs for every change of the link.
+pub(crate) const PLACE_SQL: &str = "SELECT swimlane_id, path, (floor(extract(epoch FROM updated_at) * 1000000))::bigint AS version \
+     FROM pr_links WHERE id = $1";
 
 const INSERT_SQL: &str = concat!(
     "INSERT INTO pr_links (swimlane_id, path, nfs_hash, repo, branch, pr_number, state, job_id, author_tid, author_oid, \
@@ -355,17 +357,6 @@ impl PrStateWatcher {
             return Watched::Ignored;
         };
         let hub = &*self.hub;
-        // Every replica hears the event. One of them says so: the others find the name taken. The lease runs out by itself.
-        let name = format!("pr-state:{}:{}", link_id.get(), state.as_str());
-        match hub
-            .within("pr_state_lease", hub.leases.try_acquire(&name, ANNOUNCE_LEASE))
-            .await
-        {
-            Ok(Ok(Some(_guard))) => {}
-            Ok(Ok(None)) => return Watched::Duplicate,
-            // Without the lease store the change is announced anyway: a repeated hint costs a refetch, a missing one a stale label.
-            Ok(Err(_)) | Err(_) => tracing::warn!("the pr-state lease store did not answer"),
-        }
         let place = async {
             let mut conn = hub
                 .pool
@@ -380,14 +371,29 @@ impl PrStateWatcher {
             Ok::<_, Internal>(row.and_then(|r| {
                 let swimlane = SwimlaneId::parse(&r.try_get::<String, _>("swimlane_id").ok()?).ok()?;
                 let path = NfsPath::parse(&r.try_get::<String, _>("path").ok()?).ok()?;
-                Some((swimlane, path))
+                let version: i64 = r.try_get("version").ok()?;
+                Some((swimlane, path, version))
             }))
         };
-        let (swimlane, path) = match hub.within("pr_link_place", place).await {
+        let (swimlane, path, version) = match hub.within("pr_link_place", place).await {
             Ok(Ok(Some(found))) => found,
             Ok(Ok(None)) => return Watched::Unknown,
             _ => return Watched::Unavailable,
         };
+        // Every replica hears the event. One of them says so: the others find the name taken. The name holds the version of the row
+        // the change left, so that the next change of the same link to the same state (a close after a reopen) is a name of its own;
+        // the replicas that read the same version agree on it, and one that reads a later version only says it once more, which
+        // costs the screens a refetch. The lease runs out by itself.
+        let name = format!("pr-state:{}:{}:{version}", link_id.get(), state.as_str());
+        match hub
+            .within("pr_state_lease", hub.leases.try_acquire(&name, ANNOUNCE_LEASE))
+            .await
+        {
+            Ok(Ok(Some(_guard))) => {}
+            Ok(Ok(None)) => return Watched::Duplicate,
+            // Without the lease store the change is announced anyway: a repeated hint costs a refetch, a missing one a stale label.
+            Ok(Err(_)) | Err(_) => tracing::warn!("the pr-state lease store did not answer"),
+        }
         let event = DomainEvent::DriftChanged {
             swimlane,
             paths: vec![path],
