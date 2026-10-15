@@ -43,7 +43,7 @@ impl FakeTxState {
     /// The tool writes parked in this transaction.
     pub(crate) fn parked_tool_writes(&self) -> impl Iterator<Item = &ToolWriteEntry> {
         self.pending.iter().filter_map(|p| match p {
-            Pending::ToolWrite(r) => r.entry(),
+            Pending::ToolWrite(r) => Some(r.entry()),
             _ => None,
         })
     }

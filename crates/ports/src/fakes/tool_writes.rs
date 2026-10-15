@@ -34,30 +34,31 @@ fn same_registration(a: &ToolWriteEntry, b: &ToolWriteEntry) -> bool {
 /// visible; dropping it (rollback, or a transaction that was just dropped) gives the place back.
 pub(crate) struct Reservation {
     inner: Arc<ToolWritesInner>,
-    entry: Option<ToolWriteEntry>,
+    entry: ToolWriteEntry,
+    /// The place is still held: cleared by `commit`, which hands it over to the committed entry.
+    holds_place: bool,
 }
 
 impl Reservation {
-    pub(crate) fn entry(&self) -> Option<&ToolWriteEntry> {
-        self.entry.as_ref()
+    pub(crate) fn entry(&self) -> &ToolWriteEntry {
+        &self.entry
     }
 
     /// Commit cannot fail: the place was taken at `register`.
     pub(crate) fn commit(mut self) {
-        let Some(entry) = self.entry.take() else {
-            return;
-        };
+        // The place becomes the committed entry's, so that dropping `self` below gives nothing back.
+        self.holds_place = false;
         let mut registry = lock(&self.inner.registry);
         registry.reserved = registry.reserved.saturating_sub(1);
-        if !registry.entries.iter().any(|x| same_registration(x, &entry)) {
-            registry.entries.push(entry);
+        if !registry.entries.iter().any(|x| same_registration(x, &self.entry)) {
+            registry.entries.push(self.entry.clone());
         }
     }
 }
 
 impl Drop for Reservation {
     fn drop(&mut self) {
-        if self.entry.is_some() {
+        if self.holds_place {
             let mut registry = lock(&self.inner.registry);
             registry.reserved = registry.reserved.saturating_sub(1);
         }
@@ -139,7 +140,8 @@ impl ToolWrites for FakeToolWrites {
         drop(registry);
         state.push(Pending::ToolWrite(Reservation {
             inner: self.inner.clone(),
-            entry: Some(entry),
+            entry,
+            holds_place: true,
         }));
         Ok(())
     }

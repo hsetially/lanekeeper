@@ -13,7 +13,7 @@ use ports::{
     AckSeq, AgentGateway, AuditAction, AuditActor, AuditEvent, AuditLog, AuditVia, BlobStore, DocSearch,
     EventBus, EventFilter, EventKind, GitReader, KeyRef, KeyRefError, KmsEnvelope, KmsSigner, Leases,
     NotificationKind, Notifier, RegistryRead, ReportSink, SecretSource, SentinelSink, TokenVerifier,
-    ToolWrites, Users, WriteService, canonical_json, chain_hash, genesis_hash,
+    ToolWriteEntry, ToolWrites, Users, WriteService, canonical_json, chain_hash, genesis_hash,
 };
 use static_assertions::{assert_impl_all, assert_obj_safe};
 
@@ -482,4 +482,11 @@ fn notification_kinds_have_stable_wire_names() {
         );
     }
     assert!(serde_json::from_value::<NotificationKind>("nope".into()).is_err());
+}
+
+#[test]
+fn tool_write_ttl_is_pinned() {
+    // `docs/interfaces.md` says 15 minutes; a registry and its fake rely on the number, so a change is a contract change.
+    // (`ChangePreview::TTL_SECS`, 10 minutes, is pinned in the domain tests.)
+    assert_eq!(ToolWriteEntry::TTL_SECS, 900);
 }
