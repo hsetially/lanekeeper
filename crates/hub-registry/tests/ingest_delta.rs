@@ -352,26 +352,26 @@ async fn a_registered_tool_write_is_not_out_of_band() {
         domain::Guid::parse("11111111-1111-1111-1111-111111111111").unwrap(),
         domain::Guid::parse("22222222-2222-2222-2222-222222222222").unwrap(),
     );
-    // Prompt 06 registers the write in its own transaction before it sends WriteFile (A10).
+    // Prompt 06 registers the write in its own transaction before it sends WriteFile (A10), through the port.
     let mut tx = rig.pool.begin().await.unwrap();
     let new_hash = content_hash(b"x: edited");
-    let fresh = rig
-        .ingest
-        .tool_writes()
-        .record(
-            &mut ports::Tx::from_pg(&mut tx),
-            hub_registry::ToolWriteRecord {
-                swimlane: &rig.swimlane,
-                path: &path("a.yml"),
-                hash: Some(new_hash),
-                size: Some(9),
-                actor: &user,
-            },
-        )
-        .await
-        .unwrap();
+    ports::ToolWrites::register(
+        &rig.tool_writes,
+        &mut ports::Tx::from_pg(&mut tx),
+        &rig.swimlane,
+        &path("a.yml"),
+        &new_hash,
+        &user,
+        &domain::RequestId::parse("req-edit-1").unwrap(),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
-    assert!(fresh);
+    assert_eq!(
+        rig.observations("a.yml").await.len(),
+        1,
+        "a registration is not an observation: the history has only the first inventory"
+    );
 
     rig.clock.advance_secs(5);
     rig.delta(delta(
@@ -387,21 +387,27 @@ async fn a_registered_tool_write_is_not_out_of_band() {
         "the tool audits its own writes; the scan that sees one is not a second change"
     );
     assert_eq!(rig.metrics.out_of_band_count(), 0);
-    let scan = rig
+    let tool = rig
         .observations("a.yml")
         .await
         .into_iter()
-        .find(|o| o.source == "scan" && !o.initial)
-        .unwrap();
+        .find(|o| o.source == "tool_write")
+        .expect("the observation the registration explained has source tool_write");
+    assert!(!tool.initial);
     assert_eq!(
         (
-            scan.attribution_source.as_str(),
-            scan.attribution_confidence.as_str()
+            tool.attribution_source.as_str(),
+            tool.attribution_confidence.as_str()
         ),
         ("tool_write", "certain")
     );
-    assert_eq!(scan.attribution_actor.as_ref().unwrap()["kind"], "user");
+    assert_eq!(tool.attribution_actor.as_ref().unwrap()["kind"], "user");
     assert_eq!(rig.state("a.yml").await.unwrap().hash, Some(new_hash));
+    assert_eq!(
+        rig.count("SELECT count(*) FROM tool_write_registrations").await,
+        0,
+        "the registration was consumed by the observation it announced, in the same transaction"
+    );
 }
 
 #[tokio::test]

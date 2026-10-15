@@ -13,8 +13,8 @@ use domain::{
 use hub_platform::events::bus::{BusSettings, PgEventBus};
 use hub_platform::events::metrics::EventMetrics;
 use hub_registry::{
-    AgentIngest, IndexDeps, IngestDeps, ManualClock, Pipeline, PipelineDeps, PipelineHandle, RegistryConfig,
-    RegistryMetrics, SettingsIndexer,
+    AgentIngest, IndexDeps, IngestDeps, ManualClock, PgToolWrites, Pipeline, PipelineDeps, PipelineHandle,
+    RegistryConfig, RegistryMetrics, SettingsIndexer, ToolWriteDeps, ToolWriteMatcher,
 };
 use ports::{AgentIdentity, EventBus, GitReader, ReportSink, SinkError, content_hash};
 use sqlx::{PgPool, Row};
@@ -34,6 +34,8 @@ pub struct Rig {
     pub clock: Arc<ManualClock>,
     pub metrics: RegistryMetrics,
     pub ingest: AgentIngest,
+    /// The registry's side of `ports::ToolWrites` (what prompt 06 calls), over the same database, clock and configuration.
+    pub tool_writes: PgToolWrites,
     pub swimlane: SwimlaneId,
     pub identity: AgentIdentity,
     /// The settings index that ingestion offers its blobs to, when the rig was built `with_index`; its worker runs as a task.
@@ -151,6 +153,15 @@ impl Rig {
         } else {
             None
         };
+        let tool_writes = PgToolWrites::new(ToolWriteDeps {
+            pool: pool.clone(),
+            bus: Arc::clone(&bus) as _,
+            audit: Arc::clone(&audit) as _,
+            clock: Arc::clone(&clock) as _,
+            config: config.clone(),
+            metrics: metrics.clone(),
+        })
+        .unwrap();
         let ingest = AgentIngest::new(IngestDeps {
             pool: pool.clone(),
             blobs: Arc::clone(&blobs) as _,
@@ -175,6 +186,7 @@ impl Rig {
             clock,
             metrics,
             ingest,
+            tool_writes,
             swimlane,
             indexer,
             events,
@@ -261,6 +273,11 @@ impl Rig {
         .execute(&self.pool)
         .await
         .unwrap();
+    }
+
+    /// The leased matcher of late commits, over this rig's database.
+    pub fn matcher(&self) -> ToolWriteMatcher {
+        self.tool_writes.matcher()
     }
 
     pub async fn hello(&self) -> AgentConfig {

@@ -56,17 +56,7 @@ impl Db {
     where
         F: Future<Output = Result<T, sqlx::Error>>,
     {
-        match tokio::time::timeout(self.timeout, call).await {
-            Ok(Ok(value)) => Ok(value),
-            Ok(Err(error)) => {
-                warn!(op, why = kind(&error), "database call failed");
-                Err(RegistryError::Database)
-            }
-            Err(_) => {
-                warn!(op, why = "timed_out", "database call failed");
-                Err(RegistryError::Timeout)
-            }
-        }
+        run_within(self.timeout, op, call).await
     }
 
     /// Start a transaction whose statements the server cancels after the call timeout.
@@ -86,6 +76,26 @@ impl Db {
     /// Commit, with the call timeout.
     pub async fn commit(&self, tx: Txn) -> Result<(), RegistryError> {
         self.run("commit", tx.commit()).await
+    }
+}
+
+/// Run one database future with a timeout of the caller's choosing, logging a failure as a fixed word (the operation, and
+/// `pool_timed_out`, `io`, `database` or `other`: never the driver's own text, S21). [`Db::run`] is this with the registry's call
+/// timeout; a place whose bound is its own (a registration inside a transaction that is the caller's) uses it directly.
+pub(crate) async fn run_within<T, F>(timeout: Duration, op: &'static str, call: F) -> Result<T, RegistryError>
+where
+    F: Future<Output = Result<T, sqlx::Error>>,
+{
+    match tokio::time::timeout(timeout, call).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => {
+            warn!(op, why = kind(&error), "database call failed");
+            Err(RegistryError::Database)
+        }
+        Err(_) => {
+            warn!(op, why = "timed_out", "database call failed");
+            Err(RegistryError::Timeout)
+        }
     }
 }
 

@@ -22,7 +22,7 @@
 //! | `AgentIngest: ReportSink` | `sink` (the trait impl), `hello`, `heartbeat` |
 //! | `DeltaAssembler` | `delta` (the state machine for multi-part deltas), `staging` (the durable parts), `validate` (the checks and the bounds), `apply` (the chunked apply that moves the root last), `plan` (what becomes of the versions of a path), `rules` (the names a path gets) |
 //! | `ClusterApplier` | `cluster` |
-//! | `ToolWrites` | `tool_writes` (the seam with prompt 06) |
+//! | the tool-write registrations an observation is explained by | `plan` (the decision), `apply` (the read and the drops); the port and the late matcher are [`crate::tool_writes`] |
 //! | the fuzz entry points | `fuzzing` |
 
 pub(crate) mod apply;
@@ -36,9 +36,7 @@ pub(crate) mod plan;
 pub(crate) mod rules;
 mod sink;
 pub(crate) mod staging;
-pub mod tool_writes;
 pub(crate) mod validate;
 
 pub(crate) use sink::Inner;
 pub use sink::{AgentIngest, IngestDeps};
-pub use tool_writes::{ToolWriteRecord, ToolWrites};

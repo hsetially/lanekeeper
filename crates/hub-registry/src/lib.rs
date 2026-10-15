@@ -31,6 +31,12 @@
 //!   transaction by a cluster report, by the pipeline's job after a batch and by the leased sweeper (A37). [`tenants`] says what the tenant set
 //!   of a swimlane is, who may change it, and which tenant stands for a swimlane where a view needs one (A30).
 //!
+//! - [`tool_writes`] (T1, A10): `ports::ToolWrites` over Postgres, the registry's side of the write path's tool-write registrations
+//!   ([`PgToolWrites`]). A registration is made in the caller's transaction inside a savepoint of its own and says which hash prompt 06 is
+//!   about to write, or which version of a file it is about to delete; ingestion explains the next observation of it as a tool write, and
+//!   the leased [`ToolWriteMatcher`] explains one that was applied before the registration committed (the late commit) and drops what
+//!   expired.
+//!
 //! Nothing here reads a clock or an environment variable directly: instants come from a [`clock::Clock`] and every limit is a
 //! field of [`config::RegistryConfig`] with a tested default. Queries are runtime-checked `sqlx::query` with binds (plan A39);
 //! no SQL is built from input. Errors carry no input text (S21), and logs carry ids, paths, hashes and counts, never content (S10).
@@ -62,6 +68,7 @@ pub mod read;
 pub mod severity;
 pub mod sync;
 pub mod tenants;
+pub mod tool_writes;
 
 pub use adoption::{
     AdoptionDeps, AdoptionError, AdoptionReason, AdoptionService, AdoptionStatus, AdoptionStep, AdoptionView,
@@ -78,7 +85,7 @@ pub use index::{
     SettingsIndexer, SettingsSweeper, SettingsWorker, StoredTree, SweepReport, TreeHashStore, TreeWrite,
     index_blob,
 };
-pub use ingest::{AgentIngest, IngestDeps, ToolWriteRecord, ToolWrites, fuzzing};
+pub use ingest::{AgentIngest, IngestDeps, fuzzing};
 pub use metrics::RegistryMetrics;
 pub use pickup::{PickupDeps, Pickups, SweepReport as PickupSweepReport};
 pub use pipeline::{
@@ -90,3 +97,4 @@ pub use severity::{SeverityRuleSource, file_severity};
 pub use sync::{
     Alerts, AlertsDeps, SyncDeps, SyncError, SyncOutcome, SyncService, SyncSource, WATCH_JOB, WatchReport,
 };
+pub use tool_writes::{MatchReport, PgToolWrites, ToolWriteDeps, ToolWriteMatcher};

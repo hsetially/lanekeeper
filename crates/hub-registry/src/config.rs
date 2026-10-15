@@ -202,6 +202,25 @@ pub struct RegistryConfig {
     /// oldest pod started is looked at through the newest ones and the metric `registry_pickup_truncated` says so (rule 5).
     pub pickup_max_files: usize,
 
+    // ---------------------------------------------------------------------------------------------- tool-write registrations (T1, A10)
+    /// The bound of the queue of registrations (`ports::ToolWrites`) that no observation has matched yet, hash registrations and delete
+    /// registrations together, counting only those younger than `ToolWriteEntry::TTL_SECS`: a new one past it is refused with `Full` at
+    /// `register`, never at the commit. The bound is soft by at most the number of registering transactions in flight (a count, then an
+    /// insert), because a hard one needs a lock held until the caller's commit, whose order against the audit chain's lock the registry
+    /// cannot control.
+    pub tool_write_max_pending: usize,
+    /// How long one registration may wait (for a lock, or for a statement) inside the caller's transaction. The registry bounds it itself
+    /// (`lock_timeout` and `statement_timeout` for the statements of the registration, restored afterwards), because the transaction is
+    /// the caller's and carries no timeout of the registry's. A registration that waits longer is dropped and answers `Unavailable`.
+    pub tool_write_timeout: Duration,
+    /// How often the leased job `registry-tool-write-matcher` looks for observations that a registration committed after them can
+    /// explain (the late commit), and drops the registrations that expired. A late commit is attributed within this interval.
+    pub tool_write_match_interval: Duration,
+    /// Swimlanes with pending registrations that one run of the matcher looks at; the rest wait for the next run.
+    pub tool_write_match_lanes: usize,
+    /// Expired registrations deleted by one statement of the sweep (the sweep makes at most ten of them in a run).
+    pub tool_write_sweep_batch: usize,
+
     // ---------------------------------------------------------------------------------------------- reads (T6)
     /// How recently a replica must have renewed an agent's connection row for the swimlane list to say "connected". The gateway's
     /// own rule is the same shape: a row that was not renewed for this long counts as not connected.
@@ -322,6 +341,11 @@ impl Default for RegistryConfig {
             pickup_full_interval: Duration::from_secs(10 * 60),
             pickup_sweep_lanes: 1_000,
             pickup_max_files: 20_000,
+            tool_write_max_pending: 10_000,
+            tool_write_timeout: Duration::from_secs(2),
+            tool_write_match_interval: Duration::from_secs(5),
+            tool_write_match_lanes: 200,
+            tool_write_sweep_batch: 1_000,
             agent_live_window: Duration::from_secs(30),
             read_pool_threads: 2,
             row_cache_bytes: 96 * 1024 * 1024,
@@ -595,6 +619,31 @@ impl RegistryConfig {
         }
         within("pickup_sweep_lanes", self.pickup_sweep_lanes as u64, 1, 100_000)?;
         within("pickup_max_files", self.pickup_max_files as u64, 100, 200_000)?;
+        within(
+            "tool_write_max_pending",
+            self.tool_write_max_pending as u64,
+            1,
+            1_000_000,
+        )?;
+        within("tool_write_timeout", millis(self.tool_write_timeout), 100, 30_000)?;
+        within(
+            "tool_write_match_interval",
+            millis(self.tool_write_match_interval),
+            1_000,
+            3600 * 1000,
+        )?;
+        within(
+            "tool_write_match_lanes",
+            self.tool_write_match_lanes as u64,
+            1,
+            100_000,
+        )?;
+        within(
+            "tool_write_sweep_batch",
+            self.tool_write_sweep_batch as u64,
+            1,
+            100_000,
+        )?;
         within(
             "agent_live_window",
             millis(self.agent_live_window),
@@ -962,6 +1011,59 @@ mod tests {
         out_of_range("pickup_max_files", |c| {
             c.pickup_max_files = 200_001;
         });
+    }
+
+    #[test]
+    fn the_tool_write_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(
+            c.tool_write_max_pending, 10_000,
+            "the bound of the queue of registrations that no observation has matched (the port's fake holds the same figure)"
+        );
+        assert_eq!(
+            c.tool_write_timeout,
+            Duration::from_secs(2),
+            "a registration waits this long inside the caller's transaction, and no longer"
+        );
+        assert_eq!(c.tool_write_match_interval, Duration::from_secs(5));
+        assert_eq!(c.tool_write_match_lanes, 200);
+        assert_eq!(c.tool_write_sweep_batch, 1_000);
+        out_of_range("tool_write_max_pending", |c| {
+            c.tool_write_max_pending = 0;
+        });
+        out_of_range("tool_write_max_pending", |c| {
+            c.tool_write_max_pending = 1_000_001;
+        });
+        out_of_range("tool_write_timeout", |c| {
+            c.tool_write_timeout = Duration::from_millis(99);
+        });
+        out_of_range("tool_write_timeout", |c| {
+            c.tool_write_timeout = Duration::from_secs(31);
+        });
+        out_of_range("tool_write_match_interval", |c| {
+            c.tool_write_match_interval = Duration::from_millis(999);
+        });
+        out_of_range("tool_write_match_interval", |c| {
+            c.tool_write_match_interval = Duration::from_secs(3601);
+        });
+        out_of_range("tool_write_match_lanes", |c| {
+            c.tool_write_match_lanes = 0;
+        });
+        out_of_range("tool_write_match_lanes", |c| {
+            c.tool_write_match_lanes = 100_001;
+        });
+        out_of_range("tool_write_sweep_batch", |c| {
+            c.tool_write_sweep_batch = 0;
+        });
+        out_of_range("tool_write_sweep_batch", |c| {
+            c.tool_write_sweep_batch = 100_001;
+        });
+        // The smallest bound the conformance suite runs with is accepted.
+        let small = RegistryConfig {
+            tool_write_max_pending: 2,
+            ..RegistryConfig::default()
+        };
+        assert!(small.validate().is_ok());
     }
 
     #[test]

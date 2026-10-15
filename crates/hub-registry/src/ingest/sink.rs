@@ -11,7 +11,6 @@ use sqlx::PgPool;
 
 use super::cluster::ClusterApplier;
 use super::delta::{Accepted, DeltaAssembler};
-use super::tool_writes::ToolWrites;
 use crate::clock::Clock;
 use crate::config::{ConfigError, RegistryConfig};
 use crate::db::Db;
@@ -139,11 +138,6 @@ impl AgentIngest {
                 indexer: OnceLock::new(),
             }),
         })
-    }
-
-    /// The seam with prompt 06 (A10): it registers a tool write in its own transaction before it sends `WriteFile`.
-    pub fn tool_writes(&self) -> ToolWrites {
-        ToolWrites::new(Arc::clone(&self.inner.bus), Arc::clone(&self.inner.clock))
     }
 
     /// Tell the settings index about every structured blob that becomes the current version of a file (T2). Once: a second call is

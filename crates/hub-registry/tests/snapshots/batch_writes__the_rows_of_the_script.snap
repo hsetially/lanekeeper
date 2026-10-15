@@ -34,8 +34,7 @@ outbox id=16 event={"v": 1, "event": {"hash": "383da0e6dbbd149f79176980ef1704e94
 outbox id=17 event={"v": 1, "event": {"hash": "72b329fd3587f53a8df9d2edfe55ce73169544dd5af1597819c4c09a52d7f3ba", "path": "svc/a.yml", "type": "file_observed", "source": "sync", "swimlane": "sit1"}}
 outbox id=18 event={"v": 1, "event": {"hash": "72b329fd3587f53a8df9d2edfe55ce73169544dd5af1597819c4c09a52d7f3ba", "path": "svc/b.yml", "type": "file_observed", "source": "sync", "swimlane": "sit1"}}
 outbox id=19 event={"v": 1, "event": {"hash": "80b3a6e4477c92cbf309dfd563d1bb344a4cbea9f4c5467dac39769481ba603d", "path": "svc/c.yml", "type": "file_observed", "source": "tool_write", "swimlane": "sit1"}}
-outbox id=20 event={"v": 1, "event": {"hash": "80b3a6e4477c92cbf309dfd563d1bb344a4cbea9f4c5467dac39769481ba603d", "path": "svc/c.yml", "type": "file_observed", "source": "scan", "swimlane": "sit1"}}
-outbox id=21 event={"v": 1, "event": {"hash": "d6e96c8109f564c6e123e0d12d00cf23b47cae17f13b2e74bfe81cb433b21c06", "path": "svc/d.yml", "type": "file_observed", "source": "scan", "swimlane": "sit1"}}
-outbox id=22 event={"v": 1, "event": {"hash": "5aae61598c83b732c5da7d39b9ad167bdaba835fd12c9886520b509e462d2d17", "path": "svc/e.yml", "type": "file_observed", "source": "scan", "swimlane": "sit1"}}
-outbox id=23 event={"v": 1, "event": {"hash": "f743a0dfc0bb4aa5165529095c55215404441cc9c472cd937b95ab10ebf69ab4", "path": "other/h.yml", "type": "file_observed", "source": "scan", "swimlane": "sit1"}}
-outbox id=24 event={"v": 1, "event": {"hash": "f743a0dfc0bb4aa5165529095c55215404441cc9c472cd937b95ab10ebf69ab4", "path": "svc/f.yml", "type": "file_observed", "source": "scan", "swimlane": "sit1"}}
+outbox id=20 event={"v": 1, "event": {"hash": "d6e96c8109f564c6e123e0d12d00cf23b47cae17f13b2e74bfe81cb433b21c06", "path": "svc/d.yml", "type": "file_observed", "source": "scan", "swimlane": "sit1"}}
+outbox id=21 event={"v": 1, "event": {"hash": "5aae61598c83b732c5da7d39b9ad167bdaba835fd12c9886520b509e462d2d17", "path": "svc/e.yml", "type": "file_observed", "source": "scan", "swimlane": "sit1"}}
+outbox id=22 event={"v": 1, "event": {"hash": "f743a0dfc0bb4aa5165529095c55215404441cc9c472cd937b95ab10ebf69ab4", "path": "other/h.yml", "type": "file_observed", "source": "scan", "swimlane": "sit1"}}
+outbox id=23 event={"v": 1, "event": {"hash": "f743a0dfc0bb4aa5165529095c55215404441cc9c472cd937b95ab10ebf69ab4", "path": "svc/f.yml", "type": "file_observed", "source": "scan", "swimlane": "sit1"}}

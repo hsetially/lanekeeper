@@ -10,11 +10,11 @@
 //! - A version observed *before* the stored one is history: it is recorded and does not move the state back.
 //! - A removal of a file that is not there changes nothing; a removal is ordered right after what it removes (a removal
 //!   carries no time of its own).
-//! - A hash a registered tool write explains is not out of band. A change observed while a sync Job was running (the delta says
-//!   so, or a window of `sync_windows` was open) is attributed to the Job. The first inventory of a swimlane is not a change.
-//!   Everything else is out of band: it is audited, with the author unknown until the sentinel (T7) says otherwise.
-
-use std::collections::HashMap;
+//! - A change that a registered tool write explains is not out of band: the oldest registration that matches it (a hash registration
+//!   of exactly that hash, or a delete registration of the version a deletion deleted) consumes it, and the registrations it contradicts
+//!   are dropped ([`crate::tool_writes::matching`]). A change observed while a sync Job was running (the delta says so, or a window of
+//!   `sync_windows` was open) is attributed to the Job. The first inventory of a swimlane is not a change. Everything else is out of
+//!   band: it is audited, with the author unknown until the sentinel (T7) says otherwise.
 
 use domain::{
     Actor, Attribution, AttributionSource, Confidence, ContentHash, Evidence, JobRef, NfsPath,
@@ -23,11 +23,8 @@ use domain::{
 
 use super::validate::StagedEntry;
 use crate::sync::overwrite::{Previous, previous_of};
-
-/// A tool write whose observation is older than the state it would explain by more than this does not explain it. Clocks of the
-/// hub (tool writes) and the agent (scans) differ a little, and a scan that sees the old content a moment before a write is
-/// followed by one that sees the new.
-pub(crate) const TOOL_WRITE_SLACK_MS: i64 = 60_000;
+use crate::tool_writes::Pending;
+use crate::tool_writes::matching::{Book, PathRegistrations};
 
 /// What the hub stores for a path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,13 +42,6 @@ pub(crate) struct Stored {
     /// (the C7 context, [`crate::sync::overwrite`]).
     pub state: Option<domain::DriftState>,
     pub drift_hash: Option<ContentHash>,
-}
-
-/// A registered tool write of a hash (A10), as the database has it.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ToolWrite {
-    pub observed_at_ms: i64,
-    pub actor: Option<Actor>,
 }
 
 /// A sync Job's window, from `sync_windows`.
@@ -85,8 +75,8 @@ pub(crate) struct PlanCtx<'a> {
     /// The newest time in the logical delta; a removal is placed at this time, or right after the state it removes.
     pub delta_time_ms: i64,
     pub windows: &'a [Window],
-    /// Tool writes of this path, by the hash they wrote (`None`: a deletion).
-    pub tool_writes: &'a HashMap<Option<ContentHash>, ToolWrite>,
+    /// The tool-write registrations of this path that have not expired, and the state of the path as its observations have it.
+    pub registrations: &'a PathRegistrations,
 }
 
 /// What the path was before a version of it.
@@ -121,9 +111,18 @@ pub(crate) struct Candidate {
     pub before: Option<ContentHash>,
     /// What a sync job's version replaced, for C7 ([`crate::sync::overwrite::previous_of`]). Stored on the observation.
     pub previous: Option<Previous>,
+    /// The registration that explains this observation: consumed (deleted) when the observation is recorded.
+    pub consumed: Option<i64>,
+    /// The registrations this observation contradicts: dropped when it is recorded.
+    pub invalidated: Vec<i64>,
 }
 
 impl Candidate {
+    /// The registrations that go when this observation is recorded: the one it consumed and the ones it contradicts.
+    pub(crate) fn drops(&self) -> impl Iterator<Item = i64> + '_ {
+        self.consumed.into_iter().chain(self.invalidated.iter().copied())
+    }
+
     /// The path had no state before this version.
     pub(crate) fn first_sight(&self) -> bool {
         self.origin != Origin::Known
@@ -167,6 +166,8 @@ pub(crate) fn plan_path(
     let mut cur_denied = stored.is_some_and(|s| s.denied);
     let mut cur_at = stored.map_or(-1, |s| s.observed_at_ms);
     let mut plan = PathPlan::default();
+    // The registrations of the path, which each observation consumes or contradicts in the order the observations are recorded.
+    let mut book = Book::new(ctx.registrations);
 
     for version in files.into_iter().chain(removals) {
         match version {
@@ -189,7 +190,8 @@ pub(crate) fn plan_path(
                 } else {
                     Origin::Known
                 };
-                let explained = explained_by_tool_write(ctx, Some(entry.hash), cur_at);
+                let seen = book.hash_observed(entry.hash);
+                let explained = seen.explained;
                 let (attribution, source, job) = attribute(explained, during_job.as_ref(), ctx.windows, at);
                 let previous = moves_state
                     .then(|| previous_of(stored, cur_hash, &attribution))
@@ -209,6 +211,8 @@ pub(crate) fn plan_path(
                     origin,
                     before: cur_hash,
                     previous,
+                    consumed: seen.explained.map(|r| r.id),
+                    invalidated: seen.invalidated,
                 });
                 if moves_state {
                     cur_hash = Some(entry.hash);
@@ -229,7 +233,8 @@ pub(crate) fn plan_path(
                     continue;
                 }
                 let at = ctx.delta_time_ms.max(cur_at);
-                let explained = explained_by_tool_write(ctx, None, cur_at);
+                let seen = book.deletion_observed();
+                let explained = seen.explained;
                 let (attribution, source, job) = attribute(explained, None, ctx.windows, at);
                 plan.candidates.push(Candidate {
                     path: path.clone(),
@@ -245,6 +250,8 @@ pub(crate) fn plan_path(
                     before: Some(before),
                     // A sync does not delete (Q3): a removal replaces no content that a sync could have overwritten.
                     previous: None,
+                    consumed: seen.explained.map(|r| r.id),
+                    invalidated: seen.invalidated,
                 });
                 cur_hash = None;
                 cur_at = at;
@@ -254,20 +261,10 @@ pub(crate) fn plan_path(
     plan
 }
 
-fn explained_by_tool_write<'a>(
-    ctx: &'a PlanCtx<'_>,
-    hash: Option<ContentHash>,
-    state_observed_at_ms: i64,
-) -> Option<&'a ToolWrite> {
-    ctx.tool_writes
-        .get(&hash)
-        .filter(|w| w.observed_at_ms >= state_observed_at_ms.saturating_sub(TOOL_WRITE_SLACK_MS))
-}
-
 /// The attribution a change gets when it is first seen (D73, steps 1 and 3). The sentinel (T7) upgrades it later; it is never
 /// downgraded.
 fn attribute(
-    tool_write: Option<&ToolWrite>,
+    tool_write: Option<&Pending>,
     during_job: Option<&JobRef>,
     windows: &[Window],
     at_ms: i64,
@@ -277,14 +274,16 @@ fn attribute(
         ..Evidence::default()
     };
     if let Some(w) = tool_write {
+        // A registration that explains the change makes it the tool's: the user is the actor, and the source is `tool_write`, whatever
+        // the scan or a sync window would have said (certain beats high).
         return (
             Attribution {
                 source: AttributionSource::ToolWrite,
                 confidence: Confidence::Certain,
-                actor: w.actor.clone(),
+                actor: Some(Actor::User { user: w.user.clone() }),
                 evidence,
             },
-            ObservationSource::Scan,
+            ObservationSource::ToolWrite,
             None,
         );
     }
@@ -316,7 +315,7 @@ fn attribute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::{FileClass, UserId};
+    use domain::FileClass;
     use ports::content_hash;
 
     fn h(s: &str) -> ContentHash {
@@ -376,21 +375,22 @@ mod tests {
         v
     }
 
-    fn ctx<'a>(
-        initial: bool,
-        windows: &'a [Window],
-        tool_writes: &'a HashMap<Option<ContentHash>, ToolWrite>,
-    ) -> PlanCtx<'a> {
+    fn ctx<'a>(initial: bool, windows: &'a [Window], registrations: &'a PathRegistrations) -> PlanCtx<'a> {
         PlanCtx {
             initial_inventory: initial,
             delta_time_ms: 1_000,
             windows,
-            tool_writes,
+            registrations,
         }
     }
 
     fn plan(stored: Option<&Stored>, versions: &[Version], initial: bool) -> PathPlan {
-        plan_path(&path(), stored, versions, &ctx(initial, &[], &HashMap::new()))
+        plan_path(
+            &path(),
+            stored,
+            versions,
+            &ctx(initial, &[], &PathRegistrations::default()),
+        )
     }
 
     #[test]
@@ -444,45 +444,226 @@ mod tests {
         assert_eq!(later.candidates[0].origin, Origin::New);
     }
 
+    fn user(n: u32) -> domain::UserId {
+        domain::UserId::new(
+            domain::Guid::parse("72f988bf-86f1-41af-91ab-2d7cd011db47").unwrap(),
+            domain::Guid::parse(&format!("00000000-0000-4000-8000-{n:012x}")).unwrap(),
+        )
+    }
+
+    fn registered(id: i64, hash: &str) -> Pending {
+        Pending {
+            id,
+            hash: h(hash),
+            is_delete: false,
+            user: user(u32::try_from(id).unwrap()),
+            request_id: domain::RequestId::parse(&format!("req-{id}")).unwrap(),
+            registered_at_ms: 0,
+        }
+    }
+
+    fn registered_delete(id: i64, deleted: &str) -> Pending {
+        Pending {
+            is_delete: true,
+            ..registered(id, deleted)
+        }
+    }
+
+    fn registrations(pending: Vec<Pending>, last_hash: Option<&str>) -> PathRegistrations {
+        PathRegistrations {
+            pending,
+            last_hash: last_hash.map(h),
+        }
+    }
+
     #[test]
     fn a_registered_tool_write_explains_the_hash() {
-        let user = domain::UserId::new(
-            domain::Guid::parse("11111111-1111-1111-1111-111111111111").unwrap(),
-            domain::Guid::parse("22222222-2222-2222-2222-222222222222").unwrap(),
-        );
-        let _: &UserId = &user;
-        let mut writes = HashMap::new();
-        writes.insert(
-            Some(h("b")),
-            ToolWrite {
-                observed_at_ms: 25,
-                actor: Some(Actor::User { user }),
-            },
-        );
-        let c = ctx(false, &[], &writes);
+        let regs = registrations(vec![registered(3, "b")], None);
+        let c = ctx(false, &[], &regs);
         let p = plan_path(&path(), Some(&stored(Some("a"), 10)), &[file("b", 30)], &c);
         let cand = &p.candidates[0];
         assert!(!cand.out_of_band);
         assert_eq!(cand.attribution.source, AttributionSource::ToolWrite);
         assert_eq!(cand.attribution.confidence, Confidence::Certain);
-        assert!(matches!(cand.attribution.actor, Some(Actor::User { .. })));
-        assert_eq!(cand.source, ObservationSource::Scan);
+        assert_eq!(
+            cand.attribution.actor,
+            Some(Actor::User { user: user(3) }),
+            "the registration's user is the actor"
+        );
+        assert_eq!(
+            cand.source,
+            ObservationSource::ToolWrite,
+            "the observation's source is tool_write"
+        );
+        assert_eq!(
+            cand.consumed,
+            Some(3),
+            "the registration is consumed when the observation is recorded"
+        );
+        assert!(cand.invalidated.is_empty());
+        assert_eq!(cand.drops().collect::<Vec<_>>(), vec![3]);
     }
 
     #[test]
-    fn an_old_tool_write_does_not_explain_a_later_change_to_the_same_hash() {
-        // a -> (tool write) b -> (out of band) a -> (out of band) b: the last b is not the tool write's.
-        let mut writes = HashMap::new();
-        writes.insert(
-            Some(h("b")),
-            ToolWrite {
-                observed_at_ms: 1_000,
-                actor: None,
-            },
+    fn a_registration_of_another_hash_explains_nothing_and_a_change_nobody_registered_is_out_of_band() {
+        let regs = registrations(vec![registered(3, "zzz")], None);
+        let p = plan_path(
+            &path(),
+            Some(&stored(Some("a"), 10)),
+            &[file("b", 30)],
+            &ctx(false, &[], &regs),
         );
-        let c = ctx(false, &[], &writes);
-        let state = stored(Some("a"), 1_000_000);
-        let p = plan_path(&path(), Some(&state), &[file("b", 1_000_100)], &c);
+        let cand = &p.candidates[0];
+        assert!(cand.out_of_band && cand.consumed.is_none());
+        assert_eq!(cand.attribution.source, AttributionSource::Unknown);
+        assert_eq!(
+            cand.invalidated,
+            vec![3],
+            "another hash replaced the state the registration was for"
+        );
+    }
+
+    #[test]
+    fn the_oldest_registration_explains_the_first_observation_and_the_next_the_second() {
+        // Two requests wrote b (or: the file went b, a, b), registered in the order 4, 2.
+        let regs = registrations(vec![registered(4, "b"), registered(2, "b")], None);
+        let p = plan_path(
+            &path(),
+            Some(&stored(Some("a"), 5)),
+            &[file("b", 10), file("b", 30)],
+            &ctx(false, &[], &regs),
+        );
+        // b, then b again: the second is the same version as the first (equal to the state), so only one observation.
+        assert_eq!(p.candidates.len(), 1);
+        assert_eq!(p.candidates[0].consumed, Some(2), "the lowest id");
+
+        let p = plan_path(
+            &path(),
+            Some(&stored(Some("a"), 5)),
+            &[file("b", 10), file("a", 20), file("b", 30)],
+            &ctx(false, &[], &regs),
+        );
+        let consumed: Vec<_> = p.candidates.iter().map(|c| c.consumed).collect();
+        assert_eq!(
+            consumed,
+            vec![Some(2), None, None],
+            "the second registration was dropped by the observation of a (another hash replaced the state), so the last b is not the tool's"
+        );
+        assert_eq!(p.candidates[1].invalidated, vec![4]);
+    }
+
+    #[test]
+    fn a_tool_write_explains_the_change_even_inside_a_sync_window() {
+        // Certain beats high: the registration is what the change is attributed to, and the observation is not a sync's.
+        let job = JobRef::new("sync-sit1", "uid-1").unwrap();
+        let windows = [Window {
+            job,
+            opened_ms: 0,
+            closed_ms: None,
+        }];
+        let regs = registrations(vec![registered(1, "b")], None);
+        let p = plan_path(
+            &path(),
+            Some(&stored(Some("a"), 10)),
+            &[file("b", 20)],
+            &ctx(false, &windows, &regs),
+        );
+        let c = &p.candidates[0];
+        assert_eq!(c.attribution.source, AttributionSource::ToolWrite);
+        assert_eq!(c.source, ObservationSource::ToolWrite);
+        assert!(c.during_job.is_none());
+    }
+
+    #[test]
+    fn a_deletion_is_explained_by_a_delete_registration_of_the_version_it_deleted() {
+        let regs = registrations(vec![registered_delete(7, "a")], Some("a"));
+        let p = plan_path(
+            &path(),
+            Some(&stored(Some("a"), 10)),
+            &[Version::Removal],
+            &ctx(false, &[], &regs),
+        );
+        let c = &p.candidates[0];
+        assert_eq!(c.hash, None);
+        assert!(!c.out_of_band);
+        assert_eq!(c.attribution.source, AttributionSource::ToolWrite);
+        assert_eq!(c.attribution.actor, Some(Actor::User { user: user(7) }));
+        assert_eq!(c.source, ObservationSource::ToolWrite);
+        assert_eq!(c.consumed, Some(7));
+        // A deletion of another version: the state before it, as the observations have it, was b.
+        let regs = registrations(vec![registered_delete(7, "a")], Some("b"));
+        let p = plan_path(
+            &path(),
+            Some(&stored(Some("b"), 10)),
+            &[Version::Removal],
+            &ctx(false, &[], &regs),
+        );
+        assert!(
+            p.candidates[0].out_of_band,
+            "a deletion of another version is not the tool's"
+        );
+        assert_eq!(p.candidates[0].consumed, None);
+        assert!(p.candidates[0].invalidated.is_empty());
+    }
+
+    #[test]
+    fn the_state_before_a_deletion_includes_the_versions_of_the_same_delta() {
+        // The delta carries a new version b and then the removal: the state before the removal is b, whatever the database held, so a
+        // delete registration of b explains it and one of a does not.
+        let regs = registrations(
+            vec![registered_delete(1, "a"), registered_delete(2, "b")],
+            Some("a"),
+        );
+        let p = plan_path(
+            &path(),
+            Some(&stored(Some("a"), 5)),
+            &[file("b", 10), Version::Removal],
+            &ctx(false, &[], &regs),
+        );
+        assert_eq!(p.candidates.len(), 2);
+        assert_eq!(
+            p.candidates[0].invalidated,
+            vec![1, 2],
+            "the file came back as b: both delete registrations were for a disappearance that has not happened yet"
+        );
+        assert_eq!(
+            p.candidates[1].consumed, None,
+            "so the removal that follows is nobody's"
+        );
+    }
+
+    #[test]
+    fn an_observation_that_a_delete_registration_does_not_contradict_leaves_it() {
+        // A deletion of version b leaves the delete registration for a pending: the tool's delete of a may still be reported.
+        let regs = registrations(vec![registered_delete(1, "a")], Some("b"));
+        let p = plan_path(
+            &path(),
+            Some(&stored(Some("b"), 5)),
+            &[Version::Removal],
+            &ctx(false, &[], &regs),
+        );
+        assert!(p.candidates[0].drops().next().is_none());
+    }
+
+    #[test]
+    fn the_first_inventory_is_explained_by_a_registration_too_and_stays_out_of_the_audit() {
+        let regs = registrations(vec![registered(1, "a")], None);
+        let p = plan_path(&path(), None, &[file("a", 10)], &ctx(true, &[], &regs));
+        let c = &p.candidates[0];
+        assert!(c.initial() && !c.out_of_band);
+        assert_eq!(c.attribution.source, AttributionSource::ToolWrite);
+    }
+
+    #[test]
+    fn an_old_registration_is_not_in_the_plan_at_all() {
+        // Expired registrations are not read (the statement filters them by the injected clock), so the plan never sees one: an empty
+        // book explains nothing.
+        let p = plan_path(
+            &path(),
+            Some(&stored(Some("a"), 1_000_000)),
+            &[file("b", 1_000_100)],
+            &ctx(false, &[], &PathRegistrations::default()),
+        );
         assert!(p.candidates[0].out_of_band);
     }
 
@@ -506,7 +687,7 @@ mod tests {
             opened_ms: 15,
             closed_ms: Some(30),
         }];
-        let none = HashMap::new();
+        let none = PathRegistrations::default();
         let c2 = ctx(false, &windows, &none);
         let inside = plan_path(&path(), Some(&stored(Some("a"), 10)), &[file("b", 20)], &c2);
         assert_eq!(
@@ -530,7 +711,7 @@ mod tests {
             &[Version::Removal],
             &PlanCtx {
                 delta_time_ms: 0,
-                ..ctx(false, &[], &HashMap::new())
+                ..ctx(false, &[], &PathRegistrations::default())
             },
         );
         let c = &p.candidates[0];
@@ -544,7 +725,7 @@ mod tests {
             &[Version::Removal],
             &PlanCtx {
                 delta_time_ms: 900,
-                ..ctx(false, &[], &HashMap::new())
+                ..ctx(false, &[], &PathRegistrations::default())
             },
         );
         assert_eq!(later.candidates[0].observed_at_ms, 900);
@@ -559,7 +740,7 @@ mod tests {
             &[Version::Removal],
             &PlanCtx {
                 delta_time_ms: 900,
-                ..ctx(false, &[], &HashMap::new())
+                ..ctx(false, &[], &PathRegistrations::default())
             },
         );
         assert!(p.candidates.is_empty());

@@ -19,9 +19,9 @@
 //!
 //! # One chunk
 //!
-//! Lock the swimlane, read the stored state, the tool writes and the sync windows of the chunk's paths, decide what becomes of
-//! each path ([`super::plan`]), insert the observations, upsert `file_state`, note new folders, write the outbox events, write the
-//! audit events, commit.
+//! Lock the swimlane, read the stored state, the tool-write registrations and the sync windows of the chunk's paths, decide what becomes of
+//! each path ([`super::plan`]), insert the observations, drop the registrations they consumed or contradicted, upsert `file_state`, note
+//! new folders, write the outbox events, write the audit events, commit.
 //! The audit events come last among the writes because `AuditLog::record` and `record_many` hold the audit chain's lock until the
 //! transaction ends (A12): everything else is done by then, so the lock is held for the audit insert and the commit only.
 //!
@@ -40,18 +40,20 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use domain::{
-    Actor, AttributionSource, ContentHash, DomainEvent, DriftState, FileClass, JobRef, NfsPath,
-    ObservationSource, SwimlaneId, Timestamp,
+    AttributionSource, ContentHash, DomainEvent, DriftState, FileClass, JobRef, NfsPath, SwimlaneId,
+    Timestamp,
 };
 use ports::{AuditAction, AuditActor, AuditEvent, AuditVia, Tx};
 
 use super::Inner;
-use super::plan::{Candidate, PathPlan, PlanCtx, Stored, ToolWrite, Version, Window, plan_path};
+use super::plan::{Candidate, PathPlan, PlanCtx, Stored, Version, Window, plan_path};
 use super::rules::{LaneRules, Names};
 use super::validate::{StagedGap, StagedPart};
 use crate::db::{Txn, ms, ts};
 use crate::error::RegistryError;
-use crate::metrics::VersionResult;
+use crate::metrics::{ToolWriteResult, VersionResult};
+use crate::tool_writes::matching::PathRegistrations;
+use crate::tool_writes::{DROP_SQL, MAX_READ, PENDING_OF_PATHS_SQL, PendingRow, TTL_MS, pending_of};
 
 /// Folder rows and event batches stay small whatever a delta holds.
 const MAX_WINDOWS: i64 = 100;
@@ -135,8 +137,6 @@ type StoredRow = (
     String,
     Option<Vec<u8>>,
 );
-/// A row of `file_observations` of source `tool_write`, as `tool_writes` reads it.
-type ToolWriteRow = (String, Option<Vec<u8>>, i64, Option<serde_json::Value>);
 /// The key of an observation: its path, its time and its hash (`None` for a removal).
 type ObservationKey = (String, i64, Option<ContentHash>);
 
@@ -408,6 +408,7 @@ impl Inner {
                 items,
                 scope.initial_inventory,
                 scope.delta_time_ms,
+                now_ms,
             )
             .await?;
         let mut report = ApplyReport {
@@ -416,7 +417,7 @@ impl Inner {
             ..ApplyReport::default()
         };
         let ids = self
-            .record(&mut tx, swimlane, &plans, &stored, &mut report)
+            .record(&mut tx, swimlane, &plans, &stored, &mut report, now_ms)
             .await?;
         let moves = moves_of(&plans, &ids, &mut report)?;
         if !moves.is_empty() {
@@ -462,8 +463,8 @@ impl Inner {
         }
     }
 
-    /// Read what the chunk's decisions depend on (the stored state of its paths, the tool writes, the sync windows) and decide
-    /// what becomes of the versions of each path.
+    /// Read what the chunk's decisions depend on (the stored state of its paths, the tool-write registrations, the sync windows) and
+    /// decide what becomes of the versions of each path.
     async fn decide<'p>(
         &self,
         tx: &mut Txn,
@@ -471,12 +472,13 @@ impl Inner {
         items: &[(&'p NfsPath, &[Version])],
         initial_inventory: bool,
         delta_time_ms: i64,
+        now_ms: i64,
     ) -> Result<Decided<'p>, RegistryError> {
         let path_texts: Vec<String> = items.iter().map(|(p, _)| p.as_str().to_owned()).collect();
         let stored = self.stored(tx, swimlane, &path_texts).await?;
-        let tool_writes = self.tool_writes(tx, swimlane, &path_texts).await?;
+        let registrations = self.registrations(tx, swimlane, &path_texts, now_ms).await?;
         let windows = self.windows(tx, swimlane).await?;
-        let no_writes = HashMap::new();
+        let no_registrations = PathRegistrations::default();
         let plans = items
             .iter()
             .map(|(path, versions)| {
@@ -484,7 +486,7 @@ impl Inner {
                     initial_inventory,
                     delta_time_ms,
                     windows: &windows,
-                    tool_writes: tool_writes.get(*path).unwrap_or(&no_writes),
+                    registrations: registrations.get(*path).unwrap_or(&no_registrations),
                 };
                 (*path, plan_path(path, stored.get(*path), versions, &ctx))
             })
@@ -501,6 +503,7 @@ impl Inner {
         plans: &[(&NfsPath, PathPlan)],
         stored: &HashMap<NfsPath, Stored>,
         report: &mut ApplyReport,
+        now_ms: i64,
     ) -> Result<HashMap<ObservationKey, i64>, RegistryError> {
         // De-duplicated by their key, so that one INSERT never names a row twice.
         let mut rows: Vec<&Candidate> = Vec::new();
@@ -512,7 +515,13 @@ impl Inner {
                 }
             }
         }
-        let mut ids = self.insert_observations(tx, swimlane, &rows, stored).await?;
+        let mut ids = self
+            .insert_observations(tx, swimlane, &rows, stored, now_ms)
+            .await?;
+        // The registrations that the observations just recorded consumed or contradicted are dropped in the same transaction (not
+        // audited: the write's own audit event is). A version that an earlier delivery recorded already (a replay) drops nothing, and
+        // its registration stays for the matcher to attribute the observation that is there.
+        self.drop_registrations(tx, swimlane, &rows, &ids).await?;
         // An observation an earlier delivery recorded is already in the history. That does not make the version old news: the state
         // moves by what the plan says about the *stored* state (a removal may have taken the file away since), so a replay that has
         // nothing to change still changes nothing, and one that has something to restore restores it.
@@ -619,11 +628,8 @@ impl Inner {
                     path: last.path.clone(),
                     // A removal has no hash: the event names the version that went away.
                     hash: last.hash.or(m.first.before).ok_or(RegistryError::Corrupt)?,
-                    source: if last.source == ObservationSource::Sync {
-                        ObservationSource::Sync
-                    } else {
-                        ObservationSource::Scan
-                    },
+                    // The observation's own source: a scan, a sync's, or a tool write that a registration explained.
+                    source: last.source,
                 })
             })
             .collect::<Result<Vec<_>, RegistryError>>()?;
@@ -672,43 +678,77 @@ impl Inner {
         Ok(out)
     }
 
-    /// The tool writes of these paths (A10), the newest per hash.
-    async fn tool_writes(
+    /// The tool-write registrations of these paths that have not expired by the registry's clock (A10): one statement for the chunk,
+    /// served by the unique key of the table. For a path that has a delete registration it also reads the state of the path as its
+    /// observations have it, which is what a deletion is compared with.
+    async fn registrations(
         &self,
         tx: &mut Txn,
         swimlane: &SwimlaneId,
         paths: &[String],
-    ) -> Result<HashMap<NfsPath, HashMap<Option<ContentHash>, ToolWrite>>, RegistryError> {
-        let sql = format!(
-            "SELECT DISTINCT ON (path, hash) path, hash::bytea, {}, attribution_actor \
-             FROM file_observations \
-             WHERE swimlane_id = $1 AND source = 'tool_write' AND path = ANY($2::text[]) \
-             ORDER BY path, hash, observed_at DESC",
-            ms("observed_at")
-        );
-        let rows: Vec<ToolWriteRow> = self
+        now_ms: i64,
+    ) -> Result<HashMap<NfsPath, PathRegistrations>, RegistryError> {
+        let rows: Vec<PendingRow> = self
             .db
             .run(
-                "tool_writes",
-                sqlx::query_as(&sql)
+                "tool_write_pending",
+                sqlx::query_as(PENDING_OF_PATHS_SQL)
                     .bind(swimlane.as_str())
                     .bind(paths)
+                    .bind(now_ms.saturating_sub(TTL_MS))
+                    .bind(MAX_READ)
+                    .bind(i64::MAX)
                     .fetch_all(&mut **tx),
             )
             .await?;
-        let mut out: HashMap<NfsPath, HashMap<Option<ContentHash>, ToolWrite>> = HashMap::new();
-        for (path, hash, observed_at_ms, actor) in rows {
-            let path = NfsPath::parse(&path).map_err(|_| RegistryError::Corrupt)?;
-            let actor: Option<Actor> = actor.and_then(|v| serde_json::from_value(v).ok());
-            out.entry(path).or_default().insert(
-                opt_hash(hash)?,
-                ToolWrite {
-                    observed_at_ms,
-                    actor,
-                },
-            );
+        let mut out: HashMap<NfsPath, PathRegistrations> = HashMap::new();
+        let mut unreadable = 0_u64;
+        for row in rows {
+            let Some((path, registration, before)) = pending_of(row) else {
+                unreadable += 1;
+                continue;
+            };
+            let entry = out.entry(path).or_default();
+            if registration.is_delete {
+                entry.last_hash = before;
+            }
+            entry.pending.push(registration);
         }
+        self.metrics.tool_write(ToolWriteResult::Unreadable, unreadable);
         Ok(out)
+    }
+
+    /// Delete the registrations that the new observations consumed or contradicted.
+    async fn drop_registrations(
+        &self,
+        tx: &mut Txn,
+        swimlane: &SwimlaneId,
+        rows: &[&Candidate],
+        inserted: &HashMap<ObservationKey, i64>,
+    ) -> Result<(), RegistryError> {
+        let mut gone: Vec<i64> = Vec::new();
+        let (mut matched, mut invalidated) = (0_u64, 0_u64);
+        for c in rows.iter().filter(|c| inserted.contains_key(&key_of(&c.path, c))) {
+            matched += u64::from(c.consumed.is_some());
+            invalidated += u64::try_from(c.invalidated.len()).unwrap_or(u64::MAX);
+            gone.extend(c.drops());
+        }
+        if gone.is_empty() {
+            return Ok(());
+        }
+        self.db
+            .run(
+                "tool_write_drop",
+                sqlx::query(DROP_SQL)
+                    .bind(swimlane.as_str())
+                    .bind(&gone)
+                    .execute(&mut **tx),
+            )
+            .await?;
+        self.metrics
+            .tool_write(ToolWriteResult::MatchedOnArrival, matched);
+        self.metrics.tool_write(ToolWriteResult::Invalidated, invalidated);
+        Ok(())
     }
 
     /// Insert the observations; returns the ids of those that were new, by their key.
@@ -719,6 +759,7 @@ impl Inner {
         swimlane: &SwimlaneId,
         rows: &[&Candidate],
         stored: &HashMap<NfsPath, Stored>,
+        now_ms: i64,
     ) -> Result<HashMap<ObservationKey, i64>, RegistryError> {
         if rows.is_empty() {
             return Ok(HashMap::new());
@@ -779,10 +820,10 @@ impl Inner {
             "INSERT INTO file_observations \
                (swimlane_id, path, hash, size, source, class, eol_style, encoding, bom, mtime, observed_at, during_job, \
                 attribution_source, attribution_confidence, attribution_actor, attribution_evidence, initial, \
-                previous_state, previous_hash) \
+                previous_state, previous_hash, recorded_at) \
              SELECT $1, x.path, x.hash, x.size, x.source, x.class, x.eol, x.enc, x.bom, \
                     CASE WHEN x.mtime IS NULL THEN NULL ELSE {mtime} END, {observed}, x.job, \
-                    x.a_src, x.a_conf, x.a_actor::jsonb, x.a_evid::jsonb, x.initial, x.prev_state, x.prev_hash \
+                    x.a_src, x.a_conf, x.a_actor::jsonb, x.a_evid::jsonb, x.initial, x.prev_state, x.prev_hash, {recorded} \
              FROM unnest($2::text[], $3::bytea[], $4::bigint[], $5::text[], $6::text[], $7::text[], $8::text[], \
                          $9::boolean[], $10::bigint[], $11::bigint[], $12::text[], $13::text[], $14::text[], \
                          $15::text[], $16::text[], $17::boolean[], $18::text[], $19::bytea[]) \
@@ -792,6 +833,9 @@ impl Inner {
              RETURNING id, path, hash::bytea, {observed_back}",
             mtime = ts("x.mtime"),
             observed = ts("x.observed"),
+            // When the registry applied the observation, by its own clock: the time to live of an observation that a registration
+            // committed late may still explain (the matcher) runs from here, never from the agent's `observed_at`.
+            recorded = ts("$20"),
             observed_back = ms("observed_at"),
         );
         let returned: Vec<(i64, String, Option<Vec<u8>>, i64)> = self
@@ -818,6 +862,7 @@ impl Inner {
                     .bind(&initial)
                     .bind(&prev_state)
                     .bind(&prev_hash)
+                    .bind(now_ms)
                     .fetch_all(&mut **tx),
             )
             .await?;

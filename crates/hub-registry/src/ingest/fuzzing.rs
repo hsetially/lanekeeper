@@ -4,8 +4,6 @@
 //! ([`super::validate`]), the bounds on a whole logical delta, and the decision about what becomes of the versions of a path
 //! ([`super::plan`]). The invariants it asserts are written in `fuzz/invariants.rs`.
 
-use std::collections::HashMap;
-
 use bytes::Bytes;
 use domain::{ContentHash, FileClass, NfsPath, ScanDelta, Timestamp};
 use engine::DenyMatcher;
@@ -13,6 +11,7 @@ use engine::DenyMatcher;
 use super::plan::{PlanCtx, Stored, Version, plan_path};
 use super::validate::{Bounds, Rules, StagedPart, Totals, validate};
 use crate::error::RegistryError;
+use crate::tool_writes::matching::PathRegistrations;
 
 /// One entry the hub accepted, as it keeps it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,12 +156,12 @@ pub fn plan_versions(
     if removal {
         all.push(Version::Removal);
     }
-    let writes = HashMap::new();
+    let registrations = PathRegistrations::default();
     let ctx = PlanCtx {
         initial_inventory,
         delta_time_ms,
         windows: &[],
-        tool_writes: &writes,
+        registrations: &registrations,
     };
     plan_path(&path, stored.as_ref(), &all, &ctx)
         .candidates

@@ -180,6 +180,33 @@ pub enum PickupResult {
     Failed,
 }
 
+/// What became of a tool-write registration, or of an observation that one could explain (T1, A10). A closed set: the labels never
+/// grow with the traffic, and no path, hash or user is ever one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum ToolWriteResult {
+    /// `register` or `register_delete` stored a new registration.
+    Registered,
+    /// It repeated a registration the registry holds: nothing was stored.
+    Repeated,
+    /// The queue was full: the registration was refused.
+    Full,
+    /// The registration could not be taken (a lock wait, a failed statement, a transaction that sqlx did not open): the caller's
+    /// transaction is untouched.
+    Unavailable,
+    /// The transaction was not a Postgres one.
+    WrongTx,
+    /// An observation applied while the registration was visible was explained by it (ingestion).
+    MatchedOnArrival,
+    /// An observation applied before the registration committed was explained by it (the matcher: the late commit).
+    MatchedLate,
+    /// A newer observation of the path contradicted a pending registration, which was dropped.
+    Invalidated,
+    /// A registration passed its time to live and was dropped by the sweep.
+    Expired,
+    /// A stored registration could not be read back (a user or request id of a shape this code does not know) and was skipped.
+    Unreadable,
+}
+
 /// What a call of the adoption service was (T5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
 pub enum AdoptionAction {
@@ -336,6 +363,11 @@ struct VersionLabels {
     result: VersionResult,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct ToolWriteLabels {
+    result: ToolWriteResult,
+}
+
 /// Cloning shares the counters.
 #[derive(Debug, Clone)]
 pub struct RegistryMetrics {
@@ -390,6 +422,7 @@ pub struct RegistryMetrics {
     pickup_lanes: Family<PickupLabels, Counter>,
     pickup_services_changed: Counter,
     pickup_truncated: Counter,
+    tool_writes: Family<ToolWriteLabels, Counter>,
 }
 
 /// 1 ms to about 8 s per read: the budgets are tens of milliseconds, a cold text search is hundreds.
@@ -456,6 +489,7 @@ impl Default for RegistryMetrics {
             pickup_lanes: Family::default(),
             pickup_services_changed: Counter::default(),
             pickup_truncated: Counter::default(),
+            tool_writes: Family::default(),
         }
     }
 }
@@ -718,6 +752,24 @@ impl RegistryMetrics {
             "Computations of a swimlane's pickup state that read only the newest changed files because there were more than pickup_max_files",
             self.pickup_truncated.clone(),
         );
+        registry.register(
+            "registry_tool_writes",
+            "Tool-write registrations and what became of them: registered, repeated, refused, matched on arrival or late, dropped",
+            self.tool_writes.clone(),
+        );
+    }
+
+    pub(crate) fn tool_write(&self, result: ToolWriteResult, n: u64) {
+        if n > 0 {
+            self.tool_writes
+                .get_or_create(&ToolWriteLabels { result })
+                .inc_by(n);
+        }
+    }
+
+    /// The count of one tool-write result, for tests.
+    pub fn tool_write_count(&self, result: ToolWriteResult) -> u64 {
+        self.tool_writes.get_or_create(&ToolWriteLabels { result }).get()
     }
 
     pub(crate) fn message(&self, kind: MessageKind, outcome: Outcome) {

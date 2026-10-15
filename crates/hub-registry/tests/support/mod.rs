@@ -19,4 +19,5 @@ pub mod reads;
 pub mod rig;
 pub mod statements;
 pub mod sync;
+pub mod tool_writes;
 pub mod world;

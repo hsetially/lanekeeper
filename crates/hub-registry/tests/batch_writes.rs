@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use domain::JobRef;
 use hub_identity::audit::{ChainVerifier, EcdsaP256Verifier, MemoryBucket};
-use hub_registry::{RegistryConfig, ToolWriteRecord};
-use ports::{AuditError, BusError, SinkError, Tx, content_hash};
+use hub_registry::RegistryConfig;
+use ports::{AuditError, BusError, SinkError, ToolWrites, Tx, content_hash};
 use sqlx::{PgPool, Row};
 use support::log_capture::LogCapture;
 use support::rig::{Rig, T, delta, entry, path, root, text};
@@ -160,24 +160,21 @@ const NAMES: [&str; 9] = [
     "other/i.yml",
 ];
 
-/// A tool write, registered the way prompt 06 does before it writes the file.
+/// A tool write, registered the way prompt 06 does before it writes the file: through the port, in its own transaction.
 async fn tool_write(rig: &Rig, p: &str, content: &[u8]) {
     let user = domain::UserId::new(
         domain::Guid::parse("11111111-1111-1111-1111-111111111111").unwrap(),
         domain::Guid::parse("22222222-2222-2222-2222-222222222222").unwrap(),
     );
     let mut tx = rig.pool.begin().await.unwrap();
-    rig.ingest
-        .tool_writes()
-        .record(
+    rig.tool_writes
+        .register(
             &mut Tx::from_pg(&mut tx),
-            ToolWriteRecord {
-                swimlane: &rig.swimlane,
-                path: &path(p),
-                hash: Some(content_hash(content)),
-                size: Some(content.len() as u64),
-                actor: &user,
-            },
+            &rig.swimlane,
+            &path(p),
+            &content_hash(content),
+            &user,
+            &domain::RequestId::parse("req-batch-1").unwrap(),
         )
         .await
         .unwrap();
@@ -191,7 +188,8 @@ async fn tool_write(rig: &Rig, p: &str, content: &[u8]) {
 /// 2. an increment: five files changed, one of them three times in the delta (one audit event for the path, D93), one removed
 ///    (seven paths: chunks of 3, 3 and 1);
 /// 3. a change made during a sync job (audited as a sync, a chunk of 2);
-/// 4. a tool write and a change made by hand in one chunk (the tool audits its own write: one audit event, two published);
+/// 4. a tool write and a change made by hand in one chunk (the tool audits its own write: one audit event, two published; the
+///    registration publishes nothing, the scan that explains it publishes `FileObserved` with source `tool_write`);
 /// 5. the second delta sent again, as an agent does that was not acknowledged (nothing changes);
 /// 6. a full scan that leaves two files out (they are gone: removals, a chunk of 2) and changes one.
 async fn script(rig: &Rig) {
@@ -307,15 +305,18 @@ async fn the_batch_path_writes_what_the_per_event_path_wrote() {
         dump(&batched.pool, "outbox", &OUTBOX_COLUMNS).await,
         dump(&reference.pool, "outbox", &OUTBOX_COLUMNS).await,
     );
-    // 9 for the inventory, 7 for the increment, 2 for the sync, the tool's own write and the two paths of its chunk, and the full
-    // scan's 3. The replay publishes nothing.
-    assert_eq!(outbox_batched.len(), 9 + 7 + 2 + 1 + 2 + 3, "outbox events");
+    // 9 for the inventory, 7 for the increment, 2 for the sync, the two paths of the chunk that has the tool's write (the registration
+    // publishes nothing: the scan that its hash explains publishes the observation, with source `tool_write`), and the full scan's 3.
+    // The replay publishes nothing.
+    assert_eq!(outbox_batched.len(), 9 + 7 + 2 + 2 + 3, "outbox events");
     assert_eq!(outbox_batched, outbox_reference, "outbox");
 
     // And both are what the registry wrote before it batched: the snapshot was recorded by the code of this crate at `e2bec86`, whose
     // apply path called `AuditLog::record` and `EventBus::publish_in_tx` once for each path, over the same script, and holds every
     // column that is not the time of the insert, the chain's hashes included. A change of an event's content or of the order of
-    // the events is a change of this snapshot and of the chain.
+    // the events is a change of this snapshot and of the chain. One change was made on purpose, with the port `ToolWrites` that replaced the
+    // old seam (05/T1): the registration of the tool's write publishes no `FileObserved` any more (a registration is not an observation),
+    // and the observation that it explains is published once, with source `tool_write`; the audit chain is the same, event for event.
     insta::assert_snapshot!(
         "the_rows_of_the_script",
         format!(
