@@ -763,6 +763,86 @@ async fn ingestion_and_the_matcher_read_the_state_before_a_deletion_from_the_sam
     );
 }
 
+#[tokio::test]
+async fn the_state_before_a_deletion_skips_earlier_deletions_to_the_closest_hash() {
+    // The closest earlier observation that HAS a hash: two deletions in a row (which ingestion does not write, one removal follows the
+    // state it removes, but the history may hold, for instance after a restore) do not make the state before the second one unknown.
+    let Some(rig) = Rig::new().await else { return };
+    let mut s = Script::start(&rig, &[("svc/a.yml", "x: 1")]).await;
+    rig.clock.advance_secs(5);
+    s.delete(&["svc/a.yml"]).await;
+    rig.clock.advance_secs(5);
+    let mut tx = rig.caller().await;
+    rig.register_delete_in(&mut tx, "svc/a.yml", "x: 1", "req-delete", 7)
+        .await;
+    rig.clock.advance_secs(2);
+    // A second deletion of the path, written as a restored history would hold it (the clock is +12 s).
+    sqlx::query(
+        "INSERT INTO file_observations (swimlane_id, path, hash, source, observed_at, recorded_at) \
+         VALUES ('sit1', 'svc/a.yml', NULL, 'scan', to_timestamp(1800000012), to_timestamp(1800000012))",
+    )
+    .execute(&rig.pool)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    rig.matcher().run_once().await.unwrap();
+    let history = rig.history("svc/a.yml").await;
+    assert_eq!(history.len(), 3);
+    assert!(
+        history[2].is_tool_write_of(7),
+        "the state before it is x: 1, past the earlier deletion: {:?}",
+        history[2]
+    );
+    assert!(history[1].is_unattributed());
+}
+
+#[tokio::test]
+async fn the_attribution_statement_never_touches_a_tool_write_or_an_observation_nothing_is_above() {
+    // Defence in depth under the matcher's own check: what the statement itself does when it is handed an observation that became
+    // ineligible between the look and the write (another component upgraded it).
+    let Some(rig) = Rig::new().await else { return };
+    let mut s = Script::start(
+        &rig,
+        &[
+            ("svc/a.yml", "x: 1"),
+            ("svc/b.yml", "y: 1"),
+            ("svc/c.yml", "z: 1"),
+        ],
+    )
+    .await;
+    rig.clock.advance_secs(2);
+    s.change(&[
+        ("svc/a.yml", "x: 2"),
+        ("svc/b.yml", "y: 2"),
+        ("svc/c.yml", "z: 2"),
+    ])
+    .await;
+    rig.attribute_by_hand("svc/b.yml", 1, "tool_write", "certain")
+        .await;
+    rig.attribute_by_hand("svc/c.yml", 1, "sentinel_login", "certain")
+        .await;
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM file_observations WHERE hash IS NOT NULL AND NOT initial ORDER BY path LIMIT 10",
+    )
+    .fetch_all(&rig.pool)
+    .await
+    .unwrap();
+    assert_eq!(ids.len(), 3);
+    let actor = format!("{{\"kind\":\"user\",\"user\":\"{}\"}}", user(5));
+    let upgraded: Vec<i64> = sqlx::query_scalar(hub_registry::tool_writes::ATTRIBUTE_SQL)
+        .bind("sit1")
+        .bind(&ids)
+        .bind(vec![actor; 3])
+        .fetch_all(&rig.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        upgraded,
+        vec![ids[0]],
+        "only the one that was weaker than certain and not a tool write"
+    );
+}
+
 // ================================================================================================ the job
 
 #[tokio::test]
