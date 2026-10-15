@@ -597,12 +597,13 @@ impl WriteService for FakeWriteService {
     }
 }
 
-/// The `key: value` pairs of a flat YAML-like text: unindented lines with a `: `. The fake computes no real facts (the
-/// engine does); this is enough for a preview to have changes to list and to mask.
+/// The `key: value` pairs of a flat YAML-like text: unindented lines with a `: `. A line ends at LF, CRLF or a lone CR,
+/// like the secret scan's lines do (the empty piece between the CR and LF of a CRLF has no `: ` and is skipped), so that
+/// a setting after a lone CR is a setting of its own and never part of the value before it. The fake computes no real
+/// facts (the engine does); this is enough for a preview to have changes to list and to mask.
 fn flat_settings(text: &[u8]) -> BTreeMap<String, String> {
     let text = String::from_utf8_lossy(text);
-    text.split('\n')
-        .map(|l| l.trim_end_matches('\r'))
+    text.split(['\r', '\n'])
         .filter(|l| !l.starts_with(['#', ' ', '\t']))
         .filter_map(|l| l.split_once(": "))
         .map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned()))
@@ -611,9 +612,12 @@ fn flat_settings(text: &[u8]) -> BTreeMap<String, String> {
 }
 
 /// The marker `[REDACTED: N chars, rule]` when `value` is something the secret scan flags. The fake knows one rule, the
-/// AWS access key id (`AKIA` and 16 upper case letters or digits); the real service uses the engine's whole scan.
+/// AWS access key id (`AKIA` or `ASIA`, the two prefixes of the engine's rule, and 16 upper case letters or digits); the
+/// real service uses the engine's whole scan.
 fn flagged_marker(value: &str) -> Option<String> {
-    let rest = value.strip_prefix("AKIA")?;
+    let rest = value
+        .strip_prefix("AKIA")
+        .or_else(|| value.strip_prefix("ASIA"))?;
     let is_key = rest.len() == 16 && rest.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
     is_key.then(|| format!("[REDACTED: {} chars, aws_access_key]", value.chars().count()))
 }

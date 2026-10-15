@@ -38,45 +38,16 @@ fn rejection(o: &WriteOutcome) -> RejectReason {
     }
 }
 
-/// A preview for an upload, issued to `ctx`'s user.
-async fn preview_upload<W: WriteScenario + ?Sized>(
-    w: &W,
-    ctx: &WriteCtx,
-    s: &SwimlaneId,
-    path: &str,
-    expected: Expected,
-    content: &Bytes,
-) -> PreviewId {
-    let r = PreviewRequest {
-        swimlane: s.clone(),
-        path: nfs(path),
-        change: PreviewChange::Upload {
-            expected,
-            content: content.clone(),
-        },
-    };
-    w.preview_effect(ctx, r).await.unwrap().preview_id
-}
-
-async fn preview_delete<W: WriteScenario + ?Sized>(
-    w: &W,
-    ctx: &WriteCtx,
-    s: &SwimlaneId,
-    path: &str,
-    expected: domain::ContentHash,
-) -> PreviewId {
-    let r = PreviewRequest {
-        swimlane: s.clone(),
-        path: nfs(path),
-        change: PreviewChange::Delete { expected },
-    };
-    w.preview_effect(ctx, r).await.unwrap().preview_id
-}
-
-/// A value the secret scan flags in every implementation: an AWS access key id (`AKIA` and 16 upper case letters or
-/// digits; the example key of the AWS documentation). Built from two parts so that no scanner reads this file as a leak.
+/// A value the secret scan flags in every implementation: an AWS access key id (`AKIA` or `ASIA`, then 16 upper case
+/// letters or digits; the example key of the AWS documentation). Built from two parts so that no scanner reads this
+/// file as a leak.
 fn aws_key() -> String {
     ["AKIA", "IOSFODNN7EXAMPLE"].concat()
+}
+
+/// A temporary-credentials key id: the scan's AWS rule flags the `ASIA` prefix as well.
+fn session_aws_key() -> String {
+    ["ASIA", "IOSFODNN7EXAMPLE"].concat()
 }
 
 /// A second key of the same shape.
@@ -105,6 +76,22 @@ async fn upload_preview<W: WriteScenario + ?Sized>(
             expected,
             content: Bytes::copy_from_slice(content),
         },
+    };
+    w.preview_effect(ctx, r).await.unwrap()
+}
+
+/// What the preview of a delete says.
+async fn delete_preview<W: WriteScenario + ?Sized>(
+    w: &W,
+    ctx: &WriteCtx,
+    s: &SwimlaneId,
+    path: &str,
+    expected: domain::ContentHash,
+) -> ChangePreview {
+    let r = PreviewRequest {
+        swimlane: s.clone(),
+        path: nfs(path),
+        change: PreviewChange::Delete { expected },
     };
     w.preview_effect(ctx, r).await.unwrap()
 }
@@ -147,7 +134,8 @@ fn applied_hash(o: &WriteOutcome) -> Option<domain::ContentHash> {
 /// - A preview is bound to the user, swimlane, path, expected state and content (an upload) or hash (a delete) it was
 ///   issued for, runs out after [`ChangePreview::TTL_SECS`], and writes nothing.
 /// - A preview never shows a value the secret scan flags: the value is masked and the entry says `flagged` (S14b, D79).
-/// - A new file takes the line endings of its folder; a file with mixed endings takes the dominant ones; a lone CR is a
+/// - A new file takes the line endings of its folder (the content as it is, when the folder has none); a file with
+///   mixed endings takes the dominant ones, and a file with none takes LF (the engine's `dominant_eol`); a lone CR is a
 ///   line ending.
 /// - A draft has no side effects until applied, only its author can apply it, and applying re-checks the hash.
 /// - Revert restores a known earlier version only; a PR names 1-100 paths.
@@ -164,10 +152,13 @@ pub async fn write_service<W: WriteScenario + ?Sized>(w: &W) {
             ("bound/one.yml", "k: v\n"),
             ("bound/two.yml", "k: v\n"),
             ("secrets/keys.yml", &format!("aws_key: {}\nplain: 1\n", aws_key())),
+            ("secrets/lone.yml", &format!("token: {}\rplain: 1\r", aws_key())),
+            ("no-endings-here/flat.yml", "a: 1"),
             ("eol/same.yml", "k: 1\r\nj: 2\r\n"),
             ("eol/mixed-crlf.yml", "a: 1\r\nb: 2\r\nc: 3\n"),
             ("eol/mixed-lf.yml", "a: 1\nb: 2\r\nc: 3\n"),
             ("eol/lone.yml", "a: 1\nb: 2\n"),
+            ("eol/single.yml", "a: 1"),
             ("crlf-dir/one.yml", "a: 1\r\nb: 2\r\n"),
             ("crlf-dir/two.yml", "c: 3\r\n"),
         ]),
@@ -353,7 +344,7 @@ pub async fn write_service<W: WriteScenario + ?Sized>(w: &W) {
         "a token nobody issued"
     );
     let editor2 = active(8, Role::Editor);
-    let theirs = preview_upload(
+    let theirs = upload_preview(
         w,
         &write_ctx(&editor2, "pv-a"),
         &s,
@@ -361,7 +352,8 @@ pub async fn write_service<W: WriteScenario + ?Sized>(w: &W) {
         Expected::Absent,
         &logo,
     )
-    .await;
+    .await
+    .preview_id;
     let borrowed = w
         .upload(&write_ctx(&editor, "k-5c"), upload_with(Some(theirs), &logo))
         .await
@@ -372,7 +364,7 @@ pub async fn write_service<W: WriteScenario + ?Sized>(w: &W) {
         "bound to the user"
     );
     let other_bytes = Bytes::from_static(&[9, 9, 9, 0]);
-    let for_other = preview_upload(
+    let for_other = upload_preview(
         w,
         &write_ctx(&editor, "pv-b"),
         &s,
@@ -380,7 +372,8 @@ pub async fn write_service<W: WriteScenario + ?Sized>(w: &W) {
         Expected::Absent,
         &other_bytes,
     )
-    .await;
+    .await
+    .preview_id;
     let swapped = w
         .upload(&write_ctx(&editor, "k-5d"), upload_with(Some(for_other), &logo))
         .await
@@ -390,7 +383,7 @@ pub async fn write_service<W: WriteScenario + ?Sized>(w: &W) {
         RejectReason::NotAllowed,
         "bound to the content"
     );
-    let for_path = preview_upload(
+    let for_path = upload_preview(
         w,
         &write_ctx(&editor, "pv-c"),
         &s,
@@ -398,7 +391,8 @@ pub async fn write_service<W: WriteScenario + ?Sized>(w: &W) {
         Expected::Absent,
         &logo,
     )
-    .await;
+    .await
+    .preview_id;
     let moved = w
         .upload(&write_ctx(&editor, "k-5e"), upload_with(Some(for_path), &logo))
         .await
@@ -409,7 +403,7 @@ pub async fn write_service<W: WriteScenario + ?Sized>(w: &W) {
         None,
         "refused uploads write nothing"
     );
-    let pv = preview_upload(
+    let pv = upload_preview(
         w,
         &write_ctx(&editor, "pv-d"),
         &s,
@@ -417,7 +411,8 @@ pub async fn write_service<W: WriteScenario + ?Sized>(w: &W) {
         Expected::Absent,
         &logo,
     )
-    .await;
+    .await
+    .preview_id;
     assert!(
         w.upload(&write_ctx(&editor, "k-5"), upload_with(Some(pv), &logo))
             .await
@@ -459,7 +454,9 @@ pub async fn write_service<W: WriteScenario + ?Sized>(w: &W) {
     );
 
     // Delete needs a preview and the current hash. The file moves on after the preview: a conflict.
-    let stale_preview = preview_delete(w, &write_ctx(&editor, "pv-f"), &s, "b.yml", hash(b"k: v\n")).await;
+    let stale_preview = delete_preview(w, &write_ctx(&editor, "pv-f"), &s, "b.yml", hash(b"k: v\n"))
+        .await
+        .preview_id;
     let delete_with = |preview: Option<PreviewId>, expected| DeleteRequest {
         swimlane: s.clone(),
         path: nfs("b.yml"),
@@ -506,7 +503,9 @@ pub async fn write_service<W: WriteScenario + ?Sized>(w: &W) {
         }
     );
     assert!(w.nfs_content(&s, &nfs("b.yml")).await.is_some());
-    let fresh = preview_delete(w, &write_ctx(&editor, "pv-g"), &s, "b.yml", hash(b"k: w\n")).await;
+    let fresh = delete_preview(w, &write_ctx(&editor, "pv-g"), &s, "b.yml", hash(b"k: w\n"))
+        .await
+        .preview_id;
     let del = w
         .delete(
             &write_ctx(&editor, "k-7"),
@@ -816,7 +815,7 @@ async fn previews_are_bound_and_expire<W: WriteScenario + ?Sized>(w: &W, s: &Swi
         };
 
     // An upload: the swimlane and the expected state are bound too (the user, path and content are, above).
-    let token = preview_upload(
+    let token = upload_preview(
         w,
         &write_ctx(&editor, "pb-1"),
         s,
@@ -824,7 +823,8 @@ async fn previews_are_bound_and_expire<W: WriteScenario + ?Sized>(w: &W, s: &Swi
         Expected::Absent,
         &content,
     )
-    .await;
+    .await
+    .preview_id;
     let elsewhere = upload(&editor, "pb-2", &s2, "bound/new.yml", Expected::Absent, &token).await;
     assert_eq!(
         rejection(&elsewhere),
@@ -858,7 +858,9 @@ async fn previews_are_bound_and_expire<W: WriteScenario + ?Sized>(w: &W, s: &Swi
         };
         async move { w.delete(&ctx, req).await.unwrap() }
     };
-    let token = preview_delete(w, &write_ctx(&editor, "pb-5"), s, "bound/one.yml", h).await;
+    let token = delete_preview(w, &write_ctx(&editor, "pb-5"), s, "bound/one.yml", h)
+        .await
+        .preview_id;
     let attempts = [
         (
             delete(&other_user, "pb-6", s, "bound/one.yml", h, &token).await,
@@ -961,7 +963,9 @@ async fn previews_are_bound_and_expire<W: WriteScenario + ?Sized>(w: &W, s: &Swi
         "a new preview works"
     );
     let gone = Bytes::from_static(b"k: v\n");
-    let issued = preview_delete(w, &write_ctx(&editor, "pt-7"), s, "bound/two.yml", hash(&gone)).await;
+    let issued = delete_preview(w, &write_ctx(&editor, "pt-7"), s, "bound/two.yml", hash(&gone))
+        .await
+        .preview_id;
     w.advance_clock(ttl).await;
     let expired_delete = w
         .delete(
@@ -1095,8 +1099,81 @@ async fn previews_write_nothing_and_mask_secrets<W: WriteScenario + ?Sized>(w: &
         "{entry:?}"
     );
 
+    // A secret on a line of a file that uses lone CRs (old Mac style) is masked too: a lone CR ends a line for the
+    // scan, so the setting after it is a setting of its own and is not read as part of the key. The file that is there
+    // is read as it is on NFS, and so is new content for a folder without line endings.
+    let lone_old = format!("token: {key}\rplain: 1\r");
+    let lone = upload_preview(
+        w,
+        &write_ctx(&editor, "pm-3a"),
+        s,
+        "secrets/lone.yml",
+        Expected::Hash {
+            hash: hash(lone_old.as_bytes()),
+        },
+        b"plain: 2\n",
+    )
+    .await;
+    assert!(
+        !shown(&lone).contains(&key),
+        "a secret before a lone CR is not shown (left side): {lone:?}"
+    );
+    let entry = change_of(&lone, "token");
+    assert!(
+        entry.flagged && is_marker(entry.change.left.as_ref()),
+        "{entry:?}"
+    );
+    let entry = change_of(&lone, "plain");
+    assert!(
+        !entry.flagged
+            && entry.change.left.as_ref().map(|v| v.text.as_str()) == Some("1")
+            && entry.change.right.as_ref().map(|v| v.text.as_str()) == Some("2"),
+        "the setting after the lone CR is a setting of its own: {entry:?}"
+    );
+    let lone_new = format!("token: {key}\rplain: 1\r");
+    let lone = upload_preview(
+        w,
+        &write_ctx(&editor, "pm-3c"),
+        s,
+        "no-endings-here/new.yml",
+        Expected::Absent,
+        lone_new.as_bytes(),
+    )
+    .await;
+    assert!(
+        !shown(&lone).contains(&key),
+        "a secret before a lone CR is not shown (right side): {lone:?}"
+    );
+    let entry = change_of(&lone, "token");
+    assert!(
+        entry.flagged && is_marker(entry.change.right.as_ref()),
+        "{entry:?}"
+    );
+
+    // The scan's AWS rule knows `ASIA` ids (temporary credentials) as well as `AKIA` ones.
+    let session = session_aws_key();
+    let session_text = format!("session_key: {session}\n");
+    let temporary = upload_preview(
+        w,
+        &write_ctx(&editor, "pm-3b"),
+        s,
+        "secrets/session.yml",
+        Expected::Absent,
+        session_text.as_bytes(),
+    )
+    .await;
+    assert!(
+        !shown(&temporary).contains(&session),
+        "an ASIA key is not shown: {temporary:?}"
+    );
+    let entry = change_of(&temporary, "session_key");
+    assert!(
+        entry.flagged && is_marker(entry.change.right.as_ref()),
+        "{entry:?}"
+    );
+
     // A delete lists what goes away, and never a secret.
-    let deleted = preview_delete_full(w, &write_ctx(&editor, "pm-4"), s, "secrets/keys.yml", h_secrets).await;
+    let deleted = delete_preview(w, &write_ctx(&editor, "pm-4"), s, "secrets/keys.yml", h_secrets).await;
     assert!(
         !shown(&deleted).contains(&key),
         "a deleted secret is not shown: {deleted:?}"
@@ -1131,7 +1208,7 @@ async fn previews_write_nothing_and_mask_secrets<W: WriteScenario + ?Sized>(w: &
     )
     .await;
     assert!(changed.effective_changed, "{changed:?}");
-    let nothing_to_delete = preview_delete_full(
+    let nothing_to_delete = delete_preview(
         w,
         &write_ctx(&editor, "pm-7"),
         s,
@@ -1156,22 +1233,6 @@ async fn previews_write_nothing_and_mask_secrets<W: WriteScenario + ?Sized>(w: &
     );
     assert!(w.nfs_content(s, &nfs("big/big.yml")).await.is_none());
     assert!(w.nfs_content(s, &nfs("no-such-file.yml")).await.is_none());
-}
-
-/// The whole answer of a delete preview.
-async fn preview_delete_full<W: WriteScenario + ?Sized>(
-    w: &W,
-    ctx: &WriteCtx,
-    s: &SwimlaneId,
-    path: &str,
-    expected: domain::ContentHash,
-) -> ChangePreview {
-    let r = PreviewRequest {
-        swimlane: s.clone(),
-        path: nfs(path),
-        change: PreviewChange::Delete { expected },
-    };
-    w.preview_effect(ctx, r).await.unwrap()
 }
 
 /// Rule 11, D17: a file is written back in the style it has. For a file with mixed endings that is the style most of its
@@ -1244,6 +1305,14 @@ async fn line_endings_follow_the_file_the_folder_and_the_majority<W: WriteScenar
         .await,
         Some(hash(b"a: 1\r\nb: 2\r\nc: 3\r\n")),
         "lone CR to CRLF, and a CRLF pair is not doubled"
+    );
+
+    // A file with no line ending has no style of its own, and the engine's rule for that is LF (`dominant_eol`): the
+    // content is written as LF. (A new file in a folder with no line endings is different: its content is kept, below.)
+    assert_eq!(
+        edit_to("le-3a", "eol/single.yml", on("a: 1"), "a: 1\r\nb: 2\r\n", None).await,
+        Some(hash(b"a: 1\nb: 2\n")),
+        "no line ending in the file: LF, like the engine's dominant_eol"
     );
 
     // A new file takes the style of its folder.
