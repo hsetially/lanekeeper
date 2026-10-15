@@ -648,3 +648,47 @@ async fn the_sink_and_the_job_never_read_a_clock_of_their_own() {
             .unwrap();
     assert_eq!(at, rig.clock.now().unix_millis());
 }
+
+#[tokio::test]
+async fn the_sink_takes_the_swimlanes_lock_only_when_a_record_has_a_change_to_attribute() {
+    use std::time::Duration;
+    // The lock is the one every apply of the swimlane holds. A batch whose records explain nothing (the usual: most of what a sentinel
+    // sees is not a change the agent has reported) must not queue behind the applies; one that has something to write does, and runs
+    // under the lock, with the audit chain's lock after it.
+    let lock = "SELECT pg_advisory_xact_lock(hashtextextended('lanekeeper.registry.apply.' || $1, 0))";
+    let Some(rig) = Rig::new().await else { return };
+    rig.sentinel_for_the_swimlane().await;
+    rig.add_user(1, "ada@example.com", "active").await;
+    let mut agent = Agent::start(&rig, &[("svc/a.yml", "v: 0")]).await;
+    rig.sentinel_hello().await.unwrap();
+    rig.clock.advance_secs(26);
+    agent.change("svc/a.yml", "v: 1", T0 + 25 * S).await;
+
+    let mut holder = rig.db.admin().await;
+    sqlx::raw_sql("BEGIN").execute(&mut holder).await.unwrap();
+    sqlx::query(lock).bind("sit1").execute(&mut holder).await.unwrap();
+    // A record for a file nobody has changed: stored, and no lock is needed.
+    let quiet = tokio::time::timeout(
+        Duration::from_secs(5),
+        rig.records(batch(1, vec![record("svc/quiet.yml", T0 + 10 * S)])),
+    )
+    .await;
+    assert_eq!(quiet.expect("no waiting for the lock").unwrap(), AckSeq::new(1));
+    // A record that explains the change waits for it.
+    let sink = rig.sentinel.clone();
+    let run = tokio::spawn(async move {
+        sink.records(&identity(), batch(2, vec![record("svc/a.yml", T0 + 10 * S)]))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(!run.is_finished(), "it is waiting for the swimlane's lock");
+    assert!(rig.attribution("svc/a.yml", 1).await.is("unknown", "low"));
+    sqlx::raw_sql("ROLLBACK").execute(&mut holder).await.unwrap();
+    let acked = tokio::time::timeout(Duration::from_secs(10), run)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(acked, AckSeq::new(2));
+    assert!(rig.attribution("svc/a.yml", 1).await.is("sentinel_login", "high"));
+}
