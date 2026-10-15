@@ -485,3 +485,206 @@ all shards): that is the warm-up's job at start-up, and a search before the warm
   corpus did, when it was built); a process dump of a replica holds config text (A28 says no secrets are in it, D18).
 - **A blob the store lacks** is left out of the corpus with its places (as before) and its shard is made again by every build until it
   turns up.
+
+## T1 (A10 follow-up): `ports::ToolWrites` cannot be implemented soundly on the 0001 to 0004 schema; it needs one new table (proposed `0005`)
+
+Status: BLOCKED. Nothing of the port is implemented. The old seam (`src/ingest/tool_writes.rs`, `ToolWrites::record`) is
+untouched and still compiles and passes. `db/migrations` is untouched. The rest of this section is what a contract-change PR for
+`0005` would carry.
+
+### What the port needs
+
+From `crates/ports/src/tool_writes.rs`, `docs/interfaces.md`, D73, the fake and the conformance suite:
+
+1. `register(tx, swimlane, path, new_hash, user, request_id)` writes in the CALLER's transaction: the registration is visible
+   only if that transaction commits, and a rollback leaves nothing.
+2. The same (swimlane, path, hash, **request**) again is a no-op; the same hash from another request, at another path or in
+   another swimlane is another registration. `ToolWritesProbe::registered()` reads back swimlane, path, hash, **user** and
+   **request id** of every committed registration, oldest first.
+3. Bounded: `Full` comes only from `register`, never from the commit, and a repeat of a registration already held is a no-op, not `Full`.
+4. Expiry: an unmatched registration goes `TTL_SECS` (15 min) after it became visible; a newer observation of the same path with
+   another hash drops it at once; dropping is not audited.
+5. Late commit: an observation that arrives before the registration is visible must be kept as unattributed for at least `TTL_SECS`
+   and upgraded (never downgraded, one `AttributionUpgraded` audit event and one `AttributionUpdated` outbox event in the same
+   transaction) when a matching registration commits.
+
+### Why the existing schema cannot hold it
+
+The only table that can hold a row without a migration is `file_observations` (source `tool_write`), which is what the old seam
+used. I looked for every other candidate (`idempotency_keys`, `outbox`, `leases`, `delta_staging`, a key in
+`swimlane_registry.state_counts`, in-process state, `pg_notify`). None has a home for (swimlane, path, hash, user, request) with a
+unique key and an expiry; the outbox is a fan-out queue with no user or request id in its events; leases carry no payload and
+`registered()` could not read a hashed name back; `pg_notify` and process memory are not durable and cannot be read back by the
+conformance probe right after the commit, and they are not shared by replicas. So `file_observations` is the only option, and it fails
+on four counts. Two I measured, one I reproduced, one is a reader audit.
+
+1. **The registration collides with the real observation (reproduced).** `file_observations_replay_key` is unique on
+   `(swimlane_id, path, observed_at, hash)`, and ingestion inserts with `ON CONFLICT DO NOTHING`. A registration row and the
+   agent's observation of the same version at the same millisecond share that key, and the observation is silently not recorded:
+   ```
+   INSERT ... VALUES ('sit1','svc/a.yml', sha256('x: 2'), 'tool_write', '2026-10-15 10:00:00+00', 'unknown', 'low');   INSERT 0 1
+   INSERT ... VALUES ('sit1','svc/a.yml', sha256('x: 2'), 'scan',       '2026-10-15 10:00:00+00') ON CONFLICT DO NOTHING; INSERT 0 0
+   ```
+   Tests date an observation by hand against a `ManualClock`, so they can land on the hub's instant exactly; in production it is a rare
+   and silent loss (the pipeline's `last_observation_id` would then point at the registration, and the registration's later deletion
+   leaves it dangling).
+2. **The bound and the expiry cannot be checked cheaply (measured).** Nothing indexes `source` or "pending". `register` has to count
+   the waiting registrations in the caller's transaction. With one swimlane's 15 minutes of ingestion at the P15 rate (900,000
+   observations, 20 registrations), on this machine (Postgres 16, loopback, `shared_buffers` default):
+
+   | Query | Plan | Time |
+   |---|---|---|
+   | count `source = 'tool_write' AND attribution_source = 'unknown' AND observed_at > now() - 15 min` | parallel seq scan, 16,840 buffers | 94 ms |
+   | the same limited to the bound + 1 (stops early only when many are pending) | parallel seq scan | 116 ms |
+   | the same forced through `file_observations_swimlane_time_idx` | bitmap scan, 859,064 index entries, 859,043 rows removed by the filter | 407 ms |
+
+   That is 0.1 to 0.4 s inside 06's transaction for every write, growing with the ingestion rate and the window. A partial index
+   on the pending rows would fix it and is exactly the migration this section asks for.
+3. **No place for the request id, and no unique key over it.** Idempotency is by (swimlane, path, hash, request). The table has no
+   such column or index. It could be done with the request id in `attribution_evidence` and an advisory lock around a
+   `NOT EXISTS`, which is a protocol that every writer must follow instead of a constraint.
+4. **A registration is not an observation, and every reader would have to know (audit of the readers).** The rows would be read as
+   history by: `read/history.rs` (the history page and **`is_version_of`**), `read/tree.rs` and `pipeline/lane_loader.rs` (last
+   observation, attribution), `ingest/apply.rs::existing_observations`, `sync/overwrite.rs::claim`, and the retention rule of D78
+   (the last 50 versions per file), when it is written. One of them is a security check: `is_version_of` decides whether
+   `ContentSource::Blob { hash }` may serve the blob of `hash` for a path ("a version this path has had"). A registered hash is
+   the content someone is about to write, often a proposal's or a draft's blob that the blob store already holds. With the
+   registration in `file_observations` that blob is readable by any Viewer of the swimlane through the file-content read (`ContentSource::Blob`) before the
+   write happens, or if it never happens. **The old seam on this branch has that exposure today** (it has never been merged); any design that keeps
+   registrations in `file_observations` must add the filter to each of these readers and to every future one.
+
+Each of the four has a workaround; together they make the table do two jobs, with a marker that no constraint enforces. A table of
+its own makes all four disappear (a unique key, a small table for the bound, no reader to audit).
+
+### Proposed `0005_tool_write_registrations.sql` (expand-only; validated, see below)
+
+```sql
+-- 0005_tool_write_registrations.sql: the registry's half of the tool-write port (prompts 05 and 06, D73). A contract: never
+-- edit it once merged. Run it as `lanekeeper_migrator`, behind the same guard as 0001 to 0004.
+--
+-- One new table, one index and one grant. Nothing existing is touched. Deploy order: this migration, then the 05 code that
+-- implements `ports::ToolWrites`; a binary from before it never reads or writes the table.
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'lanekeeper_migrator')
+     OR NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'lanekeeper_app') THEN
+    RAISE EXCEPTION 'roles lanekeeper_migrator and lanekeeper_app must exist before migrating (deploy/dev/init.sql, CloudNativePG managed roles)'
+      USING ERRCODE = '55000';
+  END IF;
+  IF current_user <> 'lanekeeper_migrator' THEN
+    RAISE EXCEPTION 'run migrations as lanekeeper_migrator (current user: %); objects must be owned by it', current_user
+      USING ERRCODE = '55000';
+  END IF;
+END
+$$;
+
+-- A write the tool is about to make (or has made) and no observation has explained yet. Written by `ToolWrites::register` in
+-- the caller's transaction, so a row exists only if that transaction committed. Consumed by the first observation of the hash
+-- at the path (ingestion, or the matcher when the registration committed late), dropped `ToolWriteEntry::TTL_SECS` after it was
+-- made, and dropped at once by a newer observation of the path with another hash. Dropping is a DELETE and is not audited.
+--   registered_at  the registry's clock when `register` ran, which is at most the commit time: the TTL runs from here.
+--   user_tid/oid   the user who wrote, the actor of the attribution. No foreign key: the row is a short-lived expectation, and a
+--                  user row never decides whether a write was the tool's.
+--   request_id     the 06 request: (swimlane, path, hash, request_id) is one registration, so a retry registers nothing twice.
+CREATE TABLE tool_write_registrations (
+  id            bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  swimlane_id   text        NOT NULL REFERENCES swimlanes (id) ON DELETE CASCADE,
+  path          text        NOT NULL CHECK (length(path) BETWEEN 1 AND 1024),
+  hash          sha256_hash NOT NULL,
+  user_tid      text        NOT NULL CHECK (length(user_tid) BETWEEN 1 AND 64),
+  user_oid      text        NOT NULL CHECK (length(user_oid) BETWEEN 1 AND 64),
+  request_id    text        NOT NULL CHECK (length(request_id) BETWEEN 1 AND 128),
+  registered_at timestamptz NOT NULL,
+  -- Idempotency, and the lookup of ingestion (`swimlane_id = $1 AND path = ANY($2)`) and of the matcher.
+  UNIQUE (swimlane_id, path, hash, request_id)
+);
+-- The expiry sweep and the bound: the oldest registrations first.
+CREATE INDEX tool_write_registrations_age_idx ON tool_write_registrations (registered_at, id);
+
+-- write-once: SELECT, INSERT, DELETE (README grant convention). A registration is never updated.
+GRANT SELECT, INSERT, DELETE ON tool_write_registrations TO lanekeeper_app;
+```
+
+- **Grants:** SELECT, INSERT, DELETE (the README's "write-once" class: removed by expiry, consumption and invalidation, never
+  updated). No UPDATE: the `ON CONFLICT DO NOTHING` insert needs none. No TRUNCATE.
+- **CHECKs:** the lengths of `path` (as everywhere), `user_*` (as `users`) and `request_id` (as `idempotency_keys.key`); `hash` is
+  the `sha256_hash` domain (32 bytes).
+- **No foreign key to `users`:** the conformance suite registers for users that have no row, and a registration is a short-lived
+  expectation, not a record of a user. `ON DELETE CASCADE` from `swimlanes` is allowed because the app may delete from the table.
+- **The key doubles as the lookup** ingestion and the matcher need (`swimlane_id = $1 AND path = ANY($2)`); the age index serves
+  the expiry sweep and the bound (`WHERE registered_at > cutoff ... LIMIT bound`).
+- **Deploy order:** the migration, then the 05 code. A binary from before it never touches the table.
+- The contract-change PR also needs, outside this crate: the `grant_decisions` entry and the catalog-diff test for 0005 in
+  `crates/xtask/tests/db_migrations.rs`, a README section, and a new D-entry that supersedes D91 (D91 is 05's, from plan A10).
+
+What I ran against a scratch database (`0001` to `0004` applied as `lanekeeper_migrator`, `0005` applied as `lanekeeper_migrator`,
+then used as `lanekeeper_app`): the insert; the repeat of a key (`INSERT 0 0`); another request id for the same hash (`INSERT 0 1`);
+a rollback leaving the count unchanged; `UPDATE` and `TRUNCATE` refused (42501); `DELETE` allowed. The scratch database is dropped.
+
+### The registry side once 0005 exists (so that one approval covers the whole change)
+
+- **`register`** (the port, in the caller's transaction): `WrongTx` for a foreign transaction; a repeat of a held key returns `Ok`
+  without a bound check; otherwise count the registrations newer than `now - TTL` up to the bound (`RegistryConfig::tool_write_max_pending`,
+  range-checked, default 10,000 like the fake) and answer `Full`, else `INSERT ... ON CONFLICT DO NOTHING`. The bound is soft by at
+  most the number of registering transactions in flight: a hard one needs a lock held until the caller's commit, whose order against
+  the audit chain's lock I cannot control from here (06 may record its audit event first), and a deadlock with an ingestion apply
+  is worse than a short overshoot. The commit cannot fail for lack of room because nothing is reserved at commit.
+- **Ingestion** (`decide` in `apply_chunk`, which already holds the swimlane lock): reads the registrations of the chunk's paths
+  from the new table instead of the `tool_write` rows, ignores those older than `TTL_SECS` by the injected `Clock`, explains an
+  observation of the registered hash with the **earliest** valid registration (source `ToolWrite`, attribution `tool_write` /
+  `certain`, the registration's user), and in the same transaction deletes the registrations it used and those of the same path with
+  another hash (invalidation). No audit event for a drop (the port says so); `FileChangeDetected` is not written for an explained change, as today.
+- **Late commit:** a leased job `ToolWriteMatcher` (an interval from `RegistryConfig`, `run_once()` for the tests) takes the
+  swimlane lock, finds unattributed observations (confidence below `certain`, newer than `TTL_SECS`) whose (swimlane, path, hash)
+  match a registration that committed after them, upgrades them, writes the `AttributionUpgraded` batch and the `AttributionUpdated`
+  outbox batch through `crate::batch` as `claim_chunk` does, and consumes the registration. It also deletes expired registrations in
+  bounded batches. The lost-wakeup window (an observation committed between `register` and the caller's commit) is closed by this
+  job and not by a lock, for the same lock-order reason. Latency is one interval.
+- **The old seam goes:** `ToolWrites::record`, `ToolWriteRecord` and `src/ingest/tool_writes.rs` are removed from the public API
+  (06 calls the port, nothing else); the `tool_write` observation rows and `AgentIngest::tool_writes()` go with them. Tests that
+  encoded the old model are rewritten with the reason in the commit message.
+- **Tests:** `ports::conformance::tool_writes` through a `ToolWritesProbe` over real Postgres; registry tests for the late commit
+  (both orders), the TTL with `ManualClock`, invalidation by a newer observation with another hash, `Full`, idempotency inside and
+  across transactions, rollback, the same hash at another path or swimlane not matching, the lost-wakeup window, S10 in the
+  log-capture test (no path, hash or user in a log line or an error), an `EXPLAIN` snapshot of the bound and the lookup (no seq scan).
+
+### What the human must decide
+
+1. **Approve `0005`** as a `contract-change` PR (the plan's approved contract change covered `0003` only). Without it the port stays unimplemented and 06 has nothing real to call.
+2. **Deletes cannot be registered.** The port's `register` takes `new_hash: &ContentHash`. The old seam registered a delete with
+   no hash, so the scan that saw a tool's delete was not out of band; D91 says so. With the port as written a tool delete is an
+   out-of-band change (`FileChangeDetected`, author unknown) on top of 06's own audit event. Options: widen the port to
+   `Option<&ContentHash>` (a contract-change of `crates/ports` and the fake), or accept the double audit for deletes.
+3. **The TTL starts at `register`, not at the commit.** Postgres gives a caller-owned transaction no commit hook or timestamp
+   (`track_commit_timestamp` is a server setting I cannot assume). A registration therefore expires up to the caller's
+   transaction time (milliseconds, bounded by 06's transaction timeout) earlier than "TTL after the commit". That is the safe
+   direction. The alternative is a deferred constraint trigger that stamps the commit time, which is more schema for a few milliseconds.
+4. **Soft bound** (above) and **earliest registration wins** when two requests registered the same hash for the path.
+5. **The observation source of an explained change** becomes `ToolWrite` (the port says so). The old code kept `Scan` with a
+   `tool_write` attribution, and `publish_moves` only ever publishes `Scan` or `Sync` in `FileObserved`. The registry's consumers
+   (the pipeline) do not branch on it today; `docs/mcp-tools.md` allows `tool_write` in `ObservationSource`.
+6. **D91 must be superseded** (it describes `record`, an observation row, an event on registration, delete registration).
+
+### What is done and committed
+
+Step 0, the regression check after merging `main` (`3328e88`, the 06 write contract: migration `0004`, ports and domain additions, the
+`ToolWrites` port with its fake and conformance suite). Run with `LK_TEST_PG_ADMIN_URL` set (Postgres 16 with pgvector on loopback;
+no test printed `SKIPPED`), `CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0`:
+
+| Command | Result |
+|---|---|
+| `cargo check --workspace --all-targets --locked` | exit 0 (2 m 16 s); `Cargo.lock` is consistent with the merge |
+| `cargo test -p hub-registry --lib --tests` | 49 test binaries, **623 passed, 0 failed, 3 ignored** (the migrations of the tests include `0004`) |
+| `cargo test -p xtask` | 11 test binaries, **123 passed, 0 failed, 1 ignored** |
+
+**The merge broke nothing**: no compile error, no test failure, so there is no `05/T1:` fix commit. The things the merge could
+have touched (an `AuditEvent` author field, the audit size constants, the new ports and domain items, `0004` on `proposals`,
+`approvals` and `github_credentials`, `Cargo.lock`) are not used by the registry in a way that changed.
+
+Committed: this record only (`05/blocked:`). `db/migrations`, `crates/ports` and `crates/domain` are untouched; no source file of
+`crates/hub-registry` changed. The old seam is still the one T1 built, and it still passes its tests; it must not be called by 06
+(06 will call `ports::ToolWrites`), and it carries the `is_version_of` exposure described above until it is replaced.
+
+Not run, because the work stopped before it: the conformance suite over Postgres, the registry's bench (no code changed, so there
+are no new numbers; the numbers recorded in the sections above stand).
