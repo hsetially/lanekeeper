@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use domain::{AgentReply, OpError, RequestId, WriteOutcome};
 
-use crate::idempotency::{ClaimKey, Intent};
+use crate::idempotency::{ClaimKey, Intent, IntentOp};
 use crate::pipeline::execute::{Committed, commit_applied, store_blob};
 use crate::service::{Inner, millis};
 
@@ -56,6 +56,18 @@ pub(crate) async fn resolve(hub: &Inner, key: &ClaimKey, body: Option<&[u8]>) ->
     )
     .await;
     match asked {
+        // A delete landed when the file is gone; any file at the path means it did not (a file that has the hash that was to be
+        // deleted was not deleted, and another file is somebody else's).
+        Ok(Ok(AgentReply::Op(op)))
+            if intent.op == IntentOp::Delete && op.error == Some(OpError::NotFound) =>
+        {
+            match commit_applied(hub, key, &intent, intent.new_hash).await {
+                Ok(Committed::Done(outcome)) => Resolved::Completed(outcome),
+                Ok(Committed::Lost(_)) => Resolved::Raced,
+                Err(_) => Resolved::Unreachable,
+            }
+        }
+        Ok(Ok(AgentReply::File { .. })) if intent.op == IntentOp::Delete => clear(hub, key).await,
         Ok(Ok(AgentReply::File { hash, bytes, .. }))
             if hash == intent.new_hash && ports::content_hash(&bytes) == hash =>
         {

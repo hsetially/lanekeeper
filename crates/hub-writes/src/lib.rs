@@ -6,6 +6,13 @@
 //! authorize, claim the idempotency key, check the editing lock, validate, route to approval, execute. Nothing is written
 //! blind (rule 11): the agent is sent the hash it must find. Every applied write has exactly one audit event, recorded in the
 //! same transaction as its tool-write registration, its outbox event and its stored response (rules 8 and D80).
+//!
+//! - **Actions** (`ops`): `edit`, `upload`, `delete`, `revert` and `restart`. The three that put content into a file (edit, upload
+//!   and revert) share one tail (`ops::file`); an upload and a delete also need the token of a preview.
+//! - **Previews** (`preview`): what an upload or a delete would do, from the engine, and the HMAC token bound to the user, the
+//!   swimlane, the path, the action and the hashes that lets it through (D46).
+//! - **Routes** ([`routes`]): the REST face of the actions above, registered through the platform's guarded router (S4), with
+//!   [`routes::wire`] reading each request into typed values.
 #![forbid(unsafe_code)]
 // Documenting `# Errors` on every internal function adds noise; the error types are the documentation.
 #![allow(
@@ -19,19 +26,27 @@ mod config;
 mod db;
 mod error;
 mod fidelity;
+mod hex;
 mod idempotency;
 mod ops;
 mod pipeline;
+mod preview;
 mod probe;
 mod proposals;
 mod reconcile;
+pub mod routes;
 mod service;
 
 pub use clock::{Clock, ManualClock, SystemClock};
-pub use config::{MAX_EXTRA_DENY_GLOBS, WriteConfig};
+pub use config::{MAX_EXTRA_DENY_GLOBS, PREVIEW_KEY_SECRET, WriteConfig};
 pub use error::ConfigError;
 pub use idempotency::RequestHash;
 pub use probe::QueryProbe;
+
+/// Hooks for the fuzz targets (S22). Not part of the API; only with the `fuzz-hooks` feature.
+#[cfg(feature = "fuzz-hooks")]
+#[doc(hidden)]
+pub use preview::token::fuzzing as fuzz_hooks;
 pub use reconcile::{ReconcileReport, ReconcileWrites};
 pub use service::{WriteHub, WriteHubDeps};
 

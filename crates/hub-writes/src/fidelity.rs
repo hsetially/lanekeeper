@@ -224,6 +224,38 @@ pub(crate) fn prepare_checked(
     Ok((prepared, checked))
 }
 
+/// A stored version put back (`revert`): written as it was, byte for byte, unless the request names a line ending style (D17). The
+/// result is validated like any other write: a version that held a secret, or no longer parses, is not restored. Runs on the
+/// blocking pool.
+pub(crate) fn prepare_revert(
+    path: &NfsPath,
+    stored: &Bytes,
+    change_eol: Option<ChangeEol>,
+    max_bytes: usize,
+    old: &Old,
+    deny: &engine::DenyMatcher,
+    limits: &Limits,
+) -> Result<(Bytes, Checked), RejectReason> {
+    let class = engine::classify(path, Some(stored), deny);
+    let bytes = match change_eol {
+        // The stored version is its own basis: its encoding and byte order mark stay, only the style changes.
+        Some(_) => prepare_content(
+            stored,
+            class,
+            Basis::Existing(FileFormatFacts::of(stored)),
+            change_eol,
+            limits,
+        )
+        .map_err(PrepareError::reason)?,
+        None => stored.clone(),
+    };
+    if bytes.len() > max_bytes {
+        return Err(RejectReason::TooLarge);
+    }
+    let checked = check(path, class, &bytes, old, limits);
+    Ok((bytes, checked))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

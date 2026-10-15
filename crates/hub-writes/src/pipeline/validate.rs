@@ -142,6 +142,18 @@ pub(crate) fn check(path: &NfsPath, class: FileClass, new: &Bytes, old: &Old, li
     }
 }
 
+/// The diff an audit event keeps for a deleted file: every line removed, with the lines the scan flagged redacted. A binary file
+/// is named, never shown.
+pub(crate) fn delete_diff(class: FileClass, old: &Old, limits: &Limits) -> String {
+    match (class, old) {
+        (FileClass::Binary | FileClass::Denied, Old::Known(b)) => {
+            format!("binary file deleted ({} bytes)", b.len())
+        }
+        (FileClass::Binary | FileClass::Denied, _) => "binary file deleted".to_owned(),
+        _ => audit_diff(old, "", &BTreeMap::new(), limits),
+    }
+}
+
 /// The marker for each line the scan flagged: the first match on the line stands for the line.
 fn flagged_lines(matches: &[SecretMatch]) -> BTreeMap<u32, String> {
     let mut out = BTreeMap::new();

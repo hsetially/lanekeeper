@@ -13,8 +13,8 @@
 use std::fmt;
 
 use domain::{
-    ContentHash, EditRequest, Expected, NfsPath, RequestId, SwimlaneId, UserId, ValidationIssue, WriteCtx,
-    WriteOutcome,
+    ContentHash, DeleteRequest, EditRequest, Expected, NfsPath, RequestId, RestartRequest, RevertRequest,
+    SwimlaneId, UploadRequest, UserId, ValidationIssue, WriteCtx, WriteOutcome,
 };
 use ports::AuditEvent;
 use serde::{Deserialize, Serialize};
@@ -49,6 +49,46 @@ impl RequestHash {
         b.expected(&r.expected);
         b.field(&Sha256::digest(&r.content));
         b.field(r.change_eol.map_or("", |e| e.as_str()).as_bytes());
+        b.finish()
+    }
+
+    /// The hash of an `upload`: what an `edit` has, without the line ending style. The preview token is not part of it: it
+    /// proves the upload was confirmed, it does not make it another upload, so a retry with a fresh token is the same request.
+    pub(crate) fn of_upload(r: &UploadRequest) -> Self {
+        let mut b = HashBuilder::new("upload/1");
+        b.field(r.swimlane.as_str().as_bytes());
+        b.field(r.path.as_str().as_bytes());
+        b.expected(&r.expected);
+        b.field(&Sha256::digest(&r.content));
+        b.finish()
+    }
+
+    /// The hash of a `delete`: the swimlane, the path and the hash being deleted.
+    pub(crate) fn of_delete(r: &DeleteRequest) -> Self {
+        let mut b = HashBuilder::new("delete/1");
+        b.field(r.swimlane.as_str().as_bytes());
+        b.field(r.path.as_str().as_bytes());
+        b.field(r.expected.as_bytes());
+        b.finish()
+    }
+
+    /// The hash of a `revert`: the swimlane, the path, what is expected there, the version restored and the style asked for.
+    pub(crate) fn of_revert(r: &RevertRequest) -> Self {
+        let mut b = HashBuilder::new("revert/1");
+        b.field(r.swimlane.as_str().as_bytes());
+        b.field(r.path.as_str().as_bytes());
+        b.expected(&r.expected);
+        b.field(r.to.as_bytes());
+        b.field(r.change_eol.map_or("", |e| e.as_str()).as_bytes());
+        b.finish()
+    }
+
+    /// The hash of a `restart`: the swimlane and the service.
+    pub(crate) fn of_restart(r: &RestartRequest) -> Self {
+        let mut b = HashBuilder::new("restart/1");
+        b.field(r.swimlane.as_str().as_bytes());
+        b.field(r.service.namespace().as_bytes());
+        b.field(r.service.name().as_bytes());
         b.finish()
     }
 }
@@ -134,11 +174,25 @@ pub(crate) enum Phase {
     Ambiguous,
 }
 
+/// What the sent command did to the file, which is how a later request finds out whether it landed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum IntentOp {
+    /// A file was written: it landed when the file has `new_hash`.
+    #[default]
+    Write,
+    /// A file was deleted: it landed when the file is gone. `new_hash` is the hash that was deleted.
+    Delete,
+}
+
 /// What a request sent to the agent and what recording it would write: enough to finish the write without the request.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Intent {
     pub v: u8,
     pub phase: Phase,
+    /// Absent in an intent written before deletes existed, which is a write.
+    #[serde(default)]
+    pub op: IntentOp,
     pub swimlane: SwimlaneId,
     pub path: NfsPath,
     pub new_hash: ContentHash,
@@ -582,6 +636,7 @@ mod tests {
         let intent = Intent {
             v: Intent::VERSION,
             phase: Phase::Sent,
+            op: IntentOp::Write,
             swimlane: SwimlaneId::parse("sit1").unwrap(),
             path: NfsPath::parse("a.yml").unwrap(),
             new_hash: ContentHash::from_bytes([1; 32]),

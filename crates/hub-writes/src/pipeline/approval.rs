@@ -6,7 +6,6 @@ use domain::{
     WriteCtx, WriteOutcome,
 };
 use ports::{AuditAction, AuditActor, AuditEvent, AuditVia, Notification, NotificationKind, Tx};
-use serde_json::json;
 
 use crate::error::{Internal, Res};
 use crate::idempotency::{ClaimKey, finish_in_tx, lock_claim};
@@ -16,15 +15,28 @@ use crate::pipeline::{Abort, Done, Step};
 use crate::proposals::store::{NewProposal, insert};
 use crate::service::{Inner, millis};
 
-/// An edit that waits for approval.
-pub(crate) struct EditProposal<'a> {
+/// A change that waits for approval: what an admin will be asked to apply (T4). The proposal keeps the version it proposes (a
+/// blob), the hashes it expects to find, and the few parameters its action needs.
+pub(crate) struct Proposal<'a> {
     pub ctx: &'a WriteCtx,
     pub user: &'a User,
     pub claim: &'a Claim,
     pub swimlane: &'a SwimlaneId,
-    pub path: &'a NfsPath,
-    pub expected: &'a Expected,
-    pub content: bytes::Bytes,
+    /// One of the table's actions: `edit`, `upload`, `delete`, `revert`, `restart`.
+    pub action: &'static str,
+    /// The file the audit event names; none for a restart.
+    pub path: Option<&'a NfsPath>,
+    /// What the proposal lists: the file, or `namespace/name` for a restart. At least one, at most 100.
+    pub paths: Vec<String>,
+    /// Path to the hash the author expected (hex), or `"absent"`.
+    pub base_hashes: serde_json::Value,
+    /// The hash the audit event records as the file's before.
+    pub hash_before: Option<domain::ContentHash>,
+    /// The version that would be written: kept as a blob, and named by the proposal's `new_hash`.
+    pub content: Option<bytes::Bytes>,
+    /// What the action needs besides that: the version a revert restores, the service a restart names.
+    pub params: serde_json::Value,
+    /// The diff the audit event keeps. Flagged values are redacted already.
     pub diff: String,
 }
 
@@ -42,9 +54,19 @@ pub(crate) fn expected_hash(e: &Expected) -> Option<domain::ContentHash> {
     }
 }
 
+/// `{path: expected hash or "absent"}`, the `base_hashes` of a proposal.
+pub(crate) fn base_hash(path: &NfsPath, expected: &Expected) -> serde_json::Value {
+    serde_json::json!({
+        path.as_str(): expected_hash(expected).map_or_else(|| "absent".to_owned(), |h| h.to_string()),
+    })
+}
+
 /// Create the proposal, its audit event, its event and the claim's response in one transaction, then tell the admins.
-pub(crate) async fn propose_edit(hub: &Inner, p: EditProposal<'_>) -> Step<Done> {
-    let new_hash = store_blob(hub, p.content.clone()).await?;
+pub(crate) async fn propose(hub: &Inner, p: Proposal<'_>) -> Step<Done> {
+    let new_hash = match &p.content {
+        Some(bytes) => Some(store_blob(hub, bytes.clone()).await?),
+        None => None,
+    };
     match hub.within("proposal", create(hub, &p, new_hash)).await? {
         Ok(Created::New(outcome)) => {
             if let WriteOutcome::ProposalCreated { id } = &outcome {
@@ -63,7 +85,7 @@ enum Created {
     Existing(WriteOutcome),
 }
 
-async fn create(hub: &Inner, p: &EditProposal<'_>, new_hash: domain::ContentHash) -> Res<Created> {
+async fn create(hub: &Inner, p: &Proposal<'_>, new_hash: Option<domain::ContentHash>) -> Res<Created> {
     let key: &ClaimKey = &p.claim.key;
     let mut tx = hub.pool.begin().await.map_err(|e| Internal::db("proposal", &e))?;
     if let Some(done) = lock_claim(&mut tx, key).await? {
@@ -71,19 +93,16 @@ async fn create(hub: &Inner, p: &EditProposal<'_>, new_hash: domain::ContentHash
         return Ok(Created::Existing(done));
     }
     let now = hub.now_ms();
-    let before = expected_hash(p.expected);
     let id = insert(
         &mut tx,
         &NewProposal {
             author: &p.user.id,
-            action: "edit",
+            action: p.action,
             swimlane: p.swimlane,
-            paths: vec![p.path.as_str().to_owned()],
-            base_hashes: json!({
-                p.path.as_str(): before.map_or_else(|| "absent".to_owned(), |h| h.to_string()),
-            }),
-            new_hash: Some(new_hash),
-            params: json!({}),
+            paths: p.paths.clone(),
+            base_hashes: p.base_hashes.clone(),
+            new_hash,
+            params: p.params.clone(),
             via: p.ctx.via,
             request_id: &p.ctx.request_id,
             created_ms: now,
@@ -110,9 +129,9 @@ async fn create(hub: &Inner, p: &EditProposal<'_>, new_hash: domain::ContentHash
         via_of(p.ctx.via),
     );
     event.swimlane = Some(p.swimlane.clone());
-    event.path = Some(p.path.clone());
-    event.hash_before = before;
-    event.hash_after = Some(new_hash);
+    event.path = p.path.cloned();
+    event.hash_before = p.hash_before;
+    event.hash_after = new_hash;
     event.diff = Some(p.diff.clone());
     event.approval = Some(id);
     event.request_id = Some(p.ctx.request_id.clone());

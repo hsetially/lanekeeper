@@ -16,7 +16,13 @@ fn verify_06_runs_every_sub_recipe() {
         .lines()
         .find(|l| l.starts_with("verify-06:"))
         .expect("a verify-06 recipe");
-    for dep in ["writes-tools-check", "writes-lint", "writes-test", "writes-bench"] {
+    for dep in [
+        "writes-tools-check",
+        "writes-lint",
+        "writes-test",
+        "writes-fuzz",
+        "writes-bench",
+    ] {
         assert!(line.contains(dep), "verify-06 does not run {dep}");
         assert!(
             text.contains(&format!("\n{dep}:")) || text.contains(&format!("\n{dep}: ")),
@@ -96,4 +102,38 @@ fn every_writes_benchmark_is_a_registered_budget() {
             "benches/{name}.rs has no budget in perf/budgets.toml"
         );
     }
+}
+
+#[test]
+fn the_fuzz_list_matches_the_fuzz_targets_directory() {
+    let text = justfile();
+    let list = text
+        .lines()
+        .find_map(|l| l.strip_prefix("writes_fuzz_targets := \""))
+        .and_then(|l| l.strip_suffix('"'))
+        .expect("writes_fuzz_targets");
+    let in_justfile: BTreeSet<String> = list.split_whitespace().map(str::to_owned).collect();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/fuzz_targets");
+    let on_disk: BTreeSet<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| {
+            e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .trim_end_matches(".rs")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(in_justfile, on_disk);
+
+    // The recipe checks the lockfile (deny, audit) and runs every target on the pinned nightly.
+    let recipe: String = text
+        .lines()
+        .skip_while(|l| !l.starts_with("writes-fuzz:"))
+        .take_while(|l| !l.starts_with("# P8"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(recipe.contains("cargo deny --manifest-path crates/hub-writes/fuzz/Cargo.toml"));
+    assert!(recipe.contains("cargo audit --file crates/hub-writes/fuzz/Cargo.lock"));
+    assert!(recipe.contains("--fuzz-dir crates/hub-writes/fuzz"));
 }

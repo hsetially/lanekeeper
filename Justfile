@@ -385,11 +385,10 @@ verify-05:
     @echo "verify-05 not implemented yet" && exit 1
 # Prompt 06 gate (the write paths; S4, S8 to S11, S13, S21, S22; P8, P12): lint, the tests (unit, property, golden and integration; the
 # integration tests need Postgres 16 with pgvector from a Docker daemon or from `LK_TEST_PG_ADMIN_URL`, and fail without one), and
-# the benchmarks checked against perf/budgets.toml. Later tasks add to the sub-recipes below (the fuzz crate arrives with T3) and
-# never skip one. Run `just verify` and `cargo xtask bench-check` after it (AGENTS.md, protocol step 4).
+# the benchmarks checked against perf/budgets.toml. Later tasks add to the sub-recipes below and never skip one. Run `just verify` and `cargo xtask bench-check` after it (AGENTS.md, protocol step 4).
 # Not part of the gate, and said so rather than skipped silently: a real GitHub (CRLF through the Git Data API, fine-grained token
 # behaviour), a real Cloud KMS, a real Teams Workflows webhook and a real agent on NFS; none is reachable from the sandbox.
-verify-06: writes-tools-check writes-lint writes-test writes-bench
+verify-06: writes-tools-check writes-lint writes-test writes-fuzz writes-bench
 
 # The pinned tools the gate needs, and a database for the tests (a Docker daemon, or `LK_TEST_PG_ADMIN_URL` pointing at a throwaway
 # Postgres 16 server), or the command that fixes it. Never skips.
@@ -406,6 +405,23 @@ writes-lint:
 # never a skip.
 writes-test:
     LK_REQUIRE_DOCKER=1 cargo test -p hub-writes --lib --tests
+
+# S22 (from T3): the write path's own fuzz crate (`fuzz-smoke` does not run it). Its lockfile is complete and passes cargo deny and
+# cargo audit (S19), then each target runs {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in
+# crates/hub-writes/fuzz/artifacts/. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart; the same seeds also
+# replay on stable in `cargo test -p hub-writes --test corpus_replay`.
+writes_fuzz_targets := "writes_request_json writes_upload_multipart writes_preview_id"
+writes-fuzz: fuzz-tools-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo +{{fuzz_nightly}} metadata --locked --format-version 1 --manifest-path crates/hub-writes/fuzz/Cargo.toml > /dev/null
+    cargo deny --manifest-path crates/hub-writes/fuzz/Cargo.toml check --config deny.toml
+    cargo audit --file crates/hub-writes/fuzz/Cargo.lock
+    for target in {{writes_fuzz_targets}}; do
+        mkdir -p "target/fuzz-corpus/$target"
+        cargo +{{fuzz_nightly}} fuzz run "$target" --fuzz-dir crates/hub-writes/fuzz "target/fuzz-corpus/$target" "crates/hub-writes/fuzz/corpus/$target" -- -max_total_time={{fuzz_seconds}}
+    done
+    echo "writes-fuzz: {{writes_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
 
 # P8 and P12.hub_writes_queries (from T1): the criterion benchmarks, then `cargo xtask bench-check` on this prompt's budgets only. The
 # full registry needs every other prompt's benchmarks to have run (`just bench`), and `bench-check` has no filter, so the recipe cuts

@@ -10,9 +10,9 @@ use domain::{
     ContentHash, EditRequest, Expected, NfsPath, Role, SwimlaneId, Timestamp, User, UserStatus, WriteCtx,
     WriteOutcome,
 };
-use hub_writes::{ManualClock, WriteConfig, WriteHub, WriteHubDeps};
+use hub_writes::{ManualClock, PREVIEW_KEY_SECRET, WriteConfig, WriteHub, WriteHubDeps};
 use ports::conformance::sample::{active, files, hash, nfs, swimlane, write_ctx};
-use ports::fakes::{FakeNotifier, FakeRegistry, FakeUsers};
+use ports::fakes::{FakeLeases, FakeNotifier, FakeRegistry, FakeSecretSource, FakeUsers};
 use ports::{AuditEntry, content_hash};
 use sqlx::PgPool;
 
@@ -38,8 +38,13 @@ pub struct Rig {
     pub bus: PgTestBus,
     pub audit: Arc<PgTestAudit>,
     pub notifier: Arc<FakeNotifier>,
+    pub leases: Arc<FakeLeases>,
+    pub secrets: Arc<FakeSecretSource>,
     pub clock: Arc<ManualClock>,
 }
+
+/// The key the rig's preview tokens are signed with.
+pub const PREVIEW_KEY: &str = "rig-preview-key-0123456789abcdef-0123456789";
 
 impl Rig {
     pub async fn new(db: TestDb) -> Self {
@@ -49,6 +54,15 @@ impl Rig {
     pub async fn with_config(db: TestDb, config: WriteConfig) -> Self {
         let pool = db.app_pool(8).await;
         Self::build(db, pool, config, false)
+    }
+
+    /// A rig whose secret source holds `secrets` (the preview key is not there unless the test puts it in).
+    pub async fn with_secrets(db: TestDb, secrets: FakeSecretSource) -> Self {
+        let pool = db.app_pool(8).await;
+        let mut rig = Self::build(db, pool, WriteConfig::default(), false);
+        rig.secrets = Arc::new(secrets);
+        rig.hub = rig.replica();
+        rig
     }
 
     /// A rig whose registry is never behind NFS (see `LiveRegistry`): the common case in service, and what the benchmarks use.
@@ -65,6 +79,8 @@ impl Rig {
         let bus = PgTestBus::new(pool.clone());
         let audit = Arc::new(PgTestAudit::new());
         let notifier = Arc::new(FakeNotifier::new());
+        let leases = Arc::new(FakeLeases::new());
+        let secrets = Arc::new(FakeSecretSource::new().with(PREVIEW_KEY_SECRET, PREVIEW_KEY));
         let clock = Arc::new(ManualClock::at(Timestamp::from_unix_millis(START)));
         let reader: Arc<dyn ports::RegistryRead> = if live {
             Arc::new(LiveRegistry(agent.clone()))
@@ -81,6 +97,8 @@ impl Rig {
             registry: reader,
             tool_writes: Arc::new(PgToolWrites),
             notifier: notifier.clone(),
+            secrets: secrets.clone(),
+            leases: leases.clone(),
             clock: clock.clone(),
             config,
         })
@@ -96,6 +114,8 @@ impl Rig {
             bus,
             audit,
             notifier,
+            leases,
+            secrets,
             clock,
         }
     }
@@ -112,6 +132,8 @@ impl Rig {
             registry: self.registry.clone(),
             tool_writes: Arc::new(PgToolWrites),
             notifier: self.notifier.clone(),
+            secrets: self.secrets.clone(),
+            leases: self.leases.clone(),
             clock: self.clock.clone(),
             config: WriteConfig::default(),
         })
@@ -174,6 +196,36 @@ impl Rig {
         .await
         .unwrap();
         swimlane(id)
+    }
+
+    /// The swimlane deploys this tenant (Q34: a swimlane has a set).
+    pub async fn tenant(&self, s: &SwimlaneId, tenant: &str) {
+        sqlx::query(
+            "INSERT INTO swimlane_tenants (swimlane_id, tenant_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(s.as_str())
+        .bind(tenant)
+        .execute(&self.pool)
+        .await
+        .unwrap();
+    }
+
+    /// The cluster report lists this Deployment; `app` is its `SPRING_APPLICATION_NAME` (D88).
+    pub async fn service(&self, s: &SwimlaneId, namespace: &str, name: &str, app: Option<&str>) {
+        let env = app.map_or_else(
+            || serde_json::json!({}),
+            |a| serde_json::json!({ "SPRING_APPLICATION_NAME": a }),
+        );
+        sqlx::query(
+            "INSERT INTO services (swimlane_id, namespace, name, env_values) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+        )
+        .bind(s.as_str())
+        .bind(namespace)
+        .bind(name)
+        .bind(env)
+        .execute(&self.pool)
+        .await
+        .unwrap();
     }
 
     /// The swimlane's files on the agent's NFS and in the registry.

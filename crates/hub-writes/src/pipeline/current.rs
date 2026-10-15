@@ -82,3 +82,37 @@ async fn read_from_agent(
         _ => None,
     }
 }
+
+/// What the agent has at a path right now.
+pub(crate) enum AgentFile {
+    Present {
+        hash: domain::ContentHash,
+        bytes: Bytes,
+    },
+    Absent,
+    /// The agent could not be asked, or answered something else.
+    Unreachable,
+}
+
+/// Ask the agent for the file: the truth about NFS, for the actions that must not destroy a version nobody kept.
+pub(crate) async fn agent_file(hub: &Inner, swimlane: &SwimlaneId, path: &NfsPath) -> AgentFile {
+    let Ok(request_id) = RequestId::parse(&format!("read-{:016x}", fastrand::u64(..))) else {
+        return AgentFile::Unreachable;
+    };
+    let cmd = domain::HubCommand::ReadFile {
+        request_id,
+        path: path.clone(),
+    };
+    let asked = tokio::time::timeout(
+        hub.cfg.agent_timeout,
+        hub.gateway.request(swimlane, cmd, hub.cfg.agent_timeout),
+    )
+    .await;
+    match asked {
+        Ok(Ok(AgentReply::File { hash, bytes, .. })) if content_hash(&bytes) == hash => {
+            AgentFile::Present { hash, bytes }
+        }
+        Ok(Ok(AgentReply::Op(op))) if op.error == Some(domain::OpError::NotFound) => AgentFile::Absent,
+        _ => AgentFile::Unreachable,
+    }
+}

@@ -9,15 +9,28 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+# Hooks for the fuzz targets (S22): the preview token for one fixed request, so the target can ask what the service accepts. Off in
+# every build of the hub; the crate's own tests and its fuzz crate switch it on.
+fuzz-hooks = []
+
 [dependencies]
 domain.workspace = true
 # The fact engine validates and scans content before it is written (rule 7, S13) and gives the diffs and line endings.
 engine.workspace = true
 ports = { workspace = true, features = ["postgres"] }
+# The guarded router the write routes are registered through (S4), the authenticated user and the problem type (plan A15).
+hub-platform.workspace = true
 async-trait.workspace = true
+# The preview token (D46): HMAC-SHA256 over the request it is bound to. The stack's one crypto provider, already in the graph.
+aws-lc-rs.workspace = true
+axum.workspace = true
+base64.workspace = true
 bytes.workspace = true
 # Retry and wait jitter (rule 5).
 fastrand.workspace = true
+http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -29,7 +42,15 @@ tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tracing.workspace = true
 
 [dev-dependencies]
-ports = { workspace = true, features = ["fakes", "postgres"] }
+# This crate's own tests need the fuzz hooks its feature switches on (the corpus replay).
+hub-writes = { path = ".", version = "0.1.0", features = ["fuzz-hooks"] }
+ports = { workspace = true, features = ["fakes", "postgres", "conformance"] }
+# `FakeSessionAuth` and `RouteSpec::registered`, for the route tests (S4).
+hub-platform = { workspace = true, features = ["fakes"] }
+http-body-util.workspace = true
+tower = { workspace = true, features = ["util"] }
+# Reads the OpenAPI operations (tags) in the route-table test.
+serde-saphyr.workspace = true
 # Real Postgres 16 in a container (or `LK_TEST_PG_ADMIN_URL`), migrated as lanekeeper_migrator and used as lanekeeper_app.
 sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json", "migrate"] }
 testcontainers.workspace = true

@@ -6,23 +6,25 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use domain::{
-    ChangePreview, DeleteRequest, Draft, DraftId, EditRequest, NotifyRequest, PrRequest, PreviewRequest,
-    RestartRequest, RevertRequest, Role, UploadRequest, WriteCtx, WriteOutcome,
+    ChangePreview, DeleteRequest, Draft, DraftId, EditRequest, NfsPath, NotifyRequest, PrRequest,
+    PreviewRequest, RestartRequest, RevertRequest, Role, ServiceRef, SwimlaneId, UploadRequest, WriteCtx,
+    WriteOutcome,
 };
 use engine::{DenyMatcher, Limits};
 use ports::{
-    AgentGateway, AuditLog, BlobStore, EventBus, Notifier, RegistryRead, ToolWrites, Users, WriteError,
-    WriteService,
+    AgentGateway, AuditLog, BlobStore, EventBus, Leases, Notifier, RegistryRead, SecretSource, ToolWrites,
+    Users, WriteError, WriteService,
 };
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 use tracing::Instrument;
 
 use crate::clock::Clock;
-use crate::config::WriteConfig;
+use crate::config::{PREVIEW_KEY_SECRET, WriteConfig};
 use crate::error::{ConfigError, Internal, Res};
 use crate::idempotency::IdempotencyStore;
 use crate::pipeline::authorize::authorize;
+use crate::preview::token::PreviewKey;
 use crate::reconcile::ReconcileWrites;
 
 /// What the write hub is built from: the ports it uses, the pool for its own tables, and the settings.
@@ -36,6 +38,10 @@ pub struct WriteHubDeps {
     pub registry: Arc<dyn RegistryRead>,
     pub tool_writes: Arc<dyn ToolWrites>,
     pub notifier: Arc<dyn Notifier>,
+    /// The preview token's key is read from here (secret [`PREVIEW_KEY_SECRET`]).
+    pub secrets: Arc<dyn SecretSource>,
+    /// One restart per service at a time, across replicas.
+    pub leases: Arc<dyn Leases>,
     pub clock: Arc<dyn Clock>,
     pub config: WriteConfig,
 }
@@ -58,6 +64,8 @@ pub(crate) struct Inner {
     pub registry: Arc<dyn RegistryRead>,
     pub tool_writes: Arc<dyn ToolWrites>,
     pub notifier: Arc<dyn Notifier>,
+    pub leases: Arc<dyn Leases>,
+    pub preview_key: PreviewKey,
     pub clock: Arc<dyn Clock>,
     pub cfg: WriteConfig,
     pub deny: Arc<DenyMatcher>,
@@ -135,6 +143,8 @@ impl WriteHub {
                 registry: deps.registry,
                 tool_writes: deps.tool_writes,
                 notifier: deps.notifier,
+                leases: deps.leases,
+                preview_key: PreviewKey::new(deps.secrets, PREVIEW_KEY_SECRET),
                 clock: deps.clock,
                 cfg: deps.config,
                 deny: Arc::new(deny),
@@ -144,10 +154,30 @@ impl WriteHub {
         })
     }
 
+    /// The most one file may weigh, for [`crate::routes::WriteState::new`]: the routes limit a form to it before they read it.
+    pub fn max_content_bytes(&self) -> usize {
+        self.inner.cfg.max_content_bytes
+    }
+
     /// The job that finishes writes that landed without being recorded, and sweeps expired idempotency rows. Run it under a
     /// lease (D63).
     pub fn reconciler(&self) -> ReconcileWrites {
         ReconcileWrites::new(self.inner.clone())
+    }
+
+    /// The services a "restart all" confirmation lists for a change to `path` (D49): every service of the swimlane for a file in
+    /// the root folder, which every service reads (D82), and the Deployments of the application for a file in its folder. The
+    /// screen restarts them one request at a time, each with its own idempotency key. Operator only.
+    ///
+    /// # Errors
+    /// [`WriteError::Forbidden`] below Operator, [`WriteError::Unavailable`] when the store does not answer.
+    pub async fn restart_offer(
+        &self,
+        ctx: &WriteCtx,
+        swimlane: &SwimlaneId,
+        path: &NfsPath,
+    ) -> Result<Vec<ServiceRef>, WriteError> {
+        crate::ops::restart::restart_offer(&self.inner, ctx, swimlane, path).await
     }
 }
 
@@ -171,20 +201,55 @@ impl WriteService for WriteHub {
         crate::ops::edit::edit(&self.inner, ctx, r).instrument(span).await
     }
 
-    async fn upload(&self, ctx: &WriteCtx, _r: UploadRequest) -> Result<WriteOutcome, WriteError> {
-        not_wired(self, ctx, Role::Editor).await
+    async fn upload(&self, ctx: &WriteCtx, r: UploadRequest) -> Result<WriteOutcome, WriteError> {
+        let span = tracing::info_span!(
+            "write.upload",
+            request_id = %ctx.request_id,
+            user = %ctx.user.id,
+            swimlane = %r.swimlane,
+            path = %r.path,
+        );
+        crate::ops::upload::upload(&self.inner, ctx, r)
+            .instrument(span)
+            .await
     }
 
-    async fn delete(&self, ctx: &WriteCtx, _r: DeleteRequest) -> Result<WriteOutcome, WriteError> {
-        not_wired(self, ctx, Role::Editor).await
+    async fn delete(&self, ctx: &WriteCtx, r: DeleteRequest) -> Result<WriteOutcome, WriteError> {
+        let span = tracing::info_span!(
+            "write.delete",
+            request_id = %ctx.request_id,
+            user = %ctx.user.id,
+            swimlane = %r.swimlane,
+            path = %r.path,
+        );
+        crate::ops::delete::delete(&self.inner, ctx, r)
+            .instrument(span)
+            .await
     }
 
-    async fn revert(&self, ctx: &WriteCtx, _r: RevertRequest) -> Result<WriteOutcome, WriteError> {
-        not_wired(self, ctx, Role::Editor).await
+    async fn revert(&self, ctx: &WriteCtx, r: RevertRequest) -> Result<WriteOutcome, WriteError> {
+        let span = tracing::info_span!(
+            "write.revert",
+            request_id = %ctx.request_id,
+            user = %ctx.user.id,
+            swimlane = %r.swimlane,
+            path = %r.path,
+        );
+        crate::ops::revert::revert(&self.inner, ctx, r)
+            .instrument(span)
+            .await
     }
 
-    async fn restart(&self, ctx: &WriteCtx, _r: RestartRequest) -> Result<WriteOutcome, WriteError> {
-        not_wired(self, ctx, Role::Operator).await
+    async fn restart(&self, ctx: &WriteCtx, r: RestartRequest) -> Result<WriteOutcome, WriteError> {
+        let span = tracing::info_span!(
+            "write.restart",
+            request_id = %ctx.request_id,
+            user = %ctx.user.id,
+            swimlane = %r.swimlane,
+        );
+        crate::ops::restart::restart(&self.inner, ctx, r)
+            .instrument(span)
+            .await
     }
 
     async fn raise_pr(&self, ctx: &WriteCtx, _r: PrRequest) -> Result<WriteOutcome, WriteError> {
@@ -199,8 +264,17 @@ impl WriteService for WriteHub {
         not_wired(self, ctx, Role::Editor).await
     }
 
-    async fn preview_effect(&self, ctx: &WriteCtx, _r: PreviewRequest) -> Result<ChangePreview, WriteError> {
-        not_wired(self, ctx, Role::Editor).await
+    async fn preview_effect(&self, ctx: &WriteCtx, r: PreviewRequest) -> Result<ChangePreview, WriteError> {
+        let span = tracing::info_span!(
+            "write.preview",
+            request_id = %ctx.request_id,
+            user = %ctx.user.id,
+            swimlane = %r.swimlane,
+            path = %r.path,
+        );
+        crate::preview::effect::preview_effect(&self.inner, ctx, r)
+            .instrument(span)
+            .await
     }
 
     async fn notify(&self, ctx: &WriteCtx, _r: NotifyRequest) -> Result<WriteOutcome, WriteError> {

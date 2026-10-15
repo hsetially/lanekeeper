@@ -6,7 +6,8 @@
     clippy::expect_used,
     clippy::panic,
     clippy::missing_panics_doc,
-    clippy::print_stderr
+    clippy::print_stderr,
+    clippy::too_many_lines
 )]
 
 pub mod fake_agent;

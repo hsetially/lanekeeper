@@ -1,0 +1,10 @@
+multipart/form-data; boundary=----seed
+------seed
+Content-Disposition: form-data; name="path"
+
+new.yml
+------seed
+Content-Disposition: form-data; name="expected_state"
+
+absent
+------seed--

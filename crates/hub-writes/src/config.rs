@@ -6,6 +6,10 @@ use engine::Limits;
 
 use crate::error::ConfigError;
 
+/// The name of the secret that holds the key preview tokens are signed with (D46). At least 32 characters; rotating it makes the
+/// tokens issued before the change fail to verify, which costs a person one more preview.
+pub const PREVIEW_KEY_SECRET: &str = "write-preview-key";
+
 /// What the write hub is configured with. The defaults are the plan's.
 #[derive(Debug, Clone)]
 pub struct WriteConfig {

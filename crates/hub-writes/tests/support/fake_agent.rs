@@ -30,6 +30,13 @@ pub enum Fault {
     Denied,
 }
 
+impl Fault {
+    /// True for a fault that applies after the command has run (the reply is lost).
+    pub fn lands(self) -> bool {
+        matches!(self, Self::LandThenTimeout | Self::LandThenClosed)
+    }
+}
+
 struct State {
     files: BTreeMap<(SwimlaneId, NfsPath), Bytes>,
     delay: Duration,
@@ -45,6 +52,8 @@ pub struct FakeAgent {
     /// Signalled each time a `WriteFile` reaches the agent (before it waits at the gate).
     pub entered: Arc<Notify>,
     writes: Arc<AtomicUsize>,
+    deletes: Arc<AtomicUsize>,
+    restarts: Arc<AtomicUsize>,
 }
 
 impl std::fmt::Debug for FakeAgent {
@@ -76,6 +85,8 @@ impl FakeAgent {
             })),
             entered: Arc::new(Notify::new()),
             writes: Arc::new(AtomicUsize::new(0)),
+            deletes: Arc::new(AtomicUsize::new(0)),
+            restarts: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -129,6 +140,16 @@ impl FakeAgent {
         self.writes.load(Ordering::SeqCst)
     }
 
+    /// How many `DeleteFile` commands removed a file.
+    pub fn deletes_applied(&self) -> usize {
+        self.deletes.load(Ordering::SeqCst)
+    }
+
+    /// How many `RestartDeployment` commands ran.
+    pub fn restarts_applied(&self) -> usize {
+        self.restarts.load(Ordering::SeqCst)
+    }
+
     pub fn commands(&self) -> Vec<HubCommand> {
         lock(&self.state).commands.clone()
     }
@@ -172,7 +193,12 @@ impl AgentGateway for FakeAgent {
                 return Err(GatewayError::NotConnected);
             }
             st.commands.push(cmd.clone());
-            let fault = if matches!(cmd, HubCommand::WriteFile { .. }) {
+            let fault = if matches!(
+                cmd,
+                HubCommand::WriteFile { .. }
+                    | HubCommand::DeleteFile { .. }
+                    | HubCommand::RestartDeployment { .. }
+            ) {
                 st.faults.pop_front()
             } else {
                 None
@@ -242,24 +268,53 @@ impl AgentGateway for FakeAgent {
                 path,
                 expected,
             } => {
-                let key = (s.clone(), path);
-                let mut st = lock(&self.state);
-                let current = st.files.get(&key).map(|b| content_hash(b));
-                Ok(match current {
-                    None => Self::op(request_id, false, Some(OpError::NotFound), None),
-                    Some(c) if c == expected => {
-                        st.files.remove(&key);
-                        Self::op(request_id, true, None, None)
+                match fault {
+                    Some(Fault::Io) => return Ok(Self::op(request_id, false, Some(OpError::Io), None)),
+                    Some(Fault::Denied) => {
+                        return Ok(Self::op(request_id, false, Some(OpError::Denied), None));
                     }
-                    Some(c) => Self::op(request_id, false, Some(OpError::Conflict), Some(c)),
-                })
+                    _ => {}
+                }
+                let key = (s.clone(), path);
+                let reply = {
+                    let mut st = lock(&self.state);
+                    let current = st.files.get(&key).map(|b| content_hash(b));
+                    match current {
+                        None => Self::op(request_id, false, Some(OpError::NotFound), None),
+                        Some(c) if c == expected => {
+                            st.files.remove(&key);
+                            self.deletes.fetch_add(1, Ordering::SeqCst);
+                            Self::op(request_id, true, None, None)
+                        }
+                        Some(c) => Self::op(request_id, false, Some(OpError::Conflict), Some(c)),
+                    }
+                };
+                match fault {
+                    Some(Fault::LandThenTimeout) => Err(GatewayError::Timeout),
+                    Some(Fault::LandThenClosed) => Err(GatewayError::Closed),
+                    _ => Ok(reply),
+                }
             }
             HubCommand::NotifyConfigServer { request_id, .. } => Ok(AgentReply::Notify {
                 request_id,
                 status: 200,
             }),
-            HubCommand::RestartDeployment { request_id, .. }
-            | HubCommand::RequestClusterReport { request_id } => Ok(Self::op(request_id, true, None, None)),
+            HubCommand::RestartDeployment { request_id, .. } => {
+                match fault {
+                    Some(Fault::Io) => return Ok(Self::op(request_id, false, Some(OpError::Io), None)),
+                    Some(Fault::Denied) => {
+                        return Ok(Self::op(request_id, false, Some(OpError::Denied), None));
+                    }
+                    _ => {}
+                }
+                self.restarts.fetch_add(1, Ordering::SeqCst);
+                match fault {
+                    Some(Fault::LandThenTimeout) => Err(GatewayError::Timeout),
+                    Some(Fault::LandThenClosed) => Err(GatewayError::Closed),
+                    _ => Ok(Self::op(request_id, true, None, None)),
+                }
+            }
+            HubCommand::RequestClusterReport { request_id } => Ok(Self::op(request_id, true, None, None)),
             HubCommand::FetchServed { .. }
             | HubCommand::RequestDelta { .. }
             | HubCommand::RequestFullScan => Err(GatewayError::Unavailable),
