@@ -379,7 +379,22 @@ pub(crate) async fn commit_applied(
     intent: &Intent,
     observed: ContentHash,
 ) -> Res<Committed> {
+    commit_applied_with(hub, key, intent, observed, None).await
+}
+
+/// [`commit_applied`] with a note added to the end of the event's diff (within what an event may hold: a diff that fills the event
+/// is cut, at a character boundary, to take it). The reconcile step says by it what it saw when it recorded a delete.
+pub(crate) async fn commit_applied_with(
+    hub: &Inner,
+    key: &ClaimKey,
+    intent: &Intent,
+    observed: ContentHash,
+    note: Option<&str>,
+) -> Res<Committed> {
     let mut event = intent.event.clone();
+    if let Some(note) = note {
+        event.diff = Some(with_note(event.diff.take(), note));
+    }
     let before = event.hash_before;
     let rec = match intent.op {
         IntentOp::Write => {
@@ -428,6 +443,21 @@ pub(crate) async fn commit_applied(
         }
     };
     record(hub, rec).await
+}
+
+/// `diff` with `note` at the end, within [`AuditEvent::MAX_DIFF_BYTES`].
+fn with_note(diff: Option<String>, note: &str) -> String {
+    let mut text = diff.unwrap_or_default();
+    let room = AuditEvent::MAX_DIFF_BYTES.saturating_sub(note.len());
+    if text.len() > room {
+        let mut end = room;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    text.push_str(note);
+    text
 }
 
 /// Say that the request that sent this intent has given up without knowing whether the write landed, so that the next request

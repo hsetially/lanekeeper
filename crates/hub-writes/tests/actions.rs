@@ -996,6 +996,42 @@ async fn a_lost_delete_reply_is_resolved_by_the_retry_without_a_second_delete() 
     assert_eq!(rig.agent.deletes_applied(), 1, "found gone, not deleted again");
     assert_eq!(rig.chain().await.len(), 1);
     assert_eq!(rig.chain().await[0].event.action, AuditAction::FileDeleted);
+    // "Gone" does not prove that this request's delete removed the file: another change may have, between the intent and the
+    // command. The record says that it was found gone, so nobody reads it as more than that.
+    let diff = rig.chain().await[0].event.diff.clone().unwrap_or_default();
+    assert!(
+        diff.contains("found gone") && diff.contains("cannot be told whether"),
+        "{diff}"
+    );
+    assert!(diff.len() <= ports::AuditEvent::MAX_DIFF_BYTES);
+}
+
+/// The same record for a delete found gone by the reconcile job, and a diff that already fills the event is cut to take the note.
+#[tokio::test]
+async fn the_note_on_a_delete_found_gone_fits_a_full_diff() {
+    let Some((rig, s)) = rig().await else { return };
+    let editor = rig.user(1, Role::Editor).await;
+    // A file whose diff is as long as an event may hold: 40,000 lines.
+    let mut text = String::new();
+    for n in 0..40_000 {
+        std::fmt::Write::write_fmt(&mut text, format_args!("k{n}: 1\n")).unwrap();
+    }
+    rig.agent.put(&s, &nfs("big.yml"), text.as_bytes());
+    rig.catch_up_registry(&s);
+    let hash = ports::content_hash(text.as_bytes());
+    let pv = preview(&rig, &editor, "p-1", delete_preview(&s, "big.yml", hash)).await;
+    rig.agent.fault_next_write(Fault::LandThenTimeout);
+    let _ = rig
+        .hub
+        .delete(&ctx(&editor, "k-1"), delete_req(&s, "big.yml", hash, Some(&pv)))
+        .await;
+    rig.advance_secs(61);
+    let report = rig.hub.reconciler().run_once(&|| true).await;
+    assert_eq!(report.completed, 1, "{report:?}");
+    let diff = rig.chain().await[0].event.diff.clone().unwrap_or_default();
+    assert!(diff.len() <= ports::AuditEvent::MAX_DIFF_BYTES, "{}", diff.len());
+    assert!(diff.ends_with(')'), "the note is at the end");
+    assert!(diff.contains("found gone"));
 }
 
 // ------------------------------------------------------------------------------------------------------------- revert

@@ -45,7 +45,7 @@ const MIN_RESIDUAL_RISKS: usize = 11;
 
 /// The limits that earlier tasks recorded for the threat model. Each topic needs one residual-risk bullet that contains every
 /// needle, so a topic cannot be "covered" by words scattered over unrelated bullets.
-const CARRY_FORWARD: [(&str, &[&str]); 27] = [
+const CARRY_FORWARD: [(&str, &[&str]); 28] = [
     (
         "a landed write overwritten before the reconcile job looks is not audited as ours (T1)",
         &[
@@ -162,6 +162,16 @@ const CARRY_FORWARD: [(&str, &[&str]); 27] = [
     (
         "an approver sees only the first path of a notification, and no action (T11)",
         &["ProposalView", "first path", "approver", "no `action`"],
+    ),
+    (
+        "a delete found gone by the reconcile step may not have been this request's (review 2)",
+        &[
+            "found gone",
+            "cannot be told",
+            "keeps no receipt",
+            "ReconcileWrites",
+            "contract follow-up",
+        ],
     ),
     (
         "a proposal deleted elsewhere leaves its blob reference behind (review 2)",
@@ -1125,6 +1135,20 @@ fn anchor_problems(source: &dyn Fn(&str) -> String) -> Vec<String> {
         "`config_server_offer` in ops/restart.rs authorizes an Operator, checks that C11 is open, and offers exactly one Deployment of the configured name",
     );
 
+    // 17. A delete found gone is recorded with a note that says that is all that was seen.
+    let reconcile_src = source("crates/hub-writes/src/reconcile.rs");
+    check(
+        in_order(
+            &reconcile_src,
+            &[
+                "intent.op == IntentOp::Delete && op.error == Some(OpError::NotFound)",
+                "commit_applied_with(hub, key, &intent, intent.new_hash, Some(GONE_NOTE))",
+            ],
+        ),
+        "a delete found gone",
+        "`resolve` in reconcile.rs records a delete because the file was gone with a note on its event",
+    );
+
     // 16. This crate never deletes a proposal, so no `blob_refs` row of a proposal is left behind by it.
     check(
         [
@@ -1585,6 +1609,12 @@ fn planted_gaps_are_found() {
             "let [(namespace, name)] = found.as_slice() else {",
             "let Some((namespace, name)) = found.first() else {",
             "Deployment name",
+        ),
+        (
+            "crates/hub-writes/src/reconcile.rs",
+            "commit_applied_with(hub, key, &intent, intent.new_hash, Some(GONE_NOTE))",
+            "commit_applied(hub, key, &intent, intent.new_hash)",
+            "a delete found gone",
         ),
         (
             "crates/hub-writes/src/proposals/store.rs",

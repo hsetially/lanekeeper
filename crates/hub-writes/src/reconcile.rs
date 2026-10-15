@@ -14,14 +14,15 @@
 //! transaction, which locks the claim first, so a write is recorded once however many of them race.
 //!
 //! What remains: a write that landed and was overwritten by somebody else before anybody looked is not recorded as ours (the
-//! registry still observed that version, D47). It is listed as a residual risk in the threat model.
+//! registry still observed that version, D47). And a delete is recorded when the file is found gone, which does not say whose delete
+//! removed it: the event carries a note that says so. Both are listed as residual risks in the threat model.
 
 use std::sync::Arc;
 
 use domain::{AgentReply, OpError, RequestId, WriteOutcome};
 
 use crate::idempotency::{ClaimKey, Intent, IntentOp};
-use crate::pipeline::execute::{Committed, commit_applied, store_blob};
+use crate::pipeline::execute::{Committed, commit_applied, commit_applied_with, store_blob};
 use crate::service::{Inner, millis};
 
 /// What looking at one unfinished claim came to.
@@ -63,7 +64,9 @@ pub(crate) async fn resolve(hub: &Inner, key: &ClaimKey, body: Option<&[u8]>) ->
         Ok(Ok(AgentReply::Op(op)))
             if intent.op == IntentOp::Delete && op.error == Some(OpError::NotFound) =>
         {
-            match commit_applied(hub, key, &intent, intent.new_hash).await {
+            // The file being gone does not say whose delete removed it: another change may have, after the intent was kept and
+            // before (or instead of) the command. The agent keeps no receipt a read could ask for, so the record says what was seen.
+            match commit_applied_with(hub, key, &intent, intent.new_hash, Some(GONE_NOTE)).await {
                 Ok(Committed::Done(outcome)) => Resolved::Completed(outcome),
                 Ok(Committed::Lost(_)) => Resolved::Raced,
                 Err(_) => Resolved::Unreachable,
@@ -90,6 +93,9 @@ pub(crate) async fn resolve(hub: &Inner, key: &ClaimKey, body: Option<&[u8]>) ->
         _ => Resolved::Unreachable,
     }
 }
+
+/// What the audit event of a delete that was found gone says besides the diff of the file.
+const GONE_NOTE: &str = "\n(recorded by the reconcile step: the file was found gone, and it cannot be told whether this request's delete or another change removed it)";
 
 async fn clear(hub: &Inner, key: &ClaimKey) -> Resolved {
     match hub.within("clear", hub.idem.release(key)).await {
