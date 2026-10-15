@@ -1165,7 +1165,10 @@ fn preview_operation_and_upload_text() {
         );
         let text = content["description"].as_str().unwrap();
         assert!(
-            text.contains("2 MiB") && text.contains("bytes") && text.contains("413") && text.contains("characters"),
+            text.contains("2 MiB")
+                && text.contains("bytes")
+                && text.contains("413")
+                && text.contains("characters"),
             "{schema}.content says that the 2 MiB is counted in bytes by the server (413) and that `maxLength` counts characters: {text}"
         );
         assert!(
