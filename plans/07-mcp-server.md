@@ -1,7 +1,7 @@
 # Plan 07: MCP server for Cursor 3.22.12
 
-Status: DRAFT
-Contract-change: needed
+Status: APPROVED
+Contract-change: APPROVED
 Extra-paths: `docs/decisions.md`, `docs/threat-model.md`, `crates/xtask/tests/mcp_tools_doc.rs`, `crates/xtask/tests/budgets_registry.rs`, `crates/hub/Cargo.toml`, `crates/hub/src/lib.rs`, `crates/hub/src/mcp.rs`, `crates/hub/tests/mcp_module.rs`
 Prompt: prompts/07-mcp-server.md
 Branch: agent/07-mcp-server
