@@ -68,14 +68,15 @@ impl Replay {
         (fresh && &entry.request == request).then_some(entry.result)
     }
 
-    /// Run the cache's pending maintenance (tests, so that the weight bound is visible at once).
-    #[doc(hidden)]
+    /// Run the cache's pending maintenance (this module's tests, so that the weight bound is visible at once). Not part of the
+    /// crate's API outside them.
+    #[cfg(test)]
     pub fn run_pending_tasks(&self) {
         self.cache.run_pending_tasks();
     }
 
-    /// The weight of what is stored now (tests).
-    #[doc(hidden)]
+    /// The weight of what is stored now (this module's tests).
+    #[cfg(test)]
     #[must_use]
     pub fn weighted_size(&self) -> u64 {
         self.cache.weighted_size()

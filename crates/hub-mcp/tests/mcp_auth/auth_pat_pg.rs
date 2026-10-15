@@ -117,7 +117,7 @@ async fn pat_is_stored_as_hmac_not_plaintext_in_the_table() {
         .await
         .unwrap();
     let parsed = PersonalToken::parse(&token).unwrap();
-    assert_eq!(stored, key().lookup(&parsed).as_bytes());
+    assert_eq!(stored, key().lookup(&parsed).unwrap().as_bytes());
     // Nothing in any column, and nothing in the audit table, holds the token.
     let row = sqlx::query("SELECT row_to_json(t)::text AS j FROM mcp_tokens t")
         .fetch_one(&pg.pool)

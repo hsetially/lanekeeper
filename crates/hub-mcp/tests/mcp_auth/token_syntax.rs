@@ -4,8 +4,8 @@
 use std::collections::HashSet;
 
 use hub_mcp::auth::token::{
-    HmacKey, KeyError, MAX_KEY_BYTES, MIN_KEY_BYTES, PREFIX, PersonalToken, TOKEN_LEN, TokenHmac, generate,
-    looks_like_personal_token,
+    DigestLength, HmacKey, KeyError, MAX_KEY_BYTES, MIN_KEY_BYTES, PREFIX, PersonalToken, TOKEN_LEN,
+    TokenHmac, generate, looks_like_personal_token,
 };
 use proptest::prelude::*;
 
@@ -40,16 +40,38 @@ fn the_hash_is_hmac_sha256_of_the_token_text() {
     let token = format!("{PREFIX}{}", "A".repeat(43));
     let parsed = PersonalToken::parse(&token).unwrap();
     assert_eq!(
-        hex::encode(key().lookup(&parsed).as_bytes()),
+        hex::encode(key().lookup(&parsed).unwrap().as_bytes()),
         "9d710e97e9ab568ac9a73ac23dba6834b6d5f69f50863f038076f061cfed07c1"
     );
     // The all-ones secret (a "_" in the last position), which exercises the other end of the alphabet.
     let token = format!("{PREFIX}{}8", "_".repeat(42));
     let parsed = PersonalToken::parse(&token).unwrap();
     assert_eq!(
-        hex::encode(key().lookup(&parsed).as_bytes()),
+        hex::encode(key().lookup(&parsed).unwrap().as_bytes()),
         "ad0b8f23b4db46a8fa45ac2d8cef40bcf1f94e77e4168a110a8854d63eddafe4"
     );
+}
+
+/// AGENTS.md rule 2: nothing here panics. HMAC-SHA-256 is 32 bytes, but the conversion does not rely on it: a digest of any other
+/// length is an error, and that error reaches the caller (`lookup` returns it) and does not become a hash.
+#[test]
+fn a_digest_of_the_wrong_length_is_an_error_and_not_a_panic() {
+    for len in [0_usize, 1, 16, 31, 33, 64, 1024] {
+        assert_eq!(
+            TokenHmac::from_digest(&vec![7_u8; len]),
+            Err(DigestLength),
+            "{len} bytes"
+        );
+    }
+    assert_eq!(
+        TokenHmac::from_digest(&[7_u8; 32]),
+        Ok(TokenHmac::from_bytes([7_u8; 32]))
+    );
+    // The hash of a token goes through the same conversion, and comes back as the 32 bytes of the algorithm.
+    let token = generate().unwrap();
+    let parsed = PersonalToken::parse(&token).unwrap();
+    let hash: Result<TokenHmac, DigestLength> = key().lookup(&parsed);
+    assert_eq!(hash.unwrap().as_bytes().len(), 32);
 }
 
 #[test]
@@ -57,8 +79,8 @@ fn another_key_gives_another_hash_and_the_same_key_the_same_hash() {
     let token = generate().unwrap();
     let parsed = PersonalToken::parse(&token).unwrap();
     let other = HmacKey::from_bytes(&[7_u8; 32]).unwrap();
-    assert_eq!(key().lookup(&parsed), key().lookup(&parsed));
-    assert_ne!(key().lookup(&parsed), other.lookup(&parsed));
+    assert_eq!(key().lookup(&parsed).unwrap(), key().lookup(&parsed).unwrap());
+    assert_ne!(key().lookup(&parsed).unwrap(), other.lookup(&parsed).unwrap());
 }
 
 #[test]
@@ -139,7 +161,7 @@ fn keys_are_bounded_and_the_error_says_nothing_of_the_input() {
 fn nothing_secret_is_printed() {
     let token = generate().unwrap();
     let parsed = PersonalToken::parse(&token).unwrap();
-    let hash = key().lookup(&parsed);
+    let hash = key().lookup(&parsed).unwrap();
     for printed in [
         format!("{parsed:?}"),
         format!("{key:?}", key = key()),
@@ -159,7 +181,7 @@ proptest! {
             prop_assert_eq!(token.as_str(), candidate.as_str());
             prop_assert_eq!(candidate.len(), TOKEN_LEN);
             let again = PersonalToken::parse(&candidate).unwrap();
-            prop_assert_eq!(key().lookup(&token), key().lookup(&again));
+            prop_assert_eq!(key().lookup(&token).unwrap(), key().lookup(&again).unwrap());
         }
     }
 

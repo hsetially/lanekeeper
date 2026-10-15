@@ -128,11 +128,12 @@ pub fn mcp_pat_token(data: &[u8]) -> Result<(), String> {
         // The hash is stable, depends on the key, and changes with any bit of the secret.
         let key = HmacKey::from_bytes(&[0x42; 32]).map_err(|e| format!("{e}"))?;
         let other_key = HmacKey::from_bytes(&[0x43; 32]).map_err(|e| format!("{e}"))?;
-        let hash = key.lookup(&token);
-        if key.lookup(&token) != hash {
+        let digest = |k: &HmacKey, t: &PersonalToken<'_>| k.lookup(t).map_err(|e| format!("{e}"));
+        let hash = digest(&key, &token)?;
+        if digest(&key, &token)? != hash {
             return Err("the hash is not stable".to_owned());
         }
-        if other_key.lookup(&token) == hash {
+        if digest(&other_key, &token)? == hash {
             return Err("two keys gave the same hash".to_owned());
         }
         let bit = usize::from(data.iter().fold(0_u8, |acc, b| acc.wrapping_add(*b))) % (SECRET_BYTES * 8);
@@ -141,7 +142,7 @@ pub fn mcp_pat_token(data: &[u8]) -> Result<(), String> {
         let flipped_text = format!("{PREFIX}{}", URL_SAFE_NO_PAD.encode(&flipped));
         let flipped_token =
             PersonalToken::parse(&flipped_text).ok_or("a flipped bit made the token invalid")?;
-        if key.lookup(&flipped_token) == hash {
+        if digest(&key, &flipped_token)? == hash {
             return Err("a flipped bit left the hash unchanged".to_owned());
         }
     } else if candidate.len() == TOKEN_LEN

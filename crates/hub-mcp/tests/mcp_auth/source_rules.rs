@@ -142,3 +142,75 @@ fn every_text_field_of_an_output_type_is_redacted_text() {
         }
     }
 }
+
+/// The line numbers (from 1) of every `#[doc(hidden)]` item in `text` that is not gated: a test hook that production code could
+/// call. An item is gated when an attribute `#[cfg(test)]` or `#[cfg(feature = "fakes")]` stands among the attributes and doc
+/// comments right above it or between `#[doc(hidden)]` and the item.
+fn ungated_doc_hidden(text: &str) -> Vec<usize> {
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let part_of_the_head = |l: &str| l.starts_with("#[") || l.starts_with("///");
+    let mut found = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        if *line != "#[doc(hidden)]" {
+            continue;
+        }
+        let mut head = vec![*line];
+        head.extend(
+            lines[..at]
+                .iter()
+                .rev()
+                .take_while(|l| part_of_the_head(l))
+                .copied(),
+        );
+        head.extend(
+            lines[at + 1..]
+                .iter()
+                .take_while(|l| part_of_the_head(l))
+                .copied(),
+        );
+        let gated = head
+            .iter()
+            .any(|l| *l == "#[cfg(test)]" || *l == "#[cfg(feature = \"fakes\")]");
+        if !gated {
+            found.push(at + 1);
+        }
+    }
+    found
+}
+
+/// A `#[doc(hidden)]` item is a test hook that `pub` makes part of the crate's API. It must not be reachable from the hub, so it
+/// exists only under `cfg(test)` (this crate's unit tests) or the `fakes` feature (this crate's integration tests, which turn it on
+/// through the crate's own dev-dependency, and nothing in the hub's build does).
+#[test]
+fn a_hidden_test_hook_exists_only_in_test_builds() {
+    for (path, text) in sources() {
+        assert_eq!(
+            ungated_doc_hidden(&text),
+            Vec::<usize>::new(),
+            "{} has a #[doc(hidden)] item that a production build can reach",
+            path.display()
+        );
+    }
+}
+
+/// Positive controls: the check fails for the hooks as they were, and passes for the gated ones.
+#[test]
+fn the_check_for_ungated_hooks_finds_what_it_should() {
+    // As `McpState::forget_session_owners` and `Replay::run_pending_tasks` were before they were gated.
+    let ungated = "    /// Forget who opened which session.\n    #[doc(hidden)]\n    pub fn forget_session_owners(&self) {\n    }\n\n    /// Run the cache's pending maintenance.\n    #[doc(hidden)]\n    #[must_use]\n    pub fn weighted_size(&self) -> u64 {\n        0\n    }\n";
+    assert_eq!(ungated_doc_hidden(ungated), [2, 7]);
+    for gated in [
+        "    #[cfg(test)]\n    #[doc(hidden)]\n    pub fn a(&self) {}\n",
+        "    #[cfg(feature = \"fakes\")]\n    #[doc(hidden)]\n    pub fn a(&self) {}\n",
+        "    /// Doc.\n    #[cfg(feature = \"fakes\")]\n    /// More doc.\n    #[doc(hidden)]\n    #[must_use]\n    pub fn a(&self) {}\n",
+        "    /// Doc.\n    #[doc(hidden)]\n    #[cfg(test)]\n    pub fn a(&self) {}\n",
+    ] {
+        assert_eq!(ungated_doc_hidden(gated), Vec::<usize>::new(), "{gated}");
+    }
+    // A gate on another item above is not a gate for this one.
+    let other = "#[cfg(test)]\nfn a() {}\n\n#[doc(hidden)]\npub fn b() {}\n";
+    assert_eq!(ungated_doc_hidden(other), [4]);
+    // The wrong feature is not a gate.
+    let wrong = "#[cfg(feature = \"postgres\")]\n#[doc(hidden)]\npub fn b() {}\n";
+    assert_eq!(ungated_doc_hidden(wrong), [2]);
+}

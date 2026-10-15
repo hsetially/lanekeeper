@@ -530,7 +530,11 @@ async fn tools_list_size_is_reported() {
     let reported = rig.state.tools_list_bytes(&user);
     assert_eq!(reported, wire, "the number the server reports is what it sent");
     eprintln!("tools/list for an Admin: {wire} bytes, 26 tools (notify_services is off)");
-    assert!(wire > 20_000 && wire < 400_000, "{wire}");
+    // Measured: 112,340 bytes for 26 tools, input and result schemas included (2026-10-15, round 1 of the review). The bound is
+    // the measurement and about a tenth either way, so that a new tool or a longer schema is a visible decision: when the contract
+    // (`docs/mcp-tools.md`) grows on purpose, this number grows with it, in the same PR. Every client puts this list in front of the
+    // model on each session, so its size is a cost to the user.
+    assert!((100_000..=125_000).contains(&wire), "tools/list is {wire} bytes");
     // Without the result schemas it is smaller by a good part.
     let lean = Rig::build(
         hub_mcp::config::AuthMode::Oauth,
@@ -551,6 +555,12 @@ async fn tools_list_size_is_reported() {
         .await
         .unwrap();
     let lean_wire = serde_json::to_vec(&message["result"]["tools"]).unwrap().len();
+    eprintln!("tools/list for an Admin without result schemas: {lean_wire} bytes");
+    // Measured: 31,235 bytes. Without the result schemas the list is less than a third of the size.
+    assert!(
+        (28_000..=35_000).contains(&lean_wire),
+        "tools/list without result schemas is {lean_wire} bytes"
+    );
     assert!(lean_wire * 10 < wire * 7, "{lean_wire} against {wire}");
     assert!(message["result"]["tools"][0].get("outputSchema").is_none());
 }

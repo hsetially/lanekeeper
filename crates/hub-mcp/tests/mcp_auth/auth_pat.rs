@@ -76,7 +76,7 @@ async fn pat_is_stored_as_hmac_not_plaintext() {
     assert_eq!(rows.len(), 1);
     let parsed = PersonalToken::parse(&token).unwrap();
     // What is stored is the keyed hash of the token text, and it is not a plain hash of it.
-    assert_eq!(rows[0].hmac, key().lookup(&parsed));
+    assert_eq!(rows[0].hmac, key().lookup(&parsed).unwrap());
     let plain_sha = Sha256::digest(token.as_bytes());
     assert_ne!(rows[0].hmac.as_bytes()[..], plain_sha[..]);
     // Nothing the store holds contains the token or the random part of it.

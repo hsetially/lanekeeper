@@ -1514,40 +1514,291 @@ async fn a_whole_confirmation_life_logs_what_happened_and_nothing_it_carried() {
     }
 }
 
-#[tokio::test]
-async fn the_gate_is_the_only_caller_of_the_mutating_write_methods() {
-    // A write cannot be reached by a path that skips the confirmation: the mutating methods of the write service are named in
-    // `src/confirm/` and nowhere else.
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    fn walk(dir: &std::path::Path, hits: &mut Vec<String>) {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                walk(&path, hits);
-            } else if path.extension().is_some_and(|e| e == "rs")
-                && !path.to_string_lossy().contains("/src/confirm/")
-            {
-                let text = std::fs::read_to_string(&path).unwrap();
-                for line in text.lines().filter(|l| !l.trim_start().starts_with("//")) {
-                    for method in [
-                        ".edit(",
-                        ".upload(",
-                        ".delete(",
-                        ".revert(",
-                        ".restart(",
-                        ".raise_pr(",
-                        ".apply_draft(",
-                        ".notify(",
-                    ] {
-                        if line.contains("writes") && line.contains(method) {
-                            hits.push(format!("{}: {line}", path.display()));
-                        }
+// ---------------------------------------------------------------------------------------------------------------------
+// The gate is the only caller of the mutating methods of the write service (S14)
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// `text` with every comment and the inside of every string and character literal replaced by spaces, line breaks kept (so that a
+/// line number is still the line of the original). What is left is code: a call named in a comment or a message is not a call.
+fn code_only(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let blank = |c: char| if c == '\n' { '\n' } else { ' ' };
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        if c == '/' && next == Some('/') {
+            while i < chars.len() && chars[i] != '\n' {
+                out.push(' ');
+                i += 1;
+            }
+        } else if c == '/' && next == Some('*') {
+            let mut depth = 0_usize;
+            while i < chars.len() {
+                if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    out.push_str("  ");
+                    i += 2;
+                } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    out.push_str("  ");
+                    i += 2;
+                    if depth == 0 {
+                        break;
                     }
+                } else {
+                    out.push(blank(chars[i]));
+                    i += 1;
                 }
+            }
+        } else if c == 'r' && matches!(next, Some('"' | '#')) && (i == 0 || !chars[i - 1].is_alphanumeric()) {
+            // A raw string: r"..." or r#"..."#, with any number of hashes.
+            let mut j = i + 1;
+            let mut hashes = 0_usize;
+            while chars.get(j) == Some(&'#') {
+                hashes += 1;
+                j += 1;
+            }
+            if chars.get(j) == Some(&'"') {
+                out.push_str(&" ".repeat(j + 1 - i));
+                i = j + 1;
+                while i < chars.len() {
+                    let closes = chars[i] == '"' && (1..=hashes).all(|k| chars.get(i + k) == Some(&'#'));
+                    if closes {
+                        out.push_str(&" ".repeat(hashes + 1));
+                        i += hashes + 1;
+                        break;
+                    }
+                    out.push(blank(chars[i]));
+                    i += 1;
+                }
+            } else {
+                out.push(c);
+                i += 1;
+            }
+        } else if c == '"' {
+            out.push(' ');
+            i += 1;
+            while i < chars.len() && chars[i] != '"' {
+                if chars[i] == '\\' && i + 1 < chars.len() {
+                    out.push(blank(chars[i]));
+                    i += 1;
+                }
+                out.push(blank(chars[i]));
+                i += 1;
+            }
+            out.push(' ');
+            i += 1;
+        } else if c == '\'' {
+            // A character literal ('x', '\n', '"') and not a lifetime ('a).
+            let close = if next == Some('\\') {
+                chars[i + 2..].iter().position(|&k| k == '\'').map(|p| i + 2 + p)
+            } else if chars.get(i + 2) == Some(&'\'') {
+                Some(i + 2)
+            } else {
+                None
+            };
+            if let Some(close) = close {
+                out.push_str(&" ".repeat(close + 1 - i));
+                i = close + 1;
+            } else {
+                out.push(c);
+                i += 1;
+            }
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Every call of a mutating method of the write service (`MUTATING`, the list the spy uses) in `text`, as (line, method). It reads the whole text and not line by
+/// line, so a chain that rustfmt broke (`writes`, then `.upload(` on the next line) or a `.` and a name on two lines is found; it
+/// does not need the receiver to be called `writes`, so `let w = Arc::clone(&host.writes); w.upload(..)` is found; and a path call
+/// `WriteService::upload(..)` is found. A method that only has the same start (`upload_file`) or is declared (`fn upload`) is not.
+fn mutating_calls(text: &str) -> Vec<(usize, &'static str)> {
+    let code = code_only(text);
+    let bytes = code.as_bytes();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let skip_back = |mut at: usize| {
+        while at > 0 && bytes[at - 1].is_ascii_whitespace() {
+            at -= 1;
+        }
+        at
+    };
+    let skip_forward = |mut at: usize| {
+        while at < bytes.len() && bytes[at].is_ascii_whitespace() {
+            at += 1;
+        }
+        at
+    };
+    let mut found = Vec::new();
+    for method in MUTATING {
+        let mut from = 0;
+        while let Some(offset) = code[from..].find(method) {
+            let start = from + offset;
+            let end = start + method.len();
+            from = end;
+            if start > 0 && is_ident(bytes[start - 1]) || end < bytes.len() && is_ident(bytes[end]) {
+                continue;
+            }
+            let before = skip_back(start);
+            let after = skip_forward(end);
+            let called = bytes.get(after) == Some(&b'(') || code[after..].starts_with("::<");
+            let by_dot = before > 0 && bytes[before - 1] == b'.' && !code[..before].ends_with("..");
+            let by_path = code[..before].ends_with("::") && {
+                let path = code[..skip_back(before - 2)].trim_end();
+                path.ends_with("WriteService")
+            };
+            if called && (by_dot || by_path) {
+                let line = code[..start].bytes().filter(|&b| b == b'\n').count() + 1;
+                found.push((line, method));
             }
         }
     }
-    let mut hits = Vec::new();
-    walk(&src, &mut hits);
-    assert!(hits.is_empty(), "{hits:#?}");
+    found.sort_unstable();
+    found
+}
+
+/// The calls of a mutating method in any file of `files` other than the gate: `(path, line, method)`.
+fn mutating_calls_outside_the_gate(files: &[(String, String)]) -> Vec<(String, usize, &'static str)> {
+    files
+        .iter()
+        .filter(|(path, _)| path != "src/confirm/gate.rs")
+        .flat_map(|(path, text)| {
+            mutating_calls(text)
+                .into_iter()
+                .map(move |(line, method)| (path.clone(), line, method))
+        })
+        .collect()
+}
+
+/// Every `.rs` file under `src/`, as (path relative to the crate, text).
+fn source_files() -> Vec<(String, String)> {
+    fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, root, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.push((relative, std::fs::read_to_string(&path).unwrap()));
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut out = Vec::new();
+    walk(&root.join("src"), root, &mut out);
+    assert!(out.len() >= 10, "found only {} source files", out.len());
+    out
+}
+
+#[test]
+fn the_gate_is_the_only_caller_of_the_mutating_write_methods() {
+    // A write cannot be reached by a path that skips the confirmation: the mutating methods of the write service are called in
+    // `src/confirm/gate.rs` and nowhere else.
+    let files = source_files();
+    let outside = mutating_calls_outside_the_gate(&files);
+    assert!(outside.is_empty(), "{outside:#?}");
+    // The scan is not vacuous: it finds the gate's own calls.
+    let gate = &files
+        .iter()
+        .find(|(path, _)| path == "src/confirm/gate.rs")
+        .unwrap()
+        .1;
+    let methods: std::collections::BTreeSet<&str> =
+        mutating_calls(gate).into_iter().map(|(_, m)| m).collect();
+    for method in ["apply_draft", "upload", "delete", "raise_pr", "restart", "notify"] {
+        assert!(
+            methods.contains(method),
+            "the scan does not find the gate's `{method}`: {methods:?}"
+        );
+    }
+}
+
+/// Positive controls: the scan fails when a call is added outside the gate, in each of the shapes that a line-by-line search
+/// missed or that a refactor could produce.
+#[test]
+fn the_scan_for_mutating_calls_finds_every_shape_and_only_those() {
+    let file = |path: &str, text: &str| vec![(path.to_owned(), text.to_owned())];
+    let found = |text: &str| {
+        mutating_calls(text)
+            .into_iter()
+            .map(|(_, m)| m)
+            .collect::<Vec<_>>()
+    };
+
+    // One line.
+    assert_eq!(
+        found("let r = host.writes.upload(&ctx, request).await;"),
+        ["upload"]
+    );
+    // Broken by rustfmt: the receiver on one line, the method on the next, the argument list on the ones after.
+    let broken =
+        "let r = host\n    .writes\n    .raise_pr(\n        &ctx,\n        request,\n    )\n    .await;";
+    assert_eq!(mutating_calls(broken), [(3, "raise_pr")]);
+    // The dot and the name on different lines, and a space before the parenthesis.
+    assert_eq!(found("writes.\n  delete (ctx, r)"), ["delete"]);
+    // Through an alias, a clone, a local binding: no receiver called `writes` is needed.
+    assert_eq!(
+        found("let w = Arc::clone(&host.writes);\nlet r = w\n    .apply_draft(&ctx, id)\n    .await;"),
+        ["apply_draft"]
+    );
+    // As a path.
+    assert_eq!(found("WriteService::notify(&*w, &ctx, r).await"), ["notify"]);
+    assert_eq!(found("WriteService\n    ::restart(&*w, &ctx, r)"), ["restart"]);
+    // With a turbofish.
+    assert_eq!(found("w.edit::<Request>(ctx, r)"), ["edit"]);
+
+    // None of these is a call of a mutating method.
+    for harmless in [
+        "// writes.upload(ctx, r) is how the gate does it",
+        "/* writes.delete(ctx, r) */",
+        "/* a /* nested */ writes.revert(ctx, r) */",
+        "let m = \"writes.upload(ctx, r)\";",
+        "let m = r#\"writes.restart(ctx, \"r\")\"#;",
+        "let m = \"a \\\" quote then writes.notify(ctx, r)\";",
+        "host.writes.propose_draft(&ctx, r).await",
+        "host.writes.preview_effect(&ctx, r).await",
+        "host.writes.draft(&ctx, id).await",
+        "self.upload_file(args)",
+        "fn upload(&self, ctx: &WriteCtx) {}",
+        "let edit = 1; let delete = edit;",
+        "x.deleted(1) + x.uploaded(2) + x.notify_all(3)",
+        "let c = '\"'; let l: &'static str = \"s\"; let d = '\\''; let e = r;",
+        "OtherTrait::upload(&x)",
+    ] {
+        assert_eq!(found(harmless), Vec::<&str>::new(), "{harmless}");
+    }
+    // A call after a literal that holds `//` is still a call.
+    assert_eq!(found("let u = \"https://hub\"; w.restart(ctx, r)"), ["restart"]);
+
+    // The scan of the files: the gate may call, nothing else may, and a file added under `confirm/` is not the gate.
+    let gate_call = "match action { A => writes\n    .upload(ctx, r)\n    .await }";
+    assert!(mutating_calls_outside_the_gate(&file("src/confirm/gate.rs", gate_call)).is_empty());
+    for path in [
+        "src/tools/write/sneaky.rs",
+        "src/confirm/message.rs",
+        "src/server/mod.rs",
+    ] {
+        let outside = mutating_calls_outside_the_gate(&file(path, gate_call));
+        assert_eq!(outside, [(path.to_owned(), 2, "upload")], "{path}");
+    }
+    // The real tree plus one file that calls from outside the gate, broken over lines: the check on the real tree would fail.
+    let mut files = source_files();
+    files.push((
+        "src/tools/read/sneaky.rs".to_owned(),
+        "pub async fn sneak(host: &Host) {\n    let _ = host\n        .writes\n        .delete(&ctx, request)\n        .await;\n}\n"
+            .to_owned(),
+    ));
+    assert_eq!(
+        mutating_calls_outside_the_gate(&files),
+        [("src/tools/read/sneaky.rs".to_owned(), 4, "delete")]
+    );
 }

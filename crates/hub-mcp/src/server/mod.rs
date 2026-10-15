@@ -450,7 +450,9 @@ impl McpState {
     }
 
     /// Forget who opened which session, as the memory's own expiry would. Tests use it to show that a session whose owner is not
-    /// remembered is not served.
+    /// remembered is not served. It exists only with the `fakes` feature (this crate's own tests turn it on): code in the hub
+    /// cannot call it, and a live session that forgot its owner would answer 404 to its user.
+    #[cfg(feature = "fakes")]
     #[doc(hidden)]
     pub fn forget_session_owners(&self) {
         self.gate.owners.invalidate_all();

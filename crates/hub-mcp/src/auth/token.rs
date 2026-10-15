@@ -100,6 +100,16 @@ impl TokenHmac {
         Self(bytes)
     }
 
+    /// The hash from the bytes of a digest.
+    ///
+    /// # Errors
+    ///
+    /// [`DigestLength`] when `digest` is not 32 bytes. HMAC-SHA-256 always is; this is the check that says so without a panic
+    /// (AGENTS.md rule 2), and a wrong length is never padded or cut into a hash.
+    pub fn from_digest(digest: &[u8]) -> Result<Self, DigestLength> {
+        <[u8; 32]>::try_from(digest).map(Self).map_err(|_| DigestLength)
+    }
+
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
@@ -131,6 +141,11 @@ impl fmt::Debug for TokenHmac {
         f.write_str("TokenHmac([redacted])")
     }
 }
+
+/// A digest that is not 32 bytes. Carries nothing of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the token digest is not 32 bytes")]
+pub struct DigestLength;
 
 /// Why a key was refused. Carries nothing of the key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -182,13 +197,14 @@ impl HmacKey {
     }
 
     /// The hash of a token under this key.
-    #[must_use]
-    pub fn lookup(&self, token: &PersonalToken<'_>) -> TokenHmac {
+    ///
+    /// # Errors
+    ///
+    /// [`DigestLength`] if the digest is not 32 bytes, which HMAC-SHA-256 never gives. The caller fails closed: a token that cannot
+    /// be hashed is neither made nor accepted.
+    pub fn lookup(&self, token: &PersonalToken<'_>) -> Result<TokenHmac, DigestLength> {
         let tag = hmac::sign(&self.0, token.as_str().as_bytes());
-        let mut out = [0_u8; 32];
-        // HMAC-SHA-256 is 32 bytes; the copy cannot be shorter or longer.
-        out.copy_from_slice(tag.as_ref());
-        TokenHmac(out)
+        TokenHmac::from_digest(tag.as_ref())
     }
 }
 

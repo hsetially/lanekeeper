@@ -158,7 +158,7 @@ fn debug_output_of_the_secret_bearing_types_is_redacted() {
     for printed in [
         format!("{parsed:?}"),
         format!("{key:?}"),
-        format!("{:?}", key.lookup(&parsed)),
+        format!("{:?}", key.lookup(&parsed).unwrap()),
     ] {
         assert!(printed.contains("redacted"));
         assert!(!printed.contains(&token["lkpat_".len()..]));

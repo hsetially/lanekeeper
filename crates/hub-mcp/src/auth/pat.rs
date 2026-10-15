@@ -215,7 +215,7 @@ impl PersonalTokens {
     /// # Errors
     ///
     /// [`TokenError::LimitReached`] when the owner already has the most live tokens, [`TokenError::Unavailable`] when the store or
-    /// the audit log cannot write, [`TokenError::Internal`] when the random generator fails.
+    /// the audit log cannot write, [`TokenError::Internal`] when the random generator fails or the token cannot be hashed.
     pub async fn create(
         &self,
         owner: &UserId,
@@ -227,7 +227,7 @@ impl PersonalTokens {
         let parsed = PersonalToken::parse(token.expose()).ok_or(TokenError::Internal)?;
         let new_token = NewToken {
             owner: owner.clone(),
-            hmac: self.key.lookup(&parsed),
+            hmac: self.key.lookup(&parsed).map_err(|_| TokenError::Internal)?,
             label,
             lifetime: self.settings.lifetime,
             max_live: self.settings.max_live,
@@ -315,10 +315,12 @@ impl PersonalTokens {
     /// # Errors
     ///
     /// [`AuthError::InvalidToken`] for anything that is not a live token (the same answer for a token that never existed and one
-    /// that was revoked), [`AuthError::Expired`] for a token past its end, [`AuthError::Unavailable`] when the store cannot answer.
+    /// that was revoked), [`AuthError::Expired`] for a token past its end, [`AuthError::Unavailable`] when the store cannot answer
+    /// or the token cannot be hashed.
     pub async fn authenticate(&self, presented: &str) -> Result<UserId, AuthError> {
         let token = PersonalToken::parse(presented).ok_or(AuthError::InvalidToken)?;
-        let hmac = self.key.lookup(&token);
+        // A digest of the wrong length cannot be looked up: the token is refused, as an outage and not as a wrong token.
+        let hmac = self.key.lookup(&token).map_err(|_| AuthError::Unavailable)?;
         let now = self.clock.now();
         let record = if let Some(hit) = self.fresh(&hmac, now) {
             hit
