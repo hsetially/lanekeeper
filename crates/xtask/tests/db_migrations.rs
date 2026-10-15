@@ -4171,30 +4171,33 @@ async fn mcp_token_lookups_have_an_index() {
 
 const MIGRATION_0006: &str = "0006_mcp_tokens_created_not_future.sql";
 
-/// `0006` is exactly the two statements it was reviewed with: the guard, and one `ALTER TABLE mcp_tokens ADD CONSTRAINT`. No row is
-/// written, nothing is created, dropped, renamed or granted, and the audit tables are not named. A new statement of any kind fails
-/// here until a human adds it to the list on purpose.
+/// `0006` is exactly the statements it was reviewed with: the guard, one function and one BEFORE INSERT trigger. No row is
+/// written, nothing is dropped, renamed or granted, the audit tables are not named, and nothing in it fires on an UPDATE. A new
+/// statement of any kind fails here until a human adds it to the list on purpose.
 #[test]
 fn migration_0006_is_expand_only() {
     let sql = migration_file(MIGRATION_0006);
     assert_eq!(
         row_writing_statement(&sql),
         None,
-        "0006 changes a constraint and no row: no INSERT, UPDATE, DELETE, MERGE, TRUNCATE, COPY or dynamic EXECUTE"
+        "0006 changes a guard and writes no row: no INSERT, UPDATE, DELETE, MERGE, TRUNCATE, COPY or dynamic EXECUTE, in a DO \
+         block or a function body either"
     );
     let found: Vec<String> = statements_of(&sql).iter().map(|w| w.join(" ")).collect();
     assert_eq!(
         found,
         [
             "DO",
-            "ALTER TABLE MCP_TOKENS ADD CONSTRAINT MCP_TOKENS_CREATED_NOT_FUTURE CHECK CREATED_AT NOW INTERVAL"
+            "CREATE FUNCTION MCP_TOKENS_CREATED_NOT_FUTURE RETURNS TRIGGER LANGUAGE PLPGSQL SET SEARCH_PATH PG_CATALOG PG_TEMP AS",
+            "CREATE TRIGGER MCP_TOKENS_CREATED_NOT_FUTURE BEFORE INSERT ON MCP_TOKENS FOR EACH ROW EXECUTE FUNCTION MCP_TOKENS_CREATED_NOT_FUTURE",
         ],
         "0006 has exactly the statements it was reviewed with, in this order (a new statement is a new review)"
     );
     let code = without_literals(&code_lines(&sql).join("\n")).to_uppercase();
     for banned in [
-        "CREATE ",
+        "CREATE TABLE",
         "DROP ",
+        "ALTER ",
         "RENAME",
         "CASCADE",
         "TRUNCATE",
@@ -4205,17 +4208,25 @@ fn migration_0006_is_expand_only() {
         "SECURITY DEFINER",
         "ENABLE ",
         "DISABLE ",
+        // Insert only: an UPDATE of `revoked_at` or `last_used_at` must never meet a clock-dependent rule.
+        "UPDATE",
+        "AFTER ",
+        "CHECK",
     ] {
         assert!(
             !code.contains(banned),
-            "0006 must not contain `{banned}` outside comments"
+            "0006 must not contain `{banned}` outside comments (insert only, and not a CHECK)"
         );
     }
-    // The constraint is the one the tests and the README name, with the bound they state.
-    assert!(code.contains("CHECK (CREATED_AT <= NOW() + INTERVAL )"), "{code}");
+    // The bound and the code the existing expectations rely on.
+    let text = code_lines(&sql).join("\n");
     assert!(
-        code_lines(&sql).join("\n").contains("interval '1 minute'"),
-        "the slack for clock skew is a minute, as the README says"
+        text.contains("NEW.created_at > now() + interval '1 minute'"),
+        "the bound is a minute ahead of now()"
+    );
+    assert!(
+        text.contains("ERRCODE = '23514'"),
+        "check_violation, as the tests expect"
     );
 }
 
@@ -4243,10 +4254,10 @@ async fn migration_0006_refuses_to_run_as_another_role() {
     }
 }
 
-/// 0006 adds one CHECK to `mcp_tokens` and changes nothing else: every relation (so every ACL, the grants of 0005 included),
-/// trigger, column and function that 0005 left is still there and unchanged, and the only new object is the constraint.
+/// 0006 adds one function and one trigger and changes nothing else: every relation (so every ACL, the grants of 0005 included),
+/// constraint, column and function that 0005 left is still there and unchanged, and the one new trigger is a BEFORE INSERT one.
 #[tokio::test]
-async fn migration_0006_adds_one_check_and_changes_nothing_else() {
+async fn migration_0006_adds_one_function_and_one_trigger_and_nothing_else() {
     let Some(db) = TestDb::bootstrap().await else {
         return;
     };
@@ -4287,26 +4298,40 @@ async fn migration_0006_adds_one_check_and_changes_nothing_else() {
         );
         added.push(after.difference(b).cloned().collect::<Vec<String>>());
     }
-    for (i, what) in [
-        (0, "relations"),
-        (1, "triggers"),
-        (3, "columns"),
-        (4, "functions"),
-    ] {
+    for (i, what) in [(0, "relations"), (2, "constraints"), (3, "columns")] {
         assert!(added[i].is_empty(), "0006 adds no {what}: {:?}", added[i]);
     }
-    assert_eq!(added[2].len(), 1, "one new constraint: {:?}", added[2]);
+    assert_eq!(added[4].len(), 1, "one new function: {:?}", added[4]);
     assert!(
-        added[2][0].starts_with(
-            "mcp_tokens mcp_tokens_created_not_future CHECK ((created_at <= (now() + '00:01:00'::interval)))"
-        ),
-        "{:?}",
-        added[2]
+        added[4][0].starts_with("mcp_tokens_created_not_future lanekeeper_migrator "),
+        "owned by the migrator: {:?}",
+        added[4]
     );
+    assert_eq!(added[1].len(), 1, "one new trigger: {:?}", added[1]);
+    let trigger = &added[1][0];
+    assert!(
+        trigger.starts_with("mcp_tokens CREATE TRIGGER mcp_tokens_created_not_future BEFORE INSERT ON ")
+            && trigger.contains("FOR EACH ROW EXECUTE FUNCTION mcp_tokens_created_not_future()"),
+        "a BEFORE INSERT trigger, and nothing that fires on an UPDATE: {trigger}"
+    );
+    // No SECURITY DEFINER, and a pinned search_path, like the trigger of 0005.
+    let mut owner = db.migrator().await;
+    let (definer, config): (bool, String) = sqlx::query_as(
+        "SELECT prosecdef, coalesce(proconfig::text, '') FROM pg_proc WHERE proname = 'mcp_tokens_created_not_future'",
+    )
+    .fetch_one(&mut owner)
+    .await
+    .unwrap();
+    assert!(
+        !definer,
+        "an ordinary trigger function, run with the caller's rights"
+    );
+    assert!(config.contains("search_path=pg_catalog, pg_temp"), "{config}");
 }
 
-/// What the constraint does. Each refused row satisfies `mcp_tokens_lifetime`, so the refusal is the new constraint's, and it
-/// names itself. Back-dating only shortens the life the other bound allows, so it is accepted and cannot lengthen a life.
+/// What the trigger does. Each refused row satisfies `mcp_tokens_lifetime`, so the refusal is the trigger's, with SQLSTATE 23514, and
+/// it names `mcp_tokens_created_not_future`. Back-dating only shortens the life the other bound allows, so it is accepted and cannot
+/// lengthen a life.
 #[tokio::test]
 async fn mcp_tokens_created_at_is_held_to_the_insert() {
     let db = db!();
@@ -4389,25 +4414,87 @@ async fn mcp_tokens_created_at_is_held_to_the_insert() {
         Some("mcp_tokens_lifetime"),
         "{err}"
     );
-    // The constraint is there under its name, and an update of the columns the app may change re-checks it and passes.
-    let names: Vec<String> = sqlx::query_scalar(
-        "SELECT conname::text FROM pg_constraint WHERE conrelid = 'mcp_tokens'::regclass AND contype = 'c' ORDER BY 1",
+    // The guard is a trigger on INSERT and not a constraint.
+    let mut owner = db.migrator().await;
+    let events: Vec<(String, i16)> = sqlx::query_as(
+        "SELECT tgname::text, tgtype FROM pg_trigger WHERE tgrelid = 'mcp_tokens'::regclass AND tgname = 'mcp_tokens_created_not_future'",
     )
-    .fetch_all(&mut app)
+    .fetch_all(&mut owner)
     .await
     .unwrap();
-    assert!(
-        names.contains(&"mcp_tokens_created_not_future".to_owned()),
-        "{names:?}"
+    // tgtype bits: 1 row, 2 before, 4 insert, 8 delete, 16 update, 32 truncate.
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].1 & (4 | 8 | 16 | 32),
+        4,
+        "it fires on INSERT and on nothing else"
     );
-    let touched =
-        sqlx::query("UPDATE mcp_tokens SET last_used_at = now(), revoked_at = now() WHERE token_hmac = $1")
-            .bind(vec![0x04_u8; 32])
-            .execute(&mut app)
-            .await
-            .unwrap()
-            .rows_affected();
-    assert_eq!(touched, 1, "the default-created token can be touched and revoked");
+    let constraint: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_constraint WHERE conrelid = 'mcp_tokens'::regclass AND conname = 'mcp_tokens_created_not_future'",
+    )
+    .fetch_one(&mut owner)
+    .await
+    .unwrap();
+    assert_eq!(constraint, 0, "a CHECK would be re-evaluated on every UPDATE");
+}
+
+/// The reason the rule is a trigger on INSERT: a database clock that steps back leaves a token whose `created_at` is now ahead
+/// of `now()` by more than the slack, and revoking it, or noting a use of it, must still work. The row is made with the trigger
+/// switched off by the owner (which is the state such a step leaves behind), the trigger is switched on again, and the app's two
+/// UPDATEs pass. With a CHECK on `created_at` instead, both would fail: a token that cannot be revoked.
+#[tokio::test]
+async fn a_clock_that_steps_back_never_blocks_a_revocation_or_a_use() {
+    let db = db!();
+    let mut app = db.app().await;
+    let mut owner = db.migrator().await;
+    seed_proposal_world(&mut app).await;
+    let insert = |n: u8| {
+        format!(
+            "INSERT INTO mcp_tokens (user_tid, user_oid, token_hmac, label, created_at, expires_at) \
+             VALUES ('t', 'alice', {}, 'x', now() + interval '10 days', now() + interval '17 days') RETURNING id",
+            h(n)
+        )
+    };
+    sqlx::query("ALTER TABLE mcp_tokens DISABLE TRIGGER mcp_tokens_created_not_future")
+        .execute(&mut owner)
+        .await
+        .unwrap();
+    let used: i64 = sqlx::query_scalar(&insert(1)).fetch_one(&mut app).await.unwrap();
+    let revoked: i64 = sqlx::query_scalar(&insert(2)).fetch_one(&mut app).await.unwrap();
+    sqlx::query("ALTER TABLE mcp_tokens ENABLE TRIGGER mcp_tokens_created_not_future")
+        .execute(&mut owner)
+        .await
+        .unwrap();
+
+    // The guard is back: the same insert is refused now.
+    let err = sqlx::query(&insert(3))
+        .fetch_one(&mut app)
+        .await
+        .expect_err("a created_at ten days ahead is refused");
+    assert_eq!(sqlstate(&err).as_deref(), Some(CHECK_VIOLATION), "{err}");
+
+    // And the rows made while it was off can still be used and revoked, by the app, with the statements the hub runs.
+    let touched = sqlx::query("UPDATE mcp_tokens SET last_used_at = now() WHERE id = $1")
+        .bind(used)
+        .execute(&mut app)
+        .await
+        .expect("noting a use of a token whose created_at is ahead of the clock")
+        .rows_affected();
+    assert_eq!(touched, 1);
+    let ended = sqlx::query("UPDATE mcp_tokens SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL")
+        .bind(revoked)
+        .execute(&mut app)
+        .await
+        .expect("revoking a token whose created_at is ahead of the clock")
+        .rows_affected();
+    assert_eq!(ended, 1);
+    let both = sqlx::query("UPDATE mcp_tokens SET last_used_at = now(), revoked_at = now() WHERE id = $1")
+        .bind(used)
+        .execute(&mut app)
+        .await
+        .expect("both columns at once")
+        .rows_affected();
+    assert_eq!(both, 1);
 }
 
 /// The gap `0006` closes, and what it does about it. With `0005` alone the app can write a token that lives ten years (so the
@@ -4441,15 +4528,15 @@ async fn migration_0006_closes_the_gap_in_0005_and_refuses_a_bad_row() {
     let err = sqlx::raw_sql(&sql)
         .execute(&mut owner)
         .await
-        .expect_err("0006 refuses to run over a row it would not accept");
+        .expect_err("0006 refuses to run over a row it would not have accepted");
     assert_eq!(sqlstate(&err).as_deref(), Some(CHECK_VIOLATION), "{err}");
-    let constraints: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM pg_constraint WHERE conrelid = 'mcp_tokens'::regclass AND conname = 'mcp_tokens_created_not_future'",
+    let triggers: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'mcp_tokens'::regclass AND tgname = 'mcp_tokens_created_not_future'",
     )
     .fetch_one(&mut owner)
     .await
     .unwrap();
-    assert_eq!(constraints, 0, "the failed migration left no constraint behind");
+    assert_eq!(triggers, 0, "the failed migration left no trigger behind");
 
     // A person looks at the row and removes it (the owner may; the app may not), and then 0006 applies.
     sqlx::query("DELETE FROM mcp_tokens WHERE id = $1")
