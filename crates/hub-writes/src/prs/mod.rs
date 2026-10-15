@@ -317,9 +317,11 @@ impl PrService {
                         .await
                         .map_err(PrError::Github)?;
                     let mut files = Vec::with_capacity(repo_paths.len());
+                    // The files of one directory are read through one listing of it.
+                    let mut listings = crate::github::TreeCache::default();
                     for (index, path) in repo_paths.iter().enumerate() {
                         files.push(
-                            git.file_at(token, &repo, &head, path)
+                            git.file_at(token, &repo, &tree, path, &mut listings)
                                 .await
                                 .map_err(|e| match e {
                                     GithubError::Unexpected => PrError::RepoFileUnreadable { index },

@@ -40,6 +40,12 @@ struct Repo {
     trees: BTreeMap<String, BTreeMap<String, String>>,
     blobs: BTreeMap<String, Vec<u8>>,
     pulls: Vec<SimPull>,
+    /// Paths that are symbolic links, with the path (in the same tree) each points at. A link is a blob of the target's name in the
+    /// tree, with mode 120000; the contents call follows it to a file in the repository, as GitHub does.
+    links: BTreeMap<String, String>,
+    /// The trees of directories, by the id the simulator gave them when it listed their parent: the tree they are in, and the
+    /// path of the directory.
+    subtrees: BTreeMap<String, (String, String)>,
 }
 
 type Fault = Box<dyn FnMut(&Seen) -> Option<Reply> + Send>;
@@ -187,6 +193,27 @@ impl GitSim {
             },
         );
         r.branches.insert(branch.to_owned(), commit.clone());
+        commit
+    }
+
+    /// [`Self::branch`] where each of `links` (`path`, `target`) is also a symbolic link to a file of the same tree: its blob is the
+    /// target's name, as git keeps it, and the tree lists it with mode 120000.
+    pub fn branch_with_links(
+        &self,
+        repo: &str,
+        branch: &str,
+        files: &[(&str, &[u8])],
+        links: &[(&str, &str)],
+    ) -> String {
+        let mut all: Vec<(&str, &[u8])> = files.to_vec();
+        all.extend(links.iter().map(|(path, target)| (*path, target.as_bytes())));
+        let commit = self.branch(repo, branch, &all);
+        let mut st = self.state();
+        if let Some(r) = st.repos.get_mut(repo) {
+            for (path, target) in links {
+                r.links.insert((*path).to_owned(), (*target).to_owned());
+            }
+        }
         commit
     }
 
@@ -346,6 +373,53 @@ fn route(
             ),
             None => not_found(),
         },
+        ("GET", t) if t.starts_with("git/trees/") => {
+            let id = &t["git/trees/".len()..];
+            // A root tree, or the tree of a directory that an earlier listing named.
+            let (root, dir) = match repo.subtrees.get(id) {
+                Some((root, dir)) => (root.clone(), dir.clone()),
+                None => (id.to_owned(), String::new()),
+            };
+            let Some(flat) = repo.trees.get(&root).cloned() else {
+                return not_found();
+            };
+            let prefix = if dir.is_empty() {
+                String::new()
+            } else {
+                format!("{dir}/")
+            };
+            let mut entries: Vec<serde_json::Value> = Vec::new();
+            let mut dirs: Vec<String> = Vec::new();
+            for (path, blob) in &flat {
+                let Some(rest) = path.strip_prefix(&prefix) else {
+                    continue;
+                };
+                if let Some((first, _)) = rest.split_once('/') {
+                    if !dirs.iter().any(|d| d == first) {
+                        dirs.push(first.to_owned());
+                    }
+                } else {
+                    let mode = if repo.links.contains_key(path) {
+                        "120000"
+                    } else {
+                        "100644"
+                    };
+                    entries
+                        .push(serde_json::json!({ "path": rest, "mode": mode, "type": "blob", "sha": blob }));
+                }
+            }
+            for first in dirs {
+                let full = format!("{prefix}{first}");
+                let sub = sha(&[b"subtree", root.as_bytes(), full.as_bytes()]);
+                repo.subtrees.insert(sub.clone(), (root.clone(), full));
+                entries
+                    .push(serde_json::json!({ "path": first, "mode": "040000", "type": "tree", "sha": sub }));
+            }
+            json(
+                200,
+                &serde_json::json!({ "sha": id, "tree": entries, "truncated": false }),
+            )
+        }
         ("GET", t) if t.starts_with("git/blobs/") => match repo.blobs.get(&t["git/blobs/".len()..]) {
             Some(b) => json(
                 200,
@@ -359,6 +433,8 @@ fn route(
                 .split('&')
                 .find_map(|kv| kv.strip_prefix("ref="))
                 .unwrap_or_default();
+            // A link to a file of the repository answers with that file, as GitHub's contents call does.
+            let path = repo.links.get(&path).cloned().unwrap_or(path);
             let found = repo
                 .commits
                 .get(at)

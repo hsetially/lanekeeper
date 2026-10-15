@@ -21,11 +21,11 @@ use domain::{RepoPath, Secret};
 use serde_json::json;
 
 use super::api::{
-    GithubError, MAX_CONTENT_BODY_BYTES, PullInfo, parse_blob, parse_commit_tree, parse_contents,
-    parse_created_sha, parse_pull, parse_pull_list, parse_ref_commit,
+    GithubError, MAX_CONTENT_BODY_BYTES, NodeKind, PullInfo, TreeNode, parse_blob, parse_commit_tree,
+    parse_created_sha, parse_pull, parse_pull_list, parse_ref_commit, parse_tree,
 };
 use super::client::{Call, GithubClient, Retry};
-use super::types::{BranchName, GitSha, RepoRef, encode_path};
+use super::types::{BranchName, GitSha, RepoRef};
 
 /// A file as the repository has it at a commit.
 #[derive(Clone, PartialEq, Eq)]
@@ -48,6 +48,14 @@ impl std::fmt::Debug for RepoFile {
                 .finish(),
         }
     }
+}
+
+/// The directory listings one plan has read, by the tree they are of, so that the files of one directory cost one listing. A listing
+/// is of a tree id and so cannot go stale, but it is kept for one plan only and for the user whose token fetched it: it is a value
+/// of the call that makes it, not a cache of the client.
+#[derive(Debug, Default)]
+pub struct TreeCache {
+    listings: std::collections::HashMap<String, Vec<TreeNode>>,
 }
 
 /// One file of the tree a commit is built on: the path, and the blob that becomes its content.
@@ -85,13 +93,17 @@ pub trait GitDataApi: Send + Sync + 'static {
         commit: &GitSha,
     ) -> Result<GitSha, GithubError>;
 
-    /// The file at `path` as of `commit` (not as of a branch, which may move while the plan is made).
+    /// The file at `path` in `tree` (the tree of a commit, not of a branch, which may move while the plan is made). It is read
+    /// through the tree's own listings and not the contents call, which follows a symbolic link and answers with the file it points
+    /// at: a link is [`GithubError::Unexpected`], like a directory or a submodule, and so is a name that is a file where a directory
+    /// is needed. A path that is not there is [`RepoFile::Absent`]. `cache` holds the listings of this plan.
     async fn file_at(
         &self,
         token: &Secret<String>,
         repo: &RepoRef,
-        commit: &GitSha,
+        tree: &GitSha,
         path: &RepoPath,
+        cache: &mut TreeCache,
     ) -> Result<RepoFile, GithubError>;
 
     /// A blob holding exactly `content`.
@@ -191,30 +203,45 @@ impl GitDataApi for GithubClient {
         &self,
         token: &Secret<String>,
         repo: &RepoRef,
-        commit: &GitSha,
+        tree: &GitSha,
         path: &RepoPath,
+        cache: &mut TreeCache,
     ) -> Result<RepoFile, GithubError> {
-        let url = format!(
-            "{}/contents/{}?ref={commit}",
-            repo.api_path(),
-            encode_path(path.as_str())
-        );
-        let contents = match self.send(token, &Call::get(&url, MAX_CONTENT_BODY_BYTES)).await {
-            Ok(reply) => parse_contents(&reply.body)?,
-            Err(GithubError::NotFound) => return Ok(RepoFile::Absent),
-            Err(e) => return Err(e),
+        let mut dir = tree.clone();
+        let mut names = path.as_str().split('/').peekable();
+        let node = loop {
+            let Some(name) = names.next() else {
+                return Err(GithubError::Unexpected);
+            };
+            if !cache.listings.contains_key(dir.as_str()) {
+                let url = format!("{}/git/trees/{dir}", repo.api_path());
+                let reply = self.send(token, &Call::get(&url, MAX_CONTENT_BODY_BYTES)).await?;
+                cache
+                    .listings
+                    .insert(dir.as_str().to_owned(), parse_tree(&reply.body)?);
+            }
+            let listing = cache.listings.get(dir.as_str()).map_or(&[][..], Vec::as_slice);
+            let Some(found) = listing.iter().find(|n| n.name == name) else {
+                // Not there: a listing is the whole directory.
+                return Ok(RepoFile::Absent);
+            };
+            if names.peek().is_none() {
+                break found.clone();
+            }
+            // On the way to the file: only a directory can hold it.
+            if found.kind != NodeKind::Tree {
+                return Err(GithubError::Unexpected);
+            }
+            dir = found.sha.clone();
         };
-        // A file over 1 MB comes without its bytes: they are fetched by the blob's id.
-        let bytes = if let Some(bytes) = contents.bytes {
-            bytes
-        } else {
-            let url = format!("{}/git/blobs/{}", repo.api_path(), contents.blob);
-            let reply = self.send(token, &Call::get(&url, MAX_CONTENT_BODY_BYTES)).await?;
-            parse_blob(&reply.body)?
-        };
+        if node.kind != NodeKind::File {
+            return Err(GithubError::Unexpected);
+        }
+        let url = format!("{}/git/blobs/{}", repo.api_path(), node.sha);
+        let reply = self.send(token, &Call::get(&url, MAX_CONTENT_BODY_BYTES)).await?;
         Ok(RepoFile::File {
-            blob: contents.blob,
-            bytes,
+            blob: node.sha,
+            bytes: parse_blob(&reply.body)?,
         })
     }
 

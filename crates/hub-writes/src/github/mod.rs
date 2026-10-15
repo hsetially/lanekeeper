@@ -10,7 +10,7 @@ pub mod types;
 
 pub use api::{GithubError, MAX_BODY_BYTES, PullInfo};
 pub use client::{GithubApi, GithubClient, GithubClientConfig, GithubUser};
-pub use git::{GitDataApi, NewPull, RepoFile, TreeEntry};
+pub use git::{GitDataApi, NewPull, RepoFile, TreeCache, TreeEntry};
 pub use types::{
     BranchName, FINE_GRAINED_PREFIX, GitSha, GithubLogin, MAX_TOKEN_LEN, NameError, RepoRef, TokenShapeError,
 };

@@ -11,7 +11,7 @@
 //! | `writes_upload_multipart` | a content type, a line end, and a multipart body, read as an upload form and as a preview form | reading never panics; an accepted request has a valid path, a file within the limit, an `Expected` that agrees with its fields, and survives a round trip through a canonical form unchanged |
 //! | `writes_github_token` | bytes read as the body of `PUT /me/github-token`, and the same bytes as the text of a token | reading never panics; an accepted body holds a token of one to 512 bytes and survives a round trip through its canonical JSON unchanged; the shape check accepts only `github_pat_` followed by letters, digits and underscores within 512 bytes, never calls a fine-grained prefix classic, and its errors are the fixed words, none of which holds the input |
 //! | `writes_github_responses` | bytes read as the answer of `GET /user`, as the answer of `GET /repos/{o}/{r}`, and as the value of the expiry header | reading never panics; an accepted login is valid and is the one an independent JSON read finds; `push` is `true` only when an independent read finds exactly `permissions.push == true`; every error is `Unexpected`; an accepted expiry lies in 2000 to 2200 and survives being written out and read again, an absent header is no expiry, and a header that is there is read or refused as `Unexpected`, never taken for no expiry |
-//! | `writes_git_data_responses` | bytes read as the answers of the Git Data calls (a branch head, a commit, a created object, a blob, a file's contents, a pull request and a list of them), and as the text of a branch name, a Git object id and a repository path | reading never panics; every error is `Unexpected`; an accepted object id is 40 lowercase hexadecimal digits and the one an independent JSON read finds; an accepted blob or file holds exactly the number of bytes its `size` says and no more than its text can encode; an accepted pull request has a number from 1 to 2147483647 and an `https` address of at most 512 characters without a space or a control character, as an independent read finds them; an accepted branch name holds only letters, digits, `.`, `_`, `-` and single `/`; an encoded path decodes to the path |
+//! | `writes_git_data_responses` | bytes read as the answers of the Git Data calls (a branch head, a commit, a created object, a blob, a file's contents, the listing of a tree, a pull request and a list of them), and as the text of a branch name, a Git object id and a repository path | reading never panics; every error is `Unexpected`; an accepted object id is 40 lowercase hexadecimal digits and the one an independent JSON read finds; an accepted blob or file holds exactly the number of bytes its `size` says and no more than its text can encode; an accepted pull request has a number from 1 to 2147483647 and an `https` address of at most 512 characters without a space or a control character, as an independent read finds them; an accepted branch name holds only letters, digits, `.`, `_`, `-` and single `/`; an accepted tree lists the entries an independent read finds, each as a file only if its mode and type are a regular file's (a link, a directory and a submodule are never one), and a tree GitHub cut is refused; an encoded path decodes to the path |
 //! | `writes_preview_id` | text read as a preview id presented with a fixed request at a fixed time | checking never panics; an id is accepted only if it is exactly the one the service issues for that request at the second it names (so each request has one id for each second), and that second is within the ten minutes before now |
 
 #![allow(
@@ -26,9 +26,10 @@ use bytes::Bytes;
 use domain::{Expected, PreviewChange, SwimlaneId};
 use hub_writes::fuzz_hooks;
 use hub_writes::github::api::{
-    GithubError, MAX_BODY_BYTES, MAX_CONTENT_BODY_BYTES, MAX_PULL_URL_LEN, parse_blob, parse_commit_tree,
-    parse_contents, parse_created_sha, parse_pull, parse_pull_list, parse_push_permission, parse_ref_commit,
-    parse_user, status_error, status_error_for, token_expiry,
+    GithubError, MAX_BODY_BYTES, MAX_CONTENT_BODY_BYTES, MAX_PULL_URL_LEN, MAX_TREE_ENTRIES, NodeKind,
+    parse_blob, parse_commit_tree, parse_contents, parse_created_sha, parse_pull, parse_pull_list,
+    parse_push_permission, parse_ref_commit, parse_tree, parse_user, status_error, status_error_for,
+    token_expiry,
 };
 use hub_writes::github::types::{
     BranchName, FINE_GRAINED_PREFIX, GitSha, GithubLogin, MAX_BRANCH_LEN, MAX_TOKEN_LEN, TokenShapeError,
@@ -750,6 +751,7 @@ pub fn git_data_responses_accepted(data: &[u8]) -> bool {
         || parse_created_sha(data).is_ok()
         || parse_blob(data).is_ok()
         || parse_contents(data).is_ok()
+        || parse_tree(data).is_ok()
         || parse_pull(data).is_ok()
         || parse_pull_list(data, &branch).is_ok_and(|found| found.is_some())
 }
@@ -891,6 +893,53 @@ pub fn writes_git_data_responses(data: &[u8]) -> Result<(), String> {
             }
             (None, Some("none")) => {}
             _ => return Err("the bytes of a file do not follow its encoding".into()),
+        }
+    }
+
+    if let Some(nodes) = only_unexpected("tree", parse_tree(data))? {
+        ensure(data.len() <= MAX_CONTENT_BODY_BYTES, || {
+            "a body over the cap is read".into()
+        })?;
+        ensure(
+            at(&independent, &["truncated"]).and_then(serde_json::Value::as_bool) != Some(true),
+            || "a tree that GitHub cut is read".into(),
+        )?;
+        let items = at(&independent, &["tree"])
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| "a tree is read from something that has no list of entries".to_owned())?;
+        ensure(
+            nodes.len() == items.len() && nodes.len() <= MAX_TREE_ENTRIES,
+            || "the entries are not the ones an independent read finds, or are too many".into(),
+        )?;
+        for (node, item) in nodes.iter().zip(items) {
+            let (mode, kind, name, sha) = (
+                item.get("mode").and_then(serde_json::Value::as_str),
+                item.get("type").and_then(serde_json::Value::as_str),
+                item.get("path").and_then(serde_json::Value::as_str),
+                item.get("sha").and_then(serde_json::Value::as_str),
+            );
+            ensure(
+                name == Some(node.name.as_str()) && sha == Some(node.sha.as_str()),
+                || "an entry is not the name and object id an independent read finds".into(),
+            )?;
+            ensure(
+                !node.name.is_empty()
+                    && node.name.len() <= 255
+                    && node.name != "."
+                    && node.name != ".."
+                    && !node.name.contains('/')
+                    && !node.name.chars().any(char::is_control)
+                    && is_sha(node.sha.as_str()),
+                || "an entry has a name that is not one, or an object id that is not one".into(),
+            )?;
+            // What the entry is follows from its mode and type, and only a regular file is a file: a link is never one.
+            let right = match node.kind {
+                NodeKind::File => matches!(mode, Some("100644" | "100755")) && kind == Some("blob"),
+                NodeKind::Tree => mode == Some("040000") && kind == Some("tree"),
+                NodeKind::Symlink => mode == Some("120000") && kind == Some("blob"),
+                NodeKind::Submodule => mode == Some("160000") && kind == Some("commit"),
+            };
+            ensure(right, || "an entry is not what its mode and type say".into())?;
         }
     }
 

@@ -808,6 +808,18 @@ fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
     );
     add(
         t,
+        "accepted_tree_with_a_file_a_directory_a_link_and_a_submodule",
+        json(json!({ "sha": a, "truncated": false, "tree": [
+            { "path": "x.yml", "mode": "100644", "type": "blob", "sha": a },
+            { "path": "run.sh", "mode": "100755", "type": "blob", "sha": b },
+            { "path": "dir", "mode": "040000", "type": "tree", "sha": b },
+            { "path": "link.yml", "mode": "120000", "type": "blob", "sha": a },
+            { "path": "mod", "mode": "160000", "type": "commit", "sha": b },
+        ] })),
+    );
+    add(t, "accepted_empty_tree", json(json!({ "sha": a, "tree": [] })));
+    add(
+        t,
         "accepted_pull_request",
         json(pull(json!(17), "https://github.com/acme/r/pull/17")),
     );
@@ -863,6 +875,41 @@ fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
         json(pull(json!(0), "https://github.com/acme/r/pull/0")),
     );
     add(t, "rejected_pull_list_without_the_branch", b"[]".to_vec());
+    add(
+        t,
+        "rejected_tree_that_github_cut",
+        json(json!({ "truncated": true, "tree": [
+            { "path": "x.yml", "mode": "100644", "type": "blob", "sha": a },
+        ] })),
+    );
+    add(
+        t,
+        "rejected_tree_entry_with_a_slash_in_its_name",
+        json(json!({ "tree": [
+            { "path": "a/x.yml", "mode": "100644", "type": "blob", "sha": a },
+        ] })),
+    );
+    add(
+        t,
+        "rejected_tree_entry_with_a_mode_that_does_not_fit_its_type",
+        json(json!({ "tree": [
+            { "path": "x.yml", "mode": "120000", "type": "tree", "sha": a },
+        ] })),
+    );
+    add(
+        t,
+        "rejected_tree_entry_with_an_unknown_mode",
+        json(json!({ "tree": [
+            { "path": "x.yml", "mode": "100664", "type": "blob", "sha": a },
+        ] })),
+    );
+    add(
+        t,
+        "rejected_tree_entry_named_dot_dot",
+        json(json!({ "tree": [
+            { "path": "..", "mode": "040000", "type": "tree", "sha": a },
+        ] })),
+    );
     let _ = ContentHash::from_bytes([0; 32]);
     out
 }

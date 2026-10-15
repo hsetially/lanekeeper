@@ -714,20 +714,63 @@ async fn files_and_branches_that_are_not_there_are_refused() {
 #[tokio::test]
 async fn something_that_is_not_a_regular_file_in_the_repository_is_refused() {
     let Some(f) = fixture().await else { return };
-    f.sim.branch(BASE, "master", &[("config/a/x.yml", b"x: 1\n")]);
-    f.rig.seed(&f.s, &[("a/x.yml", "x: 2\n")]);
-    // GitHub answers a directory with a list.
-    f.sim.inject(|seen| {
-        (seen.method == "GET" && seen.path.contains("/contents/"))
-            .then(|| Reply::json(200, r#"[{"type":"file","name":"x.yml"}]"#))
-    });
+    // `config/a/x.yml` is a directory in the repository, and `config/b` is a file where the path needs a directory.
+    f.sim.branch(
+        BASE,
+        "master",
+        &[("config/a/x.yml/inner.yml", b"x: 1\n"), ("config/b", b"y: 1\n")],
+    );
+    f.rig.seed(&f.s, &[("a/x.yml", "x: 2\n"), ("b/z.yml", "z: 2\n")]);
     assert_eq!(
         f.svc
-            .plan(&f.ctx("pr-dir"), &f.request(&["a/x.yml"], None))
+            .plan(&f.ctx("pr-dir"), &f.request(&["a/x.yml"], Some(PrTarget::Base)))
             .await
             .unwrap_err(),
         PrError::RepoFileUnreadable { index: 0 }
     );
+    assert_eq!(
+        f.svc
+            .plan(
+                &f.ctx("pr-file-dir"),
+                &f.request(&["b/z.yml"], Some(PrTarget::Base))
+            )
+            .await
+            .unwrap_err(),
+        PrError::RepoFileUnreadable { index: 0 }
+    );
+    assert!(f.writes().is_empty());
+}
+
+/// GitHub's contents call answers a link to a file of the repository with that file, so a plan made from it would read the target and
+/// the tree built from the plan would replace the link with a regular file. The file is read through the tree, which lists the link
+/// as what it is.
+#[tokio::test]
+async fn a_symbolic_link_in_the_repository_is_refused_not_replaced_by_a_file() {
+    let Some(f) = fixture().await else { return };
+    f.sim.branch_with_links(
+        BASE,
+        "master",
+        &[("config/a/real.yml", b"x: 1\n")],
+        &[("config/a/x.yml", "config/a/real.yml")],
+    );
+    f.rig
+        .seed(&f.s, &[("a/x.yml", "x: 2\n"), ("a/real.yml", "x: 2\n")]);
+    assert_eq!(
+        f.svc
+            .plan(&f.ctx("pr-link"), &f.request(&["a/x.yml"], Some(PrTarget::Base)))
+            .await
+            .unwrap_err(),
+        PrError::RepoFileUnreadable { index: 0 }
+    );
+    assert!(f.writes().is_empty(), "nothing was made in the repository");
+    // The regular file next to it is read as before.
+    f.svc
+        .plan(
+            &f.ctx("pr-real"),
+            &f.request(&["a/real.yml"], Some(PrTarget::Base)),
+        )
+        .await
+        .unwrap();
 }
 
 // ------------------------------------------------------------------------------------------------------------------ S4, S8
@@ -914,11 +957,10 @@ async fn the_audit_id_is_put_in_the_body_once_the_event_exists() {
 // ------------------------------------------------------------------------------------------------- the GitHub leg (rule 5)
 
 #[tokio::test]
-async fn contents_without_bytes_are_fetched_as_a_blob() {
+async fn the_repository_file_is_read_as_its_blob_and_its_form_is_kept() {
     let Some(f) = fixture().await else { return };
     f.sim
         .branch(TENANT, "sit1", &[("data/config/a/x.yml", b"k: 1\r\nm: 2\r\n")]);
-    f.sim.contents_without_bytes_over(4);
     f.rig.seed(&f.s, &[("a/x-sit1.yml", "k: 1\nm: 3\n")]);
     let made = f
         .svc
@@ -933,6 +975,9 @@ async fn contents_without_bytes_are_fetched_as_a_blob() {
         b"k: 1\r\nm: 3\r\n"
     );
     assert!(f.server.seen().iter().any(|r| r.path.contains("/git/blobs/")));
+    // The contents call is not made: it follows a symbolic link, and the listings of the tree say what each name is.
+    assert!(!f.server.seen().iter().any(|r| r.path.contains("/contents/")));
+    assert!(f.server.seen().iter().any(|r| r.path.contains("/git/trees/")));
 }
 
 #[tokio::test]
@@ -956,17 +1001,14 @@ async fn a_file_name_cannot_change_the_request() {
             .unwrap(),
         b"k: 2\n"
     );
-    let reads: Vec<String> = f
-        .server
-        .seen()
-        .iter()
-        .filter(|r| r.path.contains("/contents/"))
-        .map(|r| r.path.clone())
-        .collect();
-    assert_eq!(reads.len(), 1);
+    // The name is in no address: the file is found in the listings of its directories, which are asked for by object id.
     assert!(
-        reads[0].contains("/contents/data/config/a/we%20ird%23name%3F.yml?ref="),
-        "{reads:?}"
+        f.server
+            .seen()
+            .iter()
+            .all(|r| !r.path.contains("ird") && !r.path.contains("name")),
+        "{:?}",
+        f.server.seen().iter().map(|r| r.path.clone()).collect::<Vec<_>>()
     );
 }
 

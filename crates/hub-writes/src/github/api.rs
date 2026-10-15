@@ -208,6 +208,86 @@ pub fn parse_created_sha(body: &[u8]) -> Result<GitSha, GithubError> {
     GitSha::parse(&c.sha).map_err(|_| GithubError::Unexpected)
 }
 
+/// What a tree says an entry is, from its mode and type. Only a regular file is something this code puts a change into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeKind {
+    /// A regular file (mode 100644, or 100755).
+    File,
+    /// A directory (mode 040000).
+    Tree,
+    /// A symbolic link (mode 120000): the blob holds the name of its target, and the contents call follows it.
+    Symlink,
+    /// A submodule (mode 160000).
+    Submodule,
+}
+
+/// One entry of a tree: a name (no `/`), what it is and the object it points at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeNode {
+    pub name: String,
+    pub kind: NodeKind,
+    pub sha: GitSha,
+}
+
+/// The most entries of one directory read. A directory with more is not read (GitHub marks a tree it cut as `truncated`, which is
+/// refused too): a listing that is not the whole directory cannot say a name is absent.
+pub const MAX_TREE_ENTRIES: usize = 20_000;
+
+#[derive(Deserialize)]
+struct TreeItem {
+    path: String,
+    mode: String,
+    #[serde(rename = "type")]
+    kind: String,
+    sha: String,
+}
+
+#[derive(Deserialize)]
+struct TreeBody {
+    tree: Vec<TreeItem>,
+    #[serde(default)]
+    truncated: bool,
+}
+
+fn tree_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.chars().any(char::is_control)
+}
+
+/// The entries of one directory, from `GET /git/trees/{sha}` (not recursive). A tree GitHub cut, one with more than
+/// [`MAX_TREE_ENTRIES`], an entry whose mode and type do not go together, or whose name is not a name, is not read at all.
+pub fn parse_tree(body: &[u8]) -> Result<Vec<TreeNode>, GithubError> {
+    let t: TreeBody = serde_json::from_str(object_text_within(body, MAX_CONTENT_BODY_BYTES)?)
+        .map_err(|_| GithubError::Unexpected)?;
+    if t.truncated || t.tree.len() > MAX_TREE_ENTRIES {
+        return Err(GithubError::Unexpected);
+    }
+    t.tree
+        .into_iter()
+        .map(|item| {
+            let kind = match (item.mode.as_str(), item.kind.as_str()) {
+                ("100644" | "100755", "blob") => NodeKind::File,
+                ("040000", "tree") => NodeKind::Tree,
+                ("120000", "blob") => NodeKind::Symlink,
+                ("160000", "commit") => NodeKind::Submodule,
+                _ => return Err(GithubError::Unexpected),
+            };
+            if !tree_name_ok(&item.path) {
+                return Err(GithubError::Unexpected);
+            }
+            Ok(TreeNode {
+                name: item.path,
+                kind,
+                sha: GitSha::parse(&item.sha).map_err(|_| GithubError::Unexpected)?,
+            })
+        })
+        .collect()
+}
+
 /// The bytes of base64 text with the line breaks GitHub puts in it. Nothing else is skipped: a space or any other character that is
 /// not base64 is an error, and so is a length that does not match `size` when GitHub gave one.
 fn decode_content(text: &str, size: Option<u64>) -> Result<Bytes, GithubError> {
@@ -654,6 +734,46 @@ mod tests {
             Some(GithubError::Unavailable)
         );
         assert_eq!(status_error_for(200, false, &[200, 201]), None);
+    }
+
+    #[test]
+    fn a_tree_is_read_into_entries_that_say_what_they_are() {
+        let tree = serde_json::json!({ "sha": SHA_A, "truncated": false, "tree": [
+            { "path": "x.yml", "mode": "100644", "type": "blob", "sha": SHA_A },
+            { "path": "run.sh", "mode": "100755", "type": "blob", "sha": SHA_B },
+            { "path": "d", "mode": "040000", "type": "tree", "sha": SHA_B },
+            { "path": "l", "mode": "120000", "type": "blob", "sha": SHA_A },
+            { "path": "m", "mode": "160000", "type": "commit", "sha": SHA_B },
+        ] });
+        let nodes = parse_tree(tree.to_string().as_bytes()).unwrap();
+        let kinds: Vec<_> = nodes.iter().map(|n| (n.name.as_str(), n.kind)).collect();
+        assert_eq!(
+            kinds,
+            [
+                ("x.yml", NodeKind::File),
+                ("run.sh", NodeKind::File),
+                ("d", NodeKind::Tree),
+                ("l", NodeKind::Symlink),
+                ("m", NodeKind::Submodule),
+            ]
+        );
+        // What cannot be trusted as a whole listing is not read: a cut tree, a name that is a path, a mode that does not go with
+        // its type, an object id that is not one.
+        for bad in [
+            serde_json::json!({ "truncated": true, "tree": [] }),
+            serde_json::json!({ "tree": [{ "path": "a/b", "mode": "100644", "type": "blob", "sha": SHA_A }] }),
+            serde_json::json!({ "tree": [{ "path": "..", "mode": "040000", "type": "tree", "sha": SHA_A }] }),
+            serde_json::json!({ "tree": [{ "path": "x", "mode": "120000", "type": "tree", "sha": SHA_A }] }),
+            serde_json::json!({ "tree": [{ "path": "x", "mode": "100664", "type": "blob", "sha": SHA_A }] }),
+            serde_json::json!({ "tree": [{ "path": "x", "mode": "100644", "type": "blob", "sha": "nope" }] }),
+            serde_json::json!({ "tree": {} }),
+        ] {
+            assert_eq!(
+                parse_tree(bad.to_string().as_bytes()),
+                Err(GithubError::Unexpected),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
