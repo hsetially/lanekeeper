@@ -1,6 +1,6 @@
 # Migrations
 
-These files are a contract. Prompt 01 (T6) writes `0001_init.sql`; `0002_audit_verify_state.sql` is a contract-change that adds one table for prompt 03a; `0003_registry.sql` is a contract-change that adds the registry's tables and columns for prompt 05; `0004_write_additions.sql` is a contract-change for prompt 06 (notify proposals, the token expiry, and the approvals hardening).
+These files are a contract. Prompt 01 (T6) writes `0001_init.sql`; `0002_audit_verify_state.sql` is a contract-change that adds one table for prompt 03a; `0003_registry.sql` is a contract-change that adds the registry's tables and columns for prompt 05; `0004_write_additions.sql` is a contract-change for prompt 06 (notify proposals, the token expiry, and the approvals hardening); `0005_mcp_tokens.sql` is a contract-change for prompt 07 (personal tokens for the MCP server).
 
 - Add new migrations as new files (`0002_<what>.sql`). Never edit a merged one.
 - Follow the lanekeeper-contract-change skill: expand first, contract later.
@@ -40,9 +40,11 @@ They come from `deploy/dev/init.sql` (dev and tests) and from CloudNativePG mana
 | write-once | SELECT, INSERT, DELETE | content-addressed or immutable rows that retention or garbage collection may remove (`blobs`, `blob_refs`, `settings_index`, `settings_index_blobs`, `git_tree_index`, `doc_versions`, `webhook_deliveries`) |
 | mutable | SELECT, INSERT, UPDATE, DELETE | everything else |
 | state row | SELECT, UPDATE | a singleton row the migration inserts and the app only reads and updates (`audit_verify_state`) |
+| append-only, two updatable columns | SELECT, INSERT, and UPDATE on named columns only | `mcp_tokens` (from `0005`: `revoked_at`, `last_used_at`) |
 | none | nothing | `_sqlx_migrations` |
 
 - Never grant TRUNCATE, REFERENCES or TRIGGER. Sequences: `USAGE` only where a `serial` column needs it (`audit_events.seq`); identity columns need nothing.
+- A column-level `UPDATE` grant is invisible to `has_table_privilege`, so a table that has one is also listed in `COLUMN_UPDATES` in `crates/xtask/tests/db_migrations.rs`, with its columns, and `every_table_has_a_grant_decision` fails for any other table where the app can update a column.
 - The decision for every table is repeated in `crates/xtask/tests/db_migrations.rs` (`grant_decisions`). A migration that adds a table without adding its decision there, and the matching `GRANT`, fails `every_table_has_a_grant_decision`.
 
 ## The audit log (S9, D56)
@@ -94,6 +96,28 @@ Expand-only: new columns and indexes on existing tables, eight new tables, one g
 - **`github_credentials.expires_at timestamptz NULL`** (G9): when GitHub says the stored fine-grained token expires, read from the `GET /user` response header when the token is stored and again when it is validated. `NULL` means GitHub did not say. The UI warns a week before; nothing is called per page load.
 - **Approvals hardening** (G10): see the `approvals` bullet under "Other database-side guards". This part of the migration is separable: if a human strikes it, delete the `REVOKE`, the key replacement and the trigger from the file and their tests (`the_app_cannot_change_or_remove_an_approval`, `a_proposals_author_cannot_change`, the `approvals` grant decision) together.
 - **Rollout order.** The migration deploys before the 06 code. Binaries from before it never write `'notify'` or `expires_at`, never update an approval and never change a proposal's author, so they run unchanged.
+
+## The personal tokens of the MCP server (`0005_mcp_tokens.sql`, prompt 07)
+
+One new table, `mcp_tokens`; nothing existing changes (expand-only, no row is written; `migration_0005_changes_nothing_that_exists` compares the catalog before and after). Deploy the migration before the 07 code. Binaries from before it never touch the table.
+
+Personal-token mode is the second way a client authenticates to `/mcp` and is never combined with OAuth (D52). A token is `lkpat_` plus 256 random bits, shown once when it is created and never again; the table keeps only `token_hmac = HMAC-SHA-256(key, token)`, 32 bytes, where the key is a runtime secret that the database never sees, so a copy of the table lets nobody use a token (S7). Every call looks the token up by that hash (the `UNIQUE` index; `mcp_token_lookups_have_an_index`), then checks `expires_at` and `revoked_at`, then the user's status.
+
+| Column | Meaning |
+|---|---|
+| `id` | `bigint`, generated; the id the REST routes and the list use |
+| `user_tid`, `user_oid` | the owner; a foreign key to `users` with `ON DELETE RESTRICT` |
+| `token_hmac` | `bytea`, `UNIQUE`, exactly 32 bytes (`mcp_tokens_hmac_length`) |
+| `label` | what the user calls it, 1 to 64 characters (`mcp_tokens_label_length`); never the token |
+| `created_at`, `expires_at` | the token lives at most 31 days in the schema (`mcp_tokens_lifetime`; the hub issues 7), so no row is a bearer credential without an end |
+| `revoked_at` | set once, by the owner; a trigger refuses any later change of it (SQLSTATE `23514`), for the app and the owner alike, so a revoked token cannot be revived. Setting it to the value it has is allowed, so a second revocation is a no-op |
+| `last_used_at` | when the token was last used, to within a few seconds; operational state, not an audited event |
+
+- **Grants.** `lanekeeper_app` has SELECT and INSERT, and UPDATE on `revoked_at` and `last_used_at` only: the owner, the hash, the label and the end of a token are fixed when it is written. No DELETE and no TRUNCATE: a token, revoked or expired, is evidence and stays. Nothing prunes the table in v1 (a row is about 200 bytes and the hub makes at most a handful per user); a pruning function would be a later migration, like `maintain_sentinel_partitions`.
+- **Users with tokens.** The key to `users` is `ON DELETE RESTRICT`: a cascade would remove the tokens without a privilege check (`no_cascading_foreign_key_touches_a_protected_table` holds the line), so deleting a user who has ever had a token is refused with `23503`. Decommission such a user by disabling them (`users.status`), which is what the product does; a disabled user's tokens stop working on their next call. This is the same trade as a decided proposal (`0004`).
+- **Audit.** Creating and revoking a token each write one audit event in the same transaction: `mcp_token_created` and `mcp_token_revoked` (`ports::AuditAction`). The events name the owner and the label and never the token or its hash. `audit_events.action` is free text, so the audit tables are not touched.
+- **Not in the schema.** "At most five live tokens per user" is a count, not a constraint; the hub checks it when it creates a token, and a race can allow a sixth for a moment. The 7-day life is the hub's, within the 31 days the schema allows.
+- **Separable.** The revocation trigger and the 31-day bound go beyond what the plan listed; if a human strikes either, delete its statement, its constraint or trigger test (`a_revoked_token_stays_revoked`, the `32 days` and `infinity` cases of `mcp_tokens_enforce_their_constraints`) and the matching entry of `migration_0005_is_expand_only` together.
 
 ## Other database-side guards
 

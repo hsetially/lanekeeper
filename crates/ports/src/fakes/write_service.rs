@@ -528,6 +528,9 @@ impl WriteService for FakeWriteService {
             setting_changes: Vec::new(),
             status: ProposalStatus::Draft,
             expires_at: Timestamp::from_unix_millis(st.now_ms + DRAFT_TTL_MS),
+            // The fake computes no facts (the engine does): no severity rule matched, no service consumes the file.
+            severity: None,
+            effects: Vec::new(),
         };
         st.drafts.insert(
             id,
@@ -569,6 +572,19 @@ impl WriteService for FakeWriteService {
 
     async fn preview_effect(&self, ctx: &WriteCtx, r: PreviewRequest) -> Result<ChangePreview, WriteError> {
         self.preview(ctx, &r)
+    }
+
+    async fn draft(&self, ctx: &WriteCtx, id: DraftId) -> Result<Draft, WriteError> {
+        if !ctx.user.allows(Role::Editor) {
+            return Err(WriteError::Forbidden);
+        }
+        // Only the author's: another user's draft is as good as none. No idempotency record and no audit (reading).
+        lock(&self.state)
+            .drafts
+            .get(&id)
+            .filter(|d| d.draft.author == ctx.user.id)
+            .map(|d| d.draft.clone())
+            .ok_or(WriteError::NotFound)
     }
 
     async fn notify(&self, ctx: &WriteCtx, r: NotifyRequest) -> Result<WriteOutcome, WriteError> {

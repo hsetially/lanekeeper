@@ -2,8 +2,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use domain::{
     ChangeEol, ChangePreview, DeleteRequest, EditRequest, Expected, NfsPath, NotifyRequest, PrRequest,
-    PrTarget, PreviewChange, PreviewId, PreviewRequest, RejectReason, RestartRequest, RevertRequest, Role,
-    ServiceRef, ShortText, SwimlaneId, TenantId, UploadRequest, User, UserStatus, WriteCtx, WriteOutcome,
+    PrTarget, PreviewChange, PreviewId, PreviewRequest, ProposalStatus, RejectReason, RestartRequest,
+    RevertRequest, Role, ServiceRef, ShortText, SwimlaneId, TenantId, UploadRequest, User, UserStatus,
+    WriteCtx, WriteOutcome,
 };
 
 use super::sample::{active, files, hash, nfs, swimlane, user, write_ctx};
@@ -133,6 +134,8 @@ fn applied_hash(o: &WriteOutcome) -> Option<domain::ContentHash> {
 /// - Notify needs Operator, takes 1-100 paths, and becomes a proposal for a user who `requires_approval`.
 /// - A preview is bound to the user, swimlane, path, expected state and content (an upload) or hash (a delete) it was
 ///   issued for, runs out after [`ChangePreview::TTL_SECS`], and writes nothing.
+/// - `draft` (`contract/07-mcp`) gives the author their draft as it is, Editor only, to nobody else, with no side effects; it
+///   shows the status after an apply. An implementation that keeps the `Unavailable` default fails here.
 /// - A preview never shows a value the secret scan flags: the value is masked and the entry says `flagged` (S14b, D79).
 /// - A new file takes the line endings of its folder (the content as it is, when the folder has none); a file with
 ///   mixed endings takes the dominant ones, and a file with none takes LF (the engine's `dominant_eol`); a lone CR is a
@@ -784,9 +787,96 @@ pub async fn write_service<W: WriteScenario + ?Sized>(w: &W) {
         WriteError::Forbidden
     );
 
+    drafts_can_be_read_by_their_author(w).await;
     previews_are_bound_and_expire(w, &s).await;
     previews_write_nothing_and_mask_secrets(w, &s).await;
     line_endings_follow_the_file_the_folder_and_the_majority(w, &s).await;
+}
+
+/// `WriteService::draft`: the author reads their draft exactly as `propose_draft` returned it, nobody else can, a viewer
+/// and the users who are not active are `Forbidden`, an unknown id is `NotFound`, and reading changes nothing. After an apply
+/// the draft says `Applied`.
+async fn drafts_can_be_read_by_their_author<W: WriteScenario + ?Sized>(w: &W) {
+    let editor = active(1, Role::Editor);
+    let other_editor = active(7, Role::Editor);
+    let s = swimlane("sit-draft-read");
+    w.seed(&s, &files(&[("a.yml", "x: 1\n")])).await;
+    let a = nfs("a.yml");
+    let proposed = w
+        .propose_draft(
+            &write_ctx(&editor, "rd-1"),
+            edit(
+                &s,
+                "a.yml",
+                Expected::Hash {
+                    hash: hash(b"x: 1\n"),
+                },
+                "x: 2\n",
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(proposed.status, ProposalStatus::Draft);
+
+    // The author reads what was proposed, as often as they like.
+    let read = w
+        .draft(&write_ctx(&editor, "rd-2"), proposed.id.clone())
+        .await
+        .unwrap();
+    assert_eq!(read, proposed, "the author reads the draft that was proposed");
+    assert_eq!(
+        w.draft(&write_ctx(&editor, "rd-3"), proposed.id.clone())
+            .await
+            .unwrap(),
+        proposed,
+        "reading twice gives the same draft"
+    );
+    assert_eq!(
+        w.nfs_content(&s, &a).await.as_deref(),
+        Some(&b"x: 1\n"[..]),
+        "reading a draft writes nothing"
+    );
+
+    // Nobody else, and nobody below Editor or not active.
+    assert_eq!(
+        w.draft(&write_ctx(&other_editor, "rd-4"), proposed.id.clone())
+            .await,
+        Err(WriteError::NotFound),
+        "only the author reads a draft"
+    );
+    let unknown = domain::DraftId::parse("draft-unknown").unwrap();
+    assert_eq!(
+        w.draft(&write_ctx(&editor, "rd-5"), unknown).await,
+        Err(WriteError::NotFound)
+    );
+    for bad in [
+        active(2, Role::Viewer),
+        user(3, Some(Role::Admin), UserStatus::Pending),
+        user(4, Some(Role::Admin), UserStatus::Disabled),
+        user(5, None, UserStatus::Active),
+    ] {
+        assert_eq!(
+            w.draft(&write_ctx(&bad, "rd-6"), proposed.id.clone()).await,
+            Err(WriteError::Forbidden),
+            "{:?} may not read a draft",
+            bad.role
+        );
+    }
+
+    // Applied, it says so; it is still the author's.
+    w.apply_draft(&write_ctx(&editor, "rd-7"), proposed.id.clone())
+        .await
+        .unwrap();
+    let after = w
+        .draft(&write_ctx(&editor, "rd-8"), proposed.id.clone())
+        .await
+        .unwrap();
+    assert_eq!(after.status, ProposalStatus::Applied);
+    assert_eq!(
+        (after.id, after.swimlane, after.path, after.new_hash),
+        (proposed.id, proposed.swimlane, proposed.path, proposed.new_hash),
+        "an applied draft is still the draft that was proposed"
+    );
 }
 
 /// A token is good for the user, swimlane, path, expected state and content (a delete: the hash) it was issued for, and

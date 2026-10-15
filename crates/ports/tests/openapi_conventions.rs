@@ -244,6 +244,9 @@ fn roles_follow_the_approved_inventory() {
         ("GET", "/api/v1/me", Role::Viewer),
         ("PUT", "/api/v1/me/github-token", Role::Editor),
         ("DELETE", "/api/v1/me/github-token", Role::Editor),
+        ("GET", "/api/v1/me/mcp-tokens", Role::Viewer),
+        ("POST", "/api/v1/me/mcp-tokens", Role::Viewer),
+        ("DELETE", "/api/v1/me/mcp-tokens/{id}", Role::Viewer),
         ("GET", "/api/v1/swimlanes/{id}/served", Role::Viewer),
         ("POST", "/api/v1/swimlanes/{id}/files/reveal", Role::Editor),
         ("PUT", "/api/v1/swimlanes/{id}/files", Role::Editor),
@@ -410,6 +413,7 @@ fn every_list_uses_keyset_with_limit_max_500() {
         "GET /api/v1/admin/audit",
         "GET /api/v1/admin/agents",
         "GET /api/v1/admin/sentinels",
+        "GET /api/v1/me/mcp-tokens",
     ] {
         assert!(
             lists.contains(expected),
@@ -573,7 +577,7 @@ fn errors_are_problem_json_and_every_operation_has_a_default() {
 fn secrets_are_write_only() {
     let d = doc();
     // (schema, property): a value that is shown exactly once, with the reason.
-    let shown_once = [("JoinToken", "token")];
+    let shown_once = [("JoinToken", "token"), ("McpTokenCreated", "token")];
     // (schema, property): a boolean about a secret, not the secret, with the reason: whether a token is stored.
     let flags = [("Me", "needs_github_token")];
     let mut checked = 0;
@@ -1267,4 +1271,279 @@ fn mcp_write_definitions_match_the_rest_document() {
     assert!(!required_of(&defs["WriteOutcome"]).contains("warnings"));
     assert!(!required_of(&defs["ToolError"]).contains("issues"));
     assert!(!required_of(&defs["ToolError"]).contains("reason"));
+}
+
+/// Prompt 07's contract change (C3): personal MCP tokens. Any signed-in user may make, list and revoke their own (the role floor
+/// is Viewer; whether personal-token mode is on is the hub's configuration). The token is in the response that creates it and
+/// in no other, the stored hash is in none, and the label has the bounds of the table that keeps it.
+#[test]
+fn personal_mcp_tokens_are_shown_once_and_listed_without_the_secret() {
+    let d = doc();
+    let all = operations(&d);
+    let schemas = &d["components"]["schemas"];
+    let list = find(&all, "GET", "/api/v1/me/mcp-tokens");
+    let create = find(&all, "POST", "/api/v1/me/mcp-tokens");
+    let revoke = find(&all, "DELETE", "/api/v1/me/mcp-tokens/{id}");
+    for (op, id) in [
+        (list, "listMcpTokens"),
+        (create, "createMcpToken"),
+        (revoke, "revokeMcpToken"),
+    ] {
+        assert_eq!(op.def["operationId"], id);
+        assert_eq!(op.def["x-required-role"], "viewer", "{id}");
+        assert!(op.has_tag("me"), "{id}");
+        // The mode is the deployment's: with personal tokens off the routes answer 404, and the spec says so.
+        assert!(op.response(&d, "404").is_some(), "{id} documents 404");
+        assert!(op.response(&d, "403").is_some(), "{id} documents 403");
+    }
+
+    // The list: McpToken entries, which hold no token, no hash and no secret of any kind.
+    assert_eq!(
+        json_schema(list.response(&d, "200").unwrap()).unwrap()["$ref"],
+        "#/components/schemas/McpTokenPage"
+    );
+    assert_eq!(
+        schemas["McpTokenPage"]["properties"]["items"]["items"]["$ref"],
+        "#/components/schemas/McpToken"
+    );
+    let listed: BTreeSet<&str> = properties(&d, &schemas["McpToken"]).into_keys().collect();
+    assert_eq!(
+        listed,
+        BTreeSet::from([
+            "id",
+            "label",
+            "created_at",
+            "expires_at",
+            "revoked_at",
+            "last_used_at"
+        ])
+    );
+    assert_eq!(
+        required_of(&schemas["McpToken"]).len(),
+        listed.len(),
+        "every field is always there"
+    );
+
+    // The create response is the list entry plus the token, once, uncacheable.
+    let created_ok = create.response(&d, "201").expect("201");
+    assert_eq!(
+        json_schema(created_ok).unwrap()["$ref"],
+        "#/components/schemas/McpTokenCreated"
+    );
+    assert_eq!(
+        created_ok["headers"]["Cache-Control"]["schema"]["enum"][0],
+        "no-store"
+    );
+    let created = properties(&d, &schemas["McpTokenCreated"]);
+    assert_eq!(
+        created.keys().copied().collect::<BTreeSet<_>>(),
+        listed.iter().copied().chain(["token"]).collect::<BTreeSet<_>>()
+    );
+    assert_eq!(created["token"]["readOnly"], true, "shown once");
+    assert!(required_of(&schemas["McpTokenCreated"]).contains("token"));
+    // No other schema has a property that could hold the token or the hash the hub keeps; the HMAC is a storage detail.
+    let token_holders = ["JoinToken", "GithubTokenRequest", "McpTokenCreated"];
+    for (name, schema) in schemas.as_object().unwrap() {
+        for prop in properties(&d, schema).into_keys() {
+            assert!(
+                !prop.to_lowercase().contains("hmac"),
+                "{name}.{prop}: the stored hash is not part of the API"
+            );
+            assert!(
+                prop != "token" || token_holders.contains(&name.as_str()),
+                "{name}.{prop}: a personal token is in the response that creates it and nowhere else"
+            );
+        }
+    }
+}
+
+/// The request that creates a token, the answers at the limit and on revocation, and what the operations never say.
+#[test]
+fn personal_mcp_token_requests_are_bounded_and_never_name_the_hash() {
+    let d = doc();
+    let all = operations(&d);
+    let schemas = &d["components"]["schemas"];
+    let list = find(&all, "GET", "/api/v1/me/mcp-tokens");
+    let create = find(&all, "POST", "/api/v1/me/mcp-tokens");
+    let revoke = find(&all, "DELETE", "/api/v1/me/mcp-tokens/{id}");
+    // Nor does any word of the token operations and schemas name it (the webhook's own HMAC is another matter).
+    for text in [
+        list.def.to_string(),
+        create.def.to_string(),
+        revoke.def.to_string(),
+        schemas["McpToken"].to_string(),
+        schemas["McpTokenPage"].to_string(),
+        schemas["McpTokenCreate"].to_string(),
+        schemas["McpTokenCreated"].to_string(),
+    ] {
+        assert!(
+            !text.to_lowercase().contains("hmac"),
+            "the stored hash is not part of the API: {text}"
+        );
+    }
+
+    // The request: a label, as long as the table allows (`length(label) BETWEEN 1 AND 64`), and nothing else.
+    let body = &schemas["McpTokenCreate"];
+    assert_eq!(required_of(body), BTreeSet::from(["label".to_owned()]));
+    assert_eq!(body["additionalProperties"], false);
+    assert_eq!(body["properties"]["label"]["minLength"], 1);
+    assert_eq!(body["properties"]["label"]["maxLength"], 64);
+    assert!(
+        include_str!("../../../db/migrations/0005_mcp_tokens.sql").contains("length(label) BETWEEN 1 AND 64"),
+        "the table and the request agree on the label"
+    );
+    assert_eq!(
+        create.def["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/McpTokenCreate"
+    );
+    // A user at the limit of live tokens is told so, and a revocation has no body.
+    assert!(create.response(&d, "409").is_some());
+    assert!(revoke.response(&d, "204").is_some());
+    assert!(revoke.response(&d, "204").unwrap().get("content").is_none());
+    let id = revoke
+        .params(&d)
+        .into_iter()
+        .find(|p| p["in"] == "path")
+        .expect("path parameter");
+    assert_eq!(id["name"], "id");
+}
+
+/// A [`domain::Draft`] with every field set, as the REST edge writes it.
+fn full_draft() -> domain::Draft {
+    use domain::{
+        ContentHash, DraftId, Expected, PickupState, ProposalStatus, ServiceRef, Severity, SwimlaneId,
+        Timestamp,
+    };
+    domain::Draft {
+        id: DraftId::parse("draft-1").unwrap(),
+        author: ports::conformance::sample::user_id(1),
+        swimlane: SwimlaneId::parse("sit1").unwrap(),
+        path: NfsPath::parse("a.yml").unwrap(),
+        expected: Expected::Absent,
+        new_hash: ContentHash::from_bytes([1; 32]),
+        hunks: Vec::new(),
+        setting_changes: Vec::new(),
+        status: ProposalStatus::Draft,
+        expires_at: Timestamp::from_unix_millis(1),
+        severity: Some(Severity::Low),
+        effects: vec![(
+            ServiceRef::new("csp", "api").unwrap(),
+            PickupState::NeedsNotifyOrRestart,
+        )],
+    }
+}
+
+use domain::NfsPath;
+
+/// Prompt 07's contract change (C4, G8): a draft carries its severity and the pickup state of each service. Both are optional,
+/// so a client built from the old document keeps working, and a draft that has neither is written as before. The document
+/// spells `effects` as pairs, like `SwimlaneSummary.drift_counts`, because the domain type serialises a pair.
+#[test]
+fn draft_additions_are_optional_and_match_the_domain() {
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+    assert_optional(&d, "Draft", "severity");
+    assert_optional(&d, "Draft", "effects");
+
+    let draft = serde_json::to_value(full_draft()).unwrap();
+    let declared: BTreeSet<String> = properties(&d, &schemas["Draft"])
+        .into_keys()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        wire_keys(&draft),
+        declared,
+        "the draft's wire fields are the document's"
+    );
+
+    let effects = &schemas["Draft"]["properties"]["effects"];
+    assert_eq!(effects["type"], "array");
+    assert!(effects["maxItems"].as_u64().is_some(), "bounded");
+    let pair = &effects["items"];
+    assert_eq!(pair["type"], "array");
+    assert_eq!(pair["minItems"], 2);
+    assert_eq!(pair["maxItems"], 2);
+    assert_eq!(pair["prefixItems"][0]["$ref"], "#/components/schemas/ServiceRef");
+    assert_eq!(pair["prefixItems"][1]["$ref"], "#/components/schemas/PickupState");
+    assert!(
+        draft["effects"][0].as_array().is_some_and(|p| p.len() == 2),
+        "{draft}"
+    );
+    assert_eq!(
+        schemas["Draft"]["properties"]["severity"]["oneOf"][0]["$ref"],
+        "#/components/schemas/Severity"
+    );
+}
+
+/// Prompt 07's contract change (C1, C4, G5): the served file of the domain is the REST `ServedFile`, field for field, and the
+/// MCP tool `get_served_config` returns it with the redaction count and the data labels added.
+#[test]
+fn served_file_is_the_domains_and_the_tool_adds_redaction_fields() {
+    use domain::{AppName, ContentHash, EffectiveSource, FileRole, ServedFile, SwimlaneId, TenantId};
+    const MCP: &str = include_str!("../../../docs/mcp-tools.md");
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+    let sample = ServedFile {
+        swimlane: SwimlaneId::parse("sit1").unwrap(),
+        application: AppName::parse("api").unwrap(),
+        tenant: TenantId::parse("sit1").unwrap(),
+        channel: None,
+        file: NfsPath::parse("api.yml").unwrap(),
+        role: FileRole::PropertySource,
+        hash: ContentHash::from_bytes([1; 32]),
+        content_withheld: false,
+        text: None,
+        sources: vec![EffectiveSource {
+            path: NfsPath::parse("api.yml").unwrap(),
+            rank: 1,
+        }],
+        unresolved_placeholders: Vec::new(),
+    };
+    let declared: BTreeSet<String> = properties(&d, &schemas["ServedFile"])
+        .into_keys()
+        .map(str::to_owned)
+        .collect();
+    let wire = serde_json::to_value(&sample).unwrap();
+    assert_eq!(
+        wire_keys(&wire),
+        declared,
+        "the domain's wire fields are the document's"
+    );
+    assert_eq!(
+        required_of(&schemas["ServedFile"]),
+        declared,
+        "all required, `text` and `channel` nullable"
+    );
+    assert_eq!(wire["text"], Value::Null, "no text is a null, not a missing key");
+
+    // The tool: those fields and three more.
+    let section = MCP
+        .split("### `get_served_config`")
+        .nth(1)
+        .and_then(|rest| rest.split("\n### ").next())
+        .expect("the get_served_config section");
+    let output = section
+        .split("**Output schema**")
+        .nth(1)
+        .and_then(|rest| rest.split("```json\n").nth(1))
+        .and_then(|rest| rest.split("\n```").next())
+        .expect("its output schema");
+    let output: Value = serde_json::from_str(output).expect("the output schema is JSON");
+    let tool_keys: BTreeSet<String> = output["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    let mut expected = declared.clone();
+    expected.extend(["redacted_values", "untrusted", "label"].map(str::to_owned));
+    assert_eq!(
+        tool_keys, expected,
+        "the REST fields plus redaction and the labels"
+    );
+    // The same bounds where the two documents say the same thing.
+    assert_eq!(
+        output["properties"]["sources"]["maxItems"],
+        schemas["ServedFile"]["properties"]["sources"]["maxItems"]
+    );
 }

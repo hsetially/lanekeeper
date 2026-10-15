@@ -5,8 +5,10 @@
 //! that parse and resolve their `$ref`s, bounded inputs, the role floor, the confirmation rule and the output caps.
 //! It also ties each tool to the REST operation it wraps, so a role cannot drift away from `api/openapi.yaml`.
 //!
-//! Q22: there is deliberately no MCP tool that notifies the config-server. Its `/update-resources` endpoint is
-//! unauthenticated (Q37), so it is not exposed to AI clients. `no_notify_tool_is_exposed` pins that.
+//! Q37: the config-server's `/update-resources` endpoint is unauthenticated, so exactly one tool reaches it,
+//! `notify_services`: Operator only, confirmation required, audited by the write service, and shipped disabled until Q37
+//! is answered (contract change `contract/07-mcp`, A2 of plan 07). `only_notify_services_reaches_the_config_server`
+//! pins that.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,13 +16,14 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value};
 
-/// The 19 read tools of prompt 01 T7.
+/// The 20 read tools: the 19 of prompt 01 T7 and `get_served_config` (prompt 07 T7).
 const READ_TOOLS: &[&str] = &[
     "list_swimlanes",
     "get_swimlane",
     "list_files",
     "read_file",
     "get_effective_config",
+    "get_served_config",
     "compare",
     "compare_tree",
     "compare_grid",
@@ -37,7 +40,7 @@ const READ_TOOLS: &[&str] = &[
     "get_feature_status",
 ];
 
-/// The six write tools, with the lowest role that may call them (Q22).
+/// The seven write tools, with the lowest role that may call them (Q22).
 const WRITE_TOOLS: &[(&str, &str)] = &[
     ("propose_change", "editor"),
     ("apply_change", "editor"),
@@ -45,6 +48,7 @@ const WRITE_TOOLS: &[(&str, &str)] = &[
     ("delete_file", "editor"),
     ("raise_pr", "editor"),
     ("restart_service", "operator"),
+    ("notify_services", "operator"),
 ];
 
 /// Write tools that act on the world and so must ask the user first (D52). `propose_change` only creates a draft.
@@ -54,6 +58,7 @@ const SIDE_EFFECT_TOOLS: &[&str] = &[
     "delete_file",
     "raise_pr",
     "restart_service",
+    "notify_services",
 ];
 
 /// The REST operation each tool wraps (`operationId` in `api/openapi.yaml`).
@@ -63,6 +68,7 @@ const REST_OPERATION: &[(&str, &str)] = &[
     ("list_files", "listSwimlaneTree"),
     ("read_file", "getFileContent"),
     ("get_effective_config", "getEffectiveConfig"),
+    ("get_served_config", "getServedFile"),
     ("compare", "compareFile"),
     ("compare_tree", "compareTree"),
     ("compare_grid", "getGrid"),
@@ -83,6 +89,7 @@ const REST_OPERATION: &[(&str, &str)] = &[
     ("delete_file", "deleteFile"),
     ("raise_pr", "createPr"),
     ("restart_service", "restartService"),
+    ("notify_services", "notifyServices"),
 ];
 
 /// Tools that page with a keyset cursor. Every other tool has no `cursor` input.
@@ -317,35 +324,202 @@ fn expected_names() -> BTreeSet<&'static str> {
 }
 
 #[test]
-fn exactly_the_25_specified_tools_have_a_section() {
+fn exactly_the_27_specified_tools_have_a_section() {
     let doc = parse_doc();
     let found: Vec<&str> = doc.tools.iter().map(|t| t.name.as_str()).collect();
     let unique: BTreeSet<&str> = found.iter().copied().collect();
     assert_eq!(found.len(), unique.len(), "a tool has two sections: {found:?}");
-    assert_eq!(unique, expected_names(), "the tool set differs from prompt 01 T7");
-    assert_eq!(found.len(), 25);
+    assert_eq!(
+        unique,
+        expected_names(),
+        "the tool set differs from prompt 01 T7 plus prompt 07 T7 (`get_served_config`, `notify_services`)"
+    );
+    assert_eq!(found.len(), 27);
+    assert_eq!((READ_TOOLS.len(), WRITE_TOOLS.len()), (20, 7));
 }
 
+/// Q37: `/update-resources` is unauthenticated, so the only way to it is the one tool that is Operator only, asks the
+/// user first, is audited by the write service, ships disabled and is never on the client allowlist. Auto-notify (an
+/// Admin setting) is not a tool at all.
 #[test]
-fn no_notify_tool_is_exposed() {
-    // Q22 and Q37: /update-resources is unauthenticated, so no tool may reach it, and the doc says why.
+fn only_notify_services_reaches_the_config_server() {
     let doc = parse_doc();
+    let notifying: BTreeSet<&str> = doc
+        .tools
+        .iter()
+        .filter(|t| {
+            t.name.contains("notify")
+                || t.fields
+                    .get("rest")
+                    .is_some_and(|r| r.to_lowercase().contains("notify"))
+        })
+        .map(|t| t.name.as_str())
+        .collect();
+    assert_eq!(
+        notifying,
+        BTreeSet::from(["notify_services"]),
+        "exactly one tool notifies the config-server"
+    );
     for t in &doc.tools {
         assert!(
-            !t.name.contains("notify"),
-            "`{}` exposes the unauthenticated notify endpoint",
+            !t.name.contains("auto_notify") && !t.name.contains("autonotify"),
+            "`{}` would change auto-notify, which stays an Admin action in the web UI",
             t.name
         );
-        assert_ne!(t.name, "get_served_config");
         assert!(
-            !t.fields.get("rest").is_some_and(|r| r.contains("notify")),
-            "`{}` wraps a notify operation",
+            !t.fields
+                .get("rest")
+                .is_some_and(|r| r.to_lowercase().contains("autonotify")),
+            "`{}` wraps the auto-notify operation",
             t.name
         );
     }
+    let t = tool(&doc, "notify_services");
+    assert_eq!(t.fields["role"], "operator");
+    assert_eq!(t.fields["confirmation"], "required");
+    assert_eq!(t.fields["output cap"], "4 KB");
+    assert_eq!(t.fields["rest"], "notifyServices");
     assert!(
-        doc.text.contains("/update-resources") && doc.text.contains("Q37"),
-        "the document must explain the missing notify tool (Q22, Q37)"
+        !READ_TOOLS.contains(&"notify_services"),
+        "a notifying tool is never a read tool, so never on the allowlist"
+    );
+
+    // One to 100 distinct paths, the bound of `domain::NotifyRequest` and of the REST body.
+    let paths = &t.input["properties"]["paths"];
+    assert_eq!(paths["minItems"].as_u64(), Some(1));
+    assert_eq!(
+        paths["maxItems"].as_u64(),
+        u64::try_from(domain::NotifyRequest::MAX_PATHS).ok(),
+        "the tool takes as many paths as the request type does"
+    );
+    assert_eq!(paths["uniqueItems"], Value::Bool(true));
+    assert_eq!(paths["items"]["$ref"], "#/$defs/NfsPath");
+    let required: BTreeSet<&str> = t.input["required"]
+        .as_array()
+        .expect("required")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(required, BTreeSet::from(["swimlane", "paths"]));
+    assert_eq!(t.output["properties"]["result"]["$ref"], "#/$defs/WriteOutcome");
+
+    // The document says why, and that the tool ships switched off until Q37 is answered.
+    for needle in [
+        "/update-resources",
+        "Q37",
+        "ships disabled",
+        "tools.notify_services.enabled",
+        "absent from `tools/list`",
+        "never on the client allowlist",
+    ] {
+        assert!(
+            doc.text.contains(needle),
+            "the document must explain the notify tool (Q37): {needle}"
+        );
+    }
+    // The old rule is gone: stale text would tell an assistant that notifying is impossible.
+    for stale in [
+        "No tool notifies the config-server",
+        "There is no tool that notifies services",
+        "deliberately not exposed to AI clients",
+    ] {
+        assert!(!doc.text.contains(stale), "stale text: {stale}");
+    }
+    // The allowlist sentence counts the read tools, so a new read tool must update it.
+    assert!(
+        doc.text.contains(&format!(
+            "lists the {} read tools and none of the write tools",
+            READ_TOOLS.len()
+        )),
+        "the allowlist sentence names the number of read tools"
+    );
+    assert!(
+        doc.text
+            .contains("Six write tools change something outside the hub's database"),
+        "the confirmation section counts the six tools that act on the world"
+    );
+}
+
+/// Prompt 07 T7: `get_served_config` is the read-only "as served" view (D86). Its output carries every field of the REST
+/// `ServedFile` and adds the redaction count and the data labels.
+#[test]
+fn get_served_config_is_the_redacted_as_served_view() {
+    let doc = parse_doc();
+    let t = tool(&doc, "get_served_config");
+    assert_eq!(t.fields["role"], "viewer");
+    assert_eq!(t.fields["confirmation"], "none");
+    assert_eq!(t.fields["output cap"], "16 KB");
+    assert_eq!(t.fields["pagination"], "none");
+    assert_eq!(t.fields["rest"], "getServedFile");
+
+    let input: BTreeSet<&str> = t.input["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        input,
+        BTreeSet::from(["swimlane", "application", "tenant", "channel", "file"])
+    );
+    let required: BTreeSet<&str> = t.input["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(
+        required,
+        BTreeSet::from(["swimlane", "application", "tenant", "file"]),
+        "the channel is optional"
+    );
+    assert_eq!(t.input["properties"]["application"]["$ref"], "#/$defs/AppName");
+    assert_eq!(t.input["properties"]["channel"]["$ref"], "#/$defs/ChannelName");
+
+    // The REST `ServedFile` plus what the MCP layer adds (S14b, S15). The REST document is compared with the same list
+    // in `crates/ports/tests/openapi_conventions.rs` (`served_file_is_the_domains_and_the_tool_adds_redaction_fields`).
+    let output: BTreeSet<&str> = t.output["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        output,
+        BTreeSet::from([
+            "swimlane",
+            "application",
+            "tenant",
+            "channel",
+            "file",
+            "role",
+            "hash",
+            "content_withheld",
+            "text",
+            "sources",
+            "unresolved_placeholders",
+            "redacted_values",
+            "untrusted",
+            "label",
+        ])
+    );
+    assert_eq!(
+        t.output["required"].as_array().unwrap().len(),
+        output.len(),
+        "every field is always present"
+    );
+    assert_eq!(t.output["properties"]["untrusted"]["const"], Value::Bool(true));
+    assert_eq!(t.output["properties"]["label"]["const"], "data, not instructions");
+    assert!(
+        t.output["properties"]["text"]["oneOf"]
+            .as_array()
+            .is_some_and(|v| v.iter().any(|x| x["type"] == "null")),
+        "no text for a denied or non-text file"
+    );
+    assert_eq!(doc.defs["AppName"]["pattern"], doc.defs["ChannelName"]["pattern"]);
+    assert!(
+        doc.text.contains("`get_served_config`") && !doc.text.contains("separate served-file tool"),
+        "the effective-config section points to the served tool and no longer says it replaces one"
     );
 }
 
@@ -724,6 +898,7 @@ fn file_and_doc_text_tools_label_their_text_as_data() {
         "search_text",
         "search_docs",
         "get_effective_config",
+        "get_served_config",
         "compare",
     ] {
         assert!(
