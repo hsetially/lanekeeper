@@ -239,6 +239,25 @@ async fn new_folder_or_channels_yml_needs_a_config_server_restart() {
         Some(T0 - 2 * HOUR),
     )
     .await;
+    // A folder that did not exist when the config-server started is not one of its search locations, whatever the file in it is. These two
+    // alone (nobody has touched `channels.yml`): a folder of its own, and a folder inside the one of an application.
+    b.change(&[("newapp/new.xsl", "<n/>"), ("tx-api/new/y.xsl", "<y/>")])
+        .await;
+    let pending = b.pending().await;
+    assert_eq!(pending.len(), 2, "{pending:?}");
+    assert!(
+        pending
+            .iter()
+            .all(|s| s.pickup == PickupState::NeedsConfigServerRestart
+                && ms(s.pending_since) == Some(CHANGE_1)),
+        "{pending:?}"
+    );
+    assert_eq!(files(&b.pending_of("newapp").await.unwrap()), ["newapp/new.xsl"]);
+    assert_eq!(
+        files(&b.pending_of("tx-api").await.unwrap()),
+        ["tx-api/new/y.xsl"],
+        "the folder `tx-api` was there at the start, the one inside it was not"
+    );
     // The list of channels is the config-server's own and read once, when it starts: every service waits for it.
     b.change(&[("channels.yml", "- web\n- mobile\n")]).await;
     let pending = b.pending().await;
@@ -248,21 +267,13 @@ async fn new_folder_or_channels_yml_needs_a_config_server_restart() {
             .iter()
             .all(|s| s.pickup == PickupState::NeedsConfigServerRestart)
     );
-    assert!(pending.iter().all(|s| files(s) == ["channels.yml"]));
-    // A folder that did not exist when the config-server started is not one of its search locations.
-    b.change(&[("newapp/new.xsl", "<n/>")]).await;
-    let newapp = b.pending_of("newapp").await.unwrap();
-    assert_eq!(newapp.pickup, PickupState::NeedsConfigServerRestart);
-    assert_eq!(files(&newapp), ["channels.yml", "newapp/new.xsl"]);
     assert_eq!(
-        ms(newapp.pending_since),
-        Some(CHANGE_1),
-        "the oldest change that is not live"
+        files(&b.pending_of("newapp").await.unwrap()),
+        ["channels.yml", "newapp/new.xsl"]
     );
     assert_eq!(
         files(&b.pending_of("tx-api").await.unwrap()),
-        ["channels.yml"],
-        "the new folder is not read by the other application"
+        ["channels.yml", "tx-api/new/y.xsl"]
     );
 
     // Neither a restart of the service nor a notification helps: only the config-server's restart does.
@@ -281,9 +292,9 @@ async fn new_folder_or_channels_yml_needs_a_config_server_restart() {
     b.sql(&notified_at(CHANGE_2 + 60_000)).await;
     b.sweep().await;
     assert_eq!(b.pending().await.len(), 2, "still waiting for the config-server");
-    // It restarts, after both changes. The channels are live for everybody. The file of the new folder is no longer one that the config-server
-    // cannot see: from now on it is the change to a resource that it is, which goes live with the client's cache. Both services are named,
-    // in the transaction of the report.
+    // It restarts, after all the changes. The channels are live for everybody. The files of the new folders are no longer ones that the
+    // config-server cannot see: from now on they are the changes to resources that they are, which go live with the client's cache. Both
+    // services are named, in the transaction of the report.
     let before = b.events().await.len();
     b.cluster(
         vec![
@@ -293,11 +304,12 @@ async fn new_folder_or_channels_yml_needs_a_config_server_restart() {
         Some(T0 - 1_000),
     )
     .await;
+    // `tx-api` was restarted after its change (a pod from the report above), so it has what the config-server has. `newapp` was not.
     let left = b.pending().await;
     assert_eq!(left.len(), 1, "{left:?}");
     assert_eq!(left[0].service.name(), "newapp");
     assert_eq!(left[0].pickup, PickupState::LiveWithinTtl);
-    assert_eq!(ms(left[0].live_by), Some(CHANGE_2 + 20 * MIN));
+    assert_eq!(ms(left[0].live_by), Some(CHANGE_1 + 20 * MIN));
     assert_eq!(files(&left[0]), ["newapp/new.xsl"]);
     let events = b.events().await;
     assert_eq!(
@@ -735,32 +747,53 @@ async fn the_sweeper_turns_live_within_ttl_into_live_when_live_by_passes() {
 
 #[tokio::test]
 async fn the_sweeper_is_idempotent() {
-    let Some(mut b) = Bed::new(&[("tx-api/layout.xsl", "<a/>")]).await else {
+    // `tx-api` waits for a cache and goes live in the middle of the test; `prop` waits for a notification all the time, so that every sweep
+    // finds a service that is pending and computes it again to the very same state, which must say and write nothing.
+    let Some(mut b) = Bed::new(&[("tx-api/layout.xsl", "<a/>"), ("prop/prop.yml", "a: 1\n")]).await else {
         return;
     };
     b.cluster(
-        vec![dep("tx-api").app("tx-api").pod("tx-api-1", T0 - HOUR).build()],
+        vec![
+            dep("tx-api").app("tx-api").pod("tx-api-1", T0 - HOUR).build(),
+            dep("prop").app("prop").pod("prop-1", T0 - HOUR).build(),
+        ],
         Some(T0 - 2 * HOUR),
     )
     .await;
-    b.change(&[("tx-api/layout.xsl", "<b/>")]).await;
+    b.change(&[("tx-api/layout.xsl", "<b/>"), ("prop/prop.yml", "a: 2\n")])
+        .await;
+    assert_eq!(b.pending().await.len(), 2);
     b.clock().advance_secs(2 * 3600);
     let first = b.sweep().await;
-    assert_eq!(first.changed, 1);
+    assert_eq!(first.changed, 1, "the cache of tx-api has expired");
+    assert_eq!(
+        b.pending()
+            .await
+            .iter()
+            .map(|s| s.service.name().to_owned())
+            .collect::<Vec<_>>(),
+        ["prop"]
+    );
     let (events, rows, audit) = (
         b.r.world.rig.bus.count().await,
         b.r.world.rig.count("SELECT count(*) FROM service_state").await,
         b.r.world.rig.count("SELECT count(*) FROM audit_events").await,
     );
+    let state = b.stored("prop").await.unwrap();
     for _ in 0..3 {
         let again = b.sweep().await;
         assert_eq!((again.changed, again.failed), (0, 0));
+        assert_eq!(
+            again.swimlanes, 1,
+            "the swimlane is looked at, since `prop` is pending"
+        );
     }
     assert_eq!(b.r.world.rig.bus.count().await, events, "no event");
     assert_eq!(
         b.r.world.rig.count("SELECT count(*) FROM service_state").await,
         rows
     );
+    assert_eq!(b.stored("prop").await.unwrap(), state);
     assert_eq!(
         b.r.world.rig.count("SELECT count(*) FROM audit_events").await,
         audit,
