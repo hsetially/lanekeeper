@@ -1,7 +1,8 @@
 //! Response bodies that are not the domain type itself (T6).
 //!
 //! Most responses are the domain types, which serialize to the contract's JSON (the contract test walks every response against its
-//! schema, so a drift between the two is a failing test). Four are not:
+//! schema, so a drift between the two is a failing test), the file as the config-server serves it (`domain::ServedFile`, which the port
+//! returns too) among them. Three are not:
 //!
 //! - **`FileContent`** is "not `Serialize`: content is streamed by the edge, never embedded in JSON". The contract's `FileContent` has
 //!   the decoded text, for structured and text files, with the original line endings; null for binary, denied and undecodable files.
@@ -11,13 +12,12 @@
 //!   comparison (the tag is a function of the two contents, and a change of the rules would leave a stale severity behind a 304) and a rated
 //!   copy of a cached diff for each request; that is D103's open item. The shape is the contract's and nothing else is added.
 //! - **`SwimlaneDetail`** is the summary plus its services and the auto-notify setting (the spec's `allOf`).
-//! - **`ServedFile`** (plan A4): what the config-server answered, with the engine's role and sources. It has no domain type.
 
 use bytes::Bytes;
 use domain::{
-    AppName, BinaryCompare, ChannelName, CompareRef, Comparison, ContentHash, DiffHunk, FileClass,
-    FileContent, FileFormat, FileRole, LogicalFile, NfsPath, ServiceState, SettingChange, SettingLocation,
-    SettingValue, Severity, ShortText, SwimlaneId, SwimlaneSummary, TenantId,
+    BinaryCompare, CompareRef, Comparison, ContentHash, DiffHunk, FileClass, FileContent, FileFormat,
+    LogicalFile, NfsPath, ServiceState, SettingChange, SettingLocation, SettingValue, Severity,
+    SwimlaneSummary,
 };
 use engine::{Limits, decode_text};
 use serde::Serialize;
@@ -118,23 +118,6 @@ impl From<&Comparison> for ComparisonDto {
             binary: c.binary.clone(),
         }
     }
-}
-
-/// The contract's `ServedFile` (plan A4): a file as the config-server serves it, asked for through the agent. It never uses
-/// environment values; `${KEY}` is replaced only where the config-server's property view has the key.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ServedFile {
-    pub swimlane: SwimlaneId,
-    pub application: AppName,
-    pub tenant: TenantId,
-    pub channel: Option<ChannelName>,
-    pub file: NfsPath,
-    pub role: FileRole,
-    pub hash: ContentHash,
-    pub content_withheld: bool,
-    pub text: Option<String>,
-    pub sources: Vec<domain::EffectiveSource>,
-    pub unresolved_placeholders: Vec<ShortText>,
 }
 
 /// The bytes of a served answer as text (UTF-8, or what `decode_text` makes of them), or `None` when they are not text.

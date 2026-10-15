@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use domain::{
     AppName, ChannelName, ContentHash, EffectiveConfig, EffectiveSetting, EffectiveSource, FileClass,
-    FileKind, FileRole, LogicalFile, MergeMode, NfsPath, SettingLocation, SwimlaneId, TenantId,
+    FileKind, FileRole, LogicalFile, MergeMode, NfsPath, SettingLocation, SettingPath, SwimlaneId, TenantId,
 };
 use engine::{
     DenyMatcher, Effective, FlatSetting, Layer, Layers, Syntax, effective, logical_file_role, merge_mode,
@@ -402,6 +402,24 @@ fn settings_of(e: &Effective) -> Vec<EffectiveSetting> {
         .collect()
 }
 
+/// Whether a setting is at or below `prefix`: its path is the prefix, or continues it after a `.` or a `[` (the port's
+/// `EffectiveQuery::setting_prefix`). So `db` selects `db.host` and `db[0]` and not `dbx.y`.
+pub fn setting_is_below(path: &str, prefix: &str) -> bool {
+    path.strip_prefix(prefix)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.') || rest.starts_with('['))
+}
+
+/// `config` with only the settings at or below `prefix`, when there is one. Nothing else of the answer changes: its hash, sources and
+/// placeholders are those of the whole file (the cut is of the list the caller reads, never of what the file is).
+pub fn restrict_to_prefix(mut config: EffectiveConfig, prefix: Option<&SettingPath>) -> EffectiveConfig {
+    if let Some(prefix) = prefix {
+        config
+            .settings
+            .retain(|s| setting_is_below(s.path.as_str(), prefix.as_str()));
+    }
+    config
+}
+
 fn weight_of(e: &Effective) -> u32 {
     let bytes: usize = e
         .settings
@@ -677,5 +695,63 @@ impl Inner {
             unresolved_placeholders: Vec::new(),
         };
         Ok(Tagged::Fresh { etag: tag, value })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_setting_is_below_a_prefix_when_it_is_the_prefix_or_continues_it_after_a_dot_or_a_bracket() {
+        for (path, prefix, below) in [
+            ("db", "db", true),
+            ("db.host", "db", true),
+            ("db.host.port", "db", true),
+            ("db[0]", "db", true),
+            ("db[0].name", "db[0]", true),
+            ("db.host", "db.host", true),
+            ("dbx.y", "db", false),
+            ("db", "db.host", false),
+            ("listing", "list", false),
+            ("a", "", false),
+            ("", "a", false),
+            ("DB.host", "db", false),
+        ] {
+            assert_eq!(setting_is_below(path, prefix), below, "{path} below {prefix}");
+        }
+    }
+
+    #[test]
+    fn a_prefix_cuts_only_the_settings() {
+        let setting = |p: &str| EffectiveSetting {
+            path: SettingPath::parse(p).unwrap(),
+            value: "v".to_owned(),
+            source: NfsPath::parse("core.yml").unwrap(),
+            location: None,
+        };
+        let config = EffectiveConfig {
+            swimlane: SwimlaneId::parse("sit1").unwrap(),
+            file: LogicalFile::parse("core.yml").unwrap(),
+            tenant: TenantId::parse("sit1").unwrap(),
+            channel: None,
+            role: FileRole::PropertySource,
+            hash: ContentHash::from_bytes([7; 32]),
+            sources: Vec::new(),
+            settings: vec![setting("a.b"), setting("a.c"), setting("ab")],
+            unresolved_placeholders: Vec::new(),
+        };
+        let all = restrict_to_prefix(config.clone(), None);
+        assert_eq!(all, config, "no prefix, no cut");
+        let cut = restrict_to_prefix(config.clone(), Some(&SettingPath::parse("a").unwrap()));
+        assert_eq!(cut.settings, vec![setting("a.b"), setting("a.c")]);
+        assert_eq!(
+            EffectiveConfig {
+                settings: config.settings.clone(),
+                ..cut
+            },
+            config,
+            "nothing but the settings differs"
+        );
     }
 }

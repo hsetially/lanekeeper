@@ -1,4 +1,4 @@
-//! A file as the config-server serves it (T6, plan A4, D86, A36).
+//! A file as the config-server serves it (T6, plan A4, D86, A36): `getServedFile` and the port's `served`.
 //!
 //! The hub asks the agent in the swimlane's cluster to GET the config-server's answer for `(application, tenant, channel, file)`
 //! (`HubCommand::FetchServed`) and shows it next to what the engine believes: the engine's role and sources (the layers its effective
@@ -16,7 +16,7 @@ use std::sync::atomic::Ordering;
 
 use domain::{
     AgentReply, ChannelName, EffectiveSource, FileRole, HubCommand, LogicalFile, RequestId, ServeRequest,
-    ShortText, SwimlaneId, TenantSet,
+    ServedFile, ShortText, SwimlaneId, TenantSet,
 };
 use engine::{file_role, scan_placeholders};
 use ports::{GatewayError, ReadError};
@@ -26,7 +26,7 @@ use super::api::Tagged;
 use super::etag;
 use super::rows;
 use super::service::Inner;
-use crate::http::dto::{ServedFile, served_text};
+use crate::http::dto::served_text;
 
 impl Inner {
     /// The engine's view of the request: its role, and the files its effective config is made of.

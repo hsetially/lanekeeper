@@ -16,7 +16,11 @@ mod support;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use domain::{AgentReply, HubCommand, SwimlaneId};
+use domain::{
+    AgentReply, AppName, ChannelName, CompareQuery, CompareRef, Cursor, DriftQuery, DriftState,
+    EffectiveQuery, HubCommand, LogicalFile, NfsPath, Page, ServeRequest, SettingPath, SwimlaneId, TenantId,
+};
+use ports::RegistryRead as _;
 use support::http::{Http, SECRET};
 use support::log_capture::LogCapture;
 
@@ -108,6 +112,93 @@ async fn planted_values_never_reach_a_log_line_of_a_read() {
         let reply = h.view(uri).await;
         assert!(reply.status.as_u16() < 600, "{uri}");
     }
+    // The six methods of the port that MCP calls (`contract/07-mcp`): the same planted values in the places they take them (a setting
+    // prefix, a file, a folder, a cursor, a request, a swimlane id), with answers and refusals.
+    let v = support::reads::Reads::viewer();
+    let service = &h.reads.service;
+    let lane = |s: &str| SwimlaneId::parse(s).unwrap();
+    let planted_file = LogicalFile::parse(PLANTED[7]).unwrap();
+    let effective = |file: &LogicalFile, tenant: &str, prefix: &str| EffectiveQuery {
+        file: file.clone(),
+        tenant: TenantId::parse(tenant).unwrap(),
+        channel: Some(ChannelName::parse(PLANTED[1]).unwrap()),
+        setting_prefix: Some(SettingPath::parse(prefix).unwrap()),
+    };
+    let _ = service
+        .effective_for(
+            &v,
+            &sit1,
+            &effective(&LogicalFile::parse("planted.yml").unwrap(), "sit1", PLANTED[0]),
+        )
+        .await;
+    let _ = service
+        .effective_for(&v, &sit1, &effective(&planted_file, "sit1", PLANTED[1]))
+        .await;
+    let _ = service
+        .effective_for(
+            &v,
+            &lane(PLANTED[8]),
+            &effective(&planted_file, PLANTED[8], PLANTED[1]),
+        )
+        .await;
+    let sides = |l: &str, r: &str| (l.parse::<CompareRef>().unwrap(), r.parse::<CompareRef>().unwrap());
+    let (left, right) = sides("nfs:sit1", "nfs:sit2");
+    for file in [LogicalFile::parse("core.yml").unwrap(), planted_file.clone()] {
+        let _ = service
+            .compare_in(
+                &v,
+                &CompareQuery {
+                    left: left.clone(),
+                    right: right.clone(),
+                    file: Some(file),
+                    channel: Some(ChannelName::parse(PLANTED[1]).unwrap()),
+                },
+            )
+            .await;
+    }
+    let planted_folder = NfsPath::parse(PLANTED[7]).unwrap();
+    let forged = Page::new(10, Some(Cursor::parse(PLANTED[3]).unwrap())).unwrap();
+    let _ = service
+        .compare_tree_under(
+            &v,
+            left.clone(),
+            right.clone(),
+            &planted_folder,
+            Page::new(10, None).unwrap(),
+        )
+        .await;
+    let _ = service
+        .compare_tree_under(&v, left.clone(), right.clone(), &NfsPath::root(), forged.clone())
+        .await;
+    for (swimlane, state, prefix, page) in [
+        (&sit1, None, Some(&planted_folder), Page::new(10, None).unwrap()),
+        (&sit1, Some(DriftState::Conflict), None, forged.clone()),
+        (&sit1, None, None, Page::new(10, None).unwrap()),
+        (&lane(PLANTED[8]), None, None, Page::new(10, None).unwrap()),
+    ] {
+        let _ = service
+            .drift(
+                &v,
+                swimlane,
+                &DriftQuery {
+                    state,
+                    prefix: prefix.cloned(),
+                },
+                page,
+            )
+            .await;
+    }
+    let _ = service.auto_notify(&v, &sit1).await;
+    let _ = service.auto_notify(&v, &lane(PLANTED[8])).await;
+    for file in ["core.yml", PLANTED[7]] {
+        let request = ServeRequest {
+            application: AppName::parse("core").unwrap(),
+            tenant: TenantId::parse("sit1").unwrap(),
+            channel: Some(ChannelName::parse(PLANTED[1]).unwrap()),
+            file: NfsPath::parse(file).unwrap(),
+        };
+        let _ = service.served(&v, &sit1, &request).await;
+    }
     // A header is not a log line either.
     let tagged = h
         .get_with(
@@ -134,6 +225,16 @@ async fn planted_values_never_reach_a_log_line_of_a_read() {
         .view("/api/v1/swimlanes/sit1/served?application=core&tenant=sit1&file=core.yml")
         .await;
     assert_eq!(broken.status, 503);
+    let failing = ServeRequest {
+        application: AppName::parse("core").unwrap(),
+        tenant: TenantId::parse("sit1").unwrap(),
+        channel: None,
+        file: NfsPath::parse("core.yml").unwrap(),
+    };
+    assert_eq!(
+        h.reads.service.served(&v, &sit1, &failing).await.unwrap_err(),
+        ports::ReadError::Unavailable
+    );
 
     // The database goes away: reads fail, and the lines they log are the registry's own.
     h.reads.world.rig.pool.close().await;
@@ -148,6 +249,34 @@ async fn planted_values_never_reach_a_log_line_of_a_read() {
         let reply = h.view(uri).await;
         assert_eq!(reply.status, 503, "{uri}: {}", reply.text());
     }
+
+    assert!(h.reads.service.auto_notify(&v, &sit1).await.is_err());
+    assert!(
+        h.reads
+            .service
+            .drift(
+                &v,
+                &sit1,
+                &DriftQuery {
+                    state: None,
+                    prefix: None
+                },
+                Page::new(10, None).unwrap()
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        h.reads
+            .service
+            .effective_for(
+                &v,
+                &sit1,
+                &effective(&LogicalFile::parse("core.yml").unwrap(), "sit1", "name")
+            )
+            .await
+            .is_err()
+    );
 
     let text = capture.text();
     let ours: Vec<&str> = text.lines().filter(|l| l.contains(" hub_registry")).collect();

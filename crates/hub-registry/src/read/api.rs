@@ -1,27 +1,32 @@
 //! The two traits the read service implements (T6, plan A4, A5).
 //!
-//! [`ports::RegistryRead`] is the port: what MCP (07) and the REST handlers share, with the shape `docs/interfaces.md` gives it.
-//! [`RegistryApi`] is hub-registry's own superset for what the REST spec has and the port lacks: the drift filter on the tree and the
-//! drift list, the swimlane detail, `prefix` on the whole-tree compare, `channel` on the compare, the tenant of an effective config,
-//! pages of services, the content reads' entity tags, and the file as the config-server serves it (A4: not on the port, so the port
-//! and its fakes and conformance suite stay as they are).
+//! [`ports::RegistryRead`] is the port: what MCP (07) calls, with the shape `docs/interfaces.md` gives it, and what the REST handlers
+//! share where they need nothing more. [`RegistryApi`] is hub-registry's own superset for what the REST spec has and the port lacks: the
+//! drift list most serious first, the swimlane detail, the standing tenants of a whole-tree compare, the content reads' entity tags,
+//! pages of services, and the limits of the answers.
+//!
+//! **The six methods of `contract/07-mcp`** (`effective_for`, `compare_in`, `compare_tree_under`, `drift`, `auto_notify`, `served`) are
+//! answered here by the code that serves the REST routes, not by a copy of it: each is the `RegistryApi` read that the handler calls
+//! (`effective_tagged`, `compare_tagged`, `compare_tree_named`, `served_tagged`) without the tag, or, for the two the REST routes have
+//! no counterpart of, a read of its own (`drift` by path, `auto_notify`). Every one checks the user first (S4).
 
 use std::time::Instant;
 
 use async_trait::async_trait;
 use domain::{
-    ChannelName, CompareRef, Comparison, ContentSource, DriftState, EffectiveConfig, FileContent, FileEntry,
-    Finding, FindingsQuery, Grid, GridQuery, LogicalFile, NfsPath, Page, Paged, ServeRequest, ServiceState,
-    SettingHit, SettingsQuery, SwimlaneId, SwimlaneSummary, TenantId, TextQuery, TextResults, TreeComparison,
-    User, Version,
+    ChannelName, CompareQuery, CompareRef, Comparison, ContentSource, DriftQuery, DriftState,
+    EffectiveConfig, EffectiveQuery, FileContent, FileEntry, Finding, FindingsQuery, Grid, GridQuery,
+    LogicalFile, NfsPath, Page, Paged, ServeRequest, ServedFile, ServiceState, SettingHit, SettingsQuery,
+    SwimlaneId, SwimlaneSummary, TenantId, TextQuery, TextResults, TreeComparison, User, Version,
 };
 use engine::Limits;
 use ports::{ReadError, RegistryRead};
 
 use super::authz::require_viewer;
+use super::effective::restrict_to_prefix;
 use super::etag;
 use super::service::RegistryService;
-use crate::http::dto::{ServedFile, SwimlaneDetail};
+use crate::http::dto::SwimlaneDetail;
 use crate::metrics::ReadOp;
 
 /// A read that carries an entity tag: the content itself, or "not modified" when the caller already has it.
@@ -257,6 +262,75 @@ impl RegistryRead for RegistryService {
                 Ok(self.inner.services_page(s, true, &page).await?.items)
             })
             .await
+    }
+
+    async fn effective_for(
+        &self,
+        u: &User,
+        s: &SwimlaneId,
+        q: &EffectiveQuery,
+    ) -> Result<EffectiveConfig, ReadError> {
+        // The REST handler's read, for the tenant and channel asked, with no tag to match: the answer names them (`file`, `tenant` and
+        // `channel` are the query's) and its values are masked as the REST answer's are (A28). Only `settings` is cut by the prefix.
+        match self
+            .effective_tagged(u, s, &q.file, Some(&q.tenant), q.channel.as_ref(), None)
+            .await?
+        {
+            Tagged::Fresh { value, .. } => Ok(restrict_to_prefix(value, q.setting_prefix.as_ref())),
+            // No `If-None-Match` was given, so "not modified" cannot be the answer.
+            Tagged::NotModified { .. } => Err(ReadError::Unavailable),
+        }
+    }
+
+    async fn compare_in(&self, u: &User, q: &CompareQuery) -> Result<Comparison, ReadError> {
+        require_viewer(u)?;
+        // As `compare`: a comparison of one file needs the file (a whole tree is `compare_tree_under`).
+        let file = q.file.as_ref().ok_or(ReadError::BadRequest)?;
+        match self
+            .compare_tagged(u, q.left.clone(), q.right.clone(), file, q.channel.as_ref(), None)
+            .await?
+        {
+            Tagged::Fresh { value, .. } => Ok(value.value),
+            Tagged::NotModified { .. } => Err(ReadError::Unavailable),
+        }
+    }
+
+    async fn compare_tree_under(
+        &self,
+        u: &User,
+        l: CompareRef,
+        r: CompareRef,
+        prefix: &NfsPath,
+        page: Page,
+    ) -> Result<TreeComparison, ReadError> {
+        Ok(self.compare_tree_named(u, l, r, prefix, page).await?.value)
+    }
+
+    async fn drift(
+        &self,
+        u: &User,
+        s: &SwimlaneId,
+        q: &DriftQuery,
+        page: Page,
+    ) -> Result<Paged<FileEntry>, ReadError> {
+        require_viewer(u)?;
+        self.inner
+            .timed(ReadOp::Drift, self.inner.drift_by_path(s, q, &page))
+            .await
+    }
+
+    async fn auto_notify(&self, u: &User, s: &SwimlaneId) -> Result<bool, ReadError> {
+        require_viewer(u)?;
+        self.inner
+            .timed(ReadOp::AutoNotify, self.inner.auto_notify_of(s))
+            .await
+    }
+
+    async fn served(&self, u: &User, s: &SwimlaneId, r: &ServeRequest) -> Result<ServedFile, ReadError> {
+        match self.served_tagged(u, s, r, None).await? {
+            Tagged::Fresh { value, .. } => Ok(value),
+            Tagged::NotModified { .. } => Err(ReadError::Unavailable),
+        }
     }
 }
 

@@ -251,6 +251,8 @@ pub enum ReadOp {
     Effective,
     PendingRestarts,
     Served,
+    /// The port's `auto_notify` (a swimlane's setting, read alone).
+    AutoNotify,
 }
 
 /// How a read ended (T6).

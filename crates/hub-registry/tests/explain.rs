@@ -39,8 +39,8 @@ use hub_registry::read::restarts::services_sql;
 use hub_registry::read::search_settings::{LANE_BLOBS_SQL, PAIRS_SQL, PAIRS_UNTESTED_SQL, PLACES_SQL};
 use hub_registry::read::search_text::{FILES_SQL, VERSIONS_SQL};
 use hub_registry::read::settings::ROWS_SQL;
-use hub_registry::read::swimlanes::{SWIMLANE_SQL, SWIMLANES_SQL};
-use hub_registry::read::tree::{CHILDREN_SQL, DRIFT_SQL, FILE_ROWS_SQL};
+use hub_registry::read::swimlanes::{AUTO_NOTIFY_SQL, SWIMLANE_SQL, SWIMLANES_SQL};
+use hub_registry::read::tree::{CHILDREN_SQL, DRIFT_BY_PATH_SQL, DRIFT_PIVOT_SQL, DRIFT_SQL, FILE_ROWS_SQL};
 use hub_registry::tenants::STORED_SQL as TENANTS_STORED_SQL;
 use hub_registry::tool_writes::{
     ATTRIBUTE_SQL, DROP_SQL, LANE_PENDING_SQL, LANES_SQL, OBSERVATIONS_SQL, PENDING_OF_PATHS_SQL,
@@ -681,6 +681,32 @@ async fn read_queries_have_no_sequential_scan_on_large_tables() {
             Arg::Int32(1)
         ]
     );
+
+    // The port's drift list, by path: the first page, a state in a folder resumed after a path, and the lookup that resumes it.
+    check!(
+        "drift_by_path_first_page",
+        DRIFT_BY_PATH_SQL,
+        [
+            Arg::Text(lane),
+            Arg::OptText(None),
+            Arg::Text("%"),
+            Arg::OptText(None),
+            Arg::Int(101)
+        ]
+    );
+    check!(
+        "drift_by_path_of_a_state_in_a_folder",
+        DRIFT_BY_PATH_SQL,
+        [
+            Arg::Text(lane),
+            Arg::OptText(Some("git_ahead")),
+            Arg::Text("dir3/%"),
+            Arg::OptText(Some("dir3/file100.yml")),
+            Arg::Int(101)
+        ]
+    );
+    check!("drift_pivot", DRIFT_PIVOT_SQL, [Arg::Text(lane), Arg::Int(1500)]);
+    check!("auto_notify", AUTO_NOTIFY_SQL, [Arg::Text(lane)]);
 
     // History, findings, services.
     check!(

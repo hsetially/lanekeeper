@@ -21,9 +21,15 @@
 //! (`file_state.seq`). The keyset is the pair (severity rank, `seq`): short, so that it fits a cursor (A31), and it totally orders the
 //! list, so a page resumes exactly where the last one ended. The statement already sorted the swimlane's non-synced rows by `seq` (they
 //! are read through `file_state_state_idx`, which is not in that order); a different sort key costs the same.
+//!
+//! The port's `drift` lists the same files **by path** instead (its documentation says so, and the conformance suite holds every
+//! implementation to it), through [`Inner::drift_by_path`]: the REST list is for a person who wants the worst first, the port's for a
+//! caller that pages through all of them in a stable, predictable order. Same filters, same entries, another order and its own
+//! cursor (`Kind::DriftByPath`).
 
 use domain::{
-    Cursor, DriftState, FileClass, FileEntry, FileKind, FileRole, NfsPath, Page, Paged, SwimlaneId,
+    Cursor, DriftQuery, DriftState, FileClass, FileEntry, FileKind, FileRole, NfsPath, Page, Paged,
+    SwimlaneId,
 };
 use engine::DenyMatcher;
 use ports::ReadError;
@@ -93,6 +99,24 @@ pub const DRIFT_SQL: &str = concat!(
     fs_severity_rank_sql!(),
     " DESC, fs.seq LIMIT $5"
 );
+
+/// The drift list by path, which is the port's `drift`: `$1` swimlane, `$2` a state or `NULL` (every state but in sync), `$3` the `LIKE`
+/// pattern of the prefix, `$4` the path after which to resume or `NULL`, `$5` the page size plus one. Ordered bytewise, the order of
+/// `NfsPath`, whatever the database's locale is; a path is unique in a swimlane, so the key is a total order. `fs.seq` comes along for the
+/// cursor (see [`Inner::drift_by_path`]).
+pub const DRIFT_BY_PATH_SQL: &str = concat!(
+    "SELECT fs.seq, ",
+    entry_columns!(),
+    " FROM file_state fs LEFT JOIN file_observations o ON o.id = fs.last_observation_id \
+      WHERE fs.swimlane_id = $1 \
+        AND ((($2::text) IS NULL AND fs.state <> 'in_sync') OR fs.state = $2) \
+        AND fs.path LIKE $3 \
+        AND ($4::text IS NULL OR fs.path COLLATE \"C\" > $4) \
+      ORDER BY fs.path COLLATE \"C\" LIMIT $5"
+);
+
+/// The path of the row a path-ordered drift cursor names: `$1` swimlane, `$2` the row's `seq` (unique with the swimlane).
+pub const DRIFT_PIVOT_SQL: &str = "SELECT path FROM file_state WHERE swimlane_id = $1 AND seq = $2";
 
 /// The `LIKE` pattern of "below this prefix": `prefix/%`, or everything for the root.
 pub(crate) fn below(prefix: &NfsPath) -> String {
@@ -347,6 +371,82 @@ impl Inner {
                         &context,
                         vec![Field::Int(i64::from(rank)), Field::Int(seq)],
                     )
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        Ok(Paged { items, next })
+    }
+}
+
+impl Inner {
+    /// The files that are not in sync (or are in `q.state`) below `q.prefix`, ordered by path: the port's `drift`. The list of the REST
+    /// route ([`Self::drift_page`]) is the same files, most serious first.
+    ///
+    /// **The cursor** holds the `seq` of the last row of the page and nothing else, because a path (up to 1,024 bytes) does not fit a cursor
+    /// (A31). The next page resumes after that row's path, found by one indexed lookup (`file_state_seq_idx`). A row that has been
+    /// deleted since has no path to resume after: that is `BadRequest` (the position is lost, start again), never an empty page that
+    /// would end the list early. A `seq` the caller invented names some row of this swimlane or none, and gains nothing (A31).
+    pub async fn drift_by_path(
+        &self,
+        swimlane: &SwimlaneId,
+        q: &DriftQuery,
+        page: &Page,
+    ) -> Result<Paged<FileEntry>, ReadError> {
+        self.require_swimlane(swimlane).await?;
+        let prefix = q.prefix.clone().unwrap_or_else(NfsPath::root);
+        let context = Context::of(
+            Kind::DriftByPath,
+            &[
+                swimlane.as_str(),
+                q.state.map_or("", DriftState::as_str),
+                prefix.as_str(),
+            ],
+        );
+        let after: Option<String> = match cursor::resume(page, Kind::DriftByPath, &context)? {
+            Some(fields) => {
+                cursor::arity(&fields, 1).map_err(|_| ReadError::BadRequest)?;
+                let seq = cursor::int(&fields, 0).map_err(|_| ReadError::BadRequest)?;
+                let pivot: Option<String> = self
+                    .db
+                    .run(
+                        "read_drift_pivot",
+                        sqlx::query_scalar(DRIFT_PIVOT_SQL)
+                            .bind(swimlane.as_str())
+                            .bind(seq)
+                            .fetch_optional(self.db.pool()),
+                    )
+                    .await?;
+                Some(pivot.ok_or(ReadError::BadRequest)?)
+            }
+            None => None,
+        };
+        let limit = page.limit() as usize;
+        let fetched = self
+            .db
+            .run(
+                "read_drift_by_path",
+                sqlx::query(DRIFT_BY_PATH_SQL)
+                    .bind(swimlane.as_str())
+                    .bind(q.state.map(DriftState::as_str))
+                    .bind(below(&prefix))
+                    .bind(after)
+                    .bind(i64::try_from(limit + 1).unwrap_or(i64::MAX))
+                    .fetch_all(self.db.pool()),
+            )
+            .await?;
+        let has_more = fetched.len() > limit;
+        let kept = &fetched[..fetched.len().min(limit)];
+        let items = kept
+            .iter()
+            .map(|r| file_entry(r, &self.deny))
+            .collect::<Result<Vec<_>, _>>()?;
+        let next: Option<Cursor> = if has_more {
+            kept.last()
+                .map(|r| {
+                    let seq: i64 = r.get("seq");
+                    cursor::issue(Kind::DriftByPath, &context, vec![Field::Int(seq)])
                 })
                 .transpose()?
         } else {

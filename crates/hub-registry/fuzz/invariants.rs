@@ -351,7 +351,7 @@ const KEY_BYTES: usize = 255;
 /// The raw bytes a 512-character cursor can hold (`512 * 3 / 4`).
 const KEY_RAW: usize = 384;
 
-const KINDS: [Kind; 9] = [
+const KINDS: [Kind; 10] = [
     Kind::Swimlanes,
     Kind::Tree,
     Kind::Drift,
@@ -361,6 +361,7 @@ const KINDS: [Kind; 9] = [
     Kind::Grid,
     Kind::CompareTree,
     Kind::Restarts,
+    Kind::DriftByPath,
 ];
 
 /// The text of a cursor, the way the REST edge hands it over: at most 512 characters of the cursor alphabet.

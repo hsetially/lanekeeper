@@ -54,6 +54,10 @@ LEFT JOIN agent_acks k ON k.swimlane_id = s.id \
 LEFT JOIN swimlane_registry r ON r.swimlane_id = s.id \
 WHERE s.id = $1";
 
+/// Whether a swimlane notifies the config-server by itself after a write (D85): `$1` is the id. A swimlane nobody switched on has the
+/// column's default, `false`. Read only: the admin operations that write it are not in this crate (A7).
+pub const AUTO_NOTIFY_SQL: &str = "SELECT auto_notify FROM swimlanes WHERE id = $1";
+
 fn summary_of(row: &sqlx::postgres::PgRow) -> Result<SwimlaneSummary, RegistryError> {
     let id: String = row.get("id");
     let display: String = row.get("display_name");
@@ -188,6 +192,19 @@ impl Inner {
             services,
             auto_notify,
         })
+    }
+
+    /// The swimlane's auto-notify setting (the port's `auto_notify`); a swimlane the reader may not know is `NotFound`.
+    pub async fn auto_notify_of(&self, id: &SwimlaneId) -> Result<bool, ReadError> {
+        self.db
+            .run(
+                "read_auto_notify",
+                sqlx::query_scalar(AUTO_NOTIFY_SQL)
+                    .bind(id.as_str())
+                    .fetch_optional(self.db.pool()),
+            )
+            .await?
+            .ok_or(ReadError::NotFound)
     }
 
     /// Whether a swimlane exists. Every read that names a swimlane checks it first, so an unknown one is `NotFound` and not an empty page.

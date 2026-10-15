@@ -2,8 +2,8 @@
 //!
 //! A cursor is the position after the last row of a page, and nothing else: a few small numbers and short byte strings, never a
 //! path (a path is up to 1,024 bytes and a setting path up to 2,048, but a `domain::Cursor` is at most 512 characters). Each list
-//! says what its key is: the child name of a tree (at most 255 bytes), `file_state.seq` for the drift list, the time and id of a
-//! version, the id of a finding.
+//! says what its key is: the child name of a tree (at most 255 bytes), `file_state.seq` for the drift list (and for the one ordered
+//! by path, where it names the row whose path the page resumes after), the time and id of a version, the id of a finding.
 //!
 //! # What a cursor can and cannot do
 //!
@@ -50,6 +50,8 @@ pub enum Kind {
     Grid = 7,
     CompareTree = 8,
     Restarts = 9,
+    /// The drift list ordered by path (the port's `drift`); [`Kind::Drift`] is the REST list, most serious first.
+    DriftByPath = 10,
 }
 
 impl Kind {
@@ -64,6 +66,7 @@ impl Kind {
             7 => Self::Grid,
             8 => Self::CompareTree,
             9 => Self::Restarts,
+            10 => Self::DriftByPath,
             _ => return None,
         })
     }

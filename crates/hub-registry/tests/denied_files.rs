@@ -21,8 +21,9 @@ use std::sync::Arc;
 use axum::body::Body;
 use bytes::Bytes;
 use domain::{
-    AgentReply, ContentHash, ContentSource, DriftState, FileClass, HubCommand, Page, Role, SwimlaneId, User,
-    UserStatus,
+    AgentReply, AppName, ChannelName, CompareQuery, CompareRef, ContentHash, ContentSource, DriftQuery,
+    DriftState, EffectiveQuery, FileClass, HubCommand, LogicalFile, Page, Role, ServeRequest, SwimlaneId,
+    TenantId, User, UserStatus,
 };
 use http::{Method, Request};
 use http_body_util::BodyExt;
@@ -945,6 +946,139 @@ fn fetches(h: &Http) -> usize {
         .count()
 }
 
+/// What the six port methods of `contract/07-mcp` answer about one file, as the text a caller would be given (the JSON of the answer,
+/// or the error), with a name for the failure message. MCP calls these without the router, so they are swept like the routes are.
+async fn port_reads_of(h: &Http, file: &str, with_served: bool) -> Vec<(String, String)> {
+    let (v, s) = (viewer(), support::reads::lane("sit1"));
+    let service = &h.reads.service;
+    let logical = LogicalFile::parse(file).unwrap();
+    let shown = |r: Result<String, ReadError>| match r {
+        Ok(text) => text,
+        Err(e) => format!("{e:?}"),
+    };
+    let json = |v: &dyn erased_json::Json| v.to_json();
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (tenant, channel) in [("sit1", None), ("sit2", None), ("sit1", Some("web"))] {
+        let q = EffectiveQuery {
+            file: logical.clone(),
+            tenant: TenantId::parse(tenant).unwrap(),
+            channel: channel.map(|c| ChannelName::parse(c).unwrap()),
+            setting_prefix: None,
+        };
+        out.push((
+            format!("effective_for {tenant} {channel:?}"),
+            shown(service.effective_for(&v, &s, &q).await.map(|e| json(&e))),
+        ));
+    }
+    for (name, left, right) in [
+        ("nfs nfs", "nfs:sit1", "nfs:sit2"),
+        ("nfs baseline", "nfs:sit1", "baseline:sit1"),
+        ("effective effective", "effective:sit1", "effective:sit2"),
+        ("nfs git", "nfs:sit1", "git:base@master"),
+        ("git nfs", "git:base@master", "nfs:sit1"),
+    ] {
+        for channel in [None, Some("web")] {
+            let q = CompareQuery {
+                left: left.parse::<CompareRef>().unwrap(),
+                right: right.parse::<CompareRef>().unwrap(),
+                file: Some(logical.clone()),
+                channel: channel.map(|c| ChannelName::parse(c).unwrap()),
+            };
+            out.push((
+                format!("compare_in {name} {channel:?}"),
+                shown(service.compare_in(&v, &q).await.map(|c| json(&c))),
+            ));
+        }
+    }
+    let request = ServeRequest {
+        application: AppName::parse("core").unwrap(),
+        tenant: TenantId::parse("sit1").unwrap(),
+        channel: None,
+        file: nfs(file),
+    };
+    if with_served {
+        out.push((
+            "served".to_owned(),
+            shown(service.served(&v, &s, &request).await.map(|f| json(&f))),
+        ));
+    }
+    out
+}
+
+/// The six that are not about one file: the whole-tree compares below a folder, and the drift lists.
+async fn port_reads_of_everything(h: &Http) -> Vec<(String, String)> {
+    let (v, s) = (viewer(), support::reads::lane("sit1"));
+    let service = &h.reads.service;
+    let shown = |r: Result<String, ReadError>| match r {
+        Ok(text) => text,
+        Err(e) => format!("{e:?}"),
+    };
+    let json = |v: &dyn erased_json::Json| v.to_json();
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (name, left, right) in [
+        ("nfs nfs", "nfs:sit1", "nfs:sit2"),
+        ("effective effective", "effective:sit1", "effective:sit2"),
+        ("nfs git", "nfs:sit1", "git:base@master"),
+    ] {
+        for prefix in [None, Some("conf"), Some("keys")] {
+            let prefix = prefix.map_or_else(domain::NfsPath::root, nfs);
+            out.push((
+                format!("compare_tree_under {name} {prefix}"),
+                shown(
+                    service
+                        .compare_tree_under(
+                            &v,
+                            left.parse().unwrap(),
+                            right.parse().unwrap(),
+                            &prefix,
+                            Page::new(200, None).unwrap(),
+                        )
+                        .await
+                        .map(|t| json(&t)),
+                ),
+            ));
+        }
+    }
+    let states = std::iter::once(None).chain(DriftState::ALL.into_iter().map(Some));
+    for state in states {
+        for prefix in [None, Some("conf"), Some("keys")] {
+            let q = DriftQuery {
+                state,
+                prefix: prefix.map(nfs),
+            };
+            out.push((
+                format!("drift {state:?} {prefix:?}"),
+                shown(
+                    service
+                        .drift(&v, &s, &q, Page::new(200, None).unwrap())
+                        .await
+                        .map(|p| json(&p)),
+                ),
+            ));
+        }
+    }
+    out.push((
+        "auto_notify".to_owned(),
+        format!("{:?}", service.auto_notify(&v, &s).await),
+    ));
+    out
+}
+
+/// The JSON of any answer, without naming each type: what a caller is shown is what is checked.
+mod erased_json {
+    use serde::Serialize;
+
+    pub trait Json {
+        fn to_json(&self) -> String;
+    }
+
+    impl<T: Serialize> Json for T {
+        fn to_json(&self) -> String {
+            serde_json::to_string(self).unwrap()
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_denied_files_bytes_leave_through_no_read_path_and_reach_no_log_error_or_metric() {
     let capture = LogCapture::install_everywhere();
@@ -988,6 +1122,37 @@ async fn a_denied_files_bytes_leave_through_no_read_path_and_reach_no_log_error_
     .unwrap();
     assert!(hashes.len() >= 4, "{}", hashes.len());
     all.extend(blobs_by_hash(&h, hashes).await);
+    // The six methods that MCP calls through the port, for every denied file, and the lists and whole-tree compares that name them.
+    let mut port: Vec<(String, String)> = Vec::new();
+    for file in DENIED {
+        port.extend(
+            port_reads_of(&h, file, true)
+                .await
+                .into_iter()
+                .map(|(n, t)| (format!("{n} of {file}"), t)),
+        );
+    }
+    port.extend(port_reads_of_everything(&h).await);
+    for (name, text) in &port {
+        for p in planted {
+            assert!(
+                !text.contains(p),
+                "the port's {name} returned a denied file's content ({p}): {text}"
+            );
+        }
+    }
+    assert!(
+        port.iter().filter(|(_, t)| t.starts_with('{')).count() >= 25,
+        "the port reads are real answers, not a wall of refusals: {:?}",
+        port.iter().map(|(n, t)| (n, t.len())).collect::<Vec<_>>()
+    );
+    // And the control: a file that is not denied has its content in the same answers, so that the absence above is the protection.
+    // (Not `served`: the config-server's copy is asked for, and the test checks below that nothing was asked for a denied file.)
+    let control = port_reads_of(&h, CORE, false).await;
+    assert!(
+        control.iter().any(|(_, t)| t.contains("\"path\":\"port\"")),
+        "an ordinary file's settings are in the port's answers: {control:?}"
+    );
 
     // Replies include the errors: a problem body is among them too.
     assert!(
@@ -1049,6 +1214,15 @@ async fn a_hub_whose_own_globs_changed_withholds_what_its_rows_have_not_yet_been
     reads.extend(reads_of_everything(&planted));
     let all = replies(&h, reads).await;
     assert_nothing_leaks(&all, &planted, 15);
+    // The same through the port's six methods (the rows have not been told, so only the hub's glob stands between them and the bytes).
+    let mut port = port_reads_of(&h, GLOBBED, true).await;
+    port.extend(port_reads_of_everything(&h).await);
+    for (name, text) in &port {
+        assert!(
+            !text.contains(GLOB),
+            "the port's {name} returned the content of a file the hub's glob denies: {text}"
+        );
+    }
     assert_eq!(fetches(&h), 0, "the config-server's copy is not asked for either");
 
     // The listings say so: class denied, content withheld.
@@ -1158,6 +1332,77 @@ async fn a_denied_property_source_gives_no_value_to_the_text_it_would_have_fille
 
 // ---------------------------------------------------------------------------------------------------------------- authorization
 
+/// Each of the six, as `user` asks for `file`: the answer is only whether it was refused (the text of an answer is swept above).
+async fn port_reads_as(h: &Http, user: &User, file: &str) -> Vec<(&'static str, Result<(), ReadError>)> {
+    let (s, service) = (support::reads::lane("sit1"), &h.reads.service);
+    let logical = LogicalFile::parse(file).unwrap();
+    let tenant = TenantId::parse("sit1").unwrap();
+    let (left, right): (CompareRef, CompareRef) = ("nfs:sit1".parse().unwrap(), "nfs:sit2".parse().unwrap());
+    let request = ServeRequest {
+        application: AppName::parse("core").unwrap(),
+        tenant: tenant.clone(),
+        channel: None,
+        file: nfs(file),
+    };
+    vec![
+        (
+            "effective_for",
+            service
+                .effective_for(
+                    user,
+                    &s,
+                    &EffectiveQuery {
+                        file: logical.clone(),
+                        tenant,
+                        channel: None,
+                        setting_prefix: None,
+                    },
+                )
+                .await
+                .map(|_| ()),
+        ),
+        (
+            "compare_in",
+            service
+                .compare_in(
+                    user,
+                    &CompareQuery {
+                        left: left.clone(),
+                        right: right.clone(),
+                        file: Some(logical),
+                        channel: None,
+                    },
+                )
+                .await
+                .map(|_| ()),
+        ),
+        (
+            "compare_tree_under",
+            service
+                .compare_tree_under(user, left, right, &nfs("conf"), Page::new(10, None).unwrap())
+                .await
+                .map(|_| ()),
+        ),
+        (
+            "drift",
+            service
+                .drift(
+                    user,
+                    &s,
+                    &DriftQuery {
+                        state: None,
+                        prefix: Some(nfs("conf")),
+                    },
+                    Page::new(10, None).unwrap(),
+                )
+                .await
+                .map(|_| ()),
+        ),
+        ("auto_notify", service.auto_notify(user, &s).await.map(|_| ())),
+        ("served", service.served(user, &s, &request).await.map(|_| ())),
+    ]
+}
+
 #[tokio::test]
 async fn the_denial_is_behind_the_guard_on_the_route_and_on_the_port() {
     let Some(h) = world().await else { return };
@@ -1213,5 +1458,9 @@ async fn the_denial_is_behind_the_guard_on_the_route_and_on_the_port() {
                 .unwrap_err(),
             ReadError::Forbidden
         );
+        // And the six of `contract/07-mcp`, for the file that is denied.
+        for (name, refused) in port_reads_as(&h, &user, FLIPPED).await {
+            assert_eq!(refused, Err(ReadError::Forbidden), "{name}");
+        }
     }
 }
