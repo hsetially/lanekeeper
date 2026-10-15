@@ -1,0 +1,53 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: register
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "index": "tool_write_registrations_key",
+    "node": "Index Only Scan",
+    "relation": "tool_write_registrations"
+  },
+  {
+    "node": "Aggregate"
+  },
+  {
+    "node": "Limit"
+  },
+  {
+    "index": "tool_write_registrations_age_idx",
+    "node": "Index Only Scan",
+    "relation": "tool_write_registrations"
+  },
+  {
+    "arbiters": [
+      "tool_write_registrations_key"
+    ],
+    "node": "ModifyTable",
+    "relation": "tool_write_registrations"
+  },
+  {
+    "node": "CTE Scan"
+  },
+  {
+    "node": "CTE Scan"
+  },
+  {
+    "node": "Result"
+  },
+  {
+    "node": "CTE Scan"
+  },
+  {
+    "node": "CTE Scan"
+  },
+  {
+    "node": "CTE Scan"
+  },
+  {
+    "node": "Result"
+  }
+]

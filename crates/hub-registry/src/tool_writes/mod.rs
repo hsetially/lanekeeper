@@ -10,7 +10,7 @@
 //! | matching on arrival | `matching` (pure), `crate::ingest` (the SQL) | An observation applied while a registration is visible is explained by the oldest matching one, and the registrations it contradicts are dropped, in the same transaction |
 //! | the late commit | `matcher` | A leased job explains an observation that was applied before the registration committed, and drops what expired |
 //!
-//! The storage is `tool_write_registrations` (migration `0005`), a table of its own: no reader of history can mistake a registration for an
+//! The storage is the table `tool_write_registrations` (its own migration, `db/migrations/README.md`), a table of its own: no reader of history can mistake a registration for an
 //! observation (`file_observations` has none of it, and `is_version_of` never sees a registered hash).
 //!
 //! # The rules, and where each one is held
@@ -83,7 +83,10 @@ mod matcher;
 pub(crate) mod matching;
 mod register;
 
-pub use matcher::{MatchReport, ToolWriteMatcher};
+pub use matcher::{
+    ATTRIBUTE_SQL, LANE_PENDING_SQL, LANES_SQL, MatchReport, OBSERVATIONS_SQL, SWEEP_SQL, ToolWriteMatcher,
+};
+pub use register::REGISTER_SQL;
 
 /// `ToolWriteEntry::TTL_SECS` in milliseconds: how long a registration waits for its observation, and how long an observation waits for
 /// its registration. Pinned to the port's constant by a test.

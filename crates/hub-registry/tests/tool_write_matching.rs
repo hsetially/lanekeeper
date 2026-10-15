@@ -937,3 +937,102 @@ async fn the_job_runs_through_the_runners_context() {
     rig.matcher().job().run(&ctx).await.unwrap();
     assert!(rig.history("svc/a.yml").await[1].is_tool_write_of(5));
 }
+
+// ================================================================================================ S10
+
+#[tokio::test]
+async fn no_path_hash_or_user_is_in_a_log_line_of_matching_or_of_the_matcher() {
+    use support::log_capture::LogCapture;
+    let Some(rig) = Rig::new().await else { return };
+    let mut s = Script::start(
+        &rig,
+        &[("svc/secret-path.yml", "x: 1"), ("svc/other-secret.yml", "y: 1")],
+    )
+    .await;
+    let (capture, _guard) = LogCapture::install();
+
+    // On arrival: explained, and another one contradicted.
+    rig.registered(
+        "svc/secret-path.yml",
+        "x: 2 token-value",
+        "req-secret-arrival",
+        4242,
+    )
+    .await;
+    rig.clock.advance_secs(3);
+    s.change(&[("svc/secret-path.yml", "x: 2 token-value")]).await;
+
+    // Late, with a statement that fails (a trigger on the observations' update), and then with one that works.
+    rig.clock.advance_secs(10);
+    let mut tx = rig.caller().await;
+    rig.register_in(
+        &mut tx,
+        "svc/other-secret.yml",
+        "y: 2 token-value",
+        "req-secret-late",
+        4243,
+    )
+    .await;
+    rig.clock.advance_secs(2);
+    s.change(&[("svc/other-secret.yml", "y: 2 token-value")]).await;
+    tx.commit().await.unwrap();
+    // A registration that cannot be read back (a user id of a shape this code does not know) is skipped, not an error.
+    let mut admin = rig.db.admin().await;
+    sqlx::raw_sql(
+        "INSERT INTO tool_write_registrations (swimlane_id, path, hash, is_delete, user_tid, user_oid, request_id, registered_at) \
+         VALUES ('sit1', 'svc/secret-path.yml', sha256('unreadable'), false, 'not-a-guid', 'secret-oid', 'req-secret-bad', to_timestamp(1800000016))",
+    )
+    .execute(&mut admin)
+    .await
+    .unwrap();
+    sqlx::raw_sql(
+        "CREATE FUNCTION lk_fail_attribution() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN RAISE EXCEPTION 'forced secret-path failure'; END $$; \
+         CREATE TRIGGER lk_fail BEFORE UPDATE ON file_observations FOR EACH ROW EXECUTE FUNCTION lk_fail_attribution();",
+    )
+    .execute(&mut admin)
+    .await
+    .unwrap();
+    rig.clock.advance_secs(1);
+    let failed = rig.matcher().run_once().await.unwrap();
+    assert_eq!(
+        (failed.failed, failed.matched),
+        (1, 0),
+        "the statement failed and the lane is left for the next run"
+    );
+    sqlx::raw_sql("DROP TRIGGER lk_fail ON file_observations")
+        .execute(&mut admin)
+        .await
+        .unwrap();
+    assert_eq!(rig.matcher().run_once().await.unwrap().matched, 1);
+    assert!(
+        rig.metrics.tool_write_count(ToolWriteResult::Unreadable) >= 1,
+        "the unreadable registration was met, skipped and counted"
+    );
+
+    let text = capture.text();
+    assert!(
+        text.contains("tool_write_attribute"),
+        "the failed statement is logged as an operation: {text}"
+    );
+    for secret in [
+        "secret-path".to_owned(),
+        "other-secret".to_owned(),
+        "svc/".to_owned(),
+        hex::encode(hash_of("x: 2 token-value").as_bytes()),
+        hex::encode(hash_of("y: 2 token-value").as_bytes()),
+        "token-value".to_owned(),
+        user(4242).oid().to_string(),
+        user(4243).oid().to_string(),
+        "req-secret".to_owned(),
+        "forced".to_owned(),
+        "secret-oid".to_owned(),
+    ] {
+        // sqlx logs the text of each statement (never its binds), and the trigger's text is a statement of this test's own.
+        let leaked: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains(&secret) && !l.contains(" sqlx::query "))
+            .collect();
+        assert!(leaked.is_empty(), "S10: `{secret}` is in a log line: {leaked:?}");
+    }
+}

@@ -93,10 +93,10 @@ pub const ATTRIBUTE_SQL: &str = "UPDATE file_observations o SET source = 'tool_w
      RETURNING o.id";
 
 /// The expiry sweep: the oldest registrations stamped at or before the cutoff (`$1` in Unix ms), at most `$2`. The age index serves it.
-pub const SWEEP_SQL: &str = "DELETE FROM tool_write_registrations WHERE id IN ( \
+pub const SWEEP_SQL: &str = "DELETE FROM tool_write_registrations WHERE id = ANY(ARRAY( \
        SELECT id FROM tool_write_registrations \
        WHERE registered_at <= (timestamptz 'epoch' + ($1::bigint::text || ' milliseconds')::interval) \
-       ORDER BY registered_at, id LIMIT $2)";
+       ORDER BY registered_at, id LIMIT $2))";
 
 /// An observation with its path, as [`OBSERVATIONS_SQL`] returns it.
 type ObservationRow = (

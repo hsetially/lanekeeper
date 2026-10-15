@@ -42,12 +42,16 @@ use hub_registry::read::settings::ROWS_SQL;
 use hub_registry::read::swimlanes::{SWIMLANE_SQL, SWIMLANES_SQL};
 use hub_registry::read::tree::{CHILDREN_SQL, DRIFT_SQL, FILE_ROWS_SQL};
 use hub_registry::tenants::STORED_SQL as TENANTS_STORED_SQL;
+use hub_registry::tool_writes::{
+    ATTRIBUTE_SQL, DROP_SQL, LANE_PENDING_SQL, LANES_SQL, OBSERVATIONS_SQL, PENDING_OF_PATHS_SQL,
+    REGISTER_SQL, SWEEP_SQL,
+};
 use serde_json::Value;
 use sqlx::{PgPool, Row as _};
 use support::pg::TestDb;
 
 /// Tables that hold thousands of rows at design scale. A sequential scan of one of these is a failure.
-const LARGE: [&str; 11] = [
+const LARGE: [&str; 12] = [
     "findings",
     "file_state",
     "file_observations",
@@ -59,6 +63,7 @@ const LARGE: [&str; 11] = [
     "git_tree_index",
     "baselines",
     "blob_refs",
+    "tool_write_registrations",
 ];
 
 /// The tables the seeding fills. Autovacuum is switched off for them, because a vacuum that runs between the seeding and the
@@ -1002,4 +1007,141 @@ async fn pickup_queries_are_bounded_and_read_no_large_table_by_a_scan() {
     // The tenants of the swimlane (a computation that reads files reads them too).
     let tenants = explain(&pool, TENANTS_STORED_SQL, &[Arg::Text(lane), Arg::Int(129)]).await;
     insta::assert_json_snapshot!("tenants_stored", tenants);
+}
+
+/// T1 (A10): the statements of the tool-write registrations, on a database with the observations of 40 swimlanes (24,000) and a table of
+/// 10,000 registrations of which 120 are younger than the TTL: the state of a registry whose expiry sweep is behind (the age index is what
+/// keeps the bound's count off the expired rows), and no statement may read a large table with a sequential scan.
+#[tokio::test]
+async fn tool_write_queries_have_no_sequential_scan_on_large_tables() {
+    let Some(db) = TestDb::ready().await else { return };
+    let pool = db.app_pool().await;
+    let mut admin = db.admin().await;
+    for table in [
+        "projects",
+        "swimlanes",
+        "file_observations",
+        "tool_write_registrations",
+    ] {
+        sqlx::raw_sql(&format!("ALTER TABLE {table} SET (autovacuum_enabled = false)"))
+            .execute(&mut admin)
+            .await
+            .unwrap();
+    }
+    for sql in [
+        "INSERT INTO projects (id, display_name) VALUES ('p1', 'Project 1')",
+        "INSERT INTO swimlanes (id, project_id, display_name) SELECT 'lane' || n, 'p1', 'lane' FROM generate_series(1, 40) n",
+        // Three observations of each of 200 files of each swimlane; a deletion every tenth.
+        "INSERT INTO file_observations (swimlane_id, path, hash, source, observed_at, recorded_at) \
+         SELECT 'lane' || l, 'dir' || (f % 50) || '/file' || f || '.yml', \
+                CASE WHEN k = 3 AND f % 10 = 0 THEN NULL ELSE sha256(('v' || l || '-' || f || '-' || k)::bytea) END, \
+                'scan', now() - (k || ' minutes')::interval, now() - (k || ' minutes')::interval \
+         FROM generate_series(1, 40) l, generate_series(1, 200) f, generate_series(1, 3) k",
+        // 250 registrations for each swimlane: the first three are live, the rest are a day old and not swept yet; one in ten is a delete.
+        "INSERT INTO tool_write_registrations (swimlane_id, path, hash, is_delete, user_tid, user_oid, request_id, registered_at) \
+         SELECT 'lane' || l, 'dir' || (f % 50) || '/file' || f || '.yml', sha256(('r' || l || '-' || f)::bytea), f % 10 = 0, \
+                '72f988bf-86f1-41af-91ab-2d7cd011db47', '00000000-0000-4000-8000-000000000001', 'req-' || l || '-' || f, \
+                CASE WHEN f <= 3 THEN now() ELSE now() - interval '1 day' END \
+         FROM generate_series(1, 40) l, generate_series(1, 250) f",
+        "ANALYZE",
+    ] {
+        sqlx::raw_sql(sql).execute(&mut admin).await.unwrap();
+    }
+    let paths = some_paths(50);
+    let cutoff = 0_i64; // replaced below by the database's own notion of "a TTL ago", in Unix ms
+    let _ = cutoff;
+    let now_ms: i64 = sqlx::query_scalar("SELECT (EXTRACT(EPOCH FROM now()) * 1000)::bigint")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let cutoff = now_ms - 15 * 60 * 1000;
+    let hash = ports::content_hash(b"registered").as_bytes().to_vec();
+
+    // `register`: the repeat check, the count up to the bound, and the insert, in one statement.
+    let register = explain(
+        &pool,
+        REGISTER_SQL,
+        &[
+            Arg::Text("lane7"),
+            Arg::Text("dir10/file10.yml"),
+            Arg::Bytes(&hash),
+            Arg::Text("req-new"),
+            Arg::Bool(false),
+            Arg::Int(cutoff),
+            Arg::Int(10_000),
+            Arg::Text("72f988bf-86f1-41af-91ab-2d7cd011db47"),
+            Arg::Text("00000000-0000-4000-8000-000000000001"),
+            Arg::Int(now_ms),
+        ],
+    )
+    .await;
+    no_large_sequential_scan("register", &register);
+    insta::assert_json_snapshot!("tool_write_register", register);
+
+    // Ingestion's read of a chunk: the registrations of its paths, and the state before a deletion for the delete registrations.
+    let pending = explain(
+        &pool,
+        PENDING_OF_PATHS_SQL,
+        &[
+            Arg::Text("lane7"),
+            Arg::TextArray(paths.clone()),
+            Arg::Int(cutoff),
+            Arg::Int(1_100_000),
+            Arg::Int(i64::MAX),
+        ],
+    )
+    .await;
+    no_large_sequential_scan("pending of a chunk's paths", &pending);
+    insta::assert_json_snapshot!("tool_write_pending_of_paths", pending);
+
+    // The matcher.
+    let lanes = explain(&pool, LANES_SQL, &[Arg::Int(cutoff), Arg::Int(201)]).await;
+    no_large_sequential_scan("swimlanes with registrations", &lanes);
+    insta::assert_json_snapshot!("tool_write_lanes", lanes);
+    let lane_pending = explain(
+        &pool,
+        LANE_PENDING_SQL,
+        &[Arg::Text("lane7"), Arg::Int(cutoff), Arg::Int(1_100_000)],
+    )
+    .await;
+    no_large_sequential_scan("registrations of a swimlane", &lane_pending);
+    insta::assert_json_snapshot!("tool_write_lane_pending", lane_pending);
+    let observations = explain(
+        &pool,
+        OBSERVATIONS_SQL,
+        &[
+            Arg::Text("lane7"),
+            Arg::TextArray(paths),
+            Arg::Int(cutoff),
+            Arg::Int(1_100_000),
+        ],
+    )
+    .await;
+    no_large_sequential_scan("observations of the paths", &observations);
+    insta::assert_json_snapshot!("tool_write_observations", observations);
+    let attribute = explain(
+        &pool,
+        ATTRIBUTE_SQL,
+        &[
+            Arg::Text("lane7"),
+            Arg::IntArray(vec![1, 2, 3]),
+            Arg::TextArray(vec!["{}".to_owned(); 3]),
+        ],
+    )
+    .await;
+    no_large_sequential_scan("attribute", &attribute);
+    insta::assert_json_snapshot!("tool_write_attribute", attribute);
+
+    // Dropping, and the expiry sweep.
+    let drop = explain(
+        &pool,
+        DROP_SQL,
+        &[Arg::Text("lane7"), Arg::IntArray(vec![1, 2, 3])],
+    )
+    .await;
+    no_large_sequential_scan("drop", &drop);
+    insta::assert_json_snapshot!("tool_write_drop", drop);
+    let sweep = explain(&pool, SWEEP_SQL, &[Arg::Int(cutoff), Arg::Int(1_000)]).await;
+    no_large_sequential_scan("sweep", &sweep);
+    insta::assert_json_snapshot!("tool_write_sweep", sweep);
 }
