@@ -14,7 +14,7 @@ use domain::{
     UserStatus, WriteOutcome,
 };
 use futures::StreamExt;
-use hub_writes::github::GithubClient;
+use hub_writes::github::{GithubClient, GithubClientConfig};
 use hub_writes::prs::{
     Advanced, Driven, LinkQuery, PrDeps, PrDesk, PrJobRunner, PrJobView, PrStateWatcher, Raised, Watched,
 };
@@ -1396,6 +1396,62 @@ async fn raise_pr_through_the_write_service_waits_for_the_pull_request() {
             reason: RejectReason::NotAllowed,
             issues: Vec::new()
         })
+    );
+}
+
+/// The wait of `raise_pr` ends when it says it does, even when a step is still running: a GitHub that answers in seconds does not
+/// hold the caller for the length of the whole drive. The step is stopped, nothing is counted against the job, and the job goes on.
+#[tokio::test]
+async fn raise_pr_through_the_write_service_ends_its_wait_in_the_middle_of_a_slow_step() {
+    let Some(t) = jobs().await else { return };
+    let hub = t.f.rig.hub_with(
+        hub_writes::WriteConfig {
+            pr_wait: std::time::Duration::from_secs(1),
+            ..hub_writes::WriteConfig::default()
+        },
+        None,
+    );
+    // A client that waits for a slow GitHub, so that the slowness is not taken for a failure.
+    let vault = hub.token_vault(VaultDeps {
+        kms: t.f.kms.clone(),
+        github: Arc::new(t.f.gh.clone()),
+        repos: t.f.repos.clone(),
+    });
+    let client = GithubClient::for_tests(
+        &t.f.server.base(),
+        GithubClientConfig {
+            attempt_timeout: std::time::Duration::from_secs(5),
+            ..fast()
+        },
+    )
+    .unwrap();
+    let _runner = hub.pr_jobs(PrDeps {
+        vault,
+        git: Arc::new(client),
+        settings: t.f.deps.settings.clone(),
+    });
+    t.f.sim.slow_down(std::time::Duration::from_millis(400));
+    let started = std::time::Instant::now();
+    let out = hub.raise_pr(&t.f.ctx("k-1"), t.f.request(&[ENTRY], None)).await;
+    let took = started.elapsed();
+    assert_eq!(out, Err(ports::WriteError::Unavailable));
+    assert!(took < std::time::Duration::from_secs(3), "the wait took {took:?}");
+    // The job is there, was not counted against, and goes on from where it was.
+    assert_eq!(t.f.rig.count("pr_jobs").await, 1);
+    let (state, attempts): (String, i32) = sqlx::query_as("SELECT state, attempts FROM pr_jobs")
+        .fetch_one(&t.f.rig.pool)
+        .await
+        .unwrap();
+    assert_eq!(attempts, 0);
+    assert_ne!(state, "failed");
+    t.f.sim.slow_down(std::time::Duration::ZERO);
+    let id = sqlx::query_scalar::<_, i64>("SELECT id FROM pr_jobs")
+        .fetch_one(&t.f.rig.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        t.runner.drive(PrJobId::from(id)).await,
+        Driven::Finished(PrJobState::Completed)
     );
 }
 

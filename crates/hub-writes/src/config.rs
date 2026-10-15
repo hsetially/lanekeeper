@@ -50,6 +50,10 @@ pub struct WriteConfig {
     /// The most written paths the batcher holds at once. A write that finds it full is not announced (the "Notify services"
     /// button is still there), so a burst cannot grow the queue.
     pub auto_notify_queue: usize,
+    /// How long `WriteService::raise_pr` drives and waits for its pull request job before it answers `Unavailable` (the job goes on
+    /// in the background). The bound holds for a slow step too: a step that is still running when it ends is stopped, and the next
+    /// try goes on from where the job was.
+    pub pr_wait: Duration,
     /// The name of the config-server's Deployment (D83): the one service a restart for check C11 is offered for. The cluster
     /// report lists the Deployment; when it lists none or several of that name, no restart is offered.
     pub config_server_deployment: String,
@@ -74,6 +78,7 @@ impl Default for WriteConfig {
             reveal_tracked_users: 10_000,
             auto_notify_window: Duration::from_secs(2),
             auto_notify_queue: 1_024,
+            pr_wait: Duration::from_secs(30),
             config_server_deployment: "csp-configuration-server".to_owned(),
         }
     }
@@ -131,6 +136,10 @@ impl WriteConfig {
         }
         if self.max_concurrent_checks == 0 || self.max_concurrent_checks > 256 {
             return Err(ConfigError::Invalid("max_concurrent_checks must be 1 to 256"));
+        }
+        nonzero(self.pr_wait, "pr_wait must be more than zero")?;
+        if self.pr_wait > Duration::from_secs(120) {
+            return Err(ConfigError::Invalid("pr_wait must be at most 120 seconds"));
         }
         if self.extra_deny_globs.len() > MAX_EXTRA_DENY_GLOBS {
             return Err(ConfigError::Invalid("too many extra deny globs"));
@@ -247,6 +256,8 @@ mod tests {
         bad(&|c| c.auto_notify_window = Duration::from_secs(61));
         bad(&|c| c.auto_notify_queue = 0);
         bad(&|c| c.auto_notify_queue = 100_001);
+        bad(&|c| c.pr_wait = Duration::ZERO);
+        bad(&|c| c.pr_wait = Duration::from_secs(121));
         bad(&|c| c.config_server_deployment = String::new());
         bad(&|c| c.config_server_deployment = "Not A Name".to_owned());
     }

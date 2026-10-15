@@ -237,6 +237,13 @@ impl PrJobRunner {
 
     /// Run the job until it finishes, waits for a retry, or another runner has it. Holds the job's lease.
     pub async fn drive(&self, id: PrJobId) -> Driven {
+        self.drive_until(id, None).await
+    }
+
+    /// [`drive`](Self::drive) that stops at `deadline`: no step starts after it, and a step still running at it is stopped (the
+    /// same as a step that outlasts its own limit, and not counted against the job; the next try goes on from where the job was).
+    /// The lease is released either way.
+    pub(super) async fn drive_until(&self, id: PrJobId, deadline: Option<tokio::time::Instant>) -> Driven {
         let hub = self.hub();
         let mut lease = match hub
             .within("pr_job_lease", hub.leases.try_acquire(&lease_name(id), JOB_LEASE))
@@ -248,7 +255,20 @@ impl PrJobRunner {
         };
         let mut end = Driven::Waiting;
         for _ in 0..MAX_STEPS {
-            match self.advance(id).await {
+            let advanced = match deadline {
+                None => self.advance(id).await,
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if left.is_zero() {
+                        break;
+                    }
+                    match tokio::time::timeout(left, self.advance(id)).await {
+                        Ok(advanced) => advanced,
+                        Err(_) => break,
+                    }
+                }
+            };
+            match advanced {
                 Advanced::Moved(_) => {
                     if lease.renew(JOB_LEASE).await.is_err() {
                         // The lease is lost: somebody else may be running the job now.

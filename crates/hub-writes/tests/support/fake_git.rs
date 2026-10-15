@@ -54,6 +54,8 @@ struct State {
     /// The contents call leaves the bytes out of a file longer than this (GitHub does over 1 MB).
     none_over: Option<usize>,
     counter: u64,
+    /// Every answer takes this long more (a GitHub that works, slowly).
+    slow: std::time::Duration,
 }
 
 /// The simulator. Clone it freely: the clones share one state.
@@ -133,6 +135,11 @@ impl GitSim {
     /// checked.
     pub fn expect_token(&self, token: &str) {
         self.state().tokens.push(token.to_owned());
+    }
+
+    /// Every answer of the simulator takes `d` more to come.
+    pub fn slow_down(&self, d: std::time::Duration) {
+        self.state().slow = d;
     }
 
     /// A fault hook, run first on every request: `Some(reply)` answers instead of the simulator.
@@ -250,8 +257,9 @@ impl GitSim {
     }
 
     fn answer(&self, seen: &Seen) -> Reply {
-        let reply = self.answer_first(seen);
+        let mut reply = self.answer_first(seen);
         let mut st = self.state();
+        reply.delay = reply.delay.max(st.slow);
         for hook in &mut st.after {
             if let Some(replaced) = hook(seen) {
                 return replaced;

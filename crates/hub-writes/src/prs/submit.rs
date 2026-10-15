@@ -41,9 +41,6 @@ use crate::pipeline::approval::{Proposal, propose};
 use crate::pipeline::authorize::{authorize, authorize_user};
 use crate::pipeline::claim::{Claim, ClaimedAny, claim_any};
 
-/// How long [`PrJobRunner::raise_and_wait`] waits for a job: a pull request is five or six GitHub calls.
-const WAIT: Duration = Duration::from_secs(30);
-
 /// What asking for a pull request came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Raised {
@@ -106,9 +103,10 @@ impl PrDesk for PrJobRunner {
 
 impl PrJobRunner {
     /// Ask for a pull request and wait for the job, for a caller that answers with an outcome (`WriteService::raise_pr`): the job is
-    /// driven in this call, up to [`WAIT`]. `Applied` is the pull request, recorded; `Conflict` is a second pull request for the
-    /// change; a job that failed is `Rejected`. A job that is still running when the wait ends is `Unavailable`: it goes on, and a
-    /// retry with the same key finds it.
+    /// driven in this call, up to `WriteConfig::pr_wait` (30 s: a pull request is five or six GitHub calls), and a step still
+    /// running at the end is stopped. `Applied` is the pull request, recorded; `Conflict` is a second pull request for the change;
+    /// a job that failed is `Rejected`. A job that is still running when the wait ends is `Unavailable`: it goes on, and a retry
+    /// with the same key finds it.
     pub(crate) async fn raise_and_wait(
         &self,
         ctx: &WriteCtx,
@@ -124,10 +122,10 @@ impl PrJobRunner {
 
     async fn wait_for(&self, id: PrJobId) -> Result<WriteOutcome, WriteError> {
         let hub = self.hub();
-        let deadline = Instant::now() + WAIT;
+        let deadline = Instant::now() + hub.cfg.pr_wait;
         let mut pause = Duration::from_millis(250);
         loop {
-            self.drive(id).await;
+            self.drive_until(id, Some(deadline)).await;
             let job = async {
                 let mut conn = hub
                     .pool
