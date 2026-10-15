@@ -391,8 +391,8 @@ corpus must survive a change to one swimlane. It is decision D97 in `docs/decisi
 
 A snapshot of every swimlane's file list and of **8 shards of the distinct blobs, split by the blob's hash, each shard with all the
 places (swimlane, path) of its blobs** (`src/read/corpora.rs`, `src/read/search_text.rs`). Not one corpus per swimlane, which was the
-obvious reading of the decision and which the measurement refused: the engine's search time on the target fixtures (80,120 files, 23,265
-distinct blobs, 2 threads, 20 queries, 5 rounds, engine only, no database; every configuration's answers are asserted equal to the single
+obvious reading of the decision and which the measurement refused: the engine's search time on the target fixtures (the 78,414 structured and
+text files, 23,265 distinct blobs, 2 threads, 20 queries, 5 rounds, engine only, no database; every configuration's answers are asserted equal to the single
 corpus's):
 
 | Shape | mean | p50 | p95 |
@@ -404,7 +404,7 @@ corpus's):
 | 16 shards, side by side | 148 ms | 139 ms | 221 ms |
 | 4 shards, side by side | 134 ms | 125 ms | 182 ms |
 
-So per-swimlane corpora cost 5.5 times the search (the 3.4 times of the places per blob, and more), and sharding by content keeps a blob
+So per-swimlane corpora cost 5.5 times the search (they hold 3.3 times the blobs, 76,519 against 23,265), and sharding by content keeps a blob
 searched once while a change to one swimlane makes again only the shards whose places changed: making one shard (the places of its
 ~3,000 blobs, `SearchCorpus::new`) takes about 12 ms at 8 shards (33 ms at 4, 7 ms at 16); compiling the query for each shard costs
 0.5 ms. Eight is the default (`search_shards`, 1 to 64). How a search runs: the engine on every shard side by side and
