@@ -45,7 +45,7 @@ const MIN_RESIDUAL_RISKS: usize = 11;
 
 /// The limits that earlier tasks recorded for the threat model. Each topic needs one residual-risk bullet that contains every
 /// needle, so a topic cannot be "covered" by words scattered over unrelated bullets.
-const CARRY_FORWARD: [(&str, &[&str]); 15] = [
+const CARRY_FORWARD: [(&str, &[&str]); 20] = [
     (
         "a landed write overwritten before the reconcile job looks is not audited as ours (T1)",
         &[
@@ -117,8 +117,28 @@ const CARRY_FORWARD: [(&str, &[&str]); 15] = [
         &["users.github_login", "unique", "reset_github_link"],
     ),
     (
-        "the reveal action and notify are not built yet (T10, T11)",
-        &["T10", "T11", "Q37", "Q35"],
+        "notify and the config-server restart are not built yet (T11)",
+        &["Not built yet", "T11", "Q37", "Q35"],
+    ),
+    (
+        "the reveal's limit is kept by each replica, in memory (T10)",
+        &["RevealLimiter", "moka", "reveals_per_minute", "each replica"],
+    ),
+    (
+        "a reveal needs no approval and no second person (T10)",
+        &["requires_approval", "after the fact", "reason", "write it down"],
+    ),
+    (
+        "a reveal is not replayable, so a lost response is audited twice (T10)",
+        &["Idempotency-Key", "does not claim it", "second event", "secret"],
+    ),
+    (
+        "what can be revealed is what the mask hides, and the mask is only as good as the scan (T10)",
+        &["masked whole", "audited call", "does not recognise"],
+    ),
+    (
+        "the revealed value passes through buffers that cannot be zeroized (T10)",
+        &["serde_json::to_vec", "not wiped", "Secret", "`Bytes`"],
     ),
     (
         "a job uses its author's token in the background, after the request (T9)",
@@ -144,7 +164,7 @@ const CARRY_FORWARD: [(&str, &[&str]); 15] = [
 
 /// Numbers the section states, with where the code holds them: (the words in the section, the file under the repository root, the
 /// text the file must still contain).
-const FACTS: [(&str, &str, &str); 19] = [
+const FACTS: [(&str, &str, &str); 22] = [
     (
         "60 s",
         "crates/hub-writes/src/config.rs",
@@ -234,6 +254,21 @@ const FACTS: [(&str, &str, &str); 19] = [
         "at most four jobs in the background",
         "crates/hub-writes/src/prs/runner.rs",
         "const MAX_RUNNING: usize = 4;",
+    ),
+    (
+        "At most 30 reveals",
+        "crates/hub-writes/src/config.rs",
+        "reveals_per_minute: 30",
+    ),
+    (
+        "table of 10,000 users",
+        "crates/hub-writes/src/config.rs",
+        "reveal_tracked_users: 10_000",
+    ),
+    (
+        "(16 KiB)",
+        "crates/hub-writes/src/routes/mod.rs",
+        "pub const MAX_SMALL_BODY: usize = 16 * 1024;",
     ),
     (
         "for five seconds before it publishes",
@@ -800,6 +835,58 @@ fn anchor_problems(source: &dyn Fn(&str) -> String) -> Vec<String> {
         "a destination off the allowlist is logged and dropped without an error",
     );
 
+    // 8. A reveal checks the door and the role, counts the attempt, reads, finds, records and commits, and only then answers; it
+    //    claims no idempotency key and knows nothing of approval.
+    let reveal = source("crates/hub-writes/src/reveal.rs");
+    let desk = between(&reveal, "async fn reveal(hub: &Inner", "\n}\n").unwrap_or_default();
+    check(
+        in_order(
+            desk,
+            &[
+                "ctx.via != Via::Ui",
+                "authorize(hub, ctx, Role::Editor)",
+                ".take(&user.id",
+                "\"reveal_read\"",
+                "\"reveal_find\"",
+                "\"reveal_audit\"",
+                "tx.commit()",
+                "Ok(Revealed { value: found.value })",
+            ],
+        ),
+        "a reveal is not replayable, so a response that is lost is audited twice",
+        "`reveal` in reveal.rs checks the door and the role, counts the attempt, reads, finds, records and commits the event, and only then returns the value",
+    );
+    check(
+        !reveal.contains("claim(") && !reveal.contains("requires_approval"),
+        "a reveal is not replayable, so a response that is lost is audited twice",
+        "reveal.rs claims no idempotency key and knows nothing of approval",
+    );
+
+    // 9. The limit is a bounded in-memory table of windows, one for each replica.
+    check(
+        reveal.contains("windows: moka::sync::Cache<UserId, Arc<Mutex<VecDeque<i64>>>>")
+            && source("crates/hub-writes/src/service.rs").contains("pub reveals: RevealLimiter,"),
+        "the reveal's limit is kept by each replica",
+        "`RevealLimiter` is a `moka` table of per-user windows held by the hub in memory",
+    );
+
+    // 10. What can be revealed is decided by the mask's own function.
+    check(
+        reveal.contains("view::marker(side.flags.as_ref(), found.lines)?")
+            && source("crates/hub-writes/src/proposals/view.rs")
+                .contains("None => Some(UNSCANNED.to_owned())"),
+        "what can be revealed is what the mask hides",
+        "`find` asks `view::marker`, which also masks a file the scan could not read whole",
+    );
+
+    // 11. The value is a `Secret` until the body is written, and the body is serialised from a plain buffer.
+    check(
+        reveal.contains("Secret::new(found.value.text.clone())")
+            && source("crates/hub-writes/src/routes/reveal.rs").contains("serde_json::to_vec(&Shown {"),
+        "the revealed value passes through buffers",
+        "the value is a `Secret` from `find` and is serialised with `serde_json::to_vec`",
+    );
+
     problems
 }
 
@@ -1101,6 +1188,36 @@ fn planted_gaps_are_found() {
             "let body: RejectBody = object(body)?;",
             "let body: RejectBody = serde_json::from_slice(body).map_err(|_| Refusal::BadRequest)?;",
             "JSON array",
+        ),
+        (
+            "crates/hub-writes/src/reveal.rs",
+            "tx.commit().await.map_err(|e| Internal::db(\"reveal_audit\", &e))?;",
+            "tx.rollback().await.ok();",
+            "audited twice",
+        ),
+        (
+            "crates/hub-writes/src/reveal.rs",
+            "let mut tx = hub\n                .pool",
+            "let mut claim_a_key = hub.claim(\n                .pool",
+            "audited twice",
+        ),
+        (
+            "crates/hub-writes/src/reveal.rs",
+            "windows: moka::sync::Cache<UserId, Arc<Mutex<VecDeque<i64>>>>",
+            "windows: SharedTable",
+            "kept by each replica",
+        ),
+        (
+            "crates/hub-writes/src/reveal.rs",
+            "view::marker(side.flags.as_ref(), found.lines)?",
+            "Some(view::marker(side.flags.as_ref(), found.lines))?",
+            "what can be revealed",
+        ),
+        (
+            "crates/hub-writes/src/reveal.rs",
+            "Secret::new(found.value.text.clone())",
+            "found.value.text.clone()",
+            "the revealed value passes through",
         ),
         (
             "crates/hub-writes/src/teams/mod.rs",

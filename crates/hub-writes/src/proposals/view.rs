@@ -29,13 +29,14 @@ pub(crate) struct DiffView {
 }
 
 /// One side of a change: its text, the markers of its flagged lines, and its settings.
-struct Side {
-    text: String,
-    flags: Option<BTreeMap<u32, String>>,
-    settings: Vec<engine::FlatSetting>,
+pub(crate) struct Side {
+    pub text: String,
+    /// The markers of the flagged lines; `None` when the scan could not run.
+    pub flags: Option<BTreeMap<u32, String>>,
+    pub settings: Vec<engine::FlatSetting>,
 }
 
-fn side(path: &NfsPath, class: FileClass, bytes: &[u8], limits: &Limits) -> Option<Side> {
+pub(crate) fn side(path: &NfsPath, class: FileClass, bytes: &[u8], limits: &Limits) -> Option<Side> {
     let decoded = decode_text(bytes, limits).ok()?;
     let flags = secret_scan(&decoded.text, &ScanConfig::default(), limits)
         .ok()
@@ -58,8 +59,9 @@ fn side(path: &NfsPath, class: FileClass, bytes: &[u8], limits: &Limits) -> Opti
     })
 }
 
-/// The marker for a value written on `lines`, if the scan flagged one of them (or could not scan at all).
-fn marker(flags: Option<&BTreeMap<u32, String>>, lines: LineRange) -> Option<String> {
+/// The marker for a value written on `lines`, if the scan flagged one of them (or could not scan at all). A value is masked
+/// exactly when this is `Some`, and the reveal action (T10) reveals exactly the values for which it is.
+pub(crate) fn marker(flags: Option<&BTreeMap<u32, String>>, lines: LineRange) -> Option<String> {
     match flags {
         None => Some(UNSCANNED.to_owned()),
         Some(flags) => flags

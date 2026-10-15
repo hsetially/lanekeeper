@@ -37,6 +37,8 @@ fastrand.workspace = true
 # the graph through `ports`; no new crate.
 futures.workspace = true
 http.workspace = true
+# The reveal action's rate limit (T10): a bounded table of per-user windows, the stack's cache, already used by 03a, 03b and the hub.
+moka.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

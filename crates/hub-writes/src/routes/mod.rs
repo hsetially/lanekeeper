@@ -11,6 +11,7 @@
 //! | `POST /api/v1/swimlanes/{id}/files/preview` | Editor | preview the effect of an upload or a delete |
 //! | `POST /api/v1/swimlanes/{id}/files/upload` | Editor | upload |
 //! | `POST /api/v1/swimlanes/{id}/files/revert` | Editor | revert |
+//! | `POST /api/v1/swimlanes/{id}/files/reveal` | Editor | reveal a masked value (audited, rate limited, never cached) |
 //! | `POST /api/v1/swimlanes/{id}/restart` | Operator | restart a service |
 //! | `GET /api/v1/proposals` | Viewer | list proposals |
 //! | `POST /api/v1/proposals/{id}/approve` | Admin | approve a proposal |
@@ -34,6 +35,7 @@ pub mod multipart;
 mod problem;
 mod proposals;
 mod prs;
+mod reveal;
 mod upload;
 pub mod wire;
 
@@ -51,6 +53,7 @@ use hub_platform::{ApiError, AuthenticatedUser, GuardedRouter};
 use ports::WriteService;
 
 use crate::ProposalDesk;
+use crate::RevealDesk;
 use crate::prs::PrDesk;
 use crate::vault::TokenDesk;
 
@@ -59,6 +62,7 @@ pub const FILES_PATH: &str = "/api/v1/swimlanes/{id}/files";
 pub const PREVIEW_PATH: &str = "/api/v1/swimlanes/{id}/files/preview";
 pub const UPLOAD_PATH: &str = "/api/v1/swimlanes/{id}/files/upload";
 pub const REVERT_PATH: &str = "/api/v1/swimlanes/{id}/files/revert";
+pub const REVEAL_PATH: &str = "/api/v1/swimlanes/{id}/files/reveal";
 pub const RESTART_PATH: &str = "/api/v1/swimlanes/{id}/restart";
 pub const PROPOSALS_PATH: &str = "/api/v1/proposals";
 pub const APPROVE_PATH: &str = "/api/v1/proposals/{id}/approve";
@@ -71,12 +75,13 @@ pub const PR_JOB_PATH: &str = "/api/v1/pr-jobs/{id}";
 
 /// Every route this task mounts, with its method and the lowest role that may call it. The route-table test compares this list
 /// with `api/openapi.yaml` and with what [`mount`] registers.
-pub const WRITE_ROUTES: [(&str, &str, Role); 16] = [
+pub const WRITE_ROUTES: [(&str, &str, Role); 17] = [
     ("PUT", FILES_PATH, Role::Editor),
     ("DELETE", FILES_PATH, Role::Editor),
     ("POST", PREVIEW_PATH, Role::Editor),
     ("POST", UPLOAD_PATH, Role::Editor),
     ("POST", REVERT_PATH, Role::Editor),
+    ("POST", REVEAL_PATH, Role::Editor),
     ("POST", RESTART_PATH, Role::Operator),
     ("GET", PROPOSALS_PATH, Role::Viewer),
     ("POST", APPROVE_PATH, Role::Admin),
@@ -113,6 +118,7 @@ pub struct WriteState {
     proposals: Arc<dyn ProposalDesk>,
     tokens: Arc<dyn TokenDesk>,
     prs: Arc<dyn PrDesk>,
+    reveal: Arc<dyn RevealDesk>,
     max_file_bytes: usize,
 }
 
@@ -132,6 +138,7 @@ impl WriteState {
         proposals: Arc<dyn ProposalDesk>,
         tokens: Arc<dyn TokenDesk>,
         prs: Arc<dyn PrDesk>,
+        reveal: Arc<dyn RevealDesk>,
         max_file_bytes: usize,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -139,6 +146,7 @@ impl WriteState {
             proposals,
             tokens,
             prs,
+            reveal,
             max_file_bytes,
         })
     }
@@ -226,6 +234,22 @@ pub fn mount(router: GuardedRouter, state: Arc<WriteState>) -> GuardedRouter {
                 async move {
                     match body_of(body) {
                         Ok(body) => files::revert(&s, &id, user.0.0, &headers, &body).await,
+                        Err(e) => *e,
+                    }
+                }
+            })
+            .layer(DefaultBodyLimit::max(MAX_SMALL_BODY))
+        })
+        .route(&Method::POST, REVEAL_PATH, Role::Editor, {
+            let s = Arc::clone(&s);
+            (move |Path(id): Path<String>,
+                   user: Extension<AuthenticatedUser>,
+                   headers: HeaderMap,
+                   body: Result<Bytes, BytesRejection>| {
+                let s = Arc::clone(&s);
+                async move {
+                    match body_of(body) {
+                        Ok(body) => reveal::reveal(&s, &id, user.0.0, &headers, &body).await,
                         Err(e) => *e,
                     }
                 }

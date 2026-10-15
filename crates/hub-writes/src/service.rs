@@ -27,6 +27,7 @@ use crate::pipeline::authorize::authorize;
 use crate::preview::token::PreviewKey;
 use crate::prs::{PrDeps, PrJobRunner, PrStateWatcher};
 use crate::reconcile::ReconcileWrites;
+use crate::reveal::RevealLimiter;
 
 /// What the write hub is built from: the ports it uses, the pool for its own tables, and the settings.
 pub struct WriteHubDeps {
@@ -74,6 +75,8 @@ pub(crate) struct Inner {
     pub idem: IdempotencyStore,
     /// Bounds the validations that run at once on the blocking pool.
     pub checks: Semaphore,
+    /// How often one user may reveal a masked value (T10).
+    pub reveals: RevealLimiter,
 }
 
 impl Inner {
@@ -132,6 +135,7 @@ impl WriteHub {
         let deny = DenyMatcher::with_globs(deps.config.extra_deny_globs.iter().map(String::as_str))
             .map_err(|_| ConfigError::DenyGlob)?;
         let max_checks = deps.config.max_concurrent_checks;
+        let reveals = RevealLimiter::new(deps.config.reveals_per_minute, deps.config.reveal_tracked_users);
         let mut limits = Limits::DEFAULT;
         limits.input_bytes = deps.config.max_content_bytes;
         Ok(Self {
@@ -153,6 +157,7 @@ impl WriteHub {
                 deny: Arc::new(deny),
                 limits,
                 checks: Semaphore::new(max_checks),
+                reveals,
             }),
             prs: Arc::new(OnceLock::new()),
         })

@@ -234,6 +234,38 @@ fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
     );
     add(
         t,
+        "accepted_reveal",
+        json(json!({ "path": "tx-api/creds-sit1.yml", "setting": "creds.aws" })),
+    );
+    add(
+        t,
+        "accepted_reveal_with_reason",
+        json(
+            json!({ "path": "tx-api/creds.yml", "setting": "#1/spring.datasource.password", "reason": "rotating the staging key, ticket 4411" }),
+        ),
+    );
+    add(
+        t,
+        "rejected_reveal_as_array",
+        json(json!(["tx-api/creds.yml", "creds.aws"])),
+    );
+    add(
+        t,
+        "rejected_reveal_with_a_line",
+        json(json!({ "path": "tx-api/creds.yml", "setting": "creds.aws", "line": 3 })),
+    );
+    add(
+        t,
+        "rejected_reveal_without_a_setting",
+        json(json!({ "path": "tx-api/creds.yml" })),
+    );
+    add(
+        t,
+        "rejected_reveal_with_a_traversing_path",
+        json(json!({ "path": "../creds.yml", "setting": "creds.aws" })),
+    );
+    add(
+        t,
         "accepted_delete_lines",
         format!("tx-api/a.yml\n{}\npreview-token-0123456789", h("x: 1\n")).into_bytes(),
     );

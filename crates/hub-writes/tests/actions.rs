@@ -20,6 +20,8 @@ mod github_client;
 mod pr_jobs;
 #[path = "actions/pull_requests.rs"]
 mod pull_requests;
+#[path = "actions/reveal.rs"]
+mod reveal;
 #[path = "actions/teams.rs"]
 mod teams;
 #[path = "actions/vault.rs"]

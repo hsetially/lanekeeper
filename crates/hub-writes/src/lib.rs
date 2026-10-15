@@ -21,6 +21,10 @@
 //!   and NFS hash it came from, and a second one for the same change is refused with the first one's link (D77).
 //! - **Teams** ([`teams`]): [`teams::TeamsNotifier`], the [`ports::Notifier`] that posts an Adaptive Card to a Workflows webhook
 //!   (D49, Q9). `notify` only queues; a worker sends with bounded retries and a breaker, and a failure never reaches the action.
+//! - **Reveal** ([`RevealDesk`]): the one audited way to see a value the secret scan flags (D79, S14b). Editor and above, only
+//!   through the web UI, rate limited for each user, one audit event committed before the value is returned, and the value is never
+//!   stored, cached or logged. What can be revealed is exactly what every view masks. Every door of the write path also refuses a
+//!   denied path (the built-in globs and the configured ones, and a file the registry withholds).
 //! - **Routes** ([`routes`]): the REST face of the actions above, registered through the platform's guarded router (S4), with
 //!   [`routes::wire`] reading each request into typed values.
 #![forbid(unsafe_code)]
@@ -47,6 +51,7 @@ mod probe;
 mod proposals;
 pub mod prs;
 mod reconcile;
+mod reveal;
 pub mod routes;
 mod service;
 pub mod teams;
@@ -66,6 +71,7 @@ pub use proposals::{
 #[doc(hidden)]
 pub use preview::token::fuzzing as fuzz_hooks;
 pub use reconcile::{ReconcileReport, ReconcileWrites};
+pub use reveal::{DEFAULT_REASON, RevealDesk, RevealError, RevealRequest, Revealed};
 pub use service::{WriteHub, WriteHubDeps};
 
 /// The statements the write path runs on every request, by name, for the tests that run `EXPLAIN` on them (P12). Each takes

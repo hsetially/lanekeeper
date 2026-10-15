@@ -148,11 +148,14 @@ fn plan(f: &Facts, target: &NfsPath) -> Result<Plan, WriteError> {
     })
 }
 
-/// What the registry has at each path now. `None`: the file is not there (or may not be read).
+/// What the registry has at each path now. `None`: the file is not there (or may not be read). The `target` of the preview is
+/// the exception: a target the registry withholds (D79) is refused, not previewed as a file that is not there, so that no preview
+/// id exists for a change that the write would refuse.
 async fn read_layers(
     hub: &Inner,
     user: &User,
     swimlane: &SwimlaneId,
+    target: &NfsPath,
     paths: &[&NfsPath],
 ) -> Result<BTreeMap<NfsPath, Option<Bytes>>, WriteError> {
     let mut out = BTreeMap::new();
@@ -167,6 +170,7 @@ async fn read_layers(
             )
             .await?;
         let bytes = match read {
+            Ok(fc) if fc.withheld && *path == target => return Err(WriteError::BadRequest),
             Ok(fc) if fc.withheld => None,
             Ok(fc) => fc.bytes,
             Err(ReadError::NotFound) => None,
@@ -468,7 +472,7 @@ pub(crate) async fn preview_effect(
     let mut wanted: Vec<&NfsPath> = vec![&plan.base, &r.path];
     wanted.extend(plan.tenant.as_ref());
     wanted.extend(plan.root.as_ref());
-    let now = read_layers(hub, &user, &r.swimlane, &wanted).await?;
+    let now = read_layers(hub, &user, &r.swimlane, &r.path, &wanted).await?;
     let (folder_exists, folder_style) = folder_facts(hub, &user, &r.swimlane, &r.path).await;
 
     // The token is bound to what was asked, not to what was computed.

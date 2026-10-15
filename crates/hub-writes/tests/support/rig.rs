@@ -125,6 +125,27 @@ impl Rig {
         self.hub_with_notifier(self.notifier.clone())
     }
 
+    /// A hub over the same database, agent and doubles with its own settings and, when given, its own registry: another replica
+    /// that is configured differently (an extra deny glob, a smaller reveal limit) or that reads NFS through another registry.
+    pub fn hub_with(&self, config: WriteConfig, registry: Option<Arc<dyn ports::RegistryRead>>) -> WriteHub {
+        WriteHub::new(WriteHubDeps {
+            pool: self.pool.clone(),
+            users: self.users.clone(),
+            audit: self.audit.clone(),
+            bus: Arc::new(self.bus.clone()),
+            gateway: Arc::new(self.agent.clone()),
+            blobs: self.blobs.clone(),
+            registry: registry.unwrap_or_else(|| self.registry.clone()),
+            tool_writes: Arc::new(PgToolWrites),
+            notifier: self.notifier.clone(),
+            secrets: self.secrets.clone(),
+            leases: self.leases.clone(),
+            clock: self.clock.clone(),
+            config,
+        })
+        .unwrap()
+    }
+
     /// A hub over the same database, agent and doubles that tells its admins through `notifier`.
     pub fn hub_with_notifier(&self, notifier: Arc<dyn ports::Notifier>) -> WriteHub {
         WriteHub::new(WriteHubDeps {

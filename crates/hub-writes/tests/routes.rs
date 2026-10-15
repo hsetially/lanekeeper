@@ -33,7 +33,9 @@ use hub_writes::github::TokenShapeError;
 use hub_writes::prs::{LinkQuery, PrDesk, PrJobView, PrLinkView, Raised};
 use hub_writes::routes::{MAX_EDIT_BODY, WRITE_ROUTES, WriteState, mount};
 use hub_writes::vault::{PolicyRepos, StoredToken, TokenDesk, TokenError, VaultDeps};
-use hub_writes::{ProposalDesk, ProposalQuery, ProposalView, RejectResult};
+use hub_writes::{
+    ProposalDesk, ProposalQuery, ProposalView, RejectResult, RevealDesk, RevealError, RevealRequest, Revealed,
+};
 use ports::conformance::route_guard::{
     Allowances, SpecOperation, assert_route_table, spec_operations_from_openapi,
 };
@@ -337,6 +339,67 @@ impl PrDesk for ScriptedPrs {
     }
 }
 
+/// What the routes asked of the reveal desk.
+#[derive(Debug, Clone)]
+struct RevealCall {
+    ctx: WriteCtx,
+    request: RevealRequest,
+}
+
+/// A reveal desk that answers what it is told and remembers what it was asked.
+struct ScriptedReveal {
+    calls: Mutex<Vec<RevealCall>>,
+    reply: Mutex<Result<String, RevealError>>,
+}
+
+impl Default for ScriptedReveal {
+    fn default() -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            reply: Mutex::new(Ok(REVEALED.to_owned())),
+        }
+    }
+}
+
+impl std::fmt::Debug for ScriptedReveal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScriptedReveal").finish_non_exhaustive()
+    }
+}
+
+/// What the scripted desk reveals unless told otherwise. Not a real secret.
+const REVEALED: &str = "scripted-secret-value-0451";
+
+impl ScriptedReveal {
+    fn calls(&self) -> Vec<RevealCall> {
+        self.calls.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn says(&self, reply: Result<&str, RevealError>) {
+        *self.reply.lock().unwrap_or_else(PoisonError::into_inner) = reply.map(str::to_owned);
+    }
+}
+
+#[async_trait]
+impl RevealDesk for ScriptedReveal {
+    async fn reveal(&self, ctx: &WriteCtx, r: RevealRequest) -> Result<Revealed, RevealError> {
+        self.calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(RevealCall {
+                ctx: ctx.clone(),
+                request: r,
+            });
+        self.reply
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .map(|value| Revealed {
+                value: domain::Secret::new(value),
+            })
+    }
+}
+
 fn sample_stored() -> StoredToken {
     StoredToken {
         github_login: "octocat".to_owned(),
@@ -485,7 +548,17 @@ fn app_with_prs(
     tokens: Arc<dyn TokenDesk>,
     prs: Arc<dyn PrDesk>,
 ) -> (Router, Vec<RouteSpec>) {
-    let state = WriteState::new(service, desk, tokens, prs, 2 * 1024 * 1024);
+    app_full(service, desk, tokens, prs, Arc::new(ScriptedReveal::default()))
+}
+
+fn app_full(
+    service: Arc<dyn WriteService>,
+    desk: Arc<dyn ProposalDesk>,
+    tokens: Arc<dyn TokenDesk>,
+    prs: Arc<dyn PrDesk>,
+    reveal: Arc<dyn RevealDesk>,
+) -> (Router, Vec<RouteSpec>) {
+    let state = WriteState::new(service, desk, tokens, prs, reveal, 2 * 1024 * 1024);
     let (router, specs) = mount(GuardedRouter::new(auth(), None), state)
         .into_parts()
         .unwrap();
@@ -664,8 +737,10 @@ fn write_operations() -> BTreeSet<(String, String)> {
     let mut out = BTreeSet::new();
     for (path, item) in doc.paths {
         for (method, op) in item {
-            // The token routes are tagged `me` in the spec (they are the signed-in user's), and are this crate's.
+            // The token routes are tagged `me` in the spec (they are the signed-in user's), and are this crate's. So is the
+            // reveal (T10), which the spec tags `swimlanes` with the reads it sits beside.
             let tagged = path == "/api/v1/me/github-token"
+                || path == "/api/v1/swimlanes/{id}/files/reveal"
                 || op
                     .get("tags")
                     .and_then(Value::as_array)
@@ -1507,6 +1582,7 @@ async fn the_routes_drive_the_real_hub_end_to_end() {
         Arc::new(rig.hub.clone()),
         Arc::new(ScriptedTokens::default()),
         Arc::new(ScriptedPrs::default()),
+        Arc::new(rig.hub.clone()),
         rig.hub.max_content_bytes(),
     );
     let (router, _) = mount(GuardedRouter::new(auth(), None), state)
@@ -2087,6 +2163,7 @@ async fn the_proposal_routes_drive_the_real_hub_end_to_end() {
         Arc::new(rig.hub.clone()),
         Arc::new(ScriptedTokens::default()),
         Arc::new(ScriptedPrs::default()),
+        Arc::new(rig.hub.clone()),
         rig.hub.max_content_bytes(),
     );
     let (router, _) = mount(GuardedRouter::new(auth(), None), state)
@@ -2589,6 +2666,7 @@ async fn token_never_appears_in_logs_errors_audit_or_responses() {
         Arc::new(ScriptedDesk::default()),
         vault.clone(),
         Arc::new(ScriptedPrs::default()),
+        Arc::new(rig.hub.clone()),
         2 * 1024 * 1024,
     );
     let (router, _) = mount(GuardedRouter::new(auth(), None), state)
@@ -3087,4 +3165,397 @@ async fn the_pull_request_links_are_listed_by_swimlane_and_state_with_a_cursor()
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{query}");
     }
     assert_eq!(prs.calls().len(), before);
+}
+
+// ------------------------------------------------------------------------------------------------------ reveal (T10)
+
+const REVEAL: &str = "/api/v1/swimlanes/sit1/files/reveal";
+
+fn reveal_body() -> Value {
+    json!({ "path": "tx/creds.yml", "setting": "creds.aws", "reason": "rotating the staging key" })
+}
+
+fn reveal_req() -> Req {
+    Req::new(Method::POST, REVEAL).json(&reveal_body())
+}
+
+fn reveal_app(reveal: &Arc<ScriptedReveal>) -> Router {
+    app_full(
+        Arc::new(Scripted::default()),
+        Arc::new(ScriptedDesk::default()),
+        Arc::new(ScriptedTokens::default()),
+        Arc::new(ScriptedPrs::default()),
+        reveal.clone(),
+    )
+    .0
+}
+
+#[tokio::test]
+async fn viewer_gets_403_on_reveal() {
+    let reveal = Arc::new(ScriptedReveal::default());
+    let router = reveal_app(&reveal);
+    for (user, status) in [
+        (Some("viewer"), StatusCode::FORBIDDEN),
+        (Some("pending"), StatusCode::FORBIDDEN),
+        (Some("disabled"), StatusCode::FORBIDDEN),
+        (None, StatusCode::UNAUTHORIZED),
+    ] {
+        let reply = send(&router, reveal_req().user(user)).await;
+        assert_eq!(reply.status, status, "{user:?}");
+        assert!(
+            !String::from_utf8_lossy(&reply.body).contains(REVEALED),
+            "a refusal never carries the value"
+        );
+    }
+    assert!(
+        reveal.calls().is_empty(),
+        "the guard answers before the handler or the desk"
+    );
+
+    // An Editor and everyone above one is let through, with the caller as the session knows them.
+    for user in ["editor", "operator", "admin"] {
+        let reply = send(&router, reveal_req().user(Some(user))).await;
+        assert_eq!(reply.status, StatusCode::OK, "{user}");
+    }
+    assert_eq!(reveal.calls().len(), 3);
+}
+
+#[tokio::test]
+async fn reveal_hands_the_desk_the_caller_the_file_the_setting_and_the_reason() {
+    let reveal = Arc::new(ScriptedReveal::default());
+    let router = reveal_app(&reveal);
+    let reply = send(&router, reveal_req().key(Some("rev-1"))).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    let calls = reveal.calls();
+    assert_eq!(calls.len(), 1);
+    let call = &calls[0];
+    assert_eq!(call.request.swimlane.as_str(), "sit1");
+    assert_eq!(call.request.path.as_str(), "tx/creds.yml");
+    assert_eq!(call.request.setting.as_str(), "creds.aws");
+    assert_eq!(
+        call.request.reason.as_ref().map(ShortText::as_str),
+        Some("rotating the staging key")
+    );
+    assert_eq!(call.ctx.via, domain::Via::Ui, "the web UI is the only door");
+    assert_eq!(call.ctx.idempotency_key.as_str(), "rev-1");
+    assert_eq!(
+        call.ctx.user.id,
+        hub_platform::session_auth::user_id("editor"),
+        "the caller as the session knows them"
+    );
+
+    // The reason is optional.
+    let reply = send(
+        &router,
+        Req::new(Method::POST, REVEAL).json(&json!({ "path": "a.yml", "setting": "k" })),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert!(reveal.calls()[1].request.reason.is_none());
+}
+
+#[tokio::test]
+async fn reveal_response_is_no_store() {
+    let reveal = Arc::new(ScriptedReveal::default());
+    let router = reveal_app(&reveal);
+    let reply = send(&router, reveal_req()).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(reply.headers[header::CONTENT_TYPE], "application/json");
+    assert_eq!(
+        reply.json(),
+        json!({ "value": REVEALED }),
+        "the value, and nothing else"
+    );
+
+    // Every answer of the handler is uncacheable, the failures too: a proxy keeps none of them.
+    for (says, status) in [
+        (Err(RevealError::NotFound), StatusCode::NOT_FOUND),
+        (Err(RevealError::Forbidden), StatusCode::FORBIDDEN),
+        (
+            Err(RevealError::Throttled { retry_after_secs: 17 }),
+            StatusCode::TOO_MANY_REQUESTS,
+        ),
+        (Err(RevealError::Unavailable), StatusCode::SERVICE_UNAVAILABLE),
+    ] {
+        reveal.says(says);
+        let reply = send(&router, reveal_req()).await;
+        assert_eq!(reply.status, status);
+        assert_eq!(reply.headers[header::CACHE_CONTROL], "no-store", "{status}");
+    }
+    let bad = send(
+        &router,
+        Req::new(Method::POST, REVEAL).json(&json!({ "path": "a.yml" })),
+    )
+    .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+    assert_eq!(bad.headers[header::CACHE_CONTROL], "no-store");
+    let wrong_type = send(
+        &router,
+        Req::new(Method::POST, REVEAL).raw("text/plain", b"{}".to_vec()),
+    )
+    .await;
+    assert_eq!(wrong_type.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert_eq!(wrong_type.headers[header::CACHE_CONTROL], "no-store");
+}
+
+#[tokio::test]
+async fn a_throttled_reveal_is_429_with_the_wait() {
+    let reveal = Arc::new(ScriptedReveal::default());
+    reveal.says(Err(RevealError::Throttled { retry_after_secs: 17 }));
+    let reply = send(&reveal_app(&reveal), reveal_req()).await;
+    assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(reply.headers[header::RETRY_AFTER], "17");
+    assert_eq!(reply.json()["code"], "too_many_requests");
+    assert!(!String::from_utf8_lossy(&reply.body).contains(REVEALED));
+}
+
+#[tokio::test]
+async fn reveal_failures_are_fixed_problems_that_quote_nothing() {
+    let reveal = Arc::new(ScriptedReveal::default());
+    let router = reveal_app(&reveal);
+    for (says, status, code) in [
+        (RevealError::NotFound, StatusCode::NOT_FOUND, "not_found"),
+        (RevealError::Forbidden, StatusCode::FORBIDDEN, "forbidden"),
+        (
+            RevealError::Unavailable,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+        ),
+    ] {
+        reveal.says(Err(says));
+        let reply = send(&router, reveal_req()).await;
+        assert_eq!(reply.status, status);
+        assert_eq!(reply.json()["code"], code);
+        // Headers count: a value or a name in a header is as much a leak as one in the body.
+        let mut text = String::from_utf8_lossy(&reply.body).into_owned();
+        for (name, value) in &reply.headers {
+            let _ = write!(text, "\n{name}: {}", value.to_str().unwrap_or_default());
+        }
+        for echoed in ["creds", "tx/", "rotating", REVEALED] {
+            assert!(!text.contains(echoed), "{text}");
+        }
+        if status == StatusCode::SERVICE_UNAVAILABLE {
+            assert_eq!(reply.headers[header::RETRY_AFTER], "1");
+        }
+    }
+}
+
+#[tokio::test]
+async fn reveal_request_is_read_strictly() {
+    let reveal = Arc::new(ScriptedReveal::default());
+    let router = reveal_app(&reveal);
+    let long_reason = "r".repeat(257);
+    for (what, body) in [
+        ("an array", json!(["tx/creds.yml", "creds.aws"])),
+        ("no setting", json!({ "path": "a.yml" })),
+        ("no path", json!({ "setting": "a" })),
+        (
+            "an unknown field",
+            json!({ "path": "a.yml", "setting": "a", "line": 3 }),
+        ),
+        ("a traversing path", json!({ "path": "../a.yml", "setting": "a" })),
+        (
+            "an absolute path",
+            json!({ "path": "/etc/passwd", "setting": "a" }),
+        ),
+        ("an empty setting", json!({ "path": "a.yml", "setting": "" })),
+        (
+            "a control character in the setting",
+            json!({ "path": "a.yml", "setting": "a\nb" }),
+        ),
+        (
+            "a reason of the wrong type",
+            json!({ "path": "a.yml", "setting": "a", "reason": 5 }),
+        ),
+        (
+            "a reason that is too long",
+            json!({ "path": "a.yml", "setting": "a", "reason": long_reason }),
+        ),
+        (
+            "a control character in the reason",
+            json!({ "path": "a.yml", "setting": "a", "reason": "x\u{0}y" }),
+        ),
+    ] {
+        let reply = send(&router, Req::new(Method::POST, REVEAL).json(&body)).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{what}");
+    }
+    // No Idempotency-Key, a swimlane that is not one, and not JSON.
+    let reply = send(&router, reveal_req().key(None)).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "no key");
+    let reply = send(
+        &router,
+        Req::new(Method::POST, "/api/v1/swimlanes/Bad_Swimlane/files/reveal").json(&reveal_body()),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "bad swimlane");
+    let reply = send(
+        &router,
+        Req::new(Method::POST, REVEAL).raw("application/json", b"{\"path\":".to_vec()),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "broken JSON");
+    // A body over the limit is refused unread.
+    let reply = send(
+        &router,
+        Req::new(Method::POST, REVEAL).raw("application/json", vec![b' '; 64 * 1024]),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(reveal.calls().is_empty(), "nothing reached the desk");
+}
+
+/// The text of every row of every table of the schema, to search it for a value.
+async fn every_row_text(pool: &sqlx::PgPool) -> String {
+    let tables: Vec<String> = sqlx::query_scalar(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert!(tables.len() > 10, "{tables:?}");
+    let mut all = String::new();
+    for table in tables {
+        let rows: Vec<String> = sqlx::query_scalar(&format!("SELECT t::text FROM \"{table}\" t"))
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        all.push_str(&rows.join("\n"));
+    }
+    all
+}
+
+/// S10, S14b: whatever happens to a reveal, success or any refusal, the value is in the one response that carries it and
+/// nowhere else: no log line, no other response, no audit event and no stored row. The reason of the first request repeats it.
+#[tokio::test]
+async fn revealed_value_never_logged() {
+    let (capture, _guard) = support::log_capture::install();
+    let db = db!();
+    let rig = support::rig::Rig::with_config(
+        db,
+        hub_writes::WriteConfig {
+            reveals_per_minute: 5,
+            ..hub_writes::WriteConfig::default()
+        },
+    )
+    .await;
+    let s = rig.swimlane("sit1", true).await;
+    let value = ["AKIA", "IOSFODNN7EXAMPLE"].concat();
+    rig.seed(
+        &s,
+        &[
+            ("tx/creds.yml", &format!("app: demo\ncreds:\n  aws: {value}\n")),
+            ("tx/plain.yml", "a: 1\n"),
+        ],
+    );
+    for (n, name, role) in [(1, "editor", Role::Editor), (2, "viewer", Role::Viewer)] {
+        let mut u = ports::conformance::sample::active(n, role);
+        u.id = hub_platform::session_auth::user_id(name);
+        rig.add_user(&u).await;
+    }
+    let state = WriteState::new(
+        Arc::new(rig.hub.clone()),
+        Arc::new(rig.hub.clone()),
+        Arc::new(ScriptedTokens::default()),
+        Arc::new(ScriptedPrs::default()),
+        Arc::new(rig.hub.clone()),
+        rig.hub.max_content_bytes(),
+    );
+    let (router, _) = mount(GuardedRouter::new(auth(), None), state)
+        .into_parts()
+        .unwrap();
+    let reveal = |path: &str, setting: &str, reason: Option<&str>, key: &'static str| {
+        let mut body = json!({ "path": path, "setting": setting });
+        if let Some(reason) = reason {
+            body["reason"] = json!(reason);
+        }
+        Req::new(Method::POST, REVEAL).key(Some(key)).json(&body)
+    };
+
+    let mut statuses = Vec::new();
+    let mut elsewhere: Vec<String> = Vec::new();
+    let mut shown = Vec::new();
+    let mut go = |reply: Reply| {
+        statuses.push(reply.status.as_u16());
+        let mut text = String::from_utf8_lossy(&reply.body).into_owned();
+        for (n, v) in &reply.headers {
+            let _ = write!(text, "\n{n}: {}", v.to_str().unwrap_or_default());
+        }
+        if reply.status == StatusCode::OK {
+            shown.push(text);
+        } else {
+            elsewhere.push(text);
+        }
+    };
+    let repeats = format!("I need {value} to compare it");
+    go(send(
+        &router,
+        reveal("tx/creds.yml", "creds.aws", Some(&repeats), "v-1"),
+    )
+    .await); // shown
+    go(send(&router, reveal("tx/creds.yml", "app", None, "v-2")).await); // not flagged
+    go(send(&router, reveal("tx/missing.yml", "a", None, "v-3")).await); // no such file
+    go(send(
+        &router,
+        reveal("tx/creds.yml", "creds.aws", None, "v-4").user(Some("viewer")),
+    )
+    .await); // not allowed
+    go(send(
+        &router,
+        Req::new(Method::POST, REVEAL)
+            .key(Some("v-5"))
+            .json(&json!({ "path": "tx/creds.yml", "setting": "creds.aws", "line": 3 })),
+    )
+    .await); // unknown field
+    go(send(
+        &router,
+        Req::new(Method::POST, REVEAL).key(Some("v-6")).raw(
+            "application/json",
+            format!(r#"{{"path":"tx/creds.yml","setting":"{value}"#).into_bytes(),
+        ),
+    )
+    .await); // broken JSON that holds the value
+    rig.audit.fail_next();
+    go(send(&router, reveal("tx/creds.yml", "creds.aws", Some("again"), "v-7")).await); // the audit log fails
+    go(send(
+        &router,
+        reveal("tx/creds.yml", "creds.aws", Some("once more"), "v-8"),
+    )
+    .await); // shown
+    go(send(
+        &router,
+        reveal("tx/creds.yml", "creds.aws", Some("too often"), "v-9"),
+    )
+    .await); // over the limit
+    assert_eq!(
+        statuses,
+        [200, 404, 404, 403, 400, 400, 503, 200, 429],
+        "the paths this test means to drive are not the ones it drove"
+    );
+    assert_eq!(shown.len(), 2);
+    for text in &shown {
+        assert_eq!(
+            text.matches(&value).count(),
+            1,
+            "the value is in the response that shows it, once: {text}"
+        );
+    }
+
+    let everything = {
+        let mut all = elsewhere.join("\n");
+        all.push_str(&capture.text());
+        all.push_str(
+            &serde_json::to_string(&rig.chain().await.iter().map(|e| &e.event).collect::<Vec<_>>()).unwrap(),
+        );
+        all.push_str(&every_row_text(&rig.pool).await);
+        all
+    };
+    assert!(
+        capture.text().len() > 100 && rig.chain().await.len() == 2,
+        "nothing was captured, or the events this test depends on were not written: the test would pass for any code"
+    );
+    assert!(
+        !everything.contains(&value),
+        "the value reached a log, a refusal, the audit log or a stored row"
+    );
 }

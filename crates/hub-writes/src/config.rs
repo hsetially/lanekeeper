@@ -40,6 +40,10 @@ pub struct WriteConfig {
     /// The most validations (parse, secret scan, diff) that run at once on the blocking pool. A request waits for a permit, so a
     /// burst of large files cannot take every thread of the pool (rules 4 and 5).
     pub max_concurrent_checks: usize,
+    /// The most reveals of masked values one user may make in any 60 seconds, on one replica (D79, T10).
+    pub reveals_per_minute: u32,
+    /// The most users whose reveal window the replica keeps.
+    pub reveal_tracked_users: u64,
 }
 
 impl Default for WriteConfig {
@@ -57,6 +61,8 @@ impl Default for WriteConfig {
             extra_deny_globs: Vec::new(),
             reconcile_batch: 100,
             max_concurrent_checks: 8,
+            reveals_per_minute: 30,
+            reveal_tracked_users: 10_000,
         }
     }
 }
@@ -96,6 +102,12 @@ impl WriteConfig {
         if self.extra_deny_globs.len() > MAX_EXTRA_DENY_GLOBS {
             return Err(ConfigError::Invalid("too many extra deny globs"));
         }
+        if self.reveals_per_minute == 0 || self.reveals_per_minute > 600 {
+            return Err(ConfigError::Invalid("reveals_per_minute must be 1 to 600"));
+        }
+        if self.reveal_tracked_users == 0 || self.reveal_tracked_users > 1_000_000 {
+            return Err(ConfigError::Invalid("reveal_tracked_users must be 1 to 1000000"));
+        }
         Ok(())
     }
 }
@@ -113,6 +125,7 @@ mod tests {
         assert_eq!(c.proposal_ttl, Duration::from_secs(259_200));
         assert_eq!(c.idempotency_wait, Duration::from_secs(3));
         assert_eq!(c.stale_claim_after, Duration::from_secs(60));
+        assert_eq!((c.reveals_per_minute, c.reveal_tracked_users), (30, 10_000));
     }
 
     #[test]
@@ -138,5 +151,9 @@ mod tests {
         bad(&|c| c.max_concurrent_checks = 0);
         bad(&|c| c.max_concurrent_checks = 257);
         bad(&|c| c.extra_deny_globs = vec!["*.x".to_owned(); MAX_EXTRA_DENY_GLOBS + 1]);
+        bad(&|c| c.reveals_per_minute = 0);
+        bad(&|c| c.reveals_per_minute = 601);
+        bad(&|c| c.reveal_tracked_users = 0);
+        bad(&|c| c.reveal_tracked_users = 1_000_001);
     }
 }

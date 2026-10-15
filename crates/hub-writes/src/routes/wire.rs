@@ -8,14 +8,14 @@ use bytes::Bytes;
 use domain::{
     ChangeEol, ContentHash, Cursor, DeleteRequest, EditRequest, Expected, NfsPath, Page, PrJobId, PrRequest,
     PrState, PrTarget, PreviewChange, PreviewId, PreviewRequest, ProposalId, ProposalStatus, RestartRequest,
-    RevertRequest, Secret, ServiceRef, ShortText, SwimlaneId, UploadRequest,
+    RevertRequest, Secret, ServiceRef, SettingPath, ShortText, SwimlaneId, UploadRequest,
 };
 use serde::Deserialize;
 
 use super::multipart::{Form, MultipartError, parse};
-use crate::ProposalQuery;
 use crate::github::MAX_TOKEN_LEN;
 use crate::prs::LinkQuery;
+use crate::{ProposalQuery, RevealRequest};
 
 /// Why a request was refused before the service saw it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -87,6 +87,27 @@ pub fn revert_request(swimlane: SwimlaneId, body: &[u8]) -> Read<RevertRequest> 
         expected: body.expected,
         to: body.to,
         change_eol: body.change_eol,
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RevealBody {
+    path: NfsPath,
+    setting: SettingPath,
+    #[serde(default)]
+    reason: Option<ShortText>,
+}
+
+/// The JSON body of a reveal: the file, the setting in it and, optionally, why. Unknown fields are refused; a line number, for
+/// one, is not something the caller gets to choose.
+pub fn reveal_request(swimlane: SwimlaneId, body: &[u8]) -> Read<RevealRequest> {
+    let body: RevealBody = object(body)?;
+    Ok(RevealRequest {
+        swimlane,
+        path: body.path,
+        setting: body.setting,
+        reason: body.reason,
     })
 }
 
