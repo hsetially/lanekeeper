@@ -583,6 +583,57 @@ async fn compare_in_needs_a_file_and_says_not_found_for_what_is_not_there() {
     }
 }
 
+#[tokio::test]
+async fn compare_in_reads_the_standing_tenants_copy_of_a_swimlane_that_deploys_several() {
+    // `sit1` deploys `sit2` and `sit1`: the first in sorted order stands for it (A30, D106), whatever order the rows come in.
+    let Some(mut r) = Reads::new(&["sit2", "sit1"]).await else {
+        return;
+    };
+    with_app(&r, "sit1").await;
+    r.world
+        .inventory(&[
+            ("core.yml", "name: base\n"),
+            ("core-sit1.yml", "name: one\n"),
+            ("core-sit2.yml", "name: two\n"),
+        ])
+        .await;
+    // Another swimlane whose own file says what `sit1`'s standing tenant says.
+    r.world
+        .second_lane("sit9", &["sit9"], &[("core.yml", "name: one\n")])
+        .await;
+    let v = viewer();
+    let q = compare_query(nfs_of("sit1"), nfs_of("sit9"), Some("core.yml"), None);
+    assert!(
+        r.service.compare_in(&v, &q).await.unwrap().identical,
+        "sit1 is read as its tenant sit1 (`name: one`), not as sit2 (`name: two`)"
+    );
+    let other = compare_query(nfs_of("sit1"), nfs_of("sit1"), Some("core.yml"), None);
+    assert!(r.service.compare_in(&v, &other).await.unwrap().identical);
+    // The handler names the tenant that stood for each swimlane, for the header; the port has no place for it and drops it.
+    let Tagged::Fresh {
+        value: hub_registry::Named { tenants, .. },
+        ..
+    } = r
+        .service
+        .compare_tagged(
+            &v,
+            nfs_of("sit1"),
+            nfs_of("sit9"),
+            &logical("core.yml"),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("no tag was given");
+    };
+    assert_eq!(
+        tenants,
+        [(lane("sit1"), tenant("sit1")), (lane("sit9"), tenant("sit9"))]
+    );
+}
+
 // ------------------------------------------------------------------------------------------------ compare_tree_under
 
 fn entries(t: &TreeComparison) -> Vec<(String, CompareState)> {
