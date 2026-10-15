@@ -82,7 +82,23 @@ impl Default for WriteConfig {
 /// The most extra deny globs: they are compiled into one set at start.
 pub const MAX_EXTRA_DENY_GLOBS: usize = 256;
 
+/// The shortest lease on a command to an agent: the plan's minute.
+const MIN_COMMAND_LEASE: Duration = Duration::from_secs(60);
+
 impl WriteConfig {
+    /// How long a lease is held that guards one command to an agent (a restart, an approval): at least a minute, and longer than
+    /// the command can take. The gateway waits `agent_timeout`, the hub's own backstop waits one second more, and the database
+    /// calls around the command (the lock check, the recording, the release) take at most `db_timeout` each. A lease that ends
+    /// first lets another replica take the same work while the command is still at the agent. A replica that dies in the middle
+    /// still frees the work when the lease runs out, so this is no longer than that needs.
+    #[must_use]
+    pub fn command_lease_ttl(&self) -> Duration {
+        self.agent_timeout
+            .saturating_add(Duration::from_secs(1))
+            .saturating_add(self.db_timeout.saturating_mul(4))
+            .max(MIN_COMMAND_LEASE)
+    }
+
     /// Checks the bounds. Called by [`crate::WriteHub::new`].
     pub fn validate(&self) -> Result<(), ConfigError> {
         let nonzero = |d: Duration, what: &'static str| {
@@ -100,6 +116,11 @@ impl WriteConfig {
         nonzero(self.idempotency_ttl, "idempotency_ttl must be more than zero")?;
         nonzero(self.idempotency_wait, "idempotency_wait must be more than zero")?;
         nonzero(self.stale_claim_after, "stale_claim_after must be more than zero")?;
+        if self.command_lease_ttl() > ports::MAX_LEASE_TTL {
+            return Err(ConfigError::Invalid(
+                "agent_timeout and db_timeout are too long for the lease that guards a command",
+            ));
+        }
         nonzero(self.proposal_ttl, "proposal_ttl must be more than zero")?;
         nonzero(self.draft_ttl, "draft_ttl must be more than zero")?;
         if self.expire_batch == 0 || self.expire_batch > 1_000 {
@@ -157,6 +178,42 @@ mod tests {
         assert_eq!((c.reveals_per_minute, c.reveal_tracked_users), (30, 10_000));
         assert_eq!(c.auto_notify_window, Duration::from_secs(2));
         assert_eq!(c.config_server_deployment, "csp-configuration-server");
+    }
+
+    #[test]
+    fn a_lease_on_a_command_is_longer_than_the_command() {
+        // The default is the minute the plan gave it.
+        assert_eq!(
+            WriteConfig::default().command_lease_ttl(),
+            Duration::from_secs(60)
+        );
+        // A longer agent timeout makes a longer lease: the gateway's timeout, the hub's extra second and the database calls
+        // around the command all fit in it.
+        for secs in [30_u64, 59, 60, 90, 300, 600] {
+            let c = WriteConfig {
+                agent_timeout: Duration::from_secs(secs),
+                ..WriteConfig::default()
+            };
+            assert!(c.validate().is_ok(), "{secs}");
+            assert!(
+                c.command_lease_ttl() > c.agent_timeout + Duration::from_secs(1) + 2 * c.db_timeout,
+                "{secs}: {:?}",
+                c.command_lease_ttl()
+            );
+            assert!(c.command_lease_ttl() <= ports::MAX_LEASE_TTL);
+        }
+    }
+
+    #[test]
+    fn a_timeout_that_no_lease_could_cover_is_refused() {
+        let mut c = WriteConfig {
+            agent_timeout: Duration::from_secs(3_600),
+            ..WriteConfig::default()
+        };
+        assert!(c.validate().is_err());
+        c.agent_timeout = Duration::from_secs(10);
+        c.db_timeout = Duration::from_secs(3_600);
+        assert!(c.validate().is_err());
     }
 
     #[test]

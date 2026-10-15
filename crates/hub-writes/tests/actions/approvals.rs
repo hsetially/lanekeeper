@@ -1244,3 +1244,26 @@ async fn the_list_shows_a_delete_and_a_restart_in_the_shape_of_the_schema() {
     );
     assert!(v.hunks.is_empty() && v.setting_changes.is_empty());
 }
+
+/// An approval holds a lease on the proposal while its write runs: the lease follows the agent's timeout, so that it does not
+/// run out under a command that is still at the agent.
+#[tokio::test]
+async fn the_approval_lease_outlives_the_agent_timeout() {
+    let config = hub_writes::WriteConfig {
+        agent_timeout: std::time::Duration::from_secs(90),
+        ..hub_writes::WriteConfig::default()
+    };
+    let Some(l) = lane_with(config).await else { return };
+    let id = l.propose("k-p", "a.yml", "x: 1\n", "x: 2\n").await;
+    let out = l.approve(&l.admin, "k-a", id).await.unwrap();
+    assert!(matches!(out, WriteOutcome::Applied { .. }), "{out:?}");
+    let asked = l.rig.leases.asked();
+    let name = format!("proposal:{}", id.get());
+    let held: Vec<_> = asked.iter().filter(|(n, _)| *n == name).collect();
+    assert_eq!(held.len(), 1, "{asked:?}");
+    assert!(
+        held[0].1 > std::time::Duration::from_secs(91),
+        "the lease ({:?}) ends before the write can",
+        held[0].1
+    );
+}

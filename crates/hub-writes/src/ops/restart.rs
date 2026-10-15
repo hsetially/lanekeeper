@@ -10,8 +10,6 @@
 //!   request per service, each with its own idempotency key: there is no batch call, so one service that fails does not hide
 //!   the others and each restart has its own audit event.
 
-use std::time::Duration;
-
 use domain::{
     DomainEvent, NfsPath, ProposalId, RejectReason, RestartRequest, Role, ServiceRef, SwimlaneId, User,
     UserId, WriteCtx, WriteOutcome,
@@ -29,10 +27,6 @@ use crate::pipeline::execute::{Committed, Recording, Sent, record, send_restart}
 use crate::pipeline::lock::{LockState, check as check_lock};
 use crate::pipeline::{Abort, Done, Step};
 use crate::service::{ConfigServerRestartOffer, Inner};
-
-/// How long the lease on a service is held: longer than the agent's timeout, so the lease outlives the command it guards, and
-/// short enough that a replica that dies in the middle frees the service quickly.
-const LEASE_TTL: Duration = Duration::from_secs(60);
 
 /// The most services one swimlane lists for a restart-all confirmation.
 pub const MAX_RESTART_OFFER: usize = 2_000;
@@ -149,7 +143,10 @@ pub(crate) async fn execute(
     // At most one restart of the service at a time, on any replica.
     let name = lease_name(swimlane, service);
     let guard = match hub
-        .within("restart_lease", hub.leases.try_acquire(&name, LEASE_TTL))
+        .within(
+            "restart_lease",
+            hub.leases.try_acquire(&name, hub.cfg.command_lease_ttl()),
+        )
         .await?
     {
         Ok(Some(guard)) => guard,

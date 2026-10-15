@@ -44,12 +44,8 @@ use crate::pipeline::lock::{LockState, check as check_lock};
 use crate::pipeline::validate::{Old, check, delete_diff};
 use crate::pipeline::{Abort, Done, Step};
 use crate::service::Inner;
-use std::time::Duration;
 
 mod pr;
-
-/// How long the lease on a proposal is held: longer than the agent's timeout, so it outlives the command it guards.
-const LEASE_TTL: Duration = Duration::from_secs(60);
 
 /// The lease that serialises everything that moves a proposal: the deciders and the expiry job.
 pub(super) fn lease_name(id: ProposalId) -> String {
@@ -94,7 +90,8 @@ async fn decide(
     let lease = match hub
         .within(
             "proposal_lease",
-            hub.leases.try_acquire(&lease_name(id), LEASE_TTL),
+            hub.leases
+                .try_acquire(&lease_name(id), hub.cfg.command_lease_ttl()),
         )
         .await?
     {

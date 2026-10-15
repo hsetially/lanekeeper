@@ -12,7 +12,7 @@ use domain::{
 };
 use hub_writes::{ManualClock, PREVIEW_KEY_SECRET, WriteConfig, WriteHub, WriteHubDeps};
 use ports::conformance::sample::{active, files, hash, nfs, swimlane, write_ctx};
-use ports::fakes::{FakeLeases, FakeNotifier, FakeRegistry, FakeSecretSource, FakeUsers};
+use ports::fakes::{FakeNotifier, FakeRegistry, FakeSecretSource, FakeUsers};
 use ports::{AuditEntry, content_hash};
 use sqlx::PgPool;
 
@@ -23,6 +23,7 @@ use super::pg_audit::{PgTestAudit, committed};
 use super::pg_blobs::PgBlobs;
 use super::pg_bus::PgTestBus;
 use super::pg_tool_writes::PgToolWrites;
+use super::recording_leases::RecordingLeases;
 
 /// 2026-10-15 00:00:00 UTC.
 pub const START: i64 = 1_791_936_000_000;
@@ -38,7 +39,7 @@ pub struct Rig {
     pub bus: PgTestBus,
     pub audit: Arc<PgTestAudit>,
     pub notifier: Arc<FakeNotifier>,
-    pub leases: Arc<FakeLeases>,
+    pub leases: Arc<RecordingLeases>,
     pub secrets: Arc<FakeSecretSource>,
     pub clock: Arc<ManualClock>,
 }
@@ -79,7 +80,7 @@ impl Rig {
         let bus = PgTestBus::new(pool.clone());
         let audit = Arc::new(PgTestAudit::new());
         let notifier = Arc::new(FakeNotifier::new());
-        let leases = Arc::new(FakeLeases::new());
+        let leases = Arc::new(RecordingLeases::new());
         let secrets = Arc::new(FakeSecretSource::new().with(PREVIEW_KEY_SECRET, PREVIEW_KEY));
         let clock = Arc::new(ManualClock::at(Timestamp::from_unix_millis(START)));
         let reader: Arc<dyn ports::RegistryRead> = if live {

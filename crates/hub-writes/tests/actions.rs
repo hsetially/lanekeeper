@@ -1250,6 +1250,37 @@ async fn restart_allows_one_per_service_at_a_time() {
     assert_eq!(rig.chain().await.len(), 3);
 }
 
+/// A lease that runs out while the command it guards is still running lets another replica send a second restart. The lease
+/// follows the agent's timeout, however long that is set.
+#[tokio::test]
+async fn the_restart_lease_outlives_the_agent_timeout() {
+    let Some(db) = support::pg::TestDb::ready().await else {
+        return;
+    };
+    let config = hub_writes::WriteConfig {
+        agent_timeout: Duration::from_secs(90),
+        ..hub_writes::WriteConfig::default()
+    };
+    let rig = Rig::with_config(db, config).await;
+    let s = rig.swimlane("sit1", true).await;
+    rig.service(&s, "sit1", "payments", None).await;
+    let operator = rig.user(1, Role::Operator).await;
+    let out = rig
+        .hub
+        .restart(&ctx(&operator, "k-1"), restart_req(&s, "sit1", "payments"))
+        .await
+        .unwrap();
+    assert!(matches!(out, WriteOutcome::Applied { .. }), "{out:?}");
+    let asked = rig.leases.asked();
+    let restart: Vec<_> = asked.iter().filter(|(n, _)| n.starts_with("restart:")).collect();
+    assert_eq!(restart.len(), 1, "{asked:?}");
+    assert!(
+        restart[0].1 > Duration::from_secs(91),
+        "the lease ({:?}) ends before the command can (90 s and the hub's extra second)",
+        restart[0].1
+    );
+}
+
 #[tokio::test]
 async fn restart_answers_of_the_agent_become_outcomes() {
     let Some((rig, s)) = rig().await else { return };

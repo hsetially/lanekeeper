@@ -22,5 +22,6 @@ pub mod pg_audit;
 pub mod pg_blobs;
 pub mod pg_bus;
 pub mod pg_tool_writes;
+pub mod recording_leases;
 pub mod rig;
 pub mod withholding_registry;
