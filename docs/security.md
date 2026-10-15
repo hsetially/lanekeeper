@@ -39,7 +39,7 @@ Every requirement here is mandatory. Prompts cite these IDs, and the reviewer ag
 - **S8 GitHub token vault.**
   - Fine-grained tokens only.
   - Envelope encryption: a fresh AES-256-GCM data key per token, with the user id and credential id as associated data, wrapped by a Cloud KMS key.
-  - Decrypted only inside the owning user's request, and zeroized afterwards.
+  - Decrypted only inside the owning user's request, and zeroized afterwards. The one exception is a PR job that user started (D107): it decrypts the token for each GitHub step after re-checking that the user is active and Editor or above.
   - Never logged, returned in a response or sent to AI.
 - **S9 Tamper-evident audit.**
   - Append-only (a trigger plus INSERT/SELECT-only grants), and hash-chained.
