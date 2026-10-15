@@ -211,6 +211,59 @@ fn push(out: &mut Vec<ShortText>, text: &str) {
     }
 }
 
+/// The shortest a path is shown when the room for it is small: enough of each end to tell which file it is.
+const MIN_PATH_SHOWN: usize = 24;
+
+/// `path` in at most `max` bytes: the beginning and the end of it with `…` between, cut at character boundaries. A path that fits
+/// is returned as it is.
+fn abbreviate(path: &str, max: usize) -> String {
+    const ELLIPSIS: &str = "\u{2026}";
+    if path.len() <= max {
+        return path.to_owned();
+    }
+    let keep = max.saturating_sub(ELLIPSIS.len());
+    let mut head = keep / 2 + keep % 2;
+    while !path.is_char_boundary(head) {
+        head -= 1;
+    }
+    let mut tail = path.len() - keep / 2;
+    while !path.is_char_boundary(tail) {
+        tail += 1;
+    }
+    format!("{}{ELLIPSIS}{}", &path[..head], &path[tail..])
+}
+
+/// A piece of a note: words that stay as they are, or a path that is shortened when the note would be too long.
+enum Part<'a> {
+    Text(&'a str),
+    Path(&'a str),
+}
+
+/// A note of the parts, within a [`ShortText`]: the words are kept whole (they say what happens), and the paths share what room
+/// is left. Without this a long path filled the note and [`push`] cut off the end of it, which is the consequence.
+fn fitted(parts: &[Part<'_>]) -> String {
+    let fixed: usize = parts
+        .iter()
+        .map(|p| match p {
+            Part::Text(t) => t.len(),
+            Part::Path(_) => 0,
+        })
+        .sum();
+    let paths = parts.iter().filter(|p| matches!(p, Part::Path(_))).count();
+    let each = NOTE_MAX
+        .saturating_sub(fixed)
+        .checked_div(paths)
+        .unwrap_or(0)
+        .max(MIN_PATH_SHOWN);
+    parts
+        .iter()
+        .map(|p| match p {
+            Part::Text(t) => (*t).to_owned(),
+            Part::Path(path) => abbreviate(path, each),
+        })
+        .collect()
+}
+
 /// What one routed file needs to be warned about.
 pub(crate) struct Row<'a> {
     pub routed: &'a Routed,
@@ -242,51 +295,61 @@ pub(crate) fn warnings(
         match (dest.side, &r.suffix) {
             (Side::Base, Some(tenant)) => push(
                 &mut out,
-                &format!(
-                    "{} is the file of tenant {tenant}: this copies one tenant's content into base as {}.",
-                    r.nfs, r.repo_path
-                ),
+                &fitted(&[
+                    Part::Path(r.nfs.as_str()),
+                    Part::Text(&format!(
+                        " is the file of tenant {tenant}: this copies one tenant's content into base as "
+                    )),
+                    Part::Path(r.repo_path.as_str()),
+                    Part::Text("."),
+                ]),
             ),
             (Side::Tenant, Some(own)) if own.as_str() != dest.branch.as_str() => push(
                 &mut out,
-                &format!(
-                    "{} is the file of tenant {own}: its content goes to the file of tenant {}.",
-                    r.nfs, dest.branch
-                ),
+                &fitted(&[
+                    Part::Path(r.nfs.as_str()),
+                    Part::Text(&format!(
+                        " is the file of tenant {own}: its content goes to the file of tenant {}.",
+                        dest.branch
+                    )),
+                ]),
             ),
             (Side::Tenant, None) if row.exists => push(
                 &mut out,
-                &format!(
-                    "{} is a base file: its content replaces {} of tenant {}.",
-                    r.nfs, r.repo_path, dest.branch
-                ),
+                &fitted(&[
+                    Part::Path(r.nfs.as_str()),
+                    Part::Text(" is a base file: its content replaces "),
+                    Part::Path(r.repo_path.as_str()),
+                    Part::Text(&format!(" of tenant {}.", dest.branch)),
+                ]),
             ),
             _ => {}
         }
         if dest.side == Side::Tenant && !row.exists {
+            let consequence = if row.whole_file {
+                "it forks from the base file and will not follow later base changes (C1)."
+            } else {
+                "its settings override base for this tenant."
+            };
             push(
                 &mut out,
-                &if row.whole_file {
-                    format!(
-                        "{} is new on branch {}: it forks from the base file and will not follow later base changes (C1).",
-                        r.repo_path, dest.branch
-                    )
-                } else {
-                    format!(
-                        "{} is new on branch {}: its settings override base for this tenant.",
-                        r.repo_path, dest.branch
-                    )
-                },
+                &fitted(&[
+                    Part::Path(r.repo_path.as_str()),
+                    Part::Text(&format!(" is new on branch {}: {consequence}", dest.branch)),
+                ]),
             );
         }
     }
     for path in unchanged {
         push(
             &mut out,
-            &format!(
-                "{path} on {} already holds this content: it is left out.",
-                dest.branch
-            ),
+            &fitted(&[
+                Part::Path(path.as_str()),
+                Part::Text(&format!(
+                    " on {} already holds this content: it is left out.",
+                    dest.branch
+                )),
+            ]),
         );
     }
     if out.len() > MAX_WARNINGS {
@@ -572,5 +635,88 @@ mod tests {
         let r = routed(&["sit1"], &[long.as_str()], Some(&domain::PrTarget::Base));
         let w = warnings(&r[0].dest, &repo(), &rows(&r, true, true), &[]);
         assert!(w.iter().all(|t| t.as_str().len() <= NOTE_MAX));
+    }
+
+    /// The consequence is the point of a warning. A path long enough to fill the note must be shortened in the middle, and not
+    /// take the words that say what happens with it.
+    #[test]
+    fn a_long_path_is_abbreviated_and_the_consequence_is_kept() {
+        let t = |b: &str| domain::PrTarget::Tenant {
+            branch: TenantId::parse(b).unwrap(),
+        };
+        let dir = vec!["d".repeat(100); 4].join("/");
+        let tenant_file = format!("{dir}/x-sit1.yml");
+        let base_file = format!("{dir}/x.yml");
+
+        // A tenant file copied into base.
+        let r = routed(&["sit1"], &[tenant_file.as_str()], Some(&domain::PrTarget::Base));
+        let w = texts(&warnings(&r[0].dest, &repo(), &rows(&r, true, true), &[]));
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(
+            w[1].ends_with('.') && w[1].contains("this copies one tenant's content into base as"),
+            "{}",
+            w[1]
+        );
+        assert!(w[1].contains('\u{2026}') && w[1].len() <= NOTE_MAX, "{}", w[1]);
+        // And the ends of the path are still there, so the person can tell which file it is.
+        assert!(w[1].contains(&format!("{}\u{2026}", &dir[..20])), "{}", w[1]);
+        assert!(w[1].contains("x-sit1.yml"), "{}", w[1]);
+
+        // A tenant file sent to another tenant's branch.
+        let r = routed(&["sit1", "sit2"], &[tenant_file.as_str()], Some(&t("sit2")));
+        let w = texts(&warnings(&r[0].dest, &repo(), &rows(&r, true, true), &[]));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(
+            w[0].ends_with("its content goes to the file of tenant sit2."),
+            "{}",
+            w[0]
+        );
+
+        // A base file replacing a tenant's file.
+        let r = routed(&["sit1"], &[base_file.as_str()], Some(&t("sit1")));
+        let w = texts(&warnings(&r[0].dest, &repo(), &rows(&r, true, true), &[]));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(
+            w[0].contains("its content replaces") && w[0].ends_with("of tenant sit1."),
+            "{}",
+            w[0]
+        );
+
+        // A new file on a tenant branch.
+        let r = routed(&["sit1"], &[tenant_file.as_str()], None);
+        let w = texts(&warnings(&r[0].dest, &repo(), &rows(&r, false, true), &[]));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(
+            w[0].ends_with("it forks from the base file and will not follow later base changes (C1)."),
+            "{}",
+            w[0]
+        );
+        let w = texts(&warnings(&r[0].dest, &repo(), &rows(&r, false, false), &[]));
+        assert!(
+            w[0].ends_with("its settings override base for this tenant."),
+            "{}",
+            w[0]
+        );
+
+        // A file left out because the repository already has it.
+        let gone = RepoPath::parse(&format!("data/config/{dir}/same.yml")).unwrap();
+        let w = texts(&warnings(&r[0].dest, &repo(), &rows(&r, true, true), &[gone]));
+        assert!(
+            w[0].ends_with("already holds this content: it is left out."),
+            "{}",
+            w[0]
+        );
+    }
+
+    #[test]
+    fn a_path_is_cut_in_the_middle_on_character_boundaries() {
+        assert_eq!(abbreviate("a/b.yml", 16), "a/b.yml");
+        let long = "\u{e9}".repeat(300);
+        for max in [16, 17, 40, 41] {
+            let got = abbreviate(&long, max);
+            assert!(got.len() <= max, "{max}: {}", got.len());
+            assert!(got.contains('\u{2026}'));
+            assert!(got.starts_with('\u{e9}') && got.ends_with('\u{e9}'));
+        }
     }
 }
