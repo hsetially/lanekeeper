@@ -194,12 +194,21 @@ impl HashBuilder {
     }
 }
 
-/// Who sent which key.
+/// Who sent which key, and, once a row is known, which row.
+///
+/// A key names a row only for as long as that row exists: the reconcile job clears a claim that has outlived `stale_claim_after`
+/// while its request may still be running, and the caller's retry then makes a new row under the same key. `born_ms` is when the
+/// row was made, and every statement that changes an unfinished row on behalf of a request holds it to the row that request made
+/// (`created_at` is the guard: the table has no generation column and the migrations are a contract). A request that has lost its
+/// claim then finds no row to change, as it would if nobody had retried, and does not touch the retry's.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ClaimKey {
     tid: String,
     oid: String,
     key: String,
+    /// When the row this key stands for was made, in milliseconds since the epoch. `None` for a key that stands for whichever row
+    /// is there (the benchmark's probes).
+    born_ms: Option<i64>,
 }
 
 impl ClaimKey {
@@ -208,11 +217,25 @@ impl ClaimKey {
             tid: ctx.user.id.tid().as_str().to_owned(),
             oid: ctx.user.id.oid().as_str().to_owned(),
             key: ctx.idempotency_key.as_str().to_owned(),
+            born_ms: None,
         }
     }
 
-    fn from_row(tid: String, oid: String, key: String) -> Self {
-        Self { tid, oid, key }
+    fn from_row(tid: String, oid: String, key: String, born_ms: i64) -> Self {
+        Self {
+            tid,
+            oid,
+            key,
+            born_ms: Some(born_ms),
+        }
+    }
+
+    /// The key of the row that was made at `born_ms`.
+    pub(crate) fn born(&self, born_ms: i64) -> Self {
+        Self {
+            born_ms: Some(born_ms),
+            ..self.clone()
+        }
     }
 
     /// For the benchmark of the statements (`crate::probe`).
@@ -221,6 +244,7 @@ impl ClaimKey {
             tid: user.tid().as_str().to_owned(),
             oid: user.oid().as_str().to_owned(),
             key: key.to_owned(),
+            born_ms: None,
         }
     }
 }
@@ -311,8 +335,8 @@ impl fmt::Debug for Intent {
 
 /// What the table says about a key.
 pub(crate) enum Claim {
-    /// The row is ours: nobody has used the key.
-    Fresh,
+    /// The row is ours: nobody has used the key. It was made at `born_ms`.
+    Fresh { born_ms: i64 },
     /// Another request used the key for this request and finished: its response.
     Replay(WriteOutcome),
     /// The request was a pull request and it was accepted as this job.
@@ -325,6 +349,7 @@ pub(crate) enum Claim {
 
 /// A row of an unfinished claim, for the reconcile job.
 pub(crate) struct Unfinished {
+    /// The key of the row as it was when it was read: a statement on it leaves a row that replaced it alone.
     pub key: ClaimKey,
     pub body: Option<Vec<u8>>,
 }
@@ -353,19 +378,37 @@ const DROP_EXPIRED: &str = concat!(
     ts!("4")
 );
 
-const SET_INTENT: &str = "UPDATE idempotency_keys SET response_body = $4 \
-     WHERE user_tid = $1 AND user_oid = $2 AND key = $3 AND response_status IS NULL";
+/// Holds a statement to the row that was made at `$n` milliseconds, when `$n` is not null (see [`ClaimKey`]).
+macro_rules! born {
+    ($n:literal) => {
+        concat!(" AND ($", $n, "::bigint IS NULL OR created_at = ", ts!($n), ")")
+    };
+}
 
-const FINISH: &str = "UPDATE idempotency_keys SET response_status = $4, response_body = $5 \
-     WHERE user_tid = $1 AND user_oid = $2 AND key = $3 AND response_status IS NULL";
+const SET_INTENT: &str = concat!(
+    "UPDATE idempotency_keys SET response_body = $4 \
+     WHERE user_tid = $1 AND user_oid = $2 AND key = $3 AND response_status IS NULL",
+    born!("5")
+);
 
-const RELEASE: &str = "DELETE FROM idempotency_keys \
-     WHERE user_tid = $1 AND user_oid = $2 AND key = $3 AND response_status IS NULL";
+const FINISH: &str = concat!(
+    "UPDATE idempotency_keys SET response_status = $4, response_body = $5 \
+     WHERE user_tid = $1 AND user_oid = $2 AND key = $3 AND response_status IS NULL",
+    born!("6")
+);
+
+const RELEASE: &str = concat!(
+    "DELETE FROM idempotency_keys \
+     WHERE user_tid = $1 AND user_oid = $2 AND key = $3 AND response_status IS NULL",
+    born!("4")
+);
 
 /// Unfinished claims whose `expires_at` is before `$1`. Every claim expires `idempotency_ttl` after it began, so this is "began
 /// more than `stale_after` ago" when `$1` is now minus `stale_after` plus the ttl, read through the index on `expires_at`.
 pub(crate) const STALE_CLAIMS: &str = concat!(
-    "SELECT user_tid, user_oid, key, response_body FROM idempotency_keys \
+    "SELECT user_tid, user_oid, key, response_body, ",
+    ms!("created_at"),
+    " FROM idempotency_keys \
      WHERE response_status IS NULL AND expires_at < ",
     ts!("1"),
     " ORDER BY expires_at LIMIT $2"
@@ -382,8 +425,12 @@ const PURGE: &str = concat!(
 );
 
 /// The row lock a transaction takes before it records a write: the claim must still be unfinished.
-pub(crate) const LOCK_CLAIM: &str = "SELECT response_status, response_body FROM idempotency_keys \
-     WHERE user_tid = $1 AND user_oid = $2 AND key = $3 FOR UPDATE";
+pub(crate) const LOCK_CLAIM: &str = concat!(
+    "SELECT response_status, response_body FROM idempotency_keys \
+     WHERE user_tid = $1 AND user_oid = $2 AND key = $3",
+    born!("4"),
+    " FOR UPDATE"
+);
 
 /// The statement that completes a claim inside the recording transaction.
 pub(crate) const FINISH_IN_TX: &str = FINISH;
@@ -465,7 +512,7 @@ impl IdempotencyStore {
                 .await
                 .map_err(|e| Internal::db("claim", &e))?;
             if made.is_some() {
-                return Ok(Claim::Fresh);
+                return Ok(Claim::Fresh { born_ms: now_ms });
             }
             let Some(row) = self.lookup(key).await? else {
                 // Released between the insert and the read: try again.
@@ -542,6 +589,7 @@ impl IdempotencyStore {
             .bind(&key.oid)
             .bind(&key.key)
             .bind(body)
+            .bind(key.born_ms)
             .execute(&self.pool)
             .await
             .map_err(|e| Internal::db("intent", &e))?;
@@ -561,6 +609,7 @@ impl IdempotencyStore {
             .bind(&key.key)
             .bind(status_of(outcome))
             .bind(body)
+            .bind(key.born_ms)
             .execute(&self.pool)
             .await
             .map_err(|e| Internal::db("finish", &e))?;
@@ -573,6 +622,7 @@ impl IdempotencyStore {
             .bind(&key.tid)
             .bind(&key.oid)
             .bind(&key.key)
+            .bind(key.born_ms)
             .execute(&self.pool)
             .await
             .map_err(|e| Internal::db("release", &e))?;
@@ -588,7 +638,7 @@ impl IdempotencyStore {
         limit: i64,
     ) -> Res<Vec<Unfinished>> {
         let cutoff = now_ms.saturating_sub(stale_after_ms).saturating_add(ttl_ms);
-        let rows: Vec<(String, String, String, Option<Vec<u8>>)> = sqlx::query_as(STALE_CLAIMS)
+        let rows: Vec<StaleRow> = sqlx::query_as(STALE_CLAIMS)
             .bind(cutoff)
             .bind(limit)
             .fetch_all(&self.pool)
@@ -596,8 +646,8 @@ impl IdempotencyStore {
             .map_err(|e| Internal::db("stale_claims", &e))?;
         Ok(rows
             .into_iter()
-            .map(|(tid, oid, key, body)| Unfinished {
-                key: ClaimKey::from_row(tid, oid, key),
+            .map(|(tid, oid, key, body, created_ms)| Unfinished {
+                key: ClaimKey::from_row(tid, oid, key, created_ms),
                 body,
             })
             .collect())
@@ -615,6 +665,9 @@ impl IdempotencyStore {
         Ok(done.rows_affected())
     }
 }
+
+/// `user_tid`, `user_oid`, `key`, `response_body`, `created_ms`.
+type StaleRow = (String, String, String, Option<Vec<u8>>, i64);
 
 /// `request_hash`, `response_status`, `response_body`, `created_ms`, `expires_ms`.
 type LookupRow = (Vec<u8>, Option<i32>, Option<Vec<u8>>, i64, i64);
@@ -637,6 +690,7 @@ pub(crate) async fn lock_claim_any(
         .bind(&key.tid)
         .bind(&key.oid)
         .bind(&key.key)
+        .bind(key.born_ms)
         .fetch_optional(&mut **tx)
         .await
         .map_err(|e| Internal::db("lock_claim", &e))?;
@@ -682,6 +736,7 @@ pub(crate) async fn finish_job_in_tx(
         .bind(&key.key)
         .bind(202_i32)
         .bind(body)
+        .bind(key.born_ms)
         .execute(&mut **tx)
         .await
         .map_err(|e| Internal::db("finish", &e))?;
@@ -705,6 +760,7 @@ pub(crate) async fn finish_in_tx(
         .bind(&key.key)
         .bind(status_of(outcome))
         .bind(body)
+        .bind(key.born_ms)
         .execute(&mut **tx)
         .await
         .map_err(|e| Internal::db("finish", &e))?;
@@ -925,6 +981,7 @@ mod tests {
             tid: "t".into(),
             oid: "o".into(),
             key: "private-key-marker".into(),
+            born_ms: None,
         };
         assert!(!format!("{key:?}").contains("private-key-marker"));
     }

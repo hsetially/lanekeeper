@@ -224,3 +224,161 @@ async fn a_request_whose_claim_was_cleared_before_the_send_does_not_send() {
     assert_eq!(applied(&retry).0, Some(h("x: 2\n")));
     assert_eq!(rig.chain().await.len(), 1);
 }
+
+/// The reconciler cleared a stalled request's claim and the caller's retry made a new row under the same key. When the stalled
+/// request wakes, its claim is not the row that is there: it must not keep an intent in the retry's row (and so send a second
+/// command), and must not finish or release it either. The row belongs to the request that made it.
+#[tokio::test]
+async fn a_request_that_lost_its_claim_cannot_touch_the_row_of_the_retry_that_replaced_it() {
+    let Some(rig) = rig_with_a().await else { return };
+    let editor = rig.user(1, Role::Editor).await;
+    let stall = Stall {
+        entered: Arc::new(Notify::new()),
+        gate: Arc::new(Semaphore::new(0)),
+    };
+    let slow = Arc::new(rig.hub_with(
+        WriteConfig::default(),
+        Some(Arc::new(
+            WithholdingRegistry::new(rig.registry.clone(), Vec::new()).stalling(stall.clone()),
+        )),
+    ));
+    let first = {
+        let (slow, editor) = (slow.clone(), editor.clone());
+        tokio::spawn(async move {
+            slow.edit(
+                &ctx(&editor, "k-1"),
+                edit(&sit1(), "a.yml", at("x: 1\n"), "x: 2\n"),
+            )
+            .await
+        })
+    };
+    stall.entered.notified().await;
+    rig.advance_secs(61);
+    let report = rig.hub.reconciler().run_once(&|| true).await;
+    assert_eq!((report.completed, report.cleared), (0, 1), "{report:?}");
+
+    // The retry claims the key anew, keeps its intent and sends its command, which the agent holds.
+    let gate = rig.agent.hold_writes();
+    let retry = {
+        let (hub, editor) = (rig.hub.clone(), editor.clone());
+        tokio::spawn(async move {
+            hub.edit(
+                &ctx(&editor, "k-1"),
+                edit(&sit1(), "a.yml", at("x: 1\n"), "x: 2\n"),
+            )
+            .await
+        })
+    };
+    rig.agent.entered.notified().await;
+    assert_eq!(rig.agent.write_commands(), 1);
+
+    // The stalled request wakes. Its claim is gone: it ends without sending anything, and the retry's row is as it was.
+    stall.gate.add_permits(1);
+    let woke = tokio::time::timeout(std::time::Duration::from_secs(5), first)
+        .await
+        .expect("the stalled request kept going on a row that is not its own")
+        .unwrap();
+    assert!(woke.is_err(), "{woke:?}");
+    assert_eq!(
+        rig.agent.write_commands(),
+        1,
+        "the stalled request sent a second command"
+    );
+    assert_eq!(
+        rig.count("idempotency_keys").await,
+        1,
+        "the retry's row is still there"
+    );
+
+    gate.add_permits(1);
+    let done = retry.await.unwrap().unwrap();
+    assert_eq!(applied(&done).0, Some(h("x: 2\n")));
+    assert_eq!(rig.agent.writes_applied(), 1);
+    assert_eq!(rig.chain().await.len(), 1);
+}
+
+/// What a request that lost its claim after it had sent its command does when the agent answers: it ends its own row, which is
+/// gone, and not the retry's. `how` is how the agent answers the first command: a conflict (the request stores that answer) or an
+/// I/O error (the request releases its claim).
+async fn the_late_answer_of_a_request_that_lost_its_claim(how: &str) {
+    let Some(rig) = rig_with_a().await else { return };
+    let editor = rig.user(1, Role::Editor).await;
+    let gate = rig.agent.hold_writes();
+    let req = || edit(&sit1(), "a.yml", at("x: 1\n"), "x: 2\n");
+    if how == "io" {
+        rig.agent.fault_next_write(Fault::Io);
+    }
+    let first = {
+        let (hub, editor) = (rig.hub.clone(), editor.clone());
+        tokio::spawn(async move { hub.edit(&ctx(&editor, "k-1"), req()).await })
+    };
+    rig.agent.entered.notified().await;
+
+    // A minute passes with the command at the agent; the file is as it was, so the reconciler clears the claim. The retry makes
+    // a new row and sends its own command, which the agent holds behind the first.
+    rig.advance_secs(61);
+    let report = rig.hub.reconciler().run_once(&|| true).await;
+    assert_eq!((report.completed, report.cleared), (0, 1), "{report:?}");
+    let retry = {
+        let (hub, editor) = (rig.hub.clone(), editor.clone());
+        tokio::spawn(async move { hub.edit(&ctx(&editor, "k-1"), req()).await })
+    };
+    // (`entered` keeps a permit from the first command, so it cannot say that the second has arrived.)
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while rig.agent.write_commands() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the retry's command never reached the agent");
+
+    // The first command is answered: with a conflict (somebody changed the file), or with an I/O error.
+    if how == "conflict" {
+        rig.agent
+            .put(&sit1(), &domain::NfsPath::parse("a.yml").unwrap(), b"y: 1\n");
+    }
+    gate.add_permits(1);
+    let answered = first.await.unwrap();
+    match how {
+        "conflict" => assert!(
+            matches!(answered, Ok(WriteOutcome::Conflict { .. })),
+            "{answered:?}"
+        ),
+        _ => assert!(
+            matches!(answered, Ok(WriteOutcome::Rejected { .. })),
+            "{answered:?}"
+        ),
+    }
+    assert_eq!(
+        rig.count("idempotency_keys").await,
+        1,
+        "the retry's row survives the other request's end"
+    );
+    let finished: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM idempotency_keys WHERE response_status IS NOT NULL")
+            .fetch_one(&rig.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        finished, 0,
+        "the retry's row was finished by a request that is not its own"
+    );
+
+    // The file is as the retry expects it, and its command lands: recorded under its own claim.
+    rig.agent
+        .put(&sit1(), &domain::NfsPath::parse("a.yml").unwrap(), b"x: 1\n");
+    gate.add_permits(1);
+    let done = retry.await.unwrap().unwrap();
+    assert_eq!(applied(&done).0, Some(h("x: 2\n")), "{done:?}");
+    assert_eq!(rig.chain().await.len(), 1, "the write that landed is audited");
+}
+
+#[tokio::test]
+async fn a_conflict_for_a_request_that_lost_its_claim_is_not_stored_on_the_retrys_row() {
+    the_late_answer_of_a_request_that_lost_its_claim("conflict").await;
+}
+
+#[tokio::test]
+async fn a_request_that_lost_its_claim_does_not_release_the_retrys_row() {
+    the_late_answer_of_a_request_that_lost_its_claim("io").await;
+}

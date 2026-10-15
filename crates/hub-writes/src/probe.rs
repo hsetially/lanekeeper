@@ -41,7 +41,7 @@ impl QueryProbe<'_> {
                 .idem
                 .claim(&key(user, name), &hash, self.hub.now_ms(), ttl)
                 .await,
-            Ok(crate::idempotency::Claim::Fresh)
+            Ok(crate::idempotency::Claim::Fresh { .. })
         )
     }
 

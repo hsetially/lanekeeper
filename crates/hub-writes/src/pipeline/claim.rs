@@ -68,7 +68,11 @@ pub(crate) async fn claim_any(
         .await??;
     loop {
         match state {
-            Stored::Fresh => return Ok(ClaimedAny::Mine(Claim { key })),
+            Stored::Fresh { born_ms } => {
+                return Ok(ClaimedAny::Mine(Claim {
+                    key: key.born(born_ms),
+                }));
+            }
             Stored::Replay(outcome) => return Ok(ClaimedAny::Replay(outcome)),
             Stored::ReplayJob(id) => return Ok(ClaimedAny::Job(id)),
             Stored::Conflict => return Err(WriteError::IdempotencyConflict),
@@ -79,7 +83,7 @@ pub(crate) async fn claim_any(
                     .is_some_and(|i| i.phase == Phase::Ambiguous);
                 let aged = hub.now_ms().saturating_sub(created_ms) >= stale_after;
                 if abandoned || aged {
-                    match resolve(hub, &key, body.as_deref()).await {
+                    match resolve(hub, &key.born(created_ms), body.as_deref()).await {
                         Resolved::Completed(outcome) => return Ok(ClaimedAny::Replay(outcome)),
                         Resolved::Cleared => {
                             state = hub
