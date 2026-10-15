@@ -640,6 +640,7 @@ impl Inner {
             rules.tier.clone(),
             rules.fingerprint,
             rules.adopted,
+            Arc::clone(&rules.global.severity),
             view.heads(&rules.tenants),
             files,
             opaque,
@@ -673,7 +674,7 @@ impl Inner {
         let Some(state) = entry.state.as_ref() else {
             return Err(RegistryError::Corrupt);
         };
-        let rows = rows_of(state, &self.severity);
+        let rows = rows_of(state, &rules.global.severity);
         let stored: BTreeMap<_, _> = self
             .persist
             .open_findings(&rules.swimlane)
@@ -764,6 +765,7 @@ impl Inner {
             let old = affected.iter().map(|p| (p.clone(), entry.sig(p))).collect();
             let logicals = affected.iter().filter_map(|p| entry.logical_of(p)).collect();
             entry.adopted = rules.adopted;
+            entry.severity = Arc::clone(&rules.global.severity);
             let lane_inputs = inputs.remove(&rules.swimlane).unwrap_or_default();
             prepared.push(Prepared {
                 rules,
@@ -908,7 +910,7 @@ impl Inner {
         for ((job, state), (rules, old, decisions)) in jobs.into_iter().zip(states).zip(keep) {
             let id = rules.swimlane.clone();
             match state {
-                Ok(state) => match self.plan_incremental(job, state, &rules, &old, decisions, view) {
+                Ok(state) => match Self::plan_incremental(job, state, &rules, &old, decisions, view) {
                     Ok(plan) => planned.push(plan),
                     Err(error) => results.push((id, Err(error))),
                 },
@@ -939,7 +941,6 @@ impl Inner {
     /// The end of an update, first half: the new state, the rows that changed, the findings, and what the commit will carry. Touches
     /// neither the database nor the store.
     fn plan_incremental(
-        &self,
         job: IncJob,
         state: LaneState,
         rules: &LaneRules,
@@ -994,7 +995,7 @@ impl Inner {
         let Some(state) = entry.state.as_ref() else {
             return Err(RegistryError::Corrupt);
         };
-        let rows = rows_of(state, &self.severity);
+        let rows = rows_of(state, &rules.global.severity);
         let findings = findings_sync::diff(&entry.findings, &rows);
         let counts = entry.state_counts();
         Ok(IncrementalPlan {

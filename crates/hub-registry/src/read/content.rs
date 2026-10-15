@@ -104,9 +104,15 @@ impl Inner {
         }))
     }
 
-    /// Whether a path's content must never be served: the stored flag, or the hub's own glob (S17 defence in depth).
+    /// Whether a path's content must never be served: the stored flag or class, or the hub's own glob (S17 defence in depth), by
+    /// [`crate::denied::is_denied`].
     fn is_denied(&self, path: &NfsPath, row: Option<&FileRow>) -> bool {
-        row.is_some_and(|r| r.denied || r.class == FileClass::Denied) || self.deny.is_denied(path)
+        crate::denied::is_denied(
+            &self.deny,
+            path,
+            row.is_some_and(|r| r.denied),
+            row.map_or(FileClass::Text, |r| r.class),
+        )
     }
 
     /// Find the hash and facts of the content `src` names for `path`.

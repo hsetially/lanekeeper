@@ -16,18 +16,24 @@
 //!
 //! # The drift list
 //!
-//! The files of a swimlane that are not in sync (or are in the one state asked for), flat, in the order the rows were created
-//! (`file_state.seq`, a short keyset: a path does not fit a cursor, A31).
+//! The files of a swimlane that are not in sync (or are in the one state asked for), flat, **most serious first** (D76, D103: the rules'
+//! severity of each file's pending change; a row nobody has rated comes last) and, among equals, in the order the rows were created
+//! (`file_state.seq`). The keyset is the pair (severity rank, `seq`): short, so that it fits a cursor (A31), and it totally orders the
+//! list, so a page resumes exactly where the last one ended. The statement already sorted the swimlane's non-synced rows by `seq` (they
+//! are read through `file_state_state_idx`, which is not in that order); a different sort key costs the same.
 
 use domain::{
     Cursor, DriftState, FileClass, FileEntry, FileKind, FileRole, NfsPath, Page, Paged, SwimlaneId,
 };
+use engine::DenyMatcher;
 use ports::ReadError;
 use sqlx::Row;
 use sqlx::postgres::PgRow;
 
 use super::cursor::{self, Context, Field, Kind};
-use super::rows::{self, like_escape, severity_rank_sql, state_rank_sql};
+use super::rows::{
+    self, SEVERITY_RANK_TOP, fs_severity_rank_sql, like_escape, severity_rank_sql, state_rank_sql,
+};
 use super::service::Inner;
 use crate::error::RegistryError;
 
@@ -67,15 +73,25 @@ pub const FILE_ROWS_SQL: &str = concat!(
       WHERE fs.swimlane_id = $1 AND fs.path = ANY($2::text[])"
 );
 
-/// The drift list: `$1` swimlane, `$2` the `seq` after which to resume (0 for the first page), `$3` a state or `NULL` (every state but
-/// in sync), `$4` the `LIKE` pattern of the prefix, `$5` the page size plus one.
+/// The drift list: `$1` swimlane, `$2` the `seq` after which to resume among the rows of the severity `$6` (0 for the first page), `$3` a
+/// state or `NULL` (every state but in sync), `$4` the `LIKE` pattern of the prefix, `$5` the page size plus one, `$6` the severity rank at
+/// which to resume ([`SEVERITY_RANK_TOP`] for the first page). Most serious first, then by `seq`.
 pub const DRIFT_SQL: &str = concat!(
     "SELECT fs.seq, ",
+    fs_severity_rank_sql!(),
+    " AS sev_rank, ",
     entry_columns!(),
     " FROM file_state fs LEFT JOIN file_observations o ON o.id = fs.last_observation_id \
-      WHERE fs.swimlane_id = $1 AND fs.seq > $2 AND ((($3::text) IS NULL AND fs.state <> 'in_sync') OR fs.state = $3) \
+      WHERE fs.swimlane_id = $1 AND ((",
+    fs_severity_rank_sql!(),
+    " < $6) OR (",
+    fs_severity_rank_sql!(),
+    " = $6 AND fs.seq > $2)) \
+        AND ((($3::text) IS NULL AND fs.state <> 'in_sync') OR fs.state = $3) \
         AND fs.path LIKE $4 \
-      ORDER BY fs.seq LIMIT $5"
+      ORDER BY ",
+    fs_severity_rank_sql!(),
+    " DESC, fs.seq LIMIT $5"
 );
 
 /// The `LIKE` pattern of "below this prefix": `prefix/%`, or everything for the root.
@@ -97,7 +113,7 @@ fn rest_position(prefix: &NfsPath) -> i32 {
 }
 
 /// A file entry from a row of [`FILE_ROWS_SQL`] or [`DRIFT_SQL`].
-pub(crate) fn file_entry(row: &PgRow) -> Result<FileEntry, RegistryError> {
+pub(crate) fn file_entry(row: &PgRow, deny: &DenyMatcher) -> Result<FileEntry, RegistryError> {
     let path: String = row.get("path");
     let kind: String = row.get("kind");
     let class: String = row.get("class");
@@ -108,7 +124,7 @@ pub(crate) fn file_entry(row: &PgRow) -> Result<FileEntry, RegistryError> {
     let severity: Option<String> = row.get("severity");
     let (eol, encoding, bom): (Option<String>, Option<String>, Option<bool>) =
         (row.get("eol_style"), row.get("encoding"), row.get("bom"));
-    let denied: bool = row.get("denied");
+    let flagged: bool = row.get("denied");
     let source: Option<String> = row.get("attribution_source");
     let confidence: Option<String> = row.get("attribution_confidence");
     let actor: Option<serde_json::Value> = row.get("attribution_actor");
@@ -123,11 +139,15 @@ pub(crate) fn file_entry(row: &PgRow) -> Result<FileEntry, RegistryError> {
         )),
         _ => None,
     };
+    let path = NfsPath::parse(&path).map_err(|_| RegistryError::Corrupt)?;
+    let class = rows::class(&class)?;
+    // The class says `denied` for a denied file, and its content is withheld (D79): the flag, the class, or the hub's own globs (D104).
+    let denied = crate::denied::is_denied(deny, &path, flagged, class);
     Ok(FileEntry {
-        path: NfsPath::parse(&path).map_err(|_| RegistryError::Corrupt)?,
+        path,
         is_dir: false,
         kind: rows::kind(&kind)?,
-        class: rows::class(&class)?,
+        class: if denied { FileClass::Denied } else { class },
         role: rows::role(role.as_deref())?,
         size: u64::try_from(size.unwrap_or(0)).unwrap_or(0),
         hash: rows::opt_hash(hash.as_deref())?,
@@ -234,7 +254,7 @@ impl Inner {
                 )
                 .await?;
             for row in &fetched {
-                let entry = file_entry(row)?;
+                let entry = file_entry(row, &self.deny)?;
                 files.insert(entry.path.as_str().to_owned(), entry);
             }
         }
@@ -283,12 +303,18 @@ impl Inner {
                 prefix.as_str(),
             ],
         );
-        let after = match cursor::resume(page, Kind::Drift, &context)? {
+        // Where the list resumes: the severity rank and the `seq` of the last row of the page before (the top and 0 for the first page).
+        let (rank_after, seq_after) = match cursor::resume(page, Kind::Drift, &context)? {
             Some(fields) => {
-                cursor::arity(&fields, 1).map_err(|_| ReadError::BadRequest)?;
-                cursor::int(&fields, 0).map_err(|_| ReadError::BadRequest)?
+                cursor::arity(&fields, 2).map_err(|_| ReadError::BadRequest)?;
+                let rank = cursor::int(&fields, 0).map_err(|_| ReadError::BadRequest)?;
+                // A rank outside the ones the list has was not issued by it.
+                if !(-1..i64::from(SEVERITY_RANK_TOP)).contains(&rank) {
+                    return Err(ReadError::BadRequest);
+                }
+                (rank, cursor::int(&fields, 1).map_err(|_| ReadError::BadRequest)?)
             }
-            None => 0,
+            None => (i64::from(SEVERITY_RANK_TOP), 0),
         };
         let limit = page.limit() as usize;
         let fetched = self
@@ -297,21 +323,30 @@ impl Inner {
                 "read_drift",
                 sqlx::query(DRIFT_SQL)
                     .bind(swimlane.as_str())
-                    .bind(after)
+                    .bind(seq_after)
                     .bind(state.map(DriftState::as_str))
                     .bind(below(prefix))
                     .bind(i64::try_from(limit + 1).unwrap_or(i64::MAX))
+                    .bind(i32::try_from(rank_after).unwrap_or(SEVERITY_RANK_TOP))
                     .fetch_all(self.db.pool()),
             )
             .await?;
         let has_more = fetched.len() > limit;
         let kept = &fetched[..fetched.len().min(limit)];
-        let items = kept.iter().map(file_entry).collect::<Result<Vec<_>, _>>()?;
+        let items = kept
+            .iter()
+            .map(|r| file_entry(r, &self.deny))
+            .collect::<Result<Vec<_>, _>>()?;
         let next: Option<Cursor> = if has_more {
             kept.last()
                 .map(|r| {
                     let seq: i64 = r.get("seq");
-                    cursor::issue(Kind::Drift, &context, vec![Field::Int(seq)])
+                    let rank: i32 = r.get("sev_rank");
+                    cursor::issue(
+                        Kind::Drift,
+                        &context,
+                        vec![Field::Int(i64::from(rank)), Field::Int(seq)],
+                    )
                 })
                 .transpose()?
         } else {

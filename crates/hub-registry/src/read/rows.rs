@@ -142,6 +142,18 @@ macro_rules! severity_rank_sql {
 }
 pub(crate) use severity_rank_sql;
 
+/// The same for the column of `file_state` named `fs`, for a statement that joins a table with a `severity` of its own (an observation),
+/// and with a row that has no severity (one from before the registry rated it, T9) ranked below every severity: -1.
+macro_rules! fs_severity_rank_sql {
+    () => {
+        "COALESCE(CASE fs.severity WHEN 'low' THEN 0 WHEN 'medium' THEN 1 WHEN 'high' THEN 2 WHEN 'critical' THEN 3 END, -1)"
+    };
+}
+pub(crate) use fs_severity_rank_sql;
+
+/// A rank above every severity's, where a list that is ordered by severity starts.
+pub const SEVERITY_RANK_TOP: i32 = 4;
+
 pub const SEVERITY_RANK_SQL: &str = severity_rank_sql!();
 
 pub fn severity_of_rank(rank: Option<i32>) -> Option<Severity> {

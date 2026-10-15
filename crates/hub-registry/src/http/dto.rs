@@ -5,8 +5,11 @@
 //!
 //! - **`FileContent`** is "not `Serialize`: content is streamed by the edge, never embedded in JSON". The contract's `FileContent` has
 //!   the decoded text, for structured and text files, with the original line endings; null for binary, denied and undecodable files.
-//! - **`SettingChange`** has a `severity` in the contract (nullable) that the domain type does not carry. T9 attaches severity to every
-//!   change; until then it is null. The shape is the contract's and nothing else is added.
+//! - **`SettingChange`** has a `severity` in the contract (nullable) that the domain type does not carry. It is **null**: T9 rates what the
+//!   registry stores (a file's pending change in `file_state`, the observation a row points at, a finding; `crate::severity`), and a setting
+//!   change in a comparison is a view computed from two blobs, not a stored change. Rating it needs the rules fingerprint in the `ETag` of a
+//!   comparison (the tag is a function of the two contents, and a change of the rules would leave a stale severity behind a 304) and a rated
+//!   copy of a cached diff for each request; that is D103's open item. The shape is the contract's and nothing else is added.
 //! - **`SwimlaneDetail`** is the summary plus its services and the auto-notify setting (the spec's `allOf`).
 //! - **`ServedFile`** (plan A4): what the config-server answered, with the engine's role and sources. It has no domain type.
 
@@ -61,7 +64,7 @@ impl FileContentDto {
     }
 }
 
-/// The contract's `SettingChange`: the domain's, with the severity the contract has and T9 fills.
+/// The contract's `SettingChange`: the domain's, with the severity the contract has (null for now, see the module documentation).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SettingChangeDto {
     pub path: domain::SettingPath,

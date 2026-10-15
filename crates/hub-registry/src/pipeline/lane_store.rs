@@ -16,14 +16,19 @@
 
 use std::collections::BTreeMap;
 
+use std::sync::Arc;
+
 use domain::{
-    AppName, ContentHash, DriftState, FileClass, FileKind, FileRole, LogicalFile, NfsPath, ShortText,
-    SwimlaneId, TenantSet,
+    AppName, ContentHash, DriftState, FileClass, FileKind, FileRole, LogicalFile, NfsPath, Severity,
+    ShortText, SwimlaneId, TenantSet,
 };
-use engine::{Baseline, Drift, FileFacts, IntentionalMark, LaneFile, LaneInput, LaneState, file_role};
+use engine::{
+    Baseline, Drift, FileFacts, IntentionalMark, LaneFile, LaneInput, LaneState, SeverityRules, file_role,
+};
 
 use super::findings_sync::{FindingKey, FindingRow};
 use super::git_side::Heads;
+use crate::severity::file_severity;
 
 /// A file the engine is not given, computed by `drift_state` from the hashes the registry stored.
 #[derive(Debug, Clone)]
@@ -53,6 +58,8 @@ pub(crate) struct RowSig {
     /// N, for the paths named in `DriftChanged`: a file that changed on NFS is news even when its state did not move.
     pub nfs: Option<ContentHash>,
     pub class: FileClass,
+    /// What the change that is pending is worth under the rules the swimlane was computed under (`None`: nothing is pending, T9).
+    pub severity: Option<Severity>,
 }
 
 /// The derived columns of a stored row, as read.
@@ -64,6 +71,7 @@ pub(crate) struct Persisted {
     pub logical: String,
     pub kind: String,
     pub role: Option<String>,
+    pub severity: Option<String>,
 }
 
 impl RowSig {
@@ -75,6 +83,7 @@ impl RowSig {
             && self.state == other.state
             && self.git == other.git
             && self.baseline == other.baseline
+            && self.severity == other.severity
     }
 
     /// True when the stored row already holds what this signature says.
@@ -85,6 +94,7 @@ impl RowSig {
             && stored.logical == self.logical.as_str()
             && stored.kind == self.kind.as_str()
             && stored.role.as_deref() == Some(self.role.as_str())
+            && stored.severity.as_deref() == self.severity.map(Severity::as_str)
     }
 }
 
@@ -104,6 +114,9 @@ pub(crate) struct LaneEntry {
     pub tier: Option<ShortText>,
     pub fingerprint: ContentHash,
     pub adopted: bool,
+    /// The severity rules the swimlane was computed under: what a file's row is rated with. They are part of `fingerprint`, so an entry is
+    /// never used under other rules.
+    pub severity: Arc<SeverityRules>,
     /// The commits the Git side was last computed at (for the reconcile and the logs).
     pub heads: Heads,
     /// The engine's input, sorted by path. The content of a file is empty here, except while the engine runs.
@@ -136,6 +149,7 @@ impl LaneEntry {
         tier: Option<ShortText>,
         fingerprint: ContentHash,
         adopted: bool,
+        severity: Arc<SeverityRules>,
         heads: Heads,
         mut files: Vec<LaneFile>,
         opaque: BTreeMap<NfsPath, OpaqueFile>,
@@ -149,6 +163,7 @@ impl LaneEntry {
             tier,
             fingerprint,
             adopted,
+            severity,
             heads,
             files,
             opaque,
@@ -221,6 +236,7 @@ impl LaneEntry {
                 baseline: baseline_hash(o.baseline),
                 nfs: o.nfs,
                 class: o.class,
+                severity: file_severity(&self.severity, path, o.drift.state, o.class),
             });
         }
         let file = self.file(path)?;
@@ -234,6 +250,7 @@ impl LaneEntry {
             baseline: baseline_hash(file.baseline),
             nfs: state.hash,
             class: file.class,
+            severity: file_severity(&self.severity, path, state.drift.state, file.class),
         })
     }
 
@@ -362,6 +379,7 @@ mod tests {
             None,
             ContentHash::from_bytes([1; 32]),
             false,
+            Arc::new(SeverityRules::new(engine::default_rules()).unwrap()),
             Heads::default(),
             Vec::new(),
             BTreeMap::new(),
@@ -438,6 +456,7 @@ mod tests {
             baseline: None,
             nfs: None,
             class: FileClass::Structured,
+            severity: Some(Severity::Low),
         };
         let stored = Persisted {
             state: "git_ahead".to_owned(),
@@ -446,6 +465,7 @@ mod tests {
             logical: "a/b.yml".to_owned(),
             kind: "tenant".to_owned(),
             role: Some("resource".to_owned()),
+            severity: Some("low".to_owned()),
         };
         assert!(sig.matches(&stored));
         for change in [
@@ -465,9 +485,25 @@ mod tests {
                 kind: "base".to_owned(),
                 ..stored.clone()
             },
+            Persisted {
+                severity: Some("high".to_owned()),
+                ..stored.clone()
+            },
+            Persisted {
+                severity: None,
+                ..stored.clone()
+            },
         ] {
             assert!(!sig.matches(&change));
         }
+        let other = RowSig {
+            severity: Some(Severity::High),
+            ..sig.clone()
+        };
+        assert!(
+            !sig.derived_eq(&other),
+            "a row whose rating changed is a row to write"
+        );
     }
 
     #[test]

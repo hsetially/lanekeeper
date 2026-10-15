@@ -50,6 +50,8 @@ pub struct Tables {
             String,
         ),
     >,
+    /// path to the severity of its pending change (T9): what the rules rate it, `None` when nothing is pending
+    pub severities: BTreeMap<String, Option<String>>,
     /// (kind, fingerprint, path, severity, message), the open ones
     pub findings: BTreeSet<(String, String, Option<String>, String, String)>,
     pub dirs: BTreeMap<String, String>,
@@ -298,6 +300,18 @@ impl World {
 
     // ------------------------------------------------------------------------------------------------ the tables
 
+    /// The severity of every row of `file_state` (T9), `None` where nothing is pending.
+    pub async fn file_severities(&self) -> BTreeMap<String, Option<String>> {
+        sqlx::query("SELECT path, severity FROM file_state WHERE swimlane_id = $1 ORDER BY path LIMIT 100000")
+            .bind(self.rig.swimlane.as_str())
+            .fetch_all(&self.rig.pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.get::<String, _>("path"), r.get::<Option<String>, _>("severity")))
+            .collect()
+    }
+
     pub async fn tables(&self) -> Tables {
         let pool = &self.rig.pool;
         let lane = self.rig.swimlane.as_str();
@@ -327,6 +341,7 @@ impl World {
             )
         })
         .collect();
+        let severities = self.file_severities().await;
         let findings = sqlx::query(
             "SELECT kind, fingerprint, path, severity, message FROM findings \
              WHERE swimlane_id = $1 AND resolved_at IS NULL ORDER BY kind, fingerprint LIMIT 100000",
@@ -367,6 +382,7 @@ impl World {
         };
         Tables {
             rows,
+            severities,
             findings,
             dirs: pairs(
                 "SELECT dir_path, hash::bytea FROM effective_tree_hashes WHERE swimlane_id = $1 LIMIT 100000",

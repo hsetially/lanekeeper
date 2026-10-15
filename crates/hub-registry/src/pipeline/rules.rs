@@ -9,7 +9,8 @@
 //!
 //! Merge modes are not an input: since D82 the mode follows from a file's role, which the application names decide, so the
 //! `merge_modes` table can not change an engine answer and is left out of the fingerprint (a rule that changes nothing must not cost
-//! a swimlane recompute). The severity rules are an input, through the fingerprint of the set the pipeline was given.
+//! a swimlane recompute). The severity rules are an input: the defaults and the admin's rows of `severity_rules`, read with the rest of the
+//! rules of each batch, through the fingerprint of the set that was in force ([`crate::severity`]).
 //!
 //! Everything is read for all the swimlanes of a batch at once (one statement per kind, `= ANY`), so the cost of a batch does not
 //! grow with its number of swimlanes.
@@ -18,16 +19,18 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use domain::{AppName, ContentHash, PathMappingRule, ShortText, SwimlaneId, TenantId, TenantSet};
-use engine::{DenyMatcher, HostMatcher, HostRule, HostRules};
+use engine::{DenyMatcher, HostMatcher, HostRule, HostRules, SeverityRules};
 use sha2::{Digest, Sha256};
 use tracing::warn;
 
 use crate::db::Db;
 use crate::error::RegistryError;
 use crate::ingest::rules::rule_of;
+use crate::severity::SeverityRuleSource;
 
 /// Bump it when the pipeline's own logic changes what it stores for the same inputs, so that the next run recomputes everything.
-pub(crate) const RULES_VERSION: u8 = 1;
+/// 2: `file_state.severity` and the severity of the observation a row points at are written (T9); rows from before have none.
+pub(crate) const RULES_VERSION: u8 = 2;
 
 /// The most swimlanes, tenants, application names and host rules read in one batch. All of them are small; the bounds are guards.
 const MAX_SWIMLANES: i64 = 10_000;
@@ -39,6 +42,9 @@ pub(crate) struct GlobalRules {
     pub rule: PathMappingRule,
     pub hosts: Arc<HostRules>,
     pub deny: Arc<DenyMatcher>,
+    /// The severity rules in force for this batch: the engine's defaults and the admin's. A file's severity and a finding's are rated with
+    /// these, and the set is part of `fingerprint`, so a swimlane computed under other rules is computed again.
+    pub severity: Arc<SeverityRules>,
     /// A hash of everything above and of the severity rules, so that a swimlane's fingerprint needs only its own parts.
     fingerprint: [u8; 32],
 }
@@ -57,6 +63,7 @@ impl GlobalRules {
             rule,
             hosts: Arc::new(HostRules::default()),
             deny: Arc::new(DenyMatcher::default()),
+            severity: Arc::new(SeverityRules::new(engine::default_rules()).unwrap()),
             fingerprint: [7; 32],
         }
     }
@@ -153,8 +160,8 @@ pub(crate) struct RuleSource {
     deny: Arc<DenyMatcher>,
     /// The admin's deny globs, for the fingerprint (the compiled matcher cannot be hashed).
     deny_globs: Vec<String>,
-    /// The hash of the severity rules the pipeline was given.
-    severity: ContentHash,
+    /// The severity rules: the engine's defaults and the admin's rows, read with the rest of the rules of each batch.
+    severity: SeverityRuleSource,
 }
 
 impl RuleSource {
@@ -162,7 +169,7 @@ impl RuleSource {
         db: Db,
         deny: Arc<DenyMatcher>,
         deny_globs: Vec<String>,
-        severity: ContentHash,
+        severity: SeverityRuleSource,
     ) -> Self {
         Self {
             db,
@@ -192,6 +199,9 @@ impl RuleSource {
             )
             .await?;
         let rule = rule_of(&roots);
+        // The rows of `severity_rules` are read with the rest, once for the batch. A table that cannot be read fails the batch like any
+        // other rule that cannot be: a swimlane must not be rated with rules nobody chose.
+        let severity = self.severity.current().await?;
         let mut fp = Fingerprint::new("global");
         fp.field("version", &[RULES_VERSION]);
         fp.field("base_root", rule.base_root().as_str().as_bytes());
@@ -203,11 +213,12 @@ impl RuleSource {
         for tenant in deployable.iter() {
             fp.field("deployable", tenant.as_str().as_bytes());
         }
-        fp.field("severity", self.severity.as_bytes());
+        fp.field("severity", severity.fingerprint.as_bytes());
         Ok(Arc::new(GlobalRules {
             rule,
             hosts: Arc::new(host_rules_of(&hosts)),
             deny: Arc::clone(&self.deny),
+            severity: Arc::clone(&severity.rules),
             fingerprint: fp.finish(),
         }))
     }
@@ -332,12 +343,7 @@ mod tests {
     use super::*;
 
     fn global() -> GlobalRules {
-        GlobalRules {
-            rule: PathMappingRule::default(),
-            hosts: Arc::new(HostRules::default()),
-            deny: Arc::new(DenyMatcher::default()),
-            fingerprint: [7; 32],
-        }
+        GlobalRules::for_tests(PathMappingRule::default())
     }
 
     fn tenants(names: &[&str]) -> TenantSet {

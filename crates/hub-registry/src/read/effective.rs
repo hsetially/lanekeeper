@@ -38,7 +38,8 @@ use domain::{
     FileKind, FileRole, LogicalFile, MergeMode, NfsPath, SettingLocation, SwimlaneId, TenantId,
 };
 use engine::{
-    Effective, FlatSetting, Layer, Layers, Syntax, effective, logical_file_role, merge_mode, resolve_resource,
+    DenyMatcher, Effective, FlatSetting, Layer, Layers, Syntax, effective, logical_file_role, merge_mode,
+    resolve_resource,
 };
 use ports::ReadError;
 use sha2::{Digest, Sha256};
@@ -136,20 +137,26 @@ pub fn app_candidates(file: &LogicalFile) -> Vec<String> {
 
 pub const EXISTING_SQL: &str = "SELECT id FROM swimlanes WHERE id = ANY($1::text[])";
 
-pub(crate) fn layer_row(row: &sqlx::postgres::PgRow) -> Result<LayerRow, RegistryError> {
+/// A file row as a layer. `denied` is [`crate::denied::is_denied`]: the flag, the class and the hub's own globs, decided here once for
+/// everything that reads a file through a layer (the comparisons, the effective config, the resources, the grid), and the class says
+/// `denied` when it is.
+pub(crate) fn layer_row(row: &sqlx::postgres::PgRow, deny: &DenyMatcher) -> Result<LayerRow, RegistryError> {
     let path: String = row.get("path");
     let kind: String = row.get("kind");
     let class: String = row.get("class");
     let blob: Option<Vec<u8>> = row.get("blob");
     let norm: Option<Vec<u8>> = row.get("norm");
+    let path = NfsPath::parse(&path).map_err(|_| RegistryError::Corrupt)?;
+    let class = rows::class(&class)?;
+    let denied = crate::denied::is_denied(deny, &path, row.get("denied"), class);
     Ok(LayerRow {
-        path: NfsPath::parse(&path).map_err(|_| RegistryError::Corrupt)?,
         kind: rows::kind(&kind)?,
-        class: rows::class(&class)?,
+        class: if denied { FileClass::Denied } else { class },
         blob: rows::opt_hash(blob.as_deref())?,
         norm: rows::opt_hash(norm.as_deref())?,
         size: u64::try_from(row.get::<i64, _>("size")).unwrap_or(0),
-        denied: row.get("denied"),
+        denied,
+        path,
     })
 }
 
@@ -489,7 +496,7 @@ impl Inner {
         for row in &file_rows {
             let id: String = row.get("swimlane_id");
             let in_group: bool = row.get("in_group");
-            let layer = layer_row(row)?;
+            let layer = layer_row(row, &self.deny)?;
             let Some(g) = SwimlaneId::parse(&id).ok().and_then(|s| out.get_mut(&s)) else {
                 continue;
             };

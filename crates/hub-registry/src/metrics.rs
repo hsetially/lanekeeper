@@ -369,6 +369,8 @@ pub struct RegistryMetrics {
     read_cache: Family<ReadCacheLabels, Counter>,
     read_search_truncated: Counter,
     blob_withheld: Counter,
+    severity_rules_skipped: Counter,
+    severity_rules_active: Gauge,
 }
 
 /// 1 ms to about 8 s per read: the budgets are tens of milliseconds, a cold text search is hundreds.
@@ -430,6 +432,8 @@ impl Default for RegistryMetrics {
             read_cache: Family::default(),
             read_search_truncated: Counter::default(),
             blob_withheld: Counter::default(),
+            severity_rules_skipped: Counter::default(),
+            severity_rules_active: Gauge::default(),
         }
     }
 }
@@ -666,6 +670,16 @@ impl RegistryMetrics {
             "registry_blob_withheld",
             "Blob requests refused because the hash is the content of a denied file",
             self.blob_withheld.clone(),
+        );
+        registry.register(
+            "registry_severity_rules_skipped",
+            "Rows of severity_rules that were not applied (a condition or a glob the engine refuses, or the id of a default rule), counted each time a set of rules is compiled",
+            self.severity_rules_skipped.clone(),
+        );
+        registry.register(
+            "registry_severity_rules_active",
+            "Rules from severity_rules in effect on top of the defaults",
+            self.severity_rules_active.clone(),
         );
     }
 
@@ -913,6 +927,23 @@ impl RegistryMetrics {
 
     pub(crate) fn blob_withheld(&self) {
         self.blob_withheld.inc();
+    }
+
+    /// A set of severity rules was compiled: `active` rows are in effect and `skipped` were not (T9, D103).
+    pub(crate) fn severity_rules(&self, active: usize, skipped: usize) {
+        self.severity_rules_active
+            .set(i64::try_from(active).unwrap_or(i64::MAX));
+        self.severity_rules_skipped.inc_by(skipped as u64);
+    }
+
+    /// Rows of `severity_rules` that were not applied, over all the sets compiled, for tests.
+    pub fn severity_rules_skipped_count(&self) -> u64 {
+        self.severity_rules_skipped.get()
+    }
+
+    /// Rules from `severity_rules` in effect in the last set compiled, for tests.
+    pub fn severity_rules_active_count(&self) -> i64 {
+        self.severity_rules_active.get()
     }
 
     /// Reads by operation and outcome, for tests.

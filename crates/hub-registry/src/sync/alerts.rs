@@ -38,7 +38,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use domain::{DriftState, FindingKind, NfsPath, Severity, ShortText, SwimlaneId};
-use engine::{ChangeContext, SeverityRules, default_rules, severity};
+use engine::{ChangeContext, severity};
 use ports::{Notification, NotificationKind, Notifier};
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
@@ -50,6 +50,7 @@ use crate::config::{ConfigError, RegistryConfig};
 use crate::db::{Db, ts};
 use crate::error::RegistryError;
 use crate::metrics::{AlertResult, RegistryMetrics};
+use crate::severity::SeverityRuleSource;
 
 /// The drift states an alert is raised for: NFS has something Git does not.
 pub(crate) const ALERTABLE: [DriftState; 3] =
@@ -170,7 +171,8 @@ struct Inner {
     metrics: RegistryMetrics,
     notify_timeout: std::time::Duration,
     permits: Arc<Semaphore>,
-    severity: SeverityRules,
+    /// The rules a C7 is rated with. Everything else an alert says about severity is the severity of the findings the pipeline wrote.
+    severity: SeverityRuleSource,
 }
 
 /// Drift alerts. Cloning shares the notifier, the gate and the bound on alerts in flight.
@@ -191,8 +193,7 @@ impl Alerts {
     /// The configuration is refused when a limit is out of range.
     pub fn new(deps: AlertsDeps) -> Result<Self, ConfigError> {
         deps.config.validate()?;
-        let severity =
-            SeverityRules::new(default_rules()).map_err(|_| ConfigError::Invalid("severity_rules"))?;
+        let severity = SeverityRuleSource::new(deps.pool.clone(), &deps.config, deps.metrics.clone())?;
         let db = Db::new(deps.pool, deps.config.query_timeout);
         Ok(Self {
             inner: Arc::new(Inner {
@@ -280,7 +281,7 @@ impl Alerts {
                 finding_kind: Some(FindingKind::OverwrittenNfsChange),
                 ..ChangeContext::default()
             },
-            &inner.severity,
+            &inner.severity.current_or_last().await.rules,
         )
         .severity;
         let mut groups: BTreeMap<Severity, Counts> = drift

@@ -45,7 +45,9 @@
 //!   reports only dead overrides (`spring_merge`). C9 to C11 and the "as served" check are written by T10.
 //! - It does not audit what it derives, only what it decides (plan A12): baselines set by convergence (one event for a commit, with
 //!   the paths) and marks cleared.
-//! - Severity is the default rule set until T9 loads the admin's.
+//! - It does not decide what is serious: the rules are the engine's defaults and the admin's rows of `severity_rules`
+//!   ([`crate::severity`]), read with the rest of the rules of every batch. What they rate is written with the state (`file_state.severity`,
+//!   the observation a row points at, the findings), and the set is part of the rules fingerprint, so a change of the rows is a whole recompute.
 
 pub mod affected;
 pub(crate) mod batch;
@@ -67,11 +69,10 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use domain::{CommitId, ContentHash, RepoKind, SwimlaneId, TenantId};
-use engine::{DenyMatcher, SeverityRules};
+use domain::{CommitId, RepoKind, SwimlaneId, TenantId};
+use engine::DenyMatcher;
 use hub_platform::jobs::{Job, JobSpec, SpecError};
 use ports::{AuditLog, BlobStore, EventBus, GitReader};
-use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tokio::sync::{Mutex, mpsc};
 
@@ -90,6 +91,7 @@ use crate::config::{ConfigError, RegistryConfig};
 use crate::db::Db;
 use crate::index::{GitIndex, GitIndexDeps, TreeHashStore};
 use crate::metrics::RegistryMetrics;
+use crate::severity::SeverityRuleSource;
 
 /// A job and its spec, as the hub's job runner takes them.
 pub type JobEntry = (JobSpec, Arc<dyn Job>);
@@ -137,7 +139,6 @@ pub(crate) struct Inner {
     pub loader: LaneLoader,
     pub persist: Persist,
     pub rules: RuleSource,
-    pub severity: Arc<SeverityRules>,
     pub config: RegistryConfig,
     pub metrics: RegistryMetrics,
     pub pool: Arc<rayon::ThreadPool>,
@@ -168,11 +169,6 @@ impl std::fmt::Debug for Pipeline {
     }
 }
 
-/// A hash of the default severity rules, so that a change to them recomputes every swimlane. T9 replaces the rules with the admin's.
-fn severity_fingerprint(rules: &[engine::SeverityRule]) -> ContentHash {
-    ContentHash::from_bytes(Sha256::digest(format!("{rules:?}").as_bytes()).into())
-}
-
 impl Pipeline {
     /// # Errors
     ///
@@ -197,10 +193,7 @@ impl Pipeline {
             config: config.clone(),
             metrics: metrics.clone(),
         })?;
-        let default_rules = engine::default_rules();
-        let severity_hash = severity_fingerprint(&default_rules);
-        let severity =
-            SeverityRules::new(default_rules).map_err(|_| ConfigError::Invalid("severity_rules"))?;
+        let severity = SeverityRuleSource::new(pool.clone(), &config, metrics.clone())?;
         let deny = Arc::new(
             DenyMatcher::with_globs(config.extra_deny_globs.iter().map(String::as_str))
                 .map_err(|_| ConfigError::Invalid("extra_deny_globs"))?,
@@ -224,7 +217,7 @@ impl Pipeline {
         let (signal_tx, signal_rx) = mpsc::channel(config.signal_queue);
         let inner = Inner {
             loader: LaneLoader::new(db.clone(), blobs, config.blob_timeout),
-            rules: RuleSource::new(db.clone(), deny, config.extra_deny_globs.clone(), severity_hash),
+            rules: RuleSource::new(db.clone(), deny, config.extra_deny_globs.clone(), severity),
             db,
             git,
             git_index,
@@ -232,7 +225,6 @@ impl Pipeline {
             audit,
             clock,
             persist,
-            severity: Arc::new(severity),
             exec: Mutex::new(Exec {
                 store: LaneStore::new(config.max_lanes_in_memory),
             }),
@@ -344,15 +336,5 @@ mod tests {
         let nightly = Pipeline::nightly_spec(&config).unwrap();
         assert_eq!(nightly.name(), NIGHTLY_JOB);
         assert_eq!(NIGHTLY_JOB, "registry-nightly");
-    }
-
-    #[test]
-    fn the_severity_fingerprint_follows_the_rules() {
-        let rules = engine::default_rules();
-        let a = severity_fingerprint(&rules);
-        assert_eq!(a, severity_fingerprint(&rules));
-        let mut fewer = rules;
-        fewer.pop();
-        assert_ne!(a, severity_fingerprint(&fewer));
     }
 }

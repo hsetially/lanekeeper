@@ -48,7 +48,8 @@ const MAX_ROWS: i64 = 200_000 + 1;
 /// and does).
 pub const ROWS_OF_LANE_SQL: &str = "\
 SELECT fs.path, fs.class, fs.denied, fs.nfs_hash::bytea, fs.nfs_drift_hash::bytea, fs.state, fs.git_hash::bytea, \
-       fs.baseline_hash::bytea, fs.logical_file, fs.kind, fs.role, o.previous_state, o.previous_hash::bytea, o.attribution_source \
+       fs.baseline_hash::bytea, fs.logical_file, fs.kind, fs.role, o.previous_state, o.previous_hash::bytea, o.attribution_source, \
+       fs.severity \
 FROM file_state fs \
 LEFT JOIN LATERAL (SELECT previous_state, previous_hash, attribution_source FROM file_observations \
                    WHERE id = fs.last_observation_id AND previous_state IS NOT NULL LIMIT 1) o ON true \
@@ -56,7 +57,8 @@ WHERE fs.swimlane_id = $1 ORDER BY fs.path LIMIT $2";
 
 pub const ROWS_OF_PATHS_SQL: &str = "\
 SELECT p.sl, fs.path, fs.class, fs.denied, fs.nfs_hash::bytea, fs.nfs_drift_hash::bytea, fs.state, fs.git_hash::bytea, \
-       fs.baseline_hash::bytea, fs.logical_file, fs.kind, fs.role, o.previous_state, o.previous_hash::bytea, o.attribution_source \
+       fs.baseline_hash::bytea, fs.logical_file, fs.kind, fs.role, o.previous_state, o.previous_hash::bytea, o.attribution_source, \
+       fs.severity \
 FROM unnest($1::text[], $2::text[]) AS p(sl, path) \
 JOIN file_state fs ON fs.swimlane_id = p.sl AND fs.path = p.path \
 LEFT JOIN LATERAL (SELECT previous_state, previous_hash, attribution_source FROM file_observations \
@@ -110,6 +112,7 @@ type RowTuple = (
     Option<String>,
     Option<Vec<u8>>,
     Option<String>,
+    Option<String>,
 );
 
 /// A row of `ROWS_OF_PATHS_SQL`: the swimlane, then a [`RowTuple`].
@@ -128,6 +131,7 @@ type PathRowTuple = (
     Option<String>,
     Option<String>,
     Option<Vec<u8>>,
+    Option<String>,
     Option<String>,
 );
 
@@ -167,6 +171,7 @@ fn row_of(t: RowTuple) -> Result<(NfsPath, StateRow), RegistryError> {
         prev_state,
         prev_hash,
         source,
+        severity,
     ) = t;
     let class = FileClass::from_str(&class).map_err(|_| RegistryError::Corrupt)?;
     // The denied flag and the class say the same thing; a row that disagrees is read as denied, the safe side.
@@ -197,6 +202,7 @@ fn row_of(t: RowTuple) -> Result<(NfsPath, StateRow), RegistryError> {
                 logical,
                 kind,
                 role,
+                severity,
             },
             overwrite,
         },
@@ -328,7 +334,7 @@ impl LaneLoader {
             let (lane, rest) = (r.0.clone(), r);
             let tuple: RowTuple = (
                 rest.1, rest.2, rest.3, rest.4, rest.5, rest.6, rest.7, rest.8, rest.9, rest.10, rest.11,
-                rest.12, rest.13, rest.14,
+                rest.12, rest.13, rest.14, rest.15,
             );
             let (p, row) = row_of(tuple)?;
             out.entry(lane_of(&lane)?).or_default().rows.insert(p, row);
@@ -739,6 +745,7 @@ mod tests {
                 logical: String::new(),
                 kind: "base".to_owned(),
                 role: None,
+                severity: None,
             },
             overwrite: None,
         }
@@ -1136,6 +1143,7 @@ mod tests {
             None,
             f.lane.fingerprint,
             false,
+            Arc::clone(&f.lane.global.severity),
             crate::pipeline::git_side::Heads::default(),
             Vec::new(),
             BTreeMap::new(),

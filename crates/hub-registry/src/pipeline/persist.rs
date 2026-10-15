@@ -28,8 +28,8 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use domain::{
-    CommitId, ContentHash, DomainEvent, DriftState, FileClass, LogicalFile, NfsPath, RepoKind, ShortText,
-    SwimlaneId, Timestamp,
+    CommitId, ContentHash, DomainEvent, DriftState, FileClass, LogicalFile, NfsPath, RepoKind, Severity,
+    ShortText, SwimlaneId, Timestamp,
 };
 use engine::LaneState;
 use ports::{AuditAction, AuditActor, AuditEvent, AuditLog, AuditVia, EventBus, Tx};
@@ -58,14 +58,23 @@ const COMPONENT: &str = "registry-pipeline";
 
 /// The statements, as constants so that the EXPLAIN snapshot test takes exactly what runs (P12).
 pub const UPSERT_ROWS_SQL: &str = "\
-INSERT INTO file_state (swimlane_id, path, logical_file, kind, class, role, git_hash, baseline_hash, state, denied, updated_at) \
-SELECT $1, x.path, x.logical, x.kind, x.class, x.role, x.git, x.base, x.state, x.denied, \
+INSERT INTO file_state (swimlane_id, path, logical_file, kind, class, role, git_hash, baseline_hash, state, denied, severity, updated_at) \
+SELECT $1, x.path, x.logical, x.kind, x.class, x.role, x.git, x.base, x.state, x.denied, x.sev, \
        (timestamptz 'epoch' + ($10::bigint::text || ' milliseconds')::interval) \
-FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::bytea[], $8::bytea[], $9::text[], $11::boolean[]) \
-     AS x(path, logical, kind, class, role, git, base, state, denied) \
+FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::bytea[], $8::bytea[], $9::text[], $11::boolean[], $12::text[]) \
+     AS x(path, logical, kind, class, role, git, base, state, denied, sev) \
 ON CONFLICT (swimlane_id, path) DO UPDATE SET \
   logical_file = EXCLUDED.logical_file, kind = EXCLUDED.kind, role = EXCLUDED.role, git_hash = EXCLUDED.git_hash, \
-  baseline_hash = EXCLUDED.baseline_hash, state = EXCLUDED.state, updated_at = EXCLUDED.updated_at";
+  baseline_hash = EXCLUDED.baseline_hash, state = EXCLUDED.state, severity = EXCLUDED.severity, updated_at = EXCLUDED.updated_at";
+
+/// The observation each of these rows points at gets the row's severity, while there is one: what was rated for the change that moved the
+/// file is what its history says of that version (T9, D103). A row that has none (nothing is pending any more) leaves the version as it
+/// was rated, so resolving a change does not rewrite the history. `$1` the swimlane, `$2` the paths.
+pub const STAMP_OBSERVATIONS_SQL: &str = "\
+UPDATE file_observations o SET severity = fs.severity \
+FROM file_state fs \
+WHERE fs.swimlane_id = $1 AND fs.path = ANY($2::text[]) AND fs.severity IS NOT NULL \
+  AND o.id = fs.last_observation_id AND o.severity IS DISTINCT FROM fs.severity";
 
 pub const DELETE_ROWS_SQL: &str =
     "DELETE FROM file_state WHERE swimlane_id = $1 AND path = ANY($2::text[]) AND nfs_hash IS NULL";
@@ -288,6 +297,11 @@ impl Persist {
         for chunk in c.writes.chunks(self.rows) {
             self.upsert_rows(&mut tx, c.swimlane, chunk, now_ms).await?;
         }
+        // The paths named in `DriftChanged` are the ones whose current version is new or whose rating moved; a path that only had a new
+        // version (its state, and so its rating, the same) is not among the rows written, and its version is rated here all the same.
+        for chunk in c.drift_paths.chunks(self.rows) {
+            self.stamp_observations(&mut tx, c.swimlane, chunk).await?;
+        }
         for chunk in c.deletes.chunks(self.rows) {
             report.rows_deleted += self.delete_rows(&mut tx, c.swimlane, chunk).await?;
         }
@@ -361,6 +375,10 @@ impl Persist {
         let base: Vec<Option<Vec<u8>>> = rows.iter().map(|r| raw(r.sig.baseline)).collect();
         let states: Vec<&str> = rows.iter().map(|r| r.sig.state.as_str()).collect();
         let denied: Vec<bool> = rows.iter().map(|r| r.sig.class == FileClass::Denied).collect();
+        let severities: Vec<Option<&str>> = rows
+            .iter()
+            .map(|r| r.sig.severity.map(Severity::as_str))
+            .collect();
         self.db
             .run(
                 "persist_rows",
@@ -376,6 +394,27 @@ impl Persist {
                     .bind(&states)
                     .bind(now_ms)
                     .bind(&denied)
+                    .bind(&severities)
+                    .execute(&mut **tx),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Rate the observations the rows of these paths point at (see [`STAMP_OBSERVATIONS_SQL`]).
+    async fn stamp_observations(
+        &self,
+        tx: &mut Txn,
+        swimlane: &SwimlaneId,
+        paths: &[NfsPath],
+    ) -> Result<(), RegistryError> {
+        let names: Vec<&str> = paths.iter().map(NfsPath::as_str).collect();
+        self.db
+            .run(
+                "persist_stamp_observations",
+                sqlx::query(STAMP_OBSERVATIONS_SQL)
+                    .bind(swimlane.as_str())
+                    .bind(&names)
                     .execute(&mut **tx),
             )
             .await?;
@@ -659,7 +698,8 @@ mod tests {
     fn the_statements_name_every_bind_they_use() {
         // A statement that uses $n must be given n binds; the numbers below are what `persist` passes.
         for (sql, last) in [
-            (UPSERT_ROWS_SQL, 11),
+            (UPSERT_ROWS_SQL, 12),
+            (STAMP_OBSERVATIONS_SQL, 2),
             (DELETE_ROWS_SQL, 2),
             (UPSERT_BASELINES_SQL, 8),
             (CLEAR_MARKS_SQL, 2),

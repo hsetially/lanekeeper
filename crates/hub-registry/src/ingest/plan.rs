@@ -163,13 +163,18 @@ pub(crate) fn plan_path(
     let stored = stored.filter(|s| s.observed);
     let existed = stored.is_some();
     let mut cur_hash = stored.and_then(|s| s.hash);
+    // The flag the version before the next one has. A version that moves the state moves it too.
+    let mut cur_denied = stored.is_some_and(|s| s.denied);
     let mut cur_at = stored.map_or(-1, |s| s.observed_at_ms);
     let mut plan = PathPlan::default();
 
     for version in files.into_iter().chain(removals) {
         match version {
             Version::File { entry, during_job } => {
-                if cur_hash == Some(entry.hash) {
+                // The same content is the same version, **unless the flag changed** (D79, D104). The agent names a change of its deny list as
+                // a change of the file, with the hash it had; a hub that took the hash for the whole answer would keep serving a file that
+                // its agent has since said is denied (and refuse one that no longer is) until its content happened to change.
+                if cur_hash == Some(entry.hash) && cur_denied == entry.denied {
                     plan.unchanged += 1;
                     continue;
                 }
@@ -207,6 +212,7 @@ pub(crate) fn plan_path(
                 });
                 if moves_state {
                     cur_hash = Some(entry.hash);
+                    cur_denied = entry.denied;
                     cur_at = at;
                 }
             }
@@ -675,6 +681,93 @@ mod tests {
         );
         assert!(!p.candidates[0].moves_state);
         assert_eq!(p.candidates[0].previous, None);
+    }
+
+    /// A version of `hash` at `at` with the denied flag as given.
+    fn flagged(hash: &str, at: i64, denied: bool) -> Version {
+        let mut v = file(hash, at);
+        if let Version::File { entry, .. } = &mut v {
+            entry.denied = denied;
+            if denied {
+                entry.class = FileClass::Denied;
+                entry.has_content = false;
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn the_same_content_with_another_denied_flag_is_a_change_of_the_file() {
+        // The agent's tree names a change of the flag as a change (its deny list changed), with the content as it was. The hub must act
+        // on it: a file whose flag it ignores stays readable for as long as its content does not change (D79, D104).
+        let ordinary = stored(Some("a"), 10);
+        let p = plan(Some(&ordinary), &[flagged("a", 20, true)], false);
+        assert_eq!(p.unchanged, 0, "not a version equal to the stored one");
+        let c = &p.candidates[0];
+        assert!(c.moves_state, "it moves the state: the row's class and flag");
+        assert_eq!(c.hash, Some(h("a")));
+        assert_eq!(c.before, Some(h("a")), "the same content");
+        assert!(
+            c.out_of_band && !c.initial(),
+            "audited like any change of a denied file"
+        );
+
+        // The other way: the flag cleared, with the bytes.
+        let denied = Stored {
+            denied: true,
+            class: FileClass::Denied,
+            ..stored(Some("a"), 10)
+        };
+        let p = plan(Some(&denied), &[flagged("a", 20, false)], false);
+        assert_eq!(p.candidates.len(), 1);
+        assert_eq!(p.unchanged, 0);
+
+        // The same flag with the same content is still nothing: a replay, or the next scan.
+        assert!(
+            plan(Some(&denied), &[flagged("a", 20, true)], false)
+                .candidates
+                .is_empty()
+        );
+        assert!(
+            plan(Some(&ordinary), &[flagged("a", 20, false)], false)
+                .candidates
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn within_one_delta_the_flag_is_compared_with_the_version_before_it() {
+        // a (ordinary), then a (denied), then a (denied) again: the flag changes once.
+        let p = plan(
+            Some(&stored(Some("a"), 5)),
+            &[flagged("a", 10, true), flagged("a", 20, true)],
+            false,
+        );
+        assert_eq!(p.candidates.len(), 1);
+        assert_eq!(p.unchanged, 1);
+        // a denied, then a ordinary again, then a denied: three changes of the flag.
+        let p = plan(
+            Some(&stored(Some("a"), 5)),
+            &[
+                flagged("a", 10, true),
+                flagged("a", 20, false),
+                flagged("a", 30, true),
+            ],
+            false,
+        );
+        assert_eq!(p.candidates.len(), 3);
+        assert_eq!(p.candidates[2].before, Some(h("a")));
+    }
+
+    #[test]
+    fn a_path_nobody_has_observed_is_not_a_stored_flag() {
+        // A row that Git alone made (no observation) has no flag of NFS's: the first sight is a first sight.
+        let mut git_only = stored(Some("a"), 0);
+        git_only.observed = false;
+        git_only.denied = true;
+        let p = plan(Some(&git_only), &[flagged("a", 20, false)], false);
+        assert_eq!(p.candidates.len(), 1);
+        assert!(p.candidates[0].first_sight());
     }
 
     #[test]

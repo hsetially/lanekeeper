@@ -15,8 +15,8 @@ use hub_registry::pipeline::lane_loader::{
     ROWS_OF_PATHS_SQL,
 };
 use hub_registry::pipeline::persist::{
-    DELETE_ROWS_SQL, OPEN_FINDINGS_SQL, RESOLVE_FINDINGS_SQL, UPSERT_BASELINES_SQL, UPSERT_FINDINGS_SQL,
-    UPSERT_ROWS_SQL,
+    DELETE_ROWS_SQL, OPEN_FINDINGS_SQL, RESOLVE_FINDINGS_SQL, STAMP_OBSERVATIONS_SQL, UPSERT_BASELINES_SQL,
+    UPSERT_FINDINGS_SQL, UPSERT_ROWS_SQL,
 };
 use hub_registry::read::compare::BASELINE_BLOB_SQL;
 use hub_registry::read::compare_tree::{
@@ -333,11 +333,21 @@ async fn pipeline_queries_have_no_sequential_scan_on_large_tables() {
             Arg::TextArray(vec!["unknown".to_owned(); n]),
             Arg::Int(1_700_000_000_000),
             Arg::BoolArray(vec![false; n]),
+            Arg::OptTextArray(vec![Some("medium".to_owned()); n]),
         ],
     )
     .await;
     no_large_sequential_scan("upsert rows", &upsert_rows);
     insta::assert_json_snapshot!("pipeline_upsert_rows", upsert_rows);
+    // The observations the rows point at are rated by their primary keys, never by a scan of the history (T9).
+    let stamp = explain(
+        &pool,
+        STAMP_OBSERVATIONS_SQL,
+        &[Arg::Text("lane7"), Arg::TextArray(paths.clone())],
+    )
+    .await;
+    no_large_sequential_scan("stamp observations", &stamp);
+    insta::assert_json_snapshot!("pipeline_stamp_observations", stamp);
     let delete_rows = explain(
         &pool,
         DELETE_ROWS_SQL,
@@ -640,7 +650,8 @@ async fn read_queries_have_no_sequential_scan_on_large_tables() {
             Arg::Int(0),
             Arg::OptText(None),
             Arg::Text("%"),
-            Arg::Int(101)
+            Arg::Int(101),
+            Arg::Int32(4)
         ]
     );
     check!(
@@ -651,7 +662,8 @@ async fn read_queries_have_no_sequential_scan_on_large_tables() {
             Arg::Int(1500),
             Arg::OptText(Some("git_ahead")),
             Arg::Text("dir3/%"),
-            Arg::Int(101)
+            Arg::Int(101),
+            Arg::Int32(1)
         ]
     );
 

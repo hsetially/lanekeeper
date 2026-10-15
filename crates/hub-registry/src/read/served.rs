@@ -163,7 +163,12 @@ impl Inner {
             return Err(ReadError::NotFound);
         }
         let row = self.file_row(swimlane, &request.file).await?;
-        let denied = row.as_ref().is_some_and(|r| r.denied) || self.deny.is_denied(&request.file);
+        let denied = crate::denied::is_denied(
+            &self.deny,
+            &request.file,
+            row.as_ref().is_some_and(|r| r.denied),
+            row.as_ref().map_or(domain::FileClass::Text, |r| r.class),
+        );
         if denied {
             let (role, _) = self.served_context(swimlane, request).await?;
             let hash = row.and_then(|r| r.hash).ok_or(ReadError::NotFound)?;

@@ -106,7 +106,7 @@ impl Inner {
             .await?;
         fetched
             .iter()
-            .map(|r| super::effective::layer_row(r).map_err(ReadError::from))
+            .map(|r| super::effective::layer_row(r, &self.deny).map_err(ReadError::from))
             .collect()
     }
 
@@ -131,9 +131,11 @@ impl Inner {
                     .fetch_all(self.db.pool()),
             )
             .await?;
+        // A denied file is not a source of the view: its values would be rendered into another file's text (`${KEY}`).
         let property_rows = fetched
             .iter()
-            .map(|r| super::effective::layer_row(r).map_err(ReadError::from))
+            .map(|r| super::effective::layer_row(r, &self.deny).map_err(ReadError::from))
+            .filter(|r| r.as_ref().map_or(true, |r| !r.denied))
             .collect::<Result<Vec<_>, _>>()?;
         let wanted: Vec<(ContentHash, Syntax)> = property_rows
             .iter()

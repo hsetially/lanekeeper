@@ -65,9 +65,19 @@ async fn the_blob_policy_refuses_their_hashes() {
             .await
             .unwrap();
     assert!(!copy_denied);
-    // Once no denied file has the hash, nothing holds it back (the copy is an ordinary file by the admin's own rules).
+    // The denied file is deleted on NFS. Its row stays (the trace of a removed file) and its history still names the hash, and a denied file
+    // is refused for every version it has had (T9, D104): the bytes are still the key's.
     let mut r = r;
     r.world.nfs_delete(&["keys/server.pem"]).await;
+    assert!(
+        !policy.allowed(&key).await,
+        "the file that was denied has had these bytes: it is still refused"
+    );
+    // Once no row of a denied file has had the hash, nothing holds it back (the copy is an ordinary file by the admin's own rules).
+    sqlx::query("DELETE FROM file_state WHERE path = 'keys/server.pem'")
+        .execute(&r.world.rig.pool)
+        .await
+        .unwrap();
     assert!(policy.allowed(&key).await);
 }
 

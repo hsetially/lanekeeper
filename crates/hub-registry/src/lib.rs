@@ -45,6 +45,7 @@ pub mod branches;
 pub mod clock;
 pub mod config;
 pub mod db;
+pub mod denied;
 pub mod error;
 pub mod http;
 pub mod index;
@@ -52,6 +53,7 @@ pub mod ingest;
 pub mod metrics;
 pub mod pipeline;
 pub mod read;
+pub mod severity;
 pub mod sync;
 
 pub use adoption::{
@@ -76,6 +78,7 @@ pub use pipeline::{
 };
 pub use read::warmup::WarmupTask;
 pub use read::{Named, ReadDeps, RegistryApi, RegistryService, Tagged};
+pub use severity::{SeverityRuleSource, file_severity};
 pub use sync::{
     Alerts, AlertsDeps, SyncDeps, SyncError, SyncOutcome, SyncService, SyncSource, WATCH_JOB, WatchReport,
 };

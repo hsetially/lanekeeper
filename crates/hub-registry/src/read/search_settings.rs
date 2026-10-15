@@ -469,8 +469,15 @@ impl Inner {
         let next = key
             .map(|k| cursor::issue(Kind::SettingsSearch, &context, k))
             .transpose()?;
+        // The statements leave out the files that are flagged denied. A file that the hub's own globs deny and no agent has flagged yet is
+        // taken out here (D104): the page may be short, as it is when a batch has settings of blobs that are no file's now, and the cursor
+        // is the place the search got to, so the next page is the next hits and none is shown twice or skipped.
         Ok(Paged {
-            items: hits.into_iter().map(|h| h.hit).collect(),
+            items: hits
+                .into_iter()
+                .map(|h| h.hit)
+                .filter(|h| !self.deny.is_denied(&h.file))
+                .collect(),
             next,
         })
     }

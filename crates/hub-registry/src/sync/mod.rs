@@ -56,7 +56,7 @@ use std::time::Instant;
 use domain::{
     Actor, CommitId, FindingKind, HubCommand, NfsPath, RepoKind, Severity, ShortText, SwimlaneId, TenantId,
 };
-use engine::{ChangeContext, SeverityRules, default_rules, severity};
+use engine::{ChangeContext, severity};
 use ports::{
     AgentGateway, AuditActor, AuditLog, EventBus, GatewayError, GitError, GitReader, Notification,
     NotificationKind, Notifier,
@@ -74,6 +74,7 @@ use crate::index::{GitIndex, GitIndexDeps};
 use crate::ingest::rules::{LaneRules, load as load_rules};
 use crate::metrics::{RegistryMetrics, SyncResult};
 use crate::pipeline::{PipelineHandle, blocking};
+use crate::severity::SeverityRuleSource;
 
 /// The most paths a [`SyncOutcome`] lists. The count is exact; the list is for a person and a test.
 pub const MAX_REPORTED_PATHS: usize = 1_000;
@@ -223,7 +224,8 @@ pub(crate) struct Inner {
     pub config: RegistryConfig,
     pub metrics: RegistryMetrics,
     pub pipeline: Option<PipelineHandle>,
-    pub severity: SeverityRules,
+    /// The severity rules: what the notification about overwritten changes is rated with (T9).
+    pub severity: SeverityRuleSource,
     /// The evaluation of a closed window's alerts, and the warning about a stale one (T8).
     pub alerts: AlertSink,
 }
@@ -252,8 +254,7 @@ impl SyncService {
             config: deps.config.clone(),
             metrics: deps.metrics.clone(),
         })?;
-        let severity =
-            SeverityRules::new(default_rules()).map_err(|_| ConfigError::Invalid("severity_rules"))?;
+        let severity = SeverityRuleSource::new(deps.pool.clone(), &deps.config, deps.metrics.clone())?;
         let alerts = AlertSink::new(AlertSinkDeps {
             pool: deps.pool.clone(),
             notifier: Arc::clone(&deps.notifier),
@@ -489,7 +490,7 @@ impl Inner {
         if count == 0 {
             return false;
         }
-        let Some(n) = self.overwritten_notification(r, count) else {
+        let Some(n) = self.overwritten_notification(r, count).await else {
             return false;
         };
         // An external call: bounded (rule 5), and whatever it does the report goes on.
@@ -507,13 +508,15 @@ impl Inner {
     }
 
     /// Ids and counts only (S10): never a path, a hash or any content.
-    fn overwritten_notification(&self, r: &Report, count: usize) -> Option<Notification> {
+    async fn overwritten_notification(&self, r: &Report, count: usize) -> Option<Notification> {
+        // The rules of the table, or the last ones read (or the defaults) when it cannot be read: the notification must go out.
+        let rules = self.severity.current_or_last().await;
         let outcome = severity(
             &ChangeContext {
                 finding_kind: Some(FindingKind::OverwrittenNfsChange),
                 ..ChangeContext::default()
             },
-            &self.severity,
+            &rules.rules,
         );
         let severity: Severity = outcome.severity;
         Some(Notification {
