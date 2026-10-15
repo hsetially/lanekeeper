@@ -23,8 +23,8 @@
 //!
 //! Nothing here logs the setting, the value or the reason; the span carries the request id, the user, the swimlane and the path.
 
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -90,31 +90,53 @@ pub trait RevealDesk: Send + Sync + 'static {
 /// The length of the rate limit's window.
 const WINDOW: Duration = Duration::from_secs(60);
 
-/// A sliding-window limit per user: at most `per_minute` takes in any 60 seconds. The table of users is bounded, and an entry
-/// nobody has touched for two windows is dropped, so the table follows the people who reveal.
+/// A sliding-window limit per user: at most `per_minute` takes in any 60 seconds. The table of users is bounded, and a user's
+/// window is never dropped while it still limits them: when the table is full, the windows whose last take is a whole window old
+/// are swept out, and if none is, the newcomer is refused (fail closed) until one ends. A cache that evicts by popularity or
+/// recency could push a limited user out and give them a fresh window, which is a way round the limit.
 pub(crate) struct RevealLimiter {
     per_minute: usize,
-    windows: moka::sync::Cache<UserId, Arc<Mutex<VecDeque<i64>>>>,
+    max_users: usize,
+    windows: Mutex<HashMap<UserId, VecDeque<i64>>>,
 }
 
 impl RevealLimiter {
     pub fn new(per_minute: u32, tracked_users: u64) -> Self {
         Self {
             per_minute: usize::try_from(per_minute).unwrap_or(usize::MAX),
-            windows: moka::sync::Cache::builder()
-                .max_capacity(tracked_users)
-                .time_to_idle(WINDOW * 2)
-                .build(),
+            max_users: usize::try_from(tracked_users).unwrap_or(usize::MAX),
+            windows: Mutex::new(HashMap::new()),
         }
     }
 
     /// Count one attempt of `user` at `now_ms`. `Err` is the wait, in whole seconds, until a slot is free.
     pub fn take(&self, user: &UserId, now_ms: i64) -> Result<(), u64> {
         let window_ms = i64::try_from(WINDOW.as_millis()).unwrap_or(60_000);
-        let window = self
-            .windows
-            .get_with(user.clone(), || Arc::new(Mutex::new(VecDeque::new())));
-        let mut taken = window.lock().unwrap_or_else(PoisonError::into_inner);
+        let seconds = |wait_ms: i64| {
+            // At most a window, even if the clock was moved: the wait is a hint, the next take decides.
+            u64::try_from(wait_ms.max(1))
+                .unwrap_or(60_000)
+                .div_ceil(1000)
+                .clamp(1, 60)
+        };
+        let mut table = self.windows.lock().unwrap_or_else(PoisonError::into_inner);
+        if !table.contains_key(user) && table.len() >= self.max_users {
+            // Full. A window whose last take is a whole window old limits nobody, so only those go.
+            let horizon = now_ms.saturating_sub(window_ms);
+            table.retain(|_, taken| taken.back().is_some_and(|&at| at > horizon));
+            if table.len() >= self.max_users {
+                // Every window is live: the newcomer waits for the first of them to end.
+                let first_end = table
+                    .values()
+                    .filter_map(|taken| taken.back().copied())
+                    .min()
+                    .unwrap_or(now_ms);
+                return Err(seconds(
+                    first_end.saturating_add(window_ms).saturating_sub(now_ms),
+                ));
+            }
+        }
+        let taken = table.entry(user.clone()).or_default();
         // A take leaves the window when it is a whole window old.
         while taken
             .front()
@@ -124,12 +146,7 @@ impl RevealLimiter {
         }
         if taken.len() >= self.per_minute {
             let oldest = taken.front().copied().unwrap_or(now_ms);
-            let wait_ms = oldest.saturating_add(window_ms).saturating_sub(now_ms).max(1);
-            // At most a window, even if the clock was moved: the wait is a hint, the next take decides.
-            return Err(u64::try_from(wait_ms)
-                .unwrap_or(60_000)
-                .div_ceil(1000)
-                .clamp(1, 60));
+            return Err(seconds(oldest.saturating_add(window_ms).saturating_sub(now_ms)));
         }
         taken.push_back(now_ms);
         Ok(())
@@ -137,8 +154,7 @@ impl RevealLimiter {
 
     #[cfg(test)]
     fn tracked(&self) -> u64 {
-        self.windows.run_pending_tasks();
-        self.windows.entry_count()
+        u64::try_from(self.windows.lock().unwrap_or_else(PoisonError::into_inner).len()).unwrap_or(u64::MAX)
     }
 }
 
@@ -372,6 +388,35 @@ mod tests {
         assert_eq!(l.take(&user(1), 0), Ok(()));
         assert!(l.take(&user(1), 1).is_err());
         assert_eq!(l.take(&user(2), 1), Ok(()));
+    }
+
+    #[test]
+    fn a_full_table_never_resets_the_window_of_a_user_who_is_still_limited() {
+        let l = RevealLimiter::new(1, 3);
+        assert_eq!(l.take(&user(0), 0), Ok(()));
+        // A crowd of other users arrives while user 0's window is live. Whatever happens to them, user 0 is still limited.
+        for n in 1..300 {
+            let _ = l.take(&user(n), 1);
+        }
+        assert!(l.take(&user(0), 2).is_err(), "the window of user 0 was reset");
+        assert!(l.tracked() <= 3, "{}", l.tracked());
+    }
+
+    #[test]
+    fn a_new_user_is_refused_while_the_table_holds_only_live_windows_and_admitted_when_one_ends() {
+        let l = RevealLimiter::new(1, 2);
+        assert_eq!(l.take(&user(1), 0), Ok(()));
+        assert_eq!(l.take(&user(2), 10), Ok(()));
+        // Full of live windows: the newcomer fails closed with a wait to the first window that ends.
+        let wait = l.take(&user(3), 20).unwrap_err();
+        assert!((1..=60).contains(&wait), "{wait}");
+        // Both are still limited, and the refusal did not cost them anything.
+        assert!(l.take(&user(1), 30).is_err());
+        assert!(l.take(&user(2), 30).is_err());
+        // The window of user 1 has ended, so its slot goes to the newcomer; user 2's window is still live.
+        assert_eq!(l.take(&user(3), 60_000), Ok(()));
+        assert!(l.take(&user(2), 60_005).is_err());
+        assert!(l.tracked() <= 2, "{}", l.tracked());
     }
 
     #[test]

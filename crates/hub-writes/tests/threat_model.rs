@@ -179,7 +179,13 @@ const CARRY_FORWARD: [(&str, &[&str]); 27] = [
     ),
     (
         "the reveal's limit is kept by each replica, in memory (T10)",
-        &["RevealLimiter", "moka", "reveals_per_minute", "each replica"],
+        &[
+            "RevealLimiter",
+            "mutex-guarded map",
+            "reveals_per_minute",
+            "each replica",
+            "never evicts a window",
+        ],
     ),
     (
         "a reveal needs no approval and no second person (T10)",
@@ -961,10 +967,11 @@ fn anchor_problems(source: &dyn Fn(&str) -> String) -> Vec<String> {
 
     // 9. The limit is a bounded in-memory table of windows, one for each replica.
     check(
-        reveal.contains("windows: moka::sync::Cache<UserId, Arc<Mutex<VecDeque<i64>>>>")
+        reveal.contains("windows: Mutex<HashMap<UserId, VecDeque<i64>>>,")
+            && reveal.contains("table.retain(|_, taken| taken.back().is_some_and(|&at| at > horizon));")
             && source("crates/hub-writes/src/service.rs").contains("pub reveals: RevealLimiter,"),
         "the reveal's limit is kept by each replica",
-        "`RevealLimiter` is a `moka` table of per-user windows held by the hub in memory",
+        "`RevealLimiter` is a bounded table of per-user windows held by the hub in memory, which sweeps only ended windows and refuses a newcomer when every window is live",
     );
 
     // 10. What can be revealed is decided by the mask's own function.
@@ -1472,8 +1479,14 @@ fn planted_gaps_are_found() {
         ),
         (
             "crates/hub-writes/src/reveal.rs",
-            "windows: moka::sync::Cache<UserId, Arc<Mutex<VecDeque<i64>>>>",
-            "windows: SharedTable",
+            "windows: Mutex<HashMap<UserId, VecDeque<i64>>>,",
+            "windows: SharedTable,",
+            "kept by each replica",
+        ),
+        (
+            "crates/hub-writes/src/reveal.rs",
+            "table.retain(|_, taken| taken.back().is_some_and(|&at| at > horizon));",
+            "table.retain(|_, taken| taken.len() > 1);",
             "kept by each replica",
         ),
         (
