@@ -19,7 +19,7 @@
 
 use std::collections::BTreeSet;
 
-use domain::{DomainEvent, NfsPath, PickupState, ServiceRef, SwimlaneId, Timestamp};
+use domain::{AppName, DomainEvent, NfsPath, PickupState, ServiceRef, SwimlaneId, Timestamp};
 use engine::{ClientSettings, DEFAULT_CACHE_TTL_SECS, PickupChange, PickupInput, file_role, pickup_state};
 use ports::Tx;
 use sqlx::{Postgres, Row, Transaction};
@@ -53,6 +53,11 @@ pub(crate) const PENDING: &str = "SELECT s.id, s.namespace, s.name, s.env_values
        AND ($2 OR s.name = ANY($3) OR s.env_values ->> 'SPRING_APPLICATION_NAME' = ANY($3)) AND s.id > $5 \
      ORDER BY s.id LIMIT $4 FOR UPDATE OF st";
 
+/// The names of the swimlane's Deployments that are among the folders `$2`: a Deployment that declares no
+/// `SPRING_APPLICATION_NAME` is the application of the folder that has its name.
+const DEPLOYMENT_NAMES: &str = "SELECT DISTINCT name FROM services \
+     WHERE swimlane_id = $1 AND removed_at IS NULL AND name = ANY($2) LIMIT $3";
+
 const WRITE: &str = "UPDATE service_state SET pickup_state = $2, pending_files = $3, \
             pending_since = to_timestamp($4::bigint / 1000.0), live_by = to_timestamp($5::bigint / 1000.0), updated_at = now() \
      WHERE service_id = $1";
@@ -73,7 +78,43 @@ pub(crate) struct Readers {
     pub apps: BTreeSet<String>,
 }
 
-pub(crate) fn readers(facts: &Facts, paths: &[NfsPath]) -> Readers {
+/// The folders of `paths` below the root: the candidates for an application's own folder.
+fn folders(paths: &[NfsPath]) -> Vec<String> {
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    for path in paths {
+        if !path.parent().is_root() {
+            if let Some(folder) = path.components().next() {
+                out.insert(folder.to_owned());
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// The names of the swimlane's Deployments that are the name of a folder of `paths`. At most one for each folder.
+pub(crate) async fn deployment_names<'e, E: sqlx::PgExecutor<'e>>(
+    executor: E,
+    swimlane: &SwimlaneId,
+    paths: &[NfsPath],
+) -> Res<BTreeSet<String>> {
+    let folders = folders(paths);
+    if folders.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let limit = i64::try_from(folders.len()).unwrap_or(i64::MAX);
+    let names: Vec<String> = sqlx::query_scalar(DEPLOYMENT_NAMES)
+        .bind(swimlane.as_str())
+        .bind(folders)
+        .bind(limit)
+        .fetch_all(executor)
+        .await
+        .map_err(|e| Internal::db("pickup_deployments", &e))?;
+    Ok(names.into_iter().collect())
+}
+
+/// Who reads `paths`. `deployments` are the Deployment names that are folders of the paths ([`deployment_names`]): a folder is an
+/// application's when a Deployment declares it, or has no declared name and is called that.
+pub(crate) fn readers(facts: &Facts, paths: &[NfsPath], deployments: &BTreeSet<String>) -> Readers {
     let mut out = Readers {
         everyone: false,
         apps: BTreeSet::new(),
@@ -82,7 +123,9 @@ pub(crate) fn readers(facts: &Facts, paths: &[NfsPath]) -> Readers {
         match path.components().next() {
             // A file in the root folder has no folder: its first component is its own name.
             _ if path.parent().is_root() => out.everyone = true,
-            Some(folder) if facts.apps.iter().any(|a| a.as_str() == folder) => {
+            Some(folder)
+                if facts.apps.iter().any(|a| a.as_str() == folder) || deployments.contains(folder) =>
+            {
                 out.apps.insert(folder.to_owned());
             }
             // A folder that is no application's is a search location for all of them.
@@ -92,11 +135,28 @@ pub(crate) fn readers(facts: &Facts, paths: &[NfsPath]) -> Readers {
     out
 }
 
-/// The kind of change a waiting file is, for the engine.
-pub(crate) fn change_of(path: &NfsPath, facts: &Facts) -> PickupChange {
+/// The name a Deployment is known by to the config-server when its environment declares none: its own. `None` when it declares one
+/// (the swimlane's [`Facts::apps`] has it).
+pub(crate) fn undeclared_name<'a>(name: &'a str, env: &serde_json::Value) -> Option<&'a str> {
+    let declared = env
+        .get("SPRING_APPLICATION_NAME")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|v| !v.trim().is_empty());
+    (!declared).then_some(name)
+}
+
+/// The kind of change a waiting file is, for the engine, for a service whose application name is `own` when it declares none
+/// ([`undeclared_name`]): `<own>.yml` is a property source for it, as `<app>.yml` is for the applications that are declared.
+pub(crate) fn change_of(path: &NfsPath, facts: &Facts, own: Option<&str>) -> PickupChange {
+    let is_property_source =
+        |apps: &[AppName]| file_role(path, &facts.tenants, apps) == domain::FileRole::PropertySource;
     if path.file_name() == "channels.yml" {
         PickupChange::ChannelsYml
-    } else if file_role(path, &facts.tenants, &facts.apps) == domain::FileRole::PropertySource {
+    } else if is_property_source(&facts.apps)
+        || own
+            .and_then(|n| AppName::parse(n).ok())
+            .is_some_and(|n| is_property_source(std::slice::from_ref(&n)))
+    {
         PickupChange::PropertySource
     } else {
         PickupChange::ResourceFile
@@ -170,6 +230,7 @@ struct Outcome {
 
 fn recompute(
     update: &PickupUpdate,
+    own: Option<&str>,
     client: ClientSettings,
     pending: &[String],
     changed_at: Timestamp,
@@ -189,7 +250,7 @@ fn recompute(
             continue;
         };
         let picked = pickup_state(&PickupInput {
-            change: change_of(&path, &update.facts),
+            change: change_of(&path, &update.facts, own),
             client,
             changed_at,
             now: update.now,
@@ -225,7 +286,8 @@ pub(crate) async fn apply(
         .map_err(|e| Internal::db("pickup_touch", &e))?;
     let config_server_started = Timestamp::from_unix_millis(started.flatten().unwrap_or(0));
 
-    let who = readers(&update.facts, &update.paths);
+    let deployments = deployment_names(&mut **tx, swimlane, &update.paths).await?;
+    let who = readers(&update.facts, &update.paths, &deployments);
     let apps: Vec<String> = who.apps.into_iter().collect();
 
     // The services are read a page at a time, by id, until a page is not full: a swimlane with more waiting services than a page
@@ -304,8 +366,10 @@ async fn update_page(
         // them from now, which a notification at `now` covers.
         let changed_at = Timestamp::from_unix_millis(since.unwrap_or(update.now.unix_millis()));
 
+        let name: String = row.try_get("name").map_err(get)?;
         let result = recompute(
             update,
+            undeclared_name(&name, &env),
             client_of(&env),
             &pending,
             changed_at,
@@ -326,7 +390,6 @@ async fn update_page(
             .await
             .map_err(|e| Internal::db("pickup_write", &e))?;
         let namespace: String = row.try_get("namespace").map_err(get)?;
-        let name: String = row.try_get("name").map_err(get)?;
         if let Ok(service) = ServiceRef::new(&namespace, &name) {
             changed.push(service);
         }

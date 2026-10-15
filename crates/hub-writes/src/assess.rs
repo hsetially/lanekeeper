@@ -30,7 +30,7 @@ use serde::Deserialize;
 use sqlx::Row;
 
 use crate::error::{Internal, Res};
-use crate::ops::pickup::{change_of, client_of, readers};
+use crate::ops::pickup::{change_of, client_of, deployment_names, readers, undeclared_name};
 use crate::preview::effect::{facts, folder_facts};
 use crate::service::Inner;
 
@@ -139,12 +139,8 @@ pub(crate) async fn effects_of(
     let swimlane_facts = facts(hub, swimlane).await?;
     // A registry that does not answer is taken to have the folder: the least alarming guess is also the one a notification makes.
     let (folder_exists, _) = folder_facts(hub, user, swimlane, path).await;
-    let change = if folder_exists {
-        change_of(path, &swimlane_facts)
-    } else {
-        PickupChange::NewFolder
-    };
-    let who = readers(&swimlane_facts, std::slice::from_ref(path));
+    let deployments = deployment_names(&hub.pool, swimlane, std::slice::from_ref(path)).await?;
+    let who = readers(&swimlane_facts, std::slice::from_ref(path), &deployments);
     let apps: Vec<String> = who.apps.into_iter().collect();
     let rows = hub
         .within(
@@ -168,6 +164,11 @@ pub(crate) async fn effects_of(
         let env: serde_json::Value = row.try_get("env_values").map_err(get)?;
         let Ok(service) = ServiceRef::new(&namespace, &name) else {
             continue;
+        };
+        let change = if folder_exists {
+            change_of(path, &swimlane_facts, undeclared_name(&name, &env))
+        } else {
+            PickupChange::NewFolder
         };
         // A change nobody has been told about, made now: no notification yet, and no pod started after it. The config-server's own
         // start is long before it.

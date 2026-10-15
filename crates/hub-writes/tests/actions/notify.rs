@@ -683,6 +683,59 @@ async fn a_change_that_arrives_while_the_notification_is_sent_is_not_counted_as_
     );
 }
 
+/// A Deployment that declares no `SPRING_APPLICATION_NAME` is known to the config-server by its own name, as the module says and
+/// as the statement already matches it. Its folder is its own: a notification for a file there reaches that Deployment and no
+/// other, and `<name>.yml` in it is a property source.
+#[tokio::test]
+async fn a_deployment_without_a_declared_name_is_the_application_of_its_own_folder() {
+    let Some((rig, s)) = rig().await else { return };
+    let operator = rig.user(1, Role::Operator).await;
+    // No declared name, and a client that does not listen: a property source needs a restart; a resource file would be live
+    // within the cache lifetime.
+    let plain = deployment(
+        &rig,
+        &s,
+        "tx-plain",
+        json!({}),
+        "needs_notify_or_restart",
+        &["tx-plain/tx-plain.yml"],
+        3,
+    )
+    .await;
+    // Another application, which listens, with a change of its own waiting.
+    let other = deployment(
+        &rig,
+        &s,
+        "tx-other",
+        app("tx-other", listens()),
+        "needs_notify_or_restart",
+        &["tx-other/tx-other.yml"],
+        3,
+    )
+    .await;
+    let before_other = row(&rig, &other).await;
+    let out = rig
+        .hub
+        .notify(&ctx(&operator, "n-1"), notify_req(&s, &["tx-plain/tx-plain.yml"]))
+        .await
+        .unwrap();
+    assert!(matches!(out, WriteOutcome::Applied { .. }), "{out:?}");
+    let after = row(&rig, &plain).await;
+    assert_eq!(
+        (after.state.as_str(), after.pending.as_slice()),
+        (
+            "needs_notify_or_restart",
+            ["tx-plain/tx-plain.yml".to_owned()].as_slice()
+        ),
+        "a property source for a client that does not listen: {after:?}"
+    );
+    assert_eq!(
+        row(&rig, &other).await,
+        before_other,
+        "the notification was for another application's folder"
+    );
+}
+
 /// `PENDING` reads a page of services. A swimlane with more services waiting than one page holds must not be left half updated.
 #[tokio::test]
 async fn a_notification_updates_every_waiting_service_not_only_the_first_page() {
