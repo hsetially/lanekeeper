@@ -27,7 +27,7 @@ use hub_platform::{ApiError, SessionAuth};
 use moka::sync::Cache;
 use ports::AuthError;
 
-use super::session::{SessionCounts, SessionLimit};
+use super::session::{Closer, SessionCounts, SessionLimit};
 use crate::auth::BearerAuth;
 use crate::auth::oauth::Challenge;
 use crate::error::McpError;
@@ -45,7 +45,8 @@ pub struct McpCaller(pub User);
 pub(crate) type SessionOwners = Cache<String, UserId>;
 
 /// The memory of who opened which session. When an entry goes (the session was deleted, rmcp closed it, or the entry expired) the
-/// owner's session count falls, so the count is the number of entries.
+/// owner's session count falls, so the count is the number of entries plus the requests that are opening a session (each holds an
+/// [`Opening`](super::session::Opening) until its response has an id to put here).
 pub(crate) fn session_owners(capacity: u64, idle: Duration, counts: Arc<SessionCounts>) -> SessionOwners {
     Cache::builder()
         .max_capacity(capacity)
@@ -65,6 +66,8 @@ pub(crate) struct GateState {
     pub owners: SessionOwners,
     /// Sessions open or being opened, per user and in all.
     pub sessions: Arc<SessionCounts>,
+    /// Ends a session that a request made and did not hand over.
+    pub close: Closer,
     /// The largest request body, by its declared length (rmcp counts the bytes as they arrive).
     pub max_body: usize,
 }
@@ -163,20 +166,30 @@ pub(crate) async fn gate(State(state): State<Arc<GateState>>, request: Request, 
     }
     let method = request.method().clone();
     // 5. A request that may open a session counts against the user's and the replica's limits. The count is taken before the session
-    // exists, so two requests at the limit cannot both pass.
-    let opens_session = method == Method::POST && presented.is_none();
-    if opens_session && let Err(limit) = state.sessions.reserve(&user.id) {
-        let mut response = problem(match limit {
-            SessionLimit::User => McpError::TooManySessions,
-            SessionLimit::Replica => McpError::Unavailable,
-        });
-        response
-            .headers_mut()
-            .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
-        return response;
-    }
+    // exists, so two requests at the limit cannot both pass. The slot is held by `opening`, a value: it goes back when the value is
+    // dropped, on every way out of this function, including the client going away while rmcp works (this future is then dropped).
+    let opening = if method == Method::POST && presented.is_none() {
+        match state.sessions.open(&user.id, Arc::clone(&state.close)) {
+            Ok(opening) => Some(opening),
+            Err(limit) => {
+                let mut response = problem(match limit {
+                    SessionLimit::User => McpError::TooManySessions,
+                    SessionLimit::Replica => McpError::Unavailable,
+                });
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
+                return response;
+            }
+        }
+    } else {
+        None
+    };
     request.extensions_mut().insert(McpCaller(user.clone()));
-    let response = next.run(request).await;
+    let response = match &opening {
+        Some(opening) => opening.run(next.run(request)).await,
+        None => next.run(request).await,
+    };
     match (&method, &presented) {
         (&Method::POST, None) => {
             let id = response
@@ -185,10 +198,11 @@ pub(crate) async fn gate(State(state): State<Arc<GateState>>, request: Request, 
                 .and_then(|v| v.to_str().ok())
                 .filter(|_| response.status().is_success())
                 .map(str::to_owned);
-            match id {
-                // The owner's entry now stands for the reserved count: it is released when the entry goes.
-                Some(id) => state.owners.insert(id, user.id),
-                None => state.sessions.release(&user.id),
+            // The owner's entry now stands for the slot: it is released when the entry goes. Without an id the request opened no
+            // session (or its handshake failed), and `opening` is dropped here: it gives the slot back and closes what was made.
+            if let (Some(id), Some(opening)) = (id, opening) {
+                opening.hand_over();
+                state.owners.insert(id, user.id);
             }
         }
         (&Method::DELETE, Some(id)) if response.status().is_success() => state.owners.invalidate(id),

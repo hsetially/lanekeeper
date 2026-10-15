@@ -350,6 +350,15 @@ impl McpState {
             settings.limits.session_idle + OWNERS_GRACE,
             Arc::clone(&session_counts),
         );
+        let mut manager = LocalSessionManager::default();
+        manager.session_config.keep_alive = Some(settings.limits.session_idle);
+        // When rmcp closes a session (it was idle too long, or the owner ended it) the owner's record goes with it.
+        let forget = owners.clone();
+        let sessions = Arc::new(CappedSessionManager::new(
+            manager,
+            settings.limits.sessions_per_replica as usize,
+            Arc::new(move |id: &str| forget.invalidate(id)),
+        ));
         let gate = Arc::new(GateState {
             auth: Arc::clone(&auth),
             challenge,
@@ -357,6 +366,7 @@ impl McpState {
             origins: origins.clone(),
             owners: owners.clone(),
             sessions: Arc::clone(&session_counts),
+            close: session::closer(Arc::clone(&sessions)),
             max_body: MAX_BODY_BYTES,
         });
 
@@ -368,15 +378,6 @@ impl McpState {
             .with_max_request_body_bytes(MAX_BODY_BYTES)
             .with_sse_keep_alive(settings.sse_keep_alive);
         let token = http_config.cancellation_token.clone();
-        let mut manager = LocalSessionManager::default();
-        manager.session_config.keep_alive = Some(settings.limits.session_idle);
-        // When rmcp closes a session (it was idle too long, or the owner ended it) the owner's record goes with it.
-        let forget = owners.clone();
-        let sessions = Arc::new(CappedSessionManager::new(
-            manager,
-            settings.limits.sessions_per_replica as usize,
-            Arc::new(move |id: &str| forget.invalidate(id)),
-        ));
         let factory_host = Arc::clone(&host);
         let factory_listing = Arc::clone(&listing);
         let service = StreamableHttpService::new(

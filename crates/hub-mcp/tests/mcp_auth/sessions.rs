@@ -1,8 +1,11 @@
 //! Rule 5, S14: how many MCP sessions a user and a replica may hold, and what frees a slot.
 
-use axum::http::StatusCode;
+use axum::body::Body;
+use axum::http::{Method, StatusCode};
 use domain::{Role, UserStatus};
+use futures::FutureExt;
 use serde_json::json;
+use tower::ServiceExt;
 
 use crate::rig::{Rig, uid};
 
@@ -28,6 +31,172 @@ fn user(rig: &Rig, key: &str) -> crate::support::Client {
 fn initialize_body() -> serde_json::Value {
     json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
         "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}})
+}
+
+/// An `initialize` request, sent and polled `polls` times (at least once), and then dropped: the client went away before the
+/// response head. Returns whether the request was still waiting when it was dropped (it had not finished).
+async fn initialize_dropped_after(client: &crate::support::Client, polls: usize) -> bool {
+    let request = client
+        .request(Method::POST)
+        .body(Body::from(serde_json::to_vec(&initialize_body()).unwrap()))
+        .unwrap();
+    let mut in_flight = Box::pin(client.app.clone().oneshot(request));
+    for _ in 0..polls {
+        if (&mut in_flight).now_or_never().is_some() {
+            return false;
+        }
+        tokio::task::yield_now().await;
+    }
+    true
+}
+
+/// Let the tasks that a dropped request started run: it closes the session it made, on the runtime. No clock is involved, only
+/// turns of the scheduler, so this is as deterministic as the runtime is.
+async fn settle() {
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+}
+
+/// Round 2, blocking 1: the gate reserves a slot before it hands the request to rmcp. A client that goes away before the response
+/// head drops the gate's future, and the slot must go with it. Before the fix five such requests locked alice out for good (and the
+/// same, spread over enough accounts, locked the replica out).
+#[tokio::test]
+async fn a_dropped_initialize_releases_its_slot() {
+    let rig = rig(5, 200);
+    let alice = user(&rig, "alice");
+    for n in 0..5 {
+        assert!(
+            initialize_dropped_after(&alice, 1).await,
+            "request {n} finished at once, so nothing was in flight when it was dropped"
+        );
+    }
+    settle().await;
+    assert_eq!(
+        rig.state.counted_sessions(Some(&uid("alice"))),
+        0,
+        "a dropped request keeps its slot"
+    );
+    assert_eq!(rig.state.counted_sessions(None), 0);
+    // The next real initialize is not refused for the count.
+    let mut real = alice.with_session(None);
+    real.initialize(&json!({})).await.unwrap();
+    assert_eq!(rig.state.counted_sessions(Some(&uid("alice"))), 1);
+}
+
+/// The slot is not all a dropped request leaves behind: by the first poll rmcp has already made the session (the client never
+/// learned its id, so it can neither use nor end it). Releasing only the count would let one user fill rmcp's table with sessions
+/// that nobody can reach, for as long as the idle expiry (30 minutes), past the cap of five. The dropped request closes the session.
+#[tokio::test]
+async fn a_dropped_initialize_leaves_no_session_behind_in_rmcp() {
+    // A replica of five: if the five dropped sessions stayed, rmcp's own ceiling would refuse the real ones below.
+    let rig = rig(5, 5);
+    let alice = user(&rig, "alice");
+    for n in 0..5 {
+        assert!(
+            initialize_dropped_after(&alice, 1).await,
+            "request {n} finished at once"
+        );
+    }
+    settle().await;
+    assert_eq!(
+        rig.state.live_sessions().await,
+        0,
+        "a session nobody can reach is left in rmcp"
+    );
+    for _ in 0..5 {
+        alice.with_session(None).initialize(&json!({})).await.unwrap();
+    }
+    assert_eq!(rig.state.counted_sessions(Some(&uid("alice"))), 5);
+    assert_eq!(rig.state.live_sessions().await, 5);
+}
+
+/// Whatever the point at which the client goes away, the count and rmcp's table agree afterwards, and a request that got as far as
+/// the response head leaves a session that belongs to its user. There is no point between rmcp's answer and the owner table at
+/// which the future could be dropped (the gate does not await there), and this holds the line: if a later change put an await
+/// there, some `polls` below would leave a session that is counted for nobody, or a count for no session.
+#[tokio::test]
+async fn a_request_dropped_at_any_poll_leaves_the_count_equal_to_the_sessions() {
+    let (mut unfinished, mut finished) = (0, 0);
+    for polls in 1..=12 {
+        let rig = rig(5, 200);
+        let alice = user(&rig, "alice");
+        let request = alice
+            .request(Method::POST)
+            .body(Body::from(serde_json::to_vec(&initialize_body()).unwrap()))
+            .unwrap();
+        let mut in_flight = Box::pin(alice.app.clone().oneshot(request));
+        let mut head = None;
+        for _ in 0..polls {
+            if let Some(response) = (&mut in_flight).now_or_never() {
+                head = Some(response.unwrap());
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        drop(in_flight);
+        settle().await;
+        let counted = rig.state.counted_sessions(Some(&uid("alice")));
+        let live = rig.state.live_sessions().await;
+        assert_eq!(
+            counted, live,
+            "polls {polls}: the count and rmcp's table disagree"
+        );
+        match head {
+            None => {
+                unfinished += 1;
+                assert_eq!(
+                    counted, 0,
+                    "polls {polls}: a request that never answered keeps a session"
+                );
+            }
+            Some(response) => {
+                finished += 1;
+                assert_eq!(counted, 1, "polls {polls}: an answered request has its session");
+                // The session is alice's: she can use it, and ending it frees the slot.
+                let id = response.headers()["mcp-session-id"].to_str().unwrap().to_owned();
+                drop(response);
+                let mine = alice.with_session(Some(id));
+                assert!(mine.delete_session().await.is_success(), "polls {polls}");
+                settle().await;
+                assert_eq!(
+                    rig.state.counted_sessions(Some(&uid("alice"))),
+                    0,
+                    "polls {polls}"
+                );
+                assert_eq!(rig.state.live_sessions().await, 0, "polls {polls}");
+            }
+        }
+    }
+    assert!(
+        unfinished > 0,
+        "no poll dropped a request that was still in flight"
+    );
+    assert!(finished > 0, "no poll let a request finish");
+}
+
+/// The success path: the slot moves to the owner table, stays while the session lives, and goes back exactly once when the table
+/// forgets the entry (the idle expiry and the eviction of the table work through the same listener; `DELETE` is in the test above).
+#[tokio::test]
+async fn an_opened_session_keeps_its_slot_until_the_owner_table_forgets_it() {
+    let rig = rig(5, 200);
+    let mut alice = user(&rig, "alice");
+    alice.initialize(&json!({})).await.unwrap();
+    assert_eq!(rig.state.counted_sessions(Some(&uid("alice"))), 1);
+    // Requests on the session neither take nor give a slot.
+    let listed = alice.call_tool_to_end("list_swimlanes", &json!({})).await;
+    assert!(listed.get("result").is_some(), "{listed}");
+    assert_eq!(rig.state.counted_sessions(Some(&uid("alice"))), 1);
+    // A second session, then the table forgets both entries: each frees one slot, none frees two.
+    let mut second = user(&rig, "alice");
+    second.initialize(&json!({})).await.unwrap();
+    assert_eq!(rig.state.counted_sessions(None), 2);
+    rig.state.forget_session_owners();
+    assert_eq!(rig.state.counted_sessions(Some(&uid("alice"))), 0);
+    assert_eq!(rig.state.counted_sessions(None), 0);
+    // And the user can open again.
+    user(&rig, "alice").initialize(&json!({})).await.unwrap();
+    assert_eq!(rig.state.counted_sessions(None), 1);
 }
 
 #[tokio::test]
