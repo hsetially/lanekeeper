@@ -1047,18 +1047,18 @@ fn anchor_problems(source: &dyn Fn(&str) -> String) -> Vec<String> {
     //     the default.
     let pickup = source("crates/hub-writes/src/ops/pickup.rs");
     let apply = between(&pickup, "pub(crate) async fn apply(", "\n}\n").unwrap_or_default();
+    let page = between(&pickup, "async fn update_page(", "\n}\n").unwrap_or_default();
     check(
         in_order(
-            apply,
+            page,
             &[
                 "PickupState::NeedsConfigServerRestart.as_str()",
                 "continue;",
                 "recompute(",
-                "bus",
             ],
-        ),
+        ) && in_order(apply, &["update_page(", "bus"]),
         "the config-server's 2xx is taken at its word",
-        "`apply` in ops/pickup.rs skips a service that waits for the config-server's restart before it asks the engine, and publishes the change through the outbox",
+        "`update_page` in ops/pickup.rs skips a service that waits for the config-server's restart before it asks the engine, and `apply` publishes the change through the outbox",
     );
     check(
         pickup.contains("_ => DEFAULT_CACHE_TTL_SECS,"),
