@@ -28,7 +28,7 @@ Fixes are separate commits, none amends an earlier one, nothing is pushed.
 | Finding | Status | What changed | Proof |
 |---|---|---|---|
 | BLOCKING 2: `data_key_is_a_secret_that_zeroizes` is vacuous | **Fixed** (`2b8ccfc`) | `seal` takes its key from `new_data_key()` (a `Secret<[u8; 32]>`, its raw bytes in `Zeroizing`) through `seal_with`, which owns the key and drops it before it returns, on success and on every error. The old test is removed. | `data_key_is_zeroized_after_wrap`, `data_key_is_zeroized_when_kms_refuses`, `the_data_key_seal_uses_is_a_fresh_secret`. **Mutation check:** adding `std::mem::forget(dek)` in `seal_with` fails `data_key_is_zeroized_after_wrap` ("the data key outlived the call to seal"); restored. |
-| BLOCKING 1: job-time use of the token against S8/D42 | **Documented, needs a human decision** | Design unchanged. See "Assumptions" and "Deviations from the plan"; the threat model's residual risk now says so in as many words. There is no `plans/06-write-paths.pr.md` yet, so the PR text must carry the same item when it is written. | `tests/threat_model.rs` (10 passed) |
+| BLOCKING 1: job-time use of the token against S8/D42 | **Documented; DECIDED by the human on 2026-10-15: allowed, D107** | Design unchanged. See "Assumptions" and "Deviations from the plan"; the threat model's residual risk now says it was decided. D107 is recorded on branch `claude/brave-cori-2cnesi` (commit `564948a`) and lands with main; it is not yet in this branch's `docs/decisions.md`. | `tests/threat_model.rs` (10 passed) |
 | NB1: `set_intent` ignores `rows_affected` | **Fixed** (`18a7ef2`) | `set_intent` errors unless exactly one unfinished claim was updated; `carry_out` aborts before sending. | `a_request_whose_claim_was_cleared_before_the_send_does_not_send` in `tests/reconcile.rs`; it failed first (1 `WriteFile` sent), a stalling registry double lets the reconciler run mid-request. |
 | NB3: expiry takes no `proposal:{id}` lease | **Fixed** (`be664fa`) | The job takes the lease per proposal and skips one whose lease is held (`ExpireReport.busy`). What is left is a command that outlasts the 60 s lease; the old race test now models that by hand. Threat-model text and proofs updated. | `the_expiry_job_skips_a_proposal_whose_approval_is_at_the_agent` (failed first: the job marked it); `a_proposal_that_expires_while_its_write_is_on_the_way_is_still_audited_and_left_expired` still passes, for the remaining case. |
 | NB5: `POST /drafts` ignores its `Idempotency-Key` | **Left, as a residual risk** (`b9b518c`) | Honouring it needs a new stored-response kind, a claim replay for it, and the claim finished in the insert's transaction, in the shared idempotency store: not simple. Bounded by the open-draft limit (100) and the one-day expiry. | `a_retried_draft_with_the_same_key_makes_a_second_draft_within_the_open_limit` pins the behaviour. |
@@ -241,22 +241,23 @@ All are at least 14 days old (youngest: hyper-rustls 25 days, camino 30 days). T
   `docs/performance.md` ("files up to 2 MiB"), but it is not what A3 proposed. The plan test `write_above_3_mib_is_rejected_too_large`
   is therefore the 2 MiB-limit test `write_above_the_limit_is_rejected_too_large_and_the_limit_itself_passes`. A human should confirm
   2 MiB (A3 asked to confirm 3 MiB) and the OpenAPI wording.
-- **NEEDS A HUMAN DECISION: a PR job uses its author's GitHub token at job time (S8, D42, D77).** S8 and D42 say the token is
+- **DECIDED by the human on 2026-10-15: allowed, D107. A PR job uses its author's GitHub token at job time (S8, D42, D77).** S8 and D42 say the token is
   decrypted only inside its owner's own request. A pull request is made by a job (`PrJobRunner`, lease-driven, D77) that can run
   minutes after the request, on another replica, or after a restart. Its `ctx_for` (`src/prs/runner.rs`) rebuilds the author's
   `WriteCtx` from the directory, and the vault's `with_token` decrypts the stored token for it. Failing scenario: the author signs
   out, or their session is revoked, while they are still an active Editor; the job still opens the token and uses it to call GitHub.
   What the code re-checks before each use: `with_token` calls `authorize(.., Role::Editor)`, which asks the directory again, so an
   author who was disabled, demoted below Editor or removed makes the job fail with no call to GitHub; and a token past its expiry is
-  not opened. It does **not** re-check that a session exists. I did not change the design. Either a D-entry must allow job-time use
-  (D77 and D42 read together), or the design must change (for example, the job runs only while the author has a live session, which
-  stops a pull request surviving a restart, as D77 asks). It is also the threat model's residual risk "A job uses its author's token
-  in the background".
+  not opened. It does **not** re-check that a session exists. The design is unchanged: the human decided to allow job-time use for PR
+  jobs only (D107, which relaxes S8 and D42 for them; every other use of the token stays inside the owner's own request). D107 is
+  recorded on branch `claude/brave-cori-2cnesi` (commit `564948a`) and lands with main; until main is merged into this branch it is
+  not in this branch's `docs/decisions.md`. The residual risk stays in the threat model: signing out does not stop a job, demoting or
+  disabling the user does.
 
 ## Deviations from the plan
 
-**NEEDS A HUMAN DECISION: job-time use of the author's token** (S8/D42 against D77), as written under "Assumptions". It is a
-deviation from the letter of S8 and D42 that the plan did not list. **A3:** 2 MiB instead of 3 MiB (above).
+**DECIDED by the human on 2026-10-15: allowed, D107: job-time use of the author's token** (S8/D42 against D77), as written under "Assumptions". It is a
+deviation from the letter of S8 and D42 that the plan did not list, and that D107 now allows for PR jobs. **A3:** 2 MiB instead of 3 MiB (above).
 
 In the code, otherwise, none. Two process deviations, both from the environment: (1) `cargo test --workspace` was run package by package because of
 disk; (2) the debug-info setting differed between the first and the second half of the run (see "How the gates were run"). No test,
