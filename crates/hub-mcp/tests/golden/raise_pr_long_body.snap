@@ -1,0 +1,10 @@
+---
+source: crates/hub-mcp/tests/mcp_auth/confirm_golden.rs
+---
+Raise a pull request from swimlane sit1?
+Files (supplied by the assistant), 1 file: "tx-core/app-sit1.yml"
+Title (supplied by the assistant): "Raise the retry limit for sit1"
+Target: the branch of tenant "sit1".
+Description (supplied by the assistant), 429 characters, only the start: "## Why The nightly reconciliation job in sit1 times out because \`retry.max\` is 3 and the upstream takes up to 40 s to answer. This raises it to 8 and the backoff to 5 s. ## What changes * \`tx-core/app-sit1.yml\`: \`retry.max: 3\` becomes…"
+Effect: the pull request is raised with your own GitHub token. No file on NFS changes.
+Review it in the web UI: https://hub.example.test/swimlanes/sit1/pull-requests

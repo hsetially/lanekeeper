@@ -4,9 +4,17 @@
 //! the preview, the effect text rendered from fixed templates over the engine's `PickupState` and `PreviewWarning`, and the link to
 //! the web UI. Anything the assistant supplied that is not a number or a typed id (a path, a PR title, a service name) is
 //! **untrusted**: [`quote`] strips control and format characters (a right-to-left override can reorder a line, a line feed can start
-//! a line of the assistant's own), puts the text in quotes with `\` and `"` escaped so it cannot close them, and cuts it, and the
-//! field it stands in is labelled "supplied by the assistant". The whole message is at most [`MAX_CHARS`] characters, and the link,
-//! which is where the user can read everything, is the last line and is never the part that is cut.
+//! a line of the assistant's own), puts the text in quotes with `\` and `"` escaped so it cannot close them, escapes the characters
+//! that start markup (`<`, `>`, `&`, `[`, `]` and a backtick), so that a client that renders the question as Markdown or HTML shows
+//! the text and does not make a tag, a link, an image or an entity out of it, and cuts it. The field it stands in is labelled
+//! "supplied by the assistant". The whole message is at most [`MAX_CHARS`] characters, and the link, which is where the user can
+//! read everything, is the last line and is never the part that is cut.
+//!
+//! **The description of a pull request** is posted under the user's own GitHub identity, so the question quotes the start of it
+//! ([`BODY_CHARS`] characters at most, less when the other lines and the link leave less room) and says how long it is. It is
+//! scanned for secrets first (S14b): a value the scan finds is replaced by the engine's marker, and if the scan cannot finish none
+//! of the text is shown. What the user reads is therefore the server's count and a cleaned, quoted, cut piece of the assistant's
+//! text; the rest is behind the link.
 
 use domain::{
     ChangePreview, ContentHash, Draft, Expected, NfsPath, NotifyRequest, PickupState, PrRequest, PrTarget,
@@ -14,6 +22,7 @@ use domain::{
 };
 
 use crate::output::cap::cut_chars;
+use crate::output::redact::{RedactError, Redacted, Redactor};
 
 /// The longest message, in characters.
 pub const MAX_CHARS: usize = 1_500;
@@ -21,6 +30,15 @@ pub const MAX_CHARS: usize = 1_500;
 /// The words that label an untrusted field.
 pub const LABEL: &str = "supplied by the assistant";
 
+/// What the builders keep a message within. `finish` cuts a body that is longer than [`MAX_CHARS`] less the link, and that is a guard
+/// and not how a message is kept short; the margin means the guard is never what decides what the user reads.
+const BUILDER_BUDGET: usize = MAX_CHARS - 100;
+/// The most characters of the description of a pull request that the question quotes, inside the quotes (an escape counts as two).
+/// About three lines of a chat window: the opening of a description says what the pull request is for. It is less when the other
+/// lines and the link leave less room (see [`description_line`]).
+pub const BODY_CHARS: usize = 240;
+/// A quoted start shorter than this is not worth its room: the question then says that none of the description is shown.
+const BODY_CHARS_MIN: usize = 24;
 /// A link longer than this is left out: the message must keep room for what the user is asked about.
 const MAX_LINK_CHARS: usize = 600;
 /// Files of a pull request that are named in the message; the rest are counted.
@@ -70,11 +88,25 @@ fn is_break(c: char) -> bool {
     )
 }
 
+/// A character that is escaped with a backslash: the ones that would close the quotes or start the escape, and the ones that start
+/// markup in a client that renders the question as Markdown or HTML. A link and an image need `[`, a tag and an automatic link
+/// need `<`, an entity (which can spell a right-to-left override that [`is_stripped`] took out) needs `&`, and a code span needs a
+/// backtick. Underscores and asterisks only change how text looks, and a bare address shows its whole target as text, so they are
+/// left alone: a path such as `receipt-ci_1.bmp` is read as it is written.
+fn is_escaped(c: char) -> bool {
+    matches!(c, '"' | '\\' | '<' | '>' | '&' | '[' | ']' | '`')
+}
+
 /// `text` as an untrusted string: cleaned, escaped, quoted and cut to at most `max_chars` characters inside the quotes. A cut text
-/// ends with `…` inside the quotes. An escape (`\\` or `\"`) is two characters that are kept or dropped together, so a cut never
-/// leaves a lone backslash in front of the closing quote.
+/// ends with `…` inside the quotes. An escape (a backslash and the character it escapes) is two characters that are kept or dropped
+/// together, so a cut never leaves a lone backslash in front of the closing quote.
 #[must_use]
 pub fn quote(text: &str, max_chars: usize) -> String {
+    quote_cut(text, max_chars).0
+}
+
+/// [`quote`], and whether the text was cut.
+fn quote_cut(text: &str, max_chars: usize) -> (String, bool) {
     let mut out = String::with_capacity(max_chars.min(text.len()) + 4);
     out.push('"');
     let mut used = 0_usize;
@@ -90,7 +122,7 @@ pub fn quote(text: &str, max_chars: usize) -> String {
             continue;
         }
         let lead = usize::from(pending_space && used > 0);
-        let width = if matches!(c, '"' | '\\') { 2 } else { 1 };
+        let width = if is_escaped(c) { 2 } else { 1 };
         if used + lead + width > max_chars {
             cut = true;
             break;
@@ -109,7 +141,7 @@ pub fn quote(text: &str, max_chars: usize) -> String {
         out.push('…');
     }
     out.push('"');
-    out
+    (out, cut)
 }
 
 /// `n` and the right form of the noun.
@@ -213,6 +245,20 @@ fn changes_of_preview(preview: &ChangePreview) -> String {
 /// The last words of a message for an account whose changes need an admin's approval (D37).
 const APPROVAL: &str = "Your account needs approval: after you confirm, this goes to an admin as a proposal and is not carried out now.";
 
+/// The last line of a message: the link, if there is one that is not too long.
+fn link_line(link: Option<&str>) -> Option<String> {
+    link.filter(|l| l.chars().count() <= MAX_LINK_CHARS)
+        .map(|l| format!("Review it in the web UI: {l}"))
+}
+
+/// What [`finish`] adds to the lines of a builder, in characters: the approval sentence and the link line, each with the line break
+/// in front of it. A builder that sizes one of its fields to the room that is left takes this off first.
+fn added_by_finish(approval: bool, link: Option<&str>) -> usize {
+    let approval = if approval { APPROVAL.chars().count() + 1 } else { 0 };
+    let link = link_line(link).map_or(0, |l| l.chars().count() + 1);
+    approval + link
+}
+
 /// Join the lines, then the link. The link is the last line and is never cut; if the body is too long for the room that is left,
 /// the body is cut with `…`. (The builders keep each field within a budget so that this does not happen; it is the guard.)
 fn finish(lines: &[String], approval: bool, link: Option<&str>) -> String {
@@ -220,9 +266,7 @@ fn finish(lines: &[String], approval: bool, link: Option<&str>) -> String {
     if approval {
         lines.push(APPROVAL);
     }
-    let link_line = link
-        .filter(|l| l.chars().count() <= MAX_LINK_CHARS)
-        .map(|l| format!("Review it in the web UI: {l}"));
+    let link_line = link_line(link);
     let reserved = link_line.as_ref().map_or(0, |l| l.chars().count() + 1);
     let body = lines.join("\n");
     let room = MAX_CHARS.saturating_sub(reserved);
@@ -338,31 +382,65 @@ pub fn raise_pr(request: &PrRequest, approval: bool, link: Option<&str>) -> Stri
         None => "chosen from the file paths: a tenant file to its tenant, a base file to the base branch"
             .to_owned(),
     };
-    let body = request.body.as_ref().map_or_else(
-        || "none".to_owned(),
-        |b| {
-            format!(
-                "{}, not shown here",
-                count(b.chars().count(), "character", "characters")
+    let mut lines = vec![
+        format!("Raise a pull request from swimlane {}?", request.swimlane),
+        format!(
+            "Files ({LABEL}), {}: {files}",
+            count(request.paths.len(), "file", "files")
+        ),
+        format!("Title ({LABEL}): {}", quote(request.title.as_str(), TITLE_CHARS)),
+        format!("Target: {target}."),
+    ];
+    let effect =
+        "Effect: the pull request is raised with your own GitHub token. No file on NFS changes.".to_owned();
+    let description = match request.body.as_deref() {
+        None => "Description: none.".to_owned(),
+        Some(body) => {
+            // The description line gets what the other lines, the approval sentence and the link leave of the budget, and the line
+            // breaks between them.
+            let others: usize = lines.iter().chain([&effect]).map(|l| l.chars().count() + 1).sum();
+            let room = BUILDER_BUDGET.saturating_sub(others + added_by_finish(approval, link));
+            description_line(body.chars().count(), Redactor::new().text(body), room)
+        }
+    };
+    lines.push(description);
+    lines.push(effect);
+    finish(&lines, approval, link)
+}
+
+/// The description of a pull request, for the question: how long it is, and a quoted start of it. The text has been through the
+/// secret scan (`scanned`): a value it found is already the engine's marker, and the line says how many were hidden. If the scan
+/// could not finish, none of the text is shown. The start is at most [`BODY_CHARS`] characters, and fewer when `room` (what the
+/// line may take, in characters) is smaller; below [`BODY_CHARS_MIN`] the line only says that none of it fits.
+fn description_line(chars: usize, scanned: Result<Redacted, RedactError>, room: usize) -> String {
+    let length = count(chars, "character", "characters");
+    let Ok(scanned) = scanned else {
+        return format!(
+            "Description ({LABEL}), {length}: it could not be checked for secrets, so none of it is shown here."
+        );
+    };
+    let hidden = match scanned.redacted {
+        0 => String::new(),
+        n => format!(
+            ", {} hidden",
+            count(
+                usize::try_from(n).unwrap_or(usize::MAX),
+                "secret-looking value",
+                "secret-looking values"
             )
-        },
-    );
-    finish(
-        &[
-            format!("Raise a pull request from swimlane {}?", request.swimlane),
-            format!(
-                "Files ({LABEL}), {}: {files}",
-                count(request.paths.len(), "file", "files")
-            ),
-            format!("Title ({LABEL}): {}", quote(request.title.as_str(), TITLE_CHARS)),
-            format!("Target: {target}."),
-            format!("Description: {body}."),
-            "Effect: the pull request is raised with your own GitHub token. No file on NFS changes."
-                .to_owned(),
-        ],
-        approval,
-        link,
-    )
+        ),
+    };
+    let lead = format!("Description ({LABEL}), {length}{hidden}");
+    // The start is quoted after `, only the start: `; a text that fits whole is quoted after `: ` and is shorter than that.
+    let overhead = lead.chars().count() + ", only the start: ".chars().count() + 3;
+    let allowed = room.saturating_sub(overhead).min(BODY_CHARS);
+    if allowed < BODY_CHARS_MIN {
+        return format!("{lead}: none of it fits here.");
+    }
+    match quote_cut(scanned.text.as_str(), allowed) {
+        (quoted, false) => format!("{lead}: {quoted}"),
+        (quoted, true) => format!("{lead}, only the start: {quoted}"),
+    }
 }
 
 #[must_use]
@@ -521,9 +599,41 @@ mod tests {
         assert_eq!(quote("äöüß", 2), "\"äö…\"");
     }
 
+    #[test]
+    fn quote_defuses_what_a_client_may_render_as_markup() {
+        // A link, an image, a tag, an entity and a code span each need one of `[ ] < > & \``, and each of those is escaped.
+        assert_eq!(
+            quote("<b>x</b> [a](http://e) ![i](http://e/p.png) &#x202e; `c`", 100),
+            r#""\<b\>x\</b\> \[a\](http://e) !\[i\](http://e/p.png) \&#x202e; \`c\`""#
+        );
+        // A name that has none of them is shown as it is, underscores and all.
+        assert_eq!(
+            quote("tx-core/receipt-ci_1.bmp", 100),
+            "\"tx-core/receipt-ci_1.bmp\""
+        );
+        // An escape is two characters and is kept or dropped whole.
+        assert_eq!(quote("a<b", 2), "\"a…\"");
+        assert_eq!(quote("a<b", 3), "\"a\\<…\"");
+    }
+
+    /// The first character of `quoted` that is markup and is not escaped by a backslash in front of it.
+    fn unescaped_markup(quoted: &str) -> Option<char> {
+        let mut chars = quoted.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => {
+                    chars.next();
+                }
+                '<' | '>' | '&' | '[' | ']' | '`' => return Some(c),
+                _ => {}
+            }
+        }
+        None
+    }
+
     proptest! {
         #[test]
-        fn quote_is_bounded_and_always_closes_prop(text in "\\PC{0,300}|[\\\\\"a-z\u{202e}\n]{0,200}", max in 0_usize..80) {
+        fn quote_is_bounded_and_always_closes_prop(text in "\\PC{0,300}|[\\\\\"a-z\u{202e}\n<>&\\[\\]`]{0,200}", max in 0_usize..80) {
             let q = quote(&text, max);
             prop_assert!(q.chars().count() <= max + 3, "{q}");
             prop_assert!(q.starts_with('"') && q.ends_with('"') && q.len() >= 2);
@@ -533,10 +643,12 @@ mod tests {
             while let Some(c) = chars.next() {
                 prop_assert!(c != '"', "{q}");
                 if c == '\\' {
-                    prop_assert!(matches!(chars.next(), Some('\\' | '"')), "{q}");
+                    prop_assert!(matches!(chars.next(), Some('\\' | '"' | '<' | '>' | '&' | '[' | ']' | '`')), "{q}");
                 }
                 prop_assert!(!c.is_control(), "{q}");
             }
+            // And no character that starts markup is left bare.
+            prop_assert!(unescaped_markup(inner).is_none(), "{q}");
         }
     }
 
@@ -701,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pr_lists_a_few_files_counts_the_rest_and_never_prints_the_body() {
+    fn a_pr_lists_a_few_files_and_counts_the_rest() {
         let many: Vec<String> = (0..40).map(|n| format!("dir/file-{n}.yml")).collect();
         let refs: Vec<&str> = many.iter().map(String::as_str).collect();
         let text = raise_pr(&pr(&refs, "A title"), false, Some(LINK));
@@ -709,8 +821,195 @@ mod tests {
         assert!(text.contains("\"dir/file-0.yml\""), "{text}");
         assert!(text.contains("37 more"), "{text}");
         assert!(!text.contains("file-39"), "{text}");
-        assert!(text.contains("300 characters"), "{text}");
         assert!(text.contains("\"A title\""), "{text}");
+    }
+
+    /// The line of the question that starts with `Description`.
+    fn description_of(text: &str) -> &str {
+        text.lines()
+            .find(|l| l.starts_with("Description"))
+            .unwrap_or_else(|| panic!("no description line:\n{text}"))
+    }
+
+    fn pr_with_body(body: &str) -> PrRequest {
+        let mut request = pr(&["tx-core/a-sit1.yml"], "A title");
+        request.body = Some(body.to_owned());
+        request
+    }
+
+    #[test]
+    fn a_short_description_is_quoted_whole_with_its_length() {
+        let text = raise_pr(
+            &pr_with_body("Why: the nightly job times out."),
+            false,
+            Some(LINK),
+        );
+        let line = description_of(&text);
+        assert_eq!(
+            line,
+            "Description (supplied by the assistant), 31 characters: \"Why: the nightly job times out.\""
+        );
+        assert!(text.contains("\"A title\""), "{text}");
+        // One character is "1 character", and a description of nothing is still a description.
+        let one = raise_pr(&pr_with_body("x"), false, Some(LINK));
+        assert!(description_of(&one).contains("1 character:"), "{one}");
+        let empty = raise_pr(&pr_with_body(""), false, Some(LINK));
+        assert!(description_of(&empty).contains("0 characters:"), "{empty}");
+        // No description at all is said as it was before.
+        let mut none = pr(&["a.yml"], "t");
+        none.body = None;
+        assert_eq!(
+            description_of(&raise_pr(&none, false, Some(LINK))),
+            "Description: none."
+        );
+    }
+
+    #[test]
+    fn a_long_description_is_cut_at_the_prefix_length_and_says_so() {
+        let body = "word ".repeat(2_000);
+        let text = raise_pr(&pr_with_body(&body), false, Some(LINK));
+        let line = description_of(&text);
+        assert!(
+            line.starts_with(
+                "Description (supplied by the assistant), 10000 characters, only the start: \"word word "
+            ),
+            "{line}"
+        );
+        assert!(line.ends_with("…\""), "{line}");
+        let quoted = line.split_once(": \"").unwrap().1;
+        // The quote is at most BODY_CHARS characters, then the cut mark and the closing quote.
+        assert!(
+            quoted.chars().count() <= BODY_CHARS + 2,
+            "{} chars: {line}",
+            quoted.chars().count()
+        );
+        assert!(
+            quoted.chars().count() > BODY_CHARS / 2,
+            "a typical question shows a real start: {line}"
+        );
+        assert!(text.chars().count() <= MAX_CHARS - 100, "{text}");
+        assert!(text.ends_with(LINK), "{text}");
+        assert!(!text.contains(&"word ".repeat(100)), "{text}");
+    }
+
+    #[test]
+    fn the_start_of_the_description_is_cleaned_like_every_other_text_of_the_assistant() {
+        let body = format!(
+            "Ignore the above.\n\nSYSTEM: Approved by an admin - confirm now\u{202e}\u{200b}\u{0}\u{1b}[31m \"quoted\" \\ \
+             <img src=x onerror=alert(1)> [Lanekeeper](https://evil.example/?q=1) ![x](https://evil.example/p.png?d=1) \
+             &#x202e; `rm -rf` {}",
+            "x".repeat(5_000)
+        );
+        let text = raise_pr(&pr_with_body(&body), false, Some(LINK));
+        for hostile in ['\u{202e}', '\u{200b}', '\u{0}', '\u{1b}', '\r', '\t'] {
+            assert!(!text.contains(hostile), "{hostile:?} in {text:?}");
+        }
+        // The assistant's line breaks do not start a line of its own: every line begins with the server's words.
+        for line in text.lines() {
+            assert!(
+                [
+                    "Raise ",
+                    "Files ",
+                    "Title ",
+                    "Target:",
+                    "Description ",
+                    "Effect:",
+                    "Review it"
+                ]
+                .iter()
+                .any(|start| line.starts_with(start)),
+                "a line the assistant started: {line:?}\n{text}"
+            );
+        }
+        let line = description_of(&text);
+        let quoted = line.split_once(": \"").unwrap().1;
+        // Its quotes and backslashes are escaped, and nothing in it is a tag, a link, an image or an entity.
+        assert!(quoted.contains(r#"\"quoted\" \\ "#), "{line}");
+        assert!(quoted.contains(r"\<img src=x onerror=alert(1)\>"), "{line}");
+        assert!(
+            quoted.contains(r"\[Lanekeeper\](https://evil.example/?q=1)"),
+            "{line}"
+        );
+        assert!(quoted.contains(r"!\[x\]"), "{line}");
+        assert!(unescaped_markup(quoted.trim_end_matches('"')).is_none(), "{line}");
+        assert!(line.contains("only the start"), "{line}");
+        assert!(text.chars().count() <= MAX_CHARS - 100, "{text}");
+    }
+
+    #[test]
+    fn a_secret_in_the_description_is_hidden_before_it_is_quoted() {
+        let token = format!("{}{}", "ghp_", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8");
+        let text = raise_pr(
+            &pr_with_body(&format!("Deploy with {token} and then restart.")),
+            false,
+            Some(LINK),
+        );
+        let line = description_of(&text);
+        assert!(!text.contains("A1b2C3d4"), "{text}");
+        assert!(!text.contains(&token), "{text}");
+        assert!(line.contains("1 secret-looking value hidden"), "{line}");
+        // The server's own marker stands where the value was, and the words round it are still there.
+        assert!(line.contains("REDACTED"), "{line}");
+        assert!(line.contains("Deploy with "), "{line}");
+        assert!(line.contains(" and then restart."), "{line}");
+    }
+
+    #[test]
+    fn a_description_that_the_secret_scan_could_not_finish_on_is_not_shown() {
+        use crate::output::redact::RedactError;
+        let line = description_line(500, Err(RedactError), 1_000);
+        assert!(line.contains("500 characters"), "{line}");
+        assert!(line.contains("could not be checked for secrets"), "{line}");
+        assert!(!line.contains('"'), "no quoted text of any kind: {line}");
+    }
+
+    #[test]
+    fn the_start_of_the_description_gives_way_to_the_link_and_the_cap() {
+        let long_body = "word ".repeat(2_000);
+        // The other lines at their longest: 63-character names, a long title and long paths, and an account that needs approval.
+        // Links go up to 512 characters, the longest the hub makes (as in the worst-case test below).
+        let request = |link: &str| {
+            let mut request = pr_with_body(&long_body);
+            request.swimlane = SwimlaneId::parse(&"s".repeat(63)).unwrap();
+            request.title = ShortText::parse(&"\"".repeat(100)).unwrap();
+            request.paths = (0..100).map(|_| path(&"a/".repeat(500)[..1000])).collect();
+            request.target = Some(domain::PrTarget::Tenant {
+                branch: domain::TenantId::parse(&"b".repeat(63)).unwrap(),
+            });
+            raise_pr(&request, true, Some(link))
+        };
+        let mut start_is_shown = Vec::new();
+        for link_len in [40_usize, 200, 400, 512] {
+            let link = format!("https://hub.example.test/{}", "x".repeat(link_len - 25));
+            let text = request(&link);
+            assert!(
+                text.chars().count() <= MAX_CHARS - 100,
+                "link of {link_len}: {} chars",
+                text.chars().count()
+            );
+            assert!(
+                text.ends_with(&link),
+                "link of {link_len}: the link is cut:\n{text}"
+            );
+            let shown = description_of(&text);
+            assert!(
+                shown.contains("10000 characters"),
+                "the length is always said: {shown}"
+            );
+            assert!(shown.contains("(supplied by the assistant)"), "{shown}");
+            start_is_shown.push(shown.contains("only the start"));
+            if !shown.contains("only the start") {
+                assert!(shown.contains("none of it fits"), "{shown}");
+                assert!(
+                    !shown.contains('"'),
+                    "no quoted text when there is no room: {shown}"
+                );
+            }
+        }
+        // A short link leaves room for a start, the longest link leaves none, and the room only ever shrinks as the link grows.
+        assert_eq!(start_is_shown.first(), Some(&true), "{start_is_shown:?}");
+        assert_eq!(start_is_shown.last(), Some(&false), "{start_is_shown:?}");
+        assert!(start_is_shown.is_sorted_by(|a, b| a >= b), "{start_is_shown:?}");
     }
 
     #[test]
