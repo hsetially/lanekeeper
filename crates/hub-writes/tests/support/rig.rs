@@ -122,6 +122,11 @@ impl Rig {
 
     /// A second hub over the same database, agent and doubles: another replica.
     pub fn replica(&self) -> WriteHub {
+        self.hub_with_notifier(self.notifier.clone())
+    }
+
+    /// A hub over the same database, agent and doubles that tells its admins through `notifier`.
+    pub fn hub_with_notifier(&self, notifier: Arc<dyn ports::Notifier>) -> WriteHub {
         WriteHub::new(WriteHubDeps {
             pool: self.pool.clone(),
             users: self.users.clone(),
@@ -131,7 +136,7 @@ impl Rig {
             blobs: self.blobs.clone(),
             registry: self.registry.clone(),
             tool_writes: Arc::new(PgToolWrites),
-            notifier: self.notifier.clone(),
+            notifier,
             secrets: self.secrets.clone(),
             leases: self.leases.clone(),
             clock: self.clock.clone(),

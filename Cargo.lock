@@ -2823,6 +2823,7 @@ dependencies = [
  "hub-writes",
  "hyper-rustls",
  "hyper-util",
+ "insta",
  "octocrab",
  "ports",
  "proptest",

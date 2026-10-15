@@ -69,6 +69,8 @@ futures.workspace = true
 # Captures `tracing` output so the log tests can search it (S10).
 tracing-subscriber = { workspace = true, features = ["fmt", "std"] }
 proptest.workspace = true
+# The golden Adaptive Card per kind of notification (T7).
+insta = { workspace = true, features = ["json"] }
 criterion.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
 # The local GitHub server of the client tests: a TLS 1.3 server, a TLS 1.2-only one (which the client must refuse, S6) and their

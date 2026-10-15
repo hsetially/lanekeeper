@@ -18,6 +18,8 @@ mod drafts;
 mod github_client;
 #[path = "actions/pull_requests.rs"]
 mod pull_requests;
+#[path = "actions/teams.rs"]
+mod teams;
 #[path = "actions/vault.rs"]
 mod vault;
 

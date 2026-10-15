@@ -115,7 +115,7 @@ fn checked_base(cfg: &GithubClientConfig, plain_http: bool) -> Result<Uri, Githu
 }
 
 /// A client configuration: TLS 1.3 and nothing older (S6), the given roots and no client certificate.
-fn tls13_config(roots: RootCertStore) -> Result<ClientConfig, GithubError> {
+pub(crate) fn tls13_config(roots: RootCertStore) -> Result<ClientConfig, GithubError> {
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     // No ALPN here: the connector builder sets `http/1.1` itself (`enable_http1`) and refuses a configuration that has any.
     Ok(ClientConfig::builder_with_provider(provider)
@@ -125,7 +125,7 @@ fn tls13_config(roots: RootCertStore) -> Result<ClientConfig, GithubError> {
         .with_no_client_auth())
 }
 
-fn native_roots() -> Result<RootCertStore, GithubError> {
+pub(crate) fn native_roots() -> Result<RootCertStore, GithubError> {
     let loaded = rustls_native_certs::load_native_certs();
     let mut store = RootCertStore::empty();
     // One unreadable certificate in the system bundle must not stop the hub, but an empty store must.
@@ -405,7 +405,7 @@ impl GithubClient {
 }
 
 /// `Retry-After` in whole seconds. A date, or anything else, is not read (the call then does not wait).
-fn retry_after(headers: &HeaderMap) -> Option<Duration> {
+pub(crate) fn retry_after(headers: &HeaderMap) -> Option<Duration> {
     headers
         .get(header::RETRY_AFTER)?
         .to_str()

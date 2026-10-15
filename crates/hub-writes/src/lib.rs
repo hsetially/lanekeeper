@@ -16,6 +16,8 @@
 //!   swimlane, the path, the action and the hashes that lets it through (D46).
 //! - **Pull requests** ([`prs`]): the NFS paths reverse-mapped to the repository, the files put into the form of the repository's
 //!   own, and the commit and the pull request made through the Git Data API with the raising user's own token (D41, D43).
+//! - **Teams** ([`teams`]): [`teams::TeamsNotifier`], the [`ports::Notifier`] that posts an Adaptive Card to a Workflows webhook
+//!   (D49, Q9). `notify` only queues; a worker sends with bounded retries and a breaker, and a failure never reaches the action.
 //! - **Routes** ([`routes`]): the REST face of the actions above, registered through the platform's guarded router (S4), with
 //!   [`routes::wire`] reading each request into typed values.
 #![forbid(unsafe_code)]
@@ -44,6 +46,7 @@ pub mod prs;
 mod reconcile;
 pub mod routes;
 mod service;
+pub mod teams;
 pub mod vault;
 
 pub use clock::{Clock, ManualClock, SystemClock};
