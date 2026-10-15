@@ -51,7 +51,9 @@ pub(crate) async fn resolve(hub: &Inner, key: &ClaimKey, body: Option<&[u8]>) ->
         path: intent.path.clone(),
     };
     let asked = tokio::time::timeout(
-        hub.cfg.agent_timeout + std::time::Duration::from_secs(1),
+        hub.cfg
+            .agent_timeout
+            .saturating_add(std::time::Duration::from_secs(1)),
         hub.gateway.request(&intent.swimlane, cmd, hub.cfg.agent_timeout),
     )
     .await;

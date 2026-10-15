@@ -179,7 +179,10 @@ async fn call(
 
 async fn ask(hub: &Inner, swimlane: &SwimlaneId, cmd: HubCommand) -> Asked {
     // The gateway has its own timeout; this one is the backstop, a little longer, so the gateway's answer wins when both fire.
-    let outer = hub.cfg.agent_timeout + std::time::Duration::from_secs(1);
+    let outer = hub
+        .cfg
+        .agent_timeout
+        .saturating_add(std::time::Duration::from_secs(1));
     tokio::time::timeout(outer, hub.gateway.request(swimlane, cmd, hub.cfg.agent_timeout)).await
 }
 

@@ -87,6 +87,14 @@ impl Default for WriteConfig {
 /// The most extra deny globs: they are compiled into one set at start.
 pub const MAX_EXTRA_DENY_GLOBS: usize = 256;
 
+/// The longest any row of the write path is kept (an idempotency row, a proposal, a draft): a year. A longer span is a typo, and a
+/// span near `Duration::MAX` overflows the `bigint` milliseconds it is added to.
+pub const MAX_RETENTION: Duration = Duration::from_secs(366 * 24 * 3600);
+
+/// The longest a request waits for an earlier request with the same key. A wait is held on the request's own task, so it stays
+/// short, and `Instant::now() + wait` cannot overflow.
+pub const MAX_IDEMPOTENCY_WAIT: Duration = Duration::from_secs(60);
+
 /// The shortest lease on a command to an agent: the plan's minute.
 const MIN_COMMAND_LEASE: Duration = Duration::from_secs(60);
 
@@ -119,15 +127,34 @@ impl WriteConfig {
         nonzero(self.agent_timeout, "agent_timeout must be more than zero")?;
         nonzero(self.db_timeout, "db_timeout must be more than zero")?;
         nonzero(self.idempotency_ttl, "idempotency_ttl must be more than zero")?;
+        if self.idempotency_ttl > MAX_RETENTION {
+            return Err(ConfigError::Invalid("idempotency_ttl must be at most 366 days"));
+        }
         nonzero(self.idempotency_wait, "idempotency_wait must be more than zero")?;
+        if self.idempotency_wait > MAX_IDEMPOTENCY_WAIT {
+            return Err(ConfigError::Invalid(
+                "idempotency_wait must be at most 60 seconds",
+            ));
+        }
         nonzero(self.stale_claim_after, "stale_claim_after must be more than zero")?;
+        if self.stale_claim_after > self.idempotency_ttl {
+            return Err(ConfigError::Invalid(
+                "stale_claim_after must not be longer than idempotency_ttl",
+            ));
+        }
         if self.command_lease_ttl() > ports::MAX_LEASE_TTL {
             return Err(ConfigError::Invalid(
                 "agent_timeout and db_timeout are too long for the lease that guards a command",
             ));
         }
         nonzero(self.proposal_ttl, "proposal_ttl must be more than zero")?;
+        if self.proposal_ttl > MAX_RETENTION {
+            return Err(ConfigError::Invalid("proposal_ttl must be at most 366 days"));
+        }
         nonzero(self.draft_ttl, "draft_ttl must be more than zero")?;
+        if self.draft_ttl > MAX_RETENTION {
+            return Err(ConfigError::Invalid("draft_ttl must be at most 366 days"));
+        }
         if self.expire_batch == 0 || self.expire_batch > 1_000 {
             return Err(ConfigError::Invalid("expire_batch must be 1 to 1000"));
         }
@@ -223,6 +250,41 @@ mod tests {
         c.agent_timeout = Duration::from_secs(10);
         c.db_timeout = Duration::from_secs(3_600);
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn a_duration_too_large_to_add_to_a_clock_is_refused() {
+        // `Instant::now() + idempotency_wait` and `agent_timeout + 1 s` panic on overflow, and a ttl of `i64::MAX` milliseconds
+        // overflows the `bigint` column it is added to; every duration is held to a range the arithmetic around it can take.
+        let bad = |f: &dyn Fn(&mut WriteConfig)| {
+            let mut c = WriteConfig::default();
+            f(&mut c);
+            assert!(c.validate().is_err());
+        };
+        bad(&|c| c.agent_timeout = Duration::MAX);
+        bad(&|c| c.db_timeout = Duration::MAX);
+        bad(&|c| c.idempotency_wait = Duration::MAX);
+        bad(&|c| c.idempotency_wait = Duration::from_secs(61));
+        bad(&|c| c.idempotency_ttl = Duration::MAX);
+        bad(&|c| c.idempotency_ttl = MAX_RETENTION + Duration::from_secs(1));
+        bad(&|c| c.stale_claim_after = Duration::MAX);
+        bad(&|c| c.stale_claim_after = c.idempotency_ttl + Duration::from_secs(1));
+        bad(&|c| c.proposal_ttl = Duration::MAX);
+        bad(&|c| c.proposal_ttl = MAX_RETENTION + Duration::from_secs(1));
+        bad(&|c| c.draft_ttl = Duration::MAX);
+        bad(&|c| c.draft_ttl = MAX_RETENTION + Duration::from_secs(1));
+        bad(&|c| c.auto_notify_window = Duration::MAX);
+        bad(&|c| c.pr_wait = Duration::MAX);
+        // The edges are still fine.
+        let c = WriteConfig {
+            idempotency_wait: Duration::from_secs(60),
+            idempotency_ttl: MAX_RETENTION,
+            stale_claim_after: MAX_RETENTION,
+            proposal_ttl: MAX_RETENTION,
+            draft_ttl: MAX_RETENTION,
+            ..WriteConfig::default()
+        };
+        assert!(c.validate().is_ok());
     }
 
     #[test]
