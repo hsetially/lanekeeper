@@ -1355,6 +1355,17 @@ fn personal_mcp_tokens_are_shown_once_and_listed_without_the_secret() {
             );
         }
     }
+}
+
+/// The request that creates a token, the answers at the limit and on revocation, and what the operations never say.
+#[test]
+fn personal_mcp_token_requests_are_bounded_and_never_name_the_hash() {
+    let d = doc();
+    let all = operations(&d);
+    let schemas = &d["components"]["schemas"];
+    let list = find(&all, "GET", "/api/v1/me/mcp-tokens");
+    let create = find(&all, "POST", "/api/v1/me/mcp-tokens");
+    let revoke = find(&all, "DELETE", "/api/v1/me/mcp-tokens/{id}");
     // Nor does any word of the token operations and schemas name it (the webhook's own HMAC is another matter).
     for text in [
         list.def.to_string(),
@@ -1395,4 +1406,144 @@ fn personal_mcp_tokens_are_shown_once_and_listed_without_the_secret() {
         .find(|p| p["in"] == "path")
         .expect("path parameter");
     assert_eq!(id["name"], "id");
+}
+
+/// A [`domain::Draft`] with every field set, as the REST edge writes it.
+fn full_draft() -> domain::Draft {
+    use domain::{
+        ContentHash, DraftId, Expected, PickupState, ProposalStatus, ServiceRef, Severity, SwimlaneId,
+        Timestamp,
+    };
+    domain::Draft {
+        id: DraftId::parse("draft-1").unwrap(),
+        author: ports::conformance::sample::user_id(1),
+        swimlane: SwimlaneId::parse("sit1").unwrap(),
+        path: NfsPath::parse("a.yml").unwrap(),
+        expected: Expected::Absent,
+        new_hash: ContentHash::from_bytes([1; 32]),
+        hunks: Vec::new(),
+        setting_changes: Vec::new(),
+        status: ProposalStatus::Draft,
+        expires_at: Timestamp::from_unix_millis(1),
+        severity: Some(Severity::Low),
+        effects: vec![(
+            ServiceRef::new("csp", "api").unwrap(),
+            PickupState::NeedsNotifyOrRestart,
+        )],
+    }
+}
+
+use domain::NfsPath;
+
+/// Prompt 07's contract change (C4, G8): a draft carries its severity and the pickup state of each service. Both are optional,
+/// so a client built from the old document keeps working, and a draft that has neither is written as before. The document
+/// spells `effects` as pairs, like `SwimlaneSummary.drift_counts`, because the domain type serialises a pair.
+#[test]
+fn draft_additions_are_optional_and_match_the_domain() {
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+    assert_optional(&d, "Draft", "severity");
+    assert_optional(&d, "Draft", "effects");
+
+    let draft = serde_json::to_value(full_draft()).unwrap();
+    let declared: BTreeSet<String> = properties(&d, &schemas["Draft"])
+        .into_keys()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        wire_keys(&draft),
+        declared,
+        "the draft's wire fields are the document's"
+    );
+
+    let effects = &schemas["Draft"]["properties"]["effects"];
+    assert_eq!(effects["type"], "array");
+    assert!(effects["maxItems"].as_u64().is_some(), "bounded");
+    let pair = &effects["items"];
+    assert_eq!(pair["type"], "array");
+    assert_eq!(pair["minItems"], 2);
+    assert_eq!(pair["maxItems"], 2);
+    assert_eq!(pair["prefixItems"][0]["$ref"], "#/components/schemas/ServiceRef");
+    assert_eq!(pair["prefixItems"][1]["$ref"], "#/components/schemas/PickupState");
+    assert!(
+        draft["effects"][0].as_array().is_some_and(|p| p.len() == 2),
+        "{draft}"
+    );
+    assert_eq!(
+        schemas["Draft"]["properties"]["severity"]["oneOf"][0]["$ref"],
+        "#/components/schemas/Severity"
+    );
+}
+
+/// Prompt 07's contract change (C1, C4, G5): the served file of the domain is the REST `ServedFile`, field for field, and the
+/// MCP tool `get_served_config` returns it with the redaction count and the data labels added.
+#[test]
+fn served_file_is_the_domains_and_the_tool_adds_redaction_fields() {
+    use domain::{AppName, ContentHash, EffectiveSource, FileRole, ServedFile, SwimlaneId, TenantId};
+    const MCP: &str = include_str!("../../../docs/mcp-tools.md");
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+    let sample = ServedFile {
+        swimlane: SwimlaneId::parse("sit1").unwrap(),
+        application: AppName::parse("api").unwrap(),
+        tenant: TenantId::parse("sit1").unwrap(),
+        channel: None,
+        file: NfsPath::parse("api.yml").unwrap(),
+        role: FileRole::PropertySource,
+        hash: ContentHash::from_bytes([1; 32]),
+        content_withheld: false,
+        text: None,
+        sources: vec![EffectiveSource {
+            path: NfsPath::parse("api.yml").unwrap(),
+            rank: 1,
+        }],
+        unresolved_placeholders: Vec::new(),
+    };
+    let declared: BTreeSet<String> = properties(&d, &schemas["ServedFile"])
+        .into_keys()
+        .map(str::to_owned)
+        .collect();
+    let wire = serde_json::to_value(&sample).unwrap();
+    assert_eq!(
+        wire_keys(&wire),
+        declared,
+        "the domain's wire fields are the document's"
+    );
+    assert_eq!(
+        required_of(&schemas["ServedFile"]),
+        declared,
+        "all required, `text` and `channel` nullable"
+    );
+    assert_eq!(wire["text"], Value::Null, "no text is a null, not a missing key");
+
+    // The tool: those fields and three more.
+    let section = MCP
+        .split("### `get_served_config`")
+        .nth(1)
+        .and_then(|rest| rest.split("\n### ").next())
+        .expect("the get_served_config section");
+    let output = section
+        .split("**Output schema**")
+        .nth(1)
+        .and_then(|rest| rest.split("```json\n").nth(1))
+        .and_then(|rest| rest.split("\n```").next())
+        .expect("its output schema");
+    let output: Value = serde_json::from_str(output).expect("the output schema is JSON");
+    let tool_keys: BTreeSet<String> = output["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    let mut expected = declared.clone();
+    expected.extend(["redacted_values", "untrusted", "label"].map(str::to_owned));
+    assert_eq!(
+        tool_keys, expected,
+        "the REST fields plus redaction and the labels"
+    );
+    // The same bounds where the two documents say the same thing.
+    assert_eq!(
+        output["properties"]["sources"]["maxItems"],
+        schemas["ServedFile"]["properties"]["sources"]["maxItems"]
+    );
 }

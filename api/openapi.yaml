@@ -5336,6 +5336,24 @@ components:
           $ref: '#/components/schemas/ProposalStatus'
         expires_at:
           $ref: '#/components/schemas/Timestamp'
+        severity:
+          oneOf:
+          - $ref: '#/components/schemas/Severity'
+          - type: 'null'
+          description: The severity of the change, from the severity rules (D76). Absent when the server has no answer.
+            Absent in older servers.
+        effects:
+          type: array
+          items:
+            type: array
+            prefixItems:
+            - $ref: '#/components/schemas/ServiceRef'
+            - $ref: '#/components/schemas/PickupState'
+            minItems: 2
+            maxItems: 2
+          maxItems: 1000
+          description: When the change would take effect for each consuming service (D85), as pairs of a service and its
+            pickup state. Absent when there are none, and in older servers.
       additionalProperties: false
       required:
       - id

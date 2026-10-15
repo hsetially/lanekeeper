@@ -6,9 +6,9 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AppName, AuditId, ChangeEol, ContentHash, DraftId, IdempotencyKey, IssueKind, NfsPath, PreviewId,
-    ProposalId, ProposalStatus, RequestId, ServiceRef, ShortText, SwimlaneId, TenantId, Timestamp, User,
-    UserId, Via,
+    AppName, AuditId, ChangeEol, ContentHash, DraftId, IdempotencyKey, IssueKind, NfsPath, PickupState,
+    PreviewId, ProposalId, ProposalStatus, RequestId, ServiceRef, Severity, ShortText, SwimlaneId, TenantId,
+    Timestamp, User, UserId, Via,
     compare::{DiffHunk, SettingChange},
 };
 
@@ -331,4 +331,12 @@ pub struct Draft {
     pub setting_changes: Vec<SettingChange>,
     pub status: ProposalStatus,
     pub expires_at: Timestamp,
+    /// The severity of the change, from the engine's severity rules (D76). `None`: no rule matched, or the engine had no
+    /// answer. Absent in JSON written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<Severity>,
+    /// When the change would take effect for each consuming service (D85), from the engine. Empty: no consuming service
+    /// was found. Absent in JSON written before this field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<(ServiceRef, PickupState)>,
 }

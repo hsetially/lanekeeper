@@ -4,15 +4,14 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use domain::{
     DocGrepHit, DocHit, DocId, DocPath, DocText, FeatureQuery, FeatureStatus, LineRange, LogicalFile, Role,
-    ShortText, User,
+    SettingPath, ShortText, User,
 };
 
 use super::util::lock;
 use crate::conformance::DocScenario;
-use crate::{DocError, DocSearch, MAX_DOC_HITS, MAX_DOC_PATTERN_BYTES, MAX_GREP_CONTEXT};
+use crate::{DocError, DocSearch, MAX_DOC_HITS, MAX_DOC_PATTERN_BYTES, MAX_GREP_CONTEXT, MAX_GREP_HITS};
 
 const MAX_DOCS: usize = 10_000;
-const MAX_GREP_HITS: usize = 500;
 /// `read` returns at most this many bytes of text and sets `truncated` beyond it (MCP output cap, P9).
 const MAX_READ_BYTES: usize = 16 * 1024;
 
@@ -188,6 +187,79 @@ impl DocSearch for FakeDocSearch {
         regex: bool,
         context: u8,
     ) -> Result<Vec<DocGrepHit>, DocError> {
+        self.grep_where(u, pattern, regex, context, None, MAX_GREP_HITS)
+    }
+
+    async fn feature_status(&self, u: &User, _q: FeatureQuery) -> Result<FeatureStatus, DocError> {
+        check(u)?;
+        Ok(lock(&self.state)
+            .features
+            .clone()
+            .unwrap_or(FeatureStatus { flags: Vec::new() }))
+    }
+
+    async fn related_to(
+        &self,
+        u: &User,
+        f: &LogicalFile,
+        setting: Option<&SettingPath>,
+        limit: usize,
+    ) -> Result<Vec<DocHit>, DocError> {
+        check(u)?;
+        if limit == 0 || limit > MAX_DOC_HITS {
+            return Err(DocError::BadRequest);
+        }
+        let st = lock(&self.state);
+        st.docs
+            .iter()
+            .filter(|(_, d)| d.text.contains(f.as_str()))
+            .filter(|(_, d)| setting.is_none_or(|s| d.text.contains(s.as_str())))
+            .take(limit)
+            .map(|(p, d)| {
+                let wanted = setting.map_or_else(|| f.as_str(), SettingPath::as_str);
+                let line = d.text.lines().find(|l| l.contains(wanted)).unwrap_or("");
+                hit(p, d, 1.0, line, vec![f.clone()])
+            })
+            .collect()
+    }
+
+    async fn grep_in(
+        &self,
+        u: &User,
+        pattern: &str,
+        regex: bool,
+        context: u8,
+        prefix: Option<&DocPath>,
+        limit: usize,
+    ) -> Result<Vec<DocGrepHit>, DocError> {
+        if limit == 0 || limit > MAX_GREP_HITS {
+            check(u)?;
+            return Err(DocError::BadRequest);
+        }
+        self.grep_where(u, pattern, regex, context, prefix, limit)
+    }
+}
+
+/// Whether `path` is `prefix` or below it as a folder: the prefix ends at a whole path component.
+fn is_below(path: &DocPath, prefix: &DocPath) -> bool {
+    let (path, prefix) = (path.as_str(), prefix.as_str());
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+impl FakeDocSearch {
+    /// `grep` and `grep_in`: the lines that contain `pattern`, in the docs under `prefix`, at most `limit` hits.
+    fn grep_where(
+        &self,
+        u: &User,
+        pattern: &str,
+        regex: bool,
+        context: u8,
+        prefix: Option<&DocPath>,
+        limit: usize,
+    ) -> Result<Vec<DocGrepHit>, DocError> {
         check(u)?;
         if regex || pattern.is_empty() || pattern.len() > MAX_DOC_PATTERN_BYTES || context > MAX_GREP_CONTEXT
         {
@@ -197,12 +269,15 @@ impl DocSearch for FakeDocSearch {
         let ctx = usize::from(context);
         let mut out = Vec::new();
         'docs: for (path, doc) in &st.docs {
+            if prefix.is_some_and(|p| !is_below(path, p)) {
+                continue;
+            }
             let lines: Vec<&str> = doc.text.lines().collect();
             for (i, line) in lines.iter().enumerate() {
                 if !line.contains(pattern) {
                     continue;
                 }
-                if out.len() >= MAX_GREP_HITS {
+                if out.len() >= limit {
                     break 'docs;
                 }
                 out.push(DocGrepHit {
@@ -221,14 +296,6 @@ impl DocSearch for FakeDocSearch {
             }
         }
         Ok(out)
-    }
-
-    async fn feature_status(&self, u: &User, _q: FeatureQuery) -> Result<FeatureStatus, DocError> {
-        check(u)?;
-        Ok(lock(&self.state)
-            .features
-            .clone()
-            .unwrap_or(FeatureStatus { flags: Vec::new() }))
     }
 }
 
