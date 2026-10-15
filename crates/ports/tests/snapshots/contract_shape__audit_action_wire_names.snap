@@ -39,5 +39,7 @@ expression: names
   "auto_notify_changed",
   "session_signed_in",
   "session_signed_out",
-  "pr_state_changed"
+  "pr_state_changed",
+  "mcp_token_created",
+  "mcp_token_revoked"
 ]

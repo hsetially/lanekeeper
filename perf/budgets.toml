@@ -379,6 +379,206 @@ scale = "target"
 registered = false
 
 [[budget]]
+id = "P9.list_swimlanes"
+description = "MCP tool list_swimlanes: this layer's share, on fakes at target scale"
+bench = "hub-mcp/list_swimlanes"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.get_swimlane"
+description = "MCP tool get_swimlane: this layer's share, on fakes at target scale"
+bench = "hub-mcp/get_swimlane"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.list_files"
+description = "MCP tool list_files: this layer's share, on fakes at target scale"
+bench = "hub-mcp/list_files"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.read_file"
+description = "MCP tool read_file: this layer's share, on fakes at target scale"
+bench = "hub-mcp/read_file"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.get_effective_config"
+description = "MCP tool get_effective_config: this layer's share, on fakes at target scale"
+bench = "hub-mcp/get_effective_config"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.compare"
+description = "MCP tool compare: this layer's share, on fakes at target scale"
+bench = "hub-mcp/compare"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.compare_tree"
+description = "MCP tool compare_tree: this layer's share, on fakes at target scale"
+bench = "hub-mcp/compare_tree"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.compare_grid"
+description = "MCP tool compare_grid: this layer's share, on fakes at target scale"
+bench = "hub-mcp/compare_grid"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.search_settings"
+description = "MCP tool search_settings: this layer's share, on fakes at target scale"
+bench = "hub-mcp/search_settings"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.search_text"
+description = "MCP tool search_text: this layer's share, on fakes at target scale"
+bench = "hub-mcp/search_text"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.find_inconsistencies"
+description = "MCP tool find_inconsistencies: this layer's share, on fakes at target scale"
+bench = "hub-mcp/find_inconsistencies"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.get_drift"
+description = "MCP tool get_drift: this layer's share, on fakes at target scale"
+bench = "hub-mcp/get_drift"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.get_pending_restarts"
+description = "MCP tool get_pending_restarts: this layer's share, on fakes at target scale"
+bench = "hub-mcp/get_pending_restarts"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.get_history"
+description = "MCP tool get_history: this layer's share, on fakes at target scale"
+bench = "hub-mcp/get_history"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.search_docs"
+description = "MCP tool search_docs: this layer's share, on fakes at target scale"
+bench = "hub-mcp/search_docs"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.read_doc"
+description = "MCP tool read_doc: this layer's share, on fakes at target scale"
+bench = "hub-mcp/read_doc"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.grep_docs"
+description = "MCP tool grep_docs: this layer's share, on fakes at target scale"
+bench = "hub-mcp/grep_docs"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.get_docs_for_file"
+description = "MCP tool get_docs_for_file: this layer's share, on fakes at target scale"
+bench = "hub-mcp/get_docs_for_file"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.get_feature_status"
+description = "MCP tool get_feature_status: this layer's share, on fakes at target scale"
+bench = "hub-mcp/get_feature_status"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
+id = "P9.get_served_config"
+description = "MCP tool get_served_config: this layer's share, on fakes at target scale"
+bench = "hub-mcp/get_served_config"
+statistic = "p95"
+threshold = 300
+unit = "ms"
+scale = "target"
+registered = false
+
+[[budget]]
 id = "P10.initial_js_gzip_kb"
 description = "Initial JavaScript bundle, gzipped (KB)"
 bench = "web/initial_js_gzip_kb"

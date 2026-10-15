@@ -317,6 +317,27 @@ fn thresholds_match_docs_performance_md() {
             "versions_per_s",
             "replays at 1,000 or more versions per second",
         ),
+        // Prompt 07 (MCP server): each read tool has the figure of the whole budget, measured on this layer alone.
+        ("P9.list_swimlanes", 300.0, "ms", "respond within 300 ms"),
+        ("P9.get_swimlane", 300.0, "ms", "respond within 300 ms"),
+        ("P9.list_files", 300.0, "ms", "respond within 300 ms"),
+        ("P9.read_file", 300.0, "ms", "respond within 300 ms"),
+        ("P9.get_effective_config", 300.0, "ms", "respond within 300 ms"),
+        ("P9.compare", 300.0, "ms", "respond within 300 ms"),
+        ("P9.compare_tree", 300.0, "ms", "respond within 300 ms"),
+        ("P9.compare_grid", 300.0, "ms", "respond within 300 ms"),
+        ("P9.search_settings", 300.0, "ms", "respond within 300 ms"),
+        ("P9.search_text", 300.0, "ms", "respond within 300 ms"),
+        ("P9.find_inconsistencies", 300.0, "ms", "respond within 300 ms"),
+        ("P9.get_drift", 300.0, "ms", "respond within 300 ms"),
+        ("P9.get_pending_restarts", 300.0, "ms", "respond within 300 ms"),
+        ("P9.get_history", 300.0, "ms", "respond within 300 ms"),
+        ("P9.search_docs", 300.0, "ms", "respond within 300 ms"),
+        ("P9.read_doc", 300.0, "ms", "respond within 300 ms"),
+        ("P9.grep_docs", 300.0, "ms", "respond within 300 ms"),
+        ("P9.get_docs_for_file", 300.0, "ms", "respond within 300 ms"),
+        ("P9.get_feature_status", 300.0, "ms", "respond within 300 ms"),
+        ("P9.get_served_config", 300.0, "ms", "respond within 300 ms"),
         // Prompt 05 (registry). The same figures as the whole budgets, measured through the database and the HTTP layer
         // (`hub-registry/` benchmarks; bench names are unique, so the engine and the platform keep their own ids).
         (

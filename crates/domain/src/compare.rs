@@ -112,6 +112,17 @@ pub struct Comparison {
     pub binary: Option<BinaryCompare>,
 }
 
+/// One file between two typed references, as `RegistryRead::compare_in` compares it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompareQuery {
+    pub left: CompareRef,
+    pub right: CompareRef,
+    /// The logical file. `None` is what [`crate::Comparison::file`] is for a comparison of whole trees.
+    pub file: Option<LogicalFile>,
+    /// Compare the file as served to this channel (D83): the copy in the channel's folder wins. `None`: no channel.
+    pub channel: Option<ChannelName>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompareState {

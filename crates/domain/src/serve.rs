@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::{IdError, NfsPath, TenantId};
+use crate::{ContentHash, EffectiveSource, FileRole, IdError, NfsPath, ShortText, SwimlaneId, TenantId};
 
 macro_rules! name_token {
     ($(#[$meta:meta])* $name:ident) => {
@@ -79,4 +79,48 @@ pub struct ServeRequest {
     pub tenant: TenantId,
     pub channel: Option<ChannelName>,
     pub file: NfsPath,
+}
+
+/// What the config-server actually serves for a [`ServeRequest`] (D82, D86), as the agent fetched it read-only: the "as served"
+/// view, not the engine's computation. Same fields as the REST `ServedFile`.
+///
+/// `text` is the file as the config-server serves it, so it may hold a value the secret scan has not flagged; `Debug` prints
+/// the file's name and size and never its text (S10, S21), and the MCP layer redacts it before it leaves (S14b).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServedFile {
+    pub swimlane: SwimlaneId,
+    pub application: AppName,
+    pub tenant: TenantId,
+    pub channel: Option<ChannelName>,
+    pub file: NfsPath,
+    pub role: FileRole,
+    /// Hash of what was served.
+    pub hash: ContentHash,
+    /// True for a denied file (D79): `text` is `None`, `sources` and `unresolved_placeholders` are empty, and the hash stays, so
+    /// the answer reveals at most the file's name, size and hash.
+    pub content_withheld: bool,
+    /// `None` when `content_withheld` is true or the served file is not text. Always serialised, as `null` when absent.
+    pub text: Option<String>,
+    /// Where the served content came from, highest precedence first.
+    pub sources: Vec<EffectiveSource>,
+    /// `${...}` left as written because their keys are not in the property view.
+    pub unresolved_placeholders: Vec<ShortText>,
+}
+
+impl fmt::Debug for ServedFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServedFile")
+            .field("swimlane", &self.swimlane)
+            .field("application", &self.application)
+            .field("tenant", &self.tenant)
+            .field("channel", &self.channel)
+            .field("file", &self.file)
+            .field("role", &self.role)
+            .field("hash", &self.hash)
+            .field("content_withheld", &self.content_withheld)
+            .field("text_bytes", &self.text.as_ref().map(String::len))
+            .field("sources", &self.sources.len())
+            .field("unresolved_placeholders", &self.unresolved_placeholders.len())
+            .finish()
+    }
 }
