@@ -54,6 +54,7 @@ mod idempotency;
 mod ops;
 mod pipeline;
 mod preview;
+#[cfg(feature = "bench-probe")]
 mod probe;
 mod proposals;
 pub mod prs;
@@ -69,6 +70,7 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{MAX_EXTRA_DENY_GLOBS, PREVIEW_KEY_SECRET, WriteConfig};
 pub use error::ConfigError;
 pub use idempotency::RequestHash;
+#[cfg(feature = "bench-probe")]
 pub use probe::QueryProbe;
 pub use proposals::{
     ExpireProposals, ExpireReport, NO_HASH, ProposalDesk, ProposalQuery, ProposalView, RejectResult,

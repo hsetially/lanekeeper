@@ -35,6 +35,7 @@ impl RequestHash {
     }
 
     /// For the benchmark of the statements (`crate::probe`): a hash that depends only on `n`.
+    #[cfg(feature = "bench-probe")]
     pub(crate) fn probe(n: u64) -> Self {
         let mut b = HashBuilder::new("probe/1");
         b.field(&n.to_be_bytes());
@@ -242,6 +243,7 @@ impl ClaimKey {
     }
 
     /// For the benchmark of the statements (`crate::probe`).
+    #[cfg(feature = "bench-probe")]
     pub(crate) fn probe(user: &UserId, key: &str) -> Self {
         Self {
             tid: user.tid().as_str().to_owned(),

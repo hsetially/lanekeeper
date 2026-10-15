@@ -1131,6 +1131,56 @@ fn every_proof_cell_names_an_existing_test() {
     assert!(problems.is_empty(), "{problems:#?}");
 }
 
+/// `QueryProbe` claims, finishes and purges idempotency rows for any key on the hub's own pool, for the benchmark of P12. Anything
+/// that held a `WriteHub` with it could finish a live write's claim with a stored conflict, so it is not part of the library that
+/// the hub links: only this crate's own tests and benchmarks switch the feature on.
+#[test]
+fn the_query_probe_is_compiled_only_for_the_crates_own_tests_and_benches() {
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = read(&here.join("Cargo.toml"));
+    let lib = read(&here.join("src/lib.rs"));
+    let (own, dev) = manifest
+        .split_once("[dev-dependencies]")
+        .expect("Cargo.toml has a [dev-dependencies] section");
+    assert!(own.contains("\nbench-probe = []"), "the feature is declared");
+    assert!(own.contains("\ndefault = []"), "and is not a default");
+    assert_eq!(
+        own.matches("bench-probe").count(),
+        1,
+        "and is named nowhere else in the sections that build the library"
+    );
+    assert!(
+        dev.contains("features = [\"fuzz-hooks\", \"test-doubles\", \"bench-probe\"]"),
+        "the crate's own tests and benches switch it on"
+    );
+    assert!(
+        lib.contains("#[cfg(feature = \"bench-probe\")]\nmod probe;"),
+        "the module is behind it"
+    );
+    assert!(
+        lib.contains("#[cfg(feature = \"bench-probe\")]\npub use probe::QueryProbe;"),
+        "and so is the export"
+    );
+    // No other crate of the workspace turns it on (the hub, the fuzz crate).
+    let crates = repo().join("crates");
+    let mut users = Vec::new();
+    for entry in fs::read_dir(&crates).expect("crates/ is there").flatten() {
+        for manifest in [
+            entry.path().join("Cargo.toml"),
+            entry.path().join("fuzz/Cargo.toml"),
+        ] {
+            if manifest.exists() && read(&manifest).contains("bench-probe") {
+                users.push(manifest);
+            }
+        }
+    }
+    assert_eq!(
+        users,
+        vec![crates.join("hub-writes/Cargo.toml")],
+        "who switches it on"
+    );
+}
+
 #[test]
 fn residual_risks_cover_every_limit_the_earlier_tasks_recorded() {
     let problems = carry_forward_problems(&threat_model());

@@ -14,6 +14,10 @@ default = []
 # Hooks for the fuzz targets (S22): the preview token for one fixed request, so the target can ask what the service accepts. Off in
 # every build of the hub; the crate's own tests and its fuzz crate switch it on.
 fuzz-hooks = []
+# The hot statements of the write path, one call each, for the benchmark of P12 (`QueryProbe`). It claims, finishes and purges
+# idempotency rows for any key on the hub's pool, so it is not part of the library the hub links: off in every build of the hub;
+# the crate's own tests and benchmarks switch it on.
+bench-probe = []
 # Test doubles of the GitHub client: a constructor for a plain-HTTP local server. Off in every build of the hub; the crate's own
 # tests switch it on.
 test-doubles = []
@@ -60,7 +64,7 @@ zeroize.workspace = true
 
 [dev-dependencies]
 # This crate's own tests need the fuzz hooks its feature switches on (the corpus replay).
-hub-writes = { path = ".", version = "0.1.0", features = ["fuzz-hooks", "test-doubles"] }
+hub-writes = { path = ".", version = "0.1.0", features = ["fuzz-hooks", "test-doubles", "bench-probe"] }
 ports = { workspace = true, features = ["fakes", "postgres", "conformance"] }
 # `FakeSessionAuth` and `RouteSpec::registered`, for the route tests (S4).
 hub-platform = { workspace = true, features = ["fakes"] }
