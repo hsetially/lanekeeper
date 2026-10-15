@@ -636,6 +636,53 @@ async fn pickup_states_after_notify() {
     );
 }
 
+/// A change that lands while the notification is on its way may not be in what the config-server refreshes. The time the
+/// services count as "last told" is when the hub began to tell them, not when it got round to recording it.
+#[tokio::test]
+async fn a_change_that_arrives_while_the_notification_is_sent_is_not_counted_as_notified() {
+    let Some((rig, s)) = rig().await else { return };
+    let operator = rig.user(1, Role::Operator).await;
+    // The registry saw this change a minute after the notification began (a negative age).
+    let late = deployment(
+        &rig,
+        &s,
+        "tx-api",
+        app("tx-api", listens()),
+        "needs_notify_or_restart",
+        &["tx-api/tx-api.yml"],
+        -1,
+    )
+    .await;
+    // The agent takes its time with the command; two minutes pass at the hub meanwhile, so the hub records the notification
+    // two minutes after it began.
+    rig.agent.set_delay(Duration::from_millis(300));
+    let request = ctx(&operator, "n-1");
+    let sent = rig.hub.notify(&request, notify_req(&s, &["tx-api/tx-api.yml"]));
+    let time_passes = async {
+        while !rig
+            .agent
+            .commands()
+            .iter()
+            .any(|c| matches!(c, domain::HubCommand::NotifyConfigServer { .. }))
+        {
+            tokio::task::yield_now().await;
+        }
+        rig.advance_secs(120);
+    };
+    let (out, ()) = tokio::join!(sent, time_passes);
+    assert!(matches!(out.unwrap(), WriteOutcome::Applied { .. }));
+
+    let after = row(&rig, &late).await;
+    assert_eq!(
+        (after.state.as_str(), after.pending.as_slice()),
+        (
+            "needs_notify_or_restart",
+            ["tx-api/tx-api.yml".to_owned()].as_slice()
+        ),
+        "a change seen after the notification began is still waiting: {after:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_notification_that_changes_no_pickup_state_hints_nothing() {
     let Some((rig, s)) = rig().await else { return };

@@ -56,6 +56,9 @@ const WRITE: &str = "UPDATE service_state SET pickup_state = $2, pending_files =
 pub(crate) struct PickupUpdate {
     pub facts: Facts,
     pub paths: Vec<NfsPath>,
+    /// When the hub began to send the notification, read before the command went out: what the config-server refreshes can be
+    /// no newer than its answer, and a change that the registry saw after this may not be in it. A later time (the answer's, or
+    /// the one at which the facts were read) would count such a change as told.
     pub now: Timestamp,
 }
 

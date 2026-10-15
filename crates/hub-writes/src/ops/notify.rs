@@ -142,6 +142,8 @@ pub(crate) async fn execute(
     via: AuditVia,
     by: Option<ByApproval>,
 ) -> Step<Done> {
+    // Read before the command goes out, and not after the answer: see [`PickupUpdate::now`].
+    let began = hub.clock.now();
     match send_notify(hub, swimlane, paths.clone(), &ctx.request_id).await {
         Sent::Undelivered => Ok(Done::Release(rejected(RejectReason::AgentUnavailable))),
         Sent::Refused { outcome, transient } => Ok(if transient {
@@ -195,7 +197,7 @@ pub(crate) async fn execute(
                     pickups: Some(PickupUpdate {
                         facts,
                         paths,
-                        now: hub.clock.now(),
+                        now: began,
                     }),
                 },
             )
