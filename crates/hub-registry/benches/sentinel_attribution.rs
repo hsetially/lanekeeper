@@ -12,8 +12,9 @@
 //!   applied by the sink, in whose transaction the observation is attributed, the record being handed over at once (the time the record
 //!   takes to exist is the sentinel's, not the hub's).
 //!
-//! Thirty samples, half of each, each a new version of a different file, sent after the job started, and a pause between samples that is not a
-//! multiple of the interval, so that the samples fall on every phase of the job's clock. Every sample ends with the observation attributed
+//! Thirty samples, half of each, each a new version of a different file, sent after the job started, and a pause between samples of 0.3 to
+//! 5.3 s from a fixed pseudo-random sequence, so that the samples fall on every phase of the job's clock (a fixed pause locks on to it: a
+//! sample that waits for the job's next run ends on a tick, and the next one starts a fixed time after that). Every sample ends with the observation attributed
 //! to the application user the record's login maps to; one that is not is a failure of the benchmark and not a number.
 #![allow(
     clippy::unwrap_used,
@@ -118,6 +119,7 @@ async fn main() {
     let editable = bed.editable(0);
     assert!(editable.len() >= SAMPLES);
     let mut seq = u64::try_from(acked).unwrap() + 1;
+    let mut pause_state = 0x9E37_79B9_7F4A_7C15_u64;
     let (mut first_record, mut first_scan, mut all) = (Vec::new(), Vec::new(), Vec::new());
     for (sample, &file) in editable.iter().enumerate().take(SAMPLES) {
         let record_first = sample % 2 == 0;
@@ -183,8 +185,12 @@ async fn main() {
             &mut first_scan
         }
         .push(ms);
-        // A pause that is not a multiple of the job's interval, so that the samples fall on every phase of its clock.
-        tokio::time::sleep(Duration::from_millis(1_300)).await;
+        // A pause of 0.3 to 5.3 s from a fixed pseudo-random sequence (a linear congruential generator), so that the samples fall on every
+        // phase of the job's clock: a fixed pause locks on to it, because a sample that waits for the job ends on a tick.
+        pause_state = pause_state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        tokio::time::sleep(Duration::from_millis(300 + (pause_state >> 33) % 5_000)).await;
     }
     runner.abort();
     let stats = |name: &str, v: &mut Vec<f64>| {

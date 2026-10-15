@@ -688,7 +688,7 @@ statistic = "p95"
 threshold = 30000
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P15.spool_replay_versions_per_s"

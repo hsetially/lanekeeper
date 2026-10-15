@@ -531,6 +531,10 @@ fn only_budgets_with_a_harness_are_registered() {
     // P7.settings_search and P12.steady_state_query_ms (every read statement, p95 under 50 ms), and P7.text_search, whose registered case is
     // the steady state: the first search after an applied change to one swimlane on a warmed hub, with the other states (cold, rebuilt-all,
     // warm, the warm-up settled) logged by the same bench (D97, approved by the human on 2026-10-15).
+    // And P14 (T7, `sentinel_attribution`: a sentinel's record attributes a change within 30 s, with the leased job running at its 5 s
+    // interval, at the scale of one target swimlane with 40,000 older observations and 300,000 records; thirty samples, half with the record
+    // first (they wait for the job's next run) and half with the scan first (the sink attributes in its own transaction), the pauses between
+    // them drawn so that they fall on every phase of the job's clock: p95 4.7 s and at most 5.0 s on a quiet machine, against 30 s).
     const REGISTERED: &[&str] = &[
         "P6.parse_flatten",
         "P6.index_settings",
@@ -574,6 +578,7 @@ fn only_budgets_with_a_harness_are_registered() {
         "P7.settings_search",
         "P7.text_search",
         "P12.steady_state_query_ms",
+        "P14",
     ];
     let reg = registry();
     let registered: BTreeSet<&str> = reg
