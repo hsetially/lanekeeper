@@ -276,6 +276,67 @@ async fn duplicate_pr_is_409_with_link() {
     assert!(matches!(t.raise("k-6", &[ENTRY]).await, Raised::Job(_)));
 }
 
+/// The check under the swimlane's lock can find a pull request that was opened after the first check: the answer is the same
+/// duplicate, and the key is freed (a duplicate is not an outcome of the request), so a retry is not left waiting for a claim that
+/// nothing will finish.
+#[tokio::test]
+async fn a_duplicate_found_under_the_lock_frees_the_key() {
+    let Some(t) = jobs().await else { return };
+    let mut holder = t.f.rig.pool.acquire().await.unwrap();
+    let lock = format!("pr:{}", t.f.s);
+    sqlx::query("SELECT pg_advisory_lock(hashtextextended($1, 0))")
+        .bind(&lock)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+
+    let raise = t.raise("k-1", &[ENTRY]);
+    let meanwhile = async {
+        // The request has passed the first check and waits for the lock.
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted",
+            )
+            .fetch_one(&t.f.rig.pool)
+            .await
+            .unwrap();
+            if waiting > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        // Somebody's pull request for the change is recorded meanwhile.
+        sqlx::query(
+            "INSERT INTO pr_links (swimlane_id, path, nfs_hash, repo, branch, pr_number, state, author_tid, author_oid, url) \
+             VALUES ($1, $2, $3, 'tenant', 'lanekeeper/x/1', 7, 'open', $4, $5, 'https://github.com/acme/r/pull/7')",
+        )
+        .bind(t.f.s.as_str())
+        .bind(ENTRY)
+        .bind(h(ENTRY_NFS).as_bytes().as_slice())
+        .bind(t.f.editor.id.tid().as_str())
+        .bind(t.f.editor.id.oid().as_str())
+        .execute(&t.f.rig.pool)
+        .await
+        .unwrap();
+        sqlx::query("SELECT pg_advisory_unlock(hashtextextended($1, 0))")
+            .bind(&lock)
+            .execute(&mut *holder)
+            .await
+            .unwrap();
+    };
+    let (raised, ()) = tokio::join!(raise, meanwhile);
+    assert!(
+        matches!(&raised, Raised::Duplicate(l) if l.pr_number == 7),
+        "{raised:?}"
+    );
+    assert_eq!(t.f.rig.count("pr_jobs").await, 0, "no job was made");
+    assert_eq!(
+        t.f.rig.count("idempotency_keys").await,
+        t.keys,
+        "the key is not left claimed"
+    );
+}
+
 #[tokio::test]
 async fn a_second_job_for_a_change_that_got_a_pull_request_meanwhile_fails_instead_of_opening_another() {
     let Some(t) = jobs().await else { return };

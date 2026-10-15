@@ -248,7 +248,10 @@ async fn accept(
     let made = hub
         .within("pr_job_make", make_job(runner, ctx, &pre.user, claim, r, &rows))
         .await??;
-    Ok((made, true))
+    // The checks under the swimlane's lock can find a pull request opened since the first look: that is a duplicate, which keeps
+    // no key, like the one found before. Every other answer of the transaction is the key's stored response.
+    let stored = !matches!(made, Raised::Duplicate(_));
+    Ok((made, stored))
 }
 
 /// A pending proposal in place of a job, for a user who `requires_approval`.
