@@ -451,6 +451,20 @@ mcp-schemas:
 mcp-t0-status *args:
     cargo run --quiet -p hub-mcp --example t0_status -- {{args}}
 
+# T4 (A9): the Cursor plugin package for ONE authentication mode, built into target/plugin/ (it is removed first). `mode` is oauth (the
+# default) or personal_token, never both (D52). The hub's origin and, for oauth, the Cursor client id and the hub API's audience come
+# from the environment, so no tenant value is committed: LK_PLUGIN_HUB_ORIGIN, LK_PLUGIN_CLIENT_ID, LK_PLUGIN_API_AUDIENCE (see
+# crates/hub-mcp/plugin/README.md). The Cursor plugin format is UNVERIFIED (D91, T0 is NOT RUN): check the package on the first install.
+mcp-plugin mode="oauth":
+    rm -rf target/plugin
+    bash crates/hub-mcp/plugin/package.sh "{{mode}}" target/plugin
+
+# T4: rewrites the two generated blocks of docs/cursor-admin.md (the tool allowlist and the write tools, with their counts) from the
+# contract. `mcp-test` fails when they differ from `crates/hub-mcp/src/schemas/tools.json`, which `mcp-schemas` keeps equal to
+# docs/mcp-tools.md.
+mcp-admin-doc:
+    UPDATE_ADMIN_DOC=1 cargo test -p hub-mcp --test cursor_admin_doc generated_blocks_equal_the_contract
+
 verify-05:
     @echo "verify-05 not implemented yet" && exit 1
 verify-06:

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "lanekeeper": {
+      "url": "@HUB_ORIGIN@/mcp",
+      "auth": {
+        "CLIENT_ID": "@CLIENT_ID@",
+        "scopes": ["@API_AUDIENCE@/mcp.access", "offline_access"]
+      }
+    }
+  }
+}
