@@ -120,6 +120,40 @@ pub enum SyncResult {
     Failed,
 }
 
+/// How the processing of a closed sync window ended (T8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum WindowResult {
+    /// The sync was recorded and the alerts evaluated.
+    Processed,
+    /// The swimlane has no confirmed baseline yet: only the deployments were recorded, and nothing was alerted.
+    DeploymentOnly,
+    /// The processing could not be done now (the agent is not connected, the scan did not come, the database failed) and is tried again.
+    Deferred,
+    /// The window was given up after `sync_close_give_up`: its alerts were evaluated without the sync's own processing.
+    GivenUp,
+    /// The window names a swimlane the hub no longer has.
+    Dropped,
+    /// Nobody processed the window for `sync_window_expire_after`: it was marked done without anything being said.
+    Expired,
+}
+
+/// What became of a drift alert (T8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum AlertResult {
+    /// The notifier took the notification.
+    Sent,
+    /// The notifier answered with an error.
+    Failed,
+    /// The notifier did not answer within `notify_timeout`.
+    TimedOut,
+    /// A sync window was open for the swimlane: the alert waits for the window's evaluation (D75).
+    Held,
+    /// The swimlane has no confirmed baseline: there is nothing to call drift yet.
+    NotAdopted,
+    /// More alerts were in flight than `alert_in_flight`: this one was dropped.
+    Dropped,
+}
+
 /// What a tenant-suffix review did (T4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
 pub enum RematchResult {
@@ -236,6 +270,16 @@ struct SyncLabels {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct WindowLabels {
+    result: WindowResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct AlertLabels {
+    result: AlertResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
 struct RematchLabels {
     result: RematchResult,
 }
@@ -310,6 +354,10 @@ pub struct RegistryMetrics {
     sync_overwritten: Counter,
     sync_baselines: Counter,
     sync_seconds: Histogram,
+    windows: Family<WindowLabels, Counter>,
+    window_stale_warnings: Counter,
+    alerts: Family<AlertLabels, Counter>,
+    alert_evaluations: Counter,
     rematches: Family<RematchLabels, Counter>,
     adoptions: Family<AdoptionLabels, Counter>,
     adoption_rank_seconds: Histogram,
@@ -365,6 +413,10 @@ impl Default for RegistryMetrics {
             sync_baselines: Counter::default(),
             // 10 ms to about 80 s: most of a sync's time is the agent's scan.
             sync_seconds: Histogram::new(exponential_buckets(0.01, 2.0, 14)),
+            windows: Family::default(),
+            window_stale_warnings: Counter::default(),
+            alerts: Family::default(),
+            alert_evaluations: Counter::default(),
             rematches: Family::default(),
             adoptions: Family::default(),
             // 1 ms to about 8 s: the ranking of one swimlane over 60 tree indexes is milliseconds, the budget is 5 s.
@@ -537,6 +589,26 @@ impl RegistryMetrics {
             "registry_sync_seconds",
             "Time to record one sync report, including the wait for the scan",
             self.sync_seconds.clone(),
+        );
+        registry.register(
+            "registry_sync_windows",
+            "Closed sync windows handled by the watch job, by how they ended",
+            self.windows.clone(),
+        );
+        registry.register(
+            "registry_sync_window_stale_warnings",
+            "Sync windows open for more than the stale limit that were warned about (once each)",
+            self.window_stale_warnings.clone(),
+        );
+        registry.register(
+            "registry_drift_alerts",
+            "Drift alerts and window evaluations offered to the notifier, by what became of them",
+            self.alerts.clone(),
+        );
+        registry.register(
+            "registry_alert_evaluations",
+            "Alert evaluations made when a sync window closed (one for the whole window, whatever the number of files)",
+            self.alert_evaluations.clone(),
         );
         registry.register(
             "registry_tenant_rematches",
@@ -750,6 +822,24 @@ impl RegistryMetrics {
         }
     }
 
+    pub(crate) fn window(&self, result: WindowResult) {
+        self.windows.get_or_create(&WindowLabels { result }).inc();
+    }
+
+    pub(crate) fn window_stale_warning(&self) {
+        self.window_stale_warnings.inc();
+    }
+
+    pub(crate) fn alert(&self, result: AlertResult, n: u64) {
+        if n > 0 {
+            self.alerts.get_or_create(&AlertLabels { result }).inc_by(n);
+        }
+    }
+
+    pub(crate) fn alert_evaluation(&self) {
+        self.alert_evaluations.inc();
+    }
+
     pub(crate) fn rematch(&self, result: RematchResult) {
         self.rematches.get_or_create(&RematchLabels { result }).inc();
     }
@@ -849,6 +939,26 @@ impl RegistryMetrics {
     /// Baselines set by sync reports, for tests.
     pub fn sync_baselines_count(&self) -> u64 {
         self.sync_baselines.get()
+    }
+
+    /// Closed sync windows by how they ended, for tests.
+    pub fn window_count(&self, result: WindowResult) -> u64 {
+        self.windows.get_or_create(&WindowLabels { result }).get()
+    }
+
+    /// Stale-window warnings sent, for tests.
+    pub fn window_stale_warning_count(&self) -> u64 {
+        self.window_stale_warnings.get()
+    }
+
+    /// Drift alerts by what became of them, for tests.
+    pub fn alert_count(&self, result: AlertResult) -> u64 {
+        self.alerts.get_or_create(&AlertLabels { result }).get()
+    }
+
+    /// Window evaluations made, for tests.
+    pub fn alert_evaluation_count(&self) -> u64 {
+        self.alert_evaluations.get()
     }
 
     /// Tenant-suffix reviews by outcome, for tests.
@@ -984,6 +1094,11 @@ mod tests {
         m.sync_overwritten(0);
         m.sync_baselines(7);
         m.rematch(RematchResult::Raised);
+        m.window(WindowResult::Processed);
+        m.window_stale_warning();
+        m.alert(AlertResult::Held, 3);
+        m.alert(AlertResult::Sent, 0);
+        m.alert_evaluation();
         m.adoption(AdoptionAction::Confirm, AdoptionOutcome::Ok);
         m.adoption(AdoptionAction::Confirm, AdoptionOutcome::Forbidden);
         m.adoption_ranked(0.01);
@@ -1009,6 +1124,16 @@ mod tests {
         assert_eq!(m.sync_overwritten_count(), 2);
         assert_eq!(m.sync_baselines_count(), 7);
         assert_eq!(m.rematch_count(RematchResult::Raised), 1);
+        assert_eq!(m.window_count(WindowResult::Processed), 1);
+        assert_eq!(m.window_count(WindowResult::GivenUp), 0);
+        assert_eq!(m.window_stale_warning_count(), 1);
+        assert_eq!(m.alert_count(AlertResult::Held), 3);
+        assert_eq!(
+            m.alert_count(AlertResult::Sent),
+            0,
+            "a count of zero adds nothing"
+        );
+        assert_eq!(m.alert_evaluation_count(), 1);
         assert_eq!(m.index_count(IndexResult::Indexed), 2);
         assert_eq!(m.index_count(IndexResult::Dropped), 0);
         assert_eq!(m.index_rows_count(), 5);
@@ -1023,6 +1148,13 @@ mod tests {
         assert!(text.contains("registry_index_blobs_total"), "{text}");
         assert!(text.contains("registry_sync_reports_total"), "{text}");
         assert!(text.contains("registry_tenant_rematches_total"), "{text}");
+        assert!(text.contains("registry_sync_windows_total"), "{text}");
+        assert!(
+            text.contains("registry_sync_window_stale_warnings_total"),
+            "{text}"
+        );
+        assert!(text.contains("registry_drift_alerts_total"), "{text}");
+        assert!(text.contains("registry_alert_evaluations_total"), "{text}");
         assert!(text.contains("registry_adoption_calls_total"), "{text}");
         assert!(text.contains("registry_adoption_rank_seconds"), "{text}");
         assert!(text.contains("registry_reads_total"), "{text}");

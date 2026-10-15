@@ -43,6 +43,7 @@ use crate::db::{Db, Txn};
 use crate::error::RegistryError;
 use crate::index::{TreeHashStore, TreeWrite};
 use crate::metrics::RegistryMetrics;
+use crate::sync::alerts::Alerts;
 
 /// Paths in one `DriftChanged` (A26). The outbox payload is bounded, so is the list.
 pub(crate) const DRIFT_EVENT_PATHS: usize = 500;
@@ -196,6 +197,8 @@ pub(crate) struct Persist {
     tree: TreeHashStore,
     metrics: RegistryMetrics,
     rows: usize,
+    /// Told, after a commit, which findings became drift worth an alert (T8). `None`: nothing is alerted.
+    alerts: Option<Alerts>,
 }
 
 impl std::fmt::Debug for Persist {
@@ -230,7 +233,14 @@ impl Persist {
             tree,
             metrics,
             rows: rows.max(1),
+            alerts: None,
         }
+    }
+
+    /// Offer the findings that became drift worth an alert to `alerts` after each commit (T8).
+    pub(crate) fn with_alerts(mut self, alerts: Option<Alerts>) -> Self {
+        self.alerts = alerts;
+        self
     }
 
     /// The open findings of the engine's kinds of a swimlane, as the table holds them.
@@ -327,6 +337,11 @@ impl Persist {
         self.metrics.pipeline_drift_paths(report.drift_paths as u64);
         self.metrics.pipeline_baselines(report.baselines as u64);
         self.metrics.pipeline_marks_cleared(report.marks_cleared as u64);
+        // After the commit, so that what is offered is what a reader can see; the alerts hold the findings' severities and nothing else.
+        // The call never fails and never waits for the notifier (T8).
+        if let Some(alerts) = &self.alerts {
+            alerts.offer(c.swimlane, &c.findings.alerts).await;
+        }
         Ok(report)
     }
 

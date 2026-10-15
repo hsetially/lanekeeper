@@ -110,6 +110,9 @@ pub struct PipelineDeps {
     pub clock: Arc<dyn Clock>,
     pub config: RegistryConfig,
     pub metrics: RegistryMetrics,
+    /// Where a finding that became drift worth knowing about is offered after its commit (T8): held while a sync window is open, sent
+    /// otherwise. `None`: the pipeline alerts nobody.
+    pub alerts: Option<crate::sync::alerts::Alerts>,
 }
 
 impl std::fmt::Debug for PipelineDeps {
@@ -184,6 +187,7 @@ impl Pipeline {
             clock,
             config,
             metrics,
+            alerts,
         } = deps;
         config.validate()?;
         let db = Db::new(pool.clone(), config.query_timeout);
@@ -215,7 +219,8 @@ impl Pipeline {
             tree,
             metrics.clone(),
             config.rows_per_statement,
-        );
+        )
+        .with_alerts(alerts);
         let (signal_tx, signal_rx) = mpsc::channel(config.signal_queue);
         let inner = Inner {
             loader: LaneLoader::new(db.clone(), blobs, config.blob_timeout),

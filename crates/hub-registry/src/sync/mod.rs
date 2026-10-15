@@ -13,6 +13,13 @@
 //! | 5 | The deployment record of the tenant is replaced, with one `SettingsChanged` event. | `deployment` |
 //! | 6 | The pipeline is told which paths to recompute. | `mod` |
 //!
+//! # Sync windows (T8)
+//!
+//! A sync Job's window (D75) is the other way a sync reaches the hub: the agent reports the Job as running and as finished, and the
+//! leased job `registry-sync-watch` ([`window`]) does the same processing for every tenant of the swimlane when the window closes, with
+//! **one** scan request, at the commits that are the heads of the mirrored branches (A33). While a window is open the drift is recorded and
+//! the alerts are held ([`hold`]); when it closes they are evaluated once ([`alerts`]): one notification for each severity, C7 first.
+//!
 //! Everything that changes the database does it in chunks of at most `chunk_paths` paths, one transaction each, under the swimlane's
 //! lock that ingestion's applies take too, with its audit events (one batch, last, so the chain's lock is held briefly) and its outbox
 //! events in the same transaction (D80). Every step is idempotent: a report that is made again after a failure finds the work that
@@ -31,9 +38,15 @@
 //! - **The wait is a poll.** The scan clears `needs_full_scan` in the transaction of its last chunk, and the report looks every
 //!   `sync_poll_interval` until `sync_scan_timeout`; a caller that cannot hold a request that long makes the call from a task.
 
+pub mod alerts;
 pub(crate) mod deployment;
+pub(crate) mod hold;
 pub(crate) mod overwrite;
 pub(crate) mod record;
+pub mod window;
+
+pub use alerts::{Alerts, AlertsDeps};
+pub use window::{WATCH_JOB, WatchReport};
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -50,6 +63,7 @@ use ports::{
 use sqlx::PgPool;
 use tracing::{info, warn};
 
+use self::alerts::{Alerts as AlertSink, AlertsDeps as AlertSinkDeps};
 use crate::branches::BranchClassifier;
 use crate::clock::Clock;
 use crate::config::{ConfigError, RegistryConfig};
@@ -190,10 +204,10 @@ impl Report {
 }
 
 /// What the report's swimlane is like.
-struct Lane {
+pub(crate) struct Lane {
     /// An admin has confirmed the baseline (D2, D22).
-    adopted: bool,
-    rules: LaneRules,
+    pub adopted: bool,
+    pub rules: LaneRules,
 }
 
 pub(crate) struct Inner {
@@ -209,6 +223,8 @@ pub(crate) struct Inner {
     pub metrics: RegistryMetrics,
     pub pipeline: Option<PipelineHandle>,
     pub severity: SeverityRules,
+    /// The evaluation of a closed window's alerts, and the warning about a stale one (T8).
+    pub alerts: AlertSink,
 }
 
 /// Syncs. Cloning shares it.
@@ -237,6 +253,13 @@ impl SyncService {
         })?;
         let severity =
             SeverityRules::new(default_rules()).map_err(|_| ConfigError::Invalid("severity_rules"))?;
+        let alerts = AlertSink::new(AlertSinkDeps {
+            pool: deps.pool.clone(),
+            notifier: Arc::clone(&deps.notifier),
+            clock: Arc::clone(&deps.clock),
+            config: deps.config.clone(),
+            metrics: deps.metrics.clone(),
+        })?;
         Ok(Self {
             inner: Arc::new(Inner {
                 db: Db::new(deps.pool, deps.config.query_timeout),
@@ -251,6 +274,7 @@ impl SyncService {
                 metrics: deps.metrics,
                 pipeline: deps.pipeline,
                 severity,
+                alerts,
             }),
         })
     }
@@ -313,7 +337,7 @@ impl Inner {
             .unix_millis()
             .saturating_add(i64::try_from(self.config.sync_scan_timeout.as_millis()).unwrap_or(i64::MAX));
 
-        let lane = self.lane(r).await?;
+        let lane = self.lane(&r.swimlane).await?;
         if !BranchClassifier::load(&self.db)
             .await?
             .is_deployable(r.tenant.as_str())
@@ -367,7 +391,7 @@ impl Inner {
     }
 
     /// The swimlane's facts, or `UnknownSwimlane` when it has no registry row (an agent has never said hello for it).
-    async fn lane(&self, r: &Report) -> Result<Lane, SyncError> {
+    pub(crate) async fn lane(&self, swimlane: &SwimlaneId) -> Result<Lane, SyncError> {
         let adopted: Option<bool> = self
             .db
             .run(
@@ -376,20 +400,20 @@ impl Inner {
                     "SELECT s.baseline_confirmed_at IS NOT NULL FROM swimlane_registry g \
                      JOIN swimlanes s ON s.id = g.swimlane_id WHERE g.swimlane_id = $1",
                 )
-                .bind(r.swimlane.as_str())
+                .bind(swimlane.as_str())
                 .fetch_optional(self.db.pool()),
             )
             .await?;
         let adopted = adopted.ok_or(SyncError::UnknownSwimlane)?;
         // The rules are read in a transaction that is not committed: it is only the way `rules::load` takes its reads.
         let mut tx = self.db.begin().await?;
-        let rules = load_rules(&self.db, &mut tx, &r.swimlane).await?;
+        let rules = load_rules(&self.db, &mut tx, swimlane).await?;
         drop(tx);
         Ok(Lane { adopted, rules })
     }
 
     /// Both commits are in the mirror (`NotFound` is `UnknownCommit`).
-    async fn commits_exist(&self, r: &Report) -> Result<(), SyncError> {
+    pub(crate) async fn commits_exist(&self, r: &Report) -> Result<(), SyncError> {
         let (git, tenant, base) = (
             Arc::clone(&self.git),
             r.tenant_commit.clone(),
@@ -405,7 +429,7 @@ impl Inner {
     }
 
     /// Flag the swimlane (the next heartbeat asks for a scan if this request is lost) and ask the agent for one now.
-    async fn request_scan(&self, r: &Report) -> Result<(), SyncError> {
+    pub(crate) async fn request_scan(&self, r: &Report) -> Result<(), SyncError> {
         self.db
             .run(
                 "sync_flag_scan",
@@ -434,7 +458,7 @@ impl Inner {
     }
 
     /// Wait until the full scan has been applied (a full scan clears the flag in the transaction of its last chunk).
-    async fn await_scan(&self, r: &Report, deadline_ms: i64) -> Result<(), SyncError> {
+    pub(crate) async fn await_scan(&self, r: &Report, deadline_ms: i64) -> Result<(), SyncError> {
         loop {
             let pending: Option<bool> = self
                 .db

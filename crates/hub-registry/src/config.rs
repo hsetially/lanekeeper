@@ -133,6 +133,30 @@ pub struct RegistryConfig {
     /// Branches kept in the ranking of a tenant-suffix review and of an adoption pass (`adoptions.ranking`), best first.
     pub rematch_ranking: usize,
 
+    // ---------------------------------------------------------------------------------------------- sync windows (T8)
+    /// How long a sync window may stay open before it is stale (D75): the watch job warns once, and the window stops holding the
+    /// swimlane's drift alerts, so that a Job that never finishes (or a window nobody should have reported) cannot silence them for
+    /// good. Measured from the window's `opened_at`, which ingestion clamps to the hub's clock.
+    pub sync_window_stale_after: Duration,
+    /// How long a closed window that could not be processed (the agent is not connected, the scan did not come) is retried before it
+    /// is given up: the drift alerts it held are then evaluated without the sync's own processing, and the window is marked done.
+    pub sync_close_give_up: Duration,
+    /// How long a closed window that nobody processed is kept for processing: past it the window is marked done and nothing is said (the
+    /// hub was down for that long, or the row is older than the job). Also the bound of every retry.
+    pub sync_window_expire_after: Duration,
+    /// How often the leased job `registry-sync-watch` looks for closed windows to process and open windows that are stale.
+    pub sync_watch_interval: Duration,
+    /// Swimlanes whose closed windows one run of the watch job processes (the rest wait for the next run).
+    pub sync_watch_batch: usize,
+    /// How long the swimlane's derived state must have been quiet before a closed window's alerts are evaluated: the pipeline recomputes
+    /// what the closing scan changed after the scan was applied, and the evaluation reads what it computed. Zero skips the wait.
+    pub sync_settle: Duration,
+    /// The longest the evaluation waits for that quiet. A pipeline that is still busy after it is evaluated as it is.
+    pub sync_settle_max: Duration,
+    /// Drift alerts being sent at once by the live path (each is a task that waits for the notifier). A burst past it is dropped and
+    /// counted, never queued without bound (rule 5).
+    pub alert_in_flight: usize,
+
     // ---------------------------------------------------------------------------------------------- adoption (T5)
     /// Commits of the base repository scored when the best-matching base commit is looked for: the head, the commits that changed the
     /// files that differ from it, and the tagged ones, in that order, cut here.
@@ -251,6 +275,14 @@ impl Default for RegistryConfig {
             sync_request_timeout: Duration::from_secs(10),
             notify_timeout: Duration::from_secs(10),
             rematch_ranking: 20,
+            sync_window_stale_after: Duration::from_secs(2 * 3600),
+            sync_close_give_up: Duration::from_secs(30 * 60),
+            sync_window_expire_after: Duration::from_secs(24 * 3600),
+            sync_watch_interval: Duration::from_secs(5),
+            sync_watch_batch: 16,
+            sync_settle: Duration::from_secs(1),
+            sync_settle_max: Duration::from_secs(15),
+            alert_in_flight: 8,
             adoption_base_candidates: 64,
             adoption_history_paths: 16,
             adoption_history_depth: 32,
@@ -418,6 +450,40 @@ impl RegistryConfig {
         )?;
         within("notify_timeout", millis(self.notify_timeout), 100, 120_000)?;
         within("rematch_ranking", self.rematch_ranking as u64, 1, 100)?;
+        within(
+            "sync_window_stale_after",
+            millis(self.sync_window_stale_after),
+            60_000,
+            7 * 24 * 3600 * 1000,
+        )?;
+        within(
+            "sync_close_give_up",
+            millis(self.sync_close_give_up),
+            60_000,
+            24 * 3600 * 1000,
+        )?;
+        within(
+            "sync_window_expire_after",
+            millis(self.sync_window_expire_after),
+            60_000,
+            30 * 24 * 3600 * 1000,
+        )?;
+        if self.sync_window_expire_after < self.sync_close_give_up {
+            return Err(ConfigError::OutOfRange("sync_window_expire_after"));
+        }
+        within(
+            "sync_watch_interval",
+            millis(self.sync_watch_interval),
+            1_000,
+            3600 * 1000,
+        )?;
+        within("sync_watch_batch", self.sync_watch_batch as u64, 1, 1_000)?;
+        within("sync_settle", millis(self.sync_settle), 0, 60_000)?;
+        within("sync_settle_max", millis(self.sync_settle_max), 1, 600_000)?;
+        if self.sync_settle_max < self.sync_settle {
+            return Err(ConfigError::OutOfRange("sync_settle_max"));
+        }
+        within("alert_in_flight", self.alert_in_flight as u64, 1, 256)?;
         within(
             "adoption_base_candidates",
             self.adoption_base_candidates as u64,
@@ -693,6 +759,83 @@ mod tests {
         out_of_range("rematch_ranking", |c| {
             c.rematch_ranking = 101;
         });
+    }
+
+    #[test]
+    fn the_sync_window_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(
+            c.sync_window_stale_after,
+            Duration::from_secs(2 * 3600),
+            "D75 and the prompt: a window open for more than two hours is stale"
+        );
+        assert_eq!(c.sync_close_give_up, Duration::from_secs(30 * 60));
+        assert_eq!(c.sync_window_expire_after, Duration::from_secs(24 * 3600));
+        assert_eq!(c.sync_watch_interval, Duration::from_secs(5));
+        assert_eq!(c.sync_watch_batch, 16);
+        assert_eq!(c.sync_settle, Duration::from_secs(1));
+        assert_eq!(c.sync_settle_max, Duration::from_secs(15));
+        assert_eq!(c.alert_in_flight, 8);
+        assert!(c.sync_settle <= c.sync_settle_max);
+        out_of_range("sync_window_stale_after", |c| {
+            c.sync_window_stale_after = Duration::from_secs(59);
+        });
+        out_of_range("sync_window_stale_after", |c| {
+            c.sync_window_stale_after = Duration::from_secs(8 * 24 * 3600);
+        });
+        out_of_range("sync_close_give_up", |c| {
+            c.sync_close_give_up = Duration::from_secs(59);
+        });
+        out_of_range("sync_close_give_up", |c| {
+            c.sync_close_give_up = Duration::from_secs(25 * 3600);
+        });
+        out_of_range("sync_window_expire_after", |c| {
+            c.sync_window_expire_after = Duration::from_secs(59);
+        });
+        out_of_range("sync_window_expire_after", |c| {
+            c.sync_window_expire_after = Duration::from_secs(31 * 24 * 3600);
+        });
+        out_of_range("sync_window_expire_after", |c| {
+            // It cannot be shorter than the give-up it follows.
+            c.sync_close_give_up = Duration::from_secs(2 * 3600);
+            c.sync_window_expire_after = Duration::from_secs(3600);
+        });
+        out_of_range("sync_watch_interval", |c| {
+            c.sync_watch_interval = Duration::from_millis(999);
+        });
+        out_of_range("sync_watch_interval", |c| {
+            c.sync_watch_interval = Duration::from_secs(3601);
+        });
+        out_of_range("sync_watch_batch", |c| {
+            c.sync_watch_batch = 0;
+        });
+        out_of_range("sync_watch_batch", |c| {
+            c.sync_watch_batch = 1_001;
+        });
+        out_of_range("sync_settle", |c| {
+            c.sync_settle = Duration::from_secs(61);
+        });
+        out_of_range("sync_settle_max", |c| {
+            c.sync_settle_max = Duration::from_secs(601);
+        });
+        out_of_range("sync_settle_max", |c| {
+            // The longest wait cannot be shorter than the quiet period it waits for.
+            c.sync_settle = Duration::from_secs(5);
+            c.sync_settle_max = Duration::from_secs(1);
+        });
+        out_of_range("alert_in_flight", |c| {
+            c.alert_in_flight = 0;
+        });
+        out_of_range("alert_in_flight", |c| {
+            c.alert_in_flight = 257;
+        });
+        // The quiet period may be zero (a test, or a pipeline that is known to be done).
+        let zero = RegistryConfig {
+            sync_settle: Duration::ZERO,
+            sync_settle_max: Duration::from_millis(1),
+            ..RegistryConfig::default()
+        };
+        assert!(zero.validate().is_ok());
     }
 
     #[test]

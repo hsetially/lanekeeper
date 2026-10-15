@@ -195,6 +195,27 @@ impl Rig {
         config: RegistryConfig,
         audit: Arc<dyn ports::AuditLog>,
     ) -> (Pipeline, PipelineHandle) {
+        self.pipeline_alerting(git, config, audit, None)
+    }
+
+    /// The same, with drift alerts offered to `notifier` after each commit (T8): held while a sync window is open, sent otherwise.
+    pub fn pipeline_alerting(
+        &self,
+        git: Arc<dyn GitReader>,
+        config: RegistryConfig,
+        audit: Arc<dyn ports::AuditLog>,
+        notifier: Option<Arc<dyn ports::Notifier>>,
+    ) -> (Pipeline, PipelineHandle) {
+        let alerts = notifier.map(|notifier| {
+            hub_registry::Alerts::new(hub_registry::AlertsDeps {
+                pool: self.pool.clone(),
+                notifier,
+                clock: Arc::clone(&self.clock) as _,
+                config: config.clone(),
+                metrics: self.metrics.clone(),
+            })
+            .unwrap()
+        });
         let bus: Arc<dyn EventBus> = self.events.clone().map_or_else(
             || Arc::clone(&self.bus) as Arc<dyn EventBus>,
             |e| Arc::new(e) as Arc<dyn EventBus>,
@@ -208,6 +229,7 @@ impl Rig {
             clock: Arc::clone(&self.clock) as _,
             config,
             metrics: self.metrics.clone(),
+            alerts,
         })
         .unwrap()
     }

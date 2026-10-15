@@ -65,14 +65,27 @@ impl World {
     }
 
     pub async fn with_config(tenants: &[&str], config: RegistryConfig) -> Option<Self> {
+        Box::pin(Self::with_alerts(tenants, config, None)).await
+    }
+
+    /// The same, with the pipeline offering drift alerts to `notifier` after each commit (T8).
+    pub async fn with_alerts(
+        tenants: &[&str],
+        config: RegistryConfig,
+        notifier: Option<Arc<dyn ports::Notifier>>,
+    ) -> Option<Self> {
         let rig = Rig::with_event_bus("sit1", config.clone()).await?;
         for t in tenants {
             rig.db.seed_tenant(&rig.pool, "sit1", t).await;
         }
         let git = CountingGit::new(FakeGit::new());
         let pipeline_audit = Arc::new(super::pg_audit::PgTestAudit::default());
-        let (pipeline, handle) =
-            rig.pipeline_with(Arc::new(git.clone()), config, Arc::clone(&pipeline_audit) as _);
+        let (pipeline, handle) = rig.pipeline_alerting(
+            Arc::new(git.clone()),
+            config,
+            Arc::clone(&pipeline_audit) as _,
+            notifier,
+        );
         Some(Self {
             rig,
             pipeline_audit,

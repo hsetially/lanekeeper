@@ -59,9 +59,23 @@ impl SyncRig {
     }
 
     pub async fn with_config(tenants: &[&str], config: RegistryConfig) -> Option<Self> {
-        let w = World::with_config(tenants, config.clone()).await?;
-        let gateway = FakeAgentGateway::new();
+        Box::pin(Self::build(tenants, config, false)).await
+    }
+
+    /// A swimlane `sit1` whose pipeline offers drift alerts to the same notifier as the sync service (T8): what the hub does.
+    pub async fn alerting(tenants: &[&str], config: RegistryConfig) -> Option<Self> {
+        Box::pin(Self::build(tenants, config, true)).await
+    }
+
+    async fn build(tenants: &[&str], config: RegistryConfig, alerting: bool) -> Option<Self> {
         let notifier = FakeNotifier::new();
+        let w = World::with_alerts(
+            tenants,
+            config.clone(),
+            alerting.then(|| Arc::new(notifier.clone()) as Arc<dyn ports::Notifier>),
+        )
+        .await?;
+        let gateway = FakeAgentGateway::new();
         let service = SyncService::new(SyncDeps {
             pool: w.rig.pool.clone(),
             git: Arc::new(w.git.clone()),

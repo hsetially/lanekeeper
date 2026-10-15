@@ -470,7 +470,8 @@ impl<'a> ClusterApplier<'a> {
     }
 
     /// Sync windows (D75): one row per Job, opened once and closed once, each change with its event. A report that repeats a
-    /// window changes nothing.
+    /// window changes nothing. The times are the agent's, clamped to the hub's clock when they are ahead of it by more than
+    /// `max_clock_skew`; what a closed window sets going is [`crate::sync::window`].
     async fn apply_windows(
         &self,
         tx: &mut Txn,
@@ -478,8 +479,17 @@ impl<'a> ClusterApplier<'a> {
         c: &ClusterReport,
         events: &mut Vec<DomainEvent>,
     ) -> Result<(), RegistryError> {
+        let now_ms = self.inner.clock.now().unix_millis();
+        let max_skew_ms = i64::try_from(self.inner.config.max_clock_skew.as_millis()).unwrap_or(i64::MAX);
         for w in &c.sync_windows {
-            let at = w.at.unix_millis();
+            // A time too far ahead of the hub's clock is the hub's clock (as for a scan's `observed_at`): a window's age is what ends its
+            // hold on the swimlane's alerts (T8), and a wrong or hostile agent clock must not keep a window young for ever.
+            let reported = w.at.unix_millis();
+            let at = if reported > now_ms.saturating_add(max_skew_ms) {
+                now_ms
+            } else {
+                reported
+            };
             match w.kind {
                 SyncWindowKind::Opened => {
                     let done = self.inner

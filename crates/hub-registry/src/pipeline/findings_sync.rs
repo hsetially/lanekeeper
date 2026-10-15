@@ -265,6 +265,21 @@ pub(crate) struct FindingsDelta {
     pub insert: Vec<FindingRow>,
     pub update: Vec<FindingRow>,
     pub resolve: Vec<FindingKey>,
+    /// The severities of the drift findings that **became** drift worth an alert in this change (T8, [`crate::sync::alerts`]): new ones,
+    /// and ones that were `git_ahead` (or some other state nobody alerts on) and now are `nfs_ahead`, `conflict` or `untracked`.
+    /// One entry for each finding, in the order of the findings; a finding that stays in an alertable state is not here
+    /// again, however its message or severity changed. A fact derived from `insert` and `update`: it writes nothing.
+    pub alerts: Vec<domain::Severity>,
+}
+
+/// The alertable drift state a finding row is about, when it is one: a `drift` finding whose details say the file's NFS side has
+/// something Git does not.
+fn alertable_state(row: &FindingRow) -> Option<DriftState> {
+    if row.kind != FindingKind::Drift {
+        return None;
+    }
+    let state: DriftState = row.details.get("state")?.as_str()?.parse().ok()?;
+    crate::sync::alerts::alertable(state).then_some(state)
 }
 
 impl FindingsDelta {
@@ -287,7 +302,10 @@ pub(crate) fn diff(
         match old.get(key) {
             None => delta.insert.push(row.clone()),
             Some(before) if before != row => delta.update.push(row.clone()),
-            Some(_) => {}
+            Some(_) => continue,
+        }
+        if alertable_state(row).is_some() && old.get(key).and_then(alertable_state).is_none() {
+            delta.alerts.push(row.severity);
         }
     }
     for key in old.keys() {
@@ -398,6 +416,68 @@ mod tests {
         assert_eq!(d.total(), 3);
         assert!(diff(&new, &new).is_empty());
         assert!(diff(&BTreeMap::new(), &BTreeMap::new()).is_empty());
+    }
+
+    fn drift_row(path: &str, state: &str, severity: domain::Severity, fp: &str) -> FindingRow {
+        FindingRow {
+            kind: FindingKind::Drift,
+            path: Some(path.to_owned()),
+            severity,
+            rule_ids: vec!["default.drift".to_owned()],
+            message: state.to_owned(),
+            locations: json!([]),
+            details: json!({"check": "drift", "state": state, "label": null}),
+            fingerprint: fp.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_finding_that_becomes_nfs_side_drift_is_one_alert_and_stays_one() {
+        use domain::Severity::{Critical, High, Low, Medium};
+        // Before: one finding that waits for its sync, one that already drifts on NFS, one that is gone.
+        let waiting = drift_row("a.yml", "git_ahead", Low, "f1");
+        let drifting = drift_row("b.yml", "nfs_ahead", Medium, "f2");
+        let old = map(vec![waiting, drifting]);
+
+        let new = map(vec![
+            // git_ahead to conflict: now NFS has something Git does not: an alert, at the new severity.
+            drift_row("a.yml", "conflict", High, "f1"),
+            // nfs_ahead to conflict, and worse: the same drift, already known.
+            drift_row("b.yml", "conflict", Critical, "f2"),
+            // New, and NFS-side.
+            drift_row("c.yml", "untracked", Medium, "f3"),
+            // New, and only waiting for a sync.
+            drift_row("d.yml", "git_ahead", Low, "f4"),
+            // New, and `unknown`: in an adopted swimlane that is a file Git has and NFS has not, not NFS-side drift.
+            drift_row("g.yml", "unknown", Medium, "f7"),
+            // New, but not drift at all: a C4 finding with a `state` in its details is not a drift alert.
+            FindingRow {
+                kind: FindingKind::OrphanFile,
+                details: json!({"check": "orphan_file", "state": "nfs_ahead"}),
+                ..drift_row("e.yml", "nfs_ahead", Medium, "f5")
+            },
+        ]);
+        let d = diff(&old, &new);
+        assert_eq!(
+            d.alerts,
+            vec![High, Medium],
+            "a.yml and c.yml, in the order of the findings"
+        );
+        assert_eq!(d.insert.len(), 4);
+        assert_eq!(d.update.len(), 2);
+
+        // Nothing changed: nothing to say. A finding that goes away is not an alert either.
+        assert!(diff(&new, &new).alerts.is_empty());
+        assert!(diff(&new, &BTreeMap::new()).alerts.is_empty());
+        // The same file with only its severity changed is not a second alert.
+        let louder = map(vec![drift_row("b.yml", "nfs_ahead", High, "f2")]);
+        assert!(diff(&old, &louder).alerts.is_empty());
+        // A row whose details this code cannot read is not alertable (it is resolved or replaced by the next sync).
+        let unreadable = map(vec![FindingRow {
+            details: json!({"state": 7}),
+            ..drift_row("f.yml", "nfs_ahead", Medium, "f6")
+        }]);
+        assert!(diff(&BTreeMap::new(), &unreadable).alerts.is_empty());
     }
 
     #[test]

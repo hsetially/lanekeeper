@@ -21,8 +21,10 @@
 //!   divergence. Every call requires an active Admin (an Operator for the marks). [`baselines`] is the rule for the raw version behind a
 //!   baseline that the pipeline, a sync report and a confirmation share.
 //!
-//! - [`sync`] (T4): what the hub does when a sync Job has put Git's content on NFS (`record_sync`): the full scan, C7 first, baselines at the
-//!   commits the report names, and the deployment record. [`branches`] says which tenant branches are deployable.
+//! - [`sync`] (T4, T8): what the hub does when a sync Job has put Git's content on NFS (`record_sync`): the full scan, C7 first, baselines at the
+//!   commits the report names, and the deployment record. [`branches`] says which tenant branches are deployable. A sync window (D75)
+//!   holds the swimlane's drift alerts while it is open; when it closes the same processing runs for every tenant of the swimlane with one
+//!   scan, and the alerts are evaluated once ([`sync::alerts`], [`sync::window`]).
 //!
 //! Nothing here reads a clock or an environment variable directly: instants come from a [`clock::Clock`] and every limit is a
 //! field of [`config::RegistryConfig`] with a tested default. Queries are runtime-checked `sqlx::query` with binds (plan A39);
@@ -74,4 +76,6 @@ pub use pipeline::{
 };
 pub use read::warmup::WarmupTask;
 pub use read::{Named, ReadDeps, RegistryApi, RegistryService, Tagged};
-pub use sync::{SyncDeps, SyncError, SyncOutcome, SyncService, SyncSource};
+pub use sync::{
+    Alerts, AlertsDeps, SyncDeps, SyncError, SyncOutcome, SyncService, SyncSource, WATCH_JOB, WatchReport,
+};
