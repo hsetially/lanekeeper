@@ -28,8 +28,12 @@ use crate::error::{Internal, Res};
 use crate::preview::effect::Facts;
 use crate::service::Inner;
 
-/// The most services one notification updates.
+/// The most services one page of a notification's update reads.
 pub const MAX_PICKUP_SERVICES: i64 = 2_000;
+
+/// The most pages one notification reads: 200,000 services, far above a swimlane. A swimlane that had more would be left with the
+/// rest stale, which the log says.
+const MAX_PICKUP_PAGES: usize = 100;
 
 /// The name of the environment value that says a client listens for notifications (D88).
 const MONITOR: &str = "CONFIG_CLIENT_MONITOR_ACTIVEMQ_ENABLED";
@@ -39,13 +43,14 @@ const TOUCH: &str = "UPDATE swimlanes SET last_notified_at = to_timestamp($2::bi
      RETURNING (EXTRACT(EPOCH FROM config_server_started_at) * 1000)::bigint";
 
 /// The services of a swimlane that read the notified paths and have changes waiting. `$2` is true when every service reads one of
-/// the paths; otherwise `$3` names the applications. The rows are locked: two notifications at once update one after the other.
+/// the paths; otherwise `$3` names the applications. `$5` is the last service of the page before (0 for the first page): the rows
+/// are read a page at a time, by id. The rows are locked: two notifications at once update one after the other.
 pub(crate) const PENDING: &str = "SELECT s.id, s.namespace, s.name, s.env_values, st.pickup_state, st.pending_files, \
             (EXTRACT(EPOCH FROM st.pending_since) * 1000)::bigint AS pending_ms, \
             (EXTRACT(EPOCH FROM st.oldest_pod_started_at) * 1000)::bigint AS pod_ms \
      FROM services s JOIN service_state st ON st.service_id = s.id \
      WHERE s.swimlane_id = $1 AND s.removed_at IS NULL AND jsonb_array_length(st.pending_files) > 0 \
-       AND ($2 OR s.name = ANY($3) OR s.env_values ->> 'SPRING_APPLICATION_NAME' = ANY($3)) \
+       AND ($2 OR s.name = ANY($3) OR s.env_values ->> 'SPRING_APPLICATION_NAME' = ANY($3)) AND s.id > $5 \
      ORDER BY s.id LIMIT $4 FOR UPDATE OF st";
 
 const WRITE: &str = "UPDATE service_state SET pickup_state = $2, pending_files = $3, \
@@ -222,15 +227,62 @@ pub(crate) async fn apply(
 
     let who = readers(&update.facts, &update.paths);
     let apps: Vec<String> = who.apps.into_iter().collect();
-    let rows = sqlx::query(PENDING)
-        .bind(swimlane.as_str())
-        .bind(who.everyone)
-        .bind(apps)
-        .bind(MAX_PICKUP_SERVICES)
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(|e| Internal::db("pickup_pending", &e))?;
 
+    // The services are read a page at a time, by id, until a page is not full: a swimlane with more waiting services than a page
+    // holds is updated whole, not left with the higher ids stale after every notification.
+    let mut changed: Vec<ServiceRef> = Vec::new();
+    let mut after = 0_i64;
+    for page in 0..MAX_PICKUP_PAGES {
+        let rows = sqlx::query(PENDING)
+            .bind(swimlane.as_str())
+            .bind(who.everyone)
+            .bind(&apps)
+            .bind(MAX_PICKUP_SERVICES)
+            .bind(after)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(|e| Internal::db("pickup_pending", &e))?;
+        let full = i64::try_from(rows.len()).is_ok_and(|n| n >= MAX_PICKUP_SERVICES);
+        if let Some(last) = rows.last() {
+            after = last
+                .try_get("id")
+                .map_err(|e| Internal::db("pickup_pending", &e))?;
+        }
+        changed.extend(update_page(tx, update, config_server_started, rows).await?);
+        if !full {
+            break;
+        }
+        if page + 1 == MAX_PICKUP_PAGES {
+            tracing::warn!(
+                pages = MAX_PICKUP_PAGES,
+                "a notification reached the limit of services it updates; the rest keep the state they had"
+            );
+        }
+    }
+
+    if !changed.is_empty() {
+        hub.bus
+            .publish_in_tx(
+                &mut Tx::from_pg(tx),
+                DomainEvent::PickupChanged {
+                    swimlane: swimlane.clone(),
+                    services: changed,
+                },
+            )
+            .await
+            .map_err(|_| Internal::new("commit", "event outbox"))?;
+    }
+    Ok(())
+}
+
+/// Recompute the pickup state of one page of waiting services and write the ones that changed. The services whose state or
+/// waiting files changed, in order.
+async fn update_page(
+    tx: &mut Transaction<'_, Postgres>,
+    update: &PickupUpdate,
+    config_server_started: Timestamp,
+    rows: Vec<sqlx::postgres::PgRow>,
+) -> Res<Vec<ServiceRef>> {
     let mut changed: Vec<ServiceRef> = Vec::new();
     for row in rows {
         let get = |e: sqlx::Error| Internal::db("pickup_pending", &e);
@@ -280,19 +332,7 @@ pub(crate) async fn apply(
         }
     }
 
-    if !changed.is_empty() {
-        hub.bus
-            .publish_in_tx(
-                &mut Tx::from_pg(tx),
-                DomainEvent::PickupChanged {
-                    swimlane: swimlane.clone(),
-                    services: changed,
-                },
-            )
-            .await
-            .map_err(|_| Internal::new("commit", "event outbox"))?;
-    }
-    Ok(())
+    Ok(changed)
 }
 
 /// The statements of a notification, for the `EXPLAIN` test (P12).

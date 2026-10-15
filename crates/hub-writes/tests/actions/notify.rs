@@ -683,6 +683,51 @@ async fn a_change_that_arrives_while_the_notification_is_sent_is_not_counted_as_
     );
 }
 
+/// `PENDING` reads a page of services. A swimlane with more services waiting than one page holds must not be left half updated.
+#[tokio::test]
+async fn a_notification_updates_every_waiting_service_not_only_the_first_page() {
+    let Some((rig, s)) = rig().await else { return };
+    let operator = rig.user(1, Role::Operator).await;
+    // One page is 2,000 services (`MAX_PICKUP_SERVICES`); this is a page and a bit.
+    let total: i64 = 2_150;
+    sqlx::query(
+        "INSERT INTO services (swimlane_id, namespace, name, env_values) \
+         SELECT $1, 'sit1', 'svc' || g, $2 FROM generate_series(1, $3::int) g",
+    )
+    .bind(s.as_str())
+    .bind(listens())
+    .bind(total)
+    .execute(&rig.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO service_state (service_id, pickup_state, pending_files, pending_since) \
+         SELECT id, 'needs_notify_or_restart', $2, to_timestamp($3::bigint / 1000.0) FROM services WHERE swimlane_id = $1",
+    )
+    .bind(s.as_str())
+    .bind(json!(["application.yml"]))
+    .bind(START - 3 * 60_000)
+    .execute(&rig.pool)
+    .await
+    .unwrap();
+
+    let out = rig
+        .hub
+        .notify(&ctx(&operator, "n-1"), notify_req(&s, &["application.yml"]))
+        .await
+        .unwrap();
+    assert!(matches!(out, WriteOutcome::Applied { .. }), "{out:?}");
+    let waiting: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM service_state st JOIN services s ON s.id = st.service_id \
+         WHERE s.swimlane_id = $1 AND st.pickup_state <> 'live'",
+    )
+    .bind(s.as_str())
+    .fetch_one(&rig.pool)
+    .await
+    .unwrap();
+    assert_eq!(waiting, 0, "services left stale after the notification");
+}
+
 #[tokio::test]
 async fn a_notification_that_changes_no_pickup_state_hints_nothing() {
     let Some((rig, s)) = rig().await else { return };
