@@ -355,6 +355,16 @@ impl WriteService for WriteHub {
             .await
     }
 
+    async fn draft(&self, ctx: &WriteCtx, id: DraftId) -> Result<Draft, WriteError> {
+        let span = tracing::info_span!(
+            "write.draft",
+            request_id = %ctx.request_id,
+            user = %ctx.user.id,
+            draft = %id,
+        );
+        crate::drafts::draft(&self.inner, ctx, id).instrument(span).await
+    }
+
     async fn preview_effect(&self, ctx: &WriteCtx, r: PreviewRequest) -> Result<ChangePreview, WriteError> {
         let span = tracing::info_span!(
             "write.preview",

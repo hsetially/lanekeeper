@@ -40,6 +40,7 @@
     clippy::module_name_repetitions
 )]
 
+mod assess;
 mod autonotify;
 mod clock;
 mod config;
@@ -99,6 +100,7 @@ pub fn hot_queries() -> Vec<(&'static str, &'static str)> {
     all.push(("config_server_of", ops::restart::CONFIG_SERVER_OF));
     all.push(("auto_notify_switch", autonotify::SWITCH));
     all.extend(ops::pickup::queries());
+    all.extend(assess::queries());
     all.extend(vault::store_queries());
     all.extend(prs::job::queries());
     all.extend(prs::links::queries());

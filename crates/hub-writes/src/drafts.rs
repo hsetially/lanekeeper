@@ -7,7 +7,10 @@
 //! - **Applying** a draft is an edit by the same user, run through the whole pipeline (the lock, the secret scan, approval for a
 //!   user who `requires_approval`, the expected hash at the agent), so a draft never writes anything an edit could not. The
 //!   audit event is `DraftApplied`, and the draft is marked with the write in the same transaction.
-//! - A draft belongs to its author: another user's draft is as good as no draft (not found).
+//! - A draft belongs to its author: another user's draft is as good as no draft (not found). The author can read it
+//!   ([`draft`]) while it is open, after it was applied and after it expired.
+//! - A draft says how serious its change is and when each service would pick it up ([`crate::assess`]). Both are worked out
+//!   when the draft is made and again whenever it is read, from the rules and the Deployments as they are then; neither is stored.
 
 use std::str::FromStr;
 
@@ -19,6 +22,7 @@ use domain::{
 use ports::WriteError;
 use sqlx::{PgConnection, Row};
 
+use crate::assess;
 use crate::db::{ms, ts};
 use crate::error::{Internal, Res};
 use crate::idempotency::RequestHash;
@@ -124,6 +128,9 @@ fn read(row: &sqlx::postgres::PgRow) -> Option<Stored> {
             setting_changes: serde_json::from_value(settings).ok()?,
             status: ProposalStatus::from_str(&status).ok()?,
             expires_at: Timestamp::from_unix_millis(expires_ms),
+            // Worked out when the draft is returned, not stored (`crate::assess`).
+            severity: None,
+            effects: Vec::new(),
         },
         expires_ms,
     })
@@ -212,40 +219,13 @@ pub(crate) async fn propose_draft(hub: &Inner, ctx: &WriteCtx, r: EditRequest) -
         })
         .await?;
 
+    let severity = assess::severity_of(hub, &r.path, &view.setting_changes).await?;
+    let effects = assess::effects_of(hub, &user, &r.swimlane, &r.path).await?;
+
     let id = new_id().ok_or(WriteError::Unavailable)?;
     let now = hub.now_ms();
     let expires = now.saturating_add(millis(hub.cfg.draft_ttl));
-    let mut tx = hub
-        .within("draft_insert", hub.pool.begin())
-        .await?
-        .map_err(|e| Internal::db("draft_insert", &e))?;
-    sqlx::query(INSERT)
-        .bind(id.as_str())
-        .bind(user.id.tid().as_str())
-        .bind(user.id.oid().as_str())
-        .bind(r.swimlane.as_str())
-        .bind(r.path.as_str())
-        .bind(serde_json::to_value(r.expected).map_err(|_| Internal::new("draft_insert", "encode"))?)
-        .bind(new_hash.as_bytes().as_slice())
-        .bind(serde_json::to_value(&view.hunks).map_err(|_| Internal::new("draft_insert", "encode"))?)
-        .bind(
-            serde_json::to_value(&view.setting_changes)
-                .map_err(|_| Internal::new("draft_insert", "encode"))?,
-        )
-        .bind(now)
-        .bind(expires)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| Internal::db("draft_insert", &e))?;
-    sqlx::query(BLOB_REF)
-        .bind(new_hash.as_bytes().as_slice())
-        .bind(id.as_str())
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| Internal::db("draft_insert", &e))?;
-    tx.commit().await.map_err(|e| Internal::db("draft_insert", &e))?;
-
-    Ok(Draft {
+    let draft = Draft {
         id,
         author: user.id.clone(),
         swimlane: r.swimlane,
@@ -256,7 +236,63 @@ pub(crate) async fn propose_draft(hub: &Inner, ctx: &WriteCtx, r: EditRequest) -
         setting_changes: view.setting_changes,
         status: ProposalStatus::Draft,
         expires_at: Timestamp::from_unix_millis(expires),
-    })
+        severity,
+        effects,
+    };
+    insert(hub, &draft, now).await?;
+    Ok(draft)
+}
+
+/// Keep the draft and the reference that holds its new version, in one transaction. Its severity and effects are not stored.
+async fn insert(hub: &Inner, draft: &Draft, created_ms: i64) -> Res<()> {
+    let mut tx = hub
+        .within("draft_insert", hub.pool.begin())
+        .await?
+        .map_err(|e| Internal::db("draft_insert", &e))?;
+    sqlx::query(INSERT)
+        .bind(draft.id.as_str())
+        .bind(draft.author.tid().as_str())
+        .bind(draft.author.oid().as_str())
+        .bind(draft.swimlane.as_str())
+        .bind(draft.path.as_str())
+        .bind(serde_json::to_value(draft.expected).map_err(|_| Internal::new("draft_insert", "encode"))?)
+        .bind(draft.new_hash.as_bytes().as_slice())
+        .bind(serde_json::to_value(&draft.hunks).map_err(|_| Internal::new("draft_insert", "encode"))?)
+        .bind(
+            serde_json::to_value(&draft.setting_changes)
+                .map_err(|_| Internal::new("draft_insert", "encode"))?,
+        )
+        .bind(created_ms)
+        .bind(draft.expires_at.unix_millis())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Internal::db("draft_insert", &e))?;
+    sqlx::query(BLOB_REF)
+        .bind(draft.new_hash.as_bytes().as_slice())
+        .bind(draft.id.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Internal::db("draft_insert", &e))?;
+    tx.commit().await.map_err(|e| Internal::db("draft_insert", &e))?;
+    Ok(())
+}
+
+/// A draft as it is now, for its author. No side effect and no audit event (reading is not audited), and no idempotency record. A
+/// draft that was applied or has expired is still returned, with the status it has: expiry ends what can be applied, not what can be
+/// read, and the sweeper, not the read, moves the status.
+pub(crate) async fn draft(hub: &Inner, ctx: &WriteCtx, id: DraftId) -> Result<Draft, WriteError> {
+    let user = authorize(hub, ctx, Role::Editor).await?;
+    let Some(stored) = get(hub, &id).await? else {
+        return Err(WriteError::NotFound);
+    };
+    let mut draft = stored.draft;
+    // Somebody else's draft is not a draft the caller has.
+    if draft.author != user.id {
+        return Err(WriteError::NotFound);
+    }
+    draft.severity = assess::severity_of(hub, &draft.path, &draft.setting_changes).await?;
+    draft.effects = assess::effects_of(hub, &user, &draft.swimlane, &draft.path).await?;
+    Ok(draft)
 }
 
 /// Apply a draft. See the module documentation.

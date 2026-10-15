@@ -2291,6 +2291,11 @@ async fn draft_routes_read_a_draft_and_return_the_draft_and_the_outcome() {
         setting_changes: Vec::new(),
         status: ProposalStatus::Draft,
         expires_at: Timestamp::from_unix_millis(5),
+        severity: Some(domain::Severity::High),
+        effects: vec![(
+            domain::ServiceRef::new("csp", "tx-api").unwrap(),
+            domain::PickupState::NeedsNotifyOrRestart,
+        )],
     };
     *service.draft.lock().unwrap() = Some(Ok(draft.clone()));
     let r = send(
@@ -2301,6 +2306,12 @@ async fn draft_routes_read_a_draft_and_return_the_draft_and_the_outcome() {
     assert_eq!(r.status, StatusCode::CREATED);
     assert_eq!(r.json()["id"], "d-1");
     assert_eq!(r.json()["status"], "draft");
+    // The severity and the effects reach the caller in the API's shape: a level, and pairs of a service and its pickup state.
+    assert_eq!(r.json()["severity"], "high");
+    assert_eq!(
+        r.json()["effects"],
+        json!([[{ "namespace": "csp", "name": "tx-api" }, "needs_notify_or_restart"]])
+    );
     match &service.calls().last().unwrap().0 {
         Call::Draft(req) => {
             assert_eq!(req.swimlane.as_str(), "sit1");

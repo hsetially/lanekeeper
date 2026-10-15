@@ -425,7 +425,7 @@ fn warning(w: EffectWarning) -> PreviewWarning {
 
 /// Does the folder of `path` exist, and what line endings do its files have? The root always exists. A registry that does not
 /// answer is no reason to warn about a new folder.
-async fn folder_facts(
+pub(crate) async fn folder_facts(
     hub: &Inner,
     user: &User,
     swimlane: &SwimlaneId,

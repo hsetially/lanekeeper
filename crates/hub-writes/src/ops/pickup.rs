@@ -60,12 +60,12 @@ pub(crate) struct PickupUpdate {
 }
 
 /// Who reads the paths: every service, or the applications named.
-struct Readers {
-    everyone: bool,
-    apps: BTreeSet<String>,
+pub(crate) struct Readers {
+    pub everyone: bool,
+    pub apps: BTreeSet<String>,
 }
 
-fn readers(facts: &Facts, paths: &[NfsPath]) -> Readers {
+pub(crate) fn readers(facts: &Facts, paths: &[NfsPath]) -> Readers {
     let mut out = Readers {
         everyone: false,
         apps: BTreeSet::new(),
@@ -85,7 +85,7 @@ fn readers(facts: &Facts, paths: &[NfsPath]) -> Readers {
 }
 
 /// The kind of change a waiting file is, for the engine.
-fn change_of(path: &NfsPath, facts: &Facts) -> PickupChange {
+pub(crate) fn change_of(path: &NfsPath, facts: &Facts) -> PickupChange {
     if path.file_name() == "channels.yml" {
         PickupChange::ChannelsYml
     } else if file_role(path, &facts.tenants, &facts.apps) == domain::FileRole::PropertySource {
@@ -145,7 +145,7 @@ fn iso_seconds(rest: &str) -> Option<u64> {
     (seen && number.is_empty()).then_some(total)
 }
 
-fn client_of(env: &serde_json::Value) -> ClientSettings {
+pub(crate) fn client_of(env: &serde_json::Value) -> ClientSettings {
     let text = |key: &str| env.get(key).and_then(serde_json::Value::as_str);
     ClientSettings {
         notifications_enabled: text(MONITOR).is_some_and(|v| v.trim().eq_ignore_ascii_case("true")),

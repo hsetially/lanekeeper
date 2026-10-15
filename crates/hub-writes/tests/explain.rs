@@ -99,6 +99,22 @@ async fn explain_proposal_reads_use_the_primary_key_and_the_decision_is_joined_b
     assert!(plan(&db, sql).await.contains("drafts_pkey"));
 }
 
+/// A draft's effects read the swimlane's Deployments through the key `(swimlane, namespace, name)`, in the order they are listed in,
+/// and its severity reads the (few) rules by their key: neither is a scan, and both are bounded.
+#[tokio::test]
+async fn explain_a_drafts_services_and_rules_are_bounded_and_read_through_keys() {
+    let db = db!();
+    let queries = hub_writes::hot_queries();
+    let (_, services) = queries.iter().find(|(n, _)| *n == "draft_services").unwrap();
+    let p = plan(&db, services).await;
+    assert!(p.contains("services_swimlane_id_namespace_name_key"), "{p}");
+    assert!(p.contains("\"Limit\""), "no LIMIT: {p}");
+    let (_, rules) = queries.iter().find(|(n, _)| *n == "draft_rules").unwrap();
+    let p = plan(&db, rules).await;
+    assert!(p.contains("severity_rules_pkey"), "{p}");
+    assert!(p.contains("\"Limit\""), "no LIMIT: {p}");
+}
+
 #[tokio::test]
 async fn explain_credential_reads_use_their_keys() {
     let db = db!();

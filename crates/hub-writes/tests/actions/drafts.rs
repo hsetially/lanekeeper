@@ -3,7 +3,10 @@
 #![allow(clippy::too_many_lines)]
 
 use bytes::Bytes;
-use domain::{DomainEvent, DraftId, Expected, ProposalStatus, RejectReason, Role, SwimlaneId, WriteOutcome};
+use domain::{
+    DomainEvent, DraftId, Expected, PickupState, ProposalStatus, RejectReason, Role, ServiceRef, Severity,
+    SwimlaneId, WriteOutcome,
+};
 use hub_writes::ProposalDesk;
 use ports::conformance::sample::nfs;
 use ports::{AuditAction, AuditActor, BlobStore, WriteError, WriteService, verify_chain};
@@ -568,4 +571,429 @@ async fn secret_scan_runs_on_edit_upload_revert_and_apply_draft() {
     assert_eq!(rig.nfs_of(&s, "b.yml").as_deref(), Some(&b"y: 1\n"[..]));
     assert_eq!(rig.agent.write_commands(), 0);
     assert_eq!(rig.chain().await.len(), 0);
+}
+
+// ---------------------------------------------------------------------------- severity and effects (contract/07-mcp)
+
+fn service(namespace: &str, name: &str) -> ServiceRef {
+    ServiceRef::new(namespace, name).unwrap()
+}
+
+/// A swimlane with two applications, `tx-api` and `other-app`, one Deployment each, and files of every kind the pickup states tell
+/// apart: a root property source, an application's property source, a resource file, `channels.yml`.
+async fn lane_with_services() -> Option<(Rig, SwimlaneId)> {
+    let rig = Rig::new(TestDb::ready().await?).await;
+    let s = rig.swimlane("sit1", true).await;
+    rig.tenant(&s, "sit1").await;
+    rig.service(&s, "csp", "tx-api", Some("tx-api")).await;
+    rig.service(&s, "csp", "other", Some("other-app")).await;
+    rig.seed(
+        &s,
+        &[
+            ("application.yml", "r: 1\n"),
+            ("channels.yml", "channels: [web]\n"),
+            ("tx-api/tx-api.yml", "p: 1\n"),
+            ("tx-api/entry.yml", "a: 1\nb: 2\n"),
+            ("security/roles.yml", "role: user\n"),
+        ],
+    );
+    Some((rig, s))
+}
+
+async fn propose(
+    rig: &Rig,
+    s: &SwimlaneId,
+    editor: &domain::User,
+    key: &str,
+    path: &str,
+    old: &str,
+    new: &str,
+) -> domain::Draft {
+    rig.hub
+        .propose_draft(&ctx(editor, key), edit(s, path, at(old), new))
+        .await
+        .unwrap()
+}
+
+/// D85: the draft says when the change would take effect for each service that reads the file. The facts are the engine's
+/// `pickup_state`; the services are the ones that read the path (D82): the root's files are every service's, an application's
+/// folder is that application's Deployments'.
+#[tokio::test]
+async fn a_draft_says_when_the_change_would_take_effect_for_each_service_that_reads_the_file() {
+    let Some((rig, s)) = lane_with_services().await else {
+        return;
+    };
+    let editor = rig.user(1, Role::Editor).await;
+    let (api, other) = (service("csp", "tx-api"), service("csp", "other"));
+
+    // A property source of one application: only its Deployments, and they need a notification or a restart.
+    let d = propose(&rig, &s, &editor, "p-1", "tx-api/tx-api.yml", "p: 1\n", "p: 2\n").await;
+    assert_eq!(d.effects, vec![(api.clone(), PickupState::NeedsNotifyOrRestart)]);
+
+    // A resource file of the application: live once the client's cache expires.
+    let d = propose(
+        &rig,
+        &s,
+        &editor,
+        "p-2",
+        "tx-api/entry.yml",
+        "a: 1\nb: 2\n",
+        "a: 9\nb: 2\n",
+    )
+    .await;
+    assert_eq!(d.effects, vec![(api.clone(), PickupState::LiveWithinTtl)]);
+
+    // The root's property source is read by every service, in a fixed order.
+    let d = propose(&rig, &s, &editor, "p-3", "application.yml", "r: 1\n", "r: 2\n").await;
+    assert_eq!(
+        d.effects,
+        vec![
+            (other.clone(), PickupState::NeedsNotifyOrRestart),
+            (api.clone(), PickupState::NeedsNotifyOrRestart)
+        ]
+    );
+
+    // A new folder, and `channels.yml`: only a restart of the config-server picks them up (D83).
+    let d = rig
+        .hub
+        .propose_draft(
+            &ctx(&editor, "p-4"),
+            edit(&s, "fresh/new.yml", Expected::Absent, "n: 1\n"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        d.effects,
+        vec![
+            (other.clone(), PickupState::NeedsConfigServerRestart),
+            (api.clone(), PickupState::NeedsConfigServerRestart)
+        ]
+    );
+    let d = propose(
+        &rig,
+        &s,
+        &editor,
+        "p-5",
+        "channels.yml",
+        "channels: [web]\n",
+        "channels: [web, atm]\n",
+    )
+    .await;
+    assert_eq!(
+        d.effects,
+        vec![
+            (other, PickupState::NeedsConfigServerRestart),
+            (api, PickupState::NeedsConfigServerRestart)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_draft_with_no_deployment_to_read_the_file_has_no_effects_and_a_removed_deployment_does_not_count()
+{
+    let Some((rig, s)) = lane_with_services().await else {
+        return;
+    };
+    let editor = rig.user(1, Role::Editor).await;
+    sqlx::query("UPDATE services SET removed_at = now() WHERE name = 'tx-api'")
+        .execute(&rig.pool)
+        .await
+        .unwrap();
+    let d = propose(
+        &rig,
+        &s,
+        &editor,
+        "p-1",
+        "tx-api/entry.yml",
+        "a: 1\nb: 2\n",
+        "a: 9\nb: 2\n",
+    )
+    .await;
+    // The removed Deployment is not listed. With it gone nobody declares `tx-api`, so its folder is no application's: a search
+    // location every remaining service reads (D83).
+    assert_eq!(
+        d.effects,
+        vec![(service("csp", "other"), PickupState::LiveWithinTtl)]
+    );
+
+    sqlx::query("DELETE FROM services")
+        .execute(&rig.pool)
+        .await
+        .unwrap();
+    let d = propose(&rig, &s, &editor, "p-2", "application.yml", "r: 1\n", "r: 2\n").await;
+    assert!(d.effects.is_empty());
+    assert_eq!(rig.chain().await.len(), 0, "working out effects records nothing");
+}
+
+/// D76: the severity is the engine's, from the default rules and the admin's.
+#[tokio::test]
+async fn a_draft_carries_the_severity_the_rules_give_its_change() {
+    let Some((rig, s)) = lane_with_services().await else {
+        return;
+    };
+    let editor = rig.user(1, Role::Editor).await;
+    // Under `security/**`: critical.
+    let d = propose(
+        &rig,
+        &s,
+        &editor,
+        "s-1",
+        "security/roles.yml",
+        "role: user\n",
+        "role: admin\n",
+    )
+    .await;
+    assert_eq!(d.severity, Some(Severity::Critical));
+    // A root file changing affects every service: high.
+    let d = propose(&rig, &s, &editor, "s-2", "application.yml", "r: 1\n", "r: 2\n").await;
+    assert_eq!(d.severity, Some(Severity::High));
+    // Keys removed: high. A value changing type: high.
+    let d = propose(
+        &rig,
+        &s,
+        &editor,
+        "s-3",
+        "tx-api/entry.yml",
+        "a: 1\nb: 2\n",
+        "a: 1\n",
+    )
+    .await;
+    assert_eq!(d.severity, Some(Severity::High));
+    let d = propose(
+        &rig,
+        &s,
+        &editor,
+        "s-4",
+        "tx-api/entry.yml",
+        "a: 1\nb: 2\n",
+        "a: x\nb: 2\n",
+    )
+    .await;
+    assert_eq!(d.severity, Some(Severity::High));
+    // A value changing in a file below a folder matches no rule: no severity, not a made-up "low".
+    let d = propose(
+        &rig,
+        &s,
+        &editor,
+        "s-5",
+        "tx-api/entry.yml",
+        "a: 1\nb: 2\n",
+        "a: 9\nb: 2\n",
+    )
+    .await;
+    assert_eq!(d.severity, None);
+}
+
+#[tokio::test]
+async fn an_admins_severity_rule_applies_to_a_draft_and_a_rule_that_cannot_apply_does_not_lower_the_answer() {
+    let Some((rig, s)) = lane_with_services().await else {
+        return;
+    };
+    let editor = rig.user(1, Role::Editor).await;
+    let rule = |id: &str, scope: &str, matcher: serde_json::Value, severity: &str, enabled: bool| {
+        let (pool, id, scope, severity) = (
+            rig.pool.clone(),
+            id.to_owned(),
+            scope.to_owned(),
+            severity.to_owned(),
+        );
+        async move {
+            sqlx::query(
+                "INSERT INTO severity_rules (id, scope, matcher, severity, enabled) VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(id)
+            .bind(scope)
+            .bind(matcher)
+            .bind(severity)
+            .bind(enabled)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    // Disabled, and about findings: neither applies to a change.
+    rule(
+        "admin.off",
+        "change",
+        serde_json::json!({ "path_glob": "tx-api/**" }),
+        "critical",
+        false,
+    )
+    .await;
+    rule(
+        "admin.finding",
+        "finding",
+        serde_json::json!({ "path_glob": "tx-api/**" }),
+        "critical",
+        true,
+    )
+    .await;
+    let d = propose(
+        &rig,
+        &s,
+        &editor,
+        "r-1",
+        "tx-api/entry.yml",
+        "a: 1\nb: 2\n",
+        "a: 9\nb: 2\n",
+    )
+    .await;
+    assert_eq!(d.severity, None);
+
+    // An enabled rule for changes under the folder.
+    rule(
+        "admin.api",
+        "change",
+        serde_json::json!({ "path_glob": "tx-api/**" }),
+        "medium",
+        true,
+    )
+    .await;
+    let d = propose(
+        &rig,
+        &s,
+        &editor,
+        "r-2",
+        "tx-api/entry.yml",
+        "a: 1\nb: 2\n",
+        "a: 9\nb: 2\n",
+    )
+    .await;
+    assert_eq!(d.severity, Some(Severity::Medium));
+    // Never lower than a default rule says: the highest wins.
+    let d = propose(
+        &rig,
+        &s,
+        &editor,
+        "r-3",
+        "tx-api/entry.yml",
+        "a: 1\nb: 2\n",
+        "a: 1\n",
+    )
+    .await;
+    assert_eq!(d.severity, Some(Severity::High));
+
+    // A rule the hub cannot read is no reason to claim a lower severity: the engine has no answer.
+    rule(
+        "admin.broken",
+        "change",
+        serde_json::json!({ "bogus": 1 }),
+        "low",
+        true,
+    )
+    .await;
+    let d = propose(
+        &rig,
+        &s,
+        &editor,
+        "r-4",
+        "security/roles.yml",
+        "role: user\n",
+        "role: admin\n",
+    )
+    .await;
+    assert_eq!(d.severity, None);
+}
+
+/// `WriteService::draft`: the author reads the draft as it was proposed, with its severity and effects, and nobody else does.
+#[tokio::test]
+async fn the_author_reads_their_draft_as_proposed_and_nobody_else_does() {
+    let Some((rig, s)) = lane_with_services().await else {
+        return;
+    };
+    let editor = rig.user(1, Role::Editor).await;
+    let other = rig.user(2, Role::Editor).await;
+    let viewer = rig.user(3, Role::Viewer).await;
+    let pending = rig
+        .user_with_status(4, Some(Role::Admin), domain::UserStatus::Pending)
+        .await;
+    let proposed = propose(&rig, &s, &editor, "w-1", "application.yml", "r: 1\n", "r: 2\n").await;
+    assert_eq!(proposed.severity, Some(Severity::High));
+    assert_eq!(proposed.effects.len(), 2);
+
+    let read = rig
+        .hub
+        .draft(&ctx(&editor, "w-2"), proposed.id.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        read, proposed,
+        "the draft that was proposed, with its severity and effects"
+    );
+    assert_eq!(
+        rig.hub
+            .draft(&ctx(&editor, "w-3"), proposed.id.clone())
+            .await
+            .unwrap(),
+        proposed,
+        "reading twice gives the same draft"
+    );
+
+    assert_eq!(
+        rig.hub.draft(&ctx(&other, "w-4"), proposed.id.clone()).await,
+        Err(WriteError::NotFound)
+    );
+    assert_eq!(
+        rig.hub
+            .draft(&ctx(&editor, "w-5"), DraftId::parse("d-nothing").unwrap())
+            .await,
+        Err(WriteError::NotFound)
+    );
+    for who in [&viewer, &pending] {
+        assert_eq!(
+            rig.hub.draft(&ctx(who, "w-6"), proposed.id.clone()).await,
+            Err(WriteError::Forbidden)
+        );
+    }
+
+    // Reading records nothing and claims no key: the same key can be used again.
+    assert_eq!(rig.chain().await.len(), 0);
+    assert_eq!(rig.count("idempotency_keys").await, 0);
+    assert_eq!(rig.agent.write_commands(), 0);
+    assert_eq!(draft_status(&rig, &proposed.id).await, "draft");
+}
+
+/// An applied draft says so; an expired one is still readable by its author: expiry ends what can be applied, not what can be read.
+#[tokio::test]
+async fn an_applied_or_expired_draft_is_still_readable_by_its_author() {
+    let Some((rig, s)) = lane_with_services().await else {
+        return;
+    };
+    let editor = rig.user(1, Role::Editor).await;
+    let other = rig.user(2, Role::Editor).await;
+    let first = propose(&rig, &s, &editor, "x-1", "tx-api/tx-api.yml", "p: 1\n", "p: 2\n").await;
+    rig.hub
+        .apply_draft(&ctx(&editor, "x-2"), first.id.clone())
+        .await
+        .unwrap();
+    let after = rig
+        .hub
+        .draft(&ctx(&editor, "x-3"), first.id.clone())
+        .await
+        .unwrap();
+    assert_eq!(after.status, ProposalStatus::Applied);
+    assert_eq!(
+        (after.id, after.path, after.new_hash),
+        (first.id, first.path, first.new_hash)
+    );
+
+    let second = propose(&rig, &s, &editor, "x-4", "tx-api/tx-api.yml", "p: 2\n", "p: 3\n").await;
+    rig.advance_secs(2 * 24 * 3600);
+    let read = rig
+        .hub
+        .draft(&ctx(&editor, "x-5"), second.id.clone())
+        .await
+        .unwrap();
+    assert_eq!(read.id, second.id);
+    assert_eq!(read.expires_at, second.expires_at);
+    assert_eq!(
+        rig.hub.draft(&ctx(&other, "x-6"), second.id.clone()).await,
+        Err(WriteError::NotFound),
+        "an expired draft is still only the author's"
+    );
+    assert_eq!(
+        rig.nfs_of(&s, "tx-api/tx-api.yml").as_deref(),
+        Some(&b"p: 2\n"[..]),
+        "reading an expired draft writes nothing"
+    );
 }

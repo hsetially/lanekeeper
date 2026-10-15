@@ -5,9 +5,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use domain::{
-    CompareRef, Comparison, ContentSource, EffectiveConfig, FileContent, FileEntry, Finding, FindingsQuery,
-    Grid, GridQuery, LogicalFile, NfsPath, Page, Paged, ServiceState, SettingHit, SettingsQuery, SwimlaneId,
-    SwimlaneSummary, TextQuery, TextResults, TreeComparison, User, Version,
+    CompareQuery, CompareRef, Comparison, ContentSource, DriftQuery, EffectiveConfig, EffectiveQuery,
+    FileContent, FileEntry, Finding, FindingsQuery, Grid, GridQuery, LogicalFile, NfsPath, Page, Paged,
+    ServeRequest, ServedFile, ServiceState, SettingHit, SettingsQuery, SwimlaneId, SwimlaneSummary,
+    TextQuery, TextResults, TreeComparison, User, Version,
 };
 use ports::{ReadError, RegistryRead};
 use tokio::sync::{Notify, Semaphore};
@@ -143,5 +144,49 @@ impl RegistryRead for WithholdingRegistry {
 
     async fn pending_restarts(&self, u: &User, s: &SwimlaneId) -> Result<Vec<ServiceState>, ReadError> {
         self.inner.pending_restarts(u, s).await
+    }
+
+    // The methods the contract added after `pending_restarts` (`contract/07-mcp`) have an `Unavailable` default that would hide
+    // the wrapped registry's answers: a wrapper forwards them.
+    async fn effective_for(
+        &self,
+        u: &User,
+        s: &SwimlaneId,
+        q: &EffectiveQuery,
+    ) -> Result<EffectiveConfig, ReadError> {
+        self.inner.effective_for(u, s, q).await
+    }
+
+    async fn compare_in(&self, u: &User, q: &CompareQuery) -> Result<Comparison, ReadError> {
+        self.inner.compare_in(u, q).await
+    }
+
+    async fn compare_tree_under(
+        &self,
+        u: &User,
+        l: CompareRef,
+        r: CompareRef,
+        prefix: &NfsPath,
+        page: Page,
+    ) -> Result<TreeComparison, ReadError> {
+        self.inner.compare_tree_under(u, l, r, prefix, page).await
+    }
+
+    async fn drift(
+        &self,
+        u: &User,
+        s: &SwimlaneId,
+        q: &DriftQuery,
+        page: Page,
+    ) -> Result<Paged<FileEntry>, ReadError> {
+        self.inner.drift(u, s, q, page).await
+    }
+
+    async fn auto_notify(&self, u: &User, s: &SwimlaneId) -> Result<bool, ReadError> {
+        self.inner.auto_notify(u, s).await
+    }
+
+    async fn served(&self, u: &User, s: &SwimlaneId, r: &ServeRequest) -> Result<ServedFile, ReadError> {
+        self.inner.served(u, s, r).await
     }
 }
