@@ -522,6 +522,16 @@ mod tests {
     }
 
     #[test]
+    fn a_hash_observation_is_never_a_deletion_whatever_its_state_before_says() {
+        // The statement reads a state before only for a deletion, but the rule is the function's own: a delete registration takes a
+        // deletion, and an observation that has a hash is not one.
+        let p = delete(1, "a");
+        let mut o = seen(10, Some("a"), 1_000_100);
+        o.before = Some(h("a"));
+        assert!(late_matches(&[&p], &[o], NOW).is_empty());
+    }
+
+    #[test]
     fn two_registrations_do_not_take_one_deletion() {
         let (d1, d2) = (delete(1, "a"), delete(2, "a"));
         let observed = [deletion(10, Some("a"), 1_000_100)];
