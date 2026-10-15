@@ -30,10 +30,48 @@ The signatures below show the shape. Exact generic details are settled in prompt
 }
 
 #[async_trait] pub trait BlobStore {
-    async fn put(&self, bytes: Bytes) -> Result<ContentHash, BlobError>;   // idempotent
+    async fn put(&self, bytes: Bytes) -> Result<ContentHash, BlobError>;   // idempotent; an existing blob has its age refreshed
     async fn get(&self, h: &ContentHash) -> Result<Option<Bytes>, BlobError>; // cached
     async fn get_many(&self, hs: &[ContentHash]) -> Result<Vec<(ContentHash, Bytes)>, BlobError>;
 }
+// Storing a blob that already exists refreshes its age (migration `0008`, `blobs.touched_at`), at most once an hour per blob so that a
+// hot blob does not churn (`hub_platform::blobs::store::TOUCH_INTERVAL`). Why: a writer stores a blob BEFORE the transaction that
+// references it commits (an ingest delta, a staged part of one waiting up to 24 hours, a draft), and the registry's retention deletes
+// blobs that nothing references and whose age is beyond a grace period (48 hours). A re-store that kept the old age would let an old,
+// unreferenced blob whose content came back (a file reverted to a version from months ago) be collected between the store and the commit
+// of its reference, and `file_state`, `file_observations` and `baselines` have no foreign key to `blobs` to stop the commit. The age
+// trails the last `put` by at most one interval, plus the wait for a row lock when the blob is being refreshed or collected at that
+// moment (bounded by the put's own timeout, 5 s by default), and is never ahead of it. A read (`get`, `get_many`) never refreshes.
+// The port has no accessor for the age and gains no method: it is the store's own column, read by retention (05), so the conformance
+// suite cannot pin the refresh and only the Postgres store's tests do. `PgBlobStore::put` is one statement, `PUT_SQL`, and runs
+// outside any caller transaction: `now()` is the transaction start time, so inside a long transaction it would write an older
+// `touched_at`.
+//
+// The grace period of retention must be at least `MIN_RETENTION_GRACE`: the interval plus the longest wait for the reference. That
+// wait is a constant, `MAX_PUT_TO_REFERENCE` (24 hours), and the registry's `staging_ttl` is configurable, so `MIN_RETENTION_GRACE` is
+// the floor for the default only: the registry must range-check `staging_ttl <= MAX_PUT_TO_REFERENCE`, or compute its floor as
+// `TOUCH_INTERVAL + staging_ttl`. Anything that stores a blob and references it more than 24 hours later (for example a prompt-06
+// upload preview that puts a blob and creates its draft or proposal row later) must create the row when it stores the blob, or `put`
+// the blob again when it references it; a draft or a proposal is safe once its row exists, because `drafts.new_hash` and
+// `proposals.new_hash` are RESTRICT foreign keys.
+//
+// Rules for a collector (retention) and for the code that references blobs:
+// A collector must test `touched_at < now() - grace` in the same statement that locks or deletes the row (`DELETE ... WHERE touched_at
+// < ...`, or `SELECT ... FOR UPDATE SKIP LOCKED` with the same condition), never from an earlier read, so that a refresh that commits in
+// between wins. A job that locks first (`FOR UPDATE [SKIP LOCKED]`) must delete in the same transaction while it still holds the lock;
+// a lock that is released before the delete protects nothing. Keep the retention transaction short and set `lock_timeout` on it,
+// because a `put` of an old blob that the transaction has locked waits behind it, up to the put's own timeout. A reference taken by an
+// existence check without a `put` (the registry's `sync/record.rs`, `adoption/confirm.rs` and the guarded insert in `baselines.rs`
+// check that the blob exists and do not store it) is not protected by the refresh: only a `blob_refs` row protects such a reference
+// (its foreign key is RESTRICT), and `baselines.blob_hash`, `file_state.nfs_hash` and `pr_links.nfs_hash` have no foreign key (nor do
+// the other hash columns of the registry's tables), so the retention's reference check must read all of those columns. Any other
+// writer of `blobs` must refresh it the same way, and any code that references a blob without storing it must be covered by the
+// retention's reference check.
+//
+// Rollout: migration `0008` first, then the code. With a rolling deploy the old replicas still run the old `ON CONFLICT DO NOTHING` put,
+// which refreshes nothing. The migration covers that overlap: it makes every existing blob count as touched when it ran, and a blob that
+// an old replica stores gets `now()` from the column's default, so nothing is collectable for the first 48 hours after the migration,
+// far longer than the overlap. The retention job must not be enabled before the last old replica is gone.
 
 pub trait GitReader {                                    // sync; call via spawn_blocking
     fn head(&self, r: RepoKind, branch: &str) -> Result<CommitId, GitError>;
@@ -253,7 +291,7 @@ pub trait GitReader {                                    // sync; call via spawn
 // `tool_writes_bounded` checks the `Full` rule over both kinds, exactly, one transaction at a time.
 // `ToolDeleteEntry { swimlane, path, deleted_hash, user, request_id }` is what the probe reads back; `ToolWriteEntry` is unchanged.
 //
-// Storage is the implementor's, not the port's. Prompt 05's is the table `tool_write_registrations` (migration `0005`): one row
+// Storage is the implementor's, not the port's. Prompt 05's is the table `tool_write_registrations` (migration `0007`): one row
 // per registration, `hash` NOT NULL (the written hash, or the deleted hash) and `is_delete` NOT NULL (no default), `UNIQUE
 // (swimlane_id, path, hash, request_id, is_delete)` as the idempotency key (so the repeat of either kind is `INSERT 0 0`), the user
 // and the registry's clock beside it, an age index for the expiry sweep and the bound, SELECT, INSERT and DELETE for the app (a

@@ -128,6 +128,28 @@ pub struct EffectiveConfig {
     pub unresolved_placeholders: Vec<ShortText>,
 }
 
+/// What to compute for [`EffectiveConfig`]: a file, the tenant whose view it is, optionally a channel (D82, D83), and
+/// optionally only a part of the settings. A swimlane has a set of tenants (Q34), so the tenant is always named.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectiveQuery {
+    pub file: LogicalFile,
+    pub tenant: TenantId,
+    pub channel: Option<ChannelName>,
+    /// Only the settings at or below this path: a setting is below it when its path is the prefix or continues it after a
+    /// `.` or a `[`. A property source only; a resource file has no settings, so the prefix selects nothing of it.
+    pub setting_prefix: Option<SettingPath>,
+}
+
+/// The files of a swimlane in a drift state, for `RegistryRead::drift` (the REST `listDrift`, and the drift filter of a folder
+/// listing).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriftQuery {
+    /// Only files in this state. `None`: every state except [`DriftState::InSync`], so the files that are not in sync.
+    pub state: Option<DriftState>,
+    /// Only files below this folder, at any depth. `None`: the whole swimlane.
+    pub prefix: Option<NfsPath>,
+}
+
 /// Pickup state of one consuming service (D85).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceState {

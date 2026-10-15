@@ -2041,6 +2041,110 @@ paths:
           $ref: '#/components/responses/Forbidden'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/me/mcp-tokens:
+    get:
+      operationId: listMcpTokens
+      summary: My personal MCP tokens
+      description: The signed-in user's own tokens, newest first, with their label and times. A token value is never
+        listed. It is shown once, by the response that creates it. Answers 404 when the deployment does not use
+        personal-token mode for the MCP server (D52).
+      tags:
+      - me
+      x-required-role: viewer
+      parameters:
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpTokenPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: createMcpToken
+      summary: Create a personal MCP token
+      description: Personal-token mode only (D52); otherwise 404. The token is `lkpat_` plus 256 random bits, valid for
+        7 days, shown once in this response and stored only as a keyed hash (S7). A user has a limited number of live
+        tokens, five by default; past that, 409. Audited. Revoke a token that is lost or no longer needed.
+      tags:
+      - me
+      x-required-role: viewer
+      parameters:
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpTokenCreate'
+      responses:
+        '201':
+          description: Token created; the value is shown once
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpTokenCreated'
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The user already has the most live tokens the hub allows. Revoke one first.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/me/mcp-tokens/{id}:
+    delete:
+      operationId: revokeMcpToken
+      summary: Revoke one of my personal MCP tokens
+      description: Takes effect at once on the replica that serves the request, and within seconds on the others. Revoking
+        a token that is already revoked changes nothing and answers 204 as well. A token that does not exist or belongs
+        to someone else is 404. Audited.
+      tags:
+      - me
+      x-required-role: viewer
+      parameters:
+      - $ref: '#/components/parameters/NumericId'
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Revoked. No body.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/pr-jobs/{id}:
     get:
       operationId: getPrJob
@@ -5232,6 +5336,24 @@ components:
           $ref: '#/components/schemas/ProposalStatus'
         expires_at:
           $ref: '#/components/schemas/Timestamp'
+        severity:
+          oneOf:
+          - $ref: '#/components/schemas/Severity'
+          - type: 'null'
+          description: The severity of the change, from the severity rules (D76). Absent when the server has no answer.
+            Absent in older servers.
+        effects:
+          type: array
+          items:
+            type: array
+            prefixItems:
+            - $ref: '#/components/schemas/ServiceRef'
+            - $ref: '#/components/schemas/PickupState'
+            minItems: 2
+            maxItems: 2
+          maxItems: 1000
+          description: When the change would take effect for each consuming service (D85), as pairs of a service and its
+            pickup state. Absent when there are none, and in older servers.
       additionalProperties: false
       required:
       - id
@@ -5311,6 +5433,105 @@ components:
       - github_login
       - verified_at
       - scopes
+    McpToken:
+      type: object
+      description: A personal MCP token as listed. It holds neither the token nor anything derived from it.
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        label:
+          type: string
+          minLength: 1
+          maxLength: 64
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+        revoked_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+        last_used_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+          description: When the token was last used, to the nearest few seconds. Not an audited event.
+      additionalProperties: false
+      required:
+      - id
+      - label
+      - created_at
+      - expires_at
+      - revoked_at
+      - last_used_at
+    McpTokenPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/McpToken'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
+    McpTokenCreate:
+      type: object
+      properties:
+        label:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: What the user calls this token, such as `laptop`. Shown in the list. Not a secret.
+      additionalProperties: false
+      required:
+      - label
+    McpTokenCreated:
+      type: object
+      description: A new personal MCP token. The same fields as a listed one, and the token itself, which is shown here
+        once.
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        label:
+          type: string
+          minLength: 1
+          maxLength: 64
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+        revoked_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+        last_used_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+        token:
+          type: string
+          readOnly: true
+          description: The bearer token for the MCP server, sent as `Authorization` `Bearer` plus this value. Shown once,
+            never listed, stored only as a keyed hash, valid 7 days (S7).
+      additionalProperties: false
+      required:
+      - id
+      - label
+      - created_at
+      - expires_at
+      - revoked_at
+      - last_used_at
+      - token
     AccessRequestCreate:
       type: object
       properties:

@@ -4,11 +4,12 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use bytes::Bytes;
 use domain::{
-    AgentStatus, Attribution, CompareRef, Comparison, ContentSource, Cursor, DriftState, EffectiveConfig,
-    EolStyle, FileClass, FileContent, FileEntry, FileFormat, FileKind, FileRole, Finding, FindingsQuery,
-    Grid, GridQuery, LogicalFile, NfsPath, ObservationSource, Page, Paged, Role, ServiceState, SettingHit,
-    SettingsQuery, ShortText, SwimlaneId, SwimlaneSummary, TextEncoding, TextQuery, TextResults, Timestamp,
-    TreeComparison, User, Version,
+    AgentStatus, Attribution, CompareQuery, CompareRef, Comparison, ContentSource, Cursor, DriftQuery,
+    DriftState, EffectiveConfig, EffectiveQuery, EolStyle, FileClass, FileContent, FileEntry, FileFormat,
+    FileKind, FileRole, Finding, FindingsQuery, Grid, GridQuery, LogicalFile, NfsPath, ObservationSource,
+    Page, Paged, Role, ServeRequest, ServedFile, ServiceState, SettingHit, SettingsQuery, ShortText,
+    SwimlaneId, SwimlaneSummary, TextEncoding, TextQuery, TextResults, Timestamp, TreeComparison, User,
+    Version,
 };
 
 use super::util::lock;
@@ -28,6 +29,10 @@ struct FileData {
 struct SwimlaneData {
     files: BTreeMap<NfsPath, FileData>,
     pending_restarts: Vec<ServiceState>,
+    /// D85: off until a test switches it on.
+    auto_notify: bool,
+    /// The files `drift` lists, as scripted by [`FakeRegistry::set_drift`].
+    drift: Vec<FileEntry>,
 }
 
 #[derive(Default)]
@@ -38,6 +43,7 @@ struct Canned {
     effective: Option<EffectiveConfig>,
     settings: Vec<SettingHit>,
     text: Option<TextResults>,
+    served: Option<ServedFile>,
 }
 
 #[derive(Default)]
@@ -49,8 +55,9 @@ struct State {
 }
 
 /// A registry over seeded files. It lists, pages and reads what was seeded and enforces access, but it does
-/// not compute facts (diffs, drift, effective config, search): script those with the `set_*` methods or use
-/// `crates/engine` for the real answers.
+/// not compute facts (diffs, drift, effective config, the served file, search): script those with the `set_*` methods or use
+/// `crates/engine` for the real answers. What it does with a query that a scripted answer is for (a tenant, a channel, a
+/// prefix, a drift state) is to apply it to the scripted answer, so that a caller's use of the query is visible.
 #[derive(Clone, Default)]
 pub struct FakeRegistry {
     state: Arc<Mutex<State>>,
@@ -145,6 +152,8 @@ impl FakeRegistry {
                 })
                 .collect(),
             pending_restarts: Vec::new(),
+            auto_notify: false,
+            drift: Vec::new(),
         };
         st.swimlanes.insert(s.clone(), data);
         true
@@ -203,6 +212,44 @@ impl FakeRegistry {
     pub fn set_text_results(&self, r: TextResults) {
         lock(&self.state).canned.text = Some(r);
     }
+
+    /// Switch auto-notify on or off for `s` (D85). No effect for an unknown swimlane.
+    pub fn set_auto_notify(&self, s: &SwimlaneId, on: bool) {
+        if let Some(sw) = lock(&self.state).swimlanes.get_mut(s) {
+            sw.auto_notify = on;
+        }
+    }
+
+    /// The files `drift` lists for `s`, in any order and in any state: the fake applies the query's state, prefix and page.
+    /// At most 20,000 are kept. No effect for an unknown swimlane. A seed replaces them.
+    pub fn set_drift(&self, s: &SwimlaneId, entries: Vec<FileEntry>) {
+        if let Some(sw) = lock(&self.state).swimlanes.get_mut(s) {
+            sw.drift = entries.into_iter().take(MAX_FILES).collect();
+        }
+    }
+
+    /// The file `served` answers with; its swimlane, application, tenant, channel and file become the request's.
+    pub fn set_served(&self, f: ServedFile) {
+        lock(&self.state).canned.served = Some(f);
+    }
+}
+
+/// A setting path at or below `prefix`: the path itself, or one that continues it after a `.` or a `[`.
+fn setting_is_below(path: &str, prefix: &str) -> bool {
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+}
+
+/// A file at or below the folder `prefix`: the whole path components, never a name that merely starts the same. The root
+/// (an empty prefix) holds everything.
+fn is_below(path: &str, prefix: &str) -> bool {
+    prefix.is_empty()
+        || path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn swimlane<'a>(st: &'a State, s: &SwimlaneId) -> Result<&'a SwimlaneData, ReadError> {
@@ -437,6 +484,115 @@ impl RegistryRead for FakeRegistry {
         check(u)?;
         let st = lock(&self.state);
         Ok(swimlane(&st, s)?.pending_restarts.clone())
+    }
+
+    async fn effective_for(
+        &self,
+        u: &User,
+        s: &SwimlaneId,
+        q: &EffectiveQuery,
+    ) -> Result<EffectiveConfig, ReadError> {
+        check(u)?;
+        let st = lock(&self.state);
+        swimlane(&st, s)?;
+        let mut e = st.canned.effective.clone().ok_or(ReadError::Unavailable)?;
+        // The answer is for the question asked.
+        e.swimlane = s.clone();
+        e.file = q.file.clone();
+        e.tenant = q.tenant.clone();
+        e.channel.clone_from(&q.channel);
+        if let Some(prefix) = &q.setting_prefix {
+            e.settings
+                .retain(|x| setting_is_below(x.path.as_str(), prefix.as_str()));
+        }
+        Ok(e)
+    }
+
+    async fn compare_in(&self, u: &User, q: &CompareQuery) -> Result<Comparison, ReadError> {
+        check(u)?;
+        let mut c = lock(&self.state)
+            .canned
+            .comparison
+            .clone()
+            .ok_or(ReadError::Unavailable)?;
+        c.left = q.left.clone();
+        c.right = q.right.clone();
+        c.file.clone_from(&q.file);
+        Ok(c)
+    }
+
+    async fn compare_tree_under(
+        &self,
+        u: &User,
+        _l: CompareRef,
+        _r: CompareRef,
+        prefix: &NfsPath,
+        page: Page,
+    ) -> Result<TreeComparison, ReadError> {
+        check(u)?;
+        let canned = lock(&self.state)
+            .canned
+            .tree_comparison
+            .clone()
+            .ok_or(ReadError::Unavailable)?;
+        let below: Vec<_> = canned
+            .entries
+            .items
+            .into_iter()
+            .filter(|e| is_below(e.file.as_str(), prefix.as_str()))
+            .collect();
+        Ok(TreeComparison {
+            entries: paginate(&below, &page)?,
+            skipped_identical_subtrees: canned.skipped_identical_subtrees,
+        })
+    }
+
+    async fn drift(
+        &self,
+        u: &User,
+        s: &SwimlaneId,
+        q: &DriftQuery,
+        page: Page,
+    ) -> Result<Paged<FileEntry>, ReadError> {
+        check(u)?;
+        let st = lock(&self.state);
+        let mut listed: Vec<FileEntry> = swimlane(&st, s)?
+            .drift
+            .iter()
+            .filter(|e| !e.is_dir)
+            .filter(|e| {
+                q.state
+                    .map_or(e.drift != DriftState::InSync, |state| e.drift == state)
+            })
+            .filter(|e| {
+                q.prefix
+                    .as_ref()
+                    .is_none_or(|p| is_below(e.path.as_str(), p.as_str()))
+            })
+            .cloned()
+            .collect();
+        listed.sort_by(|a, b| a.path.cmp(&b.path));
+        paginate(&listed, &page)
+    }
+
+    async fn auto_notify(&self, u: &User, s: &SwimlaneId) -> Result<bool, ReadError> {
+        check(u)?;
+        let st = lock(&self.state);
+        Ok(swimlane(&st, s)?.auto_notify)
+    }
+
+    async fn served(&self, u: &User, s: &SwimlaneId, r: &ServeRequest) -> Result<ServedFile, ReadError> {
+        check(u)?;
+        let st = lock(&self.state);
+        swimlane(&st, s)?;
+        // No scripted file: the agent could not fetch one.
+        let mut f = st.canned.served.clone().ok_or(ReadError::Unavailable)?;
+        f.swimlane = s.clone();
+        f.application = r.application.clone();
+        f.tenant = r.tenant.clone();
+        f.channel.clone_from(&r.channel);
+        f.file = r.file.clone();
+        Ok(f)
     }
 }
 

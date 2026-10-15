@@ -92,6 +92,12 @@ pub enum AuditAction {
     /// A pull request's state changed on GitHub (opened, merged or closed, D77), learned from a `pull_request` webhook and
     /// recorded with the `pr_links` update in one transaction.
     PrStateChanged,
+    /// A personal MCP token was created (prompt 07, D52). One event per token, in the transaction that inserts its
+    /// `mcp_tokens` row. It names the owner and the label and never carries the token or its hash (S7, S21).
+    McpTokenCreated,
+    /// A personal MCP token was revoked by its owner, in the transaction that sets `revoked_at`. Revoking a token that is
+    /// already revoked changes nothing and writes no event.
+    McpTokenRevoked,
 }
 
 /// The most events one [`AuditLog::record_many`] call takes. A bigger batch is refused whole with

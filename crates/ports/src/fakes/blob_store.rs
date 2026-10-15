@@ -17,7 +17,9 @@ struct State {
     total: usize,
 }
 
-/// Content-addressed: the key is the SHA-256 of the bytes, and storing twice stores once.
+/// Content-addressed: the key is the SHA-256 of the bytes, and storing twice stores once. It keeps no age: storing a blob again
+/// refreshes the age in a store that has one (see [`BlobStore::put`]), and nothing observes an age through the port, so there is
+/// nothing here for a refresh to change.
 #[derive(Clone)]
 pub struct FakeBlobStore {
     state: Arc<Mutex<State>>,

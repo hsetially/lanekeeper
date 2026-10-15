@@ -1,8 +1,8 @@
--- 0005_tool_write_registrations.sql: the registry's half of the tool-write port (prompts 05 and 06, D73). A contract: never
--- edit it once merged, add 0006_*.sql. Run it as `lanekeeper_migrator`, behind the same guard as 0001 to 0004.
+-- 0007_tool_write_registrations.sql: the registry's half of the tool-write port (prompts 05 and 06, D73). A contract: never
+-- edit it once merged, add 0008_*.sql. Run it as `lanekeeper_migrator`, behind the same guard as 0001 to 0006.
 --
 -- One new table, one index and one grant. Expand-only: nothing existing is altered, dropped, renamed, re-granted or
--- written, and 0001 to 0004 are untouched. The audit tables, their triggers and their grants are not touched either.
+-- written, and 0001 to 0006 are untouched. The audit tables, their triggers and their grants are not touched either.
 --
 -- Why a table of its own (plan 05, T1 follow-up to A10): the port `ports::ToolWrites` needs a row per registration with a
 -- unique key over (swimlane, path, hash, request, kind), the user, an age for the expiry and the bound, and a place that no
