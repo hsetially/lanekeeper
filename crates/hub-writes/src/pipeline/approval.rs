@@ -152,11 +152,7 @@ async fn create(hub: &Inner, p: &Proposal<'_>, new_hash: Option<domain::ContentH
 
 /// Tell the admins (D49). A failure is logged and never fails the request that caused it.
 async fn tell_admins(hub: &Inner, author: &User, swimlane: &SwimlaneId, id: ProposalId) {
-    let summary = format!(
-        "{} proposed a change in {}",
-        author.display_name.as_str(),
-        swimlane
-    );
+    let summary = pending_summary(author.display_name.as_str(), swimlane);
     let (Ok(title), Ok(summary), Ok(link)) = (
         ShortText::parse("Change awaiting approval"),
         ShortText::parse(&summary),
@@ -176,5 +172,54 @@ async fn tell_admins(hub: &Inner, author: &User, swimlane: &SwimlaneId, id: Prop
     let sent = hub.within("notify_admins", hub.notifier.notify(note)).await;
     if !matches!(sent, Ok(Ok(()))) {
         tracing::warn!(proposal = id.get(), "admins could not be notified of a proposal");
+    }
+}
+
+/// "`name` proposed a change in `swimlane`", as a [`ShortText`] can hold it: a name that would make the line longer is cut (at a
+/// character boundary, with an ellipsis) so that the words that say what happened, and where, are always there. Without the cut a
+/// user whose display name is the longest the type allows would make the notice unparseable and the admins would hear nothing.
+fn pending_summary(name: &str, swimlane: &SwimlaneId) -> String {
+    const ELLIPSIS: &str = "\u{2026}";
+    let tail = format!(" proposed a change in {swimlane}");
+    let room = SHORT_TEXT_MAX.saturating_sub(tail.len());
+    if name.len() <= room {
+        return format!("{name}{tail}");
+    }
+    let mut end = room.saturating_sub(ELLIPSIS.len());
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{ELLIPSIS}{tail}", &name[..end])
+}
+
+/// The longest [`ShortText`], in bytes.
+const SHORT_TEXT_MAX: usize = 256;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_notice_of_a_proposal_fits_a_short_text_whatever_the_name_of_its_author() {
+        let lane = SwimlaneId::parse("sit1").unwrap();
+        // The longest name a user can have is the longest ShortText; two-byte letters make the cut land mid-character.
+        for name in [
+            "Ada".to_owned(),
+            "x".repeat(256),
+            "é".repeat(128),
+            "ü".repeat(127) + "ab",
+        ] {
+            assert!(ShortText::parse(&name).is_ok(), "{} bytes", name.len());
+            let summary = pending_summary(&name, &lane);
+            assert!(
+                ShortText::parse(&summary).is_ok(),
+                "{} bytes for a name of {}",
+                summary.len(),
+                name.len()
+            );
+            assert!(summary.ends_with(" proposed a change in sit1"), "{summary}");
+        }
+        // A name that fits is not touched.
+        assert_eq!(pending_summary("Ada", &lane), "Ada proposed a change in sit1");
     }
 }
