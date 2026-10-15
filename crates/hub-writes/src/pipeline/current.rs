@@ -2,8 +2,8 @@
 //!
 //! The registry knows the file from the agent's scans, so it can be a few seconds behind a write that just landed: a second edit
 //! carries the hash that the first one returned, and the registry still has the version before. So the registry's copy is used
-//! only when it is the version the request expects; then the blob store, which keeps every version by hash (D47); then the agent,
-//! which is the truth. A request is never refused because the registry is behind: the expected hash is checked by the agent.
+//! only when it is the version the request expects (and, for any request, to learn that the file is withheld); then the blob
+//! store, which keeps every version by hash (D47); then the agent, which is the truth. A request is never refused because the registry is behind: the expected hash is checked by the agent.
 
 use bytes::Bytes;
 use domain::{AgentReply, ContentSource, Expected, NfsPath, RequestId, SwimlaneId, User};
@@ -26,20 +26,25 @@ pub(crate) async fn old_content(
     path: &NfsPath,
     expected: &Expected,
 ) -> Found {
-    let hash = match expected {
-        Expected::Absent => return Found::Old(Old::Absent),
-        Expected::Hash { hash } => *hash,
-    };
-    if let Ok(Ok(fc)) = hub
+    // The registry is asked even when the request says the file is new: the agent's own deny globs may match a file that the hub's
+    // do not, and such a file must not be written, or proposed for, because the request calls it new (D79). A file the registry
+    // does not have, or cannot be asked about, is new as far as the writer can tell; the agent checks the expectation.
+    let registry = hub
         .within(
             "current_registry",
             hub.registry.content(user, swimlane, path, ContentSource::Nfs),
         )
-        .await
-    {
+        .await;
+    if let Ok(Ok(fc)) = &registry {
         if fc.withheld {
             return Found::Withheld;
         }
+    }
+    let hash = match expected {
+        Expected::Absent => return Found::Old(Old::Absent),
+        Expected::Hash { hash } => *hash,
+    };
+    if let Ok(Ok(fc)) = registry {
         if fc.hash == hash {
             if let Some(bytes) = fc.bytes {
                 return Found::Old(Old::Known(bytes));

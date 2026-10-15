@@ -277,6 +277,69 @@ async fn a_reveal_of_a_denied_or_withheld_file_is_not_found() {
     assert_eq!(l.rig.chain().await.len(), 0);
 }
 
+/// A request that says the file is new (`Expected::Absent`) is no way round the registry's withholding: the file the agent's
+/// own globs matched is there, so an upload, an edit or a careful user's edit that calls it new is refused as denied, and
+/// nothing is sent to the agent, stored as a proposal or audited.
+#[tokio::test]
+async fn a_new_file_request_over_a_withheld_file_is_refused() {
+    let Some(l) = lane().await else { return };
+    let careful = l.rig.approval_user(2, Role::Editor).await;
+    l.rig.agent.put(&l.s, &nfs("tx/odd.yml"), b"x: 1\n");
+    l.rig.catch_up_registry(&l.s);
+    let withheld = l.rig.hub_with(
+        WriteConfig::default(),
+        Some(Arc::new(WithholdingRegistry::new(
+            l.rig.registry.clone(),
+            vec![nfs("tx/odd.yml")],
+        ))),
+    );
+    let odd = "tx/odd.yml";
+    // The preview was issued by a hub that did not know the file was withheld.
+    let pv = l
+        .rig
+        .hub_with(WriteConfig::default(), None)
+        .preview_effect(
+            &ctx(&l.editor, "n-p"),
+            preview_of(&l.s, odd, upload_change(domain::Expected::Absent)),
+        )
+        .await
+        .unwrap();
+    let denied = || -> Result<domain::WriteOutcome, WriteError> { Ok(rejected(RejectReason::Denied)) };
+    assert_eq!(
+        withheld
+            .upload(
+                &ctx(&l.editor, "n-u"),
+                upload_of(&l.s, odd, domain::Expected::Absent, Some(&pv))
+            )
+            .await,
+        denied(),
+        "upload"
+    );
+    assert_eq!(
+        withheld
+            .edit(
+                &ctx(&l.editor, "n-e"),
+                edit(&l.s, odd, domain::Expected::Absent, "x: 2\n")
+            )
+            .await,
+        denied(),
+        "edit"
+    );
+    assert_eq!(
+        withheld
+            .edit(
+                &ctx(&careful, "n-c"),
+                edit(&l.s, odd, domain::Expected::Absent, "x: 2\n")
+            )
+            .await,
+        denied(),
+        "careful edit"
+    );
+    assert_eq!(l.rig.agent.write_commands(), 0, "nothing was sent to the agent");
+    assert_eq!(l.rig.count("proposals").await, 0);
+    assert_eq!(l.rig.chain().await.len(), 0);
+}
+
 #[tokio::test]
 async fn reveal_needs_an_editor_an_active_user_and_the_web_ui() {
     let Some(l) = lane().await else { return };
