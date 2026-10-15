@@ -18,6 +18,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use base64::Engine as _;
 use domain::ContentHash;
 use serde_json::json;
 
@@ -94,6 +95,57 @@ fn corpus_replay_writes_github_token() {
 #[test]
 fn corpus_replay_writes_github_responses() {
     replay("writes_github_responses");
+}
+
+#[test]
+fn corpus_replay_writes_git_data_responses() {
+    replay("writes_git_data_responses");
+}
+
+/// A stand-in for the fuzzer on stable: every seed of the Git Data target, cut and changed byte by byte in a fixed pseudo-random
+/// way, still keeps the invariants. The fuzzer goes much further; this keeps a regression in the readers from waiting for it.
+#[test]
+fn mutated_git_data_seeds_keep_the_invariants() {
+    let dir = corpus("writes_git_data_responses");
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    for name in names(&dir) {
+        let seed = fs::read(dir.join(&name)).unwrap();
+        for round in 0..400 {
+            let mut bytes = seed.clone();
+            for _ in 0..=(next() % 4) {
+                if bytes.is_empty() {
+                    break;
+                }
+                let at = usize::try_from(next()).unwrap() % bytes.len();
+                match next() % 4 {
+                    0 => bytes[at] = u8::try_from(next() % 256).unwrap(),
+                    1 => bytes.truncate(at),
+                    2 => {
+                        bytes.remove(at);
+                    }
+                    _ => bytes.insert(
+                        at,
+                        b"\"{}[]:,\\ 0aF"
+                            .get(usize::try_from(next()).unwrap() % 13)
+                            .copied()
+                            .unwrap_or(b'x'),
+                    ),
+                }
+            }
+            if let Err(why) = invariants::writes_git_data_responses(&bytes) {
+                panic!(
+                    "a change of seed {name} (round {round}) violates an invariant: {why}\n{:?}",
+                    String::from_utf8_lossy(&bytes)
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -574,6 +626,104 @@ fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
         "rejected_login_with_invalid_utf8_in_a_skipped_field",
         b"{\"id\":1,\"login\":\"octocat\",\"plan\":{\"name\":\"fr\x9b\xa2\"}}".to_vec(),
     );
+
+    // ---- writes_git_data_responses
+    let t = "writes_git_data_responses";
+    let (a, b) = ("a".repeat(40), "b".repeat(40));
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    let pull =
+        |number: serde_json::Value, url: &str| json!({ "number": number, "html_url": url, "state": "open" });
+    add(
+        t,
+        "accepted_branch_head",
+        json(json!({ "ref": "refs/heads/sit1", "object": { "sha": a, "type": "commit", "url": "u" } })),
+    );
+    add(
+        t,
+        "accepted_commit_with_its_tree",
+        json(json!({ "sha": a, "tree": { "sha": b }, "parents": [] })),
+    );
+    add(
+        t,
+        "accepted_created_object",
+        json(json!({ "sha": b, "url": "u" })),
+    );
+    add(
+        t,
+        "accepted_blob_with_line_breaks",
+        json(
+            json!({ "sha": a, "size": 10, "encoding": "base64", "content": format!("{}\n", b64(b"a: 1\r\nb: 2")) }),
+        ),
+    );
+    add(
+        t,
+        "accepted_file_with_its_bytes",
+        json(
+            json!({ "type": "file", "encoding": "base64", "size": 6, "sha": a, "content": b64(b"k: v\r\n") }),
+        ),
+    );
+    add(
+        t,
+        "accepted_file_without_its_bytes",
+        json(json!({ "type": "file", "encoding": "none", "size": 2_000_000, "sha": a, "content": "" })),
+    );
+    add(
+        t,
+        "accepted_pull_request",
+        json(pull(json!(17), "https://github.com/acme/r/pull/17")),
+    );
+    add(
+        t,
+        "accepted_pull_list_with_the_branch",
+        json(json!([
+            { "number": 3, "html_url": "https://github.com/a/r/pull/3", "head": { "ref": "other" } },
+            { "number": 4, "html_url": "https://github.com/a/r/pull/4", "head": { "ref": "lanekeeper/sit1/0a1b2c3d4e" } },
+        ])),
+    );
+    add(t, "rejected_empty", Vec::new());
+    add(t, "rejected_not_json", b"<html>Bad gateway</html>".to_vec());
+    add(t, "rejected_non_utf8", vec![0xff, 0xfe, b'{', 0x80]);
+    add(
+        t,
+        "rejected_head_is_a_tag",
+        json(json!({ "object": { "sha": a, "type": "tag" } })),
+    );
+    add(
+        t,
+        "rejected_object_id_in_capitals",
+        json(json!({ "sha": a.to_uppercase(), "tree": { "sha": b.to_uppercase() } })),
+    );
+    add(
+        t,
+        "rejected_blob_with_a_wrong_size",
+        json(json!({ "size": 4, "encoding": "base64", "content": b64(b"abc") })),
+    );
+    add(
+        t,
+        "rejected_blob_that_is_not_base64",
+        json(json!({ "size": 3, "encoding": "base64", "content": "not base64 !!" })),
+    );
+    add(
+        t,
+        "rejected_directory_listing",
+        json(json!([{ "type": "file", "name": "x.yml", "sha": a }])),
+    );
+    add(
+        t,
+        "rejected_file_with_a_blob_id_that_is_not_one",
+        json(json!({ "type": "file", "sha": "../../etc/passwd", "content": "" })),
+    );
+    add(
+        t,
+        "rejected_pull_request_with_an_http_address",
+        json(pull(json!(1), "http://github.com/acme/r/pull/1")),
+    );
+    add(
+        t,
+        "rejected_pull_request_number_zero",
+        json(pull(json!(0), "https://github.com/acme/r/pull/0")),
+    );
+    add(t, "rejected_pull_list_without_the_branch", b"[]".to_vec());
     let _ = ContentHash::from_bytes([0; 32]);
     out
 }

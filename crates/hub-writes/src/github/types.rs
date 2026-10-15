@@ -170,6 +170,141 @@ impl fmt::Display for RepoRef {
     }
 }
 
+/// A Git object id (SHA-1): exactly 40 lowercase hexadecimal digits. GitHub names commits, trees and blobs this way; a value that
+/// is anything else is not an answer of the API (T6).
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct GitSha(String);
+
+impl GitSha {
+    pub fn parse(s: &str) -> Result<Self, NameError> {
+        if s.len() == 40 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            Ok(Self(s.to_owned()))
+        } else {
+            Err(NameError::Invalid)
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for GitSha {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("GitSha").field(&self.0).finish()
+    }
+}
+
+impl fmt::Display for GitSha {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl serde::Serialize for GitSha {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for GitSha {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Self::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// The longest branch name this code handles.
+pub const MAX_BRANCH_LEN: usize = 200;
+
+/// A branch name, in the plain subset that this code ever builds or accepts: letters, digits, `.`, `_`, `-` and single `/`
+/// between parts. No part starts with `.` or `-`, none ends with `.lock`, and `..` never appears, so the name is safe in a URL and
+/// in a ref, and cannot be read as an option or a revision expression (S11). It covers a tenant branch (`sit1`), the base
+/// branch (`master`, `main`) and the branches that Lanekeeper opens (`lanekeeper/<swimlane>/<short id>`).
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct BranchName(String);
+
+impl BranchName {
+    // `.lock` is a rule about ref names (Git refuses a ref that ends in it), not a file extension: the comparison is exact.
+    #[allow(clippy::case_sensitive_file_extension_comparisons)]
+    pub fn parse(s: &str) -> Result<Self, NameError> {
+        let part_ok = |p: &str| {
+            !p.is_empty()
+                && !p.starts_with(['.', '-'])
+                && !p.ends_with(".lock")
+                && !p.ends_with('.')
+                && p.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        };
+        if !s.is_empty() && s.len() <= MAX_BRANCH_LEN && !s.contains("..") && s.split('/').all(part_ok) {
+            Ok(Self(s.to_owned()))
+        } else {
+            Err(NameError::Invalid)
+        }
+    }
+
+    /// The branch of a tenant: its id (D84).
+    #[must_use]
+    pub fn of_tenant(tenant: &domain::TenantId) -> Self {
+        // A tenant id is lowercase letters, digits, `-` and `_`, starting with a letter or digit: always a valid branch name.
+        Self(tenant.as_str().to_owned())
+    }
+
+    /// The branch Lanekeeper opens for a pull request: `lanekeeper/<swimlane>/<short id>` (T6).
+    pub fn for_pull(swimlane: &domain::SwimlaneId, short_id: &str) -> Result<Self, NameError> {
+        Self::parse(&format!("lanekeeper/{swimlane}/{short_id}"))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for BranchName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("BranchName").field(&self.0).finish()
+    }
+}
+
+impl fmt::Display for BranchName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl serde::Serialize for BranchName {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for BranchName {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Self::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// A repository path as it goes into a URL path: every part percent-encoded, with only the unreserved characters left as they are.
+/// A file name may hold spaces, `?`, `#`, `%` or non-ASCII text, and none of them may change the meaning of the request (S11).
+#[must_use]
+pub fn encode_path(path: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(path.len() + 8);
+    for b in path.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/') {
+            out.push(char::from(b));
+        } else {
+            out.push('%');
+            out.push(char::from(HEX[usize::from(b >> 4)]));
+            out.push(char::from(HEX[usize::from(b & 0x0f)]));
+        }
+    }
+    out
+}
+
 /// The days from 1970-01-01 to a civil date (proleptic Gregorian). Howard Hinnant's algorithm.
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
@@ -337,6 +472,104 @@ mod tests {
             "", "acme", "acme/", "/x", "a/b/c", "acme/..", "acme/.", "acme/a b", "-a/b", "a/b?x=1", "a/b#c",
         ] {
             assert!(RepoRef::parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn git_object_ids_are_forty_lowercase_hex_digits() {
+        let ok = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(GitSha::parse(ok).unwrap().as_str(), ok);
+        for bad in [
+            "",
+            "abc",
+            &ok[..39],
+            &format!("{ok}0"),
+            &ok.to_uppercase(),
+            &format!("g{}", &ok[1..]),
+            &format!(" {}", &ok[1..]),
+            "../../../../../../../../../etc/passwd",
+        ] {
+            assert!(GitSha::parse(bad).is_err(), "{bad}");
+        }
+        let json = serde_json::to_string(&GitSha::parse(ok).unwrap()).unwrap();
+        assert_eq!(json, format!("\"{ok}\""));
+        assert!(serde_json::from_str::<GitSha>("\"nope\"").is_err());
+    }
+
+    #[test]
+    fn branch_names_are_a_plain_subset() {
+        for ok in [
+            "master",
+            "main",
+            "sit1",
+            "release/1.2",
+            "lanekeeper/sit1/0a1b2c3d4e",
+            "a.b_c-d",
+            &"a".repeat(MAX_BRANCH_LEN),
+        ] {
+            assert!(BranchName::parse(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "/a",
+            "a/",
+            "a//b",
+            "a/../b",
+            "..",
+            ".hidden",
+            "a/.hidden",
+            "-rf",
+            "a/-b",
+            "x.lock",
+            "a/x.lock/b",
+            "a.",
+            "a b",
+            "a~1",
+            "a^",
+            "a:b",
+            "a?b",
+            "a*",
+            "a[b",
+            "a\\b",
+            "a@{u}",
+            "é",
+            &"a".repeat(MAX_BRANCH_LEN + 1),
+        ] {
+            assert!(BranchName::parse(bad).is_err(), "{bad:?}");
+        }
+        let tenant = domain::TenantId::parse("sit1").unwrap();
+        assert_eq!(BranchName::of_tenant(&tenant).as_str(), "sit1");
+        let lane = domain::SwimlaneId::parse("sit-1").unwrap();
+        assert_eq!(
+            BranchName::for_pull(&lane, "0a1b2c3d4e").unwrap().as_str(),
+            "lanekeeper/sit-1/0a1b2c3d4e"
+        );
+    }
+
+    #[test]
+    fn a_path_in_a_url_cannot_change_the_request() {
+        assert_eq!(encode_path("config/tx-api/entry.yml"), "config/tx-api/entry.yml");
+        assert_eq!(encode_path("a b/c#d?e%f.yml"), "a%20b/c%23d%3Fe%25f.yml");
+        assert_eq!(encode_path("é"), "%C3%A9");
+    }
+
+    proptest! {
+        /// Whatever the path holds, the encoded form has only unreserved characters, slashes and percent escapes.
+        #[test]
+        fn an_encoded_path_has_no_reserved_character(s in "\\PC{0,80}") {
+            let e = encode_path(&s);
+            prop_assert!(e.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/' | b'%')));
+        }
+
+        /// A name that is accepted never holds a character a URL or a ref would read specially.
+        #[test]
+        fn an_accepted_branch_is_url_safe(s in "\\PC{0,60}") {
+            if BranchName::parse(&s).is_ok() {
+                let special = ['?', '#', '%', ' ', '\\', ':', '~', '^', '*', '[', '@', '{'];
+                prop_assert!(!s.contains(special));
+                let edge = ['-', '/', '.'];
+                prop_assert!(!s.starts_with(edge));
+            }
         }
     }
 

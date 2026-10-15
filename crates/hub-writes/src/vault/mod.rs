@@ -99,6 +99,7 @@ impl TokenError {
             GithubError::Forbidden
             | GithubError::NotFound
             | GithubError::Unexpected
+            | GithubError::Unprocessable
             | GithubError::Config => {
                 tracing::warn!("github gave an answer the token check cannot use");
                 Self::Unavailable

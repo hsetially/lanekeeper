@@ -410,7 +410,7 @@ writes-test:
 # cargo audit (S19), then each target runs {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in
 # crates/hub-writes/fuzz/artifacts/. `tests/justfile_gate.rs` fails if this list and fuzz_targets/ drift apart; the same seeds also
 # replay on stable in `cargo test -p hub-writes --test corpus_replay`.
-writes_fuzz_targets := "writes_request_json writes_upload_multipart writes_preview_id writes_github_token writes_github_responses"
+writes_fuzz_targets := "writes_request_json writes_upload_multipart writes_preview_id writes_github_token writes_github_responses writes_git_data_responses"
 writes-fuzz: fuzz-tools-check
     #!/usr/bin/env bash
     set -euo pipefail

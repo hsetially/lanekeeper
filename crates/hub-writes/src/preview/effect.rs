@@ -51,14 +51,14 @@ const APP_NAMES: &str = "SELECT DISTINCT env_values ->> 'SPRING_APPLICATION_NAME
 /// The most application names read for one preview.
 const MAX_APP_NAMES: i64 = 5_000;
 
-/// What the swimlane's own configuration says about paths.
-struct Facts {
-    rule: PathMappingRule,
-    tenants: TenantSet,
-    apps: Vec<AppName>,
+/// What the swimlane's own configuration says about paths. The pull-request path reads it the same way (T6).
+pub(crate) struct Facts {
+    pub rule: PathMappingRule,
+    pub tenants: TenantSet,
+    pub apps: Vec<AppName>,
 }
 
-async fn facts(hub: &Inner, swimlane: &SwimlaneId) -> Res<Facts> {
+pub(crate) async fn facts(hub: &Inner, swimlane: &SwimlaneId) -> Res<Facts> {
     let tenants: Vec<String> = hub
         .within(
             "preview_tenants",

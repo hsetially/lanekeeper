@@ -136,6 +136,8 @@ pub struct Seen {
     pub path: String,
     /// Header names in lower case.
     pub headers: Vec<(String, String)>,
+    /// The body, whole (a content length or chunks).
+    pub body: Vec<u8>,
 }
 
 impl Seen {
@@ -152,7 +154,13 @@ impl Seen {
         for (n, v) in &self.headers {
             let _ = writeln!(text, "{n}: {v}");
         }
+        text.push_str(&String::from_utf8_lossy(&self.body));
         text
+    }
+
+    /// The body as JSON.
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::from_slice(&self.body).unwrap_or(serde_json::Value::Null)
     }
 }
 
@@ -330,14 +338,25 @@ async fn serve(
         let mut parts = first.split(' ');
         let method = parts.next().unwrap_or_default().to_owned();
         let path = parts.next().unwrap_or_default().to_owned();
-        let headers = lines
+        let headers: Vec<(String, String)> = lines
             .filter_map(|l| l.split_once(':'))
             .map(|(n, v)| (n.trim().to_ascii_lowercase(), v.trim().to_owned()))
             .collect();
+        let length = headers
+            .iter()
+            .find(|(n, _)| n == "content-length")
+            .and_then(|(_, v)| v.parse::<usize>().ok());
+        let chunked = headers
+            .iter()
+            .any(|(n, v)| n == "transfer-encoding" && v.to_ascii_lowercase().contains("chunked"));
+        let Some(body) = read_body(&mut stream, &mut buf, length, chunked).await else {
+            return;
+        };
         let request = Seen {
             method,
             path,
             headers,
+            body,
         };
 
         let before = {
@@ -362,6 +381,61 @@ async fn serve(
         bytes.extend_from_slice(&reply.body);
         if stream.write_all(&bytes).await.is_err() || stream.flush().await.is_err() {
             return;
+        }
+    }
+}
+
+/// Reads more of the stream into `buf`; false when the peer is gone.
+async fn fill(stream: &mut (impl AsyncRead + Unpin), buf: &mut Vec<u8>) -> bool {
+    let mut chunk = [0_u8; 16 * 1024];
+    match stream.read(&mut chunk).await {
+        Ok(0) | Err(_) => false,
+        Ok(n) => {
+            buf.extend_from_slice(&chunk[..n]);
+            true
+        }
+    }
+}
+
+/// The body of a request: `length` bytes, or chunks, or nothing.
+async fn read_body(
+    stream: &mut (impl AsyncRead + Unpin),
+    buf: &mut Vec<u8>,
+    length: Option<usize>,
+    chunked: bool,
+) -> Option<Vec<u8>> {
+    if let Some(len) = length {
+        while buf.len() < len {
+            if !fill(stream, buf).await {
+                return None;
+            }
+        }
+        return Some(buf.drain(..len).collect());
+    }
+    if !chunked {
+        return Some(Vec::new());
+    }
+    let mut body = Vec::new();
+    loop {
+        let line_end = loop {
+            if let Some(i) = buf.windows(2).position(|w| w == b"\r\n") {
+                break i;
+            }
+            if !fill(stream, buf).await {
+                return None;
+            }
+        };
+        let size = usize::from_str_radix(std::str::from_utf8(&buf[..line_end]).ok()?.trim(), 16).ok()?;
+        buf.drain(..line_end + 2);
+        while buf.len() < size + 2 {
+            if !fill(stream, buf).await {
+                return None;
+            }
+        }
+        body.extend(buf.drain(..size));
+        buf.drain(..2);
+        if size == 0 {
+            return Some(body);
         }
     }
 }

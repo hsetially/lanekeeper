@@ -7,10 +7,12 @@
     clippy::panic,
     clippy::missing_panics_doc,
     clippy::print_stderr,
-    clippy::too_many_lines
+    clippy::too_many_lines,
+    clippy::large_futures
 )]
 
 pub mod fake_agent;
+pub mod fake_git;
 pub mod fake_github;
 pub mod live_registry;
 pub mod log_capture;

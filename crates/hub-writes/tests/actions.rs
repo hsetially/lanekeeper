@@ -16,6 +16,8 @@ mod approvals;
 mod drafts;
 #[path = "actions/github_client.rs"]
 mod github_client;
+#[path = "actions/pull_requests.rs"]
+mod pull_requests;
 #[path = "actions/vault.rs"]
 mod vault;
 

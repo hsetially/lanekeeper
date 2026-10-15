@@ -11,6 +11,7 @@
 //! | `writes_upload_multipart` | a content type, a line end, and a multipart body, read as an upload form and as a preview form | reading never panics; an accepted request has a valid path, a file within the limit, an `Expected` that agrees with its fields, and survives a round trip through a canonical form unchanged |
 //! | `writes_github_token` | bytes read as the body of `PUT /me/github-token`, and the same bytes as the text of a token | reading never panics; an accepted body holds a token of one to 512 bytes and survives a round trip through its canonical JSON unchanged; the shape check accepts only `github_pat_` followed by letters, digits and underscores within 512 bytes, never calls a fine-grained prefix classic, and its errors are the fixed words, none of which holds the input |
 //! | `writes_github_responses` | bytes read as the answer of `GET /user`, as the answer of `GET /repos/{o}/{r}`, and as the value of the expiry header | reading never panics; an accepted login is valid and is the one an independent JSON read finds; `push` is `true` only when an independent read finds exactly `permissions.push == true`; every error is `Unexpected`; an accepted expiry lies in 2000 to 2200 and survives being written out and read again |
+//! | `writes_git_data_responses` | bytes read as the answers of the Git Data calls (a branch head, a commit, a created object, a blob, a file's contents, a pull request and a list of them), and as the text of a branch name, a Git object id and a repository path | reading never panics; every error is `Unexpected`; an accepted object id is 40 lowercase hexadecimal digits and the one an independent JSON read finds; an accepted blob or file holds exactly the number of bytes its `size` says and no more than its text can encode; an accepted pull request has a number from 1 to 2147483647 and an `https` address of at most 512 characters without a space or a control character, as an independent read finds them; an accepted branch name holds only letters, digits, `.`, `_`, `-` and single `/`; an encoded path decodes to the path |
 //! | `writes_preview_id` | text read as a preview id presented with a fixed request at a fixed time | checking never panics; an id is accepted only if it is exactly the one the service issues for that request at the second it names (so each request has one id for each second), and that second is within the ten minutes before now |
 
 #![allow(
@@ -25,10 +26,13 @@ use bytes::Bytes;
 use domain::{Expected, PreviewChange, SwimlaneId};
 use hub_writes::fuzz_hooks;
 use hub_writes::github::api::{
-    GithubError, MAX_BODY_BYTES, parse_push_permission, parse_user, status_error, token_expiry,
+    GithubError, MAX_BODY_BYTES, MAX_CONTENT_BODY_BYTES, MAX_PULL_URL_LEN, parse_blob, parse_commit_tree,
+    parse_contents, parse_created_sha, parse_pull, parse_pull_list, parse_push_permission, parse_ref_commit,
+    parse_user, status_error, status_error_for, token_expiry,
 };
 use hub_writes::github::types::{
-    FINE_GRAINED_PREFIX, GithubLogin, MAX_TOKEN_LEN, TokenShapeError, check_token_shape,
+    BranchName, FINE_GRAINED_PREFIX, GitSha, GithubLogin, MAX_BRANCH_LEN, MAX_TOKEN_LEN, TokenShapeError,
+    check_token_shape, encode_path,
 };
 use hub_writes::routes::wire::{
     approve_comment, delete_request, draft_request, edit_request, github_token_request, preview_request,
@@ -43,7 +47,7 @@ pub type Check = fn(&[u8]) -> Result<(), String>;
 pub type Accepts = fn(&[u8]) -> bool;
 
 /// Every fuzz target: its name (also the file name in `fuzz_targets` and the corpus directory), its check and its reader.
-pub const TARGETS: [(&str, Check, Accepts); 5] = [
+pub const TARGETS: [(&str, Check, Accepts); 6] = [
     ("writes_request_json", writes_request_json, request_json_accepted),
     (
         "writes_upload_multipart",
@@ -56,6 +60,11 @@ pub const TARGETS: [(&str, Check, Accepts); 5] = [
         "writes_github_responses",
         writes_github_responses,
         github_responses_accepted,
+    ),
+    (
+        "writes_git_data_responses",
+        writes_git_data_responses,
+        git_data_responses_accepted,
     ),
 ];
 
@@ -581,6 +590,250 @@ pub fn writes_github_responses(data: &[u8]) -> Result<(), String> {
             (got == Some(GithubError::Unavailable)) == (500..=599).contains(&status),
             || "only a 5xx is unavailable".into(),
         )?;
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------------------------------------------- the Git Data answers
+
+/// The branch the pull request list is searched for.
+const LIST_BRANCH: &str = "lanekeeper/sit1/0a1b2c3d4e";
+
+pub fn git_data_responses_accepted(data: &[u8]) -> bool {
+    let branch = BranchName::parse(LIST_BRANCH).unwrap();
+    parse_ref_commit(data).is_ok()
+        || parse_commit_tree(data).is_ok()
+        || parse_created_sha(data).is_ok()
+        || parse_blob(data).is_ok()
+        || parse_contents(data).is_ok()
+        || parse_pull(data).is_ok()
+        || parse_pull_list(data, &branch).is_ok_and(|found| found.is_some())
+}
+
+fn at<'a>(v: &'a Option<serde_json::Value>, path: &[&str]) -> Option<&'a serde_json::Value> {
+    let mut cur = v.as_ref()?;
+    for key in path {
+        cur = cur.get(key)?;
+    }
+    Some(cur)
+}
+
+fn text_at<'a>(v: &'a Option<serde_json::Value>, path: &[&str]) -> Option<&'a str> {
+    at(v, path)?.as_str()
+}
+
+fn is_sha(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// An error of any of these readers is the one fixed word.
+fn only_unexpected<T>(what: &str, got: Result<T, GithubError>) -> Result<Option<T>, String> {
+    match got {
+        Ok(v) => Ok(Some(v)),
+        Err(e) => {
+            ensure(e == GithubError::Unexpected, || {
+                format!("a {what} error is not 'unexpected'")
+            })?;
+            Ok(None)
+        }
+    }
+}
+
+fn percent_decode(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            out.push(u8::from_str_radix(s.get(i + 1..i + 3)?, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// A pull request that was accepted: what an independent read finds in the same place.
+fn check_pull(
+    number: u32,
+    url: &str,
+    found: Option<&serde_json::Value>,
+    html: Option<&str>,
+) -> Result<(), String> {
+    ensure((1..=i32::MAX as u32).contains(&number), || {
+        "an accepted pull request number is out of range".into()
+    })?;
+    ensure(
+        found.and_then(serde_json::Value::as_u64) == Some(u64::from(number)),
+        || "the pull request number is not the one an independent read finds".into(),
+    )?;
+    ensure(html == Some(url), || {
+        "the pull request address is not the one an independent read finds".into()
+    })?;
+    ensure(
+        url.starts_with("https://")
+            && url.len() <= MAX_PULL_URL_LEN
+            && !url.chars().any(|c| c.is_control() || c.is_whitespace()),
+        || "an accepted pull request address is not a plain https address".into(),
+    )
+}
+
+pub fn writes_git_data_responses(data: &[u8]) -> Result<(), String> {
+    let independent: Option<serde_json::Value> = serde_json::from_slice(data).ok();
+
+    if let Some(sha) = only_unexpected("branch head", parse_ref_commit(data))? {
+        ensure(is_sha(sha.as_str()), || {
+            "an accepted branch head is not an object id".into()
+        })?;
+        ensure(
+            text_at(&independent, &["object", "sha"]) == Some(sha.as_str())
+                && text_at(&independent, &["object", "type"]) == Some("commit"),
+            || "the branch head is not a commit an independent read finds".into(),
+        )?;
+    }
+    if let Some(sha) = only_unexpected("commit", parse_commit_tree(data))? {
+        ensure(
+            is_sha(sha.as_str()) && text_at(&independent, &["tree", "sha"]) == Some(sha.as_str()),
+            || "the tree is not the one an independent read finds".into(),
+        )?;
+    }
+    if let Some(sha) = only_unexpected("created object", parse_created_sha(data))? {
+        ensure(
+            is_sha(sha.as_str()) && text_at(&independent, &["sha"]) == Some(sha.as_str()),
+            || "the id is not the one an independent read finds".into(),
+        )?;
+    }
+
+    if let Some(bytes) = only_unexpected("blob", parse_blob(data))? {
+        ensure(data.len() <= MAX_CONTENT_BODY_BYTES, || {
+            "a body over the cap is read".into()
+        })?;
+        ensure(text_at(&independent, &["encoding"]) == Some("base64"), || {
+            "a blob that is not base64 is read".into()
+        })?;
+        let content = text_at(&independent, &["content"]).unwrap_or_default();
+        ensure(bytes.len() <= content.len() / 4 * 3 + 3, || {
+            "a blob holds more bytes than its text can encode".into()
+        })?;
+        if let Some(size) = at(&independent, &["size"]).and_then(serde_json::Value::as_u64) {
+            ensure(size == bytes.len() as u64, || {
+                "a blob is not the size it says".into()
+            })?;
+        }
+    }
+
+    if let Some(contents) = only_unexpected("contents", parse_contents(data))? {
+        ensure(data.len() <= MAX_CONTENT_BODY_BYTES, || {
+            "a body over the cap is read".into()
+        })?;
+        ensure(
+            text_at(&independent, &["type"]) == Some("file")
+                && text_at(&independent, &["sha"]) == Some(contents.blob.as_str()),
+            || "the file is not a regular file with the blob an independent read finds".into(),
+        )?;
+        match (&contents.bytes, text_at(&independent, &["encoding"])) {
+            (Some(bytes), Some("base64")) => {
+                let content = text_at(&independent, &["content"]).unwrap_or_default();
+                ensure(bytes.len() <= content.len() / 4 * 3 + 3, || {
+                    "a file holds more bytes than its text can encode".into()
+                })?;
+                if let Some(size) = at(&independent, &["size"]).and_then(serde_json::Value::as_u64) {
+                    ensure(size == bytes.len() as u64, || {
+                        "a file is not the size it says".into()
+                    })?;
+                }
+            }
+            (None, Some("none")) => {}
+            _ => return Err("the bytes of a file do not follow its encoding".into()),
+        }
+    }
+
+    if let Some(pull) = only_unexpected("pull request", parse_pull(data))? {
+        ensure(data.len() <= MAX_BODY_BYTES, || {
+            "a body over the cap is read".into()
+        })?;
+        check_pull(
+            pull.number,
+            &pull.url,
+            at(&independent, &["number"]),
+            text_at(&independent, &["html_url"]),
+        )?;
+    }
+
+    let branch =
+        BranchName::parse(LIST_BRANCH).map_err(|_| "the list's branch is not a branch".to_owned())?;
+    if let Some(found) = only_unexpected("pull request list", parse_pull_list(data, &branch))? {
+        ensure(data.len() <= MAX_BODY_BYTES, || {
+            "a body over the cap is read".into()
+        })?;
+        let entries = independent.as_ref().and_then(serde_json::Value::as_array);
+        let first_for_branch = entries.and_then(|all| {
+            all.iter()
+                .find(|e| e.pointer("/head/ref").and_then(serde_json::Value::as_str) == Some(LIST_BRANCH))
+        });
+        match (found, first_for_branch) {
+            (Some(pull), Some(entry)) => check_pull(
+                pull.number,
+                &pull.url,
+                entry.get("number"),
+                entry.get("html_url").and_then(serde_json::Value::as_str),
+            )?,
+            (None, None) => ensure(entries.is_some(), || "a list that is not a list is read".into())?,
+            (Some(_), None) => return Err("a pull request is found that the list does not hold".into()),
+            (None, Some(_)) => return Err("the list holds the branch and none is found".into()),
+        }
+    }
+
+    // The text readers.
+    if let Ok(text) = std::str::from_utf8(data) {
+        if let Ok(sha) = GitSha::parse(text) {
+            ensure(is_sha(sha.as_str()) && sha.as_str() == text, || {
+                "an accepted object id is not forty lowercase hexadecimal digits".into()
+            })?;
+        }
+        if let Ok(branch) = BranchName::parse(text) {
+            let name = branch.as_str();
+            ensure(
+                name == text
+                    && name.len() <= MAX_BRANCH_LEN
+                    && !name.contains("..")
+                    && !name.contains("//")
+                    && !name.starts_with(['/', '.', '-'])
+                    && !name.ends_with(['/', '.'])
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/')),
+                || "an accepted branch name holds something besides plain characters".into(),
+            )?;
+        }
+        let encoded = encode_path(text);
+        ensure(
+            encoded
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/' | b'%')),
+            || "an encoded path holds a reserved character".into(),
+        )?;
+        ensure(percent_decode(&encoded).as_deref() == Some(text), || {
+            "an encoded path does not decode to the path".into()
+        })?;
+    }
+
+    // The status table is total here too: a create's 201 is its only success, and 409 and 422 are the one word.
+    for chunk in data.chunks(3).take(64) {
+        let status = u16::from(chunk[0]) << 8 | u16::from(*chunk.get(1).unwrap_or(&0));
+        let limited = chunk.get(2).is_some_and(|b| b & 1 == 1);
+        ensure(
+            status_error_for(status, limited, &[201]).is_none() == (status == 201),
+            || "only a 201 is a success of a create".into(),
+        )?;
+        if matches!(status, 409 | 422) {
+            ensure(
+                status_error(status, limited) == Some(GithubError::Unprocessable),
+                || "409 and 422 are not the refusal of the data".into(),
+            )?;
+        }
     }
     Ok(())
 }

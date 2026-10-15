@@ -32,7 +32,8 @@ use octocrab::{AuthState, OctoBody, Octocrab, OctocrabBuilder};
 use rustls::{ClientConfig, RootCertStore};
 
 use super::api::{
-    EXPIRY_HEADER, GithubError, MAX_BODY_BYTES, parse_push_permission, parse_user, status_error, token_expiry,
+    EXPIRY_HEADER, GithubError, MAX_BODY_BYTES, parse_push_permission, parse_user, status_error_for,
+    token_expiry,
 };
 use super::types::{GithubLogin, RepoRef};
 
@@ -135,18 +136,83 @@ fn native_roots() -> Result<RootCertStore, GithubError> {
     Ok(store)
 }
 
+/// The verbs the hub uses.
+#[derive(Clone, Copy)]
+pub(super) enum Verb {
+    Get,
+    Post,
+    Patch,
+}
+
+/// What to do after a failure that leaves it unknown whether GitHub did the work.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Retry {
+    /// Try again: the call reads, or doing it twice does what doing it once does (a content-addressed object).
+    Transient,
+    /// Do not try again: a second try could do the work twice (a branch, a pull request). A rate limit is still waited out,
+    /// because GitHub has done nothing yet.
+    Once,
+}
+
+/// One call to GitHub.
+pub(super) struct Call<'a> {
+    pub verb: Verb,
+    pub path: &'a str,
+    pub body: Option<&'a serde_json::Value>,
+    pub retry: Retry,
+    /// The statuses that are success (200, or 201 for a create).
+    pub ok: &'static [u16],
+    /// The most bytes of the answer read.
+    pub cap: usize,
+}
+
+impl<'a> Call<'a> {
+    pub fn get(path: &'a str, cap: usize) -> Self {
+        Self {
+            verb: Verb::Get,
+            path,
+            body: None,
+            retry: Retry::Transient,
+            ok: &[200],
+            cap,
+        }
+    }
+
+    pub fn post(path: &'a str, body: &'a serde_json::Value, retry: Retry) -> Self {
+        Self {
+            verb: Verb::Post,
+            path,
+            body: Some(body),
+            retry,
+            ok: &[201],
+            cap: MAX_BODY_BYTES,
+        }
+    }
+
+    pub fn patch(path: &'a str, body: &'a serde_json::Value) -> Self {
+        Self {
+            verb: Verb::Patch,
+            path,
+            body: Some(body),
+            retry: Retry::Once,
+            ok: &[200],
+            cap: MAX_BODY_BYTES,
+        }
+    }
+}
+
 /// What one request got back.
-struct Reply {
-    status: u16,
-    headers: HeaderMap,
-    body: Bytes,
+pub(super) struct Reply {
+    pub status: u16,
+    pub headers: HeaderMap,
+    pub body: Bytes,
 }
 
 /// The GitHub client.
 #[derive(Clone)]
 pub struct GithubClient {
     octo: Octocrab,
-    cfg: GithubClientConfig,
+    pub(super) cfg: GithubClientConfig,
 }
 
 impl fmt::Debug for GithubClient {
@@ -229,22 +295,27 @@ impl GithubClient {
     }
 
     /// One attempt: the request with the user's token, and the answer read up to the cap.
-    async fn once(&self, token: &Secret<String>, path: &str) -> Result<Reply, GithubError> {
+    async fn once(&self, token: &Secret<String>, call: &Call<'_>) -> Result<Reply, GithubError> {
         // octocrab keeps the token as a `SecretString`, which zeroizes when dropped with the clone.
         let octo = self
             .octo
             .user_access_token(token.expose().clone())
             .map_err(|_| GithubError::Config)?;
-        let response = octo._get(path.to_owned()).await.map_err(|_| {
+        let sent = match call.verb {
+            Verb::Get => octo._get(call.path.to_owned()).await,
+            Verb::Post => octo._post(call.path.to_owned(), call.body).await,
+            Verb::Patch => octo._patch(call.path.to_owned(), call.body).await,
+        };
+        let response = sent.map_err(|_| {
             // Its error quotes URIs and GitHub's message: only the class is kept.
             tracing::warn!("github request failed");
             GithubError::Unavailable
         })?;
         let (parts, body) = response.into_parts();
         let status = parts.status.as_u16();
-        // Only a 200 has a body this module reads. The rest is dropped unread.
-        let body = if status == 200 {
-            match Limited::new(body, self.cfg.max_body).collect().await {
+        // Only a successful answer has a body this module reads. The rest is dropped unread.
+        let body = if call.ok.contains(&status) {
+            match Limited::new(body, call.cap).collect().await {
                 Ok(all) => all.to_bytes(),
                 Err(e) => {
                     return Err(if e.is::<http_body_util::LengthLimitError>() {
@@ -264,14 +335,17 @@ impl GithubClient {
         })
     }
 
-    /// `GET path` with bounded retries. A reply is returned when its status is 200; every other outcome is an error.
-    async fn get(&self, token: &Secret<String>, path: &str) -> Result<Reply, GithubError> {
+    /// The call with bounded retries. A reply is returned when its status is one of the call's successes; every other outcome
+    /// is an error. A rate limit is waited out (up to a bound) for every call, because GitHub has done nothing yet; a network
+    /// failure or a 5xx is retried only for a call that is safe to repeat.
+    pub(super) async fn send(&self, token: &Secret<String>, call: &Call<'_>) -> Result<Reply, GithubError> {
         let run = async {
             let mut attempt = 0_u32;
             loop {
                 attempt += 1;
                 let last = attempt >= self.cfg.max_attempts;
-                let once = tokio::time::timeout(self.cfg.attempt_timeout, self.once(token, path))
+                let again = !last && call.retry == Retry::Transient;
+                let once = tokio::time::timeout(self.cfg.attempt_timeout, self.once(token, call))
                     .await
                     .unwrap_or_else(|_| {
                         tracing::warn!("github request timed out");
@@ -279,7 +353,7 @@ impl GithubClient {
                     });
                 let reply = match once {
                     Ok(reply) => reply,
-                    Err(GithubError::Unavailable) if !last => {
+                    Err(GithubError::Unavailable) if again => {
                         self.pause(attempt, None).await;
                         continue;
                     }
@@ -290,7 +364,7 @@ impl GithubClient {
                     .get("x-ratelimit-remaining")
                     .is_some_and(|v| v == "0")
                     || reply.headers.contains_key(header::RETRY_AFTER);
-                match status_error(reply.status, limited) {
+                match status_error_for(reply.status, limited, call.ok) {
                     None => return Ok(reply),
                     Some(GithubError::RateLimited) => {
                         let wait = retry_after(&reply.headers);
@@ -300,7 +374,7 @@ impl GithubClient {
                         }
                         return Err(GithubError::RateLimited);
                     }
-                    Some(GithubError::Unavailable) if !last => self.pause(attempt, None).await,
+                    Some(GithubError::Unavailable) if again => self.pause(attempt, None).await,
                     Some(e) => return Err(e),
                 }
             }
@@ -308,6 +382,11 @@ impl GithubClient {
         tokio::time::timeout(self.cfg.total_timeout, run)
             .await
             .unwrap_or(Err(GithubError::Unavailable))
+    }
+
+    /// `GET path` with bounded retries.
+    async fn get(&self, token: &Secret<String>, path: &str) -> Result<Reply, GithubError> {
+        self.send(token, &Call::get(path, self.cfg.max_body)).await
     }
 
     /// The wait between two attempts: what GitHub asked for, or a random time up to a doubling bound (full jitter).
