@@ -1409,6 +1409,56 @@ async fn restart_answers_of_the_agent_become_outcomes() {
     assert!(matches!(ok, WriteOutcome::Applied { .. }), "{ok:?}");
 }
 
+/// The offer lists at most `MAX_RESTART_OFFER` services; a swimlane with more is told so, for the root folder and for the
+/// config-server's offer alike, and a swimlane with exactly that many is not.
+#[tokio::test]
+async fn a_restart_all_offer_that_leaves_services_out_says_so() {
+    let Some((rig, s)) = rig().await else { return };
+    let operator = rig.user(1, Role::Operator).await;
+    let services = |n: i32| {
+        let (pool, s) = (rig.pool.clone(), s.clone());
+        async move {
+            sqlx::query("DELETE FROM services WHERE swimlane_id = $1")
+                .bind(s.as_str())
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO services (swimlane_id, namespace, name, env_values) \
+                 SELECT $1, 'sit1', 'svc' || lpad(g::text, 5, '0'), '{}' FROM generate_series(1, $2) g",
+            )
+            .bind(s.as_str())
+            .bind(n)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    let max = i32::try_from(hub_writes::MAX_RESTART_OFFER).unwrap();
+
+    services(max).await;
+    let offer = rig
+        .hub
+        .restart_offer(&ctx(&operator, "o-1"), &s, &nfs("application.yml"))
+        .await
+        .unwrap();
+    assert_eq!(
+        (offer.services.len(), offer.truncated),
+        (hub_writes::MAX_RESTART_OFFER, false)
+    );
+
+    services(max + 1).await;
+    let offer = rig
+        .hub
+        .restart_offer(&ctx(&operator, "o-2"), &s, &nfs("application.yml"))
+        .await
+        .unwrap();
+    assert_eq!(
+        (offer.services.len(), offer.truncated),
+        (hub_writes::MAX_RESTART_OFFER, true)
+    );
+}
+
 #[tokio::test]
 async fn restart_all_offers_every_service_in_the_confirmation() {
     let Some((rig, s)) = rig().await else { return };
@@ -1433,7 +1483,9 @@ async fn restart_all_offers_every_service_in_the_confirmation() {
         .restart_offer(&ctx(&operator, "o-1"), &s, &nfs("application.yml"))
         .await
         .unwrap();
+    assert!(!all.truncated);
     let names: Vec<String> = all
+        .services
         .iter()
         .map(|r| format!("{}/{}", r.namespace(), r.name()))
         .collect();
@@ -1445,7 +1497,8 @@ async fn restart_all_offers_every_service_in_the_confirmation() {
         .restart_offer(&ctx(&operator, "o-2"), &s, &nfs("tx-api/entry.yml"))
         .await
         .unwrap();
-    assert_eq!(one, vec![ServiceRef::new("sit1", "tx-api").unwrap()]);
+    assert_eq!(one.services, vec![ServiceRef::new("sit1", "tx-api").unwrap()]);
+    assert!(!one.truncated);
 
     // The offer is for an Operator, who is the only one who can act on it.
     assert_eq!(
@@ -1455,7 +1508,7 @@ async fn restart_all_offers_every_service_in_the_confirmation() {
         Err(WriteError::Forbidden)
     );
     // And each restart is its own request: one that fails does not hide the others.
-    for (n, svc) in all.iter().enumerate() {
+    for (n, svc) in all.services.iter().enumerate() {
         let out = rig
             .hub
             .restart(

@@ -26,7 +26,7 @@ use crate::pipeline::claim::{Claim, Claimed, claim, settle};
 use crate::pipeline::execute::{Committed, Recording, Sent, record, send_restart};
 use crate::pipeline::lock::{LockState, check as check_lock};
 use crate::pipeline::{Abort, Done, Step};
-use crate::service::{ConfigServerRestartOffer, Inner};
+use crate::service::{ConfigServerRestartOffer, Inner, RestartOffer};
 
 /// The most services one swimlane lists for a restart-all confirmation.
 pub const MAX_RESTART_OFFER: usize = 2_000;
@@ -275,7 +275,9 @@ pub(crate) async fn config_server_offer(
     let Ok(service) = ServiceRef::new(namespace, name) else {
         return Ok(None);
     };
-    let limit = i64::try_from(MAX_RESTART_OFFER + 1).unwrap_or(2_001);
+    // Two more than the offer holds: the config-server is among the rows and is not offered, and one more row than that says there
+    // are services the offer leaves out.
+    let limit = i64::try_from(MAX_RESTART_OFFER + 2).unwrap_or(2_002);
     let rows: Vec<(String, String)> = hub
         .within(
             "restart_offer",
@@ -286,28 +288,34 @@ pub(crate) async fn config_server_offer(
         )
         .await?
         .map_err(|e| Internal::db("restart_offer", &e))?;
-    let affected = rows
+    let mut affected: Vec<ServiceRef> = rows
         .into_iter()
         .filter_map(|(ns, n)| ServiceRef::new(&ns, &n).ok())
         .filter(|s| *s != service)
-        .take(MAX_RESTART_OFFER)
         .collect();
-    Ok(Some(ConfigServerRestartOffer { service, affected }))
+    let truncated = affected.len() > MAX_RESTART_OFFER;
+    affected.truncate(MAX_RESTART_OFFER);
+    Ok(Some(ConfigServerRestartOffer {
+        service,
+        affected,
+        truncated,
+    }))
 }
 
 /// The services a restart-all confirmation lists for a change to `path`, or none when the change does not call for one.
 ///
 /// A file in the root folder is read by every service (D82), so every service of the swimlane is listed. A file in an
 /// application's folder is read by that application only: the Deployments of that name are listed. Operator only, like the
-/// restart itself.
+/// restart itself. The list holds at most [`MAX_RESTART_OFFER`]; when the swimlane has more, the offer says so (`truncated`), so
+/// that the confirmation cannot look complete while it leaves Deployments out.
 pub(crate) async fn restart_offer(
     hub: &Inner,
     ctx: &WriteCtx,
     swimlane: &SwimlaneId,
     path: &NfsPath,
-) -> Result<Vec<ServiceRef>, WriteError> {
+) -> Result<RestartOffer, WriteError> {
     authorize(hub, ctx, Role::Operator).await?;
-    let limit = i64::try_from(MAX_RESTART_OFFER).unwrap_or(2_000);
+    let limit = i64::try_from(MAX_RESTART_OFFER + 1).unwrap_or(2_001);
     let rows: Vec<(String, String)> = if path.parent().is_root() {
         hub.within(
             "restart_offer",
@@ -330,9 +338,14 @@ pub(crate) async fn restart_offer(
         .await?
     }
     .map_err(|e| Internal::db("restart_offer", &e))?;
+    let truncated = rows.len() > MAX_RESTART_OFFER;
     // A row that is not a valid reference (the table does not check Kubernetes naming) is left out, not guessed at.
-    Ok(rows
-        .into_iter()
-        .filter_map(|(namespace, name)| ServiceRef::new(&namespace, &name).ok())
-        .collect())
+    Ok(RestartOffer {
+        services: rows
+            .into_iter()
+            .take(MAX_RESTART_OFFER)
+            .filter_map(|(namespace, name)| ServiceRef::new(&namespace, &name).ok())
+            .collect(),
+        truncated,
+    })
 }

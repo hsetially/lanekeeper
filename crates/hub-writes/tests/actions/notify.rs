@@ -1152,6 +1152,58 @@ async fn config_server_restart_is_offered_when_c11_is_open_and_names_affected_se
     );
 }
 
+/// The services a config-server restart takes away are listed up to `MAX_RESTART_OFFER`; more than that and the offer says it is
+/// not the whole of them. The config-server's own row is not one of the services, and does not make the list look full.
+#[tokio::test]
+async fn a_config_server_offer_that_leaves_services_out_says_so() {
+    let Some((rig, s)) = rig().await else { return };
+    let operator = rig.user(1, Role::Operator).await;
+    c11(&rig, &s, false).await;
+    rig.service(&s, "sit1", "csp-configuration-server", None).await;
+    let max = i32::try_from(hub_writes::MAX_RESTART_OFFER).unwrap();
+    let others = |n: i32| {
+        let (pool, s) = (rig.pool.clone(), s.clone());
+        async move {
+            sqlx::query("DELETE FROM services WHERE swimlane_id = $1 AND name <> 'csp-configuration-server'")
+                .bind(s.as_str())
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO services (swimlane_id, namespace, name, env_values) \
+                 SELECT $1, 'sit1', 'svc' || lpad(g::text, 5, '0'), '{}' FROM generate_series(1, $2) g",
+            )
+            .bind(s.as_str())
+            .bind(n)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    others(max).await;
+    let offer = rig
+        .hub
+        .config_server_restart_offer(&ctx(&operator, "o-1"), &s)
+        .await
+        .unwrap()
+        .expect("offered");
+    assert_eq!(
+        (offer.affected.len(), offer.truncated),
+        (hub_writes::MAX_RESTART_OFFER, false)
+    );
+    others(max + 1).await;
+    let offer = rig
+        .hub
+        .config_server_restart_offer(&ctx(&operator, "o-2"), &s)
+        .await
+        .unwrap()
+        .expect("offered");
+    assert_eq!(
+        (offer.affected.len(), offer.truncated),
+        (hub_writes::MAX_RESTART_OFFER, true)
+    );
+}
+
 #[tokio::test]
 async fn config_server_restart_is_not_offered_when_the_swimlane_has_no_single_config_server() {
     let Some((rig, s)) = rig().await else { return };

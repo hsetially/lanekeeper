@@ -70,6 +70,7 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::{MAX_EXTRA_DENY_GLOBS, PREVIEW_KEY_SECRET, WriteConfig};
 pub use error::ConfigError;
 pub use idempotency::RequestHash;
+pub use ops::restart::MAX_RESTART_OFFER;
 #[cfg(feature = "bench-probe")]
 pub use probe::QueryProbe;
 pub use proposals::{
@@ -82,7 +83,7 @@ pub use proposals::{
 pub use preview::token::fuzzing as fuzz_hooks;
 pub use reconcile::{ReconcileReport, ReconcileWrites};
 pub use reveal::{DEFAULT_REASON, RevealDesk, RevealError, RevealRequest, Revealed};
-pub use service::{ConfigServerRestartOffer, WriteHub, WriteHubDeps};
+pub use service::{ConfigServerRestartOffer, RestartOffer, WriteHub, WriteHubDeps};
 
 /// The statements the write path runs on every request, by name, for the tests that run `EXPLAIN` on them (P12). Each takes
 /// numbered parameters, so `EXPLAIN (GENERIC_PLAN)` shows its plan for any value.

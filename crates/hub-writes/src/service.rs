@@ -124,6 +124,18 @@ pub struct ConfigServerRestartOffer {
     /// The other services of the swimlane, which read the config-server and cannot be served while it restarts. Bounded by
     /// [`crate::MAX_RESTART_OFFER`].
     pub affected: Vec<ServiceRef>,
+    /// The swimlane has more of them than `affected` lists: the confirmation must say that the list is not the whole of it.
+    pub truncated: bool,
+}
+
+/// The services a "restart all" confirmation lists, and whether the list is all of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestartOffer {
+    /// At most [`crate::MAX_RESTART_OFFER`] services.
+    pub services: Vec<ServiceRef>,
+    /// There are more than `services` holds: restarting these leaves the others as they are, and the confirmation must say so
+    /// rather than look complete.
+    pub truncated: bool,
 }
 
 /// The write service (`docs/interfaces.md`): every change goes through the pipeline in [`crate::pipeline`].
@@ -218,7 +230,7 @@ impl WriteHub {
         ctx: &WriteCtx,
         swimlane: &SwimlaneId,
         path: &NfsPath,
-    ) -> Result<Vec<ServiceRef>, WriteError> {
+    ) -> Result<RestartOffer, WriteError> {
         crate::ops::restart::restart_offer(&self.inner, ctx, swimlane, path).await
     }
 
