@@ -4898,9 +4898,10 @@ components:
         content:
           type: string
           maxLength: 2097152
-          description: The whole new text, at most 2 MiB of UTF-8 (`maxLength` counts characters, which are never
-            fewer than the bytes; the server checks the bytes). The server restores the file's line endings, encoding
-            and BOM.
+          description: The whole new text. The limit is 2 MiB of UTF-8, counted in bytes by the server (a larger text
+            is refused with 413 and nothing is written). `maxLength` counts characters, not bytes, and a character takes
+            up to four bytes, so it is only a coarse bound of the schema and does not enforce that limit. The server
+            restores the file's line endings, encoding and BOM.
         change_eol:
           $ref: '#/components/schemas/ChangeEol'
       additionalProperties: false
@@ -5255,7 +5256,9 @@ components:
         content:
           type: string
           maxLength: 2097152
-          description: The whole new text, at most 2 MiB of UTF-8.
+          description: The whole new text. The limit is 2 MiB of UTF-8, counted in bytes by the server (a larger text
+            is refused with 413 and nothing is saved). `maxLength` counts characters, not bytes, and a character takes
+            up to four bytes, so it is only a coarse bound of the schema and does not enforce that limit.
       additionalProperties: false
       required:
       - swimlane

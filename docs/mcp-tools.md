@@ -10,7 +10,7 @@ This file is a contract path. Prompt 07 implements every tool below and has a co
 
 **Roles (S4, S14).** Every tool declares its minimum role in its section, and the server checks it on every call, before the handler runs. The role of a tool equals the role of the REST operation it wraps; the lint compares them against `api/openapi.yaml`. No tool needs more than Operator, and no tool is open to a user with fewer rights than the REST operation requires. Users with `requires_approval` can call write tools, but their confirmed change becomes a proposal (`proposal_created`).
 
-**Output size (P9, D58).** The default output of every tool is at most 16 KB (read tools) or 4 KB (write tools). A read tool that has more returns a summary, `truncated: true`, and either a `next` cursor (tools with `pagination: cursor`) or a `web_link` to the full result. Read tools respond within 300 ms on the server (P9). The cap applies to the whole serialized result in bytes, so a `text` field is cut to fit; `maxLength` in a schema is a hard upper bound, not the usual size. File and doc text is capped at 200 lines or 16 KB by default.
+**Output size (P9, D58).** The default output of every tool is at most 16 KB (read tools) or 4 KB (write tools). A read tool that has more returns a summary, `truncated: true`, and either a `next` cursor (tools with `pagination: cursor`) or a `web_link` to the full result. Read tools respond within 300 ms on the server (P9). The cap applies to the whole serialized result in bytes, so a `text` field is cut to fit; `maxLength` in a schema is a hard upper bound, not the usual size; it counts characters, not bytes (the 2 MiB limit on file content is counted in bytes by the server). File and doc text is capped at 200 lines or 16 KB by default.
 
 **Pagination.** Tools with `pagination: cursor` take `cursor` and `limit` and page by keyset; the cursor is opaque. Pass the `next` of the previous result. There is no offset paging.
 
@@ -1512,7 +1512,7 @@ The draft is only a record; nothing is written to NFS. Drafts expire (`expires_a
     "content": {
       "type": "string",
       "maxLength": 2097152,
-      "description": "The whole new text, at most 2 MiB of UTF-8 (the engine's input limit). The server restores the file's line endings, encoding and BOM."
+      "description": "The whole new text. The limit is 2 MiB of UTF-8 (the engine's input limit), counted in bytes by the server: a larger text is refused with `too_large` and nothing is saved. `maxLength` counts characters, not bytes, and a character takes up to four bytes, so it is only a coarse bound of the schema and does not enforce that limit. The server restores the file's line endings, encoding and BOM."
     },
     "change_eol": {"$ref": "#/$defs/ChangeEol"}
   },
@@ -1615,7 +1615,7 @@ Denied globs (D79) are refused with `unprocessable`. The file keeps the line end
     "swimlane": {"$ref": "#/$defs/SwimlaneId"},
     "path": {"$ref": "#/$defs/NfsPath"},
     "expected": {"$ref": "#/$defs/Expected"},
-    "content": {"type": "string", "maxLength": 2097152, "description": "UTF-8 text, at most 2 MiB (the engine's input limit)."}
+    "content": {"type": "string", "maxLength": 2097152, "description": "UTF-8 text. The limit is 2 MiB (the engine's input limit), counted in bytes by the server: a larger text is refused with `too_large`. `maxLength` counts characters, not bytes, and is only a coarse bound of the schema."}
   },
   "required": ["swimlane", "path", "expected", "content"],
   "additionalProperties": false

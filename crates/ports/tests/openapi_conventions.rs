@@ -1155,10 +1155,22 @@ fn preview_operation_and_upload_text() {
         "no 4 MiB limit is stated for uploads or edits"
     );
     for schema in ["EditFileRequest", "DraftRequest"] {
+        let content = &d["components"]["schemas"][schema]["properties"]["content"];
+        // `maxLength` counts characters, and a UTF-8 character takes up to four bytes: it is a coarse bound of the schema
+        // and is NOT the byte cap. The 2 MiB is a limit of bytes that the server enforces (413).
         assert_eq!(
-            d["components"]["schemas"][schema]["properties"]["content"]["maxLength"],
+            content["maxLength"],
             2 * 1024 * 1024,
-            "{schema}.content is held to the same 2 MiB"
+            "{schema}.content: `maxLength` is a bound in characters and is not the 2 MiB byte cap (the server counts bytes)"
+        );
+        let text = content["description"].as_str().unwrap();
+        assert!(
+            text.contains("2 MiB") && text.contains("bytes") && text.contains("413") && text.contains("characters"),
+            "{schema}.content says that the 2 MiB is counted in bytes by the server (413) and that `maxLength` counts characters: {text}"
+        );
+        assert!(
+            !text.contains("never fewer than the bytes"),
+            "{schema}.content: characters are never MORE than bytes, so `maxLength` cannot enforce a byte limit: {text}"
         );
     }
     assert!(!SPEC.contains("25 MiB"), "the 25 MiB claim is gone (A3)");
