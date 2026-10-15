@@ -360,8 +360,21 @@ async fn run(hub: &Inner, ctx: &WriteCtx, user: &User, claim: &Claim, id: &Draft
         swimlane: d.swimlane,
         path: d.path,
         expected: d.expected,
+        change_eol: eol_of(&content),
         content,
-        change_eol: None,
     };
     edit::run(hub, ctx, user, claim, request, Some(id.as_str())).await
+}
+
+/// The line ending the stored version of a draft uses throughout, as a request for it. The version was put into its final form
+/// when the draft was made (the file's line ending, or the one the request asked for), and what the person reviewed is those
+/// bytes: applying them names their line ending, so that they are not converted a second time to the file's, which would write
+/// something other than the draft shows when the draft asked to change it. A version that mixes line endings names none, and is
+/// written as an edit is.
+fn eol_of(stored: &Bytes) -> Option<domain::ChangeEol> {
+    match engine::detect_format(stored).eol {
+        domain::EolStyle::Lf => Some(domain::ChangeEol::Lf),
+        domain::EolStyle::Crlf => Some(domain::ChangeEol::Crlf),
+        domain::EolStyle::Mixed => None,
+    }
 }

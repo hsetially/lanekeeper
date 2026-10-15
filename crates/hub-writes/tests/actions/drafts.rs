@@ -154,6 +154,47 @@ async fn concurrent_drafts_cannot_pass_the_open_limit() {
     assert_eq!(rig.count("drafts").await, hub_writes::MAX_OPEN_DRAFTS);
 }
 
+/// What the draft shows is what is written: a draft made with a line ending that the file does not have (`change_eol`) is applied
+/// in that line ending, not converted back to the file's.
+#[tokio::test]
+async fn applying_a_draft_writes_the_bytes_the_draft_holds_including_a_requested_line_ending() {
+    let Some((rig, s)) = lane().await else { return };
+    let editor = rig.user(1, Role::Editor).await;
+    let old = "a: 1\r\nb: 2\r\n";
+    rig.seed(&s, &[("crlf.yml", old)]);
+    let mut r = edit(&s, "crlf.yml", at(old), "a: 1\nb: 9\n");
+    r.change_eol = Some(domain::ChangeEol::Lf);
+    let d = rig.hub.propose_draft(&ctx(&editor, "d-1"), r).await.unwrap();
+    assert_eq!(
+        d.new_hash,
+        h("a: 1\nb: 9\n"),
+        "the draft holds the bytes with the line ending asked for"
+    );
+
+    let out = rig.hub.apply_draft(&ctx(&editor, "a-1"), d.id).await.unwrap();
+    let (hash, _) = applied(&out);
+    assert_eq!(hash, Some(d.new_hash));
+    assert_eq!(rig.nfs_of(&s, "crlf.yml").as_deref(), Some(&b"a: 1\nb: 9\n"[..]));
+
+    // A draft made without a request keeps the file's line ending, as before.
+    let old = "x: 1\r\ny: 2\r\n";
+    rig.seed(&s, &[("keep.yml", old)]);
+    let d = rig
+        .hub
+        .propose_draft(
+            &ctx(&editor, "d-2"),
+            edit(&s, "keep.yml", at(old), "x: 1\ny: 9\n"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(d.new_hash, h("x: 1\r\ny: 9\r\n"));
+    rig.hub.apply_draft(&ctx(&editor, "a-2"), d.id).await.unwrap();
+    assert_eq!(
+        rig.nfs_of(&s, "keep.yml").as_deref(),
+        Some(&b"x: 1\r\ny: 9\r\n"[..])
+    );
+}
+
 #[tokio::test]
 async fn apply_draft_writes_audits_draft_applied_and_marks_it() {
     let Some((rig, s)) = lane().await else { return };
