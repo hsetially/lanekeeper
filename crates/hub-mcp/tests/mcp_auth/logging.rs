@@ -1,70 +1,22 @@
 //! S10, S21: whatever the server logs while it authenticates, makes, lists and revokes tokens holds no token, no key, no hash, no
 //! header, no label and no body. The filter of the hub keeps `rmcp` at `warn` (`crates/hub/tests/mcp_module.rs`), as rmcp logs whole
-//! requests and results at `debug`; the capture here mirrors it.
-
-use std::io;
-use std::sync::{Arc, Mutex};
+//! requests and results at `debug`; the capture here mirrors it (`crate::capture`, the one capture of this binary: a scoped
+//! `set_default` loses events when other tests run at the same time, which these tests did).
 
 use axum::http::Method;
 use domain::{Role, UserStatus};
 use ports::AuthError;
 use serde_json::json;
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::Layer;
-use tracing_subscriber::filter::Targets;
-use tracing_subscriber::fmt::MakeWriter;
-use tracing_subscriber::layer::SubscriberExt;
 
+use crate::capture;
 use crate::rig::{ORIGIN, Rig};
 use crate::support::json_body;
-
-#[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
-
-impl io::Write for Capture {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> MakeWriter<'a> for Capture {
-    type Writer = Capture;
-
-    fn make_writer(&'a self) -> Capture {
-        self.clone()
-    }
-}
-
-impl Capture {
-    fn text(&self) -> String {
-        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
-    }
-}
-
-/// Everything this crate logs, at every level, and everything else at `warn`: the hub's own filter, widened for this crate.
-fn subscriber(capture: &Capture) -> impl tracing::Subscriber + Send + Sync {
-    let filter = Targets::new()
-        .with_default(LevelFilter::WARN)
-        .with_target("hub_mcp", LevelFilter::TRACE)
-        .with_target("hub_platform", LevelFilter::TRACE);
-    let output = tracing_subscriber::fmt::layer()
-        .with_ansi(false)
-        .with_writer(capture.clone())
-        .with_filter(filter);
-    tracing_subscriber::Registry::default().with(output)
-}
 
 const LABEL: &str = "planted-label-7c1e";
 
 #[tokio::test]
 async fn log_capture_has_no_tokens_args_or_output() {
-    let capture = Capture::default();
-    let _guard = tracing::subscriber::set_default(subscriber(&capture));
+    let logs = capture::start();
     tracing::warn!(target: "hub_mcp::test", "the capture works");
 
     // OAuth mode: good, unknown, expired, pending and unavailable.
@@ -90,6 +42,10 @@ async fn log_capture_has_no_tokens_args_or_output() {
         let _ = client
             .initialize(&json!({"planted": "planted-body-value-9d2f"}))
             .await;
+        // The signed-in caller also makes a call, so that there is a line of the server's own to look at (see the end).
+        if token == "planted-oauth-token-alice" {
+            let _ = client.call_tool_to_end("list_swimlanes", &json!({})).await;
+        }
     }
 
     // Personal-token mode: make, use, list, revoke, and the failures on the way.
@@ -110,6 +66,7 @@ async fn log_capture_has_no_tokens_args_or_output() {
     let id = created["id"].as_i64().unwrap();
     let mut client = personal.client(Some(&token));
     client.initialize(&json!({})).await.unwrap();
+    let _ = client.call_tool_to_end("list_swimlanes", &json!({})).await;
     let _ = personal
         .rest(Method::GET, "/api/v1/me/mcp-tokens", Some("alice"), None, None)
         .await;
@@ -128,8 +85,25 @@ async fn log_capture_has_no_tokens_args_or_output() {
         .await;
     let _ = personal.client(Some(&token)).post(&json!({})).await;
 
-    let log = capture.text();
+    let log = logs.text();
     assert!(log.contains("the capture works"), "{log}");
+    // A positive control for everything below: the server's own lines were captured. The checks that follow are all absences, so a
+    // capture that lost the server's events (it did, while it was a scoped `set_default`) would pass them without having looked at
+    // anything. One line of the call log for each of the two calls made above, and they say what the call log says.
+    let calls: Vec<&str> = log.lines().filter(|l| l.contains("hub_mcp::call")).collect();
+    assert_eq!(
+        calls.len(),
+        2,
+        "the server's call lines were not captured:\n{log}"
+    );
+    for line in &calls {
+        assert!(
+            line.contains("tool call")
+                && line.contains("tool=\"list_swimlanes\"")
+                && line.contains("outcome=\"ok\""),
+            "{line}"
+        );
+    }
     let hmac = hex::encode(personal.store.as_ref().unwrap().rows()[0].hmac.as_bytes());
     for secret in [
         "planted-oauth-token",
@@ -169,8 +143,7 @@ fn debug_output_of_the_secret_bearing_types_is_redacted() {
 async fn tool_calls_log_what_was_called_and_nothing_it_carried() {
     use bytes::Bytes;
     use domain::{NfsPath, SwimlaneId};
-    let capture = Capture::default();
-    let _guard = tracing::subscriber::set_default(subscriber(&capture));
+    let logs = capture::start();
     let rig = Rig::build(
         hub_mcp::config::AuthMode::Oauth,
         false,
@@ -212,7 +185,7 @@ async fn tool_calls_log_what_was_called_and_nothing_it_carried() {
     for (tool, args) in &calls {
         let _ = client.call_tool_to_end(tool, args).await;
     }
-    let log = capture.text();
+    let log = logs.text();
     for expected in [
         "tool=\"read_file\"",
         "tool=\"search_text\"",
@@ -252,8 +225,7 @@ async fn tool_calls_log_what_was_called_and_nothing_it_carried() {
 async fn every_call_line_carries_the_stable_user_id_and_nothing_else_about_the_caller() {
     use bytes::Bytes;
     use domain::{NfsPath, SwimlaneId};
-    let capture = Capture::default();
-    let _guard = tracing::subscriber::set_default(subscriber(&capture));
+    let logs = capture::start();
     let rig = Rig::build(
         hub_mcp::config::AuthMode::Oauth,
         false,
@@ -307,7 +279,7 @@ async fn every_call_line_carries_the_stable_user_id_and_nothing_else_about_the_c
     }
     let _ = b.call_tool_to_end("list_swimlanes", &json!({})).await;
 
-    let log = capture.text();
+    let log = logs.text();
     let lines: Vec<&str> = log.lines().filter(|l| l.contains("tool call")).collect();
     assert_eq!(lines.len(), calls.len() + 1, "one line per call:\n{log}");
     let alice_field = format!("user_id={alice}");

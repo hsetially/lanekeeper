@@ -38,6 +38,7 @@ mod auth_header;
 mod auth_oauth;
 mod auth_pat;
 mod auth_pat_pg;
+mod capture;
 mod confirm;
 mod confirm_golden;
 mod context_fields;

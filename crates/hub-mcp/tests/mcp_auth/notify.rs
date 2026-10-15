@@ -14,8 +14,9 @@ use hub_mcp::auth::pat::TokenSettings;
 use hub_mcp::config::{AuthMode, ConfirmMode};
 use serde_json::{Value, json};
 
+use crate::capture;
 use crate::confirm::{
-    accept, answer, approval_client, ask, capture, decline, finish, forms, no_mutation, seed, send_again,
+    accept, answer, approval_client, ask, decline, finish, forms, no_mutation, seed, send_again,
 };
 use crate::fix::{np, sid};
 use crate::rig::Rig;
