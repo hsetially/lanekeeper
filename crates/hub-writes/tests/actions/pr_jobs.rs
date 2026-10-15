@@ -655,6 +655,47 @@ async fn github_that_does_not_answer_is_retried_a_few_times_and_then_the_job_fai
     assert!(failed.error.unwrap().as_str().contains("did not answer"));
 }
 
+/// The store not answering is a reason that may pass, like GitHub not answering: each try is counted, and a job whose tries are
+/// used fails with the sentence that says so instead of staying active for ever.
+#[tokio::test]
+async fn a_blob_store_that_refuses_is_counted_and_the_job_fails_when_the_tries_are_used() {
+    let Some(t) = jobs().await else { return };
+    let job = t.job("k-1", &[ENTRY]).await;
+    let id = id_of(&job);
+    assert_eq!(t.runner.advance(id).await, Advanced::Moved(PrJobState::Preparing));
+    // The store refuses every new version.
+    let mut admin = t.f.rig.db.admin().await;
+    sqlx::query(
+        "CREATE FUNCTION refuse_blobs() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'refused'; END $$",
+    )
+    .execute(&mut admin)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER refuse_blobs BEFORE INSERT ON blobs FOR EACH ROW EXECUTE FUNCTION refuse_blobs()",
+    )
+    .execute(&mut admin)
+    .await
+    .unwrap();
+    for tries in 1..hub_writes::prs::runner::MAX_ATTEMPTS {
+        assert_eq!(t.runner.advance(id).await, Advanced::Retry);
+        let attempts: i32 = sqlx::query_scalar("SELECT attempts FROM pr_jobs WHERE id = $1")
+            .bind(id.get())
+            .fetch_one(&t.f.rig.pool)
+            .await
+            .unwrap();
+        assert_eq!(attempts, tries);
+        assert_eq!(t.state_of(id).await.state, PrJobState::Preparing);
+    }
+    assert_eq!(t.runner.advance(id).await, Advanced::Finished(PrJobState::Failed));
+    let failed = t.state_of(id).await;
+    assert!(failed.error.unwrap().as_str().contains("did not answer"));
+    assert!(
+        t.f.sim.branches(TENANT) == vec!["sit1".to_owned()],
+        "nothing was written to GitHub"
+    );
+}
+
 // ---------------------------------------------------------------------------------------------------------- idempotency
 
 /// The request sorts its files before it acts, so a retry that lists the same files in another order is the same request.

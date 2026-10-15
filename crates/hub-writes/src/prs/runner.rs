@@ -20,7 +20,8 @@
 //!
 //! **Failure.** What the user can fix, or what will not change by waiting, fails the job at once with a sentence that names no
 //! path, content or token. What may pass (GitHub unavailable or rate limiting, the store not answering) is counted, and the job
-//! is tried again by the scan until it has used [`MAX_ATTEMPTS`] tries.
+//! is tried again by the scan until it has used [`MAX_ATTEMPTS`] tries. One failure is not counted: a pull request that is open
+//! on GitHub and could not be recorded (a failed job would leave it with no record), which is tried again until it is recorded.
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -110,8 +111,11 @@ enum Stop {
     Transient,
     /// Will not change by waiting: fail the job with this sentence.
     Permanent(String),
-    /// The store did not answer.
+    /// The store did not answer: counted like a transient failure.
     Store,
+    /// The pull request is open on GitHub and its record did not reach the store. Not counted: failing the job would leave a pull
+    /// request that nothing records; the next try finds it and records it.
+    Unrecorded,
 }
 
 impl From<Internal> for Stop {
@@ -339,9 +343,12 @@ impl PrJobRunner {
         };
         match result {
             Ok(advanced) => advanced,
-            Err(Stop::Store) => Advanced::Unavailable,
             Err(Stop::Permanent(text)) => self.fail(&job, &text).await,
-            Err(Stop::Transient) => self.retry(&job).await,
+            Err(Stop::Unrecorded) => Advanced::Unavailable,
+            // The store not answering may pass, like GitHub not answering, and is counted the same way: a store that never comes
+            // back must not leave the job active for ever, to be picked up by every scan and to take a place in its batch. When
+            // the database itself is down the count cannot be written either, and `retry` answers `Unavailable` as before.
+            Err(Stop::Transient | Stop::Store) => self.retry(&job).await,
         }
     }
 
@@ -633,7 +640,8 @@ impl PrJobRunner {
         let hub = self.hub();
         let result = hub
             .within("pr_record", record_tx(hub, job, plan, committed, &opened))
-            .await?;
+            .await
+            .map_err(|_| Stop::Unrecorded)?;
         match result {
             Ok(Recorded::Done) => Ok(Advanced::Moved(PrJobState::Opening)),
             Ok(Recorded::Raced) => Ok(Advanced::Raced),
@@ -651,7 +659,7 @@ impl PrJobRunner {
                     )
                     .await)
             }
-            Err(_) => Err(Stop::Store),
+            Err(_) => Err(Stop::Unrecorded),
         }
     }
 }
