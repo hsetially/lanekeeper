@@ -530,11 +530,17 @@ async fn tools_list_size_is_reported() {
     let reported = rig.state.tools_list_bytes(&user);
     assert_eq!(reported, wire, "the number the server reports is what it sent");
     eprintln!("tools/list for an Admin: {wire} bytes, 26 tools (notify_services is off)");
-    // Measured: 112,340 bytes for 26 tools, input and result schemas included (2026-10-15, round 1 of the review). The bound is
-    // the measurement and about a tenth either way, so that a new tool or a longer schema is a visible decision: when the contract
+    // Measured: 112,340 bytes for 26 tools, input and result schemas included (2026-10-15, round 1 of the review). The upper bound
+    // is the measurement and about a tenth more, so that a new tool or a longer schema is a visible decision: when the contract
     // (`docs/mcp-tools.md`) grows on purpose, this number grows with it, in the same PR. Every client puts this list in front of the
-    // model on each session, so its size is a cost to the user.
-    assert!((100_000..=125_000).contains(&wire), "tools/list is {wire} bytes");
+    // model on each session, so its size is a cost to the user. There is no tight lower bound: a contract that gets smaller is a
+    // good change and must not fail this test. The floor only catches a list that has lost its tools or its schemas altogether (a
+    // single tool is a few thousand bytes).
+    assert!(wire <= 125_000, "tools/list is {wire} bytes");
+    assert!(
+        wire >= 20_000,
+        "tools/list is only {wire} bytes: tools or schemas are missing"
+    );
     // Without the result schemas it is smaller by a good part.
     let lean = Rig::build(
         hub_mcp::config::AuthMode::Oauth,
@@ -556,11 +562,17 @@ async fn tools_list_size_is_reported() {
         .unwrap();
     let lean_wire = serde_json::to_vec(&message["result"]["tools"]).unwrap().len();
     eprintln!("tools/list for an Admin without result schemas: {lean_wire} bytes");
-    // Measured: 31,235 bytes. Without the result schemas the list is less than a third of the size.
+    // Measured: 31,235 bytes, less than a third of the full list. Same shape of bound: an upper one (the measurement and about a
+    // tenth more) and a floor that only catches a list with nothing in it.
     assert!(
-        (28_000..=35_000).contains(&lean_wire),
+        lean_wire <= 35_000,
         "tools/list without result schemas is {lean_wire} bytes"
     );
-    assert!(lean_wire * 10 < wire * 7, "{lean_wire} against {wire}");
+    assert!(
+        lean_wire >= 8_000,
+        "tools/list without result schemas is only {lean_wire} bytes: tools are missing"
+    );
+    // The result schemas are what the full list adds. This holds however the schemas change, unless they are all empty.
+    assert!(lean_wire < wire, "{lean_wire} against {wire}");
     assert!(message["result"]["tools"][0].get("outputSchema").is_none());
 }

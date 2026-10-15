@@ -17,6 +17,12 @@ use crate::tools::error::ToolError;
 use crate::tools::paging::capped_result;
 use crate::tools::{CallCx, ToolResult};
 
+/// What the summary adds when the settings shown are no answer to "what is in this file": a resource file (a body, not settings),
+/// or a file with no settings. This view returns no `text` (D92b), so "0 of 0 settings shown" would read as an empty file. Fixed text
+/// of this crate; it holds nothing of the request or the file.
+const BODY_NOTE: &str = " This is not an empty file: its body is not part of this view, and `get_served_config` returns what the \
+                         config-server serves for it (a resource file is not settings).";
+
 /// The most settings listed: the contract's `maxItems`.
 const MAX_SETTINGS: usize = 200;
 /// The most sources and placeholders listed.
@@ -127,6 +133,11 @@ pub async fn get_effective_config(cx: &CallCx<'_>, args: GetEffectiveConfig) -> 
         .host
         .links
         .effective(&swimlane, &effective.file, effective.tenant.as_str());
+    let body_note = if effective.role == FileRole::Resource || settings_total == 0 {
+        BODY_NOTE
+    } else {
+        ""
+    };
     Ok(capped_result(
         &shape,
         &items,
@@ -150,7 +161,7 @@ pub async fn get_effective_config(cx: &CallCx<'_>, args: GetEffectiveConfig) -> 
         },
         |s| {
             format!(
-                "Swimlane {swimlane}: {} of {settings_total} settings shown{}.",
+                "Swimlane {swimlane}: {} of {settings_total} settings shown{}.{body_note}",
                 s.shown,
                 if redacted_values > 0 {
                     format!(", {redacted_values} secret values redacted")

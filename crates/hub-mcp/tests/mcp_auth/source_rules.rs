@@ -129,6 +129,50 @@ fn redacted_text_is_made_only_in_redact_rs() {
     }
 }
 
+/// The lines of production code (before a `#[cfg(test)] mod tests`, and not comments) that build a scan configuration of their own.
+fn default_redactors(text: &str) -> usize {
+    let production = text.split("#[cfg(test)]\nmod tests").next().unwrap_or(text);
+    code(production).filter(|l| l.contains("Redactor::new()")).count()
+}
+
+/// Round 2, review item 13: the question for a pull request built a `Redactor::new()` of its own, so tuning the scan of the host (Q20)
+/// would not have reached it. The host's `Redactor` is the only one the server builds, and the gate gives it to the message. (That
+/// the message uses what it is given is `confirm::message::tests::the_description_is_scanned_with_the_redactor_it_is_given`.)
+#[test]
+fn the_host_builds_the_only_redactor_and_the_gate_gives_it_to_the_message() {
+    let owners: Vec<PathBuf> = sources()
+        .into_iter()
+        .filter(|(_, text)| default_redactors(text) > 0)
+        .map(|(path, _)| path)
+        .collect();
+    assert_eq!(owners.len(), 1, "a second scan configuration: {owners:?}");
+    assert!(owners[0].ends_with("server/mod.rs"), "{owners:?}");
+    let gate = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/confirm/gate.rs")).unwrap();
+    let flat: String = gate.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("message::raise_pr(request, approval, link, &host.redactor)"),
+        "the gate does not hand the host's redactor to the question"
+    );
+}
+
+#[test]
+fn the_check_for_a_second_redactor_finds_what_it_should() {
+    assert_eq!(default_redactors("fn host() -> Redactor { Redactor::new() }"), 1);
+    assert_eq!(
+        default_redactors("let a = Redactor::new();\nlet b = Redactor::new();"),
+        2
+    );
+    assert_eq!(
+        default_redactors("// a comment about Redactor::new()\nfn f() {}"),
+        0
+    );
+    assert_eq!(
+        default_redactors("fn f() {}\n#[cfg(test)]\nmod tests {\n    fn g() { Redactor::new(); }\n}"),
+        0,
+        "a test may build its own"
+    );
+}
+
 #[test]
 fn every_text_field_of_an_output_type_is_redacted_text() {
     // A field called `text` or `snippet` in an output type is a RedactedText, never a String.

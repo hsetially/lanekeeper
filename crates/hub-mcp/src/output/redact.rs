@@ -250,6 +250,13 @@ impl Redactor {
         }
     }
 
+    /// A redactor with a scan configuration of its own: what tuning the scan (Q20) will build once, for the host, and what the tests
+    /// use to show that a caller scans with the host's redactor and not with a default of its own.
+    #[must_use]
+    pub fn with_scan(config: ScanConfig, limits: Limits) -> Self {
+        Self { config, limits }
+    }
+
     /// Text the server wrote itself (a fixed message, never file or doc text). The type is the same, so the output types stay
     /// uniform; the name says that it did not come from a file.
     #[must_use]

@@ -341,7 +341,7 @@ async fn prepare(
             })
         }
         Action::RaisePr(request) => Ok(Prepared {
-            message: message::raise_pr(request, approval, link),
+            message: message::raise_pr(request, approval, link, &host.redactor),
             preview: None,
         }),
         Action::Restart(request) => Ok(Prepared {

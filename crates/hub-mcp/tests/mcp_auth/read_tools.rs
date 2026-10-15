@@ -667,6 +667,54 @@ async fn get_effective_config_passes_tenant_channel_and_prefix() {
     assert!(missing.error()["message"].as_str().unwrap().contains("`tenant`"));
 }
 
+/// D92b, round 2 (review item 4): `get_effective_config` returns no `text` and counts settings, so for a resource file (a body,
+/// not settings) the summary used to read "0 of 0 settings shown", which a model reads as an empty file. The summary now says,
+/// in a fixed sentence, where the body is. No contract change: the summary is this crate's text.
+#[tokio::test]
+async fn get_effective_config_of_a_resource_file_points_to_the_served_view() {
+    let rig = rig();
+    seed(&rig, "sit1", &[("tx-core/app.yml", "a: 1\n")]);
+    let mut resource = effective_fixture("not-a-secret");
+    resource.role = domain::FileRole::Resource;
+    resource.settings.clear();
+    rig.registry.inner.set_effective(resource);
+    let mut c = viewer(&rig).await;
+    let called = call(
+        &mut c,
+        "get_effective_config",
+        &json!({"swimlane": "sit1", "file": "tx-core/app.yml", "tenant": "sit1"}),
+    )
+    .await;
+    let envelope = called.envelope();
+    assert_eq!(envelope["data"]["role"], "resource");
+    assert!(envelope["data"]["text"].is_null());
+    let summary = envelope["summary"].as_str().unwrap();
+    assert!(summary.contains("0 of 0 settings shown"), "{summary}");
+    assert!(summary.contains("get_served_config"), "{summary}");
+    assert!(
+        summary.contains("not an empty file") && summary.contains("not settings"),
+        "the sentence must say that this is not an empty file: {summary}"
+    );
+    // The sentence is fixed text: nothing of the request or of the file is in it.
+    assert!(
+        !summary.contains("tx-core") && !summary.contains("app.yml"),
+        "{summary}"
+    );
+    // A property source with settings is not told anything of the kind: its settings are the answer.
+    rig.registry
+        .inner
+        .set_effective(effective_fixture("not-a-secret"));
+    let plain = call(
+        &mut c,
+        "get_effective_config",
+        &json!({"swimlane": "sit1", "file": "tx-core/app.yml", "tenant": "sit1"}),
+    )
+    .await;
+    let summary = plain.envelope()["summary"].as_str().unwrap().to_owned();
+    assert!(!summary.contains("get_served_config"), "{summary}");
+    assert!(summary.contains("3 of 3 settings shown"), "{summary}");
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Compare
 // ---------------------------------------------------------------------------------------------------------------------

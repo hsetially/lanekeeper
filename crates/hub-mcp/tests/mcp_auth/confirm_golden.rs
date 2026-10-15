@@ -9,10 +9,16 @@ use domain::{
     SettingChange, SettingPath, Severity, TenantId, Timestamp, UserId,
 };
 use hub_mcp::confirm::message::{
-    apply_change, delete_file, notify_services, quote, raise_pr, restart_service, upload_file,
+    apply_change, delete_file, notify_services, quote, restart_service, upload_file,
 };
+use hub_mcp::output::Redactor;
 
 use crate::fix::{np, sid, st};
+
+/// The question for a pull request as the server asks it, with the default scan (the host's, until Q20 tunes it).
+fn raise_pr(request: &PrRequest, approval: bool, link: Option<&str>) -> String {
+    hub_mcp::confirm::message::raise_pr(request, approval, link, &Redactor::new())
+}
 
 const LINK: &str = "https://hub.example.test/drafts/draft-1";
 

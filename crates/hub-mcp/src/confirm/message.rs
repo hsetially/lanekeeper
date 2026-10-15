@@ -360,8 +360,10 @@ pub fn delete_file(
     )
 }
 
+/// The question for a pull request. `redactor` is the host's: the start of the description that the question quotes is scanned with
+/// the same configuration as every other text the server shows (S14b), so tuning the scan (Q20) in one place tunes this too.
 #[must_use]
-pub fn raise_pr(request: &PrRequest, approval: bool, link: Option<&str>) -> String {
+pub fn raise_pr(request: &PrRequest, approval: bool, link: Option<&str>, redactor: &Redactor) -> String {
     let named: Vec<String> = request
         .paths
         .iter()
@@ -400,7 +402,7 @@ pub fn raise_pr(request: &PrRequest, approval: bool, link: Option<&str>) -> Stri
             // breaks between them.
             let others: usize = lines.iter().chain([&effect]).map(|l| l.chars().count() + 1).sum();
             let room = BUILDER_BUDGET.saturating_sub(others + added_by_finish(approval, link));
-            description_line(body.chars().count(), Redactor::new().text(body), room)
+            description_line(body.chars().count(), redactor.text(body), room)
         }
     };
     lines.push(description);
@@ -506,6 +508,11 @@ mod tests {
     use super::*;
 
     const LINK: &str = "https://hub.example.test/drafts/draft-1";
+
+    /// The question as the server asks it, with the default scan. (`super::raise_pr` takes the host's redactor.)
+    fn raise_pr(request: &PrRequest, approval: bool, link: Option<&str>) -> String {
+        super::raise_pr(request, approval, link, &Redactor::new())
+    }
 
     fn swimlane() -> SwimlaneId {
         SwimlaneId::parse("sit1").unwrap()
@@ -862,6 +869,34 @@ mod tests {
             description_of(&raise_pr(&none, false, Some(LINK))),
             "Description: none."
         );
+    }
+
+    /// Round 2, review item 13: the question used to build a `Redactor::new()` of its own, so a scan tuned for the host (Q20) would
+    /// not have reached it. It is given the host's now. A redactor whose limits cannot take a text this long reads differently from
+    /// the default for the same request, so the scan that ran is the one that was passed in.
+    #[test]
+    fn the_description_is_scanned_with_the_redactor_it_is_given() {
+        let body = "Why: the nightly job times out, and the retry limit is too low for the slow nodes.";
+        let request = pr_with_body(body);
+        let default = super::raise_pr(&request, false, Some(LINK), &Redactor::new());
+        assert!(
+            description_of(&default).contains(": \"Why: the nightly job times out"),
+            "{default}"
+        );
+        let tight = Redactor::with_scan(
+            engine::ScanConfig::default(),
+            engine::Limits {
+                input_bytes: 16,
+                ..engine::Limits::DEFAULT
+            },
+        );
+        let text = super::raise_pr(&request, false, Some(LINK), &tight);
+        assert!(
+            description_of(&text)
+                .contains("it could not be checked for secrets, so none of it is shown here"),
+            "{text}"
+        );
+        assert!(!text.contains("nightly job"), "{text}");
     }
 
     #[test]
