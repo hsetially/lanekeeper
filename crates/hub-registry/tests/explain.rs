@@ -1184,6 +1184,21 @@ async fn tool_write_queries_have_no_sequential_scan_on_large_tables() {
 /// 2,000 users and 100 mapped logins, and no statement may read a large table with a sequential scan.
 #[tokio::test]
 async fn attribution_queries_have_no_sequential_scan_on_large_tables() {
+    // `file_observations` has two indexes that begin with the same three columns (`file_observations_history_idx`, for the history of a
+    // file, and the unique `file_observations_replay_key`, which makes a replay idempotent), and which of them the planner takes for a
+    // lookup by (swimlane, path, time) depends on a random sample of the table that `ANALYZE` takes: the plan is the same and the name is
+    // not. Both are written as the first, so that a snapshot is of the plan and not of the dice.
+    fn same_index(mut plan: Value) -> Value {
+        for node in plan.as_array_mut().into_iter().flatten() {
+            if node["index"] == "file_observations_replay_key" {
+                node["index"] = Value::from("file_observations_history_idx");
+            }
+        }
+        plan
+    }
+    async fn explain(pool: &PgPool, sql: &str, args: &[Arg<'_>]) -> Value {
+        same_index(crate::explain(pool, sql, args).await)
+    }
     let Some(db) = TestDb::ready().await else { return };
     let pool = db.app_pool().await;
     let mut admin = db.admin().await;
