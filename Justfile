@@ -383,8 +383,49 @@ engine-bench:
 
 verify-05:
     @echo "verify-05 not implemented yet" && exit 1
-verify-06:
-    @echo "verify-06 not implemented yet" && exit 1
+# Prompt 06 gate (the write paths; S4, S8 to S11, S13, S21, S22; P8, P12): lint, the tests (unit, property, golden and integration; the
+# integration tests need Postgres 16 with pgvector from a Docker daemon or from `LK_TEST_PG_ADMIN_URL`, and fail without one), and
+# the benchmarks checked against perf/budgets.toml. Later tasks add to the sub-recipes below (the fuzz crate arrives with T3) and
+# never skip one. Run `just verify` and `cargo xtask bench-check` after it (AGENTS.md, protocol step 4).
+# Not part of the gate, and said so rather than skipped silently: a real GitHub (CRLF through the Git Data API, fine-grained token
+# behaviour), a real Cloud KMS, a real Teams Workflows webhook and a real agent on NFS; none is reachable from the sandbox.
+verify-06: writes-tools-check writes-lint writes-test writes-bench
+
+# The pinned tools the gate needs, and a database for the tests (a Docker daemon, or `LK_TEST_PG_ADMIN_URL` pointing at a throwaway
+# Postgres 16 server), or the command that fixes it. Never skips.
+writes-tools-check:
+    @cargo deny --version | grep -qx 'cargo-deny {{cargo_deny_version}}' || { echo "need cargo-deny {{cargo_deny_version}}: cargo install --locked cargo-deny --version {{cargo_deny_version}}"; exit 1; }
+    @cargo audit --version | grep -qx 'cargo-audit-audit {{cargo_audit_version}}' || { echo "need cargo-audit {{cargo_audit_version}}: cargo install --locked cargo-audit --version {{cargo_audit_version}}"; exit 1; }
+    @docker info >/dev/null 2>&1 || [ -n "${LK_TEST_PG_ADMIN_URL:-}" ] || { echo "verify-06 needs a Docker daemon (Postgres 16 with pgvector through testcontainers) or LK_TEST_PG_ADMIN_URL=postgres://postgres:...@host:5432/postgres"; exit 1; }
+
+writes-lint:
+    cargo fmt --all -- --check
+    cargo clippy -p hub-writes --all-targets -- -D warnings
+
+# Unit, property, golden and integration tests of the write path. LK_REQUIRE_DOCKER=1 turns a missing database into a failure,
+# never a skip.
+writes-test:
+    LK_REQUIRE_DOCKER=1 cargo test -p hub-writes --lib --tests
+
+# P8 and P12.hub_writes_queries (from T1): the criterion benchmarks, then `cargo xtask bench-check` on this prompt's budgets only. The
+# full registry needs every other prompt's benchmarks to have run (`just bench`), and `bench-check` has no filter, so the recipe cuts
+# a registry with just the budgets below and judges that; the full `cargo xtask bench-check` is run by the FINAL step after
+# `just bench`. `tests/justfile_gate.rs` fails if this list and the registered `hub-writes/` budgets drift apart.
+writes_budgets := "P8 P12.hub_writes_queries"
+writes-bench:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Only this run's numbers may satisfy the check: a benchmark that dies at teardown must not pass on an earlier run's data.
+    rm -rf target/criterion/hub-writes
+    cargo bench -p hub-writes
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    awk -v ids="{{writes_budgets}}" 'BEGIN { RS = ""; ORS = "\n\n"; n = split(ids, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 } /^\[\[budget\]\]/ { if (match($0, /\nid = "[^"]+"/)) { id = substr($0, RSTART + 7, RLENGTH - 8); if (id in want) print } }' perf/budgets.toml > "$tmp/budgets.toml"
+    found="$(grep -c '^\[\[budget\]\]' "$tmp/budgets.toml" || true)"
+    wanted="$(wc -w <<< "{{writes_budgets}}")"
+    if [ "$found" -ne "$wanted" ]; then echo "writes-bench: found $found of $wanted budgets in perf/budgets.toml"; exit 1; fi
+    cargo xtask bench-check --budgets "$tmp/budgets.toml"
+
 verify-07:
     @echo "verify-07 not implemented yet" && exit 1
 verify-08:

@@ -366,7 +366,7 @@ statistic = "p95"
 threshold = 1500
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9"
@@ -456,6 +456,16 @@ description = "Recording an audit event adds to a transaction, with a second rep
 bench = "hub-identity/audit_record"
 statistic = "p95"
 threshold = 3
+unit = "ms"
+scale = "target"
+registered = true
+
+[[budget]]
+id = "P12.hub_writes_queries"
+description = "The write path's steady-state queries (the idempotency claim and replay, the editing-lock read, the reconcile scan and the expiry sweep)"
+bench = "hub-writes/write_queries"
+statistic = "p95"
+threshold = 50
 unit = "ms"
 scale = "target"
 registered = true

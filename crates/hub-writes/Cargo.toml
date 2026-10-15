@@ -10,3 +10,42 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+domain.workspace = true
+# The fact engine validates and scans content before it is written (rule 7, S13) and gives the diffs and line endings.
+engine.workspace = true
+ports = { workspace = true, features = ["postgres"] }
+async-trait.workspace = true
+bytes.workspace = true
+# Retry and wait jitter (rule 5).
+fastrand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+# The idempotency, proposal and lock stores. Runtime-checked queries, like the other hub crates (no `.sqlx` metadata needed to
+# build). No TLS feature: TLS comes from the pool options.
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+ports = { workspace = true, features = ["fakes", "postgres"] }
+# Real Postgres 16 in a container (or `LK_TEST_PG_ADMIN_URL`), migrated as lanekeeper_migrator and used as lanekeeper_app.
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json", "migrate"] }
+testcontainers.workspace = true
+futures.workspace = true
+# Captures `tracing` output so the log tests can search it (S10).
+tracing-subscriber = { workspace = true, features = ["fmt", "std"] }
+proptest.workspace = true
+criterion.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
+
+# P8 (T1): the whole `edit` call through a fake agent, over a real Postgres.
+[[bench]]
+name = "edit_applied"
+harness = false
+
+# P12 (T1): the steady-state queries of the write path at target-scale row counts.
+[[bench]]
+name = "write_queries"
+harness = false

@@ -20,6 +20,7 @@ rust-version = "1.88"
 domain = { path = "crates/domain", version = "0.1.0" }
 ports = { path = "crates/ports", version = "0.1.0" }
 proto = { path = "crates/proto", version = "0.1.0" }
+engine = { path = "crates/engine", version = "0.1.0" }
 xtask = { path = "crates/xtask", version = "0.1.0" }
 hub-platform = { path = "crates/hub-platform", version = "0.1.0" }
 # Every version is an exact pin, at least 14 days old when chosen (S19). Default features are off; member crates enable what they use.

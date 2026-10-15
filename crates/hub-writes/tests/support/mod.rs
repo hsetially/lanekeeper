@@ -1,0 +1,20 @@
+//! Shared test support: a real Postgres (migrated as the owner, used as the app role), test doubles of the ports over the real
+//! tables (audit chain, outbox, blobs, tool-write registrations), a fake agent with an in-memory NFS, and a log capture.
+#![allow(
+    dead_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    clippy::print_stderr
+)]
+
+pub mod fake_agent;
+pub mod live_registry;
+pub mod log_capture;
+pub mod pg;
+pub mod pg_audit;
+pub mod pg_blobs;
+pub mod pg_bus;
+pub mod pg_tool_writes;
+pub mod rig;
