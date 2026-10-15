@@ -4,6 +4,10 @@ Written in the FINAL step at commit `7ca194e` (T1 to T11 all committed, working 
 session on 2026-10-15; nothing is copied from an earlier session. Nothing was fixed in this step: no product bug and no gate change
 was needed, so there is no `06/FINAL: fix` commit.
 
+**Review round 1 (head `93e5d56` reviewed, fixes in the `06/review:` commits) changed code, tests and this file.** The numbers and
+tables below are the FINAL step's, taken at `7ca194e`, except where the section "Review round 1" says otherwise; that section has the
+re-run after the fixes (549 tests in `hub-writes`, not 544).
+
 ## Summary
 
 - **`just verify-06`: PASS** (literal run, exit 0, 21 m 39 s wall). All five sub-recipes ran: tools check, lint, 544 tests, 6 fuzz targets
@@ -16,6 +20,43 @@ was needed, so there is no `06/FINAL: fix` commit.
   budgets (`P8`, `P12.hub_writes_queries`) PASS with large margins.
 - Disk was the main constraint (see "How the gates were run"). It forced staged runs of `cargo test --workspace`, and a build with debug
   info off for the second half. It changed no test, budget or gate.
+
+## Review round 1 (the reviewer's CHANGES REQUESTED on `93e5d56`)
+
+Fixes are separate commits, none amends an earlier one, nothing is pushed.
+
+| Finding | Status | What changed | Proof |
+|---|---|---|---|
+| BLOCKING 2: `data_key_is_a_secret_that_zeroizes` is vacuous | **Fixed** (`2b8ccfc`) | `seal` takes its key from `new_data_key()` (a `Secret<[u8; 32]>`, its raw bytes in `Zeroizing`) through `seal_with`, which owns the key and drops it before it returns, on success and on every error. The old test is removed. | `data_key_is_zeroized_after_wrap`, `data_key_is_zeroized_when_kms_refuses`, `the_data_key_seal_uses_is_a_fresh_secret`. **Mutation check:** adding `std::mem::forget(dek)` in `seal_with` fails `data_key_is_zeroized_after_wrap` ("the data key outlived the call to seal"); restored. |
+| BLOCKING 1: job-time use of the token against S8/D42 | **Documented, needs a human decision** | Design unchanged. See "Assumptions" and "Deviations from the plan"; the threat model's residual risk now says so in as many words. There is no `plans/06-write-paths.pr.md` yet, so the PR text must carry the same item when it is written. | `tests/threat_model.rs` (10 passed) |
+| NB1: `set_intent` ignores `rows_affected` | **Fixed** (`18a7ef2`) | `set_intent` errors unless exactly one unfinished claim was updated; `carry_out` aborts before sending. | `a_request_whose_claim_was_cleared_before_the_send_does_not_send` in `tests/reconcile.rs`; it failed first (1 `WriteFile` sent), a stalling registry double lets the reconciler run mid-request. |
+| NB3: expiry takes no `proposal:{id}` lease | **Fixed** (`be664fa`) | The job takes the lease per proposal and skips one whose lease is held (`ExpireReport.busy`). What is left is a command that outlasts the 60 s lease; the old race test now models that by hand. Threat-model text and proofs updated. | `the_expiry_job_skips_a_proposal_whose_approval_is_at_the_agent` (failed first: the job marked it); `a_proposal_that_expires_while_its_write_is_on_the_way_is_still_audited_and_left_expired` still passes, for the remaining case. |
+| NB5: `POST /drafts` ignores its `Idempotency-Key` | **Left, as a residual risk** (`b9b518c`) | Honouring it needs a new stored-response kind, a claim replay for it, and the claim finished in the insert's transaction, in the shared idempotency store: not simple. Bounded by the open-draft limit (100) and the one-day expiry. | `a_retried_draft_with_the_same_key_makes_a_second_draft_within_the_open_limit` pins the behaviour. |
+| NB10: a timed-out command can still run at the agent later | **Added to the threat model** (`b9b518c`) | Verified: `WriteFile` and `DeleteFile` have no deadline in `proto/agent.proto`, and the gateway's timeout only ends the hub's wait (`request` in `hub-platform/src/gateway/local.rs`); the command already sent is not retracted. The expected hash bounds it. A fix is a proto change (contract). | `tests/threat_model.rs` green |
+| NB6, NB11: evidence only | **Fixed** (this commit) | 2 MiB against the plan's 3 MiB stated under "Assumptions"; the mapping of `write_above_3_mib_is_rejected_too_large` says it is a 2 MiB test; `paths_are_typed_before_the_pipeline` is proved by `a_request_that_is_not_well_formed_never_reaches_the_service`; `data_key_is_zeroized_after_wrap` maps to the new test. | this file |
+| NB2 (lost restart/notify answers unaudited), NB4 (KMS call in a transaction), NB7, NB8, NB9, NB12 | **Left** | Documented residual risks already, or out of proportion for this round. | n/a |
+
+**What the data-key tests do not show.** Whether the key's memory is zeroed after the drop cannot be observed from safe Rust
+(`forbid(unsafe_code)`; reading freed memory needs `unsafe`). The tests show the things that decide it: the key is a `Secret` (the
+type KMS takes) and is the key the token was encrypted under; no copy of it is in the returned `Sealed`; it is dropped by the time
+`seal` returns, on success and on a KMS refusal, and not before KMS has used it. That `Secret` wipes its bytes on drop is the property of
+`domain::Secret` (`secrecy::SecretBox`), not shown here. The raw bytes the key is made from are in `Zeroizing`; that is not observable and
+is not tested.
+
+### Re-run after the fixes (head `b9b518c`, plus this file)
+
+Environment as in "How the gates were run": local Postgres 16.15, `LK_REQUIRE_DOCKER=1`, `CARGO_INCREMENTAL=0`, debug info off, disk 8 to 9 GB free.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all -- --check` | PASS |
+| `cargo clippy -p hub-writes --all-targets -- -D warnings` | PASS |
+| `cargo test -p hub-writes`, one binary at a time | PASS: lib 200, actions 215, routes 42, matrix 6, edit 17, fidelity 14, idempotency 9, logs 3, explain 11, p8 1, reconcile 7, corpus_replay 9, threat_model 10, justfile_gate 5 = **549 passed, 0 failed** (544 before: lib +2, three data-key tests added and one removed; actions +2, the expiry-skip test and the draft-key test; reconcile +1); doc tests 0 |
+| `cargo deny check` | PASS (`advisories ok, bans ok, licenses ok, sources ok`) |
+| `just writes-bench` (release `cargo bench -p hub-writes`, then `bench-check` on this prompt's budgets) | PASS: `P8 33.904 p95 <= 1500 ms`, `P12.hub_writes_queries 9.972 p95 <= 50 ms` |
+
+**NOT RUN in this round:** `just verify-06` as one literal invocation and its 30 s fuzz targets (the code under the fuzz targets, the
+parsers, was not touched; `corpus_replay` ran), `just verify`, and the full-registry `cargo xtask bench-check`; the gaps recorded in "What was NOT RUN" still apply. `osv-scanner` is not installed. The proptest regression seed files were not touched.
 
 ## Gates
 
@@ -111,7 +152,9 @@ whether these are noise on a 4-core shared VM or real regressions; I reran each 
   423 `unconfirmed_baseline_returns_locked_423_and_writes_nothing`, `every_file_action_is_locked_until_baseline_confirmed`.
 - [x] The vault's associated-data binding and zeroization are tested, and the leak test passes. Proof: `swapped_associated_data_fails_decryption`,
   `ciphertext_moved_to_another_user_fails`, `fresh_data_key_per_token`, `plaintext_token_is_zeroized_after_use`,
-  `data_key_is_a_secret_that_zeroizes`, `decrypt_happens_only_inside_the_owners_request`, `pr_uses_the_callers_own_token`,
+  `data_key_is_zeroized_after_wrap`, `data_key_is_zeroized_when_kms_refuses`, `the_data_key_seal_uses_is_a_fresh_secret` (the old
+  `data_key_is_a_secret_that_zeroizes` never called `seal` and was removed in review round 1; see below for what the new tests do
+  and do not show), `decrypt_happens_only_inside_the_owners_request`, `pr_uses_the_callers_own_token`,
   `token_never_appears_in_logs_errors_audit_or_responses`, `classic_token_is_rejected_with_the_policy_message`.
 - [x] Every write produces exactly one chained audit event. Proof: `every_applied_write_has_exactly_one_chained_audit_event` (`tests/edit.rs`,
   per action, chain verified with `ports::verify_chain`), `edit_writes_nfs_then_commits_audit_registration_event_and_response_together`,
@@ -122,7 +165,7 @@ whether these are noise on a 4-core shared VM or real regressions; I reran each 
   every rejected or conflicting write.
 - [x] Per-task verify items (T1 to T11) are covered by the named tests of the plan's traceability table. I checked all 119 backticked
   identifiers of that table against the run: 53 spot-checked test names (the ones cited in this file) all exist and pass.
-  **Twelve plan-named tests do not exist under those exact names** (the tests were renamed or split during implementation); their
+  **Twelve plan-named tests do not exist under those exact names** (`data_key_is_zeroized_after_wrap` now does, since review round 1) (the tests were renamed or split during implementation); their
   behaviour is covered by differently named, passing tests, and `tests/threat_model.rs::every_proof_cell_names_an_existing_test` passes for the
   threat-model section. The reviewer should confirm the mapping:
 
@@ -131,13 +174,14 @@ whether these are noise on a 4-core shared VM or real regressions; I reran each 
   | `audit_event_and_change_commit_together`, `audit_failure_rolls_back_the_whole_commit_transaction` | `edit_writes_nfs_then_commits_audit_registration_event_and_response_together`, `audit_failure_rolls_back_the_registration_the_event_and_the_response` |
   | `rejected_and_conflicting_writes_record_no_audit_event` | the `no audit event` chain-length assertions in `tests/matrix.rs` and `edit_conflict_is_409_with_current_hash_and_writes_nothing`; no single test has this name |
   | `cards_exist_for_every_kind_and_hold_no_file_content` | `a_card_exists_for_every_kind_and_is_a_valid_adaptive_card`, `a_card_holds_the_notification_and_fixed_words_and_nothing_else` |
-  | `data_key_is_zeroized_after_wrap` | `data_key_is_a_secret_that_zeroizes` |
-  | `denied_path_is_refused`, `write_above_3_mib_is_rejected_too_large` | `denied_path_is_refused_and_nothing_is_sent`, `writes_to_denied_paths_are_refused`, `write_above_the_limit_is_rejected_too_large_and_the_limit_itself_passes` |
+  | `data_key_is_zeroized_after_wrap` | now a test of that name in `src/vault/crypto.rs` (review round 1): it runs the real `seal_with`, watches the key with a drop probe and a KMS spy. The first mapping, `data_key_is_a_secret_that_zeroizes`, was vacuous (it never called `seal`) and is gone. |
+  | `denied_path_is_refused` | `denied_path_is_refused_and_nothing_is_sent`, `writes_to_denied_paths_are_refused` |
+  | `write_above_3_mib_is_rejected_too_large` | `write_above_the_limit_is_rejected_too_large_and_the_limit_itself_passes`: **a 2 MiB-limit test, not a 3 MiB one** (see "Assumptions": A3 is not met as the plan proposed) |
   | `edit_registers_expected_hash_before_write_file` | `edit_writes_nfs_then_commits_audit_registration_event_and_response_together` (registration is in tx 2), `edit_conflict_is_409_with_current_hash_and_writes_nothing` |
   | `errors_carry_no_input_text` | `errors_are_fixed_words_that_hold_no_input`, `errors_and_debug_hold_nothing`, `errors_are_copy_and_carry_no_input_text` |
   | `problem_responses_hold_no_internal_detail` | `every_token_error_is_a_fixed_problem`, `reveal_failures_are_fixed_problems_that_quote_nothing`, `outcomes_that_are_not_successes_are_problems_with_the_fields_the_contract_names` |
   | `request_bodies_are_capped_and_unknown_fields_refused` | `bodies_are_limited_before_they_are_read`, `a_body_over_the_cap_is_refused_unread`, `a_form_that_is_not_exactly_the_contracts_is_refused` |
-  | `paths_are_typed_before_the_pipeline` | no test of this name; typed bodies are `an_edit_is_read_into_typed_values_and_the_applied_outcome_is_200` and the `NfsPath` fuzz target `writes_request_json`. **Weakest mapping; flagging it.** |
+  | `paths_are_typed_before_the_pipeline` | proved by `a_request_that_is_not_well_formed_never_reaches_the_service` in `tests/routes.rs`: a traversing, an absolute and an empty path through edit, delete, upload, notify, drafts, pull request and reveal each get a 4xx and the (scripted) service is never called; plus `an_edit_is_read_into_typed_values_and_the_applied_outcome_is_200` and the `NfsPath` fuzz target `writes_request_json`. (The FINAL step's note called this the weakest mapping; it was wrong.) |
 
 ## Security requirements implemented
 
@@ -192,8 +236,28 @@ All are at least 14 days old (youngest: hyper-rustls 25 days, camino 30 days). T
 - Plan assumptions A1 to A22 are unchanged by this step; the open ones that need a human (A1, A3, A4, A5, A7, A9, A11, A12, A13, A15, A16,
   A21) are listed in the plan and in the threat model's residual risks.
 
+- **A3 (size limit): the limit is 2 MiB, not the plan's proposed 3 MiB.** `WriteConfig::max_content_bytes` defaults to
+  `engine::Limits::DEFAULT.input_bytes`, which is `2 * 1024 * 1024`, and `validate` refuses a larger setting. This matches
+  `docs/performance.md` ("files up to 2 MiB"), but it is not what A3 proposed. The plan test `write_above_3_mib_is_rejected_too_large`
+  is therefore the 2 MiB-limit test `write_above_the_limit_is_rejected_too_large_and_the_limit_itself_passes`. A human should confirm
+  2 MiB (A3 asked to confirm 3 MiB) and the OpenAPI wording.
+- **NEEDS A HUMAN DECISION: a PR job uses its author's GitHub token at job time (S8, D42, D77).** S8 and D42 say the token is
+  decrypted only inside its owner's own request. A pull request is made by a job (`PrJobRunner`, lease-driven, D77) that can run
+  minutes after the request, on another replica, or after a restart. Its `ctx_for` (`src/prs/runner.rs`) rebuilds the author's
+  `WriteCtx` from the directory, and the vault's `with_token` decrypts the stored token for it. Failing scenario: the author signs
+  out, or their session is revoked, while they are still an active Editor; the job still opens the token and uses it to call GitHub.
+  What the code re-checks before each use: `with_token` calls `authorize(.., Role::Editor)`, which asks the directory again, so an
+  author who was disabled, demoted below Editor or removed makes the job fail with no call to GitHub; and a token past its expiry is
+  not opened. It does **not** re-check that a session exists. I did not change the design. Either a D-entry must allow job-time use
+  (D77 and D42 read together), or the design must change (for example, the job runs only while the author has a live session, which
+  stops a pull request surviving a restart, as D77 asks). It is also the threat model's residual risk "A job uses its author's token
+  in the background".
+
 ## Deviations from the plan
 
-None in the code. Two process deviations, both from the environment: (1) `cargo test --workspace` was run package by package because of
+**NEEDS A HUMAN DECISION: job-time use of the author's token** (S8/D42 against D77), as written under "Assumptions". It is a
+deviation from the letter of S8 and D42 that the plan did not list. **A3:** 2 MiB instead of 3 MiB (above).
+
+In the code, otherwise, none. Two process deviations, both from the environment: (1) `cargo test --workspace` was run package by package because of
 disk; (2) the debug-info setting differed between the first and the second half of the run (see "How the gates were run"). No test,
 budget, gate, hook or contract file was changed in this step.
