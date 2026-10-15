@@ -256,7 +256,7 @@ async fn tenant_target_with_existing_file_commits_only_changed_lines() {
 }
 
 #[tokio::test]
-async fn tenant_target_with_new_file_carries_the_fork_warning() {
+async fn a_new_file_on_a_tenant_branch_is_a_fork_only_of_a_base_file_that_is_there() {
     let Some(f) = fixture().await else { return };
     f.sim
         .branch(TENANT, "sit1", &[("data/config/other.yml", b"z: 1\r\n")]);
@@ -284,8 +284,10 @@ async fn tenant_target_with_new_file_carries_the_fork_warning() {
     assert!(
         warnings[0].contains("data/config/tx-api/fresh.yml")
             && warnings[0].contains("new on branch sit1")
-            && warnings[0].contains("forks from the base file"),
-        "{warnings:?}"
+            && warnings[0].contains("instead of any base file of the same name")
+            && !warnings[0].contains("fork")
+            && !warnings[0].contains("C1"),
+        "no base file was found for a tenant's own file: {warnings:?}"
     );
     // A new file keeps the form it has on NFS (CRLF here).
     let branch = made.committed.branch.as_str();
@@ -295,7 +297,7 @@ async fn tenant_target_with_new_file_carries_the_fork_warning() {
             .unwrap(),
         b"k: v\r\nm: n\r\n"
     );
-    assert!(f.sim.pulls(TENANT)[0].body.contains("forks from the base file"));
+    assert!(!f.sim.pulls(TENANT)[0].body.contains("forks from the base file"));
 
     // A base file with an explicit tenant target: the same warning, and the file becomes the tenant's.
     let made = f

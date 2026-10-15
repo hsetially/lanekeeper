@@ -327,10 +327,15 @@ pub(crate) fn warnings(
             _ => {}
         }
         if dest.side == Side::Tenant && !row.exists {
-            let consequence = if row.whole_file {
+            // Only the destination branch was read, so a base file is known to exist only when the file on NFS is one (no tenant
+            // suffix): then the new file is a copy of it. A tenant's own file may have no base file at all, and is not called a
+            // fork of one, nor tagged C1, which is about a tenant copy that misses base changes.
+            let consequence = if !row.whole_file {
+                "its settings override base for this tenant."
+            } else if r.suffix.is_none() {
                 "it forks from the base file and will not follow later base changes (C1)."
             } else {
-                "its settings override base for this tenant."
+                "it is read whole for this tenant, instead of any base file of the same name."
             };
             push(
                 &mut out,
@@ -556,16 +561,43 @@ mod tests {
             .collect()
     }
 
+    /// A base file copied to a tenant branch: the file on NFS is the base file, so there is one, and the copy forks from it.
     #[test]
-    fn a_new_tenant_file_carries_the_fork_warning() {
-        let r = routed(&["sit1"], &["a/core-sit1.yml"], None);
-        let w = warnings(&r[0].dest, &repo(), &rows(&r, false, true), &[]);
-        let w = texts(&w);
+    fn a_base_file_new_on_a_tenant_branch_carries_the_fork_warning() {
+        let t = domain::PrTarget::Tenant {
+            branch: TenantId::parse("sit1").unwrap(),
+        };
+        let r = routed(&["sit1"], &["a/core.yml"], Some(&t));
+        let w = texts(&warnings(&r[0].dest, &repo(), &rows(&r, false, true), &[]));
         assert_eq!(w.len(), 1, "{w:?}");
         assert!(
             w[0].contains("new on branch sit1") && w[0].contains("forks from the base file"),
             "{w:?}"
         );
+        assert!(w[0].ends_with("(C1)."), "{w:?}");
+    }
+
+    /// A tenant's own file that is new on its branch: nothing here says a base file exists (the destination branch is all that was
+    /// read), so the note says what the config-server does with the file and does not call it a fork or tag it C1.
+    #[test]
+    fn a_tenant_file_new_on_its_branch_is_not_called_a_fork_of_a_base_file_nobody_found() {
+        let r = routed(&["sit1"], &["a/core-sit1.yml"], None);
+        let w = texts(&warnings(&r[0].dest, &repo(), &rows(&r, false, true), &[]));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("new on branch sit1"), "{w:?}");
+        assert!(
+            w[0].ends_with("it is read whole for this tenant, instead of any base file of the same name."),
+            "{w:?}"
+        );
+        assert!(!w[0].contains("fork") && !w[0].contains("C1"), "{w:?}");
+        // The same for another tenant's file sent to this branch.
+        let t = domain::PrTarget::Tenant {
+            branch: TenantId::parse("sit2").unwrap(),
+        };
+        let r = routed(&["sit1", "sit2"], &["a/core-sit1.yml"], Some(&t));
+        let w = texts(&warnings(&r[0].dest, &repo(), &rows(&r, false, true), &[]));
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(!w[1].contains("fork") && !w[1].contains("C1"), "{w:?}");
     }
 
     #[test]
@@ -699,8 +731,17 @@ mod tests {
             w[0]
         );
 
-        // A new file on a tenant branch.
+        // A new file on a tenant branch, from a tenant's file: the consequence is kept, whichever it is.
         let r = routed(&["sit1"], &[tenant_file.as_str()], None);
+        let w = texts(&warnings(&r[0].dest, &repo(), &rows(&r, false, true), &[]));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(
+            w[0].ends_with("it is read whole for this tenant, instead of any base file of the same name."),
+            "{}",
+            w[0]
+        );
+        // And from a base file, which is a fork of it.
+        let r = routed(&["sit1"], &[base_file.as_str()], Some(&t("sit1")));
         let w = texts(&warnings(&r[0].dest, &repo(), &rows(&r, false, true), &[]));
         assert_eq!(w.len(), 1, "{w:?}");
         assert!(
@@ -708,6 +749,7 @@ mod tests {
             "{}",
             w[0]
         );
+        let r = routed(&["sit1"], &[tenant_file.as_str()], None);
         let w = texts(&warnings(&r[0].dest, &repo(), &rows(&r, false, false), &[]));
         assert!(
             w[0].ends_with("its settings override base for this tenant."),
