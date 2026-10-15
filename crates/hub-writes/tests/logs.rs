@@ -91,6 +91,34 @@ async fn write_path_logs_hold_paths_hashes_and_ids_only() {
     assert!(!logged.contains("Bearer"), "credentials in the log");
 }
 
+/// A failure inside the write path that is not a database error or a timeout (those log themselves) is not dropped: an operator
+/// who sees `Unavailable` finds the stage and the kind of failure in the log, and nothing of the request (S10).
+#[tokio::test]
+async fn a_failure_inside_the_write_path_is_logged_by_stage_and_kind_only() {
+    let (capture, _guard) = log_capture::install();
+    let rig = Rig::new(db!()).await;
+    let s: SwimlaneId = rig.swimlane("sit1", true).await;
+    rig.seed(&s, &[("a.yml", "x: 1\n")]);
+    let editor = rig.user(1, Role::Editor).await;
+    rig.audit.fail_next();
+    let out = rig
+        .hub
+        .edit(
+            &ctx(&editor, "k-1"),
+            edit(&s, "a.yml", at("x: 1\n"), &format!("mark: {MARKER}\n")),
+        )
+        .await;
+    assert_eq!(out, Err(ports::WriteError::Unavailable));
+    let logged = capture.text();
+    assert!(
+        logged.contains("write path call failed")
+            && logged.contains("audit log")
+            && logged.contains("commit"),
+        "the stage and the kind of the failure are logged:\n{logged}"
+    );
+    assert!(!logged.contains(MARKER), "file content in the log:\n{logged}");
+}
+
 /// The other actions are held to the same rule: the content of an upload, of a file being deleted, of a version being restored and
 /// of a preview, whether the action goes through or is refused, is not in the log.
 #[tokio::test]

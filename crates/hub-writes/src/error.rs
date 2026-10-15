@@ -24,7 +24,11 @@ pub(crate) struct Internal {
 pub(crate) type Res<T> = Result<T, Internal>;
 
 impl Internal {
+    /// A failure that is not a database error or a timeout (those log themselves): a port that refused, a row that was not as it
+    /// should be, a claim that changed. Logged with its two fixed words, so that the `Unavailable` the caller gets has a cause an
+    /// operator can find; both are `&'static str`, so nothing of the request can be in them (S10).
     pub fn new(stage: &'static str, what: &'static str) -> Self {
+        tracing::warn!(stage, what, "write path call failed");
         Self { stage, what }
     }
 
