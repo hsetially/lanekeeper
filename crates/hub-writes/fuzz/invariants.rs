@@ -117,6 +117,18 @@ fn query_lines(data: &[u8]) -> (Option<String>, Option<String>, Option<String>, 
     (status, swimlane, cursor, limit, wellformed)
 }
 
+/// Whether the input is a list query a reader accepts: well formed, and not the empty input (which would be the default query, not
+/// a seed of "accepted").
+fn list_query_accepted(data: &[u8]) -> bool {
+    if data.is_empty() {
+        return false;
+    }
+    let (status, lane, cursor, limit, wellformed) = query_lines(data);
+    wellformed
+        && (proposal_query(status.as_deref(), lane.as_deref(), cursor.as_deref(), limit).is_ok()
+            || pr_link_query(lane.as_deref(), status.as_deref(), cursor.as_deref(), limit).is_ok())
+}
+
 pub fn request_json_accepted(data: &[u8]) -> bool {
     edit_request(swimlane(), data).is_ok()
         || revert_request(swimlane(), data).is_ok()
@@ -128,6 +140,9 @@ pub fn request_json_accepted(data: &[u8]) -> bool {
         // An approval may have no body at all; the empty input is not a seed of "accepted".
         || (!data.is_empty() && approve_comment(data).is_ok())
         || reject_reason(data).is_ok()
+        || pr_job_id(&String::from_utf8_lossy(data)).is_ok()
+        || proposal_id(String::from_utf8_lossy(data).lines().next().unwrap_or("")).is_ok()
+        || list_query_accepted(data)
         || delete_lines(data)
             .is_some_and(|(p, e, v)| delete_request(swimlane(), &p, &e, v.as_deref()).is_ok())
 }
@@ -315,6 +330,10 @@ pub fn writes_request_json(data: &[u8]) -> Result<(), String> {
                 || "a list changes its status".into(),
             )?;
             ensure(
+                q.page.limit() == limit.unwrap_or(domain::Page::DEFAULT_LIMIT),
+                || "a list changes its limit".into(),
+            )?;
+            ensure(
                 q.swimlane.as_ref().map(SwimlaneId::as_str) == lane.as_deref(),
                 || "a list changes its swimlane".into(),
             )?;
@@ -332,6 +351,13 @@ pub fn writes_request_json(data: &[u8]) -> Result<(), String> {
             ensure(
                 q.swimlane.as_ref().map(SwimlaneId::as_str) == lane.as_deref(),
                 || "a list of links changes its swimlane".into(),
+            )?;
+            ensure(q.state.map(domain::PrState::as_str) == status.as_deref(), || {
+                "a list of links changes its state".into()
+            })?;
+            ensure(
+                q.page.limit() == limit.unwrap_or(domain::Page::DEFAULT_LIMIT),
+                || "a list of links changes its limit".into(),
             )?;
         }
     }

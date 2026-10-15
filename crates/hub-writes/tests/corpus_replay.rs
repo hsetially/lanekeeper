@@ -426,6 +426,15 @@ fn seeds() -> Vec<(&'static str, String, Vec<u8>)> {
         "rejected_truncated",
         b"{\"path\":\"a.yml\",\"expected\":{\"sta".to_vec(),
     );
+    // The readers of a job number, a proposal number and the query of a list.
+    add(t, "accepted_job_and_proposal_number", b"42".to_vec());
+    add(t, "rejected_job_number_zero", b"0".to_vec());
+    add(t, "rejected_job_number_signed", b"+7".to_vec());
+    add(t, "accepted_proposal_list_query", b"pending\nsit1\n\n50".to_vec());
+    add(t, "accepted_link_list_query", b"\nsit1\n\n25".to_vec());
+    add(t, "rejected_list_limit_zero", b"\n\n\n0".to_vec());
+    add(t, "rejected_list_limit_not_a_number", b"\n\n\nmany".to_vec());
+    add(t, "rejected_list_status_unknown", b"waiting\n\n\n".to_vec());
 
     // ---- writes_upload_multipart
     let t = "writes_upload_multipart";
