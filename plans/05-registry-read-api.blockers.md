@@ -378,3 +378,110 @@ place from the server's binary format (`array_bin`, a statement of four 6,000-se
   rule, because the index stores one marker for both (the compare reads the bytes and is not affected); text search keeps a corpus of up
   to `corpus_cache_bytes` (256 MiB by default; the target scale's corpus is about 60 MB) per distinct set of swimlane versions; the short-needle scan above; the
   served-file route is limited to 16 concurrent calls per replica and one agent round trip each (A36).
+
+## Resolved: T6, `P7.text_search` is met in the steady state (the human's decision of 2026-10-15: per-swimlane corpora that survive a change, plus background warm-up)
+
+The section "T6: `P7.text_search` ... is not met" above stands as the record of what was measured before. The human decided on
+2026-10-15 that the registered case of the budget becomes the steady state (the first search after an applied change to ONE swimlane,
+on a warmed hub, not waiting for the warm-up), with threshold 400, p95, ms, target scale and the bench name unchanged, and that the
+corpus must survive a change to one swimlane. It is decision D97 in `docs/decisions.md`. `perf/budgets.toml` changed in the
+`P7.text_search` entry only: its description and `registered = true` (pin in `crates/xtask/tests/budgets_registry.rs`).
+
+### Design chosen and why
+
+A snapshot of every swimlane's file list and of **8 shards of the distinct blobs, split by the blob's hash, each shard with all the
+places (swimlane, path) of its blobs** (`src/read/corpora.rs`, `src/read/search_text.rs`). Not one corpus per swimlane, which was the
+obvious reading of the decision and which the measurement refused: the engine's search time on the target fixtures (80,120 files, 23,265
+distinct blobs, 2 threads, 20 queries, 5 rounds, engine only, no database; every configuration's answers are asserted equal to the single
+corpus's):
+
+| Shape | mean | p50 | p95 |
+|---|---|---|---|
+| one corpus (what it was) | 142 ms | 132 ms | 193 ms |
+| 40 corpora, one per swimlane (a shared blob is searched in each) | 781 ms | 732 ms | 1,210 ms |
+| 8 shards, one engine call after another | 170 ms | 158 ms | 273 ms |
+| **8 shards, side by side on the 2-thread pool** | **140 ms** | **131 ms** | **194 ms** |
+| 16 shards, side by side | 148 ms | 139 ms | 221 ms |
+| 4 shards, side by side | 134 ms | 125 ms | 182 ms |
+
+So per-swimlane corpora cost 5.5 times the search (the 3.4 times of the places per blob, and more), and sharding by content keeps a blob
+searched once while a change to one swimlane makes again only the shards whose places changed: making one shard (the places of its
+~3,000 blobs, `SearchCorpus::new`) takes about 12 ms at 8 shards (33 ms at 4, 7 ms at 16); compiling the query for each shard costs
+0.5 ms. Eight is the default (`search_shards`, 1 to 64). How a search runs: the engine on every shard side by side and
+`corpora::merge`. How a change is taken in: the changed swimlane's file list is read (the shards' keys are made of each swimlane's digest of
+the paths and blobs it has in the shard, so a new version that changes nothing for a shard keeps the shard), the changed shards are made
+again from the bytes they already hold plus the few blobs they lack, and the rest of the snapshot is shared with the one before.
+
+The merge is exact because of what the engine's answer over one corpus is: the places that have hits in (swimlane, path) order, each
+with at most `per_file` hits, at most `total` hits, and `truncated` when the total cut something or a place that was reached overflowed.
+A place is in one shard and each shard keeps that order, so the merged hits cut at `total` are the whole's first `total`, and
+`truncated` is "the shards hold more than `total` hits between them, or any shard says it was truncated".
+
+### Measurements, before and after (final series on the final code, one quiet 4-core machine with Postgres on it, release build)
+
+Before is the single corpus (the series of the section above; "rebuilt" is what the next search was after any change to any
+swimlane, so it is that design's steady state). After is the same bench on the new code. p50 / p95 ms.
+
+| State | Before | After |
+|---|---|---|
+| **steady: one swimlane changed, the search right after it (the registered case)** | 396 / 481 (rebuilt) | **156 / 201** |
+| steady, with the warm-up running and settled | not a state | 140 / 184 |
+| warm (nothing changed) | 126 / 191 | 134 / 195 |
+| rebuilt-all (every swimlane's version moved, the files not: 40 file lists read) | 396 / 481 | 301 / 351 |
+| rebuilt from nothing (blob cache warm; the old "rebuilt") | 396 / 481 | 372 / 426 |
+| cold (just started, no warm-up) | 500 / 577 | 512 / 568 |
+
+`bench-check`: `P7.text_search` 200.989 p95 against 400, PASS. The 40 steady samples are two for each of the twenty queries, each on
+another swimlane, each after a real edit through ingestion (a new blob, a new version of the swimlane; the bench asserts that the
+corpora were behind it), and each answer is held to the answer of a service that reuses nothing (the bench fails otherwise).
+The registered file is `hub-registry_search_text_all_swimlanes.json`; the other states are in `..._steady_warmed`, `..._warm`,
+`..._rebuilt_all`, `..._rebuilt` and `..._cold`. Cold is not better because it makes everything (every list, 23.5 k blobs from the database,
+all shards): that is the warm-up's job at start-up, and a search before the warm-up has finished builds the same thing itself.
+
+### The warm-up: cost and bounds (`src/read/warmup.rs`)
+
+- **Memory:** the snapshot (the blobs, 100 bytes of allowance per place and the file lists) is 67.9 MiB at the target scale, inside
+  `corpus_cache_bytes` (256 MiB by default). The bound is held: a snapshot over it is made for the request and not kept (a test). During a
+  build the shards being replaced and their replacements coexist, so the peak is the snapshot plus the shards that changed (a change to one
+  swimlane: the 2 shards it touches, about 17 MiB at most).
+- **CPU:** the first build (start-up, or the first search) is about 0.4 s of work (the cold figures above less the search itself); a
+  change costs about 25 ms (the steady figures less the warm ones: one file list, one or two shards); the poll is two small statements
+  every `warmup_poll` (2 s by default) and builds happen at most once per `warmup_poll + warmup_debounce` (2.5 s by default).
+- **Staleness window:** with a 100 ms poll and no debounce the corpora took a change in at a p50 of 63 ms and a p95 of 126 ms after the
+  edit; at the defaults it is that plus up to 2.5 s. Inside the window a search does not wait for the warm-up: it takes the change in itself
+  (the steady state above).
+- **A search never returns a version older than the swimlane's current one:** it reads the versions first, uses the snapshot only if it
+  covers them, and builds otherwise; the lists are read after the versions. `tests/read_corpora.rs` changes a file, searches at once and
+  finds the new content and not the old one, in four rounds with the warm-up not running and with it running; the test fails if the check
+  of the versions is removed.
+- **Bounded, and not for a viewer to drive:** one build at a time on a replica (a lock; the searches that waited take the result), each
+  build bounded by the swimlanes that moved, the shards that changed and the blobs they lack (every call has a timeout), at most one
+  build per poll period from the warm-up. Nothing a viewer sends reaches the warm-up. A viewer's search builds only when the data moved
+  past the snapshot, so the builds are the writers' doing, and at most one runs at a time. A failing store is logged by kind and tried
+  again at the next poll; the task never ends on its own and stops when asked (also in the middle of a build) or dropped.
+
+### Evidence of equivalence
+
+- `tests/corpora_equivalence.rs`: 600 random corpora (swimlanes that share contents, CRLF files, NUL and non-UTF-8 files, files with more
+  matching lines than the per-file cap, 1 to 8 shards) with random queries (literals and regexes, both cases, a swimlane list, a glob, caps of
+  1 to 59 hits and 1 to 7 per file, ceilings of 5, 25, 1,000 and 2, 6, 50): the engine on one corpus against the engine on the shards merged,
+  `TextResults` equal. Four wrong merges (no cut, no sort by path, a cut with `>=`, a flag taken from the shards only) each fail it.
+- The same over the target-scale fixtures (the slow test, release): the twenty benchmark queries at three cap and swimlane-list settings and
+  1, 8 and 16 shards, 180 comparisons, equal; more than ten of the answers are cut by a cap.
+- Every steady and warmed sample of the bench is checked against a service that reuses nothing, on the real data.
+- `tests/read_corpora.rs` also holds the incremental snapshot to a fresh service's answer after a change.
+
+### Residual risks for the threat model (T10)
+
+- **Memory held per replica:** 67.9 MiB at the target scale and up to `corpus_cache_bytes` (256 MiB) by configuration, plus the transient
+  shards of a build; every replica holds its own copy (3 replicas, so 3 times that).
+- **Staleness:** a search is never older than the swimlane's version as the registry read it; the warm-up's own window is 2.5 s at the
+  defaults and is invisible to a search. The assumption is the old one, that the registry's version of a swimlane moves in the same commit as
+  its files (or after it): a writer that moved the version before its files were visible would make a search read the old files at the new
+  version.
+- **What a viewer can cause:** a search costs the same as before (the regex over every blob: the rayon pool, 5 s deadline) and a build
+  only when data moved; the short-needle scan of the settings search above is the one request that is expensive and repeatable.
+- **The warm-up reads every blob:** the replica holds the content of every readable structured or text file in memory (as the search
+  corpus did, when it was built); a process dump of a replica holds config text (A28 says no secrets are in it, D18).
+- **A blob the store lacks** is left out of the corpus with its places (as before) and its shard is made again by every build until it
+  turns up.
