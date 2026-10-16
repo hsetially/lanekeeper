@@ -676,21 +676,47 @@ async fn a_run_stops_at_the_next_chunk_when_the_lease_is_lost() {
 #[tokio::test]
 async fn only_the_lease_holder_runs_the_job() {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
     use hub_platform::jobs::{Job, JobMetrics, JobRunner, JobSpec};
     use ports::fakes::FakeLeases;
+    use ports::{LeaseError, LeaseGuard, Leases};
+    use support::world::wait_until;
+
+    /// How long the test waits for what the replicas do. It is a deadline for a broken job, not a delay: the test goes on as soon as the
+    /// replicas have done what it waits for, which takes a few hundred milliseconds on a machine with nothing else to do.
+    const DEADLINE: Duration = Duration::from_secs(20);
+    /// How many times each replica must have had its say before "the other one never ran" is read as being about the lease: it has run
+    /// the job this many times, or it has been told this many times that another replica holds the lease.
+    const CHANCES: usize = 3;
 
     /// Counts the runs of the real job.
     struct Counting {
         inner: Arc<dyn Job>,
-        runs: std::sync::atomic::AtomicUsize,
+        runs: AtomicUsize,
     }
     #[async_trait]
     impl Job for Counting {
         async fn run(&self, ctx: &JobContext) -> Result<(), JobError> {
-            self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.runs.fetch_add(1, Ordering::SeqCst);
             self.inner.run(ctx).await
+        }
+    }
+
+    /// One replica's way to the lease store the replicas share: it asks the store and counts the answers "someone else holds it".
+    struct Asking {
+        store: FakeLeases,
+        refused: AtomicUsize,
+    }
+    #[async_trait]
+    impl Leases for Asking {
+        async fn try_acquire(&self, name: &str, ttl: Duration) -> Result<Option<LeaseGuard>, LeaseError> {
+            let answer = self.store.try_acquire(name, ttl).await;
+            if matches!(answer, Ok(None)) {
+                self.refused.fetch_add(1, Ordering::SeqCst);
+            }
+            answer
         }
     }
 
@@ -703,7 +729,7 @@ async fn only_the_lease_holder_runs_the_job() {
         .map(|_| {
             Arc::new(Counting {
                 inner: retention_of(&gc.rig, config(), RegistryMetrics::default()).job(),
-                runs: std::sync::atomic::AtomicUsize::new(0),
+                runs: AtomicUsize::new(0),
             })
         })
         .collect();
@@ -713,9 +739,18 @@ async fn only_the_lease_holder_runs_the_job() {
         .name()
         .to_owned();
     let leases = FakeLeases::new();
+    let asking: Vec<Arc<Asking>> = replicas
+        .iter()
+        .map(|_| {
+            Arc::new(Asking {
+                store: leases.clone(),
+                refused: AtomicUsize::new(0),
+            })
+        })
+        .collect();
     let mut handles = Vec::new();
-    for replica in &replicas {
-        let mut runner = JobRunner::new(Arc::new(leases.clone()), JobMetrics::default());
+    for (replica, asked) in replicas.iter().zip(&asking) {
+        let mut runner = JobRunner::new(asked.clone(), JobMetrics::default());
         runner
             .register(
                 JobSpec::new(&name, Duration::from_millis(150), Duration::from_secs(3)).unwrap(),
@@ -724,14 +759,33 @@ async fn only_the_lease_holder_runs_the_job() {
             .unwrap();
         handles.push(runner.start());
     }
-    tokio::time::sleep(Duration::from_millis(900)).await;
+    let runs_of = |replicas: &[Arc<Counting>]| -> Vec<usize> {
+        replicas.iter().map(|r| r.runs.load(Ordering::SeqCst)).collect()
+    };
+    // Some replica has run the job, and the run collected.
+    wait_until(
+        "a replica to run the job and collect the blob",
+        DEADLINE,
+        || async { runs_of(&replicas).iter().any(|r| *r > 0) && !gc.exists(&h).await },
+    )
+    .await;
+    // Every replica has had its chances: the one that holds the lease has run the job again and again (every 150 ms), and the one that
+    // does not has asked for the lease as often (every 150 ms) and been told that another holds it. Counted, not slept: however slow the
+    // machine is, "the other one never ran" is only read after the other one has been refused the lease `CHANCES` times.
+    wait_until(
+        "every replica to have run the job, or been refused the lease, three times",
+        DEADLINE,
+        || async {
+            replicas.iter().zip(&asking).all(|(r, a)| {
+                r.runs.load(Ordering::SeqCst) >= CHANCES || a.refused.load(Ordering::SeqCst) >= CHANCES
+            })
+        },
+    )
+    .await;
     for handle in handles {
         handle.shutdown().await;
     }
-    let runs: Vec<usize> = replicas
-        .iter()
-        .map(|r| r.runs.load(std::sync::atomic::Ordering::SeqCst))
-        .collect();
+    let runs = runs_of(&replicas);
     assert!(
         (runs[0] > 0) != (runs[1] > 0),
         "exactly one replica ran the job: {runs:?}"
