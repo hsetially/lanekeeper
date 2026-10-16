@@ -2,7 +2,7 @@
 
 > **Please do not merge until these are answered. None of them can be closed from the sandbox that built this branch.**
 >
-> 1. **Merge the contract PR first.** This branch needs five contract commits that are on `claude/clever-franklin-26x6ym` and **not on `main`**: `352a25c`, `ede45af`, `b4c2351`, `6d9d512`, `933b668` (migrations `0007_tool_write_registrations` and `0008_blob_touch`, `ports::ToolWrites::register_delete`, the blob-retention contract, the contract docs). PR #11 merged only the first batching commit of that branch; nothing is open for the rest. Until it merges, this PR's diff contains those commits and the registry does not build against `main`.
+> 1. **The contract PR is merged (hsetially/lanekeeper#18, `a058592`).** The five contract commits (migrations `0007_tool_write_registrations` and `0008_blob_touch`, `ports::ToolWrites::register_delete`, the blob-retention contract, the contract docs) are on `main`, and this branch has `main` merged in (`bd8da2c`, no change to the tree), so this PR's diff is 05's own changes. Still to do with it: prompt 06's delete path must call `register_delete` (see #18).
 > 2. **A run of the gates that need tools the sandbox does not have.** `just verify-05`, `just verify`, `cargo deny`, `cargo audit` (including the new `crates/hub-registry/fuzz/Cargo.lock`), `osv-scanner`, the libFuzzer runs of the four registry fuzz targets (stable `corpus_replay` stands in), and Docker/testcontainers could not run here. Their underlying commands were run by hand where possible (below). CI or you should run `just verify-05`, `just verify` and `just bench && cargo xtask bench-check` and paste the result.
 > 3. **Decisions that are yours** (list under "Assumptions"), above all: **retention deletes by default** (D118) and **an audit event does not pin a blob** (D116). Do not wire or enable `registry-retention` before you have confirmed both.
 >
@@ -14,7 +14,7 @@
 
 The hub's brain: ingestion of agent and sentinel reports, the settings and tree indexes, the incremental pipeline that turns an observation into drift and findings, adoption, severity, denied files, tenants and pickup state, the structure checks C9 to C12, blob retention, and the read API (the 15 read operations and the port methods prompt 07 added). Prompt 06's write paths and prompt 07's MCP server (PR #17) are merged into this branch; the registry implements the six `RegistryRead` methods that 07 added to the port (D108).
 
-**What is in the diff, so the review can be sized:** 63 `05/Tk:` task commits, the `05/fix:`, `05/review:` and `05/evidence:` commits, merge commits from the base, and the five contract commits above. Everything of 05's own is under `crates/hub-registry/**`, plus the budget flips in `perf/budgets.toml`, the `verify-05` recipes in the `Justfile`, `crates/xtask/tests/budgets_registry.rs`, the D-entries D93 to D106, D108, D110 to D123 in `docs/decisions.md`, and the "Registry and read API (05)" section of `docs/threat-model.md`. No `crates/domain`, `proto/`, `api/openapi.yaml`, `docs/mcp-tools.md` or `design/handoff` path changed. No budget threshold was changed.
+**What is in the diff, so the review can be sized:** 63 `05/Tk:` task commits, the `05/fix:`, `05/review:`, `05/evidence:` and `05/pr:` commits, and merge commits from `main` (the contract commits arrive through #18, which is already merged, so they are not part of this diff). Everything of 05's own is under `crates/hub-registry/**`, plus the budget flips in `perf/budgets.toml`, the `verify-05` recipes in the `Justfile`, `crates/xtask/tests/budgets_registry.rs`, the D-entries D93 to D106, D108, D110 to D123 in `docs/decisions.md`, and the "Registry and read API (05)" section of `docs/threat-model.md`. No `crates/domain`, `proto/`, `api/openapi.yaml`, `docs/mcp-tools.md` or `design/handoff` path changed. No budget threshold was changed.
 
 ## Gates
 
@@ -120,7 +120,7 @@ The five non-blocking round-2 findings (an unbounded second `EXISTS` in the blob
 
 ## Labels
 
-`contract-change`: the plan's Contract-change was approved by a human (it covers the budget flips in `perf/budgets.toml`). The contract commits `0007`, `0008` and `register_delete` travel in their own contract PR, which must merge first.
+`contract-change`: the plan's Contract-change was approved by a human (it covers the budget flips in `perf/budgets.toml`). The contract commits `0007`, `0008` and `register_delete` went in their own contract PR, hsetially/lanekeeper#18, which is merged.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
