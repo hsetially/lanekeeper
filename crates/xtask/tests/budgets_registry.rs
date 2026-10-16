@@ -75,6 +75,7 @@ fn every_p_number_has_an_entry() {
         "P11.memory_mib",
         "P12.steady_state_query_ms",
         "P12.audit_record",
+        "P12.hub_writes_queries",
         "P15.spool_replay_versions_per_s",
         "P15.hub_ack_versions_per_s",
         // Prompt 05 (registry): its shares of P1, P2, P6, P7 and P15, on `hub-registry/` benchmarks.
@@ -289,6 +290,12 @@ fn thresholds_match_docs_performance_md() {
             3.0,
             "ms",
             "Recording an audit event adds at most 3 ms to a transaction (p95), with another replica contending for the chain lock",
+        ),
+        (
+            "P12.hub_writes_queries",
+            50.0,
+            "ms",
+            "The statements the write path runs on every request take at most 50 ms (p95)",
         ),
         ("P13", 1_000.0, "ms", "within 1 second"),
         (
@@ -522,7 +529,11 @@ fn only_budgets_with_a_harness_are_registered() {
     // Prompt 04 (fact engine): `cargo bench -p engine` produces P6.parse_flatten (T2), P7.compare and P7.engine_grid (T5),
     // P7.engine_text_search (T7), P6.index_settings (T3; threshold set by a human, plans/04-fact-engine.blockers.md), and P6,
     // P5.engine_base and P5.engine_per_file_per_swimlane (T8; the last is a harness that writes `target/perf-results/`).
+    // Prompt 06 (write paths): `cargo bench -p hub-writes` produces P8 (T1, `edit_applied`: the whole `edit` call through a fake
+    // agent, over a real Postgres) and P12.hub_writes_queries (T1, `write_queries`: the statements of the write path at target scale).
     const REGISTERED: &[&str] = &[
+        "P8",
+        "P12.hub_writes_queries",
         "P6.parse_flatten",
         "P6.index_settings",
         "P7.compare",

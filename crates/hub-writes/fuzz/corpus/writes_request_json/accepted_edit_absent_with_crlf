@@ -1,0 +1,1 @@
+{"change_eol":"crlf","content":"a: 1\r\nb: 2\r\n","expected":{"state":"absent"},"path":"new.yml"}
