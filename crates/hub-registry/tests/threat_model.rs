@@ -207,6 +207,8 @@ const CARRY_FORWARD: [(&str, &[&str]); 35] = [
             "HASH_PATHS_LIMIT",
             "undecided",
             "file_observations",
+            "registry_blob_withheld_total",
+            "debug line",
         ],
     ),
     (

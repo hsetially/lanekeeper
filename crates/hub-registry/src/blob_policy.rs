@@ -35,14 +35,15 @@
 //! hash nothing refers to is allowed: a blob is stored before anything points at it, and the endpoint answers an unknown hash with
 //! 404 itself.
 //!
-//! Nothing here logs or counts a hash, a path or a byte of content (S10): a refusal is a counter, and a failure is a fixed word.
+//! Nothing here logs or counts a hash, a path or a byte of content (S10): a refusal, and a hash that cannot be decided, is a counter (and at
+//! most a debug line), because a viewer who knows a hash can ask for it at request rate; a failure to ask is a warning with a fixed word.
 
 use async_trait::async_trait;
 use domain::{ContentHash, FileClass, NfsPath};
 use engine::DenyMatcher;
 use hub_platform::blobs::endpoint::BlobPolicy;
 use sqlx::{PgPool, Row as _};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::config::ConfigError;
 use crate::db::Db;
@@ -226,7 +227,10 @@ impl BlobPolicy for RegistryBlobPolicy {
                 false
             }
             Verdict::Undecided => {
-                warn!(
+                // Expected for a content that was copied into more places than the policy reads, and any viewer who knows such a hash can
+                // ask for it at request rate: it is counted, as every refusal is, and it is not a warning. The line says nothing of which
+                // hash it was (S10).
+                debug!(
                     op = "blob_policy_paths",
                     "the policy could not decide the content of this many files: the blob is withheld"
                 );

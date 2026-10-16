@@ -576,25 +576,6 @@ async fn no_hash_path_or_content_reaches_a_log_line_or_a_metric_of_the_policy() 
         copied,
     ];
 
-    let (capture, _guard) = LogCapture::install();
-    // Allowed, refused by the flag, refused by the hub's glob, refused as undecided.
-    for hash in &hashes {
-        let _ = plain.allowed(hash).await;
-        let _ = globbed.allowed(hash).await;
-    }
-    // And two that fail: the database is gone.
-    r.world.rig.pool.close().await;
-    for hash in &hashes[..2] {
-        assert!(!plain.allowed(hash).await);
-    }
-
-    let log = capture.text();
-    assert!(
-        log.contains("WARN"),
-        "the failure and the undecided hash are said (as a fixed word): {log}"
-    );
-    let metrics = format!("{}\n{}", exposition(&plain_metrics), exposition(&globbed_metrics));
-    assert!(metrics.contains("registry_blob_withheld"), "{metrics}");
     let mut words: Vec<String> = hashes.iter().map(ToString::to_string).collect();
     words.extend(
         [
@@ -613,8 +594,50 @@ async fn no_hash_path_or_content_reaches_a_log_line_or_a_metric_of_the_policy() 
         ]
         .map(str::to_owned),
     );
+
+    // What any viewer who knows a hash can ask for at request rate: allowed, refused by the flag, refused by the hub's glob, and refused as
+    // undecided (a content that more files have had than the policy reads). Each refusal is counted and none is a warning: a viewer must
+    // not be able to fill the log, and no line says which hash it was (S10).
+    {
+        let (capture, _guard) = LogCapture::install();
+        for hash in &hashes {
+            let _ = plain.allowed(hash).await;
+            let _ = globbed.allowed(hash).await;
+        }
+        let before = plain_metrics.blob_withheld_count();
+        assert!(!plain.allowed(&copied).await, "undecided");
+        assert_eq!(
+            plain_metrics.blob_withheld_count(),
+            before + 1,
+            "an undecided hash is counted, as a refusal is"
+        );
+        let log = capture.text();
+        assert!(
+            !log.contains("WARN") && !log.contains("ERROR"),
+            "a refusal, also of an undecided hash, is an expected outcome and not a warning: {log}"
+        );
+        for word in &words {
+            assert!(!log.contains(word.as_str()), "`{word}` is in a log line: {log}");
+        }
+    }
+
+    // And two that fail, which an operator has to hear of: the database is gone. The line is a fixed word.
+    let (capture, _guard) = LogCapture::install();
+    r.world.rig.pool.close().await;
+    for hash in &hashes[..2] {
+        assert!(!plain.allowed(hash).await);
+    }
+    let log = capture.text();
+    assert!(
+        log.contains("WARN"),
+        "a failure to ask is said, as a fixed word: {log}"
+    );
     for word in &words {
         assert!(!log.contains(word.as_str()), "`{word}` is in a log line: {log}");
+    }
+    let metrics = format!("{}\n{}", exposition(&plain_metrics), exposition(&globbed_metrics));
+    assert!(metrics.contains("registry_blob_withheld"), "{metrics}");
+    for word in &words {
         assert!(!metrics.contains(word.as_str()), "`{word}` is in the metrics");
     }
 }
