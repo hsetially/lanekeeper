@@ -47,6 +47,8 @@ pub(crate) mod record;
 pub mod window;
 
 pub use alerts::{Alerts, AlertsDeps};
+#[doc(hidden)]
+pub use hold::{BudgetProbe, probe as hold_budget_probe};
 pub use window::{WATCH_JOB, WatchReport};
 
 use std::collections::BTreeSet;

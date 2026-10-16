@@ -286,6 +286,54 @@ pub(crate) fn held_spans(windows: &[(i64, i64)], now_ms: i64, stale_after: i64, 
     merged
 }
 
+/// What the hold budget says about a swimlane at one instant: the rows it read, the time that windows held in the rolling window, whether
+/// that spends the budget, and when the episode of exhaustion began.
+///
+/// **Not part of the API** (hidden from the docs, as `ingest::fuzzing` is): the hub asks through `Gate`. It exists so that a test in
+/// `tests/` can compare, to the millisecond, what the budget says before and after the retention job (T9, D117) prunes `sync_windows`,
+/// which is the proof that the prune never takes a row the budget still reads. It reads, never writes, and returns numbers about one
+/// swimlane's own windows, nothing a caller could not already see through the alerts.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BudgetProbe {
+    pub windows_read: usize,
+    pub spent_ms: i64,
+    pub exhausted: bool,
+    pub exhaustion_start_ms: Option<i64>,
+}
+
+/// The hold budget of `swimlane` at `now_ms`, from the rows of `sync_windows` (see [`BudgetProbe`]). A swimlane with too many windows to
+/// read counts as exhausted, as it does for the gate.
+///
+/// # Errors
+///
+/// The database failed.
+#[doc(hidden)]
+pub async fn probe(
+    pool: sqlx::PgPool,
+    config: &crate::config::RegistryConfig,
+    swimlane: &domain::SwimlaneId,
+    now_ms: i64,
+) -> Result<BudgetProbe, RegistryError> {
+    let db = Db::new(pool, config.query_timeout);
+    let policy = Policy::of(config);
+    match load_times(&db, swimlane, now_ms, &policy).await {
+        Ok(times) => Ok(BudgetProbe {
+            windows_read: times.len(),
+            spent_ms: spent(&times, now_ms, &policy),
+            exhausted: exhausted(&times, now_ms, &policy),
+            exhaustion_start_ms: exhaustion_start(&times, now_ms, &policy),
+        }),
+        Err(RegistryError::Capacity) => Ok(BudgetProbe {
+            windows_read: usize::try_from(MAX_BUDGET_WINDOWS).unwrap_or(usize::MAX),
+            spent_ms: policy.budget,
+            exhausted: true,
+            exhaustion_start_ms: None,
+        }),
+        Err(e) => Err(e),
+    }
+}
+
 /// The statement behind [`Gate::state`]. The two cut-offs are bound as Unix milliseconds.
 pub(crate) fn state_sql() -> String {
     format!(
