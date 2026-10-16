@@ -1,14 +1,17 @@
 //! P12, no steady-state query takes longer than 50 ms (`P12.steady_state_query_ms`, `hub-registry/steady_state_queries`, a harness,
-//! p95, 50 ms): every query the read API makes, run on the database of the read bed (40 swimlanes of about 2,000 files, about 23,000
-//! blobs, every setting of every structured file indexed, every swimlane computed), with the binds a real request has, twenty times
-//! each after a first run that is not counted. The statements are the ones the service runs (`pub const` and `pub fn` of
-//! `hub_registry::read` and `hub_registry::blob_policy`), not copies.
+//! p95, 50 ms): every statement of `hub_registry::read` and `hub_registry::blob_policy`, run on the database of the read bed (40
+//! swimlanes of about 2,000 files, about 23,000 blobs, every setting of every structured file indexed, every swimlane computed), with
+//! the binds a real request has, twenty times each after a first run that is not counted. **Every statement of `read::` is either a named
+//! one that is timed here, or an inline one that is on an allow-list, each a bounded lookup with its reason.** The named statements are the
+//! ones the service runs (`pub const` and `pub fn` of `hub_registry::read` and `hub_registry::blob_policy`), not copies.
 //!
 //! **The list is not this file's.** It is `support::read_statements::statements`, shared with `tests/read_statements.rs`, which holds it in
-//! the normal gate: every SQL of the read modules is in it or on an allow-list with a reason (found by a scan of the source), every entry
-//! has as many binds as its highest placeholder, and every entry runs once at a small scale. So a statement added to the read API cannot
-//! be left out of this benchmark, and a bind that does not fit its statement fails in `cargo test` and not here at the gate (the sixth
-//! parameter of the drift list did, and three statements were never timed).
+//! the normal gate: every named SQL of the read modules is in it or on an allow-list with a reason (found by a scan of the source), every
+//! inline statement (`sqlx::query("...")` and its kin, at its call site) is on an allow-list with the reason it is a bounded lookup that
+//! needs no timing of its own (a key or prefix lookup, or the read of the one-row-per-swimlane table under a `LIMIT`; found by a second
+//! scan), every entry of the list has as many binds as its highest placeholder, and every entry runs once at a small scale. So a statement
+//! added to the read API cannot be left out of this benchmark without a reason on record, and a bind that does not fit its statement fails
+//! in `cargo test` and not here at the gate (the sixth parameter of the drift list did, and three statements were never timed).
 //!
 //! **The worst cases the API allows** are in the list: the drift list by path sorts the whole matching set before it takes a page, so it
 //! is asked of a swimlane in which every file is drifted (all of its 2,000 files match) for the first page and for a page in the middle;

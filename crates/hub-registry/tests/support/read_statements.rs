@@ -1,7 +1,8 @@
 //! The read API's statements with the binds a real request gives them: ONE list, shared by the P12 benchmark
 //! (`benches/steady_state_queries.rs`, which times it at the target scale) and by `tests/read_statements.rs` (which runs it once at a
-//! small scale in the normal gate, and checks that it is complete). The statements are the ones the service runs (`pub const` and `pub fn`
-//! of `hub_registry::read` and `hub_registry::blob_policy`), not copies, and each entry's label is written from the very path that
+//! small scale in the normal gate, and checks that it is complete: every named statement of `read::` and `blob_policy` is in it or on an
+//! allow-list with a reason, and every inline one is on `INLINE_ALLOWED` of that test, a bounded lookup with its reason). The statements
+//! are the ones the service runs (`pub const` and `pub fn` of `hub_registry::read` and `hub_registry::blob_policy`), not copies, and each entry's label is written from the very path that
 //! supplies its SQL (`stmt!`), so a label cannot name a statement that it does not hold.
 //!
 //! Why one list: a benchmark that listed its own statements and binds drifted from the code. The sixth parameter of the drift statement
