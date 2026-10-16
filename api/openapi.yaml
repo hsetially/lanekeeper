@@ -2609,6 +2609,42 @@ paths:
           $ref: '#/components/responses/NotFound'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/config-server-restart:
+    get:
+      operationId: getConfigServerRestartOffer
+      summary: The config-server restart that check C11 asks for
+      description: What the confirmation of the config-server restart shows (D83, D87). `offer` is null when check C11
+        is not open for the swimlane, or when the cluster report lists no Deployment with the configured config-server
+        name or several, because the hub does not guess which one is meant. The restart itself is `restartService` on
+        `offer.service`. Operator only, like the restart.
+      tags:
+      - writes
+      x-required-role: operator
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigServerRestartOfferResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/swimlanes/{id}/drift:
     get:
       operationId: listDrift
@@ -3227,6 +3263,48 @@ paths:
           $ref: '#/components/responses/Unprocessable'
         '423':
           $ref: '#/components/responses/Locked'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/restart-offer:
+    get:
+      operationId: getRestartOffer
+      summary: The services a restart-all confirmation lists for a change
+      description: What the confirmation of "restart all" shows (D49) for a change to `path`. A file in the root folder
+        is read by every service (D82), so the offer lists every service of the swimlane. A file in an application's
+        folder is read by that application only, so the offer lists its Deployments. The screen restarts them one
+        request at a time with `restartService`. Operator only, like the restart.
+      tags:
+      - writes
+      x-required-role: operator
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - name: path
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/NfsPath'
+        description: The file whose change calls for the restart.
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestartOffer'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/swimlanes/{id}/served:
@@ -4815,6 +4893,56 @@ components:
       required:
       - namespace
       - name
+    RestartOffer:
+      type: object
+      properties:
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceRef'
+          maxItems: 2000
+          description: The services to restart, at most 2,000, in order of namespace and name.
+        truncated:
+          type: boolean
+          description: There are more services than `services` holds. Restarting these leaves the others as they are,
+            so the confirmation must say that the list is not the whole of it.
+      additionalProperties: false
+      required:
+      - services
+      - truncated
+    ConfigServerRestartOffer:
+      type: object
+      properties:
+        service:
+          $ref: '#/components/schemas/ServiceRef'
+          description: The config-server's Deployment, which is what the restart request names.
+        affected:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceRef'
+          maxItems: 2000
+          description: Every other service of the swimlane. They all ask the config-server for their files (D82), so
+            none of them can be served while it restarts.
+        truncated:
+          type: boolean
+          description: The swimlane has more services than `affected` lists, so the list is not the whole of it.
+      additionalProperties: false
+      required:
+      - service
+      - affected
+      - truncated
+    ConfigServerRestartOfferResult:
+      type: object
+      properties:
+        offer:
+          oneOf:
+          - $ref: '#/components/schemas/ConfigServerRestartOffer'
+          - type: 'null'
+          description: Null when check C11 is not open for the swimlane, or when the cluster report lists no Deployment
+            with the configured config-server name or several of them.
+      additionalProperties: false
+      required:
+      - offer
     ServiceState:
       type: object
       properties:

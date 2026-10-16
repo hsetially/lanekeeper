@@ -388,13 +388,165 @@ fn pr_preview_answer_is_bounded_and_says_where_each_file_goes() {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// CG5: the restart offers
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// The most services an offer lists: `MAX_RESTART_OFFER` of `hub-writes/src/ops/restart.rs`.
+const MAX_RESTART_OFFER: u64 = 2_000;
+
+/// Both offers are Operator reads, like the restart they prepare, and their lists are bounded and say when they are cut.
+#[test]
+fn restart_offers_are_operator_reads_with_bounded_lists() {
+    let d = doc();
+    let restart_role = operation(&d, "restartService").2["x-required-role"].clone();
+
+    for (id, want_path) in [
+        (
+            "getConfigServerRestartOffer",
+            "/api/v1/swimlanes/{id}/config-server-restart",
+        ),
+        ("getRestartOffer", "/api/v1/swimlanes/{id}/restart-offer"),
+    ] {
+        let (method, path) = assert_conventions(&d, id, "operator", "writes");
+        assert_eq!((method.as_str(), path.as_str()), ("GET", want_path), "{id}");
+        let (_, _, op) = operation(&d, id);
+        assert_eq!(
+            op["x-required-role"], restart_role,
+            "{id} needs the role of the restart it prepares"
+        );
+        for code in ["200", "400", "401", "403", "404", "default"] {
+            assert!(op["responses"].get(code).is_some(), "{id} documents {code}");
+        }
+        // A bounded answer with a flag, not a list with a cursor.
+        assert!(
+            param(&d, op, "query", "cursor").is_none(),
+            "{id} has no cursor: the list is cut at {MAX_RESTART_OFFER}"
+        );
+        assert!(param(&d, op, "query", "limit").is_none(), "{id} has no limit");
+        let swimlane = param(&d, op, "path", "id").unwrap_or_else(|| panic!("{id} has no swimlane"));
+        assert_eq!(swimlane["required"], true);
+        assert_eq!(describe(&swimlane["schema"]), "ref:SwimlaneId");
+        // What a screen shows for a change that has not happened yet must never be kept by a cache.
+        let cache = &response(&d, op, "200")["headers"]["Cache-Control"]["schema"];
+        assert_eq!(
+            cache["enum"],
+            serde_json::json!(["no-store"]),
+            "{id} sends Cache-Control: no-store"
+        );
+    }
+
+    // Restart-all names the change it is for.
+    let (_, _, all) = operation(&d, "getRestartOffer");
+    let path = param(&d, all, "query", "path").expect("getRestartOffer takes the path of the change");
+    assert_eq!(path["required"], true);
+    assert_eq!(describe(&path["schema"]), "ref:NfsPath");
+    assert_eq!(
+        json_body(&d, all, "200")["$ref"],
+        format!("{SCHEMA_REF}RestartOffer")
+    );
+    let (_, _, cs) = operation(&d, "getConfigServerRestartOffer");
+    assert!(
+        param(&d, cs, "query", "path").is_none(),
+        "the config-server restart does not depend on a path"
+    );
+    assert_eq!(
+        json_body(&d, cs, "200")["$ref"],
+        format!("{SCHEMA_REF}ConfigServerRestartOfferResult")
+    );
+}
+
+/// The shapes of `hub-writes`' `RestartOffer` and `ConfigServerRestartOffer`, the `Option` around the second, and the words
+/// that say when there is no offer and when a list is cut.
+#[test]
+fn restart_offer_schemas_are_bounded_and_say_when_they_are_cut() {
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+    // The shapes of `hub-writes`' `RestartOffer`, `ConfigServerRestartOffer` and the `Option` around the second.
+    let restart = &schemas["RestartOffer"];
+    assert_closed(&d, "RestartOffer");
+    assert_eq!(declared_of(restart), set(&["services", "truncated"]));
+    assert_eq!(required_of(restart), declared_of(restart));
+    assert_eq!(
+        describe(&restart["properties"]["services"]),
+        "array<ref:ServiceRef>"
+    );
+    assert_eq!(restart["properties"]["services"]["maxItems"], MAX_RESTART_OFFER);
+    assert_eq!(restart["properties"]["truncated"]["type"], "boolean");
+
+    let offer = &schemas["ConfigServerRestartOffer"];
+    assert_closed(&d, "ConfigServerRestartOffer");
+    assert_eq!(declared_of(offer), set(&["service", "affected", "truncated"]));
+    assert_eq!(required_of(offer), declared_of(offer));
+    assert_eq!(describe(&offer["properties"]["service"]), "ref:ServiceRef");
+    assert_eq!(
+        describe(&offer["properties"]["affected"]),
+        "array<ref:ServiceRef>"
+    );
+    assert_eq!(offer["properties"]["affected"]["maxItems"], MAX_RESTART_OFFER);
+    assert_eq!(offer["properties"]["truncated"]["type"], "boolean");
+
+    let result = &schemas["ConfigServerRestartOfferResult"];
+    assert_closed(&d, "ConfigServerRestartOfferResult");
+    assert_eq!(declared_of(result), set(&["offer"]));
+    assert_eq!(
+        required_of(result),
+        set(&["offer"]),
+        "no offer is `null`, not an absent key and not a 404"
+    );
+    assert_eq!(
+        describe(&result["properties"]["offer"]),
+        "ref:ConfigServerRestartOffer|null"
+    );
+
+    // Said in words: when there is no offer, and that a cut list is not the whole of it (the screen must not look complete).
+    let text = |s: &Value| s["description"].as_str().unwrap_or("").to_lowercase();
+    let none = format!("{} {}", text(&result["properties"]["offer"]), text(result));
+    for needle in ["c11", "deployment"] {
+        assert!(
+            none.contains(needle),
+            "ConfigServerRestartOfferResult must say when the offer is null (`{needle}`)"
+        );
+    }
+    for (what, s) in [
+        ("RestartOffer.truncated", &restart["properties"]["truncated"]),
+        (
+            "ConfigServerRestartOffer.truncated",
+            &offer["properties"]["truncated"],
+        ),
+    ] {
+        let said = text(s);
+        assert!(
+            said.contains("not the whole") || said.contains("more than"),
+            "{what} must say that the list is not all of the services"
+        );
+    }
+    let affected = text(&offer["properties"]["affected"]);
+    assert!(
+        affected.contains("every other service"),
+        "affected is every other service of the swimlane"
+    );
+
+    for name in [
+        "RestartOffer",
+        "ConfigServerRestartOffer",
+        "ConfigServerRestartOfferResult",
+    ] {
+        assert_bounded(&d, name);
+    }
+}
+
 /// Every operation this file adds names its audit action, or says why it has none (rule 8: one audit event per state
 /// change). A read changes nothing; the one non-GET, `previewPr`, writes and records nothing, as `previewFileEffect` does.
 #[test]
 fn new_operations_name_their_audit_action_or_say_why_not() {
     let d = doc();
     // (operationId, the audit action, or why there is none)
-    let table: &[(&str, &str)] = &[("previewPr", "none: no state change")];
+    let table: &[(&str, &str)] = &[
+        ("previewPr", "none: no state change"),
+        ("getConfigServerRestartOffer", "none: a read"),
+        ("getRestartOffer", "none: a read"),
+    ];
     for (id, audit) in table {
         let (method, _, op) = operation(&d, id);
         assert!(
