@@ -1695,6 +1695,46 @@ paths:
           $ref: '#/components/responses/Unprocessable'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/drafts/{id}:
+    get:
+      operationId: getDraft
+      summary: One draft
+      description: The draft as it is now, for its author only, so that the person can see what they are about to apply
+        before they confirm. Nothing is written and nothing is audited, and the `Idempotency-Key` is not used. A draft
+        that does not exist, or is not the caller's, is 404. A draft that was applied or has expired is still returned,
+        and its `status` says which. The `severity` and the `effects` are the engine's, as of the call.
+      tags:
+      - writes
+      x-required-role: editor
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/DraftId'
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Draft'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/drafts/{id}/apply:
     post:
       operationId: applyDraft

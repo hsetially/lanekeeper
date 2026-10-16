@@ -703,6 +703,74 @@ fn decisions_document_422_and_423() {
     );
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// CG17: one draft
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// `getDraft` is the REST face of `WriteService::draft`: an Editor read of the caller's own draft, with no side effect and no
+/// key. A draft that is not the caller's is a 404, the same as one that does not exist.
+#[test]
+fn get_draft_is_an_editor_read_of_the_authors_draft() {
+    let d = doc();
+    let (method, path) = assert_conventions(&d, "getDraft", "editor", "writes");
+    assert_eq!((method.as_str(), path.as_str()), ("GET", "/api/v1/drafts/{id}"));
+    let (_, _, op) = operation(&d, "getDraft");
+    let (_, _, apply) = operation(&d, "applyDraft");
+    assert_eq!(
+        op["x-required-role"], apply["x-required-role"],
+        "the draft is read at the role that created and applies it"
+    );
+
+    // The same path parameter as `applyDraft`, the draft's own id.
+    let id = param(&d, op, "path", "id").expect("getDraft takes the draft id");
+    assert_eq!(id["required"], true);
+    assert_eq!(describe(&id["schema"]), "ref:DraftId");
+    assert_eq!(
+        id,
+        param(&d, apply, "path", "id").unwrap(),
+        "getDraft and applyDraft name the draft alike"
+    );
+
+    // The answers: the draft, and the refusals of a read. Nothing that a write would add.
+    assert_eq!(json_body(&d, op, "200")["$ref"], format!("{SCHEMA_REF}Draft"));
+    for code in ["200", "400", "401", "403", "404", "default"] {
+        assert!(op["responses"].get(code).is_some(), "getDraft documents {code}");
+    }
+    for code in ["409", "413", "422", "423"] {
+        assert!(
+            op["responses"].get(code).is_none(),
+            "getDraft changes nothing, so it has no {code}"
+        );
+    }
+    assert_eq!(op["responses"]["404"]["$ref"], "#/components/responses/NotFound");
+    let cache = &response(&d, op, "200")["headers"]["Cache-Control"]["schema"];
+    assert_eq!(
+        cache["enum"],
+        serde_json::json!(["no-store"]),
+        "a draft is its author's and is never cached"
+    );
+
+    let said = op["description"].as_str().unwrap_or("").to_lowercase();
+    for (needle, fact) in [
+        ("author", "that only the author may read it"),
+        ("404", "that another user's draft is a 404"),
+        ("applied", "that an applied draft is still returned"),
+        ("expired", "that an expired draft is still returned"),
+        ("`status`", "that the status says which"),
+        ("nothing is written", "that nothing is written"),
+        ("audit", "that nothing is audited"),
+        (
+            "engine",
+            "that the severity and the effects are the engine's, as of the call",
+        ),
+    ] {
+        assert!(
+            said.contains(needle),
+            "the description of getDraft must state {fact} (`{needle}`)"
+        );
+    }
+}
+
 /// Every operation this file adds names its audit action, or says why it has none (rule 8: one audit event per state
 /// change). A read changes nothing; the one non-GET, `previewPr`, writes and records nothing, as `previewFileEffect` does.
 #[test]
@@ -714,6 +782,7 @@ fn new_operations_name_their_audit_action_or_say_why_not() {
         ("getConfigServerRestartOffer", "none: a read"),
         ("getRestartOffer", "none: a read"),
         ("getProposal", "none: a read"),
+        ("getDraft", "none: a read"),
     ];
     for (id, audit) in table {
         let (method, _, op) = operation(&d, id);
