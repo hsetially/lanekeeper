@@ -7,7 +7,8 @@ use domain::{DocPath, FeatureQuery, LineRange, LogicalFile, RenderedDoc, Role, S
 use super::sample::{active, user};
 use crate::{
     DocError, DocSearch, HEADING_ID_PREFIX, MAX_DOC_HEADINGS, MAX_DOC_HITS, MAX_DOC_PATTERN_BYTES,
-    MAX_GREP_CONTEXT, MAX_GREP_HITS, MAX_HEADING_ID_BYTES, MAX_RENDER_SOURCE_BYTES, MAX_RENDERED_HTML_BYTES,
+    MAX_GREP_CONTEXT, MAX_GREP_HITS, MAX_HEADING_ID_BYTES, MAX_HTML_NESTING_DEPTH, MAX_RENDER_SOURCE_BYTES,
+    MAX_RENDERED_HTML_BYTES, MAX_URL_BYTES,
 };
 
 /// What the docs conformance suite needs from the test harness.
@@ -404,10 +405,12 @@ pub fn is_heading_id(s: &str) -> bool {
         })
 }
 
-/// A value that is safe to put in a URL attribute as it stands: ASCII, no whitespace, no control character, no backslash (a
-/// browser reads `/\` as `//`), none of `<>"'` or the backtick.
+/// A URL value of a rendered page, as it stands: printable ASCII of at most [`MAX_URL_BYTES`], no space, tab, line break or other
+/// control character (a browser drops a tab and a line break from a URL before it reads it), no backslash (it reads `/\` as
+/// `//`), none of `<>"'` or the backtick. This is the only check that refuses a tab or a line break inside a value: the
+/// page-wide control check lets both through, because they are legal in text.
 fn is_plain_url(u: &str) -> bool {
-    u.len() <= 2048
+    u.len() <= MAX_URL_BYTES
         && u.is_ascii()
         && !u.bytes().any(|b| {
             b.is_ascii_control() || b == b' ' || matches!(b, b'\\' | b'<' | b'>' | b'"' | b'\'' | b'`')
@@ -577,6 +580,12 @@ fn scan_tag(
     let Some(tag) = ALLOWED_HTML_TAGS.iter().copied().find(|t| *t == name) else {
         return Err(format!("element <{name}> is not in the allowlist"));
     };
+    // The depth of an element is its open ancestors and itself, a void element included: a page is not a tower.
+    if stack.len() >= MAX_HTML_NESTING_DEPTH {
+        return Err(format!(
+            "<{tag}> is nested deeper than {MAX_HTML_NESTING_DEPTH} levels"
+        ));
+    }
     let void = VOID_TAGS.contains(&tag);
     let mut i = start + 1 + name.len();
     let mut seen: Vec<(&str, String)> = Vec::new();
@@ -636,10 +645,13 @@ fn scan_tag(
 
 /// Every way in which `html` leaves the allowlist of a rendered page (S12), at most [`MAX_VIOLATIONS`] of them; empty when it
 /// stays inside. The allowlist is the one stated in `api/openapi.yaml` (`RenderedDoc.html`):
-/// - the elements of [`ALLOWED_HTML_TAGS`], in lower case, closed and properly nested, an `a` never inside an `a`;
+/// - the elements of [`ALLOWED_HTML_TAGS`], in lower case, closed and properly nested at most [`MAX_HTML_NESTING_DEPTH`] deep (a
+///   void element counts), an `a` never inside an `a`;
 /// - `id` on `h1` to `h6` only, a [`is_heading_id`], unique in the page; `href` and `rel="noopener noreferrer"` on `a`, the
 ///   `href` an absolute `https:` URL without credentials, a path on this origin or a `#` fragment naming a heading id; `src` (a
-///   path on this origin) and `alt` on `img`; no other attribute, every value in double quotes;
+///   path on this origin) and `alt` on `img`; every URL value a plain one (see `is_plain_url`: printable ASCII, no space, tab,
+///   line break, backslash, `<`, `>`, quote or backtick, at most [`MAX_URL_BYTES`]); no other attribute, every value in double
+///   quotes;
 /// - every `&` of a value begins `&amp;`, `&lt;`, `&gt;`, `&quot;` or `&#39;`; text has no `<`;
 /// - no comment, doctype, CDATA section or processing instruction, and no control character except line feed and tab.
 ///
@@ -784,6 +796,51 @@ pub const XSS_CORPUS: &[(&str, &str)] = &[
     ),
     ("external-image", "![x](https://evil.example/pixel.png)\n"),
     ("protocol-relative-image", "![x](//evil.example/pixel.png)\n"),
+    // Raw anchors and images of a sanitiser that trusts a path-shaped URL (`/` and not `//`, so "a path on this origin"). Each
+    // is inside the allowlist but for its URL value (`rel` and `alt` are right), so the URL value is the one rule that has to
+    // stop it: a browser drops a tab and a line break from a URL and reads a backslash as a slash, so `/<tab>/evil.example/`
+    // and `/\evil.example/` are `//evil.example/`. A renderer that escapes raw HTML, as the fake does, passes them trivially;
+    // one that lets an `a` or an `img` through does not. `crates/ports/tests/web_contract_docs.rs` keeps the checker honest
+    // on every one of them.
+    (
+        "raw-a-protocol-relative",
+        "<a href=\"//evil.example/\" rel=\"noopener noreferrer\">x</a>\n",
+    ),
+    (
+        "raw-a-backslash",
+        "<a href=\"/\\evil.example/\" rel=\"noopener noreferrer\">x</a>\n",
+    ),
+    (
+        "raw-a-tab-path",
+        "<a href=\"/\t/evil.example/\" rel=\"noopener noreferrer\">x</a>\n",
+    ),
+    (
+        "raw-a-line-feed-path",
+        "<a href=\"/\n/evil.example/\" rel=\"noopener noreferrer\">x</a>\n",
+    ),
+    (
+        "raw-img-protocol-relative",
+        "<img src=\"//evil.example/p.png\" alt=\"x\">\n",
+    ),
+    (
+        "raw-img-backslash",
+        "<img src=\"/\\evil.example/p.png\" alt=\"x\">\n",
+    ),
+    (
+        "raw-img-tab-path",
+        "<img src=\"/\t/evil.example/p.png\" alt=\"x\">\n",
+    ),
+    (
+        "raw-img-line-feed-path",
+        "<img src=\"/\n/evil.example/p.png\" alt=\"x\">\n",
+    ),
+    // A destination in angle brackets may hold a tab: a renderer that passes the destination on as it is emits it.
+    ("md-link-tab-path", "[x](</\t/evil.example/>)\n"),
+    ("md-image-tab-path", "![x](</\t/evil.example/p.png>)\n"),
+    // Relative links: the page rewrites one to `/docs/view?path=` or drops it, and never emits it as it stands.
+    ("relative-md-link", "[guide](guide.md)\n"),
+    ("relative-md-link-parent", "[up](../x.md)\n"),
+    ("relative-md-link-fragment", "[usage](guide.md#usage)\n"),
     (
         "srcset-image",
         "<img src=\"/a.png\" srcset=\"https://evil.example/b.png 2x\">\n",
@@ -834,6 +891,15 @@ pub const XSS_CORPUS: &[(&str, &str)] = &[
     (
         "deep-nesting",
         ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> deep\n",
+    ),
+    // Nesting: a page is at most 32 deep, so a renderer drops the containers beyond it and keeps their content.
+    (
+        "deep-nesting-quotes",
+        "> > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > deep\n",
+    ),
+    (
+        "deep-nesting-lists",
+        "- item 0\n  - item 1\n    - item 2\n      - item 3\n        - item 4\n          - item 5\n            - item 6\n              - item 7\n                - item 8\n                  - item 9\n                    - item 10\n                      - item 11\n                        - item 12\n                          - item 13\n                            - item 14\n                              - item 15\n                                - item 16\n                                  - item 17\n                                    - item 18\n                                      - item 19\n                                        - item 20\n                                          - item 21\n                                            - item 22\n                                              - item 23\n                                                - item 24\n                                                  - item 25\n                                                    - item 26\n                                                      - item 27\n                                                        - item 28\n                                                          - item 29\n                                                            - item 30\n                                                              - item 31\n                                                                - item 32\n                                                                  - item 33\n                                                                    - item 34\n                                                                      - item 35\n                                                                        - item 36\n                                                                          - item 37\n                                                                            - item 38\n                                                                              - item 39\n",
     ),
     ("marker-text", "The value is [REDACTED: 12 chars, api_key] here\n"),
 ];

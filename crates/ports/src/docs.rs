@@ -42,6 +42,13 @@ pub const MAX_HEADING_ID_BYTES: usize = 80;
 /// The shape of a heading id (`DocHeading.id` in `api/openapi.yaml`): the prefix and a slug of lower case letters and digits
 /// separated by single hyphens.
 pub const HEADING_ID_PATTERN: &str = "^doc-[a-z0-9]+(-[a-z0-9]+)*$";
+/// Deepest nesting of elements in a rendered page (`RenderedDoc.html` in `api/openapi.yaml`): an element has at most
+/// `MAX_HTML_NESTING_DEPTH - 1` open elements around it, so that a page cannot be a tower that a browser or a client walks
+/// recursively (S11, S12). A render that meets a deeper container drops that container and keeps its content.
+pub const MAX_HTML_NESTING_DEPTH: usize = 32;
+/// Longest URL value of a rendered page in bytes: the `href` of an `a` and the `src` of an `img`. A URL value is printable
+/// ASCII, so a byte is a character (`RenderedDoc.html` in `api/openapi.yaml`).
+pub const MAX_URL_BYTES: usize = 2048;
 
 /// [`DocSearch::related_to`] and [`DocSearch::grep_in`] are additive (`contract/07-mcp`, G6): they take the parameters of the
 /// REST `docsForFile` and `grepDocs` (a setting, a path prefix, a limit) that [`DocSearch::related`] and [`DocSearch::grep`]

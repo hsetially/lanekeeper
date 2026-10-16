@@ -28,8 +28,8 @@ use ports::conformance::{
 };
 use ports::fakes::FakeDocSearch;
 use ports::{
-    DocError, DocSearch, HEADING_ID_PATTERN, MAX_DOC_HEADINGS, MAX_HEADING_ID_BYTES, MAX_RENDER_SOURCE_BYTES,
-    MAX_RENDERED_HTML_BYTES, content_hash,
+    DocError, DocSearch, HEADING_ID_PATTERN, MAX_DOC_HEADINGS, MAX_HEADING_ID_BYTES, MAX_HTML_NESTING_DEPTH,
+    MAX_RENDER_SOURCE_BYTES, MAX_RENDERED_HTML_BYTES, MAX_URL_BYTES, content_hash,
 };
 use serde_json::Value;
 
@@ -305,6 +305,56 @@ fn the_allowlist_is_stated_in_the_schema_and_is_the_one_the_checker_enforces() {
     );
 }
 
+/// A browser drops a tab and a line break from a URL before it reads it, and reads `/\` as `//`. The text must say what a
+/// URL value is, in the words the checker enforces, or an implementation that reads the text emits `/<tab>/evil.example/`
+/// (a path in the text's words, another origin in a browser's).
+#[test]
+fn the_allowlist_text_states_what_a_url_value_is_and_how_deep_a_page_nests() {
+    let d = doc();
+    let text = d["components"]["schemas"]["RenderedDoc"]["properties"]["html"]["description"]
+        .as_str()
+        .expect("RenderedDoc.html has a description that states the allowlist");
+    let paragraph = |starts: &str| {
+        text.split("\n\n")
+            .find(|p| p.starts_with(starts))
+            .unwrap_or_else(|| panic!("no paragraph that starts `{starts}`"))
+    };
+    let links = paragraph("Links:");
+    let images = paragraph("Images:");
+    let markup = paragraph("Markup:");
+    for needle in [
+        format!("printable ASCII of at most {MAX_URL_BYTES} characters"),
+        "no space, tab, line break or other control character".to_owned(),
+        "no backslash".to_owned(),
+        "a quote".to_owned(),
+        "a backtick".to_owned(),
+        "drops a tab or a line break from a URL".to_owned(),
+        "reads `/\\` as `//`".to_owned(),
+    ] {
+        assert!(
+            links.contains(&needle),
+            "the Links paragraph must say `{needle}`: it is the rule of every URL value"
+        );
+    }
+    assert!(
+        images.contains("URL value"),
+        "the Images paragraph must say that `src` is a URL value, with the rule of Links"
+    );
+    let depth = format!("nested at most {MAX_HTML_NESTING_DEPTH} deep");
+    assert!(
+        markup.contains(&depth),
+        "the Markup paragraph must say `{depth}`: an unbounded tower is a denial of service for the reader"
+    );
+    assert!(
+        markup.contains("dropped") && markup.contains("content is kept"),
+        "the Markup paragraph must say what a render does with a container beyond the limit"
+    );
+    assert!(
+        markup.contains("neither of those inside a URL value"),
+        "the Markup paragraph lets line feed and tab through, so it must say where they may not be"
+    );
+}
+
 /// The pipeline requirements are in the operation, because they are what the owner of the docs index implements.
 #[test]
 fn render_doc_states_the_pipeline_it_requires() {
@@ -514,6 +564,28 @@ fn the_checker_refuses_every_way_out_of_the_allowlist() {
         ("link with an empty host", a("https:///x")),
         ("relative link", a("guide.md")),
         ("link with a space", a("https://d.example/a b")),
+        // A browser drops a tab, a line break and a carriage return from a URL before it reads it, so each of these is
+        // another address than the one the checker would read. `is_plain_url` is the only check that refuses a tab or a
+        // line break inside a value (the page-wide control check lets both through).
+        ("path with a tab in it", a("/\t/evil.example/")),
+        ("path with a line feed in it", a("/\n/evil.example/")),
+        ("path with a carriage return in it", a("/\r/evil.example/")),
+        ("https link ending in a tab", a("https://d.example/\t")),
+        ("https link ending in a line feed", a("https://d.example/\n")),
+        ("https link with a tab in the host", a("https://d.exa\tmple/")),
+        ("path with a non-ascii letter", a("/caf\u{e9}")),
+        (
+            "https host with a full-width full stop",
+            a("https://d\u{ff0e}example/"),
+        ),
+        (
+            "https link with a non-breaking space",
+            a("https://d.example/a\u{a0}b"),
+        ),
+        (
+            "link of more than the bound",
+            a(&format!("https://d.example/{}", "a".repeat(MAX_URL_BYTES))),
+        ),
         (
             "link with a quote in the value",
             "<a href=\"https://d.example/\"onclick=\"x\" rel=\"noopener noreferrer\">x</a>".into(),
@@ -540,6 +612,22 @@ fn the_checker_refuses_every_way_out_of_the_allowlist() {
         (
             "protocol-relative image",
             "<img src=\"//evil.example/p.png\" alt=\"\">".into(),
+        ),
+        (
+            "image path with a tab in it",
+            "<img src=\"/\t/evil.example/p.png\" alt=\"\">".into(),
+        ),
+        (
+            "image path with a line feed in it",
+            "<img src=\"/\n/evil.example/p.png\" alt=\"\">".into(),
+        ),
+        (
+            "image path with a backslash",
+            "<img src=\"/\\evil.example/p.png\" alt=\"\">".into(),
+        ),
+        (
+            "image path with a non-ascii letter",
+            "<img src=\"/caf\u{e9}.png\" alt=\"\">".into(),
         ),
         ("image without src", "<img alt=\"x\">".into()),
         ("single-quoted value", "<img src='/a.png'>".into()),
@@ -631,6 +719,74 @@ fn rendered_doc_violations_check_the_outline_against_the_page() {
     );
 }
 
+/// `n` nested `tag` elements around `leaf`.
+fn tower(n: usize, tag: &str, leaf: &str) -> String {
+    format!(
+        "{}{leaf}{}",
+        format!("<{tag}>").repeat(n),
+        format!("</{tag}>").repeat(n)
+    )
+}
+
+#[test]
+fn the_checker_bounds_how_deep_elements_nest() {
+    // The bound itself is a page, one more is not.
+    assert_eq!(
+        html_violations(&tower(MAX_HTML_NESTING_DEPTH, "blockquote", "x")),
+        Vec::<String>::new(),
+        "a page nested exactly {MAX_HTML_NESTING_DEPTH} deep is inside the allowlist"
+    );
+    let over = html_violations(&tower(MAX_HTML_NESTING_DEPTH + 1, "blockquote", "x"));
+    assert!(
+        over.iter().any(|v| v.contains("nested deeper than")),
+        "a page nested {} deep is outside it: {over:?}",
+        MAX_HTML_NESTING_DEPTH + 1
+    );
+
+    // A void element is an element too: a line break inside the innermost of the bound is one level too deep.
+    assert!(
+        !html_violations(&tower(MAX_HTML_NESTING_DEPTH, "blockquote", "<br>")).is_empty(),
+        "a void element counts as a level"
+    );
+    assert_eq!(
+        html_violations(&tower(MAX_HTML_NESTING_DEPTH - 1, "blockquote", "<br>")),
+        Vec::<String>::new()
+    );
+
+    // Siblings are not nesting: many shallow elements are fine, and so is a long page of them.
+    let flat = "<blockquote><p>x</p></blockquote>".repeat(10_000);
+    assert_eq!(html_violations(&flat), Vec::<String>::new());
+
+    // Every container counts, not only the quote: lists (an `ul` and an `li` per level) and tables.
+    let lists = format!(
+        "{}x{}",
+        "<ul><li>".repeat(MAX_HTML_NESTING_DEPTH / 2 + 1),
+        "</li></ul>".repeat(MAX_HTML_NESTING_DEPTH / 2 + 1)
+    );
+    assert!(!html_violations(&lists).is_empty(), "lists nest too: {lists:.80}");
+    let table = format!(
+        "{}<table><tbody><tr><td>x</td></tr></tbody></table>{}",
+        "<blockquote>".repeat(MAX_HTML_NESTING_DEPTH - 3),
+        "</blockquote>".repeat(MAX_HTML_NESTING_DEPTH - 3)
+    );
+    assert!(
+        !html_violations(&table).is_empty(),
+        "a table inside a quote tower counts every level of the table"
+    );
+
+    // The probe of the review: a page 3000 deep is refused, and the answer stays short.
+    let tall = html_violations(&tower(3000, "blockquote", "x"));
+    assert!(
+        tall.iter().any(|v| v.contains("nested deeper than")),
+        "a page 3000 deep is outside the allowlist"
+    );
+    assert!(
+        tall.len() <= 20,
+        "the answer is bounded: {} violations",
+        tall.len()
+    );
+}
+
 #[test]
 fn the_corpus_covers_every_way_the_description_names() {
     let names: BTreeSet<&str> = XSS_CORPUS.iter().map(|(n, _)| *n).collect();
@@ -669,8 +825,92 @@ fn the_corpus_covers_every_way_the_description_names() {
         "http://",
         "//evil.example",
         "[REDACTED: 12 chars, api_key]",
+        // The ways a browser reads a path as another origin: a backslash, a tab and a line break inside the value.
+        "<a href=\"//evil.example/\"",
+        "<a href=\"/\\evil.example/\"",
+        "<a href=\"/\t/evil.example/\"",
+        "<a href=\"/\n/evil.example/\"",
+        "<img src=\"//evil.example/",
+        "<img src=\"/\\evil.example/",
+        "<img src=\"/\t/evil.example/",
+        "<img src=\"/\n/evil.example/",
+        // Relative links of Markdown, which the page rewrites to the reader route or drops.
+        "](guide.md)",
+        "](../x.md)",
     ] {
         assert!(all.contains(needle), "the corpus has no entry with `{needle}`");
+    }
+}
+
+/// The corpus entries that the review of this contract found missing. A name here is a deliberate act to remove.
+const URL_ENTRIES: [&str; 8] = [
+    "raw-a-protocol-relative",
+    "raw-a-backslash",
+    "raw-a-tab-path",
+    "raw-a-line-feed-path",
+    "raw-img-protocol-relative",
+    "raw-img-backslash",
+    "raw-img-tab-path",
+    "raw-img-line-feed-path",
+];
+
+const OTHER_REQUIRED_ENTRIES: [&str; 8] = [
+    "relative-md-link",
+    "relative-md-link-parent",
+    "relative-md-link-fragment",
+    "md-link-tab-path",
+    "md-image-tab-path",
+    "deep-nesting",
+    "deep-nesting-quotes",
+    "deep-nesting-lists",
+];
+
+#[test]
+fn the_corpus_has_the_url_nesting_and_relative_link_entries() {
+    let names: BTreeSet<&str> = XSS_CORPUS.iter().map(|(n, _)| *n).collect();
+    for name in URL_ENTRIES.iter().chain(OTHER_REQUIRED_ENTRIES.iter()) {
+        assert!(names.contains(name), "the corpus has no entry `{name}`");
+    }
+}
+
+/// The `raw-` entries are the anchors and images that a renderer which trusts a path-shaped URL would let through. Each is a
+/// page that would be inside the allowlist but for its URL value, so the checker is the only thing between it and the reader:
+/// emitted as it stands, the checker must refuse it, and for its URL. Delete the tab, line feed, backslash, `//` or
+/// non-ASCII check of the checker and one of these turns red.
+#[test]
+fn every_raw_url_entry_is_refused_by_the_checker_for_its_url_and_for_nothing_else() {
+    let raw: Vec<&(&str, &str)> = XSS_CORPUS.iter().filter(|(n, _)| n.starts_with("raw-")).collect();
+    assert_eq!(
+        raw.iter().map(|(n, _)| *n).collect::<BTreeSet<_>>(),
+        URL_ENTRIES.iter().copied().collect(),
+        "the `raw-` entries are the URL entries"
+    );
+    for (name, source) in raw {
+        let (attr, tag) = if source.starts_with("<a ") {
+            ("href", "a")
+        } else {
+            ("src", "img")
+        };
+        assert!(
+            source.starts_with(&format!("<{tag} {attr}=\"")),
+            "{name}: a raw entry is one {tag} with its {attr} first"
+        );
+        let violations = html_violations(source);
+        assert!(
+            violations
+                .first()
+                .is_some_and(|v| v.contains(&format!("of {attr} on <{tag}> is outside the allowlist"))),
+            "{name}: the checker must refuse the page for the value of {attr}, and says {violations:?}"
+        );
+        // The twin with a safe value is a page inside the allowlist: the URL was the only defect.
+        let start = format!("<{tag} {attr}=\"").len();
+        let end = start + source[start..].find('"').expect("a closing quote");
+        let twin = format!("{}/ok{}", &source[..start], &source[end..]);
+        assert_eq!(
+            html_violations(&twin),
+            Vec::<String>::new(),
+            "{name}: with a safe value the page is clean, so the value is the one defect: {twin}"
+        );
     }
 }
 
@@ -705,6 +945,10 @@ enum Break {
     AnchorNamesNoHeading,
     /// Forgets to cut the outline at the bound.
     OutlineWithoutBound,
+    /// A sanitiser that trusts a path-shaped URL: the `raw-` entries of the corpus reach the page as they are written.
+    PassesRawUrlsThrough,
+    /// A renderer that turns every `>` of a quote marker into a `blockquote`, however many there are.
+    NestsQuotesWithoutBound,
 }
 
 const PLANTED: &str = "hunter2-planted-value-4711";
@@ -808,6 +1052,22 @@ impl DocSearch for Wrapped {
                     h.id = ShortText::parse("doc-not-in-the-page").unwrap();
                 }
             }
+            Break::PassesRawUrlsThrough if path.as_str().contains("/xss/raw-") => {
+                page.html = self.inner.read(u, path, None).await?.text;
+            }
+            Break::NestsQuotesWithoutBound if path.as_str().contains("/xss/deep-nesting") => {
+                let text = self.inner.read(u, path, None).await?.text;
+                let depth = text
+                    .bytes()
+                    .take_while(|b| matches!(*b, b'>' | b' '))
+                    .filter(|b| *b == b'>')
+                    .count();
+                page.html = format!(
+                    "{}<p>x</p>{}",
+                    "<blockquote>".repeat(depth),
+                    "</blockquote>".repeat(depth)
+                );
+            }
             Break::HashFollowsThePath => page.content_hash = content_hash(path.as_str().as_bytes()),
             Break::OutlineWithoutBound => {
                 let last = page.headings.last().cloned();
@@ -898,6 +1158,19 @@ async fn a_content_hash_that_follows_the_path_fails() {
 #[should_panic(expected = "outline is cut at the bound")]
 async fn an_outline_with_no_bound_fails() {
     conformance::render_output_stays_inside_the_allowlist(&Wrapped::new(Break::OutlineWithoutBound)).await;
+}
+
+#[tokio::test(start_paused = true)]
+#[should_panic(expected = "raw-a-protocol-relative: the rendered page leaves the allowlist")]
+async fn a_sanitiser_that_trusts_a_path_shaped_url_fails() {
+    conformance::render_output_stays_inside_the_allowlist(&Wrapped::new(Break::PassesRawUrlsThrough)).await;
+}
+
+#[tokio::test(start_paused = true)]
+#[should_panic(expected = "nested deeper than")]
+async fn a_renderer_that_nests_without_a_bound_fails() {
+    conformance::render_output_stays_inside_the_allowlist(&Wrapped::new(Break::NestsQuotesWithoutBound))
+        .await;
 }
 
 #[tokio::test(start_paused = true)]
