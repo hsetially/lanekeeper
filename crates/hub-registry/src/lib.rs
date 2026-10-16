@@ -36,6 +36,12 @@
 //!   `registry-structure-sweeper`, never inside a pipeline batch, with the engine's check functions, caches C10 by content so that a one-file
 //!   change reads one blob and evaluates one file, and writes them by fingerprint through [`pipeline::findings_store`].
 //!
+//! - [`served`] (T10, D86, D114, A36): the nightly check of the engine against the config-server. The leased job `registry-served-verify` asks
+//!   the agent of each swimlane whose agent is connected, one request at a time, what the config-server serves for 200 deterministically
+//!   chosen combinations of application, tenant, channel and resource file, holds it against the engine's rendering, and raises
+//!   `FindingKind::ServedMismatch` (C12, high, naming the file) for each that differs and clears it when it matches again. Findings hold
+//!   names and two hashes, never content.
+//!
 //! - [`attribution`] (T7, D72, D73, P14): `SentinelIngest`, the registry's side of the sentinel protocol (`hello` against the admin-registered
 //!   sentinel, batches deduplicated by `seq`, the records mapped to the swimlane and stored), the correlator that makes an `unknown` change a
 //!   `sentinel_login` (high, naming the OS Login user and the application user it maps to) or, after a grace, an `nfs_client`, and the leased jobs
@@ -77,6 +83,7 @@ pub mod metrics;
 pub mod pickup;
 pub mod pipeline;
 pub mod read;
+pub mod served;
 pub mod severity;
 pub mod sync;
 pub mod tenants;
@@ -110,6 +117,7 @@ pub use pipeline::{
 };
 pub use read::warmup::WarmupTask;
 pub use read::{Named, ReadDeps, RegistryApi, RegistryService, Tagged};
+pub use served::{ServedDeps, ServedReport, ServedVerifier};
 pub use severity::{SeverityRuleSource, file_severity};
 pub use sync::{
     Alerts, AlertsDeps, SyncDeps, SyncError, SyncOutcome, SyncService, SyncSource, WATCH_JOB, WatchReport,

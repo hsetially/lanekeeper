@@ -5,8 +5,14 @@
 //! where the view has the key (`render_file`). `hash` is the hash of the rendered file and `unresolved_placeholders` are the keys that
 //! were left as written, for the service to fill from its own environment. Nothing here reads an environment value.
 //!
-//! See the module documentation of [`super::effective`] for what is approximated: which application renders the file, and that
-//! `channels.yml` is not read here.
+//! See the module documentation of [`super::effective`] for what is approximated: which application renders the file.
+//!
+//! **Channel folders are not search locations (D83, T10).** The property view is built from the folders the config-server searches, which
+//! are every folder but the ones `channels.yml` lists as channels. The list is read here ([`Inner::listed_channels`]) for every
+//! request, whether it names a channel or not: before T10 only the requested channel's folder was left out, so a request without a
+//! channel read the settings of every channel folder, which the config-server does not, and the nightly "as served" comparison would
+//! have reported a mismatch for every file that a channel folder's property source touches. A requested channel that `channels.yml` does
+//! not list is left out as before (the engine's earlier behaviour for it; the verification never asks for one).
 
 use std::collections::BTreeSet;
 
@@ -39,6 +45,9 @@ SELECT swimlane_id, path, kind, class, nfs_hash::bytea AS blob, nfs_drift_hash::
 FROM file_state \
 WHERE swimlane_id = $1 AND class = 'structured' AND NOT denied AND nfs_hash IS NOT NULL \
   AND regexp_replace(path, '^.*/', '') = ANY($2::text[])";
+
+/// The file that lists the channels (D83).
+pub const CHANNELS_FILE: &str = "channels.yml";
 
 pub const ALL_PATHS_SQL: &str =
     "SELECT path FROM file_state WHERE swimlane_id = $1 AND nfs_hash IS NOT NULL LIMIT 200001";
@@ -118,9 +127,16 @@ impl Inner {
         tenant: &TenantId,
         channel: Option<&ChannelName>,
     ) -> Result<PropertyView, ReadError> {
-        let all_paths = self.all_paths(&group.swimlane).await?;
-        let channels: &[ChannelName] = channel.map_or(&[], std::slice::from_ref);
-        let locations = search_locations(app, Some(tenant), &all_paths, channels);
+        let (all_paths, mut channels) = tokio::try_join!(
+            self.all_paths(&group.swimlane),
+            self.listed_channels(&group.swimlane)
+        )?;
+        if let Some(requested) = channel {
+            if !channels.contains(requested) {
+                channels.push(requested.clone());
+            }
+        }
+        let locations = search_locations(app, Some(tenant), &all_paths, &channels);
         let fetched = self
             .db
             .run(
@@ -229,6 +245,33 @@ impl Inner {
             unresolved_placeholders: unresolved,
         };
         Ok(Tagged::Fresh { etag: tag, value })
+    }
+
+    /// The channels `channels.yml` lists in a swimlane (none when it has no such file, or it does not parse, or it is denied). The rows of
+    /// its blob come from the settings index and its cache, so a read that has them needs no second parse of the file.
+    pub(crate) async fn listed_channels(&self, swimlane: &SwimlaneId) -> Result<Vec<ChannelName>, ReadError> {
+        let found = self
+            .layer_rows_by_path(swimlane, &[CHANNELS_FILE.to_owned()])
+            .await?;
+        let Some(blob) = found
+            .into_iter()
+            .find(|r| !r.denied && r.path.as_str() == CHANNELS_FILE)
+            .and_then(|r| r.blob)
+        else {
+            return Ok(Vec::new());
+        };
+        let rows = self.rows_of(&[(blob, Syntax::Yaml)]).await?;
+        Ok(rows
+            .get(&blob)
+            .filter(|r| !r.unparseable)
+            .map(|r| {
+                crate::pipeline::c9_c11::channels_in_settings(
+                    r.settings
+                        .iter()
+                        .map(|s| (s.path.as_str(), s.value.text.as_str())),
+                )
+            })
+            .unwrap_or_default())
     }
 
     async fn all_paths(&self, swimlane: &SwimlaneId) -> Result<Vec<NfsPath>, ReadError> {

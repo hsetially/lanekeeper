@@ -75,7 +75,8 @@ pub(crate) struct Reconciled {
     pub version: Option<i64>,
 }
 
-type Rows = BTreeMap<FindingKey, FindingRow>;
+/// Findings by their key (kind and fingerprint).
+pub(crate) type Rows = BTreeMap<FindingKey, FindingRow>;
 
 fn parse(stored: Vec<StoredFinding>) -> Rows {
     stored

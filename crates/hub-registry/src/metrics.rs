@@ -193,6 +193,42 @@ pub enum StructureResult {
     Failed,
 }
 
+/// What the "as served" verification did to a swimlane (T10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum ServedSwimlane {
+    /// Its agent was asked.
+    Verified,
+    /// Its agent is not connected: skipped.
+    Offline,
+    /// The config-server has to restart before it serves what is on NFS (an open C11): skipped.
+    RestartPending,
+    /// It could not be set up, or its findings could not be written; the next run looks at it again.
+    Failed,
+}
+
+/// What the "as served" verification came to for one combination of application, tenant, channel and file (T10). A closed set: no
+/// file, tenant or channel is ever a label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum ServedResult {
+    /// The config-server serves what the engine renders.
+    Match,
+    /// It serves something else.
+    Mismatch,
+    /// It answered "not found" for a file the engine has.
+    NotServed,
+    /// The agent did not answer in time.
+    Timeout,
+    /// The agent refused the path (its deny list).
+    Denied,
+    /// No slot of the replica's served requests came free in time.
+    Busy,
+    /// The agent or the config-server answered something that cannot be compared (another status, a reply that is not a file, a
+    /// connection that went away).
+    Agent,
+    /// The engine had no rendering to hold the answer against.
+    Engine,
+}
+
 /// What became of a tool-write registration, or of an observation that one could explain (T1, A10). A closed set: the labels never
 /// grow with the traffic, and no path, hash or user is ever one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
@@ -345,6 +381,16 @@ struct PickupLabels {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
 struct StructureLabels {
     result: StructureResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct ServedSwimlaneLabels {
+    result: ServedSwimlane,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct ServedResultLabels {
+    result: ServedResult,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
@@ -504,6 +550,8 @@ pub struct RegistryMetrics {
     structure_c10_evaluated: Counter,
     structure_c10_cached: Counter,
     structure_blobs_read: Counter,
+    served_swimlanes: Family<ServedSwimlaneLabels, Counter>,
+    served_combinations: Family<ServedResultLabels, Counter>,
     tool_writes: Family<ToolWriteLabels, Counter>,
     sentinel_messages: Family<SentinelLabels, Counter>,
     sentinel_records: Family<SentinelRecordLabels, Counter>,
@@ -580,6 +628,8 @@ impl Default for RegistryMetrics {
             structure_c10_evaluated: Counter::default(),
             structure_c10_cached: Counter::default(),
             structure_blobs_read: Counter::default(),
+            served_swimlanes: Family::default(),
+            served_combinations: Family::default(),
             tool_writes: Family::default(),
             sentinel_messages: Family::default(),
             sentinel_records: Family::default(),
@@ -871,6 +921,16 @@ impl RegistryMetrics {
             "registry_structure_blobs_read",
             "Blobs the structure checks read from the blob store",
             self.structure_blobs_read.clone(),
+        );
+        registry.register(
+            "registry_served_verify_swimlanes",
+            "Swimlanes the nightly as-served verification looked at, by whether they were asked, offline, waiting for a config-server restart or failed",
+            self.served_swimlanes.clone(),
+        );
+        registry.register(
+            "registry_served_verify_combinations",
+            "Combinations of application, tenant, channel and file the as-served verification asked for, by what came of them",
+            self.served_combinations.clone(),
         );
         registry.register(
             "registry_tool_writes",
@@ -1262,6 +1322,34 @@ impl RegistryMetrics {
         self.structure_blobs_read.get()
     }
 
+    /// A swimlane was looked at by the as-served verification (T10).
+    pub(crate) fn served_verify_swimlane(&self, result: ServedSwimlane) {
+        self.served_swimlanes
+            .get_or_create(&ServedSwimlaneLabels { result })
+            .inc();
+    }
+
+    /// A combination was asked for by the as-served verification (T10).
+    pub(crate) fn served_verify_combination(&self, result: ServedResult) {
+        self.served_combinations
+            .get_or_create(&ServedResultLabels { result })
+            .inc();
+    }
+
+    /// Swimlanes looked at by the as-served verification, by result, for tests.
+    pub fn served_verify_swimlane_count(&self, result: ServedSwimlane) -> u64 {
+        self.served_swimlanes
+            .get_or_create(&ServedSwimlaneLabels { result })
+            .get()
+    }
+
+    /// Combinations asked for by the as-served verification, by result, for tests.
+    pub fn served_verify_combination_count(&self, result: ServedResult) -> u64 {
+        self.served_combinations
+            .get_or_create(&ServedResultLabels { result })
+            .get()
+    }
+
     /// Swimlanes whose pickup state was computed, by result, for tests.
     pub fn pickup_lane_count(&self, result: PickupResult) -> u64 {
         self.pickup_lanes.get_or_create(&PickupLabels { result }).get()
@@ -1511,6 +1599,33 @@ mod tests {
         }
         assert!(
             text.contains("result=\"Computed\""),
+            "a closed set of labels: {text}"
+        );
+    }
+
+    #[test]
+    fn the_served_verification_counters_count_and_register_with_closed_labels() {
+        let m = RegistryMetrics::default();
+        m.served_verify_swimlane(ServedSwimlane::Verified);
+        m.served_verify_swimlane(ServedSwimlane::Offline);
+        m.served_verify_combination(ServedResult::Match);
+        m.served_verify_combination(ServedResult::Match);
+        m.served_verify_combination(ServedResult::Timeout);
+        assert_eq!(m.served_verify_swimlane_count(ServedSwimlane::Verified), 1);
+        assert_eq!(m.served_verify_swimlane_count(ServedSwimlane::Failed), 0);
+        assert_eq!(m.served_verify_combination_count(ServedResult::Match), 2);
+        let mut registry = Registry::default();
+        m.register(&mut registry);
+        let mut text = String::new();
+        prometheus_client::encoding::text::encode(&mut text, &registry).unwrap_or_default();
+        for name in [
+            "registry_served_verify_swimlanes_total",
+            "registry_served_verify_combinations_total",
+        ] {
+            assert!(text.contains(name), "{name}: {text}");
+        }
+        assert!(
+            text.contains("result=\"Timeout\""),
             "a closed set of labels: {text}"
         );
     }

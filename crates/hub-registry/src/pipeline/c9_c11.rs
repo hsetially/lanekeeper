@@ -247,13 +247,26 @@ pub(crate) fn channels_of(bytes: &[u8], limits: &Limits) -> Vec<ChannelName> {
     let Ok(index) = engine::index_settings(bytes, Syntax::Yaml, limits) else {
         return Vec::new();
     };
-    let mut out: Vec<ChannelName> = index
-        .rows
-        .iter()
-        .filter_map(|row| {
-            let rest = row.path.as_str().strip_prefix("channels[")?.strip_suffix(']')?;
+    channels_in_settings(
+        index
+            .rows
+            .iter()
+            .map(|row| (row.path.as_str(), row.value.text.as_str())),
+    )
+}
+
+/// The channel names among the settings of `channels.yml` (`(path, value)`): the entries of its `channels:` list that are channel names,
+/// sorted, without repeats, at most [`MAX_CHANNELS`]. The one reading of the file: C9 to C11, the read side's search locations and the
+/// "as served" verification all take the list from here (the settings index holds the same rows for the blob, so a reader that has them
+/// need not parse the file again).
+pub(crate) fn channels_in_settings<'a>(
+    settings: impl Iterator<Item = (&'a str, &'a str)>,
+) -> Vec<ChannelName> {
+    let mut out: Vec<ChannelName> = settings
+        .filter_map(|(path, value)| {
+            let rest = path.strip_prefix("channels[")?.strip_suffix(']')?;
             rest.parse::<u32>().ok()?;
-            ChannelName::parse(row.value.text.trim()).ok()
+            ChannelName::parse(value.trim()).ok()
         })
         .collect();
     out.sort();

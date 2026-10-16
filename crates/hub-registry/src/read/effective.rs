@@ -23,12 +23,14 @@
 //! An [`EffectiveEntry`] is keyed by a hash of the layers it was made from (their paths, the hashes of their normalised content, the
 //! mode), never by a swimlane, so 40 swimlanes that read the same files share one entry, and a changed file is a new key.
 //!
-//! # Resource rendering is an approximation of the config-server's (T10 owns the exact one)
+//! # Resource rendering is an approximation of the config-server's, held to it every night
 //!
 //! The application whose property view renders a resource is the folder it is in, when that is one of the swimlane's applications
 //! (D88 `SPRING_APPLICATION_NAME`), and `application` (the root files alone) otherwise. The search locations are every folder of the
-//! swimlane except the requested channel's; `channels.yml` is not read here, so the folders of other channels are searched. T10's
-//! verification compares the engine's rendering with what the config-server really serves, and is where this is made exact.
+//! swimlane except the channel folders `channels.yml` lists (D83; [`Inner::listed_channels`](super::service::Inner), read for every
+//! request) and the requested channel's. The config-server keeps the folders and the channel list it had when it started, which this
+//! does not (C11 says when a restart is due). [`crate::served`] compares the engine's rendering with what the config-server really
+//! serves, every night, and raises a high-severity finding where they differ.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;

@@ -6,17 +6,22 @@
 //! replace. It never uses an environment value, and the agent only ever asks the config-server (D88).
 //!
 //! **Bounds:** one round trip takes at most `served_timeout` (10 s), at most `served_concurrency` are in flight on a replica (the
-//! rest are refused, not queued), and a denied file is never fetched: it is answered "withheld" (D79). The answer is not cached
-//! here; T10 caches it by (request, current effective hashes) and runs the nightly comparison with the engine's rendering.
+//! rest are refused, not queued), and a denied file is never fetched: it is answered "withheld" (D79).
 //!
-//! The entity tag is a hash of the request and of the served bytes, so a request that already has them gets a 304 after the round
-//! trip (the answer is the thing being asked for, so the round trip cannot be skipped until T10's cache exists).
+//! **Not cached (T10).** The answer is what the config-server says *now*. A cache keyed by the request and the engine's current effective
+//! hashes would answer from the files while the config-server, which has not picked a change up (it keeps its list of folders from its
+//! start, D83, and a client keeps its answer for the cache lifetime, D85), serves something else: the one thing this view exists to show.
+//! The round trip is therefore made for every request, within the limits above, and the entity tag is a hash of the request and of the
+//! served bytes, so a request that already has them gets a 304 after the round trip.
+//!
+//! The nightly comparison of the engine's rendering with this answer is [`crate::served`]; it makes the same round trip
+//! ([`Inner::round_trip`]) and tells its cases apart, where the route turns them into one error.
 
 use std::sync::atomic::Ordering;
 
 use domain::{
-    AgentReply, ChannelName, EffectiveSource, FileRole, HubCommand, LogicalFile, RequestId, ServeRequest,
-    ServedFile, ShortText, SwimlaneId, TenantSet,
+    AgentReply, ChannelName, EffectiveSource, FileRole, HubCommand, LogicalFile, OpError, OpResult,
+    RequestId, ServeRequest, ServedFile, ShortText, SwimlaneId, TenantSet,
 };
 use engine::{file_role, scan_placeholders};
 use ports::{GatewayError, ReadError};
@@ -27,6 +32,31 @@ use super::etag;
 use super::rows;
 use super::service::Inner;
 use crate::http::dto::served_text;
+
+/// What one round trip to the agent came to, for a caller that tells the cases apart: the route turns them into one error, the nightly
+/// verification counts them separately.
+#[derive(Debug)]
+pub(crate) enum Round {
+    /// The config-server served the file (200): its bytes.
+    Served(bytes::Bytes),
+    /// The config-server answered with another status (404 among them, and the agent's own 429 when it is asked too often). No body is
+    /// kept: only a 2xx carries one, and the agent passes on nothing else.
+    Status(u16),
+    /// The agent refused the path: its deny list covers it (D79). The answer names nothing.
+    Denied,
+    /// The agent answered something that is not a served file.
+    Other,
+}
+
+/// Why a round trip came back with no answer at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unreached {
+    NotConnected,
+    Timeout,
+    Busy,
+    Closed,
+    Unavailable,
+}
 
 impl Inner {
     /// The engine's view of the request: its role, and the files its effective config is made of.
@@ -103,15 +133,16 @@ impl Inner {
         }
     }
 
-    /// One round trip to the agent: the bytes the config-server answered with. The caller holds a slot of `served_slots`.
-    async fn fetch_served(
+    /// One round trip to the agent: what the config-server answered, within `served_timeout`. The caller holds a slot of `served_slots`.
+    /// The only command it sends is `FetchServed`, which the agent answers read-only (D86).
+    pub(crate) async fn round_trip(
         &self,
         swimlane: &SwimlaneId,
         request: &ServeRequest,
-    ) -> Result<bytes::Bytes, ReadError> {
+    ) -> Result<Round, Unreached> {
         let id = self.request_seq.fetch_add(1, Ordering::Relaxed);
         let request_id = RequestId::parse(&format!("served-{}-{id}", self.clock.now().unix_millis()))
-            .map_err(|_| ReadError::Unavailable)?;
+            .map_err(|_| Unreached::Unavailable)?;
         let reply = self
             .gateway
             .request(
@@ -126,27 +157,49 @@ impl Inner {
             .map_err(|e| {
                 warn!(op = "served", ?e, "the agent did not answer");
                 match e {
-                    GatewayError::NotConnected
-                    | GatewayError::Timeout
-                    | GatewayError::Busy
-                    | GatewayError::Closed
-                    | GatewayError::Unavailable => ReadError::Unavailable,
+                    GatewayError::NotConnected => Unreached::NotConnected,
+                    GatewayError::Timeout => Unreached::Timeout,
+                    GatewayError::Busy => Unreached::Busy,
+                    GatewayError::Closed => Unreached::Closed,
+                    GatewayError::Unavailable => Unreached::Unavailable,
                 }
             })?;
-        let AgentReply::Served { status, bytes, .. } = reply else {
-            warn!(
-                op = "served",
-                "the agent answered something other than a served file"
-            );
-            return Err(ReadError::Unavailable);
-        };
-        match status {
-            200 => Ok(bytes),
-            404 => Err(ReadError::NotFound),
+        Ok(match reply {
+            AgentReply::Served {
+                status: 200, bytes, ..
+            } => Round::Served(bytes),
+            AgentReply::Served { status, .. } => Round::Status(status),
+            AgentReply::Op(OpResult {
+                error: Some(OpError::Denied),
+                ..
+            }) => {
+                warn!(op = "served", why = "denied", "the agent refused the path");
+                Round::Denied
+            }
             _ => {
+                warn!(
+                    op = "served",
+                    "the agent answered something other than a served file"
+                );
+                Round::Other
+            }
+        })
+    }
+
+    /// One round trip to the agent: the bytes the config-server answered with. The caller holds a slot of `served_slots`.
+    async fn fetch_served(
+        &self,
+        swimlane: &SwimlaneId,
+        request: &ServeRequest,
+    ) -> Result<bytes::Bytes, ReadError> {
+        match self.round_trip(swimlane, request).await {
+            Ok(Round::Served(bytes)) => Ok(bytes),
+            Ok(Round::Status(404)) => Err(ReadError::NotFound),
+            Ok(Round::Status(status)) => {
                 warn!(op = "served", status, "the config-server did not serve the file");
                 Err(ReadError::Unavailable)
             }
+            Ok(Round::Denied | Round::Other) | Err(_) => Err(ReadError::Unavailable),
         }
     }
 

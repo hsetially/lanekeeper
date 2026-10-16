@@ -220,6 +220,23 @@ pub struct RegistryConfig {
     /// read in batches of at most this many bytes, so the memory of a check does not depend on how many files changed.
     pub structure_batch_bytes: u64,
 
+    // ---------------------------------------------------------------------------------------------- "as served" verification (T10, D86, A36)
+    /// How often the leased job `registry-served-verify` asks the agents what the config-server serves and holds it against the engine's
+    /// rendering. Also the length of a "night" for the sample: the combinations it looks at change when this much time has passed.
+    pub served_verify_interval: Duration,
+    /// The combinations of `(application, tenant, channel, file)` one run asks the agent of each swimlane for (D86: 200). The ones that
+    /// have an open finding come first, the rest are drawn deterministically from the swimlane's resource files and tenants.
+    pub served_verify_sample: usize,
+    /// How long the job waits between two requests to the same swimlane's agent. The agent answers five a second at most and the
+    /// config-server one at a time, so the default is under that; zero is for tests.
+    pub served_verify_pause: Duration,
+    /// Swimlanes the job asks at once (each one request at a time).
+    pub served_verify_lanes: usize,
+    /// How long the job waits for one of the replica's `served_concurrency` slots before it gives a combination up as unverified (it is
+    /// asked again next night). The slots are shared with the people who ask for a served file, who are refused when none is free and
+    /// never wait: the job is the one that waits.
+    pub served_verify_slot_wait: Duration,
+
     // ---------------------------------------------------------------------------------------------- tool-write registrations (T1, A10)
     /// The bound of the queue of registrations (`ports::ToolWrites`) that no observation has matched yet, hash registrations and delete
     /// registrations together, counting only those younger than `ToolWriteEntry::TTL_SECS`: a new one past it is refused with `Full` at
@@ -397,6 +414,11 @@ impl Default for RegistryConfig {
             structure_sweep_lanes: 1_000,
             structure_cache_bytes: 64 * 1024 * 1024,
             structure_batch_bytes: 16 * 1024 * 1024,
+            served_verify_interval: Duration::from_secs(24 * 3600),
+            served_verify_sample: 200,
+            served_verify_pause: Duration::from_millis(250),
+            served_verify_lanes: 4,
+            served_verify_slot_wait: Duration::from_secs(10),
             tool_write_max_pending: 10_000,
             tool_write_timeout: Duration::from_secs(2),
             tool_write_match_interval: Duration::from_secs(5),
@@ -718,6 +740,26 @@ impl RegistryConfig {
             self.structure_batch_bytes,
             1024 * 1024,
             256 * 1024 * 1024,
+        )?;
+        within(
+            "served_verify_interval",
+            millis(self.served_verify_interval),
+            60_000,
+            7 * 24 * 3600 * 1000,
+        )?;
+        within(
+            "served_verify_sample",
+            self.served_verify_sample as u64,
+            1,
+            10_000,
+        )?;
+        within("served_verify_pause", millis(self.served_verify_pause), 0, 60_000)?;
+        within("served_verify_lanes", self.served_verify_lanes as u64, 1, 64)?;
+        within(
+            "served_verify_slot_wait",
+            millis(self.served_verify_slot_wait),
+            10,
+            120_000,
         )?;
         within(
             "tool_write_max_pending",
@@ -1171,6 +1213,54 @@ mod tests {
         out_of_range("pickup_max_files", |c| {
             c.pickup_max_files = 200_001;
         });
+    }
+
+    #[test]
+    fn the_served_verification_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(c.served_verify_interval, Duration::from_secs(24 * 3600));
+        assert_eq!(
+            c.served_verify_sample, 200,
+            "D86, A36: 200 combinations a night for each swimlane"
+        );
+        assert_eq!(c.served_verify_pause, Duration::from_millis(250));
+        assert_eq!(c.served_verify_lanes, 4);
+        assert_eq!(c.served_verify_slot_wait, Duration::from_secs(10));
+        assert_eq!(
+            c.served_timeout,
+            Duration::from_secs(10),
+            "A36: 10 s for a request"
+        );
+        assert!(
+            c.served_verify_pause >= Duration::from_millis(200),
+            "no more than the agent's five requests a second for one swimlane"
+        );
+        assert_eq!(c.validate(), Ok(()));
+        out_of_range("served_verify_interval", |c| {
+            c.served_verify_interval = Duration::from_secs(59);
+        });
+        out_of_range("served_verify_interval", |c| {
+            c.served_verify_interval = Duration::from_secs(7 * 24 * 3600 + 1);
+        });
+        out_of_range("served_verify_sample", |c| c.served_verify_sample = 0);
+        out_of_range("served_verify_sample", |c| c.served_verify_sample = 10_001);
+        out_of_range("served_verify_pause", |c| {
+            c.served_verify_pause = Duration::from_secs(61);
+        });
+        out_of_range("served_verify_lanes", |c| c.served_verify_lanes = 0);
+        out_of_range("served_verify_lanes", |c| c.served_verify_lanes = 65);
+        out_of_range("served_verify_slot_wait", |c| {
+            c.served_verify_slot_wait = Duration::from_millis(9);
+        });
+        out_of_range("served_verify_slot_wait", |c| {
+            c.served_verify_slot_wait = Duration::from_secs(121);
+        });
+        // A pause of nothing is allowed (tests use it); the agent's own limit still holds on the other side.
+        let none = RegistryConfig {
+            served_verify_pause: Duration::ZERO,
+            ..RegistryConfig::default()
+        };
+        assert_eq!(none.validate(), Ok(()));
     }
 
     #[test]

@@ -81,7 +81,7 @@ impl Bed {
         let fx = fixtures::target();
         let ids: Vec<String> = fx.swimlanes().into_iter().take(lanes).collect();
         assert_eq!(ids.len(), lanes, "the fixtures have {} swimlanes", ids.len());
-        let rig = Rig::with_event_bus(&ids[0], config.clone()).await?;
+        let rig = Box::pin(Rig::with_event_bus(&ids[0], config.clone())).await?;
         let mut loaded = Vec::new();
         for (i, id) in ids.iter().enumerate() {
             let tenants = fx.tenants(id);
