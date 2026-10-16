@@ -758,7 +758,7 @@ fn write_operations() -> BTreeSet<(String, String)> {
 /// The `writes` operations that later tasks of prompt 06 mount, with the task. When one is mounted its line goes, and
 /// `every_write_operation_is_mounted_or_waits_for_its_task` fails until it does. Every operation of prompt 06 is mounted (T11 was
 /// the last); the rows below are operations that contract/08-web declared for the web app, each waiting for its owner.
-const LATER: [(&str, &str, &str); 5] = [
+const LATER: [(&str, &str, &str); 6] = [
     (
         "POST",
         "/api/v1/prs/preview",
@@ -783,6 +783,11 @@ const LATER: [(&str, &str, &str); 5] = [
         "GET",
         "/api/v1/drafts/{id}",
         "06 follow-up: WriteService::draft, which the MCP apply_change already uses (contract/08-web, CG17)",
+    ),
+    (
+        "GET",
+        "/api/v1/me/github-token",
+        "06 follow-up: TokenVault::status, and the expiry fields in the answers (contract/08-web, CG14)",
     ),
 ];
 

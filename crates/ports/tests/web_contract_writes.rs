@@ -771,6 +771,117 @@ fn get_draft_is_an_editor_read_of_the_authors_draft() {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// CG14: the stored GitHub token and its expiry
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// The days before expiry that `expires_soon` starts to be true: `EXPIRY_WARNING_DAYS` of `hub-writes/src/vault/mod.rs`.
+const EXPIRY_WARNING_DAYS: u32 = 7;
+
+/// `GithubCredential` says when the token expires and whether that is soon, without a new required key, and the user can
+/// read it back with a GET. It never holds the token (S7, S8, S21).
+#[test]
+fn github_credential_additions_are_optional() {
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+
+    let credential = &schemas["GithubCredential"];
+    assert_closed(&d, "GithubCredential");
+    assert_eq!(
+        required_of(credential),
+        set(&["github_login", "verified_at", "scopes"]),
+        "an old body is still a GithubCredential: nothing new is required"
+    );
+    assert_eq!(
+        describe(&credential["properties"]["expires_at"]),
+        "ref:Timestamp|null"
+    );
+    assert_eq!(credential["properties"]["expires_soon"]["type"], "boolean");
+    for key in ["expires_at", "expires_soon"] {
+        assert!(
+            !required_of(credential).contains(key),
+            "GithubCredential.{key} is optional"
+        );
+    }
+    let text = |s: &Value| s["description"].as_str().unwrap_or("").to_lowercase();
+    let at = text(&credential["properties"]["expires_at"]);
+    assert!(
+        at.contains("null") && at.contains("github"),
+        "expires_at is null when GitHub gave no expiry"
+    );
+    let soon = text(&credential["properties"]["expires_soon"]);
+    assert!(
+        soon.contains(&format!("{EXPIRY_WARNING_DAYS} days")) && soon.contains("expired"),
+        "expires_soon is true within {EXPIRY_WARNING_DAYS} days of the expiry and after it"
+    );
+    for key in declared_of(credential) {
+        let k = key.to_lowercase();
+        assert!(
+            !["token", "secret", "password", "key"]
+                .iter()
+                .any(|bad| k.contains(bad)),
+            "GithubCredential.{key} looks like a secret, and a credential never holds the token"
+        );
+    }
+    assert_bounded(&d, "GithubCredential");
+
+    // The GET sits with the PUT and the DELETE of the same path: one place for the user's token, at the same role.
+    let (method, path) = assert_conventions(&d, "getGithubCredential", "editor", "me");
+    assert_eq!(
+        (method.as_str(), path.as_str()),
+        ("GET", "/api/v1/me/github-token")
+    );
+    let (_, put_path, put) = operation(&d, "putGithubToken");
+    let (_, delete_path, delete) = operation(&d, "deleteGithubToken");
+    assert_eq!(
+        (put_path.as_str(), delete_path.as_str()),
+        (path.as_str(), path.as_str())
+    );
+    let (_, _, get) = operation(&d, "getGithubCredential");
+    assert_eq!(get["x-required-role"], put["x-required-role"]);
+    assert_eq!(get["x-required-role"], delete["x-required-role"]);
+    assert_eq!(
+        json_body(&d, get, "200"),
+        json_body(&d, put, "200"),
+        "the GET answers with the credential the PUT answers with"
+    );
+    assert_eq!(
+        json_body(&d, get, "200")["$ref"],
+        format!("{SCHEMA_REF}GithubCredential")
+    );
+    for code in ["200", "401", "403", "404", "default"] {
+        assert!(
+            get["responses"].get(code).is_some(),
+            "getGithubCredential documents {code}"
+        );
+    }
+    for code in ["409", "413", "422", "423", "503"] {
+        assert!(
+            get["responses"].get(code).is_none(),
+            "a read of what is stored has no {code}"
+        );
+    }
+    let not_found = text(response(&d, get, "404"));
+    assert_eq!(get["responses"]["404"]["$ref"], "#/components/responses/NotFound");
+    let said = get["description"].as_str().unwrap_or("").to_lowercase();
+    for (needle, fact) in [
+        ("404", "that no stored token is a 404"),
+        ("never the token", "that the token is never in the answer (S8)"),
+        ("own credential", "that it is the user's own credential"),
+    ] {
+        assert!(
+            said.contains(needle) || not_found.contains(needle),
+            "the description of getGithubCredential must state {fact} (`{needle}`)"
+        );
+    }
+    let cache = &response(&d, get, "200")["headers"]["Cache-Control"]["schema"];
+    assert_eq!(
+        cache["enum"],
+        serde_json::json!(["no-store"]),
+        "whose token it is is for the person who asked, now"
+    );
+}
+
 /// Every operation this file adds names its audit action, or says why it has none (rule 8: one audit event per state
 /// change). A read changes nothing; the one non-GET, `previewPr`, writes and records nothing, as `previewFileEffect` does.
 #[test]
@@ -783,6 +894,7 @@ fn new_operations_name_their_audit_action_or_say_why_not() {
         ("getRestartOffer", "none: a read"),
         ("getProposal", "none: a read"),
         ("getDraft", "none: a read"),
+        ("getGithubCredential", "none: a read"),
     ];
     for (id, audit) in table {
         let (method, _, op) = operation(&d, id);

@@ -2045,6 +2045,36 @@ paths:
         default:
           $ref: '#/components/responses/Error'
   /api/v1/me/github-token:
+    get:
+      operationId: getGithubCredential
+      summary: What is stored of my GitHub token
+      description: The user's own credential, as `putGithubToken` answers it, so that the token page can show who it
+        belongs to, when it was verified and when it expires. It is never the token. A user with no stored token gets
+        404. The answer is never cached.
+      tags:
+      - me
+      x-required-role: editor
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GithubCredential'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
     put:
       operationId: putGithubToken
       summary: Store or replace my GitHub token
@@ -6441,6 +6471,15 @@ components:
           items:
             $ref: '#/components/schemas/ShortText'
           maxItems: 64
+        expires_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+          description: When the token expires, null when GitHub did not say.
+        expires_soon:
+          type: boolean
+          description: True when the token expires within 7 days, and after it has expired, so the page can ask for a
+            new one before a pull request fails.
       additionalProperties: false
       required:
       - github_login
