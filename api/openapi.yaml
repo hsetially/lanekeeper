@@ -5285,21 +5285,104 @@ components:
       - cache_ttl_secs
       - pending_files
     SwimlaneDetail:
-      allOf:
-      - $ref: '#/components/schemas/SwimlaneSummary'
-      - type: object
-        properties:
-          services:
+      type: object
+      description: A swimlane and its services. Every field of `SwimlaneSummary`, defined as there, and `services` and
+        `auto_notify`. It repeats the summary instead of composing it with `allOf`, because `SwimlaneSummary` is closed
+        and a closed `allOf` member rejects the keys of its sibling, so no body the hub sends could be valid.
+      properties:
+        id:
+          $ref: '#/components/schemas/SwimlaneId'
+        display_name:
+          $ref: '#/components/schemas/ShortText'
+        tenants:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantId'
+          minItems: 1
+          maxItems: 100
+          description: A swimlane has a set of tenants, not exactly one (Q34).
+        agent:
+          $ref: '#/components/schemas/AgentStatus'
+        last_scan_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+        base_version:
+          oneOf:
+          - $ref: '#/components/schemas/VersionLabel'
+          - type: 'null'
+        drift_counts:
+          type: array
+          items:
             type: array
-            items:
-              $ref: '#/components/schemas/ServiceState'
-            maxItems: 500
-          auto_notify:
-            type: boolean
-        additionalProperties: false
-        required:
-        - services
-        - auto_notify
+            prefixItems:
+            - $ref: '#/components/schemas/DriftState'
+            - type: integer
+              minimum: 0
+            minItems: 2
+            maxItems: 2
+          maxItems: 16
+        finding_count:
+          type: integer
+          minimum: 0
+        tier:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+          description: The environment tier of the swimlane, such as `SIT` or `UAT`, null when none is set. Absent when
+            null.
+        project:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+          description: The display name of the project the swimlane belongs to, null when it has none. Absent when null.
+        baseline:
+          oneOf:
+          - $ref: '#/components/schemas/BaselineStatus'
+          - type: 'null'
+          description: Whether the baseline is adopted. `unconfirmed` means no baseline and editing is locked,
+            `in_progress` means an open adoption (one that is being worked through or waits for review), and
+            `confirmed` means the baseline is adopted and editing is unlocked. The registry states it for every
+            swimlane; it is absent only in a response from a server that predates this field.
+        pickup_counts:
+          type: array
+          items:
+            type: array
+            prefixItems:
+            - $ref: '#/components/schemas/PickupState'
+            - type: integer
+              minimum: 0
+            minItems: 2
+            maxItems: 2
+          maxItems: 3
+          description: How many services are in each pickup state that is not `live`, as pairs of a state and a count. It
+            equals what `listPendingRestarts` counts per state for this swimlane, and it is an aggregate worked out for
+            all swimlanes at once, so the list never needs one call per swimlane. Only non-zero states are listed, each
+            once. Absent when nothing is waiting.
+        syncing:
+          oneOf:
+          - $ref: '#/components/schemas/SyncingInfo'
+          - type: 'null'
+          description: The sync window that is open on the swimlane now, null when none is. Absent when null.
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceState'
+          maxItems: 500
+        auto_notify:
+          type: boolean
+      additionalProperties: false
+      required:
+      - id
+      - display_name
+      - tenants
+      - agent
+      - last_scan_at
+      - base_version
+      - drift_counts
+      - finding_count
+      - services
+      - auto_notify
     FileContent:
       type: object
       properties:

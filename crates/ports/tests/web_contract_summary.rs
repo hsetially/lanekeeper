@@ -189,11 +189,20 @@ fn swimlane_summary_additions_are_optional_and_match_the_domain() {
         "`required` is the keys of an old summary, so a new required key is a break"
     );
     assert_eq!(declared_of(summary), wire_keys(&with));
-    // `SwimlaneDetail` inherits the summary, so it has them too.
-    assert_eq!(
-        ref_name(&schemas["SwimlaneDetail"]["allOf"][0]),
-        "SwimlaneSummary"
-    );
+    // `SwimlaneDetail` has them too, defined as the summary defines them and optional like them. It repeats the summary's
+    // properties instead of composing it with `allOf`, because a closed `allOf` member rejects its sibling's keys
+    // (`web_contract_allof.rs` holds every property of the two equal).
+    let detail = &schemas["SwimlaneDetail"];
+    for prop in ["tier", "project", "baseline", "syncing", "pickup_counts"] {
+        assert_eq!(
+            detail["properties"][prop], summary["properties"][prop],
+            "SwimlaneDetail.{prop} is the summary's"
+        );
+        assert!(
+            !required_of(detail).contains(prop),
+            "SwimlaneDetail.{prop} must stay optional too"
+        );
+    }
 
     // The pickup counts are pairs, like `drift_counts`: a state and a count, at most one pair per non-live state.
     let counts = &summary["properties"]["pickup_counts"];
