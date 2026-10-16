@@ -536,6 +536,173 @@ fn restart_offer_schemas_are_bounded_and_say_when_they_are_cut() {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// CG12: one proposal, the decided tab and the documented 422
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// The keys `Proposal` had before this commit: all of them stay, and none is added to the required ones.
+const PROPOSAL_REQUIRED: &[&str] = &[
+    "id",
+    "author",
+    "swimlane",
+    "path",
+    "expected",
+    "new_hash",
+    "status",
+    "hunks",
+    "setting_changes",
+    "severity",
+    "created_at",
+    "expires_at",
+    "decided_by",
+    "decision_comment",
+];
+
+/// `proposals.action` of migration 0004: what a proposal is for.
+const PROPOSAL_ACTIONS: &[&str] = &["edit", "upload", "delete", "revert", "restart", "pr", "notify"];
+
+/// `getProposal` mirrors `listProposals`, and `Proposal` says what kind of change it is, how it came and which paths it has,
+/// without a new required key (an old body is still a `Proposal`).
+#[test]
+fn proposal_additions_are_optional() {
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+
+    let (method, path) = assert_conventions(&d, "getProposal", "viewer", "writes");
+    assert_eq!(
+        (method.as_str(), path.as_str()),
+        ("GET", "/api/v1/proposals/{id}")
+    );
+    let (_, _, one) = operation(&d, "getProposal");
+    let (_, _, list) = operation(&d, "listProposals");
+    assert_eq!(
+        one["x-required-role"], list["x-required-role"],
+        "the list already returns the same Proposal with its hunks, so one is no stricter than the list"
+    );
+    for code in ["200", "400", "401", "403", "404", "default"] {
+        assert!(
+            one["responses"].get(code).is_some(),
+            "getProposal documents {code}"
+        );
+    }
+    assert_eq!(json_body(&d, one, "200")["$ref"], format!("{SCHEMA_REF}Proposal"));
+    assert!(
+        one["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["$ref"] == "#/components/parameters/NumericId")
+    );
+
+    let proposal = &schemas["Proposal"];
+    assert_closed(&d, "Proposal");
+    assert_eq!(
+        required_of(proposal),
+        set(PROPOSAL_REQUIRED),
+        "an old body is still a Proposal: nothing new is required"
+    );
+    let fields = [
+        ("action", "ref:ProposalAction"),
+        ("via", "ref:ProposalVia"),
+        ("paths", "array<ref:NfsPath>"),
+        ("decided_at", "ref:Timestamp|null"),
+    ];
+    for (key, want) in fields {
+        assert_eq!(describe(&proposal["properties"][key]), want, "Proposal.{key}");
+        assert!(!required_of(proposal).contains(key), "Proposal.{key} is optional");
+    }
+    assert_eq!(
+        proposal["properties"]["paths"]["maxItems"], 100,
+        "a proposal carries at most 100 paths (proposals.paths)"
+    );
+
+    // The wire names are the domain's and the migration's.
+    assert_eq!(
+        strings(&schemas["ProposalAction"]["enum"]),
+        set(PROPOSAL_ACTIONS),
+        "ProposalAction is the CHECK of proposals.action"
+    );
+    assert_eq!(
+        strings(&schemas["ProposalVia"]["enum"]),
+        domain::Via::ALL.iter().map(|v| v.as_str().to_owned()).collect(),
+        "ProposalVia is domain::Via"
+    );
+
+    let text = |s: &Value| s["description"].as_str().unwrap_or("").to_lowercase();
+    assert!(
+        text(&proposal["properties"]["new_hash"]).contains("all-zero"),
+        "an all-zero hash means that no content is written"
+    );
+    assert!(text(&proposal["properties"]["new_hash"]).contains("no content"));
+    assert!(
+        text(&proposal["properties"]["paths"]).contains("namespace/name"),
+        "a restart's one path is `namespace/name`"
+    );
+    assert!(
+        text(&proposal["properties"]["path"]).contains("first"),
+        "`path` is the first of `paths`"
+    );
+
+    // The decided tab: one request, and not together with a status.
+    let decided = param(&d, list, "query", "decided").expect("listProposals takes `decided`");
+    assert_eq!(decided["required"], false);
+    assert_eq!(decided["schema"]["type"], "boolean");
+    assert_eq!(
+        decided["schema"]["enum"],
+        serde_json::json!([true]),
+        "only `true` has a meaning, so `false` is refused"
+    );
+    let said = text(decided);
+    for needle in ["approved", "applied", "rejected", "`status`", "400"] {
+        assert!(said.contains(needle), "`decided` must say `{needle}`");
+    }
+    for name in ["status", "swimlane", "cursor", "limit"] {
+        assert!(
+            param(&d, list, "query", name).is_some(),
+            "listProposals keeps `{name}`"
+        );
+    }
+
+    for name in ["ProposalAction", "ProposalVia"] {
+        assert_bounded(&d, name);
+    }
+}
+
+/// Approving and rejecting a proposal that is not pending (or has expired) is a 422 `not_allowed`, and a decision that
+/// finds the lease held is 423: both are documented on both operations.
+#[test]
+fn decisions_document_422_and_423() {
+    let d = doc();
+    for id in ["approveProposal", "rejectProposal"] {
+        let (_, _, op) = operation(&d, id);
+        assert_eq!(op["x-required-role"], "admin", "{id}");
+        assert_eq!(
+            op["responses"]["422"]["$ref"], "#/components/responses/Unprocessable",
+            "{id} documents 422"
+        );
+        assert_eq!(
+            op["responses"]["423"]["$ref"], "#/components/responses/Locked",
+            "{id} documents 423"
+        );
+        let said = op["description"].as_str().unwrap_or("").to_lowercase();
+        for needle in ["not pending", "`not_allowed`", "423"] {
+            assert!(
+                said.contains(needle),
+                "the description of {id} must say `{needle}`"
+            );
+        }
+        for code in ["200", "400", "401", "403", "404", "default"] {
+            assert!(op["responses"].get(code).is_some(), "{id} keeps {code}");
+        }
+    }
+    // The stale-proposal conflict stays where it was.
+    let (_, _, approve) = operation(&d, "approveProposal");
+    assert_eq!(
+        approve["responses"]["409"]["$ref"],
+        "#/components/responses/Conflict"
+    );
+}
+
 /// Every operation this file adds names its audit action, or says why it has none (rule 8: one audit event per state
 /// change). A read changes nothing; the one non-GET, `previewPr`, writes and records nothing, as `previewFileEffect` does.
 #[test]
@@ -546,6 +713,7 @@ fn new_operations_name_their_audit_action_or_say_why_not() {
         ("previewPr", "none: no state change"),
         ("getConfigServerRestartOffer", "none: a read"),
         ("getRestartOffer", "none: a read"),
+        ("getProposal", "none: a read"),
     ];
     for (id, audit) in table {
         let (method, _, op) = operation(&d, id);
