@@ -1,0 +1,20 @@
+multipart/form-data; boundary=----seed
+------seed
+Content-Disposition: form-data; name="action"
+
+upload
+------seed
+Content-Disposition: form-data; name="path"
+
+new.yml
+------seed
+Content-Disposition: form-data; name="expected_state"
+
+absent
+------seed
+Content-Disposition: form-data; name="file"; filename="f"
+Content-Type: application/octet-stream
+
+n: 1
+
+------seed--
