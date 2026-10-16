@@ -6822,20 +6822,52 @@ components:
       - expected
       - content
     Me:
-      allOf:
-      - $ref: '#/components/schemas/User'
-      - type: object
-        properties:
-          swimlane_access:
-            type: string
-            enum:
-            - all
-            description: Every signed-in user sees every swimlane.
-          needs_github_token:
-            type: boolean
-            description: True while the user has no stored GitHub token, so the web app can prompt for one before
-              the first edit. Absent in older servers; treat absence as false.
-        additionalProperties: false
+      type: object
+      description: The signed-in user and what the web app needs at sign-in. Every field of `User`, defined as there, and
+        `swimlane_access` and `needs_github_token`. It repeats `User` instead of composing it with `allOf`, because `User`
+        is closed and a closed `allOf` member rejects the keys of its sibling, so no body the hub sends could be valid.
+      properties:
+        id:
+          $ref: '#/components/schemas/UserId'
+        email:
+          $ref: '#/components/schemas/ShortText'
+        display_name:
+          $ref: '#/components/schemas/ShortText'
+        role:
+          oneOf:
+          - $ref: '#/components/schemas/Role'
+          - type: 'null'
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        requires_approval:
+          type: boolean
+        github_login:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+        last_seen_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+        swimlane_access:
+          type: string
+          enum:
+          - all
+          description: Every signed-in user sees every swimlane.
+        needs_github_token:
+          type: boolean
+          description: True while the user has no stored GitHub token, so the web app can prompt for one before
+            the first edit. Absent in older servers; treat absence as false.
+      additionalProperties: false
+      required:
+      - id
+      - email
+      - display_name
+      - role
+      - status
+      - requires_approval
+      - github_login
+      - last_seen_at
     GithubTokenRequest:
       type: object
       properties:
@@ -7551,15 +7583,33 @@ components:
       - priority
       - enabled
     SeverityRule:
-      allOf:
-      - type: object
-        properties:
-          id:
-            $ref: '#/components/schemas/ConfigKey'
-        additionalProperties: false
-        required:
-        - id
-      - $ref: '#/components/schemas/SeverityRuleInput'
+      type: object
+      description: A severity rule and its id. Every field of `SeverityRuleInput`, defined as there, and `id`. It repeats
+        the input instead of composing it with `allOf`, because both members are closed and a closed `allOf` member
+        rejects the keys of its sibling, so no body the hub sends could be valid.
+      properties:
+        id:
+          $ref: '#/components/schemas/ConfigKey'
+        name:
+          $ref: '#/components/schemas/ShortText'
+        match:
+          $ref: '#/components/schemas/SeverityMatch'
+        severity:
+          $ref: '#/components/schemas/Severity'
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 10000
+        enabled:
+          type: boolean
+      additionalProperties: false
+      required:
+      - id
+      - name
+      - match
+      - severity
+      - priority
+      - enabled
     OsLoginUser:
       type: object
       properties:
@@ -7670,27 +7720,42 @@ components:
       description: Baselines and versions referenced by audit events, proposals, drafts or PR links are always kept
         (D78).
     RetentionSettings:
-      allOf:
-      - $ref: '#/components/schemas/RetentionInput'
-      - type: object
-        properties:
-          updated_at:
-            oneOf:
-            - $ref: '#/components/schemas/Timestamp'
-            - type: 'null'
-          updated_by:
-            oneOf:
-            - $ref: '#/components/schemas/UserId'
-            - type: 'null'
-          dry_run_preview:
-            oneOf:
-            - $ref: '#/components/schemas/RetentionPreview'
-            - type: 'null'
-        additionalProperties: false
-        required:
-        - updated_at
-        - updated_by
-        - dry_run_preview
+      type: object
+      description: The retention settings and when and by whom they last changed. Every field of `RetentionInput`,
+        defined as there, and `updated_at`, `updated_by` and `dry_run_preview`. It repeats the input instead of
+        composing it with `allOf`, because both members are closed and a closed `allOf` member rejects the keys of its
+        sibling, so no body the hub sends could be valid. Baselines and versions referenced by audit events,
+        proposals, drafts or PR links are always kept (D78).
+      properties:
+        keep_last_versions:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          description: Per file (default 50).
+        keep_days:
+          type: integer
+          minimum: 1
+          maximum: 3650
+          description: Default 180 (Q33).
+        updated_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+        updated_by:
+          oneOf:
+          - $ref: '#/components/schemas/UserId'
+          - type: 'null'
+        dry_run_preview:
+          oneOf:
+          - $ref: '#/components/schemas/RetentionPreview'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - keep_last_versions
+      - keep_days
+      - updated_at
+      - updated_by
+      - dry_run_preview
     AgentRegistration:
       type: object
       properties:

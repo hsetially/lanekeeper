@@ -725,24 +725,27 @@ fn cookie_names_have_the_host_prefix() {
 }
 
 /// 03a: `Me.needs_github_token` is an additive boolean (the signed-in user has no stored GitHub token yet).
+///
+/// `Me` is one closed object that repeats the properties of `User` (contract/08-web: an `allOf` of two closed schemas validates
+/// no body, `web_contract_allof.rs`), so the flag is a property of `Me` itself, and it is not required.
 #[test]
 fn me_has_the_additive_needs_github_token_flag() {
     let d = doc();
     let me = &d["components"]["schemas"]["Me"];
-    let props = me["allOf"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find_map(|p| p.get("properties"))
-        .expect("Me adds properties to User");
-    assert_eq!(props["needs_github_token"]["type"], "boolean");
-    for p in me["allOf"].as_array().unwrap() {
-        let required = p.get("required").and_then(Value::as_array);
-        assert!(
-            required.is_none_or(|r| !r.iter().any(|v| v == "needs_github_token")),
-            "a new response field starts optional, so old mocks and clients stay valid"
-        );
-    }
+    assert!(me.get("allOf").is_none(), "Me is one closed object, not an allOf");
+    assert_eq!(
+        me["properties"]["needs_github_token"]["type"], "boolean",
+        "Me carries needs_github_token"
+    );
+    let required = me["required"].as_array().expect("Me requires the keys of User");
+    assert!(
+        !required.iter().any(|v| v == "needs_github_token"),
+        "a new response field starts optional, so old mocks and clients stay valid"
+    );
+    assert!(
+        required.iter().any(|v| v == "id"),
+        "the keys of User stay required, so the schema is not looser than before"
+    );
 }
 
 /// The SSE `EventKind` lists only public events: `user_sessions_revoked` is internal and never streamed.

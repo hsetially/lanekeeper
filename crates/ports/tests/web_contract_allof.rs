@@ -4,17 +4,23 @@
 //! siblings of an `allOf`. So `allOf: [A, B]` with `A` closed rejects every key that only `B` declares, and a body that carries
 //! one can never be valid. CG13 found it on `ConflictProblem` and `LockedProblem` (a closed extension next to the open
 //! `Problem`); `SwimlaneDetail` had it too, and worse: both of its members were closed, `SwimlaneSummary` and the extension
-//! with `services` and `auto_notify`, so not even the body of an old server validated.
+//! with `services` and `auto_notify`, so not even the body of an old server validated. Three schemas that were already in the
+//! document on `main` had it as well, `Me`, `SeverityRule` and `RetentionSettings`, and the human decided to fix them in this
+//! PR with the technique of `SwimlaneDetail`: one closed object that repeats the properties of its members.
 //!
-//! This file scans the whole document (components, paths, responses, inline schemas) for the pattern, with an explicit list
-//! of the offenders that were already in the document and are not fixed here, and holds `SwimlaneDetail` to what the hub
-//! sends: the summary and the two more fields, in one closed object, with the summary's definitions repeated and held equal.
-//! Nothing here changes what was valid before: no body ever validated against the closed `allOf`.
+//! This file scans the whole document (components, paths, responses, inline schemas) for the pattern, and expects to find
+//! none: there is no list of known debt. It holds each of the four flat schemas to what the server sends: the members'
+//! properties, each defined exactly as the member defines it, and the extra fields, in one closed object. Nothing here changes
+//! what was valid before: no body ever validated against any of the four closed `allOf`s.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeSet;
 
-use domain::{PickupState, ServiceRef, ServiceState, SwimlaneSummary};
+use domain::{
+    ChangeKind, FindingKind, PickupState, Role, ServiceRef, ServiceState, Severity, ShortText,
+    SwimlaneSummary, Timestamp, User, UserStatus,
+};
+use ports::conformance::sample::{user, user_id};
 use serde_json::{Value, json};
 
 const SPEC: &str = include_str!("../../../api/openapi.yaml");
@@ -110,19 +116,6 @@ fn offenders(d: &Value) -> BTreeSet<String> {
     out
 }
 
-/// The schemas that had this defect before this PR and still have it. Known debt: not fixed here, because each is an existing
-/// operation's schema that this PR has no brief to change, and the human has not decided how (a flat object, as
-/// `SwimlaneDetail` is now, or open members). Found by this scan on `origin/main`; each one never validated a real body.
-///   `Me` (`getMe`): `allOf [User, {needs_github_token, swimlane_access}]`, `User` and the extension both closed.
-///   `SeverityRule` (the severity rule routes): `allOf [{id}, SeverityRuleInput]`, both closed.
-///   `RetentionSettings` (the retention routes): `allOf [RetentionInput, {dry_run_preview, updated_at, updated_by}]`, both closed.
-/// An entry is removed when its schema is fixed, and the test below fails until it is.
-const KNOWN_DEBT: [&str; 3] = [
-    "#/components/schemas/Me",
-    "#/components/schemas/RetentionSettings",
-    "#/components/schemas/SeverityRule",
-];
-
 fn locations(found: &BTreeSet<String>) -> BTreeSet<String> {
     found
         .iter()
@@ -133,24 +126,11 @@ fn locations(found: &BTreeSet<String>) -> BTreeSet<String> {
 #[test]
 fn no_allof_closes_out_its_siblings() {
     let found = locations(&offenders(&doc()));
-    let debt: BTreeSet<String> = KNOWN_DEBT.iter().map(|s| (*s).to_owned()).collect();
-    let new: Vec<_> = found.difference(&debt).collect();
     assert!(
-        new.is_empty(),
-        "an allOf has a closed member that rejects what its sibling declares, so no real body validates: {new:#?}\n\
+        found.is_empty(),
+        "an allOf has a closed member that rejects what its sibling declares, so no real body validates: {found:#?}\n\
          (compose the schema as one closed object that repeats the fields, or open the members; `SwimlaneDetail` is the example)"
     );
-}
-
-#[test]
-fn the_known_debt_is_still_debt() {
-    let found = locations(&offenders(&doc()));
-    for entry in KNOWN_DEBT {
-        assert!(
-            found.contains(entry),
-            "{entry} no longer has the defect: remove it from KNOWN_DEBT"
-        );
-    }
 }
 
 /// The scan has teeth: it finds the two defects of this PR when they are put back, in a copy of the document.
@@ -173,6 +153,26 @@ fn the_scan_finds_the_defects_it_was_written_for() {
         found.contains("#/components/schemas/SwimlaneDetail"),
         "{found:#?}"
     );
+
+    // The three schemas that were fixed after `SwimlaneDetail`, each put back as it was.
+    for (name, old_shape) in [
+        ("Me", closed_allof_me()),
+        ("SeverityRule", closed_allof_severity_rule()),
+        ("RetentionSettings", closed_allof_retention()),
+    ] {
+        let mut d = doc();
+        d["components"]["schemas"][name] = old_shape;
+        let found = locations(&offenders(&d));
+        assert!(
+            found.contains(&format!("#/components/schemas/{name}")),
+            "{name}: {found:#?}"
+        );
+        assert_eq!(
+            found.len(),
+            1,
+            "{name} is the only offender once it is put back: {found:#?}"
+        );
+    }
 
     // An inline schema of a response is found too, not only the components.
     let mut d = doc();
@@ -500,4 +500,415 @@ fn swimlane_detail_is_the_summary_and_two_more_fields_in_one_closed_object() {
         .cloned()
         .collect();
     assert_eq!(keys, detail_props.keys().cloned().collect::<BTreeSet<_>>());
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// `Me`, `SeverityRule` and `RetentionSettings`
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// `Me` as it was: `User` (closed) and a closed extension.
+fn closed_allof_me() -> Value {
+    json!({
+        "allOf": [
+            {"$ref": "#/components/schemas/User"},
+            {
+                "type": "object",
+                "properties": {
+                    "swimlane_access": {"type": "string", "enum": ["all"]},
+                    "needs_github_token": {"type": "boolean"}
+                },
+                "additionalProperties": false
+            }
+        ]
+    })
+}
+
+/// `SeverityRule` as it was: `{id}` (closed) and `SeverityRuleInput` (closed).
+fn closed_allof_severity_rule() -> Value {
+    json!({
+        "allOf": [
+            {
+                "type": "object",
+                "properties": {"id": {"$ref": "#/components/schemas/ConfigKey"}},
+                "additionalProperties": false,
+                "required": ["id"]
+            },
+            {"$ref": "#/components/schemas/SeverityRuleInput"}
+        ]
+    })
+}
+
+/// `RetentionSettings` as it was: `RetentionInput` (closed) and a closed extension.
+fn closed_allof_retention() -> Value {
+    json!({
+        "allOf": [
+            {"$ref": "#/components/schemas/RetentionInput"},
+            {
+                "type": "object",
+                "properties": {
+                    "updated_at": {"oneOf": [{"$ref": "#/components/schemas/Timestamp"}, {"type": "null"}]},
+                    "updated_by": {"oneOf": [{"$ref": "#/components/schemas/UserId"}, {"type": "null"}]},
+                    "dry_run_preview": {"oneOf": [{"$ref": "#/components/schemas/RetentionPreview"}, {"type": "null"}]}
+                },
+                "additionalProperties": false,
+                "required": ["updated_at", "updated_by", "dry_run_preview"]
+            }
+        ]
+    })
+}
+
+/// A flat schema is one closed object: no `allOf`, `additionalProperties: false`, a description that says why it repeats its
+/// members, every property of every member defined exactly as the member defines it, exactly `extras` more, and the members'
+/// required keys plus `extra_required`. Returns the properties of the flat schema.
+fn assert_flat<'a>(
+    d: &'a Value,
+    name: &str,
+    members: &[&str],
+    extras: &[&str],
+    extra_required: &[&str],
+) -> &'a serde_json::Map<String, Value> {
+    let schemas = &d["components"]["schemas"];
+    let flat = &schemas[name];
+    assert!(
+        flat.get("allOf").is_none(),
+        "{name}: an allOf of a closed member cannot validate a real body"
+    );
+    assert_eq!(flat["type"], "object", "{name}");
+    assert_eq!(flat["additionalProperties"], false, "{name} stays closed");
+    assert!(
+        flat["description"].as_str().is_some_and(|t| t.contains("allOf")),
+        "{name}: the description says why its members are repeated and not composed with allOf"
+    );
+    let props = flat["properties"].as_object().unwrap();
+    let mut own: BTreeSet<String> = BTreeSet::new();
+    let mut required = BTreeSet::new();
+    for member in members {
+        let member_schema = &schemas[*member];
+        // The member stays what it was: closed, so that it is still the request body or the shape of a bare user.
+        assert_eq!(
+            member_schema["additionalProperties"], false,
+            "{member} stays closed"
+        );
+        for (key, def) in member_schema["properties"].as_object().unwrap() {
+            assert_eq!(
+                props.get(key),
+                Some(def),
+                "{name}.{key} is defined as {member}.{key} is"
+            );
+            own.insert(key.clone());
+        }
+        required.extend(member_schema.get("required").map(strings).unwrap_or_default());
+    }
+    let more: BTreeSet<String> = props.keys().filter(|k| !own.contains(*k)).cloned().collect();
+    assert_eq!(
+        more,
+        extras.iter().map(|s| (*s).to_owned()).collect::<BTreeSet<_>>(),
+        "{name}: the properties that are not a member's"
+    );
+    required.extend(extra_required.iter().map(|s| (*s).to_owned()));
+    assert_eq!(
+        flat.get("required").map(strings).unwrap_or_default(),
+        required,
+        "{name}: the required keys of the members, and the extra ones, and no more"
+    );
+    props
+}
+
+/// The body of `getMe` as `hub-identity` builds it (`routes/me.rs`): the real `domain::User`, serialised, and the two more keys.
+fn me_body(user: &User, needs_github_token: bool) -> Value {
+    let mut body = serde_json::to_value(user).unwrap();
+    body["swimlane_access"] = json!("all");
+    body["needs_github_token"] = json!(needs_github_token);
+    body
+}
+
+fn editor_with_everything() -> User {
+    User {
+        github_login: Some(ShortText::parse("octocat").unwrap()),
+        last_seen_at: Some(Timestamp::from_unix_millis(1_700_000_000_000)),
+        ..user(1, Some(Role::Editor), UserStatus::Active)
+    }
+}
+
+#[test]
+fn a_real_me_body_never_validated_against_the_closed_allof() {
+    let d = doc();
+    let old = closed_allof_me();
+    for u in [
+        editor_with_everything(),
+        user(2, Some(Role::Viewer), UserStatus::Active),
+    ] {
+        let err = check(&d, &old, &me_body(&u, true), "$")
+            .expect_err("a closed allOf cannot hold the keys of its sibling");
+        assert!(err.contains("additionalProperties: false"), "{err}");
+    }
+    // Not even the bare user: the closed extension rejects every key of `User`.
+    let err = check(
+        &d,
+        &old,
+        &serde_json::to_value(editor_with_everything()).unwrap(),
+        "$",
+    )
+    .expect_err("the extension is closed");
+    assert!(err.contains("is not allowed"), "{err}");
+}
+
+#[test]
+fn me_accepts_what_the_hub_sends_and_nothing_else() {
+    let d = doc();
+    let me = &d["components"]["schemas"]["Me"];
+    // Every user the hub can write: a role or none, with and without a GitHub login and a last-seen time, either flag.
+    for u in [
+        editor_with_everything(),
+        user(2, Some(Role::Viewer), UserStatus::Active),
+        user(3, None, UserStatus::Pending),
+        user(4, Some(Role::Admin), UserStatus::Disabled),
+    ] {
+        for flag in [true, false] {
+            check(&d, me, &me_body(&u, flag), "$")
+                .unwrap_or_else(|e| panic!("`/me` of {u:?} is refused: {e}"));
+        }
+    }
+    // An older server sends the user and neither extra key; both are optional, and each stands alone.
+    let bare = serde_json::to_value(editor_with_everything()).unwrap();
+    check(&d, me, &bare, "$").expect("a body of a server that predates both keys");
+    let mut only_flag = bare.clone();
+    only_flag["needs_github_token"] = json!(false);
+    check(&d, me, &only_flag, "$").expect("needs_github_token alone");
+    let mut only_access = bare;
+    only_access["swimlane_access"] = json!("all");
+    check(&d, me, &only_access, "$").expect("swimlane_access alone");
+
+    let body = me_body(&editor_with_everything(), true);
+    let mut extra = body.clone();
+    extra["undeclared"] = json!(1);
+    assert!(check(&d, me, &extra, "$").is_err(), "`Me` stays closed");
+    for key in [
+        "id",
+        "email",
+        "display_name",
+        "role",
+        "status",
+        "requires_approval",
+        "github_login",
+        "last_seen_at",
+    ] {
+        let mut without = body.clone();
+        without.as_object_mut().unwrap().remove(key);
+        assert!(
+            check(&d, me, &without, "$").is_err(),
+            "`{key}` of `User` stays required"
+        );
+    }
+    let mut other_access = body;
+    other_access["swimlane_access"] = json!("some");
+    assert!(
+        check(&d, me, &other_access, "$").is_err(),
+        "swimlane_access is `all`"
+    );
+}
+
+#[test]
+fn me_is_the_user_and_two_optional_fields_in_one_closed_object() {
+    let d = doc();
+    let props = assert_flat(
+        &d,
+        "Me",
+        &["User"],
+        &["needs_github_token", "swimlane_access"],
+        &[],
+    );
+    assert_eq!(props["needs_github_token"]["type"], "boolean");
+    assert_eq!(props["swimlane_access"]["type"], "string");
+    assert_eq!(props["swimlane_access"]["enum"], json!(["all"]));
+    // What the hub writes is the user's keys and the two more, and nothing else.
+    let keys: BTreeSet<String> = me_body(&editor_with_everything(), true)
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(keys, props.keys().cloned().collect::<BTreeSet<_>>());
+    // The two new keys are optional: an old body and an old mock stay valid (`me_has_the_additive_needs_github_token_flag`).
+    let required = strings(&d["components"]["schemas"]["Me"]["required"]);
+    assert!(!required.contains("needs_github_token") && !required.contains("swimlane_access"));
+}
+
+/// The body of `adminPutSeverityRules` (200) and the items of `adminListSeverityRules`: the rule and its id. The enums are the
+/// domain's, so the wire names are the ones the engine writes.
+fn severity_rule_body() -> Value {
+    json!({
+        "id": "prod-hosts-critical",
+        "name": "Production hosts",
+        "match": {
+            "finding_kinds": [serde_json::to_value(FindingKind::EnvironmentHostMismatch).unwrap()],
+            "change_kinds": [serde_json::to_value(ChangeKind::Changed).unwrap()],
+            "path_glob": "**/*.yml",
+            "setting_glob": null
+        },
+        "severity": serde_json::to_value(Severity::Critical).unwrap(),
+        "priority": 100,
+        "enabled": true
+    })
+}
+
+#[test]
+fn a_real_severity_rule_body_never_validated_against_the_closed_allof() {
+    let d = doc();
+    let err = check(&d, &closed_allof_severity_rule(), &severity_rule_body(), "$")
+        .expect_err("a closed allOf cannot hold the keys of its sibling");
+    assert!(err.contains("additionalProperties: false"), "{err}");
+}
+
+#[test]
+fn severity_rule_accepts_what_the_admin_routes_send_and_nothing_else() {
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+    let rule = &schemas["SeverityRule"];
+    let body = severity_rule_body();
+    check(&d, rule, &body, "$").unwrap_or_else(|e| panic!("a severity rule is refused: {e}"));
+    // A rule with no conditions at all, and every severity.
+    let mut open = body.clone();
+    open["match"] = json!({});
+    check(&d, rule, &open, "$").expect("a match has no required key");
+    for sev in Severity::ALL {
+        let mut b = body.clone();
+        b["severity"] = serde_json::to_value(sev).unwrap();
+        check(&d, rule, &b, "$").unwrap_or_else(|e| panic!("{sev:?}: {e}"));
+    }
+    // The page that lists them.
+    let page = json!({"items": [body.clone(), open], "next": null});
+    check(&d, &schemas["SeverityRulePage"], &page, "$")
+        .unwrap_or_else(|e| panic!("the list page is refused: {e}"));
+
+    let mut extra = body.clone();
+    extra["undeclared"] = json!(1);
+    assert!(
+        check(&d, rule, &extra, "$").is_err(),
+        "`SeverityRule` stays closed"
+    );
+    for key in ["id", "name", "match", "severity", "priority", "enabled"] {
+        let mut without = body.clone();
+        without.as_object_mut().unwrap().remove(key);
+        assert!(check(&d, rule, &without, "$").is_err(), "`{key}` stays required");
+    }
+    let mut high = body.clone();
+    high["priority"] = json!(10_001);
+    assert!(
+        check(&d, rule, &high, "$").is_err(),
+        "`priority` keeps its bound of 10,000"
+    );
+    let mut long = body;
+    long["name"] = json!("x".repeat(257));
+    assert!(
+        check(&d, rule, &long, "$").is_err(),
+        "`name` keeps its bound of 256 characters"
+    );
+}
+
+#[test]
+fn severity_rule_is_the_input_and_an_id_in_one_closed_object() {
+    let d = doc();
+    let props = assert_flat(&d, "SeverityRule", &["SeverityRuleInput"], &["id"], &["id"]);
+    assert_eq!(props["id"]["$ref"], "#/components/schemas/ConfigKey");
+    let keys: BTreeSet<String> = severity_rule_body()
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(keys, props.keys().cloned().collect::<BTreeSet<_>>());
+}
+
+/// The body of `adminGetRetention` and of `adminPutRetention`: the settings and when and by whom they changed. `dry_run_preview`
+/// is the numbers of `?dry_run=true` and null otherwise, and the two `updated_` keys are null for settings nobody has changed.
+fn retention_body(preview: bool, changed: bool) -> Value {
+    json!({
+        "keep_last_versions": 50,
+        "keep_days": 180,
+        "updated_at": if changed { json!(Timestamp::from_unix_millis(1_700_000_000_000)) } else { Value::Null },
+        "updated_by": if changed { json!(user_id(1)) } else { Value::Null },
+        "dry_run_preview": if preview {
+            json!({"versions_to_delete": 12, "bytes_to_free": 4096, "versions_kept_by_reference": 3})
+        } else {
+            Value::Null
+        }
+    })
+}
+
+#[test]
+fn a_real_retention_body_never_validated_against_the_closed_allof() {
+    let d = doc();
+    let err = check(&d, &closed_allof_retention(), &retention_body(false, true), "$")
+        .expect_err("a closed allOf cannot hold the keys of its sibling");
+    assert!(err.contains("additionalProperties: false"), "{err}");
+}
+
+#[test]
+fn retention_settings_accepts_what_the_admin_routes_send_and_nothing_else() {
+    let d = doc();
+    let retention = &d["components"]["schemas"]["RetentionSettings"];
+    for (preview, changed) in [(false, true), (true, true), (false, false), (true, false)] {
+        check(&d, retention, &retention_body(preview, changed), "$")
+            .unwrap_or_else(|e| panic!("preview {preview}, changed {changed}: {e}"));
+    }
+    let body = retention_body(true, true);
+    let mut extra = body.clone();
+    extra["undeclared"] = json!(1);
+    assert!(
+        check(&d, retention, &extra, "$").is_err(),
+        "`RetentionSettings` stays closed"
+    );
+    for key in [
+        "keep_last_versions",
+        "keep_days",
+        "updated_at",
+        "updated_by",
+        "dry_run_preview",
+    ] {
+        let mut without = body.clone();
+        without.as_object_mut().unwrap().remove(key);
+        assert!(
+            check(&d, retention, &without, "$").is_err(),
+            "`{key}` stays required"
+        );
+    }
+    for (key, value) in [
+        ("keep_last_versions", 10_001),
+        ("keep_last_versions", 0),
+        ("keep_days", 3651),
+        ("keep_days", 0),
+    ] {
+        let mut b = body.clone();
+        b[key] = json!(value);
+        assert!(
+            check(&d, retention, &b, "$").is_err(),
+            "`{key}` keeps its bounds: {value}"
+        );
+    }
+    let mut negative = body;
+    negative["dry_run_preview"]["bytes_to_free"] = json!(-1);
+    assert!(
+        check(&d, retention, &negative, "$").is_err(),
+        "the preview keeps its bounds"
+    );
+}
+
+#[test]
+fn retention_settings_is_the_input_and_three_more_fields_in_one_closed_object() {
+    let d = doc();
+    let props = assert_flat(
+        &d,
+        "RetentionSettings",
+        &["RetentionInput"],
+        &["dry_run_preview", "updated_at", "updated_by"],
+        &["dry_run_preview", "updated_at", "updated_by"],
+    );
+    let keys: BTreeSet<String> = retention_body(true, true)
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(keys, props.keys().cloned().collect::<BTreeSet<_>>());
 }
