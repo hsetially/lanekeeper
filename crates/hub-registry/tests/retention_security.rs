@@ -264,7 +264,7 @@ async fn the_job_runs_as_the_app_role_and_needs_nothing_the_app_role_does_not_ha
 /// Every class of reference, an old tool-write registration, an old sentinel record, a processed window and a stale staged part, in one
 /// database; one real run. The tables that changed are exactly the ones the job is named for: the blobs (and what cascades from them),
 /// the staged parts and the windows. Not the audit chain (a collection is not audited, A12), not the outbox (nothing is published), not
-/// `tool_write_registrations` (the matcher job sweeps it, D107) and not `sentinel_records` (the partitions job owns it, T7), whose rows
+/// `tool_write_registrations` (the matcher job sweeps it, D120) and not `sentinel_records` (the partitions job owns it, T7), whose rows
 /// are old enough to tempt a careless sweep.
 #[tokio::test]
 async fn a_run_changes_no_table_but_the_ones_it_is_named_for() {

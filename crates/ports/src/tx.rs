@@ -19,8 +19,8 @@ use crate::fakes::FakeTxState;
 /// The handle is opaque on purpose: a caller hands it to a port and can see nothing inside it, so it cannot know what a port
 /// runs, nor rely on that failing cleanly. A port whose failure must not abort the caller's transaction therefore opens a
 /// savepoint of its own: that is the contract of `ToolWrites::register` and `register_delete` (see the docs of
-/// [`crate::ToolWrites`]). A caller that holds the sqlx transaction can also wrap the call in a savepoint of its own, as
-/// defence in depth.
+/// [`crate::ToolWrites`]). A caller that holds the connection can also wrap the call in a savepoint of its own, as defence in
+/// depth (raw SQL, as the docs of [`Tx::pg`] say).
 pub struct Tx<'a> {
     inner: Inner<'a>,
 }
@@ -79,10 +79,11 @@ impl<'a> Tx<'a> {
     /// (`ToolWrites`) opens a savepoint of its own on this connection, runs its statements in it, and rolls back to it before
     /// it returns an error. That is the implementation's contract; a caller may also wrap the call in a savepoint of its own.
     ///
-    /// - `sqlx::Connection::begin` on the connection opens a savepoint only inside a transaction **opened by sqlx** (as every
-    ///   production caller does, through `Tx::from_pg(&mut tx)`). After a raw `BEGIN`, `begin()` issues a second `BEGIN`, and
-    ///   its rollback ends the caller's whole transaction. An implementation that cannot rely on sqlx having opened the
-    ///   transaction issues `SAVEPOINT`, `RELEASE` and `ROLLBACK TO` itself.
+    /// - Open the savepoint with raw `SAVEPOINT name`, `RELEASE SAVEPOINT name` and `ROLLBACK TO SAVEPOINT name` statements on
+    ///   this connection (the registry's implementation does). Do not use a drop-guard based nested transaction for it, such as
+    ///   `sqlx::Connection::begin`: in sqlx 0.8.6 a nested transaction whose guard is dropped half-way (a cancelled future)
+    ///   rolls back the caller's WHOLE transaction, and after a raw `BEGIN` it issues a second `BEGIN`. A cancelled future
+    ///   must not roll back the caller's transaction.
     /// - A `SET LOCAL` (a `lock_timeout`, say) made inside the savepoint is reverted by a rollback to it but persists after
     ///   `RELEASE`, into the caller's later statements. A registration needs a bounded wait, so the implementation restores
     ///   the previous value after it releases the savepoint, or uses another bound.

@@ -1,0 +1,64 @@
+---
+source: crates/hub-writes/src/teams/cards.rs
+expression: "message(&n, Some(ORIGIN))"
+---
+{
+  "attachments": [
+    {
+      "content": {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "actions": [
+          {
+            "title": "Open in Lanekeeper",
+            "type": "Action.OpenUrl",
+            "url": "https://lanekeeper.example.test/swimlanes/sit1"
+          }
+        ],
+        "body": [
+          {
+            "isSubtle": true,
+            "size": "Small",
+            "text": "Drift detected",
+            "type": "TextBlock",
+            "weight": "Bolder",
+            "wrap": true
+          },
+          {
+            "color": "Attention",
+            "size": "Medium",
+            "text": "Title of the event",
+            "type": "TextBlock",
+            "weight": "Bolder",
+            "wrap": true
+          },
+          {
+            "text": "Two files changed in sit1 by Ada Lovelace",
+            "type": "TextBlock",
+            "wrap": true
+          },
+          {
+            "facts": [
+              {
+                "title": "Severity",
+                "value": "High"
+              },
+              {
+                "title": "Swimlane",
+                "value": "sit1"
+              }
+            ],
+            "type": "FactSet"
+          }
+        ],
+        "msteams": {
+          "width": "Full"
+        },
+        "type": "AdaptiveCard",
+        "version": "1.4"
+      },
+      "contentType": "application/vnd.microsoft.card.adaptive",
+      "contentUrl": null
+    }
+  ],
+  "type": "message"
+}

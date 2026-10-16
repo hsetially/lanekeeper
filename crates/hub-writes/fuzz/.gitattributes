@@ -1,0 +1,2 @@
+# The seeds are exact bytes: a multipart seed needs its CRLF line ends, and no seed may be normalised (D17, S22).
+corpus/** -text

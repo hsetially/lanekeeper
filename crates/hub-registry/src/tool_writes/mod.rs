@@ -1,4 +1,4 @@
-//! The registry's side of `ports::ToolWrites` (T1, A10, D73, D107): prompt 06 tells the registry which hash it is about to put on NFS
+//! The registry's side of `ports::ToolWrites` (T1, A10, D73, D120): prompt 06 tells the registry which hash it is about to put on NFS
 //! (or which version of a file it is about to delete), and the registry explains the next observation of it as a tool write, with the
 //! user as the actor and `certain` as the confidence, instead of an out-of-band change.
 //!
@@ -94,7 +94,7 @@ pub(crate) const TTL_MS: i64 = 15 * 60 * 1000;
 
 /// How much earlier than a registration's stamp the registry may have applied an observation that the registration then explains late.
 ///
-/// **Decided by the implementer (D107), narrower than the port's text.** A registration that commits late takes the newest eligible
+/// **Decided by the implementer (D120), narrower than the port's text.** A registration that commits late takes the newest eligible
 /// observation of its hash applied within the TTL; the tool registers *before* it writes, so an observation applied before the registration
 /// was even stamped is not the write that it announced, and without this floor a revert to content that someone else wrote ten minutes ago
 /// would credit that older observation to the editor (and leave the editor's own change out of band). The floor is the skew allowed between

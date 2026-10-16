@@ -212,21 +212,24 @@ pub trait GitReader {                                    // sync; call via spawn
 // client). The MUST is the implementation's because it is the contract, and the conformance suites cannot test it: the fakes have
 // no failed state, so an implementation that forgets the savepoint passes every suite and fails only in production. Prompt 05
 // tests it against a real Postgres: a failing registration statement, then the audit insert and the commit still succeed, and the
-// registration is absent. Callers (prompt 06) SHOULD ALSO wrap the call in a savepoint of their own (`Tx::from_pg(&mut *savepoint)`,
-// rolled back on `Err`) as defence in depth, because that does not depend on each implementor. A lost connection is not covered:
+// registration is absent. Callers (prompt 06) SHOULD ALSO wrap the call in a savepoint of their own (the same raw statements, rolled
+// back to on `Err`) as defence in depth, because that does not depend on each implementor. A lost connection is not covered:
 // the transaction is gone with the connection, the change appears as an out-of-band change, and the audit event cannot be recorded
 // in that transaction either (the caller's problem, as for any lost connection). A pitfall: a `SET LOCAL lock_timeout` made inside
 // the savepoint is reverted by a rollback to it but PERSISTS after `RELEASE` (300 ms were measured leaking into the caller's later
 // audit insert); a registration needs a bounded wait (AGENTS rule 5), so the implementation restores the previous value after it
-// releases the savepoint, or uses another bound. And `sqlx::Connection::begin` opens a savepoint only inside a transaction opened
-// by sqlx (as every production caller does, through `Tx::from_pg(&mut tx)`); after a raw `BEGIN` it issues a second `BEGIN`, so an
-// implementation that cannot rely on that issues `SAVEPOINT`, `RELEASE` and `ROLLBACK TO` itself.
+// releases the savepoint, or uses another bound. How to open it: with raw `SAVEPOINT name`, `RELEASE SAVEPOINT name` and
+// `ROLLBACK TO SAVEPOINT name` statements on the caller's connection (the registry's implementation does). A drop-guard based nested
+// transaction must not be used for this, such as `sqlx::Connection::begin` on that connection: in sqlx 0.8.6 a nested transaction
+// whose guard is dropped half-way (a cancelled future) rolls back the caller's WHOLE transaction, and after a raw `BEGIN` it issues
+// a second `BEGIN`; a cancelled future must not roll back the caller's transaction.
 //
 // Order, time and keys (rules of the registry, which the port cannot observe, so 05 tests them and the conformance suites do
 // not). "Newer" and "older" mean later and earlier in the PATH'S OBSERVATION ORDER (the order in which the registry applied
-// observations of that swimlane and path), never wall-clock or ingestion time compared across paths. The registry stamps a
-// registration with its own injected clock when `register` or `register_delete` runs, never with a time from a caller, and clamps
-// it to that clock (a registration cannot be dated into the future and never age out of the sweep); the stamp is for the TTL only.
+// observations of that swimlane and path), never wall-clock or ingestion time compared across paths. The registry takes no time
+// from a caller (the port has no time parameter): it stamps a registration with its own injected clock when `register` or
+// `register_delete` runs, so a registration cannot be dated into the future and cannot fail to age out of the sweep; the stamp is
+// for the TTL only.
 // The TTL of a registration runs from that stamp and the TTL of an observation from the moment the registry applied it, never from
 // the agent's `observed_at`. With several hub replicas each stamps with its own clock; skew is harmless for a 15-minute TTL and is
 // assumed small relative to it. A registry cannot know the commit time and a caller-owned transaction has no commit hook, so a registration
@@ -241,12 +244,22 @@ pub trait GitReader {                                    // sync; call via spawn
 // observation (different requests, one path), the OLDEST consumes it, so an observation never has two actors: the one with the
 // lowest `id` (assigned by the registry's store, in the order the registrations were inserted; stamps can disagree across
 // replicas); the others stay pending until their own match, the TTL or an invalidation. A registration that commits after
-// observations attributes at most one.
+// observations attributes at most one, and only above the late-match floor below.
 //
 // Matching a hash registration: one that is visible when its hash is first observed at its path is consumed by that observation;
 // one that commits after observations attributes the newest eligible observation of that exact hash at that path, within the TTL of
-// when the registry applied it. A newer observation of the path that has another hash, or says the file is gone, invalidates a
-// pending hash registration at once (the state that replaced the one it was for).
+// when the registry applied it, and above the floor below. A newer observation of the path that has another hash, or says the file
+// is gone, invalidates a pending hash registration at once (the state that replaced the one it was for).
+//
+// The late match has a floor. A late-committed registration attributes only an observation that the registry applied no earlier
+// than 1 second before the registration's stamp (the registry's constant is `LATE_SKEW_MS`, 1000 ms, which absorbs clock skew
+// between replicas). The tool registers before it writes, so a real write is applied after its own registration's stamp; taken
+// literally, the rule above would let a registration that committed normally take an older observation of the same hash made by
+// someone else (an editor reverts to content a person wrote ten minutes earlier, the matcher runs before the agent reports the
+// editor's write: the old observation would be credited to the editor and the editor's own write left out of band). The cost is on
+// the safe side: a false negative when an interrupted write is retried after the file was already observed, or when replica clocks
+// differ by more than the floor. The floor is a registry rule, and the conformance suites cannot observe it, like the other
+// registry rules here.
 //
 // A delete is a registration of its own kind, pinned to content like a write is: it carries `deleted_hash`, the hash of the file
 // that was deleted (the expected hash the delete carried anyway, AGENTS rule 11). It exists only if `tx` commits (a rollback leaves
@@ -260,8 +273,9 @@ pub trait GitReader {                                    // sync; call via spawn
 //       certain, with this user as the actor; the oldest pending one, if several);
 //   (c) one that commits AFTER observations attributes AT MOST ONE observation: the newest observation of that path in that
 //       swimlane, which must be a deletion matching as in (a), that no hash observation of the path follows, that is eligible,
-//       and that is within the TTL of when the registry applied it; older deletions stay exactly as they were (a person's earlier
-//       delete over NFS is never taken for the tool's, however old the later one is);
+//       that is within the TTL of when the registry applied it, and that is above the late-match floor (applied no earlier than
+//       1 second before the registration's stamp); older deletions stay exactly as they were (a person's earlier delete over NFS
+//       is never taken for the tool's, however old the later one is);
 //   (d) a hash observation later in the path's order than the deletion invalidates it (the file came back); with no deletion
 //       observed yet, one applied after the registration became visible does; a hash observation earlier in the path's order
 //       never does;

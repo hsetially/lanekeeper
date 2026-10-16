@@ -1,0 +1,5 @@
+multipart/form-data; boundary=----seed
+------seed
+Content-Disposition: form-data; name="path"
+
+abc

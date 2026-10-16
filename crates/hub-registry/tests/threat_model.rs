@@ -98,8 +98,8 @@ const CARRY_FORWARD: [(&str, &[&str]); 27] = [
         &["pod start", "per-tenant", "config-server start"],
     ),
     (
-        "tool-write registrations (D107)",
-        &["D107", "TTL", "identical content"],
+        "tool-write registrations (D120)",
+        &["D120", "TTL", "identical content"],
     ),
     ("attribution (D109)", &["D109", "sentinel", "not used up"]),
     (
