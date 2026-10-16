@@ -61,7 +61,7 @@ pub use lease::{
 pub use notify::{Notification, NotificationKind, Notifier, NotifyError};
 pub use read::{ReadError, RegistryRead};
 pub use sink::{ReportSink, SentinelSink, SinkError};
-pub use tool_writes::{ToolWriteEntry, ToolWriteError, ToolWrites};
+pub use tool_writes::{ToolDeleteEntry, ToolWriteEntry, ToolWriteError, ToolWrites};
 pub use tx::{OwnedTx, Tx, TxError, TxFactory, WrongTxKind};
 pub use write::{WriteError, WriteService};
 

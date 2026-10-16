@@ -30,10 +30,48 @@ The signatures below show the shape. Exact generic details are settled in prompt
 }
 
 #[async_trait] pub trait BlobStore {
-    async fn put(&self, bytes: Bytes) -> Result<ContentHash, BlobError>;   // idempotent
+    async fn put(&self, bytes: Bytes) -> Result<ContentHash, BlobError>;   // idempotent; an existing blob has its age refreshed
     async fn get(&self, h: &ContentHash) -> Result<Option<Bytes>, BlobError>; // cached
     async fn get_many(&self, hs: &[ContentHash]) -> Result<Vec<(ContentHash, Bytes)>, BlobError>;
 }
+// Storing a blob that already exists refreshes its age (migration `0008`, `blobs.touched_at`), at most once an hour per blob so that a
+// hot blob does not churn (`hub_platform::blobs::store::TOUCH_INTERVAL`). Why: a writer stores a blob BEFORE the transaction that
+// references it commits (an ingest delta, a staged part of one waiting up to 24 hours, a draft), and the registry's retention deletes
+// blobs that nothing references and whose age is beyond a grace period (48 hours). A re-store that kept the old age would let an old,
+// unreferenced blob whose content came back (a file reverted to a version from months ago) be collected between the store and the commit
+// of its reference, and `file_state`, `file_observations` and `baselines` have no foreign key to `blobs` to stop the commit. The age
+// trails the last `put` by at most one interval, plus the wait for a row lock when the blob is being refreshed or collected at that
+// moment (bounded by the put's own timeout, 5 s by default), and is never ahead of it. A read (`get`, `get_many`) never refreshes.
+// The port has no accessor for the age and gains no method: it is the store's own column, read by retention (05), so the conformance
+// suite cannot pin the refresh and only the Postgres store's tests do. `PgBlobStore::put` is one statement, `PUT_SQL`, and runs
+// outside any caller transaction: `now()` is the transaction start time, so inside a long transaction it would write an older
+// `touched_at`.
+//
+// The grace period of retention must be at least `MIN_RETENTION_GRACE`: the interval plus the longest wait for the reference. That
+// wait is a constant, `MAX_PUT_TO_REFERENCE` (24 hours), and the registry's `staging_ttl` is configurable, so `MIN_RETENTION_GRACE` is
+// the floor for the default only: the registry must range-check `staging_ttl <= MAX_PUT_TO_REFERENCE`, or compute its floor as
+// `TOUCH_INTERVAL + staging_ttl`. Anything that stores a blob and references it more than 24 hours later (for example a prompt-06
+// upload preview that puts a blob and creates its draft or proposal row later) must create the row when it stores the blob, or `put`
+// the blob again when it references it; a draft or a proposal is safe once its row exists, because `drafts.new_hash` and
+// `proposals.new_hash` are RESTRICT foreign keys.
+//
+// Rules for a collector (retention) and for the code that references blobs:
+// A collector must test `touched_at < now() - grace` in the same statement that locks or deletes the row (`DELETE ... WHERE touched_at
+// < ...`, or `SELECT ... FOR UPDATE SKIP LOCKED` with the same condition), never from an earlier read, so that a refresh that commits in
+// between wins. A job that locks first (`FOR UPDATE [SKIP LOCKED]`) must delete in the same transaction while it still holds the lock;
+// a lock that is released before the delete protects nothing. Keep the retention transaction short and set `lock_timeout` on it,
+// because a `put` of an old blob that the transaction has locked waits behind it, up to the put's own timeout. A reference taken by an
+// existence check without a `put` (the registry's `sync/record.rs`, `adoption/confirm.rs` and the guarded insert in `baselines.rs`
+// check that the blob exists and do not store it) is not protected by the refresh: only a `blob_refs` row protects such a reference
+// (its foreign key is RESTRICT), and `baselines.blob_hash`, `file_state.nfs_hash` and `pr_links.nfs_hash` have no foreign key (nor do
+// the other hash columns of the registry's tables), so the retention's reference check must read all of those columns. Any other
+// writer of `blobs` must refresh it the same way, and any code that references a blob without storing it must be covered by the
+// retention's reference check.
+//
+// Rollout: migration `0008` first, then the code. With a rolling deploy the old replicas still run the old `ON CONFLICT DO NOTHING` put,
+// which refreshes nothing. The migration covers that overlap: it makes every existing blob count as touched when it ran, and a blob that
+// an old replica stores gets `now()` from the column's default, so nothing is collectable for the first 48 hours after the migration,
+// far longer than the overlap. The retention job must not be enabled before the last old replica is gone.
 
 pub trait GitReader {                                    // sync; call via spawn_blocking
     fn head(&self, r: RepoKind, branch: &str) -> Result<CommitId, GitError>;
@@ -156,11 +194,123 @@ pub trait GitReader {                                    // sync; call via spawn
 
 /// Called by 06 inside the transaction that carries a write's audit event; implemented by 05 (D73).
 /// A registration becomes visible at commit and 06 commits after the file is written (`WriteFile`), so 05 also matches an
-/// observation that arrives before the commit is visible, and an unmatched registration expires after `ToolWriteEntry::TTL_SECS` (15 minutes), or at once when a newer observation of the path has another hash (see the port's docs).
+/// observation that arrives before the commit is visible, and an unmatched registration expires after `ToolWriteEntry::TTL_SECS` (15 minutes, on the registry's clock, from when `register` ran), or at once when a newer observation of the path has another hash or says the file is gone (see the port's docs).
 #[async_trait] pub trait ToolWrites {
     async fn register(&self, tx: &mut Tx<'_>, swimlane: &SwimlaneId, path: &NfsPath, new_hash: &ContentHash,
                       user: &UserId, request_id: &RequestId) -> Result<(), ToolWriteError>;
+    /// Provided: the default registers nothing and says Ok (see below). `deleted_hash` is the hash of the file that was deleted.
+    async fn register_delete(&self, tx: &mut Tx<'_>, swimlane: &SwimlaneId, path: &NfsPath, deleted_hash: &ContentHash,
+                             user: &UserId, request_id: &RequestId) -> Result<(), ToolWriteError> { Ok(()) }
 }
+// A failed registration must not abort the caller's transaction. Both methods run inside the caller's open transaction, and in
+// Postgres any failed statement aborts it: every later statement, the caller's audit insert included, fails with SQLSTATE 25P02
+// until a ROLLBACK. So an implementation MUST run every statement of a registration inside a savepoint (a nested transaction) that
+// it opens and releases itself, so that any failure rolls back only its own work, leaves the caller's transaction usable, and is
+// returned as `Unavailable`. A caller that gets `Full` or `Unavailable` after the file operation has already happened therefore
+// goes on and records the operation's own audit event in the same transaction (it must not roll it back or hide it: a failed
+// registration only means the change may appear as an out-of-band change, attributed by the other means, the sentinel or the NFS
+// client). The MUST is the implementation's because it is the contract, and the conformance suites cannot test it: the fakes have
+// no failed state, so an implementation that forgets the savepoint passes every suite and fails only in production. Prompt 05
+// tests it against a real Postgres: a failing registration statement, then the audit insert and the commit still succeed, and the
+// registration is absent. Callers (prompt 06) SHOULD ALSO wrap the call in a savepoint of their own (the same raw statements, rolled
+// back to on `Err`) as defence in depth, because that does not depend on each implementor. A lost connection is not covered:
+// the transaction is gone with the connection, the change appears as an out-of-band change, and the audit event cannot be recorded
+// in that transaction either (the caller's problem, as for any lost connection). A pitfall: a `SET LOCAL lock_timeout` made inside
+// the savepoint is reverted by a rollback to it but PERSISTS after `RELEASE` (300 ms were measured leaking into the caller's later
+// audit insert); a registration needs a bounded wait (AGENTS rule 5), so the implementation restores the previous value after it
+// releases the savepoint, or uses another bound. How to open it: with raw `SAVEPOINT name`, `RELEASE SAVEPOINT name` and
+// `ROLLBACK TO SAVEPOINT name` statements on the caller's connection (the registry's implementation does). A drop-guard based nested
+// transaction must not be used for this, such as `sqlx::Connection::begin` on that connection: in sqlx 0.8.6 a nested transaction
+// whose guard is dropped half-way (a cancelled future) rolls back the caller's WHOLE transaction, and after a raw `BEGIN` it issues
+// a second `BEGIN`; a cancelled future must not roll back the caller's transaction.
+//
+// Order, time and keys (rules of the registry, which the port cannot observe, so 05 tests them and the conformance suites do
+// not). "Newer" and "older" mean later and earlier in the PATH'S OBSERVATION ORDER (the order in which the registry applied
+// observations of that swimlane and path), never wall-clock or ingestion time compared across paths. The registry takes no time
+// from a caller (the port has no time parameter): it stamps a registration with its own injected clock when `register` or
+// `register_delete` runs, so a registration cannot be dated into the future and cannot fail to age out of the sweep; the stamp is
+// for the TTL only.
+// The TTL of a registration runs from that stamp and the TTL of an observation from the moment the registry applied it, never from
+// the agent's `observed_at`. With several hub replicas each stamps with its own clock; skew is harmless for a 15-minute TTL and is
+// assumed small relative to it. A registry cannot know the commit time and a caller-owned transaction has no commit hook, so a registration
+// expires at most a few milliseconds early, the safe direction. The key is (swimlane, path, hash, request), without the user: the
+// same key from another user is a no-op that keeps the first user. That is an accepted risk that rests on the uniqueness of
+// hub-made request ids, which nothing enforces; the registry's threat model records it. The bound (`Full`) is the registry's rule,
+// soft by at most the number of registering transactions in flight.
+//
+// Which observation a registration explains (both kinds). An observation is eligible only if it is not already attributed as a
+// tool write: a registration may UPGRADE a weaker attribution (unknown, nfs_client, sentinel_login, fs_owner_hint, sync_job) to
+// tool_write/certain, and never replaces another tool-write attribution. When several registrations are pending for one
+// observation (different requests, one path), the OLDEST consumes it, so an observation never has two actors: the one with the
+// lowest `id` (assigned by the registry's store, in the order the registrations were inserted; stamps can disagree across
+// replicas); the others stay pending until their own match, the TTL or an invalidation. A registration that commits after
+// observations attributes at most one, and only above the late-match floor below.
+//
+// Matching a hash registration: one that is visible when its hash is first observed at its path is consumed by that observation;
+// one that commits after observations attributes the newest eligible observation of that exact hash at that path, within the TTL of
+// when the registry applied it, and above the floor below. A newer observation of the path that has another hash, or says the file
+// is gone, invalidates a pending hash registration at once (the state that replaced the one it was for).
+//
+// The late match has a floor. A late-committed registration attributes only an observation that the registry applied no earlier
+// than 1 second before the registration's stamp (the registry's constant is `LATE_SKEW_MS`, 1000 ms, which absorbs clock skew
+// between replicas). The tool registers before it writes, so a real write is applied after its own registration's stamp; taken
+// literally, the rule above would let a registration that committed normally take an older observation of the same hash made by
+// someone else (an editor reverts to content a person wrote ten minutes earlier, the matcher runs before the agent reports the
+// editor's write: the old observation would be credited to the editor and the editor's own write left out of band). The cost is on
+// the safe side: a false negative when an interrupted write is retried after the file was already observed, or when replica clocks
+// differ by more than the floor. The floor is a registry rule, and the conformance suites cannot observe it, like the other
+// registry rules here.
+//
+// A delete is a registration of its own kind, pinned to content like a write is: it carries `deleted_hash`, the hash of the file
+// that was deleted (the expected hash the delete carried anyway, AGENTS rule 11). It exists only if `tx` commits (a rollback leaves
+// nothing), the same (swimlane, path, deleted hash, request) again is a no-op and never `Full` (the same key from another user keeps
+// the first user), it takes a place in the same bounded queue as a hash registration (`Full` is the answer of `register` and
+// `register_delete`, never of the commit), it is distinct from a hash registration of the same path, hash and request, and a delete
+// of another version of the file is another registration. Its matching is defined by the path's observation order:
+//   (a) a deletion observation of the path matches a delete registration only if the state of the path immediately before that
+//       deletion, in the path's observation order, was the hash `deleted_hash`; a deletion of any other version never matches;
+//   (b) a delete registration that is visible when such a deletion is first observed is consumed by it (attributed `tool_write`,
+//       certain, with this user as the actor; the oldest pending one, if several);
+//   (c) one that commits AFTER observations attributes AT MOST ONE observation: the newest observation of that path in that
+//       swimlane, which must be a deletion matching as in (a), that no hash observation of the path follows, that is eligible,
+//       that is within the TTL of when the registry applied it, and that is above the late-match floor (applied no earlier than
+//       1 second before the registration's stamp); older deletions stay exactly as they were (a person's earlier delete over NFS
+//       is never taken for the tool's, however old the later one is);
+//   (d) a hash observation later in the path's order than the deletion invalidates it (the file came back); with no deletion
+//       observed yet, one applied after the registration became visible does; a hash observation earlier in the path's order
+//       never does;
+//   (e) it expires after the TTL, as a hash registration does. Dropping one is not audited.
+// Where the registry reads "the state immediately before a deletion": the path's observation order is the registry's apply order for
+// the path (`file_observations.id`), and that state is the hash of the closest earlier observation of that path in that order that
+// has a hash (the deletion observation's own `previous_hash`, where the registry recorded it, must agree). Ingestion and the late
+// matcher MUST read it from the same place. A deletion with no earlier observation of the path never matches (safe), and a registry
+// whose last-known state is stale (the tool deleted a version the agent had not yet reported) gets a safe false negative.
+//
+// What remains (the registry's threat model, prompt 05 T10, carries these): (1) the same content recreated by someone else inside
+// the window is indistinguishable from the tool's: a delete of it, recreated and deleted again, is attributed to the tool's
+// registration; and for hash registrations too: if someone else writes H, then H', then H again inside the window, a late
+// registration takes the newest eligible observation of H; (2) concurrent writers of identical content: if the later registration
+// commits first, it takes the observation and the earlier one gets nothing ("oldest pending" only orders registrations that are
+// visible together); both are tool users, so it is a swap between tool users and not a misattribution to a non-tool actor; (3) the
+// assumption that the newest deletion at commit time is the tool's holds inside the duration of the registering transaction.
+//
+// The default of `register_delete` registers nothing and answers `Ok`, so that the method is additive: an implementation that has
+// only `register` keeps compiling, and a delete made through the tool stays an out-of-band change (author unknown, next to the
+// write path's own audit event), which is the safe degradation. The default does not check `tx`, where `register` answers `WrongTx`
+// for a transaction of another store: an implementation that registers deletes must refuse one. A wrapper or decorator of `ToolWrites`
+// MUST forward `register_delete`, or the deletes sent through it are dropped silently. An implementation that overrides
+// `register_delete` MUST make its `ToolWritesProbe` return `Some(..)` from `registered_deletes` and run
+// `ports::conformance::tool_writes_with_deletes` (and `tool_writes_bounded`): this is a convention, and a probe left at the default
+// `None` passes `tool_writes` with every delete rule unchecked. The fake does, and the registry's probe must.
+// `tool_writes_bounded` checks the `Full` rule over both kinds, exactly, one transaction at a time.
+// `ToolDeleteEntry { swimlane, path, deleted_hash, user, request_id }` is what the probe reads back; `ToolWriteEntry` is unchanged.
+//
+// Storage is the implementor's, not the port's. Prompt 05's is the table `tool_write_registrations` (migration `0007`): one row
+// per registration, `hash` NOT NULL (the written hash, or the deleted hash) and `is_delete` NOT NULL (no default), `UNIQUE
+// (swimlane_id, path, hash, request_id, is_delete)` as the idempotency key (so the repeat of either kind is `INSERT 0 0`), the user
+// and the registry's clock beside it, an age index for the expiry sweep and the bound, SELECT, INSERT and DELETE for the app (a
+// registration is never updated, and the app holds no row locks: a sweep or a claim uses `DELETE ... RETURNING`), `ON DELETE
+// CASCADE` from `swimlanes` and no foreign key to `users` (`db/migrations/README.md`).
 
 #[async_trait] pub trait DocSearch {
     async fn search(&self, u: &User, q: &str, limit: usize) -> Result<Vec<DocHit>, DocError>;
