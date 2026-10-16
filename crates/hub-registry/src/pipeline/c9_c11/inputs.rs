@@ -198,10 +198,15 @@ pub(crate) async fn files(db: &Db, swimlane: &SwimlaneId) -> Result<Vec<FileRow>
             size: u64::try_from(size).unwrap_or(0),
         });
     }
-    // The order the engine takes (`NfsPath`'s, bytewise): the database's collation may order paths differently, and the engine's checks
-    // report in the order they are given (the result of the check must not depend on a setting of the database).
-    out.sort_by(|a, b| a.path.cmp(&b.path));
+    in_engine_order(&mut out);
     Ok(out)
+}
+
+/// The order the engine takes (`NfsPath`'s, bytewise): the database's collation may order paths differently (under `en_US.UTF-8` a hyphen
+/// is ignored), and the engine's checks report in the order they are given, so the result of a check must not depend on a setting of the
+/// database.
+pub(crate) fn in_engine_order(rows: &mut [FileRow]) {
+    rows.sort_by(|a, b| a.path.cmp(&b.path));
 }
 
 /// The folders of a swimlane with the time each was first seen (`None` for a folder of the first inventory: C11 takes it as seen at the
@@ -286,4 +291,35 @@ pub(crate) async fn env_names(
             names
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use domain::FileRole;
+
+    use super::*;
+
+    fn row(path: &str) -> FileRow {
+        let p = NfsPath::parse(path).unwrap();
+        FileRow {
+            logical: LogicalFile::from_nfs(p.clone()).unwrap(),
+            path: p,
+            kind: FileKind::Base,
+            class: FileClass::Text,
+            state: DriftState::InSync,
+            role: FileRole::Resource,
+            blob: ContentHash::from_bytes([1; 32]),
+            denied: false,
+            size: 1,
+        }
+    }
+
+    #[test]
+    fn the_rows_come_in_the_engines_byte_order_whatever_order_the_database_gave_them() {
+        // `a-b` before `a/b` and after `a.b` in bytes (`-` 0x2d, `.` 0x2e, `/` 0x2f), which a collation that ignores punctuation would not.
+        let mut rows = vec![row("a/b.yml"), row("a-b.yml"), row("a.b.yml"), row("A.yml")];
+        in_engine_order(&mut rows);
+        let paths: Vec<&str> = rows.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(paths, ["A.yml", "a-b.yml", "a.b.yml", "a/b.yml"]);
+    }
 }
