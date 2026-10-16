@@ -20,8 +20,10 @@
 //!
 //! **An audit event does not pin a blob through its hashes** (`audit_events.hash_before`, `hash_after`). The chain keeps its own diff text
 //! and its hashes (D78, last bullet); a blob is pinned by an audit event only through an explicit `blob_refs` row of kind `audit_event`
-//! that the event's writer chose to add (none does today). So the keep rules decide which versions survive, and the audit chain may name
-//! a hash whose blob is gone: the residual risk of D116.
+//! that the event's writer chose to add (`hub-writes` adds one for each blob that a recorded action keeps, in
+//! `pipeline/execute.rs`; the registry's own writers add `baseline` rows only). Such a blob is pinned twice over: by the foreign key,
+//! while a delete is in flight, and by the `blob_refs.hash` probe of [`NOT_REFERENCED`], which looks at every kind. So the keep rules
+//! decide which versions survive when no row pins them, and the audit chain may name a hash whose blob is gone: the residual risk of D116.
 //!
 //! # Races, and how the statements close them
 //!
