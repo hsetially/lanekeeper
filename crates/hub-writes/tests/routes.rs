@@ -756,8 +756,13 @@ fn write_operations() -> BTreeSet<(String, String)> {
 }
 
 /// The `writes` operations that later tasks of prompt 06 mount, with the task. When one is mounted its line goes, and
-/// `every_write_operation_is_mounted_or_waits_for_its_task` fails until it does. Every operation is mounted now (T11 was the last).
-const LATER: [(&str, &str, &str); 0] = [];
+/// `every_write_operation_is_mounted_or_waits_for_its_task` fails until it does. Every operation of prompt 06 is mounted (T11 was
+/// the last); the rows below are operations that contract/08-web declared for the web app, each waiting for its owner.
+const LATER: [(&str, &str, &str); 1] = [(
+    "POST",
+    "/api/v1/prs/preview",
+    "06 follow-up: PrService::plan without side effects (contract/08-web, CG3)",
+)];
 
 #[test]
 fn route_table_matches_openapi_for_writes() {

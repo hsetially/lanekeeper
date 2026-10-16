@@ -2397,6 +2397,44 @@ paths:
           $ref: '#/components/responses/Forbidden'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/prs/preview:
+    post:
+      operationId: previewPr
+      summary: Preview a pull request
+      description: Shows where the files of a pull request would go before anybody raises it. Nothing is written,
+        audited or recorded, and no job is created. The `Idempotency-Key` is required like on every write, and not
+        recorded. It reads the user's own GitHub token inside the user's own request (S8) to look for the paths on the
+        branch and for an open PR. A target that cannot be used is 422 `invalid_content` and an unknown swimlane is 422
+        `unknown_swimlane`, as on `createPr`.
+      tags:
+      - writes
+      x-required-role: editor
+      parameters:
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PrPreviewRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrPreview'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/search/settings:
     get:
       operationId: searchSettings
@@ -5786,6 +5824,87 @@ components:
       - swimlane
       - paths
       - title
+    PrPreviewRequest:
+      type: object
+      properties:
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        paths:
+          type: array
+          items:
+            $ref: '#/components/schemas/NfsPath'
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+        target:
+          $ref: '#/components/schemas/PrTarget'
+      additionalProperties: false
+      required:
+      - swimlane
+      - paths
+      description: The paths and the target of a `CreatePrRequest`, without the title and the body.
+    PrPreviewFile:
+      type: object
+      properties:
+        nfs_path:
+          $ref: '#/components/schemas/NfsPath'
+        repo_path:
+          $ref: '#/components/schemas/RepoPath'
+          description: Where the file lands in the repository, relative to its root.
+        exists_on_branch:
+          type: boolean
+          description: Whether the file is already on the destination branch, so the PR changes it and does not add it.
+      additionalProperties: false
+      required:
+      - nfs_path
+      - repo_path
+      - exists_on_branch
+    PrPreview:
+      type: object
+      properties:
+        repo:
+          $ref: '#/components/schemas/ShortText'
+          description: The full name of the repository that the PR goes to, `owner/name`, from configuration.
+        destination:
+          $ref: '#/components/schemas/PrTarget'
+          description: The target after it was resolved, the same shape the request may carry. An absent target is
+            replaced by the one the files imply.
+        base_branch:
+          $ref: '#/components/schemas/GitRef'
+          description: The branch of `repo` that the PR is raised against.
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/PrPreviewFile'
+          maxItems: 100
+          description: The files the PR would carry.
+        unchanged:
+          type: array
+          items:
+            $ref: '#/components/schemas/NfsPath'
+          maxItems: 100
+          description: Paths of the request that the PR would not carry, because the branch already has the same
+            content.
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/ShortText'
+          maxItems: 20
+          description: What the person should know about where this PR goes, in the same words as `PrJob.warnings`.
+        open_pr:
+          oneOf:
+          - $ref: '#/components/schemas/PrLink'
+          - type: 'null'
+          description: The pull request that is already open for these paths, which blocks a second one (D77), or null.
+      additionalProperties: false
+      required:
+      - repo
+      - destination
+      - base_branch
+      - files
+      - unchanged
+      - warnings
+      - open_pr
     PrJob:
       type: object
       properties:
