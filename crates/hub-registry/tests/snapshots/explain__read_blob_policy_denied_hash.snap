@@ -10,21 +10,5 @@ expression: plan
     "index": "file_state_denied_hash_idx",
     "node": "Index Only Scan",
     "relation": "file_state"
-  },
-  {
-    "node": "Nested Loop"
-  },
-  {
-    "index": "file_observations_hash_idx",
-    "node": "Index Scan",
-    "relation": "file_observations"
-  },
-  {
-    "node": "Memoize"
-  },
-  {
-    "index": "file_state_prefix_idx",
-    "node": "Index Scan",
-    "relation": "file_state"
   }
 ]

@@ -5,19 +5,24 @@
 //! `BlobPolicy`. A hash is refused when a file that has or has ever had that content is denied by **the one rule of
 //! [`crate::denied::is_denied`]**: the stored flag, the class, or the hub's own deny globs. Two questions are asked, in this order:
 //!
-//! 1. **The flag.** Some file of some swimlane is flagged denied and has that content now (the partial index
-//!    `file_state_denied_hash_idx`, one index probe) or has ever had it (a probe of the index on the observations' hashes and one
-//!    primary-key probe of `file_state` for each observation that has the hash, stopping at the first denied file). A file that becomes
-//!    denied was an ordinary file before, its earlier versions are in the store, and the history of the file names their hashes, so a
-//!    policy that looked only at the version it has now would be a way round the denial for every version before it. This is
-//!    [`DENIED_HASH_SQL`]; it is cheap, and it answers a flagged file's hash however many files have that content.
+//! 1. **The flag.** Some file of some swimlane is flagged denied and has that content now: one probe of the partial index
+//!    `file_state_denied_hash_idx`. This is [`DENIED_HASH_SQL`]. It reads nothing but `file_state`, so its cost does not depend on how many
+//!    files have had the content, and a flagged file's hash is settled by it alone, however many other files have that content.
 //! 2. **The rule, on the paths.** [`HASH_PATHS_SQL`] reads the files that have had the content, by `file_observations_hash_idx` (no
 //!    other index is needed and none was added): for each, its path, its flag and class from `file_state` while the file exists, and
 //!    from its observations when it does not (a file that was deleted loses its `file_state` row, so the flag is gone, but its newest
 //!    observation that has a class still says whether it was denied). The rows go through `is_denied` with the hub's own globs. This
-//!    is what closes two windows that the flag alone leaves open: a hub that restarted with other `extra_deny_globs` while the agents
-//!    have not yet reported the files again (the rows still say "ordinary", and every other read withholds the file because of the
-//!    glob), and a denied file that was deleted (its old versions are still in the store and the history still names them).
+//!    is what closes three windows that the flag of the current content leaves open: a file that becomes denied was an ordinary file
+//!    before, its earlier versions are in the store, and the history of the file names their hashes (the observation of an earlier
+//!    version is read with the file's flag as it is now), so a policy that looked only at the version a file has now would be a way
+//!    round the denial for every version before it; a hub that restarted with other `extra_deny_globs` while the agents have not yet
+//!    reported the files again (the rows still say "ordinary", and every other read withholds the file because of the glob); and a
+//!    denied file that was deleted (its old versions are still in the store and the history still names them).
+//!
+//!    There is no separate probe of the flag of the files that once had the content. It would have no bound (every observation of a popular
+//!    hash, 20 to 37 ms at 100,000 and linear, for any viewer who knows the hash), and it would decide nothing this statement does not:
+//!    the statement reads the same flag through its join, and it refuses a hash that has more sightings than it reads, so a denied
+//!    sighting that is not among the rows it returns is refused all the same.
 //!
 //! **Bounded.** The second statement reads at most [`HASH_PATHS_LIMIT`] plus one rows. A hash that more observations than that have had
 //! cannot be decided, and **an undecided hash is refused**: a 404 for content that was copied into more than a thousand places (at the
@@ -43,12 +48,10 @@ use crate::config::ConfigError;
 use crate::db::Db;
 use crate::metrics::RegistryMetrics;
 
-/// Whether any denied file has this content, or has had it. `$1` is the hash; the predicates are those of the partial indexes
-/// (`file_state_denied_hash_idx`, `file_observations_hash_idx`).
+/// Whether a denied file has this content now. `$1` is the hash; the predicate is that of the partial index `file_state_denied_hash_idx`,
+/// so that this is one index probe. A file that had the content once is the paths statement's question ([`HASH_PATHS_SQL`]).
 pub const DENIED_HASH_SQL: &str = "\
-SELECT EXISTS (SELECT 1 FROM file_state WHERE nfs_hash = $1 AND denied AND nfs_hash IS NOT NULL) \
-    OR EXISTS (SELECT 1 FROM file_observations o JOIN file_state f ON f.swimlane_id = o.swimlane_id AND f.path = o.path \
-               WHERE o.hash = $1 AND o.hash IS NOT NULL AND f.denied)";
+SELECT EXISTS (SELECT 1 FROM file_state WHERE nfs_hash = $1 AND denied AND nfs_hash IS NOT NULL)";
 
 /// The most sightings of one hash that the policy reads to decide it. A hash that more than this many observations have had is refused as
 /// undecided (see the module documentation). At the design scale (40 swimlanes of 2,000 files) the most common content has far fewer.
@@ -328,5 +331,17 @@ mod tests {
         assert!(HASH_PATHS_SQL.contains("LIMIT $2"));
         assert!(HASH_PATHS_SQL.contains("o.hash = $1 AND o.hash IS NOT NULL"));
         assert!(!HASH_PATHS_SQL.contains("OFFSET"));
+    }
+
+    #[test]
+    fn the_probe_of_the_flag_is_one_index_probe_of_file_state_and_reads_no_observation() {
+        // A second `EXISTS` over the observations had no bound: it read every observation of a popular hash (20 to 37 ms at 100,000, linear).
+        assert_eq!(DENIED_HASH_SQL.matches("EXISTS").count(), 1);
+        assert!(
+            DENIED_HASH_SQL
+                .contains("FROM file_state WHERE nfs_hash = $1 AND denied AND nfs_hash IS NOT NULL")
+        );
+        assert!(!DENIED_HASH_SQL.contains("file_observations"));
+        assert!(!DENIED_HASH_SQL.contains("JOIN"));
     }
 }

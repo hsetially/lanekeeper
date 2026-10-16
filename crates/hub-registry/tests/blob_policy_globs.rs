@@ -31,7 +31,7 @@ use http::{Method, Request, StatusCode};
 use http_body_util::BodyExt;
 use hub_platform::blobs::endpoint::{BlobPolicy, BlobState, mount};
 use hub_platform::{GuardedRouter, TEST_USER_HEADER};
-use hub_registry::blob_policy::{DENIED_HASH_SQL, HASH_PATHS_LIMIT};
+use hub_registry::blob_policy::{DENIED_HASH_SQL, HASH_PATHS_LIMIT, HASH_PATHS_SQL};
 use hub_registry::{RegistryBlobPolicy, RegistryConfig, RegistryMetrics};
 use ports::{BlobStore, content_hash};
 use prometheus_client::registry::Registry;
@@ -337,6 +337,21 @@ async fn plant(r: &Reads, hash: &ContentHash, from: usize, count: usize) {
     .await;
 }
 
+/// Like [`plant`], and the last of the `count` observations (the last rows of the hash in every index, as they are written by one statement
+/// on one connection in order) is an observation of `path`, an older version of a file that exists: `count` sightings of `hash`, the file's
+/// the last one.
+async fn plant_ending_with(r: &Reads, hash: &ContentHash, from: usize, count: usize, path: &str) {
+    let last = from + count - 1;
+    r.sql(&format!(
+        "INSERT INTO file_observations (swimlane_id, path, hash, source, class, observed_at) \
+         SELECT 'sit1', CASE WHEN n = {last} THEN '{path}' ELSE 'bulk/f' || n || '.yml' END, '\\x{}', 'scan', 'structured', \
+                now() - (n || ' seconds')::interval \
+         FROM generate_series({from}, {last}) n ORDER BY n",
+        hex::encode(hash.as_bytes()),
+    ))
+    .await;
+}
+
 #[tokio::test]
 async fn a_hash_that_more_files_have_had_than_the_policy_reads_is_refused_as_undecided() {
     let Some(r) = world().await else { return };
@@ -376,22 +391,157 @@ async fn a_hash_that_more_files_have_had_than_the_policy_reads_is_refused_as_und
     assert!(policy.allowed(&h(&ordinary())).await);
 }
 
+/// The statements of the policy among the ones sqlx logged on this thread (the rig's outbox relay runs its own, which are not these).
+fn policy_statements(capture: &LogCapture) -> Vec<support::statements::Statement> {
+    support::statements::statements(capture)
+        .into_iter()
+        .filter(|s| s.text.contains("FROM file_state") || s.text.contains("FROM file_observations"))
+        .collect()
+}
+
+/// The decisions that the flag probe and the paths statement share, with a popular content (05 FIX, review round 2, non-blocking 1). The
+/// probe of the flag asks one thing, "does a denied file have this content now?", through a partial index, so its cost does not grow with
+/// the files that have had the content; every other question (a denied file that had the content once, the hub's globs, a deleted file) is
+/// the paths statement's, and it reads at most the limit plus one rows and refuses a hash that has more. These two tests pin that the
+/// answer to every combination of "a denied file" and "many ordinary sightings" is still a refusal, and that the flag is what decides when
+/// a file's current content is the hash (one statement, however many files have had it).
+#[tokio::test]
+async fn a_denied_files_current_content_is_refused_by_the_probe_of_the_flag_however_many_files_have_had_it() {
+    let Some(r) = world().await else { return };
+    let flipped = h(&flipped_v1());
+    // The control: the same flagged file with no other sighting is refused too, by one statement.
+    let (policy, metrics) = policy(&r, &[]);
+    {
+        let (capture, _guard) = LogCapture::install();
+        assert!(!policy.allowed(&flipped).await);
+        assert_eq!(policy_statements(&capture).len(), 1);
+    }
+    // 1,500 ordinary files have had the same bytes (a key that was copied everywhere): more than the policy reads.
+    plant(&r, &flipped, 1, 3 * HASH_PATHS_LIMIT / 2).await;
+    let (capture, _guard) = LogCapture::install();
+    assert!(
+        !policy.allowed(&flipped).await,
+        "a denied file's content is refused however many ordinary files have had it"
+    );
+    let ran = policy_statements(&capture);
+    assert_eq!(
+        ran.len(),
+        1,
+        "the probe of the flag decided it: the statement that reads the paths did not have to run"
+    );
+    assert!(
+        ran[0].text.contains("nfs_hash = $1 AND denied"),
+        "{}",
+        ran[0].text
+    );
+    assert_eq!(metrics.blob_withheld_count(), 2);
+}
+
+#[tokio::test]
+async fn a_denied_files_earlier_version_is_refused_at_the_limit_and_above_it_whatever_order_the_rows_come_in()
+{
+    // A file that was ordinary when its content was recorded and that is denied now: the probe of the flag does not see this hash (the
+    // file's current content is another one), so the paths statement decides. It reads the rows of the hash in no order, and a denied
+    // row that is not among the ones it returns must not be a way to a "yes": a hash with more sightings than the limit is refused whole.
+    let Some(mut r) = world().await else { return };
+    let (policy, metrics) = policy(&r, &[]);
+
+    // At the limit: the file's own sighting and `limit - 1` others, and the file is ordinary, then denied.
+    let at_the_limit = h("a content a file had before it was denied: at the limit\n");
+    plant(&r, &at_the_limit, 10_000, HASH_PATHS_LIMIT - 1).await;
+    r.world
+        .nfs_change(&[(
+            "conf/late-a.yml",
+            "a content a file had before it was denied: at the limit\n",
+        )])
+        .await;
+    assert!(
+        policy.allowed(&at_the_limit).await,
+        "the control: {HASH_PATHS_LIMIT} sightings, none of them denied"
+    );
+    r.world
+        .nfs_raw(|at| vec![denied_entry("conf/late-a.yml", "its denied version A\n", at)])
+        .await;
+    assert_eq!(flag_of(&r, "conf/late-a.yml").await, Some(true));
+    assert!(
+        !policy.allowed(&at_the_limit).await,
+        "the file is denied now, and this hash is one of its earlier versions"
+    );
+    assert_eq!(metrics.blob_withheld_count(), 1);
+    // The flag alone is enough, whatever the class of the row says (a row that disagrees with itself is denied): the paths statement reads the
+    // flag of the file as it is now for the observation of an earlier version, and it is what refuses this hash.
+    r.sql(
+        "UPDATE file_state SET class = 'structured' WHERE swimlane_id = 'sit1' AND path = 'conf/late-a.yml'",
+    )
+    .await;
+    assert!(
+        !policy.allowed(&at_the_limit).await,
+        "the flag of the file, with the class of an ordinary one"
+    );
+    assert_eq!(metrics.blob_withheld_count(), 2);
+
+    // Above the limit, with the file's sighting written after all the others (the last rows of the hash in the index): the statement
+    // returns the limit plus one rows of the others and never the file's, so only the count can refuse this hash. (The count of a hash
+    // with no denied file is `a_hash_that_more_files_have_had_than_the_policy_reads_is_refused_as_undecided`.) The file is denied, and
+    // one of its older versions is the content that 1,500 other files have had.
+    let above = h("a content a file had before it was denied: above the limit\n");
+    r.world
+        .nfs_raw(|at| vec![denied_entry("conf/late-b.yml", "its denied version B\n", at)])
+        .await;
+    assert_eq!(flag_of(&r, "conf/late-b.yml").await, Some(true));
+    plant_ending_with(&r, &above, 20_000, 3 * HASH_PATHS_LIMIT / 2, "conf/late-b.yml").await;
+    // The premise, asked of the statement itself: the denied file's sighting is not among the rows that come back. Which rows a `LIMIT`
+    // without an `ORDER BY` returns is the planner's: on a database with no statistics it joins the other way round and the rows that
+    // have a `file_state` row (this one) come first. So the statistics are gathered, as a running hub's autovacuum does, and the premise
+    // is checked and not assumed.
+    let mut admin = r.world.rig.db.admin().await;
+    sqlx::raw_sql("ANALYZE file_observations; ANALYZE file_state")
+        .execute(&mut admin)
+        .await
+        .unwrap();
+    let returned: Vec<(String, bool)> = sqlx::query_as(HASH_PATHS_SQL)
+        .bind(above.as_bytes().as_slice())
+        .bind(i64::try_from(HASH_PATHS_LIMIT + 1).unwrap())
+        .fetch_all(&r.world.rig.pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(path, flagged, _class): (String, bool, Option<String>)| (path, flagged))
+        .collect();
+    assert_eq!(returned.len(), HASH_PATHS_LIMIT + 1);
+    assert!(
+        returned
+            .iter()
+            .all(|(path, flagged)| path != "conf/late-b.yml" && !flagged),
+        "the denied file's sighting is outside the rows that the statement returns"
+    );
+    let (capture, _guard) = LogCapture::install();
+    assert!(
+        !policy.allowed(&above).await,
+        "a denied file's earlier version among more sightings than are read is refused, by the count"
+    );
+    let ran = policy_statements(&capture);
+    assert_eq!(
+        ran.iter().map(|s| s.rows).max(),
+        Some(u64::try_from(HASH_PATHS_LIMIT + 1).unwrap()),
+        "the paths statement ran, and returned the limit plus one rows"
+    );
+    assert_eq!(metrics.blob_withheld_count(), 3);
+}
+
 #[tokio::test]
 async fn a_lookup_that_fails_says_no_even_when_the_probe_of_the_flag_worked() {
     let Some(r) = world().await else { return };
     let (policy, _) = policy(&r, &[]);
     assert!(policy.allowed(&h("port: 1\n")).await, "the control: it works");
 
-    // The app role may read only the three columns of `file_observations` that the probe of the flag reads. That probe still works, and
-    // the statement that reads the paths and the classes is refused by the database.
+    // The app role may not read `file_observations` at all. The probe of the flag reads `file_state` only, so it still works, and the
+    // statement that reads the paths and the classes is refused by the database.
     let mut admin = r.world.rig.db.admin().await;
-    sqlx::raw_sql(
-        "REVOKE SELECT ON file_observations FROM lanekeeper_app; \
-         GRANT SELECT (hash, swimlane_id, path) ON file_observations TO lanekeeper_app",
-    )
-    .execute(&mut admin)
-    .await
-    .unwrap();
+    sqlx::raw_sql("REVOKE SELECT ON file_observations FROM lanekeeper_app")
+        .execute(&mut admin)
+        .await
+        .unwrap();
     let flag: bool = sqlx::query_scalar(DENIED_HASH_SQL)
         .bind(h("port: 1\n").as_bytes().as_slice())
         .fetch_one(&r.world.rig.pool)
