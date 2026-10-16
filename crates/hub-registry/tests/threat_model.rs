@@ -44,7 +44,7 @@ const PARTS: [&str; 4] = [
 const MIN_RESIDUAL_RISKS: usize = 32;
 
 /// The limits that the registry's tasks and decisions recorded. Each topic needs one residual-risk bullet that contains every needle.
-const CARRY_FORWARD: [(&str, &[&str]); 35] = [
+const CARRY_FORWARD: [(&str, &[&str]); 36] = [
     (
         "parallel swimlane commits are not atomic together",
         &["persist_concurrency", "parallel", "no atomicity"],
@@ -212,6 +212,19 @@ const CARRY_FORWARD: [(&str, &[&str]); 35] = [
         ],
     ),
     (
+        "an ordinary file's blob is also refused when a denied file has the same bytes",
+        &[
+            "ordinary file's blob is also refused",
+            "denied file has the same bytes",
+            "content addressing",
+            "every path that names it is allowed",
+            "over-refusal",
+            "accepted",
+            "1,000 sightings",
+            "undecided",
+        ],
+    ),
+    (
         "a read of a collected version is counted and nothing says which blob it was",
         &[
             "collected version",
@@ -308,10 +321,17 @@ const REQUIRED_ROWS: [(&str, &str, &[&str]); 9] = [
         "I",
         "A caller who knows a hash reads a blob it should not",
         &[
+            "content_is_exact_and_a_blob_is_only_served_under_a_path_that_had_it",
+            "a_registered_hash_is_not_a_version_of_its_path_and_its_blob_is_not_served",
+            "the_blob_policy_refuses_their_hashes",
+            "the_platforms_blob_endpoint_serves_an_ordinary_blob_and_answers_a_denied_hash_as_it_answers_an_unknown_one",
+            "a_denied_files_current_content_is_refused_by_the_probe_of_the_flag_however_many_files_have_had_it",
+            "a_denied_files_earlier_version_is_refused_at_the_limit_and_above_it_whatever_order_the_rows_come_in",
             "a_hub_whose_globs_changed_before_the_agent_said_so_refuses_the_blob_by_hash",
             "a_denied_files_versions_are_refused_after_the_file_is_deleted_and_the_pipeline_dropped_its_row",
             "a_hash_that_more_files_have_had_than_the_policy_reads_is_refused_as_undecided",
             "a_lookup_that_fails_says_no_even_when_the_probe_of_the_flag_worked",
+            "a_policy_that_cannot_ask_says_no",
             "no_hash_path_or_content_reaches_a_log_line_or_a_metric_of_the_policy",
         ],
     ),
@@ -938,6 +958,29 @@ fn planted_gaps_are_found() {
             .any(|p| p.contains("the_foreign_key_refuses_a_reference")),
         "a retention row that stops naming one of its tests is refused"
     );
+    // The blob endpoint's row: a proof that is dropped, and the unrelated test (the settings index's, which says nothing of the endpoint)
+    // put in its place, are both refused.
+    let endpoint_test = "`the_platforms_blob_endpoint_serves_an_ordinary_blob_and_answers_a_denied_hash_as_it_answers_an_unknown_one`, ";
+    let lost_endpoint_proof = doc.replace(endpoint_test, "");
+    assert_ne!(lost_endpoint_proof, doc, "the plant found no `{endpoint_test}`");
+    assert!(
+        required_row_problems(&lost_endpoint_proof)
+            .iter()
+            .any(|p| p.contains("A caller who knows a hash")
+                && p.contains("the_platforms_blob_endpoint_serves")),
+        "the blob endpoint's row that stops naming the test of the endpoint is refused"
+    );
+    let swapped = doc.replace(
+        "`a_denied_files_current_content_is_refused_by_the_probe_of_the_flag_however_many_files_have_had_it`, ",
+        "`a_blob_the_store_does_not_have_gets_no_marker`, ",
+    );
+    assert_ne!(swapped, doc);
+    assert!(
+        required_row_problems(&swapped)
+            .iter()
+            .any(|p| p.contains("a_denied_files_current_content_is_refused_by_the_probe_of_the_flag")),
+        "a proof that is replaced by an unrelated test is refused"
+    );
     let wrong_letter = doc.replace(
         "| E | The retention job is used",
         "| D | The retention job is used",
@@ -957,6 +1000,12 @@ fn planted_gaps_are_found() {
         ("whose blob is gone", "the audit chain can name a hash"),
         ("autovacuum_analyze_", "the planner's statistics window"),
         ("finds no window", "the sync_windows prune"),
+        (
+            "every path that names it is allowed",
+            "an ordinary file's blob is also refused",
+        ),
+        ("over-refusal", "an ordinary file's blob is also refused"),
+        ("1,000 sightings", "an ordinary file's blob is also refused"),
     ] {
         let without = doc.replace(word, "x");
         assert_ne!(without, doc, "the plant found no `{word}`");
