@@ -36,6 +36,7 @@ use hub_registry::read::findings::findings_sql;
 use hub_registry::read::history::history_sql;
 use hub_registry::read::resource::{ALL_PATHS_SQL, PROPERTY_ROWS_SQL, ROWS_BY_PATH_SQL};
 use hub_registry::read::restarts::services_sql;
+use hub_registry::read::rows::SEVERITY_RANK_TOP;
 use hub_registry::read::search_settings::{
     LANE_BLOBS_SQL, PAIRS_SQL, PAIRS_UNTESTED_SQL, PLACES_PER_STATEMENT, PLACES_SQL,
 };
@@ -154,6 +155,8 @@ async fn main() {
         "tree_file_rows",
         sqlx::query(FILE_ROWS_SQL).bind(lane_s).bind(&page_paths)
     );
+    // `$6` is the severity rank at which the list resumes: the top one for the first page, as the service binds it (T9 made the list
+    // most serious first and added the parameter).
     measure!(
         "drift_first_page",
         sqlx::query(DRIFT_SQL)
@@ -162,6 +165,7 @@ async fn main() {
             .bind(None::<&str>)
             .bind("%")
             .bind(501_i64)
+            .bind(SEVERITY_RANK_TOP)
     );
     measure!(
         "history",
