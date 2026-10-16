@@ -691,6 +691,7 @@ fn schemas_carry_the_required_fields() {
             "sync_window_opened",
             "sync_window_closed",
             "pickup_changed",
+            "swimlane_changed",
         ])
     );
 }
@@ -755,7 +756,56 @@ fn internal_events_are_not_in_the_sse_event_kinds() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert!(!kinds.contains(&"user_sessions_revoked"));
-    assert_eq!(kinds.len(), 16);
+    assert_eq!(kinds.len(), 17);
+}
+
+/// contract/08-web, `CG1b`: `swimlane_changed` is a streamed event like the others. It is a kind a client can name, and an arm of
+/// the `DomainEvent` schema told apart by its `type`, with exactly the keys the domain writes, all required and nothing else
+/// allowed. (`web_contract_events.rs` holds every arm to the structural rules; this ties the one new arm to the real type.)
+#[test]
+fn swimlane_changed_is_a_streamed_event_with_the_keys_of_the_domain() {
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+    let event = serde_json::to_value(domain::DomainEvent::SwimlaneChanged {
+        swimlane: domain::SwimlaneId::parse("sit1").unwrap(),
+    })
+    .unwrap();
+    assert_eq!(event["type"], "swimlane_changed");
+
+    assert!(
+        strings(&schemas["EventKind"]["enum"]).contains("swimlane_changed"),
+        "a client must be able to name the kind in the `kinds` filter"
+    );
+
+    let arm = "#/components/schemas/DomainEventSwimlaneChanged";
+    let arms: Vec<&str> = schemas["DomainEvent"]["oneOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["$ref"].as_str().unwrap())
+        .collect();
+    assert!(arms.contains(&arm), "DomainEvent has no arm for swimlane_changed");
+    assert_eq!(
+        schemas["DomainEvent"]["discriminator"]["mapping"]["swimlane_changed"], arm,
+        "the discriminator maps the type to its arm"
+    );
+
+    let schema = &schemas["DomainEventSwimlaneChanged"];
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(schema["properties"]["type"]["const"], "swimlane_changed");
+    let keys = wire_keys(&event);
+    let declared: BTreeSet<String> = schema["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(declared, keys, "the properties are the keys the domain writes");
+    assert_eq!(required_of(schema), keys, "every key is required");
+    assert_eq!(
+        schema["properties"]["swimlane"]["$ref"], "#/components/schemas/SwimlaneId",
+        "ids only: the swimlane is named, not described"
+    );
 }
 
 /// The `NotificationKind` of the admin API is the port's: the wire names match, in the same order, and a channel can

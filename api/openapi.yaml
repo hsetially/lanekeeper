@@ -1812,7 +1812,7 @@ paths:
           type: array
           items:
             $ref: '#/components/schemas/EventKind'
-          maxItems: 16
+          maxItems: 17
           uniqueItems: true
         description: Only these kinds; all when absent.
         style: form
@@ -4226,6 +4226,7 @@ components:
       - sync_window_opened
       - sync_window_closed
       - pickup_changed
+      - swimlane_changed
     JobRef:
       type: object
       description: A Kubernetes Job, as the sync-window events name it. `ActorJob.job` has the same shape.
@@ -4266,6 +4267,7 @@ components:
       - $ref: '#/components/schemas/DomainEventSyncWindowOpened'
       - $ref: '#/components/schemas/DomainEventSyncWindowClosed'
       - $ref: '#/components/schemas/DomainEventPickupChanged'
+      - $ref: '#/components/schemas/DomainEventSwimlaneChanged'
       discriminator:
         propertyName: type
         mapping:
@@ -4285,6 +4287,7 @@ components:
           sync_window_opened: '#/components/schemas/DomainEventSyncWindowOpened'
           sync_window_closed: '#/components/schemas/DomainEventSyncWindowClosed'
           pickup_changed: '#/components/schemas/DomainEventPickupChanged'
+          swimlane_changed: '#/components/schemas/DomainEventSwimlaneChanged'
     DomainEventFileObserved:
       type: object
       description: A file version was seen, by a scan, a tool write or a sync.
@@ -4563,6 +4566,20 @@ components:
       - type
       - swimlane
       - services
+    DomainEventSwimlaneChanged:
+      type: object
+      description: The baseline, the tier, the tenant set or the auto-notify setting of the swimlane changed. Ids only;
+        read the new state with `getSwimlane` or `listSwimlanes`.
+      properties:
+        type:
+          type: string
+          const: swimlane_changed
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
     ValueType:
       type: string
       enum:
