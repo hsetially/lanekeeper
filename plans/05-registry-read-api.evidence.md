@@ -1,0 +1,458 @@
+# Evidence 05: Registry, indexes, incremental pipeline and read API
+
+Written in the FINAL step on 2026-10-16 at head **`f5d5fc7`** (T1 to T10, the retention job, prompt 06's write paths and prompt 07's `hub-mcp` (PR #17) merged, and four `05/fix:` commits: two test-flake fixes from before this step and the two of this step). Every number below is from a run in this step on that day, on `93b8b9e` or `f5d5fc7` as each row says; nothing is copied from an earlier session. Real output only; nothing is ticked that is not proved by a test name or a log line. Nobody has reviewed the branch yet.
+
+## Summary
+
+- **`just verify-05` and `just verify` were NOT run as recipes** (no `just`, no Docker daemon, no `cargo-deny`, `cargo-audit`, `osv-scanner`, nightly or `cargo-fuzz` in this sandbox). Their commands were run by hand, in the recipes' order. What could not run at all is in "What was NOT RUN, and why": the libFuzzer runs (corpus replay on stable stands in), `cargo deny`, `cargo audit`, `osv-scanner`, Docker/testcontainers (a local Postgres 16.15 with pgvector stands in), and one test of `crates/hub` that needs a Docker daemon.
+- **Registry lint and tests: green.** `cargo fmt` and `cargo clippy -p hub-registry --all-targets --all-features -- -D warnings` exit 0 (twice, before and after the fixes); `cargo test -p hub-registry --lib --tests` with `LK_REQUIRE_DOCKER=1`: **1,159 passed, 0 failed, 3 ignored** over 77 test binaries, 0 `SKIPPED`; the three ignored tests, run as `registry-slow-test` in release, one at a time: **3 passed**.
+- **Workspace: green.** `cargo clippy --workspace --all-targets -- -D warnings`, `cargo check --workspace --all-targets --locked` and all five web checks exit 0; the workspace tests, run crate by crate for disk: **5,234 passed, 0 failed** (one `hub` test, `pg_tls`, needs Docker and fails only when a missing daemon is made a failure; the crate is untouched by this branch).
+- **The benchmarks found two real defects, both of the benchmark harness, both fixed (`05/fix:`):** `steady_state_queries` bound five parameters where the drift statement has taken six since T9 (`cargo bench -p hub-registry` panicked, and two benchmarks after it never ran), and, once that was fixed, the read bed measured on a database that autovacuum had not yet analysed, so the dense settings searches took 110 to 160 ms where they take 3 to 30 ms (the benchmark failed its own 50 ms rule in two runs of two; three of three pass with the fix). See "The two defects the benchmarks found". The second fix moved one number: `P7.settings_search` is **p95 107 to 197 ms (budget 200) with statistics where it was 43 ms without**.
+- **Benchmarks: all 18 `hub-registry/` budgets MET** in the official run on `f5d5fc7` (`18 pass, 0 fail, 0 unmet`), and the whole-registry `cargo xtask bench-check` is **66 pass, 0 fail, 7 unmet of 73** (the 7 unmet are other prompts' budgets with no benchmark yet: `P7.docs_search`, `P7.feature_status`, five `P10.*`). The tight ones: `P7.settings_search` (108.4, 196.9, 107.0 and 43.2 ms in four runs, budget 200: **passes every time, brittle, needle set changes per run**), `P7.grid` 102.3 of 150, `P2` 615 of 1,000, `P15` 1,547 of a minimum 1,000, `P7.text_search` 189 of 400, `P14` 4,729 of 30,000.
+- **Open for the human before merge** (the last section has the list): the contract commits (`0007`, `0008`, `register_delete`) that this branch rests on are **not on `main`**; `hub-registry` is **not wired into `crates/hub`**; the D-entries marked "to be confirmed at review"; the retention default (it deletes) and the D116 reading; the seven sleep-based tests; and the production planner-statistics window after a bulk load.
+
+## How the gates were run in this sandbox (read this first)
+
+- **`just` is not installed, nor are `cargo-deny`, `cargo-audit`, `osv-scanner`, `cargo-fuzz` or the pinned nightly (`nightly-2026-09-14`). The `docker` client exists (29.8.2) but there is no daemon** (`failed to connect to the docker API at unix:///var/run/docker.sock`). So `just verify-05` and `just verify` were **not run as recipes**. I read the recipes (`verify-05`, `registry-*`, `rust-verify`, `web-verify`, `bench`, and the sub-recipes they name) and ran each underlying command by hand, in the recipes' order, with the recipes' flags. A step that could not run at all is in "What was NOT RUN, and why"; none is reported as passed.
+- **Database:** a local PostgreSQL 16.15 (Ubuntu package) with `vector` 0.6.0 and `pg_trgm` 1.6 available, at `127.0.0.1:5432` (`shared_buffers` 128 MB, `fsync` on, `max_connections` 100), reached through `LK_TEST_PG_ADMIN_URL=<sandbox postgres>` (the URL holds a sandbox-only password and is not written in this file). The test harness creates `lk_t_<pid>_<n>` databases, migrates them as `lanekeeper_migrator` and connects the hub side as `lanekeeper_app`; dead-pid `lk_t_*` databases were dropped after every command (0 were left behind each time). The registry's tests and benchmarks ran against real Postgres, not testcontainers.
+- **`LK_REQUIRE_DOCKER=1`** turns a missing database into a failure, never a skip. It was set for `registry-test` and `registry-slow-test` as the recipes set it. **A passing test hides its `SKIPPED` line, so `grep -c SKIPPED` on a default log proves nothing; the proof that nothing was skipped is a run with `LK_REQUIRE_DOCKER=1`** (skip is a failure). `hub-registry` ran that way. For the other crates whose tests use Postgres or Docker (`hub`, `hub-identity`, `hub-mcp`, `hub-platform`, `hub-writes`, `xtask`) I ran a first pass without it (the recipe `rust-verify` does not set it) and a second pass with it; the result of the second is in the table.
+- **Build settings:** `CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0` (debug info does not change what a test asserts or what a release benchmark measures); Rust 1.88.0 (the pinned stable); 4 vCPU, 16 GB RAM, no swap. Benchmarks and slow tests run in release (`bench` inherits `release`: `lto = "thin"`, `codegen-units = 1`).
+- **Disk** was the constraint (12 GB free at the start; the worktree's `target/` was 15 GB, 19 to 20 GB with this step's builds). `cargo test --workspace` as one command was started and **stopped by me** at 5.7 GB free and falling by about 1 GB every two minutes: it must keep every test executable of the workspace (about 130 MB each at this profile) on disk until the run ends, and the 06 and 07 evidence files record `No space left on device` with the same command. Not a test failure. I deleted stale test executables of earlier builds of `target/debug/deps` (those over 50 MB), then ran **the workspace crate by crate** (`cargo test -p <crate> --no-fail-fast`, the test executables over 50 MB deleted after each crate). `cargo test -p` unifies features per selected crate, where `--workspace` unifies over the whole workspace, so a crate can be compiled with different features than in the one-command run (`ports` was also run with `--all-features`, as `ports-verify` does). `hub-registry` ran `--lib --tests` (debug part of `verify-05`) and `--doc` separately; the union is what `cargo test -p hub-registry` runs.
+- **Wall-clock tests on a shared box:** the known flake outside this prompt, `hub-platform` `lease_race::pg_leases_conformance`, passed in the first run and in the second (see the table). No test of this crate was rerun to get a pass.
+- Raw logs of this step are in `/tmp/claude-0/-home-user-lanekeeper/05f8f302-eba7-5740-b3c5-4131f3d33112/scratchpad/final-gate2/` (not in the repository), with `STATE.md` as the ledger of every command: its start, end, exit code and log. An earlier gate attempt on a previous head (stopped when `main` was merged) is in `final-gate-old/` and was used for nothing.
+
+## Gates
+
+Head of the FINAL step: **`f5d5fc7`**: `93b8b9e` (the head handed to this step) plus two `05/fix:` commits, `6b5881c` and `f5d5fc7`, both in `crates/hub-registry/benches/`; the evidence commit comes after. `git status` was empty when the step started, before the release part, and after each fix commit. Exit codes and logs are in the ledger `STATE.md` of the scratchpad (see "How the gates were run"). **Everything in rows 1, 2, 4, 5 and 7 and in steps a to d and f below ran on `93b8b9e`; rows 3 and 8 and the benchmarks of the other crates ran on `f5d5fc7`.** The two fixes touch only benchmark code: no `src/` file and no test of any crate changed, and row 3 builds the benchmarks under `-D warnings` on the new head.
+
+| Command | Result | Output (tail) |
+|---|---|---|
+| `just verify-05` | **NOT RUN as a recipe** (`just`, Docker daemon, `cargo-deny`, `cargo-audit`, nightly and `cargo-fuzz` absent). Its sub-recipes below, one by one. | the first prerequisite, `registry-tools-check`, would fail here by design |
+| 1. `registry-lint`: `cargo fmt --all -- --check` | exit 0 | (no output) |
+| 2. `registry-lint`: `cargo clippy -p hub-registry --all-targets --all-features -- -D warnings` | exit 0 on `93b8b9e` (2 m 26 s) | `Finished \`dev\` profile [unoptimized] target(s) in 2m 25s` |
+| 3. the same two commands again on `f5d5fc7` (after the two fixes) | exit 0 (3 m 53 s) | `Finished \`dev\` profile [unoptimized] target(s) in 3m 53s` |
+| 4. `registry-test`: `LK_REQUIRE_DOCKER=1 cargo test -p hub-registry --lib --tests --no-fail-fast` | exit 0 (14 m 05 s) | 77 test binaries, **1,159 passed, 0 failed, 3 ignored**; last `test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.02s`; 0 `SKIPPED` (and a skip would have been a failure) |
+| 5. `registry-slow-test`: `LK_REQUIRE_DOCKER=1 cargo test -p hub-registry --release --tests -- --ignored --test-threads=1` | exit 0 (82 min, nearly all of it the release build of 77 test binaries) | the three tests, **all passed, 0 failed**: `adoption_rank_target::the_correct_branch_ranks_first_for_every_fixture_swimlane` and `::ranking_takes_5_seconds_or_less_per_swimlane` (`2 passed ... finished in 73.01s`), `corpora_equivalence::the_twenty_benchmark_queries_over_the_target_fixtures_give_the_same_answers_sharded_and_whole` (`1 passed ... finished in 38.30s`) |
+| 6. `registry-fuzz` | **NOT RUN** (no nightly, no `cargo-fuzz`); stand-in `corpus_replay` (17 tests) is in row 4 | |
+| 7. `registry-bench`, run 1 on `93b8b9e`: `cargo bench -p hub-registry` then the cut `bench-check` | **FAILED, two real defects, both fixed below**: bench exit 101 at `steady_state_queries` (`bind message supplies 5 parameters, but prepared statement "sqlx_s_60" requires 6`), so `swimlane_list` and `whole_swimlane_compare` never ran; `bench-check (default): 15 pass, 3 fail, 0 unmet of 18` (the 3 fails: no result) | see "The two defects the benchmarks found" |
+| 8. `registry-bench`, **official run on `f5d5fc7`**: `rm -rf target/criterion/hub-registry; rm -f target/perf-results/hub-registry_*.json; cargo bench -p hub-registry`, then the recipe's `awk` cut of `perf/budgets.toml` and `cargo xtask bench-check --budgets <cut>` | **exit 0 and exit 0** (42 min for the 18 benchmarks, about 18 min of it compiling) | `found 18 of 18 budgets` ... `bench-check (default): 18 pass, 0 fail, 0 unmet of 18 budgets` |
+| `just verify` | **NOT RUN as a recipe.** Its steps, below. | |
+| a. `rust-verify`: `cargo fmt --all -- --check` | exit 0 | (no output) |
+| b. `rust-verify`: `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 (2 m 18 s) | `Finished \`dev\` profile [unoptimized] target(s) in 2m 17s` |
+| c. `cargo check --workspace --all-targets --locked` | exit 0 (1 m 48 s); `Cargo.lock` is consistent | `Finished \`dev\` profile [unoptimized] target(s) in 1m 47s` |
+| d. `rust-verify`: `cargo test --workspace` | **run crate by crate, see the table below**: every crate exit 0 except one test of `hub` that needs a Docker daemon (second pass only) | 5,234 passed, 0 failed in the first pass |
+| e. `rust-verify`: `cargo deny check`, `cargo audit` | **NOT RUN** (not installed) | |
+| f. `web-verify`: `pnpm install --frozen-lockfile`, `pnpm lint`, `pnpm typecheck`, `pnpm test --run`, `pnpm build` | all five exit 0 (Node 22.22.0, pnpm 10.34.6; `web/` is untouched by this branch) | `Tests  1 passed (1)`; `dist/assets/index-O9gXnvRs.js 224.10 kB \| gzip: 69.65 kB`; `✓ built in 1.65s` |
+| `osv-scanner` (AGENTS rule 15; not part of `verify`) | **NOT RUN** (not installed) | |
+| `just bench` (`cargo bench --workspace`) and `cargo xtask bench-check` (AGENTS step 4) | `hub-registry`: row 8. The other crates and the whole-registry table: "Benchmarks against budgets" below | |
+
+### `cargo test --workspace`, crate by crate (`cargo test -p <crate> --no-fail-fast`, doc tests included)
+
+First pass without `LK_REQUIRE_DOCKER` (as `rust-verify` runs it), second pass with `LK_REQUIRE_DOCKER=1` for the crates whose tests use Postgres or Docker. "Binaries" counts the unit-test, integration-test and doc-test runs of the crate.
+
+| Crate | Binaries | Passed | Failed | Ignored | With `LK_REQUIRE_DOCKER=1` |
+|---|---|---|---|---|---|
+| `domain` | 13 | 105 | 0 | 0 | not needed |
+| `ports` | 15 | 184 (185 with `--all-features`) | 0 | 0 | not needed |
+| `proto` | 3 | 25 | 0 | 0 | not needed |
+| `engine` | 38 | 538 | 0 | 7 (2 target-scale, 5 real-snapshot, all opt-in) | not needed |
+| `xtask` | 8 | 162 | 0 | 1 (80,000 files, `fixtures-verify`) | 162 passed, 0 failed |
+| `agent` | 55 | 742 | 0 | 1 (`p1_change_visible_real_timings`, `agent-slow-test`) | not needed |
+| `sentinel` | 1 | 0 (no tests) | 0 | 0 | not needed |
+| `hub-identity` | 26 | 544 | 0 | 2 (measurements) | 544 passed, 0 failed |
+| `hub-platform` | 50 | 527 | 0 | 6 (3 real Google Cloud, 2 measurements, 1 child process) | 527 passed, 0 failed |
+| `hub-registry` (`--lib --tests`, step 2, `LK_REQUIRE_DOCKER=1`) | 77 | **1,159** | 0 | 3 (target-scale, run by `registry-slow-test`) | the run itself |
+| `hub-registry --doc` | 1 | 0 (no doc tests) | 0 | 0 | not needed |
+| `hub-writes` | 15 | 614 | 0 | 0 | 614 passed, 0 failed |
+| `hub-docsearch` | 2 | 0 (no tests yet) | 0 | 0 | not needed |
+| `hub-mcp` | 11 | 505 | 0 | 0 | 505 passed, 0 failed |
+| `hub` | 20 | 129 | 0 | 0 | **128 passed, 1 failed**: `pg_tls::pg_pool_connects_to_a_real_tls_postgres_and_refuses_the_wrong_ca` needs a Docker daemon (`Socket not found: /var/run/docker.sock`). `crates/hub` is untouched by this branch. |
+| **Total, first pass** | | **5,234** | **0** | 20 | |
+
+`hub-platform` `lease_race::pg_leases_conformance`, the known wall-clock flake that is not this prompt's, passed in both passes (so there is no failure to rerun). No other test failed in either pass.
+
+
+### The two defects the benchmarks found (and the two `05/fix:` commits)
+
+Neither is a defect of the code under test; both are of the benchmark harness, found because this step ran the whole recipe. Nothing in `perf/budgets.toml`, `crates/xtask` or any statement of the registry changed. Both commits are in `crates/hub-registry/benches/` (owned paths).
+
+1. **`6b5881c`, `steady_state_queries` bound five parameters where `DRIFT_SQL` takes six.** 05/T9 (`6e2c02d`) made the drift list most serious first and added `$6`, the severity rank to resume at; the service binds `SEVERITY_RANK_TOP` for a first page, the benchmark (written at T6) was never run again, and nothing else ties its binds to the statements. `cargo bench` stops at the first failing benchmark, so two benchmarks after it never ran (`swimlane_list`, `whole_swimlane_compare`) and `bench-check` listed three budgets (`P7.swimlane_list`, `P7.whole_swimlane_compare`, `P12.steady_state_query_ms`) as registered with no result. Red: the panic above, in run 1. Green: the benchmark runs its 39 statements.
+2. **`f5d5fc7`, the read bed measured on a database with no planner statistics.** With the sixth bind fixed, `steady_state_queries` failed its own rule (no statement over 50 ms at p95) in **two runs out of two**: `settings_search_pairs_dense_untested` p95 158.3 ms and 156.1 ms, `settings_search_pairs_dense_listed_blobs` 112.2 ms and 143.9 ms, where the same statements take 3 to 30 ms in a database with statistics. Cause, by observation (`probe2_s5_probe_run2.log` in the scratchpad: a read-only probe every two seconds on the bed's database): `pg_stat_user_tables` showed `settings_index` **never analysed** (`last_autoanalyze` empty) from the first row of the load to the last statement of the benchmark; the planner estimated 58 to 445 rows for `ILIKE '%name%'` over 95,195 to 867,285 rows and planned `Limit -> Sort` over a trigram bitmap (all about 100,000 matches, sorted); four seconds after the benchmark ended autovacuum ran, and the plan became `Index Scan using settings_index_pkey` (2.8 ms). The bed is loaded about 90 s before it measures and autovacuum's launcher wakes once a minute, so whether the statements run before or after the first analyze is luck; at T6 it was luck in the other direction (P12 18.2 ms). The read bed (`ReadBed::new`, shared by every read benchmark) now runs `ANALYZE` once as the table owner (`lanekeeper_app` may not) after the settings index is current, which is what a hub in steady state has had autovacuum do. With it `steady_state_queries` passed **3 of 3** runs (slowest statement p95 19.9, 31.1 and 28.9 ms), and in the official run the harness p95 is 15.0 ms.
+   - **It changes the pre-condition of all ten read benchmarks (every bench that builds a `ReadBed`), not only P12, and it moved one number the wrong way:** with the same needle set (`account1`, `audit0`, `channel2`, ...), `P7.settings_search` was **p95 43.2 ms without the analyze (run 1) and 107.0 ms with it** (rerun b). The planner with statistics takes the primary key's order for some needles where, unanalysed, it took the trigram index. Still under the 200 ms budget in every run (below), but the margin is thinner than run 1 made it look. I judged that the benchmark of a steady state should run on a steady state's statistics, and that a number that is better only because the planner knows nothing is not one to keep; the human can ask for the other choice (analyse only in `steady_state_queries`), which would put `P7.settings_search` back at the luck of autovacuum's timing.
+   - **What it does not fix** (for the human, not mine to change: `db/migrations/` and the app role are contracts): in production the same window exists after a bulk load (the first inventory of a swimlane; 40 swimlanes at adoption): until autovacuum's first analyze of `settings_index` a dense settings search costs 100 to 160 ms a statement, and `lanekeeper_app` cannot run `ANALYZE` itself (not the owner). Only autovacuum, or a per-table autovacuum setting from a migration, closes it.
+
+## What was NOT RUN, and why
+
+| Item | Why it did not run, and what stands in for it |
+|---|---|
+| `just` (every recipe as a recipe: `verify-05`, `verify`, `bench`, `registry-*`) | Not installed. The underlying commands were run by hand in the recipes' order with their flags; the rows of the Gates table are those commands. Nothing the recipes do beyond their commands (the `set -euo pipefail` shell, the recipe dependency order) was reproduced except by running the commands in that order. |
+| `registry-tools-check` / `platform-tools-check` / `docker-check` / `fuzz-tools-check` | They check for Docker, `cargo-deny`, `cargo-audit` and the pinned nightly with `cargo-fuzz`, none of which exists here. They would fail here, by design. |
+| `registry-fuzz` (the libFuzzer runs of `registry_delta`, `registry_cursor`, `registry_query`, `registry_sentinel_path`, 30 s each) | No nightly-2026-09-14, no `cargo-fuzz 0.13.2`. **Stand-in on stable:** `cargo test -p hub-registry --test corpus_replay` (17 tests, in the 1,159) replays the committed seeds (18, 21, 28 and 15 files) through the same invariants, and runs random programs against them. It does not search for new inputs. S22 is therefore proved for "the seeds replay and the invariants hold", not for "a fuzzer ran for 30 s". |
+| `cargo deny check` and `cargo audit` (also on the fuzz crates' lockfiles), `osv-scanner` | Not installed. This branch adds no `name version` pair to `Cargo.lock` or to the fuzz lockfiles (checked in "New dependencies"), so the advisory and licence state is that of `origin/main`; **this sandbox cannot confirm it** (the tools are absent; whether the advisory database is reachable from here was not tried). |
+| Docker and testcontainers | No daemon. The database tests ran against a local Postgres 16.15 with pgvector through `LK_TEST_PG_ADMIN_URL`. One test cannot: `hub` `tests/pg_tls.rs::pg_pool_connects_to_a_real_tls_postgres_and_refuses_the_wrong_ca` needs a TLS Postgres container; under `LK_REQUIRE_DOCKER=1` it fails with `Socket not found: /var/run/docker.sock`, without it it prints `SKIPPED` and passes without running. `crates/hub` is untouched by this branch (`git diff 777b590...HEAD -- crates/hub` is empty), so the failure is not this prompt's. |
+| `just verify-01`'s pieces (`proto-verify`, `openapi-verify`, `db-verify`, `mcp-doc-verify`, `fixtures-verify`, `fuzz-smoke`) | Not part of `verify-05` or `verify`. The contract linters (`buf`, `redocly`) need the repo-root `pnpm install`, which was not run. |
+| `cargo sqlx prepare --check` | The registry uses runtime-checked queries (A39), so there is no `.sqlx` metadata of this crate to check. |
+| A real GitHub, a real Cloud KMS, a real config-server, a real agent on NFS, a real sentinel VM | Not reachable from the sandbox. The registry's `FetchServed` is exercised against a fake config-server behind a fake agent; the sentinel against `SentinelProbe`; Git against `FakeGit` loaded from the generated fixture repositories (A41). **What the real config-server serves (the as-served check, D86) is not proved against the real one.** |
+| `registry-slow-test` and the other crates' slow tests (`agent-slow-test`, `platform-slow-test`) | The first is run in the release part (Gates table). The other two belong to prompts 02 and 03b and were not run: they are not part of `verify-05` or `verify`. |
+| The multi-replica behaviour of the registry (leases, a takeover mid-batch) on a real network | Modelled in-process (`pipeline_prop::incremental_equals_full_after_a_takeover`, `retention_gc::only_the_lease_holder_runs_the_job`, `nightly::the_nightly_job_runs_the_recompute_and_stops_when_its_lease_is_gone`); never run as separate processes. Prompt 16 measures staging. |
+
+## Acceptance checklist
+
+Prompt `prompts/05-registry-read-api.md`, "Acceptance (all required)", then the plan's traceability rows. Test names are those of the run of `cargo test -p hub-registry --lib --tests` (`s2_test_registry.log`, every one `ok`). **Where the plan named a test that was renamed during the work, the name below is the real one and the plan's is in "Deviations from the plan".**
+
+- [ ] `just verify-05` passes. **Not ticked: it cannot be run as a recipe here** (`registry-tools-check` needs Docker, `cargo-deny`, `cargo-audit`, the pinned nightly and `cargo-fuzz`; `registry-fuzz` needs the nightly). What ran, by hand, in its order: `registry-lint` exit 0, `registry-test` exit 0 (1,159 passed), `registry-slow-test` exit 0 (3 passed), `registry-bench` exit 0 with 18 of 18 budgets met after two fixes (Gates table, rows 1 to 8). `registry-fuzz` did not run (the committed seeds replay on stable instead).
+- [x] Every P1, P5, P6, P7 and P12 item owned here is within budget (and P2, P14 and P15, which the plan also gives this prompt). Proof: `cargo xtask bench-check --budgets <the 18 registry budgets>` on the official run of `f5d5fc7`: `bench-check (default): 18 pass, 0 fail, 0 unmet of 18 budgets` (table in "Benchmarks against budgets"); and the whole-registry `cargo xtask bench-check`: `66 pass, 0 fail, 7 unmet of 73` (every `hub-registry/` budget MET; the 7 unmet are other prompts').
+- [x] The incremental-equals-full property test passes. Proof: `pipeline_prop::incremental_state_equals_full_recompute_after_random_events` (proptest over observed adds, changes and deletes, base and tenant head moves, adoption confirmation, intentional marks and tenant suffix changes; compares lane state, `file_state`, findings, effective tree hashes and effective files) and `pipeline_prop::incremental_equals_full_after_a_takeover`, both `ok`.
+- [x] Every endpoint matches the OpenAPI spec (contract test) and passes the route-guard test. Proof: `http_contract::every_response_of_every_read_operation_matches_the_contract` (the 15 read operations, success and error bodies, headers, by the schema walker of `tests/support/openapi.rs`), `http_contract::every_status_the_contract_names_for_a_read_operation_is_exercised`, the negative control `http_contract::the_contract_test_notices_a_response_that_drifts_from_the_spec`, `openapi_walker::*` (the walker's own tests); `route_table::registry_route_table_is_guarded_and_matches_openapi`, `route_table::the_routes_are_exactly_the_fifteen_read_operations_of_the_contract`, `route_table::a_route_cannot_be_mounted_without_a_guard_by_construction`, and the negative control `route_table::the_harness_rejects_an_unguarded_or_wrongly_guarded_registry_route`, all `ok`. One deviation from the schema is pinned by name, not hidden: `http_contract::known_deviation_an_unadopted_swimlane_lists_no_tenants_where_the_spec_wants_one` (`SwimlaneSummary.tenants` has `minItems: 1`; an unadopted swimlane has none yet; the schema or the data has to give, `plans/05-registry-read-api.blockers.md`, "T6: for the human").
+- [x] The pending-user 403 and Viewer requirements are tested. Proof: `http_authz::a_pending_disabled_or_role_less_user_is_403_on_every_route_and_reads_nothing`, `http_authz::every_role_that_can_sign_in_reads_every_route_and_no_route_asks_for_more`, `http_authz::no_session_is_401_on_every_route`, `http_authz::the_service_itself_refuses_a_user_who_is_not_an_active_viewer`, `http_authz::there_is_a_request_for_every_route_of_the_table`; the port suite `read_conformance::registry_read_conformance`; for adoption `adoption::only_an_active_admin_can_run_or_confirm`, `adoption::the_check_is_on_the_service_and_comes_before_any_database_call`, `adoption::the_marks_need_an_operator_and_say_so_before_they_look`; all `ok`.
+
+Plan rows (`plans/05-registry-read-api.md`, "Traceability"), the ones not covered by the four above:
+
+- [x] **T1** ingestion: `ingest_delta::a_replayed_spool_loses_no_acknowledged_version`, `::a_crash_between_chunks_is_repaired_by_the_retry`, `::stream_end_before_the_last_part_applies_nothing`, `::delta_publishes_file_observed_in_the_same_transaction`, `::size_and_entry_limits_are_enforced`; the port suites `conformance_sink::report_sink_conformance` and `::sentinel_sink_conformance`; `batch_writes` (the batched audit and outbox calls write the same rows as the per-event reference, and the chain verifier passes).
+- [x] **P1** (out-of-band change visible within 15 s), registry share: `p1_delta_to_drift::fake_agent_change_reaches_drift_changed_within_15_seconds` `ok`; the benchmark is in the budget table.
+- [x] **T2** settings index and Git side of drift: `settings_index::replaying_the_same_deltas_twice_gives_identical_tables`, `::settings_index_row_count_matches_the_engine`, `::a_blob_is_indexed_once_by_two_replicas`, `::flagged_values_are_stored_redacted`; `git_index::head_moved_maps_changed_repo_paths_to_swimlane_paths`; `tree_hashes::*`.
+- [x] **T3** pipeline: Acceptance 2 above; `pipeline_events::git_head_moved_recomputes_only_changed_paths`, `pipeline_events::drift_changed_is_in_the_outbox_within_the_window_plus_compute` (P13), `nightly::nightly_full_recompute_repairs_a_corrupted_row`.
+- [x] **T4** adoption, out-of-band edit, overwriting sync gives C7 and a notifier call: `sequence_adoption_oob_sync_c7::adoption_then_oob_edit_then_overwriting_sync_gives_c7_and_a_notifier_call`.
+- [x] **T5** adoption pass: `adoption::an_initial_pass_runs_from_ranking_to_confirmation`, `adoption::of_two_confirmations_of_one_pass_exactly_one_commits`, `adoption::progress_persists_and_resumes_after_a_restart`; the ranking at target scale (`adoption_rank_target::the_correct_branch_ranks_first_for_every_fixture_swimlane` and `::ranking_takes_5_seconds_or_less_per_swimlane`) is `#[ignore]` in the debug run and belongs to the slow-test step (both `ok` there, 73.01 s for the two, Gates table row 5; the sharded-search equivalence at target scale, `corpora_equivalence::the_twenty_benchmark_queries_over_the_target_fixtures_give_the_same_answers_sharded_and_whole`, is `ok` in the same run, 38.30 s).
+- [x] **T6** read API: `read_*`, `http_*` and `explain::read_queries_have_no_sequential_scan_on_large_tables` / `::hot_queries_have_no_sequential_scan_on_large_tables` (insta snapshots, 107 files `tests/snapshots/explain__*`, reviewed in the diff); one benchmark per P7 line (budget table).
+- [x] **T7** sentinel and attribution: `attribution::a_local_vm_edit_is_sentinel_login_high_and_names_the_user`, `::a_sync_window_change_is_sync_job`, `::an_nfs_write_outside_any_job_is_nfs_client`, `::a_late_sentinel_record_upgrades_an_earlier_unknown`, `::an_upgrade_is_never_a_downgrade`, `::an_upgrade_writes_one_audit_event_and_one_attribution_updated`; `attribution::sentinel_record_attributes_sentinel_login_within_30_seconds` (P14).
+- [x] **T8** sync windows: `sync_windows::a_600_file_sync_produces_one_alert_evaluation`, `::c7_fires_for_an_overwritten_nfs_ahead_file`, `::a_window_open_over_2_hours_warns_once`, `::duplicate_window_events_are_idempotent`.
+- [x] **T9** severity, denied files, retention: `retention_gc::gc_never_deletes_a_referenced_blob` (proptest), `::keeps_the_last_50_versions_and_180_days`, `::dry_run_deletes_nothing`, `::only_the_lease_holder_runs_the_job`; `denied_files::denied_files_are_listed_with_class_denied`, `::content_withheld_has_no_bytes`, `::the_blob_policy_refuses_their_hashes`; `outbox_only::every_event_goes_through_publish_in_tx`.
+- [x] **T10** tenants, pickup and as served: `served_verification::a_mismatch_with_the_fake_config_server_raises_a_high_severity_finding_naming_the_file`, `::a_match_raises_nothing`; one pickup test per state: `pickup::resource_file_is_live_within_ttl_with_a_live_by_time`, `pickup::property_source_needs_notify_or_restart`, `pickup::new_folder_or_channels_yml_needs_a_config_server_restart`, `pickup::a_notified_or_restarted_service_is_live`; `pickup::the_sweeper_turns_live_within_ttl_into_live_when_live_by_passes`; `structure_checks::*` (C9 to C11); `threat_model::*` (S24).
+- [x] **A10 follow-up** (`ports::ToolWrites`): `tool_write_conformance::the_registry_holds_the_port_suite_for_writes_and_deletes`, `::the_registry_holds_the_bound_exactly_over_both_kinds`; `tool_write_matching::*` (31 tests: late commit both orders, TTL with the manual clock, invalidation, `Full`, rollback, the lost-wakeup window); `tool_write_statements::*`.
+- [x] **S22** fuzz target for every parser at a trust boundary: the four targets of `crates/hub-registry/fuzz/fuzz_targets/` have their committed seeds replayed on stable by `corpus_replay::corpus_replay_registry_delta`, `::corpus_replay_registry_cursor`, `::corpus_replay_registry_query`, `::corpus_replay_registry_sentinel_path` and the `*_seeds_reach_the_cases_they_are_named_for` tests, all `ok`. **The libFuzzer runs themselves (`registry-fuzz`) were NOT run: no pinned nightly and no `cargo-fuzz` here.** The stand-in proves the seeds replay without a crash and that the invariants hold on random programs (`corpus_replay::random_*_programs_hold_every_invariant`); it does not search for new inputs.
+
+## Security requirements implemented
+
+The prompt lists S4, S10, S11, S13 and S21; the plan adds S22 and S24, and the threat model section (`docs/threat-model.md`, "Registry and read API (05)", 28 STRIDE rows) cites S5, S9, S14b, S15, S17 and S25 as well, so those are listed too. `threat_model::every_proof_the_stride_table_names_exists` (`ok`) fails if a test, benchmark or fuzz target named in a STRIDE row does not exist or is a helper and not a test; the tests below are the main proof of each requirement, not the whole list (the rows have the rest).
+
+| S# | Where in code | Proof (all `ok` in `s2_test_registry.log` unless said) |
+|---|---|---|
+| S4 default-deny authorization | routes only through `GuardedRouter` (a route cannot be mounted without a role: `crates/hub-registry/src/http/`); every service method checks the caller (`ports::ReadError::Forbidden`); adoption needs an active Admin, the marks an Operator | `route_table::registry_route_table_is_guarded_and_matches_openapi`, `::a_route_cannot_be_mounted_without_a_guard_by_construction`, negative control `::the_harness_rejects_an_unguarded_or_wrongly_guarded_registry_route`; `http_authz::*` (401 without a session, 403 for pending, disabled and role-less users on every route, a Viewer reads every route and no route asks for more); `read_conformance::registry_read_conformance`; `adoption::only_an_active_admin_can_run_or_confirm`; `denied_files::the_denial_is_behind_the_guard_on_the_route_and_on_the_port` |
+| S5 agent and sentinel identity | `hello` checks that the identity's swimlane equals the payload's and that an admin created it; nothing is accepted before `hello`; the sentinel is the one an admin registered | `ingest_hello::a_payload_that_names_another_swimlane_is_refused`, `::a_swimlane_no_admin_created_is_refused`, `::nothing_is_accepted_before_hello`; `ingest_delta::one_swimlanes_deltas_do_not_touch_another`; `served_verification::a_lying_agent_can_raise_or_hide_a_finding_for_its_own_swimlane_and_for_no_other`; `sentinel_sink::*` |
+| S9 audit (rule 8: one event per state change, in the transaction) | `crate::batch::{record_all, publish_all}` over `AuditLog::record_many` and `EventBus::publish_many_in_tx`; every state change commits with its audit event | `batch_writes::*` (the batch ports write the same rows as the per-event reference, the chain verifier reports clean, a snapshot of the rows); `ingest_delta::an_out_of_band_change_is_audited_and_its_author_is_unknown`, `::a_denied_file_changing_is_audited`; `attribution::an_upgrade_writes_one_audit_event_and_one_attribution_updated`; `adoption::a_failure_anywhere_in_the_confirmation_leaves_nothing_behind`; `outbox_only::a_rolled_back_transaction_leaves_no_event_and_a_committed_one_leaves_each` |
+| S10 logs hold ids, paths and hashes, never contents or secrets | `tracing` fields are ids, counts and hashes; no content, value or served text is formatted into a message or an error | `log_capture::planted_secret_never_reaches_a_log_line` (ingest), `::planted_secret_never_reaches_a_log_line_of_the_index`, `::planted_secret_never_reaches_a_log_line_of_the_pipeline`; `log_capture_reads::planted_values_never_reach_a_log_line_of_a_read` (reads, text search, served, with the database taken away); `adoption_log::planted_secret_never_reaches_a_log_line_of_the_adoption_pass`; `sync_windows::no_content_path_or_hash_reaches_a_log_line_or_a_notification`; `pickup::no_value_and_no_denied_path_reaches_a_log_an_event_or_the_stored_state`; `denied_files::a_denied_files_bytes_leave_through_no_read_path_and_reach_no_log_error_or_metric` |
+| S11 typed parsers, bounded queries, mandatory pagination, linear-time regex | typed parsers at every edge (`NfsPath`, `Cursor`, tenant and application names, the query parser of `src/http/query.rs`); every list is keyset and capped at 500; regex through the engine's linear-time search with size limits and a 5 s deadline | `http_query::every_declared_parameter_is_typed_and_bounded_as_the_spec_declares`, `::pagination_is_capped_at_five_hundred_and_defaults_to_a_hundred`, `::the_raw_query_is_bounded_and_must_be_text`; `read_search::a_pattern_is_bounded_and_a_regex_runs_in_linear_time_under_limits`, `::the_caps_are_the_servers_ceilings_whatever_the_request_asks_and_truncation_is_reported`, `::a_search_that_runs_past_its_deadline_is_answered_503_and_the_pool_is_not_held`; `ingest_delta::size_and_entry_limits_are_enforced`; `explain::*` (no sequential scan of a large table, insta snapshots); `hygiene::no_offset_no_unbounded_channel_no_format_built_sql_no_direct_publish`, `hygiene::every_query_is_bounded_or_keyed` |
+| S13 secret detection (adoption scans both repos) | the engine's `secret_scan` over every indexed blob (a flagged setting is stored as `[REDACTED: N chars, rule]`) and over both repositories and the NFS content in the adoption pass; results hold locations and lengths, never a value | `adoption_secrets::secret_scan_covers_both_repos_and_the_nfs_content`, `::the_scan_result_holds_locations_and_lengths_but_no_value`; `settings_index::flagged_values_are_stored_redacted`; `http_reads::a_flagged_value_is_masked_in_every_setting_surface`; `read_search::a_flagged_value_is_masked_in_a_settings_hit` |
+| S14b (redaction of what leaves) and S15 (text is data) | served text and config text are data: a mismatch changes a hash and a status, never an instruction; a finding keeps names and two hashes, not text | `served_verification::*` (25 tests, among them `a_mismatch_with_the_fake_config_server_raises_a_high_severity_finding_naming_the_file`); `served_verification::served_text_is_data_whatever_it_says_it_only_changes_a_hash` |
+| S17 denied files (cap-std and deny globs at the agent; the hub holds to it too) | one rule `crate::denied::is_denied`; the hub's own globs apply even before an agent has said so; the blob policy refuses a denied file's hashes | `denied_files::*` (9 tests): `denied_files_are_listed_with_class_denied`, `content_withheld_has_no_bytes`, `the_blob_policy_refuses_their_hashes`; `http_reads::a_denied_file_never_returns_content_through_any_route` |
+| S21 no unsafe, no panics, errors do not leak | `#![forbid(unsafe_code)]` and the workspace lints (clippy `-D warnings` over the whole workspace, exit 0); `ReadError` has unit variants only and the edge maps them to `application/problem+json` with a code and nothing of the input or the server | `hygiene::forbid_unsafe_present`, `::no_panic_outside_tests`, `::panic_scan_finds_planted_violations`; `http_reads::an_error_is_a_problem_with_a_code_and_nothing_of_the_input_or_the_server`; `log_capture_reads::planted_values_never_reach_a_log_line_of_a_read` (the database is taken away and five routes answer 503; the lines that are logged are the registry's own); `batch::tests::a_port_that_refuses_a_batch_for_size_is_an_internal_error` (lib); the plan's `errors::a_database_failure_returns_a_generic_problem_body` does not exist under that name (Deviations) |
+| S22 fuzz target for every parser at a trust boundary | `crates/hub-registry/fuzz/fuzz_targets/{registry_delta, registry_cursor, registry_query, registry_sentinel_path}.rs` over `invariants.rs` (seeds: 18, 21, 28 and 15 files) | `corpus_replay::*` on stable (17 tests, `ok`); `justfile_gate::the_gate_lists_every_fuzz_target_and_every_registry_budget`; **the libFuzzer runs were NOT run here** (no pinned nightly, no `cargo-fuzz`) |
+| S24 threat model section | `docs/threat-model.md`, "Registry and read API (05)": assets, boundaries, STRIDE (28 rows, each with mitigation, proof and S#), residual risks | `threat_model::stride_table_has_all_six_letters_and_every_row_is_complete`, `::section_cites_the_registrys_requirements_and_only_real_ones`, `::every_proof_the_stride_table_names_exists`, `::residual_risks_cover_every_limit_the_tasks_and_decisions_recorded`, `::planted_gaps_are_found` (negative control) |
+| S25 (attribution) | sentinel records attribute a change only to the swimlane under the sentinel's root; an upgrade never replaces an equal or stronger attribution | `attribution::an_upgrade_is_never_a_downgrade`, `::a_local_vm_edit_is_sentinel_login_high_and_names_the_user`; `sentinel_partitions::*`; `attribution_job::*` |
+
+## Benchmarks against budgets
+
+All 18 `hub-registry/` budgets are registered in `perf/budgets.toml` and **all 18 are MET** in the official run (head `f5d5fc7`, release build, `cargo bench -p hub-registry` from a clean `target/criterion/hub-registry` and `target/perf-results/hub-registry_*.json`): `bench-check (default): 18 pass, 0 fail, 0 unmet of 18 budgets`. No budget was changed: `git diff 777b590...HEAD -- perf/budgets.toml` is exactly 18 lines `registered = false` becoming `registered = true` and the new description of `P7.text_search` (D97), with no threshold, statistic, unit or scale line touched; `crates/xtask/src` is untouched (the only `crates/xtask` changes are two tests: `budgets_registry.rs`, which pins the registered set, and `db_migrations.rs`, for migrations 0007 and 0008).
+
+Machine: 4 shared vCPU, 16 GB, Postgres 16.15 with `shared_buffers` 128 MB on the same box, `fsync` on, target-scale fixtures (40 swimlanes, 80,120 files, 20,008 indexed blobs, 867,285 settings). Nothing of mine ran during the official run (`ps` clean before it; a `NOT QUIET` line would be in the ledger). **Numbers on this box vary by up to about 30 % between runs**, and the table shows two runs because this step had two: run 1 (head `93b8b9e`, bed **without** the analyze of `f5d5fc7`, the benchmark that panicked excluded) and the official run. p50 and p99 are from the same samples as the p95 that `bench-check` judges (nearest rank).
+
+| Budget | Benchmark | Official run: p95 (p50, p99) | Budget | Margin | Run 1 p95 |
+|---|---|---|---|---|---|
+| `P1.hub_delta_to_drift` | `delta_to_drift_changed` | 244.2 ms (236.4, 247.7) | p95 <= 2,000 ms | 88 % | 242.0 |
+| `P2.hub_head_moved_to_drift` (tight) | `head_moved_to_drift` | 615.0 ms (569.5, 748.0) | p95 <= 1,000 ms | 38 % | 717.3 |
+| `P5` | `incremental_recompute_base` | 27.4 ms (22.5, 29.3) | p95 <= 50 ms | 45 % | 28.9 |
+| `P5.per_file_per_swimlane` | `incremental_recompute_per_file_per_swimlane` | 0.43 ms (0.35, 0.43) | p95 <= 2 ms | 78 % | 0.40 |
+| `P6.hub_full_recompute` | `full_recompute_target_scale` | 11,697 ms (4,728, 11,697) | p95 <= 180,000 ms | 94 % | 10,807 |
+| `P6.adoption_rank` | `adoption_rank_per_swimlane` | 39.2 ms (29.5, 44.9) | p95 <= 5,000 ms | 99 % | 38.5 |
+| `P7.swimlane_list` | `swimlane_list` | 1.82 ms (0.77, 3.62) | p95 <= 50 ms | 96 % | no result (see below) |
+| `P7.file_tree` | `file_tree` | 5.82 ms (1.69, 6.97) | p95 <= 100 ms | 94 % | 4.49 |
+| `P7.file_content_cached` | `file_content_cached` | 1.60 ms (0.96, 2.37) | p95 <= 30 ms | 95 % | 1.54 |
+| `P7.file_content_cold` | `file_content_cold` | 1.62 ms (0.87, 3.64) | p95 <= 80 ms | 98 % | 1.38 |
+| `P7.compare_api` | `compare_6000_lines` | 28.1 ms (21.4, 29.0) | p95 <= 100 ms | 72 % | 26.6 |
+| `P7.grid` (tight) | `grid_40_swimlanes` | 102.3 ms (81.2, 102.8; 24 samples) | p95 <= 150 ms | 32 % | 112.6 |
+| `P7.whole_swimlane_compare` | `whole_swimlane_compare` | 24.9 ms (16.7, 28.7) | p95 <= 300 ms | 92 % | no result (see below) |
+| `P7.settings_search` (tight, brittle) | `search_settings_all_swimlanes` | **108.4 ms** (17.7, 249.6) | p95 <= 200 ms | 46 % | 43.2 |
+| `P7.text_search` (tight; steady state, D97) | `search_text_all_swimlanes` | 189.4 ms (149.0, 239.6) | p95 <= 400 ms | 53 % | 215.6 |
+| `P12.steady_state_query_ms` | `steady_state_queries` | 15.0 ms (1.4, 22.1; 780 samples) | p95 <= 50 ms, and no statement over 50 ms | 70 % | no result (panic, see below) |
+| `P14` | `sentinel_attribution` | 4,729 ms (24.9, 5,003) | p95 <= 30,000 ms | 84 % | 4,700 |
+| `P15.registry_ingest_versions_per_s` (min of three runs, blob double now runs the real `PUT_SQL` with `touched_at`) | `ingest_versions_per_s` | **1,547.3** (runs 1,674.0, 1,578.4, 1,547.3) | min >= 1,000 | 55 % above | 1,425.7 (runs 1,425.7, 1,600.2, 1,560.1) |
+
+**The tight budgets, each number against its budget:**
+
+- **`P7.grid`**: 102.3 ms of 150 (run 1: 112.6; earlier 116 to 151). Met in both runs; the p95 of 24 samples is the 23rd.
+- **`P7.settings_search`**: **108.4 ms of 200** in the official run, and **three reruns of this benchmark alone** on the same head, because it is the brittle one: **196.9 ms** (rerun a), **107.0 ms** (rerun b), against **43.2 ms** in run 1 (no analyze). Met in every run, but **rerun a is at 98 % of the budget**. Cause of the spread, found in this step: the benchmark takes ten of its twenty needles with `TABLESAMPLE SYSTEM (0.05) REPEATABLE (7)`, which is repeatable for one physical layout of the table and not across loads (the settings are written by concurrent workers, so the pages differ), so **the needle set changes from run to run** (run 1 and rerun b happened to draw the same set, which is how the effect of the analyze could be isolated: 43.2 against 107.0). Some needles are slow in the realistic plan: `options5` took 198 to 275 ms in four of its five rounds in rerun a (four of the five slowest samples). The p95 of 100 samples is the sixth slowest. The five rounds of the 2-character needle `id` (a sequential scan of the index, 186 to 293 ms, the same in every run) take five of the top places and whatever else is slow lands in the sixth and above: in the official run the five slowest were all `id` (251, 250, 206, 199, 195 ms) and the sixth, the p95, was 108.4; in rerun a one `id` and four `options5` samples were the five slowest and the sixth was 196.9. One more slow needle in the draw and the p95 is over 200. The same scan as its own series (`search_settings_short_needles`, no budget): p95 about 220 to 227 ms. **Nothing was changed for this (no needle, no threshold).**
+- **`P2.hub_head_moved_to_drift`**: 615.0 ms of 1,000 (run 1: 717.3; T6 to T8: 644 to 736).
+- **`P15.registry_ingest_versions_per_s`**: **1,547.3** against a minimum of 1,000 (run 1: 1,425.7; earlier about 1,200 to 1,340). Re-measured, as asked, with the blob test double that runs the real `PUT_SQL` with `touched_at` (migration 0008): it is not slower, 6 runs: 1,425.7, 1,600.2, 1,560.1, 1,674.0, 1,578.4, 1,547.3.
+- **`P7.text_search`**: 189.4 ms of 400 (run 1: 215.6; about 201 in T6), steady state as D97 defines it (the first search after an applied change to one swimlane, on a warmed hub).
+- **`P14`**: 4,729 ms of 30,000 (run 1: 4,700). The 15 "record first" samples are 0.4 to 5.0 s; the "scan first" ones about 10 ms.
+
+**Why run 1 has three blanks.** `cargo bench` stops at the first failing benchmark; `steady_state_queries` panicked (the first defect, `6b5881c`), so `swimlane_list` and `whole_swimlane_compare`, which come after it in `Cargo.toml`, never ran, and `P12.steady_state_query_ms` has no result. They have results in the official run, after the two fixes.
+
+**What the benchmarks do not cover** (a gap, not a miss): `steady_state_queries` runs 39 statements; three statements added after T6 by `36a9fff` (the six methods of contract 07, D108) are not in it: `AUTO_NOTIFY_SQL`, `DRIFT_BY_PATH_SQL` and `DRIFT_PIVOT_SQL`. Their plans are covered by `explain::hot_queries_have_no_sequential_scan_on_large_tables` (no sequential scan), not their times.
+
+### The whole registry: `cargo xtask bench-check` after the other crates' benchmarks
+
+```
+PASS  P1                                     9600.407 p95 <= 15000 ms
+PASS  P2                                       26.430 p95 <= 10000 ms
+PASS  P3                                          672 p95 <= 1024 bytes_per_min
+PASS  P4                                       23.897 p95 <= 20000 ms
+PASS  P4.stat_walk                              4.399 p95 <= 1000 ms
+PASS  P4.cpu_mcores                                 6 p95 <= 50 mcores
+PASS  P4.memory_mib                            24.371 max <= 64 mib
+PASS  P5                                       27.356 p95 <= 50 ms
+PASS  P5.per_file_per_swimlane                  0.431 p95 <= 2 ms
+PASS  P6                                     1743.212 p95 <= 180000 ms
+PASS  P6.parse_flatten                          9.572 p95 <= 20 ms
+PASS  P6.index_settings                        53.646 p95 <= 60 ms
+PASS  P7.swimlane_list                          1.817 p95 <= 50 ms
+PASS  P7.file_tree                              5.818 p95 <= 100 ms
+PASS  P7.file_content_cached                    1.602 p95 <= 30 ms
+PASS  P7.file_content_cold                      1.623 p95 <= 80 ms
+PASS  P7.compare                               32.294 p95 <= 100 ms
+PASS  P7.engine_grid                           46.345 p95 <= 150 ms
+PASS  P7.engine_text_search                   192.888 p95 <= 400 ms
+PASS  P5.engine_base                            4.278 p95 <= 50 ms
+PASS  P5.engine_per_file_per_swimlane           0.153 p95 <= 2 ms
+PASS  P7.grid                                 102.292 p95 <= 150 ms
+PASS  P7.whole_swimlane_compare                24.856 p95 <= 300 ms
+PASS  P7.settings_search                      108.380 p95 <= 200 ms
+PASS  P7.text_search                          189.438 p95 <= 400 ms
+UNMET P7.docs_search                                - p95 <= 150 ms  not registered; no benchmark yet
+UNMET P7.feature_status                             - p95 <= 200 ms  not registered; no benchmark yet
+PASS  P7.blob_get_cached                        0.000 p95 <= 1 ms
+PASS  P7.auth_middleware                        0.005 p95 <= 2 ms
+PASS  P7.blob_endpoint                          0.006 p95 <= 30 ms
+PASS  P7.auth_middleware_cold                   0.367 p95 <= 2 ms
+PASS  P8                                       31.922 p95 <= 1500 ms
+PASS  P9                                        8.215 p95 <= 300 ms
+PASS  P9.list_swimlanes                         0.646 p95 <= 300 ms
+PASS  P9.get_swimlane                           0.873 p95 <= 300 ms
+PASS  P9.list_files                             0.866 p95 <= 300 ms
+PASS  P9.read_file                             81.290 p95 <= 300 ms
+PASS  P9.get_effective_config                   1.343 p95 <= 300 ms
+PASS  P9.compare                                1.493 p95 <= 300 ms
+PASS  P9.compare_tree                           0.711 p95 <= 300 ms
+PASS  P9.compare_grid                           7.828 p95 <= 300 ms
+PASS  P9.search_settings                        1.268 p95 <= 300 ms
+PASS  P9.search_text                            1.711 p95 <= 300 ms
+PASS  P9.find_inconsistencies                   1.368 p95 <= 300 ms
+PASS  P9.get_drift                              1.308 p95 <= 300 ms
+PASS  P9.get_pending_restarts                   0.901 p95 <= 300 ms
+PASS  P9.get_history                            0.811 p95 <= 300 ms
+PASS  P9.search_docs                            0.724 p95 <= 300 ms
+PASS  P9.read_doc                               2.681 p95 <= 300 ms
+PASS  P9.grep_docs                              1.566 p95 <= 300 ms
+PASS  P9.get_docs_for_file                      0.779 p95 <= 300 ms
+PASS  P9.get_feature_status                     2.629 p95 <= 300 ms
+PASS  P9.get_served_config                      3.130 p95 <= 300 ms
+UNMET P10.initial_js_gzip_kb                        - max <= 250 kb  not registered; no benchmark yet
+UNMET P10.route_change_ms                           - p95 <= 100 ms  not registered; no benchmark yet
+UNMET P10.diff_6000_lines_ms                        - p95 <= 500 ms  not registered; no benchmark yet
+UNMET P10.grid_5000_rows_fps                        - min >= 60 fps  not registered; no benchmark yet
+UNMET P10.lighthouse_perf                           - p50 >= 90 score  not registered; no benchmark yet
+PASS  P11                                      46.256 p95 <= 10000 ms
+PASS  P11.memory_mib                          746.621 max <= 1536 mib
+PASS  P12.audit_record                          2.492 p95 <= 3 ms
+PASS  P12.hub_writes_queries                   10.736 p95 <= 50 ms
+PASS  P12.steady_state_query_ms                15.042 p95 <= 50 ms
+PASS  P13                                       5.192 p95 <= 1000 ms
+PASS  P14                                    4729.271 p95 <= 30000 ms
+PASS  P15.spool_replay_versions_per_s      274843.564 min >= 1000 versions_per_s
+PASS  P15.hub_ack_versions_per_s            20303.182 min >= 1000 versions_per_s
+PASS  P1.hub_delta_to_drift                   244.212 p95 <= 2000 ms
+PASS  P2.hub_head_moved_to_drift              615.038 p95 <= 1000 ms
+PASS  P6.hub_full_recompute                 11697.123 p95 <= 180000 ms
+PASS  P6.adoption_rank                         39.181 p95 <= 5000 ms
+PASS  P7.compare_api                           28.145 p95 <= 100 ms
+PASS  P15.registry_ingest_versions_per_s     1547.323 min >= 1000 versions_per_s
+bench-check (default): 66 pass, 0 fail, 7 unmet of 73 budgets
+```
+
+`cargo bench --workspace --exclude hub-registry --no-fail-fast` (exit 0; the 26 benchmark binaries of `agent`, `engine`, `hub-mcp`, `hub`, `hub-identity`, `hub-platform` and `hub-writes` ran, in release, after the registry's own, on the same box) and then `cargo xtask bench-check` (exit 0, default mode, where an unregistered budget is "unmet" and does not fail): **66 pass, 0 fail, 7 unmet of 73 budgets**.
+
+- **Every `hub-registry/` budget is MET** (the 18 rows above, with the same numbers as the table of the official run: the whole-registry check reads the same `target/perf-results/` and `target/criterion/`).
+- **The 7 unmet are not this prompt's and are reported with their reason:** `P7.docs_search` and `P7.feature_status` (the docs search) and `P10.initial_js_gzip_kb`, `P10.route_change_ms`, `P10.diff_6000_lines_ms`, `P10.grid_5000_rows_fps`, `P10.lighthouse_perf` (the web app): all `registered = false` in `perf/budgets.toml` ("not registered; no benchmark yet"), because the owning prompts have no benchmark. In the default mode of `bench-check` that is "unmet" and does not fail; `--strict` would fail on it.
+- **Other prompts' budgets that are close, for their owners (not ours to fix):** `P6.index_settings` 53.6 ms of 60 (prompt 04; it failed in prompt 06's run, which says the box moves it), `P12.audit_record` 2.49 ms of 3 (prompt 03a; the same), `P7.engine_text_search` 192.9 ms of 400, `P7.auth_middleware_cold` 0.37 ms of 2. None failed in this run.
+- **Not run, and not run for this check:** the agent's slow test (`agent-slow-test`, the real 10 s walk) and the real-GCP tests; the benchmarks that do not exist yet (the seven unmet). No benchmark was skipped for lack of resources: every one that exists ran.
+
+
+## Contract changes this branch rests on
+
+None of these was made by a `05/Tk:` commit. They came from `contract(05): ...` branches and were merged into this one; the feature commits only flip `registered = true` in `perf/budgets.toml` (with the pin in `crates/xtask/tests/budgets_registry.rs`), add the `Justfile` recipes, and add the registry's own D-entries and threat-model section (the plan's Extra-paths). `git diff 777b590...HEAD --stat` (777b590 is `origin/main`, PR #17) is 474 files, 441 of them in `crates/hub-registry`; the others are the contract items below, the `Justfile`, `Cargo.toml` and `Cargo.lock`, the plan files, and `docs/`.
+
+**Already on `origin/main` (777b590):**
+
+| Contract | What |
+|---|---|
+| `0003_registry.sql` (`0bed2dc`, merged `369e9a1`) | The registry's tables and columns: `swimlane_registry`, `effective_files`, `delta_staging`, `adoptions`, `adoption_resolutions`, `swimlane_deployments`, `swimlane_folders`, `release_hints`, the `file_state` and `file_observations` additions, `swimlanes.last_notified_at`, and the grants. Plus `DomainEvent::PickupChanged`, `FindingKind::ServedMismatch` (C12), `NotificationKind::{DriftDetected, SyncWindowStale}`, `EventKind::PickupChanged`, the OpenAPI enums and six unregistered budgets (`P1.hub_delta_to_drift`, `P2.hub_head_moved_to_drift`, `P6.hub_full_recompute`, `P6.adoption_rank`, `P7.compare_api`, `P15.registry_ingest_versions_per_s`; thresholds are the plan's proposals, A42). |
+| Batching of the ports' audit and outbox calls (`97798d1` to `68ce406`, merged `c24b6bd`) | `AuditLog::record_many` and `EventBus::publish_many_in_tx` (limits of 200 events and 1 MiB of canonical JSON, `canonical_size`, `split_batches`, `BusError::BatchTooLarge`, one-statement overrides in `PgAuditLog` and `PgEventBus`, defaults and conformance in the ports' fakes). It is what made `P15.registry_ingest_versions_per_s` reachable (blocked at 724 against 1,000 before it; `plans/05-registry-read-api.blockers.md`). |
+| `0004` to `0006` | Prompt 06's write additions and prompt 07's personal tokens. Not 05's; the registry reads `swimlanes.last_notified_at` that 06 writes and calls nothing of them. |
+
+**NOT on `origin/main` yet: they are on `origin/claude/clever-franklin-26x6ym` (5 commits ahead of main: `352a25c`, `ede45af`, `b4c2351`, `6d9d512`, `933b668`) and this branch needs them merged first, or with it:**
+
+| Contract | What it is and why the registry needs it |
+|---|---|
+| `0007_tool_write_registrations.sql` (first written as `0005`, renumbered by `b4c2351` because prompt 07 took `0005` and `0006`) | One table, one index and one grant (`SELECT, INSERT, DELETE`): the registrations of `ports::ToolWrites` (unique key over swimlane, path, hash, request and kind; the user; an age for the TTL and the bound). Expand-only. The old seam (`ToolWrites::record`, an observation row of source `tool_write`) could not be made sound on the 0001 to 0004 schema (it let a registration swallow the agent's own observation of the same version and nothing indexed it for the bound; `plans/05-registry-read-api.blockers.md`, "T1 (A10 follow-up)"), and was removed. D120 records the registry's side and supersedes D121. |
+| `ports::ToolWrites` with `register_delete` (`352a25c`) | A delete is registered with the hash of the version that is deleted (rule 11's expected hash), so a tool's delete is no longer an out-of-band change that also gets 06's own audit event. The port docs say the registry opens its own savepoint with raw SQL (so a failing statement cannot abort the caller's transaction), takes no time from the caller, and that a late match has a floor (`6d9d512`). The ports' fake and the conformance suite `ports::conformance::tool_writes` carry both kinds; `tool_write_conformance::*` runs it over the real Postgres. |
+| `0008_blob_touch.sql` (retention contract "W2", human-approved 2026-10-15) | `blobs.touched_at timestamptz NOT NULL DEFAULT now()` and a column-level `UPDATE (touched_at)` grant to `lanekeeper_app`. `PgBlobStore::put` of an existing blob refreshes `touched_at` at most once an hour (`hub-platform` `blobs/store.rs`, `TOUCH_INTERVAL`, owned by 03b: the contract carries the change), and retention deletes only a blob whose `touched_at` is older than `gc_grace` (default 48 h, held by `RegistryConfig::validate` to at least `TOUCH_INTERVAL + staging_ttl`). It closes the race between a writer that has stored a blob and not yet committed the row that references it (a conditional delete cannot see a reference that has not committed). `created_at` keeps its meaning ("first stored"). D116. |
+| `docs/interfaces.md`, `docs/domain-model.md`, `db/migrations/README.md` | The text of the contracts above, including the rule that a deleter tests the age in the same statement that locks or deletes the row. |
+
+**What this means for the PR:** the diff of this branch against `origin/main` contains those contract commits. A human merges the contract branch (`contract/05-*`, behind `origin/claude/clever-franklin-26x6ym`) before this PR or reviews them as part of it; the evidence of the contract PR itself is not repeated here.
+
+**Retention reading to confirm (D116):** an audit event's `hash_before` and `hash_after` do **not** pin a blob; only an explicit `blob_refs` row of kind `audit_event` does, and nothing writes one today. The keep rules (the last 50 versions of a file, or the last 180 days) therefore decide what is collected, and the audit chain can name a hash whose blob is gone (accepted: the chain keeps its own diff text). The alternative readings (two partial indexes on `audit_events`, 11.6 ms against 141 ms by sequential scan at 500,000 rows, or a guarded insert of a `blob_refs` row per audit event on the P15 path) are in the blockers file, "T9 (second half, retention)".
+
+## Follow-ups the hub must wire (plan A8, D112)
+
+`hub-registry` is **not wired into `crates/hub`** (A8, decided in D112): the crate exposes constructors, routes and jobs, and a test composes the routes with hub-platform's `GuardedRouter`. Until these are wired nothing of the registry runs in the binary. `Registry::build`, which plan A8 named, does not exist: each service has its own constructor (`AgentIngest::new`, `SentinelIngest::new`, `Pipeline::new`, `RegistryService::new`, ...). One follow-up, after 03a, 05 and 06 have merged:
+
+| What the hub must do | Registry item |
+|---|---|
+| Give the gateway the two sinks | `AgentIngest` (`ports::ReportSink`), `SentinelIngest` (`ports::SentinelSink`) |
+| Give prompt 06 its port | `PgToolWrites` (`ports::ToolWrites`, built from `ToolWriteDeps`) |
+| Mount the 15 read routes and the blob policy | `registry_routes`, `registry_route_specs`, `RegistryBlobPolicy` (with 03a's real session auth in place of `FakeSessionAuth`) |
+| Start the leased jobs (`JobRunner`, one holder per replica set), each with its `spec(&RegistryConfig)` and `job()` | `registry-pipeline`, `registry-nightly`, `registry-pickup-sweeper`, `registry-structure-sweeper` (the four of `Pipeline::jobs()`); `registry-index-sweeper` (`SettingsSweeper`, with the `SettingsWorker` the indexer returns); `registry-tool-write-matcher` (`ToolWriteMatcher::job()`); `registry-served-verify` (`ServedVerifier::job()`, the served verification); `registry-attribution-grace` and `registry-sentinel-partitions` (`SentinelIngest::grace()` and `::partitions()`); `registry-retention` (`Retention::spec` and `::job()`); `registry-sync-watch` (`WATCH_JOB`, the sync-window watcher). Eleven jobs |
+| Start the per-replica warm-up of the text-search corpora and stop it at shutdown | `RegistryService::spawn_warmup()` (a task, not a leased job; D97, `P7.text_search` is measured with it settled or not needed in the steady state) |
+| Run the migrations before the code | `0007` first, then the 05 code that implements `ToolWrites`; `0008` first, then the 03b code that refreshes `touched_at` (`PgBlobStore::put`, in this branch) and the registry's retention job (each migration header states its order; a binary from before them runs unchanged against the new schema) |
+| Keep the retention defaults in mind | `registry-retention` **deletes** by default, in bounds (500 blobs and 64 MiB a run), with a `dry_run` setting (D118); an operator who wants a dry first week must set it |
+
+Not built here and needing an owner (D112, A6 and A7): the adoption and "mark intentional" routes (`AdoptionService`, `mark_intentional` and `clear_intentional` are typed service methods; the contract has no operation for them) and the admin operations of the spec (path mappings, merge modes, host tiers, folder mappings, severity rules, retention settings, sentinels, OS Login map, notifications, auto-notify, tenants and agents). This crate reads their tables and its tests seed them with SQL. An owner must be named before the pilot.
+
+## Known weaknesses
+
+- **Seven registry tests assert "nothing happened" after a fixed sleep.** They cannot fail a correct job, but they could pass a broken one under load (the sleep may end before the thing that should not happen would have happened). Read from the code in this step: `tool_write_matching.rs:993`, `sentinel_sink.rs:683` and `attribution_job.rs:123` sleep 400 ms and assert that the job has not finished (it should be waiting for a swimlane lock that the test holds), then release the lock and assert that it finishes within 10 s; `pipeline_events.rs:316` sleeps 700 ms and asserts that no swimlane was loaded again by the second run of one holder; `severity.rs:542` sleeps 100 ms after the two expected alerts and asserts that there is no third; `read_corpora.rs:278` sleeps 450 ms and asserts that a stopped warm-up no longer follows (the corpora are not current) and then that a search builds for itself; `read_corpora.rs:298` sleeps 350 ms and asserts that a failing warm-up has not ended its task and that the corpora are not current, then lets reads work again and waits for it to catch up. None of the seven ends on the sleep alone, but the "not yet" half of each is the weak one. Nothing was changed in this step.
+- **Two tests that flaked under load were already fixed in the last two commits of the branch** (`af8813b` `served_verification` two-swimlane test: waits for the other swimlane's request instead of counting yields; `93b8b9e` `retention_gc` lease-holder test: waits for the runs instead of a fixed 900 ms). The seven above are the same kind of test and were not touched.
+- **`P7.settings_search` is met by the statistic, not by every request.** The index needs three characters of a needle; one or two characters that match few settings read the whole `settings_index` (867,285 rows at target scale, 220 to 290 ms). The registered workload has exactly one 2-character needle in twenty, so 5 of its 100 samples are that scan and sit above the p95 line. The same scan as its own series (`search_settings_short_needles`, no budget): p95 253.5 ms. A viewer can repeat it. Options in the blockers file (a minimum needle length of three in the OpenAPI, a table of distinct paths, or accept).
+- **`P7.text_search` is the steady state (D97, human decision of 2026-10-15), not a cold hub.** A search before the warm-up has finished builds the corpora itself (about 570 ms cold in the T6 series). The memory per replica is about 68 MiB at target scale and up to `corpus_cache_bytes` (256 MiB) by configuration, in every replica.
+- **Tight budgets** (the margin on the machine the numbers below were taken on): `P7.grid` (150 ms), `P15.registry_ingest_versions_per_s` (min 1,000), `P2.hub_head_moved_to_drift` (1,000 ms). They moved by up to 30 % between runs on this shared 4-vCPU box. CI hardware that is noisier than this box may fail them without a code change.
+- **Residual risks accepted and written in the threat model:** cursors are bound to their query by a tag and not MACed (a client can forge one for the same query; no test reaches another query's data); raw file text, blobs, diff hunks and text-search lines are not masked (A28: config is not meant to hold secrets, D18); `only_differing` hides a change between two different secrets of one length and rule (one marker for both); the audit chain can name a hash whose blob retention has collected (D116); retention's deletes are not audited (D118); the served-file route is limited to 16 calls per replica (A36).
+- **`SwimlaneSummary.tenants`** has `minItems: 1` in the OpenAPI, but an unadopted swimlane has no tenant yet; the service answers `[]` and `http_contract::known_deviation_an_unadopted_swimlane_lists_no_tenants_where_the_spec_wants_one` pins that one deviation. The schema or the data has to give.
+- **`hub-identity` is a dev-dependency of `hub-registry`** (for the real `PgAuditLog` in tests and in the `P15` benchmark), where plan A9 said the registry depends on hub-platform "and for nothing else". It is true of the library; a P15 measurement over a stand-in cannot tell whether `record_many` is the real batch.
+- **`D121` is superseded by `D120` and still stands in `docs/decisions.md`** (the file keeps both; D120 says so). The plan and the blockers file use the old numbers D91, D92 and D109, which are D121, D122 and D123 now (prompt 07 took D91, D92 and D109).
+- **What was not run** is in "What was NOT RUN, and why" above: the libFuzzer runs, Docker/testcontainers, `just`, `cargo deny`, `cargo audit` and `osv-scanner`.
+
+## New dependencies
+
+**None.** `git diff 777b590...HEAD -- Cargo.toml Cargo.lock crates/hub-registry/Cargo.toml` (777b590 is `origin/main` before and after PR #17; 184 insertions, 1 deletion) adds no external crate:
+
+- Root `Cargo.toml`: one workspace path entry (`hub-identity`, a path dependency, used only as a **dev-dependency** of `hub-registry`) and `engine` and `proto` swapped in the list of path entries. No line of `[workspace.dependencies]` for an external crate was added, removed or changed (no version, no feature).
+- `Cargo.lock`: the only change is the dependency list of the workspace member `hub-registry` itself (it already existed as a stub). Comparing every `name version` pair of the lockfile with the one of 777b590: **no new pair**. The same comparison for the new `crates/hub-registry/fuzz/Cargo.lock` against all fuzz lockfiles of 777b590 and the main lockfile: the only pair that is not already there is `registry-fuzz 0.0.0`, the fuzz crate itself.
+- `crates/hub-registry/Cargo.toml`: every dependency is `x.workspace = true` (features chosen per crate: `sqlx` `postgres`, `runtime-tokio`, `json`, plus `migrate` for tests; `tokio` `macros`, `rt`, `sync`, `time`; `ports` `postgres`, and `fakes` for tests). No feature pulled in a crate that the lockfile did not already hold.
+- The fuzz crate's own direct pins are `libfuzzer-sys =0.4.13` and `bytes =1.12.1`, the same as the other fuzz crates; `libfuzzer-sys 0.4.13` was published 2026-06-04 (134 days before 2026-10-16).
+- `deny.toml`, `package.json`, `pnpm-lock.yaml` and `web/` are unchanged.
+
+The 27 external crates that `crates/hub-registry/Cargo.toml` names were all already pinned in the root manifest of 777b590. Their ages, read from the `pubtime` field of the crates.io sparse index (`https://index.crates.io`, reachable from this sandbox) on 2026-10-16, for the record of the 14-day rule (S19; "age" is the age today, not at the day the pin was chosen, which this sandbox cannot know):
+
+| Crate and pin | Published | Age in days | | Crate and pin | Published | Age in days |
+|---|---|---|---|---|---|---|
+| async-trait 0.1.92 | 2026-08-08 | 69 | | serde_json 1.0.151 | 2026-07-20 | 88 |
+| axum 0.8.9 | 2026-04-14 | 185 | | sha2 0.10.9 | 2025-04-30 | 534 |
+| base64 0.22.1 | 2024-04-30 | 899 | | sqlx 0.8.6 | 2025-05-19 | 515 |
+| bytes 1.12.1 | 2026-07-08 | 100 | | thiserror 2.0.20 | 2026-08-08 | 69 |
+| futures 0.3.34 | 2026-08-11 | 66 | | tokio 1.53.1 | 2026-07-20 | 88 |
+| hex 0.4.3 | 2021-03-03 | 2,053 | | tracing 0.1.44 | 2025-12-18 | 302 |
+| http 1.5.0 | 2026-07-29 | 79 | | insta 1.48.0 (dev) | 2026-06-11 | 127 |
+| globset 0.4.20 | 2026-08-04 | 73 | | tower 0.5.3 (dev) | 2026-01-12 | 277 |
+| moka 0.12.16 | 2026-08-09 | 68 | | http-body-util 0.1.5 (dev) | 2026-08-12 | 65 |
+| prometheus-client 0.25.1 | 2026-09-01 | 45 | | serde-saphyr 1.1.0 (dev) | 2026-08-15 | 62 |
+| rayon 1.12.0 | 2026-04-14 | 185 | | grep-regex 0.1.14 (dev) | 2025-10-16 | 365 |
+| serde 1.0.229 | 2026-07-18 | 90 | | grep-matcher 0.1.9 (dev) | 2026-07-15 | 93 |
+| testcontainers 0.28.0 (dev) | 2026-08-06 | 71 | | tempfile 3.27.0 (dev) | 2026-03-11 | 219 |
+| proptest 1.11.0 (dev) | 2026-03-24 | 206 | | criterion 0.8.2 (dev) | 2026-02-04 | 254 |
+
+The youngest is `prometheus-client 0.25.1` at 45 days. The justification of each is the one it already had when it joined the workspace (D-entries and the earlier prompts' evidence); this prompt adds none. `cargo deny` and `cargo audit` were **NOT run** (not installed; see the not-run list), so "clean under `cargo deny`" is not claimed for the lockfile; since it adds no pair, the result of the last run on `origin/main` is the one that applies, which this sandbox cannot confirm.
+
+## Assumptions
+
+The plan's ambiguity table (A1 to A46, `plans/05-registry-read-api.md`) was approved with the plan; what each row became is below. **Numbering warning:** the plan and the blockers file still say D91, D92 and D109 for what are now **D121, D122 and D123**, because prompt 07 took D91, D92 and D109 while this branch was open. Where this table says D121 to D123 it means the renumbered entries.
+
+| Id | What was built or assumed | Decision record |
+|---|---|---|
+| A1 | The schema additions of `0003_registry.sql`, as a separate contract PR before T1 | contract (on main) |
+| A2 | `PickupChanged` added; `PendingRestartChanged` kept as a superseded variant, no longer published (`pickup::pending_restart_changed_is_not_published_any_more`) | contract, D105 |
+| A3 | `FindingKind::ServedMismatch` (C12) | contract, D114 |
+| A4, A5 | `served` is a method of the registry's own `RegistryApi` with a local DTO; `RegistryApi` is a superset trait over `RegistryRead`; the six methods that `contract/07-mcp` added to the port are answered through it | D108 |
+| A6, A7 | **Not built:** adoption, "mark intentional" and the admin operations have no route and no owner | D112 |
+| A8 | **Not wired** into `crates/hub` (follow-ups above) | D112 |
+| A9 | Depends on hub-platform for `GuardedRouter`, `ApiError`, `BlobPolicy` and `Job` only | D112 |
+| A10 | Tool writes: `ports::ToolWrites` (`register`, `register_delete`) over the table of `0007`, matcher job for the late commit; the first design (`record`, an observation row) was removed | D120 (supersedes D121), contract `0007` |
+| A11 | The first inventory of a swimlane is not a change (`ingest_delta::the_first_scan_is_an_inventory_and_not_a_change`) | D122 |
+| A12 | Which actions are audited, one event each, in the transaction; in-tool writes are 06's; retention GC and index writes are not audited | D93, D118 |
+| A13 | The agent's Merkle root is stored as reported; no proto change | D94 |
+| A14 | Non-final delta parts are staged durably in `delta_staging`; the last part applies in chunks of at most 50 paths; the root, ack and staging cleanup move in the last chunk's transaction | D110 |
+| A15 | `hello` for a swimlane no admin created is `IdentityMismatch` | D110 |
+| A16 | A chmod or chown record is acknowledged and counted, not stored | D123 |
+| A17 | Sentinel paths are made relative to the swimlane's export under the sentinel's root; records outside it are dropped and counted | D123 |
+| A18 | OS Login mapping: the admin's map, else an unambiguous email match, else no user | D123 |
+| A19 | Attribution `unknown` first, `nfs_client` after a 30 s grace, a late record still upgrades | D123 |
+| A20 | `swimlanes.last_notified_at` is written by 06 and read here | D105, contract |
+| A21 | The engine's input is built from file metadata in memory with real bytes only for the groups an update touches (`pipeline_core::incremental_never_needs_the_bytes_of_clean_files`) | D110 |
+| A22 | `git_tree_index` has one writer, hub-platform's `TreeIndexPersist`; the registry never writes it (`hygiene::no_source_writes_the_git_tree_index`) | D96 |
+| A23 | A byte-weighed cache of normalised Git hashes keyed by (repo, object id, class) | D96 |
+| A24 | A baseline row per confirmed path (drift hash in `hash`, raw version in `blob_hash`); an absent file has no baseline row | D110 |
+| A25 | The drift state of a directory is the worst of its descendants | D111 |
+| A26 | `DriftChanged` in chunks of 500 paths, at most 20 per batch, then `FindingsChanged` | D110 |
+| A27 | Text-search ceilings of 1,000 and 50 on the port; the REST parameters keep the spec's own limits (lower of each pair) | D111 |
+| A28 | Flagged values are masked `[REDACTED: N chars, rule]` in setting surfaces; raw text, blobs, diff hunks and search lines are not masked (residual risk) | D95, D111 |
+| A29 | `compare_tree` of anything but two `effective:` sides compares path-level hashes without subtree skipping | D111 |
+| A30 | The first tenant in sorted order stands for a swimlane and the response names it | D106 |
+| A31 | Cursor keys are short (child name, `file_state.seq`, a time and an id, a hash of the setting path) | D111 |
+| A32 | The benchmarks go through the axum router with a fake session and the real Postgres and engine | D111, D112 |
+| A33 | `record_sync` takes the heads the registry resolves when a sync window closes, until prompt 10 chooses a reporting option | D100 |
+| A34 | Retention deletes by default, 500 blobs and 64 MiB a run, `dry_run` available, keep rules 50 versions or 180 days from `retention_settings` | D118, D119 |
+| A35 | `NotificationKind::{DriftDetected, SyncWindowStale}` | D98, D101, contract |
+| A36 | As-served verification skips a swimlane whose agent is not connected, one request at a time, 10 s timeout, a deterministic sample of 200 | D114 |
+| A37 | A leased sweeper turns an expired `live_within_ttl` into `live` and publishes `PickupChanged` | D105 |
+| A38 | The open questions that block 05 take the defaults their own document states (Q3, Q17, Q19, Q32, Q33, Q34) | D112 |
+| A39, A40, A41, A43, A44 | Runtime-checked `sqlx::query`; fuzz crate inside `crates/hub-registry/fuzz`; `FakeGit` at target scale; a schema walker instead of a JSON-schema crate; T1 proves up to `FileObserved`, the end-to-end `DriftChanged` test is T3's | D112 |
+| A42 | The new budgets' numbers are the plan's proposals (2,000 ms, 1,000 ms, 180,000 ms, 5,000 ms, 100 ms, 1,000 versions per second); no existing threshold was loosened (`perf/budgets.toml` is as the contract PR and the flips left it) | contract |
+| A45 | C9 to C11 run in a leased sweeper, not in the pipeline's batch; `channels.yml` is read the same way by every reader | D113, D115 |
+| A46 | A new tenant suffix raises a pending `adoptions` row (reason `tenant_suffix_changed`) and the C4 findings, no notification | D110 |
+
+**Entries the implementer decided, to be confirmed at review** (the entry says so): D103 (severity and the admin's rules), D104 (what a denied file is), D105 (pickup state), D106 (the tenants of a swimlane), D108 (the six `RegistryRead` methods), D113 (C9 to C11 in a sweeper), D114 (as-served verification), D115 (`channels.yml`), D119 (the shape of the retention job), D120 (how the registry holds `ToolWrites`), D123 (attribution from the sentinel's records).
+
+**Entries the orchestrator decided under the human's delegation ("make decisions for me", 2026-10-15), to be confirmed at review:** D98 (drift alerts held while a sync window is open), D99 (how long, and how its times are trusted), D100 (what happens when a window closes), D101 (the stale-window warning and settings), D102 (a limit on holding in total), D110 (staging, the engine's input, baselines, events, a new tenant suffix), D111 (read API shapes), D112 (what is not built and how tests are made), D116 (blob collection, "referenced by an audit event", the writer race), D117 (pruning processed `sync_windows`), D118 (retention deletes by default).
+
+**Entries that record the approved plan's defaults** (no "decided by" sentence; they restate rows the human approved with the plan): D93 (A12), D94 (A13), D95 (A28), D96 (A22, A23), D121 (A10, **superseded by D120**), D122 (A11). **D97** is a human decision of 2026-10-15 (`P7.text_search` is the steady state; the threshold stays 400 ms) and says so.
+
+D107 and D109 (and D91, D92) are prompts 06 and 07's.
+
+**Assumptions that are mine, from this step:**
+
+- `LK_TEST_PG_ADMIN_URL` against a local Postgres 16.15 with pgvector and `pg_trgm` stands in for testcontainers. The tests create their own `lk_t_<pid>_<n>` databases, migrate them as `lanekeeper_migrator` (0001 to 0008) and connect the hub side as `lanekeeper_app`, so a missing grant fails a test. The Docker path (`LK_REQUIRE_DOCKER=1` with a daemon) was never exercised.
+- `cargo test -p <crate>` unifies features per selected crate, not over the whole workspace as `cargo test --workspace` does; the workspace run was done crate by crate for disk (see "How the gates were run").
+- The fuzz stand-in on stable is the corpus replay (`corpus_replay`, 17 tests): it proves the committed seeds run and the invariants hold on random programs; it is not a libFuzzer search.
+- Numbers on this 4-vCPU shared box vary by up to about 30 % between runs; a budget read over once was rerun alone once, both numbers are reported.
+
+## Deviations from the plan
+
+The plan is frozen and was not edited. The items below are where what was built differs from what the plan says, each also in `plans/05-registry-read-api.blockers.md` or a D-entry unless it is a naming difference.
+
+1. **Fourteen proofs have another name than the plan's traceability table gives** (the tests exist and pass; the plan's name does not). Found in this step by comparing every `tests/<file>.rs::<name>` of the table with the run:
+
+| Plan's name | What is there |
+|---|---|
+| `http_contract::every_response_matches_its_openapi_schema` | `every_response_of_every_read_operation_matches_the_contract` |
+| `http_authz::pending_and_disabled_users_get_403_on_every_route` | `a_pending_disabled_or_role_less_user_is_403_on_every_route_and_reads_nothing` |
+| `http_authz::a_viewer_can_read_every_route`, `::no_route_requires_more_than_viewer` | one test, `every_role_that_can_sign_in_reads_every_route_and_no_route_asks_for_more` |
+| `route_table::an_unguarded_route_fails_the_harness` | `the_harness_rejects_an_unguarded_or_wrongly_guarded_registry_route` |
+| `http_query::every_parameter_is_bounded_and_typed` | `every_declared_parameter_is_typed_and_bounded_as_the_spec_declares` |
+| `http_query::pagination_is_mandatory_and_capped_at_500` | `pagination_is_capped_at_five_hundred_and_defaults_to_a_hundred` (a request without `limit` gets the spec's default of 100; it is not refused) |
+| `read_search::regex_limits_and_the_5_second_cancel_are_enforced` | `a_pattern_is_bounded_and_a_regex_runs_in_linear_time_under_limits` and `a_search_that_runs_past_its_deadline_is_answered_503_and_the_pool_is_not_held` |
+| `read_search::caps_are_clamped_to_the_ceilings` | `the_caps_are_the_servers_ceilings_whatever_the_request_asks_and_truncation_is_reported` |
+| `adoption::secret_scan_covers_both_repos_and_the_nfs_content`, `adoption::the_scan_result_holds_locations_and_lengths_but_no_value` | same names, file `adoption_secrets.rs` |
+| `errors::a_database_failure_returns_a_generic_problem_body` | no `errors.rs`; see 2 |
+| `hygiene::no_offset_pagination` | `no_offset_no_unbounded_channel_no_format_built_sql_no_direct_publish` and `every_query_is_bounded_or_keyed` |
+| `threat_model::the_registry_section_lists_every_threat_with_its_requirement` | `stride_table_has_all_six_letters_and_every_row_is_complete`, `section_cites_the_registrys_requirements_and_only_real_ones`, `every_proof_the_stride_table_names_exists` |
+
+2. **Insta is used for EXPLAIN plans (107 snapshot files) and for the rows of `batch_writes` (1) only.** The plan also listed insta goldens of the published events' JSON, the problem bodies of the read routes and the swimlane detail and tree responses. I found none of those as snapshot files. They are covered another way: `http_contract` validates every success and error body of the 15 operations against the OpenAPI schema (a body that is not a problem fails it), `http_reads::an_error_is_a_problem_with_a_code_and_nothing_of_the_input_or_the_server` asserts status and code for each error case, and `log_capture_reads` takes the database away and asserts 503 on five routes. **No test pins the exact JSON text of a problem body or of an event envelope**; a change of wording would not fail one.
+3. **Budget `P7.text_search` is registered for the steady state, not the cold build** (human decision, 2026-10-15, D97): threshold 400 ms, p95, target scale and the bench name unchanged; only the description and `registered = true` changed.
+4. **More contract changes than the plan's one contract PR.** The plan approved the `0003` contract. Three more were raised by blockers, decided by the human and merged: the batched audit and outbox calls (P15 was 724 against 1,000 before), the tool-write registrations (`0007`, `register_delete`; the first design could not be sound), and the blob age (`0008`; retention could not delete safely without it). `Registry::build`, which A8 named, was not built (D112).
+5. **`hub-identity` is a dev-dependency of `hub-registry`** (A9 said hub-platform only).
+6. **`verify-05`, `verify` and the `bench` recipes were run command by command, not as recipes** (`just` is not installed). Which steps could not run at all is in "What was NOT RUN, and why".
+
+## Open items for the human
+
+In order of how much they can block a merge:
+
+1. **Merge order.** This branch needs `0007`, `0008`, `ToolWrites::register_delete` and the contract docs (`352a25c`, `ede45af`, `b4c2351`, `6d9d512`, `933b668`) that are on `origin/claude/clever-franklin-26x6ym` and not on `main`. Without them the registry does not build against `main` (`PgToolWrites`, `touched_at`).
+2. **`hub-registry` is not wired into `crates/hub`** (A8, D112). The follow-up list is in "Follow-ups the hub must wire": eleven leased jobs, one warm-up task, the two sinks, the 15 routes and the blob policy, plus `PgToolWrites` for prompt 06. Nothing of the registry runs in the binary until then. Also unowned: the adoption and "mark intentional" routes (A6) and the admin operations of the spec (A7).
+3. **Decisions to confirm** (they say "to be confirmed at review"): D103 to D106, D108, D113 to D115, D119, D120, D123 (implementer); D98 to D102, D110 to D112, D116 to D118 (orchestrator, under the human's delegation of 2026-10-15). In particular: **retention deletes by default** (D118) and **an audit event does not pin a blob** (D116: the chain can name a hash whose blob has been collected; the alternatives are two partial indexes on `audit_events`, a contract change, or a guarded `blob_refs` insert per audit event on the P15 path).
+4. **The planner-statistics window in production** (found in this step; not mine to fix: `db/migrations/` and the app role are contracts). After a bulk load into `settings_index` (the first inventory of a swimlane, 40 at adoption) and before autovacuum's first analyze, a dense settings search costs 100 to 160 ms a statement, and `lanekeeper_app` cannot run `ANALYZE`. Options: a per-table autovacuum setting from a migration, or a start-up/after-adoption `ANALYZE` by an owner role.
+5. **`P7.settings_search` is brittle** (four runs: 43.2 without statistics, 108.4, 196.9 and 107.0 with them; budget 200). Root cause of the run-to-run spread found here: the needle set comes from `TABLESAMPLE SYSTEM ... REPEATABLE (7)`, which depends on the physical layout of the table. A deterministic draw (for example `ORDER BY md5(setting_path)`) would make the benchmark repeatable; it would also change the workload the budget was measured on, so I did not do it. The analyze choice of `f5d5fc7` (all read benchmarks, or only `steady_state_queries`) is also yours to confirm.
+6. **The P12 benchmark does not time three statements** added by the contract-07 methods (`AUTO_NOTIFY_SQL`, `DRIFT_BY_PATH_SQL`, `DRIFT_PIVOT_SQL`); their plans are checked by `explain.rs`. And nothing ties the benchmark's binds to the statements (that is how defect 1 went unseen from T9 to this step): a test that runs the benchmark's statement list once at small scale would.
+7. **The seven tests that assert "nothing happened" after a fixed sleep** ("Known weaknesses"), and the **plan's test names** that differ from the built ones, and the **missing insta snapshots** of problem bodies and event JSON ("Deviations from the plan", 1 and 2).
+8. **Not run here and needing another environment:** `registry-fuzz` (the libFuzzer runs), `cargo deny`, `cargo audit`, `osv-scanner`, Docker/testcontainers (including `hub` `pg_tls`), a real config-server behind a real agent (the as-served check, D86), and the opt-in real-snapshot tests.
+9. **`SwimlaneSummary.tenants` `minItems: 1`** against an unadopted swimlane (pinned by `known_deviation_an_unadopted_swimlane_lists_no_tenants_where_the_spec_wants_one`): the schema or the data has to give.
+10. **Disk and the workspace test run:** `cargo test --workspace` as one command needs more disk than this box has (12 GB free at the start). The crate-by-crate run is the same tests.
