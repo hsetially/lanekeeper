@@ -813,7 +813,7 @@ async fn a_denied_files_old_blob_is_collected_like_any_other_once_beyond_the_kee
          VALUES ('sit1', 'secrets/app.key', 'secrets/app.key', 'base', 'denied', 'in_sync', true)",
     )
     .await;
-    let policy = RegistryBlobPolicy::new(gc.pool().clone(), &gc.config, RegistryMetrics::default());
+    let policy = RegistryBlobPolicy::new(gc.pool().clone(), &gc.config, RegistryMetrics::default()).unwrap();
     assert!(
         !policy.allowed(&old_version).await,
         "meanwhile the blob endpoint refuses every version a denied file has had (T9, D104)"

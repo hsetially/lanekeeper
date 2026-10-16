@@ -11,7 +11,7 @@ use hub_registry::attribution::statements::{
     LANES_SQL as ATTRIBUTION_LANES_SQL, NFS_CLIENT_SQL, SENTINEL_SQL, UPGRADE_SQL,
 };
 use hub_registry::baselines::{CURRENT_BLOBS_SQL, DROP_REFS_SQL, INSERT_REFS_SQL};
-use hub_registry::blob_policy::DENIED_HASH_SQL;
+use hub_registry::blob_policy::{DENIED_HASH_SQL, HASH_PATHS_LIMIT, HASH_PATHS_SQL};
 use hub_registry::index::settings::{MARKED_SQL, UNINDEXED_SQL};
 use hub_registry::index::tree_hashes::{LOAD_DIRS_SQL, LOAD_FILES_SQL};
 use hub_registry::pickup::sweeper::{INVENTORIED_LANES_SQL, PENDING_LANES_SQL};
@@ -939,6 +939,16 @@ async fn read_queries_have_no_sequential_scan_on_large_tables() {
 
     // The blob policy: is this hash a denied file's?
     check!("blob_policy_denied_hash", DENIED_HASH_SQL, [Arg::Bytes(&[7; 32])]);
+    // And the files that have had it, for the hub's own globs and for files that were deleted: by the hash index of the observations, a
+    // probe of `file_state` for each, bounded by the limit.
+    check!(
+        "blob_policy_hash_paths",
+        HASH_PATHS_SQL,
+        [
+            Arg::Bytes(&[7; 32]),
+            Arg::Int(i64::try_from(HASH_PATHS_LIMIT + 1).unwrap())
+        ]
+    );
 }
 
 /// T10: the pickup computation, over a database with 300 Deployments in each of the 40 swimlanes (12,000 services and as many state rows),

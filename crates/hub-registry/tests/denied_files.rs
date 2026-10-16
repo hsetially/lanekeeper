@@ -507,7 +507,8 @@ async fn the_blob_policy_refuses_their_hashes() {
         h.reads.world.rig.pool.clone(),
         &h.reads.config,
         h.reads.world.rig.metrics.clone(),
-    );
+    )
+    .unwrap();
     let v1 = content_hash(flipped_v1().as_bytes());
     let notes_v1 = content_hash(replaced_v1().as_bytes());
     let store: Arc<dyn BlobStore> = Arc::clone(&h.reads.world.rig.blobs) as _;
@@ -575,7 +576,9 @@ async fn the_blob_policy_refuses_their_hashes() {
     );
     assert!(!history.text().contains(V1));
 
-    // Once no denied file has had the content, nothing holds it back: the same bytes under another name are an ordinary file's.
+    // A denied file that is gone is still a denied file's history: the pipeline drops the row of a file that is deleted (and the flag with
+    // it), but the observations of the file say that its newest version was denied, so every version it has had is refused still (the
+    // blob endpoint was a way round the denial for a file that was removed).
     sqlx::query("DELETE FROM file_state WHERE swimlane_id = 'sit1' AND path = ANY($1::text[])")
         .bind(vec![FLIPPED, REPLACED])
         .execute(&h.reads.world.rig.pool)
@@ -585,10 +588,19 @@ async fn the_blob_policy_refuses_their_hashes() {
         h.reads.world.rig.pool.clone(),
         &h.reads.config,
         h.reads.world.rig.metrics.clone(),
+    )
+    .unwrap();
+    assert!(
+        !policy.allowed(&v1).await,
+        "the file's row is gone and its observations still say it was denied: the version it had before is refused"
     );
     assert!(
-        policy.allowed(&v1).await,
-        "no file that is denied has had it any more"
+        !policy.allowed(&notes_v1).await,
+        "the same for the file whose later version arrived denied"
+    );
+    assert!(
+        policy.allowed(&content_hash(b"port: 2\n")).await,
+        "an ordinary file's content is still served"
     );
 }
 
@@ -882,7 +894,8 @@ async fn blobs_by_hash(h: &Http, hashes: Vec<Vec<u8>>) -> Vec<(String, Reply)> {
         h.reads.world.rig.pool.clone(),
         &h.reads.config,
         h.reads.world.rig.metrics.clone(),
-    );
+    )
+    .unwrap();
     let (router, _) = mount(
         GuardedRouter::new(support::http::auth(), None),
         BlobState::new(store, Arc::new(policy)),

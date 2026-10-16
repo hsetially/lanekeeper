@@ -9,8 +9,8 @@
 //! - every test, benchmark or fuzz target that a row names as its proof exists in `crates/hub-registry`, and a test name must belong to a
 //!   function that really is a test, so a row cannot cite a helper or a test nobody wrote (a control that is planned but not built goes in
 //!   the row's prose, and its Proof cell starts with `None`);
-//! - the rows that cover the retention job (what it may delete, the races with a writer, the prune, the bounds, the logs, the role) are all
-//!   there, and each one still names the tests that prove it ([`REQUIRED_ROWS`]), so a row cannot be dropped, or lose its proof, unseen;
+//! - the rows that cover the retention job (what it may delete, the races with a writer, the prune, the bounds, the logs, the role) and the
+//!   blob endpoint's policy are all there, and each one still names the tests that prove it ([`REQUIRED_ROWS`]), so a row cannot be dropped, or lose its proof, unseen;
 //! - the residual risks name the limits that the registry's tasks and decisions recorded: each topic of [`CARRY_FORWARD`] needs one bullet
 //!   that holds all of its words, so a topic cannot be "covered" by words scattered over unrelated bullets, and the gaps against a security
 //!   requirement are named as gaps.
@@ -200,8 +200,14 @@ const CARRY_FORWARD: [(&str, &[&str]); 35] = [
         ],
     ),
     (
-        "the blob endpoint withholds on the flag and not on the hub's own globs",
-        &["blob endpoint", "extra_deny_globs", "unset flag", "loses its row"],
+        "the blob endpoint refuses what it cannot decide, and remembers a deleted denied file only by its observations",
+        &[
+            "blob endpoint",
+            "extra_deny_globs",
+            "HASH_PATHS_LIMIT",
+            "undecided",
+            "file_observations",
+        ],
     ),
     (
         "a read of a collected version logs its hash",
@@ -219,7 +225,7 @@ const CARRY_FORWARD: [(&str, &[&str]); 35] = [
 
 /// Rows that must be in the STRIDE table: the letter, a phrase of the threat that finds the row, and the tests its Proof cell must still
 /// name. These are the rows of the retention job, which deletes data that cannot be had again (T9, D116 to D119).
-const REQUIRED_ROWS: [(&str, &str, &[&str]); 8] = [
+const REQUIRED_ROWS: [(&str, &str, &[&str]); 9] = [
     (
         "T",
         "Blob garbage collection deletes a blob that something still needs",
@@ -289,6 +295,17 @@ const REQUIRED_ROWS: [(&str, &str, &[&str]); 8] = [
         &[
             "a_search_that_is_fetching_a_blob_that_a_real_collection_deletes_still_answers",
             "after_a_real_collection_everything_reads_as_before_and_the_collected_version_is_not_found",
+        ],
+    ),
+    (
+        "I",
+        "A caller who knows a hash reads a blob it should not",
+        &[
+            "a_hub_whose_globs_changed_before_the_agent_said_so_refuses_the_blob_by_hash",
+            "a_denied_files_versions_are_refused_after_the_file_is_deleted_and_the_pipeline_dropped_its_row",
+            "a_hash_that_more_files_have_had_than_the_policy_reads_is_refused_as_undecided",
+            "a_lookup_that_fails_says_no_even_when_the_probe_of_the_flag_worked",
+            "no_hash_path_or_content_reaches_a_log_line_or_a_metric_of_the_policy",
         ],
     ),
     (

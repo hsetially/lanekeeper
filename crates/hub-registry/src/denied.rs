@@ -31,7 +31,7 @@
 //! | text search | the corpus has no denied file (`NOT denied`, and the engine's search applies the hub's globs to every path) |
 //! | history | hashes, sizes, sources and attribution: never content |
 //! | served | a denied file is not asked for from the agent: `withheld` |
-//! | the blob endpoint | `RegistryBlobPolicy`: a hash that a denied file has or has had is refused as an unknown one is |
+//! | the blob endpoint | `RegistryBlobPolicy`: a hash that a denied file has or has had (the same rule, over the paths that have had it, also for a deleted file) is refused as an unknown one is |
 //!
 //! `LayerRow.denied` is set where the row is read (`read::effective::layer_row`) from [`is_denied`], so the comparisons, the effective config, the
 //! resources and the grid, which all read their files through it, decide the same way.

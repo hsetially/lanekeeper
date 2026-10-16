@@ -39,7 +39,7 @@ async fn world() -> Option<Reads> {
 }
 
 fn policy(r: &Reads) -> RegistryBlobPolicy {
-    RegistryBlobPolicy::new(r.world.rig.pool.clone(), &r.config, r.world.rig.metrics.clone())
+    RegistryBlobPolicy::new(r.world.rig.pool.clone(), &r.config, r.world.rig.metrics.clone()).unwrap()
 }
 
 #[tokio::test]
@@ -73,12 +73,21 @@ async fn the_blob_policy_refuses_their_hashes() {
         !policy.allowed(&key).await,
         "the file that was denied has had these bytes: it is still refused"
     );
-    // Once no row of a denied file has had the hash, nothing holds it back (the copy is an ordinary file by the admin's own rules).
+    // The pipeline drops the row of a file that is gone, and the flag with it. The file's observations still say that it was denied (its
+    // class, and its name, which the hub's own globs deny), so the key is refused still: removing a denied file does not make its old
+    // versions servable.
     sqlx::query("DELETE FROM file_state WHERE path = 'keys/server.pem'")
         .execute(&r.world.rig.pool)
         .await
         .unwrap();
-    assert!(policy.allowed(&key).await);
+    assert!(
+        !policy.allowed(&key).await,
+        "the row is gone, the history of the file is not: the bytes of the key are still refused"
+    );
+    assert!(
+        policy.allowed(&content_hash(b"port: 1\n")).await,
+        "an ordinary file's content is served as before"
+    );
 }
 
 fn blob_request(hash: &ContentHash) -> Request<Body> {
