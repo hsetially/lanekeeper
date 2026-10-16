@@ -581,3 +581,36 @@ fn tool_write_ttl_is_pinned() {
     // (`ChangePreview::TTL_SECS`, 10 minutes, is pinned in the domain tests.)
     assert_eq!(ToolWriteEntry::TTL_SECS, 900);
 }
+
+/// `register_delete` and `ToolDeleteEntry` are additions: `ToolWriteEntry` keeps the fields it had, with the types it had, and
+/// a delete registration is its own type, so `new_hash` still means "the hash that was written".
+#[test]
+fn tool_write_deletes_are_additive() {
+    use ports::ToolDeleteEntry;
+    let write = ToolWriteEntry {
+        swimlane: SwimlaneId::parse("sit1").unwrap(),
+        path: NfsPath::parse("a/b.yml").unwrap(),
+        new_hash: ContentHash::from_bytes([1; 32]),
+        user: ports::conformance::sample::user_id(1),
+        request_id: domain::RequestId::parse("req-1").unwrap(),
+    };
+    // The field types are the ones the port had before the method (a build break otherwise).
+    let ToolWriteEntry {
+        swimlane: _,
+        path: _,
+        new_hash,
+        user: _,
+        request_id: _,
+    } = write.clone();
+    let _: ContentHash = new_hash;
+    let delete = ToolDeleteEntry {
+        swimlane: write.swimlane.clone(),
+        path: write.path.clone(),
+        deleted_hash: write.new_hash,
+        user: write.user.clone(),
+        request_id: write.request_id.clone(),
+    };
+    assert_eq!(delete.clone(), delete);
+    assert_impl_all!(ToolDeleteEntry: Clone, std::fmt::Debug, PartialEq, Eq);
+    assert_impl_all!(ports::ToolWriteError: Copy);
+}

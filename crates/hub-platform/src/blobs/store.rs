@@ -1,12 +1,37 @@
 //! `PgBlobStore`: the `BlobStore` port over the `blobs` table (T8, D47, P7, P12).
 //!
 //! - **`put`** hashes the bytes here (SHA-256 of exactly what it was given: line endings are not touched), refuses more than
-//!   4 MiB, and inserts with `ON CONFLICT DO NOTHING`. The table's own `CHECK (hash = sha256(content))` keeps it
-//!   content-addressed even if this code were wrong. A written blob is not put in the cache: writes are often never read again.
+//!   4 MiB, and runs [`PUT_SQL`]: one statement that inserts a new blob and refreshes the age of one that exists (below). The
+//!   table's own `CHECK (hash = sha256(content))` keeps it content-addressed even if this code were wrong. A written blob is not
+//!   put in the cache: writes are often never read again.
 //! - **`get`** looks in the cache, then reads the row and caches it. A hash that is not stored is `None` and is not cached.
 //!   Concurrent reads of the same cold blob share one database read (single flight), so 100 users opening the same big file cost
 //!   one read of it, not 100.
 //! - **`get_many`** serves what the cache has and reads all the rest with one `= ANY($1)` query, never one query per blob.
+//!
+//! **The age of a blob (migration 0008, D78).** Retention deletes blobs that nothing references and whose `touched_at` is older than
+//! a grace period, and a writer stores a blob before the transaction that references it commits, so a blob that is stored again
+//! must not keep its old age: an old, unreferenced blob whose content came back would be collected in between. `put` of a blob that
+//! exists therefore refreshes `touched_at`, at most once per [`TOUCH_INTERVAL`] (a hot blob stored a thousand times an hour is
+//! written once). The relation that makes this safe is a constant, [`MIN_RETENTION_GRACE`]: the grace must be at least the interval
+//! plus the longest wait for the reference. The age trails the last `put` by at most one interval plus the wait for a row lock (see
+//! [`TOUCH_INTERVAL`]). The rules that a collector and the code that references blobs follow are in `docs/interfaces.md`, under
+//! `BlobStore`, and in the rustdoc of [`ports::BlobStore::put`].
+//!
+//! - *One statement, and nothing written for a recent blob.* A blob touched within the interval is found by a read-only probe
+//!   first, and then the statement inserts nothing and takes no lock: no new tuple, no WAL, no transaction id (so no commit
+//!   flush). A plain `ON CONFLICT DO UPDATE ... WHERE` would take the row lock before it tests the age, which is one WAL record and
+//!   a commit flush for every re-put of a hot blob (measured in `tests/blob_put_cost.rs`). Only a new blob (an insert) or one older
+//!   than the interval (an update of the one column) writes. The update half is `ON CONFLICT DO UPDATE`, so a concurrent delete of
+//!   the same row is waited for and the blob is stored again afterwards.
+//! - *The cache cannot make the refresh unreachable, because `put` never reads it.* A cached blob that is stored again still runs
+//!   the statement, and the statement decides by the table's age. Do not add a shortcut that skips `put` for a blob the cache holds
+//!   (`a_cached_blob_that_is_put_again_still_refreshes` fails): it would let a hot, cached blob go stale in the table for ever.
+//! - *Outside any caller transaction.* `put` runs [`PUT_SQL`] on the pool, in autocommit, and takes no `Tx`: `now()` is the
+//!   transaction's start time, so inside a long transaction the statement would write an older `touched_at`.
+//! - Reads (`get`, `get_many`) never touch the age: reading is not a reference.
+//! - There is no batch `put`. A caller that stores many blobs calls `put` for each, each in its own statement, so no transaction
+//!   ever holds two blob rows and there is no lock order to get wrong.
 //!
 //! **Bounds (rule 5).** Every database call has a timeout. At most `read_concurrency` reads of content run at once (the rest wait,
 //! also with a timeout), so a flood of cold reads cannot take every connection of the pool from the rest of the hub. The
@@ -37,8 +62,56 @@ use super::metrics::BlobMetrics;
 pub const GET_ONE_SQL: &str = "SELECT content::bytea FROM blobs WHERE hash = $1::bytea";
 /// Many blobs by address, in one statement.
 pub const GET_MANY_SQL: &str = "SELECT hash::bytea, content::bytea FROM blobs WHERE hash = ANY($1::bytea[])";
-const PUT_SQL: &str =
-    "INSERT INTO blobs (hash, content, size) VALUES ($1::bytea, $2::bytea, $3) ON CONFLICT (hash) DO NOTHING";
+/// Store a blob, or refresh the age of one that exists, in one statement. Binds: `$1` the hash, `$2` the content, `$3` the size, `$4`
+/// the touch interval in seconds ([`TOUCH_INTERVAL`]).
+///
+/// - The `WHERE NOT EXISTS` probe reads the row by its primary key: a blob touched within the interval inserts nothing, so the
+///   statement is read-only (no tuple, no row lock, no WAL, no transaction id).
+/// - Otherwise the row is inserted, and `ON CONFLICT (hash) DO UPDATE` handles the rest atomically: a concurrent insert or delete of
+///   the same row is waited for, then the age is refreshed only if it is still older than the interval (a put that lost the race to
+///   another put writes nothing), and a row that a collector deleted meanwhile is inserted again.
+/// - Only `touched_at` is ever updated (the app holds UPDATE on that one column and no other, migration 0008).
+///
+/// Run it outside any caller transaction: `now()` is the transaction start time, so inside a long transaction it would write an
+/// older `touched_at`. (`PgBlobStore::put` runs it on the pool, in autocommit.)
+pub const PUT_SQL: &str = "\
+INSERT INTO blobs (hash, content, size) \
+SELECT $1::bytea, $2::bytea, $3::bigint \
+WHERE NOT EXISTS (SELECT 1 FROM blobs WHERE hash = $1::bytea AND touched_at >= now() - ($4::bigint * interval '1 second')) \
+ON CONFLICT (hash) DO UPDATE SET touched_at = now() \
+WHERE blobs.touched_at < now() - ($4::bigint * interval '1 second')";
+
+/// How far `touched_at` may lag behind the last `put` of a blob: a `put` refreshes the age only when it is older than this, so a hot
+/// blob costs one write an hour however often it is stored. The age is therefore at most this much older than the start of the
+/// last `put`, and that start can be earlier than the commit by the wait for a row lock when the blob is being refreshed or collected
+/// at that moment (the statement waits, bounded by the put's own timeout, and writes the time it started); it is never newer. So
+/// the lag behind the commit of the last `put` is at most this interval plus that wait (5 s by default), which is negligible against
+/// the margin between [`MIN_RETENTION_GRACE`] and the grace period. Far below the grace period, and tied to it by
+/// [`MIN_RETENTION_GRACE`] and a compile-time assertion.
+pub const TOUCH_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// The longest a writer may hold a blob it has stored before the transaction that references it commits: the registry's
+/// `staging_ttl` (24 hours by default), the wait of a non-final part of a delta.
+///
+/// This is a constant, and the registry's `staging_ttl` is configurable, so [`MIN_RETENTION_GRACE`] is the floor for the default
+/// staging lifetime only. The registry must range-check `staging_ttl <= MAX_PUT_TO_REFERENCE`, or compute its floor as
+/// `TOUCH_INTERVAL + staging_ttl`; a longer staging lifetime needs a longer grace. And anything that stores a blob and references it
+/// more than this long afterwards (for example a prompt-06 upload preview that puts a blob and creates its draft or proposal row
+/// later) must create the row when it stores the blob, or `put` the blob again when it references it. A draft or a proposal is safe
+/// once its row exists, because `drafts.new_hash` and `proposals.new_hash` are RESTRICT foreign keys.
+pub const MAX_PUT_TO_REFERENCE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The shortest grace period retention may use: a blob stored at `t` has `touched_at >= t - TOUCH_INTERVAL`, so it is deletable no
+/// earlier than `t - TOUCH_INTERVAL + grace`, which is after its reference commits (`t + MAX_PUT_TO_REFERENCE`) only if
+/// `grace >= TOUCH_INTERVAL + MAX_PUT_TO_REFERENCE`. The registry range-checks its grace period against this, for the default
+/// staging lifetime; for a longer one see [`MAX_PUT_TO_REFERENCE`].
+pub const MIN_RETENTION_GRACE: Duration = TOUCH_INTERVAL.saturating_add(MAX_PUT_TO_REFERENCE);
+
+// The grace period the human approved on 2026-10-15 is 48 hours (the registry owns the setting); it must leave room above the floor.
+// And a refresh that is not rate-limited is not a refresh interval at all: a blob stored a thousand times would be written a
+// thousand times.
+const _: () = assert!(MIN_RETENTION_GRACE.as_secs() < 48 * 60 * 60);
+const _: () = assert!(TOUCH_INTERVAL.as_secs() >= 60);
 
 /// Blobs up to this size are hashed on the async thread (about 30 microseconds); bigger ones go to a blocking thread (rule 4).
 const INLINE_HASH_LIMIT: usize = 64 * 1024;
@@ -263,10 +336,12 @@ impl BlobStore for PgBlobStore {
                 .map_err(|_| self.reader.failed("put", "hash_task"))?
         };
         let size = i64::try_from(bytes.len()).map_err(|_| BlobError::TooLarge)?;
+        // Never the cache: a blob that is cached and stored again must still reach the statement, which decides by the table's age.
         let call = sqlx::query(PUT_SQL)
             .bind(hash.as_bytes().as_slice())
             .bind(bytes.as_ref())
             .bind(size)
+            .bind(i64::try_from(TOUCH_INTERVAL.as_secs()).unwrap_or(i64::MAX))
             .execute(&self.reader.pool);
         match tokio::time::timeout(self.reader.timeout, call).await {
             Ok(Ok(_)) => Ok(hash),
