@@ -151,6 +151,12 @@ pub trait GitReader {                                    // sync; call via spawn
 // service enforces min(the agent's max_file_bytes, 2 MiB).
 // ChangePreview.changes is a list of PreviewedChange{change: SettingChange, flagged: bool}. A value the secret scan
 // flags is masked (`[REDACTED: N chars, rule]`) and `flagged` is true; revealing stays the audited /files/reveal (D79).
+// Content that holds a redaction marker (text of the form `[REDACTED: N chars, rule]`) is Rejected{invalid_content} with one
+// ValidationIssue{kind: redaction_marker, line} for each line that holds one, before anything is claimed or written (S14b,
+// contract/08-web, CG7): every read shows a flagged value as that marker, so such content is a masked text sent back, and saving
+// it would write the marker over the value it hides. 06 owns the check for edit, upload, preview and draft, so MCP writes get it
+// too. The kinds of ValidationIssue are parse_error, duplicate_key, secret_match and redaction_marker, in the domain's
+// `IssueKind`, in `api/openapi.yaml` and in `docs/mcp-tools.md`.
 // `WriteService::notify` (tell the config-server that files changed, audited, Operator only) has nothing to do with
 // the `Notifier::notify` port (Teams and other notifications): they share a verb and no behaviour.
 
@@ -168,6 +174,8 @@ pub trait GitReader {                                    // sync; call via spawn
     async fn read(&self, u: &User, path: &DocPath, lines: Option<LineRange>) -> Result<DocText, DocError>;
     async fn grep(&self, u: &User, pattern: &str, regex: bool, context: u8) -> Result<Vec<DocGrepHit>, DocError>;
     async fn feature_status(&self, u: &User, q: FeatureQuery) -> Result<FeatureStatus, DocError>;
+    // Additive (contract/08-web, CG11). Default: DocError::Unavailable. The sanitised HTML page of a doc, for REST `renderDoc`.
+    async fn render(&self, u: &User, path: &DocPath) -> Result<RenderedDoc, DocError>;
 }
 ```
 
@@ -187,6 +195,7 @@ enum DomainEvent {
     AccessRequestCreated { user },
     DocIndexed { doc },
     Resync,                                               // the subscriber lagged; refetch state
+    // ...and the events listed under "New domain events" below, the newest of which is SwimlaneChanged { swimlane }.
 }
 ```
 
@@ -251,3 +260,80 @@ New domain events:
 - `SyncWindowClosed { swimlane, job }`
 - `UserSessionsRevoked { user }`: internal, for replica coordination (03a). `DomainEvent::is_internal()` is true for it; the SSE edge drops it, and it is not in the OpenAPI `EventKind` list.
 - `PickupChanged { swimlane, services }`: D85 (prompt 05). The pickup state of a change changed for these services; it carries ids only, and the state itself (with "live by HH:MM") is read from the pending-restarts endpoint. It supersedes `PendingRestartChanged`, which stays in the contract so that old rows and subscribers still parse. In the OpenAPI `EventKind` as `pickup_changed`.
+- `SwimlaneChanged { swimlane }`: contract/08-web (CG1b). The baseline, tier, tenant set or auto-notify setting of a swimlane changed. It carries the id only (the client rereads the swimlane summary), it is published with `publish_in_tx` in the transaction of the change (D80), and the audit event belongs to that change (`BaselineAdopted`, `SettingsChanged`, `AutoNotifyChanged`), not to the event. Public: in the OpenAPI `EventKind` as `swimlane_changed` (17 values), in `ports::EventKind`, and accepted by the SSE edge (`MAX_KINDS` is 17).
+
+## Web additions (contract/08-web)
+
+The REST contract grew by what the web app (prompt 08) needs. The register is CG1 to CG19 of `plans/08-frontend.md`; the plan of this change is `plans/contract-08-web.md`. Everything is additive: a new operation, a new optional property, a new enum value, a clearer description, or the correction of a schema that rejected the bodies the servers send. A response schema keeps `additionalProperties: false`, so a server that adds an undeclared field is wrong. Nothing here changes a migration, a budget or a protobuf message, and no new port trait is added (`docs/interfaces.md` still names the same 18).
+
+Rules that hold for every item:
+
+- **Masking happens at the REST edge and never in a port** (CG7, below). `RegistryRead::content` stays raw: `hub-writes` reads current bytes through it for expected-hash checks.
+- **`logical_file` and `tenant` come from the engine's reverse mapping** (CG2). The registry works them out from the path and the swimlane's tenant set; a client never derives them. The way back from a `LogicalFile` to a swimlane's `NfsPath` is the existing `EffectiveConfig.sources[].path`, so no operation was added for it.
+- **The summary additions are aggregates** (CG4a). `pickup_counts`, `baseline` and `syncing` are worked out for all swimlanes in one grouped query and one open-window lookup, never one call per swimlane (P7).
+- **Eight operations have no server yet.** They are declared here and mounted by their owners (the table "Operations that wait for a server" below).
+- **Reads are not audited and `previewPr` writes nothing**, so this change adds no audit event (rule 8): `new_operations_name_their_audit_action_or_say_why_not` lists each new operation with "none: a read" or "none: no state change".
+
+### What the contract says, by item
+
+| Item | What the document and the domain now say |
+|---|---|
+| CG1a | `DomainEvent` is a `oneOf` of 17 named payload schemas (`DomainEventFileObserved` and so on), discriminated by `type`, closed, every field required. `streamEvents` types its `text/event-stream` body with it and states the framing: `id:` only on stored events (a `resync` the server makes up has none), `event:` equals `type`, `retry: 3000`, a `: heartbeat` every 15 s, a replay of at most 1,000 events and only with `Last-Event-ID` (a connection without it gets neither replay nor `resync`), at most 5 streams per user (429), 30 minutes at most, an event over 4 KiB becomes a `resync`. A new `JobRef {name, uid}`. Ranges are UTF-8 byte offsets, half-open, into the `text` of the same object (`InlineRange`, `TextHit.ranges`, `DiffLine.inline_changes`). |
+| CG13 | The problem vocabulary. `Problem.code` (optional, the suffix of `type`; read `type` first). `ConflictProblem` and `LockedProblem` no longer reject the bodies the server builds (`additionalProperties: false` left the extension branch). `DuplicatePrProblem` (`reason: duplicate_pr`, `link: PrLink`) joins `ConflictProblem` as the 409 of `createPr`. `createPr` also documents 200 (`WriteProposalCreated`), 413 and 423; `notifyServices` 200 is `NotifyResult` or `WriteProposalCreated`. `TokenMissingAccessProblem {base, tenant}` is the 422 of `putGithubToken`. `TooManyRequests` and `ServiceUnavailable` (header `RetryAfter`) are used by `streamEvents`, `revealValue` and `createAccessRequest` (429) and by `putGithubToken` (503). `ConflictState` (a plain `Problem`) replaces `Conflict` on `adminApproveAccessRequest`, `adminRejectAccessRequest` and `adminUpdateUser`, whose bodies never carry `current`. |
+| CG2 | Optional `logical_file` and `tenant` on `FileEntry`, `Finding`, `SettingHit` and `TextHit`, in the domain structs and the document. Absent when `None`: a directory, a base file (tenant) or a finding with no path. `FakeRegistry` fills them (`set_tenants`), and `ports::conformance::registry_read` checks them. |
+| CG4a | `SwimlaneSummary` gains `tier`, `project`, `baseline` (`BaselineStatus {state: unconfirmed, in_progress or confirmed; by: UserRef or null; at}`), `pickup_counts` (pairs of a non-live `PickupState` and a count, equal to what `pending_restarts` lists per state) and `syncing` (`SyncingInfo {job: JobRef, since}`). `UserRef {id, display_name}` is what any signed-in user may see of a person: never an email (Q6). |
+| SwimlaneDetail | `SwimlaneDetail` is one flat closed object that repeats the summary's properties. The `allOf` of the summary and an extension closed the extension, which rejected the summary's own properties (`web_contract_allof.rs` finds that shape; `Me`, `SeverityRule` and `RetentionSettings` are allowlisted known debt, and a new offender fails the test). |
+| CG3 | `previewPr`, `POST /api/v1/prs/preview`, Editor: where the files of a pull request would go (`PrPreview`: repository, resolved destination, base branch, `files` with repo paths, `unchanged`, `warnings`, `open_pr`). Nothing is written, audited or recorded; the `Idempotency-Key` is required and not recorded; it reads the user's own GitHub token inside the user's own request (S8). |
+| CG5 | `getConfigServerRestartOffer`, `GET /api/v1/swimlanes/{id}/config-server-restart` (`offer` is null when C11 is not open or the cluster report does not name exactly one Deployment) and `getRestartOffer`, `GET /api/v1/swimlanes/{id}/restart-offer?path=`. Operator, both bounded at 2,000 services with `truncated`. The restart itself stays `restartService`. |
+| CG12 | `getProposal`, `GET /api/v1/proposals/{id}`, Viewer (it mirrors `listProposals`, which returns the same `Proposal` with hunks). `Proposal` gains optional `action`, `via`, `paths` and `decided_at`. `listProposals` gains `decided` (only `true` has a meaning: approved, applied and rejected; `false`, or `decided` with `status`, is 400). `approveProposal` and `rejectProposal` document 422 (not pending, or expired), and `rejectProposal` 423 (lease). |
+| CG17 | `getDraft`, `GET /api/v1/drafts/{id}`, Editor: the author's own draft, 404 for anyone else's. `WriteService::draft` already exists. |
+| CG14 | `getGithubCredential`, `GET /api/v1/me/github-token`, Editor (404 when none is stored, never cached). `GithubCredential` gains optional `expires_at` and `expires_soon`. |
+| CG10 | `listGitRefs`, `GET /api/v1/git/refs`, Viewer, a keyset list of branches and tags of one repository (`GitRefPage`, `GitRefEntry`, the new `BranchKind` that is the domain's), names and commit ids only. New tag `git`. |
+| CG1b | `DomainEvent::SwimlaneChanged { swimlane }`, public, in the OpenAPI `EventKind` (17 values) and in `ports::EventKind`: the baseline, tier, tenant set or auto-notify of a swimlane changed. It carries the id only; a client rereads the summary. The SSE edge already accepts it (`MAX_KINDS` is 17 and `is_internal_kind` has its arm: edited in this change). |
+| CG11 | `renderDoc`, `GET /api/v1/docs/fs/render?path=`, Viewer, a `content` operation (ETag, `If-None-Match`): `RenderedDoc {path, html, headings, content_hash}`, the one HTML sink the CSP lets through (S12). The allowlist is stated in the document as a requirement on the server. `DocSearch::render` has the default `DocError::Unavailable`, and `ports::conformance::render_output_stays_inside_the_allowlist` renders a corpus of attacks and checks every page with `html_violations`. Optional `anchor` on `DocHit` and `FlagStatus`. |
+| CG7 | Masking of read responses, below. |
+
+### Operations that wait for a server
+
+| Operation | Backed by | Owner | Pinned by |
+|---|---|---|---|
+| `previewPr` | `PrService::plan` without side effects (hub-writes) | 06 | a `LATER` row in `crates/hub-writes/tests/routes.rs` |
+| `getConfigServerRestartOffer`, `getRestartOffer` | `WriteHub::config_server_restart_offer`, `restart_offer` | 06 | two `LATER` rows |
+| `getProposal` | `ProposalDesk::get_proposal`, through the same mask as the list | 06 | a `LATER` row |
+| `getDraft` | `WriteService::draft` | 06 | a `LATER` row |
+| `getGithubCredential` | `TokenVault::status` | 06 | a `LATER` row |
+| `listGitRefs` | `GitReader::branches` and `tags` | 03b | nothing (an operation of another tag is invisible to every route test) |
+| `renderDoc` | `DocSearch::render` | 14 | nothing |
+
+Each owner deletes its `LATER` row when it mounts the route, and the test fails until it does. The two without a row are the ones most easily forgotten: until they are mounted a generated client calls a route that answers 404.
+
+### Masking of read responses (CG7, S14b, D79)
+
+The human chose option M1. The contract states it; the owners build it.
+
+- **What.** The server never sends a value the secret scan flags. Wherever a response carries file or doc text, the value is replaced by its marker `[REDACTED: N chars, rule]` (the engine's `SecretMatch::marker`, the text the MCP tools print too). The unit is the flagged value, or the whole line where the producer works by lines (proposals and drafts do). The marker matches `^\[REDACTED: [0-9]+ chars, [a-z0-9_]+\]$` as a whole value and `\[REDACTED: [0-9]+ chars, [a-z0-9_]+\]` inside a text. The statement is in `info.description` and in the description of every property that can hold text; `every_text_bearing_schema_states_how_it_is_masked` lists them (18 rows, masked or raw by design) and fails for a text-bearing property that is not in the table.
+- **`masks`.** `FileContent`, `ServedFile` and `DocText` carry an optional `masks: Mask[]` (at most 1,000), where `Mask {line, start, end, setting?}`. `start` and `end` are 0-based UTF-8 byte offsets into the `text` of the same object, half-open, so `text[start..end]` is exactly the marker; `line` is 1-based in that masked text; `setting` is what `revealValue` needs, absent for plain text, for docs and for the served file. A mask holds no value and no part of one (`mask_has_no_value_field`). The secret scan counts characters; the server converts to bytes. Elsewhere (`SettingValue`, `DiffLine`, `TextHit`, `DocHit`, hunks) the marker pattern is the recognition.
+- **Reveal** is unchanged: `revealValue` by `SettingPath`, Editor, audited by 06, 30 a minute, never cached.
+- **Edit round trip.** Edit mode is off while `masks` is not empty (the client rule). A write whose content holds a marker (`editFile`, `createDraft`, `uploadFile`, `previewFileEffect`) is refused with 422 `invalid_content` and one `ValidationIssue` of the new kind `redaction_marker` for each line that holds one, before anything is claimed or written. **06 owns that check, and 07 gets it for MCP writes** because they go through the same pipeline: an assistant that reads a marker through an MCP tool and writes it back is the main case. The kind is in `domain::IssueKind`, in the OpenAPI enum and, since this change, in the MCP document (`docs/mcp-tools.md`, `ValidationIssue.kind`, and the generated `crates/hub-mcp/src/schemas/tools.json`): one set of issue kinds on both surfaces.
+- **Cache and cost.** The ETag of a masked response also covers the version of the scan configuration, so a changed configuration is never served from a stale 304. The scan runs once per content hash and is cached by `(hash, scan configuration)` (moka, weighted); `P7.file_content_cold` (80 ms) and `P7.compare` (100 ms) are measured with masking on. The engine has no registered scan benchmark today, so 05 registers one.
+- **Fail closed.** If the scan cannot finish, the server sends no text: `content_withheld` is true and `text` is null where the schema has them, and a problem response where it does not.
+
+### What each owner must implement
+
+| Owner | Must implement (each is a promise this change makes) |
+|---|---|
+| 03a | Optionally a `code` on identity problems (CG13). Nothing else: no audit read is added (CG9 is deferred), and `UserRef` is resolved by 05. |
+| 03b | `GET /api/v1/git/refs` (CG10): `GitReader` in `spawn_blocking`, the sorted list cached per `(repo, head)`, `q` as a prefix, keyset by `cursor` and `limit`. The SSE edge needs nothing for `swimlane_changed` and nothing for the framing facts of CG1a: they describe what `sse.rs` does. |
+| 04 | Nothing in the engine. `logical_file: None, tenant: None` in the one `TextHit` literal of `search.rs` and of the fuzz invariants (done here: the engine has no tenant set, so it cannot fill them). See the open items below. |
+| 05 | Fill `logical_file` and `tenant` in `tree`, `drift`, `findings` and both searches (CG2). The summary additions with one grouped query and an `EXPLAIN` snapshot (CG4a, P7, P12), and `UserRef.display_name` (Q6). Publish `swimlane_changed` with `publish_in_tx` in the transaction of a baseline confirm, a tier, tenant-set or auto-notify change (CG1b, D80). Mask every read response at the REST edge with the cache, the benchmark and a planted-key test over every read operation (CG7). See the open items below. |
+| 06 | Mount the six operations above and delete their `LATER` rows; the new `Proposal` fields and the `decided` parser; the expiry fields of the token answers. Refuse a write that holds a marker (CG7). Nothing for CG13: the server already sends the documented bodies. |
+| 07 | The marker refusal reaches MCP writes through 06's pipeline; the MCP document and the generated schemas already list `redaction_marker`. `LinkTemplates::default()` already links `/drafts/{id}` (CG17). A later change may adopt `logical_file` and the typed `EffectiveConfig` (D92 b). |
+| 14 | `DocSearch::render`, with pulldown-cmark and ammonia, inside the stated allowlist, and the REST docs routes if the human names 14 for them (no prompt names an owner for them today). `DocText.masks`, `anchor` on `DocHit` and `FlagStatus`, and the XSS corpus. `DocText` requires `content_hash` in the document and the domain type has none: 14 decides how `readDoc` fills it. |
+| 08 | After the merge: merge `main`, run `pnpm gen:api` (the client does not exist yet), and expect an orval override for the `text/event-stream` schema of `streamEvents`. |
+
+### Open items for the owners of 04 and 05 (M1 does not close them)
+
+1. **Text search is an oracle for a hidden value.** `searchText`, `searchSettings` and the docs searches match against the stored text. Every hit's text is masked, but whether a pattern matches at all tells a reader something about the value that was hidden, and a regular expression can narrow it a character at a time. M1 as approved does not close this. 04 (the engine's matching) and 05 (the read API) decide how the searches treat flagged values (for example, matching on the masked text), and whether the MCP search tools, which sit on the same ports, share the problem.
+2. **`getBlob` is a way around M1.** It serves a file's own bytes under an immutable hash, so a blob cannot be masked. The document therefore says that it never serves a file whose text the secret scan flags (404, like a withheld file), and that the masked text of a file comes from `getFileContent`. Nobody has built that check: it needs the scan of 05 at the blob endpoint of 03b (`crates/hub-platform/src/blobs/endpoint.rs`), cached by hash, applied to text and skipped for binary files. 04 and 05 decide how a blob is classified.
+
+New operations also add no budget: `perf/budgets.toml` is untouched, and a row for `renderDoc` waits for a measured threshold.

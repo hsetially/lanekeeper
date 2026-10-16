@@ -22,7 +22,7 @@ In your plan, write down the proposed change, why your prompt needs it, and whic
 | `crates/domain` | All |
 | `crates/ports` | 02, 03a, 03b, 05, 06, 07, 14, 17 |
 | `proto/agent.proto` | 02, 03b, 05, 17 |
-| `api/openapi.yaml` | 05, 06, 08, 14, plus 03a for auth routes |
+| `api/openapi.yaml` | 05, 06, 08, 14, plus 03a for auth routes, problems and audit, 03b for events and refs |
 | `db/migrations/` | 03a, 03b, 05, 06, 14, 17 |
 | `docs/mcp-tools.md` | 07, 11 |
 | `perf/budgets.toml` | 16, plus whoever owns the benchmark |
