@@ -1,0 +1,73 @@
+/* Base layer: what every handoff page repeats in its <style>. Tokens only, no hex colours. */
+@layer base {
+  *,
+  ::before,
+  ::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    color-scheme: light;
+  }
+  html.dark,
+  html[data-theme="dark"] {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    line-height: var(--leading-sm);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a {
+    color: var(--link);
+  }
+  a:hover {
+    color: var(--primary-hover);
+  }
+
+  /* One focus style for every focusable element (:focus-visible), 2px ring with a 2px offset. */
+  :focus-visible {
+    outline: var(--focus-ring-width) solid var(--ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+
+  code,
+  kbd,
+  pre,
+  samp {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    line-height: var(--leading-mono);
+  }
+
+  /* Numbers line up in tables, counts and line numbers. */
+  table,
+  [role="grid"],
+  [role="treegrid"] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Native scrolling with a thin scrollbar replaces the Radix ScrollArea (it injects a <style>, S12). */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--input) transparent;
+  }
+}
+
+/* The spinner slows and the pulse stops; a frozen spinner would say nothing. Fade and pop-in skip. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-lk-spin {
+    animation-duration: 2.4s;
+  }
+  .animate-lk-pulse,
+  .animate-lk-fade-in,
+  .animate-lk-pop-in {
+    animation: none;
+  }
+}

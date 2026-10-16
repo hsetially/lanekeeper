@@ -11,6 +11,9 @@
     "exactOptionalPropertyTypes": true,
     "skipLibCheck": true,
     "types": ["vite/client"],
+    "allowJs": true,
+    "checkJs": false,
+    "paths": { "@/*": ["./src/*"] },
     "noEmit": true
   },
   "include": ["src", "vite.config.ts"]
