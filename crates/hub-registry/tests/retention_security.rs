@@ -247,19 +247,100 @@ async fn the_job_runs_as_the_app_role_and_needs_nothing_the_app_role_does_not_ha
         touch,
         "the age column is the one UPDATE on blobs (put refreshes it)"
     );
-    let audit_delete: bool =
-        sqlx::query_scalar("SELECT has_table_privilege(current_user, 'audit_events', 'DELETE')")
-            .fetch_one(pool)
-            .await
-            .unwrap();
-    assert!(
-        !audit_delete,
-        "a collection cannot touch the audit chain: it is append-only for the app role"
-    );
+    for table in ["audit_events", "sentinel_records"] {
+        assert!(
+            !allowed("DELETE", table).await,
+            "{table} is append-only for the app role: a collection cannot touch it"
+        );
+    }
 
     // And it works with exactly that: a full run, as that role, deletes.
     let h = gc.old("collectable as the app role\n").await;
     gc.attach(Attach::FileStateGit, &h, 1).await;
     let report = gc.retention.run_once().await.unwrap();
     assert_eq!(report.deleted_blobs, 1);
+}
+
+/// Every class of reference, an old tool-write registration, an old sentinel record, a processed window and a stale staged part, in one
+/// database; one real run. The tables that changed are exactly the ones the job is named for: the blobs (and what cascades from them),
+/// the staged parts and the windows. Not the audit chain (a collection is not audited, A12), not the outbox (nothing is published), not
+/// `tool_write_registrations` (the matcher job sweeps it, D107) and not `sentinel_records` (the partitions job owns it, T7), whose rows
+/// are old enough to tempt a careless sweep.
+#[tokio::test]
+async fn a_run_changes_no_table_but_the_ones_it_is_named_for() {
+    use std::collections::BTreeMap;
+
+    let Some(gc) = Gc::with(config()).await else {
+        return;
+    };
+    for (n, how) in Attach::all().into_iter().enumerate() {
+        let h = gc.old(&format!("class {how:?}\n")).await;
+        gc.attach(how, &h, n + 1).await;
+    }
+    let orphan = gc.old("an orphan with settings rows\n").await;
+    gc.index_rows(&orphan, 3).await;
+    // Old rows of the two tables that other jobs own, each naming nothing the job may delete.
+    let registered = gc.old("named by an old tool-write registration\n").await;
+    gc.admin(&format!(
+        "INSERT INTO tool_write_registrations (swimlane_id, path, hash, is_delete, user_tid, user_oid, request_id, registered_at) \
+         VALUES ('sit1', 'old/registration.yml', '\\x{}', false, 't1', 'o1', 'req-old', now() - interval '100 days'); \
+         INSERT INTO sentinels (vm, swimlane_id, export_root) VALUES ('vm1', 'sit1', '/nfs'); \
+         INSERT INTO sentinel_records (sentinel_id, batch_seq, record_index, observed_at, path, operation, success) \
+         SELECT id, 1, 0, now() - interval '400 days', 'old/record.yml', 'write', true FROM sentinels WHERE vm = 'vm1'; \
+         INSERT INTO sync_windows (swimlane_id, job_name, job_uid, opened_at, closed_at, processed_at) \
+         VALUES ('sit1', 'sync-sit1', 'uid-old', now() - interval '30 days', now() - interval '30 days', now() - interval '30 days'); \
+         INSERT INTO delta_staging (swimlane_id, seq, part, base_root, new_root, metadata, staged_at) \
+         VALUES ('sit1', 9999, 0, NULL, '\\x{}', '{{\"v\":1,\"entries\":[],\"removed\":[],\"skipped\":[],\"bytes\":0}}', now() - interval '30 days')",
+        hex::encode(registered.as_bytes()),
+        hex::encode(ports::content_hash(b"root").as_bytes()),
+    ))
+    .await;
+    // (The rows above are old by the database's clock, and the registry's clock, which the job reads, is later still.)
+    let by_table = |dump: Vec<(String, i64, String)>| -> BTreeMap<String, (i64, String)> {
+        dump.into_iter().map(|(t, n, d)| (t, (n, d))).collect()
+    };
+    let before = by_table(gc.dump().await);
+
+    let report = gc.retention.run_once().await.unwrap();
+
+    assert!(
+        report.deleted_blobs >= 2,
+        "the run had something to delete: {report:?}"
+    );
+    assert_eq!((report.windows, report.staging), (1, 1));
+    let after = by_table(gc.dump().await);
+    let changed: Vec<&str> = before
+        .iter()
+        .filter(|(table, state)| after.get(*table) != Some(state))
+        .map(|(table, _)| table.as_str())
+        .collect();
+    assert_eq!(
+        changed,
+        vec![
+            "blobs",
+            "delta_staging",
+            "settings_index",
+            "settings_index_blobs",
+            "sync_windows"
+        ],
+        "only the tables the job is named for changed"
+    );
+    for table in [
+        "tool_write_registrations",
+        "sentinel_records",
+        "audit_events",
+        "outbox",
+    ] {
+        assert_eq!(after.get(table), before.get(table), "{table} is as it was");
+    }
+    assert!(
+        after["tool_write_registrations"].0 >= 2 && after["sentinel_records"].0 == 1,
+        "and the rows that tempt a careless sweep are there: {:?} {:?}",
+        after["tool_write_registrations"],
+        after["sentinel_records"]
+    );
+    assert!(
+        gc.exists(&registered).await,
+        "the old registration still names its blob"
+    );
 }

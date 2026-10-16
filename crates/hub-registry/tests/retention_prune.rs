@@ -146,13 +146,45 @@ async fn only_processed_windows_older_than_the_retention_in_every_time_are_prune
     )
     .await;
     window(&gc, "sit2", "never-closed", NOW - 20 * DAY, None, None).await;
+    // The times of a window are the agent's, clamped to the hub's clock, so a skewed or hostile agent can report them out of order. The
+    // rule is "every time is older", and it has to hold exactly there: the hold budget reads a row by its opening or by its close.
+    window(
+        &gc,
+        "sit1",
+        "closed-before-it-opened",
+        NOW - 2 * HOUR,
+        Some(NOW - 10 * DAY),
+        Some(NOW - 10 * DAY),
+    )
+    .await;
+    window(
+        &gc,
+        "sit1",
+        "closed-after-it-was-processed",
+        NOW - 10 * DAY,
+        Some(NOW - HOUR),
+        Some(NOW - 10 * DAY + 5 * MIN),
+    )
+    .await;
+    // Processed and never closed: no time of it is recent, so it goes (a time that is not there is not a recent one).
+    window(
+        &gc,
+        "sit1",
+        "processed-never-closed",
+        NOW - 10 * DAY,
+        None,
+        Some(NOW - 10 * DAY),
+    )
+    .await;
 
     let report = gc.retention.run_once().await.unwrap();
 
-    assert_eq!(report.windows, 3);
+    assert_eq!(report.windows, 4);
     assert_eq!(
         window_uids(&gc).await,
         vec![
+            "closed-after-it-was-processed",
+            "closed-before-it-opened",
             "closed-never-processed",
             "closed-one-minute-inside",
             "never-closed",
@@ -268,18 +300,35 @@ fn old_window() -> impl Strategy<Value = W> {
         })
 }
 
+/// A window whose agent's times are out of order: opened recently, "closed" and processed long ago. The budget reads it (by its opening),
+/// holds nothing for it, and a prune that took it would still change the rows the budget read.
+fn skewed_window() -> impl Strategy<Value = W> {
+    (0_i64..56 * 60, 7 * 24 * 60 + 9 * 60..40 * 24 * 60_i64, 0_i64..120).prop_map(
+        |(opened_age, closed_age, processing)| {
+            let closed = NOW - closed_age * MIN;
+            W {
+                opened: NOW - opened_age * MIN,
+                closed: Some(closed),
+                processed: Some(closed + processing * MIN),
+            }
+        },
+    )
+}
+
 #[derive(Debug, Clone)]
 struct World {
     recent: Vec<W>,
     old: Vec<W>,
+    skewed: Vec<W>,
 }
 
 fn world() -> impl Strategy<Value = World> {
     (
         proptest::collection::vec(recent_window(), 0..=8),
         proptest::collection::vec(old_window(), 0..=6),
+        proptest::collection::vec(skewed_window(), 0..=3),
     )
-        .prop_map(|(recent, old)| World { recent, old })
+        .prop_map(|(recent, old, skewed)| World { recent, old, skewed })
 }
 
 async fn build(gc: &Gc, world: &World) {
@@ -297,6 +346,17 @@ async fn build(gc: &Gc, world: &World) {
     }
     for (i, w) in world.old.iter().enumerate() {
         window(gc, "sit1", &format!("old-{i}"), w.opened, w.closed, w.processed).await;
+    }
+    for (i, w) in world.skewed.iter().enumerate() {
+        window(
+            gc,
+            "sit1",
+            &format!("skewed-{i}"),
+            w.opened,
+            w.closed,
+            w.processed,
+        )
+        .await;
     }
 }
 
