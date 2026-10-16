@@ -69,3 +69,68 @@ The reviewer found no code defect. The two blocking items are the security docs 
 - Benches measure the real paths through the router, with a real `PgBlobStore` and Postgres, at 40 swimlanes x 2,000 files. The P5 base bench asserts incremental equals full before timing. Units and statistics are right.
 - Fuzz: all four targets exist and are listed in the Justfile; `corpus_replay` shares its invariants file with the targets; `tests/justfile_gate.rs` holds the lists together.
 - Plan A8: the missing `Registry::build` is recorded in D112 and in the evidence file.
+
+## Round 2
+
+Reviewed HEAD `372cace` (five `05/fix:` commits and the evidence update after round 1).
+
+VERDICT: APPROVE
+
+No blocking finding other than the environmental one (round 1, item 2: the gates that cannot run in this sandbox). For everything an agent can check, the reviewer approves; the gates are for CI or a human.
+
+### Blocking
+
+None, apart from the environmental item.
+
+### Non-blocking
+
+1. `crates/hub-registry/src/blob_policy.rs:48-51`. The second `EXISTS` of `DENIED_HASH_SQL` has no LIMIT. For a popular hash with no denied file it probes every observation of that hash. Measured in a scratch Postgres: 100,000 ordinary observations of one hash, all with live `file_state` rows, cost about 20 to 37 ms per call, growing linearly; at design scale (at most 49 per hash) it is negligible. `tests/support/read_statements.rs:568-572` times `blob_policy_denied_hash` only with a hash nothing has had. The second `EXISTS` adds nothing: `HASH_PATHS_SQL` already reads `f.denied` through its join, and a hash with more than 1,000 observations is refused anyway. Fix: drop it, or add a worst-case entry to the P12 list.
+2. `blob_policy.rs:226-229`. An undecided hash writes a WARN on every request, and any viewer who knows a popular hash can trigger it at request rate. Round 1's minor 10 treated the same kind of expected outcome as a counter plus a debug line; `blob_withheld` already counts it, so a debug line would do.
+3. The P12 completeness claim is slightly too strong. The scan in `tests/read_statements.rs` sees only `pub const *_SQL` and `pub fn *_sql`. Four inline statements in `src/read` are invisible to it and not in the list: `search_settings.rs:179` and `search_text.rs:75` (`SELECT id FROM swimlanes ORDER BY id LIMIT 1000`), `swimlanes.rs:216` (existence of a swimlane) and `history.rs:118` (`read_is_version`, three `EXISTS`). All are key or prefix lookups. Fix: make them named constants, or have the scan flag inline `sqlx::query*("` literals.
+4. Evidence consistency. The S17 row and non-blocking 6 say the blob policy takes "p95 0.3 to 1.8 ms"; the benchmark section says 2.6 ms typical, 12.0 ms for the most common content and 2.2 ms for the flag probe. Label or replace the first figure. The OpenAPI acceptance box is ticked although one deviation is pinned (`tenants` `minItems`); the PR text should say "with one pinned deviation".
+5. Threat model. The "I / caller who knows a hash" row (`docs/threat-model.md:519`) cites `a_blob_the_store_does_not_have_gets_no_marker`, a settings-index test that says nothing about the endpoint. No residual says that an ordinary file's blob is also refused when a denied file has the same bytes (the any-denied rule is right; the over-refusal is a product-visible effect).
+6. Still carried as PR-text follow-ups, none fixed, all disclosed: `P7.settings_search` is brittle (p95 108 against a budget of 200 ms; the sixth slowest of 100 samples is 196.9 in some runs); the seven fixed-sleep tests; `SwimlaneSummary.tenants` `minItems`; the T7 commit order; the contract PR that must merge first, and the wiring into `crates/hub`; human confirmation of D116 and D118 (retention deletes by default) before the job is wired.
+
+### Round-1 findings and their disposition
+
+| # | Disposition | Evidence |
+|---|---|---|
+| B1 threat model | Fixed (`26b4ec1`) | Section describes the shipped job; 36 STRIDE rows and 35 residuals; pins fail on a dropped row, lost proof, wrong letter or dropped word. |
+| B2 gates | Environmental, not fixable here | See "Could not run". |
+| NB1 settings_search needles | Left; documented follow-up (contract) | Residual in the threat model, evidence open item 5. |
+| NB2 stats window | Documented, not built | Residual in the threat model, pinned. P12 re-run after the P12 commit. |
+| NB3 P12 gap | Fixed (`794ed81`) | 45 unique statements shared by the bench and a test, with bind-count and run-once checks; binds spot-checked against the service. See non-blocking 3. |
+| NB4 seven sleeps | Left; follow-up | |
+| NB5 D116 and stale text | Stale text fixed (`9f4ec9a`) | Decisions stay with the human. |
+| NB6 blob endpoint and hub globs | Fixed (`b547e1d`) | Mutation `f.path IS NULL` -> `false` fails two `blob_policy_globs` tests. |
+| NB7 tenants `minItems` | Left; human choice, pinned by name | |
+| NB8 T7 order | Left; no behavioural effect | |
+| NB9 merge order and wiring | Left; documented | |
+| NB10 WARN with a hash | Fixed (`a3e1e18`) | Unlabelled counter, debug line only, control in the test. |
+
+### Re-ran
+
+- `cargo fmt --all -- --check`: exit 0.
+- `cargo clippy -p hub-registry --all-targets --all-features -- -D warnings`: exit 0.
+- `LK_REQUIRE_DOCKER=1 cargo test -p hub-registry --lib --tests --no-fail-fast`: exit 0, 79 binaries, 1,178 passed, 0 failed, 3 ignored, 0 SKIPPED.
+- `cargo test -p xtask`: exit 0, 162 passed, 1 ignored.
+- `cargo check --workspace --all-targets --locked`: exit 0.
+- Registry cut of `cargo xtask bench-check` on the existing results: exit 0, 18 pass, 0 fail, 0 unmet (P12 17.257 ms, P7.settings_search 108.4 ms, P7.grid 102.3 ms).
+- P12 samples: recomputed p95 17.2565 ms over 900 samples (45 x 20); max 32.4 ms, so every statement is under 50 ms.
+- Fixtures: the most common content has 49 files at target scale, as the code and evidence claim.
+- Mutation: `f.path IS NULL` replaced by `false` in the deleted-file lookup of `HASH_PATHS_SQL`; two `blob_policy_globs` tests failed; restored, `git diff` empty.
+- Scratch Postgres experiment for non-blocking 1 (one scratch database, dropped).
+
+### Could not run
+
+`just verify-05` and `just verify` (no `just`); `cargo deny`, `cargo audit` (including `crates/hub-registry/fuzz/Cargo.lock`) and `osv-scanner`; libFuzzer smoke (no nightly, no `cargo-fuzz`; `corpus_replay` stands in); Docker and testcontainers (the local Postgres stood in); web checks (`web/` is untouched); other crates' tests, the full `cargo test --workspace`, the release slow tests and all benchmarks (stored results were checked instead).
+
+### Checked and found sound
+
+- Blob policy fails closed on every path: probe error or timeout, paths-statement error, an unreadable row, a bad path or class, more than 1,000 sightings, and a closed pool all refuse. A hash shared by a denied and an ordinary path is refused; a deleted file's old versions are refused through its newest classified observation.
+- No SQL from input; both statements bind only the hash and the limit. Logs carry fixed words only; no hash, path or content reaches a log or a metric.
+- Indexes and plans: `file_observations_hash_idx`, `file_observations_history_idx` and `file_state_denied_hash_idx` exist in migrations 0001 and 0003; the EXPLAIN snapshot is a real `EXPLAIN` that also checks the generic plan.
+- `denied.rs` changed in one doc line only.
+- New tests have serving controls (globs; deleted file; file that stopped being denied; at-limit allowed and over-limit refused; failing lookup shown by revoking only the columns the paths statement reads).
+- Scope: only `crates/hub-registry/**`, the two Extra-paths docs and the evidence file; no contract path changed; the plan file is untouched since `57fac25`.
+- Evidence claims matched what was re-run: test counts, 108 snapshots, 19 new tests, P12 numbers and the unticked verify-05 box with its reason.
