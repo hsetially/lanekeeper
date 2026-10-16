@@ -68,6 +68,18 @@ impl ReadBed {
             swept.found,
             started.elapsed().as_secs_f64()
         );
+        // A hub in steady state has had its tables analysed by autovacuum; a database that was loaded a minute ago has not, and the
+        // first analyze comes whenever the launcher next wakes (once a minute), usually after the bed is built. Until it does, the
+        // planner takes the tables for nearly empty: the dense settings searches (`%name%`) were planned as a trigram scan and a sort
+        // of about 100,000 rows, 110 to 160 ms a statement instead of 3 to 30 ms, and the rule of `steady_state_queries` (no statement
+        // over 50 ms) failed in two runs out of two on this head, with `settings_index` shown as never analysed. The bed therefore
+        // does what autovacuum would have done, once, as the owner of the tables (the app role may not analyse them).
+        let mut admin = bed.rig.db.admin().await;
+        sqlx::raw_sql("ANALYZE").execute(&mut admin).await.unwrap();
+        eprintln!(
+            "read bed: the tables are analysed ({:.1} s since the start)",
+            started.elapsed().as_secs_f64()
+        );
         let gateway = FakeAgentGateway::default();
         let (service, blobs, router) = Self::wire(&bed, &gateway, &config);
         Some(Self {
