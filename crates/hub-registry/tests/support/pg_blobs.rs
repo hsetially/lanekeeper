@@ -4,7 +4,7 @@
 //! a blob that is stored again has its `blobs.touched_at` refreshed (migration `0008`). The registry's ingestion tests and the P15 bench
 //! therefore measure and exercise the statement the hub uses, and the retention tests get the age behaviour of the real store (a put
 //! of an old blob protects it for the grace period) instead of a copy that stored without refreshing. This type adds what the real store
-//! does not have: counters, a switch that makes it fail or hang, and a record of what was asked for. The reads stay its own (one
+//! does not have: counters, a switch that makes it fail or hang, a gate that holds readers, and a record of what was asked for. The reads stay its own (one
 //! statement, no cache, countable) so that a test can say how many reads a code path made and so that a blob deleted behind its back is
 //! gone for the next read, which a cache would hide.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -34,6 +34,10 @@ pub struct PgBlobs {
     many_calls: AtomicU64,
     /// Calls to `get`.
     gets: AtomicU64,
+    /// While `true`, `get_many` waits before it reads (see `pause_reads`).
+    read_pause: tokio::sync::watch::Sender<bool>,
+    /// Calls to `get_many` that are waiting at the gate.
+    read_waiting: AtomicU64,
 }
 
 impl PgBlobs {
@@ -48,7 +52,34 @@ impl PgBlobs {
             requested: std::sync::Mutex::new(Vec::new()),
             many_calls: AtomicU64::new(0),
             gets: AtomicU64::new(0),
+            read_pause: tokio::sync::watch::channel(false).0,
+            read_waiting: AtomicU64::new(0),
         }
+    }
+
+    /// Hold every `get_many` at a gate, before it reads, until `pause_reads(false)`: a test makes a search stand between "I know which
+    /// blobs I need" and "I read them" and does something to the store in that gap, by condition and not by delay.
+    pub fn pause_reads(&self, pause: bool) {
+        self.read_pause.send_replace(pause);
+    }
+
+    /// How many `get_many` calls are waiting at the gate now.
+    pub fn paused_readers(&self) -> u64 {
+        self.read_waiting.load(Ordering::SeqCst)
+    }
+
+    async fn wait_at_the_gate(&self) {
+        let mut open = self.read_pause.subscribe();
+        if !*open.borrow_and_update() {
+            return;
+        }
+        self.read_waiting.fetch_add(1, Ordering::SeqCst);
+        while *open.borrow_and_update() {
+            if open.changed().await.is_err() {
+                break;
+            }
+        }
+        self.read_waiting.fetch_sub(1, Ordering::SeqCst);
     }
 
     /// The hashes asked for through `get_many` since the last `forget_requests`.
@@ -144,6 +175,7 @@ impl BlobStore for PgBlobs {
         }
         self.many_calls.fetch_add(1, Ordering::SeqCst);
         self.requested.lock().unwrap().extend_from_slice(hs);
+        self.wait_at_the_gate().await;
         // One statement for the whole batch, like the real store, in the order first requested, each at most once.
         let wanted: Vec<Vec<u8>> = hs.iter().map(|h| h.as_bytes().to_vec()).collect();
         let rows: Vec<(Vec<u8>, Vec<u8>)> =
