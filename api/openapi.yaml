@@ -38,6 +38,8 @@ tags:
   description: Content by hash
 - name: events
   description: Server-sent events
+- name: git
+  description: Refs of the mirrored repositories
 - name: hooks
   description: Inbound webhooks
 - name: docs
@@ -1930,6 +1932,51 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/FindingPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/git/refs:
+    get:
+      operationId: listGitRefs
+      summary: Branches and tags of a mirrored repository
+      description: |-
+        The branches and tags of one mirrored repository, for the ref pickers of the web app. Names and commit ids only, never file contents. The list is sorted by `name`, branches before tags when a branch and a tag share a name, so that a cursor can follow it. `kind` narrows it to branches or to tags, and both are listed when it is absent. `q` keeps the refs whose name starts with it. Reading is not audited.
+      tags:
+      - git
+      x-required-role: viewer
+      parameters:
+      - name: repo
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/RepoKind'
+      - name: kind
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/GitRefKind'
+      - name: q
+        in: query
+        required: false
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 64
+        description: Only refs whose name starts with this prefix. It is a prefix, never a pattern.
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitRefPage'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -4056,6 +4103,59 @@ components:
       enum:
       - base
       - tenant
+    BranchKind:
+      type: string
+      enum:
+      - default
+      - deployable
+      - template
+      - common_docs
+      - other
+      description: How a branch of the tenant repository is used. `default` is the base repository's single default
+        branch, `deployable` a swimlane candidate (`sit1` to `sitN`), `template` a branch under `templates/` that is
+        never deployed, and `common_docs` the docs source `templates/common-docs`.
+    GitRefKind:
+      type: string
+      enum:
+      - branch
+      - tag
+    GitRefEntry:
+      type: object
+      properties:
+        name:
+          $ref: '#/components/schemas/GitRef'
+        kind:
+          $ref: '#/components/schemas/GitRefKind'
+        commit:
+          $ref: '#/components/schemas/CommitId'
+          description: The commit the branch or the tag points at.
+        branch_kind:
+          oneOf:
+          - $ref: '#/components/schemas/BranchKind'
+          - type: 'null'
+          description: How the branch is used, null for a tag.
+      additionalProperties: false
+      required:
+      - name
+      - kind
+      - commit
+      - branch_kind
+    GitRefPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/GitRefEntry'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
     AttributionSource:
       type: string
       enum:
