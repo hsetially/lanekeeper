@@ -18,7 +18,8 @@
 --
 -- The bound (`Full`) is the registry's rule and not a constraint: the table has no row limit, and the rule is soft by at most
 -- the number of registering transactions in flight (a count, then an insert). The registry runs its statements inside a
--- savepoint that it opens itself (the port docs require it), so that a failing statement here cannot abort the caller's
+-- savepoint that it opens itself, with raw SAVEPOINT, RELEASE SAVEPOINT and ROLLBACK TO SAVEPOINT statements and not with a
+-- drop-guard nested transaction (the port docs require it), so that a failing statement here cannot abort the caller's
 -- transaction and the caller can still record its audit event in it (a lost connection excepted: the transaction goes with it).
 --
 -- Deploy order: this migration, then the 05 code that implements `ports::ToolWrites`. A binary from before it never reads
@@ -59,9 +60,11 @@ $$;
 --                  because replicas stamp with their own clocks: skew is harmless for the TTL but could invert an order by
 --                  stamp. A registry cannot know the commit time and a caller-owned transaction has no commit hook, so a
 --                  registration expires at most the transaction's time early, the safe direction. No default and no CHECK:
---                  the registry passes its injected clock (so tests can date a registration) and must clamp it to its own
---                  clock, never a time that a caller supplied; a now()-dependent CHECK is a bad idea, and a time in the
---                  future would never age out of the sweep.
+--                  the registry stamps with its own injected clock (so tests can date a registration) and never takes a time
+--                  from a caller; a now()-dependent CHECK is a bad idea, and a time in the future would never age out of the
+--                  sweep. The matcher attributes a late-committed registration only an observation that the registry applied
+--                  no earlier than LATE_SKEW_MS (1000 ms, which absorbs clock skew between replicas) before registered_at: the
+--                  tool registers before it writes, so a real write is applied after its own registration's stamp.
 --   user_tid/oid   the user who wrote, the actor of the attribution. No foreign key: the row is a short-lived expectation,
 --                  and a user row never decides whether a write was the tool's.
 --   request_id     the 06 request. (swimlane, path, hash, request_id, is_delete) is one registration, so a retry registers

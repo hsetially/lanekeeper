@@ -19,14 +19,20 @@
 //! is returned as `Unavailable`. With the savepoint, a caller that gets `Full` or `Unavailable` can go on and record the
 //! operation's audit event in the same transaction (see [`ToolWriteError`]).
 //!
+//! - **How to open it: raw SQL.** Use raw `SAVEPOINT name`, `RELEASE SAVEPOINT name` and `ROLLBACK TO SAVEPOINT name`
+//!   statements on the caller's connection (the registry's implementation does). Do **not** use a drop-guard based nested
+//!   transaction for this, such as `sqlx::Connection::begin` on the caller's connection: sqlx 0.8.6's nested transaction
+//!   rolls back the caller's WHOLE transaction if its guard is dropped half-way (a cancelled future), and after a raw
+//!   `BEGIN` it issues a second `BEGIN`. A cancelled future must not roll back the caller's transaction.
 //! - **The MUST is the implementation's, because it is the contract.** The conformance suites cannot test it: the in-memory
 //!   fakes have no failed state, so an implementation that forgets the savepoint passes every suite and fails only in
 //!   production. The registry (05) must test it against a real Postgres: a registration statement that fails (forced, for
 //!   instance, by a lock timeout), then the audit insert and the commit still succeed in the same transaction, and the
 //!   registration is absent.
-//! - **Callers SHOULD ALSO wrap the call.** A caller that holds the sqlx transaction can open a savepoint of its own around
-//!   the registration (`Tx::from_pg(&mut *savepoint)`) and roll it back on `Err`. Callers (prompt 06) should do that as
-//!   defence in depth, because it does not depend on each implementor.
+//! - **Callers SHOULD ALSO wrap the call.** A caller that holds the connection can open a savepoint of its own around the
+//!   registration, with the same raw `SAVEPOINT`, `ROLLBACK TO SAVEPOINT` and `RELEASE SAVEPOINT` statements, and roll back
+//!   to it on `Err`. Callers (prompt 06) should do that as defence in depth, because it does not depend on each
+//!   implementor.
 //! - **A lost connection is not covered.** The caller's transaction is gone with the connection, and no savepoint helps. The
 //!   change then appears as an out-of-band change, and the audit event cannot be recorded in that transaction either (the
 //!   caller's problem, as for any lost connection).
@@ -40,13 +46,13 @@
 //! - **Order.** "Newer" and "older" in this port always mean later and earlier in the **path's observation order**: the
 //!   order in which the registry applied observations of that swimlane and that path. They never mean wall-clock time or
 //!   ingestion time compared across paths.
-//! - **The clock.** The port takes no time. The registry stamps a registration with its own (injected) clock when `register`
-//!   or `register_delete` runs, and never takes a time from a caller; it must clamp what it stores to that clock, so that a
-//!   registration cannot be dated into the future, never age out of the sweep and take a place in the bounded queue for
-//!   good. The stamp is used for the **TTL only**. Wherever this port speaks of the TTL ([`ToolWriteEntry::TTL_SECS`]) it is
-//!   measured on the registry's clock: a registration's from its stamp, and an observation's from the moment the registry
-//!   **applied** it, never from the agent's `observed_at`, which is the agent's clock. With several hub replicas each stamps
-//!   with its own clock; skew between them is harmless for a 15-minute TTL, and is assumed small relative to it.
+//! - **The clock.** The port takes no time, and the registry takes no time from a caller: it stamps a registration with its
+//!   own (injected) clock when `register` or `register_delete` runs. So a registration cannot be dated into the future, and
+//!   cannot fail to age out of the sweep and hold a place in the bounded queue for good. The stamp is used for the **TTL
+//!   only**. Wherever this port speaks of the TTL ([`ToolWriteEntry::TTL_SECS`]) it is measured on the registry's clock: a
+//!   registration's from its stamp, and an observation's from the moment the registry **applied** it, never from the
+//!   agent's `observed_at`, which is the agent's clock. With several hub replicas each stamps with its own clock; skew
+//!   between them is harmless for a 15-minute TTL, and is assumed small relative to it.
 //! - **The TTL of a registration** therefore runs from the registry's clock when `register` or `register_delete` ran. A
 //!   registry cannot know the commit time, and a caller-owned transaction has no commit hook, so a registration expires at
 //!   most the time the transaction took (milliseconds) before `TTL_SECS` after its commit, which is the safe direction.
@@ -68,13 +74,14 @@
 //!   store, in the order the registrations were inserted; the stamp is for the TTL only, and stamps can disagree across
 //!   replicas), so an observation never has two actors. The others stay pending until their own matching observation, the
 //!   TTL or an invalidation.
-//! - **One observation per late registration.** A registration that commits after observations attributes at most one.
+//! - **One observation per late registration.** A registration that commits after observations attributes at most one, and
+//!   only above the late-match floor (see "Ordering" below).
 //!
 //! # Ordering: the observation can come first
 //!
 //! A registration becomes visible when its transaction commits, and 06 commits after the file is written (the
-//! `WriteFile` command has returned). So the agent can see the new file, and report it, before the registration is
-//! visible. The registry (05) must therefore also match an observation that arrives before the commit becomes visible
+//! `WriteFile` command has returned), though the call to `register` comes before the write, so the registration's stamp
+//! precedes the write. So the agent can see the new file, and report it, before the registration is visible. The registry (05) must therefore also match an observation that arrives before the commit becomes visible
 //! (a late-committed registration): it keeps an observation it could not attribute for at least
 //! [`ToolWriteEntry::TTL_SECS`] and attributes it as a tool write when a matching registration commits within that
 //! time. Matching is by swimlane, path and hash.
@@ -82,8 +89,17 @@
 //! - A registration that is already visible when its hash is first observed at its path is consumed by that observation
 //!   (the oldest pending one, if several).
 //! - A registration that commits after observations attributes **at most one** of them: the newest eligible observation of
-//!   that exact hash at that path, still within [`ToolWriteEntry::TTL_SECS`] of when the registry applied it. Older
-//!   observations of the same hash stay as they were.
+//!   that exact hash at that path, still within [`ToolWriteEntry::TTL_SECS`] of when the registry applied it, and above the
+//!   floor below. Older observations of the same hash stay as they were.
+//! - **The late match has a floor.** A late-committed registration attributes only an observation that the registry applied
+//!   **no earlier than 1 second before the registration's stamp** (the registry's constant is `LATE_SKEW_MS`, 1000 ms, which
+//!   absorbs clock skew between replicas). The tool registers before it writes, so a real write is applied after its own
+//!   registration's stamp; taken literally, the rule above would let a registration that committed normally take an older
+//!   observation of the same hash made by someone else (an editor reverts to content a person wrote ten minutes earlier, the
+//!   matcher runs before the agent reports the editor's write: the old observation would be credited to the editor and the
+//!   editor's own write left out of band). The cost is on the safe side: a false negative when an interrupted write is
+//!   retried after the file was already observed, or when replica clocks differ by more than the floor. The floor is a
+//!   registry rule, and the conformance suites cannot observe it, like the other registry rules here.
 //!
 //! # A registration that nothing matches expires
 //!
@@ -117,8 +133,9 @@
 //!   this user as the actor and confidence `certain`;
 //! - a delete registration that commits **after** observations attributes **at most one** observation: the newest
 //!   observation of that path in that swimlane, which must be a deletion matching as above, that no hash observation of the
-//!   path follows, that is eligible, and that is still within [`ToolWriteEntry::TTL_SECS`] of when the registry applied it.
-//!   Older deletions of the path stay exactly as they were (attribution is never downgraded, and never moved to another
+//!   path follows, that is eligible, that is still within [`ToolWriteEntry::TTL_SECS`] of when the registry applied it, and
+//!   that is above the late-match floor (applied no earlier than 1 second before the registration's stamp, see "Ordering"
+//!   above). Older deletions of the path stay exactly as they were (attribution is never downgraded, and never moved to another
 //!   observation). Example: a person deletes `svc/a.yml` over NFS (deletion O0), someone recreates it out of band (O1, a
 //!   hash), and an editor deletes it through the tool (O2), which the agent reports before the editor's transaction commits.
 //!   The registration attributes O2 and nothing else, and O0 stays unattributed, whatever its age; had O2 deleted a version
@@ -228,10 +245,9 @@ pub trait ToolWrites: Send + Sync + 'static {
     ///   interrupted write does not register twice. The user is not part of the key: the same key from another user is
     ///   a no-op too, and keeps the first user (an accepted risk that rests on the uniqueness of hub-made request ids).
     /// - After the commit, the registry attributes the next observation of this hash at this path as
-    ///   `ObservationSource::ToolWrite`, with this user as the actor and confidence `certain` (D73). The matching and the
-    ///   expiry rules are in the module docs.
-    /// - The registry stamps the registration with its own clock and clamps it to that clock; the time is never the
-    ///   caller's.
+    ///   `ObservationSource::ToolWrite`, with this user as the actor and confidence `certain` (D73). The matching, the
+    ///   late-match floor and the expiry rules are in the module docs.
+    /// - The registry stamps the registration with its own clock; it never takes a caller's time.
     /// - **The implementation MUST run its statements inside a savepoint that it opens itself**, so that a failure rolls
     ///   back only its own work, leaves `tx` usable and is returned as `Unavailable` (module docs: a failed statement
     ///   aborts a Postgres transaction, the suites cannot test the savepoint because the fakes have no failed state, and
@@ -261,8 +277,9 @@ pub trait ToolWrites: Send + Sync + 'static {
     ///   path's observation order, must have been `deleted_hash`. A registration that is visible when such a deletion is
     ///   first observed is consumed by it; one that commits after observations attributes at most one, the newest
     ///   observation of the path, which must be such a deletion that no hash observation follows, within
-    ///   [`ToolWriteEntry::TTL_SECS`] of when the registry applied it; a later hash observation invalidates it, an earlier
-    ///   one never does (the module docs have the rules, an example and what remains);
+    ///   [`ToolWriteEntry::TTL_SECS`] of when the registry applied it and above the late-match floor (applied no earlier than
+    ///   1 second before the registration's stamp); a later hash observation invalidates it, an earlier one never does (the
+    ///   module docs have the rules, an example and what remains);
     /// - it expires [`ToolWriteEntry::TTL_SECS`] after the registry stamped it with its own clock;
     /// - the implementation MUST run its statements inside a savepoint, as `register` must;
     /// - after the commit, the registry attributes that observation as `ObservationSource::ToolWrite`, with this user as
