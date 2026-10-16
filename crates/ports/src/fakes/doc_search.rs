@@ -1,17 +1,23 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use domain::{
-    DocGrepHit, DocHit, DocId, DocPath, DocText, FeatureQuery, FeatureStatus, LineRange, LogicalFile, Role,
-    SettingPath, ShortText, User,
+    DocGrepHit, DocHeading, DocHit, DocId, DocPath, DocText, FeatureQuery, FeatureStatus, LineRange,
+    LogicalFile, RenderedDoc, Role, SettingPath, ShortText, User,
 };
 
 use super::util::lock;
 use crate::conformance::DocScenario;
-use crate::{DocError, DocSearch, MAX_DOC_HITS, MAX_DOC_PATTERN_BYTES, MAX_GREP_CONTEXT, MAX_GREP_HITS};
+use crate::{
+    DocError, DocSearch, HEADING_ID_PREFIX, MAX_DOC_HEADINGS, MAX_DOC_HITS, MAX_DOC_PATTERN_BYTES,
+    MAX_GREP_CONTEXT, MAX_GREP_HITS, MAX_RENDER_SOURCE_BYTES, MAX_RENDERED_HTML_BYTES, content_hash,
+};
 
 const MAX_DOCS: usize = 10_000;
+/// The limit of a `ShortText` in bytes (`domain::SHORT_TEXT_MAX`, which the domain does not export).
+const SHORT_TEXT_BYTES: usize = 256;
 /// `read` returns at most this many bytes of text and sets `truncated` beyond it (MCP output cap, P9).
 const MAX_READ_BYTES: usize = 16 * 1024;
 
@@ -29,7 +35,9 @@ struct State {
 }
 
 /// Substring search over seeded docs. There is no embedding, ranking model or regex engine: `search` ranks
-/// by match count, and `grep` with `regex = true` answers [`DocError::BadRequest`].
+/// by match count, and `grep` with `regex = true` answers [`DocError::BadRequest`]. `render` has no Markdown engine either: it
+/// escapes every character of the text, turns `#` lines into headings with ids, and wraps the rest in paragraphs, so its
+/// page is inside the allowlist whatever the text holds. Hits carry no `anchor`.
 #[derive(Clone, Default)]
 pub struct FakeDocSearch {
     state: Arc<Mutex<State>>,
@@ -64,6 +72,7 @@ fn hit(
         snippet: snippet.chars().take(200).collect(),
         score,
         related_files: related,
+        anchor: None,
     })
 }
 
@@ -190,6 +199,13 @@ impl DocSearch for FakeDocSearch {
         self.grep_where(u, pattern, regex, context, None, MAX_GREP_HITS)
     }
 
+    async fn render(&self, u: &User, path: &DocPath) -> Result<RenderedDoc, DocError> {
+        check(u)?;
+        let st = lock(&self.state);
+        let doc = st.docs.get(path).ok_or(DocError::NotFound)?;
+        render_text(path, &doc.text)
+    }
+
     async fn feature_status(&self, u: &User, _q: FeatureQuery) -> Result<FeatureStatus, DocError> {
         check(u)?;
         Ok(lock(&self.state)
@@ -237,6 +253,135 @@ impl DocSearch for FakeDocSearch {
             return Err(DocError::BadRequest);
         }
         self.grep_where(u, pattern, regex, context, prefix, limit)
+    }
+}
+
+/// Escape the five characters that matter in HTML text and in a double-quoted value, and drop control characters other than
+/// line feed and tab.
+fn escape(text: &str, out: &mut String) {
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c if c.is_control() && c != '\n' && c != '\t' => {}
+            c => out.push(c),
+        }
+    }
+}
+
+/// An ATX heading line: one to six `#`, a space (or the end), the title without its closing `#`s.
+fn atx_heading(line: &str) -> Option<(u8, &str)> {
+    let hashes = line.bytes().take_while(|b| *b == b'#').count();
+    if !(1..=6).contains(&hashes) {
+        return None;
+    }
+    let rest = &line[hashes..];
+    if !rest.is_empty() && !rest.starts_with(' ') {
+        return None;
+    }
+    let title = rest.trim();
+    let without_closing = title.trim_end_matches('#');
+    let title = if without_closing.len() < title.len()
+        && (without_closing.is_empty() || without_closing.ends_with(' '))
+    {
+        without_closing.trim_end()
+    } else {
+        title
+    };
+    Some((u8::try_from(hashes).unwrap_or(6), title))
+}
+
+/// `doc-` and the title as lower case ASCII letters and digits separated by single hyphens, numbered apart from the ids in `used`.
+fn heading_id(title: &str, used: &mut BTreeSet<String>) -> String {
+    let mut slug = String::new();
+    for c in title.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+        } else if !slug.ends_with('-') && !slug.is_empty() {
+            slug.push('-');
+        }
+    }
+    slug.truncate(64);
+    let slug = slug.trim_end_matches('-');
+    let slug = if slug.is_empty() { "section" } else { slug };
+    let mut id = format!("{HEADING_ID_PREFIX}{slug}");
+    let mut n = 2_u32;
+    while used.contains(&id) {
+        id = format!("{HEADING_ID_PREFIX}{slug}-{n}");
+        n += 1;
+    }
+    used.insert(id.clone());
+    id
+}
+
+/// The page of `text`: see [`FakeDocSearch`]. Refuses a text or a page over the bounds, and stops as soon as the page is over.
+fn render_text(path: &DocPath, text: &str) -> Result<RenderedDoc, DocError> {
+    if text.len() > MAX_RENDER_SOURCE_BYTES {
+        return Err(DocError::BadRequest);
+    }
+    let mut html = String::new();
+    let mut paragraph = String::new();
+    let mut headings = Vec::new();
+    let mut used = BTreeSet::new();
+    let flush = |html: &mut String, paragraph: &mut String| {
+        if !paragraph.is_empty() {
+            html.push_str("<p>");
+            html.push_str(paragraph);
+            html.push_str("</p>\n");
+            paragraph.clear();
+        }
+    };
+    for (n, line) in text.lines().enumerate() {
+        if html.len() + paragraph.len() > MAX_RENDERED_HTML_BYTES {
+            return Err(DocError::BadRequest);
+        }
+        if let Some((level, title)) = atx_heading(line) {
+            flush(&mut html, &mut paragraph);
+            let id = heading_id(title, &mut used);
+            let _ = write!(html, "<h{level} id=\"{id}\">");
+            escape(title, &mut html);
+            let _ = writeln!(html, "</h{level}>");
+            if headings.len() < MAX_DOC_HEADINGS {
+                let mut plain = String::new();
+                escape_plain(title, &mut plain);
+                headings.push(DocHeading {
+                    id: ShortText::parse(&id).map_err(|_| DocError::Unavailable)?,
+                    level,
+                    text: ShortText::parse(&plain).map_err(|_| DocError::Unavailable)?,
+                    line: u32::try_from(n + 1).unwrap_or(u32::MAX),
+                });
+            }
+        } else if line.trim().is_empty() {
+            flush(&mut html, &mut paragraph);
+        } else {
+            if !paragraph.is_empty() {
+                paragraph.push('\n');
+            }
+            escape(line, &mut paragraph);
+        }
+    }
+    flush(&mut html, &mut paragraph);
+    if html.len() > MAX_RENDERED_HTML_BYTES {
+        return Err(DocError::BadRequest);
+    }
+    Ok(RenderedDoc {
+        path: path.clone(),
+        html,
+        headings,
+        content_hash: content_hash(text.as_bytes()),
+    })
+}
+
+/// The title as plain text for a [`ShortText`]: no control characters, at most [`SHORT_TEXT_BYTES`].
+fn escape_plain(title: &str, out: &mut String) {
+    for c in title.chars().filter(|c| !c.is_control()) {
+        if out.len() + c.len_utf8() > SHORT_TEXT_BYTES {
+            break;
+        }
+        out.push(c);
     }
 }
 

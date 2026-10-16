@@ -1198,6 +1198,7 @@ async fn get_feature_status_filters() {
                     value: None,
                 },
             ],
+            anchor: None,
         }],
     });
     let mut c = viewer(&rig).await;

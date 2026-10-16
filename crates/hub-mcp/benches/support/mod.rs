@@ -323,6 +323,7 @@ impl Fixtures {
                 snippet: format!("| flag{n} | `tx-infinity-api/big.yml` | feature.flags.f{n}.enabled | Turns the feature on. {} |", "text ".repeat(150)),
                 score: 0.9,
                 related_files: vec![lf("tx-infinity-api/big.yml")],
+                anchor: None,
             })
             .collect();
         let doc_text: String = (0..3_000)
@@ -351,6 +352,7 @@ impl Fixtures {
                             value: (k % 9 != 4).then(|| left.settings[n].value.clone()),
                         })
                         .collect(),
+                    anchor: None,
                 })
                 .collect(),
         };

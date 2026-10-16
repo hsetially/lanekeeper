@@ -214,6 +214,7 @@ fn scenarios() -> Vec<Scenario> {
                     snippet: "the timeout is 30".to_owned(),
                     score: 0.5,
                     related_files: Vec::new(),
+                    anchor: None,
                 }]);
             },
             args: || json!({"q": "timeout"}),
@@ -273,6 +274,7 @@ fn scenarios() -> Vec<Scenario> {
                             swimlane: sid("sit1"),
                             value: Some(value(secret)),
                         }],
+                        anchor: None,
                     }],
                 });
             },

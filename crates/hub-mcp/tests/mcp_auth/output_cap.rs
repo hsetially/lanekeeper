@@ -235,6 +235,7 @@ async fn no_read_tool_exceeds_16kb_at_worst_case_items() {
                         value: Some(value(&secret_free_long)),
                     })
                     .collect(),
+                anchor: None,
             })
             .collect(),
     });

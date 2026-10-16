@@ -378,6 +378,9 @@ docs!(DeviatingDocs {
         let limit = if self.how == DocDeviation::GrepIgnoresTheLimit { MAX_GREP_HITS } else { limit };
         self.inner.grep_in(u, pattern, regex, context, prefix, limit).await
     }
+    async fn render(&self, u: &User, path: &DocPath) -> Result<domain::RenderedDoc, DocError> {
+        self.inner.render(u, path).await
+    }
 });
 
 #[tokio::test(start_paused = true)]

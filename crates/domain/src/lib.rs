@@ -43,7 +43,9 @@ pub use compare::{
     TreeComparison, ValueFlag, ValueType,
 };
 pub use compare_ref::{CompareRef, CompareRefError, GitRef, GitRefError};
-pub use docs::{DocGrepHit, DocHit, DocText, FeatureQuery, FeatureStatus, FlagStatus, FlagValue};
+pub use docs::{
+    DocGrepHit, DocHeading, DocHit, DocText, FeatureQuery, FeatureStatus, FlagStatus, FlagValue, RenderedDoc,
+};
 pub use enums::{
     AgentStatus, AttributionSource, ChangeEol, Confidence, DriftState, EolStyle, FileClass, FileKind,
     FileRole, FindingKind, IssueKind, MergeMode, ObservationSource, PickupState, PrJobState, PrState,

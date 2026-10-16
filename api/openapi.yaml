@@ -1561,6 +1561,62 @@ paths:
           $ref: '#/components/responses/Forbidden'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/docs/fs/render:
+    get:
+      operationId: renderDoc
+      summary: Read a doc as sanitised HTML
+      description: |-
+        The server-rendered page of one doc, for the doc reader, addressed by path like `readDoc`. This is the one HTML sink the CSP lets through (S12): the web app puts `html` into the page only through its Trusted Types policy `lanekeeper-docs` and nowhere else.
+
+        What the server guarantees. These are requirements on the owner of the docs index (prompt 14); the port method `DocSearch::render` states the same, and `ports::conformance::render_output_stays_inside_the_allowlist` checks the part that can be observed.
+
+        - Order. The stored text is read, its line endings are normalised, and the secret scan masks every flagged value (S14b) before the Markdown is parsed. A masked value is the text of its marker `[REDACTED: N chars, rule]` in the page. The render never sees an unmasked value, and there is no reveal for docs.
+        - Allowlist. `RenderedDoc.html` states the elements and attributes the page may contain. Nothing outside them is emitted, whatever the Markdown holds.
+        - Bounds. A doc of more than 2 MiB of text, or one whose page would pass 8 MiB, is refused with 413. The server never truncates: a cut fragment is not sanitised output. `headings` lists the first 500 headings.
+        - Cost. Parsing and sanitising are CPU work. They run in `spawn_blocking` under a timeout, and the page is cached by content hash (together with the scan configuration and the allowlist version), so a doc is rendered once.
+        - Validator. The ETag is derived from the content hash, the scan configuration version and the allowlist version, so a changed configuration is never served from a stale 304.
+      tags:
+      - docs
+      - content
+      x-required-role: viewer
+      parameters:
+      - name: path
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/DocPath'
+      - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RenderedDoc'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '304':
+          description: 'Not modified: the ETag matched.'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          description: The doc, or the page it would render to, is over the bound. Nothing is cut.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/docs/search:
     get:
       operationId: searchDocs
@@ -6841,6 +6897,11 @@ components:
           items:
             $ref: '#/components/schemas/LogicalFile'
           maxItems: 100
+        anchor:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+          description: The `id` of the heading of the rendered page (`renderDoc` for the same `path`) that the chunk sits under, so that the reader can open the page at the hit, `/docs/view?path=<path>#<anchor>`. Null or absent when the chunk is above the first heading or the producer has no outline. A client never builds it from a title. Additive, so an old document has none.
       additionalProperties: false
       required:
       - doc
@@ -6888,6 +6949,67 @@ components:
       - total_lines
       - text
       - truncated
+      - content_hash
+    DocHeading:
+      type: object
+      description: One heading of a rendered doc, in document order. `text` is plain text, not HTML, so a client sets it as text content only.
+      properties:
+        id:
+          type: string
+          pattern: ^doc-[a-z0-9]+(-[a-z0-9]+)*$
+          maxLength: 80
+          description: The `id` attribute of the heading element in `RenderedDoc.html`. `doc-` and a slug, unique in the page, chosen by the server and never copied from the Markdown, so a doc cannot name an element of the app.
+        level:
+          type: integer
+          minimum: 1
+          maximum: 6
+        text:
+          $ref: '#/components/schemas/ShortText'
+        line:
+          type: integer
+          minimum: 1
+          description: The 1-based line of the heading in the doc's text, the numbering of `readDoc` and `grepDocs`.
+      additionalProperties: false
+      required:
+      - id
+      - level
+      - text
+      - line
+    RenderedDoc:
+      type: object
+      description: The server-rendered page of one doc (`DocSearch::render`) with its outline. `content_hash` is the SHA-256 of the doc's stored text, the value `readDoc` reports, so the same text has the same hash at any path. `headings` is the outline, the first 500 headings in document order; the page keeps every heading, and each entry names an element of `html` of that level with that `id`.
+      properties:
+        path:
+          $ref: '#/components/schemas/DocPath'
+        html:
+          type: string
+          maxLength: 8388608
+          description: |-
+            Sanitised HTML of the doc, a fragment with no `html`, `head` or `body`. This is the one HTML sink the CSP lets through (S12): the web app puts it into the page only through its Trusted Types policy `lanekeeper-docs`, and nowhere else.
+
+            The allowlist below is a requirement on the server, not a description of what a sanitising library does by default. The render stays inside it whatever the Markdown holds, an implementation does not widen it, and `ports::conformance::doc_search` renders a corpus of attacks and checks every page against it (`render_output_stays_inside_the_allowlist`).
+
+            Elements: `h1`, `h2`, `h3`, `h4`, `h5`, `h6`, `p`, `blockquote`, `pre`, `code`, `ul`, `ol`, `li`, `hr`, `br`, `em`, `strong`, `table`, `thead`, `tbody`, `tr`, `th`, `td`, `a`, `img`.
+
+            Attributes: `id` on `h1` to `h6` only, always `doc-` and a slug of lower case letters and digits separated by single hyphens (at most 80 characters, unique in the page, chosen by the server and never copied from the Markdown); `href` and `rel` on `a`; `src` and `alt` on `img`. Nothing else: no `class`, no `style`, no `target`, no `srcset`, no event handler (`on...`), no `data-` or `aria-` attribute. Every value is in double quotes, and every `&` in a value begins `&amp;`, `&lt;`, `&gt;`, `&quot;` or `&#39;`.
+
+            Links: every `a` has `rel="noopener noreferrer"` and an `href` that is an absolute `https:` URL without credentials, a path on this origin (one leading `/`, never `//`), or a `#` fragment that names a heading id of this page. A relative link to a `.md` doc is rewritten to the reader route `/docs/view?path=<DocPath>`, the path percent-encoded. Any other link (`http:`, `javascript:`, `data:`, `mailto:`, any other scheme, any other relative target) loses its `href` and `rel`: the element is dropped and its text kept.
+
+            Images: `src` is a path on this origin and nothing else (no scheme, no `//`, no `data:`). Any other image is replaced by its alt text.
+
+            Markup: raw HTML in the Markdown source is data. It never produces an element or attribute outside this list: it is escaped or removed. A `<` in text is `&lt;`. No comment, doctype, CDATA section or processing instruction, and no control character except line feed and tab. Elements are closed and properly nested, and an `a` is never inside an `a`.
+        headings:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocHeading'
+          maxItems: 500
+        content_hash:
+          $ref: '#/components/schemas/ContentHash'
+      additionalProperties: false
+      required:
+      - path
+      - html
+      - headings
       - content_hash
     DocGrepHit:
       type: object
@@ -6965,6 +7087,11 @@ components:
           items:
             $ref: '#/components/schemas/FlagValue'
           maxItems: 64
+        anchor:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+          description: The `id` of the heading, in the rendered page of the doc that documents this flag, under which the flag's row of the Feature Flags table sits. The doc is the one `docsForFile` returns for `file` and `setting`, and its `DocHit.anchor` is the same value; this schema carries no doc path, so the client pairs the two. Null or absent when the producer has no outline. Additive, so an old document has none.
       additionalProperties: false
       required:
       - flag
