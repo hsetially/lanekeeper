@@ -362,6 +362,39 @@ async fn the_fake_lists_what_it_is_told_and_keeps_it_across_a_seed() {
     assert!(!r.set_syncing(&nowhere, None));
 }
 
+/// An open adoption is not a confirmed baseline (D17), whatever the fake was told before: it lists `in_progress` and names
+/// nobody, and closing the adoption brings the confirmed baseline back.
+#[tokio::test]
+async fn the_fake_never_confirms_a_baseline_while_an_adoption_is_open() {
+    let (r, s) = (seeded(), swimlane("sit1"));
+    assert!(r.set_baseline(&s, confirmed_by_someone()));
+    assert_eq!(summary_of(&r, &s).await.baseline, Some(confirmed_by_someone()));
+
+    assert!(r.set_open_adoption(&s, true));
+    assert_eq!(
+        summary_of(&r, &s).await.baseline,
+        Some(in_progress()),
+        "an open adoption lists in_progress, with nobody and no time"
+    );
+    // A seed of the files is not the end of the adoption.
+    assert!(r.seed(&s, &[(nfs("b.yml"), bytes("b: 1\n"))]));
+    assert_eq!(summary_of(&r, &s).await.baseline, Some(in_progress()));
+    // Scripting another baseline does not confirm it while the adoption is open either.
+    assert!(r.set_baseline(&s, confirmed_by_someone()));
+    assert_eq!(summary_of(&r, &s).await.baseline, Some(in_progress()));
+
+    assert!(r.set_open_adoption(&s, false));
+    assert_eq!(
+        summary_of(&r, &s).await.baseline,
+        Some(confirmed_by_someone()),
+        "closed without confirming: the baseline it had is back"
+    );
+    assert!(
+        !r.set_open_adoption(&swimlane("nowhere"), true),
+        "an unknown swimlane has no adoption to open"
+    );
+}
+
 /// The counts are worked out from the pending restarts the fake holds, so they agree with `pending_restarts` by
 /// construction: the non-live states, in the order of `PickupState::ALL`, none with a count of zero.
 #[tokio::test]
@@ -417,6 +450,8 @@ enum Deviation {
     ForgetsThePickupCounts,
     ForgetsTierAndProject,
     ForgetsSyncing,
+    /// Is told to open an adoption, says it did, and lists the confirmed baseline it had all the same.
+    IgnoresAnOpenAdoption,
 }
 
 /// Forwards every method to a fake, and deviates in the summaries `swimlanes` lists.
@@ -475,7 +510,7 @@ impl Wrapper {
                 s.project = None;
             }
             Deviation::ForgetsSyncing => s.syncing = None,
-            Deviation::Honest | Deviation::CannotScript => {}
+            Deviation::Honest | Deviation::CannotScript | Deviation::IgnoresAnOpenAdoption => {}
         }
     }
 }
@@ -622,6 +657,14 @@ impl RegistryScenario for Wrapper {
     async fn set_syncing(&self, s: &SwimlaneId, syncing: Option<SyncingInfo>) -> bool {
         self.can_script() && FakeRegistry::set_syncing(&self.inner, s, syncing)
     }
+    async fn set_open_adoption(&self, s: &SwimlaneId, open: bool) -> bool {
+        match self.how {
+            Deviation::CannotScript => false,
+            // Says yes and does nothing: the registry that never lets an open adoption change what it lists.
+            Deviation::IgnoresAnOpenAdoption => true,
+            _ => FakeRegistry::set_open_adoption(&self.inner, s, open),
+        }
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -683,6 +726,12 @@ async fn a_registry_that_forgets_the_tier_and_project_fails() {
 #[should_panic(expected = "swimlanes lists the sync window it was given")]
 async fn a_registry_that_forgets_the_sync_window_fails() {
     conformance::registry_read(&Wrapper::new(Deviation::ForgetsSyncing)).await;
+}
+
+#[tokio::test(start_paused = true)]
+#[should_panic(expected = "baseline_is_never_confirmed_with_an_open_adoption")]
+async fn a_registry_that_lists_confirmed_while_an_adoption_is_open_fails() {
+    conformance::registry_read(&Wrapper::new(Deviation::IgnoresAnOpenAdoption)).await;
 }
 
 /// A user that is not a viewer of anything gets no summaries at all (S4): the additions do not open a side door.

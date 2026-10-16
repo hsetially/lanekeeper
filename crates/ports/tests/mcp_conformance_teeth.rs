@@ -20,7 +20,7 @@ use domain::{
     SwimlaneSummary, TextQuery, TextResults, TreeComparison, UploadRequest, User, Version, WriteCtx,
     WriteOutcome,
 };
-use ports::conformance::{self, DocScenario, RegistryScenario, WriteScenario};
+use ports::conformance::{self, DocScenario, RegistryScenario, SecretPlant, WriteScenario};
 use ports::fakes::{FakeDocSearch, FakeRegistry, FakeWriteService};
 use ports::{DocError, DocSearch, MAX_GREP_HITS, ReadError, RegistryRead, WriteError, WriteService};
 
@@ -128,6 +128,9 @@ macro_rules! docs {
         impl DocScenario for $name {
             async fn seed(&self, path: DocPath, title: &str, text: &str) {
                 FakeDocSearch::seed(&self.inner, path, title, text);
+            }
+            async fn plant_secret(&self, path: DocPath) -> SecretPlant {
+                DocScenario::plant_secret(&self.inner, path).await
             }
         }
     };

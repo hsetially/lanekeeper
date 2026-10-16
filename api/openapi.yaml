@@ -5125,7 +5125,9 @@ components:
           - type: 'null'
           description: Whether the baseline is adopted. `unconfirmed` means no baseline and editing is locked,
             `in_progress` means an open adoption (one that is being worked through or waits for review), and
-            `confirmed` means the baseline is adopted and editing is unlocked. The registry states it for every
+            `confirmed` means the baseline is adopted and editing is unlocked. An open adoption always shows as
+            `in_progress`, even on a swimlane whose earlier baseline was confirmed, and `confirmed` is never listed while
+            an adoption is open (`ports::conformance::registry_read` checks it). The registry states it for every
             swimlane; it is absent only in a response from a server that predates this field.
         pickup_counts:
           type: array
@@ -5177,7 +5179,7 @@ components:
       - in_progress
       - confirmed
       description: Where the baseline of a swimlane stands. `in_progress` means an adoption is open and the baseline is not
-        confirmed yet.
+        confirmed yet, also on a swimlane that was confirmed before the adoption was opened.
     BaselineStatus:
       type: object
       description: The baseline of a swimlane, and once it is confirmed, who confirmed it and when.
@@ -5366,7 +5368,9 @@ components:
           - type: 'null'
           description: Whether the baseline is adopted. `unconfirmed` means no baseline and editing is locked,
             `in_progress` means an open adoption (one that is being worked through or waits for review), and
-            `confirmed` means the baseline is adopted and editing is unlocked. The registry states it for every
+            `confirmed` means the baseline is adopted and editing is unlocked. An open adoption always shows as
+            `in_progress`, even on a swimlane whose earlier baseline was confirmed, and `confirmed` is never listed while
+            an adoption is open (`ports::conformance::registry_read` checks it). The registry states it for every
             swimlane; it is absent only in a response from a server that predates this field.
         pickup_counts:
           type: array

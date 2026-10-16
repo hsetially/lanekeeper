@@ -9,13 +9,16 @@ use domain::{
 };
 
 use super::util::lock;
-use crate::conformance::DocScenario;
+use crate::conformance::{DocScenario, SecretPlant};
 use crate::{
     DocError, DocSearch, HEADING_ID_PREFIX, MAX_DOC_HEADINGS, MAX_DOC_HITS, MAX_DOC_PATTERN_BYTES,
     MAX_GREP_CONTEXT, MAX_GREP_HITS, MAX_RENDER_SOURCE_BYTES, MAX_RENDERED_HTML_BYTES, content_hash,
 };
 
 const MAX_DOCS: usize = 10_000;
+/// What the fake's toy secret scan flags: a word that starts with this. The real scan judges values by their shape
+/// (`crates/engine`, S13); the fake only needs a value to plant that a render must keep out of the page (S14b).
+pub const FAKE_SECRET_PREFIX: &str = "fake-secret-";
 /// The limit of a `ShortText` in bytes (`domain::SHORT_TEXT_MAX`, which the domain does not export).
 const SHORT_TEXT_BYTES: usize = 256;
 /// `read` returns at most this many bytes of text and sets `truncated` beyond it (MCP output cap, P9).
@@ -37,7 +40,10 @@ struct State {
 /// Substring search over seeded docs. There is no embedding, ranking model or regex engine: `search` ranks
 /// by match count, and `grep` with `regex = true` answers [`DocError::BadRequest`]. `render` has no Markdown engine either: it
 /// escapes every character of the text, turns `#` lines into headings with ids, and wraps the rest in paragraphs, so its
-/// page is inside the allowlist whatever the text holds. Hits carry no `anchor`.
+/// page is inside the allowlist whatever the text holds. Hits carry no `anchor`. It has a toy secret scan that `render` runs
+/// before it renders (every word that starts with [`FAKE_SECRET_PREFIX`] is masked), which is what
+/// [`DocScenario::plant_secret`] plants; `read`, `grep` and `search` give the text as it was seeded, as the real index's
+/// callers mask it (S14b) at their own edge.
 #[derive(Clone, Default)]
 pub struct FakeDocSearch {
     state: Arc<Mutex<State>>,
@@ -322,6 +328,8 @@ fn render_text(path: &DocPath, text: &str) -> Result<RenderedDoc, DocError> {
     if text.len() > MAX_RENDER_SOURCE_BYTES {
         return Err(DocError::BadRequest);
     }
+    // The scan runs before the render (S14b): the page is made from the masked text, the hash is of the stored one.
+    let masked = mask_flagged(text);
     let mut html = String::new();
     let mut paragraph = String::new();
     let mut headings = Vec::new();
@@ -334,7 +342,7 @@ fn render_text(path: &DocPath, text: &str) -> Result<RenderedDoc, DocError> {
             paragraph.clear();
         }
     };
-    for (n, line) in text.lines().enumerate() {
+    for (n, line) in masked.lines().enumerate() {
         if html.len() + paragraph.len() > MAX_RENDERED_HTML_BYTES {
             return Err(DocError::BadRequest);
         }
@@ -373,6 +381,28 @@ fn render_text(path: &DocPath, text: &str) -> Result<RenderedDoc, DocError> {
         headings,
         content_hash: content_hash(text.as_bytes()),
     })
+}
+
+/// The toy secret scan of the fake: every word that starts with [`FAKE_SECRET_PREFIX`] becomes its marker
+/// `[REDACTED: N chars, fake_rule]`, `N` counting the characters of the word. Everything else, line breaks included, stays
+/// where it was, so line numbers and headings are those of the stored text.
+fn mask_flagged(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        let space = rest.len() - rest.trim_start().len();
+        out.push_str(&rest[..space]);
+        rest = &rest[space..];
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let word = &rest[..end];
+        if word.starts_with(FAKE_SECRET_PREFIX) {
+            let _ = write!(out, "[REDACTED: {} chars, fake_rule]", word.chars().count());
+        } else {
+            out.push_str(word);
+        }
+        rest = &rest[end..];
+    }
+    out
 }
 
 /// The title as plain text for a [`ShortText`]: no control characters, at most [`SHORT_TEXT_BYTES`].
@@ -448,5 +478,16 @@ impl FakeDocSearch {
 impl DocScenario for FakeDocSearch {
     async fn seed(&self, path: DocPath, title: &str, text: &str) {
         Self::seed(self, path, title, text);
+    }
+
+    async fn plant_secret(&self, path: DocPath) -> SecretPlant {
+        let secret = format!("{FAKE_SECRET_PREFIX}4711-planted");
+        Self::seed(
+            self,
+            path,
+            "Planted",
+            &format!("# Planted\n\nthe value is {secret} and nobody may see it\n"),
+        );
+        SecretPlant::Planted(secret)
     }
 }

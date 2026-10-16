@@ -63,6 +63,14 @@ pub trait RegistryScenario: RegistryRead {
     async fn set_syncing(&self, _s: &SwimlaneId, _syncing: Option<SyncingInfo>) -> bool {
         false
     }
+
+    /// Open an adoption on `s` (one that is being worked through or waits for review), or close the open one without
+    /// confirming it (`CG4a`). It leaves the baseline the swimlane already had alone: one confirmed before is confirmed again
+    /// once the adoption is closed. Returns `false` when the harness cannot, which is the default: the suite then cannot plant
+    /// an open adoption, and does not check that [`baseline_is_never_confirmed_with_an_open_adoption`].
+    async fn set_open_adoption(&self, _s: &SwimlaneId, _open: bool) -> bool {
+        false
+    }
 }
 
 /// - Pending, disabled and role-less users are `Forbidden` on every method (S4).
@@ -83,7 +91,8 @@ pub trait RegistryScenario: RegistryRead {
 /// - `contract/08-web`, `CG4a`: every summary of `swimlanes` states its baseline, and a baseline that is not confirmed names nobody
 ///   and no time, while a confirmed one says when; its `pickup_counts` list each pickup state that is not live at most once,
 ///   with a count above zero, and equal what `pending_restarts` lists for the swimlane. When the harness can script a swimlane,
-///   the tier, project, baseline, sync window and pickup counts it was given come back as given.
+///   the tier, project, baseline, sync window and pickup counts it was given come back as given, and an adoption it was told to
+///   open makes the baseline `in_progress` even where a confirmed one stood before (D17).
 pub async fn registry_read<R: RegistryScenario + ?Sized>(r: &R) {
     let viewer = active(1, Role::Viewer);
     let s1 = swimlane("sit1");
@@ -672,23 +681,59 @@ fn pending_service(name: &str, pickup: PickupState) -> ServiceState {
     }
 }
 
+/// The summary of `s` as `swimlanes` lists it, after [`check_summary_additions`] has held it and `pending_restarts` to what is
+/// true of every answer.
+async fn listed_summary<R: RegistryScenario + ?Sized>(r: &R, s: &SwimlaneId) -> SwimlaneSummary {
+    let viewer = active(1, Role::Viewer);
+    let summary = r
+        .swimlanes(&viewer)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|x| &x.id == s)
+        .expect("a seeded swimlane is listed");
+    let pending = r.pending_restarts(&viewer, s).await.unwrap();
+    check_summary_additions(&summary, &pending);
+    summary
+}
+
+/// `baseline_is_never_confirmed_with_an_open_adoption` (`CG4a`, D17): `confirmed` means the baseline is adopted and no adoption
+/// is open, so a swimlane that was confirmed and has an adoption open again is listed as `in_progress` and names nobody; when
+/// that adoption is closed without confirming it, the confirmed baseline it had comes back as it was. Skipped, as the other
+/// scripted checks are, when the harness cannot open an adoption ([`RegistryScenario::set_open_adoption`]).
+async fn baseline_is_never_confirmed_with_an_open_adoption<R: RegistryScenario + ?Sized>(
+    r: &R,
+    s: &SwimlaneId,
+    confirmed: &BaselineStatus,
+) {
+    if !r.set_open_adoption(s, true).await {
+        return;
+    }
+    assert_eq!(
+        listed_summary(r, s).await.baseline,
+        Some(BaselineStatus {
+            state: BaselineState::InProgress,
+            by: None,
+            at: None
+        }),
+        "{s}: baseline_is_never_confirmed_with_an_open_adoption: an adoption is open, so the baseline is in_progress and \
+         names nobody, whatever was confirmed before"
+    );
+    assert!(r.set_open_adoption(s, false).await);
+    assert_eq!(
+        listed_summary(r, s).await.baseline,
+        Some(confirmed.clone()),
+        "{s}: closing an adoption without confirming it gives back the confirmed baseline the swimlane had"
+    );
+}
+
 /// The summary additions (`CG4a`) on a swimlane the harness scripts when it can. Every summary follows
 /// [`check_summary_additions`] whatever the harness can do; the tier, project, baseline, sync window and pickup counts a
 /// harness set come back as set, and the counts agree with `pending_restarts` while the services change.
 async fn summary_additions<R: RegistryScenario + ?Sized>(r: &R) {
-    let viewer = active(1, Role::Viewer);
     let s = swimlane("sit3");
     r.seed(&s, &files(&[("a.yml", "x: 1\n")])).await;
-    let summary_of = || async {
-        let list = r.swimlanes(&viewer).await.unwrap();
-        let summary = list
-            .into_iter()
-            .find(|x| x.id == s)
-            .expect("a seeded swimlane is listed");
-        let pending = r.pending_restarts(&viewer, &s).await.unwrap();
-        check_summary_additions(&summary, &pending);
-        summary
-    };
+    let summary_of = || listed_summary(r, &s);
 
     // Services in four states: two need a notification or restart, one is live within its TTL, one is live.
     let pending = r
@@ -763,9 +808,10 @@ async fn summary_additions<R: RegistryScenario + ?Sized>(r: &R) {
         assert!(r.set_baseline(&s, confirmed.clone()).await);
         assert_eq!(
             summary_of().await.baseline,
-            Some(confirmed),
+            Some(confirmed.clone()),
             "{s}: swimlanes lists the baseline it was given"
         );
+        baseline_is_never_confirmed_with_an_open_adoption(r, &s, &confirmed).await;
     }
 
     let window = SyncingInfo {

@@ -11,19 +11,33 @@ use crate::{
     MAX_RENDERED_HTML_BYTES, MAX_URL_BYTES,
 };
 
+/// What a [`DocScenario`] says about planting a value that the implementation's secret scan flags
+/// ([`DocScenario::plant_secret`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretPlant {
+    /// The scenario seeded a doc at the given path whose text holds this value, and the implementation's secret scan flags it.
+    /// [`render_output_stays_inside_the_allowlist`] then holds the page of that doc to the order "scan, then render" (S14b): the
+    /// value is not in the page, and its marker `[REDACTED: N chars, rule]` is.
+    Planted(String),
+    /// The harness cannot plant a flagged value, and says why. The check of the order "scan, then render" is then not made,
+    /// and the reason is the record of that: it has to be written, and the suite refuses an empty one. Use this only for an
+    /// implementation that has no secret scan to give a value to (its docs reach it already masked, say); one that scans
+    /// must plant.
+    Cannot { reason: &'static str },
+}
+
 /// What the docs conformance suite needs from the test harness.
 #[async_trait]
 pub trait DocScenario: DocSearch {
     /// Add or replace a doc with this title and exact text.
     async fn seed(&self, path: DocPath, title: &str, text: &str);
 
-    /// Seed a doc at `path` whose text holds a value that this implementation's secret scan flags, and return that value.
-    /// Additive (`contract/08-web`, CG11). The default is `None`: the scenario cannot plant one, and
-    /// [`render_output_stays_inside_the_allowlist`] skips the check that no page carries a flagged value (S14b). A real
-    /// implementation overrides it, because the order "scan, then render" is a security property that only a planted value shows.
-    async fn plant_secret(&self, _path: DocPath) -> Option<String> {
-        None
-    }
+    /// Seed a doc at `path` whose text holds a value that this implementation's secret scan flags, and return it as
+    /// [`SecretPlant::Planted`]; or say, with [`SecretPlant::Cannot`], that the harness cannot and why. Additive
+    /// (`contract/08-web`, CG11). There is no default on purpose: the order "scan, then render" is a security property (S14b)
+    /// that only a planted value shows, so a harness that does not think about it fails to compile, and one that cannot plant
+    /// has to write down why.
+    async fn plant_secret(&self, path: DocPath) -> SecretPlant;
 }
 
 /// - Pending, disabled and role-less users are `Forbidden` everywhere (S4).
@@ -916,7 +930,8 @@ const OUTLINE: &str = "# Overview\r\n\r\nText with `code`.\r\n\r\n## Usage\r\n\r
 /// - The content hash follows the text, not the path: the same text twice, even under two paths, is one hash.
 /// - A doc over [`MAX_RENDER_SOURCE_BYTES`], and one whose page would pass [`MAX_RENDERED_HTML_BYTES`], is refused
 ///   (`BadRequest`), never truncated; an outline longer than [`MAX_DOC_HEADINGS`] is cut at that many.
-/// - When the scenario can plant a value its secret scan flags ([`DocScenario::plant_secret`]), the value is not in the page.
+/// - The scenario plants a value its secret scan flags ([`DocScenario::plant_secret`]), and the value is not in the page, while
+///   the marker of a masked value is. A scenario that cannot plant has to say why: the check is never skipped without a reason.
 /// - Every doc of [`XSS_CORPUS`] renders to a page for which [`rendered_doc_violations`] is empty, and the marker of a masked
 ///   value is text in the page.
 pub async fn render_output_stays_inside_the_allowlist<D: DocScenario + ?Sized>(d: &D) {
@@ -1037,19 +1052,36 @@ pub async fn render_output_stays_inside_the_allowlist<D: DocScenario + ?Sized>(d
         "many-headings: the rendered page leaves the allowlist or disagrees with its outline: {violations:?}"
     );
 
-    // The scan runs before the render.
+    // The scan runs before the render. Never skipped without a stated reason.
     let planted = at("planted");
-    if let Some(secret) = d.plant_secret(planted.clone()).await {
-        let page = d.render(&viewer, &planted).await.unwrap();
-        assert!(
-            !page.html.contains(&secret) && !page.headings.iter().any(|h| h.text.as_str().contains(&secret)),
-            "a flagged value reached the rendered page (S14b): the secret scan runs before the render"
-        );
-        let violations = rendered_doc_violations(&page);
-        assert!(
-            violations.is_empty(),
-            "planted: the rendered page leaves the allowlist or disagrees with its outline: {violations:?}"
-        );
+    match d.plant_secret(planted.clone()).await {
+        SecretPlant::Planted(secret) => {
+            assert!(
+                !secret.trim().is_empty(),
+                "plant_secret planted an empty value: it cannot show that a flagged value stays out of the page"
+            );
+            let page = d.render(&viewer, &planted).await.unwrap();
+            assert!(
+                !page.html.contains(&secret)
+                    && !page.headings.iter().any(|h| h.text.as_str().contains(&secret)),
+                "a flagged value reached the rendered page (S14b): the secret scan runs before the render"
+            );
+            assert!(
+                page.html.contains("[REDACTED: ") && page.html.contains(" chars, "),
+                "the planted value is masked and not just dropped: its marker `[REDACTED: N chars, rule]` is text in the page \
+                 (S14b), or the doc that plant_secret seeded does not hold the value it returned"
+            );
+            let violations = rendered_doc_violations(&page);
+            assert!(
+                violations.is_empty(),
+                "planted: the rendered page leaves the allowlist or disagrees with its outline: {violations:?}"
+            );
+        }
+        SecretPlant::Cannot { reason } => assert!(
+            !reason.trim().is_empty(),
+            "a scenario that cannot plant a secret says why: the check that the scan runs before the render is skipped, and the \
+             reason is the only record of it"
+        ),
     }
 
     // The corpus.

@@ -24,7 +24,8 @@ use domain::{
     FlagStatus, LineRange, LogicalFile, RenderedDoc, SettingPath, ShortText, User,
 };
 use ports::conformance::{
-    self, ALLOWED_HTML_TAGS, DocScenario, XSS_CORPUS, html_violations, is_heading_id, rendered_doc_violations,
+    self, ALLOWED_HTML_TAGS, DocScenario, SecretPlant, XSS_CORPUS, html_violations, is_heading_id,
+    rendered_doc_violations,
 };
 use ports::fakes::FakeDocSearch;
 use ports::{
@@ -925,18 +926,22 @@ async fn render_output_stays_inside_the_allowlist() {
 /// The one way a wrapper of the fake leaves the contract.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Break {
-    /// Forwards everything, and breaks nothing.
+    /// Forwards everything, and breaks nothing: the fake plants a secret and masks it before it renders.
     Nothing,
-    /// Masks the planted secret in the page, as an implementation that scans before it renders does.
-    MasksTheSecret,
     /// Keeps the default of `render`.
     KeepsTheRenderDefault,
     /// Appends the raw text of the doc to the page.
     EmitsTheTextRaw,
     /// Answers a doc over the bound with a page instead of a refusal.
     ForgetsTheBound,
-    /// Lets the planted secret reach the page.
+    /// Plants a value that its own scan does not flag, so the value reaches the page.
     LeaksTheSecret,
+    /// Says it planted a value, and seeds a doc that does not hold it: the check would pass for nothing.
+    PlantsNothing,
+    /// Says it cannot plant a secret, with a reason.
+    CannotPlantAndSaysWhy,
+    /// Says it cannot plant a secret, and gives no reason.
+    CannotPlantAndSaysNothing,
     /// Names a heading id that the page does not carry.
     HeadingIdNotInThePage,
     /// Derives the content hash from the path, not from the text.
@@ -951,6 +956,7 @@ enum Break {
     NestsQuotesWithoutBound,
 }
 
+/// A value that the secret scan of the fake does not flag, so that only a wrapper can leak or mask it.
 const PLANTED: &str = "hunter2-planted-value-4711";
 
 struct Wrapped {
@@ -1039,13 +1045,10 @@ impl DocSearch for Wrapped {
             Err(e) => return Err(e),
         };
         match self.how {
-            Break::EmitsTheTextRaw => {
+            // The raw text of a corpus doc, which is where a renderer that forgets to sanitise is caught.
+            Break::EmitsTheTextRaw if path.as_str().contains("/xss/") => {
                 let text = self.inner.read(u, path, None).await?.text;
                 page.html.push_str(&text);
-            }
-            Break::MasksTheSecret => {
-                let marker = format!("[REDACTED: {} chars, test_rule]", PLANTED.len());
-                page.html = page.html.replace(PLANTED, &marker);
             }
             Break::HeadingIdNotInThePage => {
                 if let Some(h) = page.headings.first_mut() {
@@ -1091,18 +1094,39 @@ impl DocScenario for Wrapped {
         FakeDocSearch::seed(&self.inner, path, title, text);
     }
 
-    async fn plant_secret(&self, path: DocPath) -> Option<String> {
-        if !matches!(self.how, Break::MasksTheSecret | Break::LeaksTheSecret) {
-            return None;
+    async fn plant_secret(&self, path: DocPath) -> SecretPlant {
+        match self.how {
+            Break::CannotPlantAndSaysWhy => SecretPlant::Cannot {
+                reason: "this wrapper has no secret scan of its own to give a value to",
+            },
+            Break::CannotPlantAndSaysNothing => SecretPlant::Cannot { reason: "  " },
+            Break::PlantsNothing => {
+                FakeDocSearch::seed(
+                    &self.inner,
+                    path,
+                    "Planted",
+                    "# Planted\n\nnothing to hide here\n",
+                );
+                SecretPlant::Planted(PLANTED.to_owned())
+            }
+            Break::LeaksTheSecret => {
+                // A value that the scan of this implementation does not flag, so that it reaches the page as it stands.
+                FakeDocSearch::seed(
+                    &self.inner,
+                    path.clone(),
+                    "Planted",
+                    &format!("# Planted\n\nthe value is {PLANTED} and nobody may see it\n"),
+                );
+                SecretPlant::Planted(PLANTED.to_owned())
+            }
+            _ => {
+                let planted = DocScenario::plant_secret(&self.inner, path.clone()).await;
+                if let SecretPlant::Planted(secret) = &planted {
+                    self.planted.lock().unwrap().insert(path, secret.clone());
+                }
+                planted
+            }
         }
-        FakeDocSearch::seed(
-            &self.inner,
-            path.clone(),
-            "Planted",
-            &format!("# Planted\n\nthe value is {PLANTED} and nobody may see it\n"),
-        );
-        self.planted.lock().unwrap().insert(path, PLANTED.to_owned());
-        Some(PLANTED.to_owned())
     }
 }
 
@@ -1113,9 +1137,28 @@ async fn a_wrapper_that_breaks_nothing_passes_the_suite() {
 
 #[tokio::test(start_paused = true)]
 async fn an_implementation_that_masks_the_planted_secret_passes() {
-    let w = Wrapped::new(Break::MasksTheSecret);
+    let w = Wrapped::new(Break::Nothing);
     conformance::render_output_stays_inside_the_allowlist(&w).await;
     assert_eq!(w.planted.lock().unwrap().len(), 1, "the suite did plant a secret");
+}
+
+/// The check of the order "scan, then render" cannot be skipped by saying nothing: a harness plants, or says why it cannot.
+#[tokio::test(start_paused = true)]
+async fn a_scenario_that_cannot_plant_a_secret_and_says_why_passes() {
+    conformance::doc_search(&Wrapped::new(Break::CannotPlantAndSaysWhy)).await;
+}
+
+#[tokio::test(start_paused = true)]
+#[should_panic(expected = "a scenario that cannot plant a secret says why")]
+async fn a_scenario_that_cannot_plant_a_secret_and_gives_no_reason_fails() {
+    conformance::render_output_stays_inside_the_allowlist(&Wrapped::new(Break::CannotPlantAndSaysNothing))
+        .await;
+}
+
+#[tokio::test(start_paused = true)]
+#[should_panic(expected = "the planted value is masked and not just dropped")]
+async fn a_scenario_that_plants_nothing_the_page_could_leak_fails() {
+    conformance::render_output_stays_inside_the_allowlist(&Wrapped::new(Break::PlantsNothing)).await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -1225,4 +1268,49 @@ async fn the_fake_numbers_duplicate_headings_apart_and_ignores_line_endings() {
         "lines are 1-based"
     );
     assert_eq!(rendered_doc_violations(&a), Vec::<String>::new());
+}
+
+/// The scan runs before the render, in a heading as in a paragraph: the page and the outline hold the marker, never the value,
+/// the lines are the stored text's, and the hash is of the stored text (it is what the ETag follows).
+#[tokio::test(start_paused = true)]
+async fn the_fake_masks_what_its_scan_flags_before_it_renders() {
+    let fake = FakeDocSearch::new();
+    let viewer = ports::conformance::sample::active(1, domain::Role::Viewer);
+    let p = DocPath::parse("/git/main/scan.md").unwrap();
+    let text = "# Keys fake-secret-heading-1\n\nthe key is fake-secret-abc, and fake-secret-def\nplain fake-secrets are fine\n";
+    fake.seed(p.clone(), "Scan", text);
+    let page = fake.render(&viewer, &p).await.unwrap();
+    assert!(
+        !page.html.contains("fake-secret-"),
+        "no flagged value in the page: {}",
+        page.html
+    );
+    // The scan takes a whole word, a trailing comma included: 16 characters, then 15.
+    assert!(
+        page.html
+            .contains("[REDACTED: 16 chars, fake_rule] and [REDACTED: 15 chars, fake_rule]"),
+        "{}",
+        page.html
+    );
+    assert!(
+        page.html.contains("[REDACTED: 21 chars, fake_rule]"),
+        "the heading's value: {}",
+        page.html
+    );
+    assert!(
+        page.html.contains("plain fake-secrets are fine"),
+        "a word that merely holds the prefix is not flagged"
+    );
+    assert_eq!(page.headings.len(), 1);
+    assert_eq!(
+        page.headings[0].text.as_str(),
+        "Keys [REDACTED: 21 chars, fake_rule]"
+    );
+    assert_eq!(page.headings[0].line, 1);
+    assert_eq!(
+        page.content_hash,
+        content_hash(text.as_bytes()),
+        "the hash is of the stored text"
+    );
+    assert_eq!(rendered_doc_violations(&page), Vec::<String>::new());
 }

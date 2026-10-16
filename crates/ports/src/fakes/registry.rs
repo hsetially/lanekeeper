@@ -42,6 +42,8 @@ struct SwimlaneData {
     project: Option<ShortText>,
     baseline: Option<BaselineStatus>,
     syncing: Option<SyncingInfo>,
+    /// An adoption is open, as set by [`FakeRegistry::set_open_adoption`] (`CG4a`).
+    open_adoption: bool,
 }
 
 #[derive(Default)]
@@ -162,6 +164,7 @@ impl FakeRegistry {
             project: kept.and_then(|d| d.project.clone()),
             baseline: kept.and_then(|d| d.baseline.clone()),
             syncing: kept.and_then(|d| d.syncing.clone()),
+            open_adoption: kept.is_some_and(|d| d.open_adoption),
             files: files
                 .iter()
                 .map(|(p, b)| {
@@ -306,10 +309,39 @@ impl FakeRegistry {
         }
     }
 
+    /// Open an adoption on `s`, or close the open one without confirming it (`CG4a`). Returns false for an unknown swimlane. A
+    /// seed keeps it. While one is open `swimlanes` lists the baseline as `in_progress` (D17), whatever [`Self::set_baseline`]
+    /// gave; closing it brings back what was given.
+    pub fn set_open_adoption(&self, s: &SwimlaneId, open: bool) -> bool {
+        match lock(&self.state).swimlanes.get_mut(s) {
+            Some(sw) => {
+                sw.open_adoption = open;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The file `served` answers with; its swimlane, application, tenant, channel and file become the request's.
     pub fn set_served(&self, f: ServedFile) {
         lock(&self.state).canned.served = Some(f);
     }
+}
+
+/// The baseline `swimlanes` lists for a swimlane: an open adoption is never a confirmed baseline (D17), so while one is open
+/// it is `in_progress` and names nobody; otherwise what was set, or unconfirmed for a swimlane nobody adopted.
+fn listed_baseline(sw: &SwimlaneData) -> BaselineStatus {
+    let state = |state| BaselineStatus {
+        state,
+        by: None,
+        at: None,
+    };
+    if sw.open_adoption {
+        return state(BaselineState::InProgress);
+    }
+    sw.baseline
+        .clone()
+        .unwrap_or_else(|| state(BaselineState::Unconfirmed))
 }
 
 /// A setting path at or below `prefix`: the path itself, or one that continues it after a `.` or a `[`.
@@ -388,11 +420,7 @@ impl RegistryRead for FakeRegistry {
                         .unwrap_or(u32::MAX),
                     tier: sw.tier.clone(),
                     project: sw.project.clone(),
-                    baseline: Some(sw.baseline.clone().unwrap_or(BaselineStatus {
-                        state: BaselineState::Unconfirmed,
-                        by: None,
-                        at: None,
-                    })),
+                    baseline: Some(listed_baseline(sw)),
                     pickup_counts: pickup_counts(&sw.pending_restarts),
                     syncing: sw.syncing.clone(),
                 })
@@ -786,5 +814,9 @@ impl RegistryScenario for FakeRegistry {
 
     async fn set_syncing(&self, s: &SwimlaneId, syncing: Option<SyncingInfo>) -> bool {
         Self::set_syncing(self, s, syncing)
+    }
+
+    async fn set_open_adoption(&self, s: &SwimlaneId, open: bool) -> bool {
+        Self::set_open_adoption(self, s, open)
     }
 }
