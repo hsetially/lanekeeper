@@ -101,7 +101,7 @@ const CARRY_FORWARD: [(&str, &[&str]); 27] = [
         "tool-write registrations (D120)",
         &["D120", "TTL", "identical content"],
     ),
-    ("attribution (D109)", &["D109", "sentinel", "not used up"]),
+    ("attribution (D123)", &["D123", "sentinel", "not used up"]),
     (
         "severity rules are raise-only, stale after a change, and some defaults never fire",
         &["raise-only", "change_kinds", "setting_glob", "stale"],

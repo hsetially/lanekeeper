@@ -1,0 +1,8 @@
+---
+source: crates/hub-mcp/tests/mcp_auth/confirm_golden.rs
+---
+Apply a draft to a file in swimlane sit1?
+File (supplied by the assistant): "tx-infinity-api/tx-infinity-core-sit1.yml"
+Draft status: draft. Changes: 3 settings in 0 hunks. Severity: high.
+Effect: no consuming service was found.
+Review it in the web UI: https://hub.example.test/drafts/draft-1

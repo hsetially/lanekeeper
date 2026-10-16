@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "lanekeeper": {
+      "url": "@HUB_ORIGIN@/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:LANEKEEPER_TOKEN}"
+      }
+    }
+  }
+}

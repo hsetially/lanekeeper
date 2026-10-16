@@ -1,0 +1,7 @@
+---
+source: crates/hub-mcp/tests/mcp_auth/confirm_golden.rs
+---
+Restart a service in swimlane sit1?
+Service (supplied by the assistant): "apps/tx-infinity-api"
+Effect: a rolling restart of this one service, so that it reads its configuration again.
+Review it in the web UI: https://hub.example.test/swimlanes/sit1

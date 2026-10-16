@@ -1,0 +1,2 @@
+
+{"pattern":"timeout","regex":false,"case_sensitive":true,"swimlanes":["sit1"],"path_glob":"**/*.yml","max_total":50,"max_per_file":5}
