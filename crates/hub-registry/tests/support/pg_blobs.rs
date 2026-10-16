@@ -1,4 +1,12 @@
 //! A `BlobStore` over the real `blobs` table, for tests: content-addressed, idempotent, counted, and able to fail.
+//!
+//! **`put` is the real one** (T9, retention): it is `hub_platform::blobs::store::PgBlobStore::put`, so `PUT_SQL` runs as the hub runs it, and
+//! a blob that is stored again has its `blobs.touched_at` refreshed (migration `0008`). The registry's ingestion tests and the P15 bench
+//! therefore measure and exercise the statement the hub uses, and the retention tests get the age behaviour of the real store (a put
+//! of an old blob protects it for the grace period) instead of a copy that stored without refreshing. This type adds what the real store
+//! does not have: counters, a switch that makes it fail or hang, and a record of what was asked for. The reads stay its own (one
+//! statement, no cache, countable) so that a test can say how many reads a code path made and so that a blob deleted behind its back is
+//! gone for the next read, which a cache would hide.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -6,12 +14,16 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use async_trait::async_trait;
 use bytes::Bytes;
 use domain::ContentHash;
-use ports::{BlobError, BlobStore, MAX_BLOB_BYTES, MAX_GET_MANY, content_hash};
+use hub_platform::blobs::metrics::BlobMetrics;
+use hub_platform::blobs::store::{BlobSettings, PgBlobStore};
+use ports::{BlobError, BlobStore, MAX_GET_MANY};
 use sqlx::PgPool;
 
 #[derive(Debug)]
 pub struct PgBlobs {
     pool: PgPool,
+    /// The store the hub runs, for `put` (the age of a blob that is stored again).
+    store: PgBlobStore,
     puts: AtomicU64,
     fail: AtomicBool,
     fail_reads: AtomicBool,
@@ -27,6 +39,7 @@ pub struct PgBlobs {
 impl PgBlobs {
     pub fn new(pool: PgPool) -> Self {
         Self {
+            store: PgBlobStore::new(pool.clone(), BlobSettings::default(), BlobMetrics::default()),
             pool,
             puts: AtomicU64::new(0),
             fail: AtomicBool::new(false),
@@ -105,18 +118,7 @@ impl BlobStore for PgBlobs {
         if self.fail.load(Ordering::SeqCst) {
             return Err(BlobError::Unavailable);
         }
-        if bytes.len() > MAX_BLOB_BYTES {
-            return Err(BlobError::TooLarge);
-        }
-        let hash = content_hash(&bytes);
-        sqlx::query("INSERT INTO blobs (hash, content, size) VALUES ($1::bytea, $2::bytea, $3) ON CONFLICT (hash) DO NOTHING")
-            .bind(hash.as_bytes().as_slice())
-            .bind(bytes.as_ref())
-            .bind(i64::try_from(bytes.len()).unwrap())
-            .execute(&self.pool)
-            .await
-            .map_err(|_| BlobError::Unavailable)?;
-        Ok(hash)
+        self.store.put(bytes).await
     }
 
     async fn get(&self, h: &ContentHash) -> Result<Option<Bytes>, BlobError> {
