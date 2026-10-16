@@ -491,6 +491,59 @@ struct AttributionLabels {
     result: AttributionResult,
 }
 
+/// What became of the blobs a retention run looked at (T9). A count of blobs, never which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum RetentionBlobs {
+    /// Deleted from `blobs`.
+    Deleted,
+    /// A dry run found them collectable and left them.
+    WouldDelete,
+    /// Left for the next run, as they should be: touched, locked by a writer or referenced between the plan and the delete.
+    Skipped,
+    /// A delete transaction that a reference or a lock stopped (the foreign key, `lock_timeout`): left for the next run.
+    Contended,
+}
+
+/// The rows of the two tables whose old rows the retention job also removes (T9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum RetentionTable {
+    SyncWindows,
+    DeltaStaging,
+}
+
+/// Whether the rows were deleted or a dry run counted them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum RetentionRows {
+    Deleted,
+    WouldDelete,
+}
+
+/// A step of a retention run that failed (the rest of the run still ran).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+pub enum RetentionStep {
+    Settings,
+    Plan,
+    Collect,
+    SyncWindows,
+    DeltaStaging,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct RetentionBlobLabels {
+    result: RetentionBlobs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct RetentionRowLabels {
+    table: RetentionTable,
+    result: RetentionRows,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelSet)]
+struct RetentionStepLabels {
+    step: RetentionStep,
+}
+
 /// Cloning shares the counters.
 #[derive(Debug, Clone)]
 pub struct RegistryMetrics {
@@ -557,6 +610,13 @@ pub struct RegistryMetrics {
     sentinel_records: Family<SentinelRecordLabels, Counter>,
     sentinel_gaps: Counter,
     attributions: Family<AttributionLabels, Counter>,
+    retention_blobs: Family<RetentionBlobLabels, Counter>,
+    retention_blob_bytes: Family<RetentionBlobLabels, Counter>,
+    retention_rows: Family<RetentionRowLabels, Counter>,
+    retention_failures: Family<RetentionStepLabels, Counter>,
+    retention_runs: Counter,
+    retention_dry_runs: Counter,
+    retention_truncated: Counter,
 }
 
 /// 1 ms to about 8 s per read: the budgets are tens of milliseconds, a cold text search is hundreds.
@@ -635,6 +695,13 @@ impl Default for RegistryMetrics {
             sentinel_records: Family::default(),
             sentinel_gaps: Counter::default(),
             attributions: Family::default(),
+            retention_blobs: Family::default(),
+            retention_blob_bytes: Family::default(),
+            retention_rows: Family::default(),
+            retention_failures: Family::default(),
+            retention_runs: Counter::default(),
+            retention_dry_runs: Counter::default(),
+            retention_truncated: Counter::default(),
         }
     }
 }
@@ -957,6 +1024,41 @@ impl RegistryMetrics {
             "Observations the attribution upgraded or left, by what became of them",
             self.attributions.clone(),
         );
+        registry.register(
+            "registry_retention_blobs",
+            "Blobs the retention job looked at, by what became of them (counts only)",
+            self.retention_blobs.clone(),
+        );
+        registry.register(
+            "registry_retention_blob_bytes",
+            "Bytes of the blobs the retention job looked at, by what became of them",
+            self.retention_blob_bytes.clone(),
+        );
+        registry.register(
+            "registry_retention_rows",
+            "Rows of sync_windows and delta_staging that the retention job deleted, or that a dry run counted",
+            self.retention_rows.clone(),
+        );
+        registry.register(
+            "registry_retention_failures",
+            "Steps of a retention run that failed (the other steps still ran)",
+            self.retention_failures.clone(),
+        );
+        registry.register(
+            "registry_retention_runs",
+            "Retention runs that deleted (a dry run is counted apart)",
+            self.retention_runs.clone(),
+        );
+        registry.register(
+            "registry_retention_dry_runs",
+            "Retention runs that only reported",
+            self.retention_dry_runs.clone(),
+        );
+        registry.register(
+            "registry_retention_truncated",
+            "Retention runs whose plan was cut by the batch or the byte limit, so that more is left for the next run",
+            self.retention_truncated.clone(),
+        );
     }
 
     pub(crate) fn tool_write(&self, result: ToolWriteResult, n: u64) {
@@ -1022,6 +1124,82 @@ impl RegistryMetrics {
         self.attributions
             .get_or_create(&AttributionLabels { result })
             .get()
+    }
+
+    /// Blobs a retention run looked at, with their bytes (T9). Counts only: which blobs is never a label and never a log field.
+    pub(crate) fn retention_blobs(&self, result: RetentionBlobs, blobs: u64, bytes: u64) {
+        let labels = RetentionBlobLabels { result };
+        if blobs > 0 {
+            self.retention_blobs.get_or_create(&labels).inc_by(blobs);
+        }
+        if bytes > 0 {
+            self.retention_blob_bytes.get_or_create(&labels).inc_by(bytes);
+        }
+    }
+
+    /// Rows of one table that a retention run deleted or a dry run counted (T9).
+    pub(crate) fn retention_rows(&self, table: RetentionTable, result: RetentionRows, n: u64) {
+        if n > 0 {
+            self.retention_rows
+                .get_or_create(&RetentionRowLabels { table, result })
+                .inc_by(n);
+        }
+    }
+
+    /// A step of a retention run failed (T9).
+    pub(crate) fn retention_failure(&self, step: RetentionStep) {
+        self.retention_failures
+            .get_or_create(&RetentionStepLabels { step })
+            .inc();
+    }
+
+    /// A retention run ended, deleting or not (T9).
+    pub(crate) fn retention_run(&self, dry_run: bool, truncated: bool) {
+        if dry_run {
+            self.retention_dry_runs.inc();
+        } else {
+            self.retention_runs.inc();
+        }
+        if truncated {
+            self.retention_truncated.inc();
+        }
+    }
+
+    /// Blobs with one retention result, for tests.
+    pub fn retention_blob_count(&self, result: RetentionBlobs) -> u64 {
+        self.retention_blobs
+            .get_or_create(&RetentionBlobLabels { result })
+            .get()
+    }
+
+    /// Bytes of the blobs with one retention result, for tests.
+    pub fn retention_blob_bytes_count(&self, result: RetentionBlobs) -> u64 {
+        self.retention_blob_bytes
+            .get_or_create(&RetentionBlobLabels { result })
+            .get()
+    }
+
+    /// Rows of one table with one retention result, for tests.
+    pub fn retention_row_count(&self, table: RetentionTable, result: RetentionRows) -> u64 {
+        self.retention_rows
+            .get_or_create(&RetentionRowLabels { table, result })
+            .get()
+    }
+
+    /// Failures of one step of a retention run, for tests.
+    pub fn retention_failure_count(&self, step: RetentionStep) -> u64 {
+        self.retention_failures
+            .get_or_create(&RetentionStepLabels { step })
+            .get()
+    }
+
+    /// Retention runs that deleted, and (second) dry runs, and (third) runs whose plan was cut, for tests.
+    pub fn retention_run_counts(&self) -> (u64, u64, u64) {
+        (
+            self.retention_runs.get(),
+            self.retention_dry_runs.get(),
+            self.retention_truncated.get(),
+        )
     }
 
     pub(crate) fn message(&self, kind: MessageKind, outcome: Outcome) {
@@ -1767,5 +1945,49 @@ mod tests {
         assert!(text.contains("registry_read_seconds"), "{text}");
         assert!(text.contains("registry_read_cache_total"), "{text}");
         assert!(!text.contains("sit1"), "no swimlane id is ever a label");
+    }
+
+    #[test]
+    fn the_retention_counters_count_register_and_carry_no_identity() {
+        let m = RegistryMetrics::default();
+        m.retention_blobs(RetentionBlobs::Deleted, 3, 3_000);
+        m.retention_blobs(RetentionBlobs::WouldDelete, 0, 0);
+        m.retention_rows(RetentionTable::SyncWindows, RetentionRows::Deleted, 2);
+        m.retention_rows(RetentionTable::DeltaStaging, RetentionRows::WouldDelete, 5);
+        m.retention_failure(RetentionStep::Plan);
+        m.retention_run(false, true);
+        m.retention_run(true, false);
+        assert_eq!(m.retention_blob_count(RetentionBlobs::Deleted), 3);
+        assert_eq!(m.retention_blob_bytes_count(RetentionBlobs::Deleted), 3_000);
+        assert_eq!(
+            m.retention_blob_count(RetentionBlobs::WouldDelete),
+            0,
+            "a count of zero adds nothing"
+        );
+        assert_eq!(
+            m.retention_row_count(RetentionTable::SyncWindows, RetentionRows::Deleted),
+            2
+        );
+        assert_eq!(
+            m.retention_row_count(RetentionTable::DeltaStaging, RetentionRows::WouldDelete),
+            5
+        );
+        assert_eq!(m.retention_failure_count(RetentionStep::Plan), 1);
+        assert_eq!(m.retention_run_counts(), (1, 1, 1));
+        let mut registry = Registry::default();
+        m.register(&mut registry);
+        let mut text = String::new();
+        prometheus_client::encoding::text::encode(&mut text, &registry).unwrap_or_default();
+        for name in [
+            "registry_retention_blobs_total",
+            "registry_retention_blob_bytes_total",
+            "registry_retention_rows_total",
+            "registry_retention_failures_total",
+            "registry_retention_runs_total",
+            "registry_retention_dry_runs_total",
+            "registry_retention_truncated_total",
+        ] {
+            assert!(text.contains(name), "{name}: {text}");
+        }
     }
 }

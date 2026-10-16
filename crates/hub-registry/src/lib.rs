@@ -54,6 +54,12 @@
 //!   the leased [`ToolWriteMatcher`] explains one that was applied before the registration committed (the late commit) and drops what
 //!   expired.
 //!
+//! - [`retention`] (T9, D78, D116): the leased nightly job `registry-retention`. It collects the blobs that no reference class names and no keep rule
+//!   keeps (the last 50 versions of a file, or the last 180 days: Q33), by SQL under the app role's own `DELETE` grant, in short transactions that
+//!   lock first and test the grace period and every reference again; prunes the processed `sync_windows` rows older than a retention that is
+//!   always longer than the hold budget reads back; and sweeps stale `delta_staging` rows through ingestion's own sweep. A dry run reports and
+//!   changes nothing. Counts and bytes only in the log and the metrics.
+//!
 //! Nothing here reads a clock or an environment variable directly: instants come from a [`clock::Clock`] and every limit is a
 //! field of [`config::RegistryConfig`] with a tested default. Queries are runtime-checked `sqlx::query` with binds (plan A39);
 //! no SQL is built from input. Errors carry no input text (S21), and logs carry ids, paths, hashes and counts, never content (S10).
@@ -83,6 +89,7 @@ pub mod metrics;
 pub mod pickup;
 pub mod pipeline;
 pub mod read;
+pub mod retention;
 pub mod served;
 pub mod severity;
 pub mod sync;
@@ -117,6 +124,7 @@ pub use pipeline::{
 };
 pub use read::warmup::WarmupTask;
 pub use read::{Named, ReadDeps, RegistryApi, RegistryService, Tagged};
+pub use retention::{Collected, Plan, Retention, RetentionDeps, RetentionReport};
 pub use served::{ServedDeps, ServedReport, ServedVerifier};
 pub use severity::{SeverityRuleSource, file_severity};
 pub use sync::{

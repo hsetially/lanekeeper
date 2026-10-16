@@ -8,6 +8,7 @@
 use std::time::Duration;
 
 use engine::{DEFAULT_DENY_GLOBS, DenyMatcher};
+use hub_platform::blobs::store::{MIN_RETENTION_GRACE, TOUCH_INTERVAL};
 use ports::{MAX_BLOB_BYTES, MAX_GET_MANY};
 
 /// The environment variables whose values the agent may report (D88). Anything else is a name only.
@@ -288,6 +289,38 @@ pub struct RegistryConfig {
     /// past their retention; it must run at least monthly).
     pub sentinel_partition_interval: Duration,
 
+    // ---------------------------------------------------------------------------------------------- retention (T9, D78, D116)
+    /// How often the leased job `registry-retention` runs (nightly): blob collection, the prune of processed `sync_windows` rows and the
+    /// sweep of stale `delta_staging` rows.
+    pub retention_interval: Duration,
+    /// A dry run reports what a run would do (counts and bytes, in the log and the metrics) and changes nothing: no blob, no window, no
+    /// staging row, no lock (A34: a run deletes by default).
+    pub retention_dry_run: bool,
+    /// The most blobs one run plans to collect (A34: 500).
+    pub gc_batch: usize,
+    /// The most bytes of blobs one run plans to collect (A34: 64 MiB). Never below the largest blob, so that no blob is too big to go.
+    pub gc_max_bytes: u64,
+    /// Blobs one delete transaction takes. A put of a blob that the transaction has locked waits behind it, up to the put's own timeout
+    /// (5 s), so the transaction is short: a run is a number of them.
+    pub gc_chunk: usize,
+    /// How long a blob must have been untouched (`blobs.touched_at`, which `PgBlobStore::put` refreshes) before retention may delete it.
+    /// At least `hub_platform::blobs::store::MIN_RETENTION_GRACE` and at least the touch interval plus `staging_ttl`: a writer stores a blob
+    /// before the transaction that references it commits, and a staged part waits `staging_ttl` for the rest of its delta (the `put` it
+    /// made then is the last touch). Default 48 hours.
+    pub gc_grace: Duration,
+    /// `lock_timeout` of a delete transaction (set for the transaction only; the session's own setting is never changed).
+    pub gc_lock_timeout: Duration,
+    /// The plan statement reads every blob and every reference table once, and is the one statement of the job that is not short; this
+    /// is its timeout (client side, and the server's `statement_timeout` for it).
+    pub gc_scan_timeout: Duration,
+    /// How long a processed `sync_windows` row is kept before the job deletes it. Always more than the hold budget reads back (see
+    /// `validate`).
+    pub sync_window_retention: Duration,
+    /// Rows one statement of the prune and of the staging sweep deletes, and how many such statements one run makes of each kind (the rest
+    /// waits for the next run).
+    pub retention_prune_batch: usize,
+    pub retention_prune_batches: usize,
+
     // ---------------------------------------------------------------------------------------------- reads (T6)
     /// How recently a replica must have renewed an agent's connection row for the swimlane list to say "connected". The gateway's
     /// own rule is the same shape: a row that was not renewed for this long counts as not connected.
@@ -435,6 +468,17 @@ impl Default for RegistryConfig {
             nfs_client_window: Duration::from_secs(10 * 60),
             sentinel_lookback: Duration::from_secs(2 * 3600),
             sentinel_partition_interval: Duration::from_secs(24 * 3600),
+            retention_interval: Duration::from_secs(24 * 3600),
+            retention_dry_run: false,
+            gc_batch: 500,
+            gc_max_bytes: 64 * 1024 * 1024,
+            gc_chunk: 100,
+            gc_grace: Duration::from_secs(48 * 3600),
+            gc_lock_timeout: Duration::from_secs(2),
+            gc_scan_timeout: Duration::from_secs(120),
+            sync_window_retention: Duration::from_secs(7 * 24 * 3600),
+            retention_prune_batch: 1_000,
+            retention_prune_batches: 100,
             agent_live_window: Duration::from_secs(30),
             read_pool_threads: 2,
             row_cache_bytes: 96 * 1024 * 1024,
@@ -852,6 +896,55 @@ impl RegistryConfig {
             1_000,
             3600 * 1000,
         )?;
+        within(
+            "retention_interval",
+            millis(self.retention_interval),
+            60_000,
+            7 * 24 * 3600 * 1000,
+        )?;
+        within("gc_batch", self.gc_batch as u64, 1, 100_000)?;
+        // Never below the largest blob: a limit under 4 MiB would leave a blob of that size uncollectable for ever.
+        within(
+            "gc_max_bytes",
+            self.gc_max_bytes,
+            MAX_BLOB_BYTES as u64,
+            64 * 1024 * 1024 * 1024,
+        )?;
+        within("gc_chunk", self.gc_chunk as u64, 1, 1_000)?;
+        // The grace period is the registry's side of the contract of `PgBlobStore::put` (docs/interfaces.md, `BlobStore`): a blob stored at
+        // `t` has `touched_at >= t - TOUCH_INTERVAL`, and its reference commits at most `staging_ttl` after (a staged part waits that
+        // long), so the grace must be at least the interval plus that wait, and never below the constant floor for the default wait.
+        within(
+            "gc_grace",
+            millis(self.gc_grace),
+            millis(self.gc_grace_floor()),
+            400 * 24 * 3600 * 1000,
+        )?;
+        within("gc_lock_timeout", millis(self.gc_lock_timeout), 100, 60_000)?;
+        within(
+            "gc_scan_timeout",
+            millis(self.gc_scan_timeout),
+            1_000,
+            30 * 60 * 1000,
+        )?;
+        within(
+            "sync_window_retention",
+            millis(self.sync_window_retention),
+            millis(self.sync_window_retention_floor()) + 1,
+            365 * 24 * 3600 * 1000,
+        )?;
+        within(
+            "retention_prune_batch",
+            self.retention_prune_batch as u64,
+            1,
+            100_000,
+        )?;
+        within(
+            "retention_prune_batches",
+            self.retention_prune_batches as u64,
+            1,
+            10_000,
+        )?;
         within("read_pool_threads", self.read_pool_threads as u64, 1, 64)?;
         let mib = 1024 * 1024;
         within("row_cache_bytes", self.row_cache_bytes, mib, 8 * 1024 * mib)?;
@@ -912,6 +1005,24 @@ impl RegistryConfig {
             return Err(ConfigError::Invalid("env_allowlist"));
         }
         Ok(())
+    }
+
+    /// The shortest grace period retention may use with this configuration: the interval by which `touched_at` may lag the last `put`,
+    /// plus the longest a writer holds a stored blob before the transaction that references it commits (`staging_ttl`), and never less
+    /// than `MIN_RETENTION_GRACE`, the floor the platform states for its default wait.
+    pub fn gc_grace_floor(&self) -> Duration {
+        MIN_RETENTION_GRACE.max(TOUCH_INTERVAL.saturating_add(self.staging_ttl))
+    }
+
+    /// What the rows of `sync_windows` are read back for: the hold budget (T8) looks at the windows of two rolling windows before now, and
+    /// a window's holding phases end at most `sync_window_stale_after` after it opened and `sync_close_give_up` after it closed. A row
+    /// is pruned only when every one of its times is older than `sync_window_retention`, which therefore has to be longer than this
+    /// (with both margins, the generous reading) for the budget to give the same answer before and after a prune.
+    pub fn sync_window_retention_floor(&self) -> Duration {
+        self.sync_hold_budget_window
+            .saturating_mul(2)
+            .saturating_add(self.sync_window_stale_after)
+            .saturating_add(self.sync_close_give_up)
     }
 
     /// The deny globs the agent is told to apply: the built-in ones, then the admin's.
@@ -1650,6 +1761,174 @@ mod tests {
             bad(&|c| c.env_allowlist = vec!["NOT AN ENV NAME".to_owned()]),
             Err(ConfigError::Invalid("env_allowlist"))
         );
+    }
+
+    #[test]
+    fn the_retention_defaults_are_pinned() {
+        let c = RegistryConfig::default();
+        assert_eq!(c.validate(), Ok(()));
+        assert_eq!(c.retention_interval, Duration::from_secs(24 * 3600), "nightly");
+        assert!(!c.retention_dry_run, "A34: a run deletes by default");
+        assert_eq!(c.gc_batch, 500, "A34: at most 500 blobs a run");
+        assert_eq!(c.gc_max_bytes, 64 * 1024 * 1024, "A34: and 64 MiB");
+        assert_eq!(
+            c.gc_grace,
+            Duration::from_secs(48 * 3600),
+            "the grace the human approved (W2)"
+        );
+        assert_eq!(c.sync_window_retention, Duration::from_secs(7 * 24 * 3600));
+        assert!(c.gc_chunk <= c.gc_batch, "a transaction takes a part of a run");
+        assert!(
+            usize::try_from(c.gc_max_bytes).is_ok_and(|v| v >= MAX_BLOB_BYTES),
+            "no blob is too big to be collected"
+        );
+    }
+
+    #[test]
+    fn the_grace_period_is_range_checked_against_the_contract_of_put() {
+        // The default staging lifetime: the floor is the platform's MIN_RETENTION_GRACE, the touch interval plus 24 hours.
+        let c = RegistryConfig::default();
+        assert_eq!(c.gc_grace_floor(), MIN_RETENTION_GRACE);
+        assert_eq!(MIN_RETENTION_GRACE, Duration::from_secs(25 * 3600));
+        out_of_range("gc_grace", |c| {
+            c.gc_grace = MIN_RETENTION_GRACE - Duration::from_secs(1);
+        });
+        out_of_range("gc_grace", |c| {
+            c.gc_grace = Duration::ZERO;
+        });
+        out_of_range("gc_grace", |c| {
+            c.gc_grace = Duration::from_secs(401 * 24 * 3600);
+        });
+        let at_the_floor = RegistryConfig {
+            gc_grace: MIN_RETENTION_GRACE,
+            ..RegistryConfig::default()
+        };
+        assert_eq!(at_the_floor.validate(), Ok(()), "exactly the floor is allowed");
+
+        // A longer staging lifetime moves the floor: a staged part waits that long for the reference that follows its put.
+        let ttl = Duration::from_secs(3 * 24 * 3600);
+        let long_staging = RegistryConfig {
+            staging_ttl: ttl,
+            ..RegistryConfig::default()
+        };
+        assert_eq!(long_staging.gc_grace_floor(), TOUCH_INTERVAL + ttl);
+        assert_eq!(
+            long_staging.validate(),
+            Err(ConfigError::OutOfRange("gc_grace")),
+            "48 hours is below the touch interval plus 72 hours"
+        );
+        let raised = RegistryConfig {
+            staging_ttl: ttl,
+            gc_grace: TOUCH_INTERVAL + ttl,
+            ..RegistryConfig::default()
+        };
+        assert_eq!(raised.validate(), Ok(()));
+        // The longest staging lifetime the registry allows still leaves a grace period that can be set.
+        let longest = RegistryConfig {
+            staging_ttl: Duration::from_secs(30 * 24 * 3600),
+            gc_grace: TOUCH_INTERVAL + Duration::from_secs(30 * 24 * 3600),
+            ..RegistryConfig::default()
+        };
+        assert_eq!(longest.validate(), Ok(()));
+    }
+
+    #[test]
+    fn the_retention_of_sync_windows_is_longer_than_the_hold_budget_reads_back() {
+        let c = RegistryConfig::default();
+        // Two rolling windows (48 h) plus the stale (2 h) and give-up (30 min) margins.
+        assert_eq!(
+            c.sync_window_retention_floor(),
+            Duration::from_secs(48 * 3600 + 2 * 3600 + 30 * 60)
+        );
+        assert!(c.sync_window_retention > c.sync_window_retention_floor());
+        out_of_range("sync_window_retention", |c| {
+            c.sync_window_retention = c.sync_window_retention_floor();
+        });
+        out_of_range("sync_window_retention", |c| {
+            c.sync_window_retention = Duration::from_secs(3600);
+        });
+        out_of_range("sync_window_retention", |c| {
+            c.sync_window_retention = Duration::from_secs(366 * 24 * 3600);
+        });
+        let just_above = RegistryConfig {
+            sync_window_retention: RegistryConfig::default().sync_window_retention_floor()
+                + Duration::from_millis(1),
+            ..RegistryConfig::default()
+        };
+        assert_eq!(just_above.validate(), Ok(()));
+        // A longer hold budget window moves the floor with it: the default 7 days no longer covers two 30 day windows.
+        out_of_range("sync_window_retention", |c| {
+            c.sync_hold_budget_window = Duration::from_secs(30 * 24 * 3600);
+        });
+        let wide = RegistryConfig {
+            sync_hold_budget_window: Duration::from_secs(30 * 24 * 3600),
+            sync_window_retention: Duration::from_secs(365 * 24 * 3600),
+            ..RegistryConfig::default()
+        };
+        assert_eq!(wide.validate(), Ok(()));
+        // The margins count: more stale time or a longer give-up raises the floor.
+        let more_margin = RegistryConfig {
+            sync_window_stale_after: Duration::from_secs(7 * 24 * 3600),
+            sync_close_give_up: Duration::from_secs(24 * 3600),
+            sync_window_retention: Duration::from_secs(7 * 24 * 3600),
+            ..RegistryConfig::default()
+        };
+        assert_eq!(
+            more_margin.validate(),
+            Err(ConfigError::OutOfRange("sync_window_retention"))
+        );
+    }
+
+    #[test]
+    fn every_retention_bound_is_enforced() {
+        out_of_range("retention_interval", |c| {
+            c.retention_interval = Duration::from_secs(59);
+        });
+        out_of_range("retention_interval", |c| {
+            c.retention_interval = Duration::from_secs(8 * 24 * 3600);
+        });
+        out_of_range("gc_batch", |c| {
+            c.gc_batch = 0;
+        });
+        out_of_range("gc_batch", |c| {
+            c.gc_batch = 100_001;
+        });
+        out_of_range("gc_max_bytes", |c| {
+            c.gc_max_bytes = MAX_BLOB_BYTES as u64 - 1;
+        });
+        out_of_range("gc_max_bytes", |c| {
+            c.gc_max_bytes = 65 * 1024 * 1024 * 1024;
+        });
+        out_of_range("gc_chunk", |c| {
+            c.gc_chunk = 0;
+        });
+        out_of_range("gc_chunk", |c| {
+            c.gc_chunk = 1_001;
+        });
+        out_of_range("gc_lock_timeout", |c| {
+            c.gc_lock_timeout = Duration::from_millis(99);
+        });
+        out_of_range("gc_lock_timeout", |c| {
+            c.gc_lock_timeout = Duration::from_secs(61);
+        });
+        out_of_range("gc_scan_timeout", |c| {
+            c.gc_scan_timeout = Duration::from_millis(999);
+        });
+        out_of_range("gc_scan_timeout", |c| {
+            c.gc_scan_timeout = Duration::from_secs(31 * 60);
+        });
+        out_of_range("retention_prune_batch", |c| {
+            c.retention_prune_batch = 0;
+        });
+        out_of_range("retention_prune_batch", |c| {
+            c.retention_prune_batch = 100_001;
+        });
+        out_of_range("retention_prune_batches", |c| {
+            c.retention_prune_batches = 0;
+        });
+        out_of_range("retention_prune_batches", |c| {
+            c.retention_prune_batches = 10_001;
+        });
     }
 
     #[test]

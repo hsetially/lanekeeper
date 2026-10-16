@@ -154,9 +154,27 @@ impl AgentIngest {
         &self.inner.metrics
     }
 
-    /// Drop staged parts that have waited longer than `staging_ttl` (A14). Also done on every `hello`; a job may call it too.
+    /// Drop staged parts that have waited longer than `staging_ttl` (A14), in batches of `retention_prune_batch` rows and at most
+    /// `retention_prune_batches` of them. Also done on every `hello`; the retention job (T9) calls the batched form.
     pub async fn sweep_staging(&self) -> Result<u64, RegistryError> {
         self.inner.sweep_staging().await
+    }
+
+    /// One bounded statement of the sweep: delete at most `limit` stale parts, the oldest first, and say how many went. The retention job
+    /// calls this in a loop of its own, so that it can check its lease between statements.
+    pub async fn sweep_staging_batch(&self, limit: usize) -> Result<u64, RegistryError> {
+        self.inner.sweep_staging_batch(limit).await
+    }
+
+    /// How many staged parts are stale, counting at most `limit`: what a dry run says a sweep would delete. Writes nothing.
+    pub async fn stale_staging_count(&self, limit: usize) -> Result<u64, RegistryError> {
+        self.inner.stale_staging(limit).await
+    }
+
+    /// How long a staged part waits for the rest of its delta before it is stale. The retention job checks that its grace period
+    /// covers it.
+    pub fn staging_ttl(&self) -> std::time::Duration {
+        self.inner.config.staging_ttl
     }
 
     fn done<T>(&self, kind: MessageKind, result: Result<T, RegistryError>) -> Result<T, SinkError> {

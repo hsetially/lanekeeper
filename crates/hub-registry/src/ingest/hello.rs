@@ -126,22 +126,36 @@ impl Inner {
         })
     }
 
+    /// Drop every part that has waited longer than `staging_ttl`, in batches of `retention_prune_batch` and at most
+    /// `retention_prune_batches` of them (T9: the sweep is bounded, and the rest waits for the next call).
     pub(crate) async fn sweep_staging(&self) -> Result<u64, RegistryError> {
-        let now_ms = self.clock.now().unix_millis();
+        let batch = self.config.retention_prune_batch;
+        let mut total = 0_u64;
+        for _ in 0..self.config.retention_prune_batches {
+            let deleted = self.sweep_staging_batch(batch).await?;
+            total = total.saturating_add(deleted);
+            if usize::try_from(deleted).is_ok_and(|d| d < batch) {
+                break;
+            }
+        }
+        Ok(total)
+    }
+
+    /// The moment before which a staged part is stale, as Unix milliseconds: `staging_ttl` ago on the registry's clock.
+    fn staging_cutoff_ms(&self) -> i64 {
         let ttl = i64::try_from(self.config.staging_ttl.as_millis()).unwrap_or(i64::MAX);
-        // No swimlane is named: the sweep drops by age only.
-        let done = self
-            .db
-            .run(
-                "staging_sweep",
-                sqlx::query(&format!(
-                    "DELETE FROM delta_staging WHERE staged_at < {}",
-                    ts("$1")
-                ))
-                .bind(now_ms.saturating_sub(ttl))
-                .execute(self.db.pool()),
-            )
-            .await?;
-        Ok(done.rows_affected())
+        self.clock.now().unix_millis().saturating_sub(ttl)
+    }
+
+    /// One statement: delete at most `limit` stale parts, oldest first. No swimlane is named: the sweep drops by age only.
+    pub(crate) async fn sweep_staging_batch(&self, limit: usize) -> Result<u64, RegistryError> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        staging::sweep_batch(&self.db, self.staging_cutoff_ms(), limit).await
+    }
+
+    /// How many parts are stale, counting at most `limit`: what a dry run says a sweep would delete.
+    pub(crate) async fn stale_staging(&self, limit: usize) -> Result<u64, RegistryError> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        staging::count_stale(&self.db, self.staging_cutoff_ms(), limit).await
     }
 }

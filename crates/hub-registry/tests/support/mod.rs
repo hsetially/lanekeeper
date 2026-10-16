@@ -16,6 +16,7 @@ pub mod pg_audit;
 pub mod pg_blobs;
 pub mod pg_bus;
 pub mod reads;
+pub mod retention;
 pub mod rig;
 pub mod sentinel;
 pub mod statements;

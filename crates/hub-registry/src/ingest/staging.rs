@@ -154,6 +154,46 @@ pub(crate) async fn discard(
     Ok(done.rows_affected())
 }
 
+/// Delete at most `limit` parts staged before `older_than_ms`, the oldest first (T9: the retention job sweeps in batches, so that no
+/// statement holds the table for long). The key of the table is `(swimlane_id, seq)`; the parts to go are chosen by the index on
+/// `staged_at` and deleted by the key.
+pub(crate) async fn sweep_batch(db: &Db, older_than_ms: i64, limit: i64) -> Result<u64, RegistryError> {
+    let sql = format!(
+        "DELETE FROM delta_staging WHERE (swimlane_id, seq) IN (\
+           SELECT swimlane_id, seq FROM delta_staging WHERE staged_at < {} ORDER BY staged_at, swimlane_id, seq LIMIT $2)",
+        ts("$1")
+    );
+    let done = db
+        .run(
+            "staging_sweep",
+            sqlx::query(&sql)
+                .bind(older_than_ms)
+                .bind(limit)
+                .execute(db.pool()),
+        )
+        .await?;
+    Ok(done.rows_affected())
+}
+
+/// How many parts were staged before `older_than_ms`, counting at most `limit` (a dry run says what a sweep would delete and changes
+/// nothing).
+pub(crate) async fn count_stale(db: &Db, older_than_ms: i64, limit: i64) -> Result<u64, RegistryError> {
+    let sql = format!(
+        "SELECT count(*)::bigint FROM (SELECT 1 FROM delta_staging WHERE staged_at < {} LIMIT $2) stale",
+        ts("$1")
+    );
+    let n: i64 = db
+        .run(
+            "staging_stale",
+            sqlx::query_scalar(&sql)
+                .bind(older_than_ms)
+                .bind(limit)
+                .fetch_one(db.pool()),
+        )
+        .await?;
+    Ok(u64::try_from(n).unwrap_or(0))
+}
+
 /// Drop the staged parts of one logical delta, once it is applied or refused.
 pub(crate) async fn clear(
     db: &Db,
