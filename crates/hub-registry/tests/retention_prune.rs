@@ -623,3 +623,27 @@ fn retention_with(
         metrics: RegistryMetrics::default(),
     })
 }
+
+/// The grace period is checked against the configuration's `staging_ttl` and the sweep uses the ingestion's: a job built over an
+/// ingestion with another lifetime would check the grace against a number it does not sweep by, so construction refuses it.
+#[tokio::test]
+async fn a_job_over_an_ingestion_with_another_staging_ttl_is_refused() {
+    let Some(gc) = Gc::with(RegistryConfig::default()).await else {
+        return;
+    };
+    let shorter = RegistryConfig {
+        staging_ttl: Duration::from_secs(12 * 3600),
+        ..RegistryConfig::default()
+    };
+    assert_eq!(
+        retention_with(&gc, shorter).unwrap_err(),
+        hub_registry::config::ConfigError::Invalid("staging_ttl"),
+        "the ingestion of the rig sweeps by 24 hours"
+    );
+    // A longer ttl than the grace allows is refused by the range check before the comparison is made.
+    let longer = RegistryConfig {
+        staging_ttl: Duration::from_secs(100 * 3600),
+        ..RegistryConfig::default()
+    };
+    assert!(retention_with(&gc, longer).is_err());
+}
