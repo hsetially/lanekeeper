@@ -1,6 +1,6 @@
 # Plan contract/08-web: the additive contract that the web app (prompt 08) needs
 
-Status: DRAFT
+Status: APPROVED
 Contract-change: needed
 Extra-paths: `docs/interfaces.md` `.claude/skills/lanekeeper-contract-change/SKILL.md` `crates/engine/src/search.rs` `crates/engine/fuzz/invariants.rs` `crates/hub-writes/src/fidelity.rs` `crates/hub-writes/tests/support/live_registry.rs` `crates/hub-writes/tests/routes.rs` `crates/hub-mcp/benches/support/mod.rs` `crates/hub-mcp/tests/mcp_auth/**` `crates/hub-platform/src/events/sse.rs` `crates/hub-platform/tests/events_sse.rs`
 Prompt: prompts/08-frontend.md (no prompt owns this PR; it carries the register CG1 to CG19 of the approved plan `plans/08-frontend.md`, decision W1)
@@ -9,6 +9,16 @@ Branch: contract/08-web
 Plan only. Nothing outside `plans/` was edited. Every experiment ran in copies under the scratchpad (`cg-sandbox`, `cg-sandbox-b`, `cg-redocly`, `cg-tools`, `cg-py`). Base commit 777b590 (origin/main). Branch `contract/08-web`, cut from it, no upstream. After approval one agent (or several, see "Estimate and parallel split") writes the PR; this plan does not authorise anything else. PR title when it is opened: `contract: web app additions`, label `contract-change`.
 
 The facts below were checked against the repository at 777b590. The review brief was treated as data: what I could confirm is marked with `file:line`; what I could not is under "Not verified".
+
+## Decisions
+
+The human's answer to this plan, recorded as given (not an opinion of the planner or the implementer).
+
+- **Masking:** M1 (the server masks at the REST edge; commit 13, later).
+- **Scope:** all recommended items, i.e. commits 1 to 14 of the table in "Tasks and commits", including CG1b (the new `swimlane_changed` event, Q7 include), CG10, CG11 (the path-addressed `GET /api/v1/docs/fs/render?path=`, Q5 include), CG12, CG14 and CG17.
+- **Plan defaults approved:** Q6 `UserRef {id, display_name}` to Viewers (never an email); Q9 `logical_file` and `tenant` on the domain structs; Q10 point the three wrong 409 references at a plain `ConflictState`; Q11 `LATER` rows in `crates/hub-writes/tests/routes.rs` for CG3, CG5, CG12, CG14 and CG17; Q12 an ad-hoc additive check, its output pasted in the PR (no permanent test); Q13 the deferred items (CG6 adoption, CG8 served) go in later PRs `contract/08-adoption` and `contract/08-served`; Q14 one row in the contract-change skill file (commit 14); Q15 and Q16 none.
+- **Deferred, not in this PR:** CG4b, CG6, CG8, CG9, CG15 (the defaults of Q2, Q3 and Q4). **No change:** CG16 and CG18; CG19 stays in prompt 08's T2.
+- **Process (Q8):** parallel slices follow the first implementer's work, then an integrator, then a reviewer. Nothing is pushed and no PR is opened by the implementer.
 
 ## Summary for approval
 
