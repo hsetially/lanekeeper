@@ -254,6 +254,19 @@ pub fn sample(
     pinned: &[Combination],
     n: usize,
 ) -> Vec<Combination> {
+    sample_with(population, swimlane, round, pinned, n, DRAWS_PER_SLOT)
+}
+
+/// [`sample`] with the number of draws it makes for each place of the sample (a test sets it to nothing, to reach the part that fills the
+/// sample in order).
+fn sample_with(
+    population: &Population,
+    swimlane: &SwimlaneId,
+    round: u64,
+    pinned: &[Combination],
+    n: usize,
+    draws_per_slot: u64,
+) -> Vec<Combination> {
     let n = n.max(1);
     let mut chosen: BTreeSet<Combination> = pinned
         .iter()
@@ -270,7 +283,7 @@ pub fn sample(
     let mut taken: BTreeSet<u64> = BTreeSet::new();
     let limit = u64::try_from(n)
         .unwrap_or(u64::MAX)
-        .saturating_mul(DRAWS_PER_SLOT);
+        .saturating_mul(draws_per_slot);
     let mut j = 0;
     while chosen.len() < n && j < limit {
         let i = draw(&seed, j, total);
@@ -493,6 +506,38 @@ mod tests {
         let pinned: Vec<Combination> = (0..60).filter_map(|i| p.nth(i)).collect();
         let s = sample(&p, &SwimlaneId::parse("sit1").unwrap(), 1, &pinned, 50);
         assert_eq!(s.len(), 50);
+    }
+
+    #[test]
+    fn a_combination_of_another_application_is_not_one_the_swimlane_has() {
+        let p = population(&many(5), &["sit1"], &[]);
+        let ours = p.nth(0).unwrap();
+        assert!(p.contains(&ours));
+        let other = Combination {
+            application: AppName::parse("someone-else").unwrap(),
+            ..ours
+        };
+        assert!(
+            !p.contains(&other),
+            "the application is the one whose folder holds the file"
+        );
+    }
+
+    #[test]
+    fn when_the_draws_do_not_fill_the_sample_the_rest_is_taken_in_order_and_it_is_still_n_distinct() {
+        let p = population(&many(60), &["sit1", "sit2"], &[]);
+        let lane = SwimlaneId::parse("sit1").unwrap();
+        // No draws at all: the whole sample is the first combinations in order.
+        let s = sample_with(&p, &lane, 3, &[], 50, 0);
+        assert_eq!(s.len(), 50);
+        assert_eq!(s.iter().collect::<BTreeSet<_>>().len(), 50);
+        let first: BTreeSet<Combination> = (0..50).filter_map(|i| p.nth(i)).collect();
+        assert_eq!(s.iter().cloned().collect::<BTreeSet<_>>(), first);
+        // A pinned combination stays in it, and the draws that were made are kept.
+        let pinned = p.nth(119).unwrap();
+        let s = sample_with(&p, &lane, 3, std::slice::from_ref(&pinned), 50, 0);
+        assert_eq!(s.len(), 50);
+        assert!(s.contains(&pinned));
     }
 
     #[test]

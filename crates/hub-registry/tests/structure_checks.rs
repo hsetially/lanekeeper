@@ -541,6 +541,29 @@ async fn a_folder_made_after_the_config_server_started_needs_a_restart_and_a_res
 }
 
 #[tokio::test]
+async fn a_folder_of_the_first_inventory_is_not_new_even_when_the_config_server_started_before_the_hub_saw_it()
+ {
+    let Some(mut b) = Bed::new(&["sit1"], &[("old/x.yml", "a: 1\n"), ("svc/svc.yml", "n: 1\n")]).await else {
+        return;
+    };
+    // The config-server has been up for an hour when the hub first sees the swimlane: every folder of the inventory is first seen after the
+    // server started, and none of them is a folder it does not know (A11: the first inventory is not a change).
+    b.cluster(vec![], Some(T - 3_600_000)).await;
+    b.run().await;
+    assert!(
+        b.of_kind("config_server_restart_required").await.is_empty(),
+        "{:#?}",
+        b.found().await
+    );
+    // A folder made after that is new.
+    b.change(&[("newdir/y.yml", "b: 2\n")]).await;
+    b.run().await;
+    let c11 = b.of_kind("config_server_restart_required").await;
+    assert_eq!(c11.len(), 1, "{c11:#?}");
+    assert_eq!(c11[0].path.as_deref(), Some("newdir"));
+}
+
+#[tokio::test]
 async fn a_changed_channels_yml_needs_a_restart_and_a_channel_without_a_folder_says_so() {
     let Some(mut b) = Bed::new(
         &["sit1"],
