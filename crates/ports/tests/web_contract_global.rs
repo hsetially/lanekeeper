@@ -3,11 +3,12 @@
 //! The plan's traceability names `new_operations_name_their_audit_action_or_say_why_not` ("a table of every operationId added
 //! here") and `new_schemas_are_bounded` ("every array in a schema added here has `maxItems`, every string `maxLength` or a
 //! `pattern`"). The item files each carry a version scoped to what that item adds. These are the global ones: every
-//! operation, schema, response, header and added property of the twelve commits, listed once, against the document.
+//! operation, schema, response, header and added property of the thirteen commits, listed once, against the document.
 //!
 //! The lists are the difference between `api/openapi.yaml` and `origin/main` (777b590), worked out mechanically when the
-//! slices were integrated: 8 operations, 39 schemas, 3 responses and 1 header, and the properties added to 11 existing
-//! schemas (a value added to the `EventKind` enum and the descriptions of a few others add no property). A later change to the contract adds its own rows, which is the point of keeping them in one place: a new
+//! slices were integrated and then extended for the masking commit (CG7): 8 operations, 40 schemas, 3 responses and 1
+//! header, and the properties added to 14 existing schemas (a value added to the `EventKind` enum or to the `ValidationIssue`
+//! kinds and the descriptions of many others add no property). A later change to the contract adds its own rows, which is the point of keeping them in one place: a new
 //! operation names its audit action (rule 8, S9), and a new schema is bounded (S11).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -46,7 +47,7 @@ fn resolve<'a>(d: &'a Value, v: &'a Value) -> &'a Value {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// What the twelve commits add
+// What the thirteen commits add
 // ---------------------------------------------------------------------------------------------------------------------
 
 /// `(operationId, method, the audit action, or why there is none)`. Every row is state-free: a read, or the one POST that
@@ -63,10 +64,10 @@ const NEW_OPERATIONS: [(&str, &str, &str); 8] = [
     ("renderDoc", "GET", "none: a read"),
 ];
 
-/// The 39 schemas of `components.schemas` that `origin/main` does not have: the event payloads (`CG1a`, `CG1b`), the problem
+/// The 40 schemas of `components.schemas` that `origin/main` does not have: the event payloads (`CG1a`, `CG1b`), the problem
 /// vocabulary (CG13), the summary additions (`CG4a`), the pull request preview (CG3), the restart offers (CG5), the proposal
-/// vocabulary (CG12), the Git refs (CG10) and the rendered doc (CG11).
-const NEW_SCHEMAS: [&str; 39] = [
+/// vocabulary (CG12), the Git refs (CG10), the rendered doc (CG11) and the mask (CG7).
+const NEW_SCHEMAS: [&str; 40] = [
     "BaselineState",
     "BaselineStatus",
     "BranchKind",
@@ -96,6 +97,7 @@ const NEW_SCHEMAS: [&str; 39] = [
     "GitRefKind",
     "GitRefPage",
     "JobRef",
+    "Mask",
     "PrPreview",
     "PrPreviewFile",
     "PrPreviewRequest",
@@ -114,7 +116,7 @@ const NEW_SCHEMAS: [&str; 39] = [
 const NOT_CLOSED_OBJECTS: [&str; 2] = ["DomainEvent", "TokenMissingAccessProblem"];
 
 /// The properties the commits add to schemas that `origin/main` already has (every one optional).
-const NEW_PROPERTIES: [(&str, &[&str]); 11] = [
+const NEW_PROPERTIES: [(&str, &[&str]); 14] = [
     ("Problem", &["code"]),
     ("FileEntry", &["logical_file", "tenant"]),
     ("SettingHit", &["logical_file", "tenant"]),
@@ -128,6 +130,10 @@ const NEW_PROPERTIES: [(&str, &[&str]); 11] = [
     ("GithubCredential", &["expires_at", "expires_soon"]),
     ("DocHit", &["anchor"]),
     ("FlagStatus", &["anchor"]),
+    // CG7: where the markers sit, on the three schemas that carry text (`web_contract_masking.rs` pins the rest).
+    ("FileContent", &["masks"]),
+    ("ServedFile", &["masks"]),
+    ("DocText", &["masks"]),
     // `SwimlaneDetail` repeats the summary's properties since `web_contract_allof.rs`, so all of them are checked.
     (
         "SwimlaneDetail",
@@ -445,6 +451,12 @@ fn the_bound_check_finds_a_missing_bound_in_each_item() {
             "/components/schemas/DomainEventSwimlaneChanged/properties/swimlane",
             "pattern",
             "DomainEventSwimlaneChanged.swimlane",
+        ),
+        // CG7: the masks of a text.
+        (
+            "/components/schemas/FileContent/properties/masks",
+            "maxItems",
+            "FileContent.masks",
         ),
     ] {
         let mut d = doc();

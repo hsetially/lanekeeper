@@ -1549,8 +1549,10 @@ fn served_file_is_the_domains_and_the_tool_adds_redaction_fields() {
         }],
         unresolved_placeholders: Vec::new(),
     };
+    // `masks` is the one property the REST view adds at its own edge (CG7, M1): the domain's ServedFile has no such field.
     let declared: BTreeSet<String> = properties(&d, &schemas["ServedFile"])
         .into_keys()
+        .filter(|k| *k != "masks")
         .map(str::to_owned)
         .collect();
     let wire = serde_json::to_value(&sample).unwrap();

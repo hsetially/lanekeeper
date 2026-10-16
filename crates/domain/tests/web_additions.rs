@@ -2,6 +2,7 @@
 //!
 //! CG2: `logical_file` and `tenant` on the four types a file shows up in (`FileEntry`, `Finding`, `SettingHit`, `TextHit`).
 //! `CG4a`: `tier`, `project`, `baseline`, `pickup_counts` and `syncing` on `SwimlaneSummary`, and `UserRef`.
+//! `CG7`: the issue kind `redaction_marker`, for a write whose content holds the text of a redaction marker.
 //!
 //! Every addition is optional on the wire: absent when `None` or empty, so a client built from the document before the
 //! change keeps working, and JSON written before the change still reads.
@@ -11,9 +12,10 @@ use std::fmt::Debug;
 
 use domain::{
     AgentStatus, BaselineState, BaselineStatus, ContentHash, DriftState, FileClass, FileEntry, FileKind,
-    FileRole, Finding, FindingId, FindingKind, Guid, JobRef, LineRange, LogicalFile, NfsPath, PickupState,
-    Role, SettingHit, SettingLocation, SettingPath, SettingValue, Severity, ShortText, SwimlaneId,
-    SwimlaneSummary, SyncingInfo, TenantId, TextHit, Timestamp, User, UserId, UserRef, UserStatus, ValueType,
+    FileRole, Finding, FindingId, FindingKind, Guid, IssueKind, JobRef, LineRange, LogicalFile, NfsPath,
+    PickupState, Role, SettingHit, SettingLocation, SettingPath, SettingValue, Severity, ShortText,
+    SwimlaneId, SwimlaneSummary, SyncingInfo, TenantId, TextHit, Timestamp, User, UserId, UserRef,
+    UserStatus, ValidationIssue, ValueType,
 };
 use proptest::prelude::*;
 use serde::Serialize;
@@ -464,4 +466,67 @@ fn user_ref_is_an_id_and_a_display_name_never_an_email() {
     assert_eq!(serde_json::from_value::<UserRef>(json).unwrap(), r);
     // The id is validated as it is read.
     assert!(serde_json::from_value::<UserRef>(json!({"id": "not-an-id", "display_name": "x"})).is_err());
+}
+
+// CG7 (M1, S14b): the issue kind of a write whose content holds the text of a redaction marker. The web app and the MCP tools
+// show a flagged value as `[REDACTED: N chars, rule]`, so a marker in content is a masked text sent back, and saving it would
+// write the marker over the value it hides.
+
+#[test]
+fn redaction_marker_is_the_last_kind_and_the_others_are_unchanged() {
+    // Appended, so that the order of the kinds that existed does not move.
+    assert_eq!(
+        IssueKind::ALL,
+        [
+            IssueKind::ParseError,
+            IssueKind::DuplicateKey,
+            IssueKind::SecretMatch,
+            IssueKind::RedactionMarker,
+        ]
+    );
+    for (kind, wire) in [
+        (IssueKind::ParseError, "parse_error"),
+        (IssueKind::DuplicateKey, "duplicate_key"),
+        (IssueKind::SecretMatch, "secret_match"),
+        (IssueKind::RedactionMarker, "redaction_marker"),
+    ] {
+        assert_eq!(kind.as_str(), wire);
+        assert_eq!(serde_json::to_value(kind).unwrap(), json!(wire));
+        assert_eq!(serde_json::from_value::<IssueKind>(json!(wire)).unwrap(), kind);
+        assert_eq!(wire.parse::<IssueKind>().unwrap(), kind);
+    }
+    assert!(serde_json::from_value::<IssueKind>(json!("cosmic_ray")).is_err());
+}
+
+#[test]
+fn a_redaction_marker_issue_carries_a_line_and_no_text_and_no_rule() {
+    let on_a_line = ValidationIssue {
+        kind: IssueKind::RedactionMarker,
+        line: std::num::NonZeroU32::new(7),
+        rule: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&on_a_line).unwrap(),
+        json!({"kind": "redaction_marker", "line": 7})
+    );
+    let bare = ValidationIssue {
+        kind: IssueKind::RedactionMarker,
+        line: None,
+        rule: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&bare).unwrap(),
+        json!({"kind": "redaction_marker"})
+    );
+    for issue in [on_a_line, bare] {
+        let json = serde_json::to_string(&issue).unwrap();
+        assert_eq!(serde_json::from_str::<ValidationIssue>(&json).unwrap(), issue);
+    }
+    // JSON written before the kind existed still reads, and a line of 0 is still refused.
+    for old in ["parse_error", "duplicate_key", "secret_match"] {
+        assert!(serde_json::from_value::<ValidationIssue>(json!({"kind": old})).is_ok());
+    }
+    assert!(
+        serde_json::from_value::<ValidationIssue>(json!({"kind": "redaction_marker", "line": 0})).is_err()
+    );
 }

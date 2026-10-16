@@ -11,7 +11,14 @@ info:
     cookie session plus a double-submit `X-CSRF-Token` on every non-GET; `Idempotency-Key` on every write; errors
     are `application/problem+json`; lists use keyset pagination (`cursor`, `limit` at most 500); content responses
     carry an `ETag` and honour `If-None-Match`; every operation declares `x-required-role` (`viewer`, `editor`,
-    `operator`, `admin`, or `none` for the four open operations) (S4).'
+    `operator`, `admin`, or `none` for the four open operations) (S4). Masking (S14b, D79): the server never sends a
+    value the secret scan flags. Wherever a response carries file or doc text, the value is replaced by its marker
+    `[REDACTED: N chars, rule]` (N is the length of the value in characters, rule the name of the scan rule), which
+    matches `^\[REDACTED: [0-9]+ chars, [a-z0-9_]+\]$` as a whole value and `\[REDACTED: [0-9]+ chars, [a-z0-9_]+\]`
+    inside a text. `FileContent`, `ServedFile` and `DocText` also list where each marker sits in `masks`. If the scan
+    cannot finish, the server sends no text: `content_withheld` is true and `text` is null where the schema has them,
+    and a problem response where it does not. `revealValue` is the one audited way to see a value. A write that
+    contains a marker is refused with 422 `invalid_content` and an issue of kind `redaction_marker`.'
   license:
     name: Proprietary
     identifier: LicenseRef-Proprietary
@@ -1208,7 +1215,9 @@ paths:
     get:
       operationId: getBlob
       summary: Content by hash
-      description: Never serves denied or withheld files (404).
+      description: Never serves denied or withheld files (404), and never a file whose text the secret scan flags (404
+        as well). A blob is the exact bytes of one hash and never changes, so it cannot be masked; the masked text of
+        a file comes from `getFileContent` (S14b).
       tags:
       - content-store
       - content
@@ -1721,7 +1730,9 @@ paths:
     post:
       operationId: createDraft
       summary: Create a draft from an edit
-      description: Computes the diff and setting changes without writing anything. Drafts expire.
+      description: 'Computes the diff and setting changes without writing anything. Drafts expire. Content that holds
+        a redaction marker, text of the form `[REDACTED: N chars, rule]` (S14b), is refused with 422 `invalid_content`
+        and one issue of kind `redaction_marker` for each line that holds one, and nothing is saved.'
       tags:
       - writes
       x-required-role: editor
@@ -2958,8 +2969,11 @@ paths:
     put:
       operationId: editFile
       summary: Edit a file
-      description: Carries the expected hash. A mismatch is 409 and nothing is written. May create a proposal instead
-        of applying (D-approvals).
+      description: 'Carries the expected hash. A mismatch is 409 and nothing is written. May create a proposal instead
+        of applying (D-approvals). Content that holds a redaction marker, text of the form `[REDACTED: N chars, rule]`
+        (S14b), is refused with 422 `invalid_content` and one issue of kind `redaction_marker` for each line that holds
+        one, and nothing is written: a masked view of a file is not its content, so saving one would write the marker
+        over the value it hides.'
       tags:
       - writes
       x-required-role: editor
@@ -3056,7 +3070,11 @@ paths:
     get:
       operationId: getFileContent
       summary: Read one file
-      description: 'Denied files return `content_withheld: true` and no text (D79). The ETag is the content hash.'
+      description: 'Denied files return `content_withheld: true` and no text (D79). A value the secret scan flags is
+        masked in `text` and located in `masks`, and the unmasked value is never sent (S14b). The text of a response
+        that has `masks` is a read-only view, not the file: it must not be sent back to `editFile`, and the web app
+        turns Edit mode off for it. The ETag is the content hash, and for a masked response also the version of the
+        secret-scan configuration, so a changed configuration is never answered from a stale 304.'
       tags:
       - swimlanes
       - content
@@ -3164,7 +3182,9 @@ paths:
       description: 'Computed by the engine from the current files, before anybody confirms. Nothing is written, audited
         or recorded. The answer carries a `preview_id` that the upload or the delete must present: it is bound to the
         user, the swimlane, the path, the action and the hashes, and it expires at `expires_at` (10 minutes). The
-        `Idempotency-Key` is required like on every write, and not recorded.'
+        `Idempotency-Key` is required like on every write, and not recorded. An upload of a text file that contains a
+        redaction marker, text of the form `[REDACTED: N chars, rule]` (S14b), is refused with 422 `invalid_content`
+        and one issue of kind `redaction_marker` for each line that holds one, and no `preview_id` is issued.'
       tags:
       - writes
       x-required-role: editor
@@ -3314,10 +3334,12 @@ paths:
     post:
       operationId: uploadFile
       summary: Upload a file
-      description: Needs the `preview_id` of `POST /swimlanes/{id}/files/preview` for this path, expected state and
+      description: 'Needs the `preview_id` of `POST /swimlanes/{id}/files/preview` for this path, expected state and
         file, at most 10 minutes old. Without a valid one the upload is refused with 422 (`not_allowed`) and nothing
         is written. `preview_id` is optional in the schema so that the refusal is a problem response and not a
-        parse failure.
+        parse failure. A text file that contains a redaction marker, text of the form `[REDACTED: N chars, rule]`
+        (S14b), is refused with 422 `invalid_content` and one issue of kind `redaction_marker` for each line that holds
+        one, and nothing is written.'
       tags:
       - writes
       x-required-role: editor
@@ -3846,7 +3868,9 @@ components:
         minimum: 1
   headers:
     ETag:
-      description: Strong validator. For content it is derived from content hashes.
+      description: Strong validator. For content it is derived from content hashes. For a masked response it is also
+        derived from the version of the secret-scan configuration, so a changed configuration is never served from a
+        stale 304.
       schema:
         type: string
     RetryAfter:
@@ -5404,8 +5428,19 @@ components:
           oneOf:
           - type: string
           - type: 'null'
-          description: Decoded text for structured and text files, with the original line endings. Null for binary
-            and withheld files; binary content comes from `/blobs/{hash}`.
+          description: 'Decoded text for structured and text files, with the original line endings. Null for binary
+            and withheld files; binary content comes from `/blobs/{hash}`. A value the secret scan flags is replaced by
+            its marker `[REDACTED: N chars, rule]` and is never sent (S14b); `masks` says where each marker sits.'
+        masks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Mask'
+          maxItems: 1000
+          description: 'Where the markers sit in `text`, in the order of `start`, at most 1,000: the text is masked in
+            full all the same, and a marker past the list is recognised by its form `[REDACTED: N chars, rule]` and has
+            no reveal. Absent when `text` holds no marker. Edit mode is off while this list is not empty: `text` is a
+            masked view and not the file, so saving it with `editFile` would write the marker over the value it hides
+            (a write that holds a marker is refused, see `editFile`).'
       additionalProperties: false
       required:
       - path
@@ -5415,6 +5450,44 @@ components:
       - size
       - content_withheld
       - text
+    Mask:
+      type: object
+      description: 'Where one marker sits in the `text` of the object that carries this mask: `FileContent`, `ServedFile`
+        or `DocText`. The marker `[REDACTED: N chars, rule]` replaced a value the secret scan flagged (S14b), and
+        `text[start..end]` is exactly that marker. `start` and `end` are 0-based UTF-8 byte offsets into that `text`,
+        half-open `[start, end)`, always on character boundaries, with `end` at most the byte length of `text`. They are
+        bytes, like the offsets of `InlineRange`, and not characters or UTF-16 units, so a client that indexes a
+        JavaScript string converts them first. A mask holds no value, and no part of one.'
+      properties:
+        line:
+          type: integer
+          minimum: 1
+          maximum: 4294967295
+          description: The 1-based line of the masked `text` that holds the marker. Lines end at a line feed, and a
+            carriage return before it belongs to the line.
+        start:
+          type: integer
+          minimum: 0
+          maximum: 4294967295
+          description: The 0-based UTF-8 byte offset into `text` of the first byte of the marker.
+        end:
+          type: integer
+          minimum: 0
+          maximum: 4294967295
+          description: The 0-based UTF-8 byte offset into `text` just after the last byte of the marker, so `end` is
+            greater than `start`.
+        setting:
+          oneOf:
+          - $ref: '#/components/schemas/SettingPath'
+          - type: 'null'
+          description: The setting whose value the marker stands for, as `revealValue` takes it together with
+            `FileContent.path`. Absent or null when no reveal can name the value, which is the case in a plain text
+            file, in a doc, and in every mask of a `ServedFile` or a `DocText`.
+      additionalProperties: false
+      required:
+      - line
+      - start
+      - end
     Version:
       type: object
       properties:
@@ -5488,7 +5561,8 @@ components:
       - value
       - source
       - location
-      description: Values the secret scan flags are masked; `/files/reveal` shows one (audited).
+      description: 'A value the secret scan flags is replaced by its marker `[REDACTED: N chars, rule]` and is never
+        sent (S14b); `/files/reveal` shows one (audited).'
     EffectiveConfig:
       type: object
       properties:
@@ -5558,7 +5632,16 @@ components:
           - type: string
           - type: 'null'
           description: 'The file exactly as the config-server would serve it: `${KEY}` replaced only where the property
-            view has the key.'
+            view has the key. A value the secret scan flags, in the file or substituted into it, is replaced by its
+            marker `[REDACTED: N chars, rule]` and is never sent (S14b); `masks` says where each marker sits.'
+        masks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Mask'
+          maxItems: 1000
+          description: 'Where the markers sit in `text`, as on `FileContent`: in the order of `start`, at most 1,000,
+            and absent when `text` holds no marker. A mask here has no `setting`, so there is no reveal from the served
+            file. The marker is the same `[REDACTED: N chars, rule]`, and the served text is a read-only view.'
         sources:
           type: array
           items:
@@ -5597,6 +5680,9 @@ components:
       properties:
         text:
           type: string
+          description: 'The value exactly as written, except that a value the secret scan flags is replaced by its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b). There is no `masks` here: the whole text is the marker,
+            and it is recognised by the pattern `^\[REDACTED: [0-9]+ chars, [a-z0-9_]+\]$`.'
         ty:
           $ref: '#/components/schemas/ValueType'
         flag:
@@ -5652,7 +5738,8 @@ components:
         object that carries the range (`DiffLine.text` for `DiffLine.inline_changes`), half-open `[start, end)`, always
         on character boundaries, with `end` at most the byte length of `text`. They are not characters and not UTF-16
         units, so a client that indexes a JavaScript string converts them first, for example by slicing the bytes of
-        a `TextEncoder` result. A secret match's location (`column` and `length`) is different, and counts characters.
+        a `TextEncoder` result. The `start` and `end` of a `Mask` are bytes in the same way. The secret scan itself
+        counts characters (`column` and `length`), and the server converts them to bytes before it sends a mask.
       properties:
         start:
           type: integer
@@ -5671,6 +5758,10 @@ components:
           $ref: '#/components/schemas/DiffLineKind'
         text:
           type: string
+          description: 'One line of the diff, exactly as written, except that a value the secret scan flags is replaced
+            by its marker `[REDACTED: N chars, rule]` and is never sent (S14b). A producer that works by whole lines, as
+            the proposals and the drafts do, replaces the whole line. There is no `masks` here: the marker is recognised
+            by the pattern `^\[REDACTED: [0-9]+ chars, [a-z0-9_]+\]$` on a value and by its form inside a line.'
         inline_changes:
           type: array
           items:
@@ -5758,6 +5849,8 @@ components:
           items:
             $ref: '#/components/schemas/DiffHunk'
           maxItems: 100000
+          description: 'The diff of the two sides. A value the secret scan flags is replaced by its marker
+            `[REDACTED: N chars, rule]` on either side and is never sent (S14b); see `DiffLine`.'
         setting_changes:
           type: array
           items:
@@ -5887,6 +5980,9 @@ components:
           minimum: 1
         text:
           type: string
+          description: 'The line of the file that matched. A value the secret scan flags is replaced by its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b), and `ranges` index the masked text. There is no
+            `masks` here: the marker is recognised by its form.'
         ranges:
           type: array
           items:
@@ -6068,6 +6164,10 @@ components:
           - parse_error
           - duplicate_key
           - secret_match
+          - redaction_marker
+          description: 'Which check found it. `redaction_marker` means that the content holds the text of a redaction
+            marker, `[REDACTED: N chars, rule]` (S14b), which is a masked text sent back. It is a block, reports the
+            `line` and nothing else, and never holds the text of the line.'
         line:
           type: integer
           minimum: 1
@@ -6536,6 +6636,8 @@ components:
           items:
             $ref: '#/components/schemas/DiffHunk'
           maxItems: 100000
+          description: 'The diff of the proposed content. A line the secret scan flags is replaced by its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b); see `DiffLine`.'
         setting_changes:
           type: array
           items:
@@ -6626,6 +6728,8 @@ components:
           items:
             $ref: '#/components/schemas/DiffHunk'
           maxItems: 100000
+          description: 'The diff of the draft. A line the secret scan flags is replaced by its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b); see `DiffLine`.'
         setting_changes:
           type: array
           items:
@@ -6972,6 +7076,8 @@ components:
           maxItems: 16
         snippet:
           type: string
+          description: 'The matching chunk of the doc. A value the secret scan flags is replaced by its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b).'
         score:
           type: number
           format: float
@@ -7020,7 +7126,18 @@ components:
           minimum: 0
         text:
           type: string
-          description: Document text. Data, never instructions.
+          description: 'Document text. Data, never instructions. A value the secret scan flags is replaced by its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b), and there is no reveal for docs; `masks` says where each
+            marker sits.'
+        masks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Mask'
+          maxItems: 1000
+          description: 'Where the markers sit in `text`, as on `FileContent`: in the order of `start`, at most 1,000,
+            and absent when `text` holds no marker. `line` counts from the first line of `text`, which is line
+            `lines.start` of the doc when `lines` is given. A mask here has no `setting`. The marker is the same
+            `[REDACTED: N chars, rule]`.'
         truncated:
           type: boolean
         content_hash:
@@ -7048,6 +7165,8 @@ components:
           maximum: 6
         text:
           $ref: '#/components/schemas/ShortText'
+          description: 'The heading as plain text, taken from the doc after the secret scan: a flagged value in a heading
+            is its marker `[REDACTED: N chars, rule]` and is never sent (S14b).'
         line:
           type: integer
           minimum: 1
@@ -7069,6 +7188,8 @@ components:
           maxLength: 8388608
           description: |-
             Sanitised HTML of the doc, a fragment with no `html`, `head` or `body`. This is the one HTML sink the CSP lets through (S12): the web app puts it into the page only through its Trusted Types policy `lanekeeper-docs`, and nowhere else.
+
+            The text was masked before it was rendered (S14b): a value the secret scan flags is the text of its marker `[REDACTED: N chars, rule]` in the page and is never sent, and there is no reveal for docs.
 
             The allowlist below is a requirement on the server, not a description of what a sanitising library does by default. The render stays inside it whatever the Markdown holds, an implementation does not widen it, and `ports::conformance::doc_search` renders a corpus of attacks and checks every page against it (`render_output_stays_inside_the_allowlist`).
 
@@ -7104,16 +7225,22 @@ components:
           minimum: 1
         text:
           type: string
+          description: 'The line of the doc that matched. A value the secret scan flags is replaced by its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b); the same holds for `before` and `after`.'
         before:
           type: array
           items:
             type: string
           maxItems: 20
+          description: 'The lines before the match, masked like `text`: a flagged value is its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b).'
         after:
           type: array
           items:
             type: string
           maxItems: 20
+          description: 'The lines after the match, masked like `text`: a flagged value is its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b).'
       additionalProperties: false
       required:
       - path
@@ -7682,7 +7809,9 @@ components:
         diff:
           oneOf:
           - type: string
-            description: The change's own diff text, kept so evidence survives blob garbage collection (D78).
+            description: 'The diff text of the change, kept so evidence survives blob garbage collection (D78). It is
+              kept already masked: a line the secret scan flags is its marker `[REDACTED: N chars, rule]`, so the value
+              is never stored here and never sent (S14b).'
           - type: 'null'
         prev_hash:
           $ref: '#/components/schemas/ContentHash'

@@ -113,6 +113,10 @@ wire_enum! {
         DuplicateKey => "duplicate_key",
         /// The value-based secret scan matched (S13). Reports the place and the rule, never the text.
         SecretMatch => "secret_match",
+        /// The content holds the text of a redaction marker, `[REDACTED: N chars, rule]` (S14b). Every read shows a flagged
+        /// value as that marker, so this is a masked text sent back, and saving it would write the marker over the value it
+        /// hides. Always a block, never a warning. Reports the line, never the text, and has no rule.
+        RedactionMarker => "redaction_marker",
     }
 }
 
