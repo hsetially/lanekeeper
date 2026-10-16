@@ -220,6 +220,26 @@ fn nodes(plan: &Value, out: &mut Vec<Value>) {
     }
 }
 
+/// Writes each index of a pair that serve a statement equally as the first of the pair. Both of `effective_files_pkey` and
+/// `effective_files_prefix_idx` begin with the swimlane, and both of `file_observations_history_idx` and `file_observations_replay_key`
+/// with the swimlane and the path, so a statement that asks no more than that is served by either. Which one the planner takes is a
+/// matter of a page of index size (the primary key of `effective_files` is 592 pages here and the other 630, and the cost of an index scan
+/// counts whole pages: under `C` they tie, and under `en_US` the first is cheaper unless the physical sizes move by a few pages, which the
+/// glibc of another image may do; D124). A snapshot of such a statement is of the plan, not of the dice, so it names the first. It is
+/// applied to the statements that no more is asked of, never to one that needs the second (a `LIKE` prefix under `en_US` can be served by
+/// `effective_files_prefix_idx` only, and that snapshot keeps its name).
+fn interchangeable(mut plan: Value) -> Value {
+    for node in plan.as_array_mut().into_iter().flatten() {
+        let first = match node["index"].as_str() {
+            Some("effective_files_prefix_idx") => "effective_files_pkey",
+            Some("file_observations_replay_key") => "file_observations_history_idx",
+            _ => continue,
+        };
+        node["index"] = Value::from(first);
+    }
+    plan
+}
+
 /// A bound value of a statement under EXPLAIN.
 enum Arg<'a> {
     Text(&'a str),
@@ -317,7 +337,7 @@ async fn hot_queries_have_no_sequential_scan_on_large_tables() {
     insta::assert_json_snapshot!("stored_directories_of_a_swimlane", dirs);
     let files = explain(&pool, LOAD_FILES_SQL, &[Arg::Text("lane7"), Arg::Int(200_000)]).await;
     no_large_sequential_scan("stored files", &files);
-    insta::assert_json_snapshot!("stored_files_of_a_swimlane", files);
+    insta::assert_json_snapshot!("stored_files_of_a_swimlane", interchangeable(files));
 }
 
 /// The first `n` paths of the swimlane `lane7` (every tenth of its files, so that they are spread over the table).
@@ -651,8 +671,12 @@ async fn read_queries_have_no_sequential_scan_on_large_tables() {
         .collect();
 
     macro_rules! check {
-        ($name:literal, $sql:expr, $args:expr) => {{
-            let plan = explain(&pool, $sql, &$args).await;
+        ($name:literal, $sql:expr, $args:expr) => {
+            check!($name, $sql, $args, std::convert::identity::<Value>)
+        };
+        // `$same` names the indexes of a pair that serve the statement equally (`interchangeable`).
+        ($name:literal, $sql:expr, $args:expr, $same:expr) => {{
+            let plan = ($same)(explain(&pool, $sql, &$args).await);
             no_large_sequential_scan($name, &plan);
             insta::assert_json_snapshot!(concat!("read_", $name), plan);
             // A prepared statement that has run a few times is given one plan for all values: that one reads no large table whole either.
@@ -897,7 +921,8 @@ async fn read_queries_have_no_sequential_scan_on_large_tables() {
         [
             Arg::Text(lane),
             Arg::TextArray(vec!["dir3".to_owned(), "dir4".to_owned()])
-        ]
+        ],
+        interchangeable
     );
     check!(
         "compare_tree_effective_map",
@@ -1309,7 +1334,7 @@ async fn tool_write_queries_have_no_sequential_scan_on_large_tables() {
     )
     .await;
     no_large_sequential_scan("pending of a chunk's paths", &pending);
-    insta::assert_json_snapshot!("tool_write_pending_of_paths", pending);
+    insta::assert_json_snapshot!("tool_write_pending_of_paths", interchangeable(pending));
 
     // The matcher.
     let lanes = explain(&pool, LANES_SQL, &[Arg::Int(cutoff), Arg::Int(201)]).await;
