@@ -1737,6 +1737,16 @@ paths:
     get:
       operationId: streamEvents
       summary: Live events (SSE)
+      description: |-
+        Server-sent events (`text/event-stream`). Each frame is one `DomainEvent` (see that schema): the `event:` line is its `type`, the `data:` line is the event as JSON on a single line, and an `id:` line carries the event id, a positive integer, only on stored events. An event that is not stored, such as a `resync` that the server makes up because it cannot replay, has no `id:` line.
+
+        Frames. The first frame is `retry: 3000`, the reconnect delay in milliseconds. A `: heartbeat` comment is sent every 15 seconds; at each heartbeat the server checks that the user may still listen and closes the stream if not. A stream lives at most 30 minutes; the server then closes it with a final `retry: 3000`, and the client reconnects with its `Last-Event-ID` and loses nothing.
+
+        Resume. A connection without `Last-Event-ID` gets no replay and no `resync`: it starts at the live edge, and the page loads what it shows with its ordinary reads. A browser's `EventSource` sends the header itself when it reconnects. With the id of the last event received, the server replays the stored events after it (at most 1,000 events, filtered like the live stream) and then carries on live. If the id is too old, is not a positive integer, or the stored events cannot be read, the server sends one `resync` instead, and the client refetches what it shows.
+
+        Limits. At most 5 streams per user: the next request gets 429, and so does any request to a replica that is full. An event is stored as an envelope of at most 4,096 bytes; an event that would not fit is stored as a `resync` instead. Events carry ids and hashes only, never file content (S12).
+
+        Filters. A `resync` passes both filters, so a filtered client still learns that it lagged. Otherwise `kinds` keeps only the kinds named, and `swimlane` keeps the events of those swimlanes and every event that belongs to no swimlane.
       tags:
       - events
       x-required-role: viewer
@@ -1771,14 +1781,18 @@ paths:
         schema:
           type: string
           maxLength: 64
-        description: Resume after this event; a `resync` event is sent if it is too old.
+        description: 'Resume after this event: the `id:` of the last event received, a positive integer. A `resync`
+          event is sent if it is too old or is not one. Without the header nothing is replayed (see the description of
+          the operation).'
       responses:
         '200':
-          description: A `text/event-stream`. Events carry ids and kinds only, never file content (S12).
+          description: A `text/event-stream`. The `data:` of each frame is a `DomainEvent`; the description of the
+            operation has the framing, the resume rules and the limits. Events carry ids and kinds only, never file
+            content (S12).
           content:
             text/event-stream:
               schema:
-                type: string
+                $ref: '#/components/schemas/DomainEvent'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -3785,6 +3799,343 @@ components:
       - sync_window_opened
       - sync_window_closed
       - pickup_changed
+    JobRef:
+      type: object
+      description: A Kubernetes Job, as the sync-window events name it. `ActorJob.job` has the same shape.
+      properties:
+        name:
+          type: string
+          pattern: ^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$
+          description: The name of the Job, a Kubernetes name of at most 253 characters.
+        uid:
+          type: string
+          maxLength: 64
+          pattern: ^[A-Za-z0-9-]{1,64}$
+          description: The uid of the Job.
+      additionalProperties: false
+      required:
+      - name
+      - uid
+    DomainEvent:
+      description: One event of the live stream, the JSON of the `data:` line of a frame of `GET /api/v1/events`. The
+        `type` tells the kinds apart; it is the `event:` name of the frame and a value of `EventKind`. An event carries
+        ids and hashes only, never file content (S12), so a client refetches what the event names. Every field of a kind
+        is present on every event; a field that can be empty is `null`, never absent. `user_sessions_revoked` is internal
+        and never streamed, so it is not here.
+      oneOf:
+      - $ref: '#/components/schemas/DomainEventFileObserved'
+      - $ref: '#/components/schemas/DomainEventDriftChanged'
+      - $ref: '#/components/schemas/DomainEventFindingsChanged'
+      - $ref: '#/components/schemas/DomainEventPendingRestartChanged'
+      - $ref: '#/components/schemas/DomainEventProposalChanged'
+      - $ref: '#/components/schemas/DomainEventAgentStatusChanged'
+      - $ref: '#/components/schemas/DomainEventGitHeadMoved'
+      - $ref: '#/components/schemas/DomainEventAccessRequestCreated'
+      - $ref: '#/components/schemas/DomainEventDocIndexed'
+      - $ref: '#/components/schemas/DomainEventResync'
+      - $ref: '#/components/schemas/DomainEventAttributionUpdated'
+      - $ref: '#/components/schemas/DomainEventPrStateChanged'
+      - $ref: '#/components/schemas/DomainEventPrJobProgress'
+      - $ref: '#/components/schemas/DomainEventSyncWindowOpened'
+      - $ref: '#/components/schemas/DomainEventSyncWindowClosed'
+      - $ref: '#/components/schemas/DomainEventPickupChanged'
+      discriminator:
+        propertyName: type
+        mapping:
+          file_observed: '#/components/schemas/DomainEventFileObserved'
+          drift_changed: '#/components/schemas/DomainEventDriftChanged'
+          findings_changed: '#/components/schemas/DomainEventFindingsChanged'
+          pending_restart_changed: '#/components/schemas/DomainEventPendingRestartChanged'
+          proposal_changed: '#/components/schemas/DomainEventProposalChanged'
+          agent_status_changed: '#/components/schemas/DomainEventAgentStatusChanged'
+          git_head_moved: '#/components/schemas/DomainEventGitHeadMoved'
+          access_request_created: '#/components/schemas/DomainEventAccessRequestCreated'
+          doc_indexed: '#/components/schemas/DomainEventDocIndexed'
+          resync: '#/components/schemas/DomainEventResync'
+          attribution_updated: '#/components/schemas/DomainEventAttributionUpdated'
+          pr_state_changed: '#/components/schemas/DomainEventPrStateChanged'
+          pr_job_progress: '#/components/schemas/DomainEventPrJobProgress'
+          sync_window_opened: '#/components/schemas/DomainEventSyncWindowOpened'
+          sync_window_closed: '#/components/schemas/DomainEventSyncWindowClosed'
+          pickup_changed: '#/components/schemas/DomainEventPickupChanged'
+    DomainEventFileObserved:
+      type: object
+      description: A file version was seen, by a scan, a tool write or a sync.
+      properties:
+        type:
+          type: string
+          const: file_observed
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        path:
+          $ref: '#/components/schemas/NfsPath'
+        hash:
+          $ref: '#/components/schemas/ContentHash'
+        source:
+          $ref: '#/components/schemas/ObservationSource'
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+      - path
+      - hash
+      - source
+    DomainEventDriftChanged:
+      type: object
+      description: The drift state of these paths changed.
+      properties:
+        type:
+          type: string
+          const: drift_changed
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        paths:
+          type: array
+          items:
+            $ref: '#/components/schemas/NfsPath'
+          maxItems: 1000
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+      - paths
+    DomainEventFindingsChanged:
+      type: object
+      description: The findings of the swimlane changed.
+      properties:
+        type:
+          type: string
+          const: findings_changed
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+    DomainEventPendingRestartChanged:
+      type: object
+      description: Superseded by `pickup_changed` (D85) and kept so that old clients still parse it; it is streamed until
+        the registry stops publishing it. The services whose pending restarts changed.
+      properties:
+        type:
+          type: string
+          const: pending_restart_changed
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceRef'
+          maxItems: 1000
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+      - services
+    DomainEventProposalChanged:
+      type: object
+      description: A proposal changed status.
+      properties:
+        type:
+          type: string
+          const: proposal_changed
+        id:
+          type: integer
+          format: int64
+          description: The id of the proposal (`Proposal.id`).
+        status:
+          $ref: '#/components/schemas/ProposalStatus'
+      additionalProperties: false
+      required:
+      - type
+      - id
+      - status
+    DomainEventAgentStatusChanged:
+      type: object
+      description: The status of the swimlane's agent changed.
+      properties:
+        type:
+          type: string
+          const: agent_status_changed
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        status:
+          $ref: '#/components/schemas/AgentStatus'
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+      - status
+    DomainEventGitHeadMoved:
+      type: object
+      description: A branch of a mirrored repository moved to a new commit. `from` is `null` when the branch is new.
+      properties:
+        type:
+          type: string
+          const: git_head_moved
+        repo:
+          $ref: '#/components/schemas/RepoKind'
+        branch:
+          $ref: '#/components/schemas/GitRef'
+        from:
+          oneOf:
+          - $ref: '#/components/schemas/CommitId'
+          - type: 'null'
+        to:
+          $ref: '#/components/schemas/CommitId'
+      additionalProperties: false
+      required:
+      - type
+      - repo
+      - branch
+      - from
+      - to
+    DomainEventAccessRequestCreated:
+      type: object
+      description: A user asked for access.
+      properties:
+        type:
+          type: string
+          const: access_request_created
+        user:
+          $ref: '#/components/schemas/UserId'
+      additionalProperties: false
+      required:
+      - type
+      - user
+    DomainEventDocIndexed:
+      type: object
+      description: A document was indexed.
+      properties:
+        type:
+          type: string
+          const: doc_indexed
+        doc:
+          type: integer
+          format: int64
+          description: The id of the document (`DocSummary.id`).
+      additionalProperties: false
+      required:
+      - type
+      - doc
+    DomainEventResync:
+      type: object
+      description: The client may have missed events, because it lagged, an event did not fit in 4,096 bytes, or the
+        replay could not be served. Refetch what the page shows. It has no fields besides `type`.
+      properties:
+        type:
+          type: string
+          const: resync
+      additionalProperties: false
+      required:
+      - type
+    DomainEventAttributionUpdated:
+      type: object
+      description: The attribution of a file version was upgraded.
+      properties:
+        type:
+          type: string
+          const: attribution_updated
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        path:
+          $ref: '#/components/schemas/NfsPath'
+        hash:
+          $ref: '#/components/schemas/ContentHash'
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+      - path
+      - hash
+    DomainEventPrStateChanged:
+      type: object
+      description: The state of a pull-request link changed (open, merged or closed).
+      properties:
+        type:
+          type: string
+          const: pr_state_changed
+        link_id:
+          type: integer
+          format: int64
+          description: The id of the pull-request link (`PrLink.id`).
+        state:
+          $ref: '#/components/schemas/PrState'
+      additionalProperties: false
+      required:
+      - type
+      - link_id
+      - state
+    DomainEventPrJobProgress:
+      type: object
+      description: A pull-request job moved to a new state.
+      properties:
+        type:
+          type: string
+          const: pr_job_progress
+        job_id:
+          type: integer
+          format: int64
+          description: The id of the job (`PrJob.id`).
+        state:
+          $ref: '#/components/schemas/PrJobState'
+      additionalProperties: false
+      required:
+      - type
+      - job_id
+      - state
+    DomainEventSyncWindowOpened:
+      type: object
+      description: A sync window opened for the swimlane, because the sync Job `job` started.
+      properties:
+        type:
+          type: string
+          const: sync_window_opened
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        job:
+          $ref: '#/components/schemas/JobRef'
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+      - job
+    DomainEventSyncWindowClosed:
+      type: object
+      description: The sync window of the swimlane closed, because the sync Job `job` ended.
+      properties:
+        type:
+          type: string
+          const: sync_window_closed
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        job:
+          $ref: '#/components/schemas/JobRef'
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+      - job
+    DomainEventPickupChanged:
+      type: object
+      description: The pickup state (D85) of a change changed for these services. Ids only; read the state with
+        `listPendingRestarts`.
+      properties:
+        type:
+          type: string
+          const: pickup_changed
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceRef'
+          maxItems: 1000
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+      - services
     ValueType:
       type: string
       enum:
@@ -4491,6 +4842,11 @@ components:
       - severity
     InlineRange:
       type: object
+      description: A changed span inside a line. `start` and `end` are 0-based UTF-8 byte offsets into the `text` of the
+        object that carries the range (`DiffLine.text` for `DiffLine.inline_changes`), half-open `[start, end)`, always
+        on character boundaries, with `end` at most the byte length of `text`. They are not characters and not UTF-16
+        units, so a client that indexes a JavaScript string converts them first, for example by slicing the bytes of
+        a `TextEncoder` result. A secret match's location (`column` and `length`) is different, and counts characters.
       properties:
         start:
           type: integer
@@ -4514,6 +4870,7 @@ components:
           items:
             $ref: '#/components/schemas/InlineRange'
           maxItems: 10000
+          description: The changed spans of the line, as 0-based UTF-8 byte offsets into `text` (see `InlineRange`).
       additionalProperties: false
       required:
       - kind
@@ -4726,6 +5083,9 @@ components:
             minItems: 2
             maxItems: 2
           maxItems: 1000
+          description: The matches in `text`. Each pair is `[start, end)`, half-open, as 0-based UTF-8 byte offsets
+            into the `text` of this hit (see `InlineRange`); a client that indexes a JavaScript string converts them
+            first.
       additionalProperties: false
       required:
       - swimlane
