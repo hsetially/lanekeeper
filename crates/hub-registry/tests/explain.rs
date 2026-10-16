@@ -155,6 +155,29 @@ async fn seeded() -> Option<(TestDb, PgPool)> {
     Some((db, pool))
 }
 
+/// D124: the plan snapshots of this file are plans of one collation, `en_US.utf8`, the default of the image CI runs on. Under `C` the
+/// `text_pattern_ops` indexes can supply an `ORDER BY` and the planner picks other indexes (`effective_files_prefix_idx` for
+/// `effective_files_pkey`, and so on), so the same snapshots do not hold. The harness creates every database on that locale whatever the
+/// server's default is; this test reads it back from the catalog and from the order the database sorts text in, so that a harness that
+/// stopped pinning it fails here by name and not as a plan that differs.
+#[tokio::test]
+async fn the_explain_database_is_on_the_collation_of_the_pinned_image() {
+    let Some(db) = TestDb::ready().await else { return };
+    let (collate, ctype) = db.locale().await;
+    assert_eq!(collate, support::pg::COLLATION, "datcollate");
+    assert_eq!(ctype, support::pg::COLLATION, "datctype");
+    // The order of strings, not only the name: `C` puts every capital before every small letter, `en_US` sorts by letter first.
+    let mut admin = db.admin().await;
+    let capital_before_small: bool = sqlx::query_scalar("SELECT 'B'::text < 'a'::text")
+        .fetch_one(&mut admin)
+        .await
+        .unwrap();
+    assert!(
+        !capital_before_small,
+        "the database sorts text by byte value, as `C` does"
+    );
+}
+
 /// The generic plan of a statement (the one a prepared statement is given after it has run a few times), or the error when the server
 /// cannot make one without the values.
 async fn explain_generic(pool: &PgPool, sql: &str) -> Result<Value, sqlx::Error> {

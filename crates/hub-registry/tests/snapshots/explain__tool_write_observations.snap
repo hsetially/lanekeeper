@@ -17,7 +17,7 @@ expression: observations
     "relation": "file_observations"
   },
   {
-    "index": "file_observations_swimlane_time_idx",
+    "index": "file_observations_history_idx",
     "node": "Bitmap Index Scan"
   },
   {

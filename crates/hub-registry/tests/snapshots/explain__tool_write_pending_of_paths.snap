@@ -38,7 +38,7 @@ expression: pending
     "relation": "file_observations"
   },
   {
-    "index": "file_observations_replay_key",
+    "index": "file_observations_history_idx",
     "node": "Bitmap Index Scan"
   }
 ]

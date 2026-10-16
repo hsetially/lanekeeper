@@ -14,7 +14,7 @@ expression: files
     "relation": "effective_files"
   },
   {
-    "index": "effective_files_prefix_idx",
+    "index": "effective_files_pkey",
     "node": "Bitmap Index Scan"
   }
 ]

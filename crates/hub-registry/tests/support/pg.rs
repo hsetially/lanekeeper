@@ -6,6 +6,12 @@
 //! Without a Docker daemon a test prints `SKIPPED` and passes; with `LK_REQUIRE_DOCKER=1` (set by `just verify-05`) a missing
 //! daemon fails it instead. `LK_TEST_PG_ADMIN_URL=postgres://postgres@127.0.0.1:5432/postgres` points the tests at an existing
 //! throwaway server instead of a container: each test creates its own database there and drops it when the test is over.
+//!
+//! **Every test database is created on [`COLLATION`] (D124), whatever the server's default is.** The image CI runs on has
+//! `en_US.utf8` as its default; a developer's server may have `C` (or `C.UTF-8`), under which `text_pattern_ops` indexes can supply
+//! an `ORDER BY` and the planner picks other indexes, so the plan snapshots of `tests/explain.rs` (plans of the pinned image) did
+//! not hold on that server and the sort order of text differed. Creating the database from `template0` with the locale named makes
+//! the plans and the order of strings the same on every server, or fails with a message when the server lacks the locale.
 #![allow(
     dead_code,
     clippy::unwrap_used,
@@ -32,6 +38,12 @@ const SUPERUSER_PASSWORD: &str = "lanekeeper-test-superuser-only";
 const MIGRATOR: (&str, &str) = ("lanekeeper_migrator", "lanekeeper-migrator-dev-only");
 const APP: (&str, &str) = ("lanekeeper_app", "lanekeeper-app-dev-only");
 const INIT_LOCK: &str = "hashtextextended('lanekeeper.test.run_init', 0)";
+
+/// The locale (collation and character class) of every test database: the default of the pinned image (Debian's `postgres` images set
+/// `LANG=en_US.utf8`), under which the plan snapshots of `tests/explain.rs` are taken (D124).
+pub const COLLATION: &str = "en_US.utf8";
+/// The database the container's tests use: made by the same statement as an external server's, not the image's own `lanekeeper`.
+const CONTAINER_DATABASE: &str = "lanekeeper_test";
 
 static NEXT_DB: AtomicU32 = AtomicU32::new(0);
 
@@ -85,6 +97,19 @@ async fn connect_when_ready(
     }
 }
 
+/// `CREATE DATABASE` on [`COLLATION`], from `template0` (the template that may be given a locale of its own); panics, saying how to fix
+/// it, when the server cannot (a server without the locale, or a role that may not create databases).
+async fn create_database(conn: &mut PgConnection, name: &str) {
+    let sql = format!("CREATE DATABASE {name} TEMPLATE template0 ENCODING 'UTF8' LOCALE '{COLLATION}'");
+    if let Err(e) = sqlx::query(&sql).execute(conn).await {
+        panic!(
+            "cannot create the test database {name} on {COLLATION}: {e}. The registry tests run on {COLLATION}, the default of the \
+             pinned pgvector image (D124): install that locale on the server (Debian: `localedef -i en_US -f UTF-8 en_US.UTF-8`, \
+             then restart the server) or use the image"
+        );
+    }
+}
+
 impl TestDb {
     /// A database with the roles of `deploy/dev/init.sql` and the migrations applied, or `None` (after saying why) when there
     /// is no Docker and it is not required.
@@ -126,14 +151,15 @@ impl TestDb {
             .password(SUPERUSER_PASSWORD)
             .database("lanekeeper")
             .ssl_mode(PgSslMode::Disable);
-        connect_when_ready(&admin_options, Duration::from_secs(60))
+        let mut conn = connect_when_ready(&admin_options, Duration::from_secs(60))
             .await
             .map_err(|e| format!("the Postgres container did not become ready: {e}"))?;
+        create_database(&mut conn, CONTAINER_DATABASE).await;
         Ok(Self {
             host,
             port,
             admin_options,
-            database: "lanekeeper".to_owned(),
+            database: CONTAINER_DATABASE.to_owned(),
             drop_database: false,
             _container: Some(container),
         })
@@ -147,10 +173,7 @@ impl TestDb {
             std::process::id(),
             NEXT_DB.fetch_add(1, Ordering::Relaxed)
         );
-        sqlx::query(&format!("CREATE DATABASE {database}"))
-            .execute(&mut conn)
-            .await
-            .unwrap();
+        create_database(&mut conn, &database).await;
         let (host, port) = (base.get_host().to_owned(), base.get_port());
         Self {
             host,
@@ -170,6 +193,15 @@ impl TestDb {
             .password(role.1)
             .database(&self.database)
             .ssl_mode(PgSslMode::Disable)
+    }
+
+    /// The collation and the character class the database was created with, as the catalog states them.
+    pub async fn locale(&self) -> (String, String) {
+        let mut conn = self.admin().await;
+        sqlx::query_as("SELECT datcollate, datctype FROM pg_database WHERE datname = current_database()")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap()
     }
 
     pub async fn admin(&self) -> PgConnection {
