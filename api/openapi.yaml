@@ -110,7 +110,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/Conflict'
+          $ref: '#/components/responses/ConflictState'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/admin/access-requests/{id}/reject:
@@ -146,7 +146,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/Conflict'
+          $ref: '#/components/responses/ConflictState'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/admin/agents:
@@ -1197,7 +1197,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/Conflict'
+          $ref: '#/components/responses/ConflictState'
         '422':
           $ref: '#/components/responses/Unprocessable'
         default:
@@ -1799,6 +1799,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/features/status:
@@ -1998,6 +2000,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/me/github-token:
@@ -2032,7 +2036,18 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '422':
-          $ref: '#/components/responses/Unprocessable'
+          description: |-
+            The token was refused. Match on `type`: `classic_token` and `not_fine_grained_token` (the policy allows only fine-grained tokens), `token_rejected` (GitHub does not accept it), `token_missing_access` (it cannot push to both repositories), `github_account_mismatch` (it belongs to another GitHub account than the one linked to the user), `token_expired` and `token_unreadable` (the stored token cannot be used), or `idempotency_conflict`.
+
+            Only `token_missing_access` carries more than the common fields: `base` and `tenant` say whether the token can push to the base and to the tenant repository. Every other refusal is a plain `Problem`, so the schema is a union, not the one extension.
+          content:
+            application/problem+json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/TokenMissingAccessProblem'
+                - $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/Error'
     delete:
@@ -2297,8 +2312,9 @@ paths:
     post:
       operationId: createPr
       summary: Raise a pull request
-      description: A second PR for a change that already has an open PR is blocked with 409 (D77). The user's own
-        GitHub token is used.
+      description: A second PR for a change that already has an open PR is blocked with 409 (`DuplicatePrProblem`,
+        with the link of the open one; D77). A user whose writes need approval gets 200 with a proposal
+        (`WriteProposalCreated`) instead of a job. The user's own GitHub token is used.
       tags:
       - writes
       x-required-role: editor
@@ -2312,6 +2328,12 @@ paths:
             schema:
               $ref: '#/components/schemas/CreatePrRequest'
       responses:
+        '200':
+          description: A proposal was created instead of a job, because the user's writes need approval.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteProposalCreated'
         '202':
           description: Job accepted; follow it over SSE or `GET /pr-jobs/{id}`
           content:
@@ -2325,9 +2347,20 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
-          $ref: '#/components/responses/Conflict'
+          description: A second PR for a change that already has an open one (`reason` is `duplicate_pr`, with the link
+            of the open PR), or the expected hash did not match (`current`). Nothing was done.
+          content:
+            application/problem+json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/ConflictProblem'
+                - $ref: '#/components/schemas/DuplicatePrProblem'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
         '422':
           $ref: '#/components/responses/Unprocessable'
+        '423':
+          $ref: '#/components/responses/Locked'
         default:
           $ref: '#/components/responses/Error'
     get:
@@ -2937,6 +2970,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/swimlanes/{id}/files/revert:
@@ -3070,11 +3105,14 @@ paths:
               $ref: '#/components/schemas/NotifyRequest'
       responses:
         '200':
-          description: OK
+          description: Sent, as `NotifyResult`. For a user whose writes need approval the request became a proposal
+            instead, as `WriteProposalCreated`; tell them apart by `outcome`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/NotifyResult'
+                oneOf:
+                - $ref: '#/components/schemas/NotifyResult'
+                - $ref: '#/components/schemas/WriteProposalCreated'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -3475,6 +3513,12 @@ components:
       description: Strong validator. For content it is derived from content hashes.
       schema:
         type: string
+    RetryAfter:
+      description: Seconds to wait before the request is tried again.
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 86400
   responses:
     BadRequest:
       description: The request is malformed or a parameter failed validation.
@@ -3506,6 +3550,14 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/ConflictProblem'
+    ConflictState:
+      description: The request conflicts with the current state of the resource, for example a request that was
+        already decided or a change that would leave no active admin. Nothing was changed. Unlike `Conflict` there is
+        no expected hash, so the body carries no `current`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
     PayloadTooLarge:
       description: The body exceeds the size limit.
       content:
@@ -3518,6 +3570,31 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/LockedProblem'
+    TooManyRequests:
+      description: A rate limit or a limit on open streams was reached. `Retry-After` says how long to wait when the
+        server knows; the stream limit and the access-request cooldown send none.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    ServiceUnavailable:
+      description: A service the request depends on did not answer, such as GitHub, the key service or the store.
+        Nothing was changed; the same request can be sent again after `Retry-After` seconds.
+      headers:
+        Retry-After:
+          required: true
+          description: Seconds to wait before the request is tried again.
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 86400
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
     Error:
       description: Any other error.
       content:
@@ -4201,6 +4278,12 @@ components:
         type:
           type: string
           format: uri-reference
+          description: |-
+            `urn:lanekeeper:problem:<code>`. What follows the last colon is the stable code of the problem and the discriminator: match on it, and fall back to `status` for a value you do not know, because the list can grow. Nothing is renamed, so both spellings below appear.
+
+            Sent by the hub's own layers, with snake_case codes: `bad_request`, `unauthorized`, `forbidden`, `not_found`, `method_not_allowed`, `request_timeout`, `conflict`, `payload_too_large`, `unsupported_media_type`, `unprocessable`, `too_many_requests`, `internal`, `unavailable`, `shutting_down`, `gateway_timeout`, `idempotency_conflict` and `locked`. The GitHub token adds `classic_token`, `not_fine_grained_token`, `token_rejected`, `token_missing_access`, `github_account_mismatch`, `token_expired` and `token_unreadable`.
+
+            Sent by the identity layer, with kebab-case codes: `unauthenticated`, `access-pending`, `access-disabled`, `insufficient-role`, `csrf`, `not-found`, `bad-request`, `unsupported-media-type`, `payload-too-large`, `conflict`, `too-many-requests`, `unprocessable`, `unavailable`, `sign-in-invalid`, `sign-in-refused`, `identity-provider` and `internal`.
         title:
           type: string
         status:
@@ -4214,6 +4297,12 @@ components:
         request_id:
           type: string
           description: Quote this to find the request in the logs.
+        code:
+          type: string
+          pattern: ^[a-z][a-z0-9_-]{0,63}$
+          maxLength: 64
+          description: The suffix of `type`, repeated. Sent by the write and platform layers and absent from the problems
+            of the identity layer, so read `type` first.
         reason:
           $ref: '#/components/schemas/RejectReason'
           description: Why a write was refused (422), when it was.
@@ -4238,7 +4327,6 @@ components:
             oneOf:
             - $ref: '#/components/schemas/ContentHash'
             - type: 'null'
-        additionalProperties: false
         required:
         - current
         description: '`current` is the hash found instead of the expected one; null when the file is absent.'
@@ -4251,10 +4339,64 @@ components:
             oneOf:
             - $ref: '#/components/schemas/Timestamp'
             - type: 'null'
-        additionalProperties: false
         required:
         - until
         description: A sync window or PR job holds the file.
+    DuplicatePrProblem:
+      type: object
+      description: The 409 of `createPr` for a second pull request on a change that already has an open one (D77).
+        `link` is the open one. Not an `allOf` of `Problem`, because `Problem.reason` is a `RejectReason` and
+        `duplicate_pr` is not a write rejection.
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          maxLength: 256
+        title:
+          type: string
+          maxLength: 256
+        status:
+          const: 409
+        detail:
+          type: string
+          maxLength: 2048
+        instance:
+          type: string
+          maxLength: 512
+        request_id:
+          type: string
+          maxLength: 128
+        code:
+          type: string
+          pattern: ^[a-z][a-z0-9_-]{0,63}$
+          maxLength: 64
+        reason:
+          const: duplicate_pr
+        link:
+          $ref: '#/components/schemas/PrLink'
+      additionalProperties: false
+      required:
+      - type
+      - title
+      - status
+      - reason
+      - link
+    TokenMissingAccessProblem:
+      allOf:
+      - $ref: '#/components/schemas/Problem'
+      - type: object
+        properties:
+          base:
+            type: boolean
+            description: Whether the token can push to the base repository.
+          tenant:
+            type: boolean
+            description: Whether the token can push to the tenant repository.
+        required:
+        - base
+        - tenant
+        description: The `token_missing_access` refusal of `putGithubToken` (422). The token has to push to both
+          repositories, and these two flags say which one fell short.
     Evidence:
       type: object
       properties:
