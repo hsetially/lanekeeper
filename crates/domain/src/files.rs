@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgentStatus, Attribution, ChannelName, CommitId, ContentHash, DriftState, EolStyle, FileClass, FileKind,
-    FileRole, GitRef, LogicalFile, NfsPath, ObservationSource, PickupState, RepoKind, ServiceRef,
+    FileRole, GitRef, JobRef, LogicalFile, NfsPath, ObservationSource, PickupState, RepoKind, ServiceRef,
     SettingLocation, SettingPath, Severity, ShortText, SwimlaneId, TenantId, TextEncoding, Timestamp,
-    VersionLabel,
+    UserRef, VersionLabel,
 };
 
 /// A row of the swimlane list.
@@ -23,6 +23,70 @@ pub struct SwimlaneSummary {
     /// Counts by drift state, for the list badges. Only non-zero states are listed.
     pub drift_counts: Vec<(DriftState, u32)>,
     pub finding_count: u32,
+    /// The environment tier of the swimlane (`swimlanes.tier`), when one is set. Absent on the wire when `None`
+    /// (`contract/08-web`, `CG4a`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<ShortText>,
+    /// The display name of the project the swimlane belongs to, when it has one. Absent on the wire when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<ShortText>,
+    /// Whether the swimlane's baseline is adopted, and by whom and when. Absent on the wire when `None`, which only a producer
+    /// written before this field says: the registry states it for every swimlane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<BaselineStatus>,
+    /// How many services are in each pickup state that is not [`PickupState::Live`], for the list badges and the pending
+    /// column. It is an aggregate worked out in one query for all swimlanes, never a call per swimlane, and it agrees with
+    /// what [`crate::ServiceState`] lists per service (`RegistryRead::pending_restarts`): only non-zero states are listed,
+    /// each once. Empty (and absent on the wire) when nothing is waiting.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pickup_counts: Vec<(PickupState, u32)>,
+    /// The sync window that is open on the swimlane now, if any (D72). Absent on the wire when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub syncing: Option<SyncingInfo>,
+}
+
+/// Where a swimlane's baseline stands (D17): not adopted, being adopted, or adopted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BaselineState {
+    /// No baseline: editing is locked until someone adopts one.
+    Unconfirmed,
+    /// An adoption is open (it is being worked through, or it waits for review). The baseline is not confirmed yet.
+    InProgress,
+    /// Adopted and confirmed: editing is unlocked.
+    Confirmed,
+}
+
+impl BaselineState {
+    /// Every variant, in declaration order.
+    pub const ALL: [Self; 3] = [Self::Unconfirmed, Self::InProgress, Self::Confirmed];
+
+    /// The wire name.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unconfirmed => "unconfirmed",
+            Self::InProgress => "in_progress",
+            Self::Confirmed => "confirmed",
+        }
+    }
+}
+
+/// The baseline of a swimlane: its state and, once confirmed, who confirmed it and when. Both are always written, `null` when
+/// there is nobody and no time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BaselineStatus {
+    pub state: BaselineState,
+    /// Who confirmed it. `None` unless the state is [`BaselineState::Confirmed`].
+    pub by: Option<UserRef>,
+    /// When it was confirmed. `None` unless the state is [`BaselineState::Confirmed`].
+    pub at: Option<Timestamp>,
+}
+
+/// A sync window that is open on a swimlane: the Kubernetes Job that is syncing it and when the window opened.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncingInfo {
+    pub job: JobRef,
+    pub since: Timestamp,
 }
 
 /// Line endings, encoding and BOM of a file. Writes keep the original (rule 11).

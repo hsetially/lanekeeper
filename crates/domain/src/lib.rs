@@ -50,6 +50,7 @@ pub use enums::{
     ProposalStatus, RepoKind, Role, Severity, TextEncoding, UnknownVariant, UserStatus, Via,
 };
 pub use events::DomainEvent;
+pub use files::{BaselineState, BaselineStatus, SyncingInfo};
 pub use files::{
     ContentSource, DriftQuery, EffectiveConfig, EffectiveQuery, EffectiveSetting, EffectiveSource,
     FileContent, FileEntry, FileFormat, ServiceState, SwimlaneSummary, Version,
@@ -72,6 +73,7 @@ pub use setting::SettingLocation;
 pub use text::{ShortText, TextError};
 pub use time::Timestamp;
 pub use user::User;
+pub use user::UserRef;
 pub use wire::{
     AgentConfig, AgentReply, AuditOperation, AuditRecord, AuditRecordBatch, ClusterReport, DeploymentInfo,
     EnvValue, Heartbeat, HeartbeatAction, Hello, HubCommand, OpError, OpResult, PodInfo, ReleaseHint,

@@ -374,6 +374,11 @@ impl Fixtures {
                         (DriftState::Conflict, 1),
                     ],
                     finding_count: 40,
+                    tier: None,
+                    project: None,
+                    baseline: None,
+                    pickup_counts: Vec::new(),
+                    syncing: None,
                 })
                 .collect(),
             tree: (0..FILES).map(|n| entry(n, DriftState::InSync)).collect(),
