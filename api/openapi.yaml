@@ -1218,9 +1218,10 @@ paths:
     get:
       operationId: getBlob
       summary: Content by hash
-      description: Never serves denied or withheld files (404), and never a file whose text the secret scan flags (404
-        as well). A blob is the exact bytes of one hash and never changes, so it cannot be masked; the masked text of
-        a file comes from `getFileContent` (S14b).
+      description: |-
+        Requirement on the owners of the blob endpoint (03b) and of the secret scan (05). Nothing in this contract builds it, and it is not a statement about what the code does today.
+
+        This operation must never serve a denied or withheld file (404, the same answer as for an unknown hash), and must never serve a file whose text the secret scan flags (404 as well). A blob is the exact bytes of one hash and never changes, so it cannot be masked. Serving the bytes of a flagged file would hand out the value that `getFileContent` masks, which is a way around the masking of this contract (S14b). The masked text of a file comes from `getFileContent`. The check applies to text files and is cached by hash; a binary file is served.
       tags:
       - content-store
       - content

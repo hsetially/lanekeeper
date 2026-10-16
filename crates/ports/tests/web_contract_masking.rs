@@ -456,6 +456,13 @@ fn text_stance_gaps(d: &Value) -> Vec<String> {
 // What is missing from the prose a reader of the document meets: the front page, the read that hands out text, and each write
 // that could be handed a masked copy.
 fn rule_gaps(d: &Value) -> Vec<String> {
+    let mut gaps = editing_gaps(d);
+    gaps.extend(bypass_gaps(d));
+    gaps
+}
+
+// The front page, the read that hands out text, the editor's rule and the server's rule for a write.
+fn editing_gaps(d: &Value) -> Vec<String> {
     let mut gaps = Vec::new();
 
     say(
@@ -518,14 +525,41 @@ fn rule_gaps(d: &Value) -> Vec<String> {
         }
     }
 
-    // A blob is the file's own bytes under an immutable hash, so it cannot be masked: it is not served for a flagged text.
+    gaps
+}
+
+// What masking does not cover, and the document says so where it matters: the blob that cannot be masked and the searches that
+// match against what was hidden.
+fn bypass_gaps(d: &Value) -> Vec<String> {
+    let mut gaps = Vec::new();
+    // A blob is the file's own bytes under an immutable hash, so it cannot be masked: it must not be served for a flagged text.
+    // That is a REQUIREMENT on the owners of the blob endpoint (03b) and of the scan (05), which nobody has built: the document
+    // says so, in the words of a requirement, and not as a fact about the code.
     match operation(d, "getBlob") {
-        Some(op) => say(
-            &mut gaps,
-            "getBlob",
-            &own_description(op),
-            &["secret scan", "404", "getFileContent"],
-        ),
+        Some(op) => {
+            let said = own_description(op);
+            say(
+                &mut gaps,
+                "getBlob",
+                &said,
+                &[
+                    "requirement",
+                    "03b",
+                    "05",
+                    "must never serve",
+                    "secret scan",
+                    "404",
+                    "getFileContent",
+                    "way around the masking",
+                    "S14b",
+                ],
+            );
+            if said.starts_with("never serves") {
+                gaps.push(
+                    "getBlob states the rule as a fact (`Never serves ...`): it is a requirement on 03b and 05".to_owned(),
+                );
+            }
+        }
         None => gaps.push("getBlob is not in the document".to_owned()),
     }
 
@@ -863,6 +897,20 @@ fn the_rule_check_finds_a_lost_edit_rule_a_lost_refusal_and_a_lost_blob_rule() {
             json!("Never serves denied or withheld files (404).");
     });
     assert!(found(&rule_gaps(&d), "getBlob must say"));
+
+    // The rule worded as a fact, as it was before the owners were asked to build it.
+    let d = damaged(|d| {
+        d["paths"]["/api/v1/blobs/{hash}"]["get"]["description"] = json!(
+            "Never serves denied or withheld files (404), and never a file whose text the secret scan flags (404 as well). \
+             A blob never changes, so it cannot be masked; the masked text comes from `getFileContent` (S14b). Requirement \
+             03b 05 must never serve a way around the masking."
+        );
+    });
+    assert!(
+        found(&rule_gaps(&d), "getBlob states the rule as a fact"),
+        "{:#?}",
+        rule_gaps(&d)
+    );
 
     let d = damaged(|d| {
         d["info"]["description"] = json!("The REST contract.");
