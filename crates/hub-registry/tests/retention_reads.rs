@@ -3,7 +3,12 @@
 //!
 //! The blobs here are deleted by the retention job itself (the same plan, lock and delete the hub runs), not by a `DELETE` of the test: the
 //! job is what decides which blob is gone, so a read that depended on a blob the job takes would fail here.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::too_many_lines,
+    clippy::panic
+)]
 
 mod support;
 

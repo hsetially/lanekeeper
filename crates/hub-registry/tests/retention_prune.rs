@@ -536,7 +536,7 @@ async fn a_dry_run_counts_the_windows_and_leaves_them() {
 const STAGING_TTL: i64 = 24 * HOUR;
 
 /// One staged part, stamped `staged_at`. With `blob`, its metadata lists that blob among the entries it staged.
-async fn stage(gc: &Gc, seq: usize, staged_at: i64, blob: Option<&domain::ContentHash>) {
+async fn stage(gc: &Gc, seq: i64, staged_at: i64, blob: Option<&domain::ContentHash>) {
     let entries = blob.map_or_else(String::new, |h| {
         format!("{{\"hash\":\"{}\"}}", hex::encode(h.as_bytes()))
     });
@@ -567,8 +567,8 @@ async fn stale_staged_parts_are_swept_in_batches_and_the_ones_within_the_ttl_sta
         return;
     };
     // Ten stale parts (seq 1 to 10), the last of them one minute beyond the lifetime; two within it (11, 12), one a minute inside.
-    for i in 1..=9_usize {
-        stage(&gc, i, NOW - STAGING_TTL - (i as i64) * HOUR, None).await;
+    for i in 1..=9_i64 {
+        stage(&gc, i, NOW - STAGING_TTL - i * HOUR, None).await;
     }
     stage(&gc, 10, NOW - STAGING_TTL - MIN, None).await;
     stage(&gc, 11, NOW - STAGING_TTL + MIN, None).await;
@@ -597,8 +597,8 @@ async fn the_sweep_on_hello_is_bounded_the_same_way_and_leaves_the_rest() {
     let Some(gc) = Gc::with(config).await else {
         return;
     };
-    for i in 1..=10_usize {
-        stage(&gc, i, NOW - STAGING_TTL - (i as i64) * HOUR, None).await;
+    for i in 1..=10_i64 {
+        stage(&gc, i, NOW - STAGING_TTL - i * HOUR, None).await;
     }
     assert_eq!(gc.rig.ingest.sweep_staging().await.unwrap(), 6);
     assert_eq!(gc.rig.ingest.sweep_staging().await.unwrap(), 4);
@@ -638,8 +638,8 @@ async fn a_dry_run_counts_the_stale_parts_and_leaves_them() {
     let Some(gc) = Gc::with(config).await else {
         return;
     };
-    for i in 1..=4_usize {
-        stage(&gc, i, NOW - STAGING_TTL - (i as i64) * HOUR, None).await;
+    for i in 1..=4_i64 {
+        stage(&gc, i, NOW - STAGING_TTL - i * HOUR, None).await;
     }
     let before = gc.dump().await;
     let report = gc.retention.run_once().await.unwrap();
