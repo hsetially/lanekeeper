@@ -1,6 +1,6 @@
 # Plan 08: Web app
 
-Status: DRAFT
+Status: APPROVED
 Contract-change: needed
 Extra-paths: `crates/hub/examples/web_fixture.rs` `.github/workflows/web-e2e.yml` `docs/threat-model.md` `crates/xtask/tests/budgets_registry.rs` `perf/budgets.toml`
 Prompt: prompts/08-frontend.md
