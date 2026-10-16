@@ -33,6 +33,7 @@ use support::cluster::{dep, report};
 use support::log_capture::LogCapture;
 use support::rig::T;
 use support::world::World;
+use tokio::sync::Barrier;
 
 /// When the config-server of a test started: after the first inventory (at `T`), before the first change (`T + 1,000`).
 const STARTED: i64 = T + 500;
@@ -185,14 +186,54 @@ impl Server {
     }
 }
 
-/// A gateway that counts how many requests are in flight to each swimlane at once, and lets other tasks run in the middle of each, so
-/// two requests the job made at the same time would overlap.
+/// A rendezvous of the swimlanes: the first request to each swimlane is held open until the first request to every other swimlane has
+/// arrived, so that the requests to different swimlanes are in flight at the same moment because each waits for the others, and not
+/// because the scheduler happened to interleave them (it does so or not depending on how long the database takes, which is what made
+/// this test fail one run in six). The wait is bounded: a job that asks the swimlanes one after the other never brings the second
+/// swimlane's request while the first is held, so the first gives up after `wait` and records that in `missed` (the test says so)
+/// instead of hanging; once one has been missed nobody waits again. A later request to a swimlane that has met goes straight through.
+struct Rendezvous {
+    gate: Barrier,
+    met: Mutex<HashSet<SwimlaneId>>,
+    wait: Duration,
+    missed: Mutex<Option<SwimlaneId>>,
+}
+
+impl Rendezvous {
+    fn new(swimlanes: usize, wait: Duration) -> Self {
+        Self {
+            gate: Barrier::new(swimlanes),
+            met: Mutex::new(HashSet::new()),
+            wait,
+            missed: Mutex::new(None),
+        }
+    }
+
+    /// Hold the calling request open if it is the first to its swimlane, until the first request to each other swimlane is here too.
+    async fn meet(&self, swimlane: &SwimlaneId) {
+        if self.missed().is_some() || !self.met.lock().unwrap().insert(swimlane.clone()) {
+            return;
+        }
+        if tokio::time::timeout(self.wait, self.gate.wait()).await.is_err() {
+            *self.missed.lock().unwrap() = Some(swimlane.clone());
+        }
+    }
+
+    /// The swimlane whose first request waited `wait` for a request to another swimlane and none came, if there was one.
+    fn missed(&self) -> Option<SwimlaneId> {
+        self.missed.lock().unwrap().clone()
+    }
+}
+
+/// A gateway that counts how many requests are in flight to each swimlane at once and to all of them, and holds the first request to
+/// each swimlane until the other swimlane's has arrived ([`Rendezvous`]).
 struct Counting {
     inner: FakeAgentGateway,
     now: Mutex<HashMap<SwimlaneId, usize>>,
     max: Mutex<HashMap<SwimlaneId, usize>>,
     overall: AtomicUsize,
     overall_max: AtomicUsize,
+    rendezvous: Rendezvous,
 }
 
 #[async_trait]
@@ -213,6 +254,10 @@ impl AgentGateway for Counting {
         }
         let all = self.overall.fetch_add(1, Ordering::SeqCst) + 1;
         self.overall_max.fetch_max(all, Ordering::SeqCst);
+        // Counted in before the wait, so that when the rendezvous is met the requests of both swimlanes are in flight and counted.
+        self.rendezvous.meet(s).await;
+        // Other tasks run in the middle of every request: a second request the job made to this swimlane at the same time would show in
+        // `max`. This can only add to a peak, never hide one, and it cannot make the job under test pass or fail by its length.
         for _ in 0..3 {
             tokio::task::yield_now().await;
         }
@@ -984,6 +1029,9 @@ async fn one_request_at_a_time_to_a_swimlane_and_the_swimlanes_are_asked_side_by
         max: Mutex::new(HashMap::new()),
         overall: AtomicUsize::new(0),
         overall_max: AtomicUsize::new(0),
+        // Two swimlanes; seconds to spare for the second's first request to come to a job that does ask side by side (it takes
+        // milliseconds), and under the 10 s a request is given.
+        rendezvous: Rendezvous::new(2, Duration::from_secs(5)),
     });
     let files = many(12);
     let Some(b) = Bed::with_gateway(
@@ -1005,15 +1053,32 @@ async fn one_request_at_a_time_to_a_swimlane_and_the_swimlanes_are_asked_side_by
     let report = b.run().await;
     assert_eq!(report.swimlanes, 2, "{report:?}");
     assert_eq!(report.requests, 12 * 2 + 12, "{report:?}");
+    // Side by side: the first request to each swimlane was held open until the other's came, so both were in flight together.
+    let missed = counting.rendezvous.missed();
+    assert!(
+        missed.is_none(),
+        "the swimlanes were not asked side by side: the first request to {missed:?} waited 5 s for a request to the other swimlane, \
+         and none came (the job asks the swimlanes one after the other)"
+    );
+    // One at a time: never two requests in flight to one swimlane.
     let max = counting.max.lock().unwrap().clone();
-    assert_eq!(max.get(&lane("sit1")), Some(&1), "{max:?}");
-    assert_eq!(max.get(&lane("lane2")), Some(&1), "{max:?}");
+    assert_eq!(
+        max.get(&lane("sit1")),
+        Some(&1),
+        "a swimlane was asked twice at once: {max:?}"
+    );
+    assert_eq!(
+        max.get(&lane("lane2")),
+        Some(&1),
+        "a swimlane was asked twice at once: {max:?}"
+    );
     assert_eq!(
         counting.overall_max.load(Ordering::SeqCst),
         2,
         "two swimlanes were asked at once, one request each"
     );
-    // With one swimlane at a time (`served_verify_lanes = 1`) there is never more than one request in flight.
+    // With one swimlane at a time (`served_verify_lanes = 1`) there is never more than one request in flight. (The rendezvous is spent:
+    // the first request to each swimlane has been made, so nothing waits for the other swimlane now.)
     counting.overall_max.store(0, Ordering::SeqCst);
     let one = ServedVerifier::new(ServedDeps {
         service: RegistryService::new(ReadDeps {
