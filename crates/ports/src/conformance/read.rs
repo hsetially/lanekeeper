@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use domain::{
-    AppName, CompareQuery, CompareRef, ContentSource, DriftQuery, DriftState, EffectiveQuery, FindingsQuery,
-    GridQuery, LogicalFile, NfsPath, Page, Role, ServeRequest, SettingPath, SettingsQuery, ShortText,
-    SwimlaneId, TenantId, TextQuery, UserStatus,
+    AppName, CompareQuery, CompareRef, ContentSource, DriftQuery, DriftState, EffectiveQuery, FileEntry,
+    FindingsQuery, GridQuery, LogicalFile, NfsPath, Page, PathMappingRule, ReverseMapping, Role,
+    ServeRequest, SettingPath, SettingsQuery, ShortText, SwimlaneId, TenantId, TenantSet, TextQuery,
+    UserStatus,
 };
 
 use super::sample::{active, files, nfs, swimlane, user};
@@ -26,6 +27,14 @@ fn text_query(pattern: &str) -> TextQuery {
 pub trait RegistryScenario: RegistryRead {
     /// Make `s` exist with exactly these files, each with its content as the current NFS version.
     async fn seed(&self, s: &SwimlaneId, files: &[(NfsPath, Bytes)]);
+
+    /// Make the tenants deployed to `s` (a swimlane that was just seeded) exactly `tenants`, so that a file whose name ends in
+    /// `-<tenant>` is that tenant's (`contract/08-web`, CG2). Returns `false` when the harness cannot name tenants, which is
+    /// the default: the suite then holds the registry to the rules that hold for any tenant set, and not to the ones that
+    /// name `sit1`.
+    async fn set_tenants(&self, _s: &SwimlaneId, _tenants: &[TenantId]) -> bool {
+        false
+    }
 }
 
 /// - Pending, disabled and role-less users are `Forbidden` on every method (S4).
@@ -39,6 +48,10 @@ pub trait RegistryScenario: RegistryRead {
 ///   off for a swimlane nobody switched on (D85); `drift` lists files only, none in sync unless that state was asked for, in
 ///   one state when one was asked for, below the prefix when there is one, ordered by path, and a page of it never exceeds its
 ///   limit and visits every file exactly once. An implementation that keeps the `Unavailable` default of these fails here.
+/// - `contract/08-web`, CG2: every file a listing returns names its `logical_file` (a base file its own path, a tenant file the
+///   path without `-<tenant>`) and its `tenant` (none for a base file), a folder has neither, and, when the harness can name a
+///   swimlane's tenants, `tx-core-sit1.yml` of tenant `sit1` is the logical file `tx-core.yml`, while `tx-core-sit10.yml` is a
+///   base file. An implementation that forgets the two fields fails here.
 pub async fn registry_read<R: RegistryScenario + ?Sized>(r: &R) {
     let viewer = active(1, Role::Viewer);
     let s1 = swimlane("sit1");
@@ -234,7 +247,9 @@ pub async fn registry_read<R: RegistryScenario + ?Sized>(r: &R) {
         ]
     );
     assert!(root.next.is_none());
+    root.items.iter().for_each(check_logical_fields);
     let under_a = r.tree(&viewer, &s1, &nfs("a"), Page::default()).await.unwrap();
+    under_a.items.iter().for_each(check_logical_fields);
     let names: Vec<_> = under_a.items.iter().map(|e| e.path.as_str().to_owned()).collect();
     assert_eq!(names, ["a/deep", "a/one.yml", "a/two.yml"]);
     let file = under_a.items.iter().find(|e| e.path == any_file).unwrap();
@@ -256,6 +271,7 @@ pub async fn registry_read<R: RegistryScenario + ?Sized>(r: &R) {
             .await
             .unwrap();
         assert!(p.items.len() <= 2, "a page never exceeds its limit");
+        p.items.iter().for_each(check_logical_fields);
         seen.extend(p.items.iter().map(|e| e.path.as_str().to_owned()));
         match p.next {
             Some(c) => cursor = Some(c),
@@ -292,6 +308,7 @@ pub async fn registry_read<R: RegistryScenario + ?Sized>(r: &R) {
     );
 
     drift_and_auto_notify(r, &s1).await;
+    logical_files(r).await;
 
     // Limits.
     let too_many = GridQuery {
@@ -395,6 +412,7 @@ async fn drift_and_auto_notify<R: RegistryScenario + ?Sized>(r: &R, s1: &Swimlan
             "{}: a file in sync is not drift",
             e.path
         );
+        check_logical_fields(e);
     }
     // One page at a time visits the same files in the same order.
     let by_ones = drift_pages(r, s1, &drift_query(None, None), 1).await;
@@ -430,4 +448,138 @@ async fn drift_and_auto_notify<R: RegistryScenario + ?Sized>(r: &R, s1: &Swimlan
         nothing_here.is_empty(),
         "a folder with no files is an empty list, not an error"
     );
+}
+
+/// What `logical_file` and `tenant` of one listed entry must be, whatever the tenants of its swimlane are (CG2): a folder has
+/// neither; a file names its logical file; a base file (no tenant) is its own logical file; a file with a tenant has that
+/// tenant as the suffix of its name, and its logical file is the name without it.
+fn check_logical_fields(e: &FileEntry) {
+    if e.is_dir {
+        assert!(
+            e.logical_file.is_none() && e.tenant.is_none(),
+            "{}: a directory has no logical file and no tenant",
+            e.path
+        );
+        return;
+    }
+    let Some(logical) = &e.logical_file else {
+        panic!("{}: a file names its logical file", e.path);
+    };
+    let Some(tenant) = &e.tenant else {
+        assert_eq!(
+            logical.as_str(),
+            e.path.as_str(),
+            "{}: a base file is its own logical file",
+            e.path
+        );
+        return;
+    };
+    let only = TenantSet::new([tenant.clone()]).unwrap();
+    match PathMappingRule::default().reverse(&e.path, &only).unwrap() {
+        ReverseMapping::Tenant {
+            tenant: suffix,
+            logical: without,
+            ..
+        } => {
+            assert_eq!(
+                &suffix, tenant,
+                "{}: the tenant is the suffix of the name",
+                e.path
+            );
+            assert_eq!(
+                &without, logical,
+                "{}: the logical file of a tenant file is its name without the suffix",
+                e.path
+            );
+        }
+        ReverseMapping::Base { .. } => panic!(
+            "{}: names a tenant that its name does not end with ({tenant})",
+            e.path
+        ),
+    }
+}
+
+/// Every entry of `prefix`, one page of two at a time.
+async fn tree_entries<R: RegistryRead + ?Sized>(r: &R, s: &SwimlaneId, prefix: &NfsPath) -> Vec<FileEntry> {
+    let viewer = active(1, Role::Viewer);
+    let mut all = Vec::new();
+    let mut cursor = None;
+    for _ in 0..1000 {
+        let page = r
+            .tree(&viewer, s, prefix, Page::new(2, cursor.clone()).unwrap())
+            .await
+            .unwrap();
+        all.extend(page.items);
+        match page.next {
+            Some(c) => cursor = Some(c),
+            None => return all,
+        }
+    }
+    panic!("tree paging did not end after 1,000 pages");
+}
+
+/// `logical_file` and `tenant` (CG2) on a swimlane with tenant files. Whatever the tenants are, every entry of every page
+/// follows [`check_logical_fields`]. When the harness can name the tenants (`sit1`), the answers are the ones the path mapping
+/// gives: `-sit1` before the extension is the tenant's suffix, `-sit10` is not, and the name is never split at its first
+/// hyphen.
+async fn logical_files<R: RegistryScenario + ?Sized>(r: &R) {
+    let viewer = active(1, Role::Viewer);
+    let s = swimlane("sit2");
+    r.seed(
+        &s,
+        &files(&[
+            ("tx-core.yml", "a: 1\n"),
+            ("tx-core-sit1.yml", "a: 2\n"),
+            ("tx-core-sit10.yml", "a: 3\n"),
+            ("svc/app.yml", "b: 1\n"),
+            ("svc/app-sit1.yml", "b: 2\n"),
+        ]),
+    )
+    .await;
+    let sit1 = TenantId::parse("sit1").unwrap();
+    let named = r.set_tenants(&s, std::slice::from_ref(&sit1)).await;
+
+    let mut entries = tree_entries(r, &s, &NfsPath::root()).await;
+    entries.extend(tree_entries(r, &s, &nfs("svc")).await);
+    assert!(
+        entries.iter().any(|e| !e.is_dir) && entries.iter().any(|e| e.is_dir),
+        "the suite seeded files and a folder"
+    );
+    entries.iter().for_each(check_logical_fields);
+    if !named {
+        return;
+    }
+
+    let expected: [(&str, Option<&str>, Option<&str>); 6] = [
+        ("tx-core.yml", Some("tx-core.yml"), None),
+        ("tx-core-sit1.yml", Some("tx-core.yml"), Some("sit1")),
+        ("tx-core-sit10.yml", Some("tx-core-sit10.yml"), None),
+        ("svc", None, None),
+        ("svc/app.yml", Some("svc/app.yml"), None),
+        ("svc/app-sit1.yml", Some("svc/app.yml"), Some("sit1")),
+    ];
+    for (path, logical, tenant) in expected {
+        let e = entries
+            .iter()
+            .find(|e| e.path.as_str() == path)
+            .unwrap_or_else(|| panic!("{path} is not listed"));
+        let got = (
+            e.logical_file.as_ref().map(LogicalFile::as_str),
+            e.tenant.as_ref().map(TenantId::as_str),
+        );
+        let why = match tenant {
+            Some(t) => format!("belongs to the tenant {t} (the suffix of its name); its logical file is the name without it"),
+            None => "has no tenant of this swimlane in its name, so it has none, and a file is its own logical file".to_owned(),
+        };
+        assert_eq!(got, (logical, tenant), "{path} {why}");
+    }
+
+    let listed = r
+        .swimlanes(&viewer)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|x| x.id == s)
+        .expect("a seeded swimlane is listed");
+    assert_eq!(listed.tenants, [sit1], "swimlanes lists the tenants it was given");
 }

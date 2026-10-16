@@ -160,6 +160,8 @@ fn scenarios() -> Vec<Scenario> {
                     path: sp("token"),
                     value: value(secret),
                     location: location("token", 2, 2),
+                    logical_file: None,
+                    tenant: None,
                 }]);
             },
             args: || json!({"q": "token", "swimlanes": ["sit1"]}),
@@ -177,6 +179,8 @@ fn scenarios() -> Vec<Scenario> {
                         line: 2,
                         text: format!("token: {secret} # timeout"),
                         ranges: vec![(0, 5)],
+                        logical_file: None,
+                        tenant: None,
                     }],
                     truncated: false,
                 });

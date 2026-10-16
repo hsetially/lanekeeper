@@ -4576,6 +4576,21 @@ components:
           oneOf:
           - $ref: '#/components/schemas/PickupState'
           - type: 'null'
+        logical_file:
+          oneOf:
+          - $ref: '#/components/schemas/LogicalFile'
+          - type: 'null'
+          description: The file without the tenant suffix of its name, so that a tenant file and the base file it
+            replaces have the same value. The same as `path` for a base file, `path` with `-<tenant>` taken out for a
+            tenant file, null for a directory. The registry computes it with the reverse mapping of the path mapping
+            rule and the tenants of the swimlane; the client never derives it. The way back from a logical file to the
+            path in a swimlane is `EffectiveConfig.sources[].path` (`getEffectiveConfig`). Absent when null.
+        tenant:
+          oneOf:
+          - $ref: '#/components/schemas/TenantId'
+          - type: 'null'
+          description: The tenant whose file this is, when its name ends in `-<tenant>` for a tenant of the swimlane.
+            Null for a base file and for a directory. Absent when null.
       additionalProperties: false
       required:
       - path
@@ -5194,6 +5209,16 @@ components:
           $ref: '#/components/schemas/SettingValue'
         location:
           $ref: '#/components/schemas/SettingLocation'
+        logical_file:
+          oneOf:
+          - $ref: '#/components/schemas/LogicalFile'
+          - type: 'null'
+          description: The logical file of `file`, as on `FileEntry`. Absent when null.
+        tenant:
+          oneOf:
+          - $ref: '#/components/schemas/TenantId'
+          - type: 'null'
+          description: The tenant of `file`, as on `FileEntry`. Null for a base file. Absent when null.
       additionalProperties: false
       required:
       - swimlane
@@ -5228,6 +5253,16 @@ components:
           description: The matches in `text`. Each pair is `[start, end)`, half-open, as 0-based UTF-8 byte offsets
             into the `text` of this hit (see `InlineRange`); a client that indexes a JavaScript string converts them
             first.
+        logical_file:
+          oneOf:
+          - $ref: '#/components/schemas/LogicalFile'
+          - type: 'null'
+          description: The logical file of `path`, as on `FileEntry`. Absent when null.
+        tenant:
+          oneOf:
+          - $ref: '#/components/schemas/TenantId'
+          - type: 'null'
+          description: The tenant of `path`, as on `FileEntry`. Null for a base file. Absent when null.
       additionalProperties: false
       required:
       - swimlane
@@ -5279,6 +5314,18 @@ components:
           maxItems: 1000
         detected_at:
           $ref: '#/components/schemas/Timestamp'
+        logical_file:
+          oneOf:
+          - $ref: '#/components/schemas/LogicalFile'
+          - type: 'null'
+          description: The logical file of `path`, as on `FileEntry`. Null when the finding has no path. Absent when
+            null.
+        tenant:
+          oneOf:
+          - $ref: '#/components/schemas/TenantId'
+          - type: 'null'
+          description: The tenant of `path`, as on `FileEntry`. Null for a base file and when the finding has no path.
+            Absent when null.
       additionalProperties: false
       required:
       - id

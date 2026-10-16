@@ -252,6 +252,8 @@ fn the_marker_never_reaches_a_summary(text: &str) {
                 line: 1,
                 text: body.clone(),
                 ranges: Vec::new(),
+                logical_file: None,
+                tenant: None,
             }],
             truncated: false,
         });
@@ -261,6 +263,8 @@ fn the_marker_never_reaches_a_summary(text: &str) {
             path: sp("a.b"),
             value: value(&body),
             location: location("a.b", 1, 1),
+            logical_file: None,
+            tenant: None,
         }]);
         rig.docs.inner.seed(
             domain::DocPath::parse("/git/main/a.md").unwrap(),

@@ -941,6 +941,8 @@ async fn search_settings_pages() {
             path: sp(&format!("timeout.t{n}")),
             value: value(&format!("{n}")),
             location: location(&format!("timeout.t{n}"), n, n),
+            logical_file: None,
+            tenant: None,
         })
         .collect();
     rig.registry.inner.set_setting_hits(hits);
@@ -985,6 +987,8 @@ async fn search_text_truncation_is_reported() {
                 line: 3,
                 text: "timeout: 30".into(),
                 ranges: vec![(0, 7)],
+                logical_file: None,
+                tenant: None,
             },
             TextHit {
                 swimlane: sid("sit1"),
@@ -992,6 +996,8 @@ async fn search_text_truncation_is_reported() {
                 line: 9,
                 text: format!("token: {secret} # timeout"),
                 ranges: vec![(25, 32)],
+                logical_file: None,
+                tenant: None,
             },
             TextHit {
                 swimlane: sid("sit1"),
@@ -999,6 +1005,8 @@ async fn search_text_truncation_is_reported() {
                 line: 1,
                 text: "x".repeat(2000),
                 ranges: vec![(0, 1), (1900, 1901)],
+                logical_file: None,
+                tenant: None,
             },
         ],
         truncated: true,

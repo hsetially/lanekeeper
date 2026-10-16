@@ -164,6 +164,8 @@ fn entry(n: usize, drift: DriftState) -> FileEntry {
         attribution: (drift != DriftState::InSync).then(|| attribution(n)),
         severity: (drift != DriftState::InSync).then_some(Severity::Medium),
         pickup_state: (drift != DriftState::InSync).then_some(PickupState::NeedsNotifyOrRestart),
+        logical_file: None,
+        tenant: None,
     }
 }
 
@@ -247,6 +249,8 @@ impl Fixtures {
                     path: s.path.clone(),
                     lines: LineRange::new(3, 3).unwrap(),
                 },
+                logical_file: None,
+                tenant: None,
             })
             .collect();
         let text_hits = TextResults {
@@ -261,6 +265,8 @@ impl Fixtures {
                     line: u32::try_from(n * 6 + 5).unwrap(),
                     text: l.to_owned(),
                     ranges: vec![(4, 10)],
+                    logical_file: None,
+                    tenant: None,
                 })
                 .collect(),
             truncated: true,
@@ -276,6 +282,8 @@ impl Fixtures {
                 message: st("The tenant copy is missing 3 settings that the base file gained since the copy was made."),
                 locations: (0..4).map(|k| SettingLocation { path: sp(&format!("feature.flags.f{k}.enabled")), lines: LineRange::new(10 + k, 12 + k).unwrap() }).collect(),
                 detected_at: Timestamp::from_unix_millis(1_700_000_000_000),
+                logical_file: None,
+                tenant: None,
             })
             .collect();
         let history = (0..200)

@@ -51,6 +51,16 @@ pub struct FileEntry {
     pub attribution: Option<Attribution>,
     pub severity: Option<Severity>,
     pub pickup_state: Option<PickupState>,
+    /// The file without the tenant suffix of its name: the same as `path` for a base file, and `path` with `-<tenant>`
+    /// taken out for a tenant file. `None` for a directory. The registry computes it with the path mapping's reverse
+    /// direction and the swimlane's tenant set; a client never derives it (`contract/08-web`, CG2). Absent on the wire when
+    /// `None`, and JSON written before the field existed reads as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logical_file: Option<LogicalFile>,
+    /// The tenant whose file this is: set when the name ends in `-<tenant>` for a tenant of the swimlane (Q34). `None` for a
+    /// base file and for a directory. Absent on the wire when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<TenantId>,
 }
 
 /// Which copy of a file to read.

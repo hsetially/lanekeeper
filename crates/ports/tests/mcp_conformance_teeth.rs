@@ -40,6 +40,9 @@ fn file(path: &str, drift: DriftState, is_dir: bool) -> FileEntry {
         attribution: None,
         severity: None,
         pickup_state: None,
+        // A file names its logical file, which for a base file is its own path (CG2). The suite checks every drift entry.
+        logical_file: (!is_dir).then(|| LogicalFile::parse(path).unwrap()),
+        tenant: None,
     }
 }
 
