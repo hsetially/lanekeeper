@@ -415,9 +415,20 @@ fn restart_offers_are_operator_reads_with_bounded_lists() {
             op["x-required-role"], restart_role,
             "{id} needs the role of the restart it prepares"
         );
-        for code in ["200", "400", "401", "403", "404", "default"] {
+        for code in ["200", "400", "401", "403", "default"] {
             assert!(op["responses"].get(code).is_some(), "{id} documents {code}");
         }
+        // `WriteHub::restart_offer` and `config_server_restart_offer` look at no swimlane row: for one the hub does not know
+        // the offer is empty (`ops/restart.rs`). A documented 404 would be a promise that no code keeps.
+        assert!(
+            op["responses"].get("404").is_none(),
+            "{id} never answers 404: an unknown swimlane has an empty offer"
+        );
+        let said = op["description"].as_str().unwrap_or("").to_lowercase();
+        assert!(
+            said.contains("does not know") && said.contains("not an error"),
+            "{id} must say that a swimlane the hub does not know is not an error, and what it gets instead"
+        );
         // A bounded answer with a flag, not a list with a cursor.
         assert!(
             param(&d, op, "query", "cursor").is_none(),
@@ -435,6 +446,21 @@ fn restart_offers_are_operator_reads_with_bounded_lists() {
             "{id} sends Cache-Control: no-store"
         );
     }
+
+    let said = |id: &str| {
+        operation(&d, id).2["description"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase()
+    };
+    assert!(
+        said("getRestartOffer").contains("no services") || said("getRestartOffer").contains("empty"),
+        "an unknown swimlane's restart-all offer is empty"
+    );
+    assert!(
+        said("getConfigServerRestartOffer").contains("`offer` is null"),
+        "an unknown swimlane's config-server offer is null"
+    );
 
     // Restart-all names the change it is for.
     let (_, _, all) = operation(&d, "getRestartOffer");
@@ -454,6 +480,32 @@ fn restart_offers_are_operator_reads_with_bounded_lists() {
         json_body(&d, cs, "200")["$ref"],
         format!("{SCHEMA_REF}ConfigServerRestartOfferResult")
     );
+}
+
+/// `revealValue` answers 503 with `Retry-After: 1` when the registry, the audit log or the store does not answer
+/// (`hub-writes` `routes/reveal.rs`, `RevealError::Unavailable`): nothing is revealed, and the client may ask again.
+#[test]
+fn reveal_value_documents_the_503_it_answers() {
+    let d = doc();
+    let (_, _, op) = operation(&d, "revealValue");
+    assert_eq!(
+        op["responses"]["503"]["$ref"], "#/components/responses/ServiceUnavailable",
+        "revealValue answers 503 with Retry-After"
+    );
+    assert_eq!(
+        op["responses"]["429"]["$ref"], "#/components/responses/TooManyRequests",
+        "and keeps its 429"
+    );
+    let retry = &d["components"]["responses"]["ServiceUnavailable"]["headers"]["Retry-After"];
+    assert_eq!(
+        resolve(&d, retry)["required"],
+        true,
+        "the 503 always sends Retry-After"
+    );
+    let said = op["description"].as_str().unwrap_or("").to_lowercase();
+    for needle in ["503", "retry-after", "no value", "audit"] {
+        assert!(said.contains(needle), "revealValue must say `{needle}`");
+    }
 }
 
 /// The shapes of `hub-writes`' `RestartOffer` and `ConfigServerRestartOffer`, the `Option` around the second, and the words
@@ -586,6 +638,14 @@ fn proposal_additions_are_optional() {
         );
     }
     assert_eq!(json_body(&d, one, "200")["$ref"], format!("{SCHEMA_REF}Proposal"));
+    // A proposal changes with every decision and carries hunks: it is never kept by a cache, like the other reads of this
+    // contract that are not `content`.
+    let cache = &response(&d, one, "200")["headers"]["Cache-Control"]["schema"];
+    assert_eq!(
+        cache["enum"],
+        serde_json::json!(["no-store"]),
+        "getProposal sends Cache-Control: no-store"
+    );
     assert!(
         one["parameters"]
             .as_array()
@@ -666,6 +726,33 @@ fn proposal_additions_are_optional() {
     for name in ["ProposalAction", "ProposalVia"] {
         assert_bounded(&d, name);
     }
+}
+
+/// The route that is mounted today (`hub-writes` `routes/proposals.rs`, `deny_unknown_fields`) refuses a query name it does not
+/// know, so a client that sends `decided` before 06 implements it gets a 400. The document says so, and so does
+/// `docs/interfaces.md`.
+#[test]
+fn list_proposals_says_that_decided_is_not_accepted_yet() {
+    let d = doc();
+    let (_, _, list) = operation(&d, "listProposals");
+    let decided = param(&d, list, "query", "decided").expect("listProposals takes `decided`");
+    let said = decided["description"].as_str().unwrap_or("").to_lowercase();
+    for needle in [
+        "not accepted yet",
+        "refuses every query name it does not know",
+        "400 until",
+        "06",
+    ] {
+        assert!(
+            said.contains(needle),
+            "`decided` must say `{needle}`: the mounted route does not take it yet"
+        );
+    }
+    let interfaces = include_str!("../../../docs/interfaces.md");
+    assert!(
+        interfaces.contains("`decided`") && interfaces.contains("accepted once 06 implements it"),
+        "docs/interfaces.md must say that `decided` is accepted once 06 implements it"
+    );
 }
 
 /// Approving and rejecting a proposal that is not pending (or has expired) is a 422 `not_allowed`, and a decision that

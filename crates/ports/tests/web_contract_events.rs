@@ -439,6 +439,49 @@ fn job_ref_is_the_domain_job_ref() {
     assert_eq!(required_of(inline), required_of(schema));
 }
 
+/// Who receives what: roles are global (D35), so a Viewer sees every event of every swimlane, and the one event that only an
+/// Admin receives is named, so that a Viewer's client does not wait for it. `hub-platform` pins the other direction: the events
+/// that `RoleVisibility` keeps from a Viewer are exactly the ones this paragraph names.
+#[test]
+fn stream_events_says_who_receives_what() {
+    let d = doc();
+    let schemas = &d["components"]["schemas"];
+    let op = &d["paths"]["/api/v1/events"]["get"];
+    let visibility = op["description"]
+        .as_str()
+        .unwrap_or("")
+        .split("\n\n")
+        .find(|p| p.starts_with("Visibility."))
+        .expect("the description of GET /api/v1/events has a `Visibility.` paragraph")
+        .to_lowercase();
+    for (needle, fact) in [
+        ("roles are global", "that there is no per-swimlane scope"),
+        ("`access_request_created`", "the one event for Admins only"),
+        ("admin", "who receives it"),
+        ("viewer", "who does not"),
+        ("replay", "that a replay follows the same rule"),
+        ("`kinds`", "that asking for the kind does not change it"),
+        ("`resync`", "that a resync always passes"),
+        (
+            "`user_sessions_revoked`",
+            "that an internal event is never streamed",
+        ),
+    ] {
+        assert!(
+            visibility.contains(needle),
+            "the Visibility paragraph of GET /api/v1/events must state {fact} (`{needle}`)"
+        );
+    }
+    let restricted = schemas["DomainEventAccessRequestCreated"]["description"]
+        .as_str()
+        .unwrap_or("")
+        .to_lowercase();
+    assert!(
+        restricted.contains("admin") && restricted.contains("only"),
+        "DomainEventAccessRequestCreated must say that only an Admin receives it"
+    );
+}
+
 /// What the web client needs to know to consume the stream (T3): the frames, the resume rules, the limits.
 #[test]
 fn stream_events_describes_the_framing_and_the_units() {

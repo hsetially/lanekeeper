@@ -11,14 +11,17 @@ info:
     cookie session plus a double-submit `X-CSRF-Token` on every non-GET; `Idempotency-Key` on every write; errors
     are `application/problem+json`; lists use keyset pagination (`cursor`, `limit` at most 500); content responses
     carry an `ETag` and honour `If-None-Match`; every operation declares `x-required-role` (`viewer`, `editor`,
-    `operator`, `admin`, or `none` for the four open operations) (S4). Masking (S14b, D79): the server never sends a
-    value the secret scan flags. Wherever a response carries file or doc text, the value is replaced by its marker
+    `operator`, `admin`, or `none` for the four open operations) (S4). Masking (S14b, D79): in the text it returns,
+    the server never sends a value the secret scan flags. Wherever a response carries file or doc text, the value is replaced by its marker
     `[REDACTED: N chars, rule]` (N is the length of the value in characters, rule the name of the scan rule), which
     matches `^\[REDACTED: [0-9]+ chars, [a-z0-9_]+\]$` as a whole value and `\[REDACTED: [0-9]+ chars, [a-z0-9_]+\]`
     inside a text. `FileContent`, `ServedFile` and `DocText` also list where each marker sits in `masks`. If the scan
     cannot finish, the server sends no text: `content_withheld` is true and `text` is null where the schema has them,
     and a problem response where it does not. `revealValue` is the one audited way to see a value. A write that
-    contains a marker is refused with 422 `invalid_content` and an issue of kind `redaction_marker`.'
+    contains a marker is refused with 422 `invalid_content` and an issue of kind `redaction_marker`. Known limitation:
+    a text search (`searchText`, `searchDocs`, `grepDocs`) matches against the stored text, so whether it finds a match
+    tells a reader something about a value that was hidden. This contract does not close it; the owners of the searches
+    do (04 and 05 for file text, 14 for docs).'
   license:
     name: Proprietary
     identifier: LicenseRef-Proprietary
@@ -1473,6 +1476,8 @@ paths:
     get:
       operationId: grepDocs
       summary: Search docs text by pattern
+      description: |-
+        Known limitation (S14b), not closed by this contract. Every line of a hit is masked, but the search matches against the stored text of the docs, so whether a pattern finds anything tells a reader something about a value that was hidden, and a regular expression can narrow it a character at a time. How the docs index treats a flagged value (for example by matching on the masked text) is for owner 14. The MCP search tools sit on the same port.
       tags:
       - docs
       x-required-role: viewer
@@ -1630,6 +1635,8 @@ paths:
     get:
       operationId: searchDocs
       summary: Search docs
+      description: |-
+        Known limitation (S14b), not closed by this contract. Every snippet is masked, but the search matches against the stored text of the docs, so whether a query finds a doc tells a reader something about a value that was hidden. How the docs index treats a flagged value (for example by matching on the masked text) is for owner 14. The MCP search tools sit on the same port.
       tags:
       - docs
       x-required-role: viewer
@@ -1854,6 +1861,8 @@ paths:
         Resume. A connection without `Last-Event-ID` gets no replay and no `resync`: it starts at the live edge, and the page loads what it shows with its ordinary reads. A browser's `EventSource` sends the header itself when it reconnects. With the id of the last event received, the server replays the stored events after it (at most 1,000 events, filtered like the live stream) and then carries on live. If the id is too old, is not a positive integer, or the stored events cannot be read, the server sends one `resync` instead, and the client refetches what it shows.
 
         Limits. At most 5 streams per user: the next request gets 429, and so does any request to a replica that is full. An event is stored as an envelope of at most 4,096 bytes; an event that would not fit is stored as a `resync` instead. Events carry ids and hashes only, never file content (S12).
+
+        Visibility. Roles are global (D35), so a Viewer or above receives the events of every swimlane. One event is for Admins only, `access_request_created` (a user asked for access): a Viewer or an Operator never receives it, live or in a replay, and naming it in `kinds` does not change that, because the stream opens and the frame never comes. `resync` always passes. `user_sessions_revoked` is internal and never streamed (asking for it in `kinds` is 400).
 
         Filters. A `resync` passes both filters, so a filtered client still learns that it lagged. Otherwise `kinds` keeps only the kinds named, and `swimlane` keeps the events of those swimlanes and every event that belongs to no swimlane.
       tags:
@@ -2411,6 +2420,8 @@ paths:
           - true
         description: Only the proposals an admin has decided, which are `approved`, `applied` and `rejected`. Only
           `true` has a meaning, so `false` is refused, and so is a request that also has a `status` (both are 400).
+          Not accepted yet. The `listProposals` route that is mounted today refuses every query name it does not know,
+          so a request with `decided` is 400 until the owner of the write paths (prompt 06) implements the filter.
       - $ref: '#/components/parameters/Cursor'
       - $ref: '#/components/parameters/Limit'
       responses:
@@ -2433,7 +2444,7 @@ paths:
       operationId: getProposal
       summary: One proposal
       description: The same `Proposal`, with its hunks, that `listProposals` returns, so a link to a proposal works
-        when it is not on the first page. It is open to the same role as the list.
+        when it is not on the first page. It is open to the same role as the list. The answer is never cached.
       tags:
       - writes
       x-required-role: viewer
@@ -2442,6 +2453,12 @@ paths:
       responses:
         '200':
           description: OK
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
           content:
             application/json:
               schema:
@@ -2670,6 +2687,8 @@ paths:
     get:
       operationId: searchSettings
       summary: Search setting paths
+      description: Matches a part of a setting path, never the value of a setting, so it is not a way to find out
+        whether a hidden value contains a given string. A hit's value is masked like any other text (S14b).
       tags:
       - search
       x-required-role: viewer
@@ -2719,7 +2738,10 @@ paths:
     get:
       operationId: searchText
       summary: Search file text
-      description: Results are capped by `max_total`; `truncated` says when more exist.
+      description: |-
+        Results are capped by `max_total`; `truncated` says when more exist.
+
+        Known limitation (S14b), not closed by this contract. Every hit's text is masked, but the search matches against the stored text, so whether a pattern finds anything tells a reader something about a value that was hidden, and a regular expression can narrow it a character at a time. How a search treats a flagged value (for example by matching on the masked text) is for owners 04 and 05, the engine's matching and the read API. The MCP search tools sit on the same ports.
       tags:
       - search
       x-required-role: viewer
@@ -2847,7 +2869,8 @@ paths:
       description: What the confirmation of the config-server restart shows (D83, D87). `offer` is null when check C11
         is not open for the swimlane, or when the cluster report lists no Deployment with the configured config-server
         name or several, because the hub does not guess which one is meant. The restart itself is `restartService` on
-        `offer.service`. Operator only, like the restart.
+        `offer.service`. Operator only, like the restart. A swimlane the hub does not know is not an error either.
+        Check C11 is not open for it, so `offer` is null.
       tags:
       - writes
       x-required-role: operator
@@ -2872,8 +2895,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/swimlanes/{id}/drift:
@@ -3249,7 +3270,9 @@ paths:
     post:
       operationId: revealValue
       summary: Reveal a masked value
-      description: Audited. The value is never cached.
+      description: Audited. The value is never cached. The audit event is committed before the value leaves, so when
+        the registry, the audit log or the store does not answer, the request gets 503 with `Retry-After` and no value
+        is sent. More reveals than the limit in a minute get 429 with `Retry-After`.
       tags:
       - swimlanes
       x-required-role: editor
@@ -3286,6 +3309,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/swimlanes/{id}/files/revert:
@@ -3514,7 +3539,9 @@ paths:
       description: What the confirmation of "restart all" shows (D49) for a change to `path`. A file in the root folder
         is read by every service (D82), so the offer lists every service of the swimlane. A file in an application's
         folder is read by that application only, so the offer lists its Deployments. The screen restarts them one
-        request at a time with `restartService`. Operator only, like the restart.
+        request at a time with `restartService`. Operator only, like the restart. A swimlane the hub does not know is
+        not an error. The offer is then empty, with no services, because it is read from the services the hub holds
+        for the swimlane, so there is no 404.
       tags:
       - writes
       x-required-role: operator
@@ -3545,8 +3572,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/swimlanes/{id}/served:
@@ -4502,7 +4527,8 @@ components:
       - to
     DomainEventAccessRequestCreated:
       type: object
-      description: A user asked for access.
+      description: A user asked for access. Only an Admin receives it. A Viewer or an Operator is never sent it, live or
+        in a replay (see the Visibility paragraph of `streamEvents`).
       properties:
         type:
           type: string

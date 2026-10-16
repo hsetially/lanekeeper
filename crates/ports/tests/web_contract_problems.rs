@@ -966,6 +966,7 @@ fn too_many_requests_and_service_unavailable_are_documented_where_the_server_sen
     for (id, code, name) in [
         ("streamEvents", "429", "TooManyRequests"),
         ("revealValue", "429", "TooManyRequests"),
+        ("revealValue", "503", "ServiceUnavailable"),
         ("createAccessRequest", "429", "TooManyRequests"),
         ("putGithubToken", "503", "ServiceUnavailable"),
     ] {

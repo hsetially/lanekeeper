@@ -470,6 +470,10 @@ fn rule_gaps(d: &Value) -> Vec<String> {
             "content_withheld",
             "revealValue",
             "redaction_marker",
+            // What masking does not close, said on the front page and not only in `docs/interfaces.md`.
+            "known limitation",
+            "searchText",
+            "not close it",
         ],
     );
     say(
@@ -523,6 +527,40 @@ fn rule_gaps(d: &Value) -> Vec<String> {
             &["secret scan", "404", "getFileContent"],
         ),
         None => gaps.push("getBlob is not in the document".to_owned()),
+    }
+
+    // A search cannot be masked: whether it finds a match tells a reader something about a value that was hidden. The document
+    // says so where the search is, with its owners, and does not claim more than the masking does. A settings search matches
+    // setting paths and never a value, so it is not one of them and says that.
+    for (id, owners) in [
+        ("searchText", "owners 04 and 05"),
+        ("searchDocs", "owner 14"),
+        ("grepDocs", "owner 14"),
+    ] {
+        match operation(d, id) {
+            Some(op) => say(
+                &mut gaps,
+                id,
+                &own_description(op),
+                &[
+                    "known limitation",
+                    "S14b",
+                    "not closed by this contract",
+                    "a value that was hidden",
+                    owners,
+                ],
+            ),
+            None => gaps.push(format!("{id} is not in the document")),
+        }
+    }
+    match operation(d, "searchSettings") {
+        Some(op) => say(
+            &mut gaps,
+            "searchSettings",
+            &own_description(op),
+            &["setting path", "never the value of a setting"],
+        ),
+        None => gaps.push("searchSettings is not in the document".to_owned()),
     }
     gaps
 }
@@ -830,6 +868,25 @@ fn the_rule_check_finds_a_lost_edit_rule_a_lost_refusal_and_a_lost_blob_rule() {
         d["info"]["description"] = json!("The REST contract.");
     });
     assert!(found(&rule_gaps(&d), "info.description must say"));
+
+    // A search that does not say what it leaks, and one that claims to be safe when it is not asked about values.
+    for id in ["searchText", "searchDocs", "grepDocs"] {
+        let d = damaged(|d| {
+            let op = d["paths"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+                .flat_map(|item| item.as_object_mut().unwrap().values_mut())
+                .find(|op| op["operationId"] == id)
+                .unwrap();
+            op["description"] = json!("Results are capped.");
+        });
+        assert!(found(&rule_gaps(&d), &format!("{id} must say")), "{id}");
+    }
+    let d = damaged(|d| {
+        d["paths"]["/api/v1/search/settings"]["get"]["description"] = json!("Searches settings.");
+    });
+    assert!(found(&rule_gaps(&d), "searchSettings must say"));
 
     let d = damaged(|d| {
         d["components"]["headers"]["ETag"]["description"] = json!("Strong validator.");
