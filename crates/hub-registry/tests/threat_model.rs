@@ -9,6 +9,8 @@
 //! - every test, benchmark or fuzz target that a row names as its proof exists in `crates/hub-registry`, and a test name must belong to a
 //!   function that really is a test, so a row cannot cite a helper or a test nobody wrote (a control that is planned but not built goes in
 //!   the row's prose, and its Proof cell starts with `None`);
+//! - the rows that cover the retention job (what it may delete, the races with a writer, the prune, the bounds, the logs, the role) are all
+//!   there, and each one still names the tests that prove it ([`REQUIRED_ROWS`]), so a row cannot be dropped, or lose its proof, unseen;
 //! - the residual risks name the limits that the registry's tasks and decisions recorded: each topic of [`CARRY_FORWARD`] needs one bullet
 //!   that holds all of its words, so a topic cannot be "covered" by words scattered over unrelated bullets, and the gaps against a security
 //!   requirement are named as gaps.
@@ -39,10 +41,10 @@ const PARTS: [&str; 4] = [
     "### Residual risks",
 ];
 /// The fewest residual risks the section may list. The registry has many limits; a short list means some were left out.
-const MIN_RESIDUAL_RISKS: usize = 24;
+const MIN_RESIDUAL_RISKS: usize = 32;
 
 /// The limits that the registry's tasks and decisions recorded. Each topic needs one residual-risk bullet that contains every needle.
-const CARRY_FORWARD: [(&str, &[&str]); 27] = [
+const CARRY_FORWARD: [(&str, &[&str]); 35] = [
     (
         "parallel swimlane commits are not atomic together",
         &["persist_concurrency", "parallel", "no atomicity"],
@@ -86,8 +88,14 @@ const CARRY_FORWARD: [(&str, &[&str]); 27] = [
         &["A33", "between the sync", "close"],
     ),
     (
-        "sync_windows has no retention yet",
-        &["sync_windows", "retention"],
+        "the sync_windows prune: a late observation finds no window, and a window never closed is never pruned (D117)",
+        &[
+            "sync_windows",
+            "sync_window_retention",
+            "finds no window",
+            "never closed",
+            "D117",
+        ],
     ),
     (
         "denied files: old versions stay, compare_tree and FileObserved name them",
@@ -131,8 +139,73 @@ const CARRY_FORWARD: [(&str, &[&str]); 27] = [
         &["D93", "rule 8", "findings"],
     ),
     (
-        "there is no retention yet: storage grows",
-        &["retention", "blob_refs", "grows"],
+        "retention deletes for good, is bounded per run, and is not wired into the hub yet (A8, A34)",
+        &[
+            "registry-retention",
+            "A8",
+            "A34",
+            "blob_refs",
+            "not registered",
+            "at most 500 blobs",
+        ],
+    ),
+    (
+        "the audit chain can name a hash whose blob is gone (D116)",
+        &[
+            "D116",
+            "hash_before",
+            "whose blob is gone",
+            "blob_refs",
+            "audit_event",
+        ],
+    ),
+    (
+        "a garbage collection is not audited, only counted (D118, A12)",
+        &[
+            "D118",
+            "A12",
+            "not audited",
+            "counts and bytes",
+            "registry_retention_",
+        ],
+    ),
+    (
+        "the plan reads every blob on every run and only gc_scan_timeout bounds it",
+        &[
+            "PLAN_SQL",
+            "touched_at",
+            "gc_scan_timeout",
+            "300,000 blobs",
+            "registry_retention_failures_total",
+            "alert on it",
+        ],
+    ),
+    (
+        "a deleted blob can linger in one replica's cache",
+        &["PgBlobStore", "cache", "immutable"],
+    ),
+    (
+        "only a blob_refs row or a column the job reads pins a blob",
+        &["blob_refs", "without a `put`", "DECISIONS", "text field"],
+    ),
+    (
+        "the planner's statistics window after a bulk load (a contract follow-up)",
+        &[
+            "auto-analyze",
+            "settings_index",
+            "100 to 160 ms",
+            "cannot `ANALYZE`",
+            "autovacuum_analyze_",
+            "contract follow-up",
+        ],
+    ),
+    (
+        "the blob endpoint withholds on the flag and not on the hub's own globs",
+        &["blob endpoint", "extra_deny_globs", "unset flag", "loses its row"],
+    ),
+    (
+        "a read of a collected version logs its hash",
+        &["collected version", "warning", "hash"],
     ),
     (
         "an agent's times and facts are its own",
@@ -141,6 +214,90 @@ const CARRY_FORWARD: [(&str, &[&str]); 27] = [
     (
         "gaps against a security requirement, named",
         &["Gaps against requirements", "S13", "S14b", "S9"],
+    ),
+];
+
+/// Rows that must be in the STRIDE table: the letter, a phrase of the threat that finds the row, and the tests its Proof cell must still
+/// name. These are the rows of the retention job, which deletes data that cannot be had again (T9, D116 to D119).
+const REQUIRED_ROWS: [(&str, &str, &[&str]); 8] = [
+    (
+        "T",
+        "Blob garbage collection deletes a blob that something still needs",
+        &[
+            "gc_never_deletes_a_referenced_blob",
+            "every_reference_class_pins_and_every_look_alike_does_not",
+            "every_column_that_can_hold_a_hash_is_decided",
+            "a_column_added_later_fails_the_check_until_it_is_decided",
+            "keeps_the_last_50_versions_and_180_days",
+            "a_blob_is_not_collected_before_its_grace_period_has_passed",
+            "an_audit_events_hashes_do_not_pin_a_blob_only_a_blob_refs_row_does",
+        ],
+    ),
+    (
+        "T",
+        "has stored a blob and not yet committed the row that references it",
+        &[
+            "a_put_between_the_plan_and_the_delete_protects_the_blob",
+            "an_ingest_that_stored_an_old_blob_and_has_not_yet_committed_its_reference_keeps_it",
+            "a_blob_that_a_put_is_refreshing_is_skipped_and_nobody_waits",
+            "a_put_that_finds_the_delete_locked_waits_and_the_blob_is_stored_again",
+            "a_reference_that_appears_between_the_plan_and_the_delete_keeps_the_blob",
+            "a_new_observation_of_the_same_content_after_the_plan_keeps_the_blob",
+            "a_writer_that_is_referencing_a_blob_makes_the_collector_skip_it",
+            "the_foreign_key_refuses_a_reference_that_arrives_while_the_blob_is_being_deleted",
+            "lock_timeout_leaves_the_sessions_setting_as_it_found_it_and_a_blocked_chunk_waits_for_the_next_run",
+        ],
+    ),
+    (
+        "T",
+        "The prune of `sync_windows` or the staging sweep removes what is still read",
+        &[
+            "only_processed_windows_older_than_the_retention_in_every_time_are_pruned",
+            "the_hold_budget_answers_the_same_before_and_after_a_prune",
+            "a_spent_budget_is_spent_the_same_way_after_the_prune",
+            "stale_staged_parts_are_swept_in_batches_and_the_ones_within_the_ttl_stay",
+        ],
+    ),
+    (
+        "R",
+        "Blobs are deleted and nobody can say that the job did it",
+        &[
+            "dry_run_deletes_nothing",
+            "no_hash_path_or_content_reaches_a_log_line_a_metric_or_an_error",
+        ],
+    ),
+    (
+        "I",
+        "reaches a log line, a metric or an error of the retention job",
+        &["no_hash_path_or_content_reaches_a_log_line_a_metric_or_an_error"],
+    ),
+    (
+        "D",
+        "A retention run does too much or holds too much",
+        &[
+            "a_run_takes_at_most_gc_batch_blobs_and_the_rest_waits_for_the_next",
+            "a_run_takes_at_most_gc_max_bytes",
+            "dry_run_deletes_nothing",
+            "a_dry_run_takes_no_lock",
+            "a_run_stops_at_the_next_chunk_when_the_lease_is_lost",
+            "only_the_lease_holder_runs_the_job",
+        ],
+    ),
+    (
+        "D",
+        "A real collection removes a blob that a read, a search or a shard being built is fetching",
+        &[
+            "a_search_that_is_fetching_a_blob_that_a_real_collection_deletes_still_answers",
+            "after_a_real_collection_everything_reads_as_before_and_the_collected_version_is_not_found",
+        ],
+    ),
+    (
+        "E",
+        "The retention job is used to change what the app role should only read",
+        &[
+            "the_job_runs_as_the_app_role_and_needs_nothing_the_app_role_does_not_have",
+            "a_run_changes_no_table_but_the_ones_it_is_named_for",
+        ],
     ),
 ];
 
@@ -474,6 +631,39 @@ fn proof_problems(doc: &str, known: &BTreeSet<String>) -> Vec<String> {
     problems
 }
 
+/// Problems with the required rows: each of [`REQUIRED_ROWS`] is in the table, under its letter, and still names its tests.
+fn required_row_problems(doc: &str) -> Vec<String> {
+    let Ok(section) = registry_section(doc) else {
+        return vec!["no registry section".to_owned()];
+    };
+    let Some(stride) = part(&section, "### STRIDE") else {
+        return vec!["no STRIDE part".to_owned()];
+    };
+    let rows = match stride_rows(stride) {
+        Ok(rows) => rows,
+        Err(problem) => return vec![problem],
+    };
+    let mut problems = Vec::new();
+    for (letter, phrase, proofs) in REQUIRED_ROWS {
+        let Some(row) = rows
+            .iter()
+            .find(|r| r.letter == letter && r.threat.contains(phrase))
+        else {
+            problems.push(format!("no `{letter}` row has the threat `{phrase}`"));
+            continue;
+        };
+        let named = code_spans(&row.proof);
+        for proof in proofs {
+            if !named.contains(proof) {
+                problems.push(format!(
+                    "the `{letter}` row `{phrase}` no longer names the proof `{proof}`"
+                ));
+            }
+        }
+    }
+    problems
+}
+
 /// Problems with the residual risks: each carried-forward limit has a bullet that holds all of its words.
 fn carry_forward_problems(doc: &str) -> Vec<String> {
     let Ok(section) = registry_section(doc) else {
@@ -530,6 +720,12 @@ fn every_proof_the_stride_table_names_exists() {
 }
 
 #[test]
+fn the_retention_rows_are_there_and_name_their_tests() {
+    let problems = required_row_problems(&threat_model());
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+#[test]
 fn residual_risks_cover_every_limit_the_tasks_and_decisions_recorded() {
     let problems = carry_forward_problems(&threat_model());
     assert!(problems.is_empty(), "{problems:#?}");
@@ -575,6 +771,7 @@ fn planted_gaps_are_found() {
     assert!(requirement_problems(&doc, &defined).is_empty());
     assert!(proof_problems(&doc, &known).is_empty());
     assert!(carry_forward_problems(&doc).is_empty());
+    assert!(required_row_problems(&doc).is_empty());
 
     // No section at all.
     let without = doc.replace(HEADING, "## Something else");
@@ -694,4 +891,54 @@ fn planted_gaps_are_found() {
             .any(|p| p.contains("residual risks are listed")),
         "bullets that are no longer risks are not counted"
     );
+    // A retention row that is dropped, and one that lost a proof.
+    let dropped = doc.replace(
+        "Blob garbage collection deletes a blob that something still needs",
+        "Something else",
+    );
+    assert_ne!(dropped, doc);
+    assert!(
+        required_row_problems(&dropped)
+            .iter()
+            .any(|p| p.contains("Blob garbage collection")),
+        "a section without the row that covers a delete of a referenced blob is refused"
+    );
+    let lost_proof = doc.replace(
+        "`the_foreign_key_refuses_a_reference_that_arrives_while_the_blob_is_being_deleted`, ",
+        "",
+    );
+    assert_ne!(lost_proof, doc);
+    assert!(
+        required_row_problems(&lost_proof)
+            .iter()
+            .any(|p| p.contains("the_foreign_key_refuses_a_reference")),
+        "a retention row that stops naming one of its tests is refused"
+    );
+    let wrong_letter = doc.replace(
+        "| E | The retention job is used",
+        "| D | The retention job is used",
+    );
+    assert_ne!(wrong_letter, doc);
+    assert!(
+        required_row_problems(&wrong_letter)
+            .iter()
+            .any(|p| p.contains("`E` row has the threat")),
+        "a row under another letter is not the row"
+    );
+
+    // The new residual risks: a dropped word is found.
+    for (word, topic) in [
+        ("gc_scan_timeout", "the plan reads every blob"),
+        ("not audited", "a garbage collection is not audited"),
+        ("whose blob is gone", "the audit chain can name a hash"),
+        ("autovacuum_analyze_", "the planner's statistics window"),
+        ("finds no window", "the sync_windows prune"),
+    ] {
+        let without = doc.replace(word, "x");
+        assert_ne!(without, doc, "the plant found no `{word}`");
+        assert!(
+            carry_forward_problems(&without).iter().any(|p| p.contains(topic)),
+            "a document without `{word}` must lose `{topic}`"
+        );
+    }
 }
