@@ -60,6 +60,14 @@ use serde_json::Value;
 use sqlx::{PgPool, Row as _};
 use support::pg::TestDb;
 
+/// `ANALYZE` with exact statistics. It reads a random sample of 300 rows for each unit of the statistics target (30,000 at the default),
+/// so on a table of 80,000 rows the estimate of how many rows a swimlane has moves from run to run (1,851 to 2,069 where there are 2,000),
+/// and where two indexes of a table have the same leading columns and differ by a page or so, which of them costs less moves with it:
+/// `effective_files_pkey` (592 pages) and `effective_files_prefix_idx` (630) cost the same when the estimate falls in a narrow band, the
+/// planner then takes the second, and about one run in ten failed on `read_compare_tree_files_of_directories` (D124). A target of 1,000
+/// samples 300,000 rows, which is every row of every table here, so the statistics are exact and the plans are the same every time.
+const EXACT_ANALYZE: &str = "SET default_statistics_target = 1000; ANALYZE";
+
 /// Tables that hold thousands of rows at design scale. A sequential scan of one of these is a failure.
 const LARGE: [&str; 12] = [
     "findings",
@@ -148,7 +156,7 @@ async fn seeded() -> Option<(TestDb, PgPool)> {
         "INSERT INTO intentional_divergence (swimlane_id, path, nfs_hash, git_hash, marked_by_tid, marked_by_oid) \
          SELECT swimlane_id, path, nfs_hash, nfs_hash, 't', 'o' FROM file_state WHERE hashtext(path || swimlane_id) % 100 = 0",
         "SET session_replication_role = DEFAULT",
-        "ANALYZE",
+        EXACT_ANALYZE,
     ] {
         sqlx::raw_sql(sql).execute(&mut admin).await.unwrap();
     }
@@ -614,7 +622,7 @@ async fn seeded_for_reads() -> Option<(TestDb, PgPool)> {
          SELECT id, 'ns', 'svc' || n, '{\"SPRING_APPLICATION_NAME\": \"core\"}' FROM swimlanes, generate_series(1, 5) n",
         "INSERT INTO service_state (service_id, pickup_state) SELECT id, 'live' FROM services",
         "INSERT INTO path_mappings (repo, repo_root) VALUES ('base', 'config'), ('tenant', 'data/config')",
-        "ANALYZE",
+        EXACT_ANALYZE,
     ] {
         sqlx::raw_sql(sql).execute(&mut admin).await.unwrap();
     }
@@ -1008,7 +1016,7 @@ async fn pickup_queries_are_bounded_and_read_no_large_table_by_a_scan() {
          SELECT 'lane' || l, 'dir' || d, now(), d % 10 <> 0 FROM generate_series(1, 40) l, generate_series(0, 49) d",
         "INSERT INTO folder_mappings (folder_path, namespace, deployment, confirmed) \
          SELECT 'dir' || d, 'csp', 'svc-' || d, true FROM generate_series(0, 49) d",
-        "ANALYZE",
+        EXACT_ANALYZE,
     ] {
         sqlx::raw_sql(sql).execute(&mut admin).await.unwrap();
     }
@@ -1115,7 +1123,7 @@ async fn structure_queries_are_bounded_and_read_no_large_table_by_a_scan() {
         "INSERT INTO findings (swimlane_id, kind, path, severity, message, fingerprint) \
          SELECT 'lane' || l, 'ambiguous_file_name', 'svc/name' || i || '.yml', 'medium', 'm', 'af-' || i \
          FROM generate_series(1, 40) l, generate_series(1, 12) i",
-        "ANALYZE",
+        EXACT_ANALYZE,
     ] {
         sqlx::raw_sql(sql).execute(&mut admin).await.unwrap();
     }
@@ -1252,7 +1260,7 @@ async fn tool_write_queries_have_no_sequential_scan_on_large_tables() {
                 '72f988bf-86f1-41af-91ab-2d7cd011db47', '00000000-0000-4000-8000-000000000001', 'req-' || l || '-' || f, \
                 CASE WHEN f <= 3 THEN now() ELSE now() - interval '1 day' END \
          FROM generate_series(1, 40) l, generate_series(1, 250) f",
-        "ANALYZE",
+        EXACT_ANALYZE,
     ] {
         sqlx::raw_sql(sql).execute(&mut admin).await.unwrap();
     }
@@ -1414,7 +1422,7 @@ async fn attribution_queries_have_no_sequential_scan_on_large_tables() {
                 CASE WHEN n % 10 = 0 THEN 'disabled' ELSE 'active' END FROM generate_series(1, 2000) n",
         "INSERT INTO os_login_user_map (os_login, user_tid, user_oid) \
          SELECT 'local_' || n, '72f988bf-86f1-41af-91ab-2d7cd011db47', lpad(n::text, 36, '0') FROM generate_series(1, 100) n",
-        "ANALYZE",
+        EXACT_ANALYZE,
     ] {
         sqlx::raw_sql(sql).execute(&mut admin).await.unwrap();
     }
