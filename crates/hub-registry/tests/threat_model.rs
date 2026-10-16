@@ -210,8 +210,13 @@ const CARRY_FORWARD: [(&str, &[&str]); 35] = [
         ],
     ),
     (
-        "a read of a collected version logs its hash",
-        &["collected version", "warning", "hash"],
+        "a read of a collected version is counted and nothing says which blob it was",
+        &[
+            "collected version",
+            "registry_read_blob_missing",
+            "NotFound",
+            "lost",
+        ],
     ),
     (
         "an agent's times and facts are its own",

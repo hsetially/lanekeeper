@@ -18,6 +18,7 @@ use domain::{ContentHash, ContentSource, SettingsQuery, ShortText, TextQuery};
 use hub_registry::config::RegistryConfig;
 use hub_registry::{RegistryMetrics, RegistryService, Retention};
 use ports::{ReadError, RegistryRead, content_hash};
+use support::log_capture::LogCapture;
 use support::reads::{Reads, lane, nfs, page};
 use support::retention::retention_of;
 
@@ -213,6 +214,7 @@ async fn after_a_real_collection_everything_reads_as_before_and_the_collected_ve
     let report = job.run_once().await.unwrap();
     assert_eq!(report.deleted_blobs, 1);
 
+    assert_eq!(r.service.metrics().read_blob_missing_count(), 0);
     assert_eq!(
         r.service
             .content(&v, &sit1, &a, ContentSource::Blob { hash: old })
@@ -220,6 +222,11 @@ async fn after_a_real_collection_everything_reads_as_before_and_the_collected_ve
             .unwrap_err(),
         ReadError::NotFound,
         "the version whose blob is gone is not found, and not a failure"
+    );
+    assert_eq!(
+        r.service.metrics().read_blob_missing_count(),
+        1,
+        "a read of a collected version is counted"
     );
     let current = r
         .service
@@ -246,4 +253,62 @@ async fn after_a_real_collection_everything_reads_as_before_and_the_collected_ve
         "the history still lists both versions: it is made of rows, and the audit chain keeps its own record"
     );
     assert_eq!(history_after.items.len(), 2);
+}
+
+/// A collected version is an expected outcome of retention, so a read of one is a counter and not a warning, and the log says nothing of
+/// which blob it was (S10 prefers no hash in a log, and a hash in a WARN on every read of an old version is noise).
+#[tokio::test]
+async fn a_read_of_a_collected_version_moves_a_counter_and_writes_no_warning_and_no_hash() {
+    let Some(mut r) = world().await else {
+        return;
+    };
+    let job = job_of(&r);
+    let old = the_file_changes_and_its_old_version_becomes_collectable(&mut r, true).await;
+    assert_eq!(job.run_once().await.unwrap().deleted_blobs, 1);
+    let v = Reads::viewer();
+    let (sit1, a) = (lane("sit1"), nfs("a.yml"));
+    let metrics = r.service.metrics().clone();
+    assert_eq!(metrics.read_blob_missing_count(), 0);
+
+    let (capture, _guard) = LogCapture::install();
+    for _ in 0..3 {
+        assert_eq!(
+            r.service
+                .content(&v, &sit1, &a, ContentSource::Blob { hash: old })
+                .await
+                .unwrap_err(),
+            ReadError::NotFound
+        );
+    }
+    let log = capture.text();
+    assert_eq!(metrics.read_blob_missing_count(), 3, "each read is counted");
+    assert!(
+        !log.contains("WARN") && !log.contains("ERROR"),
+        "an expected outcome is not a warning: {log}"
+    );
+    for word in [
+        old.to_string(),
+        "a.yml".to_owned(),
+        "needle".to_owned(),
+        "Server".to_owned(),
+    ] {
+        assert!(!log.contains(&word), "`{word}` is in a log line: {log}");
+    }
+    let mut registry = prometheus_client::registry::Registry::default();
+    metrics.register(&mut registry);
+    let mut exposition = String::new();
+    prometheus_client::encoding::text::encode(&mut exposition, &registry).unwrap();
+    assert!(
+        exposition.contains("registry_read_blob_missing_total 3"),
+        "{exposition}"
+    );
+    assert!(!exposition.contains(&old.to_string()));
+    // The current version still reads, and does not count.
+    let current = r
+        .service
+        .content(&v, &sit1, &a, ContentSource::Nfs)
+        .await
+        .unwrap();
+    assert_eq!(current.bytes.as_deref(), Some(NEW.as_bytes()));
+    assert_eq!(metrics.read_blob_missing_count(), 3);
 }

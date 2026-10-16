@@ -593,6 +593,7 @@ pub struct RegistryMetrics {
     read_cache: Family<ReadCacheLabels, Counter>,
     read_search_truncated: Counter,
     blob_withheld: Counter,
+    read_blob_missing: Counter,
     severity_rules_skipped: Counter,
     severity_rules_active: Gauge,
     pickup_lanes: Family<PickupLabels, Counter>,
@@ -678,6 +679,7 @@ impl Default for RegistryMetrics {
             read_cache: Family::default(),
             read_search_truncated: Counter::default(),
             blob_withheld: Counter::default(),
+            read_blob_missing: Counter::default(),
             severity_rules_skipped: Counter::default(),
             severity_rules_active: Gauge::default(),
             pickup_lanes: Family::default(),
@@ -936,8 +938,13 @@ impl RegistryMetrics {
         );
         registry.register(
             "registry_blob_withheld",
-            "Blob requests refused because the hash is the content of a denied file",
+            "Blob requests refused because the hash is the content of a denied file, or because the policy could not decide it (too many files have had the content)",
             self.blob_withheld.clone(),
+        );
+        registry.register(
+            "registry_read_blob_missing",
+            "Reads of a version whose blob the store no longer has (collected by retention, or lost): answered NotFound",
+            self.read_blob_missing.clone(),
         );
         registry.register(
             "registry_severity_rules_skipped",
@@ -1448,6 +1455,12 @@ impl RegistryMetrics {
         self.blob_withheld.inc();
     }
 
+    /// A read found the row of a version and not its blob in the store: the version was collected by retention (an expected outcome, D116)
+    /// or the store lost it. The caller gets `NotFound`; this counts it, and nothing says which blob (S10).
+    pub(crate) fn read_blob_missing(&self) {
+        self.read_blob_missing.inc();
+    }
+
     /// A set of severity rules was compiled: `active` rows are in effect and `skipped` were not (T9, D103).
     pub(crate) fn severity_rules(&self, active: usize, skipped: usize) {
         self.severity_rules_active
@@ -1568,6 +1581,11 @@ impl RegistryMetrics {
     /// Blob requests refused for a denied file's hash, for tests.
     pub fn blob_withheld_count(&self) -> u64 {
         self.blob_withheld.get()
+    }
+
+    /// Reads that found a version's row and not its blob, for tests.
+    pub fn read_blob_missing_count(&self) -> u64 {
+        self.read_blob_missing.get()
     }
 
     /// Text searches that were cut by a cap, for tests.
@@ -1894,6 +1912,9 @@ mod tests {
         m.read_search_truncated();
         m.blob_withheld();
         assert_eq!(m.blob_withheld_count(), 1);
+        assert_eq!(m.read_blob_missing_count(), 0);
+        m.read_blob_missing();
+        assert_eq!(m.read_blob_missing_count(), 1);
         assert_eq!(m.read_count(ReadOp::Grid, ReadOutcome::Ok), 1);
         assert_eq!(m.read_count(ReadOp::Tree, ReadOutcome::Ok), 0);
         assert_eq!(m.read_cache_count(CacheName::Rows, CacheResult::Hit), 1);

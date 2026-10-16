@@ -32,7 +32,7 @@ use domain::{
 use engine::{classify, detect_format};
 use ports::{GitError, ReadError};
 use sqlx::Row;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::rows;
 use super::service::Inner;
@@ -224,8 +224,10 @@ impl Inner {
         } else if let Some(b) = self.get_blob(&resolved.hash).await? {
             b
         } else {
-            // The row says the content exists and the store does not have it: the hash goes to the log, not to the caller.
-            warn!(hash = %resolved.hash, "a file's blob is missing from the store");
+            // The row says the content exists and the store does not have it. After retention that is an expected outcome (a version that
+            // was collected, D116), so it is counted and not warned about, and neither the log nor the metric says which blob (S10).
+            self.metrics.read_blob_missing();
+            debug!("a version's blob is not in the store");
             return Err(ReadError::NotFound);
         };
         let format = resolved.format.unwrap_or_else(|| detect_format(&bytes));
