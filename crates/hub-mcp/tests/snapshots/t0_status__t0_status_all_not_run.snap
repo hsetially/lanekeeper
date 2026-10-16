@@ -1,0 +1,35 @@
+---
+source: crates/hub-mcp/tests/t0_status.rs
+expression: output
+---
+T0, the Cursor 3.22.12 compatibility test. Source: D91 in docs/decisions.md
+overall: NOT RUN
+  Windows: 0 of 25 cells recorded (PASS 0, FAIL 0, NOT RUN 25)
+  macOS: 0 of 25 cells recorded (PASS 0, FAIL 0, NOT RUN 25)
+rows (Windows | macOS):
+  META.cursor_build          NOT RUN | NOT RUN
+  META.recorded_by           NOT RUN | NOT RUN
+  META.date                  NOT RUN | NOT RUN
+  C1.discovery               NOT RUN | NOT RUN
+  C1.mirror_needed           NOT RUN | NOT RUN
+  C1.entra_accepts           NOT RUN | NOT RUN
+  C1.tool_call               NOT RUN | NOT RUN
+  C1.headers                 NOT RUN | NOT RUN
+  C2.prompt                  NOT RUN | NOT RUN
+  C2.accept                  NOT RUN | NOT RUN
+  C2.decline                 NOT RUN | NOT RUN
+  C2.cancel                  NOT RUN | NOT RUN
+  C2.no_hang                 NOT RUN | NOT RUN
+  C3.read_runs               NOT RUN | NOT RUN
+  C3.write_prompts           NOT RUN | NOT RUN
+  O.protocol_version         NOT RUN | NOT RUN
+  O.elicitation_capability   NOT RUN | NOT RUN
+  O.structured_content       NOT RUN | NOT RUN
+  O.error_vs_output_schema   NOT RUN | NOT RUN
+  O.session_404              NOT RUN | NOT RUN
+  O.origin_header            NOT RUN | NOT RUN
+  O.refresh                  NOT RUN | NOT RUN
+  D.auth                     NOT RUN | NOT RUN
+  D.confirm                  NOT RUN | NOT RUN
+  D.content                  NOT RUN | NOT RUN
+NOT RUN is not a pass. An agent cannot run Cursor 3.22.12 and never fills a cell; a human does, on Windows and on macOS (crates/hub-mcp/t0/README.md).

@@ -1,0 +1,9 @@
+{
+  "name": "lanekeeper",
+  "version": "0.1.0",
+  "description": "Lanekeeper for Cursor: ask about swimlane configs, drift, inconsistencies and the config docs, and propose changes that always wait for your confirmation.",
+  "author": {
+    "name": "Lanekeeper"
+  },
+  "keywords": ["lanekeeper", "config", "swimlane", "mcp"]
+}

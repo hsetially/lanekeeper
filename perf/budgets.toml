@@ -376,7 +376,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.list_swimlanes"
@@ -386,7 +386,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.get_swimlane"
@@ -396,7 +396,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.list_files"
@@ -406,7 +406,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.read_file"
@@ -416,7 +416,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.get_effective_config"
@@ -426,7 +426,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.compare"
@@ -436,7 +436,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.compare_tree"
@@ -446,7 +446,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.compare_grid"
@@ -456,7 +456,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.search_settings"
@@ -466,7 +466,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.search_text"
@@ -476,7 +476,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.find_inconsistencies"
@@ -486,7 +486,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.get_drift"
@@ -496,7 +496,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.get_pending_restarts"
@@ -506,7 +506,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.get_history"
@@ -516,7 +516,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.search_docs"
@@ -526,7 +526,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.read_doc"
@@ -536,7 +536,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.grep_docs"
@@ -546,7 +546,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.get_docs_for_file"
@@ -556,7 +556,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.get_feature_status"
@@ -566,7 +566,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P9.get_served_config"
@@ -576,7 +576,7 @@ statistic = "p95"
 threshold = 300
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P10.initial_js_gzip_kb"

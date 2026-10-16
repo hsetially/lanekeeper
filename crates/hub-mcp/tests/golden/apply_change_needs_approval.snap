@@ -1,0 +1,9 @@
+---
+source: crates/hub-mcp/tests/mcp_auth/confirm_golden.rs
+---
+Apply a draft to a file in swimlane sit1?
+File (supplied by the assistant): "tx-infinity-api/tx-infinity-core-sit1.yml"
+Draft status: draft. Changes: 3 settings in 0 hunks. Severity: high.
+Effect: 2 services pick it up within their cache time; 1 service needs a notification or a restart.
+Your account needs approval: after you confirm, this goes to an admin as a proposal and is not carried out now.
+Review it in the web UI: https://hub.example.test/drafts/draft-1

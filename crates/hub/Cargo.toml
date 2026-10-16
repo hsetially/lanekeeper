@@ -21,6 +21,7 @@ path = "src/main.rs"
 domain.workspace = true
 ports.workspace = true
 hub-platform.workspace = true
+hub-mcp.workspace = true
 async-trait.workspace = true
 aws-lc-rs.workspace = true
 axum.workspace = true

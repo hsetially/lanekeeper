@@ -524,6 +524,8 @@ fn only_budgets_with_a_harness_are_registered() {
     // (T11, `cargo bench -p hub-platform --bench ack_throughput`: the hub acknowledging a replayed spool).
     // Prompt 03a (identity): `cargo bench -p hub-identity` produces P7.auth_middleware and P7.auth_middleware_cold (T3) and
     // P12.audit_record (T5).
+    // Prompt 07 (MCP server): `cargo bench -p hub-mcp` produces P9 (the rotation over the read tools, `hub-mcp/read_tools`) and
+    // P9.<tool> for the 20 read tools (T2), on fakes at target scale: this layer's share of a call (plan A7).
     // Prompt 04 (fact engine): `cargo bench -p engine` produces P6.parse_flatten (T2), P7.compare and P7.engine_grid (T5),
     // P7.engine_text_search (T7), P6.index_settings (T3; threshold set by a human, plans/04-fact-engine.blockers.md), and P6,
     // P5.engine_base and P5.engine_per_file_per_swimlane (T8; the last is a harness that writes `target/perf-results/`).
@@ -557,6 +559,27 @@ fn only_budgets_with_a_harness_are_registered() {
         "P13",
         "P15.spool_replay_versions_per_s",
         "P15.hub_ack_versions_per_s",
+        "P9",
+        "P9.list_swimlanes",
+        "P9.get_swimlane",
+        "P9.list_files",
+        "P9.read_file",
+        "P9.get_effective_config",
+        "P9.compare",
+        "P9.compare_tree",
+        "P9.compare_grid",
+        "P9.search_settings",
+        "P9.search_text",
+        "P9.find_inconsistencies",
+        "P9.get_drift",
+        "P9.get_pending_restarts",
+        "P9.get_history",
+        "P9.search_docs",
+        "P9.read_doc",
+        "P9.grep_docs",
+        "P9.get_docs_for_file",
+        "P9.get_feature_status",
+        "P9.get_served_config",
     ];
     let reg = registry();
     let registered: BTreeSet<&str> = reg

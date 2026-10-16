@@ -1,0 +1,8 @@
+---
+source: crates/hub-mcp/tests/mcp_auth/confirm_golden.rs
+---
+Delete a file from swimlane sit1?
+File (supplied by the assistant): "channels/web/app-sit1.yml"; the version to delete starts with cccccccccccc.
+Changes: 1 setting differs in what the services get.
+Effect: services that use the folder "channels/web" read it; the base file takes over for this tenant.
+Review it in the web UI: https://hub.example.test/swimlanes/sit1/files?path=channels%2Fweb%2Fapp-sit1.yml
