@@ -1,0 +1,106 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: plan
+---
+[
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "swimlanes"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "agents"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "agent_acks"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "swimlane_registry"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "projects"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "users"
+  },
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "sync_windows"
+  },
+  {
+    "node": "Aggregate"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "swimlane_tenants"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "agent_connections"
+  },
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "adoptions"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "adoptions"
+  },
+  {
+    "node": "Aggregate"
+  },
+  {
+    "node": "Aggregate"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "service_state"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "services"
+  }
+]

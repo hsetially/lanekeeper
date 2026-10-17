@@ -1,0 +1,34 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: observations
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Result"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "file_observations"
+  },
+  {
+    "index": "file_observations_history_idx",
+    "node": "Bitmap Index Scan"
+  },
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "index": "file_observations_history_idx",
+    "node": "Index Scan",
+    "relation": "file_observations"
+  }
+]

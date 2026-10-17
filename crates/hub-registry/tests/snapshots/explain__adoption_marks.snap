@@ -1,0 +1,16 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: adopt_marks
+---
+[
+  {
+    "arbiters": [
+      "intentional_divergence_pkey"
+    ],
+    "node": "ModifyTable",
+    "relation": "intentional_divergence"
+  },
+  {
+    "node": "Function Scan"
+  }
+]

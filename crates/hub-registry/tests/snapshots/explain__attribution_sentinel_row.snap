@@ -1,0 +1,30 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: sentinel
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "ModifyTable",
+    "relation": "sentinels"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "sentinels"
+  },
+  {
+    "node": "Hash Join"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "swimlanes"
+  },
+  {
+    "node": "Hash"
+  },
+  {
+    "node": "CTE Scan"
+  }
+]

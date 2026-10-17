@@ -1,0 +1,29 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: pending
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Aggregate"
+  },
+  {
+    "node": "Hash Join"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "services"
+  },
+  {
+    "node": "Hash"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "service_state"
+  }
+]

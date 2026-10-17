@@ -529,6 +529,21 @@ fn only_budgets_with_a_harness_are_registered() {
     // Prompt 04 (fact engine): `cargo bench -p engine` produces P6.parse_flatten (T2), P7.compare and P7.engine_grid (T5),
     // P7.engine_text_search (T7), P6.index_settings (T3; threshold set by a human, plans/04-fact-engine.blockers.md), and P6,
     // P5.engine_base and P5.engine_per_file_per_swimlane (T8; the last is a harness that writes `target/perf-results/`).
+    // Prompt 05 (registry): `cargo bench -p hub-registry` produces P5 (`incremental_recompute_base`, criterion), P5.per_file_per_swimlane,
+    // P6.hub_full_recompute, P1.hub_delta_to_drift and P2.hub_head_moved_to_drift (T3; harnesses that write `target/perf-results/`),
+    // P15.registry_ingest_versions_per_s (T1, `ingest_versions_per_s`: the registry applying a replayed spool over the real audit
+    // log and event bus; registered once the batch calls of the ports brought it from 587 to over 1,000, see
+    // plans/05-registry-read-api.blockers.md), and P6.adoption_rank (T5, `adoption_rank_per_swimlane`: `AdoptionService::start` over
+    // each of the 40 swimlanes of the target scale, 120 samples; p95 48.8 ms on a quiet machine against the 5,000 ms of the prompt),
+    // and the read API of T6, every one through the router over the 40 swimlanes of the target scale: P7.swimlane_list, P7.file_tree,
+    // P7.file_content_cached, P7.file_content_cold, P7.compare_api, P7.grid (cold: the service has nothing cached), P7.whole_swimlane_compare,
+    // P7.settings_search and P12.steady_state_query_ms (every read statement, p95 under 50 ms), and P7.text_search, whose registered case is
+    // the steady state: the first search after an applied change to one swimlane on a warmed hub, with the other states (cold, rebuilt-all,
+    // warm, the warm-up settled) logged by the same bench (D97, approved by the human on 2026-10-15).
+    // And P14 (T7, `sentinel_attribution`: a sentinel's record attributes a change within 30 s, with the leased job running at its 5 s
+    // interval, at the scale of one target swimlane with 40,000 older observations and 300,000 records; thirty samples, half with the record
+    // first (they wait for the job's next run) and half with the scan first (the sink attributes in its own transaction), the pauses between
+    // them drawn so that they fall on every phase of the job's clock: p95 4.7 s and at most 5.0 s on a quiet machine, against 30 s).
     // Prompt 06 (write paths): `cargo bench -p hub-writes` produces P8 (T1, `edit_applied`: the whole `edit` call through a fake
     // agent, over a real Postgres) and P12.hub_writes_queries (T1, `write_queries`: the statements of the write path at target scale).
     const REGISTERED: &[&str] = &[
@@ -559,6 +574,24 @@ fn only_budgets_with_a_harness_are_registered() {
         "P13",
         "P15.spool_replay_versions_per_s",
         "P15.hub_ack_versions_per_s",
+        "P5",
+        "P5.per_file_per_swimlane",
+        "P6.hub_full_recompute",
+        "P1.hub_delta_to_drift",
+        "P2.hub_head_moved_to_drift",
+        "P15.registry_ingest_versions_per_s",
+        "P6.adoption_rank",
+        "P7.swimlane_list",
+        "P7.file_tree",
+        "P7.file_content_cached",
+        "P7.file_content_cold",
+        "P7.compare_api",
+        "P7.grid",
+        "P7.whole_swimlane_compare",
+        "P7.settings_search",
+        "P7.text_search",
+        "P12.steady_state_query_ms",
+        "P14",
         "P9",
         "P9.list_swimlanes",
         "P9.get_swimlane",

@@ -1,0 +1,22 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: marks
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Hash Join"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "intentional_divergence"
+  },
+  {
+    "node": "Hash"
+  },
+  {
+    "node": "Function Scan"
+  }
+]

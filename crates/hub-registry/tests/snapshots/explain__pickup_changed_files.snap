@@ -1,0 +1,28 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: changed
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "file_state"
+  },
+  {
+    "index": "file_state_seq_idx",
+    "node": "Bitmap Index Scan"
+  },
+  {
+    "index": "file_observations_pkey",
+    "node": "Index Scan",
+    "relation": "file_observations"
+  }
+]

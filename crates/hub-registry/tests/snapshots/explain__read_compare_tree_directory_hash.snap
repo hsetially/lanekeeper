@@ -1,0 +1,11 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: plan
+---
+[
+  {
+    "index": "effective_tree_hashes_pkey",
+    "node": "Index Scan",
+    "relation": "effective_tree_hashes"
+  }
+]

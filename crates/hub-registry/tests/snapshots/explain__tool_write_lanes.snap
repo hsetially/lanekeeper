@@ -1,0 +1,20 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: lanes
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Aggregate"
+  },
+  {
+    "index": "tool_write_registrations_age_idx",
+    "node": "Index Scan",
+    "relation": "tool_write_registrations"
+  }
+]

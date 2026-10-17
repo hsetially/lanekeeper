@@ -1,0 +1,16 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: email
+---
+[
+  {
+    "node": "Aggregate"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "users"
+  }
+]

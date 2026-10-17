@@ -1,0 +1,80 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: from_batch
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Result"
+  },
+  {
+    "node": "Unique"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Append"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "sentinel_records_y2026m09"
+  },
+  {
+    "index": "sentinel_records_y2026m09_pkey",
+    "node": "Bitmap Index Scan"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "sentinel_records_y2026m10"
+  },
+  {
+    "index": "sentinel_records_y2026m10_pkey",
+    "node": "Bitmap Index Scan"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "sentinel_records_y2026m11"
+  },
+  {
+    "index": "sentinel_records_y2026m11_pkey",
+    "node": "Bitmap Index Scan"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "sentinel_records_y2026m12"
+  },
+  {
+    "index": "sentinel_records_y2026m12_pkey",
+    "node": "Bitmap Index Scan"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "sentinel_records_default"
+  },
+  {
+    "index": "sentinel_records_default_pkey",
+    "node": "Bitmap Index Scan"
+  },
+  {
+    "index": "file_observations_history_idx",
+    "node": "Index Scan",
+    "relation": "file_observations"
+  },
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "index": "file_observations_history_idx",
+    "node": "Index Scan",
+    "relation": "file_observations"
+  }
+]

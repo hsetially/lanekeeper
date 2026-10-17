@@ -1,0 +1,10 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: admin_map
+---
+[
+  {
+    "node": "Seq Scan",
+    "relation": "os_login_user_map"
+  }
+]

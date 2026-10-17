@@ -1,0 +1,16 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: upsert_baselines
+---
+[
+  {
+    "arbiters": [
+      "baselines_pkey"
+    ],
+    "node": "ModifyTable",
+    "relation": "baselines"
+  },
+  {
+    "node": "Function Scan"
+  }
+]

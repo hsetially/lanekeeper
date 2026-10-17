@@ -1,0 +1,1945 @@
+//! Every limit and window of the registry, in one place (rule 5: everything is bounded).
+//!
+//! Nothing in this crate reads an environment variable: the hub builds a [`RegistryConfig`] from its settings and hands it
+//! over, and a test builds one directly. Every field has a default that the tests pin, and [`RegistryConfig::validate`]
+//! refuses a combination that would break a contract (a deny glob that is not text a `ShortText` can carry, a chunk of zero
+//! paths).
+
+use std::time::Duration;
+
+use engine::{DEFAULT_DENY_GLOBS, DenyMatcher};
+use hub_platform::blobs::store::{MIN_RETENTION_GRACE, TOUCH_INTERVAL};
+use ports::{MAX_BLOB_BYTES, MAX_GET_MANY};
+
+/// The environment variables whose values the agent may report (D88). Anything else is a name only.
+pub const DEFAULT_ENV_ALLOWLIST: [&str; 4] = [
+    "SPRING_APPLICATION_NAME",
+    "SPRING_PROFILES_ACTIVE",
+    "CONFIG_CLIENT_CACHE_TTL",
+    "CONFIG_CLIENT_MONITOR_ACTIVEMQ_ENABLED",
+];
+
+/// Why a [`RegistryConfig`] was refused. Names the field, never a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ConfigError {
+    #[error("setting {0} is out of its range")]
+    OutOfRange(&'static str),
+    #[error("setting {0} is not valid")]
+    Invalid(&'static str),
+}
+
+/// Limits and windows. `Default` is the production setting.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegistryConfig {
+    // ---------------------------------------------------------------------------------------------- database
+    /// One database call, and one wait for a connection. A statement that runs longer is also cancelled by the server.
+    pub query_timeout: Duration,
+    /// One put into the blob store (a file of up to `max_file_bytes`). A store that does not answer fails the message instead of
+    /// holding the swimlane's lock for ever (rule 5).
+    pub blob_timeout: Duration,
+
+    // ---------------------------------------------------------------------------------------------- AgentConfig
+    /// How often the agent walks the tree (D63).
+    pub scan_interval_secs: u32,
+    /// How often the agent sends its Merkle root (P3).
+    pub heartbeat_interval_secs: u32,
+    /// The largest file the agent reads and sends (2 MiB, `docs/performance.md`).
+    pub max_file_bytes: u64,
+    /// Deny globs the admin adds to the built-in ones (D79). They can add to the built-in list and never remove from it.
+    pub extra_deny_globs: Vec<String>,
+    /// Environment variables whose values are kept (D88). A value of any other variable is dropped, whatever the agent sends.
+    pub env_allowlist: Vec<String>,
+
+    // ---------------------------------------------------------------------------------------------- scan deltas
+    /// Most messages in one logical delta.
+    pub max_delta_parts: usize,
+    /// Most file entries (versions) and removals in one logical delta, over all its parts.
+    pub max_delta_entries: usize,
+    /// Most file bytes in one logical delta, over all its parts.
+    pub max_delta_bytes: u64,
+    /// Paths applied in one transaction. Small, so that the audit chain's lock is held briefly (A12).
+    pub chunk_paths: usize,
+    /// Swimlanes with a live stream on this replica.
+    pub max_streams: usize,
+    /// How far in the future an `observed_at` may be before it is clamped to the hub's clock. A wrong agent clock must not
+    /// make every later change look older than the stored one.
+    pub max_clock_skew: Duration,
+    /// How long a staged part waits for the rest of its delta before it is swept.
+    pub staging_ttl: Duration,
+
+    // ---------------------------------------------------------------------------------------------- cluster reports
+    pub max_services_per_report: usize,
+    pub max_pods_per_service: usize,
+    pub max_env_names_per_service: usize,
+    pub max_release_hints_per_report: usize,
+    pub max_sync_windows_per_report: usize,
+
+    // ---------------------------------------------------------------------------------------------- indexes (T2)
+    /// Threads of the registry's rayon pool, which parses blobs for the settings index (rule 4: CPU work is rayon inside
+    /// `spawn_blocking`). Small on purpose: indexing is off the acknowledgement path and must not starve the readers.
+    pub pool_threads: usize,
+    /// Blob hashes waiting for the settings index on this replica. A hash offered to a full queue is dropped and counted; the
+    /// sweeper finds it again, so the bound costs latency and never an index row.
+    pub index_queue: usize,
+    /// Blobs indexed per transaction (and read from the blob store per call).
+    pub index_batch: usize,
+    /// How often the leased sweeper looks for current structured blobs that have no index marker.
+    pub index_sweep_interval: Duration,
+    /// The most blobs one sweep run indexes, so a run ends well inside its `max_run`; the next run goes on.
+    pub index_sweep_max_blobs: usize,
+    /// Rows per statement when the registry writes many rows at once (settings rows, effective files and directories).
+    pub rows_per_statement: usize,
+    /// The most paths of one swimlane that a moved Git head may name before the swimlane is recomputed whole (A21).
+    pub max_affected_paths: usize,
+    /// The bytes the cache of normalised Git hashes may weigh (A23). A key weighs its text and a fixed overhead.
+    pub git_hash_cache_bytes: u64,
+    /// One Git operation (a tree diff, a tree index, a blob read), as seen by the caller. The operation itself runs in
+    /// `spawn_blocking` and cannot be cancelled, so a timeout frees the caller and not the thread.
+    pub git_timeout: Duration,
+
+    // ---------------------------------------------------------------------------------------------- the pipeline (T3)
+    /// How long a swimlane's changes are gathered before they are recomputed together (D66, P13): a burst is one recompute.
+    pub coalesce_window: Duration,
+    /// Swimlanes with changes waiting in the coalescer. Past it a swimlane's changes are not kept; the next reconcile finds them.
+    pub max_coalesced_lanes: usize,
+    /// Swimlanes whose state the pipeline keeps in memory (hashes and findings, never content). The least recently used goes first.
+    pub max_lanes_in_memory: usize,
+    /// How often the pipeline compares its memory with the database and with Git, and so finds what an event missed.
+    pub reconcile_interval: Duration,
+    /// How often it looks for a swimlane whose first inventory is done and that has not been computed yet.
+    pub inventory_poll_interval: Duration,
+    /// In-process signals (a baseline or a mark changed) waiting for the pipeline. A full queue drops the signal and counts it; the
+    /// reconcile finds the change.
+    pub signal_queue: usize,
+    /// How long one run of the pipeline job goes on before it ends and starts again (always shorter than the job's `max_run`).
+    pub pipeline_run: Duration,
+    /// Swimlane commits in flight at once (each is one transaction, on its own connection). A push to the base repository concerns every
+    /// swimlane, and what a commit mostly waits for is the disk.
+    pub persist_concurrency: usize,
+    /// How often the leased nightly job runs, and how many swimlanes it recomputes in one batch (a batch holds the content of
+    /// the distinct files of its swimlanes in memory).
+    pub nightly_interval: Duration,
+    pub nightly_batch_lanes: usize,
+
+    // ---------------------------------------------------------------------------------------------- syncs (T4)
+    /// How long `record_sync` waits for the full scan it asked for to be applied before it gives up. The scan stays requested (the
+    /// swimlane is flagged, so the next heartbeat asks again) and nothing is written: the caller reports the sync again.
+    pub sync_scan_timeout: Duration,
+    /// How often `record_sync` looks whether the scan has been applied.
+    pub sync_poll_interval: Duration,
+    /// How long the request for the scan may take to reach the agent's stream (the gateway acknowledges it at once).
+    pub sync_request_timeout: Duration,
+    /// How long a notification may take (the notifier talks to a webhook): a slow channel is logged and the report goes on (rule 5).
+    pub notify_timeout: Duration,
+    /// Branches kept in the ranking of a tenant-suffix review and of an adoption pass (`adoptions.ranking`), best first.
+    pub rematch_ranking: usize,
+
+    // ---------------------------------------------------------------------------------------------- sync windows (T8)
+    /// How long a sync window may stay open before it is stale (D75): the watch job warns once, and the window stops holding the
+    /// swimlane's drift alerts, so that a Job that never finishes (or a window nobody should have reported) cannot silence them for
+    /// good. Measured from the window's `opened_at`, which ingestion clamps to the hub's clock.
+    pub sync_window_stale_after: Duration,
+    /// How long a closed window that could not be processed (the agent is not connected, the scan did not come) is retried before it
+    /// is given up: the drift alerts it held are then evaluated without the sync's own processing, and the window is marked done.
+    pub sync_close_give_up: Duration,
+    /// The most time that a swimlane's alerts may be held by sync windows within any `sync_hold_budget_window`, counted from the windows' own
+    /// spans (open, then closed and not yet processed), so it does not depend on the memory of a process. Once it is spent the hold ends
+    /// and alerts flow whatever windows are open, until the spans slide out of the rolling window; a compromised or buggy agent that
+    /// reports window after window cannot silence a swimlane for more than this. 4 h in 24 h is the figure: a sync window lasts minutes,
+    /// the stale mark (a stuck Job) is 2 h, so a day may hold 24 syncs of ten minutes or two stuck Jobs and still alert as soon as a third
+    /// one appears.
+    pub sync_hold_budget: Duration,
+    /// The rolling window the budget is counted in.
+    pub sync_hold_budget_window: Duration,
+    /// How long a closed window that nobody processed is kept for processing: past it the window is marked done and nothing is said (the
+    /// hub was down for that long, or the row is older than the job). Also the bound of every retry.
+    pub sync_window_expire_after: Duration,
+    /// How often the leased job `registry-sync-watch` looks for closed windows to process and open windows that are stale.
+    pub sync_watch_interval: Duration,
+    /// Swimlanes whose closed windows one run of the watch job processes (the rest wait for the next run).
+    pub sync_watch_batch: usize,
+    /// How long the swimlane's derived state must have been quiet before a closed window's alerts are evaluated: the pipeline recomputes
+    /// what the closing scan changed after the scan was applied, and the evaluation reads what it computed. Zero skips the wait.
+    pub sync_settle: Duration,
+    /// The longest the evaluation waits for that quiet. A pipeline that is still busy after it is evaluated as it is.
+    pub sync_settle_max: Duration,
+    /// Drift alerts being sent at once by the live path (each is a task that waits for the notifier). A burst past it is dropped and
+    /// counted, never queued without bound (rule 5).
+    pub alert_in_flight: usize,
+
+    // ---------------------------------------------------------------------------------------------- adoption (T5)
+    /// Commits of the base repository scored when the best-matching base commit is looked for: the head, the commits that changed the
+    /// files that differ from it, and the tagged ones, in that order, cut here.
+    pub adoption_base_candidates: usize,
+    /// Files that differ between NFS and the base head whose history is read to find candidate commits (spread over the list).
+    pub adoption_history_paths: usize,
+    /// Commits read from the history of each of those files.
+    pub adoption_history_depth: usize,
+    /// Hints (environment and release) kept for one adoption pass.
+    pub adoption_hints: usize,
+    /// Files read and scanned together for secrets: the count, and the bytes (a file is at most `max_file_bytes`, so a batch never
+    /// holds more than this in memory).
+    pub adoption_scan_batch_files: usize,
+    pub adoption_scan_batch_bytes: u64,
+    /// Locations kept from one secret scan. A scan with more hits keeps this many and says so with a last entry.
+    pub adoption_secret_hits: usize,
+    /// The whole secret scan of one pass (the reads and the scanning).
+    pub adoption_scan_timeout: Duration,
+    /// Resolutions one call may record.
+    pub adoption_resolutions_per_call: usize,
+
+    // ---------------------------------------------------------------------------------------------- pickup (T10)
+    /// How often the leased job `registry-pickup-sweeper` recomputes the swimlanes that still have something to pick up (A37): a change
+    /// that is `live_within_ttl` becomes `live` by the passing of time, with no event, and a notification (prompt 06 writes
+    /// `swimlanes.last_notified_at`) is seen at the next sweep. 30 seconds: the cache's time to live is minutes.
+    pub pickup_sweep_interval: Duration,
+    /// How often the sweeper looks at **every** swimlane that has an inventory, not only those with something pending. The pipeline and the
+    /// cluster report recompute a swimlane when they change what the state is made of, and this is what repairs the rest (a recompute that
+    /// failed, a folder mapping an admin changed, a replica that took over).
+    pub pickup_full_interval: Duration,
+    /// Swimlanes one run of the sweeper recomputes; the rest wait for the next run.
+    pub pickup_sweep_lanes: usize,
+    /// The files of one swimlane the pickup computation reads: the newest changes. A swimlane with more changed files than this since its
+    /// oldest pod started is looked at through the newest ones and the metric `registry_pickup_truncated` says so (rule 5).
+    pub pickup_max_files: usize,
+
+    // ---------------------------------------------------------------------------------------------- structure checks, C9 to C11 (T10, A45)
+    /// How often the leased job `registry-structure-sweeper` looks at the swimlanes' versions and computes the checks of those that moved
+    /// since it last did (a pipeline commit bumps `swimlane_registry.version`; a new start of the config-server is seen at the same look).
+    /// The job never runs inside the pipeline's batch, so the checks cost the incremental recompute nothing; this is how stale a C9, C10 or
+    /// C11 may be after a change, with the pipeline's own latency in front of it.
+    pub structure_sweep_interval: Duration,
+    /// How often the sweeper computes **every** swimlane that has an inventory whatever its version says: what no version announces
+    /// (a Deployment's environment names, a folder mapping an admin changed, a replica that took over) is found by this one.
+    pub structure_full_interval: Duration,
+    /// Swimlanes one run of the sweeper computes; the rest wait for the next run.
+    pub structure_sweep_lanes: usize,
+    /// What the cache of C10 results and of the property sources' keys may hold, in bytes (a weigher counts keys, paths and messages). A
+    /// result is kept by the content that made it, so a file that did not change is never read again for it.
+    pub structure_cache_bytes: u64,
+    /// The bytes of file content one batch of blob reads may hold (C10 reads a resource only when its result is not cached): a swimlane is
+    /// read in batches of at most this many bytes, so the memory of a check does not depend on how many files changed.
+    pub structure_batch_bytes: u64,
+
+    // ---------------------------------------------------------------------------------------------- "as served" verification (T10, D86, A36)
+    /// How often the leased job `registry-served-verify` asks the agents what the config-server serves and holds it against the engine's
+    /// rendering. Also the length of a "night" for the sample: the combinations it looks at change when this much time has passed.
+    pub served_verify_interval: Duration,
+    /// The combinations of `(application, tenant, channel, file)` one run asks the agent of each swimlane for (D86: 200). The ones that
+    /// have an open finding come first, the rest are drawn deterministically from the swimlane's resource files and tenants.
+    pub served_verify_sample: usize,
+    /// How long the job waits between two requests to the same swimlane's agent. The agent answers five a second at most and the
+    /// config-server one at a time, so the default is under that; zero is for tests.
+    pub served_verify_pause: Duration,
+    /// Swimlanes the job asks at once (each one request at a time).
+    pub served_verify_lanes: usize,
+    /// How long the job waits for one of the replica's `served_concurrency` slots before it gives a combination up as unverified (it is
+    /// asked again next night). The slots are shared with the people who ask for a served file, who are refused when none is free and
+    /// never wait: the job is the one that waits.
+    pub served_verify_slot_wait: Duration,
+
+    // ---------------------------------------------------------------------------------------------- tool-write registrations (T1, A10)
+    /// The bound of the queue of registrations (`ports::ToolWrites`) that no observation has matched yet, hash registrations and delete
+    /// registrations together, counting only those younger than `ToolWriteEntry::TTL_SECS`: a new one past it is refused with `Full` at
+    /// `register`, never at the commit. The bound is soft by at most the number of registering transactions in flight (a count, then an
+    /// insert), because a hard one needs a lock held until the caller's commit, whose order against the audit chain's lock the registry
+    /// cannot control.
+    pub tool_write_max_pending: usize,
+    /// How long one registration may wait (for a lock, or for a statement) inside the caller's transaction. The registry bounds it itself
+    /// (`lock_timeout` and `statement_timeout` for the statements of the registration, restored afterwards), because the transaction is
+    /// the caller's and carries no timeout of the registry's. A registration that waits longer is dropped and answers `Unavailable`.
+    pub tool_write_timeout: Duration,
+    /// How often the leased job `registry-tool-write-matcher` looks for observations that a registration committed after them can
+    /// explain (the late commit), and drops the registrations that expired. A late commit is attributed within this interval.
+    pub tool_write_match_interval: Duration,
+    /// Swimlanes with pending registrations that one run of the matcher looks at; the rest wait for the next run.
+    pub tool_write_match_lanes: usize,
+    /// Expired registrations deleted by one statement of the sweep (the sweep makes at most ten of them in a run).
+    pub tool_write_sweep_batch: usize,
+
+    // ---------------------------------------------------------------------------------------------- sentinel and attribution (T7)
+    /// The most records in one batch from a sentinel, which is also what the sentinel is told (`SentinelConfig`): prompt 17 sends at most
+    /// 500. A batch over it is `TooLarge` and nothing of it is applied.
+    pub sentinel_max_batch_records: u32,
+    /// How often the sentinel flushes a batch, as it is told (`SentinelConfig`). A record reaches the hub about this long after the write.
+    pub sentinel_flush_interval_secs: u32,
+    /// The most bytes of text (paths, user names, executables) in one batch. The fields are bounded one by one already (a path 1,024
+    /// bytes, the rest 256 each); this is the sum, so that a batch of the longest records is refused before anything is stored.
+    pub sentinel_max_batch_bytes: usize,
+    /// Sentinels that may have said `hello` on this replica at once (the table is per replica and small: one sentinel per NFS VM).
+    pub sentinel_max_streams: usize,
+    /// How often the leased job `registry-attribution-grace` looks for observations that a sentinel record already stored explains, and
+    /// for the ones that stayed unexplained past the grace. A record that reached the hub before the agent's scan is attributed within
+    /// this interval of the observation being applied (P14 allows 30 s).
+    pub attribution_interval: Duration,
+    /// Swimlanes with a sentinel that one run of the job looks at; the rest wait for the next run.
+    pub attribution_lanes: usize,
+    /// The most observations of one swimlane that one run reads for each question it asks.
+    pub attribution_batch: usize,
+    /// How long after the hub applied a change that nothing explains it waits for a sentinel record before it is called an NFS client's
+    /// (A19: 30 s). The sentinel flushes every `sentinel_flush_interval_secs`, so a record of a local write is long here by then.
+    pub nfs_client_grace: Duration,
+    /// An observation older than this (by the agent's time of seeing it) is never called an NFS client's: a spool replayed after an
+    /// outage carries old changes, and the sentinel's having been seen since says nothing about whether it was up when they were made.
+    pub nfs_client_window: Duration,
+    /// How far back the job looks for observations that a stored sentinel record explains: a change that the agent reported late (a replayed
+    /// spool) still finds the records of its time. By the agent's time of seeing the change.
+    pub sentinel_lookback: Duration,
+    /// How often the leased job that calls `maintain_sentinel_partitions` runs (the function creates the months to come and drops the ones
+    /// past their retention; it must run at least monthly).
+    pub sentinel_partition_interval: Duration,
+
+    // ---------------------------------------------------------------------------------------------- retention (T9, D78, D116)
+    /// How often the leased job `registry-retention` runs (nightly): blob collection, the prune of processed `sync_windows` rows and the
+    /// sweep of stale `delta_staging` rows.
+    pub retention_interval: Duration,
+    /// A dry run reports what a run would do (counts and bytes, in the log and the metrics) and changes nothing: no blob, no window, no
+    /// staging row, no lock (A34: a run deletes by default).
+    pub retention_dry_run: bool,
+    /// The most blobs one run plans to collect (A34: 500).
+    pub gc_batch: usize,
+    /// The most bytes of blobs one run plans to collect (A34: 64 MiB). Never below the largest blob, so that no blob is too big to go.
+    pub gc_max_bytes: u64,
+    /// Blobs one delete transaction takes. A put of a blob that the transaction has locked waits behind it, up to the put's own timeout
+    /// (5 s), so the transaction is short: a run is a number of them.
+    pub gc_chunk: usize,
+    /// How long a blob must have been untouched (`blobs.touched_at`, which `PgBlobStore::put` refreshes) before retention may delete it.
+    /// At least `hub_platform::blobs::store::MIN_RETENTION_GRACE` and at least the touch interval plus `staging_ttl`: a writer stores a blob
+    /// before the transaction that references it commits, and a staged part waits `staging_ttl` for the rest of its delta (the `put` it
+    /// made then is the last touch). Default 48 hours.
+    pub gc_grace: Duration,
+    /// `lock_timeout` of a delete transaction (set for the transaction only; the session's own setting is never changed).
+    pub gc_lock_timeout: Duration,
+    /// The plan statement reads every blob and every reference table once, and is the one statement of the job that is not short; this
+    /// is its timeout (client side, and the server's `statement_timeout` for it).
+    pub gc_scan_timeout: Duration,
+    /// How long a processed `sync_windows` row is kept before the job deletes it. Always more than the hold budget reads back (see
+    /// `validate`).
+    pub sync_window_retention: Duration,
+    /// Rows one statement of the prune and of the staging sweep deletes, and how many such statements one run makes of each kind (the rest
+    /// waits for the next run).
+    pub retention_prune_batch: usize,
+    pub retention_prune_batches: usize,
+
+    // ---------------------------------------------------------------------------------------------- reads (T6)
+    /// How recently a replica must have renewed an agent's connection row for the swimlane list to say "connected". The gateway's
+    /// own rule is the same shape: a row that was not renewed for this long counts as not connected.
+    pub agent_live_window: Duration,
+    /// Threads of the read pool (rule 4: text search runs on rayon inside `spawn_blocking`). The plan's figure for the 400 ms of
+    /// P7 is two threads, as the engine's own benchmark.
+    pub read_pool_threads: usize,
+    /// The caches of the read side, each weighed in bytes and bounded (rule 5). Every key is a content hash, so an entry is never
+    /// stale and nothing invalidates it: the setting rows of a blob, the effective config of a set of layers, a diff of two blobs,
+    /// the file list of a swimlane at a version, and the text-search corpora (one snapshot of every swimlane's files, in shards: its
+    /// blobs, their places and the lists it was made from, all counted here). 256 MiB in all for the parsed and rendered values (the
+    /// plan), and the corpora on top of 03b's blob cache whose `Bytes` they share. A snapshot over the bound is made for the request and
+    /// not kept.
+    pub row_cache_bytes: u64,
+    pub effective_cache_bytes: u64,
+    pub diff_cache_bytes: u64,
+    pub file_list_cache_bytes: u64,
+    pub corpus_cache_bytes: u64,
+    /// The ceilings on a text search (A27): the prompt's 1,000 matches in all and 50 for one file. A larger request is clamped, and
+    /// `truncated` says so. The REST spec keeps its own, lower limits (500 and 100), so over REST the lower of each pair applies.
+    pub search_max_total: u32,
+    pub search_max_per_file: u32,
+    /// A text search that runs longer is cancelled and answers 503 (the prompt: a 5 second timeout).
+    pub search_timeout: Duration,
+    /// Blobs read from the blob store in one call when a search corpus is built, and how many such calls run at once.
+    pub search_blob_batch: usize,
+    pub search_blob_parallel: usize,
+    /// The text-search corpus is this many shards, the blobs split by their hash (see `read::corpora`). More shards make a change to one
+    /// swimlane cheaper to take in (a shard is made again when its places change) and a search a little dearer.
+    pub search_shards: usize,
+    /// The warm-up task (`read::warmup`) looks at the swimlanes' versions this often, and waits this long after it sees one move before
+    /// it builds, so that a burst of changes is taken in once.
+    pub warmup_poll: Duration,
+    pub warmup_debounce: Duration,
+    /// A settings search over at most this many swimlanes, or in one file, first lists the blobs that are the current version of a
+    /// file there (a few thousand per swimlane at most) and looks for the settings of those blobs only; over more it finds the
+    /// settings first and asks where they are (the list of blobs would be most of the index, and every request would carry it). Zero
+    /// lists never; tests use it to run both ways over the same data.
+    pub search_tested_lanes: usize,
+    /// The most blobs such a search lists before it reads their settings; a search that would list more reads the settings first and
+    /// asks where they are, as over many swimlanes (a request does not carry a list of the index).
+    pub search_listed_blobs: usize,
+    /// One `FetchServed` round trip to the config-server through the agent (A36).
+    pub served_timeout: Duration,
+    /// `FetchServed` calls in flight at once on this replica. The config-server answers one request at a time per agent, so a user
+    /// who clicks fast must not queue a hundred of them: past this the call is refused (503) rather than waited for.
+    pub served_concurrency: usize,
+    /// The most rows the children of one tree prefix may be read from (a guard: a swimlane has at most `MAX_LANE_FILES` files).
+    pub tree_scan_rows: u32,
+}
+
+impl Default for RegistryConfig {
+    #[allow(clippy::too_many_lines)] // one default per field, in the order of the fields
+    fn default() -> Self {
+        Self {
+            query_timeout: Duration::from_secs(10),
+            blob_timeout: Duration::from_secs(15),
+            scan_interval_secs: 10,
+            heartbeat_interval_secs: 10,
+            max_file_bytes: 2 * 1024 * 1024,
+            extra_deny_globs: Vec::new(),
+            env_allowlist: DEFAULT_ENV_ALLOWLIST.iter().map(|s| (*s).to_owned()).collect(),
+            max_delta_parts: 64,
+            max_delta_entries: 100_000,
+            max_delta_bytes: 512 * 1024 * 1024,
+            chunk_paths: 50,
+            max_streams: 4096,
+            max_clock_skew: Duration::from_secs(5 * 60),
+            staging_ttl: Duration::from_secs(24 * 3600),
+            max_services_per_report: 5_000,
+            max_pods_per_service: 500,
+            max_env_names_per_service: 1_024,
+            max_release_hints_per_report: 5_000,
+            max_sync_windows_per_report: 100,
+            pool_threads: 2,
+            index_queue: 4_096,
+            index_batch: 32,
+            index_sweep_interval: Duration::from_secs(5 * 60),
+            index_sweep_max_blobs: 20_000,
+            rows_per_statement: 5_000,
+            max_affected_paths: 5_000,
+            git_hash_cache_bytes: 24 * 1024 * 1024,
+            git_timeout: Duration::from_secs(30),
+            coalesce_window: Duration::from_millis(200),
+            max_coalesced_lanes: 10_000,
+            max_lanes_in_memory: 256,
+            reconcile_interval: Duration::from_secs(60),
+            inventory_poll_interval: Duration::from_secs(5),
+            signal_queue: 4_096,
+            pipeline_run: Duration::from_secs(50 * 60),
+            persist_concurrency: 4,
+            nightly_interval: Duration::from_secs(24 * 3600),
+            nightly_batch_lanes: 4,
+            sync_scan_timeout: Duration::from_secs(120),
+            sync_poll_interval: Duration::from_millis(250),
+            sync_request_timeout: Duration::from_secs(10),
+            notify_timeout: Duration::from_secs(10),
+            rematch_ranking: 20,
+            sync_window_stale_after: Duration::from_secs(2 * 3600),
+            sync_close_give_up: Duration::from_secs(30 * 60),
+            sync_hold_budget: Duration::from_secs(4 * 3600),
+            sync_hold_budget_window: Duration::from_secs(24 * 3600),
+            sync_window_expire_after: Duration::from_secs(24 * 3600),
+            sync_watch_interval: Duration::from_secs(5),
+            sync_watch_batch: 16,
+            sync_settle: Duration::from_secs(1),
+            sync_settle_max: Duration::from_secs(15),
+            alert_in_flight: 8,
+            adoption_base_candidates: 64,
+            adoption_history_paths: 16,
+            adoption_history_depth: 32,
+            adoption_hints: 200,
+            adoption_scan_batch_files: 200,
+            adoption_scan_batch_bytes: 32 * 1024 * 1024,
+            adoption_secret_hits: 10_000,
+            adoption_scan_timeout: Duration::from_secs(5 * 60),
+            adoption_resolutions_per_call: 5_000,
+            pickup_sweep_interval: Duration::from_secs(30),
+            pickup_full_interval: Duration::from_secs(10 * 60),
+            pickup_sweep_lanes: 1_000,
+            pickup_max_files: 20_000,
+            structure_sweep_interval: Duration::from_secs(10),
+            structure_full_interval: Duration::from_secs(10 * 60),
+            structure_sweep_lanes: 1_000,
+            structure_cache_bytes: 64 * 1024 * 1024,
+            structure_batch_bytes: 16 * 1024 * 1024,
+            served_verify_interval: Duration::from_secs(24 * 3600),
+            served_verify_sample: 200,
+            served_verify_pause: Duration::from_millis(250),
+            served_verify_lanes: 4,
+            served_verify_slot_wait: Duration::from_secs(10),
+            tool_write_max_pending: 10_000,
+            tool_write_timeout: Duration::from_secs(2),
+            tool_write_match_interval: Duration::from_secs(5),
+            tool_write_match_lanes: 200,
+            tool_write_sweep_batch: 1_000,
+            sentinel_max_batch_records: 500,
+            sentinel_flush_interval_secs: 1,
+            sentinel_max_batch_bytes: 2 * 1024 * 1024,
+            sentinel_max_streams: 4096,
+            attribution_interval: Duration::from_secs(5),
+            attribution_lanes: 200,
+            attribution_batch: 5_000,
+            nfs_client_grace: Duration::from_secs(30),
+            nfs_client_window: Duration::from_secs(10 * 60),
+            sentinel_lookback: Duration::from_secs(2 * 3600),
+            sentinel_partition_interval: Duration::from_secs(24 * 3600),
+            retention_interval: Duration::from_secs(24 * 3600),
+            retention_dry_run: false,
+            gc_batch: 500,
+            gc_max_bytes: 64 * 1024 * 1024,
+            gc_chunk: 100,
+            gc_grace: Duration::from_secs(48 * 3600),
+            gc_lock_timeout: Duration::from_secs(2),
+            gc_scan_timeout: Duration::from_secs(120),
+            sync_window_retention: Duration::from_secs(7 * 24 * 3600),
+            retention_prune_batch: 1_000,
+            retention_prune_batches: 100,
+            agent_live_window: Duration::from_secs(30),
+            read_pool_threads: 2,
+            row_cache_bytes: 96 * 1024 * 1024,
+            effective_cache_bytes: 64 * 1024 * 1024,
+            diff_cache_bytes: 48 * 1024 * 1024,
+            file_list_cache_bytes: 16 * 1024 * 1024,
+            corpus_cache_bytes: 256 * 1024 * 1024,
+            search_max_total: 1_000,
+            search_max_per_file: 50,
+            search_timeout: Duration::from_secs(5),
+            search_blob_batch: MAX_GET_MANY,
+            search_blob_parallel: 4,
+            search_shards: 8,
+            warmup_poll: Duration::from_secs(2),
+            warmup_debounce: Duration::from_millis(500),
+            search_tested_lanes: 8,
+            search_listed_blobs: 20_000,
+            served_timeout: Duration::from_secs(10),
+            served_concurrency: 16,
+            tree_scan_rows: 200_001,
+        }
+    }
+}
+
+impl RegistryConfig {
+    /// Checks every field against what the rest of the system can carry.
+    #[allow(clippy::too_many_lines)] // one range check per field, in the order of the fields
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        fn within(name: &'static str, value: u64, low: u64, high: u64) -> Result<(), ConfigError> {
+            if (low..=high).contains(&value) {
+                Ok(())
+            } else {
+                Err(ConfigError::OutOfRange(name))
+            }
+        }
+        let millis = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+        within("query_timeout", millis(self.query_timeout), 100, 120_000)?;
+        within("blob_timeout", millis(self.blob_timeout), 100, 120_000)?;
+        within("scan_interval_secs", u64::from(self.scan_interval_secs), 1, 3600)?;
+        within(
+            "heartbeat_interval_secs",
+            u64::from(self.heartbeat_interval_secs),
+            1,
+            300,
+        )?;
+        within("max_file_bytes", self.max_file_bytes, 1, MAX_BLOB_BYTES as u64)?;
+        within("max_delta_parts", self.max_delta_parts as u64, 1, 4096)?;
+        within("max_delta_entries", self.max_delta_entries as u64, 1, 1_000_000)?;
+        within("max_delta_bytes", self.max_delta_bytes, 1, 8 * 1024 * 1024 * 1024)?;
+        within("chunk_paths", self.chunk_paths as u64, 1, 1_000)?;
+        within("max_streams", self.max_streams as u64, 1, 100_000)?;
+        within("max_clock_skew", millis(self.max_clock_skew), 0, 24 * 3600 * 1000)?;
+        within(
+            "staging_ttl",
+            millis(self.staging_ttl),
+            1_000,
+            30 * 24 * 3600 * 1000,
+        )?;
+        within(
+            "max_services_per_report",
+            self.max_services_per_report as u64,
+            1,
+            100_000,
+        )?;
+        within(
+            "max_pods_per_service",
+            self.max_pods_per_service as u64,
+            1,
+            10_000,
+        )?;
+        within(
+            "max_env_names_per_service",
+            self.max_env_names_per_service as u64,
+            1,
+            10_000,
+        )?;
+        within(
+            "max_release_hints_per_report",
+            self.max_release_hints_per_report as u64,
+            0,
+            100_000,
+        )?;
+        within(
+            "max_sync_windows_per_report",
+            self.max_sync_windows_per_report as u64,
+            0,
+            10_000,
+        )?;
+        within("pool_threads", self.pool_threads as u64, 1, 64)?;
+        within("index_queue", self.index_queue as u64, 1, 1_000_000)?;
+        within("index_batch", self.index_batch as u64, 1, MAX_GET_MANY as u64)?;
+        within(
+            "index_sweep_interval",
+            millis(self.index_sweep_interval),
+            10_000,
+            24 * 3600 * 1000,
+        )?;
+        within(
+            "index_sweep_max_blobs",
+            self.index_sweep_max_blobs as u64,
+            1,
+            10_000_000,
+        )?;
+        within("rows_per_statement", self.rows_per_statement as u64, 100, 50_000)?;
+        within("max_affected_paths", self.max_affected_paths as u64, 1, 100_000)?;
+        within(
+            "git_hash_cache_bytes",
+            self.git_hash_cache_bytes,
+            1024 * 1024,
+            1024 * 1024 * 1024,
+        )?;
+        within("git_timeout", millis(self.git_timeout), 100, 600_000)?;
+        within("coalesce_window", millis(self.coalesce_window), 10, 10_000)?;
+        within(
+            "max_coalesced_lanes",
+            self.max_coalesced_lanes as u64,
+            1,
+            1_000_000,
+        )?;
+        within("max_lanes_in_memory", self.max_lanes_in_memory as u64, 1, 10_000)?;
+        within(
+            "reconcile_interval",
+            millis(self.reconcile_interval),
+            1_000,
+            24 * 3600 * 1000,
+        )?;
+        within(
+            "inventory_poll_interval",
+            millis(self.inventory_poll_interval),
+            100,
+            3600 * 1000,
+        )?;
+        within("signal_queue", self.signal_queue as u64, 1, 1_000_000)?;
+        // The job's own `max_run` is this plus a minute, and the runner allows an hour at most.
+        within("pipeline_run", millis(self.pipeline_run), 1_000, 55 * 60 * 1000)?;
+        within(
+            "nightly_interval",
+            millis(self.nightly_interval),
+            60_000,
+            7 * 24 * 3600 * 1000,
+        )?;
+        within("persist_concurrency", self.persist_concurrency as u64, 1, 16)?;
+        within("nightly_batch_lanes", self.nightly_batch_lanes as u64, 1, 1_000)?;
+        within(
+            "sync_scan_timeout",
+            millis(self.sync_scan_timeout),
+            1_000,
+            3600 * 1000,
+        )?;
+        within("sync_poll_interval", millis(self.sync_poll_interval), 10, 10_000)?;
+        within(
+            "sync_request_timeout",
+            millis(self.sync_request_timeout),
+            100,
+            120_000,
+        )?;
+        within("notify_timeout", millis(self.notify_timeout), 100, 120_000)?;
+        within("rematch_ranking", self.rematch_ranking as u64, 1, 100)?;
+        within(
+            "sync_window_stale_after",
+            millis(self.sync_window_stale_after),
+            60_000,
+            7 * 24 * 3600 * 1000,
+        )?;
+        within(
+            "sync_close_give_up",
+            millis(self.sync_close_give_up),
+            60_000,
+            24 * 3600 * 1000,
+        )?;
+        within(
+            "sync_hold_budget_window",
+            millis(self.sync_hold_budget_window),
+            3_600_000,
+            30 * 24 * 3600 * 1000,
+        )?;
+        within(
+            "sync_hold_budget",
+            millis(self.sync_hold_budget),
+            60_000,
+            30 * 24 * 3600 * 1000,
+        )?;
+        if self.sync_hold_budget > self.sync_hold_budget_window {
+            return Err(ConfigError::OutOfRange("sync_hold_budget"));
+        }
+        within(
+            "sync_window_expire_after",
+            millis(self.sync_window_expire_after),
+            60_000,
+            30 * 24 * 3600 * 1000,
+        )?;
+        if self.sync_window_expire_after < self.sync_close_give_up {
+            return Err(ConfigError::OutOfRange("sync_window_expire_after"));
+        }
+        within(
+            "sync_watch_interval",
+            millis(self.sync_watch_interval),
+            1_000,
+            3600 * 1000,
+        )?;
+        within("sync_watch_batch", self.sync_watch_batch as u64, 1, 1_000)?;
+        within("sync_settle", millis(self.sync_settle), 0, 60_000)?;
+        within("sync_settle_max", millis(self.sync_settle_max), 1, 600_000)?;
+        if self.sync_settle_max < self.sync_settle {
+            return Err(ConfigError::OutOfRange("sync_settle_max"));
+        }
+        within("alert_in_flight", self.alert_in_flight as u64, 1, 256)?;
+        within(
+            "adoption_base_candidates",
+            self.adoption_base_candidates as u64,
+            1,
+            1_000,
+        )?;
+        within(
+            "adoption_history_paths",
+            self.adoption_history_paths as u64,
+            0,
+            256,
+        )?;
+        within(
+            "adoption_history_depth",
+            self.adoption_history_depth as u64,
+            1,
+            1_000,
+        )?;
+        within("adoption_hints", self.adoption_hints as u64, 1, 10_000)?;
+        within(
+            "adoption_scan_batch_files",
+            self.adoption_scan_batch_files as u64,
+            1,
+            MAX_GET_MANY as u64,
+        )?;
+        within(
+            "adoption_scan_batch_bytes",
+            self.adoption_scan_batch_bytes,
+            MAX_BLOB_BYTES as u64,
+            512 * 1024 * 1024,
+        )?;
+        within(
+            "adoption_secret_hits",
+            self.adoption_secret_hits as u64,
+            1,
+            100_000,
+        )?;
+        within(
+            "adoption_scan_timeout",
+            millis(self.adoption_scan_timeout),
+            1_000,
+            3600 * 1000,
+        )?;
+        within(
+            "adoption_resolutions_per_call",
+            self.adoption_resolutions_per_call as u64,
+            1,
+            100_000,
+        )?;
+        within(
+            "pickup_sweep_interval",
+            millis(self.pickup_sweep_interval),
+            1_000,
+            3600 * 1000,
+        )?;
+        within(
+            "pickup_full_interval",
+            millis(self.pickup_full_interval),
+            10_000,
+            24 * 3600 * 1000,
+        )?;
+        if self.pickup_full_interval < self.pickup_sweep_interval {
+            return Err(ConfigError::OutOfRange("pickup_full_interval"));
+        }
+        within("pickup_sweep_lanes", self.pickup_sweep_lanes as u64, 1, 100_000)?;
+        within("pickup_max_files", self.pickup_max_files as u64, 100, 200_000)?;
+        within(
+            "structure_sweep_interval",
+            millis(self.structure_sweep_interval),
+            1_000,
+            3600 * 1000,
+        )?;
+        within(
+            "structure_full_interval",
+            millis(self.structure_full_interval),
+            10_000,
+            24 * 3600 * 1000,
+        )?;
+        if self.structure_full_interval < self.structure_sweep_interval {
+            return Err(ConfigError::OutOfRange("structure_full_interval"));
+        }
+        within(
+            "structure_sweep_lanes",
+            self.structure_sweep_lanes as u64,
+            1,
+            100_000,
+        )?;
+        within(
+            "structure_cache_bytes",
+            self.structure_cache_bytes,
+            1024 * 1024,
+            1024 * 1024 * 1024,
+        )?;
+        within(
+            "structure_batch_bytes",
+            self.structure_batch_bytes,
+            1024 * 1024,
+            256 * 1024 * 1024,
+        )?;
+        within(
+            "served_verify_interval",
+            millis(self.served_verify_interval),
+            60_000,
+            7 * 24 * 3600 * 1000,
+        )?;
+        within(
+            "served_verify_sample",
+            self.served_verify_sample as u64,
+            1,
+            10_000,
+        )?;
+        within("served_verify_pause", millis(self.served_verify_pause), 0, 60_000)?;
+        within("served_verify_lanes", self.served_verify_lanes as u64, 1, 64)?;
+        within(
+            "served_verify_slot_wait",
+            millis(self.served_verify_slot_wait),
+            10,
+            120_000,
+        )?;
+        within(
+            "tool_write_max_pending",
+            self.tool_write_max_pending as u64,
+            1,
+            1_000_000,
+        )?;
+        within("tool_write_timeout", millis(self.tool_write_timeout), 100, 30_000)?;
+        within(
+            "tool_write_match_interval",
+            millis(self.tool_write_match_interval),
+            1_000,
+            3600 * 1000,
+        )?;
+        within(
+            "tool_write_match_lanes",
+            self.tool_write_match_lanes as u64,
+            1,
+            100_000,
+        )?;
+        within(
+            "tool_write_sweep_batch",
+            self.tool_write_sweep_batch as u64,
+            1,
+            100_000,
+        )?;
+        within(
+            "sentinel_max_batch_records",
+            u64::from(self.sentinel_max_batch_records),
+            1,
+            10_000,
+        )?;
+        within(
+            "sentinel_flush_interval_secs",
+            u64::from(self.sentinel_flush_interval_secs),
+            1,
+            3600,
+        )?;
+        within(
+            "sentinel_max_batch_bytes",
+            self.sentinel_max_batch_bytes as u64,
+            64 * 1024,
+            64 * 1024 * 1024,
+        )?;
+        within(
+            "sentinel_max_streams",
+            self.sentinel_max_streams as u64,
+            1,
+            100_000,
+        )?;
+        within(
+            "attribution_interval",
+            millis(self.attribution_interval),
+            1_000,
+            3600 * 1000,
+        )?;
+        within("attribution_lanes", self.attribution_lanes as u64, 1, 100_000)?;
+        within("attribution_batch", self.attribution_batch as u64, 1, 100_000)?;
+        within(
+            "nfs_client_grace",
+            millis(self.nfs_client_grace),
+            1_000,
+            3600 * 1000,
+        )?;
+        within(
+            "nfs_client_window",
+            millis(self.nfs_client_window),
+            1_000,
+            24 * 3600 * 1000,
+        )?;
+        // The window is the time in which a change can still be called an NFS client's, and it starts after the grace.
+        if self.nfs_client_window <= self.nfs_client_grace {
+            return Err(ConfigError::OutOfRange("nfs_client_window"));
+        }
+        within(
+            "sentinel_lookback",
+            millis(self.sentinel_lookback),
+            60_000,
+            7 * 24 * 3600 * 1000,
+        )?;
+        within(
+            "sentinel_partition_interval",
+            millis(self.sentinel_partition_interval),
+            60_000,
+            7 * 24 * 3600 * 1000,
+        )?;
+        within(
+            "agent_live_window",
+            millis(self.agent_live_window),
+            1_000,
+            3600 * 1000,
+        )?;
+        within(
+            "retention_interval",
+            millis(self.retention_interval),
+            60_000,
+            7 * 24 * 3600 * 1000,
+        )?;
+        within("gc_batch", self.gc_batch as u64, 1, 100_000)?;
+        // Never below the largest blob: a limit under 4 MiB would leave a blob of that size uncollectable for ever.
+        within(
+            "gc_max_bytes",
+            self.gc_max_bytes,
+            MAX_BLOB_BYTES as u64,
+            64 * 1024 * 1024 * 1024,
+        )?;
+        within("gc_chunk", self.gc_chunk as u64, 1, 1_000)?;
+        // The grace period is the registry's side of the contract of `PgBlobStore::put` (docs/interfaces.md, `BlobStore`): a blob stored at
+        // `t` has `touched_at >= t - TOUCH_INTERVAL`, and its reference commits at most `staging_ttl` after (a staged part waits that
+        // long), so the grace must be at least the interval plus that wait, and never below the constant floor for the default wait.
+        within(
+            "gc_grace",
+            millis(self.gc_grace),
+            millis(self.gc_grace_floor()),
+            400 * 24 * 3600 * 1000,
+        )?;
+        within("gc_lock_timeout", millis(self.gc_lock_timeout), 100, 60_000)?;
+        within(
+            "gc_scan_timeout",
+            millis(self.gc_scan_timeout),
+            1_000,
+            30 * 60 * 1000,
+        )?;
+        within(
+            "sync_window_retention",
+            millis(self.sync_window_retention),
+            millis(self.sync_window_retention_floor()) + 1,
+            365 * 24 * 3600 * 1000,
+        )?;
+        within(
+            "retention_prune_batch",
+            self.retention_prune_batch as u64,
+            1,
+            100_000,
+        )?;
+        within(
+            "retention_prune_batches",
+            self.retention_prune_batches as u64,
+            1,
+            10_000,
+        )?;
+        within("read_pool_threads", self.read_pool_threads as u64, 1, 64)?;
+        let mib = 1024 * 1024;
+        within("row_cache_bytes", self.row_cache_bytes, mib, 8 * 1024 * mib)?;
+        within(
+            "effective_cache_bytes",
+            self.effective_cache_bytes,
+            mib,
+            8 * 1024 * mib,
+        )?;
+        within("diff_cache_bytes", self.diff_cache_bytes, mib, 8 * 1024 * mib)?;
+        within(
+            "file_list_cache_bytes",
+            self.file_list_cache_bytes,
+            mib,
+            8 * 1024 * mib,
+        )?;
+        within("corpus_cache_bytes", self.corpus_cache_bytes, mib, 8 * 1024 * mib)?;
+        within("search_max_total", u64::from(self.search_max_total), 1, 100_000)?;
+        within(
+            "search_max_per_file",
+            u64::from(self.search_max_per_file),
+            1,
+            10_000,
+        )?;
+        within("search_timeout", millis(self.search_timeout), 100, 120_000)?;
+        within(
+            "search_blob_batch",
+            self.search_blob_batch as u64,
+            1,
+            MAX_GET_MANY as u64,
+        )?;
+        within("search_blob_parallel", self.search_blob_parallel as u64, 1, 64)?;
+        within("search_shards", self.search_shards as u64, 1, 64)?;
+        within("warmup_poll", millis(self.warmup_poll), 100, 3_600_000)?;
+        within("warmup_debounce", millis(self.warmup_debounce), 0, 60_000)?;
+        within("search_tested_lanes", self.search_tested_lanes as u64, 0, 1_000)?;
+        within("search_listed_blobs", self.search_listed_blobs as u64, 1, 100_000)?;
+        within("served_timeout", millis(self.served_timeout), 100, 120_000)?;
+        within("served_concurrency", self.served_concurrency as u64, 1, 1_024)?;
+        within(
+            "tree_scan_rows",
+            u64::from(self.tree_scan_rows),
+            1_000,
+            10_000_000,
+        )?;
+        // The globs travel to the agent as `ShortText` (256 bytes) and must compile.
+        if self.extra_deny_globs.iter().any(|g| g.len() > 256) {
+            return Err(ConfigError::Invalid("extra_deny_globs"));
+        }
+        DenyMatcher::with_globs(self.extra_deny_globs.iter().map(String::as_str))
+            .map_err(|_| ConfigError::Invalid("extra_deny_globs"))?;
+        if self.env_allowlist.len() > 64
+            || self
+                .env_allowlist
+                .iter()
+                .any(|n| !crate::ingest::cluster::is_env_name(n))
+        {
+            return Err(ConfigError::Invalid("env_allowlist"));
+        }
+        Ok(())
+    }
+
+    /// The shortest grace period retention may use with this configuration: the interval by which `touched_at` may lag the last `put`,
+    /// plus the longest a writer holds a stored blob before the transaction that references it commits (`staging_ttl`), and never less
+    /// than `MIN_RETENTION_GRACE`, the floor the platform states for its default wait.
+    pub fn gc_grace_floor(&self) -> Duration {
+        MIN_RETENTION_GRACE.max(TOUCH_INTERVAL.saturating_add(self.staging_ttl))
+    }
+
+    /// What the rows of `sync_windows` are read back for: the hold budget (T8) looks at the windows of two rolling windows before now, and
+    /// a window's holding phases end at most `sync_window_stale_after` after it opened and `sync_close_give_up` after it closed. A row
+    /// is pruned only when every one of its times is older than `sync_window_retention`, which therefore has to be longer than this
+    /// (with both margins, the generous reading) for the budget to give the same answer before and after a prune.
+    pub fn sync_window_retention_floor(&self) -> Duration {
+        self.sync_hold_budget_window
+            .saturating_mul(2)
+            .saturating_add(self.sync_window_stale_after)
+            .saturating_add(self.sync_close_give_up)
+    }
+
+    /// The deny globs the agent is told to apply: the built-in ones, then the admin's.
+    pub fn deny_globs(&self) -> Vec<String> {
+        DEFAULT_DENY_GLOBS
+            .iter()
+            .map(|g| (*g).to_owned())
+            .chain(self.extra_deny_globs.iter().cloned())
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_defaults_are_valid_and_pinned() {
+        let c = RegistryConfig::default();
+        assert_eq!(c.validate(), Ok(()));
+        // The numbers the plan and the budgets rely on.
+        assert_eq!(
+            c.chunk_paths, 50,
+            "A12: the audit chain's lock is held for a chunk of 50 paths"
+        );
+        assert_eq!(
+            c.max_file_bytes,
+            2 * 1024 * 1024,
+            "docs/performance.md: files up to 2 MiB"
+        );
+        assert_eq!(c.scan_interval_secs, 10, "D63: a stat walk every 10 seconds");
+        assert_eq!(c.heartbeat_interval_secs, 10, "P3: never faster than 10 seconds");
+        assert_eq!(
+            c.staging_ttl,
+            Duration::from_secs(24 * 3600),
+            "A14: a 24 hour sweep"
+        );
+        assert_eq!(c.blob_timeout, Duration::from_secs(15), "one put of up to 2 MiB");
+        assert_eq!(c.env_allowlist.len(), 4, "D88: four variables keep their value");
+        assert!(usize::try_from(c.max_file_bytes).is_ok_and(|v| v <= MAX_BLOB_BYTES));
+    }
+
+    #[test]
+    fn the_index_defaults_are_pinned() {
+        let c = RegistryConfig::default();
+        assert_eq!(c.pool_threads, 2, "the plan's registry pool: 2 threads");
+        assert_eq!(c.index_queue, 4_096, "a bounded queue of blob hashes");
+        assert_eq!(c.index_batch, 32);
+        assert_eq!(c.index_sweep_interval, Duration::from_secs(300));
+        assert_eq!(c.rows_per_statement, 5_000);
+        assert_eq!(
+            c.max_affected_paths, 5_000,
+            "past this a swimlane is recomputed whole"
+        );
+        assert_eq!(
+            c.git_hash_cache_bytes,
+            24 * 1024 * 1024,
+            "about 20 MB of normalised hashes (plan, risk 6)"
+        );
+        assert!(c.index_batch <= MAX_GET_MANY, "one get_many per batch");
+    }
+
+    #[test]
+    fn the_pipeline_defaults_are_pinned() {
+        let c = RegistryConfig::default();
+        assert_eq!(
+            c.coalesce_window,
+            Duration::from_millis(200),
+            "the prompt: bursts are coalesced per swimlane in 200 ms windows"
+        );
+        assert_eq!(c.max_lanes_in_memory, 256);
+        assert_eq!(c.reconcile_interval, Duration::from_secs(60));
+        assert_eq!(c.nightly_interval, Duration::from_secs(24 * 3600));
+        assert!(
+            c.pipeline_run < Duration::from_secs(3600),
+            "a run ends before the runner's one hour limit on a run"
+        );
+        assert!(c.nightly_batch_lanes >= 1 && c.persist_concurrency >= 1);
+    }
+
+    #[test]
+    fn every_pipeline_bound_is_enforced() {
+        out_of_range("coalesce_window", |c| {
+            c.coalesce_window = Duration::from_millis(1);
+        });
+        out_of_range("max_coalesced_lanes", |c| {
+            c.max_coalesced_lanes = 0;
+        });
+        out_of_range("max_lanes_in_memory", |c| {
+            c.max_lanes_in_memory = 0;
+        });
+        out_of_range("reconcile_interval", |c| {
+            c.reconcile_interval = Duration::from_millis(5);
+        });
+        out_of_range("inventory_poll_interval", |c| {
+            c.inventory_poll_interval = Duration::from_millis(1);
+        });
+        out_of_range("signal_queue", |c| {
+            c.signal_queue = 0;
+        });
+        out_of_range("pipeline_run", |c| {
+            c.pipeline_run = Duration::from_secs(3600);
+        });
+        out_of_range("persist_concurrency", |c| {
+            c.persist_concurrency = 0;
+        });
+        out_of_range("persist_concurrency", |c| {
+            c.persist_concurrency = 17;
+        });
+        out_of_range("nightly_interval", |c| {
+            c.nightly_interval = Duration::from_secs(1);
+        });
+        out_of_range("nightly_batch_lanes", |c| {
+            c.nightly_batch_lanes = 0;
+        });
+    }
+
+    #[test]
+    fn the_sync_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(
+            c.sync_scan_timeout,
+            Duration::from_secs(120),
+            "a full scan of a swimlane takes the agent a walk of 10 s and a quiet period of 3 s"
+        );
+        assert_eq!(c.sync_poll_interval, Duration::from_millis(250));
+        assert_eq!(c.sync_request_timeout, Duration::from_secs(10));
+        assert_eq!(c.notify_timeout, Duration::from_secs(10));
+        assert_eq!(c.rematch_ranking, 20);
+        assert!(c.sync_poll_interval < c.sync_scan_timeout);
+        out_of_range("sync_scan_timeout", |c| {
+            c.sync_scan_timeout = Duration::from_millis(10);
+        });
+        out_of_range("sync_scan_timeout", |c| {
+            c.sync_scan_timeout = Duration::from_secs(3601);
+        });
+        out_of_range("sync_poll_interval", |c| {
+            c.sync_poll_interval = Duration::from_millis(1);
+        });
+        out_of_range("sync_poll_interval", |c| {
+            c.sync_poll_interval = Duration::from_secs(11);
+        });
+        out_of_range("sync_request_timeout", |c| {
+            c.sync_request_timeout = Duration::from_millis(1);
+        });
+        out_of_range("sync_request_timeout", |c| {
+            c.sync_request_timeout = Duration::from_secs(3600);
+        });
+        out_of_range("notify_timeout", |c| {
+            c.notify_timeout = Duration::from_millis(1);
+        });
+        out_of_range("notify_timeout", |c| {
+            c.notify_timeout = Duration::from_secs(3600);
+        });
+        out_of_range("rematch_ranking", |c| {
+            c.rematch_ranking = 0;
+        });
+        out_of_range("rematch_ranking", |c| {
+            c.rematch_ranking = 101;
+        });
+    }
+
+    #[test]
+    fn the_sync_window_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(
+            c.sync_window_stale_after,
+            Duration::from_secs(2 * 3600),
+            "D75 and the prompt: a window open for more than two hours is stale"
+        );
+        assert_eq!(c.sync_close_give_up, Duration::from_secs(30 * 60));
+        assert_eq!(c.sync_hold_budget, Duration::from_secs(4 * 3600));
+        assert_eq!(c.sync_hold_budget_window, Duration::from_secs(24 * 3600));
+        assert!(c.sync_hold_budget <= c.sync_hold_budget_window);
+        assert_eq!(c.sync_window_expire_after, Duration::from_secs(24 * 3600));
+        assert_eq!(c.sync_watch_interval, Duration::from_secs(5));
+        assert_eq!(c.sync_watch_batch, 16);
+        assert_eq!(c.sync_settle, Duration::from_secs(1));
+        assert_eq!(c.sync_settle_max, Duration::from_secs(15));
+        assert_eq!(c.alert_in_flight, 8);
+        assert!(c.sync_settle <= c.sync_settle_max);
+        out_of_range("sync_window_stale_after", |c| {
+            c.sync_window_stale_after = Duration::from_secs(59);
+        });
+        out_of_range("sync_window_stale_after", |c| {
+            c.sync_window_stale_after = Duration::from_secs(8 * 24 * 3600);
+        });
+        out_of_range("sync_close_give_up", |c| {
+            c.sync_close_give_up = Duration::from_secs(59);
+        });
+        out_of_range("sync_close_give_up", |c| {
+            c.sync_close_give_up = Duration::from_secs(25 * 3600);
+        });
+        out_of_range("sync_hold_budget", |c| {
+            c.sync_hold_budget = Duration::from_secs(59);
+        });
+        out_of_range("sync_hold_budget", |c| {
+            c.sync_hold_budget = Duration::from_secs(31 * 24 * 3600);
+            c.sync_hold_budget_window = Duration::from_secs(30 * 24 * 3600);
+        });
+        out_of_range("sync_hold_budget", |c| {
+            // The budget cannot be more than the rolling window it is counted in.
+            c.sync_hold_budget_window = Duration::from_secs(3 * 3600);
+            c.sync_hold_budget = Duration::from_secs(4 * 3600);
+        });
+        out_of_range("sync_hold_budget_window", |c| {
+            c.sync_hold_budget_window = Duration::from_secs(3599);
+        });
+        out_of_range("sync_hold_budget_window", |c| {
+            c.sync_hold_budget_window = Duration::from_secs(31 * 24 * 3600);
+        });
+        out_of_range("sync_window_expire_after", |c| {
+            c.sync_window_expire_after = Duration::from_secs(59);
+        });
+        out_of_range("sync_window_expire_after", |c| {
+            c.sync_window_expire_after = Duration::from_secs(31 * 24 * 3600);
+        });
+        out_of_range("sync_window_expire_after", |c| {
+            // It cannot be shorter than the give-up it follows.
+            c.sync_close_give_up = Duration::from_secs(2 * 3600);
+            c.sync_window_expire_after = Duration::from_secs(3600);
+        });
+        out_of_range("sync_watch_interval", |c| {
+            c.sync_watch_interval = Duration::from_millis(999);
+        });
+        out_of_range("sync_watch_interval", |c| {
+            c.sync_watch_interval = Duration::from_secs(3601);
+        });
+        out_of_range("sync_watch_batch", |c| {
+            c.sync_watch_batch = 0;
+        });
+        out_of_range("sync_watch_batch", |c| {
+            c.sync_watch_batch = 1_001;
+        });
+        out_of_range("sync_settle", |c| {
+            c.sync_settle = Duration::from_secs(61);
+        });
+        out_of_range("sync_settle_max", |c| {
+            c.sync_settle_max = Duration::from_secs(601);
+        });
+        out_of_range("sync_settle_max", |c| {
+            // The longest wait cannot be shorter than the quiet period it waits for.
+            c.sync_settle = Duration::from_secs(5);
+            c.sync_settle_max = Duration::from_secs(1);
+        });
+        out_of_range("alert_in_flight", |c| {
+            c.alert_in_flight = 0;
+        });
+        out_of_range("alert_in_flight", |c| {
+            c.alert_in_flight = 257;
+        });
+        // The quiet period may be zero (a test, or a pipeline that is known to be done).
+        let zero = RegistryConfig {
+            sync_settle: Duration::ZERO,
+            sync_settle_max: Duration::from_millis(1),
+            ..RegistryConfig::default()
+        };
+        assert!(zero.validate().is_ok());
+    }
+
+    #[test]
+    fn the_pickup_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(
+            c.pickup_sweep_interval,
+            Duration::from_secs(30),
+            "A37: every 30 seconds"
+        );
+        assert_eq!(c.pickup_full_interval, Duration::from_secs(10 * 60));
+        assert!(c.pickup_sweep_interval <= c.pickup_full_interval);
+        assert_eq!(c.pickup_sweep_lanes, 1_000);
+        assert_eq!(c.pickup_max_files, 20_000);
+        out_of_range("pickup_sweep_interval", |c| {
+            c.pickup_sweep_interval = Duration::from_millis(999);
+        });
+        out_of_range("pickup_sweep_interval", |c| {
+            c.pickup_sweep_interval = Duration::from_secs(3601);
+        });
+        out_of_range("pickup_full_interval", |c| {
+            c.pickup_full_interval = Duration::from_secs(9);
+        });
+        out_of_range("pickup_full_interval", |c| {
+            c.pickup_full_interval = Duration::from_secs(25 * 3600);
+        });
+        out_of_range("pickup_full_interval", |c| {
+            // A full look cannot be more often than the sweep it is part of.
+            c.pickup_sweep_interval = Duration::from_secs(60);
+            c.pickup_full_interval = Duration::from_secs(30);
+        });
+        out_of_range("pickup_sweep_lanes", |c| {
+            c.pickup_sweep_lanes = 0;
+        });
+        out_of_range("pickup_sweep_lanes", |c| {
+            c.pickup_sweep_lanes = 100_001;
+        });
+        out_of_range("pickup_max_files", |c| {
+            c.pickup_max_files = 99;
+        });
+        out_of_range("pickup_max_files", |c| {
+            c.pickup_max_files = 200_001;
+        });
+    }
+
+    #[test]
+    fn the_served_verification_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(c.served_verify_interval, Duration::from_secs(24 * 3600));
+        assert_eq!(
+            c.served_verify_sample, 200,
+            "D86, A36: 200 combinations a night for each swimlane"
+        );
+        assert_eq!(c.served_verify_pause, Duration::from_millis(250));
+        assert_eq!(c.served_verify_lanes, 4);
+        assert_eq!(c.served_verify_slot_wait, Duration::from_secs(10));
+        assert_eq!(
+            c.served_timeout,
+            Duration::from_secs(10),
+            "A36: 10 s for a request"
+        );
+        assert!(
+            c.served_verify_pause >= Duration::from_millis(200),
+            "no more than the agent's five requests a second for one swimlane"
+        );
+        assert_eq!(c.validate(), Ok(()));
+        out_of_range("served_verify_interval", |c| {
+            c.served_verify_interval = Duration::from_secs(59);
+        });
+        out_of_range("served_verify_interval", |c| {
+            c.served_verify_interval = Duration::from_secs(7 * 24 * 3600 + 1);
+        });
+        out_of_range("served_verify_sample", |c| c.served_verify_sample = 0);
+        out_of_range("served_verify_sample", |c| c.served_verify_sample = 10_001);
+        out_of_range("served_verify_pause", |c| {
+            c.served_verify_pause = Duration::from_secs(61);
+        });
+        out_of_range("served_verify_lanes", |c| c.served_verify_lanes = 0);
+        out_of_range("served_verify_lanes", |c| c.served_verify_lanes = 65);
+        out_of_range("served_verify_slot_wait", |c| {
+            c.served_verify_slot_wait = Duration::from_millis(9);
+        });
+        out_of_range("served_verify_slot_wait", |c| {
+            c.served_verify_slot_wait = Duration::from_secs(121);
+        });
+        // A pause of nothing is allowed (tests use it); the agent's own limit still holds on the other side.
+        let none = RegistryConfig {
+            served_verify_pause: Duration::ZERO,
+            ..RegistryConfig::default()
+        };
+        assert_eq!(none.validate(), Ok(()));
+    }
+
+    #[test]
+    fn the_structure_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(c.structure_sweep_interval, Duration::from_secs(10));
+        assert_eq!(c.structure_full_interval, Duration::from_secs(10 * 60));
+        assert!(c.structure_sweep_interval <= c.structure_full_interval);
+        assert_eq!(c.structure_sweep_lanes, 1_000);
+        assert_eq!(c.structure_cache_bytes, 64 * 1024 * 1024);
+        assert_eq!(c.structure_batch_bytes, 16 * 1024 * 1024);
+        assert_eq!(c.validate(), Ok(()));
+        out_of_range("structure_sweep_interval", |c| {
+            c.structure_sweep_interval = Duration::from_millis(999);
+        });
+        out_of_range("structure_sweep_interval", |c| {
+            c.structure_sweep_interval = Duration::from_secs(3601);
+        });
+        out_of_range("structure_full_interval", |c| {
+            c.structure_full_interval = Duration::from_secs(9);
+        });
+        out_of_range("structure_full_interval", |c| {
+            c.structure_full_interval = Duration::from_secs(25 * 3600);
+        });
+        out_of_range("structure_full_interval", |c| {
+            c.structure_sweep_interval = Duration::from_secs(60);
+            c.structure_full_interval = Duration::from_secs(30);
+        });
+        out_of_range("structure_sweep_lanes", |c| {
+            c.structure_sweep_lanes = 0;
+        });
+        out_of_range("structure_sweep_lanes", |c| {
+            c.structure_sweep_lanes = 100_001;
+        });
+        out_of_range("structure_cache_bytes", |c| {
+            c.structure_cache_bytes = 1024 * 1024 - 1;
+        });
+        out_of_range("structure_cache_bytes", |c| {
+            c.structure_cache_bytes = 1024 * 1024 * 1024 + 1;
+        });
+        out_of_range("structure_batch_bytes", |c| {
+            c.structure_batch_bytes = 1024 * 1024 - 1;
+        });
+        out_of_range("structure_batch_bytes", |c| {
+            c.structure_batch_bytes = 256 * 1024 * 1024 + 1;
+        });
+    }
+
+    #[test]
+    fn the_tool_write_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(
+            c.tool_write_max_pending, 10_000,
+            "the bound of the queue of registrations that no observation has matched (the port's fake holds the same figure)"
+        );
+        assert_eq!(
+            c.tool_write_timeout,
+            Duration::from_secs(2),
+            "a registration waits this long inside the caller's transaction, and no longer"
+        );
+        assert_eq!(c.tool_write_match_interval, Duration::from_secs(5));
+        assert_eq!(c.tool_write_match_lanes, 200);
+        assert_eq!(c.tool_write_sweep_batch, 1_000);
+        out_of_range("tool_write_max_pending", |c| {
+            c.tool_write_max_pending = 0;
+        });
+        out_of_range("tool_write_max_pending", |c| {
+            c.tool_write_max_pending = 1_000_001;
+        });
+        out_of_range("tool_write_timeout", |c| {
+            c.tool_write_timeout = Duration::from_millis(99);
+        });
+        out_of_range("tool_write_timeout", |c| {
+            c.tool_write_timeout = Duration::from_secs(31);
+        });
+        out_of_range("tool_write_match_interval", |c| {
+            c.tool_write_match_interval = Duration::from_millis(999);
+        });
+        out_of_range("tool_write_match_interval", |c| {
+            c.tool_write_match_interval = Duration::from_secs(3601);
+        });
+        out_of_range("tool_write_match_lanes", |c| {
+            c.tool_write_match_lanes = 0;
+        });
+        out_of_range("tool_write_match_lanes", |c| {
+            c.tool_write_match_lanes = 100_001;
+        });
+        out_of_range("tool_write_sweep_batch", |c| {
+            c.tool_write_sweep_batch = 0;
+        });
+        out_of_range("tool_write_sweep_batch", |c| {
+            c.tool_write_sweep_batch = 100_001;
+        });
+        // The smallest bound the conformance suite runs with is accepted.
+        let small = RegistryConfig {
+            tool_write_max_pending: 2,
+            ..RegistryConfig::default()
+        };
+        assert!(small.validate().is_ok());
+    }
+
+    #[test]
+    fn the_sentinel_and_attribution_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(
+            c.sentinel_max_batch_records, 500,
+            "prompt 17: at most 500 records in a batch"
+        );
+        assert_eq!(c.sentinel_flush_interval_secs, 1, "prompt 17: one batch a second");
+        assert_eq!(c.sentinel_max_batch_bytes, 2 * 1024 * 1024);
+        assert_eq!(c.sentinel_max_streams, 4096);
+        assert_eq!(c.attribution_interval, Duration::from_secs(5));
+        assert_eq!(c.attribution_lanes, 200);
+        assert_eq!(c.attribution_batch, 5_000);
+        assert_eq!(c.nfs_client_grace, Duration::from_secs(30), "A19: a 30 s grace");
+        assert_eq!(c.nfs_client_window, Duration::from_secs(10 * 60));
+        assert_eq!(c.sentinel_lookback, Duration::from_secs(2 * 3600));
+        assert_eq!(c.sentinel_partition_interval, Duration::from_secs(24 * 3600));
+        assert!(
+            c.attribution_interval <= Duration::from_secs(10),
+            "P14: a sentinel attribution is attached within 30 s of the change being observed, and a record that was here first waits for the \
+             job's next run: the default leaves most of the 30 s to the run itself"
+        );
+        out_of_range("sentinel_max_batch_records", |c| {
+            c.sentinel_max_batch_records = 0;
+        });
+        out_of_range("sentinel_max_batch_records", |c| {
+            c.sentinel_max_batch_records = 10_001;
+        });
+        out_of_range("sentinel_flush_interval_secs", |c| {
+            c.sentinel_flush_interval_secs = 0;
+        });
+        out_of_range("sentinel_flush_interval_secs", |c| {
+            c.sentinel_flush_interval_secs = 3601;
+        });
+        out_of_range("sentinel_max_batch_bytes", |c| {
+            c.sentinel_max_batch_bytes = 64 * 1024 - 1;
+        });
+        out_of_range("sentinel_max_batch_bytes", |c| {
+            c.sentinel_max_batch_bytes = 64 * 1024 * 1024 + 1;
+        });
+        out_of_range("sentinel_max_streams", |c| {
+            c.sentinel_max_streams = 0;
+        });
+        out_of_range("sentinel_max_streams", |c| {
+            c.sentinel_max_streams = 100_001;
+        });
+        out_of_range("attribution_interval", |c| {
+            c.attribution_interval = Duration::from_millis(999);
+        });
+        out_of_range("attribution_interval", |c| {
+            c.attribution_interval = Duration::from_secs(3601);
+        });
+        out_of_range("attribution_lanes", |c| {
+            c.attribution_lanes = 0;
+        });
+        out_of_range("attribution_batch", |c| {
+            c.attribution_batch = 0;
+        });
+        out_of_range("attribution_batch", |c| {
+            c.attribution_batch = 100_001;
+        });
+        out_of_range("nfs_client_grace", |c| {
+            c.nfs_client_grace = Duration::from_millis(999);
+        });
+        out_of_range("nfs_client_grace", |c| {
+            c.nfs_client_grace = Duration::from_secs(3601);
+        });
+        out_of_range("nfs_client_window", |c| {
+            c.nfs_client_window = Duration::from_secs(25 * 3600);
+        });
+        out_of_range("nfs_client_window", |c| {
+            // The window starts after the grace: one that ends with it leaves no time in which to call a change an NFS client's.
+            c.nfs_client_grace = Duration::from_secs(60);
+            c.nfs_client_window = Duration::from_secs(60);
+        });
+        out_of_range("sentinel_lookback", |c| {
+            c.sentinel_lookback = Duration::from_secs(59);
+        });
+        out_of_range("sentinel_lookback", |c| {
+            c.sentinel_lookback = Duration::from_secs(8 * 24 * 3600);
+        });
+        out_of_range("sentinel_partition_interval", |c| {
+            c.sentinel_partition_interval = Duration::from_secs(59);
+        });
+        out_of_range("sentinel_partition_interval", |c| {
+            c.sentinel_partition_interval = Duration::from_secs(8 * 24 * 3600);
+        });
+    }
+
+    #[test]
+    fn the_adoption_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(c.adoption_base_candidates, 64);
+        assert_eq!(c.adoption_history_paths, 16);
+        assert_eq!(c.adoption_history_depth, 32);
+        assert_eq!(c.adoption_hints, 200);
+        assert_eq!(c.adoption_scan_batch_files, 200);
+        assert_eq!(
+            c.adoption_scan_batch_bytes,
+            32 * 1024 * 1024,
+            "a batch of files read for the scan never holds more than this"
+        );
+        assert!(
+            c.adoption_scan_batch_bytes >= c.max_file_bytes,
+            "one file always fits a batch"
+        );
+        assert_eq!(c.adoption_secret_hits, 10_000);
+        assert_eq!(c.adoption_scan_timeout, Duration::from_secs(300));
+        assert_eq!(c.adoption_resolutions_per_call, 5_000);
+        out_of_range("adoption_base_candidates", |c| {
+            c.adoption_base_candidates = 0;
+        });
+        out_of_range("adoption_base_candidates", |c| {
+            c.adoption_base_candidates = 1_001;
+        });
+        out_of_range("adoption_history_paths", |c| {
+            c.adoption_history_paths = 257;
+        });
+        out_of_range("adoption_history_depth", |c| {
+            c.adoption_history_depth = 0;
+        });
+        out_of_range("adoption_hints", |c| {
+            c.adoption_hints = 0;
+        });
+        out_of_range("adoption_scan_batch_files", |c| {
+            c.adoption_scan_batch_files = 0;
+        });
+        out_of_range("adoption_scan_batch_files", |c| {
+            c.adoption_scan_batch_files = MAX_GET_MANY + 1;
+        });
+        out_of_range("adoption_scan_batch_bytes", |c| {
+            c.adoption_scan_batch_bytes = 1024;
+        });
+        out_of_range("adoption_secret_hits", |c| {
+            c.adoption_secret_hits = 0;
+        });
+        out_of_range("adoption_scan_timeout", |c| {
+            c.adoption_scan_timeout = Duration::from_millis(10);
+        });
+        out_of_range("adoption_resolutions_per_call", |c| {
+            c.adoption_resolutions_per_call = 0;
+        });
+    }
+
+    #[test]
+    fn the_read_defaults_are_pinned_and_their_bounds_enforced() {
+        let c = RegistryConfig::default();
+        assert_eq!(c.validate(), Ok(()));
+        // A27: the ceilings of the prompt, which the REST spec's own lower limits sit under.
+        assert_eq!((c.search_max_total, c.search_max_per_file), (1_000, 50));
+        assert_eq!(
+            c.search_timeout,
+            Duration::from_secs(5),
+            "the prompt: a 5 second timeout"
+        );
+        assert_eq!(
+            c.read_pool_threads, 2,
+            "the plan's figure for the 400 ms of P7 is two threads"
+        );
+        assert!(c.search_blob_batch <= MAX_GET_MANY, "one get_many per batch");
+        assert_eq!(
+            c.tree_scan_rows, 200_001,
+            "MAX_LANE_FILES and one more: a swimlane over it cannot exist"
+        );
+        let caches =
+            c.row_cache_bytes + c.effective_cache_bytes + c.diff_cache_bytes + c.file_list_cache_bytes;
+        assert_eq!(
+            caches,
+            224 * 1024 * 1024,
+            "within the plan's 256 MiB for the parsed and rendered values"
+        );
+        out_of_range("agent_live_window", |c| {
+            c.agent_live_window = Duration::from_millis(1);
+        });
+        out_of_range("read_pool_threads", |c| c.read_pool_threads = 0);
+        out_of_range("row_cache_bytes", |c| c.row_cache_bytes = 1);
+        out_of_range("effective_cache_bytes", |c| c.effective_cache_bytes = 1);
+        out_of_range("diff_cache_bytes", |c| c.diff_cache_bytes = 1);
+        out_of_range("file_list_cache_bytes", |c| c.file_list_cache_bytes = 1);
+        out_of_range("corpus_cache_bytes", |c| c.corpus_cache_bytes = 1);
+        out_of_range("search_max_total", |c| c.search_max_total = 0);
+        out_of_range("search_max_per_file", |c| c.search_max_per_file = 0);
+        out_of_range("search_timeout", |c| c.search_timeout = Duration::from_millis(1));
+        out_of_range("search_timeout", |c| c.search_timeout = Duration::from_secs(3600));
+        out_of_range("search_blob_batch", |c| c.search_blob_batch = 0);
+        out_of_range("search_blob_batch", |c| c.search_blob_batch = MAX_GET_MANY + 1);
+        out_of_range("search_blob_parallel", |c| c.search_blob_parallel = 0);
+        out_of_range("search_shards", |c| c.search_shards = 0);
+        out_of_range("search_shards", |c| c.search_shards = 65);
+        out_of_range("warmup_poll", |c| c.warmup_poll = Duration::from_millis(10));
+        out_of_range("warmup_debounce", |c| c.warmup_debounce = Duration::from_secs(61));
+        out_of_range("search_tested_lanes", |c| c.search_tested_lanes = 1_001);
+        out_of_range("search_listed_blobs", |c| c.search_listed_blobs = 0);
+        out_of_range("search_listed_blobs", |c| c.search_listed_blobs = 100_001);
+        out_of_range("served_timeout", |c| c.served_timeout = Duration::from_millis(1));
+        out_of_range("served_concurrency", |c| c.served_concurrency = 0);
+        out_of_range("tree_scan_rows", |c| c.tree_scan_rows = 10);
+    }
+
+    fn out_of_range(name: &'static str, change: impl FnOnce(&mut RegistryConfig)) {
+        let mut c = RegistryConfig::default();
+        change(&mut c);
+        assert_eq!(c.validate(), Err(ConfigError::OutOfRange(name)), "{name}");
+    }
+
+    #[test]
+    fn every_index_and_git_bound_is_enforced() {
+        out_of_range("pool_threads", |c| {
+            c.pool_threads = 0;
+        });
+        out_of_range("pool_threads", |c| {
+            c.pool_threads = 65;
+        });
+        out_of_range("index_queue", |c| {
+            c.index_queue = 0;
+        });
+        out_of_range("index_batch", |c| {
+            c.index_batch = 0;
+        });
+        out_of_range("index_batch", |c| {
+            c.index_batch = MAX_GET_MANY + 1;
+        });
+        out_of_range("index_sweep_interval", |c| {
+            c.index_sweep_interval = Duration::from_secs(1);
+        });
+        out_of_range("index_sweep_max_blobs", |c| {
+            c.index_sweep_max_blobs = 0;
+        });
+        out_of_range("rows_per_statement", |c| {
+            c.rows_per_statement = 99;
+        });
+        out_of_range("rows_per_statement", |c| {
+            c.rows_per_statement = 50_001;
+        });
+        out_of_range("max_affected_paths", |c| {
+            c.max_affected_paths = 0;
+        });
+        out_of_range("git_hash_cache_bytes", |c| {
+            c.git_hash_cache_bytes = 1024;
+        });
+        out_of_range("git_timeout", |c| {
+            c.git_timeout = Duration::from_millis(1);
+        });
+    }
+
+    #[test]
+    fn every_bound_is_enforced() {
+        let bad = |f: &dyn Fn(&mut RegistryConfig)| {
+            let mut c = RegistryConfig::default();
+            f(&mut c);
+            c.validate()
+        };
+        assert_eq!(
+            bad(&|c| c.chunk_paths = 0),
+            Err(ConfigError::OutOfRange("chunk_paths"))
+        );
+        assert_eq!(
+            bad(&|c| c.max_file_bytes = MAX_BLOB_BYTES as u64 + 1),
+            Err(ConfigError::OutOfRange("max_file_bytes"))
+        );
+        assert_eq!(
+            bad(&|c| c.max_delta_parts = 0),
+            Err(ConfigError::OutOfRange("max_delta_parts"))
+        );
+        assert_eq!(
+            bad(&|c| c.query_timeout = Duration::from_millis(1)),
+            Err(ConfigError::OutOfRange("query_timeout"))
+        );
+        assert_eq!(
+            bad(&|c| c.blob_timeout = Duration::from_millis(1)),
+            Err(ConfigError::OutOfRange("blob_timeout"))
+        );
+        assert_eq!(
+            bad(&|c| c.blob_timeout = Duration::from_secs(3600)),
+            Err(ConfigError::OutOfRange("blob_timeout"))
+        );
+        assert_eq!(
+            bad(&|c| c.extra_deny_globs = vec!["[".to_owned()]),
+            Err(ConfigError::Invalid("extra_deny_globs"))
+        );
+        assert_eq!(
+            bad(&|c| c.extra_deny_globs = vec!["a".repeat(300)]),
+            Err(ConfigError::Invalid("extra_deny_globs"))
+        );
+        assert_eq!(
+            bad(&|c| c.env_allowlist = vec!["NOT AN ENV NAME".to_owned()]),
+            Err(ConfigError::Invalid("env_allowlist"))
+        );
+    }
+
+    #[test]
+    fn the_retention_defaults_are_pinned() {
+        let c = RegistryConfig::default();
+        assert_eq!(c.validate(), Ok(()));
+        assert_eq!(c.retention_interval, Duration::from_secs(24 * 3600), "nightly");
+        assert!(!c.retention_dry_run, "A34: a run deletes by default");
+        assert_eq!(c.gc_batch, 500, "A34: at most 500 blobs a run");
+        assert_eq!(c.gc_max_bytes, 64 * 1024 * 1024, "A34: and 64 MiB");
+        assert_eq!(
+            c.gc_grace,
+            Duration::from_secs(48 * 3600),
+            "the grace the human approved (W2)"
+        );
+        assert_eq!(c.sync_window_retention, Duration::from_secs(7 * 24 * 3600));
+        assert!(c.gc_chunk <= c.gc_batch, "a transaction takes a part of a run");
+        assert!(
+            usize::try_from(c.gc_max_bytes).is_ok_and(|v| v >= MAX_BLOB_BYTES),
+            "no blob is too big to be collected"
+        );
+    }
+
+    #[test]
+    fn the_grace_period_is_range_checked_against_the_contract_of_put() {
+        // The default staging lifetime: the floor is the platform's MIN_RETENTION_GRACE, the touch interval plus 24 hours.
+        let c = RegistryConfig::default();
+        assert_eq!(c.gc_grace_floor(), MIN_RETENTION_GRACE);
+        assert_eq!(MIN_RETENTION_GRACE, Duration::from_secs(25 * 3600));
+        out_of_range("gc_grace", |c| {
+            c.gc_grace = MIN_RETENTION_GRACE - Duration::from_secs(1);
+        });
+        out_of_range("gc_grace", |c| {
+            c.gc_grace = Duration::ZERO;
+        });
+        out_of_range("gc_grace", |c| {
+            c.gc_grace = Duration::from_secs(401 * 24 * 3600);
+        });
+        let at_the_floor = RegistryConfig {
+            gc_grace: MIN_RETENTION_GRACE,
+            ..RegistryConfig::default()
+        };
+        assert_eq!(at_the_floor.validate(), Ok(()), "exactly the floor is allowed");
+
+        // A longer staging lifetime moves the floor: a staged part waits that long for the reference that follows its put.
+        let ttl = Duration::from_secs(3 * 24 * 3600);
+        let long_staging = RegistryConfig {
+            staging_ttl: ttl,
+            ..RegistryConfig::default()
+        };
+        assert_eq!(long_staging.gc_grace_floor(), TOUCH_INTERVAL + ttl);
+        assert_eq!(
+            long_staging.validate(),
+            Err(ConfigError::OutOfRange("gc_grace")),
+            "48 hours is below the touch interval plus 72 hours"
+        );
+        let raised = RegistryConfig {
+            staging_ttl: ttl,
+            gc_grace: TOUCH_INTERVAL + ttl,
+            ..RegistryConfig::default()
+        };
+        assert_eq!(raised.validate(), Ok(()));
+        // The longest staging lifetime the registry allows still leaves a grace period that can be set.
+        let longest = RegistryConfig {
+            staging_ttl: Duration::from_secs(30 * 24 * 3600),
+            gc_grace: TOUCH_INTERVAL + Duration::from_secs(30 * 24 * 3600),
+            ..RegistryConfig::default()
+        };
+        assert_eq!(longest.validate(), Ok(()));
+    }
+
+    #[test]
+    fn the_retention_of_sync_windows_is_longer_than_the_hold_budget_reads_back() {
+        let c = RegistryConfig::default();
+        // Two rolling windows (48 h) plus the stale (2 h) and give-up (30 min) margins.
+        assert_eq!(
+            c.sync_window_retention_floor(),
+            Duration::from_secs(48 * 3600 + 2 * 3600 + 30 * 60)
+        );
+        assert!(c.sync_window_retention > c.sync_window_retention_floor());
+        out_of_range("sync_window_retention", |c| {
+            c.sync_window_retention = c.sync_window_retention_floor();
+        });
+        out_of_range("sync_window_retention", |c| {
+            c.sync_window_retention = Duration::from_secs(3600);
+        });
+        out_of_range("sync_window_retention", |c| {
+            c.sync_window_retention = Duration::from_secs(366 * 24 * 3600);
+        });
+        let just_above = RegistryConfig {
+            sync_window_retention: RegistryConfig::default().sync_window_retention_floor()
+                + Duration::from_millis(1),
+            ..RegistryConfig::default()
+        };
+        assert_eq!(just_above.validate(), Ok(()));
+        // A longer hold budget window moves the floor with it: the default 7 days no longer covers two 30 day windows.
+        out_of_range("sync_window_retention", |c| {
+            c.sync_hold_budget_window = Duration::from_secs(30 * 24 * 3600);
+        });
+        let wide = RegistryConfig {
+            sync_hold_budget_window: Duration::from_secs(30 * 24 * 3600),
+            sync_window_retention: Duration::from_secs(365 * 24 * 3600),
+            ..RegistryConfig::default()
+        };
+        assert_eq!(wide.validate(), Ok(()));
+        // The margins count: more stale time or a longer give-up raises the floor.
+        let more_margin = RegistryConfig {
+            sync_window_stale_after: Duration::from_secs(7 * 24 * 3600),
+            sync_close_give_up: Duration::from_secs(24 * 3600),
+            sync_window_retention: Duration::from_secs(7 * 24 * 3600),
+            ..RegistryConfig::default()
+        };
+        assert_eq!(
+            more_margin.validate(),
+            Err(ConfigError::OutOfRange("sync_window_retention"))
+        );
+    }
+
+    #[test]
+    fn every_retention_bound_is_enforced() {
+        out_of_range("retention_interval", |c| {
+            c.retention_interval = Duration::from_secs(59);
+        });
+        out_of_range("retention_interval", |c| {
+            c.retention_interval = Duration::from_secs(8 * 24 * 3600);
+        });
+        out_of_range("gc_batch", |c| {
+            c.gc_batch = 0;
+        });
+        out_of_range("gc_batch", |c| {
+            c.gc_batch = 100_001;
+        });
+        out_of_range("gc_max_bytes", |c| {
+            c.gc_max_bytes = MAX_BLOB_BYTES as u64 - 1;
+        });
+        out_of_range("gc_max_bytes", |c| {
+            c.gc_max_bytes = 65 * 1024 * 1024 * 1024;
+        });
+        out_of_range("gc_chunk", |c| {
+            c.gc_chunk = 0;
+        });
+        out_of_range("gc_chunk", |c| {
+            c.gc_chunk = 1_001;
+        });
+        out_of_range("gc_lock_timeout", |c| {
+            c.gc_lock_timeout = Duration::from_millis(99);
+        });
+        out_of_range("gc_lock_timeout", |c| {
+            c.gc_lock_timeout = Duration::from_secs(61);
+        });
+        out_of_range("gc_scan_timeout", |c| {
+            c.gc_scan_timeout = Duration::from_millis(999);
+        });
+        out_of_range("gc_scan_timeout", |c| {
+            c.gc_scan_timeout = Duration::from_secs(31 * 60);
+        });
+        out_of_range("retention_prune_batch", |c| {
+            c.retention_prune_batch = 0;
+        });
+        out_of_range("retention_prune_batch", |c| {
+            c.retention_prune_batch = 100_001;
+        });
+        out_of_range("retention_prune_batches", |c| {
+            c.retention_prune_batches = 0;
+        });
+        out_of_range("retention_prune_batches", |c| {
+            c.retention_prune_batches = 10_001;
+        });
+    }
+
+    #[test]
+    fn admin_globs_add_to_the_built_in_ones_and_never_replace_them() {
+        let c = RegistryConfig {
+            extra_deny_globs: vec!["secrets/*".to_owned()],
+            ..RegistryConfig::default()
+        };
+        let globs = c.deny_globs();
+        assert_eq!(globs.len(), DEFAULT_DENY_GLOBS.len() + 1);
+        assert!(globs.iter().any(|g| g == "*.pem"));
+        assert!(globs.iter().any(|g| g == "secrets/*"));
+    }
+}

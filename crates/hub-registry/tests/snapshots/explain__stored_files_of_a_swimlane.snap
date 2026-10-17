@@ -1,0 +1,20 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: files
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "effective_files"
+  },
+  {
+    "index": "effective_files_pkey",
+    "node": "Bitmap Index Scan"
+  }
+]

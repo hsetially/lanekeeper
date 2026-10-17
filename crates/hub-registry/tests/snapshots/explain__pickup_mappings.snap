@@ -1,0 +1,16 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: mappings
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "folder_mappings"
+  }
+]

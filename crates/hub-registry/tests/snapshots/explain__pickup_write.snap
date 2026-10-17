@@ -1,0 +1,16 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: write
+---
+[
+  {
+    "arbiters": [
+      "service_state_pkey"
+    ],
+    "node": "ModifyTable",
+    "relation": "service_state"
+  },
+  {
+    "node": "Function Scan"
+  }
+]

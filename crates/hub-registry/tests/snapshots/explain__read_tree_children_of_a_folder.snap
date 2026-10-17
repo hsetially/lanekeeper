@@ -1,0 +1,32 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: plan
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Aggregate"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Subquery Scan"
+  },
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "file_state"
+  },
+  {
+    "index": "file_state_prefix_idx",
+    "node": "Bitmap Index Scan"
+  }
+]

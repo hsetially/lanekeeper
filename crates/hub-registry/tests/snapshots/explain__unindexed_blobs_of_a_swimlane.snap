@@ -1,0 +1,25 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: unindexed
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Aggregate"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "index": "file_state_current_hash_idx",
+    "node": "Index Only Scan",
+    "relation": "file_state"
+  },
+  {
+    "index": "settings_index_blobs_pkey",
+    "node": "Index Only Scan",
+    "relation": "settings_index_blobs"
+  }
+]

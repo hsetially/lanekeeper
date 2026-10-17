@@ -1,0 +1,34 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: plan
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Function Scan"
+  },
+  {
+    "index": "settings_index_blobs_pkey",
+    "node": "Index Scan",
+    "relation": "settings_index_blobs"
+  },
+  {
+    "node": "Aggregate"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "settings_index"
+  },
+  {
+    "index": "settings_index_pkey",
+    "node": "Bitmap Index Scan"
+  }
+]

@@ -1,0 +1,25 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: plan
+---
+[
+  {
+    "node": "ModifyTable",
+    "relation": "swimlane_registry"
+  },
+  {
+    "node": "Aggregate"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "findings"
+  },
+  {
+    "index": "findings_list_idx",
+    "node": "Bitmap Index Scan"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "swimlane_registry"
+  }
+]

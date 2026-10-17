@@ -1,0 +1,27 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: lane_pending
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "tool_write_registrations"
+  },
+  {
+    "node": "BitmapAnd"
+  },
+  {
+    "index": "tool_write_registrations_age_idx",
+    "node": "Bitmap Index Scan"
+  },
+  {
+    "index": "tool_write_registrations_key",
+    "node": "Bitmap Index Scan"
+  }
+]
