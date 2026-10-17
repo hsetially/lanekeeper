@@ -92,6 +92,8 @@ pub fn entry(path: &str, drift: DriftState) -> FileEntry {
         attribution: None,
         severity: None,
         pickup_state: None,
+        logical_file: None,
+        tenant: None,
     }
 }
 
@@ -118,6 +120,8 @@ pub fn finding(id: i64, kind: FindingKind, swimlane: &str, severity: Severity) -
         message: st("A plain sentence from the engine."),
         locations: vec![location("a.b", 3, 4)],
         detected_at: Timestamp::from_unix_millis(1_700_000_000_000),
+        logical_file: None,
+        tenant: None,
     }
 }
 

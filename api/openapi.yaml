@@ -11,7 +11,17 @@ info:
     cookie session plus a double-submit `X-CSRF-Token` on every non-GET; `Idempotency-Key` on every write; errors
     are `application/problem+json`; lists use keyset pagination (`cursor`, `limit` at most 500); content responses
     carry an `ETag` and honour `If-None-Match`; every operation declares `x-required-role` (`viewer`, `editor`,
-    `operator`, `admin`, or `none` for the four open operations) (S4).'
+    `operator`, `admin`, or `none` for the four open operations) (S4). Masking (S14b, D79): in the text it returns,
+    the server never sends a value the secret scan flags. Wherever a response carries file or doc text, the value is replaced by its marker
+    `[REDACTED: N chars, rule]` (N is the length of the value in characters, rule the name of the scan rule), which
+    matches `^\[REDACTED: [0-9]+ chars, [a-z0-9_]+\]$` as a whole value and `\[REDACTED: [0-9]+ chars, [a-z0-9_]+\]`
+    inside a text. `FileContent`, `ServedFile` and `DocText` also list where each marker sits in `masks`. If the scan
+    cannot finish, the server sends no text: `content_withheld` is true and `text` is null where the schema has them,
+    and a problem response where it does not. `revealValue` is the one audited way to see a value. A write that
+    contains a marker is refused with 422 `invalid_content` and an issue of kind `redaction_marker`. Known limitation:
+    a text search (`searchText`, `searchDocs`, `grepDocs`) matches against the stored text, so whether it finds a match
+    tells a reader something about a value that was hidden. This contract does not close it; the owners of the searches
+    do (04 and 05 for file text, 14 for docs).'
   license:
     name: Proprietary
     identifier: LicenseRef-Proprietary
@@ -38,6 +48,8 @@ tags:
   description: Content by hash
 - name: events
   description: Server-sent events
+- name: git
+  description: Refs of the mirrored repositories
 - name: hooks
   description: Inbound webhooks
 - name: docs
@@ -110,7 +122,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/Conflict'
+          $ref: '#/components/responses/ConflictState'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/admin/access-requests/{id}/reject:
@@ -146,7 +158,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/Conflict'
+          $ref: '#/components/responses/ConflictState'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/admin/agents:
@@ -1197,7 +1209,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/Conflict'
+          $ref: '#/components/responses/ConflictState'
         '422':
           $ref: '#/components/responses/Unprocessable'
         default:
@@ -1206,7 +1218,10 @@ paths:
     get:
       operationId: getBlob
       summary: Content by hash
-      description: Never serves denied or withheld files (404).
+      description: |-
+        Requirement on the owners of the blob endpoint (03b) and of the secret scan (05). Nothing in this contract builds it, and it is not a statement about what the code does today.
+
+        This operation must never serve a denied or withheld file (404, the same answer as for an unknown hash), and must never serve a file whose text the secret scan flags (404 as well). A blob is the exact bytes of one hash and never changes, so it cannot be masked. Serving the bytes of a flagged file would hand out the value that `getFileContent` masks, which is a way around the masking of this contract (S14b). The masked text of a file comes from `getFileContent`. The check applies to text files and is cached by hash; a binary file is served.
       tags:
       - content-store
       - content
@@ -1462,6 +1477,8 @@ paths:
     get:
       operationId: grepDocs
       summary: Search docs text by pattern
+      description: |-
+        Known limitation (S14b), not closed by this contract. Every line of a hit is masked, but the search matches against the stored text of the docs, so whether a pattern finds anything tells a reader something about a value that was hidden, and a regular expression can narrow it a character at a time. How the docs index treats a flagged value (for example by matching on the masked text) is for owner 14. The MCP search tools sit on the same port.
       tags:
       - docs
       x-required-role: viewer
@@ -1559,10 +1576,68 @@ paths:
           $ref: '#/components/responses/Forbidden'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/docs/fs/render:
+    get:
+      operationId: renderDoc
+      summary: Read a doc as sanitised HTML
+      description: |-
+        The server-rendered page of one doc, for the doc reader, addressed by path like `readDoc`. This is the one HTML sink the CSP lets through (S12): the web app puts `html` into the page only through its Trusted Types policy `lanekeeper-docs` and nowhere else.
+
+        What the server guarantees. These are requirements on the owner of the docs index (prompt 14); the port method `DocSearch::render` states the same, and `ports::conformance::render_output_stays_inside_the_allowlist` checks the part that can be observed.
+
+        - Order. The stored text is read, its line endings are normalised, and the secret scan masks every flagged value (S14b) before the Markdown is parsed. A masked value is the text of its marker `[REDACTED: N chars, rule]` in the page. The render never sees an unmasked value, and there is no reveal for docs.
+        - Allowlist. `RenderedDoc.html` states the elements and attributes the page may contain. Nothing outside them is emitted, whatever the Markdown holds.
+        - Bounds. A doc of more than 2 MiB of text, or one whose page would pass 8 MiB, is refused with 413. The server never truncates: a cut fragment is not sanitised output. `headings` lists the first 500 headings.
+        - Cost. Parsing and sanitising are CPU work. They run in `spawn_blocking` under a timeout, and the page is cached by content hash (together with the scan configuration and the allowlist version), so a doc is rendered once.
+        - Validator. The ETag is derived from the content hash, the scan configuration version and the allowlist version, so a changed configuration is never served from a stale 304.
+      tags:
+      - docs
+      - content
+      x-required-role: viewer
+      parameters:
+      - name: path
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/DocPath'
+      - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RenderedDoc'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '304':
+          description: 'Not modified: the ETag matched.'
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          description: The doc, or the page it would render to, is over the bound. Nothing is cut.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/docs/search:
     get:
       operationId: searchDocs
       summary: Search docs
+      description: |-
+        Known limitation (S14b), not closed by this contract. Every snippet is masked, but the search matches against the stored text of the docs, so whether a query finds a doc tells a reader something about a value that was hidden. How the docs index treats a flagged value (for example by matching on the masked text) is for owner 14. The MCP search tools sit on the same port.
       tags:
       - docs
       x-required-role: viewer
@@ -1663,7 +1738,9 @@ paths:
     post:
       operationId: createDraft
       summary: Create a draft from an edit
-      description: Computes the diff and setting changes without writing anything. Drafts expire.
+      description: 'Computes the diff and setting changes without writing anything. Drafts expire. Content that holds
+        a redaction marker, text of the form `[REDACTED: N chars, rule]` (S14b), is refused with 422 `invalid_content`
+        and one issue of kind `redaction_marker` for each line that holds one, and nothing is saved.'
       tags:
       - writes
       x-required-role: editor
@@ -1693,6 +1770,46 @@ paths:
           $ref: '#/components/responses/PayloadTooLarge'
         '422':
           $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/drafts/{id}:
+    get:
+      operationId: getDraft
+      summary: One draft
+      description: The draft as it is now, for its author only, so that the person can see what they are about to apply
+        before they confirm. Nothing is written and nothing is audited, and the `Idempotency-Key` is not used. A draft
+        that does not exist, or is not the caller's, is 404. A draft that was applied or has expired is still returned,
+        and its `status` says which. The `severity` and the `effects` are the engine's, as of the call.
+      tags:
+      - writes
+      x-required-role: editor
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/DraftId'
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Draft'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/drafts/{id}/apply:
@@ -1737,6 +1854,18 @@ paths:
     get:
       operationId: streamEvents
       summary: Live events (SSE)
+      description: |-
+        Server-sent events (`text/event-stream`). Each frame is one `DomainEvent` (see that schema): the `event:` line is its `type`, the `data:` line is the event as JSON on a single line, and an `id:` line carries the event id, a positive integer, only on stored events. An event that is not stored, such as a `resync` that the server makes up because it cannot replay, has no `id:` line.
+
+        Frames. The first frame is `retry: 3000`, the reconnect delay in milliseconds. A `: heartbeat` comment is sent every 15 seconds; at each heartbeat the server checks that the user may still listen and closes the stream if not. A stream lives at most 30 minutes; the server then closes it with a final `retry: 3000`, and the client reconnects with its `Last-Event-ID` and loses nothing.
+
+        Resume. A connection without `Last-Event-ID` gets no replay and no `resync`: it starts at the live edge, and the page loads what it shows with its ordinary reads. A browser's `EventSource` sends the header itself when it reconnects. With the id of the last event received, the server replays the stored events after it (at most 1,000 events, filtered like the live stream) and then carries on live. If the id is too old, is not a positive integer, or the stored events cannot be read, the server sends one `resync` instead, and the client refetches what it shows.
+
+        Limits. At most 5 streams per user: the next request gets 429, and so does any request to a replica that is full. An event is stored as an envelope of at most 4,096 bytes; an event that would not fit is stored as a `resync` instead. Events carry ids and hashes only, never file content (S12).
+
+        Visibility. Roles are global (D35), so a Viewer or above receives the events of every swimlane. One event is for Admins only, `access_request_created` (a user asked for access): a Viewer or an Operator never receives it, live or in a replay, and naming it in `kinds` does not change that, because the stream opens and the frame never comes. `resync` always passes. `user_sessions_revoked` is internal and never streamed (asking for it in `kinds` is 400).
+
+        Filters. A `resync` passes both filters, so a filtered client still learns that it lagged. Otherwise `kinds` keeps only the kinds named, and `swimlane` keeps the events of those swimlanes and every event that belongs to no swimlane.
       tags:
       - events
       x-required-role: viewer
@@ -1760,7 +1889,7 @@ paths:
           type: array
           items:
             $ref: '#/components/schemas/EventKind'
-          maxItems: 16
+          maxItems: 17
           uniqueItems: true
         description: Only these kinds; all when absent.
         style: form
@@ -1771,20 +1900,26 @@ paths:
         schema:
           type: string
           maxLength: 64
-        description: Resume after this event; a `resync` event is sent if it is too old.
+        description: 'Resume after this event: the `id:` of the last event received, a positive integer. A `resync`
+          event is sent if it is too old or is not one. Without the header nothing is replayed (see the description of
+          the operation).'
       responses:
         '200':
-          description: A `text/event-stream`. Events carry ids and kinds only, never file content (S12).
+          description: A `text/event-stream`. The `data:` of each frame is a `DomainEvent`; the description of the
+            operation has the framing, the resume rules and the limits. Events carry ids and kinds only, never file
+            content (S12).
           content:
             text/event-stream:
               schema:
-                type: string
+                $ref: '#/components/schemas/DomainEvent'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/features/status:
@@ -1874,6 +2009,51 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/FindingPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/git/refs:
+    get:
+      operationId: listGitRefs
+      summary: Branches and tags of a mirrored repository
+      description: |-
+        The branches and tags of one mirrored repository, for the ref pickers of the web app. Names and commit ids only, never file contents. The list is sorted by `name`, branches before tags when a branch and a tag share a name, so that a cursor can follow it. `kind` narrows it to branches or to tags, and both are listed when it is absent. `q` keeps the refs whose name starts with it. Reading is not audited.
+      tags:
+      - git
+      x-required-role: viewer
+      parameters:
+      - name: repo
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/RepoKind'
+      - name: kind
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/GitRefKind'
+      - name: q
+        in: query
+        required: false
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 64
+        description: Only refs whose name starts with this prefix. It is a prefix, never a pattern.
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitRefPage'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -1984,9 +2164,41 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/me/github-token:
+    get:
+      operationId: getGithubCredential
+      summary: What is stored of my GitHub token
+      description: The user's own credential, as `putGithubToken` answers it, so that the token page can show who it
+        belongs to, when it was verified and when it expires. It is never the token. A user with no stored token gets
+        404. The answer is never cached.
+      tags:
+      - me
+      x-required-role: editor
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GithubCredential'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
     put:
       operationId: putGithubToken
       summary: Store or replace my GitHub token
@@ -2018,7 +2230,18 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '422':
-          $ref: '#/components/responses/Unprocessable'
+          description: |-
+            The token was refused. Match on `type`: `classic_token` and `not_fine_grained_token` (the policy allows only fine-grained tokens), `token_rejected` (GitHub does not accept it), `token_missing_access` (it cannot push to both repositories), `github_account_mismatch` (it belongs to another GitHub account than the one linked to the user), `token_expired` and `token_unreadable` (the stored token cannot be used), or `idempotency_conflict`.
+
+            Only `token_missing_access` carries more than the common fields: `base` and `tenant` say whether the token can push to the base and to the tenant repository. Every other refusal is a plain `Problem`, so the schema is a union, not the one extension.
+          content:
+            application/problem+json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/TokenMissingAccessProblem'
+                - $ref: '#/components/schemas/Problem'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/Error'
     delete:
@@ -2189,6 +2412,17 @@ paths:
         required: false
         schema:
           $ref: '#/components/schemas/SwimlaneId'
+      - name: decided
+        in: query
+        required: false
+        schema:
+          type: boolean
+          enum:
+          - true
+        description: Only the proposals an admin has decided, which are `approved`, `applied` and `rejected`. Only
+          `true` has a meaning, so `false` is refused, and so is a request that also has a `status` (both are 400).
+          Not accepted yet. The `listProposals` route that is mounted today refuses every query name it does not know,
+          so a request with `decided` is 400 until the owner of the write paths (prompt 06) implements the filter.
       - $ref: '#/components/parameters/Cursor'
       - $ref: '#/components/parameters/Limit'
       responses:
@@ -2206,11 +2440,47 @@ paths:
           $ref: '#/components/responses/Forbidden'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/proposals/{id}:
+    get:
+      operationId: getProposal
+      summary: One proposal
+      description: The same `Proposal`, with its hunks, that `listProposals` returns, so a link to a proposal works
+        when it is not on the first page. It is open to the same role as the list. The answer is never cached.
+      tags:
+      - writes
+      x-required-role: viewer
+      parameters:
+      - $ref: '#/components/parameters/NumericId'
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Proposal'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/proposals/{id}/approve:
     post:
       operationId: approveProposal
       summary: Approve a proposal
-      description: Applies the change if the file still matches; otherwise the proposal becomes stale (409).
+      description: Applies the change if the file still matches; otherwise the proposal becomes stale (409). A
+        proposal that is not pending, or has expired, is 422 `not_allowed`, and a decision that finds the lease held
+        is 423.
       tags:
       - writes
       x-required-role: admin
@@ -2241,6 +2511,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
         '423':
           $ref: '#/components/responses/Locked'
         default:
@@ -2249,6 +2521,8 @@ paths:
     post:
       operationId: rejectProposal
       summary: Reject a proposal
+      description: A proposal that is not pending, or has expired, is 422 `not_allowed`, and a decision that finds the
+        lease held is 423.
       tags:
       - writes
       x-required-role: admin
@@ -2277,14 +2551,19 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '423':
+          $ref: '#/components/responses/Locked'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/prs:
     post:
       operationId: createPr
       summary: Raise a pull request
-      description: A second PR for a change that already has an open PR is blocked with 409 (D77). The user's own
-        GitHub token is used.
+      description: A second PR for a change that already has an open PR is blocked with 409 (`DuplicatePrProblem`,
+        with the link of the open one; D77). A user whose writes need approval gets 200 with a proposal
+        (`WriteProposalCreated`) instead of a job. The user's own GitHub token is used.
       tags:
       - writes
       x-required-role: editor
@@ -2298,6 +2577,12 @@ paths:
             schema:
               $ref: '#/components/schemas/CreatePrRequest'
       responses:
+        '200':
+          description: A proposal was created instead of a job, because the user's writes need approval.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteProposalCreated'
         '202':
           description: Job accepted; follow it over SSE or `GET /pr-jobs/{id}`
           content:
@@ -2311,9 +2596,20 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
-          $ref: '#/components/responses/Conflict'
+          description: A second PR for a change that already has an open one (`reason` is `duplicate_pr`, with the link
+            of the open PR), or the expected hash did not match (`current`). Nothing was done.
+          content:
+            application/problem+json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/ConflictProblem'
+                - $ref: '#/components/schemas/DuplicatePrProblem'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
         '422':
           $ref: '#/components/responses/Unprocessable'
+        '423':
+          $ref: '#/components/responses/Locked'
         default:
           $ref: '#/components/responses/Error'
     get:
@@ -2350,10 +2646,50 @@ paths:
           $ref: '#/components/responses/Forbidden'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/prs/preview:
+    post:
+      operationId: previewPr
+      summary: Preview a pull request
+      description: Shows where the files of a pull request would go before anybody raises it. Nothing is written,
+        audited or recorded, and no job is created. The `Idempotency-Key` is required like on every write, and not
+        recorded. It reads the user's own GitHub token inside the user's own request (S8) to look for the paths on the
+        branch and for an open PR. A target that cannot be used is 422 `invalid_content` and an unknown swimlane is 422
+        `unknown_swimlane`, as on `createPr`.
+      tags:
+      - writes
+      x-required-role: editor
+      parameters:
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PrPreviewRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrPreview'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/search/settings:
     get:
       operationId: searchSettings
       summary: Search setting paths
+      description: Matches a part of a setting path, never the value of a setting, so it is not a way to find out
+        whether a hidden value contains a given string. A hit's value is masked like any other text (S14b).
       tags:
       - search
       x-required-role: viewer
@@ -2403,7 +2739,10 @@ paths:
     get:
       operationId: searchText
       summary: Search file text
-      description: Results are capped by `max_total`; `truncated` says when more exist.
+      description: |-
+        Results are capped by `max_total`; `truncated` says when more exist.
+
+        Known limitation (S14b), not closed by this contract. Every hit's text is masked, but the search matches against the stored text, so whether a pattern finds anything tells a reader something about a value that was hidden, and a regular expression can narrow it a character at a time. How a search treats a flagged value (for example by matching on the masked text) is for owners 04 and 05, the engine's matching and the read API. The MCP search tools sit on the same ports.
       tags:
       - search
       x-required-role: viewer
@@ -2524,6 +2863,41 @@ paths:
           $ref: '#/components/responses/NotFound'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/config-server-restart:
+    get:
+      operationId: getConfigServerRestartOffer
+      summary: The config-server restart that check C11 asks for
+      description: What the confirmation of the config-server restart shows (D83, D87). `offer` is null when check C11
+        is not open for the swimlane, or when the cluster report lists no Deployment with the configured config-server
+        name or several, because the hub does not guess which one is meant. The restart itself is `restartService` on
+        `offer.service`. Operator only, like the restart. A swimlane the hub does not know is not an error either.
+        Check C11 is not open for it, so `offer` is null.
+      tags:
+      - writes
+      x-required-role: operator
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigServerRestartOfferResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/swimlanes/{id}/drift:
     get:
       operationId: listDrift
@@ -2617,8 +2991,11 @@ paths:
     put:
       operationId: editFile
       summary: Edit a file
-      description: Carries the expected hash. A mismatch is 409 and nothing is written. May create a proposal instead
-        of applying (D-approvals).
+      description: 'Carries the expected hash. A mismatch is 409 and nothing is written. May create a proposal instead
+        of applying (D-approvals). Content that holds a redaction marker, text of the form `[REDACTED: N chars, rule]`
+        (S14b), is refused with 422 `invalid_content` and one issue of kind `redaction_marker` for each line that holds
+        one, and nothing is written: a masked view of a file is not its content, so saving one would write the marker
+        over the value it hides.'
       tags:
       - writes
       x-required-role: editor
@@ -2715,7 +3092,11 @@ paths:
     get:
       operationId: getFileContent
       summary: Read one file
-      description: 'Denied files return `content_withheld: true` and no text (D79). The ETag is the content hash.'
+      description: 'Denied files return `content_withheld: true` and no text (D79). A value the secret scan flags is
+        masked in `text` and located in `masks`, and the unmasked value is never sent (S14b). The text of a response
+        that has `masks` is a read-only view, not the file: it must not be sent back to `editFile`, and the web app
+        turns Edit mode off for it. The ETag is the content hash, and for a masked response also the version of the
+        secret-scan configuration, so a changed configuration is never answered from a stale 304.'
       tags:
       - swimlanes
       - content
@@ -2823,7 +3204,9 @@ paths:
       description: 'Computed by the engine from the current files, before anybody confirms. Nothing is written, audited
         or recorded. The answer carries a `preview_id` that the upload or the delete must present: it is bound to the
         user, the swimlane, the path, the action and the hashes, and it expires at `expires_at` (10 minutes). The
-        `Idempotency-Key` is required like on every write, and not recorded.'
+        `Idempotency-Key` is required like on every write, and not recorded. An upload of a text file that contains a
+        redaction marker, text of the form `[REDACTED: N chars, rule]` (S14b), is refused with 422 `invalid_content`
+        and one issue of kind `redaction_marker` for each line that holds one, and no `preview_id` is issued.'
       tags:
       - writes
       x-required-role: editor
@@ -2888,7 +3271,9 @@ paths:
     post:
       operationId: revealValue
       summary: Reveal a masked value
-      description: Audited. The value is never cached.
+      description: Audited. The value is never cached. The audit event is committed before the value leaves, so when
+        the registry, the audit log or the store does not answer, the request gets 503 with `Retry-After` and no value
+        is sent. More reveals than the limit in a minute get 429 with `Retry-After`.
       tags:
       - swimlanes
       x-required-role: editor
@@ -2923,6 +3308,10 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/swimlanes/{id}/files/revert:
@@ -2971,10 +3360,12 @@ paths:
     post:
       operationId: uploadFile
       summary: Upload a file
-      description: Needs the `preview_id` of `POST /swimlanes/{id}/files/preview` for this path, expected state and
+      description: 'Needs the `preview_id` of `POST /swimlanes/{id}/files/preview` for this path, expected state and
         file, at most 10 minutes old. Without a valid one the upload is refused with 422 (`not_allowed`) and nothing
         is written. `preview_id` is optional in the schema so that the refusal is a problem response and not a
-        parse failure.
+        parse failure. A text file that contains a redaction marker, text of the form `[REDACTED: N chars, rule]`
+        (S14b), is refused with 422 `invalid_content` and one issue of kind `redaction_marker` for each line that holds
+        one, and nothing is written.'
       tags:
       - writes
       x-required-role: editor
@@ -3056,11 +3447,14 @@ paths:
               $ref: '#/components/schemas/NotifyRequest'
       responses:
         '200':
-          description: OK
+          description: Sent, as `NotifyResult`. For a user whose writes need approval the request became a proposal
+            instead, as `WriteProposalCreated`; tell them apart by `outcome`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/NotifyResult'
+                oneOf:
+                - $ref: '#/components/schemas/NotifyResult'
+                - $ref: '#/components/schemas/WriteProposalCreated'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -3137,6 +3531,48 @@ paths:
           $ref: '#/components/responses/Unprocessable'
         '423':
           $ref: '#/components/responses/Locked'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/swimlanes/{id}/restart-offer:
+    get:
+      operationId: getRestartOffer
+      summary: The services a restart-all confirmation lists for a change
+      description: What the confirmation of "restart all" shows (D49) for a change to `path`. A file in the root folder
+        is read by every service (D82), so the offer lists every service of the swimlane. A file in an application's
+        folder is read by that application only, so the offer lists its Deployments. The screen restarts them one
+        request at a time with `restartService`. Operator only, like the restart. A swimlane the hub does not know is
+        not an error. The offer is then empty, with no services, because it is read from the services the hub holds
+        for the swimlane, so there is no 404.
+      tags:
+      - writes
+      x-required-role: operator
+      parameters:
+      - $ref: '#/components/parameters/SwimlaneId'
+      - name: path
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/NfsPath'
+        description: The file whose change calls for the restart.
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                - no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestartOffer'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         default:
           $ref: '#/components/responses/Error'
   /api/v1/swimlanes/{id}/served:
@@ -3458,9 +3894,17 @@ components:
         minimum: 1
   headers:
     ETag:
-      description: Strong validator. For content it is derived from content hashes.
+      description: Strong validator. For content it is derived from content hashes. For a masked response it is also
+        derived from the version of the secret-scan configuration, so a changed configuration is never served from a
+        stale 304.
       schema:
         type: string
+    RetryAfter:
+      description: Seconds to wait before the request is tried again.
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 86400
   responses:
     BadRequest:
       description: The request is malformed or a parameter failed validation.
@@ -3492,6 +3936,14 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/ConflictProblem'
+    ConflictState:
+      description: The request conflicts with the current state of the resource, for example a request that was
+        already decided or a change that would leave no active admin. Nothing was changed. Unlike `Conflict` there is
+        no expected hash, so the body carries no `current`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
     PayloadTooLarge:
       description: The body exceeds the size limit.
       content:
@@ -3504,6 +3956,31 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/LockedProblem'
+    TooManyRequests:
+      description: A rate limit or a limit on open streams was reached. `Retry-After` says how long to wait when the
+        server knows; the stream limit and the access-request cooldown send none.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    ServiceUnavailable:
+      description: A service the request depends on did not answer, such as GitHub, the key service or the store.
+        Nothing was changed; the same request can be sent again after `Retry-After` seconds.
+      headers:
+        Retry-After:
+          required: true
+          description: Seconds to wait before the request is tried again.
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 86400
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
     Error:
       description: Any other error.
       content:
@@ -3681,6 +4158,23 @@ components:
       - stale
       - expired
       - applied
+    ProposalAction:
+      type: string
+      enum:
+      - edit
+      - upload
+      - delete
+      - revert
+      - restart
+      - pr
+      - notify
+      description: What a proposal is for. A `restart` proposal has one path, `namespace/name` of the service.
+    ProposalVia:
+      type: string
+      enum:
+      - ui
+      - mcp
+      description: How the request reached the write path.
     FindingKind:
       type: string
       enum:
@@ -3715,6 +4209,59 @@ components:
       enum:
       - base
       - tenant
+    BranchKind:
+      type: string
+      enum:
+      - default
+      - deployable
+      - template
+      - common_docs
+      - other
+      description: How a branch of the tenant repository is used. `default` is the base repository's single default
+        branch, `deployable` a swimlane candidate (`sit1` to `sitN`), `template` a branch under `templates/` that is
+        never deployed, and `common_docs` the docs source `templates/common-docs`.
+    GitRefKind:
+      type: string
+      enum:
+      - branch
+      - tag
+    GitRefEntry:
+      type: object
+      properties:
+        name:
+          $ref: '#/components/schemas/GitRef'
+        kind:
+          $ref: '#/components/schemas/GitRefKind'
+        commit:
+          $ref: '#/components/schemas/CommitId'
+          description: The commit the branch or the tag points at.
+        branch_kind:
+          oneOf:
+          - $ref: '#/components/schemas/BranchKind'
+          - type: 'null'
+          description: How the branch is used, null for a tag.
+      additionalProperties: false
+      required:
+      - name
+      - kind
+      - commit
+      - branch_kind
+    GitRefPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/GitRefEntry'
+          maxItems: 500
+        next:
+          oneOf:
+          - $ref: '#/components/schemas/Cursor'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - items
+      - next
     AttributionSource:
       type: string
       enum:
@@ -3785,6 +4332,361 @@ components:
       - sync_window_opened
       - sync_window_closed
       - pickup_changed
+      - swimlane_changed
+    JobRef:
+      type: object
+      description: A Kubernetes Job, as the sync-window events name it. `ActorJob.job` has the same shape.
+      properties:
+        name:
+          type: string
+          pattern: ^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$
+          description: The name of the Job, a Kubernetes name of at most 253 characters.
+        uid:
+          type: string
+          maxLength: 64
+          pattern: ^[A-Za-z0-9-]{1,64}$
+          description: The uid of the Job.
+      additionalProperties: false
+      required:
+      - name
+      - uid
+    DomainEvent:
+      description: One event of the live stream, the JSON of the `data:` line of a frame of `GET /api/v1/events`. The
+        `type` tells the kinds apart; it is the `event:` name of the frame and a value of `EventKind`. An event carries
+        ids and hashes only, never file content (S12), so a client refetches what the event names. Every field of a kind
+        is present on every event; a field that can be empty is `null`, never absent. `user_sessions_revoked` is internal
+        and never streamed, so it is not here.
+      oneOf:
+      - $ref: '#/components/schemas/DomainEventFileObserved'
+      - $ref: '#/components/schemas/DomainEventDriftChanged'
+      - $ref: '#/components/schemas/DomainEventFindingsChanged'
+      - $ref: '#/components/schemas/DomainEventPendingRestartChanged'
+      - $ref: '#/components/schemas/DomainEventProposalChanged'
+      - $ref: '#/components/schemas/DomainEventAgentStatusChanged'
+      - $ref: '#/components/schemas/DomainEventGitHeadMoved'
+      - $ref: '#/components/schemas/DomainEventAccessRequestCreated'
+      - $ref: '#/components/schemas/DomainEventDocIndexed'
+      - $ref: '#/components/schemas/DomainEventResync'
+      - $ref: '#/components/schemas/DomainEventAttributionUpdated'
+      - $ref: '#/components/schemas/DomainEventPrStateChanged'
+      - $ref: '#/components/schemas/DomainEventPrJobProgress'
+      - $ref: '#/components/schemas/DomainEventSyncWindowOpened'
+      - $ref: '#/components/schemas/DomainEventSyncWindowClosed'
+      - $ref: '#/components/schemas/DomainEventPickupChanged'
+      - $ref: '#/components/schemas/DomainEventSwimlaneChanged'
+      discriminator:
+        propertyName: type
+        mapping:
+          file_observed: '#/components/schemas/DomainEventFileObserved'
+          drift_changed: '#/components/schemas/DomainEventDriftChanged'
+          findings_changed: '#/components/schemas/DomainEventFindingsChanged'
+          pending_restart_changed: '#/components/schemas/DomainEventPendingRestartChanged'
+          proposal_changed: '#/components/schemas/DomainEventProposalChanged'
+          agent_status_changed: '#/components/schemas/DomainEventAgentStatusChanged'
+          git_head_moved: '#/components/schemas/DomainEventGitHeadMoved'
+          access_request_created: '#/components/schemas/DomainEventAccessRequestCreated'
+          doc_indexed: '#/components/schemas/DomainEventDocIndexed'
+          resync: '#/components/schemas/DomainEventResync'
+          attribution_updated: '#/components/schemas/DomainEventAttributionUpdated'
+          pr_state_changed: '#/components/schemas/DomainEventPrStateChanged'
+          pr_job_progress: '#/components/schemas/DomainEventPrJobProgress'
+          sync_window_opened: '#/components/schemas/DomainEventSyncWindowOpened'
+          sync_window_closed: '#/components/schemas/DomainEventSyncWindowClosed'
+          pickup_changed: '#/components/schemas/DomainEventPickupChanged'
+          swimlane_changed: '#/components/schemas/DomainEventSwimlaneChanged'
+    DomainEventFileObserved:
+      type: object
+      description: A file version was seen, by a scan, a tool write or a sync.
+      properties:
+        type:
+          type: string
+          const: file_observed
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        path:
+          $ref: '#/components/schemas/NfsPath'
+        hash:
+          $ref: '#/components/schemas/ContentHash'
+        source:
+          $ref: '#/components/schemas/ObservationSource'
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+      - path
+      - hash
+      - source
+    DomainEventDriftChanged:
+      type: object
+      description: The drift state of these paths changed.
+      properties:
+        type:
+          type: string
+          const: drift_changed
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        paths:
+          type: array
+          items:
+            $ref: '#/components/schemas/NfsPath'
+          maxItems: 1000
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+      - paths
+    DomainEventFindingsChanged:
+      type: object
+      description: The findings of the swimlane changed.
+      properties:
+        type:
+          type: string
+          const: findings_changed
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+    DomainEventPendingRestartChanged:
+      type: object
+      description: Superseded by `pickup_changed` (D85) and kept so that old clients still parse it; it is streamed until
+        the registry stops publishing it. The services whose pending restarts changed.
+      properties:
+        type:
+          type: string
+          const: pending_restart_changed
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceRef'
+          maxItems: 1000
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+      - services
+    DomainEventProposalChanged:
+      type: object
+      description: A proposal changed status.
+      properties:
+        type:
+          type: string
+          const: proposal_changed
+        id:
+          type: integer
+          format: int64
+          description: The id of the proposal (`Proposal.id`).
+        status:
+          $ref: '#/components/schemas/ProposalStatus'
+      additionalProperties: false
+      required:
+      - type
+      - id
+      - status
+    DomainEventAgentStatusChanged:
+      type: object
+      description: The status of the swimlane's agent changed.
+      properties:
+        type:
+          type: string
+          const: agent_status_changed
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        status:
+          $ref: '#/components/schemas/AgentStatus'
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+      - status
+    DomainEventGitHeadMoved:
+      type: object
+      description: A branch of a mirrored repository moved to a new commit. `from` is `null` when the branch is new.
+      properties:
+        type:
+          type: string
+          const: git_head_moved
+        repo:
+          $ref: '#/components/schemas/RepoKind'
+        branch:
+          $ref: '#/components/schemas/GitRef'
+        from:
+          oneOf:
+          - $ref: '#/components/schemas/CommitId'
+          - type: 'null'
+        to:
+          $ref: '#/components/schemas/CommitId'
+      additionalProperties: false
+      required:
+      - type
+      - repo
+      - branch
+      - from
+      - to
+    DomainEventAccessRequestCreated:
+      type: object
+      description: A user asked for access. Only an Admin receives it. A Viewer or an Operator is never sent it, live or
+        in a replay (see the Visibility paragraph of `streamEvents`).
+      properties:
+        type:
+          type: string
+          const: access_request_created
+        user:
+          $ref: '#/components/schemas/UserId'
+      additionalProperties: false
+      required:
+      - type
+      - user
+    DomainEventDocIndexed:
+      type: object
+      description: A document was indexed.
+      properties:
+        type:
+          type: string
+          const: doc_indexed
+        doc:
+          type: integer
+          format: int64
+          description: The id of the document (`DocSummary.id`).
+      additionalProperties: false
+      required:
+      - type
+      - doc
+    DomainEventResync:
+      type: object
+      description: The client may have missed events, because it lagged, an event did not fit in 4,096 bytes, or the
+        replay could not be served. Refetch what the page shows. It has no fields besides `type`.
+      properties:
+        type:
+          type: string
+          const: resync
+      additionalProperties: false
+      required:
+      - type
+    DomainEventAttributionUpdated:
+      type: object
+      description: The attribution of a file version was upgraded.
+      properties:
+        type:
+          type: string
+          const: attribution_updated
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        path:
+          $ref: '#/components/schemas/NfsPath'
+        hash:
+          $ref: '#/components/schemas/ContentHash'
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+      - path
+      - hash
+    DomainEventPrStateChanged:
+      type: object
+      description: The state of a pull-request link changed (open, merged or closed).
+      properties:
+        type:
+          type: string
+          const: pr_state_changed
+        link_id:
+          type: integer
+          format: int64
+          description: The id of the pull-request link (`PrLink.id`).
+        state:
+          $ref: '#/components/schemas/PrState'
+      additionalProperties: false
+      required:
+      - type
+      - link_id
+      - state
+    DomainEventPrJobProgress:
+      type: object
+      description: A pull-request job moved to a new state.
+      properties:
+        type:
+          type: string
+          const: pr_job_progress
+        job_id:
+          type: integer
+          format: int64
+          description: The id of the job (`PrJob.id`).
+        state:
+          $ref: '#/components/schemas/PrJobState'
+      additionalProperties: false
+      required:
+      - type
+      - job_id
+      - state
+    DomainEventSyncWindowOpened:
+      type: object
+      description: A sync window opened for the swimlane, because the sync Job `job` started.
+      properties:
+        type:
+          type: string
+          const: sync_window_opened
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        job:
+          $ref: '#/components/schemas/JobRef'
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+      - job
+    DomainEventSyncWindowClosed:
+      type: object
+      description: The sync window of the swimlane closed, because the sync Job `job` ended.
+      properties:
+        type:
+          type: string
+          const: sync_window_closed
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        job:
+          $ref: '#/components/schemas/JobRef'
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+      - job
+    DomainEventPickupChanged:
+      type: object
+      description: The pickup state (D85) of a change changed for these services. Ids only; read the state with
+        `listPendingRestarts`.
+      properties:
+        type:
+          type: string
+          const: pickup_changed
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceRef'
+          maxItems: 1000
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
+      - services
+    DomainEventSwimlaneChanged:
+      type: object
+      description: The baseline, the tier, the tenant set or the auto-notify setting of the swimlane changed. Ids only;
+        read the new state with `getSwimlane` or `listSwimlanes`.
+      properties:
+        type:
+          type: string
+          const: swimlane_changed
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+      additionalProperties: false
+      required:
+      - type
+      - swimlane
     ValueType:
       type: string
       enum:
@@ -3850,6 +4752,12 @@ components:
         type:
           type: string
           format: uri-reference
+          description: |-
+            `urn:lanekeeper:problem:<code>`. What follows the last colon is the stable code of the problem and the discriminator: match on it, and fall back to `status` for a value you do not know, because the list can grow. Nothing is renamed, so both spellings below appear.
+
+            Sent by the hub's own layers, with snake_case codes: `bad_request`, `unauthorized`, `forbidden`, `not_found`, `method_not_allowed`, `request_timeout`, `conflict`, `payload_too_large`, `unsupported_media_type`, `unprocessable`, `too_many_requests`, `internal`, `unavailable`, `shutting_down`, `gateway_timeout`, `idempotency_conflict` and `locked`. The GitHub token adds `classic_token`, `not_fine_grained_token`, `token_rejected`, `token_missing_access`, `github_account_mismatch`, `token_expired` and `token_unreadable`.
+
+            Sent by the identity layer, with kebab-case codes: `unauthenticated`, `access-pending`, `access-disabled`, `insufficient-role`, `csrf`, `not-found`, `bad-request`, `unsupported-media-type`, `payload-too-large`, `conflict`, `too-many-requests`, `unprocessable`, `unavailable`, `sign-in-invalid`, `sign-in-refused`, `identity-provider` and `internal`.
         title:
           type: string
         status:
@@ -3863,6 +4771,12 @@ components:
         request_id:
           type: string
           description: Quote this to find the request in the logs.
+        code:
+          type: string
+          pattern: ^[a-z][a-z0-9_-]{0,63}$
+          maxLength: 64
+          description: The suffix of `type`, repeated. Sent by the write and platform layers and absent from the problems
+            of the identity layer, so read `type` first.
         reason:
           $ref: '#/components/schemas/RejectReason'
           description: Why a write was refused (422), when it was.
@@ -3887,7 +4801,6 @@ components:
             oneOf:
             - $ref: '#/components/schemas/ContentHash'
             - type: 'null'
-        additionalProperties: false
         required:
         - current
         description: '`current` is the hash found instead of the expected one; null when the file is absent.'
@@ -3900,10 +4813,64 @@ components:
             oneOf:
             - $ref: '#/components/schemas/Timestamp'
             - type: 'null'
-        additionalProperties: false
         required:
         - until
         description: A sync window or PR job holds the file.
+    DuplicatePrProblem:
+      type: object
+      description: The 409 of `createPr` for a second pull request on a change that already has an open one (D77).
+        `link` is the open one. Not an `allOf` of `Problem`, because `Problem.reason` is a `RejectReason` and
+        `duplicate_pr` is not a write rejection.
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          maxLength: 256
+        title:
+          type: string
+          maxLength: 256
+        status:
+          const: 409
+        detail:
+          type: string
+          maxLength: 2048
+        instance:
+          type: string
+          maxLength: 512
+        request_id:
+          type: string
+          maxLength: 128
+        code:
+          type: string
+          pattern: ^[a-z][a-z0-9_-]{0,63}$
+          maxLength: 64
+        reason:
+          const: duplicate_pr
+        link:
+          $ref: '#/components/schemas/PrLink'
+      additionalProperties: false
+      required:
+      - type
+      - title
+      - status
+      - reason
+      - link
+    TokenMissingAccessProblem:
+      allOf:
+      - $ref: '#/components/schemas/Problem'
+      - type: object
+        properties:
+          base:
+            type: boolean
+            description: Whether the token can push to the base repository.
+          tenant:
+            type: boolean
+            description: Whether the token can push to the tenant repository.
+        required:
+        - base
+        - tenant
+        description: The `token_missing_access` refusal of `putGithubToken` (422). The token has to push to both
+          repositories, and these two flags say which one fell short.
     Evidence:
       type: object
       properties:
@@ -4083,6 +5050,21 @@ components:
           oneOf:
           - $ref: '#/components/schemas/PickupState'
           - type: 'null'
+        logical_file:
+          oneOf:
+          - $ref: '#/components/schemas/LogicalFile'
+          - type: 'null'
+          description: The file without the tenant suffix of its name, so that a tenant file and the base file it
+            replaces have the same value. The same as `path` for a base file, `path` with `-<tenant>` taken out for a
+            tenant file, null for a directory. The registry computes it with the reverse mapping of the path mapping
+            rule and the tenants of the swimlane; the client never derives it. The way back from a logical file to the
+            path in a swimlane is `EffectiveConfig.sources[].path` (`getEffectiveConfig`). Absent when null.
+        tenant:
+          oneOf:
+          - $ref: '#/components/schemas/TenantId'
+          - type: 'null'
+          description: The tenant whose file this is, when its name ends in `-<tenant>` for a tenant of the swimlane.
+            Null for a base file and for a directory. Absent when null.
       additionalProperties: false
       required:
       - path
@@ -4153,6 +5135,47 @@ components:
         finding_count:
           type: integer
           minimum: 0
+        tier:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+          description: The environment tier of the swimlane, such as `SIT` or `UAT`, null when none is set. Absent when
+            null.
+        project:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+          description: The display name of the project the swimlane belongs to, null when it has none. Absent when null.
+        baseline:
+          oneOf:
+          - $ref: '#/components/schemas/BaselineStatus'
+          - type: 'null'
+          description: Whether the baseline is adopted. `unconfirmed` means no baseline and editing is locked,
+            `in_progress` means an open adoption (one that is being worked through or waits for review), and
+            `confirmed` means the baseline is adopted and editing is unlocked. An open adoption always shows as
+            `in_progress`, even on a swimlane whose earlier baseline was confirmed, and `confirmed` is never listed while
+            an adoption is open (`ports::conformance::registry_read` checks it). The registry states it for every
+            swimlane; it is absent only in a response from a server that predates this field.
+        pickup_counts:
+          type: array
+          items:
+            type: array
+            prefixItems:
+            - $ref: '#/components/schemas/PickupState'
+            - type: integer
+              minimum: 0
+            minItems: 2
+            maxItems: 2
+          maxItems: 3
+          description: How many services are in each pickup state that is not `live`, as pairs of a state and a count. It
+            equals what `listPendingRestarts` counts per state for this swimlane, and it is an aggregate worked out for
+            all swimlanes at once, so the list never needs one call per swimlane. Only non-zero states are listed, each
+            once. Absent when nothing is waiting.
+        syncing:
+          oneOf:
+          - $ref: '#/components/schemas/SyncingInfo'
+          - type: 'null'
+          description: The sync window that is open on the swimlane now, null when none is. Absent when null.
       additionalProperties: false
       required:
       - id
@@ -4163,6 +5186,60 @@ components:
       - base_version
       - drift_counts
       - finding_count
+    UserRef:
+      type: object
+      description: A person, as any signed-in user may see them. The id and the display name Entra gave them, and never an
+        email address.
+      properties:
+        id:
+          $ref: '#/components/schemas/UserId'
+        display_name:
+          $ref: '#/components/schemas/ShortText'
+      additionalProperties: false
+      required:
+      - id
+      - display_name
+    BaselineState:
+      type: string
+      enum:
+      - unconfirmed
+      - in_progress
+      - confirmed
+      description: Where the baseline of a swimlane stands. `in_progress` means an adoption is open and the baseline is not
+        confirmed yet, also on a swimlane that was confirmed before the adoption was opened.
+    BaselineStatus:
+      type: object
+      description: The baseline of a swimlane, and once it is confirmed, who confirmed it and when.
+      properties:
+        state:
+          $ref: '#/components/schemas/BaselineState'
+        by:
+          oneOf:
+          - $ref: '#/components/schemas/UserRef'
+          - type: 'null'
+          description: Who confirmed the baseline. Null unless the state is `confirmed`.
+        at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+          description: When the baseline was confirmed. Null unless the state is `confirmed`.
+      additionalProperties: false
+      required:
+      - state
+      - by
+      - at
+    SyncingInfo:
+      type: object
+      description: A sync window that is open on a swimlane. The Job that is syncing it and when the window opened.
+      properties:
+        job:
+          $ref: '#/components/schemas/JobRef'
+        since:
+          $ref: '#/components/schemas/Timestamp'
+      additionalProperties: false
+      required:
+      - job
+      - since
     ServiceRef:
       type: object
       properties:
@@ -4176,6 +5253,56 @@ components:
       required:
       - namespace
       - name
+    RestartOffer:
+      type: object
+      properties:
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceRef'
+          maxItems: 2000
+          description: The services to restart, at most 2,000, in order of namespace and name.
+        truncated:
+          type: boolean
+          description: There are more services than `services` holds. Restarting these leaves the others as they are,
+            so the confirmation must say that the list is not the whole of it.
+      additionalProperties: false
+      required:
+      - services
+      - truncated
+    ConfigServerRestartOffer:
+      type: object
+      properties:
+        service:
+          $ref: '#/components/schemas/ServiceRef'
+          description: The config-server's Deployment, which is what the restart request names.
+        affected:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceRef'
+          maxItems: 2000
+          description: Every other service of the swimlane. They all ask the config-server for their files (D82), so
+            none of them can be served while it restarts.
+        truncated:
+          type: boolean
+          description: The swimlane has more services than `affected` lists, so the list is not the whole of it.
+      additionalProperties: false
+      required:
+      - service
+      - affected
+      - truncated
+    ConfigServerRestartOfferResult:
+      type: object
+      properties:
+        offer:
+          oneOf:
+          - $ref: '#/components/schemas/ConfigServerRestartOffer'
+          - type: 'null'
+          description: Null when check C11 is not open for the swimlane, or when the cluster report lists no Deployment
+            with the configured config-server name or several of them.
+      additionalProperties: false
+      required:
+      - offer
     ServiceState:
       type: object
       properties:
@@ -4211,21 +5338,106 @@ components:
       - cache_ttl_secs
       - pending_files
     SwimlaneDetail:
-      allOf:
-      - $ref: '#/components/schemas/SwimlaneSummary'
-      - type: object
-        properties:
-          services:
+      type: object
+      description: A swimlane and its services. Every field of `SwimlaneSummary`, defined as there, and `services` and
+        `auto_notify`. It repeats the summary instead of composing it with `allOf`, because `SwimlaneSummary` is closed
+        and a closed `allOf` member rejects the keys of its sibling, so no body the hub sends could be valid.
+      properties:
+        id:
+          $ref: '#/components/schemas/SwimlaneId'
+        display_name:
+          $ref: '#/components/schemas/ShortText'
+        tenants:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantId'
+          minItems: 1
+          maxItems: 100
+          description: A swimlane has a set of tenants, not exactly one (Q34).
+        agent:
+          $ref: '#/components/schemas/AgentStatus'
+        last_scan_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+        base_version:
+          oneOf:
+          - $ref: '#/components/schemas/VersionLabel'
+          - type: 'null'
+        drift_counts:
+          type: array
+          items:
             type: array
-            items:
-              $ref: '#/components/schemas/ServiceState'
-            maxItems: 500
-          auto_notify:
-            type: boolean
-        additionalProperties: false
-        required:
-        - services
-        - auto_notify
+            prefixItems:
+            - $ref: '#/components/schemas/DriftState'
+            - type: integer
+              minimum: 0
+            minItems: 2
+            maxItems: 2
+          maxItems: 16
+        finding_count:
+          type: integer
+          minimum: 0
+        tier:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+          description: The environment tier of the swimlane, such as `SIT` or `UAT`, null when none is set. Absent when
+            null.
+        project:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+          description: The display name of the project the swimlane belongs to, null when it has none. Absent when null.
+        baseline:
+          oneOf:
+          - $ref: '#/components/schemas/BaselineStatus'
+          - type: 'null'
+          description: Whether the baseline is adopted. `unconfirmed` means no baseline and editing is locked,
+            `in_progress` means an open adoption (one that is being worked through or waits for review), and
+            `confirmed` means the baseline is adopted and editing is unlocked. An open adoption always shows as
+            `in_progress`, even on a swimlane whose earlier baseline was confirmed, and `confirmed` is never listed while
+            an adoption is open (`ports::conformance::registry_read` checks it). The registry states it for every
+            swimlane; it is absent only in a response from a server that predates this field.
+        pickup_counts:
+          type: array
+          items:
+            type: array
+            prefixItems:
+            - $ref: '#/components/schemas/PickupState'
+            - type: integer
+              minimum: 0
+            minItems: 2
+            maxItems: 2
+          maxItems: 3
+          description: How many services are in each pickup state that is not `live`, as pairs of a state and a count. It
+            equals what `listPendingRestarts` counts per state for this swimlane, and it is an aggregate worked out for
+            all swimlanes at once, so the list never needs one call per swimlane. Only non-zero states are listed, each
+            once. Absent when nothing is waiting.
+        syncing:
+          oneOf:
+          - $ref: '#/components/schemas/SyncingInfo'
+          - type: 'null'
+          description: The sync window that is open on the swimlane now, null when none is. Absent when null.
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceState'
+          maxItems: 500
+        auto_notify:
+          type: boolean
+      additionalProperties: false
+      required:
+      - id
+      - display_name
+      - tenants
+      - agent
+      - last_scan_at
+      - base_version
+      - drift_counts
+      - finding_count
+      - services
+      - auto_notify
     FileContent:
       type: object
       properties:
@@ -4247,8 +5459,19 @@ components:
           oneOf:
           - type: string
           - type: 'null'
-          description: Decoded text for structured and text files, with the original line endings. Null for binary
-            and withheld files; binary content comes from `/blobs/{hash}`.
+          description: 'Decoded text for structured and text files, with the original line endings. Null for binary
+            and withheld files; binary content comes from `/blobs/{hash}`. A value the secret scan flags is replaced by
+            its marker `[REDACTED: N chars, rule]` and is never sent (S14b); `masks` says where each marker sits.'
+        masks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Mask'
+          maxItems: 1000
+          description: 'Where the markers sit in `text`, in the order of `start`, at most 1,000: the text is masked in
+            full all the same, and a marker past the list is recognised by its form `[REDACTED: N chars, rule]` and has
+            no reveal. Absent when `text` holds no marker. Edit mode is off while this list is not empty: `text` is a
+            masked view and not the file, so saving it with `editFile` would write the marker over the value it hides
+            (a write that holds a marker is refused, see `editFile`).'
       additionalProperties: false
       required:
       - path
@@ -4258,6 +5481,44 @@ components:
       - size
       - content_withheld
       - text
+    Mask:
+      type: object
+      description: 'Where one marker sits in the `text` of the object that carries this mask: `FileContent`, `ServedFile`
+        or `DocText`. The marker `[REDACTED: N chars, rule]` replaced a value the secret scan flagged (S14b), and
+        `text[start..end]` is exactly that marker. `start` and `end` are 0-based UTF-8 byte offsets into that `text`,
+        half-open `[start, end)`, always on character boundaries, with `end` at most the byte length of `text`. They are
+        bytes, like the offsets of `InlineRange`, and not characters or UTF-16 units, so a client that indexes a
+        JavaScript string converts them first. A mask holds no value, and no part of one.'
+      properties:
+        line:
+          type: integer
+          minimum: 1
+          maximum: 4294967295
+          description: The 1-based line of the masked `text` that holds the marker. Lines end at a line feed, and a
+            carriage return before it belongs to the line.
+        start:
+          type: integer
+          minimum: 0
+          maximum: 4294967295
+          description: The 0-based UTF-8 byte offset into `text` of the first byte of the marker.
+        end:
+          type: integer
+          minimum: 0
+          maximum: 4294967295
+          description: The 0-based UTF-8 byte offset into `text` just after the last byte of the marker, so `end` is
+            greater than `start`.
+        setting:
+          oneOf:
+          - $ref: '#/components/schemas/SettingPath'
+          - type: 'null'
+          description: The setting whose value the marker stands for, as `revealValue` takes it together with
+            `FileContent.path`. Absent or null when no reveal can name the value, which is the case in a plain text
+            file, in a doc, and in every mask of a `ServedFile` or a `DocText`.
+      additionalProperties: false
+      required:
+      - line
+      - start
+      - end
     Version:
       type: object
       properties:
@@ -4331,7 +5592,8 @@ components:
       - value
       - source
       - location
-      description: Values the secret scan flags are masked; `/files/reveal` shows one (audited).
+      description: 'A value the secret scan flags is replaced by its marker `[REDACTED: N chars, rule]` and is never
+        sent (S14b); `/files/reveal` shows one (audited).'
     EffectiveConfig:
       type: object
       properties:
@@ -4401,7 +5663,16 @@ components:
           - type: string
           - type: 'null'
           description: 'The file exactly as the config-server would serve it: `${KEY}` replaced only where the property
-            view has the key.'
+            view has the key. A value the secret scan flags, in the file or substituted into it, is replaced by its
+            marker `[REDACTED: N chars, rule]` and is never sent (S14b); `masks` says where each marker sits.'
+        masks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Mask'
+          maxItems: 1000
+          description: 'Where the markers sit in `text`, as on `FileContent`: in the order of `start`, at most 1,000,
+            and absent when `text` holds no marker. A mask here has no `setting`, so there is no reveal from the served
+            file. The marker is the same `[REDACTED: N chars, rule]`, and the served text is a read-only view.'
         sources:
           type: array
           items:
@@ -4440,6 +5711,9 @@ components:
       properties:
         text:
           type: string
+          description: 'The value exactly as written, except that a value the secret scan flags is replaced by its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b). There is no `masks` here: the whole text is the marker,
+            and it is recognised by the pattern `^\[REDACTED: [0-9]+ chars, [a-z0-9_]+\]$`.'
         ty:
           $ref: '#/components/schemas/ValueType'
         flag:
@@ -4491,6 +5765,12 @@ components:
       - severity
     InlineRange:
       type: object
+      description: A changed span inside a line. `start` and `end` are 0-based UTF-8 byte offsets into the `text` of the
+        object that carries the range (`DiffLine.text` for `DiffLine.inline_changes`), half-open `[start, end)`, always
+        on character boundaries, with `end` at most the byte length of `text`. They are not characters and not UTF-16
+        units, so a client that indexes a JavaScript string converts them first, for example by slicing the bytes of
+        a `TextEncoder` result. The `start` and `end` of a `Mask` are bytes in the same way. The secret scan itself
+        counts characters (`column` and `length`), and the server converts them to bytes before it sends a mask.
       properties:
         start:
           type: integer
@@ -4509,11 +5789,16 @@ components:
           $ref: '#/components/schemas/DiffLineKind'
         text:
           type: string
+          description: 'One line of the diff, exactly as written, except that a value the secret scan flags is replaced
+            by its marker `[REDACTED: N chars, rule]` and is never sent (S14b). A producer that works by whole lines, as
+            the proposals and the drafts do, replaces the whole line. There is no `masks` here: the marker is recognised
+            by the pattern `^\[REDACTED: [0-9]+ chars, [a-z0-9_]+\]$` on a value and by its form inside a line.'
         inline_changes:
           type: array
           items:
             $ref: '#/components/schemas/InlineRange'
           maxItems: 10000
+          description: The changed spans of the line, as 0-based UTF-8 byte offsets into `text` (see `InlineRange`).
       additionalProperties: false
       required:
       - kind
@@ -4595,6 +5880,8 @@ components:
           items:
             $ref: '#/components/schemas/DiffHunk'
           maxItems: 100000
+          description: 'The diff of the two sides. A value the secret scan flags is replaced by its marker
+            `[REDACTED: N chars, rule]` on either side and is never sent (S14b); see `DiffLine`.'
         setting_changes:
           type: array
           items:
@@ -4695,6 +5982,16 @@ components:
           $ref: '#/components/schemas/SettingValue'
         location:
           $ref: '#/components/schemas/SettingLocation'
+        logical_file:
+          oneOf:
+          - $ref: '#/components/schemas/LogicalFile'
+          - type: 'null'
+          description: The logical file of `file`, as on `FileEntry`. Absent when null.
+        tenant:
+          oneOf:
+          - $ref: '#/components/schemas/TenantId'
+          - type: 'null'
+          description: The tenant of `file`, as on `FileEntry`. Null for a base file. Absent when null.
       additionalProperties: false
       required:
       - swimlane
@@ -4714,6 +6011,9 @@ components:
           minimum: 1
         text:
           type: string
+          description: 'The line of the file that matched. A value the secret scan flags is replaced by its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b), and `ranges` index the masked text. There is no
+            `masks` here: the marker is recognised by its form.'
         ranges:
           type: array
           items:
@@ -4726,6 +6026,19 @@ components:
             minItems: 2
             maxItems: 2
           maxItems: 1000
+          description: The matches in `text`. Each pair is `[start, end)`, half-open, as 0-based UTF-8 byte offsets
+            into the `text` of this hit (see `InlineRange`); a client that indexes a JavaScript string converts them
+            first.
+        logical_file:
+          oneOf:
+          - $ref: '#/components/schemas/LogicalFile'
+          - type: 'null'
+          description: The logical file of `path`, as on `FileEntry`. Absent when null.
+        tenant:
+          oneOf:
+          - $ref: '#/components/schemas/TenantId'
+          - type: 'null'
+          description: The tenant of `path`, as on `FileEntry`. Null for a base file. Absent when null.
       additionalProperties: false
       required:
       - swimlane
@@ -4777,6 +6090,18 @@ components:
           maxItems: 1000
         detected_at:
           $ref: '#/components/schemas/Timestamp'
+        logical_file:
+          oneOf:
+          - $ref: '#/components/schemas/LogicalFile'
+          - type: 'null'
+          description: The logical file of `path`, as on `FileEntry`. Null when the finding has no path. Absent when
+            null.
+        tenant:
+          oneOf:
+          - $ref: '#/components/schemas/TenantId'
+          - type: 'null'
+          description: The tenant of `path`, as on `FileEntry`. Null for a base file and when the finding has no path.
+            Absent when null.
       additionalProperties: false
       required:
       - id
@@ -4870,6 +6195,10 @@ components:
           - parse_error
           - duplicate_key
           - secret_match
+          - redaction_marker
+          description: 'Which check found it. `redaction_marker` means that the content holds the text of a redaction
+            marker, `[REDACTED: N chars, rule]` (S14b), which is a masked text sent back. It is a block, reports the
+            `line` and nothing else, and never holds the text of the line.'
         line:
           type: integer
           minimum: 1
@@ -5144,6 +6473,87 @@ components:
       - swimlane
       - paths
       - title
+    PrPreviewRequest:
+      type: object
+      properties:
+        swimlane:
+          $ref: '#/components/schemas/SwimlaneId'
+        paths:
+          type: array
+          items:
+            $ref: '#/components/schemas/NfsPath'
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+        target:
+          $ref: '#/components/schemas/PrTarget'
+      additionalProperties: false
+      required:
+      - swimlane
+      - paths
+      description: The paths and the target of a `CreatePrRequest`, without the title and the body.
+    PrPreviewFile:
+      type: object
+      properties:
+        nfs_path:
+          $ref: '#/components/schemas/NfsPath'
+        repo_path:
+          $ref: '#/components/schemas/RepoPath'
+          description: Where the file lands in the repository, relative to its root.
+        exists_on_branch:
+          type: boolean
+          description: Whether the file is already on the destination branch, so the PR changes it and does not add it.
+      additionalProperties: false
+      required:
+      - nfs_path
+      - repo_path
+      - exists_on_branch
+    PrPreview:
+      type: object
+      properties:
+        repo:
+          $ref: '#/components/schemas/ShortText'
+          description: The full name of the repository that the PR goes to, `owner/name`, from configuration.
+        destination:
+          $ref: '#/components/schemas/PrTarget'
+          description: The target after it was resolved, the same shape the request may carry. An absent target is
+            replaced by the one the files imply.
+        base_branch:
+          $ref: '#/components/schemas/GitRef'
+          description: The branch of `repo` that the PR is raised against.
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/PrPreviewFile'
+          maxItems: 100
+          description: The files the PR would carry.
+        unchanged:
+          type: array
+          items:
+            $ref: '#/components/schemas/NfsPath'
+          maxItems: 100
+          description: Paths of the request that the PR would not carry, because the branch already has the same
+            content.
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/ShortText'
+          maxItems: 20
+          description: What the person should know about where this PR goes, in the same words as `PrJob.warnings`.
+        open_pr:
+          oneOf:
+          - $ref: '#/components/schemas/PrLink'
+          - type: 'null'
+          description: The pull request that is already open for these paths, which blocks a second one (D77), or null.
+      additionalProperties: false
+      required:
+      - repo
+      - destination
+      - base_branch
+      - files
+      - unchanged
+      - warnings
+      - open_pr
     PrJob:
       type: object
       properties:
@@ -5243,10 +6653,13 @@ components:
           $ref: '#/components/schemas/SwimlaneId'
         path:
           $ref: '#/components/schemas/NfsPath'
+          description: The first of `paths`.
         expected:
           $ref: '#/components/schemas/Expected'
         new_hash:
           $ref: '#/components/schemas/ContentHash'
+          description: The hash of the proposed content. An all-zero hash means that the action writes no content, for
+            example a delete or a restart.
         status:
           $ref: '#/components/schemas/ProposalStatus'
         hunks:
@@ -5254,6 +6667,8 @@ components:
           items:
             $ref: '#/components/schemas/DiffHunk'
           maxItems: 100000
+          description: 'The diff of the proposed content. A line the secret scan flags is replaced by its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b); see `DiffLine`.'
         setting_changes:
           type: array
           items:
@@ -5275,6 +6690,23 @@ components:
           oneOf:
           - $ref: '#/components/schemas/ShortText'
           - type: 'null'
+        action:
+          $ref: '#/components/schemas/ProposalAction'
+          description: What the proposal is for.
+        via:
+          $ref: '#/components/schemas/ProposalVia'
+        paths:
+          type: array
+          items:
+            $ref: '#/components/schemas/NfsPath'
+          maxItems: 100
+          description: Every path of the proposal, of which `path` is the first. For a `restart` it is the one
+            `namespace/name` of the service.
+        decided_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+          description: When the proposal was approved or rejected, null while it is not decided.
       additionalProperties: false
       required:
       - id
@@ -5327,6 +6759,8 @@ components:
           items:
             $ref: '#/components/schemas/DiffHunk'
           maxItems: 100000
+          description: 'The diff of the draft. A line the secret scan flags is replaced by its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b); see `DiffLine`.'
         setting_changes:
           type: array
           items:
@@ -5388,20 +6822,52 @@ components:
       - expected
       - content
     Me:
-      allOf:
-      - $ref: '#/components/schemas/User'
-      - type: object
-        properties:
-          swimlane_access:
-            type: string
-            enum:
-            - all
-            description: Every signed-in user sees every swimlane.
-          needs_github_token:
-            type: boolean
-            description: True while the user has no stored GitHub token, so the web app can prompt for one before
-              the first edit. Absent in older servers; treat absence as false.
-        additionalProperties: false
+      type: object
+      description: The signed-in user and what the web app needs at sign-in. Every field of `User`, defined as there, and
+        `swimlane_access` and `needs_github_token`. It repeats `User` instead of composing it with `allOf`, because `User`
+        is closed and a closed `allOf` member rejects the keys of its sibling, so no body the hub sends could be valid.
+      properties:
+        id:
+          $ref: '#/components/schemas/UserId'
+        email:
+          $ref: '#/components/schemas/ShortText'
+        display_name:
+          $ref: '#/components/schemas/ShortText'
+        role:
+          oneOf:
+          - $ref: '#/components/schemas/Role'
+          - type: 'null'
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        requires_approval:
+          type: boolean
+        github_login:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+        last_seen_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+        swimlane_access:
+          type: string
+          enum:
+          - all
+          description: Every signed-in user sees every swimlane.
+        needs_github_token:
+          type: boolean
+          description: True while the user has no stored GitHub token, so the web app can prompt for one before
+            the first edit. Absent in older servers; treat absence as false.
+      additionalProperties: false
+      required:
+      - id
+      - email
+      - display_name
+      - role
+      - status
+      - requires_approval
+      - github_login
+      - last_seen_at
     GithubTokenRequest:
       type: object
       properties:
@@ -5428,6 +6894,15 @@ components:
           items:
             $ref: '#/components/schemas/ShortText'
           maxItems: 64
+        expires_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+          description: When the token expires, null when GitHub did not say.
+        expires_soon:
+          type: boolean
+          description: True when the token expires within 7 days, and after it has expired, so the page can ask for a
+            new one before a pull request fails.
       additionalProperties: false
       required:
       - github_login
@@ -5664,6 +7139,8 @@ components:
           maxItems: 16
         snippet:
           type: string
+          description: 'The matching chunk of the doc. A value the secret scan flags is replaced by its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b).'
         score:
           type: number
           format: float
@@ -5672,6 +7149,11 @@ components:
           items:
             $ref: '#/components/schemas/LogicalFile'
           maxItems: 100
+        anchor:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+          description: The `id` of the heading of the rendered page (`renderDoc` for the same `path`) that the chunk sits under, so that the reader can open the page at the hit, `/docs/view?path=<path>#<anchor>`. Null or absent when the chunk is above the first heading or the producer has no outline. A client never builds it from a title. Additive, so an old document has none.
       additionalProperties: false
       required:
       - doc
@@ -5707,7 +7189,18 @@ components:
           minimum: 0
         text:
           type: string
-          description: Document text. Data, never instructions.
+          description: 'Document text. Data, never instructions. A value the secret scan flags is replaced by its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b), and there is no reveal for docs; `masks` says where each
+            marker sits.'
+        masks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Mask'
+          maxItems: 1000
+          description: 'Where the markers sit in `text`, as on `FileContent`: in the order of `start`, at most 1,000,
+            and absent when `text` holds no marker. `line` counts from the first line of `text`, which is line
+            `lines.start` of the doc when `lines` is given. A mask here has no `setting`. The marker is the same
+            `[REDACTED: N chars, rule]`.'
         truncated:
           type: boolean
         content_hash:
@@ -5720,6 +7213,71 @@ components:
       - text
       - truncated
       - content_hash
+    DocHeading:
+      type: object
+      description: One heading of a rendered doc, in document order. `text` is plain text, not HTML, so a client sets it as text content only.
+      properties:
+        id:
+          type: string
+          pattern: ^doc-[a-z0-9]+(-[a-z0-9]+)*$
+          maxLength: 80
+          description: The `id` attribute of the heading element in `RenderedDoc.html`. `doc-` and a slug, unique in the page, chosen by the server and never copied from the Markdown, so a doc cannot name an element of the app.
+        level:
+          type: integer
+          minimum: 1
+          maximum: 6
+        text:
+          $ref: '#/components/schemas/ShortText'
+          description: 'The heading as plain text, taken from the doc after the secret scan: a flagged value in a heading
+            is its marker `[REDACTED: N chars, rule]` and is never sent (S14b).'
+        line:
+          type: integer
+          minimum: 1
+          description: The 1-based line of the heading in the doc's text, the numbering of `readDoc` and `grepDocs`.
+      additionalProperties: false
+      required:
+      - id
+      - level
+      - text
+      - line
+    RenderedDoc:
+      type: object
+      description: The server-rendered page of one doc (`DocSearch::render`) with its outline. `content_hash` is the SHA-256 of the doc's stored text, the value `readDoc` reports, so the same text has the same hash at any path. `headings` is the outline, the first 500 headings in document order; the page keeps every heading, and each entry names an element of `html` of that level with that `id`.
+      properties:
+        path:
+          $ref: '#/components/schemas/DocPath'
+        html:
+          type: string
+          maxLength: 8388608
+          description: |-
+            Sanitised HTML of the doc, a fragment with no `html`, `head` or `body`. This is the one HTML sink the CSP lets through (S12): the web app puts it into the page only through its Trusted Types policy `lanekeeper-docs`, and nowhere else.
+
+            The text was masked before it was rendered (S14b): a value the secret scan flags is the text of its marker `[REDACTED: N chars, rule]` in the page and is never sent, and there is no reveal for docs.
+
+            The allowlist below is a requirement on the server, not a description of what a sanitising library does by default. The render stays inside it whatever the Markdown holds, an implementation does not widen it, and `ports::conformance::doc_search` renders a corpus of attacks and checks every page against it (`render_output_stays_inside_the_allowlist`).
+
+            Elements: `h1`, `h2`, `h3`, `h4`, `h5`, `h6`, `p`, `blockquote`, `pre`, `code`, `ul`, `ol`, `li`, `hr`, `br`, `em`, `strong`, `table`, `thead`, `tbody`, `tr`, `th`, `td`, `a`, `img`.
+
+            Attributes: `id` on `h1` to `h6` only, always `doc-` and a slug of lower case letters and digits separated by single hyphens (at most 80 characters, unique in the page, chosen by the server and never copied from the Markdown); `href` and `rel` on `a`; `src` and `alt` on `img`. Nothing else: no `class`, no `style`, no `target`, no `srcset`, no event handler (`on...`), no `data-` or `aria-` attribute. Every value is in double quotes, and every `&` in a value begins `&amp;`, `&lt;`, `&gt;`, `&quot;` or `&#39;`.
+
+            Links: every `a` has `rel="noopener noreferrer"` and an `href` that is an absolute `https:` URL without credentials, a path on this origin (one leading `/`, never `//`), or a `#` fragment that names a heading id of this page. A relative link to a `.md` doc is rewritten to the reader route `/docs/view?path=<DocPath>`, the path percent-encoded. Any other link (`http:`, `javascript:`, `data:`, `mailto:`, any other scheme, any other relative target) loses its `href` and `rel`: the element is dropped and its text kept. Every URL value (the `href` of an `a` and the `src` of an `img`) is printable ASCII of at most 2048 characters, with no space, tab, line break or other control character, no backslash, and none of `<`, `>`, a quote (`"` or `'`) or a backtick. A browser drops a tab or a line break from a URL before it reads it and reads `/\` as `//`, so `/`, a tab and `/evil.example/` is the address of another origin and not a path on this one. A URL value that is not in this form is not emitted: the link is dropped as above and the image is replaced by its alt text.
+
+            Images: `src` is a path on this origin and nothing else (no scheme, no `//`, no `data:`), and it is a URL value with the rule of Links. Any other image is replaced by its alt text. The same-origin path rule is the floor of the allowlist: an image path can address any same-origin GET, the event stream included, and owner 14 may tighten it to a docs-asset prefix, so the renderer must not assume that any same-origin path is safe to fetch.
+
+            Markup: raw HTML in the Markdown source is data. It never produces an element or attribute outside this list: it is escaped or removed. A `<` in text is `&lt;`. No comment, doctype, CDATA section or processing instruction, and no control character except line feed and tab, neither of those inside a URL value. Elements are closed and properly nested, nested at most 32 deep (an element has at most 31 ancestors, a void element such as `br` included), and an `a` is never inside an `a`. A doc that nests deeper is still rendered: the containers beyond the limit are dropped and their content is kept.
+        headings:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocHeading'
+          maxItems: 500
+        content_hash:
+          $ref: '#/components/schemas/ContentHash'
+      additionalProperties: false
+      required:
+      - path
+      - html
+      - headings
+      - content_hash
     DocGrepHit:
       type: object
       properties:
@@ -5730,16 +7288,22 @@ components:
           minimum: 1
         text:
           type: string
+          description: 'The line of the doc that matched. A value the secret scan flags is replaced by its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b); the same holds for `before` and `after`.'
         before:
           type: array
           items:
             type: string
           maxItems: 20
+          description: 'The lines before the match, masked like `text`: a flagged value is its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b).'
         after:
           type: array
           items:
             type: string
           maxItems: 20
+          description: 'The lines after the match, masked like `text`: a flagged value is its marker
+            `[REDACTED: N chars, rule]` and is never sent (S14b).'
       additionalProperties: false
       required:
       - path
@@ -5796,6 +7360,11 @@ components:
           items:
             $ref: '#/components/schemas/FlagValue'
           maxItems: 64
+        anchor:
+          oneOf:
+          - $ref: '#/components/schemas/ShortText'
+          - type: 'null'
+          description: The `id` of the heading, in the rendered page of the doc that documents this flag, under which the flag's row of the Feature Flags table sits. The doc is the one `docsForFile` returns for `file` and `setting`, and its `DocHit.anchor` is the same value; this schema carries no doc path, so the client pairs the two. Null or absent when the producer has no outline. Additive, so an old document has none.
       additionalProperties: false
       required:
       - flag
@@ -6014,15 +7583,33 @@ components:
       - priority
       - enabled
     SeverityRule:
-      allOf:
-      - type: object
-        properties:
-          id:
-            $ref: '#/components/schemas/ConfigKey'
-        additionalProperties: false
-        required:
-        - id
-      - $ref: '#/components/schemas/SeverityRuleInput'
+      type: object
+      description: A severity rule and its id. Every field of `SeverityRuleInput`, defined as there, and `id`. It repeats
+        the input instead of composing it with `allOf`, because both members are closed and a closed `allOf` member
+        rejects the keys of its sibling, so no body the hub sends could be valid.
+      properties:
+        id:
+          $ref: '#/components/schemas/ConfigKey'
+        name:
+          $ref: '#/components/schemas/ShortText'
+        match:
+          $ref: '#/components/schemas/SeverityMatch'
+        severity:
+          $ref: '#/components/schemas/Severity'
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 10000
+        enabled:
+          type: boolean
+      additionalProperties: false
+      required:
+      - id
+      - name
+      - match
+      - severity
+      - priority
+      - enabled
     OsLoginUser:
       type: object
       properties:
@@ -6133,27 +7720,42 @@ components:
       description: Baselines and versions referenced by audit events, proposals, drafts or PR links are always kept
         (D78).
     RetentionSettings:
-      allOf:
-      - $ref: '#/components/schemas/RetentionInput'
-      - type: object
-        properties:
-          updated_at:
-            oneOf:
-            - $ref: '#/components/schemas/Timestamp'
-            - type: 'null'
-          updated_by:
-            oneOf:
-            - $ref: '#/components/schemas/UserId'
-            - type: 'null'
-          dry_run_preview:
-            oneOf:
-            - $ref: '#/components/schemas/RetentionPreview'
-            - type: 'null'
-        additionalProperties: false
-        required:
-        - updated_at
-        - updated_by
-        - dry_run_preview
+      type: object
+      description: The retention settings and when and by whom they last changed. Every field of `RetentionInput`,
+        defined as there, and `updated_at`, `updated_by` and `dry_run_preview`. It repeats the input instead of
+        composing it with `allOf`, because both members are closed and a closed `allOf` member rejects the keys of its
+        sibling, so no body the hub sends could be valid. Baselines and versions referenced by audit events,
+        proposals, drafts or PR links are always kept (D78).
+      properties:
+        keep_last_versions:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          description: Per file (default 50).
+        keep_days:
+          type: integer
+          minimum: 1
+          maximum: 3650
+          description: Default 180 (Q33).
+        updated_at:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+        updated_by:
+          oneOf:
+          - $ref: '#/components/schemas/UserId'
+          - type: 'null'
+        dry_run_preview:
+          oneOf:
+          - $ref: '#/components/schemas/RetentionPreview'
+          - type: 'null'
+      additionalProperties: false
+      required:
+      - keep_last_versions
+      - keep_days
+      - updated_at
+      - updated_by
+      - dry_run_preview
     AgentRegistration:
       type: object
       properties:
@@ -6303,7 +7905,9 @@ components:
         diff:
           oneOf:
           - type: string
-            description: The change's own diff text, kept so evidence survives blob garbage collection (D78).
+            description: 'The diff text of the change, kept so evidence survives blob garbage collection (D78). It is
+              kept already masked: a line the secret scan flags is its marker `[REDACTED: N chars, rule]`, so the value
+              is never stored here and never sent (S14b).'
           - type: 'null'
         prev_hash:
           $ref: '#/components/schemas/ContentHash'

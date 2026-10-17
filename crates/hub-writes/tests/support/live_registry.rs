@@ -73,6 +73,8 @@ impl RegistryRead for LiveRegistry {
                 attribution: None,
                 severity: None,
                 pickup_state: None,
+                logical_file: None,
+                tenant: None,
             })
             .collect();
         items.sort_by(|a, b| a.path.cmp(&b.path));

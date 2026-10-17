@@ -46,7 +46,11 @@ pub use audit::{
 };
 pub use auth::{AuthError, MAX_TOKEN_BYTES, TokenVerifier, UserError, Users};
 pub use blob::{BlobError, BlobStore, MAX_BLOB_BYTES, MAX_GET_MANY, content_hash};
-pub use docs::{DocError, DocSearch, MAX_DOC_HITS, MAX_DOC_PATTERN_BYTES, MAX_GREP_CONTEXT, MAX_GREP_HITS};
+pub use docs::{
+    DocError, DocSearch, HEADING_ID_PATTERN, HEADING_ID_PREFIX, MAX_DOC_HEADINGS, MAX_DOC_HITS,
+    MAX_DOC_PATTERN_BYTES, MAX_GREP_CONTEXT, MAX_GREP_HITS, MAX_HEADING_ID_BYTES, MAX_HTML_NESTING_DEPTH,
+    MAX_RENDER_SOURCE_BYTES, MAX_RENDERED_HTML_BYTES, MAX_URL_BYTES,
+};
 pub use events::{BusError, EventBus, EventFilter, EventKind, MAX_EVENT_BATCH};
 pub use gateway::{AgentGateway, GatewayError};
 pub use git::{GitError, GitReader};

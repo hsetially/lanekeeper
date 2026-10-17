@@ -1303,6 +1303,8 @@ pub fn planted_harm_is_detected() -> Result<(), String> {
         line: 1,
         text: text.to_owned(),
         ranges,
+        logical_file: None,
+        tenant: None,
     };
     check_hit(&hit("fine", vec![(0, 2)]), &limits_for_search)?;
     for (name, bad) in [

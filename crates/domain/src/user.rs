@@ -17,6 +17,24 @@ pub struct User {
     pub last_seen_at: Option<Timestamp>,
 }
 
+/// A person, as any signed-in user may see them: the id and the name Entra gave them, and never an email (Q6). It is what the
+/// web app shows where the design names someone, such as who confirmed a baseline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserRef {
+    pub id: UserId,
+    pub display_name: ShortText,
+}
+
+impl From<&User> for UserRef {
+    /// Keeps the id and the display name and drops everything else, the email and the GitHub login included.
+    fn from(u: &User) -> Self {
+        Self {
+            id: u.id.clone(),
+            display_name: u.display_name.clone(),
+        }
+    }
+}
+
 impl User {
     /// True for an active user whose role is at least `min`. Pending and disabled users never pass (S4).
     pub fn allows(&self, min: Role) -> bool {

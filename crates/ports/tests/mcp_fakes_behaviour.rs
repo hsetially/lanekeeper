@@ -29,6 +29,8 @@ fn entry(path: &str, drift: DriftState, is_dir: bool) -> FileEntry {
         attribution: None,
         severity: None,
         pickup_state: None,
+        logical_file: None,
+        tenant: None,
     }
 }
 

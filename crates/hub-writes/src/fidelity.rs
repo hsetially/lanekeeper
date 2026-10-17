@@ -327,6 +327,8 @@ mod tests {
             attribution: None,
             severity: None,
             pickup_state: None,
+            logical_file: None,
+            tenant: None,
         }
     }
 
