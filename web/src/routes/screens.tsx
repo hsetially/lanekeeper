@@ -5,7 +5,8 @@ import { RequestId } from "@/components/app/RequestId";
 import { Banner } from "@/components/app/Banner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { roleLabel } from "@/auth/roles";
-import type { RouteDef } from "./table";
+import { NewVersionScreen } from "@/components/app/NewVersion";
+import { isChunkLoadError } from "@/lib/deploy/retry-import";
 
 // The screens every route can fall back to. The designed versions (focus to the h1 after navigation, the handoff's
 // permission and error states) are built by the shell slice in T4 and replace these; what stays is the contract: a
@@ -53,6 +54,8 @@ export function PermissionScreen({ need }: { need: Role | null }) {
  * error that is not a problem (it could hold anything), nor `detail` (only screens that know a code is safe show it).
  */
 export function ErrorScreen({ error }: { error?: unknown }) {
+  // A screen whose chunk is gone is not an error of the page: the build is old (a deploy replaced its files).
+  if (isChunkLoadError(error)) return <NewVersionScreen />;
   const problem = error instanceof ApiProblem ? error : undefined;
   return (
     <main className="flex flex-col gap-3 p-6">
@@ -62,16 +65,6 @@ export function ErrorScreen({ error }: { error?: unknown }) {
       <Link to="/swimlanes" className="text-link underline">
         Go to the swimlanes
       </Link>
-    </main>
-  );
-}
-
-/** What a route shows until its screen is built (T4 replaces it with a lazy import of the feature page). */
-export function RoutePlaceholder({ def }: { def: RouteDef }) {
-  return (
-    <main className="flex flex-col gap-3 p-6">
-      <h1 className="text-lg font-semibold">{def.title}</h1>
-      <p className="text-muted-foreground">This screen is built in a later task.</p>
     </main>
   );
 }

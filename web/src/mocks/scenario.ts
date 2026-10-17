@@ -26,6 +26,8 @@ export type MockResponse = {
   /** A value, or a function of the request. A function needs a `sample` so the validator can call it. */
   body?: unknown;
   sample?: Partial<MockContext>;
+  /** More requests to check the body against the contract with: the first, a middle and the last page of a list. */
+  samples?: readonly Partial<MockContext>[];
 };
 
 export type Scenario = {
@@ -72,6 +74,10 @@ export function toHandlers(scenario: Scenario): RequestHandler[] {
       });
       const status = response.status ?? 200;
       const headers: Record<string, string> = { ...response.headers };
+      // A success with an ETag is answered 304, with no body, when the request holds that ETag: the hub does the same for the
+      // content operations, and it is what the app's own ETag cache (src/api/etag.ts) is for.
+      const etag = Object.entries(headers).find(([name]) => name.toLowerCase() === "etag")?.[1];
+      if (etag !== undefined && status < 300 && request.headers.get("if-none-match") === etag) return new HttpResponse(null, { status: 304, headers: { etag } });
       if (body === undefined) return new HttpResponse(null, { status, headers });
       headers["content-type"] ??= status >= 400 ? "application/problem+json" : "application/json";
       return new HttpResponse(JSON.stringify(body), { status, headers });

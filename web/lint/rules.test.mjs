@@ -101,7 +101,7 @@ describe("the named exceptions are as narrow as they say", () => {
     "editor-workers": "src/editor/entry.ts",
     "api-client": "src/api/client.ts",
     "sse-client": "src/live/sse-client.ts",
-    "editor-warm-up": "src/editor/loader.ts",
+    "editor-warm-up": "src/editor/warm.ts",
     "trusted-types-module": "src/lib/csp/trusted-types.ts",
     "prefs-module": "src/lib/prefs/index.ts",
     "monaco-global-patches": "src/editor/global-patches.ts",

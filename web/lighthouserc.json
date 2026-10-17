@@ -1,0 +1,22 @@
+{
+  "ci": {
+    "collect": {
+      "numberOfRuns": 3,
+      "url": ["/testpages/perf/grid", "/testpages/perf/diff", "/testpages/perf/nav/a"],
+      "settings": {
+        "preset": "desktop",
+        "onlyCategories": ["performance"]
+      }
+    },
+    "assert": {
+      "assertions": {
+        "categories:performance": ["error", { "minScore": 0.9, "aggregationMethod": "median" }]
+      }
+    }
+  },
+  "lanekeeper": {
+    "note": "The format of Lighthouse CI's lighthouserc, read by scripts/perf/lighthouse.mjs (the plan's W31 fallback: lighthouse 13.5.0 and a small runner, because @lhci/cli's tree has nine audit findings). The paths are on the perf build behind the harness (scenario `perf`), which serves them as the hub does, with no Content-Encoding. A page's score is the median of its runs; the budget is the lowest of the pages, so a page cannot hide behind another.",
+    "dist": "dist-perf",
+    "scenario": "perf"
+  }
+}

@@ -31,7 +31,8 @@ export type SessionState =
   | { status: "error"; problem: ApiProblem }
   | { status: "ready"; me: Me; role: Role | null };
 
-const SessionContext = createContext<SessionState>({ status: "none" });
+/** Exported so that a hook that reads the session can be tested with a session of the test's choosing. */
+export const SessionContext = createContext<SessionState>({ status: "none" });
 
 export const useSession = (): SessionState => useContext(SessionContext);
 

@@ -1,25 +1,13 @@
 // The scenarios of T1: who is signed in. T4's slices add their own beside this file (src/mocks/design/<slice>/) for the
 // design-parity data of each screen.
 import type { Me, Role } from "../api/generated/model/index.ts";
+import { meBody } from "./me.ts";
+import { perfScenarios } from "./perf/scenarios.ts";
 import { problemBody, type Scenario } from "./scenario.ts";
 
-const csrfCookie = "__Host-lk_csrf=mockMockMockMockMockMockMockMockMockMo0; Path=/; Secure; SameSite=Lax";
+export { meBody };
 
-export function meBody(role: Role | null, overrides: Partial<Me> = {}): Me {
-  return {
-    id: "11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222",
-    email: "ada.lovelace@example.test",
-    display_name: "Ada Lovelace",
-    role,
-    status: "active",
-    requires_approval: false,
-    github_login: null,
-    last_seen_at: null,
-    swimlane_access: "all",
-    needs_github_token: false,
-    ...overrides,
-  };
-}
+const csrfCookie = "__Host-lk_csrf=mockMockMockMockMockMockMockMockMockMo0; Path=/; Secure; SameSite=Lax";
 
 const signedIn = (id: string, description: string, role: Role | null, overrides: Partial<Me> = {}): Scenario => ({
   id,
@@ -55,5 +43,8 @@ export const scenarios: Record<string, Scenario> = {
     responses: [{ method: "GET", path: "/api/v1/me", status: 403, body: problemBody(403, "access-disabled", "Access disabled") }],
   },
 };
+
+// The data of the performance runs (src/mocks/perf): an Editor, a 5,000-row grid, a 6,000-line diff, a list of swimlanes.
+Object.assign(scenarios, perfScenarios);
 
 export const DEFAULT_SCENARIO = "viewer";

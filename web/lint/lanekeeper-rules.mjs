@@ -165,7 +165,7 @@ export const EXCEPTIONS = [
   { name: "editor-workers", files: ["src/editor/**/*.ts"], allow: ["worker"], why: "The editor's web worker is created through a TrustedScriptURL from the editor policy." },
   { name: "api-client", files: ["src/api/client.ts"], allow: ["network"], why: "The one mutator: every API request is made here, with CSRF, an Idempotency-Key, a timeout and problem parsing." },
   { name: "sse-client", files: ["src/live/sse-client.ts"], allow: ["network"], why: "The live-event stream is a long fetch read through a parser (T3). EventSource has no header control and no status codes." },
-  { name: "editor-warm-up", files: ["src/editor/loader.ts"], allow: ["network", "worker"], why: "A fetch-only warm-up of the hashed editor chunk for editors (T2); it never executes it." },
+  { name: "editor-warm-up", files: ["src/editor/warm.ts"], allow: ["network"], why: "A fetch-only warm-up of the editor chunk for editors (T2): it fetches the hashed files into the HTTP cache while the browser is idle and never imports or executes them." },
   { name: "trusted-types-module", files: ["src/lib/csp/trusted-types.ts"], allow: ["create-policy"], why: "The only module that creates Trusted Types policies, each once." },
   { name: "prefs-module", files: ["src/lib/prefs/**/*.ts"], allow: ["web-storage", "cookie-write"], why: "The only module that touches web storage (layout choices) and the theme cookie." },
   {

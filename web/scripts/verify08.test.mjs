@@ -58,6 +58,34 @@ describe("verify-08", () => {
     expect(text).toContain("pnpm build:perf");
     expect(recipe("web-fixture").body).toContain("cargo build --locked -p hub --example web_fixture");
   });
+
+  it("keeps the timing specs out of web-e2e and runs them alone in web-perf", () => {
+    // A measurement that shares the machine with another test measures the other test.
+    expect(recipe("web-e2e").body).toContain("playwright test --project=chromium");
+    const perf = recipe("web-perf");
+    expect(perf.header).toContain("web-fixture");
+    expect(perf.body).toContain("playwright test --project=perf --workers=1");
+  });
+
+  it("web-perf removes the old results, builds, measures, then runs Lighthouse, in that order", () => {
+    const body = recipe("web-perf").body;
+    expect(body).not.toMatch(/exit 1|not added|stub/);
+    const steps = ['rm -f "${CARGO_TARGET_DIR:-target}"/perf-results/web-*.json', "pnpm build\n", "pnpm build:perf", "playwright test --project=perf", "scripts/perf/lighthouse.mjs"];
+    let from = 0;
+    for (const step of steps) {
+      const at = body.indexOf(step, from);
+      expect(at, `${step} comes after the step before it`).toBeGreaterThanOrEqual(0);
+      from = at + step.length;
+    }
+  });
+
+  it("the two Playwright projects split the specs between them, the three timing specs in `perf`", () => {
+    const config = readFileSync(new URL("web/playwright.config.ts", root), "utf8");
+    expect(config).toContain('{ name: "chromium", testIgnore: TIMING }');
+    expect(config).toContain('{ name: "perf", testMatch: TIMING');
+    const timing = /const TIMING = \/(.*)\/;/.exec(config)?.[1] ?? "";
+    for (const spec of ["route-change", "diff-6000", "grid-5000"]) expect(timing, spec).toContain(spec);
+  });
 });
 
 describe("the P10 budgets of the gate", () => {
@@ -65,6 +93,12 @@ describe("the P10 budgets of the gate", () => {
     .map((m) => m[1])
     .filter((block) => /^bench = "web\//m.test(block))
     .map((block) => /^id = "([^"]+)"/m.exec(block)?.[1]);
+
+  it("has every one of them registered, so the gate fails when a number is missing", () => {
+    const blocks = [...budgets.matchAll(/\[\[budget\]\]([\s\S]*?)(?=\n\[\[budget\]\]|$)/g)].map((m) => m[1]).filter((block) => /^bench = "web\//m.test(block));
+    expect(blocks).toHaveLength(5);
+    for (const block of blocks) expect(block, /^id = "([^"]+)"/m.exec(block)?.[1]).toMatch(/^registered = true$/m);
+  });
 
   it("lists exactly the web budgets of perf/budgets.toml", () => {
     const listed = /^web_budgets := "([^"]+)"/m.exec(justfile)?.[1]?.split(" ") ?? [];

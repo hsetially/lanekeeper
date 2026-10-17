@@ -3,6 +3,7 @@ import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { bundleReport } from "./scripts/build/bundle-report.mjs";
+import { chunkHints } from "./scripts/build/chunk-hints.mjs";
 
 // No CDN, no third-party origins (S12). Monaco and fonts are self-hosted later (prompt 08).
 const alias = { "@": fileURLToPath(new URL("./src", import.meta.url)) };
@@ -27,7 +28,7 @@ const NODE_TEST_DIRS = [
 // editor and, in T2, the performance pages) into dist-perf/, which the e2e and performance runs serve through the hub's own
 // header code. It is never the production dist and never in the image.
 export default defineConfig(({ mode }) => ({
-  plugins: [react(), tailwindcss(), bundleReport()],
+  plugins: [react(), tailwindcss(), bundleReport(), chunkHints()],
   resolve: { alias },
   // The build writes the placeholder into every generated `nonce` attribute and into <meta property="csp-nonce">; the hub
   // replaces it with the response's own nonce (crates/hub/src/static_files.rs refuses to start without it). S12.

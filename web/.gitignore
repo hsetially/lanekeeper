@@ -1,5 +1,7 @@
 # Build and test output. The root .gitignore ignores web/dist and node_modules.
 dist-perf/
+# The list of modules of each chunk, written by the build for the bundle gate (scripts/perf/check-bundle.mjs).
+.build-report/
 test-results/
 playwright-report/
 # References rendered from the design handoff for the visual tests (T4); a committed manifest.json beside them records the inputs.

@@ -364,6 +364,8 @@ This section records the decisions the human gave in the chat on 2026-10-16 and 
 
 ## T2 blocked: the 5,000-row grid frame-rate gate (`P10.grid_5000_rows_fps`, W20), recorded 2026-10-17
 
+**Resolved the same day: see "W20 decided" at the end of this file.** The text below is the record of the blocker as it stood; its "What the human has to decide" and "How to finish T2" are answered there.
+
 **Status.** Everything in T2 is built, tested and measured except one gate: the grid's 60 fps, with the metric exactly as W20 defines it, cannot be met reliably on this machine, and the same box fails it with a hand-written list that has no application code. The threshold is not changed, no gate is skipped, and nothing is committed as T2 (the rule is: commit only this file). All of T2's work is in the worktree `.worktrees/08-frontend`, uncommitted, and verified as listed below.
 
 ### What was measured, as W20 defines it
@@ -427,3 +429,15 @@ The agent's reading: D together with C says the most (the page costs 4 to 6 ms a
 1. Change `e2e/perf/grid-5000.spec.ts` (and `perf/budgets.toml` for B, in a contract-change PR the human approves) to the chosen rule. The gated number is written as `values.min` of `web/grid_5000_rows_scroll_fps`; `headroom` and `control` are already recorded beside it.
 2. Run the recipe's steps (`just web-perf`, then `just web-bench-check`), `just verify-08` and `just verify`.
 3. Make the single commit `08/T2: performance (code splitting, lazy Monaco, bundle gate, ETags, virtualised views, P10 gates)` with the usual trailers. Nothing else from this section needs redoing.
+
+## W20 decided (2026-10-17)
+
+**Decision.** The human, in the chat on 2026-10-17 (relayed by the orchestrator), decided the grid gate as "Capacity + control" (of options A to D above, C and D together). `perf/budgets.toml` is not touched: threshold 60, `statistic = "min"`, no contract PR.
+
+**Rule implemented** (`web/e2e/perf/grid-5000.spec.ts`, `web/scripts/perf/frame-rule.mjs` with `frame-rule.test.mjs`):
+
+1. **Capacity is the budgeted number.** Five runs of 300 frames in a Chromium launched with `--disable-frame-rate-limit --disable-gpu-vsync`, the same scroll step in every frame; frames a second from the mean frame interval, not capped at 60. `values.min` of `web/grid_5000_rows_scroll_fps` is the minimum of the five and is judged against the floor of 60 by `cargo xtask bench-check`.
+2. **Control is an assertion of the spec.** Five 5 s scrolls in the normal, frame-rate-limited Chromium, alternated with five of the hand-written control list in the same browser and execution. The grid's late frames (an interval over 25 ms) must be at most the control list's plus a margin of **8** in 1,500. The margin, and the 60 pairs and 200,000 resamples behind it, are written in the spec: the grid had a late frame in 26 of 60 runs (35 in all) and the control list in 30 of 60 (40 in all); the same code would fail by luck about once in 1,200 executions. Sensitivity, measured by adding a 30 ms hitch to the frame loop: every 4 s gave 13 late frames in five runs, every 2 s 19, every 1 s 27, against an allowance of about 11, so a hitch at least every 2 s fails the gate (passes by chance about 1 in 300) and one every 4 s fails about four times in five. A cost that stays under 16.7 ms a frame (a box-shadow, a layer for every row or cell) gave 1 to 13 late frames and is not seen by this assertion: that is what the capacity number and its floor are for (172.8 fps measured, 2.9 times the floor).
+3. **Informational, in the same result file:** `vsyncLocked` (the original W20 metric, min of five 5 s runs of `min(60, 1000 / mean frame interval)`; 58.8 to 59.8 in the 10 validation executions, which is why it is not a gate on this machine), `headroom`, `control` and `controlRule`. The comments in `results.mjs`, the `web-perf` comment in the `Justfile` and the spec say that the number is a capacity and not the display's rate.
+
+**Does it pass reliably.** 11 executions of the new spec on the same machine (Chromium 141.0.7390.37, 4 cores, load average 0.7 to 1.5): 11 passed (10 on their own, 1 inside the `web-perf` steps). Capacity minimum 161.6 to 172.8 fps (floor 60); the grid's late frames 1 to 4 against the control list's 0 to 4, allowance 8 to 12. Then `cargo xtask bench-check` on the five P10 budgets: 5 pass, 0 fail (initial JavaScript 131.0 KB, route change p95 31 ms, diff p95 196.2 ms, grid capacity 172.8 fps, Lighthouse 96).

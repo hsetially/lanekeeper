@@ -625,12 +625,24 @@ web-mock scenario="admin": web-fixture
 # End to end under the production CSP (S12): the app, every overlay and the editor, in a real Chromium. `build:perf` is the
 # test-only build with the extra routes (the overlay and editor pages); it is never the production dist.
 web-e2e: web-fixture
-    cd web && pnpm build && pnpm build:perf && pnpm exec playwright test
+    cd web && pnpm build && pnpm build:perf && pnpm exec playwright test --project=chromium
 
-# P10 performance gates (Lighthouse, 6,000-line diff, 5,000-row grid, route change). They arrive in 08/T2: until then this
-# recipe fails, so `verify-08` cannot pass without them.
-web-perf:
-    @echo "web-perf: the P10 performance specs are added in 08/T2" && exit 1
+# P10 performance gates, measured here and judged by `web-bench-check`: the bundle (the end of `pnpm build`), then, in the
+# `perf` Playwright project with one worker so that nothing else shares the machine, the route change, the 6,000-line diff and
+# the 5,000-row grid, then Lighthouse (web/scripts/perf/lighthouse.mjs, web/lighthouserc.json). Every web result is removed
+# first, so only this run's numbers can pass. The functional specs of the same pages are in `web-e2e` (the `chromium` project).
+# The grid number is the grid's CAPACITY (frames a second with the frame-rate limit off, the same scroll in every frame, the
+# minimum of five runs, floor 60), and the spec ALSO fails when the grid drops more frames than a control list on the same
+# machine in the same run, plus a margin (W20, decided 2026-10-17; web/e2e/perf/grid-5000.spec.ts). It is not the display's rate.
+web-perf: web-fixture
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -f "${CARGO_TARGET_DIR:-target}"/perf-results/web-*.json
+    cd web
+    pnpm build
+    pnpm build:perf
+    pnpm exec playwright test --project=perf --workers=1
+    node scripts/perf/lighthouse.mjs
 
 # The five P10 budgets, judged on their own (the full registry needs every other prompt's benchmarks, see writes-bench).
 # `web/scripts/verify08.test.mjs` fails if this list and the registered `web/` budgets of perf/budgets.toml drift apart.

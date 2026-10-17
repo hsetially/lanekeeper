@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { initialClosure, measureInitialJs } from "./bundle-report.mjs";
+import { initialClosure, measureInitialJs, modulesOf } from "./bundle-report.mjs";
 
 const manifest = {
   "index.html": { file: "assets/index-a.js", src: "index.html", isEntry: true, imports: ["_react.js", "_router.js"], dynamicImports: ["src/routes/files.tsx"] },
@@ -41,5 +41,16 @@ describe("measureInitialJs", () => {
     expect(m.totalRaw).toBe(10_000);
     expect(m.totalGzip).toBeGreaterThan(0);
     expect(m.totalGzip).toBeLessThan(200);
+  });
+});
+
+describe("modulesOf", () => {
+  it("lists, for each chunk, the modules that went into it, for the bundle gate's check of what is in the first screen", () => {
+    const bundle = {
+      "assets/index-a.js": { type: "chunk", fileName: "assets/index-a.js", modules: { "/w/src/main.tsx": {}, "/w/node_modules/react/index.js": {} } },
+      "assets/Inter.woff2": { type: "asset", fileName: "assets/Inter.woff2" },
+      "assets/files-d.js": { type: "chunk", fileName: "assets/files-d.js", modules: {} },
+    };
+    expect(modulesOf(bundle)).toEqual({ "assets/index-a.js": ["/w/src/main.tsx", "/w/node_modules/react/index.js"], "assets/files-d.js": [] });
   });
 });

@@ -7,6 +7,7 @@ import { expect, vi } from "vitest";
 import { apiCaches } from "@/api/client";
 import { createQueryClient } from "@/lib/query/client";
 import { createAppRouter } from "@/router";
+import type { PageLoaders } from "@/routes/pages";
 
 export type Call = { method: string; path: string; headers: Headers; body: string | undefined };
 export type Api = (call: Call) => Response | Promise<Response>;
@@ -40,7 +41,7 @@ export function me(role: string | null, extra: Record<string, unknown> = {}) {
   };
 }
 
-export function renderApp(url: string, api: Api) {
+export function renderApp(url: string, api: Api, options: { pages?: PageLoaders } = {}) {
   const calls: Call[] = [];
   // jsdom refuses a `__Host-` cookie on an http origin, so the test supplies the cookie string the client reads.
   Object.defineProperty(document, "cookie", { configurable: true, get: () => `__Host-lk_csrf=${TOKEN}` });
@@ -60,7 +61,7 @@ export function renderApp(url: string, api: Api) {
   apiCaches.clear();
   const queryClient = createQueryClient();
   const history = createMemoryHistory({ initialEntries: [url] });
-  const router = createAppRouter({ queryClient, history });
+  const router = createAppRouter({ queryClient, history, ...(options.pages ? { pages: options.pages } : {}) });
   const view = render(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />

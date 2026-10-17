@@ -14,6 +14,17 @@ const BLOCKED_STYLE_INJECTORS = [
   },
 ];
 
+// TanStack Router's `lazyRouteComponent` reloads the whole page, once, when a chunk is missing, and keeps its "reloaded already"
+// flag in sessionStorage. A reload throws away an unsaved edit, and the app keeps web storage to lib/prefs. src/lib/deploy/lazy-page.ts
+// is the replacement: the same `.preload()`, and a missing chunk is an error the router shows as "A new version is available".
+const BLOCKED_LAZY = [
+  {
+    name: "@tanstack/react-router",
+    importNames: ["lazyRouteComponent"],
+    message: "lazyRouteComponent reloads the page by itself when a chunk is missing, losing unsaved work. Use lazyPage from @/lib/deploy/lazy-page.",
+  },
+];
+
 // Test and mock tooling that must never reach the production bundle (P10: the initial JavaScript is under 250 KB).
 const TEST_ONLY_PATHS = [
   { name: "msw", message: "msw is for tests, mocks and the e2e harness; it must not be in the bundle." },
@@ -37,7 +48,7 @@ const POLICY_PATTERN = {
   message: "Only components/app/SanitisedDocHtml.tsx and src/editor use the Trusted Types policies (S12).",
 };
 
-const rule = ({ paths = [], patterns = [] }) => ["error", { paths: [...BLOCKED_STYLE_INJECTORS, ...paths], patterns }];
+const rule = ({ paths = [], patterns = [] }) => ["error", { paths: [...BLOCKED_STYLE_INJECTORS, ...BLOCKED_LAZY, ...paths], patterns }];
 
 const TESTS = ["src/**/*.test.{ts,tsx}", "src/handoff/**", "src/test/**"];
 

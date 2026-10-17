@@ -34,6 +34,13 @@ describe("imports the app must not make (S12)", () => {
     expect(await restricted(code, "src/components/ui/x.tsx")).toEqual([]);
   });
 
+  it("bans the router's own lazy component, which reloads the page and uses session storage", async () => {
+    const code = 'import { lazyRouteComponent } from "@tanstack/react-router";\nexport { lazyRouteComponent };\n';
+    expect(await restricted(code, "src/router.tsx")).toHaveLength(1);
+    expect(await restricted(code, "src/testpages/x.tsx")).toHaveLength(1);
+    expect(await restricted('import { createRoute, Link } from "@tanstack/react-router";\nexport { createRoute, Link };\n', "src/router.tsx")).toEqual([]);
+  });
+
   it("keeps the extracted handoff data out of product code, but not out of tests or tooling", async () => {
     const code = 'import { TOKENS } from "@/handoff/tokens.generated";\nexport { TOKENS };\n';
     expect(await restricted(code, "src/components/app/Foo.tsx")).toHaveLength(1);

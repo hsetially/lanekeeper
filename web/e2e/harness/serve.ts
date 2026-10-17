@@ -36,6 +36,7 @@ export type HarnessRequest = {
   origin?: string | null;
   csrfHeader?: string | null;
   idempotencyKey?: string | null;
+  ifNoneMatch?: string | null;
   accept?: string | null;
   csrf?: "ok" | "refused" | "n/a";
   body?: string | undefined;
@@ -247,6 +248,7 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
       origin: req.headers.origin ?? null,
       csrfHeader: req.headers["x-csrf-token"] ? "present" : null,
       idempotencyKey: (req.headers["idempotency-key"] as string | undefined) ?? null,
+      ifNoneMatch: req.headers["if-none-match"] ?? null,
       accept: req.headers.accept ?? null,
       csrf: verdict,
       body: body && body.length <= 4096 ? body.toString("utf8") : undefined,

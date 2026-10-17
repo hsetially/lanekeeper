@@ -4,7 +4,7 @@ import { getResponse } from "msw";
 import Ajv2020 from "ajv/dist/2020.js";
 import { parse } from "yaml";
 import { DEFAULT_SCENARIO, scenarios } from "./scenarios.ts";
-import { contextFor, mswPath, resolveBody, toHandlers, type MockResponse } from "./scenario.ts";
+import { contextFor, mswPath, resolveBody, toHandlers, type MockContext, type MockResponse } from "./scenario.ts";
 
 // Every mock response must satisfy the OpenAPI schema of its operation and status (patterns and lengths included), so a
 // mock cannot drift from the contract and a screen is never built against an answer the server could not give.
@@ -36,11 +36,14 @@ function pointerFor(method: string, path: string, status: number): string | unde
   return media && node.content?.[media]?.schema ? `${base}/content/${esc(media)}/schema` : undefined;
 }
 
-const all: Array<{ scenario: string; response: MockResponse }> = Object.values(scenarios).flatMap((s) => s.responses.map((response) => ({ scenario: s.id, response })));
+// A response is checked once with its `sample`, and once more for each of its `samples`: a list of pages (first, middle, last).
+const all: Array<{ scenario: string; response: MockResponse; sample?: Partial<MockContext>; label: string }> = Object.values(scenarios).flatMap((s) =>
+  s.responses.flatMap((response) => [{ scenario: s.id, response, label: "" }, ...(response.samples ?? []).map((sample, i) => ({ scenario: s.id, response, sample, label: ` (sample ${i + 1})` }))]),
+);
 
 describe("scenarios", () => {
-  it("has the sessions T1 needs, and a default that exists", () => {
-    expect(Object.keys(scenarios).sort()).toEqual(["admin", "disabled", "editor", "needs-token", "operator", "pending", "signed-out", "viewer"]);
+  it("has the sessions T1 needs and the data of the performance runs, and a default that exists", () => {
+    expect(Object.keys(scenarios)).toEqual(expect.arrayContaining(["admin", "disabled", "editor", "needs-token", "operator", "pending", "signed-out", "viewer", "perf", "perf-full", "perf-viewer"]));
     expect(scenarios[DEFAULT_SCENARIO]).toBeDefined();
   });
 
@@ -48,10 +51,10 @@ describe("scenarios", () => {
     for (const [key, scenario] of Object.entries(scenarios)) expect(scenario.id).toBe(key);
   });
 
-  it.each(all.map((a) => [`${a.scenario}: ${a.response.method} ${a.response.path} ${a.response.status ?? 200}`, a] as const))("%s satisfies the contract", (_name, { response }) => {
+  it.each(all.map((a) => [`${a.scenario}: ${a.response.method} ${a.response.path} ${a.response.status ?? 200}${a.label}`, a] as const))("%s satisfies the contract", (_name, { response, sample }) => {
     const status = response.status ?? 200;
     const pointer = pointerFor(response.method, response.path, status);
-    const body = resolveBody(response, contextFor(response));
+    const body = resolveBody(response, sample ? { ...contextFor(response), ...sample } : contextFor(response));
     if (pointer === undefined) {
       expect(body, "an operation with no body in the contract sends none").toBeUndefined();
       return;
@@ -89,6 +92,29 @@ describe("toHandlers", () => {
     expect(denied?.headers.get("content-type")).toBe("application/problem+json");
     const none = await getResponse(out, new Request("http://localhost/auth/logout", { method: "POST" }));
     expect(none?.status).toBe(204);
+  });
+
+  it("answers 304 with no body when a response has an ETag and the request has it in If-None-Match, as the hub does", async () => {
+    const handlers = toHandlers({
+      id: "etag",
+      description: "t",
+      responses: [{ method: "GET", path: "/api/v1/compare", headers: { etag: '"abc"' }, body: { hunks: [] } }],
+    });
+    const first = await getResponse(handlers, new Request("http://localhost/api/v1/compare"));
+    expect(first?.status).toBe(200);
+    expect(first?.headers.get("etag")).toBe('"abc"');
+    const same = await getResponse(handlers, new Request("http://localhost/api/v1/compare", { headers: { "if-none-match": '"abc"' } }));
+    expect(same?.status).toBe(304);
+    expect(same?.headers.get("etag")).toBe('"abc"');
+    expect(await same?.text()).toBe("");
+    const other = await getResponse(handlers, new Request("http://localhost/api/v1/compare", { headers: { "if-none-match": '"zzz"' } }));
+    expect(other?.status).toBe(200);
+  });
+
+  it("does not make a 304 of a response that has no ETag, or of an error", async () => {
+    const handlers = toHandlers({ id: "t", description: "t", responses: [{ method: "GET", path: "/api/v1/me", body: { a: 1 } }] });
+    const r = await getResponse(handlers, new Request("http://localhost/api/v1/me", { headers: { "if-none-match": '"abc"' } }));
+    expect(r?.status).toBe(200);
   });
 
   it("does not answer what the scenario does not know", async () => {

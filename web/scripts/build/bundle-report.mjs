@@ -2,8 +2,8 @@
 // fetch before the first screen), each file gzipped at level 9, summed. 1 KB is 1,000 bytes. The bundle gate of T2
 // (scripts/perf/check-bundle.mjs) uses the same function and fails above 250 KB; T1 only reports, so the first measured
 // number is visible from the first build.
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 
 /**
@@ -48,19 +48,38 @@ export function measureInitialJs(distDir) {
   return { entry, files: rows, totalGzip: rows.reduce((n, r) => n + r.gzip, 0), totalRaw: rows.reduce((n, r) => n + r.bytes, 0) };
 }
 
+/** For each chunk of a Rollup bundle, the ids of the modules in it. The bundle gate reads this to see what is in the first screen. */
+export function modulesOf(bundle) {
+  return Object.fromEntries(Object.values(bundle).flatMap((item) => (item.type === "chunk" ? [[item.fileName, Object.keys(item.modules ?? {})]] : [])));
+}
+
 /**
- * A Vite plugin that prints the number after the build. It never fails the build.
+ * A Vite plugin that prints the number after the build, and writes the list of modules of each chunk to
+ * `.build-report/<dist>.modules.json` (next to the build, not into dist: it is not served). It never fails the build.
  * @returns {import("vite").Plugin}
  */
 export function bundleReport() {
   let outDir = "dist";
+  let root = process.cwd();
   let silent = false;
   return {
     name: "lanekeeper-bundle-report",
     apply: "build",
     configResolved(config) {
       outDir = config.build.outDir;
+      root = config.root;
       silent = config.logLevel === "silent";
+    },
+    writeBundle(options, bundle) {
+      // Skipped for the nested builds (the editor's web worker): they have no manifest and nothing to gate.
+      if (!options.dir || basename(resolve(options.dir)) !== basename(resolve(outDir))) return;
+      try {
+        const dir = join(root, ".build-report");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, `${basename(resolve(outDir))}.modules.json`), `${JSON.stringify(modulesOf(bundle))}\n`);
+      } catch {
+        // A read-only tree has nowhere to write it; the gate then says so, which is the right failure.
+      }
     },
     closeBundle() {
       if (silent) return;

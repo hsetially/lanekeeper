@@ -3,7 +3,6 @@ import {
   createRootRouteWithContext,
   createRoute,
   createRouter,
-  lazyRouteComponent,
   notFound,
   Outlet,
   redirect,
@@ -12,8 +11,11 @@ import {
 import { SessionProvider, RouteGate } from "@/auth/session";
 import { Frame } from "@/routes/Frame";
 import { Landing } from "@/routes/Landing";
-import { SignIn } from "@/routes/SignIn";
-import { ErrorScreen, NotFoundScreen, RoutePlaceholder } from "@/routes/screens";
+import { lazyPage } from "@/lib/deploy/lazy-page";
+import { NewVersionBanner } from "@/components/app/NewVersion";
+import { PAGE_LOADERS, type PageLoader, type PageLoaders } from "@/routes/pages";
+import { useIdlePrefetch } from "@/routes/prefetch";
+import { ErrorScreen, NotFoundScreen, RouteLoading } from "@/routes/screens";
 import { parseAppSearch, pickSearch, stringifySearch } from "@/routes/search";
 import { paramCheck, paramNames, ROUTES, type RouteAccess, type RouteDef } from "@/routes/table";
 
@@ -33,10 +35,18 @@ declare module "@tanstack/react-router" {
 
 export type RouterContext = { queryClient: QueryClient };
 
+/** Loads the sidebar's destinations while the page is idle. A component of its own because it reads the session. */
+function IdlePrefetch() {
+  useIdlePrefetch();
+  return null;
+}
+
 function RootLayout() {
   return (
     <SessionProvider>
+      <IdlePrefetch />
       <Frame />
+      <NewVersionBanner />
       <Outlet />
     </SessionProvider>
   );
@@ -49,14 +59,29 @@ function fillParams(path: string, params: Readonly<Record<string, string>>): str
   return path.replace(/:([A-Za-z]+)/g, (_m, name: string) => encodeURIComponent(params[name] ?? ""));
 }
 
-function screenFor(def: RouteDef) {
-  if (def.id === "signin") return SignIn;
-  return function Screen() {
-    return <RoutePlaceholder def={def} />;
-  };
+/**
+ * A page behind the role gate. The page is loaded when the route is first used, and the router preloads it on hover and focus
+ * (`defaultPreload: "intent"`) by calling `.preload` on the route's component, which is why the gate is wrapped here and the
+ * page's `preload` is put on the wrapper.
+ */
+function gated(access: RouteAccess, load: PageLoader) {
+  const Screen = lazyPage(load);
+  const Gated = () => (
+    <RouteGate access={access}>
+      <Screen />
+    </RouteGate>
+  );
+  Gated.preload = Screen.preload;
+  return Gated;
 }
 
-export function createAppRouter({ queryClient, history }: { queryClient: QueryClient; history?: RouterHistory }) {
+/** The component of a route: its page behind the role gate. A route that only redirects shows nothing. */
+function componentFor(def: RouteDef, pages: PageLoaders) {
+  const load = pages[def.id];
+  return load ? gated(def.access, load) : () => null;
+}
+
+export function createAppRouter({ queryClient, history, pages = PAGE_LOADERS }: { queryClient: QueryClient; history?: RouterHistory; pages?: PageLoaders }) {
   const root = createRootRouteWithContext<RouterContext>()({
     // A child's search is its parent's merged with its own, so without this every key in the URL would reach every route.
     validateSearch: () => ({}),
@@ -77,7 +102,6 @@ export function createAppRouter({ queryClient, history }: { queryClient: QueryCl
   });
 
   const routes = ROUTES.map((def) => {
-    const Screen = screenFor(def);
     return createRoute({
       getParentRoute: () => root,
       path: toTanstack(def.path),
@@ -94,16 +118,12 @@ export function createAppRouter({ queryClient, history }: { queryClient: QueryCl
           throw redirect({ href: target });
         }
       },
-      component: () => (
-        <RouteGate access={def.access}>
-          <Screen />
-        </RouteGate>
-      ),
+      component: componentFor(def, pages),
     });
   });
 
-  // Test-only pages (the overlay primitives and the editor), for the CSP and performance runs. They exist only in
-  // `vite build --mode perf`: in a production build `import.meta.env.MODE` is the string "production", the branch is dead
+  // Test-only pages (the overlay primitives, the editor and the P10 pages), for the CSP and performance runs. They exist only
+  // in `vite build --mode perf`: in a production build `import.meta.env.MODE` is the string "production", the branch is dead
   // code and no chunk is emitted (scripts/dist-check.mjs fails a production dist that mentions /testpages/). They are routes
   // of the app, not separate HTML files, because the hub puts the nonce only into index.html.
   const lab =
@@ -113,14 +133,43 @@ export function createAppRouter({ queryClient, history }: { queryClient: QueryCl
             getParentRoute: () => root,
             path: "/testpages/primitives",
             staticData: { access: "public", title: "Primitives", routeId: "lab-primitives" },
-            component: lazyRouteComponent(() => import("@/testpages/primitives"), "PrimitivesPage"),
+            component: lazyPage(() => import("@/testpages/primitives").then((m) => ({ default: m.PrimitivesPage }))),
           }),
           createRoute({
             getParentRoute: () => root,
             path: "/testpages/editor",
             staticData: { access: "public", title: "Editor", routeId: "lab-editor" },
-            component: lazyRouteComponent(() => import("@/testpages/EditorLab"), "EditorLab"),
+            component: lazyPage(() => import("@/testpages/EditorLab").then((m) => ({ default: m.EditorLab }))),
           }),
+          // The P10 pages: a 5,000-row grid, a 6,000-line diff, and three screens to change routes between. Signed-in routes
+          // like the real ones, so the session and the role gate are in the measurement.
+          createRoute({
+            getParentRoute: () => root,
+            path: "/testpages/perf/grid",
+            staticData: { access: "viewer", title: "Grid", routeId: "lab-perf-grid" },
+            component: gated("viewer", () => import("@/testpages/perf/Grid").then((m) => ({ default: m.PerfGrid }))),
+          }),
+          createRoute({
+            getParentRoute: () => root,
+            path: "/testpages/perf/diff",
+            staticData: { access: "viewer", title: "Diff", routeId: "lab-perf-diff" },
+            component: gated("viewer", () => import("@/testpages/perf/Diff").then((m) => ({ default: m.PerfDiff }))),
+          }),
+          (() => {
+            const nav = createRoute({
+              getParentRoute: () => root,
+              path: "/testpages/perf/nav",
+              staticData: { access: "viewer", title: "Pages", routeId: "lab-perf-nav" },
+              component: gated("viewer", () => import("@/testpages/perf/Nav").then((m) => ({ default: m.PerfNavLayout }))),
+            });
+            const page = (id: "a" | "b" | "c", load: PageLoader) =>
+              createRoute({ getParentRoute: () => nav, path: id, staticData: { access: "viewer", title: `Route ${id.toUpperCase()}`, routeId: `lab-perf-${id}` }, component: lazyPage(load) });
+            return nav.addChildren([
+              page("a", () => import("@/testpages/perf/RouteA")),
+              page("b", () => import("@/testpages/perf/RouteB")),
+              page("c", () => import("@/testpages/perf/RouteC")),
+            ]);
+          })(),
         ]
       : [];
 
@@ -131,7 +180,9 @@ export function createAppRouter({ queryClient, history }: { queryClient: QueryCl
     ...(history ? { history } : {}),
     parseSearch: parseAppSearch,
     stringifySearch,
+    // A link that is hovered or focused loads its screen, so the click that follows is a route change that waits for nothing.
     defaultPreload: "intent",
+    defaultPendingComponent: RouteLoading,
     defaultNotFoundComponent: () => <NotFoundScreen />,
     defaultErrorComponent: ({ error }) => <ErrorScreen error={error} />,
   });

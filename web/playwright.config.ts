@@ -6,6 +6,11 @@ import { chromiumPath, launchArgs, recordBrowser } from "./e2e/harness/browser.t
 // e2e/harness/browser.ts finds, and its version is written to target/web-gates/browser.json.
 recordBrowser();
 
+// The three timing specs of the P10 gate run alone, one worker, in their own project (`just web-perf`): a measurement that
+// shares the machine with another test measures the other test. Everything else, the functional checks of the same pages
+// included, is the `chromium` project (`just web-e2e`).
+const TIMING = /e2e[\\/]perf[\\/](route-change|diff-6000|grid-5000)\.spec\.ts$/;
+
 export default defineConfig({
   testDir: "./e2e",
   testMatch: /.*\.spec\.ts/,
@@ -26,5 +31,8 @@ export default defineConfig({
     viewport: { width: 1440, height: 900 },
     launchOptions: { executablePath: chromiumPath(), args: launchArgs() },
   },
-  projects: [{ name: "chromium" }],
+  projects: [
+    { name: "chromium", testIgnore: TIMING },
+    { name: "perf", testMatch: TIMING, fullyParallel: false, timeout: 300_000 },
+  ],
 });

@@ -1,0 +1,126 @@
+// Code splitting in a real browser, behind the hub's header code and the production CSP (P10, S12). What the unit tests cannot
+// show: that a dynamic import of a chunk is allowed by the policy, that the first visit fetches the shell and the one screen
+// it needs and nothing more (no editor), that the files are the immutable assets the hub marks them as, and what the screen
+// of a deploy that took a chunk away looks like, without the page reloading by itself (an unsaved edit is not thrown away).
+import { cpSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { gzipSync } from "node:zlib";
+import { fileURLToPath } from "node:url";
+import { startHarness } from "../harness/serve.ts";
+import { expect, test } from "../fixtures/test";
+
+const WEB_ROOT = fileURLToPath(new URL("../../", import.meta.url));
+const BUDGET_KB = 250;
+
+type Script = { path: string; status: number; cacheControl: string | undefined; gzipBytes: number };
+
+/** Every script the page fetches, with its size gzipped (what a hub that compressed would send). */
+function collectScripts(page: import("@playwright/test").Page): { scripts: Script[]; settled: () => Promise<void> } {
+  const scripts: Script[] = [];
+  const pending: Array<Promise<void>> = [];
+  page.on("response", (response) => {
+    const url = new URL(response.url());
+    if (!url.pathname.endsWith(".js")) return;
+    pending.push(
+      response
+        .body()
+        .then((body) => {
+          scripts.push({ path: url.pathname, status: response.status(), cacheControl: response.headers()["cache-control"], gzipBytes: gzipSync(body).length });
+        })
+        .catch(() => {
+          scripts.push({ path: url.pathname, status: response.status(), cacheControl: response.headers()["cache-control"], gzipBytes: 0 });
+        }),
+    );
+  });
+  return {
+    scripts,
+    settled: async () => {
+      await Promise.all(pending);
+    },
+  };
+}
+
+test("the first visit fetches the shell and the one screen it needs: immutable files, no editor, under the budget", async ({ page, harness }) => {
+  harness.setScenario("viewer");
+  const { scripts, settled } = collectScripts(page);
+  await page.goto(`${harness.url}/swimlanes`);
+  await expect(page.getByRole("heading", { level: 1, name: "Swimlanes" })).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  await settled();
+
+  const assets = scripts.filter((s) => s.path.startsWith("/assets/"));
+  const names = assets.map((s) => s.path.replace(/^\/assets\//, "").replace(/-[A-Za-z0-9_-]{8}\.js$/, ""));
+  // The shell, and the screen's chunk. The screens share one module until they are built, so it is one file.
+  expect(names).toContain("index");
+  expect(names).toContain("Placeholder");
+  expect(names.filter((n) => n !== "index" && n !== "Placeholder"), "no other script on the first visit").toEqual([]);
+  for (const name of names) expect(name, "the editor is not part of a first visit").not.toMatch(/editor|monaco|jsonMode|worker/i);
+
+  for (const script of assets) {
+    expect(script.status, script.path).toBe(200);
+    expect(script.cacheControl, script.path).toMatch(/immutable/);
+  }
+  const kb = assets.reduce((n, s) => n + s.gzipBytes, 0) / 1024;
+  expect(kb, `the scripts of a first visit, gzipped: ${kb.toFixed(1)} KB`).toBeLessThan(BUDGET_KB);
+});
+
+test.describe("on the perf build's route pages (three screens, a chunk each)", () => {
+  test.use({ dist: "dist-perf", scenario: "perf" });
+
+  test("a second screen is its own chunk, fetched when it is first used, over the same page", async ({ page, harness }) => {
+    const { scripts, settled } = collectScripts(page);
+    let documents = 0;
+    page.on("request", (request) => {
+      if (request.resourceType() === "document") documents += 1;
+    });
+    await page.goto(`${harness.url}/testpages/perf/nav/a`);
+    await expect(page.getByRole("heading", { level: 1, name: "Route A" })).toBeVisible();
+    await page.waitForLoadState("networkidle");
+    await settled();
+    const has = (name: string) => scripts.some((s) => new RegExp(`/assets/${name}-[A-Za-z0-9_-]{8}\\.js$`).test(s.path));
+    expect(has("RouteA"), "the first screen's chunk").toBe(true);
+    expect(has("RouteB"), "the second screen is not fetched before it is wanted").toBe(false);
+    expect(has("RouteC")).toBe(false);
+
+    await page.getByRole("link", { name: "Page B" }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Route B" })).toBeVisible();
+    await settled();
+    expect(has("RouteB"), "the second screen's chunk was fetched when it was used").toBe(true);
+    expect(has("RouteC"), "and not the third").toBe(false);
+    expect(documents, "one page load, then client-side navigation").toBe(1);
+  });
+});
+
+test("a chunk that a deploy took away shows the new-version screen, keeps the page, and never reloads by itself", async ({ page }) => {
+  // A copy of the production build with the screen's chunk deleted: what a tab opened before a deploy sees when it asks
+  // for a file the new build no longer has.
+  const copy = mkdtempSync(join(tmpdir(), "lk-stale-dist-"));
+  const stale = await (async () => {
+    cpSync(resolve(WEB_ROOT, "dist"), copy, { recursive: true });
+    const gone = readdirSync(join(copy, "assets")).filter((name) => /^Placeholder-.*\.js$/.test(name));
+    expect(gone, "the build has the placeholder chunk to remove").toHaveLength(1);
+    for (const name of gone) rmSync(join(copy, "assets", name));
+    return startHarness({ dist: copy, scenario: "viewer" });
+  })();
+  try {
+    let documents = 0;
+    page.on("request", (request) => {
+      if (request.resourceType() === "document") documents += 1;
+    });
+    await page.goto(`${stale.url}/swimlanes`);
+    await expect(page.getByRole("heading", { level: 1, name: "A new version is available" })).toBeVisible();
+    const reload = page.getByRole("button", { name: "Reload" });
+    await expect(reload).toBeVisible();
+    // One "Reload", not one in a banner and another in the screen.
+    await expect(reload).toHaveCount(1);
+    // The page is where it was. Nothing reloaded it: not the failure, not a retry, not a timer.
+    await page.waitForTimeout(1500);
+    expect(documents, "the page was loaded once and not again").toBe(1);
+    expect(await page.evaluate(() => window.sessionStorage.length), "no reload marker was left in sessionStorage").toBe(0);
+    await expect(page).toHaveURL(`${stale.url}/swimlanes`);
+  } finally {
+    await stale.close();
+    rmSync(copy, { recursive: true, force: true });
+  }
+});
