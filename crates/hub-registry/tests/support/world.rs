@@ -432,7 +432,7 @@ impl World {
             .count()
     }
 
-    /// How many `SwimlaneChanged` events (`contract/08-web`, CG1b) reached the outbox.
+    /// How many `SwimlaneChanged` events (`contract/08-web`, `CG1b`) reached the outbox.
     pub async fn swimlane_changed_events(&self) -> usize {
         self.rig
             .bus
