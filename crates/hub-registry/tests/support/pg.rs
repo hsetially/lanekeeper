@@ -30,7 +30,7 @@ use sqlx::postgres::{PgConnectOptions, PgConnection, PgPool, PgPoolOptions, PgSs
 use sqlx::{Connection, Row};
 use testcontainers::core::IntoContainerPort;
 use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerAsync, GenericImage, ImageExt};
+use testcontainers::{GenericImage, ImageExt};
 
 const IMAGE: &str = "pgvector/pgvector";
 const IMAGE_TAG: &str = "pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a";
@@ -70,7 +70,51 @@ pub struct TestDb {
     database: String,
     /// A database made on an external server is dropped with the test; a container goes away whole.
     drop_database: bool,
-    _container: Option<ContainerAsync<GenericImage>>,
+    /// The container, whose drop needs a Tokio runtime: see [`RuntimeBound`].
+    _container: RuntimeBound,
+}
+
+/// Drops `value` with a Tokio runtime around it, wherever the caller is. A `ContainerAsync` removes its container in `Drop` with
+/// `Handle::current()`, which panics outside a runtime ("there is no reactor running"), and a test that builds its own runtime and drops
+/// its database after `block_on` returned (the proptests of `retention_gc`, `retention_prune` and `tree_hashes`, a benchmark) drops it
+/// there. Inside a runtime it is dropped as it is (testcontainers hands the removal to a worker thread of its own, or blocks in place);
+/// anywhere else it is dropped inside `block_on` of a runtime of its own on a helper thread, which is joined. The Docker client keeps no
+/// idle connection (`pool_max_idle_per_host(0)`), so the removal does not need the runtime that started the container.
+pub fn drop_with_runtime<T: Send + 'static>(value: T) {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        drop(value);
+        return;
+    }
+    let _ = std::thread::spawn(move || {
+        let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
+            // No runtime to be had: leave the container to the reaper rather than panic in its drop.
+            std::mem::forget(value);
+            return;
+        };
+        rt.block_on(async move { drop(value) });
+    })
+    .join();
+}
+
+/// What a test database owns that must be dropped under a runtime (the container; nothing for an external server).
+struct RuntimeBound(Option<Box<dyn Send + Sync>>);
+
+impl RuntimeBound {
+    fn none() -> Self {
+        Self(None)
+    }
+
+    fn new<T: Send + Sync + 'static>(value: T) -> Self {
+        Self(Some(Box::new(value)))
+    }
+}
+
+impl Drop for RuntimeBound {
+    fn drop(&mut self) {
+        if let Some(value) = self.0.take() {
+            drop_with_runtime(value);
+        }
+    }
 }
 
 async fn connect(options: &PgConnectOptions) -> Result<PgConnection, sqlx::Error> {
@@ -161,7 +205,7 @@ impl TestDb {
             admin_options,
             database: CONTAINER_DATABASE.to_owned(),
             drop_database: false,
-            _container: Some(container),
+            _container: RuntimeBound::new(container),
         })
     }
 
@@ -181,7 +225,20 @@ impl TestDb {
             admin_options: base,
             database,
             drop_database: true,
-            _container: None,
+            _container: RuntimeBound::none(),
+        }
+    }
+
+    /// A `TestDb` that owns `resource` the way the container is owned and connects to nothing: for the test that dropping one from a
+    /// thread with no runtime does not panic (`tests/container_drop.rs`), which no Docker-less run can show with a real container.
+    pub fn around<T: Send + Sync + 'static>(resource: T) -> Self {
+        Self {
+            host: String::new(),
+            port: 0,
+            admin_options: PgConnectOptions::new(),
+            database: String::new(),
+            drop_database: false,
+            _container: RuntimeBound::new(resource),
         }
     }
 
