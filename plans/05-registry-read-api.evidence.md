@@ -583,6 +583,43 @@ No statement is over its budget under `en_US`, so no budget or threshold was tou
 
 **What I could not do or check.** (1) The container path of the harness (testcontainers): there is no Docker daemon here. Its drop is covered by a stand-in test (the second finding above); its start, pin and teardown against a real daemon are CI's. (2) The image itself: its PostgreSQL minor, its pgvector version and its glibc (Debian) are not known here, and the digest cannot be pulled; the sandbox has Ubuntu's 16.15, vector 0.6.0 and glibc 2.39. A plan that turns on a page of index size is exactly what another glibc could move, which is why `interchangeable` exists. (3) The deployment's collation, which is not specified anywhere (D124). (4) No test runs on `C` continuously any more; the claim that the code is correct under `C` rests on the run before the pin (1,184 passed) and the run after it (1,185 passed, on a `C` server with `en_US` databases, which does not exercise `C` ordering): a database created on `C` was last exercised by the full suite before this round.
 
+## The merge of `contract/08-web` (PR #20): what it broke and how the registry follows it
+
+CI of #19 builds the PR merged with `main`, and `main` had merged #20, which added required fields to the types the read side builds by hand. Commits `05/fix:` on top of the merge `f7f682f`.
+
+| What #20 added | Source of the value in the registry |
+|---|---|
+| `FileEntry.logical_file`, `.tenant` (tree, both drift lists) | the row's own `file_state.logical_file` (the engine's classification) and the suffix it cut off (`tenants::tenant_suffix`); none for a folder (D125) |
+| `SettingHit.logical_file`, `.tenant` | the `logical_file` of the place row the statement already reads (`PLACES_SQL`) (D125) |
+| `Finding.logical_file`, `.tenant`, `TextHit.logical_file`, `.tenant` | one bounded `unnest` joined to the primary key of `file_state` (`read::logical`), none for a path that is no tracked file, C3 names its own path (D125) |
+| `SwimlaneSummary.tier`, `.project` | `swimlanes.tier`; `projects.display_name` through `project_id` (D126) |
+| `SwimlaneSummary.baseline` | open `adoptions` row, else `editing_unlocked` with `baseline_confirmed_at`; `by` is `UserRef` (id and display name, never the email) from `users` (D126) |
+| `SwimlaneSummary.pickup_counts` | `service_state.pickup_state` of the services not removed, grouped, every state but `live` (D126) |
+| `SwimlaneSummary.syncing` | the open `sync_windows` row held longest, `sync_windows_open_idx` (D126) |
+| `SwimlaneChanged` (CG1b) | published in the transaction of a pass that opens, cancels or confirms and of a raised tenant review (D127) |
+
+The conformance scenario (`tests/support/reads.rs`) implements the six new hooks (`set_tenants`, `set_pending_restarts`, `set_tier_and_project`, `set_baseline`, `set_syncing`, `set_open_adoption`) against the tables, so the suite's scripted checks run and do not skip; the mutations below show they do.
+
+**Tests (this step).** `LK_REQUIRE_DOCKER=1 cargo test -p hub-registry --lib --tests --no-fail-fast --locked`: on the `en_US` cluster (5433) exit 0, 82 binaries, **1,207 passed, 0 failed, 3 ignored**; on the `C.UTF-8` cluster (5432, the harness pins `en_US.utf8`) the same, **1,207 passed, 0 failed, 3 ignored**. New: `read_logical.rs` (6), `read_summary.rs` (5), one test in `adoption.rs` and an assertion in each of two tests of `tenant_rematch.rs` (SwimlaneChanged). Changed to follow the contract: `explain__read_swimlane(s).snap` (the correlated lookups appear as small-table scans on the unseeded tables; no large table is scanned), a new `explain__read_logical_files_of_500_places.snap` (index scan of `file_state_prefix_idx`, no sequential scan), and the P12 list (`logical_files_of_500_places`). `cargo test -p ports --all-features -p hub-mcp -p hub-writes --no-fail-fast`: 51 binaries, 1,436 passed, 0 failed. `cargo test -p ports -p xtask --no-fail-fast`: 36 binaries, 478 passed, 0 failed, 1 ignored. `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo check --workspace --all-targets --locked`: exit 0.
+
+**Mutations (each restored in the same command).** `logical_and_tenant` returning no tenant: all 6 of `read_logical` fail. Text hits left unfilled and the C3 fallback off: `text_hits_...` and `a_finding_names_...` fail. The adoption check of the baseline off: `read_conformance` fails at `baseline_is_never_confirmed_with_an_open_adoption`. The pickup count off by one: `read_conformance` fails at `pickup_counts`. The unlock test of `confirmed`, the order of the sync windows and the removed-service filter changed: 3 of 5 `read_summary` tests fail. The publication in `cancel` and in `tenant_rematch` removed: `adoption` and `tenant_rematch` fail.
+
+**Benchmarks (release, `en_US` cluster, each once; `target/perf-results/hub-registry_*` copied aside and restored).**
+
+| Benchmark | p95 now | Before this step | Budget |
+|---|---|---|---|
+| `steady_state_queries`, slowest of 46 statements | 28.89 ms (`settings_search_pairs_dense_listed_blobs`, a statement this step did not touch; 22.2 ms in the last run, the dense statement moves with the box) | 22.21 ms | 50 ms each |
+| `steady_state_queries`, new statements | `swimlanes` 8.83 ms, `swimlane` 1.95 ms, `logical_files_of_500_places` 2.75 ms | | 50 ms each |
+| `steady_state_queries`, aggregate (`P12.steady_state_query_ms`) | 11.62 ms (p50 1.22, p99 17.59, max 29.90) | 13.07 ms | 50 ms |
+| `swimlane_list` (`P7.swimlane_list`) | 3.63 ms (p50 1.0) | 1.82 ms | 50 ms |
+| `file_tree` (`P7.file_tree`) | 4.08 ms | 5.8 ms | 100 ms |
+| `search_settings_all_swimlanes` (`P7.settings_search`) | 58.8 ms (p50 17.0, max 197.4) | 72.8 ms | 200 ms |
+| `search_text_all_swimlanes` (`P7.text_search`, steady) | 165.7 ms (one more statement per search) | not recorded for this bench | 400 ms |
+
+No budget was touched. `swimlane_list` doubled (the five correlated lookups per swimlane) and is 14 times under its budget.
+
+**Not built, reported (D128).** CG7 masking of read responses (S14b) and what hangs on it: `masks`, the scan cache and its benchmark, the blob policy's refusal of a flagged text file, a planted-key test over every read operation. The contract assigns it to 05; no test fails without it and the threat model keeps it as a residual. `SwimlaneSummary.tenants` `minItems: 1` is still in the spec (#20 did not settle it), and `known_deviation_an_unadopted_swimlane_lists_no_tenants_where_the_spec_wants_one` still pins it.
+
 ## Open items for the human
 
 In order of how much they can block a merge:
