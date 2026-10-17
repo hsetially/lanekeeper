@@ -3,10 +3,10 @@
 Status: DRAFT
 Contract-change: needed (WP-C1 to WP-C4, WP-C4's migration, the `perf/budgets.toml` rows of WP-R1 and WP-R6; this plan itself edits nothing outside `plans/`)
 Extra-paths: none for this plan. Each work package's own plan lists its own (see "Extra paths and contract changes")
-Prompt: none. The input is the audit of 16 Oct 2026 ("Lanekeeper: cross-directory audit and improvements"). WP-P3 creates prompts 18 and 19
+Prompt: none. The input is the audit of 16 Oct 2026 ("Lanekeeper: cross-directory audit and improvements"), committed verbatim as `plans/audit-2026-10.md`. WP-P3 creates prompts 18 and 19
 Branch: `claude/beautiful-pasteur-52zl4n` (this plan). Every work package has a branch of its own, named in its block
 
-Plan only. Nothing outside `plans/` was edited, and no work package starts until a human approves this plan and answers the questions in "Ambiguities and open questions". This plan is an umbrella, as `plans/contract-08-web.md` was: each work package still writes its own `plans/<name>.md` from `plans/TEMPLATE.md` and waits for its own approval (AGENTS.md, protocol step 2). The audit text is the specification for each item; the fixes quoted in its §3 are the starting point, and where this plan departs from one it says so and why.
+Plan only. Nothing outside `plans/` was edited, and no work package starts until a human approves this plan and answers the questions in "Ambiguities and open questions". This plan is an umbrella, as `plans/contract-08-web.md` was: each work package still writes its own `plans/<name>.md` from `plans/TEMPLATE.md` and waits for its own approval (AGENTS.md, protocol step 2). The audit text (`plans/audit-2026-10.md`, a snapshot at `db6ea42`, not updated for the merges described below) is the specification for each item; the fixes quoted in its §3 are the starting point, and where this plan departs from one it says so and why. When the two disagree, this plan wins for the item, because it was checked against `20155b4`.
 
 Base commit `20155b4` (`origin/main`, which holds prompts 01 to 07, `contract/08-web` and prompt 05). The audit was taken at `db6ea42`, on 05's open branch. Facts below were checked at `20155b4`; "Not verified" at the end says what was not.
 
