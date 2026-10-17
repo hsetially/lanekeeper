@@ -229,7 +229,7 @@ JSON Schema (2020-12). Tool schemas refer to these as `#/$defs/<Name>`. Names an
     "ValidationIssue": {
       "type": "object",
       "properties": {
-        "kind": {"type": "string", "maxLength": 16, "enum": ["parse_error", "duplicate_key", "secret_match"]},
+        "kind": {"type": "string", "maxLength": 16, "enum": ["parse_error", "duplicate_key", "secret_match", "redaction_marker"]},
         "line": {"type": "integer", "minimum": 1, "maximum": 4294967295},
         "rule": {"$ref": "#/$defs/ShortText", "description": "The secret rule's name for `secret_match`."}
       },

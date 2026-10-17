@@ -13,7 +13,7 @@
 //!
 //! **Bounds (rule 5).** A user holds at most 5 streams and the replica at most 2,000. Each stream has a small outbound queue; a
 //! client that stops reading for the write timeout is cut off, and one that reads slowly lags the bounded broadcast channel and
-//! is sent a `resync` instead of making the bus wait. The query is bounded (64 swimlanes, 16 kinds, 8 KiB), parsed by hand into
+//! is sent a `resync` instead of making the bus wait. The query is bounded (64 swimlanes, 17 kinds, 8 KiB), parsed by hand into
 //! typed values, and refused whole when any part is wrong (S11).
 //!
 //! **Authorisation (S4).** The route is registered through [`GuardedRouter`] at Viewer, so pending and disabled users never reach the
@@ -59,8 +59,9 @@ use domain::Role;
 
 /// The most swimlanes a request may name.
 pub const MAX_SWIMLANES: usize = 64;
-/// The most kinds a request may name. There are 16 kinds a browser can ask for (the internal kinds are not among them).
-pub const MAX_KINDS: usize = 16;
+/// The most kinds a request may name. There are 17 kinds a browser can ask for (the internal kinds are not among them), and
+/// `streamEvents` in `api/openapi.yaml` bounds its `kinds` list at the same number.
+pub const MAX_KINDS: usize = 17;
 /// The longest `Last-Event-ID` the API accepts.
 const MAX_LAST_EVENT_ID: usize = 64;
 /// The longest a replay query may take.
@@ -327,7 +328,8 @@ fn is_internal_kind(kind: EventKind) -> bool {
         | EventKind::PrJobProgress
         | EventKind::SyncWindowOpened
         | EventKind::SyncWindowClosed
-        | EventKind::PickupChanged => false,
+        | EventKind::PickupChanged
+        | EventKind::SwimlaneChanged => false,
     }
 }
 
@@ -610,7 +612,7 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    const KINDS: [&str; 16] = [
+    const KINDS: [&str; 17] = [
         "file_observed",
         "drift_changed",
         "findings_changed",
@@ -627,6 +629,7 @@ mod tests {
         "sync_window_opened",
         "sync_window_closed",
         "pickup_changed",
+        "swimlane_changed",
     ];
 
     #[test]

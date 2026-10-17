@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     FindingId, FindingKind, LogicalFile, NfsPath, Page, SettingLocation, SettingPath, Severity, ShortText,
-    SwimlaneId, Timestamp, compare::SettingValue,
+    SwimlaneId, TenantId, Timestamp, compare::SettingValue,
 };
 
 /// A result of one of the consistency checks C1-C11, or of the C12 "as served" verification (D86).
@@ -21,6 +21,13 @@ pub struct Finding {
     pub message: ShortText,
     pub locations: Vec<SettingLocation>,
     pub detected_at: Timestamp,
+    /// The logical file of `path`, as for [`crate::FileEntry::logical_file`]. `None` when the finding has no path. Absent on
+    /// the wire when `None` (`contract/08-web`, CG2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logical_file: Option<LogicalFile>,
+    /// The tenant of `path`, as for [`crate::FileEntry::tenant`]. `None` for a base file. Absent on the wire when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<TenantId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +57,13 @@ pub struct SettingHit {
     pub path: SettingPath,
     pub value: SettingValue,
     pub location: SettingLocation,
+    /// The logical file of `file`, as for [`crate::FileEntry::logical_file`]. Absent on the wire when `None`
+    /// (`contract/08-web`, CG2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logical_file: Option<LogicalFile>,
+    /// The tenant of `file`, as for [`crate::FileEntry::tenant`]. `None` for a base file. Absent on the wire when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<TenantId>,
 }
 
 /// Text search over stored file versions (never NFS directly).
@@ -82,6 +96,13 @@ pub struct TextHit {
     pub text: String,
     /// Byte ranges of the matches within `text`.
     pub ranges: Vec<(u32, u32)>,
+    /// The logical file of `path`, as for [`crate::FileEntry::logical_file`]. Absent on the wire when `None`
+    /// (`contract/08-web`, CG2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logical_file: Option<LogicalFile>,
+    /// The tenant of `path`, as for [`crate::FileEntry::tenant`]. `None` for a base file. Absent on the wire when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<TenantId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -474,6 +474,8 @@ fn materialise(
         line: raw.line,
         text: line[..cut].to_owned(),
         ranges,
+        logical_file: None,
+        tenant: None,
     })
 }
 

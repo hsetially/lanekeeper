@@ -32,6 +32,8 @@ pub enum EventKind {
     UserSessionsRevoked,
     /// D85. Supersedes `PendingRestartChanged`.
     PickupChanged,
+    /// contract/08-web: the baseline, tier, tenant set or auto-notify setting of a swimlane changed.
+    SwimlaneChanged,
 }
 
 impl EventKind {
@@ -54,6 +56,7 @@ impl EventKind {
             DomainEvent::SyncWindowClosed { .. } => Self::SyncWindowClosed,
             DomainEvent::UserSessionsRevoked { .. } => Self::UserSessionsRevoked,
             DomainEvent::PickupChanged { .. } => Self::PickupChanged,
+            DomainEvent::SwimlaneChanged { .. } => Self::SwimlaneChanged,
         }
     }
 }

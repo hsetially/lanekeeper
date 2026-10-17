@@ -1,9 +1,11 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use domain::{
-    AppName, CompareQuery, CompareRef, ContentSource, DriftQuery, DriftState, EffectiveQuery, FindingsQuery,
-    GridQuery, LogicalFile, NfsPath, Page, Role, ServeRequest, SettingPath, SettingsQuery, ShortText,
-    SwimlaneId, TenantId, TextQuery, UserStatus,
+    AppName, BaselineState, BaselineStatus, CompareQuery, CompareRef, ContentSource, DriftQuery, DriftState,
+    EffectiveQuery, FileEntry, FindingsQuery, GridQuery, JobRef, LogicalFile, NfsPath, Page, PathMappingRule,
+    PickupState, ReverseMapping, Role, ServeRequest, ServiceRef, ServiceState, SettingPath, SettingsQuery,
+    ShortText, SwimlaneId, SwimlaneSummary, SyncingInfo, TenantId, TenantSet, TextQuery, Timestamp, UserRef,
+    UserStatus,
 };
 
 use super::sample::{active, files, nfs, swimlane, user};
@@ -26,6 +28,49 @@ fn text_query(pattern: &str) -> TextQuery {
 pub trait RegistryScenario: RegistryRead {
     /// Make `s` exist with exactly these files, each with its content as the current NFS version.
     async fn seed(&self, s: &SwimlaneId, files: &[(NfsPath, Bytes)]);
+
+    /// Make the tenants deployed to `s` (a swimlane that was just seeded) exactly `tenants`, so that a file whose name ends in
+    /// `-<tenant>` is that tenant's (`contract/08-web`, CG2). Returns `false` when the harness cannot name tenants, which is
+    /// the default: the suite then holds the registry to the rules that hold for any tenant set, and not to the ones that
+    /// name `sit1`.
+    async fn set_tenants(&self, _s: &SwimlaneId, _tenants: &[TenantId]) -> bool {
+        false
+    }
+
+    /// Make the services of `s` that `pending_restarts` lists exactly `services` (`contract/08-web`, `CG4a`). Returns `false` when
+    /// the harness cannot, which is the default: the suite then checks the pickup counts against whatever the registry lists.
+    async fn set_pending_restarts(&self, _s: &SwimlaneId, _services: Vec<ServiceState>) -> bool {
+        false
+    }
+
+    /// Give `s` this tier and project name (`CG4a`). Returns `false` when the harness cannot, which is the default.
+    async fn set_tier_and_project(
+        &self,
+        _s: &SwimlaneId,
+        _tier: Option<ShortText>,
+        _project: Option<ShortText>,
+    ) -> bool {
+        false
+    }
+
+    /// Give `s` this baseline (`CG4a`). Returns `false` when the harness cannot, which is the default.
+    async fn set_baseline(&self, _s: &SwimlaneId, _baseline: BaselineStatus) -> bool {
+        false
+    }
+
+    /// Open a sync window on `s`, or close the one that is open (`CG4a`). Returns `false` when the harness cannot, which is the
+    /// default.
+    async fn set_syncing(&self, _s: &SwimlaneId, _syncing: Option<SyncingInfo>) -> bool {
+        false
+    }
+
+    /// Open an adoption on `s` (one that is being worked through or waits for review), or close the open one without
+    /// confirming it (`CG4a`). It leaves the baseline the swimlane already had alone: one confirmed before is confirmed again
+    /// once the adoption is closed. Returns `false` when the harness cannot, which is the default: the suite then cannot plant
+    /// an open adoption, and does not check that [`baseline_is_never_confirmed_with_an_open_adoption`].
+    async fn set_open_adoption(&self, _s: &SwimlaneId, _open: bool) -> bool {
+        false
+    }
 }
 
 /// - Pending, disabled and role-less users are `Forbidden` on every method (S4).
@@ -39,6 +84,15 @@ pub trait RegistryScenario: RegistryRead {
 ///   off for a swimlane nobody switched on (D85); `drift` lists files only, none in sync unless that state was asked for, in
 ///   one state when one was asked for, below the prefix when there is one, ordered by path, and a page of it never exceeds its
 ///   limit and visits every file exactly once. An implementation that keeps the `Unavailable` default of these fails here.
+/// - `contract/08-web`, CG2: every file a listing returns names its `logical_file` (a base file its own path, a tenant file the
+///   path without `-<tenant>`) and its `tenant` (none for a base file), a folder has neither, and, when the harness can name a
+///   swimlane's tenants, `tx-core-sit1.yml` of tenant `sit1` is the logical file `tx-core.yml`, while `tx-core-sit10.yml` is a
+///   base file. An implementation that forgets the two fields fails here.
+/// - `contract/08-web`, `CG4a`: every summary of `swimlanes` states its baseline, and a baseline that is not confirmed names nobody
+///   and no time, while a confirmed one says when; its `pickup_counts` list each pickup state that is not live at most once,
+///   with a count above zero, and equal what `pending_restarts` lists for the swimlane. When the harness can script a swimlane,
+///   the tier, project, baseline, sync window and pickup counts it was given come back as given, and an adoption it was told to
+///   open makes the baseline `in_progress` even where a confirmed one stood before (D17).
 pub async fn registry_read<R: RegistryScenario + ?Sized>(r: &R) {
     let viewer = active(1, Role::Viewer);
     let s1 = swimlane("sit1");
@@ -171,6 +225,10 @@ pub async fn registry_read<R: RegistryScenario + ?Sized>(r: &R) {
     let list = r.swimlanes(&viewer).await.unwrap();
     assert!(list.iter().any(|s| s.id == s1));
     assert!(list.windows(2).all(|w| w[0].id < w[1].id), "ordered by id");
+    for summary in &list {
+        let pending = r.pending_restarts(&viewer, &summary.id).await.unwrap();
+        check_summary_additions(summary, &pending);
+    }
 
     // Unknown swimlane.
     let nowhere = swimlane("nowhere");
@@ -234,7 +292,9 @@ pub async fn registry_read<R: RegistryScenario + ?Sized>(r: &R) {
         ]
     );
     assert!(root.next.is_none());
+    root.items.iter().for_each(check_logical_fields);
     let under_a = r.tree(&viewer, &s1, &nfs("a"), Page::default()).await.unwrap();
+    under_a.items.iter().for_each(check_logical_fields);
     let names: Vec<_> = under_a.items.iter().map(|e| e.path.as_str().to_owned()).collect();
     assert_eq!(names, ["a/deep", "a/one.yml", "a/two.yml"]);
     let file = under_a.items.iter().find(|e| e.path == any_file).unwrap();
@@ -256,6 +316,7 @@ pub async fn registry_read<R: RegistryScenario + ?Sized>(r: &R) {
             .await
             .unwrap();
         assert!(p.items.len() <= 2, "a page never exceeds its limit");
+        p.items.iter().for_each(check_logical_fields);
         seen.extend(p.items.iter().map(|e| e.path.as_str().to_owned()));
         match p.next {
             Some(c) => cursor = Some(c),
@@ -292,6 +353,8 @@ pub async fn registry_read<R: RegistryScenario + ?Sized>(r: &R) {
     );
 
     drift_and_auto_notify(r, &s1).await;
+    logical_files(r).await;
+    summary_additions(r).await;
 
     // Limits.
     let too_many = GridQuery {
@@ -395,6 +458,7 @@ async fn drift_and_auto_notify<R: RegistryScenario + ?Sized>(r: &R, s1: &Swimlan
             "{}: a file in sync is not drift",
             e.path
         );
+        check_logical_fields(e);
     }
     // One page at a time visits the same files in the same order.
     let by_ones = drift_pages(r, s1, &drift_query(None, None), 1).await;
@@ -430,4 +494,341 @@ async fn drift_and_auto_notify<R: RegistryScenario + ?Sized>(r: &R, s1: &Swimlan
         nothing_here.is_empty(),
         "a folder with no files is an empty list, not an error"
     );
+}
+
+/// What `logical_file` and `tenant` of one listed entry must be, whatever the tenants of its swimlane are (CG2): a folder has
+/// neither; a file names its logical file; a base file (no tenant) is its own logical file; a file with a tenant has that
+/// tenant as the suffix of its name, and its logical file is the name without it.
+fn check_logical_fields(e: &FileEntry) {
+    if e.is_dir {
+        assert!(
+            e.logical_file.is_none() && e.tenant.is_none(),
+            "{}: a directory has no logical file and no tenant",
+            e.path
+        );
+        return;
+    }
+    let Some(logical) = &e.logical_file else {
+        panic!("{}: a file names its logical file", e.path);
+    };
+    let Some(tenant) = &e.tenant else {
+        assert_eq!(
+            logical.as_str(),
+            e.path.as_str(),
+            "{}: a base file is its own logical file",
+            e.path
+        );
+        return;
+    };
+    let only = TenantSet::new([tenant.clone()]).unwrap();
+    match PathMappingRule::default().reverse(&e.path, &only).unwrap() {
+        ReverseMapping::Tenant {
+            tenant: suffix,
+            logical: without,
+            ..
+        } => {
+            assert_eq!(
+                &suffix, tenant,
+                "{}: the tenant is the suffix of the name",
+                e.path
+            );
+            assert_eq!(
+                &without, logical,
+                "{}: the logical file of a tenant file is its name without the suffix",
+                e.path
+            );
+        }
+        ReverseMapping::Base { .. } => panic!(
+            "{}: names a tenant that its name does not end with ({tenant})",
+            e.path
+        ),
+    }
+}
+
+/// Every entry of `prefix`, one page of two at a time.
+async fn tree_entries<R: RegistryRead + ?Sized>(r: &R, s: &SwimlaneId, prefix: &NfsPath) -> Vec<FileEntry> {
+    let viewer = active(1, Role::Viewer);
+    let mut all = Vec::new();
+    let mut cursor = None;
+    for _ in 0..1000 {
+        let page = r
+            .tree(&viewer, s, prefix, Page::new(2, cursor.clone()).unwrap())
+            .await
+            .unwrap();
+        all.extend(page.items);
+        match page.next {
+            Some(c) => cursor = Some(c),
+            None => return all,
+        }
+    }
+    panic!("tree paging did not end after 1,000 pages");
+}
+
+/// `logical_file` and `tenant` (CG2) on a swimlane with tenant files. Whatever the tenants are, every entry of every page
+/// follows [`check_logical_fields`]. When the harness can name the tenants (`sit1`), the answers are the ones the path mapping
+/// gives: `-sit1` before the extension is the tenant's suffix, `-sit10` is not, and the name is never split at its first
+/// hyphen.
+async fn logical_files<R: RegistryScenario + ?Sized>(r: &R) {
+    let viewer = active(1, Role::Viewer);
+    let s = swimlane("sit2");
+    r.seed(
+        &s,
+        &files(&[
+            ("tx-core.yml", "a: 1\n"),
+            ("tx-core-sit1.yml", "a: 2\n"),
+            ("tx-core-sit10.yml", "a: 3\n"),
+            ("svc/app.yml", "b: 1\n"),
+            ("svc/app-sit1.yml", "b: 2\n"),
+        ]),
+    )
+    .await;
+    let sit1 = TenantId::parse("sit1").unwrap();
+    let named = r.set_tenants(&s, std::slice::from_ref(&sit1)).await;
+
+    let mut entries = tree_entries(r, &s, &NfsPath::root()).await;
+    entries.extend(tree_entries(r, &s, &nfs("svc")).await);
+    assert!(
+        entries.iter().any(|e| !e.is_dir) && entries.iter().any(|e| e.is_dir),
+        "the suite seeded files and a folder"
+    );
+    entries.iter().for_each(check_logical_fields);
+    if !named {
+        return;
+    }
+
+    let expected: [(&str, Option<&str>, Option<&str>); 6] = [
+        ("tx-core.yml", Some("tx-core.yml"), None),
+        ("tx-core-sit1.yml", Some("tx-core.yml"), Some("sit1")),
+        ("tx-core-sit10.yml", Some("tx-core-sit10.yml"), None),
+        ("svc", None, None),
+        ("svc/app.yml", Some("svc/app.yml"), None),
+        ("svc/app-sit1.yml", Some("svc/app.yml"), Some("sit1")),
+    ];
+    for (path, logical, tenant) in expected {
+        let e = entries
+            .iter()
+            .find(|e| e.path.as_str() == path)
+            .unwrap_or_else(|| panic!("{path} is not listed"));
+        let got = (
+            e.logical_file.as_ref().map(LogicalFile::as_str),
+            e.tenant.as_ref().map(TenantId::as_str),
+        );
+        let why = match tenant {
+            Some(t) => format!("belongs to the tenant {t} (the suffix of its name); its logical file is the name without it"),
+            None => "has no tenant of this swimlane in its name, so it has none, and a file is its own logical file".to_owned(),
+        };
+        assert_eq!(got, (logical, tenant), "{path} {why}");
+    }
+
+    let listed = r
+        .swimlanes(&viewer)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|x| x.id == s)
+        .expect("a seeded swimlane is listed");
+    assert_eq!(listed.tenants, [sit1], "swimlanes lists the tenants it was given");
+}
+
+/// What is true of the additions of one summary (`CG4a`), whatever the registry holds: the baseline is stated, and exclusive;
+/// the pickup counts are the non-live states of `pending`, each once, none of them zero.
+fn check_summary_additions(s: &SwimlaneSummary, pending: &[ServiceState]) {
+    let id = &s.id;
+    let Some(baseline) = &s.baseline else {
+        panic!("{id}: swimlanes states the baseline of every swimlane");
+    };
+    match baseline.state {
+        BaselineState::Confirmed => assert!(
+            baseline.at.is_some(),
+            "{id}: a confirmed baseline says when it was confirmed"
+        ),
+        BaselineState::Unconfirmed | BaselineState::InProgress => assert!(
+            baseline.by.is_none() && baseline.at.is_none(),
+            "{id}: a baseline that is not confirmed names nobody and no time"
+        ),
+    }
+    assert!(
+        s.pickup_counts
+            .iter()
+            .all(|(state, _)| *state != PickupState::Live),
+        "{id}: pickup_counts lists no live state"
+    );
+    let expected: Vec<(PickupState, u32)> = PickupState::ALL
+        .into_iter()
+        .filter(|p| *p != PickupState::Live)
+        .filter_map(|p| {
+            let n = pending.iter().filter(|x| x.pickup == p).count();
+            (n > 0).then(|| (p, u32::try_from(n).unwrap()))
+        })
+        .collect();
+    let mut got = s.pickup_counts.clone();
+    got.sort_by_key(|(state, _)| *state);
+    assert_eq!(
+        got, expected,
+        "{id}: pickup_counts equal the pending restarts per state, each non-live state once and none at zero"
+    );
+}
+
+fn pending_service(name: &str, pickup: PickupState) -> ServiceState {
+    ServiceState {
+        service: ServiceRef::new("csp", name).unwrap(),
+        pickup,
+        pending_since: None,
+        live_by: None,
+        notifications_enabled: true,
+        cache_ttl_secs: 1200,
+        pending_files: Vec::new(),
+    }
+}
+
+/// The summary of `s` as `swimlanes` lists it, after [`check_summary_additions`] has held it and `pending_restarts` to what is
+/// true of every answer.
+async fn listed_summary<R: RegistryScenario + ?Sized>(r: &R, s: &SwimlaneId) -> SwimlaneSummary {
+    let viewer = active(1, Role::Viewer);
+    let summary = r
+        .swimlanes(&viewer)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|x| &x.id == s)
+        .expect("a seeded swimlane is listed");
+    let pending = r.pending_restarts(&viewer, s).await.unwrap();
+    check_summary_additions(&summary, &pending);
+    summary
+}
+
+/// `baseline_is_never_confirmed_with_an_open_adoption` (`CG4a`, D17): `confirmed` means the baseline is adopted and no adoption
+/// is open, so a swimlane that was confirmed and has an adoption open again is listed as `in_progress` and names nobody; when
+/// that adoption is closed without confirming it, the confirmed baseline it had comes back as it was. Skipped, as the other
+/// scripted checks are, when the harness cannot open an adoption ([`RegistryScenario::set_open_adoption`]).
+async fn baseline_is_never_confirmed_with_an_open_adoption<R: RegistryScenario + ?Sized>(
+    r: &R,
+    s: &SwimlaneId,
+    confirmed: &BaselineStatus,
+) {
+    if !r.set_open_adoption(s, true).await {
+        return;
+    }
+    assert_eq!(
+        listed_summary(r, s).await.baseline,
+        Some(BaselineStatus {
+            state: BaselineState::InProgress,
+            by: None,
+            at: None
+        }),
+        "{s}: baseline_is_never_confirmed_with_an_open_adoption: an adoption is open, so the baseline is in_progress and \
+         names nobody, whatever was confirmed before"
+    );
+    assert!(r.set_open_adoption(s, false).await);
+    assert_eq!(
+        listed_summary(r, s).await.baseline,
+        Some(confirmed.clone()),
+        "{s}: closing an adoption without confirming it gives back the confirmed baseline the swimlane had"
+    );
+}
+
+/// The summary additions (`CG4a`) on a swimlane the harness scripts when it can. Every summary follows
+/// [`check_summary_additions`] whatever the harness can do; the tier, project, baseline, sync window and pickup counts a
+/// harness set come back as set, and the counts agree with `pending_restarts` while the services change.
+async fn summary_additions<R: RegistryScenario + ?Sized>(r: &R) {
+    let s = swimlane("sit3");
+    r.seed(&s, &files(&[("a.yml", "x: 1\n")])).await;
+    let summary_of = || listed_summary(r, &s);
+
+    // Services in four states: two need a notification or restart, one is live within its TTL, one is live.
+    let pending = r
+        .set_pending_restarts(
+            &s,
+            vec![
+                pending_service("tx-api", PickupState::NeedsNotifyOrRestart),
+                pending_service("tx-batch", PickupState::NeedsNotifyOrRestart),
+                pending_service("tx-ui", PickupState::LiveWithinTtl),
+                pending_service("tx-live", PickupState::Live),
+            ],
+        )
+        .await;
+    let got = summary_of().await;
+    if pending {
+        assert_eq!(
+            got.pickup_counts,
+            [
+                (PickupState::LiveWithinTtl, 1),
+                (PickupState::NeedsNotifyOrRestart, 2)
+            ],
+            "{s}: pickup_counts equal the pending restarts per state"
+        );
+        // One service picks the change up: the count follows, and a state that empties is no longer listed.
+        r.set_pending_restarts(
+            &s,
+            vec![pending_service("tx-api", PickupState::NeedsNotifyOrRestart)],
+        )
+        .await;
+        assert_eq!(
+            summary_of().await.pickup_counts,
+            [(PickupState::NeedsNotifyOrRestart, 1)],
+            "{s}: pickup_counts equal the pending restarts per state"
+        );
+    }
+
+    if r.set_tier_and_project(
+        &s,
+        Some(ShortText::parse("SIT").unwrap()),
+        Some(ShortText::parse("Core Banking").unwrap()),
+    )
+    .await
+    {
+        let got = summary_of().await;
+        assert_eq!(
+            (
+                got.tier.as_ref().map(ShortText::as_str),
+                got.project.as_ref().map(ShortText::as_str)
+            ),
+            (Some("SIT"), Some("Core Banking")),
+            "{s}: swimlanes lists the tier and project it was given"
+        );
+    }
+
+    // An open adoption is not a confirmed baseline (D17): the state says so and names nobody.
+    let adopting = BaselineStatus {
+        state: BaselineState::InProgress,
+        by: None,
+        at: None,
+    };
+    if r.set_baseline(&s, adopting.clone()).await {
+        assert_eq!(
+            summary_of().await.baseline,
+            Some(adopting),
+            "{s}: swimlanes lists the baseline it was given"
+        );
+        let confirmed = BaselineStatus {
+            state: BaselineState::Confirmed,
+            by: Some(UserRef::from(&user(2, Some(Role::Admin), UserStatus::Active))),
+            at: Some(Timestamp::from_unix_millis(1_700_000_000_000)),
+        };
+        assert!(r.set_baseline(&s, confirmed.clone()).await);
+        assert_eq!(
+            summary_of().await.baseline,
+            Some(confirmed.clone()),
+            "{s}: swimlanes lists the baseline it was given"
+        );
+        baseline_is_never_confirmed_with_an_open_adoption(r, &s, &confirmed).await;
+    }
+
+    let window = SyncingInfo {
+        job: JobRef::new("sync-job-1", "uid-1").unwrap(),
+        since: Timestamp::from_unix_millis(1_700_000_001_000),
+    };
+    if r.set_syncing(&s, Some(window.clone())).await {
+        assert_eq!(
+            summary_of().await.syncing,
+            Some(window),
+            "{s}: swimlanes lists the sync window it was given"
+        );
+        assert!(r.set_syncing(&s, None).await);
+        assert_eq!(
+            summary_of().await.syncing,
+            None,
+            "{s}: a closed sync window is no longer listed"
+        );
+    }
 }

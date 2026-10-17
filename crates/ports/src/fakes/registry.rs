@@ -4,12 +4,13 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use bytes::Bytes;
 use domain::{
-    AgentStatus, Attribution, CompareQuery, CompareRef, Comparison, ContentSource, Cursor, DriftQuery,
-    DriftState, EffectiveConfig, EffectiveQuery, EolStyle, FileClass, FileContent, FileEntry, FileFormat,
-    FileKind, FileRole, Finding, FindingsQuery, Grid, GridQuery, LogicalFile, NfsPath, ObservationSource,
-    Page, Paged, Role, ServeRequest, ServedFile, ServiceState, SettingHit, SettingsQuery, ShortText,
-    SwimlaneId, SwimlaneSummary, TextEncoding, TextQuery, TextResults, Timestamp, TreeComparison, User,
-    Version,
+    AgentStatus, Attribution, BaselineState, BaselineStatus, CompareQuery, CompareRef, Comparison,
+    ContentSource, Cursor, DriftQuery, DriftState, EffectiveConfig, EffectiveQuery, EolStyle, FileClass,
+    FileContent, FileEntry, FileFormat, FileKind, FileRole, Finding, FindingsQuery, Grid, GridQuery,
+    LogicalFile, NfsPath, ObservationSource, Page, Paged, PathMappingRule, PickupState, ReverseMapping, Role,
+    ServeRequest, ServedFile, ServiceState, SettingHit, SettingsQuery, ShortText, SwimlaneId,
+    SwimlaneSummary, SyncingInfo, TenantId, TenantSet, TextEncoding, TextQuery, TextResults, Timestamp,
+    TreeComparison, User, Version,
 };
 
 use super::util::lock;
@@ -33,6 +34,16 @@ struct SwimlaneData {
     auto_notify: bool,
     /// The files `drift` lists, as scripted by [`FakeRegistry::set_drift`].
     drift: Vec<FileEntry>,
+    /// The tenants deployed to the swimlane (Q34), as set by [`FakeRegistry::set_tenants`]: none until a test says.
+    tenants: TenantSet,
+    /// What the swimlane list shows besides the counts, as set by [`FakeRegistry::set_tier_and_project`],
+    /// [`FakeRegistry::set_baseline`] and [`FakeRegistry::set_syncing`] (`CG4a`). A swimlane nobody adopted is unconfirmed.
+    tier: Option<ShortText>,
+    project: Option<ShortText>,
+    baseline: Option<BaselineStatus>,
+    syncing: Option<SyncingInfo>,
+    /// An adoption is open, as set by [`FakeRegistry::set_open_adoption`] (`CG4a`).
+    open_adoption: bool,
 }
 
 #[derive(Default)]
@@ -58,6 +69,11 @@ struct State {
 /// not compute facts (diffs, drift, effective config, the served file, search): script those with the `set_*` methods or use
 /// `crates/engine` for the real answers. What it does with a query that a scripted answer is for (a tenant, a channel, a
 /// prefix, a drift state) is to apply it to the scripted answer, so that a caller's use of the query is visible.
+///
+/// `logical_file` and `tenant` (`contract/08-web`, CG2) are the one fact it does work out, because they are a function of the
+/// path and the swimlane's tenants ([`FakeRegistry::set_tenants`]) and nothing else: it computes them for every file of a
+/// listing, and fills them in on a scripted file, hit or finding that names a path and left both out. A script that says
+/// either keeps what it says.
 #[derive(Clone, Default)]
 pub struct FakeRegistry {
     state: Arc<Mutex<State>>,
@@ -139,7 +155,16 @@ impl FakeRegistry {
         }
         st.clock += 1000;
         let at = Timestamp::from_unix_millis(1_700_000_000_000 + st.clock);
+        // The tenants, tier, project, baseline and sync window are attributes of the swimlane, not of its files, so a new seed
+        // keeps them. What the fake was scripted to answer about the files (pending restarts, drift, auto-notify) it forgets.
+        let kept = st.swimlanes.get(s);
         let data = SwimlaneData {
+            tenants: kept.map(|d| d.tenants.clone()).unwrap_or_default(),
+            tier: kept.and_then(|d| d.tier.clone()),
+            project: kept.and_then(|d| d.project.clone()),
+            baseline: kept.and_then(|d| d.baseline.clone()),
+            syncing: kept.and_then(|d| d.syncing.clone()),
+            open_adoption: kept.is_some_and(|d| d.open_adoption),
             files: files
                 .iter()
                 .map(|(p, b)| {
@@ -228,10 +253,95 @@ impl FakeRegistry {
         }
     }
 
+    /// The tenants deployed to `s` (Q34): what `swimlanes` lists, and what tells a tenant file from a base file in `tree`,
+    /// `drift`, the searches and the findings. Returns false for an unknown swimlane or more tenants than a swimlane can have
+    /// ([`TenantSet::MAX_TENANTS`]), and sets nothing then. A seed keeps them.
+    pub fn set_tenants(&self, s: &SwimlaneId, tenants: Vec<TenantId>) -> bool {
+        let Ok(set) = TenantSet::new(tenants) else {
+            return false;
+        };
+        match lock(&self.state).swimlanes.get_mut(s) {
+            Some(sw) => {
+                sw.tenants = set;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The tier and the project name `swimlanes` lists for `s` (`CG4a`). Returns false for an unknown swimlane. A seed keeps them.
+    pub fn set_tier_and_project(
+        &self,
+        s: &SwimlaneId,
+        tier: Option<ShortText>,
+        project: Option<ShortText>,
+    ) -> bool {
+        match lock(&self.state).swimlanes.get_mut(s) {
+            Some(sw) => {
+                sw.tier = tier;
+                sw.project = project;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The baseline `swimlanes` lists for `s` (`CG4a`). Returns false for an unknown swimlane. A swimlane never given one is
+    /// listed as unconfirmed. A seed keeps it.
+    pub fn set_baseline(&self, s: &SwimlaneId, baseline: BaselineStatus) -> bool {
+        match lock(&self.state).swimlanes.get_mut(s) {
+            Some(sw) => {
+                sw.baseline = Some(baseline);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The sync window `swimlanes` lists as open on `s`, or none (`CG4a`). Returns false for an unknown swimlane. A seed keeps it.
+    pub fn set_syncing(&self, s: &SwimlaneId, syncing: Option<SyncingInfo>) -> bool {
+        match lock(&self.state).swimlanes.get_mut(s) {
+            Some(sw) => {
+                sw.syncing = syncing;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Open an adoption on `s`, or close the open one without confirming it (`CG4a`). Returns false for an unknown swimlane. A
+    /// seed keeps it. While one is open `swimlanes` lists the baseline as `in_progress` (D17), whatever [`Self::set_baseline`]
+    /// gave; closing it brings back what was given.
+    pub fn set_open_adoption(&self, s: &SwimlaneId, open: bool) -> bool {
+        match lock(&self.state).swimlanes.get_mut(s) {
+            Some(sw) => {
+                sw.open_adoption = open;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The file `served` answers with; its swimlane, application, tenant, channel and file become the request's.
     pub fn set_served(&self, f: ServedFile) {
         lock(&self.state).canned.served = Some(f);
     }
+}
+
+/// The baseline `swimlanes` lists for a swimlane: an open adoption is never a confirmed baseline (D17), so while one is open
+/// it is `in_progress` and names nobody; otherwise what was set, or unconfirmed for a swimlane nobody adopted.
+fn listed_baseline(sw: &SwimlaneData) -> BaselineStatus {
+    let state = |state| BaselineStatus {
+        state,
+        by: None,
+        at: None,
+    };
+    if sw.open_adoption {
+        return state(BaselineState::InProgress);
+    }
+    sw.baseline
+        .clone()
+        .unwrap_or_else(|| state(BaselineState::Unconfirmed))
 }
 
 /// A setting path at or below `prefix`: the path itself, or one that continues it after a `.` or a `[`.
@@ -252,6 +362,40 @@ fn is_below(path: &str, prefix: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
+/// `(logical_file, tenant)` of the file at `path` in a swimlane whose tenants are `tenants` (CG2): what the registry works out
+/// with the path mapping's reverse direction. A path the mapping cannot place has neither.
+fn logical_of(path: &NfsPath, tenants: &TenantSet) -> (Option<LogicalFile>, Option<TenantId>) {
+    match PathMappingRule::default().reverse(path, tenants) {
+        Ok(ReverseMapping::Base { logical, .. }) => (Some(logical), None),
+        Ok(ReverseMapping::Tenant { tenant, logical, .. }) => (Some(logical), Some(tenant)),
+        Err(_) => (None, None),
+    }
+}
+
+/// The tenants of `s`: none for a swimlane the fake does not hold, so its files are all base files.
+fn tenants_of(st: &State, s: &SwimlaneId) -> TenantSet {
+    st.swimlanes.get(s).map(|d| d.tenants.clone()).unwrap_or_default()
+}
+
+/// How many services are in each pickup state that is not live, in the order of [`PickupState::ALL`], none with a count of
+/// zero: what [`SwimlaneSummary::pickup_counts`] holds, worked out from what `pending_restarts` lists (`CG4a`).
+fn pickup_counts(services: &[ServiceState]) -> Vec<(PickupState, u32)> {
+    PickupState::ALL
+        .into_iter()
+        .filter(|p| *p != PickupState::Live)
+        .filter_map(|p| {
+            let n = services.iter().filter(|s| s.pickup == p).count();
+            (n > 0).then(|| (p, u32::try_from(n).unwrap_or(u32::MAX)))
+        })
+        .collect()
+}
+
+fn fill_entry(e: &mut FileEntry, tenants: &TenantSet) {
+    if !e.is_dir && e.logical_file.is_none() && e.tenant.is_none() {
+        (e.logical_file, e.tenant) = logical_of(&e.path, tenants);
+    }
+}
+
 fn swimlane<'a>(st: &'a State, s: &SwimlaneId) -> Result<&'a SwimlaneData, ReadError> {
     st.swimlanes.get(s).ok_or(ReadError::NotFound)
 }
@@ -262,18 +406,23 @@ impl RegistryRead for FakeRegistry {
         check(u)?;
         let st = lock(&self.state);
         st.swimlanes
-            .keys()
-            .map(|id| {
+            .iter()
+            .map(|(id, sw)| {
                 Ok(SwimlaneSummary {
                     id: id.clone(),
                     display_name: ShortText::parse(id.as_str()).map_err(|_| ReadError::Unavailable)?,
-                    tenants: Vec::new(),
+                    tenants: sw.tenants.iter().cloned().collect(),
                     agent: AgentStatus::Connected,
                     last_scan_at: None,
                     base_version: None,
                     drift_counts: Vec::new(),
                     finding_count: u32::try_from(st.findings.iter().filter(|f| &f.swimlane == id).count())
                         .unwrap_or(u32::MAX),
+                    tier: sw.tier.clone(),
+                    project: sw.project.clone(),
+                    baseline: Some(listed_baseline(sw)),
+                    pickup_counts: pickup_counts(&sw.pending_restarts),
+                    syncing: sw.syncing.clone(),
                 })
             })
             .collect()
@@ -311,9 +460,18 @@ impl RegistryRead for FakeRegistry {
             .into_iter()
             .map(|(path, (is_dir, size, hash))| {
                 let (class, role) = class_and_role(&path);
+                let (logical_file, tenant) = if is_dir {
+                    (None, None)
+                } else {
+                    logical_of(&path, &sw.tenants)
+                };
                 FileEntry {
                     is_dir,
-                    kind: FileKind::Base,
+                    kind: if tenant.is_some() {
+                        FileKind::Tenant
+                    } else {
+                        FileKind::Base
+                    },
                     class,
                     role,
                     size,
@@ -324,6 +482,8 @@ impl RegistryRead for FakeRegistry {
                     attribution: None,
                     severity: None,
                     pickup_state: None,
+                    logical_file,
+                    tenant,
                     path,
                 }
             })
@@ -439,7 +599,13 @@ impl RegistryRead for FakeRegistry {
 
     async fn search_settings(&self, u: &User, q: SettingsQuery) -> Result<Paged<SettingHit>, ReadError> {
         check(u)?;
-        let hits = lock(&self.state).canned.settings.clone();
+        let st = lock(&self.state);
+        let mut hits = st.canned.settings.clone();
+        for h in &mut hits {
+            if h.logical_file.is_none() && h.tenant.is_none() {
+                (h.logical_file, h.tenant) = logical_of(&h.file, &tenants_of(&st, &h.swimlane));
+            }
+        }
         paginate(&hits, &q.page)
     }
 
@@ -448,10 +614,17 @@ impl RegistryRead for FakeRegistry {
         if q.pattern.len() > TextQuery::MAX_PATTERN_BYTES {
             return Err(ReadError::BadRequest);
         }
-        Ok(lock(&self.state).canned.text.clone().unwrap_or(TextResults {
+        let st = lock(&self.state);
+        let mut results = st.canned.text.clone().unwrap_or(TextResults {
             hits: Vec::new(),
             truncated: false,
-        }))
+        });
+        for h in &mut results.hits {
+            if h.logical_file.is_none() && h.tenant.is_none() {
+                (h.logical_file, h.tenant) = logical_of(&h.path, &tenants_of(&st, &h.swimlane));
+            }
+        }
+        Ok(results)
     }
 
     async fn findings(&self, u: &User, q: FindingsQuery) -> Result<Paged<Finding>, ReadError> {
@@ -464,6 +637,14 @@ impl RegistryRead for FakeRegistry {
             .filter(|f| q.kinds.is_empty() || q.kinds.contains(&f.kind))
             .filter(|f| q.min_severity.is_none_or(|m| f.severity >= m))
             .cloned()
+            .map(|mut f| {
+                if f.logical_file.is_none() && f.tenant.is_none() {
+                    if let Some(path) = &f.path {
+                        (f.logical_file, f.tenant) = logical_of(path, &tenants_of(&st, &f.swimlane));
+                    }
+                }
+                f
+            })
             .collect();
         paginate(&matching, &q.page)
     }
@@ -556,7 +737,9 @@ impl RegistryRead for FakeRegistry {
     ) -> Result<Paged<FileEntry>, ReadError> {
         check(u)?;
         let st = lock(&self.state);
-        let mut listed: Vec<FileEntry> = swimlane(&st, s)?
+        let sw = swimlane(&st, s)?;
+        let tenants = &sw.tenants;
+        let mut listed: Vec<FileEntry> = sw
             .drift
             .iter()
             .filter(|e| !e.is_dir)
@@ -570,6 +753,10 @@ impl RegistryRead for FakeRegistry {
                     .is_none_or(|p| is_below(e.path.as_str(), p.as_str()))
             })
             .cloned()
+            .map(|mut e| {
+                fill_entry(&mut e, tenants);
+                e
+            })
             .collect();
         listed.sort_by(|a, b| a.path.cmp(&b.path));
         paginate(&listed, &page)
@@ -600,5 +787,36 @@ impl RegistryRead for FakeRegistry {
 impl RegistryScenario for FakeRegistry {
     async fn seed(&self, s: &SwimlaneId, files: &[(NfsPath, Bytes)]) {
         Self::seed(self, s, files);
+    }
+
+    async fn set_tenants(&self, s: &SwimlaneId, tenants: &[TenantId]) -> bool {
+        Self::set_tenants(self, s, tenants.to_vec())
+    }
+
+    async fn set_pending_restarts(&self, s: &SwimlaneId, services: Vec<ServiceState>) -> bool {
+        let known = lock(&self.state).swimlanes.contains_key(s);
+        Self::set_pending_restarts(self, s, services);
+        known
+    }
+
+    async fn set_tier_and_project(
+        &self,
+        s: &SwimlaneId,
+        tier: Option<ShortText>,
+        project: Option<ShortText>,
+    ) -> bool {
+        Self::set_tier_and_project(self, s, tier, project)
+    }
+
+    async fn set_baseline(&self, s: &SwimlaneId, baseline: BaselineStatus) -> bool {
+        Self::set_baseline(self, s, baseline)
+    }
+
+    async fn set_syncing(&self, s: &SwimlaneId, syncing: Option<SyncingInfo>) -> bool {
+        Self::set_syncing(self, s, syncing)
+    }
+
+    async fn set_open_adoption(&self, s: &SwimlaneId, open: bool) -> bool {
+        Self::set_open_adoption(self, s, open)
     }
 }

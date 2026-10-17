@@ -1,8 +1,8 @@
 //! Events published on the `EventBus` and delivered to SSE subscribers (`docs/interfaces.md`).
 //!
 //! The first ten variants are the base set; then come the five D72-D80 additions, the internal
-//! `UserSessionsRevoked` (see [`DomainEvent::is_internal`]) and `PickupChanged` (D85), which supersedes
-//! `PendingRestartChanged`.
+//! `UserSessionsRevoked` (see [`DomainEvent::is_internal`]), `PickupChanged` (D85), which supersedes
+//! `PendingRestartChanged`, and `SwimlaneChanged` (contract/08-web).
 //! The JSON shape (`{"type": "<snake_case variant>", ...fields}`) is pinned by a snapshot test.
 
 use serde::{Deserialize, Serialize};
@@ -96,6 +96,13 @@ pub enum DomainEvent {
         swimlane: SwimlaneId,
         services: Vec<ServiceRef>,
     },
+    /// The baseline, the tier, the tenant set or the auto-notify setting of the swimlane changed. An invalidation hint like
+    /// [`DomainEvent::PickupChanged`]: it carries the swimlane id only, and a client reads the new state from the swimlane
+    /// summary. Published in the transaction of the change (D80), so that the overview shows a confirmed baseline or a new tier
+    /// without waiting for a drift event (an adoption confirm on an in-sync swimlane changes no file's drift state).
+    SwimlaneChanged {
+        swimlane: SwimlaneId,
+    },
 }
 
 impl DomainEvent {
@@ -109,6 +116,7 @@ impl DomainEvent {
             | Self::PickupChanged { swimlane, .. }
             | Self::AgentStatusChanged { swimlane, .. }
             | Self::AttributionUpdated { swimlane, .. }
+            | Self::SwimlaneChanged { swimlane }
             | Self::SyncWindowOpened { swimlane, .. }
             | Self::SyncWindowClosed { swimlane, .. } => Some(swimlane),
             Self::ProposalChanged { .. }

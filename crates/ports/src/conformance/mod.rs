@@ -47,7 +47,10 @@ pub mod sample;
 pub use audit::{AuditProbe, audit_log, audit_log_batch};
 pub use auth::{TokenFixtures, UsersScenario, token_verifier, users};
 pub use blob::blob_store;
-pub use docs::{DocScenario, doc_search};
+pub use docs::{
+    ALLOWED_HTML_TAGS, DocScenario, SecretPlant, XSS_CORPUS, doc_search, html_violations, is_heading_id,
+    render_output_stays_inside_the_allowlist, rendered_doc_violations,
+};
 pub use events::{event_bus, event_bus_batch};
 pub use gateway::{AgentGatewayScenario, agent_gateway};
 pub use git::{GitExpectation, git_reader};

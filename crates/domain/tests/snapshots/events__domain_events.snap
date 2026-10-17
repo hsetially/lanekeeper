@@ -104,5 +104,9 @@ expression: all_events()
         "name": "tx-infinity-api"
       }
     ]
+  },
+  {
+    "type": "swimlane_changed",
+    "swimlane": "sitb"
   }
 ]
