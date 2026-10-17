@@ -22,6 +22,10 @@ import { resultsDir as defaultResultsDir, writeResult } from "./results.mjs";
 export const FAIL_KB = 250;
 export const WARN_KB = 225;
 export const FORBIDDEN_PACKAGES = ["monaco-editor", "msw", "@faker-js/faker", "cmdk", "dompurify", "marked"];
+// The live stream engine (the parser, the client, the plan of what an event invalidates) is a chunk of its own, imported by
+// src/live/LiveProvider.tsx when a signed-in user with a role is on screen. The sign-in path never needs it, so it must not
+// be in the first screen's JavaScript; one static import of it from anywhere in the entry would put it back.
+export const LAZY_APP_MODULES = ["src/live/live.ts", "src/live/sse-client.ts", "src/live/sse-parser.ts", "src/live/events.ts", "src/live/invalidation.ts", "src/live/apply.ts"];
 
 const WEB_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const escape = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -81,6 +85,12 @@ export function checkBundle(dist, { modulesFile = modulesFileFor(dist), resultsD
       if (match?.[1]) found.add(match[1]);
     }
     for (const name of found) errors.push(`${file}, in the initial JavaScript, contains ${name}: it belongs in a lazy chunk (or in a test), never in the first screen`);
+    const eager = new Set();
+    for (const id of ids) {
+      const normal = String(id).split("\\").join("/");
+      for (const lazy of LAZY_APP_MODULES) if (normal.endsWith(`/${lazy}`)) eager.add(lazy);
+    }
+    for (const name of eager) errors.push(`${file}, in the initial JavaScript, contains ${name}: the live stream engine is loaded when a signed-in user is on screen, never on the sign-in path (import it with import() from src/live/LiveProvider.tsx only)`);
   }
 
   const gzip = files.reduce((n, f) => n + f.gzip, 0);

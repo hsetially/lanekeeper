@@ -56,6 +56,8 @@ export type Harness = {
   /** Write raw text to every open event stream. */
   emit(text: string): void;
   closeStreams(): void;
+  /** Answer the next `count` stream requests with this status instead of a stream (a 503, a 401, a 429). */
+  refuseStreams(status: number, count: number, options?: { retryAfter?: number }): void;
   close(): Promise<void>;
 };
 
@@ -125,6 +127,7 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   const upstream = new URL(fixture.url);
   const log: HarnessRequest[] = [];
   const streams = new Set<Stream>();
+  let refusal: { status: number; remaining: number; retryAfter?: number } | null = null;
   const scenarioOf = (id: string) => {
     const scenario = scenarios[id];
     if (!scenario) throw new Error(`no scenario ${id}`);
@@ -173,6 +176,13 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
 
   function openStream(req: IncomingMessage, res: ServerResponse): void {
     const path = req.url ?? "";
+    if (refusal && refusal.remaining > 0) {
+      refusal.remaining -= 1;
+      const { status, retryAfter } = refusal;
+      record({ method: "GET", path, status, kind: "stream", lastEventId: (req.headers["last-event-id"] as string | undefined) ?? null, accept: req.headers.accept ?? null });
+      send(res, { ...problem(status, status === 401 ? "unauthenticated" : status === 429 ? "too_many_requests" : "unavailable", "Refused by the harness"), ...(retryAfter === undefined ? {} : { headers: { "retry-after": String(retryAfter) } }) });
+      return;
+    }
     if (streams.size >= MAX_STREAMS) {
       record({ method: "GET", path, status: 429, kind: "stream" });
       send(res, { ...problem(429, "too_many_requests", "Too many streams"), headers: { "retry-after": "3" } });
@@ -210,7 +220,7 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
     }
     if (req.method === "POST") {
       const text = (await readBody(req)).toString("utf8");
-      const data = (text ? JSON.parse(text) : {}) as { id?: string; text?: string };
+      const data = (text ? JSON.parse(text) : {}) as { id?: string; text?: string; status?: number; count?: number; retryAfter?: number };
       if (url.pathname === "/__harness/scenario") {
         setScenario(String(data.id));
         json({ scenario: scenarioId });
@@ -224,6 +234,11 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
       if (url.pathname === "/__harness/events/emit") {
         for (const { res: out } of streams) out.write(String(data.text));
         json({ streams: streams.size });
+        return;
+      }
+      if (url.pathname === "/__harness/events/refuse") {
+        refusal = { status: Number(data.status), remaining: Number(data.count), ...(data.retryAfter === undefined ? {} : { retryAfter: data.retryAfter }) };
+        json({});
         return;
       }
       if (url.pathname === "/__harness/events/close") {
@@ -321,6 +336,9 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
       for (const { res } of streams) res.write(text);
     },
     closeStreams: closeAll,
+    refuseStreams(status: number, count: number, options: { retryAfter?: number } = {}) {
+      refusal = { status, remaining: count, ...(options.retryAfter === undefined ? {} : { retryAfter: options.retryAfter }) };
+    },
     async close() {
       for (const stream of streams) clearInterval(stream.timer);
       streams.clear();

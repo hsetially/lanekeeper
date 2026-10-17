@@ -39,6 +39,8 @@ describe("SafeCell", () => {
         const marked = splitUnsafe(text).filter((s) => s.kind === "mark").length;
         expect(container.querySelectorAll("[role='img']").length).toBe(marked);
         unmount();
+        // RTL leaves the container in the body after unmount; 10,000 of them make the afterEach cleanup slower than its timeout.
+        container.remove();
       },
     );
   }, 60_000);

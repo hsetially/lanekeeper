@@ -13,6 +13,8 @@ import { Frame } from "@/routes/Frame";
 import { Landing } from "@/routes/Landing";
 import { lazyPage } from "@/lib/deploy/lazy-page";
 import { NewVersionBanner } from "@/components/app/NewVersion";
+import { LiveProvider } from "@/live/LiveProvider";
+import type { LiveConfig } from "@/live/live";
 import { PAGE_LOADERS, type PageLoader, type PageLoaders } from "@/routes/pages";
 import { useIdlePrefetch } from "@/routes/prefetch";
 import { ErrorScreen, NotFoundScreen, RouteLoading } from "@/routes/screens";
@@ -41,13 +43,20 @@ function IdlePrefetch() {
   return null;
 }
 
-function RootLayout() {
+/**
+ * The session, then the live stream (one for the tab, only for a signed-in user with a role; see src/live/LiveProvider.tsx),
+ * then the chrome and the screen. The stream sits inside the session because it needs to know who is signed in, and it
+ * provides the write gate because only it knows whether live updates are up.
+ */
+function RootLayout({ live }: { live: LiveConfig | undefined }) {
   return (
     <SessionProvider>
-      <IdlePrefetch />
-      <Frame />
-      <NewVersionBanner />
-      <Outlet />
+      <LiveProvider config={live}>
+        <IdlePrefetch />
+        <Frame />
+        <NewVersionBanner />
+        <Outlet />
+      </LiveProvider>
     </SessionProvider>
   );
 }
@@ -81,11 +90,22 @@ function componentFor(def: RouteDef, pages: PageLoaders) {
   return load ? gated(def.access, load) : () => null;
 }
 
-export function createAppRouter({ queryClient, history, pages = PAGE_LOADERS }: { queryClient: QueryClient; history?: RouterHistory; pages?: PageLoaders }) {
+export function createAppRouter({
+  queryClient,
+  history,
+  pages = PAGE_LOADERS,
+  live,
+}: {
+  queryClient: QueryClient;
+  history?: RouterHistory;
+  pages?: PageLoaders;
+  /** The live layer's settings. Production passes none; a test of something else passes `{ enabled: false }`. */
+  live?: LiveConfig;
+}) {
   const root = createRootRouteWithContext<RouterContext>()({
     // A child's search is its parent's merged with its own, so without this every key in the URL would reach every route.
     validateSearch: () => ({}),
-    component: RootLayout,
+    component: () => <RootLayout live={live} />,
     notFoundComponent: () => <NotFoundScreen />,
     errorComponent: ({ error }) => <ErrorScreen error={error} />,
   });

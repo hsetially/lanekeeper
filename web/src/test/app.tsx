@@ -1,12 +1,14 @@
 // A helper for the tests that need the whole app shell: the real router, built from the route table, on a memory history,
 // with `fetch` answered by a function the test supplies. Nothing here touches the network.
 import { render, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { expect, vi } from "vitest";
 import { apiCaches } from "@/api/client";
 import { createQueryClient } from "@/lib/query/client";
 import { createAppRouter } from "@/router";
+import type { LiveConfig } from "@/live/live";
 import type { PageLoaders } from "@/routes/pages";
 
 export type Call = { method: string; path: string; headers: Headers; body: string | undefined };
@@ -41,7 +43,11 @@ export function me(role: string | null, extra: Record<string, unknown> = {}) {
   };
 }
 
-export function renderApp(url: string, api: Api, options: { pages?: PageLoaders } = {}) {
+/**
+ * Render the whole app on a memory history. The live stream is OFF unless the test passes `live`: most tests are about
+ * something else, and a stream that asks `fetch` for `/api/v1/events` would add a call to every list of calls they assert on.
+ */
+export function renderApp(url: string, api: Api, options: { pages?: PageLoaders; live?: LiveConfig; strict?: boolean } = {}) {
   const calls: Call[] = [];
   // jsdom refuses a `__Host-` cookie on an http origin, so the test supplies the cookie string the client reads.
   Object.defineProperty(document, "cookie", { configurable: true, get: () => `__Host-lk_csrf=${TOKEN}` });
@@ -61,12 +67,14 @@ export function renderApp(url: string, api: Api, options: { pages?: PageLoaders 
   apiCaches.clear();
   const queryClient = createQueryClient();
   const history = createMemoryHistory({ initialEntries: [url] });
-  const router = createAppRouter({ queryClient, history, ...(options.pages ? { pages: options.pages } : {}) });
-  const view = render(
+  const router = createAppRouter({ queryClient, history, live: options.live ?? { enabled: false }, ...(options.pages ? { pages: options.pages } : {}) });
+  const tree = (
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  // StrictMode has to be the root element for React to double-invoke effects in development, as src/main.tsx does.
+  const view = render(options.strict ? <StrictMode>{tree}</StrictMode> : tree);
   const location = () => router.state.location.href;
   const settled = () => waitFor(() => expect(router.state.status).toBe("idle"));
   return { ...view, calls, queryClient, router, location, settled };

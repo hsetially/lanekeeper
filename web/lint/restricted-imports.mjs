@@ -14,6 +14,14 @@ const BLOCKED_STYLE_INJECTORS = [
   },
 ];
 
+// Server data lives in ONE place, the QueryClient (src/lib/query), and the only other state is the non-server prefs of
+// src/lib/prefs. A second store (Redux, Zustand, Jotai, Valtio, Recoil, MobX) is a second copy of what the server said, which
+// the live events can no longer find, so none of them may be imported (and src/lib/query/server-state.test.ts fails when one
+// is a dependency).
+const STATE_LIBRARIES = ["zustand", "redux", "@reduxjs/toolkit", "react-redux", "redux-thunk", "jotai", "valtio", "recoil", "mobx", "mobx-react", "mobx-react-lite", "nanostores", "@nanostores/react", "@preact/signals-react", "unstated-next"];
+const STATE_MESSAGE = "Server data is kept in the QueryClient and nowhere else. A client-state library is a second store of what the server said, which live updates cannot refresh; use a query (src/features/<domain>/queries.ts), React state for a view's own state, or src/lib/prefs.";
+const STATE_PATTERN = { group: STATE_LIBRARIES.flatMap((name) => [name, `${name}/*`]), message: STATE_MESSAGE };
+
 // TanStack Router's `lazyRouteComponent` reloads the whole page, once, when a chunk is missing, and keeps its "reloaded already"
 // flag in sessionStorage. A reload throws away an unsaved edit, and the app keeps web storage to lib/prefs. src/lib/deploy/lazy-page.ts
 // is the replacement: the same `.preload()`, and a missing chunk is an error the router shows as "A new version is available".
@@ -48,7 +56,7 @@ const POLICY_PATTERN = {
   message: "Only components/app/SanitisedDocHtml.tsx and src/editor use the Trusted Types policies (S12).",
 };
 
-const rule = ({ paths = [], patterns = [] }) => ["error", { paths: [...BLOCKED_STYLE_INJECTORS, ...BLOCKED_LAZY, ...paths], patterns }];
+const rule = ({ paths = [], patterns = [] }) => ["error", { paths: [...BLOCKED_STYLE_INJECTORS, ...BLOCKED_LAZY, ...paths], patterns: [STATE_PATTERN, ...patterns] }];
 
 const TESTS = ["src/**/*.test.{ts,tsx}", "src/handoff/**", "src/test/**"];
 

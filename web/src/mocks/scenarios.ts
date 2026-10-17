@@ -1,6 +1,7 @@
 // The scenarios of T1: who is signed in. T4's slices add their own beside this file (src/mocks/design/<slice>/) for the
 // design-parity data of each screen.
 import type { Me, Role } from "../api/generated/model/index.ts";
+import { liveScenarios } from "./live.ts";
 import { meBody } from "./me.ts";
 import { perfScenarios } from "./perf/scenarios.ts";
 import { problemBody, type Scenario } from "./scenario.ts";
@@ -46,5 +47,7 @@ export const scenarios: Record<string, Scenario> = {
 
 // The data of the performance runs (src/mocks/perf): an Editor, a 5,000-row grid, a 6,000-line diff, a list of swimlanes.
 Object.assign(scenarios, perfScenarios);
+// The data of the live-update runs (src/mocks/live.ts): a list whose first row counts how often it was asked for.
+Object.assign(scenarios, liveScenarios);
 
 export const DEFAULT_SCENARIO = "viewer";

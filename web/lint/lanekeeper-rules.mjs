@@ -109,8 +109,29 @@ export const SYNTAX_RULES = [
   },
   {
     id: "optimistic-update",
-    selectors: ["Property[key.name='onMutate']", "CallExpression[callee.property.name='setQueryData']"],
-    message: "No optimistic updates and no setQueryData: a write shows the server's answer, and SSE events invalidate (a secret must never be written into the cache).",
+    selectors: ["Property[key.name='onMutate']", "CallExpression[callee.property.name=/^(setQueryData|setQueriesData)$/]"],
+    message:
+      "No optimistic updates and no setQueryData: a write shows the server's answer (it may be hash-guarded, sent for approval, or carry a secret, and a secret must never be written into the cache). The one exception is src/lib/query/optimistic.ts, a closed list of operations the contract shows to be safe; use optimisticWriteMutation for those.",
+  },
+  {
+    id: "query-key-literal",
+    selectors: [
+      "Property[key.name='queryKey'][value.type='ArrayExpression']",
+      "CallExpression[callee.property.name=/^(getQueryData|setQueryData|getQueriesData|setQueriesData|getQueryState|removeQueries|resetQueries|cancelQueries|invalidateQueries|refetchQueries|fetchQuery|prefetchQuery|ensureQueryData|fetchInfiniteQuery|prefetchInfiniteQuery|ensureInfiniteQueryData|isFetching)$/][arguments.0.type='ArrayExpression']",
+      "ImportSpecifier[imported.name=/^get[A-Za-z0-9]+Query(Key|Options)$/]",
+    ],
+    message:
+      "Build a query key with the factories of src/lib/query/keys.ts (swimlaneKeys.detail(id), fileKeys.head(id, path), ...), never a literal array and never the key the generator made (getXQueryKey). The live events and the writes invalidate by those keys; a key of any other shape is a cache they can never find.",
+  },
+  {
+    id: "unfiltered-invalidation",
+    selectors: [
+      "CallExpression[callee.property.name=/^(invalidateQueries|refetchQueries|resetQueries|cancelQueries|removeQueries)$/][arguments.length=0]",
+      "CallExpression[callee.property.name=/^(invalidateQueries|refetchQueries|resetQueries|cancelQueries|removeQueries)$/][arguments.length>0][arguments.0.type!='ObjectExpression']",
+      "CallExpression[callee.property.name=/^(invalidateQueries|refetchQueries|resetQueries|cancelQueries|removeQueries)$/][arguments.0.type='ObjectExpression']:not(:has(Property[key.name=/^(queryKey|predicate)$/]))",
+    ],
+    message:
+      "Invalidate with a filter: a `queryKey` built from a factory of src/lib/query/keys.ts, or a `predicate`. A call that names nothing refetches every query on screen, which is what a live event must never do (P13). The write table (src/lib/query/invalidate.ts) says what each write invalidates.",
   },
   {
     id: "network",
@@ -166,6 +187,13 @@ export const EXCEPTIONS = [
   { name: "api-client", files: ["src/api/client.ts"], allow: ["network"], why: "The one mutator: every API request is made here, with CSRF, an Idempotency-Key, a timeout and problem parsing." },
   { name: "sse-client", files: ["src/live/sse-client.ts"], allow: ["network"], why: "The live-event stream is a long fetch read through a parser (T3). EventSource has no header control and no status codes." },
   { name: "editor-warm-up", files: ["src/editor/warm.ts"], allow: ["network"], why: "A fetch-only warm-up of the editor chunk for editors (T2): it fetches the hashed files into the HTTP cache while the browser is idle and never imports or executes them." },
+  {
+    name: "optimistic-helper",
+    files: ["src/lib/query/optimistic.ts"],
+    allow: ["optimistic-update"],
+    why:
+      "The only code that may touch the cache while a write is in flight: it cancels what is loading, remembers, shows the expected answer, rolls back on failure and ALWAYS refetches on settle. It serves a closed registry of operations that the contract shows to be safe (a PUT with the whole value, no 202, 409, 412 or 423, no expected hash, not secret, not a reveal); optimistic.test.ts checks the registry against api/openapi.yaml.",
+  },
   { name: "trusted-types-module", files: ["src/lib/csp/trusted-types.ts"], allow: ["create-policy"], why: "The only module that creates Trusted Types policies, each once." },
   { name: "prefs-module", files: ["src/lib/prefs/**/*.ts"], allow: ["web-storage", "cookie-write"], why: "The only module that touches web storage (layout choices) and the theme cookie." },
   {

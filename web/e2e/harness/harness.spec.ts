@@ -78,4 +78,20 @@ test.describe("harness", () => {
     await Promise.all(open.map(async (r) => r.body?.cancel().catch(() => undefined)));
     expect(harness.streamCount()).toBe(0);
   });
+
+  test("refuses the next stream requests with the status the test names, then streams again", async ({ harness }) => {
+    harness.refuseStreams(503, 2);
+    expect((await fetch(`${harness.url}/api/v1/events`)).status).toBe(503);
+    expect((await fetch(`${harness.url}/api/v1/events`)).status).toBe(503);
+    const open = await fetch(`${harness.url}/api/v1/events`);
+    expect(open.status).toBe(200);
+    harness.refuseStreams(429, 1, { retryAfter: 7 });
+    const busy = await fetch(`${harness.url}/api/v1/events`);
+    expect(busy.status).toBe(429);
+    expect(busy.headers.get("retry-after")).toBe("7");
+    const refused = harness.requests().filter((r) => r.kind === "stream" && r.status !== 200);
+    expect(refused.map((r) => r.status)).toEqual([503, 503, 429]);
+    harness.closeStreams();
+    await open.body?.cancel().catch(() => undefined);
+  });
 });

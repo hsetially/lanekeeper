@@ -4,7 +4,7 @@
 // painted. Warm: the chunk and the data are already there, which is what the idle prefetch and the cache are for. Cold is
 // reported and not budgeted. T4 Phase C switches this to the real routes with the same result file.
 import { expect, test } from "../fixtures/test";
-import { armRouteChange, environment, longTasks, observeLongTasks, record, round1, routeChangeMs, summarize, values } from "./helpers";
+import { armRouteChange, environment, longTasks, observeLongTasks, record, round1, routeChangeMs, settleLive, summarize, values } from "./helpers";
 
 test.use({ dist: "dist-perf", scenario: "perf" });
 
@@ -18,6 +18,8 @@ test("route change, cached: click and key, p95 under 100 ms", async ({ page, har
   await observeLongTasks(page);
   await page.goto(`${harness.url}/testpages/perf/nav/a`);
   await expect(page.getByRole("heading", { level: 1, name: "Route A" })).toBeVisible();
+  // The tab's live stream is open and its first refetch is over: nothing but the click is going on while a route change is timed.
+  await settleLive(page, harness);
 
   // Warm everything once: every chunk is loaded and the swimlanes are in the query cache.
   for (const id of ["b", "c", "a"] as const) {
@@ -54,9 +56,10 @@ test("route change, cached: click and key, p95 under 100 ms", async ({ page, har
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "light", reducedMotion: "reduce" });
     const coldPage = await context.newPage();
     await observeLongTasks(coldPage);
+    harness.clearRequests();
     await coldPage.goto(`${harness.url}/testpages/perf/nav/a`);
     await expect(coldPage.getByRole("heading", { level: 1, name: "Route A" })).toBeVisible();
-    await coldPage.waitForTimeout(300);
+    await settleLive(coldPage, harness);
     await armRouteChange(coldPage, "Route B");
     await coldPage.getByRole("link", { name: "Page B" }).click();
     cold.push(await routeChangeMs(coldPage));

@@ -24,6 +24,10 @@ export type CursorPageOptions<TPage, TItem> = {
   /** Keep asking for the next page until the end (or `maxPages`). For a view that needs all of it, such as a grid. */
   autoLoad?: boolean;
   enabled?: boolean;
+  /** How long the list counts as fresh. `Infinity` for a list that live events keep fresh. Default: the client's. */
+  staleTime?: number;
+  /** How long the list is kept after nobody shows it. Default: the client's. */
+  gcTime?: number;
 };
 
 export type CursorPages<TItem> = {
@@ -40,13 +44,17 @@ export type CursorPages<TItem> = {
   /** `maxPages` was reached with more still on the server: the list is cut off. */
   truncated: boolean;
   isFetching: boolean;
+  /** When the list was last fetched (ms since the epoch); 0 before the first page. For "last updated" and the stale banner. */
+  dataUpdatedAt: number;
+  /** TanStack's staleness: older than the entry's `staleTime`, or invalidated. */
+  isStale: boolean;
   /** Ask for the next page. Does nothing when there is none, and joins a request that is already out. */
   loadMore: () => Promise<void>;
   refetch: () => Promise<void>;
 };
 
 export function useCursorPages<TPage, TItem>(options: CursorPageOptions<TPage, TItem>): CursorPages<TItem> {
-  const { queryKey, fetchPage, select, maxPages = DEFAULT_MAX_PAGES, autoLoad = false, enabled = true } = options;
+  const { queryKey, fetchPage, select, maxPages = DEFAULT_MAX_PAGES, autoLoad = false, enabled = true, staleTime, gcTime } = options;
   const query = useInfiniteQuery<TPage, ApiProblem, { pages: TPage[] }, QueryKey, string | undefined>({
     queryKey,
     queryFn: ({ pageParam, signal }) => fetchPage(pageParam, signal),
@@ -54,6 +62,8 @@ export function useCursorPages<TPage, TItem>(options: CursorPageOptions<TPage, T
     getNextPageParam: (lastPage, allPages) => (allPages.length >= maxPages ? undefined : (select(lastPage).next ?? undefined)),
     select: (data) => ({ pages: data.pages }),
     enabled,
+    ...(staleTime === undefined ? {} : { staleTime }),
+    ...(gcTime === undefined ? {} : { gcTime }),
   });
 
   const pages = query.data?.pages;
@@ -91,6 +101,8 @@ export function useCursorPages<TPage, TItem>(options: CursorPageOptions<TPage, T
     hasMore: hasNextPage,
     truncated,
     isFetching: query.isFetching,
+    dataUpdatedAt: query.dataUpdatedAt,
+    isStale: query.isStale,
     loadMore,
     refetch: () => refetchAll().then(() => undefined),
   };

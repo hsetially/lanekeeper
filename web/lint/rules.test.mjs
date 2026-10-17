@@ -34,7 +34,31 @@ const BAD = {
   "web-storage": ["localStorage.setItem('a', 'b');", "window.sessionStorage.clear();", "indexedDB.open('x');"],
   "cookie-write": ["document.cookie = 'a=b';"],
   "form-submit": ["const f = <form method='post'><button>x</button></form>;", "const f = <form action='/x' />;"],
-  "optimistic-update": ["useMutation({ onMutate: () => {} });", "client.setQueryData(['a'], 1);"],
+  "optimistic-update": ["useMutation({ onMutate: () => {} });", "client.setQueryData(key, 1);", "client.setQueriesData({ queryKey: key }, f);"],
+  "query-key-literal": [
+    "useQuery({ queryKey: ['swimlanes'], queryFn: f });",
+    "useQuery({ queryKey: ['swimlane', id], queryFn: f });",
+    "client.getQueryData(['swimlanes']);",
+    "client.setQueryData(['swimlane', id], d);",
+    "client.invalidateQueries({ queryKey: ['tree', id] });",
+    "client.invalidateQueries(['tree']);",
+    "client.removeQueries(['compare']);",
+    "client.prefetchQuery({ queryKey: ['me'], queryFn: f });",
+    "client.getQueryState(['me']);",
+    "client.cancelQueries(['grid']);",
+    "import { getListSwimlanesQueryKey } from '@/api/generated/endpoints/swimlanes/swimlanes';",
+    "import { getGetSwimlaneQueryOptions } from '@/api/generated/endpoints/swimlanes/swimlanes';",
+  ],
+  "unfiltered-invalidation": [
+    "client.invalidateQueries();",
+    "client.invalidateQueries({});",
+    "client.invalidateQueries({ refetchType: 'all' });",
+    "client.invalidateQueries(filters);",
+    "client.refetchQueries();",
+    "client.resetQueries();",
+    "client.cancelQueries();",
+    "client.removeQueries({ type: 'all' });",
+  ],
   network: ["fetch('/api/v1/x');", "fetch(`/api/v1/${id}`);", "window.fetch(u);", "globalThis.fetch(u);", "new XMLHttpRequest();", "new WebSocket(u);", "new EventSource(u);", "navigator.sendBeacon(u, d);"],
   worker: ["new Worker(url);", "new SharedWorker(url);", "URL.createObjectURL(blob);", "navigator.serviceWorker.register(url);"],
   "global-patch": ["Element.prototype.setAttribute = f;", "Document.prototype.createElement = f;", "Object.defineProperty(HTMLElement.prototype, 'x', {});"],
@@ -96,6 +120,7 @@ describe("the named exceptions are as narrow as they say", () => {
     "cookie-write": "document.cookie = 'a=b';",
     "global-patch": "Element.prototype.setAttribute = f;",
     worker: "new Worker(url);",
+    "optimistic-update": "client.setQueryData(key, 1);",
   };
   const FILES = {
     "editor-workers": "src/editor/entry.ts",
@@ -105,6 +130,7 @@ describe("the named exceptions are as narrow as they say", () => {
     "trusted-types-module": "src/lib/csp/trusted-types.ts",
     "prefs-module": "src/lib/prefs/index.ts",
     "monaco-global-patches": "src/editor/global-patches.ts",
+    "optimistic-helper": "src/lib/query/optimistic.ts",
   };
 
   it("names a file for every exception", () => {
@@ -130,6 +156,78 @@ describe("the named exceptions are as narrow as they say", () => {
     expect(ids(await lint("fetch(u);\n", "src/api/other.ts"))).toContain("network");
     expect(ids(await lint("localStorage.getItem('a');\n", "src/features/prefs.ts"))).toContain("web-storage");
     expect(ids(await lint("Element.prototype.x = f;\n", "src/editor/other.ts"))).toContain("global-patch");
+  });
+});
+
+describe("optimistic updates: the ban fires everywhere, and one file is exempt", () => {
+  const ON_MUTATE = "export const m = (client) => ({ onMutate: (v) => client.setQueryData(key, v) });\n";
+
+  it.each([
+    "src/features/swimlanes/mutations.ts",
+    "src/features/file/mutations.ts",
+    "src/lib/query/write.ts",
+    "src/lib/query/invalidate.ts",
+    "src/lib/query/cursor-pages.ts",
+    "src/lib/query/optimistic-helper.ts",
+    "src/lib/query/optimistic/index.ts",
+    "src/lib/query/optimistic.tsx",
+    "src/lib/query/other/optimistic.ts",
+    "src/lib/optimistic.ts",
+    "src/live/apply.ts",
+    "src/components/app/Save.tsx",
+    "src/api/client.ts",
+    "src/editor/loader.ts",
+  ])("still refuses onMutate and setQueryData in %s", async (file) => {
+    const found = ids(await lint(ON_MUTATE, file));
+    expect(found.filter((id) => id === "optimistic-update")).toHaveLength(2);
+  });
+
+  it("allows both in src/lib/query/optimistic.ts, and only there", async () => {
+    expect(ids(await lint(ON_MUTATE, "src/lib/query/optimistic.ts"))).not.toContain("optimistic-update");
+    const exempt = EXCEPTIONS.filter((e) => e.allow.includes("optimistic-update"));
+    expect(exempt.map((e) => e.files)).toEqual([["src/lib/query/optimistic.ts"]]);
+  });
+
+  it("does not let the helper's file do anything else the rules ban", async () => {
+    for (const code of ["fetch('/api/v1/x');", "localStorage.getItem('a');", "el.innerHTML = x;", "client.invalidateQueries();", "useQuery({ queryKey: ['a'] });"]) {
+      expect(ids(await lint(`${code}\n`, "src/lib/query/optimistic.ts")).length, code).toBeGreaterThan(0);
+    }
+  });
+
+  it("the exception says what it is for", () => {
+    const e = EXCEPTIONS.find((x) => x.name === "optimistic-helper");
+    expect(e?.why).toMatch(/closed registry/);
+    expect(e?.why).toMatch(/ALWAYS refetches/);
+  });
+});
+
+describe("query keys and invalidation are written one way", () => {
+  it.each([
+    "client.invalidateQueries({ queryKey: swimlaneKeys.detail(id) });",
+    "client.invalidateQueries({ predicate: (q) => keep(q) });",
+    "client.invalidateQueries({ predicate, refetchType: 'active' });",
+    "client.cancelQueries({ queryKey: key, exact: true });",
+    "client.removeQueries({ queryKey: compareKeys.diffs() });",
+    "useQuery({ queryKey: swimlaneKeys.all(), queryFn: f });",
+    "useQuery({ queryKey, queryFn: f });",
+    "client.getQueryData(swimlaneKeys.all());",
+    "client.clear();",
+    "const key = ['not', 'a', 'query', 'key'];",
+    "import { listSwimlanes } from '@/api/generated/endpoints/swimlanes/swimlanes';",
+  ])("passes %s", async (code) => {
+    const found = ids(await lint(`${code}\n`));
+    expect(found.filter((id) => id === "query-key-literal" || id === "unfiltered-invalidation"), code).toEqual([]);
+  });
+
+  it("does not apply to tests, mocks and the generated client", async () => {
+    for (const file of ["src/lib/query/x.test.ts", "src/test/x.tsx", "src/mocks/x.ts"]) {
+      expect(ids(await lint("client.invalidateQueries(); useQuery({ queryKey: ['a'] });\n", file)), file).toEqual([]);
+    }
+  });
+
+  it("says where the keys are, in the message", async () => {
+    const [m] = (await lint("useQuery({ queryKey: ['a'] });\n")).filter((x) => x.ruleId === "no-restricted-syntax");
+    expect(m?.message).toMatch(/src\/lib\/query\/keys\.ts/);
   });
 });
 

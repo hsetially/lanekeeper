@@ -8,7 +8,8 @@
 import { readFileSync } from "node:fs";
 import { cpus, loadavg } from "node:os";
 import { join } from "node:path";
-import type { Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
+import type { Harness } from "../harness/serve.ts";
 import { droppedAt } from "../../scripts/perf/frame-rule.mjs";
 import { resultsDir, summarize, writeResult } from "../../scripts/perf/results.mjs";
 
@@ -53,6 +54,30 @@ export function values(summary: Summary): Record<string, number> {
 
 // ---------------------------------------------------------------------------------------------------------------------
 // In the page
+
+/**
+ * Wait for the live stream of a signed-in page to be open and the requests it causes to be over. The stream is the tab's own
+ * (one for the tab, see src/live/LiveProvider.tsx), so a page of the perf build opens it like every other; its first connection
+ * refetches what is on screen once (the page cannot know what it missed before it connected), and a measurement that counts
+ * requests, or times a screen that is still being refetched, must start after that. The stream never ends, so "the network is
+ * idle" is not a state a page with a live stream reaches: this is the replacement for `waitForLoadState("networkidle")`.
+ */
+export async function settleLive(page: Page, harness: Harness, quietMs = 400): Promise<void> {
+  // A stream request answered since the log was last cleared, and still open: a page that came after another was opened by this one.
+  await expect
+    .poll(() => harness.streamCount() > 0 && harness.requests().some((r) => r.kind === "stream" && r.status === 200), { message: "the live stream was opened", timeout: 10_000 })
+    .toBe(true);
+  let last = -1;
+  let since = Date.now();
+  while (Date.now() - since < quietMs) {
+    const count = harness.requests().length;
+    if (count !== last) {
+      last = count;
+      since = Date.now();
+    }
+    await page.waitForTimeout(50);
+  }
+}
 
 /** Long tasks, from the start of the page: `{ start, duration }`. Install before the first navigation. */
 export async function observeLongTasks(page: Page): Promise<void> {

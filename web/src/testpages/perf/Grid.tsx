@@ -9,7 +9,7 @@ import { SafeText } from "@/components/app/SafeText";
 import { useEditorWarmup } from "@/editor/warm";
 import { DataTable, type Column } from "@/components/app/virtual/DataTable";
 import { useCursorPages } from "@/lib/query/cursor-pages";
-import { keys } from "@/lib/query/keys";
+import { compareKeys } from "@/lib/query/keys";
 import { resetLab, setLab } from "./lab";
 
 const FILE = "services/payments/application.yml";
@@ -25,7 +25,7 @@ const select = (page: Awaited<ReturnType<typeof getGrid>>) => ({ items: page.row
 
 export function PerfGrid() {
   const pages = useCursorPages({
-    queryKey: keys.grid(FILE, LANES, false, null),
+    queryKey: compareKeys.grid(FILE, LANES, false, null),
     fetchPage: (cursor, signal) => getGrid({ file: FILE, swimlanes: LANES, limit: cursor === undefined ? FIRST_PAGE : PAGE, ...(cursor === undefined ? {} : { cursor }) }, { signal }),
     select,
     autoLoad: true,

@@ -9,6 +9,8 @@ type BannerProps = {
   title: string;
   /** Buttons or links on the right. */
   action?: ReactNode;
+  /** Replaces the icon of the variant (the paused banner's wifi-off). Decorative: the title says it. */
+  icon?: ReactNode;
   /** Only a success banner can be dismissed: a warning or an error stays until the cause is gone. */
   onDismiss?: () => void;
   children?: ReactNode;
@@ -16,9 +18,9 @@ type BannerProps = {
 };
 
 /** A full-width Alert: NFS ahead, PR open, Pending approval, Conflict, Saved (restart needed), Offline, Locked. */
-export function Banner({ variant, title, action, onDismiss, children, className }: BannerProps) {
+export function Banner({ variant, title, action, icon, onDismiss, children, className }: BannerProps) {
   return (
-    <Alert variant={variant} className={cn("items-center rounded-none border-x-0 px-4", className)}>
+    <Alert variant={variant} {...(icon === undefined ? {} : { icon })} className={cn("items-center rounded-none border-x-0 px-4", className)}>
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
         <AlertTitle>{title}</AlertTitle>
         {children ? <AlertDescription className="min-w-0 flex-1">{children}</AlertDescription> : null}

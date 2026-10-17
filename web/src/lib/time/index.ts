@@ -26,6 +26,12 @@ export function formatTime(ms: number, options: { seconds?: boolean } = {}): str
   return `${p.date} ${options.seconds === true ? p.hms : p.hm} UTC`;
 }
 
+/** `06:42 UTC`: the time of day only, for a place with no room for the date ("Offline, data from 06:42 UTC"). */
+export function formatClock(ms: number): string {
+  const p = parts(ms);
+  return p ? `${p.hm} UTC` : UNKNOWN;
+}
+
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
 const HOUR = 60 * MINUTE;

@@ -46,7 +46,7 @@ import { chromium } from "@playwright/test";
 import { controlVerdict, uncappedFps } from "../../scripts/perf/frame-rule.mjs";
 import { chromiumPath, launchArgs } from "../harness/browser.ts";
 import { CspWatch, expect, pageViolations, test, watchCsp } from "../fixtures/test";
-import { CONTROL_LIST_HTML, environment, framesPerSecond, longTasks, observeLongTasks, record, round1, scrollRun, summarize, values } from "./helpers";
+import { CONTROL_LIST_HTML, environment, framesPerSecond, longTasks, observeLongTasks, record, round1, scrollRun, settleLive, summarize, values } from "./helpers";
 
 test.use({ dist: "dist-perf", scenario: "perf" });
 
@@ -73,10 +73,13 @@ test("grid, 5,000 rows by 40 swimlanes: capacity (the budget), late frames again
   // Alternate the grid and the control list, so that a change in the machine between the first run and the last falls on both.
   for (let run = 0; run < RUNS; run++) {
     await observeLongTasks(page);
+    harness.clearRequests();
     await page.goto(`${harness.url}/testpages/perf/grid`);
     await page.waitForFunction(() => window.__perf?.phase === "ready", undefined, { timeout: 60_000 });
     await expect(page.getByRole("grid", { name: "Comparison grid" })).toHaveAttribute("aria-rowcount", "5001");
     expect(await page.evaluate(() => window.__perf?.rows)).toBe(5000);
+    // The tab's live stream is open and its first refetch is over, so nothing but the scroll is going on while frames are counted.
+    await settleLive(page, harness);
 
     if (run === 0) {
       // The editor warm-up fires once the page is idle. It must cost the main thread nothing worth a long task.
@@ -111,9 +114,11 @@ test("grid, 5,000 rows by 40 swimlanes: capacity (the budget), late frames again
     const labWatch = new CspWatch();
     await watchCsp(lab, labWatch);
     for (let run = 0; run < RUNS; run++) {
+      harness.clearRequests();
       await lab.goto(`${harness.url}/testpages/perf/grid`);
       await lab.waitForFunction(() => window.__perf?.phase === "ready", undefined, { timeout: 60_000 });
       await expect(lab.getByRole("grid", { name: "Comparison grid" })).toHaveAttribute("aria-rowcount", "5001");
+      await settleLive(lab, harness);
       const result = await scrollRun(lab, GRID, { by: "frames", frames: CAPACITY_FRAMES });
       expect(result.lastIndex).toBeGreaterThanOrEqual(4990);
       capacity.push({ fps: round1(uncappedFps(result.stamps)), frames: result.stamps.length, worstMs: framesPerSecond(result).worstMs, longTasks: result.longTasks, heapMb: result.heapMb });

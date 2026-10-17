@@ -9,6 +9,7 @@ import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { startHarness } from "../harness/serve.ts";
 import { expect, test } from "../fixtures/test";
+import { settleLive } from "./helpers";
 
 const WEB_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const BUDGET_KB = 250;
@@ -46,15 +47,18 @@ test("the first visit fetches the shell and the one screen it needs: immutable f
   const { scripts, settled } = collectScripts(page);
   await page.goto(`${harness.url}/swimlanes`);
   await expect(page.getByRole("heading", { level: 1, name: "Swimlanes" })).toBeVisible();
-  await page.waitForLoadState("networkidle");
+  // A signed-in page keeps a live stream open, so the network is never idle: wait for the stream and for what it caused instead.
+  await settleLive(page, harness);
   await settled();
 
   const assets = scripts.filter((s) => s.path.startsWith("/assets/"));
   const names = assets.map((s) => s.path.replace(/^\/assets\//, "").replace(/-[A-Za-z0-9_-]{8}\.js$/, ""));
-  // The shell, and the screen's chunk. The screens share one module until they are built, so it is one file.
+  // The shell, the screen's chunk (the screens share one module until they are built, so it is one file), and the live engine:
+  // the SSE client, fetched once a user with a role is signed in (src/live/LiveProvider.tsx), in a chunk of its own.
   expect(names).toContain("index");
   expect(names).toContain("Placeholder");
-  expect(names.filter((n) => n !== "index" && n !== "Placeholder"), "no other script on the first visit").toEqual([]);
+  expect(names).toContain("live");
+  expect(names.filter((n) => n !== "index" && n !== "Placeholder" && n !== "live"), "no other script on the first visit").toEqual([]);
   for (const name of names) expect(name, "the editor is not part of a first visit").not.toMatch(/editor|monaco|jsonMode|worker/i);
 
   for (const script of assets) {
@@ -63,6 +67,19 @@ test("the first visit fetches the shell and the one screen it needs: immutable f
   }
   const kb = assets.reduce((n, s) => n + s.gzipBytes, 0) / 1024;
   expect(kb, `the scripts of a first visit, gzipped: ${kb.toFixed(1)} KB`).toBeLessThan(BUDGET_KB);
+});
+
+test("a screen before the session loads no live engine and opens no stream", async ({ page, harness }) => {
+  harness.setScenario("signed-out");
+  const { scripts, settled } = collectScripts(page);
+  await page.goto(`${harness.url}/signin`);
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  await settled();
+  const names = scripts.filter((s) => s.path.startsWith("/assets/")).map((s) => s.path.replace(/^\/assets\//, "").replace(/-[A-Za-z0-9_-]{8}\.js$/, ""));
+  expect(names, "the shell is there").toContain("index");
+  expect(names, "the engine is not fetched for someone who is not signed in").not.toContain("live");
+  expect(harness.requests().filter((r) => r.kind === "stream"), "and no stream is asked for").toEqual([]);
 });
 
 test.describe("on the perf build's route pages (three screens, a chunk each)", () => {
@@ -76,7 +93,7 @@ test.describe("on the perf build's route pages (three screens, a chunk each)", (
     });
     await page.goto(`${harness.url}/testpages/perf/nav/a`);
     await expect(page.getByRole("heading", { level: 1, name: "Route A" })).toBeVisible();
-    await page.waitForLoadState("networkidle");
+    await settleLive(page, harness);
     await settled();
     const has = (name: string) => scripts.some((s) => new RegExp(`/assets/${name}-[A-Za-z0-9_-]{8}\\.js$`).test(s.path));
     expect(has("RouteA"), "the first screen's chunk").toBe(true);

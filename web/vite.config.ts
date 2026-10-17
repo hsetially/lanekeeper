@@ -19,6 +19,10 @@ const NODE_TEST_DIRS = [
   "src/icons/**/*.test.{ts,tsx}",
   // Plain TypeScript libraries run without a DOM. A .tsx test under src/lib (a hook, a provider) runs under jsdom.
   "src/lib/**/*.test.ts",
+  // The live layer's transport, parser, backoff and invalidation plan are plain TypeScript too; its provider and indicator
+  // are .tsx and run under jsdom. The colocated query modules of the features (queries.ts, mutations.ts) are the same.
+  "src/live/**/*.test.ts",
+  "src/features/**/*.test.ts",
   "src/api/**/*.test.ts",
   "src/mocks/**/*.test.ts",
   "e2e/fixtures/**/*.test.ts",

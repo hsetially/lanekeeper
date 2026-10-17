@@ -7,8 +7,9 @@
 // and the answer is fetched again in full) and REVALIDATED (the chunk is loaded and the answer is a 304 from the ETag the app
 // sent). The budget is the cold series, the slowest of the three. The worst case, every line changed, is measured too.
 import type { Browser, Page } from "@playwright/test";
+import type { Harness } from "../harness/serve.ts";
 import { expect, pageViolations, test } from "../fixtures/test";
-import { environment, longTasks, observeLongTasks, record, round1, summarize, values } from "./helpers";
+import { environment, longTasks, observeLongTasks, record, round1, settleLive, summarize, values } from "./helpers";
 
 test.use({ dist: "dist-perf", scenario: "perf" });
 
@@ -16,7 +17,9 @@ const COLD = 20;
 const WARM = 20;
 const REVALIDATED = 20;
 
-async function startPage(page: Page, url: string): Promise<void> {
+// The page is started signed in, so it has opened the tab's live stream; its first connection refetches what is on screen once.
+// A sample starts after that, so the diff is timed with nothing else going on (the log is cleared first: it is how the stream is told).
+async function startPage(page: Page, harness: Harness): Promise<void> {
   await observeLongTasks(page);
   // The time of the click itself, kept: the `n` presses that follow overwrite __lkInputAt.
   await page.addInitScript(() => {
@@ -28,8 +31,10 @@ async function startPage(page: Page, url: string): Promise<void> {
       true,
     );
   });
-  await page.goto(url);
+  harness.clearRequests();
+  await page.goto(`${harness.url}/testpages/perf/nav/a`);
   await expect(page.getByRole("heading", { level: 1, name: "Route A" })).toBeVisible();
+  await settleLive(page, harness);
 }
 
 /** Click "Open the diff" and press `n` until one works. Milliseconds from the click to that key's effect, by the page's own clock. */
@@ -56,12 +61,12 @@ async function back(page: Page): Promise<void> {
   await expect(page.getByRole("heading", { level: 1, name: "Route A" })).toBeVisible();
 }
 
-async function coldSeries(browser: Browser, url: string, runs: number): Promise<number[]> {
+async function coldSeries(browser: Browser, harness: Harness, runs: number): Promise<number[]> {
   const out: number[] = [];
   for (let run = 0; run < runs; run++) {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "light", reducedMotion: "reduce" });
     const page = await context.newPage();
-    await startPage(page, url);
+    await startPage(page, harness);
     await page.waitForTimeout(250);
     out.push(await sample(page));
     await context.close();
@@ -70,13 +75,11 @@ async function coldSeries(browser: Browser, url: string, runs: number): Promise<
 }
 
 test("diff of 6,000 lines: interactive within 500 ms, p95 (cold; warm and revalidated reported)", async ({ page, harness, browser, csp }) => {
-  const url = `${harness.url}/testpages/perf/nav/a`;
-
   // Cold: the slowest honest case, and the budgeted series.
-  const cold = await coldSeries(browser, url, COLD);
+  const cold = await coldSeries(browser, harness, COLD);
 
   // Warm and revalidated, in one page: the chunk of the diff is loaded after the first visit.
-  await startPage(page, url);
+  await startPage(page, harness);
   await sample(page);
   await back(page);
   const warm: number[] = [];
@@ -97,8 +100,10 @@ test("diff of 6,000 lines: interactive within 500 ms, p95 (cold; warm and revali
   // The worst case, reported: every line changed, 12,000 lines in one hunk.
   harness.setScenario("perf-full");
   await page.evaluate(() => window.__perfControl?.dropCompare(true));
+  harness.clearRequests();
   await page.reload();
   await expect(page.getByRole("heading", { level: 1, name: "Route A" })).toBeVisible();
+  await settleLive(page, harness);
   const full: number[] = [];
   for (let i = 0; i < 5; i++) {
     await page.evaluate(() => window.__perfControl?.dropCompare(true));

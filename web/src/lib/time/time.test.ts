@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createTimeFormatter, formatRelative, formatTime, systemClock } from "./index";
+import { createTimeFormatter, formatClock, formatRelative, formatTime, systemClock } from "./index";
 
 const T = Date.UTC(2026, 9, 17, 6, 42, 5, 123); // 2026-10-17 06:42:05.123 UTC
 const sec = 1000;
@@ -19,6 +19,16 @@ describe("formatTime (UTC, with the zone spelled out)", () => {
 
   it("never throws and never prints Invalid Date", () => {
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1e18, 1e18]) expect(formatTime(bad)).toBe("unknown time");
+  });
+});
+
+describe("formatClock (the time of day, for a pill or a banner that says when the data is from)", () => {
+  it("is the hour and minute in UTC with the zone spelled out", () => {
+    expect(formatClock(T)).toBe("06:42 UTC");
+    expect(formatClock(Date.UTC(2026, 0, 2, 23, 5))).toBe("23:05 UTC");
+  });
+  it("never throws and never prints Invalid Date", () => {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1e18]) expect(formatClock(bad)).toBe("unknown time");
   });
 });
 

@@ -48,4 +48,28 @@ describe("imports the app must not make (S12)", () => {
     expect(await restricted(code, "src/components/app/Foo.test.tsx")).toEqual([]);
     expect(await restricted(code, "src/handoff/x.test.ts")).toEqual([]);
   });
+
+  it.each([
+    ["zustand", 'import { create } from "zustand";'],
+    ["zustand subpath", 'import { createStore } from "zustand/vanilla";'],
+    ["redux", 'import { createStore } from "redux";'],
+    ["redux toolkit", 'import { configureStore } from "@reduxjs/toolkit";'],
+    ["react-redux", 'import { useSelector } from "react-redux";'],
+    ["jotai", 'import { atom } from "jotai";'],
+    ["valtio", 'import { proxy } from "valtio";'],
+    ["recoil", 'import { atom } from "recoil";'],
+    ["mobx", 'import { observable } from "mobx";'],
+    ["mobx-react-lite", 'import { observer } from "mobx-react-lite";'],
+  ])("bans a client-state library, once, with the reason: %s", async (_name, code) => {
+    for (const file of ["src/features/x/Page.tsx", "src/lib/query/x.ts", "src/components/app/X.test.tsx", "src/mocks/x.ts"]) {
+      const found = await restricted(`${code}\nexport {};\n`, file);
+      expect(found, file).toHaveLength(1);
+      expect(found[0]?.message, file).toMatch(/QueryClient/);
+    }
+  });
+
+  it("does not ban what only sounds like one (the names are exact, and TanStack Query is the store)", async () => {
+    const code = 'import { useQuery, QueryClient } from "@tanstack/react-query";\nimport { reduce } from "lodash-es";\nexport { useQuery, QueryClient, reduce };\n';
+    expect(await restricted(code, "src/features/x/Page.tsx")).toEqual([]);
+  });
 });

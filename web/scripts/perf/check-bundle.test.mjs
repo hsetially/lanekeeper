@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { checkBundle, FAIL_KB, FORBIDDEN_PACKAGES, WARN_KB } from "./check-bundle.mjs";
+import { checkBundle, FAIL_KB, FORBIDDEN_PACKAGES, LAZY_APP_MODULES, WARN_KB } from "./check-bundle.mjs";
 
 // P10: the initial JavaScript is under 250 KB gzipped. The gate sums the gzip size (level 9) of the entry chunk and of every
 // chunk it imports statically, taking 1 KB as 1,000 bytes. It fails above 250, warns above 225, and fails when a package that
@@ -170,5 +170,37 @@ describe("the result", () => {
     const { dist, modulesFile } = makeDist({ initial: { "index-A.js": 1_000 } });
     checkBundle(dist, { modulesFile, resultsDir: resultsDir(), writeResult: false });
     expect(() => readFileSync(join(resultsDir(), "web-initial_js_gzip_kb.json"), "utf8")).toThrow();
+  });
+});
+
+describe("the live stream engine is a lazy chunk", () => {
+  it("names the modules of the engine, and none of the provider that loads it", () => {
+    expect(LAZY_APP_MODULES).toContain("src/live/sse-client.ts");
+    expect(LAZY_APP_MODULES).toContain("src/live/sse-parser.ts");
+    expect(LAZY_APP_MODULES).not.toContain("src/live/LiveProvider.tsx");
+  });
+
+  it("fails when a module of the engine is in the initial JavaScript", () => {
+    for (const module of LAZY_APP_MODULES) {
+      const { dist, modulesFile } = makeDist({ initial: { "index-A.js": 50_000 }, modules: { "assets/index-A.js": ["/w/src/main.tsx", `/w/${module}`] } });
+      const out = checkBundle(dist, { modulesFile, resultsDir: resultsDir() });
+      expect(out.errors.join("\n"), module).toMatch(new RegExp(`contains ${module.replace(/[./]/g, "\\$&")}`));
+      expect(out.ok).toBe(false);
+    }
+  });
+
+  it("passes when the engine is in a chunk of its own", () => {
+    const { dist, modulesFile } = makeDist({
+      initial: { "index-A.js": 50_000 },
+      lazy: { "live-L.js": 5_000 },
+      modules: { "assets/index-A.js": ["/w/src/main.tsx", "/w/src/live/LiveProvider.tsx"], "assets/live-L.js": ["/w/src/live/live.ts", "/w/src/live/sse-client.ts"] },
+    });
+    const out = checkBundle(dist, { modulesFile, resultsDir: resultsDir() });
+    expect(out.errors).toEqual([]);
+  });
+
+  it("does not mistake a file that only ends the same way for the engine's", () => {
+    const { dist, modulesFile } = makeDist({ initial: { "index-A.js": 50_000 }, modules: { "assets/index-A.js": ["/w/src/main.tsx", "/w/src/other/live.ts", "/w/src/live/live.test.ts"] } });
+    expect(checkBundle(dist, { modulesFile, resultsDir: resultsDir() }).errors).toEqual([]);
   });
 });

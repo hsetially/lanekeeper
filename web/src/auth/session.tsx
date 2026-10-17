@@ -1,22 +1,21 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter, useRouterState } from "@tanstack/react-router";
 import { apiCaches } from "@/api/client";
 import { ACCESS_DISABLED_PATH, ACCESS_PENDING_PATH, LOGIN_PATH } from "@/api/constants";
 import { Role, type Me } from "@/api/generated/model";
-import { useGetMe } from "@/api/generated/endpoints/me/me";
 import { onSessionSignal } from "@/api/session-events";
 import { ApiProblem } from "@/api/problem";
+import { meQuery } from "@/features/access/queries";
 import { Banner } from "@/components/app/Banner";
 import { CopyButton } from "@/components/app/CopyButton";
-import { WriteGateProvider } from "@/components/app/write-gate";
 import { Button } from "@/components/ui/button";
 import { RouteLoading, ErrorScreen, PermissionScreen } from "@/routes/screens";
 import type { RouteAccess } from "@/routes/table";
 import type { AppRouter } from "@/router";
 import { collectDrafts, hasDirty } from "./dirty";
 import { validateNext } from "./params";
-import { ROLE_ORDER, roleAtLeast } from "./roles";
+import { roleAtLeast } from "./roles";
 
 // The session (S2, client side). It owns four things:
 //  - who the user is: `getMe`, asked only on routes that need a session (a screen before sign-in makes no API call);
@@ -62,14 +61,14 @@ function SessionEndedAlert({ next }: { next: string | undefined }) {
   );
 }
 
-export function SessionProvider({ children, online = true }: { children: ReactNode; online?: boolean }) {
+export function SessionProvider({ children }: { children: ReactNode }) {
   const router = useRouter<AppRouter>();
   const queryClient = useQueryClient();
   const access = useRouterState({ select: (s) => s.matches.at(-1)?.staticData.access });
   const needsSession = access !== undefined && access !== "public";
   const [ended, setEnded] = useState<{ next: string | undefined } | null>(null);
 
-  const me = useGetMe({ query: { enabled: needsSession, staleTime: 60_000 } });
+  const me = useQuery({ ...meQuery(), enabled: needsSession });
 
   useEffect(
     () =>
@@ -101,13 +100,12 @@ export function SessionProvider({ children, online = true }: { children: ReactNo
     return { status: "loading" };
   }, [needsSession, me.data, me.isError, me.error]);
 
-  const roleName = state.status === "ready" ? state.role : null;
+  // The write gate (who may press a write button, and whether the live stream is up) is mounted by LiveProvider, which sits
+  // inside this provider: it needs the session to decide whether to open the stream, and the stream to decide `online`.
   return (
     <SessionContext.Provider value={state}>
-      <WriteGateProvider value={{ roles: ROLE_ORDER, role: roleName, online }}>
-        {ended ? <SessionEndedAlert next={ended.next} /> : null}
-        {children}
-      </WriteGateProvider>
+      {ended ? <SessionEndedAlert next={ended.next} /> : null}
+      {children}
     </SessionContext.Provider>
   );
 }

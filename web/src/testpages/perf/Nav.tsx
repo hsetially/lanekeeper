@@ -6,11 +6,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet } from "@tanstack/react-router";
 import { useEffect, useMemo } from "react";
 import { apiCaches } from "@/api/client";
-import { useListSwimlanes } from "@/api/generated/endpoints/swimlanes/swimlanes";
 import type { SwimlaneSummary } from "@/api/generated/model";
 import { SafeText } from "@/components/app/SafeText";
 import { DataTable, type Column } from "@/components/app/virtual/DataTable";
-import { keys } from "@/lib/query/keys";
+import { swimlaneListQuery } from "@/features/swimlanes/queries";
+import { useCursorPages } from "@/lib/query/cursor-pages";
+import { compareKeys } from "@/lib/query/keys";
 
 export function PerfNavLayout() {
   const queryClient = useQueryClient();
@@ -19,7 +20,7 @@ export function PerfNavLayout() {
   useEffect(() => {
     window.__perfControl = {
       dropCompare: (alsoEtag: boolean) => {
-        queryClient.removeQueries({ queryKey: ["compare"] });
+        queryClient.removeQueries({ queryKey: compareKeys.diffs() });
         if (alsoEtag) apiCaches.etags.clear();
       },
     };
@@ -48,7 +49,7 @@ export function PerfNavLayout() {
 }
 
 export function PerfScreen({ title }: { title: string }) {
-  const query = useListSwimlanes(undefined, { query: { queryKey: keys.swimlanes(), staleTime: 60_000 } });
+  const pages = useCursorPages({ ...swimlaneListQuery(), staleTime: 60_000 });
   const columns = useMemo<Column<SwimlaneSummary>[]>(
     () => [
       { id: "name", header: "Swimlane", width: "minmax(0,1fr)", cell: (row) => <SafeText text={row.display_name} /> },
@@ -60,7 +61,7 @@ export function PerfScreen({ title }: { title: string }) {
   return (
     <main className="flex min-h-0 flex-1 flex-col">
       <h1 className="p-3 text-lg font-semibold">{title}</h1>
-      <DataTable label={title} rows={query.data?.items ?? []} columns={columns} rowKey={(row) => row.id} state={query.isPending ? "loading" : query.isError ? "error" : "ready"} className="min-h-0 flex-1" />
+      <DataTable label={title} rows={pages.items} columns={columns} rowKey={(row) => row.id} state={pages.status === "pending" ? "loading" : pages.status === "error" ? "error" : "ready"} className="min-h-0 flex-1" />
     </main>
   );
 }

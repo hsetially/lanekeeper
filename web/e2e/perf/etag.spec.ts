@@ -4,7 +4,9 @@
 // (src/mocks/scenario.ts). What each case proves: the header is sent and is the ETag that was given, a 304 gives the same
 // screen, a request after the ETag is gone is unconditional, and an answer that changed replaces the kept one.
 import type { Page } from "@playwright/test";
+import type { Harness } from "../harness/serve.ts";
 import { expect, test } from "../fixtures/test";
+import { settleLive } from "./helpers";
 
 test.use({ dist: "dist-perf", scenario: "perf" });
 
@@ -27,13 +29,15 @@ async function back(page: Page): Promise<void> {
   await expect(page.getByRole("heading", { level: 1, name: "Route A" })).toBeVisible();
 }
 
-async function start(page: Page, base: string): Promise<void> {
-  await page.goto(`${base}/testpages/perf/nav/a`);
+// The live stream's first connection refetches what is on screen once; the reads below are counted, so they start after it.
+async function start(page: Page, harness: Harness): Promise<void> {
+  await page.goto(`${harness.url}/testpages/perf/nav/a`);
   await expect(page.getByRole("heading", { level: 1, name: "Route A" })).toBeVisible();
+  await settleLive(page, harness);
 }
 
 test("a second read sends the ETag it was given, is answered 304, and the screen is the same", async ({ page, harness }) => {
-  await start(page, harness.url);
+  await start(page, harness);
   const first = await openDiff(page);
   expect(first, "the diff has its rows (6,000 lines, a change every ten, the unchanged runs folded)").toBeGreaterThan(5000);
   await back(page);
@@ -50,7 +54,7 @@ test("a second read sends the ETag it was given, is answered 304, and the screen
 });
 
 test("once the ETag is gone the read is unconditional and the answer is whole", async ({ page, harness }) => {
-  await start(page, harness.url);
+  await start(page, harness);
   const first = await openDiff(page);
   await back(page);
   await page.evaluate(() => window.__perfControl?.dropCompare(true));
@@ -63,7 +67,7 @@ test("once the ETag is gone the read is unconditional and the answer is whole", 
 });
 
 test("an answer that changed replaces the kept one, and the new ETag is what is sent next", async ({ page, harness }) => {
-  await start(page, harness.url);
+  await start(page, harness);
   const before = await openDiff(page);
   await back(page);
 

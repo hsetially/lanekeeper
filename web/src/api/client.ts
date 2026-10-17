@@ -173,7 +173,12 @@ function parseJson<T>(text: string, status: number): T {
   }
 }
 
-function signalFor(problem: ApiProblem): void {
+/**
+ * What a problem means for the session: a 401 empties every cache and says "signed out", a 403 for a user with no role or a
+ * disabled one says so. `apiFetch` calls it for every failed response, and so does the live stream (src/live), which cannot
+ * use `apiFetch` (a stream never ends) but must route a 401 exactly the same way.
+ */
+export function signalSessionProblem(problem: ApiProblem): void {
   if (problem.status === 401) {
     apiCaches.clear();
     emitSessionSignal({ kind: "unauthenticated" });
@@ -252,7 +257,7 @@ async function interpret<T>(response: Response, url: string, cacheable: boolean,
   }
   if (!response.ok) {
     const problem = await problemFromResponse(response);
-    signalFor(problem);
+    signalSessionProblem(problem);
     throw problem;
   }
   if (response.status === 204 || response.status === 205) return undefined as T;

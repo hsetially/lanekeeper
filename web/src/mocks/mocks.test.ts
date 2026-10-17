@@ -43,7 +43,7 @@ const all: Array<{ scenario: string; response: MockResponse; sample?: Partial<Mo
 
 describe("scenarios", () => {
   it("has the sessions T1 needs and the data of the performance runs, and a default that exists", () => {
-    expect(Object.keys(scenarios)).toEqual(expect.arrayContaining(["admin", "disabled", "editor", "needs-token", "operator", "pending", "signed-out", "viewer", "perf", "perf-full", "perf-viewer"]));
+    expect(Object.keys(scenarios)).toEqual(expect.arrayContaining(["admin", "disabled", "editor", "needs-token", "operator", "pending", "signed-out", "viewer", "perf", "perf-full", "perf-viewer", "live"]));
     expect(scenarios[DEFAULT_SCENARIO]).toBeDefined();
   });
 

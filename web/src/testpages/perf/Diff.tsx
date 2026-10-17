@@ -4,17 +4,19 @@
 // file view will.
 import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { useCompareFile } from "@/api/generated/endpoints/compare/compare";
+import { useQuery } from "@tanstack/react-query";
 import { DiffView, type DiffViewHandle } from "@/components/app/diff/DiffView";
 import { diffStats } from "@/components/app/diff/rows";
 import { useEditorWarmup } from "@/editor/warm";
-import { keys } from "@/lib/query/keys";
+import { compareFileQuery } from "@/features/compare/queries";
+import { QUERY_STALE_MS } from "@/lib/query/client";
 import { resetLab, setLab } from "./lab";
 
 const PARAMS = { left: "nfs:swimlane-01", right: "git:base@main", file: "services/payments/application.yml" } as const;
 
 export function PerfDiff() {
-  const query = useCompareFile(PARAMS, { query: { queryKey: keys.compare(PARAMS.left, PARAMS.right, PARAMS.file, null) } });
+  // The page keeps the client's 15 s freshness so that what the spec measures (a warm, a revalidated and a cold diff) is what it was.
+  const query = useQuery({ ...compareFileQuery(PARAMS.left, PARAMS.right, PARAMS.file, null), staleTime: QUERY_STALE_MS });
   const [mode, setMode] = useState<"split" | "unified">("split");
   const ref = useRef<DiffViewHandle>(null);
   const hunks = query.data?.hunks;
