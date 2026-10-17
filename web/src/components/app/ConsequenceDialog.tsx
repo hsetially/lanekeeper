@@ -1,4 +1,4 @@
-import type { FormEvent, ReactNode } from "react";
+import type { ReactNode, SyntheticEvent } from "react";
 import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import type { dialogSizes } from "@/components/ui/dialog";
@@ -50,7 +50,7 @@ export function ConsequenceDialog({ open, onOpenChange, title, consequence, chil
     if (!next && working) return;
     onOpenChange(next);
   };
-  const submit = (event: FormEvent) => {
+  const submit = (event: SyntheticEvent) => {
     event.preventDefault();
     if (working || !canConfirm) return;
     onConfirm();

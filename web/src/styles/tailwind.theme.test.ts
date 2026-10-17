@@ -70,7 +70,7 @@ describe("handoff vocabulary", () => {
     expect(unlayered).toBeGreaterThan(layered);
     // The real value sits in a top-level (unlayered) :root rule, which beats any @layer rule.
     const before = css.slice(0, unlayered);
-    const depth = [...before].reduce((d, ch) => d + (ch === "{" ? 1 : ch === "}" ? -1 : 0), 0);
+    const depth = Array.from(before).reduce((d, ch) => d + (ch === "{" ? 1 : ch === "}" ? -1 : 0), 0);
     expect(depth).toBe(1); // inside :root { ... } only
     expect(before.slice(before.lastIndexOf("{") - 8, before.lastIndexOf("{"))).toMatch(/:root\s*$/);
   });

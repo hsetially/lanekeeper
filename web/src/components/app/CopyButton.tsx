@@ -35,14 +35,18 @@ export function CopyButton({ value, what, showLabel = false, className }: CopyBu
 
   const copy = () => {
     // The clipboard can be absent (insecure context) or refuse (permissions); neither may throw into the page.
-    const write = navigator.clipboard?.writeText(value);
-    if (!write) {
+    const clipboard = navigator.clipboard as Clipboard | undefined;
+    if (!clipboard) {
       settle("failed", FAILED_MS);
       return;
     }
-    write.then(
-      () => settle("copied", COPIED_MS),
-      () => settle("failed", FAILED_MS),
+    clipboard.writeText(value).then(
+      () => {
+        settle("copied", COPIED_MS);
+      },
+      () => {
+        settle("failed", FAILED_MS);
+      },
     );
   };
 

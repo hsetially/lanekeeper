@@ -1,0 +1,47 @@
+# The web app under the production CSP (prompt 08, S12). The page is served by the hub's own header code (the Rust example
+# `web_fixture`), with the mock API in front of it (web/e2e/harness), and a real Chromium drives it: every route, every overlay and
+# the editor, light and dark, failing on any CSP or Trusted Types violation. Actions are pinned by commit SHA (S19).
+# Later tasks add jobs to this file: the P10 performance gates and the filtered `cargo xtask bench-check` (08/T2), and the
+# `workflow_dispatch` job that bootstraps the visual baselines (08/T4).
+name: web-e2e
+on:
+  pull_request:
+    paths:
+      - "web/**"
+      - "crates/hub/**"
+      - "api/openapi.yaml"
+      - "Justfile"
+      - ".github/workflows/web-e2e.yml"
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: web-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: just web-install
+      # Playwright's own Chromium, for the pinned @playwright/test (web/e2e/harness/browser.ts finds it).
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: web
+      - run: just web-gen-check
+      # Builds the Rust fixture, the production dist (with the dist scan) and the perf-mode dist, then runs Playwright.
+      - run: just web-e2e

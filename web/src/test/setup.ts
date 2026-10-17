@@ -83,6 +83,8 @@ if (typeof window.matchMedia !== "function") {
 }
 
 Element.prototype.scrollIntoView = function scrollIntoView(): void {};
+// The router scrolls to the top on navigation; jsdom logs "not implemented" for it.
+window.scrollTo = (): void => {};
 
 // Radix pointer handling asks for these; jsdom does not implement them.
 Element.prototype.hasPointerCapture = (): boolean => false;

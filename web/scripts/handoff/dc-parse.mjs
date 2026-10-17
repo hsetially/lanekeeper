@@ -366,7 +366,8 @@ function ev(node, scope, ctx) {
       return node.operator === "!" ? !value : node.operator === "-" ? -value : +value;
     }
     default:
-      return refuse(node, "syntax");
+      refuse(node, "syntax");
+      return undefined;
   }
 }
 

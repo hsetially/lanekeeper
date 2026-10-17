@@ -2,8 +2,10 @@ import { join } from "node:path";
 import { ESLint } from "eslint";
 import { describe, expect, it } from "vitest";
 import { WEB_ROOT } from "../scripts/handoff/dc-parse.mjs";
+import { syntaxOnlyConfig } from "./syntax-config.mjs";
 
-const eslint = new ESLint({ cwd: WEB_ROOT, overrideConfigFile: join(WEB_ROOT, "eslint.config.js") });
+// A snippet is not a file of a tsconfig, so these run the rules that need no type information.
+const eslint = new ESLint({ cwd: WEB_ROOT, overrideConfigFile: true, overrideConfig: syntaxOnlyConfig });
 
 async function restricted(code, filePath) {
   const [result] = await eslint.lintText(code, { filePath: join(WEB_ROOT, filePath) });

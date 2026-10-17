@@ -73,7 +73,7 @@ describe("CopyButton and RequestId", () => {
     expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
     expect(screen.getByText("Copied", { selector: '[aria-live="polite"]' })).toBeInTheDocument();
     await act(async () => {
-      vi.advanceTimersByTime(1500);
+      await vi.advanceTimersByTimeAsync(1500);
     });
     expect(screen.getByRole("button", { name: "Copy hash" })).toBeInTheDocument();
     expect(screen.queryByText("Copied", { selector: '[aria-live="polite"]' })).not.toBeInTheDocument();

@@ -12,7 +12,7 @@ type Block = { selector: string; vars: [string, string][] };
 // WCAG 2.x relative luminance and contrast ratio, same formula as the Style Guide's `lum` and `ratio`.
 export function luminance(hex: string): number {
   let h = hex.replace("#", "");
-  if (h.length === 3) h = [...h].map((c) => c + c).join("");
+  if (h.length === 3) h = Array.from(h).map((c) => c + c).join("");
   if (!/^[0-9a-fA-F]{6}$/.test(h)) throw new Error(`not a hex colour: ${hex}`);
   const channel = (i: number): number => {
     const v = Number.parseInt(h.slice(i, i + 2), 16) / 255;

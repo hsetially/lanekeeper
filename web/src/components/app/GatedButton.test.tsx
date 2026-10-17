@@ -21,7 +21,7 @@ function Probe({ minRole, needsConnection }: { minRole?: string; needsConnection
 }
 
 describe("useWriteGate", () => {
-  const read = (): { allowed: boolean; reason: string | null } => JSON.parse(screen.getByTestId("gate").textContent ?? "null");
+  const read = (): { allowed: boolean; reason: string | null } => JSON.parse(screen.getByTestId("gate").textContent ?? "null") as { allowed: boolean; reason: string | null };
 
   it("allows a role at or above the minimum", () => {
     render(<Probe minRole="operator" />, { wrapper: withGate("admin") });

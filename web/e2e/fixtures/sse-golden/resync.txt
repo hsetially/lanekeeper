@@ -1,0 +1,3 @@
+event: resync
+data: {"type":"resync"}
+

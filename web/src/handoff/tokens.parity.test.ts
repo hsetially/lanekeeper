@@ -83,7 +83,7 @@ describe("colour tokens against the Engineering Handoff tables", () => {
 const norm = (v: string): string => v.replace(/\s+/g, "").replace(/(^|[^0-9])0\./g, "$1.").toLowerCase();
 
 function otherTable(): string[][] {
-  const call = page.calls("sec").find((c: { arguments: { value?: string }[] }) => c.arguments[0]?.value === "tok-other");
+  const call = (page.calls("sec") as { arguments: { value?: string }[] }[]).find((c) => c.arguments[0]?.value === "tok-other");
   if (!call) throw new Error("no tok-other table");
   return (page.evalArg(call, 7) as unknown[][]).map((row) => row.map((c) => (typeof c === "string" ? c : (c as { t: string }).t).replace(/^`/, "")));
 }

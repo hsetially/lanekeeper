@@ -1,0 +1,4 @@
+id: 42
+event: findings_changed
+data: {"type":"findings_changed","swimlane":"sit1"}
+
