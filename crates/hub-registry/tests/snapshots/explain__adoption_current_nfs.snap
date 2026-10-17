@@ -1,0 +1,14 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: current_nfs
+---
+[
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "file_state"
+  },
+  {
+    "index": "file_state_prefix_idx",
+    "node": "Bitmap Index Scan"
+  }
+]

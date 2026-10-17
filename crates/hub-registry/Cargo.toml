@@ -10,3 +10,149 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+domain.workspace = true
+# `postgres` gives `Tx::from_pg`: the registry hands its open transaction to `AuditLog::record` and `EventBus::publish_in_tx` (D80).
+ports = { workspace = true, features = ["postgres"] }
+# The fact engine (D33): the class of a file, its format, the drift hash, the path mapping and the roles. No other crate computes them.
+engine.workspace = true
+# `Job`, `JobSpec` and `JobContext`: the leased jobs (the index sweeper from T2, the pipeline from T3). Plan A9: the registry depends on
+# hub-platform for these and for `GuardedRouter`, `ApiError` and `BlobPolicy` (T6), and for nothing else.
+hub-platform.workspace = true
+async-trait.workspace = true
+# The read API's routes (T6, plan A9): handlers, the typed query extraction and the response types. `GuardedRouter` is hub-platform's.
+axum.workspace = true
+# Cursors (T6, A31): base64url of a small binary key, never of a path.
+base64.workspace = true
+bytes.workspace = true
+futures.workspace = true
+# The tags of the content reads (T6) are hex of a SHA-256 prefix.
+hex.workspace = true
+# `Method`, `HeaderMap`, `StatusCode`, `ETag` headers of the REST edge (the same crate axum and hub-platform use).
+http.workspace = true
+# The admin's branch patterns (`path_mappings.branch_include` and `branch_exclude`, T4) are globs, matched with the crate the engine and the
+# agent already use for their globs. Already pinned.
+globset.workspace = true
+# The bounded cache of normalised Git hashes (T2, plan A23): weighed in bytes, never more than `git_hash_cache_bytes`. Already pinned.
+moka.workspace = true
+prometheus-client.workspace = true
+# The settings index parses on a pool of its own (T2, rule 4: CPU work is rayon inside `spawn_blocking`). Already pinned.
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The fingerprint of the rules a swimlane is computed under (T3). Already pinned.
+sha2.workspace = true
+thiserror.workspace = true
+# Runtime-checked queries with binds (plan A39): `query!` needs a live database or `.sqlx` metadata at compile time, which the xtask
+# harness does not have. `json` is for the `jsonb` columns.
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+ports = { workspace = true, features = ["fakes", "postgres"] }
+# `JobContext::held_until_told_otherwise`: a test runs a job without a runner.
+hub-platform = { workspace = true, features = ["fakes"] }
+# The real `PgAuditLog` (P15, T1): the ingestion tests and the P15 benchmark run the registry against the audit log the hub runs, so that
+# `AuditLog::record_many` is the real one-lock, one-insert batch and not a loop. Tests and benchmarks only, never the library.
+hub-identity.workspace = true
+# `EXPLAIN (FORMAT JSON)` snapshots of the hot queries (P12, T2 on).
+insta = { workspace = true, features = ["json"] }
+# The HTTP tests and benchmarks (T6) call the real router with `oneshot` and read the whole body.
+tower = { workspace = true, features = ["util"] }
+http-body-util.workspace = true
+# The OpenAPI schema walker of `tests/support/openapi.rs` (plan A43) reads `api/openapi.yaml` with the YAML reader the workspace already pins.
+serde-saphyr.workspace = true
+# `pattern` of the schema walker: ripgrep's matcher, which the engine already builds its searches on (linear time, no new crate).
+grep-regex.workspace = true
+grep-matcher.workspace = true
+# Real Postgres 16 with pgvector (a container, or `LK_TEST_PG_ADMIN_URL`), migrated as lanekeeper_migrator and used as lanekeeper_app.
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "json", "migrate"] }
+testcontainers.workspace = true
+# The synthetic fixtures (`xtask::fixtures::generate`): tests and benchmarks ingest real-shaped files, never toy data (rule 12).
+xtask.workspace = true
+tempfile.workspace = true
+proptest.workspace = true
+# The benchmark of the base cost of an incremental recompute (T3, P5) is criterion's; the others write their own results.
+criterion.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+
+# P15 (T1): the registry applying a replayed spool of 360 messages of 50 versions, audit and outbox included, over a real Postgres.
+[[bench]]
+name = "ingest_versions_per_s"
+harness = false
+
+# P5 (T3), the base cost of an incremental recompute of one changed file, criterion.
+[[bench]]
+name = "incremental_recompute_base"
+harness = false
+
+# P5 (T3), 100 changed files in each of 10 swimlanes in one batch.
+[[bench]]
+name = "incremental_recompute_per_file_per_swimlane"
+harness = false
+
+# P6 (T3), the nightly full recompute of 40 swimlanes with the database reads and writes.
+[[bench]]
+name = "full_recompute_target_scale"
+harness = false
+
+# P1 (T3), a scan delta to DriftChanged in the outbox, through the job and the real event bus.
+[[bench]]
+name = "delta_to_drift_changed"
+harness = false
+
+# P2 (T3), a moved head to DriftChanged for all 40 swimlanes.
+[[bench]]
+name = "head_moved_to_drift"
+harness = false
+
+# P6 (T5), ranking the deployable branches of one swimlane for the adoption pass: 120 starts over the 40 swimlanes of the target scale.
+[[bench]]
+name = "adoption_rank_per_swimlane"
+harness = false
+
+# P7 (T6): the read API through the router at target scale, over the read bed (every swimlane computed and indexed).
+[[bench]]
+name = "swimlane_list"
+harness = false
+
+[[bench]]
+name = "file_tree"
+harness = false
+
+[[bench]]
+name = "file_content_cached"
+harness = false
+
+[[bench]]
+name = "file_content_cold"
+harness = false
+
+[[bench]]
+name = "compare_6000_lines"
+harness = false
+
+[[bench]]
+name = "grid_40_swimlanes"
+harness = false
+
+[[bench]]
+name = "whole_swimlane_compare"
+harness = false
+
+[[bench]]
+name = "search_settings_all_swimlanes"
+harness = false
+
+[[bench]]
+name = "search_text_all_swimlanes"
+harness = false
+
+[[bench]]
+name = "steady_state_queries"
+harness = false
+
+# P14 (T7): a sentinel's record attributes a change within 30 s, with the leased job running at its interval, at the scale of one target swimlane.
+[[bench]]
+name = "sentinel_attribution"
+harness = false

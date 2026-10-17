@@ -1,0 +1,30 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: services
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Hash Join"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "service_state"
+  },
+  {
+    "node": "Hash"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "services"
+  },
+  {
+    "index": "services_swimlane_id_namespace_name_key",
+    "node": "Bitmap Index Scan"
+  }
+]

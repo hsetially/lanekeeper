@@ -1,0 +1,14 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: current_blobs
+---
+[
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "baselines"
+  },
+  {
+    "index": "baselines_pkey",
+    "node": "Bitmap Index Scan"
+  }
+]

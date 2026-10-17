@@ -1,0 +1,15 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: drop
+---
+[
+  {
+    "node": "ModifyTable",
+    "relation": "tool_write_registrations"
+  },
+  {
+    "index": "tool_write_registrations_pkey",
+    "node": "Index Scan",
+    "relation": "tool_write_registrations"
+  }
+]

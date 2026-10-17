@@ -2893,6 +2893,42 @@ dependencies = [
 [[package]]
 name = "hub-registry"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "criterion",
+ "domain",
+ "engine",
+ "futures",
+ "globset",
+ "grep-matcher",
+ "grep-regex",
+ "hex",
+ "http",
+ "http-body-util",
+ "hub-identity",
+ "hub-platform",
+ "insta",
+ "moka",
+ "ports",
+ "prometheus-client",
+ "proptest",
+ "rayon",
+ "serde",
+ "serde-saphyr 1.1.0",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tempfile",
+ "testcontainers",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tracing",
+ "xtask",
+]
 
 [[package]]
 name = "hub-writes"

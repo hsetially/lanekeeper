@@ -1,0 +1,20 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: findings
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "findings"
+  },
+  {
+    "index": "findings_list_idx",
+    "node": "Bitmap Index Scan"
+  }
+]

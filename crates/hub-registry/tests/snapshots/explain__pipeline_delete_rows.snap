@@ -1,0 +1,18 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: delete_rows
+---
+[
+  {
+    "node": "ModifyTable",
+    "relation": "file_state"
+  },
+  {
+    "node": "Bitmap Heap Scan",
+    "relation": "file_state"
+  },
+  {
+    "index": "file_state_prefix_idx",
+    "node": "Bitmap Index Scan"
+  }
+]

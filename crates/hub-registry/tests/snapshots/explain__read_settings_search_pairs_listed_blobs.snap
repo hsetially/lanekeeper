@@ -1,0 +1,14 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: plan
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "index": "settings_index_pkey",
+    "node": "Index Scan",
+    "relation": "settings_index"
+  }
+]

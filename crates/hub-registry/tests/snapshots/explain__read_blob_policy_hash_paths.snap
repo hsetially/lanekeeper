@@ -1,0 +1,33 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: plan
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "index": "file_observations_hash_idx",
+    "node": "Index Scan",
+    "relation": "file_observations"
+  },
+  {
+    "index": "file_state_prefix_idx",
+    "node": "Index Scan",
+    "relation": "file_state"
+  },
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Result"
+  },
+  {
+    "index": "file_observations_history_idx",
+    "node": "Index Scan",
+    "relation": "file_observations"
+  }
+]

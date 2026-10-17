@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 05f95d89ad955f49db5f3ba0132f92358062b72c0a9a6eaa06030013b8f80a94 # shrinks to name = "pay.yml", apps = ["pay"]

@@ -1,0 +1,20 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: baselines
+---
+[
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Function Scan"
+  },
+  {
+    "index": "baselines_pkey",
+    "node": "Index Scan",
+    "relation": "baselines"
+  }
+]

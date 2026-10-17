@@ -1,0 +1,16 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: upsert_rows
+---
+[
+  {
+    "arbiters": [
+      "file_state_pkey"
+    ],
+    "node": "ModifyTable",
+    "relation": "file_state"
+  },
+  {
+    "node": "Function Scan"
+  }
+]

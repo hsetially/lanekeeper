@@ -1,0 +1,21 @@
+---
+source: crates/hub-registry/tests/explain.rs
+expression: insert_refs
+---
+[
+  {
+    "node": "ModifyTable",
+    "relation": "blob_refs"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Function Scan"
+  },
+  {
+    "index": "blobs_pkey",
+    "node": "Index Only Scan",
+    "relation": "blobs"
+  }
+]
