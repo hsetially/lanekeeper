@@ -16,18 +16,18 @@ Base commit `20155b4` (`origin/main`, which holds prompts 01 to 07, `contract/08
 
 **What changed since the audit.** Two merges (PR #19 prompt 05, PR #20 `contract/08-web`) closed or narrowed seven findings (H-1, H-4, H-7, H-8, H-9, H-12, M-8) and changed the fix for four more (H-2, C-2, C-3, C-4; table "Re-baseline"). Two examples: the six `allOf` schemas (H-1) are fixed in the spec, and masking (C-4) is no longer "no contract" but "contract merged, nobody built it" (D128). The audit's snippets for H-2, H-8, C-2 and C-4 would now duplicate or contradict what is on `main`, so this plan replaces them.
 
-**How the work is cut.** 16 packages in five waves (wave D resumes existing prompts and adds none):
+**How the work is cut.** 17 packages in five waves (wave D resumes existing prompts and adds none):
 
 | Wave | Packages | Kind | Gate |
 |---|---|---|---|
-| 0 | this plan, decisions A1 to A18 | human | approve and answer |
-| A | P1 agent protocol and guard script; P2 amended prompts; P3 new prompts 18 and 19; P4 records | Markdown and one script, no contract path, no Rust | one human review each |
+| 0 | this plan, decisions A1 to A19 (A1 to A5 answered on 17 Oct 2026, see "Ambiguities and open questions") | human | approve and answer the rest |
+| A | P1 agent protocol and guard script; P2 amended prompts; P3 new prompts 18 and 19, README rows for 18 to 20 (prompt 20 is written separately, see A4); P4 records | Markdown and one script, no contract path, no Rust | one human review each |
 | B | C1 errors and edges; C2 adoption (`contract/08-adoption`); C3 admin registration; C4 shapes and the MCP document | contract PRs, merged in this order | each: own plan, human approval, label `contract-change` |
-| C | R1 prompt 18 hub integration; R2 03a fix; R3 06 fix; R4 07 fix; R5 05 fix (adoption, effective hash, served limit); R6 05 fix (masking); R7 prompt 19 admin API | code, each against its merged contract | each: plan, gate `just verify-NN`, `just verify`, bench-check, reviewer |
+| C | R0 03b fix (CSRF in the guard, B16, idempotency helper), then R1 prompt 18 hub integration; R2 03a fix; R3 06 fix; R4 07 fix; R5 05 fix (adoption routes, effective hash, served limit); R6 prompt 20 read-response masking (built later, see A4); R7 prompt 19 admin API | code, each against its merged contract | each: plan, gate `just verify-NN`, `just verify`, bench-check, reviewer |
 | D | resume prompts 08, 09, 14, 17, then 15, 16 (and 10, 11) with the amended text | existing prompts | as in `prompts/README.md` |
 | E | P5 docs restructure (split `threat-model.md` and `decisions.md`) | optional, last | only if A14 says yes |
 
-**What needs a human first** (all have a default, so nothing is blocked on silence, but A1 to A5 shape the contracts): A1 adoption scope, A2 who owns admin registration, A3 how hub composition gets its guard paths, A4 who builds masking and what to do about the search and compare oracles, A5 the spelling of problem types (the audit's rename conflicts with a merged "nothing is renamed").
+**Answered on 17 Oct 2026:** A1 the full wizard; A3 a 03b fix first (WP-R0); A4 a separate prompt 20 that builds masking later; A5 no problem-type rename; A2 in part (only admins add admins and register swimlanes, agents and sentinels). **Still open:** how the first admin is created and where the agent's service account lives (A2, A19), then A6 to A18, each with a default, so nothing is blocked on silence.
 
 **Done means** every audit ID in "Traceability" is `closed` with the named proof, or `human exception` with a D# in `docs/decisions.md`; `just verify` and `cargo xtask bench-check --strict` pass on `main`; the composed route table equals `api/openapi.yaml` except for a named list that is empty before the pilot.
 
@@ -86,15 +86,15 @@ Verify: `just lk-test` with new tests `a_verdict_is_line_one_and_nothing_else`, 
 
 Verify: `just lk-test`; `node scripts/lk.mjs info NN` for every prompt still returns wave, owns and stack; a check that no prompt still contains `WalkParallel`, `sqlx prepare`, an instruction to publish `PendingRestartChanged`, "multi-replica" under v2 or "previous bundle" (a grep, its output pasted in the PR).
 
-**WP-P3 new prompts 18 and 19** (`docs/audit-new-prompts`, S; after A2 and A3). Closes the prompt half of C-1 and C-3.
+**WP-P3 new prompts 18 and 19, and the README rows for 18 to 20** (`docs/audit-new-prompts`, S). Closes the prompt half of C-1 and C-3. Prompt 20 (`prompts/20-read-masking.md`, A4) is written as its own step, not by P3 (as of this commit it does not exist yet); P3 only gives it its README row and rereads it with the other two.
 
 | Task | Commit | Change |
 |---|---|---|
-| T1 | `audit/P3/T1: prompt 18, hub integration` | The audit's C-1 prompt, adjusted: scope adds the B16 types and the idempotency helper (H-9, H-6), the route-table test (H-10), the leased jobs, the migration runner, `retention_dry_run = true` (A7), request ids and the duplicate-route `BuildError`; **Amended by** D109, D112, D116, D118; Extra-paths (A3); the S3 test covers every non-GET composed route; P7 auth and P11 measured with every module. |
+| T1 | `audit/P3/T1: prompt 18, hub integration` | The audit's C-1 prompt, adjusted: the CSRF step, the B16 types and the idempotency helper are not here (R0 lands them first, A3), so 18 owns the composition: the production `SessionAuth` over hub-identity, the route-table test (H-10), the leased jobs, the migration runner, `retention_dry_run = true` (A7), request ids and the duplicate-route `BuildError`; it takes over `crates/hub/**` from 03b; **Amended by** D109, D112, D116, D118; the S3 test covers every non-GET composed route; P7 auth and P11 measured with every module. |
 | T2 | `audit/P3/T2: prompt 19, admin API` | Owns `crates/hub-admin/**`; T1 registration (C-3), T2 every other `admin*` operation not built by 03a (explicit list, `adminListAudit` among them, with the D38 fields of H-11), T3 schema alignment (H-22); each write audits in its own transaction (rule 8) and honours `Idempotency-Key`; join tokens are never replayed (H-6). |
-| T3 | `audit/P3/T3: README rows and the owner of D112 A7` | Wave 2.5 rows in `prompts/README.md` and the shared-work table. Needs P1 T4 first: until the wave parser accepts decimals, `2.5` reads as wave 2. |
+| T3 | `audit/P3/T3: README rows and the owner of D112 A7` | Wave 2.5 rows for 18, 19 and 20 in `prompts/README.md` and the shared-work table, and the note that 18 takes over `crates/hub/**` composition from 03b and 20 takes the registry's read edge for masking. Needs P1 T4 first: until the wave parser accepts decimals, `2.5` reads as wave 2. |
 
-Verify: `node scripts/lk.mjs info 18`, `info 19` (wave prints as 2.5), `deps 18`, `list --wave 2.5`, and `list --wave 2` does not list them.
+Verify: `node scripts/lk.mjs info 18`, `info 19`, `info 20` (wave prints as 2.5), `deps 18`, `list --wave 2.5`, and `list --wave 2` does not list them.
 
 **WP-P4 records** (`docs/audit-records`, S). Closes M-22, M-23, the record items of the Low batch, H-18's decision amendment and the `CHANGES.md` half of M-12.
 
@@ -126,11 +126,11 @@ Common process (skill `lanekeeper-contract-change`). Each package: a planner wri
 
 Verify: `just verify-01`; `cargo test -p ports --test openapi_conventions --test web_contract_allof --test web_contract_problems --test web_contract_global`; new tests `every_no_store_operation_uses_the_no_replay_key`, `every_operation_declares_429_and_503`, `every_body_operation_declares_413`, `path_and_ref_patterns_agree_with_their_parsers` (differential, with the proptest corpus of `domain`), `allof_composites_validate_real_bodies`.
 
-**WP-C2 adoption and intentional divergence** (`contract/08-adoption`, M; after A1). Closes the contract half of C-2.
+**WP-C2 adoption and intentional divergence** (`contract/08-adoption`, M; A1 decided: the full wizard). Closes the contract half of C-2.
 
 - Operations, tag `adoption`, every non-GET with `X-CSRF-Token`, `Idempotency-Key` and `x-required-role`: read the open pass or tenant re-match review, the wizard steps CG6 lists (choose branch, choose base, resolve, cancel), `adminConfirmAdoption` (Admin; its 200 says `editing_unlocked`; 409 `ConflictState` when the pass changed), `markIntentional` and `clearIntentional` (Operator; 409 `ConflictState` or `Conflict` when a hash moved).
 - Schemas `AdoptionProposal`, `AdoptionConfirmRequest`, `AdoptionResult`, `IntentionalDivergenceRequest`, every string and array bounded, derived from the typed inputs of `crates/hub-registry/src/adoption/confirm.rs` and from migration `0003_registry.sql:196-243` (the five steps win over the three vocabularies of the handoff).
-- `lost_version` on `Finding` only if A1 includes it. The `lock` cause (CG4b) only if A17 says so.
+- `lost_version` on `Finding` is included: the S6b screen's "restore a lost version" needs the lost hash, and the restore itself is the existing `revertFile`. That is my reading of "full wizard" (CG6 lists it with the wizard); it is one optional field and one commit, so say so if you want it out. The `lock` cause (CG4b) only if A17 says so.
 - `crates/ports/tests/web_contract_global.rs`: rows in `new_operations_name_their_audit_action_or_say_why_not` for each operation (confirm: `BaselineAdopted`; marks: `DriftMarkedIntentional`, `DriftMarkCleared`; wizard steps: none, stated).
 
 Verify: as the common process, plus `cargo test -p ports --test web_contract_global` and the registry conformance hook `RegistryScenario::set_open_adoption`.
@@ -160,23 +160,34 @@ Verify: as the common process; `cargo test -p xtask --test mcp_tools_doc`, `just
 
 Each runs the protocol of AGENTS.md: a plan in `plans/`, approval, one commit per task, `just verify-NN`, `just verify`, `cargo xtask bench-check`, evidence, reviewer. The owner crates are merged prompts, so each is a fix round (A15, A16): its plan lists the owner's paths as owned and names no other crate except where "Extra-paths" says so.
 
-**WP-R1 prompt 18, hub integration** (`agent/18-hub-integration`, L; after P3, C1). Closes C-1, H-10, H-9 (code), H-6 (helper), M-1, M-2, M-3, the hub half of H-16 (A12) and the code items of the Low batch.
+**WP-R0 03b fix, the guard first** (`agent/03b-guard-csrf`, S to M; after C1, before R1). A3 decided: the 03b fix goes first. 03b owns both `crates/hub-platform/**` and `crates/hub/**`, so this package needs no Extra-paths. Closes the guard half of C-1, H-9 (code), H-6 (helper) and, if A12 says yes, the heartbeat stamp of H-16.
 
 | Task | Commit | Change |
 |---|---|---|
-| T1 | `18/T1: one guard stack with CSRF` | `SessionAuth::verify_csrf`, default-deny, called in `guard` right after authentication, new `ApiError::CsrfRejected` (403, problem type `csrf`); `crates/hub/src/identity.rs` implements it over hub-identity's `csrf::check`; the B16 types `AccessPending`, `AccessDisabled`, `InsufficientRole` in the guard and in `auth_failure` (A5 sets the spelling); `require_idempotency_key` helper in hub-platform (H-6). `crates/hub/tests/guard.rs:41-44` now asserts 403 without the token or with another `Origin`, and 200 with both. `/mcp` stays self-authenticating (D109 D-1); the webhook is HMAC (S18). |
+| T1 | `03b/fix: S3 in the one guard` | `SessionAuth::verify_csrf`, default-deny, called in `guard` right after authentication; new `ApiError::CsrfRejected` (403, problem type `csrf`, the spelling identity already uses); every fake and test that implements `SessionAuth` is updated in the same commit; `crates/hub/tests/guard.rs:41-50` stops asserting 200 and asserts 403 without the double-submit token or with another `Origin`, and 200 with both (a `status_with_csrf` helper). `/mcp` stays self-authenticating (D109 D-1); the webhook is HMAC (S18). |
+| T2 | `03b/fix: B16 on platform routes` | `AccessPending`, `AccessDisabled`, `InsufficientRole` in `guard` and `auth_failure`, with identity's spellings (`access-pending`, `access-disabled`, `insufficient-role`), because A5 decided there is no rename; test: a pending, a disabled and a low-role user get three different problems on one platform route. |
+| T3 | `03b/fix: one Idempotency-Key check` | `require_idempotency_key` in `crates/hub-platform/src/routes.rs` (D68): exactly one header, matching the contract's pattern, else 400. |
+| T4 (A12) | `03b/fix: the sentinel heartbeat is stamped` | `SentinelHeartbeat` stamps `sentinels.last_seen_at` (`sentinel_service.rs:333` drops it today). |
+
+Verify: `just verify-03b`; `cargo test -p hub-platform`; `cargo test -p hub --test guard`; P7 auth re-measured with the CSRF step (`cargo xtask bench-check`). The platform threat-model rows for S3 and S4 are updated in the last commit.
+
+**WP-R1 prompt 18, hub integration** (`agent/18-hub-integration`, L; after P3, C1, R0). Closes the composition half of C-1, H-10, M-1, M-2, M-3, the hub half of H-16 (A12) and the code items of the Low batch.
+
+| Task | Commit | Change |
+|---|---|---|
+| T1 | `18/T1: the production SessionAuth` | `crates/hub/src/identity.rs` implements `verify_csrf` over hub-identity's `csrf::check` and `AuthContext`; 03a's ten routes are re-registered through an `IdentityModule` that keeps B16's types, and hub-identity's own router is deleted or test-gated. `cargo test -p hub --test csrf`: every non-GET route of the composed table answers 403 without the token or with another `Origin`, `/api/v1/me/mcp-tokens` included (D109 D-2). |
 | T2 | `18/T2: mount every module and test the whole table` | Registry, writes, MCP, events, blobs and git mounted through `Module`; `RegistryBlobPolicy` on `/api/v1/blobs/{hash}`; `crates/hub/tests/route_table_full.rs` compares the composed table with `api/openapi.yaml`, with `NOT_YET_BUILT` and `NOT_IN_SPEC` as explicit `const` lists naming an owner and a prompt, and fails on a route registered twice (H-10); a duplicate route is a `BuildError`, not an axum panic. |
 | T3 | `18/T3: edge hardening` | Streaming JSON depth limit replacing the buffer-then-scan (`limits.rs:216-236`) so nothing is buffered before authentication (M-1); `catch_panic` inside `normalize_errors` and `unreachable = "deny"`, `indexing_slicing = "warn"` in `[workspace.lints.clippy]` (M-2); authenticate before a 404 under `/api` (M-3, after T1's B16 types); one `RequestId` generator read by writes, MCP and identity. |
-| T4 | `18/T4: background work and start-up` | Every leased job that 05 and 06 export registered (a test fails if one is not), `spawn_warmup`, the gateway given the registry's `ReportSink` and `SentinelSink`, 06 given the registry's `ToolWrites`; retention starts with `retention_dry_run = true` (A7); migrations run as `lanekeeper_migrator` before the app pool opens; `main` starts with every module; `just dev` starts the hub; if A12 says yes, `SentinelHeartbeat` stamps `sentinels.last_seen_at` and a leased job raises `sentinel_silent` after N missed beats. |
+| T4 | `18/T4: background work and start-up` | Every leased job that 05 and 06 export registered (a test fails if one is not), `spawn_warmup`, the gateway given the registry's `ReportSink` and `SentinelSink`, 06 given the registry's `ToolWrites`; retention starts with `retention_dry_run = true` (A7); migrations run as `lanekeeper_migrator` before the app pool opens; `main` starts with every module; `just dev` starts the hub; if A12 says yes, a leased job raises `sentinel_silent` after N missed beats (the stamp it reads is R0 T4). |
 | T5 | `18/T5: threat model, P7 and P11` | The "Hub composition (18)" section of `docs/threat-model.md`; P7 auth measured with the CSRF step, P11 with every module mounted. |
 
-Extra-paths (A3): `crates/hub-platform/src/routes.rs`, `error.rs`, `session_auth.rs`, `sentinel_service.rs` and their tests; `Cargo.toml` (lints); `Justfile` (`verify-18`, `just dev`); `perf/budgets.toml` (a row for the streaming depth check, a contract path). Verify: `cargo test -p hub --test csrf --test route_table_full --test jobs --test guard`; `just verify-18`; `cargo xtask bench-check`. New fuzz target `crates/hub/fuzz/depth_scanner` (the depth scanner parses untrusted bytes, rule 13).
+Extra-paths: `Cargo.toml` (lints); `Justfile` (`verify-18`, `just dev`); `perf/budgets.toml` (a row for the streaming depth check, a contract path). Nothing in `crates/hub-platform`: R0 did that (A3). Verify: `cargo test -p hub --test csrf --test route_table_full --test jobs --test guard`; `just verify-18`; `cargo xtask bench-check`. New fuzz target `crates/hub/fuzz/depth_scanner` (the depth scanner parses untrusted bytes, rule 13).
 
 **WP-R2 03a fix** (`agent/03a-audit-verify-state`, S; after C1). Closes H-20; H-6 (the four hub-identity writes); H-8 (the identity 409s and 429s).
 
 - `crates/hub-identity/src/audit/verify.rs`: `unfinished_in_a_row` is read and written in `audit_verify_state` under the verifier's lease; the column names are checked against `db/migrations/0002_audit_verify_state.sql` first. Test `a_restart_between_two_unfinished_nights_still_alerts`.
-- The four writes call `require_idempotency_key` (R1 T1, or the same helper copied behind the same name if R1 has not merged).
-- If A5 says rename, identity builds every problem through `hub_platform::error::problem_body`; the default does nothing here.
+- The four writes call `require_idempotency_key` (R0 T3).
+- A5 decided no rename, so identity's problem types stay as they are and nothing else changes here.
 
 **WP-R3 06 fix** (`agent/06-write-fixes`, M; after C1, C4). Closes H-2 (server), H-19, H-6 (reveal, tokens), H-7 (code), H-8 (code), H-12 (workaround), M-15 (the S14b form).
 
@@ -198,7 +209,7 @@ Extra-paths (A3): `crates/hub-platform/src/routes.rs`, `error.rs`, `session_auth
 - H-21: per A11, the engine adds `application-<tenant>.*` to `Layers` and the batch recomputes through `property_view`; regression test `an_edit_to_application_sit1_moves_the_effective_hash_and_the_drift`.
 - M-24: a per-user `RateLimiter<UserId>` in front of `served_slots.try_acquire()` (429 with `Retry-After`), and 4 slots reserved for the nightly verify job; test `one_viewer_cannot_take_every_served_slot`; `served` benchmark unchanged in `bench-check`.
 
-**WP-R6 05 fix, masking** (`agent/05-masking`, L; after A4). Closes C-4 (build), and the blob half of S14b.
+**WP-R6 prompt 20, read-response masking** (`agent/20-read-masking`, L; built later, when the human schedules it, and before prompts 15 and 08 T5; A4 decided). Closes C-4 (build) and the blob half of S14b. Its work order is `prompts/20-read-masking.md` (written as its own step; the owned and extra paths below are a first sketch that the prompt and its plan settle).
 
 - Mask every read response at the REST edge with the `Mask` lists of the merged contract; a scan cache keyed by `(content hash, scan configuration)`; the registry's `BlobPolicy` refuses the hash of a text file that the scan flags (`getBlob`); a benchmark and a row in `perf/budgets.toml` (a contract path: the plan says so and a human approves it); a planted-key test over every read operation (`getFileContent`, `getBlob`, `compareFile`, `compareTree`, `searchText`, `getGrid`, `searchSettings`, `getServedFile`).
 - Prompt 08 T5's masking test and edit-mode switch-off depend on this package.
@@ -239,7 +250,7 @@ Every audit ID, its status at `20155b4`, the package that closes it and the proo
 
 | ID | Status at `20155b4` | Package | Proof |
 |---|---|---|---|
-| C-1 | open | P3 (prompt), R1 | `guard.rs` asserts 403 without token or `Origin`; `route_table_full`; `csrf` over every non-GET composed route |
+| C-1 | open | R0 (guard), P3 (prompt), R1 (composition) | `guard.rs` asserts 403 without token or `Origin` (R0); `route_table_full`; `csrf` over every non-GET composed route (R1) |
 | C-2 | open; CG6 deferred to `contract/08-adoption` | C2, R5 | `new_operations_name_their_audit_action_or_say_why_not` rows; registry conformance with `set_open_adoption`; a confirm unlocks writes end to end (new) |
 | C-3 | open; CG15 deferred | C3, P3, R7 | no unimplemented spec operation in `route_table_full` |
 | C-4 | contract merged, build missing (D128) | R6, A4 | planted-key test over every read operation; blob policy test; bench row |
@@ -248,17 +259,17 @@ Every audit ID, its status at `20155b4`, the package that closes it and the proo
 | H-3 | open | R4, C4 | seeded-marker test in `read_tools.rs` |
 | H-4 | REST half closed | C4, R3 (mount), R4 | `listMyDrafts` in the route table; draft-mode summaries test |
 | H-5 | open | P2 (text), R4 (defaults) | acceptance rows in 09 and 15; `mcp-t0-status --strict` at go-live |
-| H-6 | open | C1, R1, R2, R3 | `every_no_store_operation_uses_the_no_replay_key`; a write without the header answers 400 on every write route (new, in `route_table_full`) |
+| H-6 | open | C1, R0, R2, R3 | `every_no_store_operation_uses_the_no_replay_key`; a write without the header answers 400 on every write route (new, in `route_table_full`) |
 | H-7 | partly closed | C1, R3 | `every_operation_declares_429_and_503`; `agent_unavailable` is 503 (new) |
 | H-8 | partly closed | C1, R2, R3 | conflicts answer `ConflictState` with `conflict` (new) |
-| H-9 | spec half closed | C1, R1, A5 | pending, disabled and low role give three distinct problems on a platform route (new) |
+| H-9 | spec half closed | C1, R0 (A5: no rename) | pending, disabled and low role give three distinct problems on a platform route (new) |
 | H-10 | open | R1 | `composed_hub_route_table_matches_openapi` |
 | H-11 | open | C4, R7 | audit read schema test with `sync`, `agent_detected` and `chain` (new) |
 | H-12 | mostly closed | C4, R3 | workaround deleted; `params` and `pr_job_id` in the conformance |
 | H-13 | open | P2, P1 (protocol) | the grep check of P2 |
 | H-14 | open | P1, P2 | review of the Stop sections |
 | H-15 | open | P1 | `a_verdict_is_line_one_and_nothing_else` |
-| H-16 | open | P2 (text), C4, R1 (A12) | fake-hub tests in prompt 17; heartbeat stamp and job test (new) |
+| H-16 | open | P2 (text), C4, R0 (stamp) and R1 (job), A12 | fake-hub tests in prompt 17; heartbeat stamp and job test (new) |
 | H-17 | open | P2 (text), Wave D 09 | prompt 09's acceptance |
 | H-18 | open | P2, P4 (D70), Wave D 15 and 16 | acceptance rows |
 | H-19 | open | R3 | `a_delete_through_the_tool_is_attributed_tool_write_and_raises_no_file_change` |
@@ -268,7 +279,7 @@ Every audit ID, its status at `20155b4`, the package that closes it and the proo
 | H-23 | open | P2 (text), Wave D 16 | `crates/agent/tests/nfs_real_mount.rs` run against a pilot mount |
 | M-1 | open | R1 | streaming depth test and fuzz target `depth_scanner` |
 | M-2 | open | R1 | a panicking handler answers a 500 problem (new) |
-| M-3 | open | R1 | an anonymous caller gets 401 and a pending user 403 under `/api` (new) |
+| M-3 | open | R1 (after R0's B16 types) | an anonymous caller gets 401 and a pending user 403 under `/api` (new) |
 | M-4 | open | C1 | `return_to` pattern test with `/\t/evil.example` (new) |
 | M-5 | open | C1 | `path_and_ref_patterns_agree_with_their_parsers` |
 | M-6 | open | C1 | `every_body_operation_declares_413` |
@@ -320,11 +331,11 @@ Every row has a default, so a silent approval means the default. "Yes" means a h
 
 | Id | Question | Where it came from | Proposed default (configurable) | Needs a human? |
 |---|---|---|---|---|
-| A1 | **Adoption scope.** The audit asks for three operations; `contract/08-web` Q2 and Q13 foresaw the whole wizard (CG6). Does C2 carry the wizard, `lost_version` on `Finding`, and the mark and clear operations? | C-2; `plans/contract-08-web.md` Q2, Q13 | Yes to the wizard and the marks, no to `lost_version` (derivable from `revertFile`) | **Yes** |
-| A2 | **Who owns admin registration, and where does an agent's service account live (S5)?** | C-3; D112 A7; CG15 named 05 | A new prompt 19 and `crates/hub-admin`; fields taken from the tables, and a stop if the tables hold no service account | **Yes** |
-| A3 | **How does hub composition touch `hub-platform`?** The CSRF step and the B16 types live in `crates/hub-platform`, which prompt 03b owns. | C-1; AGENTS.md ownership | Extra-paths on four files in prompt 18's plan (they must land and be tested with the composition); alternative: a 03b fix first | **Yes** |
-| A4 | **Who builds M1 masking, and what happens to the search and compare oracles?** D128 reported the gap; the contract names 05. | C-4; D128; `docs/interfaces.md` open items 1 and 3 | 05 builds it (R6); the two oracles are recorded as open questions with "accept for the pilot only, with a D#" until 15 decides | **Yes** |
-| A5 | **Problem type spelling.** The audit normalises to snake_case; the merged contract says "nothing is renamed". | H-9; `Problem.type` description | No rename. Platform routes send identity's B16 types (`access-pending`, `access-disabled`, `insufficient-role`) and C1 lists them | **Yes** |
+| A1 | **Adoption scope.** The audit asks for three operations; `contract/08-web` Q2 and Q13 foresaw the whole wizard (CG6). Does C2 carry the wizard, `lost_version` on `Finding`, and the mark and clear operations? | C-2; `plans/contract-08-web.md` Q2, Q13 | **Decided 17 Oct 2026: the full wizard.** The wizard, the marks and `lost_version` (my reading of "full"; see WP-C2) | Decided |
+| A2 | **Who owns admin registration, and where does an agent's service account live (S5)?** | C-3; D112 A7; CG15 named 05 | **Partly decided 17 Oct 2026:** only admins can add admins and register swimlanes, agents and sentinels (`x-required-role: admin`, no self-promotion, last-admin guard). Still open: how the first admin is created (a proposal follows from the investigation under way) and where the service account lives. Default for the rest: prompt 19 and `crates/hub-admin`, fields from the tables, a stop if no column holds the service account | Partly |
+| A3 | **How does hub composition touch `hub-platform`?** The CSRF step and the B16 types live in `crates/hub-platform`, which prompt 03b owns. | C-1; AGENTS.md ownership | **Decided 17 Oct 2026: a 03b fix first** (WP-R0, no Extra-paths: 03b owns `crates/hub-platform/**` and `crates/hub/**`) | Decided |
+| A4 | **Who builds M1 masking, and what happens to the search and compare oracles?** D128 reported the gap; the contract names 05. | C-4; D128; `docs/interfaces.md` open items 1 and 3 | **Decided 17 Oct 2026: a separate prompt (20) that builds it later** (R6). The two oracles are recorded as open questions with "accept for the pilot only, with a D#" until 15 decides. Not on the build path of anything but prompt 08 T5 and prompt 15's S14b check, but still a go-live gate: see Risks | Decided |
+| A5 | **Problem type spelling.** The audit normalises to snake_case; the merged contract says "nothing is renamed". | H-9; `Problem.type` description | **Decided 17 Oct 2026: no rename.** Platform routes send identity's B16 types (`access-pending`, `access-disabled`, `insufficient-role`) and C1 lists them | Decided |
 | A6 | **Drift order**, most serious first (REST) or by path (port and MCP). | M-13; D103, D108 | Both are stated where they apply now; a human picks one for both | **Yes** |
 | A7 | **Retention (D116, D118).** | audit §5; D116, D118 | `retention_dry_run = true` until a human confirms | **Yes** |
 | A8 | **The 26 decisions "to be confirmed at review".** | M-23 | A table in P4; none counts as confirmed until a human signs a line | **Yes** |
@@ -337,12 +348,13 @@ Every row has a default, so a silent approval means the default. "Yes" means a h
 | A15 | **How a fix round of a merged prompt runs in the harness.** `lk worktree NN` makes `agent/NN-slug`, the name the merged branch used. | Wave C | By hand per AGENTS.md, branch `agent/NN-fix-name`; optionally P1 T5 adds `--slug` | No |
 | A16 | **Where the owner-crate fixes of H-19, H-20, M-24 go.** The audit puts them in prompt 18. | audit §5 | Fix rounds in the owner crates (R2, R3, R5), so the owner's reviewer sees them; prompt 18 stays about composition | **Yes** |
 | A17 | **`lock` cause on `LockedProblem`** (CG4b, deferred; 6 producers in hub-writes). | C-2; `contract-08-web.md` | Defer; the web derives the cause from `baseline`; only the description changes (C1) | **Yes** |
+| A19 | **How the first admin is created, and whether D35 and B13 need hardening.** Today configured Entra object ids become admin at first sign-in only, and recovery after a lockout is a database intervention. The owner's rule is that only admins add admins. | A2; D35; B13; `docs/threat-model.md` "Bootstrap admins and recovery" | Keep D35 and B13 as built until a proposal is approved (an investigation of the code is under way) | **Yes** |
 | A18 | **Tightening `return_to`, `NfsPath`, `GitRef` and the blob hash.** The contract skill says additive only within a version. | M-4, M-5 | Approve them, because they only match what the server accepts already, with the differential test of C1 | **Yes** |
 
 ## Risks
 
 - **`api/openapi.yaml` is a merge hot spot.** Four contract PRs and several prompts edit it. Merge in order, rebase before each, and regenerate snapshots after each rebase, never by hand.
-- **A default-deny `verify_csrf` breaks every existing `SessionAuth` implementation and test** (platform fakes, hub tests). R1 updates them in the same commit and the 403 test replaces the 200 assertion, so a lost step shows as a red test and not as an open route.
+- **A default-deny `verify_csrf` breaks every existing `SessionAuth` implementation and test** (platform fakes, hub tests). R0 updates them in the same commit and the 403 test replaces the 200 assertion, so a lost step shows as a red test and not as an open route.
 - **Applying 429, 503 and 504 to 99 operations makes a large generated-client diff.** C1 lands before prompt 08 generates its client, so it is generated once.
 - **Tightened patterns could reject input that a client sends today.** They are copied from the parsers, and the differential test fails on any drift; A18 makes the tightening a human decision.
 - **A required `Idempotency-Key` on six writes that ignore it today** breaks callers that never sent one. Both the contract and prompt 08 already require it; R2 and R3 add tests for the 400.
