@@ -361,3 +361,69 @@ This section records the decisions the human gave in the chat on 2026-10-16 and 
 3. Run `node scripts/lk.mjs status` from the main checkout, not from inside the worktree. For prompt 08 it should show `plan: approved` and `taskCommits: 1/7` (T0 is done). From inside the worktree it prints `plan: -` and `0/7`, because `lk` looks for the worktree under its own root. The branch holds, after the scaffold, these commits: `08/plan: draft`, `08/plan: revise 1`, `08/plan: approved by a human`, `08/T0: import the design handoff ...`, `08/blocked: G0 Monaco under the production CSP (W3)`, the merge 5e9038e, and `08/decision: record the human's decisions and the handoff state`.
 4. Run `/run-prompt 08`. It resumes the approved plan at the next task without a commit, T1, with a fresh `web-implementer`.
 5. The orchestrator must read this section first, and the G0 report above it.
+
+## T2 blocked: the 5,000-row grid frame-rate gate (`P10.grid_5000_rows_fps`, W20), recorded 2026-10-17
+
+**Status.** Everything in T2 is built, tested and measured except one gate: the grid's 60 fps, with the metric exactly as W20 defines it, cannot be met reliably on this machine, and the same box fails it with a hand-written list that has no application code. The threshold is not changed, no gate is skipped, and nothing is committed as T2 (the rule is: commit only this file). All of T2's work is in the worktree `.worktrees/08-frontend`, uncommitted, and verified as listed below.
+
+### What was measured, as W20 defines it
+
+Five fresh pages, a 5 s programmatic scroll over 5,000 rows by 40 swimlanes (loaded through `useCursorPages` and the generated `getGrid`), `fps = min(60, 1000 / mean rAF interval)` rounded to 0.1, the minimum of five runs, in a normal (vsync-limited) headless Chromium 141.0.7390.37 (Playwright 1.63.0 with `executablePath`), software compositing, a 4-core virtual machine, load average 1.6 to 3.3.
+
+| Execution of `e2e/perf/grid-5000.spec.ts` | `values.min` | Runs (fps) | Dropped frames (an interval over 25 ms) |
+|---|---|---|---|
+| 1 | 60.0 | 60, 60, 60, 60, 60 | 0 |
+| 2 | 59.8 | 60, 60, 60, 60, 59.8 | one, at frame 4 |
+| 3 | 59.8 | 60, 59.8, 60, 60, 60 | one, at frame 5 |
+| 4 | 59.8 | 60, 60, 60, 59.8, 60 | one, at frame 3 |
+| 5 (the `web-perf` steps end to end) | 59.2 | 59.4, 60, 59.2, 60, 60 | 3 and 4: frames 3, 5, 6 and 3, 104, 139, 175 |
+
+Earlier builds of the same page measured 59.6 to 60.0. Every miss is a single 33 ms frame, which is 59.8; there are no long tasks in any run and the editor warm-up costs none. With the threshold at 60 and a rounding of 0.1, the gate needs ZERO dropped frames in 1,500.
+
+### The control: the machine drops the same frames with no application code
+
+`CONTROL_LIST_HTML` in `web/e2e/perf/helpers.ts`: a 140,000 px scroller with 40 absolutely positioned text rows that are moved and rewritten on every frame, no framework, scrolled the same way.
+
+- 20 fresh pages each, alternating, same flags: the grid dropped at least one frame in **7 of 20** runs (8 frames in all, worst interval 50 ms); the control list in **7 of 20** (10 frames in all, worst interval 116.6 ms).
+- Earlier, 10 runs each: the control list 3 of 10, a static 140,000 px page 0 of 10, a static 140,000 by 5,120 px page 1 of 10, the grid 4 of 10 (and 4 of 10 with the horizontal overflow removed).
+- In execution 5 above, the control list in the same run scored a minimum of 58.4 (runs 59.8, 60, 60, 60, 58.4), under the grid's 59.2.
+- A trace of a late frame shows the compositor thread (`ProxyImpl::ReadyToCommit`, `LayerTreeHostImpl::CommitComplete`, `TileManager::PrepareTiles`, `AssignGpuMemoryToTiles`) taking 31.6 ms at one commit and 10.4 ms at the next, which blocks the main thread's commit. It happens at the start of a scroll (frames 3 to 12) and at random places after it. Flags that move rasterisation to the GPU path (`--use-angle=swiftshader --enable-gpu-rasterization`) make it far worse here (every frame late), so they are not an answer.
+- Taking the chance that a run is clean as about 0.65, five clean runs in a row is about 0.11: the gate as defined fails about nine executions in ten on this box, for any virtualised list.
+
+### Headroom (informational, recorded in the result file under `headroom`)
+
+The same grid, 300 frames a run with the same scroll step in every frame, in a Chromium launched with `--disable-frame-rate-limit --disable-gpu-vsync`: 178.6 to 256.4 fps per run (the minimum of five runs 178.6 in one execution and 192.3 in the last; mean 215 to 224), worst frame up to 34.9 ms, no long task. The page's own work per frame is about 4 to 6 ms of the 16.7 ms a frame has at 60 fps. What it does not see is a frame the compositor drops while the page is idle.
+
+### What the human has to decide (W20, "Needs a human"; the agent has not chosen)
+
+Any of these needs the spec and, for B, `perf/budgets.toml` (a contract path) to change, which the agent may not do alone.
+
+- **A. Keep the metric and judge it on the hardware it was written for** (CI with a GPU-composited Chromium, or a quiet machine), with this box's number informational. Nothing in the repository changes except where the gate is run.
+- **B. Amend the statistic** to tolerate a frame the machine drops: for example the median run instead of the minimum, or at most one dropped frame in 300. `statistic = "min"` in `perf/budgets.toml` would change.
+- **C. Judge the page's own capacity**: the uncapped, equal-work-per-frame run above, with 60 as the floor (178.6 measured). It is blind to compositor stalls, so it would not catch a grid that makes the compositor slower.
+- **D. Judge the grid against the control on the same machine in the same run** (for example "no more dropped frames than the control list plus a margin"). The spec already records both. It needs a rule for the margin.
+
+The agent's reading: D together with C says the most (the page costs 4 to 6 ms a frame, and drops no more frames than the least a list can ask of this box), A is the most faithful to the original intent, and the unchanged metric on this machine is a gate that fails by luck.
+
+### Done, verified, and uncommitted in the worktree
+
+- Code splitting and loading: `lazyPage` (a bounded retry of a failed import, a stale-chunk flag, no `lazyRouteComponent`: it reloads the page and keeps its marker in `sessionStorage`, which loses unsaved work), `src/routes/pages.ts` (31 page loaders, each a chunk), intent preload and idle prefetch of the sidebar destinations, the "A new version is available" banner and screen (Reload held back while a screen has unsaved work), a fetch-only editor warm-up (the files come from a build-time `<meta>`, only `/assets/*.js|css`, at most eight, once, low priority), the editor fallback to `CodeView`.
+- Data: `src/lib/query/keys.ts` (the key vocabulary), `cursor-pages.ts` (bounded keyset paging), `src/lib/text/byte-ranges.ts` (UTF-8 byte offsets to UTF-16, bounded, property-tested against `TextEncoder`).
+- Views: `VirtualList`, `DataTable` (column windowing, pinned column, ARIA row and column counts, keyboard), `TreeView`, `CodeView`, `DiffView` (server hunks, split and unified, `n` and `p`, folds), `SafeCell`.
+- Gates and tooling: `scripts/perf/{results,check-bundle,lighthouse-score,lighthouse}.mjs` with tests, `scripts/build/{chunk-hints,bundle-report}.mjs`, `web/lighthouserc.json`, `web-perf` and `web-e2e` in the `Justfile` (and `verify08.test.mjs`), the `chromium` and `perf` Playwright projects, `perf/budgets.toml` (five entries `registered = true`, no threshold touched) and `crates/xtask/tests/budgets_registry.rs` (the five ids), three rows in `design/DEVIATIONS.md`.
+- Results with the browser and box they were measured on (Chromium 141.0.7390.37, 4 cores, load average 1.6 to 3.3): initial JavaScript **131.0 KB** gzipped of 250 (a single entry chunk; routes are small chunks); route change, cached, p95 **30.1 ms** of 100 (click 30.1, keyboard 25.3, cold 57.7 reported and not budgeted; 50 samples; one long task in the page over the whole spec); 6,000-line diff, cold, p95 **194.2 ms** of 500 (warm 77.5, revalidated 68.0, every line changed 219.1, all reported; the cold p95 was 179.7 in an earlier execution); Lighthouse 13.5.0 desktop, median of 3 per page, lowest page **95** of 90 (grid 96, diff 95, route page 98; stable to 1 to 3 points); grid **59.2** of 60 (the blocked gate). `cargo xtask bench-check` on the five ids: 4 pass, 1 fail (the grid). Noise: the route change and the diff passed with a margin of at least 2.5x in every execution, Lighthouse varied by 1 to 3 points, and only the 60 fps floor is inside the machine's noise.
+- Checks run: `pnpm install --frozen-lockfile`, `pnpm lint`, `pnpm typecheck`, the full `vitest run` (85 files, 1,381 tests), `pnpm build` and `pnpm build:perf`, the `chromium` Playwright project (123 specs, among them the new `splitting`, `editor-warm`, `etag` and `csp-perf` specs: chunk loading, the stale-chunk screen without a reload, warm-up for an Editor only and from the cache afterwards, 304 revalidation, zero CSP violations), `pnpm gen:api` freshness (no change under `src/api`), `pnpm audit` (no known vulnerabilities), `cargo test -p xtask --test budgets_registry` (8 pass), `cargo fmt --check`. `just` itself is not installed here; its steps were run as commands, in the recipe's order.
+- New dependencies, both exact pins at least 14 days old: `@tanstack/react-virtual@3.14.13` (published 2026-09-14; the fixed stack's virtualiser) and `lighthouse@13.5.0` (published 2026-09-18; plan W31's fallback, with a runner under `scripts/perf/`, because `@lhci/cli` brought 9 `pnpm audit` findings; the runner reads the same `lighthouserc.json` format and asserts the same median of 0.9). `lighthouse` needs Node 22.19 or later (22.22.0 here).
+
+### Things the owners of other work should know
+
+- **W13.** With the five P10 entries `registered = true`, a bare `cargo xtask bench-check` (every budget) fails until the web results exist in `target/perf-results/`. Whoever runs the full check (prompt 09's gate) must run `just web-perf` first.
+- **The grid API is large.** One page of 500 rows by 40 swimlanes is 2.7 MB of JSON in the contract's shape (each cell repeats its setting path in `location`), and the hub sends it without `Content-Encoding` (W28). Under Lighthouse's simulated 10 Mbps a full first page made the grid page's LCP 3.2 s (score 82). The lab page now asks for 50 rows first and 500 after (LCP 1.2 s, score 96); the real route in T4 Phase C should do the same, and 05 and 07 may want to look at the cell shape.
+- **Lighthouse pages in T2** are the perf build's test pages (grid, diff, route page), as the plan allows before the screens exist. T4 Phase C switches them to the real routes in `lighthouserc.json`.
+- A Lighthouse run that records no navigation (`NO_NAVSTART`, seen once) is made again, at most twice, and only then: a low score is never repeated. The retry is unit-tested.
+
+### How to finish T2 once W20 is decided
+
+1. Change `e2e/perf/grid-5000.spec.ts` (and `perf/budgets.toml` for B, in a contract-change PR the human approves) to the chosen rule. The gated number is written as `values.min` of `web/grid_5000_rows_scroll_fps`; `headroom` and `control` are already recorded beside it.
+2. Run the recipe's steps (`just web-perf`, then `just web-bench-check`), `just verify-08` and `just verify`.
+3. Make the single commit `08/T2: performance (code splitting, lazy Monaco, bundle gate, ETags, virtualised views, P10 gates)` with the usual trailers. Nothing else from this section needs redoing.
