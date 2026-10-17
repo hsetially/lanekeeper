@@ -207,6 +207,7 @@ async fn sse_query_bounds_are_enforced() {
         "sync_window_opened",
         "sync_window_closed",
         "pickup_changed",
+        "swimlane_changed",
     ];
     let query = |name: &str, values: Vec<String>| -> String {
         let pairs: Vec<String> = values.iter().map(|v| format!("{name}={v}")).collect();
@@ -231,14 +232,14 @@ async fn sse_query_bounds_are_enforced() {
     assert_eq!(
         ok(query("kinds", kinds.iter().map(ToString::to_string).collect())).await,
         StatusCode::OK,
-        "all 16 kinds"
+        "all 17 kinds"
     );
-    let mut seventeen: Vec<String> = kinds.iter().map(ToString::to_string).collect();
-    seventeen.push("resync".to_owned());
+    let mut eighteen: Vec<String> = kinds.iter().map(ToString::to_string).collect();
+    eighteen.push("resync".to_owned());
     assert_eq!(
-        ok(query("kinds", seventeen)).await,
+        ok(query("kinds", eighteen)).await,
         StatusCode::BAD_REQUEST,
-        "17 kinds"
+        "18 kinds"
     );
 
     let long = "a".repeat(64);
@@ -538,6 +539,175 @@ async fn a_resync_and_the_other_kinds_still_reach_the_users_they_reached_before(
         kinds_up_to_the_probe(&mut admin).await,
         ["resync", "access_request_created", "findings_changed"]
     );
+}
+
+/// One value of every variant of `DomainEvent`. The match has no wildcard: a variant added to the contract does not compile
+/// here until someone has decided who sees it, and said so in the `OpenAPI` (`the_openapi_names_every_event_...` below).
+fn one_of_each() -> Vec<DomainEvent> {
+    let lane = || SwimlaneId::parse("sit1").unwrap();
+    let path = || domain::NfsPath::parse("svc/app.yml").unwrap();
+    let job = || domain::JobRef::new("sync-job-1", "uid-1").unwrap();
+    let services = || vec![domain::ServiceRef::new("csp", "tx-api").unwrap()];
+    let events = vec![
+        DomainEvent::FileObserved {
+            swimlane: lane(),
+            path: path(),
+            hash: domain::ContentHash::from_bytes([1; 32]),
+            source: domain::ObservationSource::Scan,
+        },
+        DomainEvent::DriftChanged {
+            swimlane: lane(),
+            paths: vec![path()],
+        },
+        DomainEvent::FindingsChanged { swimlane: lane() },
+        DomainEvent::PendingRestartChanged {
+            swimlane: lane(),
+            services: services(),
+        },
+        DomainEvent::PickupChanged {
+            swimlane: lane(),
+            services: services(),
+        },
+        DomainEvent::ProposalChanged {
+            id: ProposalId::from(7),
+            status: ProposalStatus::Pending,
+        },
+        DomainEvent::AgentStatusChanged {
+            swimlane: lane(),
+            status: domain::AgentStatus::Connected,
+        },
+        DomainEvent::GitHeadMoved {
+            repo: domain::RepoKind::Base,
+            branch: domain::GitRef::parse("master").unwrap(),
+            from: None,
+            to: domain::CommitId::parse(&"a".repeat(40)).unwrap(),
+        },
+        DomainEvent::AccessRequestCreated {
+            user: user_id("newcomer"),
+        },
+        DomainEvent::DocIndexed { doc: 3.into() },
+        DomainEvent::Resync,
+        DomainEvent::AttributionUpdated {
+            swimlane: lane(),
+            path: path(),
+            hash: domain::ContentHash::from_bytes([2; 32]),
+        },
+        DomainEvent::PrStateChanged {
+            link_id: 3.into(),
+            state: domain::PrState::Merged,
+        },
+        DomainEvent::PrJobProgress {
+            job_id: 4.into(),
+            state: domain::PrJobState::Committing,
+        },
+        DomainEvent::SyncWindowOpened {
+            swimlane: lane(),
+            job: job(),
+        },
+        DomainEvent::SyncWindowClosed {
+            swimlane: lane(),
+            job: job(),
+        },
+        DomainEvent::SwimlaneChanged { swimlane: lane() },
+        revoked("someone"),
+    ];
+    for event in &events {
+        match event {
+            DomainEvent::FileObserved { .. }
+            | DomainEvent::DriftChanged { .. }
+            | DomainEvent::FindingsChanged { .. }
+            | DomainEvent::PendingRestartChanged { .. }
+            | DomainEvent::PickupChanged { .. }
+            | DomainEvent::ProposalChanged { .. }
+            | DomainEvent::AgentStatusChanged { .. }
+            | DomainEvent::GitHeadMoved { .. }
+            | DomainEvent::AccessRequestCreated { .. }
+            | DomainEvent::DocIndexed { .. }
+            | DomainEvent::Resync
+            | DomainEvent::AttributionUpdated { .. }
+            | DomainEvent::PrStateChanged { .. }
+            | DomainEvent::PrJobProgress { .. }
+            | DomainEvent::SyncWindowOpened { .. }
+            | DomainEvent::SyncWindowClosed { .. }
+            | DomainEvent::SwimlaneChanged { .. }
+            | DomainEvent::UserSessionsRevoked { .. } => {}
+        }
+    }
+    let kinds: std::collections::BTreeSet<String> = events.iter().map(wire_type).collect();
+    assert_eq!(
+        kinds.len(),
+        18,
+        "one value of each of the 18 variants, none twice: {kinds:?}"
+    );
+    events
+}
+
+/// The `type` of an event on the wire: the `event:` of its frame and the kind of the `OpenAPI`.
+fn wire_type(event: &DomainEvent) -> String {
+    serde_json::to_value(event).unwrap()["type"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn user_of(role: Role) -> domain::User {
+    let text = |s: &str| domain::ShortText::parse(s).unwrap();
+    domain::User {
+        id: user_id("reader"),
+        email: text("reader@example.test"),
+        display_name: text("reader"),
+        role: Some(role),
+        status: UserStatus::Active,
+        requires_approval: false,
+        github_login: None,
+        last_seen_at: None,
+    }
+}
+
+/// The document says who does not receive an event, and it is the code's list: the events that `RoleVisibility` keeps from a
+/// Viewer, an Operator and an Admin, over one value of every variant, are the ones the `Visibility.` paragraph of
+/// `GET /api/v1/events` names, so a client of a lower role never waits for one. A variant that is restricted without the
+/// document saying so, or a document that names an event the rule does not restrict, fails here.
+#[test]
+fn the_openapi_names_every_event_the_default_rule_keeps_from_a_viewer() {
+    const SPEC: &str = include_str!("../../../api/openapi.yaml");
+    let events = one_of_each();
+    let withheld_from = |role: Role| -> std::collections::BTreeSet<String> {
+        let user = user_of(role);
+        events
+            .iter()
+            .filter(|e| !e.is_internal() && !RoleVisibility.visible(&user, e))
+            .map(wire_type)
+            .collect()
+    };
+    let restricted: std::collections::BTreeSet<String> = ["access_request_created".to_owned()].into();
+    assert_eq!(withheld_from(Role::Viewer), restricted, "a Viewer");
+    assert_eq!(withheld_from(Role::Operator), restricted, "an Operator");
+    assert!(
+        withheld_from(Role::Admin).is_empty(),
+        "an Admin sees every event that is streamed"
+    );
+
+    let start = SPEC
+        .find("Visibility. Roles are global")
+        .expect("the description of GET /api/v1/events has a `Visibility.` paragraph");
+    let paragraph = SPEC[start..].split("\n\n").next().unwrap();
+    for kind in &restricted {
+        assert!(
+            paragraph.contains(&format!("`{kind}`")),
+            "the Visibility paragraph must name `{kind}`: only an Admin receives it"
+        );
+    }
+    for event in &events {
+        let kind = wire_type(event);
+        if restricted.contains(&kind) || kind == "resync" || kind == "user_sessions_revoked" {
+            continue;
+        }
+        assert!(
+            !paragraph.contains(&format!("`{kind}`")),
+            "the Visibility paragraph names `{kind}`, which the default rule shows to every Viewer"
+        );
+    }
 }
 
 #[test]

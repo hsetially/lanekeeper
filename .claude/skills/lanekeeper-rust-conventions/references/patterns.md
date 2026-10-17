@@ -24,8 +24,14 @@ pub struct PgBlobStore { pool: sqlx::PgPool, cache: moka::future::Cache<ContentH
 impl BlobStore for PgBlobStore {
     async fn put(&self, bytes: Bytes) -> Result<ContentHash, BlobError> {
         let hash = ContentHash::sha256(&bytes);
-        sqlx::query!("INSERT INTO blobs (hash, content, size) VALUES ($1, $2, $3) ON CONFLICT (hash) DO NOTHING",
-            hash.as_str(), bytes.as_ref(), bytes.len() as i64)
+        // One statement, on the pool and never inside a caller's transaction. Storing a blob that already exists refreshes its
+        // age (`blobs.touched_at`, migration 0008), so that retention cannot collect it before the transaction that references it
+        // commits. A plain `INSERT ... ON CONFLICT DO NOTHING` is wrong here, and so is a bare `ON CONFLICT DO UPDATE ... WHERE`
+        // (it locks the row and writes WAL on every re-put). Use `PUT_SQL` and `TOUCH_INTERVAL`, as `PgBlobStore::put` does
+        // (crates/hub-platform/src/blobs/store.rs); the rules for a collector are in docs/interfaces.md, under `BlobStore`.
+        sqlx::query(PUT_SQL)
+            .bind(hash.as_bytes().as_slice()).bind(bytes.as_ref()).bind(bytes.len() as i64)
+            .bind(TOUCH_INTERVAL.as_secs() as i64)
             .execute(&self.pool).await.map_err(BlobError::db)?;
         Ok(hash)
     }

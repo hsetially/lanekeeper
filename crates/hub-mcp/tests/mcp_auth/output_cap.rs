@@ -97,6 +97,8 @@ async fn no_read_tool_exceeds_16kb_at_worst_case_items() {
                 path: sp(&format!("{}{n}", long(900))),
                 value: value(&secret_free_long),
                 location: location("a.b", 1, 2),
+                logical_file: None,
+                tenant: None,
             })
             .collect(),
     );
@@ -108,6 +110,8 @@ async fn no_read_tool_exceeds_16kb_at_worst_case_items() {
                 line: n + 1,
                 text: secret_free_long.clone(),
                 ranges: vec![(0, 5); 20],
+                logical_file: None,
+                tenant: None,
             })
             .collect(),
         truncated: true,
@@ -231,6 +235,7 @@ async fn no_read_tool_exceeds_16kb_at_worst_case_items() {
                         value: Some(value(&secret_free_long)),
                     })
                     .collect(),
+                anchor: None,
             })
             .collect(),
     });
@@ -374,6 +379,8 @@ async fn truncated_sets_next_or_web_link() {
                 line: n + 1,
                 text: long(400),
                 ranges: Vec::new(),
+                logical_file: None,
+                tenant: None,
             })
             .collect(),
         truncated: false,
@@ -409,6 +416,8 @@ async fn truncated_sets_next_or_web_link() {
             line: 1,
             text: "x".into(),
             ranges: Vec::new(),
+            logical_file: None,
+            tenant: None,
         }],
         truncated: false,
     });

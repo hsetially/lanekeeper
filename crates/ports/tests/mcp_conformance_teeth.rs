@@ -20,7 +20,7 @@ use domain::{
     SwimlaneSummary, TextQuery, TextResults, TreeComparison, UploadRequest, User, Version, WriteCtx,
     WriteOutcome,
 };
-use ports::conformance::{self, DocScenario, RegistryScenario, WriteScenario};
+use ports::conformance::{self, DocScenario, RegistryScenario, SecretPlant, WriteScenario};
 use ports::fakes::{FakeDocSearch, FakeRegistry, FakeWriteService};
 use ports::{DocError, DocSearch, MAX_GREP_HITS, ReadError, RegistryRead, WriteError, WriteService};
 
@@ -40,6 +40,9 @@ fn file(path: &str, drift: DriftState, is_dir: bool) -> FileEntry {
         attribution: None,
         severity: None,
         pickup_state: None,
+        // A file names its logical file, which for a base file is its own path (CG2). The suite checks every drift entry.
+        logical_file: (!is_dir).then(|| LogicalFile::parse(path).unwrap()),
+        tenant: None,
     }
 }
 
@@ -125,6 +128,9 @@ macro_rules! docs {
         impl DocScenario for $name {
             async fn seed(&self, path: DocPath, title: &str, text: &str) {
                 FakeDocSearch::seed(&self.inner, path, title, text);
+            }
+            async fn plant_secret(&self, path: DocPath) -> SecretPlant {
+                DocScenario::plant_secret(&self.inner, path).await
             }
         }
     };
@@ -374,6 +380,9 @@ docs!(DeviatingDocs {
         let prefix = if self.how == DocDeviation::GrepIgnoresThePrefix { None } else { prefix };
         let limit = if self.how == DocDeviation::GrepIgnoresTheLimit { MAX_GREP_HITS } else { limit };
         self.inner.grep_in(u, pattern, regex, context, prefix, limit).await
+    }
+    async fn render(&self, u: &User, path: &DocPath) -> Result<domain::RenderedDoc, DocError> {
+        self.inner.render(u, path).await
     }
 });
 

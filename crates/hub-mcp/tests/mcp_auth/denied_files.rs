@@ -375,6 +375,8 @@ async fn search_settings_drops_hits_in_denied_files_and_pages_exactly() {
         path: sp(&format!("timeout.t{n}")),
         value: value(text),
         location: location(&format!("timeout.t{n}"), n, n),
+        logical_file: None,
+        tenant: None,
     };
     rig.registry.inner.set_setting_hits(vec![
         hit("a.yml", 1, "one"),
@@ -422,6 +424,8 @@ async fn search_text_drops_hits_in_denied_files() {
         line,
         text: text.to_owned(),
         ranges: vec![(0, 4)],
+        logical_file: None,
+        tenant: None,
     };
     rig.registry.inner.set_text_results(TextResults {
         hits: vec![

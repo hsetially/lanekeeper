@@ -160,6 +160,8 @@ fn scenarios() -> Vec<Scenario> {
                     path: sp("token"),
                     value: value(secret),
                     location: location("token", 2, 2),
+                    logical_file: None,
+                    tenant: None,
                 }]);
             },
             args: || json!({"q": "token", "swimlanes": ["sit1"]}),
@@ -177,6 +179,8 @@ fn scenarios() -> Vec<Scenario> {
                         line: 2,
                         text: format!("token: {secret} # timeout"),
                         ranges: vec![(0, 5)],
+                        logical_file: None,
+                        tenant: None,
                     }],
                     truncated: false,
                 });
@@ -210,6 +214,7 @@ fn scenarios() -> Vec<Scenario> {
                     snippet: "the timeout is 30".to_owned(),
                     score: 0.5,
                     related_files: Vec::new(),
+                    anchor: None,
                 }]);
             },
             args: || json!({"q": "timeout"}),
@@ -269,6 +274,7 @@ fn scenarios() -> Vec<Scenario> {
                             swimlane: sid("sit1"),
                             value: Some(value(secret)),
                         }],
+                        anchor: None,
                     }],
                 });
             },

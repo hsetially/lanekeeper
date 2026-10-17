@@ -112,7 +112,7 @@ Each change gets a state per consuming service:
 
 - **Blob:** file content, stored once and keyed by SHA-256.
 - **Observation:** a record of swimlane, path, hash, observed time and source. Source is `scan`, `tool_write` or `sync`.
-- **Out-of-band change:** an observed hash that neither a tool write nor a sync explains. It is recorded with author `unknown`.
+- **Out-of-band change:** an observed hash, or an observed deletion, that neither a tool write (or a tool delete registered through `register_delete`) nor a sync explains. It is recorded with author `unknown`.
 
 ## Baselines and drift
 
@@ -300,7 +300,7 @@ Each observation and audit event carries `attribution { source, confidence, acto
 
 **How the hub correlates sources:**
 
-1. **A tool write with the expected hash.** Source `tool_write`; confidence certain.
+1. **A tool write with the expected hash.** Source `tool_write`; confidence certain. A tool delete registered through `register_delete` is attributed the same way when the deletion is observed, under the matching rules in `docs/interfaces.md` (it explains the newest observation of the path, and only a deletion of the version it deleted, never an older deletion).
 2. **A sentinel record on the same path within ±60 seconds of the change.** Source `sentinel_login`; confidence high. The actor is the OS Login user, mapped to an app user (Q32). The evidence is the executable, the original login identity, and the time.
 3. **The change was observed while a sync Job was running.** Source `sync_job`; confidence high. The actor is the Job's name and uid.
 4. **No local audit record and no Job running.** Source `nfs_client`; confidence medium. The write came through an NFS client.

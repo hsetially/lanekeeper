@@ -164,6 +164,7 @@ fn sample_events() -> Vec<DomainEvent> {
             swimlane: sl(),
             services: vec![ServiceRef::new("ns", "svc").unwrap()],
         },
+        DomainEvent::SwimlaneChanged { swimlane: sl() },
     ]
 }
 
@@ -182,9 +183,95 @@ fn event_kind_is_the_wire_type_of_every_domain_event() {
     }
     assert_eq!(
         kinds.len(),
-        17,
-        "5 added by D72-D80, the internal UserSessionsRevoked, PickupChanged (prompt 05) and the 10 base variants, all distinct"
+        18,
+        "5 added by D72-D80, the internal UserSessionsRevoked, PickupChanged (prompt 05), SwimlaneChanged (contract/08-web) and the 10 base variants, all distinct"
     );
+}
+
+/// `ports::conformance::event_bus` has teeth for `swimlane_changed` (contract/08-web): a bus that drops the event, or hands it
+/// on with another swimlane, fails the suite, and the same wrapper with no defect passes it, so the wrapper is not what fails.
+mod swimlane_changed_conformance {
+    use async_trait::async_trait;
+    use domain::DomainEvent;
+    use futures::stream::BoxStream;
+    use ports::conformance::{self, sample::swimlane};
+    use ports::fakes::{FakeEventBus, FakeTxFactory};
+    use ports::{BusError, EventBus, EventFilter, Tx};
+
+    #[derive(Clone, Copy)]
+    enum Defect {
+        None,
+        /// Loses every `swimlane_changed`, and says nothing.
+        Drops,
+        /// Hands every `swimlane_changed` on, for another swimlane.
+        WrongSwimlane,
+    }
+
+    struct Bus {
+        inner: FakeEventBus,
+        defect: Defect,
+    }
+
+    impl Bus {
+        /// What the bus makes of an event: `None` when it loses it.
+        fn handle(&self, e: DomainEvent) -> Option<DomainEvent> {
+            match (self.defect, e) {
+                (Defect::Drops, DomainEvent::SwimlaneChanged { .. }) => None,
+                (Defect::WrongSwimlane, DomainEvent::SwimlaneChanged { .. }) => {
+                    Some(DomainEvent::SwimlaneChanged {
+                        swimlane: swimlane("sit9"),
+                    })
+                }
+                (_, e) => Some(e),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl EventBus for Bus {
+        async fn publish(&self, e: DomainEvent) -> Result<(), BusError> {
+            match self.handle(e) {
+                Some(e) => self.inner.publish(e).await,
+                None => Ok(()),
+            }
+        }
+
+        async fn publish_in_tx(&self, tx: &mut Tx<'_>, e: DomainEvent) -> Result<(), BusError> {
+            match self.handle(e) {
+                Some(e) => self.inner.publish_in_tx(tx, e).await,
+                None => Ok(()),
+            }
+        }
+
+        fn subscribe(&self, f: EventFilter) -> BoxStream<'static, DomainEvent> {
+            self.inner.subscribe(f)
+        }
+    }
+
+    async fn run(defect: Defect) {
+        let bus = Bus {
+            inner: FakeEventBus::new(8),
+            defect,
+        };
+        conformance::event_bus(&bus, &FakeTxFactory::new(), 8).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_event_bus_suite_passes_for_a_bus_that_handles_swimlane_changed() {
+        run(Defect::None).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    #[should_panic(expected = "swimlane_changed was not delivered")]
+    async fn the_event_bus_suite_catches_a_bus_that_drops_swimlane_changed() {
+        run(Defect::Drops).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    #[should_panic(expected = "swimlane_changed arrives exactly as published")]
+    async fn the_event_bus_suite_catches_a_bus_that_hands_on_another_swimlane() {
+        run(Defect::WrongSwimlane).await;
+    }
 }
 
 #[test]
@@ -493,4 +580,37 @@ fn tool_write_ttl_is_pinned() {
     // `docs/interfaces.md` says 15 minutes; a registry and its fake rely on the number, so a change is a contract change.
     // (`ChangePreview::TTL_SECS`, 10 minutes, is pinned in the domain tests.)
     assert_eq!(ToolWriteEntry::TTL_SECS, 900);
+}
+
+/// `register_delete` and `ToolDeleteEntry` are additions: `ToolWriteEntry` keeps the fields it had, with the types it had, and
+/// a delete registration is its own type, so `new_hash` still means "the hash that was written".
+#[test]
+fn tool_write_deletes_are_additive() {
+    use ports::ToolDeleteEntry;
+    let write = ToolWriteEntry {
+        swimlane: SwimlaneId::parse("sit1").unwrap(),
+        path: NfsPath::parse("a/b.yml").unwrap(),
+        new_hash: ContentHash::from_bytes([1; 32]),
+        user: ports::conformance::sample::user_id(1),
+        request_id: domain::RequestId::parse("req-1").unwrap(),
+    };
+    // The field types are the ones the port had before the method (a build break otherwise).
+    let ToolWriteEntry {
+        swimlane: _,
+        path: _,
+        new_hash,
+        user: _,
+        request_id: _,
+    } = write.clone();
+    let _: ContentHash = new_hash;
+    let delete = ToolDeleteEntry {
+        swimlane: write.swimlane.clone(),
+        path: write.path.clone(),
+        deleted_hash: write.new_hash,
+        user: write.user.clone(),
+        request_id: write.request_id.clone(),
+    };
+    assert_eq!(delete.clone(), delete);
+    assert_impl_all!(ToolDeleteEntry: Clone, std::fmt::Debug, PartialEq, Eq);
+    assert_impl_all!(ports::ToolWriteError: Copy);
 }

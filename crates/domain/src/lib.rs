@@ -43,13 +43,16 @@ pub use compare::{
     TreeComparison, ValueFlag, ValueType,
 };
 pub use compare_ref::{CompareRef, CompareRefError, GitRef, GitRefError};
-pub use docs::{DocGrepHit, DocHit, DocText, FeatureQuery, FeatureStatus, FlagStatus, FlagValue};
+pub use docs::{
+    DocGrepHit, DocHeading, DocHit, DocText, FeatureQuery, FeatureStatus, FlagStatus, FlagValue, RenderedDoc,
+};
 pub use enums::{
     AgentStatus, AttributionSource, ChangeEol, Confidence, DriftState, EolStyle, FileClass, FileKind,
     FileRole, FindingKind, IssueKind, MergeMode, ObservationSource, PickupState, PrJobState, PrState,
     ProposalStatus, RepoKind, Role, Severity, TextEncoding, UnknownVariant, UserStatus, Via,
 };
 pub use events::DomainEvent;
+pub use files::{BaselineState, BaselineStatus, SyncingInfo};
 pub use files::{
     ContentSource, DriftQuery, EffectiveConfig, EffectiveQuery, EffectiveSetting, EffectiveSource,
     FileContent, FileEntry, FileFormat, ServiceState, SwimlaneSummary, Version,
@@ -72,6 +75,7 @@ pub use setting::SettingLocation;
 pub use text::{ShortText, TextError};
 pub use time::Timestamp;
 pub use user::User;
+pub use user::UserRef;
 pub use wire::{
     AgentConfig, AgentReply, AuditOperation, AuditRecord, AuditRecordBatch, ClusterReport, DeploymentInfo,
     EnvValue, Heartbeat, HeartbeatAction, Hello, HubCommand, OpError, OpResult, PodInfo, ReleaseHint,

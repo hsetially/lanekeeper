@@ -169,7 +169,8 @@
             "enum": [
               "parse_error",
               "duplicate_key",
-              "secret_match"
+              "secret_match",
+              "redaction_marker"
             ],
             "maxLength": 16,
             "type": "string"
@@ -5143,7 +5144,8 @@
                 "enum": [
                   "parse_error",
                   "duplicate_key",
-                  "secret_match"
+                  "secret_match",
+                  "redaction_marker"
                 ],
                 "maxLength": 16,
                 "type": "string"
@@ -5346,7 +5348,8 @@
                 "enum": [
                   "parse_error",
                   "duplicate_key",
-                  "secret_match"
+                  "secret_match",
+                  "redaction_marker"
                 ],
                 "maxLength": 16,
                 "type": "string"
@@ -5510,7 +5513,8 @@
                 "enum": [
                   "parse_error",
                   "duplicate_key",
-                  "secret_match"
+                  "secret_match",
+                  "redaction_marker"
                 ],
                 "maxLength": 16,
                 "type": "string"
@@ -5743,7 +5747,8 @@
                 "enum": [
                   "parse_error",
                   "duplicate_key",
-                  "secret_match"
+                  "secret_match",
+                  "redaction_marker"
                 ],
                 "maxLength": 16,
                 "type": "string"
@@ -5939,7 +5944,8 @@
                 "enum": [
                   "parse_error",
                   "duplicate_key",
-                  "secret_match"
+                  "secret_match",
+                  "redaction_marker"
                 ],
                 "maxLength": 16,
                 "type": "string"
@@ -6100,7 +6106,8 @@
                 "enum": [
                   "parse_error",
                   "duplicate_key",
-                  "secret_match"
+                  "secret_match",
+                  "redaction_marker"
                 ],
                 "maxLength": 16,
                 "type": "string"

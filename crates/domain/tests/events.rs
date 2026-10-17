@@ -83,6 +83,8 @@ fn all_events() -> Vec<DomainEvent> {
             swimlane: lane(),
             services: vec![ServiceRef::new("csp", "tx-infinity-api").unwrap()],
         },
+        // contract/08-web (CG1b): baseline, tier, tenant set or auto-notify of a swimlane changed.
+        DomainEvent::SwimlaneChanged { swimlane: lane() },
     ]
 }
 
@@ -93,8 +95,8 @@ fn user() -> domain::UserId {
 }
 
 #[test]
-fn there_are_seventeen_variants_ten_base_five_d72_to_d80_one_internal_and_pickup_changed() {
-    assert_eq!(all_events().len(), 17);
+fn there_are_eighteen_variants_ten_base_five_d72_to_d80_one_internal_pickup_changed_and_swimlane_changed() {
+    assert_eq!(all_events().len(), 18);
 }
 
 #[test]
@@ -154,6 +156,21 @@ fn pickup_changed_is_swimlane_scoped_public_and_carries_service_ids_only() {
         json.as_object().unwrap().len(),
         3,
         "type, swimlane and services, nothing else: the live-by time travels in the pending-restarts read, not in the event"
+    );
+    assert_eq!(serde_json::from_value::<DomainEvent>(json).unwrap(), e);
+}
+
+#[test]
+fn swimlane_changed_is_swimlane_scoped_public_and_carries_ids_only() {
+    let e = DomainEvent::SwimlaneChanged { swimlane: lane() };
+    assert_eq!(e.swimlane(), Some(&lane()));
+    assert!(!e.is_internal(), "a browser may receive it");
+    let json = serde_json::to_value(&e).unwrap();
+    assert_eq!(json["type"], "swimlane_changed");
+    assert_eq!(
+        json.as_object().unwrap().len(),
+        2,
+        "type and swimlane, nothing else: what changed (baseline, tier, tenants, auto-notify) is read from the swimlane summary, not from the event"
     );
     assert_eq!(serde_json::from_value::<DomainEvent>(json).unwrap(), e);
 }

@@ -36,10 +36,23 @@ async fn assert_quiet<S: futures::Stream<Item = DomainEvent> + Unpin>(s: &mut S,
     );
 }
 
+/// [`next`] for the part of the suite that is about `swimlane_changed`: a bus that loses the event fails with a message that names
+/// it, and not with the bare "an event arrives".
+async fn next_swimlane_changed<S: futures::Stream<Item = DomainEvent> + Unpin>(
+    s: &mut S,
+    to: &str,
+) -> DomainEvent {
+    tokio::time::timeout(WAIT, s.next())
+        .await
+        .unwrap_or_else(|_| panic!("swimlane_changed was not delivered to {to}"))
+        .expect("the stream is open")
+}
+
 /// `buffer` is the number of events a subscriber may lag behind before it is cut off.
 ///
 /// - Subscribers see events published after they subscribed (even before their first poll), in order.
 /// - Filters limit by swimlane and kind; events with no swimlane pass a swimlane filter.
+/// - `swimlane_changed` (contract/08-web) arrives exactly as published, belongs to its swimlane and is found by its kind.
 /// - `publish_in_tx` delivers only after the transaction commits, never on rollback.
 /// - A subscriber that lags receives `Resync` before any later event, and then catches up.
 /// - `publish_many_in_tx` ([`event_bus_batch`]) behaves like `publish_in_tx` called once per event.
@@ -108,6 +121,50 @@ pub async fn event_bus<B: EventBus + ?Sized>(bus: &B, txf: &dyn TxFactory, buffe
         "sit2 is filtered out"
     );
     assert_quiet(&mut pickups_in_sit1, "only sit1 was asked for").await;
+
+    // `SwimlaneChanged` (contract/08-web) belongs to a swimlane, like `PickupChanged`: it arrives exactly as published, a
+    // swimlane filter limits it and its own kind finds it. A bus that loses it, or hands on another swimlane, fails here.
+    let changed = |s: &str| DomainEvent::SwimlaneChanged {
+        swimlane: swimlane(s),
+    };
+    let mut every_kind = bus.subscribe(EventFilter::all());
+    let mut changes_anywhere = bus.subscribe(EventFilter {
+        swimlanes: None,
+        kinds: [EventKind::SwimlaneChanged].into(),
+    });
+    let mut changes_in_sit1 = bus.subscribe(EventFilter {
+        swimlanes: Some([swimlane("sit1")].into()),
+        kinds: [EventKind::SwimlaneChanged].into(),
+    });
+    let mut only_findings = bus.subscribe(EventFilter {
+        swimlanes: None,
+        kinds: [EventKind::FindingsChanged].into(),
+    });
+    bus.publish(changed("sit2")).await.unwrap();
+    bus.publish(changed("sit1")).await.unwrap();
+    for want in [changed("sit2"), changed("sit1")] {
+        assert_eq!(
+            next_swimlane_changed(&mut every_kind, "an unfiltered subscriber").await,
+            want,
+            "swimlane_changed arrives exactly as published"
+        );
+        assert_eq!(
+            next_swimlane_changed(&mut changes_anywhere, "a subscriber of its kind").await,
+            want,
+            "swimlane_changed arrives exactly as published, to its own kind filter"
+        );
+    }
+    assert_eq!(
+        next_swimlane_changed(&mut changes_in_sit1, "a subscriber of its swimlane").await,
+        changed("sit1"),
+        "sit2 is filtered out"
+    );
+    assert_quiet(&mut changes_in_sit1, "only sit1 was asked for").await;
+    assert_quiet(
+        &mut only_findings,
+        "swimlane_changed is not findings_changed: the kind filter keeps the two apart",
+    )
+    .await;
 
     // A new subscriber does not see the past.
     let mut late = bus.subscribe(EventFilter::all());
@@ -240,6 +297,8 @@ pub async fn event_bus_batch<B: EventBus + ?Sized>(bus: &B, txf: &dyn TxFactory)
 
     // The same rules as `publish_in_tx`: what each kind of subscriber hears of a batch is what it hears of the same events one at
     // a time, internal events and events of another swimlane included.
+    // At most 7 events: the buffer of the buses these suites run against is 8, and the marker is the 8th event a subscriber
+    // holds before it reads any. More, and a subscriber lags and hears a `Resync` where the test expects the batch.
     let events = vec![
         findings("sit2"),
         findings("sit1"),
