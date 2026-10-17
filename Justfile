@@ -605,3 +605,5 @@ verify-16:
     @echo "verify-16 not implemented yet" && exit 1
 verify-17:
     @echo "verify-17 not implemented yet" && exit 1
+verify-20:
+    @echo "verify-20 not implemented yet" && exit 1
