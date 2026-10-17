@@ -11,6 +11,7 @@ use ports::ReadError;
 use sqlx::Row;
 
 use super::cursor::{self, Context, Field, Kind};
+use super::logical::{Found, finding_fallback};
 use super::rows;
 use super::service::Inner;
 use crate::db::ms;
@@ -41,7 +42,7 @@ const fn severity_rank(s: Severity) -> i32 {
     }
 }
 
-fn finding_of(row: &sqlx::postgres::PgRow) -> Result<Finding, RegistryError> {
+fn finding_of(row: &sqlx::postgres::PgRow, logical: &Found) -> Result<Finding, RegistryError> {
     let id: i64 = row.get("id");
     let kind: String = row.get("kind");
     let swimlane: String = row.get("swimlane_id");
@@ -51,13 +52,25 @@ fn finding_of(row: &sqlx::postgres::PgRow) -> Result<Finding, RegistryError> {
     let message: String = row.get("message");
     let locations: serde_json::Value = row.get("locations");
     let detected_ms: i64 = row.get("detected_ms");
+    let kind = kind.parse::<FindingKind>().map_err(|_| RegistryError::Corrupt)?;
+    let swimlane = SwimlaneId::parse(&swimlane).map_err(|_| RegistryError::Corrupt)?;
+    let path = path
+        .map(|p| NfsPath::parse(&p).map_err(|_| RegistryError::Corrupt))
+        .transpose()?;
+    // The logical file and tenant of the finding's file (CG2): the classification of the tracked file at `path`, and none for a finding with
+    // no path or a path that is no tracked file (see `read::logical`).
+    let (logical_file, tenant) = match &path {
+        Some(p) => match logical.of(&swimlane, p) {
+            (None, None) => finding_fallback(kind, p),
+            named => named,
+        },
+        None => (None, None),
+    };
     Ok(Finding {
         id: FindingId::from(id),
-        kind: kind.parse::<FindingKind>().map_err(|_| RegistryError::Corrupt)?,
-        swimlane: SwimlaneId::parse(&swimlane).map_err(|_| RegistryError::Corrupt)?,
-        path: path
-            .map(|p| NfsPath::parse(&p).map_err(|_| RegistryError::Corrupt))
-            .transpose()?,
+        kind,
+        swimlane,
+        path,
         severity: severity.parse().map_err(|_| RegistryError::Corrupt)?,
         rule_ids: rule_ids
             .iter()
@@ -67,6 +80,8 @@ fn finding_of(row: &sqlx::postgres::PgRow) -> Result<Finding, RegistryError> {
         // The engine wrote them as `SettingLocation`s; a value that does not read back is shown as no location, not as an error.
         locations: serde_json::from_value::<Vec<SettingLocation>>(locations).unwrap_or_default(),
         detected_at: Timestamp::from_unix_millis(detected_ms),
+        logical_file,
+        tenant,
     })
 }
 
@@ -110,7 +125,21 @@ impl Inner {
             .await?;
         let has_more = fetched.len() > limit;
         let kept = &fetched[..fetched.len().min(limit)];
-        let items = kept.iter().map(finding_of).collect::<Result<Vec<_>, _>>()?;
+        // The classification of the files the page names, in one statement for the whole page.
+        let named: Vec<(SwimlaneId, NfsPath)> = kept
+            .iter()
+            .filter_map(|r| {
+                let path: Option<String> = r.get("path");
+                let lane: String = r.get("swimlane_id");
+                Some((SwimlaneId::parse(&lane).ok()?, NfsPath::parse(&path?).ok()?))
+            })
+            .collect();
+        let places: Vec<(&SwimlaneId, &NfsPath)> = named.iter().map(|(s, p)| (s, p)).collect();
+        let logical = self.logical_of(&places).await?;
+        let items = kept
+            .iter()
+            .map(|r| finding_of(r, &logical))
+            .collect::<Result<Vec<_>, _>>()?;
         let next = if has_more {
             items
                 .last()

@@ -13,6 +13,15 @@ expression: plan
     "node": "Nested Loop"
   },
   {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
     "node": "Seq Scan",
     "relation": "swimlanes"
   },
@@ -27,6 +36,24 @@ expression: plan
   {
     "node": "Seq Scan",
     "relation": "swimlane_registry"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "projects"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "users"
+  },
+  {
+    "node": "Limit"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "sync_windows"
   },
   {
     "node": "Aggregate"
@@ -51,5 +78,29 @@ expression: plan
   {
     "node": "Seq Scan",
     "relation": "adoptions"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "adoptions"
+  },
+  {
+    "node": "Aggregate"
+  },
+  {
+    "node": "Aggregate"
+  },
+  {
+    "node": "Sort"
+  },
+  {
+    "node": "Nested Loop"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "service_state"
+  },
+  {
+    "node": "Seq Scan",
+    "relation": "services"
   }
 ]

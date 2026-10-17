@@ -79,10 +79,10 @@ const MAX_BATCHES: usize = 16;
 /// is probed on its own (`LATERAL` with a `LIMIT`, which keeps the planner from turning the probes into one scan of the table): the
 /// covering index `(swimlane_id, nfs_hash)` answers every probe, so no plan reads the whole of `file_state`.
 pub const PLACES_SQL: &str = "\
-SELECT fs.swimlane_id, fs.seq, fs.path, b.h::bytea AS blob \
+SELECT fs.swimlane_id, fs.seq, fs.path, fs.logical_file, b.h::bytea AS blob \
 FROM unnest($2::bytea[]) AS b(h) \
 CROSS JOIN LATERAL ( \
-  SELECT f.swimlane_id, f.seq, f.path FROM file_state f \
+  SELECT f.swimlane_id, f.seq, f.path, f.logical_file FROM file_state f \
   WHERE f.swimlane_id = ANY($1::text[]) AND f.nfs_hash = b.h AND NOT f.denied AND ($3::text IS NULL OR f.logical_file = $3) \
   ORDER BY f.swimlane_id, f.seq LIMIT 10000) fs";
 
@@ -93,6 +93,9 @@ enum Among {
     /// All the index: a setting found may be of a blob that is no file's now.
     Everything,
 }
+
+/// Where a setting is: the swimlane, the file's sequence number, its path and its logical file (the `file_state` row's own classification).
+type Place = (String, i64, String, String);
 
 struct Pair {
     blob: ContentHash,
@@ -143,7 +146,7 @@ fn after_of(fields: &[Field]) -> Result<After, ReadError> {
 /// every page). Only the cursor's own setting can have places that were shown already: those at or before the cursor's.
 fn positioned(
     pairs: &[Pair],
-    by_blob: &HashMap<ContentHash, Vec<(String, i64, String)>>,
+    by_blob: &HashMap<ContentHash, Vec<Place>>,
     after: Option<&After>,
 ) -> Result<Vec<Positioned>, RegistryError> {
     let mut hits = Vec::new();
@@ -152,7 +155,7 @@ fn positioned(
             continue;
         };
         let cursor_pair = after.filter(|a| a.0.as_slice() == p.blob.as_bytes().as_slice() && a.1 == p.path);
-        for (lane, seq, path) in here {
+        for (lane, seq, path, logical) in here {
             if cursor_pair.is_some_and(|a| (lane.as_str(), *seq) <= (a.2.as_str(), a.3)) {
                 continue;
             }
@@ -161,7 +164,7 @@ fn positioned(
                 path: p.path.clone(),
                 lane: lane.clone(),
                 seq: *seq,
-                hit: hit_of(p, lane, path)?,
+                hit: hit_of(p, lane, path, logical)?,
             });
         }
     }
@@ -277,7 +280,7 @@ impl Inner {
         lanes: &[String],
         pairs: &[Pair],
         file: Option<&str>,
-    ) -> Result<HashMap<ContentHash, Vec<(String, i64, String)>>, ReadError> {
+    ) -> Result<HashMap<ContentHash, Vec<Place>>, ReadError> {
         let mut seen: Vec<ContentHash> = Vec::new();
         for p in pairs {
             if !seen.contains(&p.blob) {
@@ -309,13 +312,14 @@ impl Inner {
                 .into_iter()
                 .flatten()
                 .collect();
-        let mut by_blob: HashMap<ContentHash, Vec<(String, i64, String)>> = HashMap::new();
+        let mut by_blob: HashMap<ContentHash, Vec<Place>> = HashMap::new();
         for row in &places {
             let blob: Vec<u8> = row.get("blob");
             by_blob.entry(rows::hash(&blob)?).or_default().push((
                 row.get("swimlane_id"),
                 row.get("seq"),
                 row.get("path"),
+                row.get("logical_file"),
             ));
         }
         for v in by_blob.values_mut() {
@@ -483,7 +487,7 @@ impl Inner {
     }
 }
 
-fn hit_of(p: &Pair, lane: &str, file: &str) -> Result<SettingHit, RegistryError> {
+fn hit_of(p: &Pair, lane: &str, file: &str, logical: &str) -> Result<SettingHit, RegistryError> {
     let ty = match p.ty.as_str() {
         "int" => ValueType::Int,
         "float" => ValueType::Float,
@@ -498,9 +502,13 @@ fn hit_of(p: &Pair, lane: &str, file: &str) -> Result<SettingHit, RegistryError>
         u32::try_from(p.end).map_err(|_| RegistryError::Corrupt)?,
     )
     .map_err(|_| RegistryError::Corrupt)?;
+    let file = NfsPath::parse(file).map_err(|_| RegistryError::Corrupt)?;
+    // The file of a hit is never a denied one (the statements leave them out), so naming its logical file and tenant adds nothing that its path
+    // did not say (CG2).
+    let (logical_file, tenant) = rows::logical_and_tenant(&file, logical)?;
     Ok(SettingHit {
         swimlane: SwimlaneId::parse(lane).map_err(|_| RegistryError::Corrupt)?,
-        file: NfsPath::parse(file).map_err(|_| RegistryError::Corrupt)?,
+        file,
         path: path.clone(),
         value: SettingValue {
             text: p.value.clone(),
@@ -508,5 +516,7 @@ fn hit_of(p: &Pair, lane: &str, file: &str) -> Result<SettingHit, RegistryError>
             flag: flag_of(ty, &p.value),
         },
         location: SettingLocation { path, lines },
+        logical_file: Some(logical_file),
+        tenant,
     })
 }

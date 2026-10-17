@@ -405,6 +405,14 @@ impl Inner {
         if results.truncated {
             self.metrics.read_search_truncated();
         }
+        // The engine has no tenant set and names neither (CG2): the registry does, from the classification of the files the hits are in.
+        let mut results = results;
+        let places: Vec<(&SwimlaneId, &NfsPath)> =
+            results.hits.iter().map(|h| (&h.swimlane, &h.path)).collect();
+        let logical = self.logical_of(&places).await?;
+        for hit in &mut results.hits {
+            (hit.logical_file, hit.tenant) = logical.of(&hit.swimlane, &hit.path);
+        }
         Ok(results)
     }
 }

@@ -65,8 +65,8 @@ pub const CHILDREN_SQL: &str = concat!(
 /// The columns of a file entry. `fs` is `file_state`, `o` the observation the row points at.
 macro_rules! entry_columns {
     () => {
-        "fs.path, fs.kind, fs.class, fs.role, fs.nfs_hash::bytea AS hash, fs.size, fs.state, fs.severity, fs.eol_style, \
-         fs.encoding, fs.bom, fs.denied, o.attribution_source, o.attribution_confidence, o.attribution_actor, \
+        "fs.path, fs.logical_file, fs.kind, fs.class, fs.role, fs.nfs_hash::bytea AS hash, fs.size, fs.state, fs.severity, \
+         fs.eol_style, fs.encoding, fs.bom, fs.denied, o.attribution_source, o.attribution_confidence, o.attribution_actor, \
          o.attribution_evidence"
     };
 }
@@ -139,6 +139,7 @@ fn rest_position(prefix: &NfsPath) -> i32 {
 /// A file entry from a row of [`FILE_ROWS_SQL`] or [`DRIFT_SQL`].
 pub(crate) fn file_entry(row: &PgRow, deny: &DenyMatcher) -> Result<FileEntry, RegistryError> {
     let path: String = row.get("path");
+    let logical: String = row.get("logical_file");
     let kind: String = row.get("kind");
     let class: String = row.get("class");
     let role: Option<String> = row.get("role");
@@ -167,6 +168,8 @@ pub(crate) fn file_entry(row: &PgRow, deny: &DenyMatcher) -> Result<FileEntry, R
     let class = rows::class(&class)?;
     // The class says `denied` for a denied file, and its content is withheld (D79): the flag, the class, or the hub's own globs (D104).
     let denied = crate::denied::is_denied(deny, &path, flagged, class);
+    // The logical file and the tenant come from the row's classification and the name alone (CG2): a denied file's are as visible as its path.
+    let (logical_file, tenant) = rows::logical_and_tenant(&path, &logical)?;
     Ok(FileEntry {
         path,
         is_dir: false,
@@ -181,6 +184,8 @@ pub(crate) fn file_entry(row: &PgRow, deny: &DenyMatcher) -> Result<FileEntry, R
         attribution,
         severity: rows::severity(severity.as_deref())?,
         pickup_state: None,
+        logical_file: Some(logical_file),
+        tenant,
     })
 }
 
@@ -200,6 +205,9 @@ fn dir_entry(path: NfsPath, drift: DriftState, severity: Option<domain::Severity
         attribution: None,
         severity,
         pickup_state: None,
+        // A folder is no file: it has no logical file and no tenant.
+        logical_file: None,
+        tenant: None,
     }
 }
 

@@ -44,6 +44,7 @@ use hub_registry::read::content::{
 use hub_registry::read::effective::{APPS_SQL, EXISTING_SQL, GROUP_ROWS_SQL, TENANTS_SQL};
 use hub_registry::read::findings::findings_sql;
 use hub_registry::read::history::history_sql;
+use hub_registry::read::logical::PLACES_LOGICAL_SQL;
 use hub_registry::read::resource::{ALL_PATHS_SQL, PROPERTY_ROWS_SQL, ROWS_BY_PATH_SQL};
 use hub_registry::read::restarts::services_sql;
 use hub_registry::read::search_settings::{LANE_BLOBS_SQL, PAIRS_SQL, PAIRS_UNTESTED_SQL, PLACES_SQL};
@@ -727,6 +728,14 @@ async fn read_queries_have_no_sequential_scan_on_large_tables() {
         "tree_file_rows",
         FILE_ROWS_SQL,
         [Arg::Text(lane), Arg::TextArray(page_paths.clone())]
+    );
+    check!(
+        "logical_files_of_500_places",
+        PLACES_LOGICAL_SQL,
+        [
+            Arg::TextArray(vec![lane.to_owned(); 500]),
+            Arg::TextArray(page_paths.iter().cycle().take(500).cloned().collect())
+        ]
     );
     check!(
         "drift_first_page",

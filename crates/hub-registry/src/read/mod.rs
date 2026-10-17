@@ -17,7 +17,8 @@
 //! # Modules
 //!
 //! - [`cursor`]: keyset cursors bound to their query (A31). [`etag`]: tags of the content reads. [`authz`]: the Viewer check.
-//! - [`swimlanes`], [`tree`], [`history`], [`findings`], [`restarts`], [`content`]: plain reads of the registry tables.
+//! - [`swimlanes`], [`tree`], [`history`], [`findings`], [`restarts`], [`content`]: plain reads of the registry tables. [`logical`]: the logical file and
+//!   tenant of the files a read names by path (CG2).
 //! - [`settings`]: the setting rows of a blob (from `settings_index`, on demand for a blob that is not indexed yet), cached by hash.
 //! - [`effective`], [`grid`], [`compare`], [`compare_tree`]: the engine's views over those rows.
 //! - [`search_settings`], [`search_text`]: indexed SQL, and the engine's text search over the corpora ([`corpora`]: shards that survive a
@@ -39,6 +40,7 @@ pub mod etag;
 pub mod findings;
 pub mod grid;
 pub mod history;
+pub mod logical;
 pub mod resource;
 pub mod restarts;
 pub mod rows;

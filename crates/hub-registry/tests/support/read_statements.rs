@@ -355,6 +355,16 @@ pub fn statements(w: &ReadWorld) -> Vec<ReadStatement> {
             read::tree::FILE_ROWS_SQL,
             [lane(), TextList(w.page_paths.clone())]
         ),
+        // The logical file and tenant of the files a page of findings or text hits names (CG2): one probe of the primary key for each of up to
+        // 500 places (the page limit), here the files of a tree page taken over again to the limit.
+        stmt!(
+            "logical_files_of_500_places",
+            read::logical::PLACES_LOGICAL_SQL,
+            [
+                TextList(vec![w.lane.clone(); 500]),
+                TextList(w.page_paths.iter().cycle().take(500).cloned().collect())
+            ]
+        ),
         // `$6` is the severity rank at which the list resumes: the top one for the first page, as the service binds it (T9 made the list
         // most serious first and added the parameter).
         stmt!(

@@ -3,7 +3,8 @@
 
 use domain::{
     Attribution, AttributionSource, Confidence, ContentHash, DriftState, EolStyle, FileClass, FileFormat,
-    FileKind, FileRole, ObservationSource, Severity, ShortText, TextEncoding, Timestamp,
+    FileKind, FileRole, LogicalFile, NfsPath, ObservationSource, Severity, ShortText, TenantId, TextEncoding,
+    Timestamp,
 };
 use serde_json::Value;
 
@@ -21,6 +22,24 @@ pub fn short(s: &str) -> Result<ShortText, RegistryError> {
         out.push(c);
     }
     ShortText::parse(&out).map_err(|_| RegistryError::Corrupt)
+}
+
+/// The logical file of a stored path and the tenant whose copy it is (`contract/08-web`, CG2). `logical` is the `file_state.logical_file` of the
+/// row, which is the engine's own classification of the path (`classify_path`, D33): the file without its tenant suffix, or the path itself
+/// for a base file. The tenant is the suffix that the classification cut off ([`crate::tenants::tenant_suffix`]), so a file is a tenant's
+/// exactly when the row says its logical file is another name than its own. Both are derived from the name alone, which every listing
+/// shows already: a denied file's are as visible as its path, and say nothing of its content (S17, D104).
+///
+/// # Errors
+///
+/// [`RegistryError::Corrupt`] for a stored logical file that is not one (the registry never writes such a row).
+pub fn logical_and_tenant(
+    path: &NfsPath,
+    logical: &str,
+) -> Result<(LogicalFile, Option<TenantId>), RegistryError> {
+    let logical = LogicalFile::parse(logical).map_err(|_| RegistryError::Corrupt)?;
+    let tenant = crate::tenants::tenant_suffix(path, &logical);
+    Ok((logical, tenant))
 }
 
 pub fn hash(bytes: &[u8]) -> Result<ContentHash, RegistryError> {
@@ -222,6 +241,27 @@ mod tests {
         );
         assert_eq!(good.confidence, Confidence::High);
         assert!(good.actor.is_some());
+    }
+
+    #[test]
+    fn a_tenant_file_is_the_tenants_and_a_base_file_is_nobodys() {
+        let path = |p: &str| NfsPath::parse(p).unwrap();
+        let (logical, tenant) = logical_and_tenant(&path("a/tx-core-sit1.yml"), "a/tx-core.yml").unwrap();
+        assert_eq!(logical.as_str(), "a/tx-core.yml");
+        assert_eq!(tenant.as_ref().map(TenantId::as_str), Some("sit1"));
+        let (logical, tenant) = logical_and_tenant(&path("a/tx-core.yml"), "a/tx-core.yml").unwrap();
+        assert_eq!(logical.as_str(), "a/tx-core.yml");
+        assert_eq!(
+            tenant, None,
+            "a base file is its own logical file and has no tenant"
+        );
+        // A name that merely looks like a suffix is a base file when the classification said so.
+        let (logical, tenant) = logical_and_tenant(&path("tx-core-sit10.yml"), "tx-core-sit10.yml").unwrap();
+        assert_eq!((logical.as_str(), tenant), ("tx-core-sit10.yml", None));
+        assert_eq!(
+            logical_and_tenant(&path("a.yml"), "/not a logical file"),
+            Err(RegistryError::Corrupt)
+        );
     }
 
     #[test]
