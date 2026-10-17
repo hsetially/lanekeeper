@@ -171,6 +171,8 @@ async fn a_new_suffix_on_nfs_raises_a_review_that_ranks_the_deployable_branches(
     assert_eq!(orphans, 2);
     assert_eq!(settings_events(&w).await, 1);
     assert_eq!(w.rig.metrics.rematch_count(RematchResult::Raised), 1);
+    // A review is an open adoption, so the swimlane's baseline is `in_progress` now: the summary changed, and clients are told (CG1b).
+    assert_eq!(w.swimlane_changed_events().await, 1);
 }
 
 #[tokio::test]
@@ -218,6 +220,11 @@ async fn another_suffix_refreshes_the_open_review_and_a_closed_one_is_not_reopen
     );
     assert_eq!(w.rig.metrics.rematch_count(RematchResult::Refreshed), 1);
     assert_eq!(settings_events(&w).await, 2);
+    assert_eq!(
+        w.swimlane_changed_events().await,
+        1,
+        "refreshing a review that is open changes no baseline: only raising it did"
+    );
 
     // An admin is working on it: the registry does not change it under them.
     sqlx::query("UPDATE adoptions SET status = 'in_progress' WHERE id = $1")

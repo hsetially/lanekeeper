@@ -139,6 +139,8 @@ impl Inner {
         let event = self.lifecycle_event(u, swimlane, format!("adoption pass {id} opened (initial)"));
         let mut handle = Tx::from_pg(&mut tx);
         crate::batch::record_all(&*self.audit, &mut handle, vec![event]).await?;
+        // An open pass makes the baseline `in_progress` in the swimlane summary (CG4a), so the clients are told (CG1b).
+        crate::batch::publish_swimlane_changed(&*self.bus, &mut handle, swimlane).await?;
         self.db.commit(tx).await?;
         self.view(id).await
     }
@@ -362,6 +364,8 @@ impl Inner {
         );
         let mut handle = Tx::from_pg(&mut tx);
         crate::batch::record_all(&*self.audit, &mut handle, vec![event]).await?;
+        // The pass is closed without a baseline: the summary changes back (CG1b).
+        crate::batch::publish_swimlane_changed(&*self.bus, &mut handle, &swimlane).await?;
         self.db.commit(tx).await?;
         Ok(())
     }

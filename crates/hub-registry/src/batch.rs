@@ -55,6 +55,24 @@ pub(crate) async fn record_all(
     }
 }
 
+/// Publish `SwimlaneChanged` for `swimlane` in the outbox inside `tx` (`contract/08-web`, CG1b, D80): the swimlane summary changed (its baseline
+/// moved because a pass of the adoption opened, closed or confirmed, or its tenant set changed), and the web app rereads it. It carries the id
+/// only, and is written with the change that made it, so a change that rolls back tells nobody.
+pub(crate) async fn publish_swimlane_changed(
+    bus: &dyn EventBus,
+    tx: &mut Tx<'_>,
+    swimlane: &domain::SwimlaneId,
+) -> Result<(), RegistryError> {
+    publish_all(
+        bus,
+        tx,
+        vec![DomainEvent::SwimlaneChanged {
+            swimlane: swimlane.clone(),
+        }],
+    )
+    .await
+}
+
 /// Publish `events` in the outbox inside `tx`, in order: `publish_in_tx` for one, `publish_many_in_tx` for several, in batches of at
 /// most [`MAX_EVENT_BATCH`].
 pub(crate) async fn publish_all(

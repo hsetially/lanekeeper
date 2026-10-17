@@ -757,7 +757,7 @@ impl Inner {
         Ok(())
     }
 
-    /// `DriftChanged` for the baselined paths, in chunks of [`DRIFT_EVENT_PATHS`] and at most [`MAX_DRIFT_EVENTS`], and `FindingsChanged`
+    /// `DriftChanged` for the baselined paths, in chunks of [`DRIFT_EVENT_PATHS`] and at most [`MAX_DRIFT_EVENTS`], `SwimlaneChanged`, and `FindingsChanged`
     /// (also when the paths did not all fit, so that clients refetch the swimlane, A26).
     async fn queue_events(
         &self,
@@ -774,6 +774,10 @@ impl Inner {
             })
             .collect();
         events.push(DomainEvent::FindingsChanged {
+            swimlane: swimlane.clone(),
+        });
+        // The pass is closed and the baseline is confirmed or the tenant set replaced, so the summary of the swimlane changed (CG1b).
+        events.push(DomainEvent::SwimlaneChanged {
             swimlane: swimlane.clone(),
         });
         let mut handle = Tx::from_pg(tx);

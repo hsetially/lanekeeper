@@ -208,6 +208,11 @@ impl Inner {
         ));
         let mut handle = Tx::from_pg(&mut tx);
         crate::batch::record_all(&*self.audit, &mut handle, vec![event]).await?;
+        if inserted {
+            // A review is an open adoption: the baseline in the swimlane summary is `in_progress` from now on (CG4a, CG1b). A refreshed one
+            // was open already, so nothing changed for a client.
+            crate::batch::publish_swimlane_changed(&*self.bus, &mut handle, &check.swimlane).await?;
+        }
         self.db.commit(tx).await?;
         Ok(if inserted {
             RematchResult::Raised

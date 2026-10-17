@@ -864,6 +864,46 @@ async fn choosing_again_forgets_what_was_decided_about_other_commits_and_cancell
     assert!(baseline_paths(&r.w.rig.pool, "sit1").await.is_empty());
 }
 
+#[tokio::test]
+async fn opening_cancelling_and_confirming_a_pass_each_publish_one_swimlane_changed_from_their_transaction() {
+    // The summary's baseline is `in_progress` while a pass is open and `confirmed` after it (CG4a), so each of the three changes it, and a
+    // client that shows it is told (CG1b, D80).
+    let Some(r) = rig().await else { return };
+    assert_eq!(r.w.swimlane_changed_events().await, 0);
+    let id = r.start().await.id;
+    assert_eq!(r.w.swimlane_changed_events().await, 1, "opened");
+    // Starting again resumes the open pass: nothing changed.
+    r.start().await;
+    assert_eq!(r.w.swimlane_changed_events().await, 1, "resumed");
+    r.svc.cancel(&r.admin, id).await.unwrap();
+    assert_eq!(r.w.swimlane_changed_events().await, 2, "cancelled");
+    assert_eq!(r.svc.cancel(&r.admin, id).await, Err(AdoptionError::NotOpen));
+    assert_eq!(
+        r.w.swimlane_changed_events().await,
+        2,
+        "a refused cancel changes nothing"
+    );
+
+    let id = ready(&r).await;
+    assert_eq!(r.w.swimlane_changed_events().await, 3, "opened again");
+    r.svc.confirm(&r.admin, id).await.unwrap();
+    assert_eq!(r.w.swimlane_changed_events().await, 4, "confirmed");
+    for e in r.w.rig.bus.published().await {
+        if let domain::DomainEvent::SwimlaneChanged { swimlane } = e {
+            assert_eq!(swimlane, lane());
+        }
+    }
+    assert_eq!(
+        r.svc.confirm(&r.admin, id).await.map(|_| ()),
+        Err(AdoptionError::NotOpen)
+    );
+    assert_eq!(
+        r.w.swimlane_changed_events().await,
+        4,
+        "a refused confirm changes nothing"
+    );
+}
+
 // ------------------------------------------------------------------------------------------------ what was reviewed is what is written
 
 #[tokio::test]

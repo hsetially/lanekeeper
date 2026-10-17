@@ -432,6 +432,17 @@ impl World {
             .count()
     }
 
+    /// How many `SwimlaneChanged` events (`contract/08-web`, CG1b) reached the outbox.
+    pub async fn swimlane_changed_events(&self) -> usize {
+        self.rig
+            .bus
+            .published()
+            .await
+            .into_iter()
+            .filter(|e| matches!(e, DomainEvent::SwimlaneChanged { .. }))
+            .count()
+    }
+
     pub async fn registry_row(&self) -> (i64, serde_json::Value, i32, bool) {
         let r = sqlx::query(
             "SELECT version, state_counts, finding_count, rules_fingerprint IS NOT NULL AS fp FROM swimlane_registry WHERE swimlane_id = $1",
