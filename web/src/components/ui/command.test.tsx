@@ -43,6 +43,22 @@ describe("Command", () => {
     expect(await screen.findByText("No results")).toBeVisible();
   });
 
+  it("when nothing matches, the list is out of the accessibility tree and the message is a status beside it, not a child of it (axe `aria-required-children`)", async () => {
+    const user = userEvent.setup();
+    render(<Palette onSelect={() => {}} />);
+    await user.type(screen.getByRole("combobox"), "zzz");
+    const message = await screen.findByText("No results");
+    // An empty listbox, or a listbox with a message in it, is an axe violation; so the list is hidden and the message is beside it.
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(message.closest("[cmdk-list]")).toBeNull();
+    expect(message.closest("[role='status']")).not.toBeNull();
+    await expectNoAxeViolations();
+    // And it comes back when the filter does.
+    await user.clear(screen.getByRole("combobox"));
+    await waitFor(() => expect(screen.getByRole("listbox")).toBeVisible());
+    expect(screen.queryByText("No results")).toBeNull();
+  });
+
   it("CommandDialog is a named dialog with a hidden title", async () => {
     render(
       <CommandDialog open onOpenChange={() => {}} title="Command palette" description="Search and run anything">

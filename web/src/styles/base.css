@@ -37,6 +37,12 @@
     outline-offset: var(--focus-ring-offset);
   }
 
+  /* A heading that took focus after a route change (src/features/shell/focus.ts) is not a control: no ring around the title. */
+  h1[tabindex="-1"]:focus,
+  h1[tabindex="-1"]:focus-visible {
+    outline: none;
+  }
+
   code,
   kbd,
   pre,

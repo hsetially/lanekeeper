@@ -3,6 +3,7 @@ import { AlertDialog as AlertDialogPrimitive } from "radix-ui";
 import { cn } from "@/lib/utils";
 import { buttonVariants } from "./button";
 import { dialogSizes } from "./dialog";
+import { useReturnFocus, type ReturnFocusProps } from "./return-focus";
 
 export function AlertDialog(props: ComponentProps<typeof AlertDialogPrimitive.Root>) {
   return <AlertDialogPrimitive.Root data-slot="alert-dialog" {...props} />;
@@ -12,8 +13,17 @@ export function AlertDialogTrigger(props: ComponentProps<typeof AlertDialogPrimi
   return <AlertDialogPrimitive.Trigger data-slot="alert-dialog-trigger" {...props} />;
 }
 
-// Radix puts initial focus on the Cancel control, the least destructive one, as the handoff asks.
-export function AlertDialogContent({ className, size = "md", ...props }: ComponentProps<typeof AlertDialogPrimitive.Content> & { size?: keyof typeof dialogSizes }) {
+// Radix puts initial focus on the Cancel control, the least destructive one, as the handoff asks. On close, focus goes back to the
+// control that opened the dialog (src/components/ui/return-focus.ts), or to `returnFocusRef`.
+export function AlertDialogContent({
+  className,
+  size = "md",
+  returnFocusRef,
+  onOpenAutoFocus,
+  onCloseAutoFocus,
+  ...props
+}: ComponentProps<typeof AlertDialogPrimitive.Content> & { size?: keyof typeof dialogSizes } & ReturnFocusProps) {
+  const focus = useReturnFocus({ returnFocusRef, onOpenAutoFocus, onCloseAutoFocus });
   return (
     <AlertDialogPrimitive.Portal>
       <AlertDialogPrimitive.Overlay data-slot="alert-dialog-overlay" className="fixed inset-0 grid place-items-center overflow-y-auto bg-overlay p-4 animate-lk-fade-in">
@@ -21,6 +31,8 @@ export function AlertDialogContent({ className, size = "md", ...props }: Compone
           data-slot="alert-dialog-content"
           className={cn("relative flex w-full flex-col gap-3 rounded-md border border-border bg-popover p-4 text-popover-foreground shadow-popover animate-lk-pop-in", dialogSizes[size], className)}
           {...props}
+          onOpenAutoFocus={focus.onOpenAutoFocus}
+          onCloseAutoFocus={focus.onCloseAutoFocus}
         />
       </AlertDialogPrimitive.Overlay>
     </AlertDialogPrimitive.Portal>

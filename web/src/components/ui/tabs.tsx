@@ -9,7 +9,7 @@ export function Tabs({ className, ...props }: ComponentProps<typeof TabsPrimitiv
 // Underline tabs: 36px high, a 2px bar in the primary colour on the selected one. Detail tabs are routes:
 // render TabsTrigger asChild around a router link.
 export function TabsList({ className, ...props }: ComponentProps<typeof TabsPrimitive.List>) {
-  return <TabsPrimitive.List data-slot="tabs-list" className={cn("flex items-end gap-4 border-b border-border", className)} {...props} />;
+  return <TabsPrimitive.List data-slot="tabs-list" className={cn("flex flex-wrap items-end gap-4 border-b border-border", className)} {...props} />;
 }
 
 export function TabsTrigger({ className, ...props }: ComponentProps<typeof TabsPrimitive.Trigger>) {

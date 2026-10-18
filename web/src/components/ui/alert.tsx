@@ -1,6 +1,6 @@
 import type { ComponentProps, ReactNode } from "react";
 import { cva, type VariantProps } from "class-variance-authority";
-import { CircleCheck, CircleX, Info, TriangleAlert } from "@/icons";
+import { CircleCheck, CircleX, Info, Lock, TriangleAlert } from "@/icons";
 import { cn } from "@/lib/utils";
 
 const alertVariants = cva("flex w-full items-start gap-2 rounded-md border px-3 py-2 text-sm [&_svg]:mt-px [&_svg]:size-4 [&_svg]:shrink-0", {
@@ -10,12 +10,14 @@ const alertVariants = cva("flex w-full items-start gap-2 rounded-md border px-3 
       success: "border-success-border bg-success-bg text-success-fg",
       warning: "border-warning-border bg-warning-bg text-warning-fg",
       danger: "border-danger-border bg-danger-bg text-danger-fg",
+      // The locked family of the design (a baseline not confirmed, an adoption under way): its own colour, not a warning's.
+      locked: "border-status-locked-border bg-status-locked-bg text-status-locked-fg",
     },
   },
   defaultVariants: { variant: "info" },
 });
 
-const ICONS = { info: Info, success: CircleCheck, warning: TriangleAlert, danger: CircleX } as const;
+const ICONS = { info: Info, success: CircleCheck, warning: TriangleAlert, danger: CircleX, locked: Lock } as const;
 
 type AlertProps = Omit<ComponentProps<"div">, "role"> & VariantProps<typeof alertVariants> & { icon?: ReactNode };
 

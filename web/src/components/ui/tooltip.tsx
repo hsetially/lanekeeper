@@ -1,6 +1,7 @@
 import type { ComponentProps } from "react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { cn } from "@/lib/utils";
+import { useOverlayContainer } from "./overlay-root";
 
 export function TooltipProvider({ delayDuration = 500, ...props }: ComponentProps<typeof TooltipPrimitive.Provider>) {
   return <TooltipPrimitive.Provider delayDuration={delayDuration} {...props} />;
@@ -22,12 +23,13 @@ export function TooltipTrigger(props: ComponentProps<typeof TooltipPrimitive.Tri
 
 // The handoff tooltip is inverted: foreground background, background text, 12px, 24px high, 4px radius.
 export function TooltipContent({ className, sideOffset = 4, children, ...props }: ComponentProps<typeof TooltipPrimitive.Content>) {
+  const container = useOverlayContainer();
   return (
-    <TooltipPrimitive.Portal>
+    <TooltipPrimitive.Portal container={container}>
       <TooltipPrimitive.Content
         data-slot="tooltip-content"
         sideOffset={sideOffset}
-        className={cn("inline-flex min-h-6 max-w-80 items-center gap-2 rounded-sm bg-foreground px-2 py-1 text-xs text-background", className)}
+        className={cn("z-40 inline-flex min-h-6 max-w-80 items-center gap-2 rounded-sm bg-foreground px-2 py-1 text-xs text-background", className)}
         {...props}
       >
         {children}

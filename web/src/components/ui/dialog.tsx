@@ -3,6 +3,7 @@ import { Dialog as DialogPrimitive } from "radix-ui";
 import { X } from "@/icons";
 import { cn } from "@/lib/utils";
 import { Button } from "./button";
+import { useReturnFocus, type ReturnFocusProps } from "./return-focus";
 
 export function Dialog(props: ComponentProps<typeof DialogPrimitive.Root>) {
   return <DialogPrimitive.Root data-slot="dialog" {...props} />;
@@ -24,15 +25,18 @@ export const dialogSizes = {
   palette: "max-w-[640px]", // the command palette
 } as const;
 
-type DialogContentProps = ComponentProps<typeof DialogPrimitive.Content> & {
-  size?: keyof typeof dialogSizes;
-  showCloseButton?: boolean;
-};
+type DialogContentProps = ComponentProps<typeof DialogPrimitive.Content> &
+  ReturnFocusProps & {
+    size?: keyof typeof dialogSizes;
+    showCloseButton?: boolean;
+  };
 
 // The content sits inside the overlay and is centred by the overlay's grid, so no transform is needed to centre it
 // and the open animation does not fight one. A click on the overlay is a click outside the content.
-// Always give the dialog a DialogTitle (hidden with sr-only if the design shows none) and a description.
-export function DialogContent({ className, children, size = "md", showCloseButton = true, ...props }: DialogContentProps) {
+// Always give the dialog a DialogTitle (hidden with sr-only if the design shows none) and a description. On close, focus goes back
+// to the control that opened the dialog (src/components/ui/return-focus.ts), or to `returnFocusRef`.
+export function DialogContent({ className, children, size = "md", showCloseButton = true, returnFocusRef, onOpenAutoFocus, onCloseAutoFocus, ...props }: DialogContentProps) {
+  const focus = useReturnFocus({ returnFocusRef, onOpenAutoFocus, onCloseAutoFocus });
   return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay data-slot="dialog-overlay" className="fixed inset-0 grid place-items-center overflow-y-auto bg-overlay p-4 animate-lk-fade-in">
@@ -40,6 +44,8 @@ export function DialogContent({ className, children, size = "md", showCloseButto
           data-slot="dialog-content"
           className={cn("relative flex w-full flex-col gap-3 rounded-md border border-border bg-popover p-4 text-popover-foreground shadow-popover animate-lk-pop-in", dialogSizes[size], className)}
           {...props}
+          onOpenAutoFocus={focus.onOpenAutoFocus}
+          onCloseAutoFocus={focus.onCloseAutoFocus}
         >
           {children}
           {showCloseButton ? (

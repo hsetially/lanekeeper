@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 import { expect, test } from "../fixtures/test";
+import { signOut } from "../fixtures/shell";
 
 const doc = parse(readFileSync(new URL("../../../api/openapi.yaml", import.meta.url), "utf8")) as { paths: Record<string, unknown> };
 const templates = Object.keys(doc.paths).map((p) => new RegExp(`^${p.replace(/\{[^}]+\}/g, "[^/]+")}$`));
@@ -13,7 +14,10 @@ test("a signed-in visit asks only for its own static files and operations of the
   harness.setScenario("admin");
   const seen: string[] = [];
   page.on("request", (request) => seen.push(request.url()));
-  for (const path of ["/swimlanes", "/admin/users", "/approvals", "/search", "/compare", "/swimlanes/sit1/files?path=a.yml"]) await page.goto(`${harness.url}${path}`);
+  for (const path of ["/swimlanes", "/admin/users", "/approvals", "/search", "/compare"]) await page.goto(`${harness.url}${path}`);
+  // The file screen asks for the file, its folder and its swimlane, which the design's file scenario answers (the admin scenario has no files).
+  harness.setScenario("design-file-core");
+  await page.goto(`${harness.url}/swimlanes/sitb/files?path=${encodeURIComponent("tx-infinity-api/tx-infinity-core-sit7.yml")}`);
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   const origin = new URL(harness.url).origin;
   for (const url of seen) {
@@ -32,7 +36,7 @@ test("sign-out is a fetch POST with the real Origin and the CSRF token, and ends
   harness.setScenario("viewer");
   await page.goto(`${harness.url}/swimlanes`);
   await expect(page.getByRole("heading", { level: 1, name: "Swimlanes" })).toBeVisible();
-  await page.getByRole("button", { name: "Sign out" }).click();
+  await signOut(page);
   await expect(page).toHaveURL(/\/signin$/);
   const logout = harness.requests().find((r) => r.path === "/auth/logout");
   expect(logout).toBeDefined();

@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
 import type { ApiProblem } from "@/api/problem";
 import { Banner } from "@/components/app/Banner";
-import { RequestId } from "@/components/app/RequestId";
+import { EmptyState } from "@/components/app/EmptyState";
+import { ErrorState } from "@/components/app/ErrorState";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
-import { Inbox, TriangleAlert } from "@/icons";
 import { formatClock, formatRelative } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { useNow } from "@/live/use-now";
@@ -16,7 +16,8 @@ import { useQueryState, type QuerySource, type QueryState, type QueryStateOption
 // request ID with copy, Retry as the only action), and the "data as of" stamp of the Offline and Paused rows.
 //
 // Loading, error, empty and ready REPLACE the content. Refreshing and stale never do: a screen that has data keeps showing it
-// while it refreshes, while the live stream is down, and after a refresh failed (the banner says so and offers Refresh).
+// while it refreshes, when it is old, and after a refresh failed (the banner says so and offers Refresh). That the live stream is
+// down is not said here: the shell says it once for the whole page.
 //
 // Accessibility: the loading region is `aria-busy` and named; its footer, the refreshing indicator and the stale banner are
 // polite live regions (role status); an error is an alert. Motion is the app's own utility (`animate-lk-spin`), which
@@ -70,35 +71,39 @@ function explain(problem: ApiProblem, source: string, retryable: boolean): strin
 
 function ErrorPanel({ problem, noun, source, retryable, onRetry }: { problem: ApiProblem; noun: string; source: string; retryable: boolean; onRetry: () => void }) {
   return (
-    <div role="alert" data-slot="query-error" className="flex flex-col items-center gap-3 px-6 py-10 text-center">
-      <TriangleAlert aria-hidden="true" className="size-6 text-danger-fg" />
-      <h2 className="text-base font-semibold">Couldn&apos;t load {noun}</h2>
-      <p className="text-sm font-medium">{problem.title}</p>
-      <p className="max-w-prose text-sm text-muted-foreground">{explain(problem, source, retryable)}</p>
-      {problem.requestId ? <RequestId id={problem.requestId} /> : null}
-      {retryable ? <Button onClick={onRetry}>Retry</Button> : null}
-    </div>
+    <ErrorState title={`Couldn't load ${noun}`} problem={problem} {...(retryable ? { onRetry } : {})}>
+      {explain(problem, source, retryable)}
+    </ErrorState>
   );
 }
 
-const TITLE: Record<StaleCause, string> = {
+// "Live updates paused" is the shell's to say, once, for the whole page (src/components/app/PausedBanner.tsx): a screen with three
+// lists would say it four times. A boundary speaks for the two causes that are the view's own: its data is old, or the last refresh
+// of it failed. The `live-paused` cause stays in the state (the write gate and the tests read it); it just has no banner here.
+type OwnCause = Exclude<StaleCause, "live-paused">;
+const TITLE: Record<OwnCause, string> = {
   "refetch-failed": "Couldn't refresh",
-  "live-paused": "Live updates paused",
   age: "This view may be out of date",
 };
 // Most urgent first: it is the title.
-const PRIORITY: readonly StaleCause[] = ["refetch-failed", "live-paused", "age"];
+const PRIORITY: readonly OwnCause[] = ["refetch-failed", "age"];
 
-function staleSentences(causes: readonly StaleCause[], error: ApiProblem | null): string[] {
+/** The causes this boundary's banner speaks for: the view's own, never the stream's. */
+export function ownCauses(causes: readonly StaleCause[]): OwnCause[] {
+  return PRIORITY.filter((cause) => causes.includes(cause));
+}
+
+function staleSentences(causes: readonly OwnCause[], error: ApiProblem | null): string[] {
   const sentences: string[] = [];
   if (causes.includes("refetch-failed")) sentences.push(`Showing the last data that loaded.${error ? ` ${error.title}.` : ""}`);
-  if (causes.includes("live-paused")) sentences.push("Live updates are paused, so this view may be out of date.");
   return sentences;
 }
 
 function StaleBanner({ stale, error, onRefresh, now }: { stale: NonNullable<QueryState<unknown>["stale"]>; error: ApiProblem | null; onRefresh: () => void; now: number }) {
-  const cause = PRIORITY.find((c) => stale.causes.includes(c)) ?? "age";
-  const sentences = staleSentences(stale.causes, error);
+  const causes = ownCauses(stale.causes);
+  const cause = causes[0];
+  if (cause === undefined) return null;
+  const sentences = staleSentences(causes, error);
   if (stale.asOf !== null) sentences.push(`Last updated ${formatClock(stale.asOf)} (${formatRelative(stale.asOf, now)}).`);
   return (
     <Banner
@@ -117,10 +122,11 @@ function StaleBanner({ stale, error, onRefresh, now }: { stale: NonNullable<Quer
 
 /** The boundary for a state the caller already has (a test, or a screen that combines several queries). */
 export function QueryBoundaryView<T>({ state, noun, source = noun, loading, empty, staleBanner = true, now, className, children }: Props<T>) {
-  const clock = useNow(state.stale !== null && staleBanner, 30_000);
+  const speaks = state.stale !== null && ownCauses(state.stale.causes).length > 0;
+  const clock = useNow(speaks && staleBanner, 30_000);
   if (state.state === "loading") {
     return (
-      <div data-slot="query-loading" aria-busy="true" aria-label={`Loading ${noun}`} className={className}>
+      <div data-slot="query-loading" role="group" aria-busy="true" aria-label={`Loading ${noun}`} className={className}>
         {loading ?? <ListSkeleton />}
         <p role="status" className="flex items-center gap-2 px-4 py-2 text-xs text-muted-foreground">
           <Spinner />
@@ -148,19 +154,14 @@ export function QueryBoundaryView<T>({ state, noun, source = noun, loading, empt
           </>
         ) : null}
       </span>
-      {state.stale && staleBanner ? <StaleBanner stale={state.stale} error={state.error} onRefresh={state.refetch} now={now ?? clock} /> : null}
+      {state.stale && speaks && staleBanner ? <StaleBanner stale={state.stale} error={state.error} onRefresh={state.refetch} now={now ?? clock} /> : null}
       {state.state === "empty" ? (empty ?? <DefaultEmpty noun={noun} />) : data === undefined ? null : children(data)}
     </div>
   );
 }
 
 function DefaultEmpty({ noun }: { noun: string }) {
-  return (
-    <div data-slot="query-empty" className="flex flex-col items-center gap-2 px-6 py-10 text-center">
-      <Inbox aria-hidden="true" className="size-6 text-muted-foreground" />
-      <p className="text-sm font-medium">No {noun} yet</p>
-    </div>
-  );
+  return <EmptyState title={`No ${noun} yet`} />;
 }
 
 type ConnectedProps<T> = Omit<Props<T>, "state"> & { query: QuerySource<T> } & QueryStateOptions<T>;

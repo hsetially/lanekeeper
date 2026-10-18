@@ -84,7 +84,8 @@ export function StatusBadge({ variant, count, label, detail, compact = false, cl
   const spec = STATUS_VARIANTS[variant];
   const base = label ?? spec.label;
   const text = variant === "live-by" && detail && label === undefined ? `${base} ${detail}` : base;
-  const classes = cn(badgeBase, TOKEN_CLASSES[spec.tokens], spec.dashed && "border-dashed", className);
+  // `max-w-full` and the truncating label: where the room is short the label ends in an ellipsis, it does not run under its neighbour.
+  const classes = cn(badgeBase, "max-w-full", TOKEN_CLASSES[spec.tokens], spec.dashed && "border-dashed", className);
 
   if (compact) {
     const name = count === undefined ? text : `${count} ${text}`;
@@ -99,7 +100,7 @@ export function StatusBadge({ variant, count, label, detail, compact = false, cl
     <span data-slot="status-badge" data-status={variant} className={classes}>
       <spec.Icon aria-hidden="true" />
       {count === undefined ? null : <span className="tabular-nums">{count}</span>}
-      <span>{text}</span>
+      <span className="min-w-0 truncate">{text}</span>
     </span>
   );
 }

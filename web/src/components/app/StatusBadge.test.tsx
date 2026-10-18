@@ -44,6 +44,15 @@ describe("StatusBadge rendering: colour plus icon plus label, never colour alone
     });
   }
 
+  it("ends its label in an ellipsis when the room is short, and never grows past its container (the layout run, labels 40% longer: 'Needs notify or restart' ran under the Restart button)", () => {
+    render(<StatusBadge variant="needs-notify-or-restart" />);
+    const badge = screen.getByText("Needs notify or restart").closest("[data-slot='status-badge']");
+    expect(badge?.className).toMatch(/(^|\s)max-w-full(\s|$)/);
+    const label = screen.getByText("Needs notify or restart");
+    expect(label.className).toMatch(/(^|\s)min-w-0(\s|$)/);
+    expect(label.className).toMatch(/(^|\s)truncate(\s|$)/);
+  });
+
   it("draws Untracked with a dashed border and nothing else", () => {
     const { container } = render(
       <div>

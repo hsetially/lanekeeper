@@ -53,6 +53,14 @@ describe("loading (design L: skeletons, and a footer that names what is loading)
     expect(screen.queryByRole("list")).not.toBeInTheDocument();
   });
 
+  it("is a group, because `aria-label` is not allowed on an element with no role (axe `aria-prohibited-attr`)", () => {
+    show(view({ state: "loading", data: undefined }));
+    const region = screen.getByRole("group", { name: "Loading swimlanes" });
+    expect(region).toHaveAttribute("aria-busy", "true");
+    // The footer is the one live region: a status inside a status would be said twice.
+    expect(region.closest("[role='status']")).toBeNull();
+  });
+
   it("lets the screen draw its own skeleton, with its own grid, instead of the default", () => {
     show(view({ state: "loading", data: undefined }), { loading: <div data-testid="mine" /> });
     expect(screen.getByTestId("mine")).toBeInTheDocument();
@@ -188,12 +196,10 @@ describe("stale: a banner that names the cause and when the data is from (design
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
   });
 
-  it("live-paused: the stream is down, so events may have been missed", () => {
+  it("live-paused: says nothing, because the shell already says it once for the whole page (a screen with three lists would say it four times)", () => {
     show(view({ stale: { causes: ["live-paused"], asOf: AS_OF } }));
-    const b = banner();
-    expect(b).toHaveTextContent("Live updates paused");
-    expect(b).toHaveTextContent("Live updates are paused, so this view may be out of date.");
-    expect(b).toHaveTextContent("Last updated 10:42 UTC");
+    expect(document.querySelector("[data-slot='alert']")).toBeNull();
+    expect(screen.queryByText(/Live updates/)).toBeNull();
   });
 
   it("refetch-failed: the data on screen is the last good copy, and the error is said once, without an error panel", () => {
@@ -207,17 +213,25 @@ describe("stale: a banner that names the cause and when the data is from (design
     expect(b).toHaveTextContent("Last updated 10:42 UTC");
   });
 
-  it("says every cause, with the most urgent as the title", () => {
+  it("says its own cause when the stream is also down, and does not repeat what the shell says about the stream", () => {
     show(view({ error: problem(500), stale: { causes: ["refetch-failed", "live-paused"], asOf: AS_OF } }));
     const b = banner();
     expect(b).toHaveTextContent("Couldn't refresh");
-    expect(b).toHaveTextContent(/live updates are paused/i);
+    expect(b).not.toHaveTextContent(/live updates/i);
+    show(view({ stale: { causes: ["live-paused", "age"], asOf: AS_OF } }));
+    expect(screen.getAllByText("This view may be out of date").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Live updates paused")).toBeNull();
+  });
+
+  it("says every cause of its own, with the most urgent as the title", () => {
+    show(view({ error: problem(500), stale: { causes: ["refetch-failed", "age"], asOf: AS_OF } }));
+    expect(banner()).toHaveTextContent("Couldn't refresh");
   });
 
   it("copes with a time it does not know", () => {
-    show(view({ stale: { causes: ["live-paused"], asOf: null } }));
+    show(view({ stale: { causes: ["age"], asOf: null } }));
     expect(banner()).not.toHaveTextContent(/Last updated/);
-    expect(banner()).toHaveTextContent("Live updates paused");
+    expect(banner()).toHaveTextContent("This view may be out of date");
   });
 
   it("has a Refresh button that asks for the refetch", async () => {
@@ -228,7 +242,7 @@ describe("stale: a banner that names the cause and when the data is from (design
   });
 
   it("can be switched off by a screen that says the same thing elsewhere", () => {
-    show(view({ stale: { causes: ["live-paused"], asOf: AS_OF } }), { staleBanner: false });
+    show(view({ stale: { causes: ["age"], asOf: AS_OF } }), { staleBanner: false });
     expect(document.querySelector("[data-slot='alert']")).toBeNull();
   });
 });
@@ -252,8 +266,8 @@ describe("the design's state vocabulary (src/handoff/states.generated.ts, read f
     expect(within(alert).getByRole("button", { name: "Copy request ID" })).toBeInTheDocument();
   });
 
-  it("stamps the data with the time it is from, as the offline and paused rows do", () => {
-    show(view({ stale: { causes: ["live-paused"], asOf: AS_OF } }));
+  it("stamps the data with the time it is from, as the offline rows do", () => {
+    show(view({ stale: { causes: ["age"], asOf: AS_OF } }));
     expect(banner()).toHaveTextContent(/10:42 UTC/);
   });
 });

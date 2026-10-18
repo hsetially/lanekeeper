@@ -60,7 +60,7 @@ export function PerfGrid() {
   }, [done, pages.items.length]);
 
   return (
-    <main className="flex h-screen flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       <h1 className="p-3 text-lg font-semibold">Grid</h1>
       <Link to="/testpages/perf/nav/a" className="px-3 pb-2 text-sm underline">
         Back to the pages
@@ -75,6 +75,6 @@ export function PerfGrid() {
         className="min-h-0 flex-1"
         footer={{ hasMore: pages.hasMore, loading: pages.isFetching, truncated: pages.truncated, onLoadMore: () => void pages.loadMore() }}
       />
-    </main>
+    </div>
   );
 }

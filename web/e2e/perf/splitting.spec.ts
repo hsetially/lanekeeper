@@ -42,7 +42,40 @@ function collectScripts(page: import("@playwright/test").Page): { scripts: Scrip
   };
 }
 
-test("the first visit fetches the shell and the one screen it needs: immutable files, no editor, under the budget", async ({ page, harness }) => {
+// P10 budgets the INITIAL JavaScript: what a first visit needs before the person can use the page. What the browser fetches
+// afterwards, when it has nothing else to do (the other screens of the sidebar, the command palette), is its own business and is
+// checked in the next test; it is not in the budget, and it grows with every screen that is built.
+test("the first visit needs the shell, the one screen and the live engine: immutable files, no editor, under the budget", async ({ page, harness }) => {
+  harness.setScenario("viewer");
+  // The browser is never idle here, so the idle work (src/routes/prefetch.ts, the palette) does not run.
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "requestIdleCallback", { configurable: true, value: () => 0 });
+  });
+  const { scripts, settled } = collectScripts(page);
+  await page.goto(`${harness.url}/swimlanes`);
+  await expect(page.getByRole("heading", { level: 1, name: "Swimlanes" })).toBeVisible();
+  await settleLive(page, harness);
+  await settled();
+
+  const assets = scripts.filter((s) => s.path.startsWith("/assets/"));
+  const names = assets.map((s) => s.path.replace(/^\/assets\//, "").replace(/-[A-Za-z0-9_-]{8}\.js$/, ""));
+  expect(names).toContain("index");
+  expect(names).toContain("SwimlanesPage");
+  expect(names).toContain("live");
+  for (const name of names) {
+    expect(name, "the editor is not part of a first visit").not.toMatch(/editor|monaco|jsonMode|worker/i);
+    expect(name, "no other screen is part of a first visit").not.toMatch(/^(ComparePage|StatusPage|FindingsPage|ApprovalsPage|ApprovalPage|AuditPage|UsersPage|SwimlanesAdminPage|SectionPage|FilePage|SearchPage)$/);
+    expect(name, "the command palette waits for an idle moment").not.toMatch(/^CommandPalette$/);
+  }
+  for (const script of assets) {
+    expect(script.status, script.path).toBe(200);
+    expect(script.cacheControl, script.path).toMatch(/immutable/);
+  }
+  const kb = assets.reduce((n, s) => n + s.gzipBytes, 0) / 1024;
+  expect(kb, `the scripts of a first visit, gzipped: ${kb.toFixed(1)} KB`).toBeLessThan(BUDGET_KB);
+});
+
+test("when the browser is idle it fetches the sidebar's other screens and the palette: only the ones the role can open, never the editor", async ({ page, harness }) => {
   harness.setScenario("viewer");
   const { scripts, settled } = collectScripts(page);
   await page.goto(`${harness.url}/swimlanes`);
@@ -53,20 +86,33 @@ test("the first visit fetches the shell and the one screen it needs: immutable f
 
   const assets = scripts.filter((s) => s.path.startsWith("/assets/"));
   const names = assets.map((s) => s.path.replace(/^\/assets\//, "").replace(/-[A-Za-z0-9_-]{8}\.js$/, ""));
-  // The shell, the screen's chunk (the screens share one module until they are built, so it is one file), and the live engine:
-  // the SSE client, fetched once a user with a role is signed in (src/live/LiveProvider.tsx), in a chunk of its own.
+  // The shell and its screen: the shell (`index`), the screen's own chunk, and the live engine (the SSE client, fetched once a
+  // user with a role is signed in, src/live/LiveProvider.tsx, in a chunk of its own).
   expect(names).toContain("index");
-  expect(names).toContain("Placeholder");
+  expect(names).toContain("SwimlanesPage");
   expect(names).toContain("live");
-  expect(names.filter((n) => n !== "index" && n !== "Placeholder" && n !== "live"), "no other script on the first visit").toEqual([]);
-  for (const name of names) expect(name, "the editor is not part of a first visit").not.toMatch(/editor|monaco|jsonMode|worker/i);
+  // What the idle moment adds (a Viewer's sidebar destinations, src/routes/prefetch.ts, and the command palette, which the shell
+  // loads when idle so that Command-K opens at once): screens a Viewer can open, never one it cannot, and never the editor.
+  const SCREEN_CHUNK = /Page$/;
+  const NOT_FOR_A_VIEWER = /^(ApprovalsPage|ApprovalPage|AuditPage|UsersPage|SwimlanesAdminPage|SectionPage)$/;
+  for (const name of names) {
+    expect(name, "the editor is not part of a first visit").not.toMatch(/editor|monaco|jsonMode|worker/i);
+    expect(name, "a Viewer never fetches an Admin screen").not.toMatch(NOT_FOR_A_VIEWER);
+  }
+  expect(
+    names.filter((n) => SCREEN_CHUNK.test(n) && !["SwimlanesPage", "ComparePage", "StatusPage", "FindingsPage"].includes(n)),
+    "no screen outside the sidebar's destinations",
+  ).toEqual([]);
 
   for (const script of assets) {
     expect(script.status, script.path).toBe(200);
     expect(script.cacheControl, script.path).toMatch(/immutable/);
   }
+  // The idle loads are a few hundred small files, all of them lazy: they are reported, not budgeted (P10 budgets the initial load,
+  // which the test above holds to 250 KB). Reading the number off the report is how a chunk that grew out of hand gets noticed.
   const kb = assets.reduce((n, s) => n + s.gzipBytes, 0) / 1024;
-  expect(kb, `the scripts of a first visit, gzipped: ${kb.toFixed(1)} KB`).toBeLessThan(BUDGET_KB);
+  test.info().annotations.push({ type: "gzipped KB of the first visit with its idle loads", description: kb.toFixed(1) });
+  expect(names, "the idle moment did load the sidebar's other screens").toEqual(expect.arrayContaining(["ComparePage", "StatusPage", "FindingsPage", "CommandPalette"]));
 });
 
 test("a screen before the session loads no live engine and opens no stream", async ({ page, harness }) => {
@@ -115,8 +161,8 @@ test("a chunk that a deploy took away shows the new-version screen, keeps the pa
   const copy = mkdtempSync(join(tmpdir(), "lk-stale-dist-"));
   const stale = await (async () => {
     cpSync(resolve(WEB_ROOT, "dist"), copy, { recursive: true });
-    const gone = readdirSync(join(copy, "assets")).filter((name) => /^Placeholder-.*\.js$/.test(name));
-    expect(gone, "the build has the placeholder chunk to remove").toHaveLength(1);
+    const gone = readdirSync(join(copy, "assets")).filter((name) => /^SwimlanesPage-.*\.js$/.test(name));
+    expect(gone, "the build has the screen chunk to remove").toHaveLength(1);
     for (const name of gone) rmSync(join(copy, "assets", name));
     return startHarness({ dist: copy, scenario: "viewer" });
   })();

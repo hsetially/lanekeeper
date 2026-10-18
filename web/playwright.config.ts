@@ -22,6 +22,13 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   reporter: [["list"]],
   outputDir: "test-results",
+  // The app-owned baselines of the visual specs live in one folder per spec file, under e2e/visual/__baselines__/. They are generated
+  // in CI only (the `visual-baselines` job of .github/workflows/web-e2e.yml) and are not committed with the code that they guard:
+  // web/.gitignore keeps the folder out of a commit, and the job's artifact is what a person reviews. The `{testFilePath}` keeps two
+  // specs that name a baseline alike apart.
+  snapshotPathTemplate: "{testDir}/visual/__baselines__/{testFilePath}/{arg}{ext}",
+  // A missing baseline is never created silently (e2e/visual/baseline-rule.mjs): only the job that makes them says so.
+  updateSnapshots: process.env["LK_UPDATE_BASELINES"] ? "missing" : "none",
   use: {
     // Pinned so a screenshot, a time string and a media query mean the same everywhere.
     timezoneId: "UTC",

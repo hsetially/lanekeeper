@@ -28,6 +28,18 @@ const DEFAULTS = {
   },
 } as const;
 
+/**
+ * Focus starts on the dialog itself. The first control in it is the request ID's copy button, and a keyboard hint that opens on a
+ * button nobody tabbed to takes the first Escape; the footer's first action may be "Discard my changes", which is not a place to
+ * start. The dialog is read first (its title and description name it), and Tab goes to the request ID, then the actions.
+ */
+function focusDialog(event: Event): void {
+  if (event.target instanceof HTMLElement) {
+    event.preventDefault();
+    event.target.focus();
+  }
+}
+
 type ProblemDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -41,13 +53,17 @@ type ProblemDialogProps = {
   children?: ReactNode;
   /** Footer buttons. Defaults to a single Close. */
   actions?: ReactNode;
+  /** The corner cross, for actions that have no Close of their own. */
+  showCloseButton?: boolean;
 };
 
-export function ProblemDialog({ open, onOpenChange, variant, title, description, requestId, children, actions }: ProblemDialogProps) {
+export function ProblemDialog({ open, onOpenChange, variant, title, description, requestId, children, actions, showCloseButton = false }: ProblemDialogProps) {
   const defaults = DEFAULTS[variant];
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent size="lg">
+      {/* The footer has the Close button (the default one, or the caller's own with its other actions); a corner cross beside it would be
+          a second "Close" for a screen reader. A caller whose actions have no Close can ask for the cross. */}
+      <DialogContent size="lg" showCloseButton={showCloseButton} onOpenAutoFocus={focusDialog} className="focus-visible:outline-none">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <defaults.Icon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />

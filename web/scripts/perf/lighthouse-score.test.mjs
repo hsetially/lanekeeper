@@ -13,12 +13,18 @@ const rc = (patch = {}) =>
   });
 
 describe("parseConfig", () => {
-  it("reads the repository's lighthouserc.json: three pages, three runs, a median of 90", () => {
+  it("reads the repository's lighthouserc.json: three real routes of the production build, three runs, a median of 90", () => {
     const config = parseConfig(readFileSync(new URL("../../lighthouserc.json", import.meta.url), "utf8"));
     expect(config.runs).toBe(3);
     expect(config.minScore).toBe(0.9);
-    expect(config.urls).toEqual(["/testpages/perf/grid", "/testpages/perf/diff", "/testpages/perf/nav/a"]);
-    expect(config).toMatchObject({ dist: "dist-perf", scenario: "perf" });
+    expect(config.urls).toHaveLength(3);
+    expect(config.urls[0]).toMatch(/^\/compare\?file=services%2Fpayments%2Fapplication\.yml&lanes=swimlane-01,.*,swimlane-40&only=all$/);
+    expect(config.urls[1]).toBe("/swimlanes/sitb/files?path=security%2Fsecurity-roles.yml&tab=diff");
+    expect(config.urls[2]).toBe("/swimlanes");
+    expect(config).toMatchObject({ dist: "dist", scenario: "perf-routes" });
+    expect(config.pages.map((p) => p.scenario)).toEqual(["design-compare-large", "design-file-diff-large", "perf-routes"]);
+    // No page is a test page of the perf build.
+    expect(config.urls.some((u) => u.startsWith("/testpages"))).toBe(false);
   });
 
   it("matches the budget it feeds: the same threshold as perf/budgets.toml", () => {
@@ -30,7 +36,8 @@ describe("parseConfig", () => {
   it.each([
     ["no pages", { ci: { collect: { numberOfRuns: 3, url: [], settings: { preset: "desktop" } }, assert: { assertions: { "categories:performance": ["error", { minScore: 0.9, aggregationMethod: "median" }] } } } }],
     ["a full URL, not a path", { ci: { collect: { numberOfRuns: 3, url: ["http://example.com/"], settings: { preset: "desktop" } }, assert: { assertions: { "categories:performance": ["error", { minScore: 0.9, aggregationMethod: "median" }] } } } }],
-    ["a path with a query", { ci: { collect: { numberOfRuns: 3, url: ["/a?x=1"], settings: { preset: "desktop" } }, assert: { assertions: { "categories:performance": ["error", { minScore: 0.9, aggregationMethod: "median" }] } } } }],
+    ["a path with a fragment", { ci: { collect: { numberOfRuns: 3, url: ["/a#x"], settings: { preset: "desktop" } }, assert: { assertions: { "categories:performance": ["error", { minScore: 0.9, aggregationMethod: "median" }] } } } }],
+    ["a scenario for a page that is not one of the pages", { lanekeeper: { dist: "dist", scenario: "s", scenarios: { "/other": "x" } } }],
     ["a mobile preset", { ci: { collect: { numberOfRuns: 3, url: ["/a"], settings: { preset: "mobile" } }, assert: { assertions: { "categories:performance": ["error", { minScore: 0.9, aggregationMethod: "median" }] } } } }],
     ["no runs", { ci: { collect: { numberOfRuns: 0, url: ["/a"], settings: { preset: "desktop" } }, assert: { assertions: { "categories:performance": ["error", { minScore: 0.9, aggregationMethod: "median" }] } } } }],
     ["a warning where an error is wanted", { ci: { collect: { numberOfRuns: 3, url: ["/a"], settings: { preset: "desktop" } }, assert: { assertions: { "categories:performance": ["warn", { minScore: 0.9, aggregationMethod: "median" }] } } } }],
@@ -41,7 +48,18 @@ describe("parseConfig", () => {
   });
 
   it("accepts a valid file", () => {
-    expect(parseConfig(rc())).toEqual({ urls: ["/a", "/b/c"], runs: 3, minScore: 0.9, dist: "dist-perf", scenario: "perf" });
+    expect(parseConfig(rc())).toEqual({ urls: ["/a", "/b/c"], runs: 3, minScore: 0.9, dist: "dist-perf", scenario: "perf", pages: [{ url: "/a", scenario: "perf" }, { url: "/b/c", scenario: "perf" }] });
+  });
+
+  it("accepts a page with a query, and gives a page its own scenario where the file says so", () => {
+    const text = JSON.stringify({
+      ci: { collect: { numberOfRuns: 3, url: ["/compare?file=a%2Fb.yml&lanes=x,y&only=all", "/b"], settings: { preset: "desktop" } }, assert: { assertions: { "categories:performance": ["error", { minScore: 0.9, aggregationMethod: "median" }] } } },
+      lanekeeper: { dist: "dist", scenario: "default", scenarios: { "/compare?file=a%2Fb.yml&lanes=x,y&only=all": "special" } },
+    });
+    expect(parseConfig(text).pages).toEqual([
+      { url: "/compare?file=a%2Fb.yml&lanes=x,y&only=all", scenario: "special" },
+      { url: "/b", scenario: "default" },
+    ]);
   });
 });
 

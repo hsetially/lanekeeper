@@ -1,8 +1,7 @@
-import { act, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { Banner } from "./Banner";
-import { CopyButton } from "./CopyButton";
 import { RequestId } from "./RequestId";
 import { TruncationBanner } from "./TruncationBanner";
 import { WriteError } from "./WriteError";
@@ -58,35 +57,18 @@ describe("WriteError", () => {
   });
 });
 
-describe("CopyButton and RequestId", () => {
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("copies the exact value, switches to Copied, announces it politely and goes back after 1.5 s", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    render(<CopyButton value="a3f9c21" what="hash" />);
-    const button = screen.getByRole("button", { name: "Copy hash" });
-    await user.click(button);
-    expect(await navigator.clipboard.readText()).toBe("a3f9c21");
-    expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
-    expect(screen.getByText("Copied", { selector: '[aria-live="polite"]' })).toBeInTheDocument();
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1500);
-    });
-    expect(screen.getByRole("button", { name: "Copy hash" })).toBeInTheDocument();
-    expect(screen.queryByText("Copied", { selector: '[aria-live="polite"]' })).not.toBeInTheDocument();
-  });
-
-  it("reports a failed copy instead of throwing", async () => {
+describe("RequestId, details for support", () => {
+  it("has a second, labelled copy button only when it is given the details", async () => {
     const user = userEvent.setup();
-    vi.spyOn(navigator.clipboard, "writeText").mockRejectedValueOnce(new Error("denied"));
-    render(<CopyButton value="x" what="path" />);
-    await user.click(screen.getByRole("button", { name: "Copy path" }));
-    expect(await screen.findByText("Copy failed", { selector: '[aria-live="polite"]' })).toBeInTheDocument();
+    const { rerender } = render(<RequestId id="req_1" />);
+    expect(screen.queryByRole("button", { name: "Copy details for support" })).toBeNull();
+    rerender(<RequestId id="req_1" details={"Request ID: req_1\nStatus: 500"} />);
+    await user.click(screen.getByRole("button", { name: "Copy details for support" }));
+    expect(await navigator.clipboard.readText()).toBe("Request ID: req_1\nStatus: 500");
   });
+});
 
+describe("RequestId", () => {
   it("RequestId shows the id in mono next to a copy button", async () => {
     const user = userEvent.setup();
     render(<RequestId id="req_01HXYZ" />);

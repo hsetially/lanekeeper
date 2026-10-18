@@ -19,7 +19,19 @@ const tree: TreeNode[] = [
   { id: "lazy", label: "lazy", lazy: true },
 ];
 
-function Host({ initial = [] as string[], onSelect = vi.fn(), onToggle = vi.fn(), nodes = tree }: { initial?: string[]; onSelect?: (id: string) => void; onToggle?: (id: string, open: boolean) => void; nodes?: TreeNode[] }) {
+function Host({
+  initial = [] as string[],
+  onSelect = vi.fn(),
+  onToggle = vi.fn(),
+  onOpenInNewTab,
+  nodes = tree,
+}: {
+  initial?: string[];
+  onSelect?: (id: string) => void;
+  onToggle?: (id: string, open: boolean) => void;
+  onOpenInNewTab?: (id: string) => void;
+  nodes?: TreeNode[];
+}) {
   const [expanded, setExpanded] = useState(new Set(initial));
   return (
     <TreeView
@@ -31,6 +43,7 @@ function Host({ initial = [] as string[], onSelect = vi.fn(), onToggle = vi.fn()
         onToggle(id, next.has(id));
       }}
       onSelect={onSelect}
+      {...(onOpenInNewTab === undefined ? {} : { onOpenInNewTab })}
     />
   );
 }
@@ -125,6 +138,71 @@ describe("TreeView", () => {
     expect(active()).toContain("a.yml");
   });
 
+  // The keymap's "Tree only: type-ahead. Jump to the next row starting with the typed characters": found by the keyboard journey in
+  // a real browser, where typing a letter in the file tree did nothing.
+  it("jumps to the next row that starts with the typed characters, in any case, wrapping round", async () => {
+    const user = userEvent.setup();
+    const names: TreeNode[] = [
+      { id: "alpha", label: "alpha" },
+      { id: "beta", label: "Beta" },
+      { id: "bravo", label: "bravo" },
+      { id: "charlie", label: "charlie" },
+    ];
+    render(<Host nodes={names} />);
+    await user.click(screen.getByRole("tree"));
+    await user.keyboard("c");
+    expect(active()).toContain("charlie");
+    // A single letter again goes to the next row that starts with it, and round to the first.
+    await user.keyboard("b");
+    expect(active()).toContain("Beta");
+    await user.keyboard("b");
+    expect(active()).toContain("bravo");
+    await user.keyboard("b");
+    expect(active()).toContain("Beta");
+    await user.keyboard("a");
+    expect(active()).toContain("alpha");
+  });
+
+  it("matches what has been typed so far as a prefix, and starts again after a pause", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "performance"] });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const names: TreeNode[] = [
+        { id: "limits", label: "limits/" , text: "limits" },
+        { id: "resources", label: "resources/", text: "resources" },
+        { id: "remote", label: "remote-itm-teller/", text: "remote-itm-teller" },
+        { id: "security", label: "security/", text: "security" },
+      ];
+      render(<Host nodes={names} />);
+      await user.click(screen.getByRole("tree"));
+      await user.keyboard("re");
+      expect(active()).toContain("resources");
+      await user.keyboard("m");
+      expect(active()).toContain("remote");
+      // After a pause the buffer is empty again: "s" is a new search.
+      await vi.advanceTimersByTimeAsync(1500);
+      await user.keyboard("s");
+      expect(active()).toContain("security");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does nothing when no row starts with what was typed, and ignores chords and the keys of other rows", async () => {
+    const user = userEvent.setup();
+    render(<Host initial={["app"]} />);
+    await user.click(screen.getByRole("tree"));
+    await user.keyboard("{ArrowDown}");
+    expect(active()).toContain("app");
+    await user.keyboard("zz");
+    expect(active()).toContain("app");
+    await user.keyboard("{Control>}t{/Control}");
+    expect(active()).toContain("app");
+    // A letter that starts a row, after letters that started none, is a new search.
+    await user.keyboard("t");
+    expect(active()).toContain("top.yml");
+  });
+
   it("selects with Enter and with a click, and a click on the chevron opens without selecting", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
@@ -139,6 +217,40 @@ describe("TreeView", () => {
     await user.click(screen.getByRole("button", { name: "Open app" }));
     expect(onToggle).toHaveBeenLastCalledWith("app", true);
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  // The keymap's "Lists, tables, trees: Control or Command and Enter, open in new tab": found by the keyboard journey in a real
+  // browser, where the file tree did nothing with it (the table did).
+  it("opens the row under the cursor in a new tab on Control+Enter and on Command+Enter, and on Enter alone selects it here", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const onOpenInNewTab = vi.fn();
+    render(<Host onSelect={onSelect} onOpenInNewTab={onOpenInNewTab} />);
+    await user.click(screen.getByRole("tree"));
+    await user.keyboard("{ArrowDown}{ArrowDown}");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+    expect(onOpenInNewTab).toHaveBeenCalledTimes(2);
+    expect(onOpenInNewTab).toHaveBeenLastCalledWith("top.yml");
+    expect(onSelect).not.toHaveBeenCalled();
+    await user.keyboard("{Enter}");
+    expect(onSelect).toHaveBeenCalledWith("top.yml");
+    expect(onOpenInNewTab).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves Control+Enter to the browser when the screen has no new tab to open, and does nothing on a row of nothing", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const onOpenInNewTab = vi.fn();
+    const { unmount } = render(<Host onSelect={onSelect} />);
+    await user.click(screen.getByRole("tree"));
+    await user.keyboard("{ArrowDown}{Control>}{Enter}{/Control}");
+    expect(onSelect).not.toHaveBeenCalled();
+    unmount();
+    render(<Host onSelect={onSelect} onOpenInNewTab={onOpenInNewTab} />);
+    await user.click(screen.getByRole("tree"));
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    expect(onOpenInNewTab).not.toHaveBeenCalled();
   });
 
   it("opens a folder whose children are not loaded yet, and tells the screen so it can fetch them", async () => {

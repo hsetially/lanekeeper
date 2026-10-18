@@ -57,6 +57,11 @@ export default defineConfig(
   },
   { files: ["scripts/**/*.{js,mjs}", "lint/**/*.{js,mjs}", "e2e/**/*.{js,mjs}", "*.config.{js,mjs}"], languageOptions: { globals: nodeGlobals } },
   {
+    // e2e/visual/*.mjs hand functions to `page.evaluate`, which run in the browser: they use its globals, nothing else of it.
+    files: ["e2e/visual/*.mjs"],
+    languageOptions: { globals: Object.fromEntries(["document", "getComputedStyle", "atob", "createImageBitmap", "OffscreenCanvas", "ImageData", "Blob", "FileReader"].map((name) => [name, "readonly"])) },
+  },
+  {
     // public/ holds classic browser scripts (theme-init.js), copied to dist as they are: no module, no types, browser globals.
     files: ["public/**/*.js"],
     ...tseslint.configs.disableTypeChecked,

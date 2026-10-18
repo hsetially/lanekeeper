@@ -36,7 +36,9 @@ export function SearchInput({ className, boxClassName, kbd, toggles = [], ...pro
     <div
       data-slot="search-input"
       className={cn(
-        "flex h-7 w-full min-w-0 items-center gap-1.5 rounded-sm border border-input bg-background px-2 transition-colors hover:border-muted-foreground has-[input:focus-visible]:border-ring has-[input:focus-visible]:shadow-[0_0_0_1px_var(--ring)] has-[input:focus-visible]:outline-2 has-[input:focus-visible]:outline-offset-2 has-[input:focus-visible]:outline-ring has-[input:disabled]:cursor-not-allowed has-[input:disabled]:bg-muted has-[input:disabled]:opacity-55",
+        "flex h-7 w-full min-w-0 items-center gap-1.5 rounded-sm border border-input bg-background transition-colors hover:border-muted-foreground has-[input:focus-visible]:border-ring has-[input:focus-visible]:shadow-[0_0_0_1px_var(--ring)] has-[input:focus-visible]:outline-2 has-[input:focus-visible]:outline-offset-2 has-[input:focus-visible]:outline-ring has-[input:disabled]:cursor-not-allowed has-[input:disabled]:bg-muted has-[input:disabled]:opacity-55",
+        // The design's search field pads 4px (not 8) after a key hint or a toggle, which have a padding of their own.
+        kbd || toggles.length > 0 ? "pr-1 pl-2" : "px-2",
         boxClassName,
       )}
     >

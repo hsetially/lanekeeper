@@ -51,12 +51,12 @@ export function NewVersionScreen({ reload = reloadPage }: { reload?: () => void 
   // Before the first paint, so that the banner is never seen beside the screen.
   useLayoutEffect(() => claimNewVersionScreen(), []);
   return (
-    <main className="flex flex-col gap-3 p-6">
+    <div className="flex flex-col gap-3 p-6">
       <h1 className="text-lg font-semibold">A new version is available</h1>
       <p className="text-muted-foreground">{dirty ? WHY_HELD : "This page needs files that the new version replaced. Reload to get them."}</p>
       <div>
         <ReloadButton reload={reload} dirty={dirty} />
       </div>
-    </main>
+    </div>
   );
 }

@@ -5,7 +5,7 @@ import { X } from "@/icons";
 import { cn } from "@/lib/utils";
 
 type BannerProps = {
-  variant: "info" | "success" | "warning" | "danger";
+  variant: "info" | "success" | "warning" | "danger" | "locked";
   title: string;
   /** Buttons or links on the right. */
   action?: ReactNode;
@@ -21,16 +21,20 @@ type BannerProps = {
 export function Banner({ variant, title, action, icon, onDismiss, children, className }: BannerProps) {
   return (
     <Alert variant={variant} {...(icon === undefined ? {} : { icon })} className={cn("items-center rounded-none border-x-0 px-4", className)}>
-      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
-        <AlertTitle>{title}</AlertTitle>
-        {children ? <AlertDescription className="min-w-0 flex-1">{children}</AlertDescription> : null}
+      {/* The Alert lays its children out in a column, so the words, the action and the dismiss button are ONE child of it, a row: the
+          design's banner is a single line with its button at the right (a column put the button under the words). */}
+      <div data-slot="banner-row" className="flex min-w-0 flex-1 items-center gap-3">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+          <AlertTitle>{title}</AlertTitle>
+          {children ? <AlertDescription className="min-w-0 flex-1">{children}</AlertDescription> : null}
+        </div>
+        {action ? <div className="flex shrink-0 items-center gap-2">{action}</div> : null}
+        {variant === "success" && onDismiss ? (
+          <Button variant="ghost" size="icon-sm" aria-label="Dismiss" onClick={onDismiss} className="text-success-fg">
+            <X />
+          </Button>
+        ) : null}
       </div>
-      {action ? <div className="flex shrink-0 items-center gap-2">{action}</div> : null}
-      {variant === "success" && onDismiss ? (
-        <Button variant="ghost" size="icon-sm" aria-label="Dismiss" onClick={onDismiss} className="text-success-fg">
-          <X />
-        </Button>
-      ) : null}
     </Alert>
   );
 }

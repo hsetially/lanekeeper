@@ -56,9 +56,15 @@ export const swimlaneKeys = {
   detail: (id: string) => ["swimlane", id] as const,
   pickup: (id: string) => ["pickup", id] as const,
   activity: (id: string) => ["activity", id] as const,
+  /**
+   * The files of a swimlane that are not in sync (the Drift tab), for one state or for all of them (null). It sits under the
+   * swimlane's own key, so every event that refreshes the swimlane (`drift_changed`, `file_observed`, `swimlane_changed`, the
+   * sync windows) refreshes it as well.
+   */
+  drift: (id: string, state: DriftState | null) => ["swimlane", id, "drift", state] as const,
 };
 
-/** Files of one swimlane: the tree, the head of a file, its content by hash, a git read, its history. */
+/** Files of one swimlane: the tree, the head of a file, its content by hash, a git read, its history, its baseline copy; and drafts. */
 export const fileKeys = {
   /** The prefix of every tree page-set of a swimlane. */
   trees: (id: string) => ["tree", id] as const,
@@ -74,6 +80,13 @@ export const fileKeys = {
   /** A file read from git at a ref. A ref moves, so this is not immutable. */
   contentRef: (id: string, path: string, repo: string, ref: string) => ["content-ref", id, path, repo, ref] as const,
   history: (id: string, path: string) => ["history", id, path] as const,
+  /**
+   * A file as the swimlane's baseline has it. The same shape as a git read, with the repository "baseline", which no git read
+   * uses, so a branch moving never refetches it. Not immutable: a baseline is rebased.
+   */
+  baseline: (id: string, path: string) => ["content-ref", id, path, "baseline", "baseline"] as const,
+  /** One draft (`/drafts/:id`), as it is now. */
+  draft: (id: Id) => ["draft", String(id)] as const,
 };
 
 /** Comparisons: one file between two sides, the grid across swimlanes, the tree of a comparison. */
@@ -117,6 +130,8 @@ export const docKeys = {
   lists: () => ["docs"] as const,
   list: (params: WithoutCursor<ListDocsParams>) => ["docs", params] as const,
   detail: (id: Id) => ["doc", String(id)] as const,
+  /** The docs that describe one file (the LOGICAL file), or one setting of it. Under "docs", so `doc_indexed` reaches it. */
+  forFile: (file: string, setting: string | null) => ["docs", "for-file", file, setting] as const,
   featureStatuses: () => ["features"] as const,
   features: (params: WithoutCursor<GetFeatureStatusParams>) => ["features", params] as const,
 };

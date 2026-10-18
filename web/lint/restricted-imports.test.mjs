@@ -68,6 +68,24 @@ describe("imports the app must not make (S12)", () => {
     }
   });
 
+  it("lets only the one-time secret displays import the secret copy button and field", async () => {
+    const code = 'import { SecretCopyButton } from "@/components/app/secret/SecretCopyButton";\nexport { SecretCopyButton };\n';
+    expect(await restricted(code, "src/components/app/PersonalTokens.tsx")).toEqual([]);
+    expect(await restricted(code, "src/features/admin/swimlanes/JoinTokenCard.tsx")).toEqual([]);
+    for (const file of ["src/features/file/view/FileHeader.tsx", "src/components/app/CopyButton.tsx", "src/features/access/GithubTokenPage.tsx", "src/features/admin/swimlanes/AgentAccount.tsx"]) {
+      const found = await restricted(code, file);
+      expect(found, file).toHaveLength(1);
+      expect(found[0]?.message, file).toMatch(/one-time secret displays only/);
+    }
+    // Relative imports, the folder itself, and the read-only field are covered too.
+    expect(await restricted('import { SecretCopyButton } from "../../components/app/secret/SecretCopyButton";\nexport { SecretCopyButton };\n', "src/features/x/Page.tsx")).toHaveLength(1);
+    expect(await restricted('import { SecretField } from "@/components/app/secret/SecretField";\nexport { SecretField };\n', "src/features/x/Page.tsx")).toHaveLength(1);
+    expect(await restricted('import { SecretField } from "./secret/SecretField";\nexport { SecretField };\n', "src/components/app/Y.tsx")).toHaveLength(1);
+    // The generic button is for everyone, and the secret components may use each other.
+    expect(await restricted('import { CopyButton } from "@/components/app/CopyButton";\nexport { CopyButton };\n', "src/features/x/Page.tsx")).toEqual([]);
+    expect(await restricted('import { SecretField } from "./SecretField";\nexport { SecretField };\n', "src/components/app/secret/SecretCopyButton.tsx")).toEqual([]);
+  });
+
   it("does not ban what only sounds like one (the names are exact, and TanStack Query is the store)", async () => {
     const code = 'import { useQuery, QueryClient } from "@tanstack/react-query";\nimport { reduce } from "lodash-es";\nexport { useQuery, QueryClient, reduce };\n';
     expect(await restricted(code, "src/features/x/Page.tsx")).toEqual([]);

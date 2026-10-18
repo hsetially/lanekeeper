@@ -93,10 +93,10 @@ export function EditorLab() {
     });
   }, []);
   return (
-    <main>
+    <div>
       <h1 className="sr-only">Editor test page</h1>
       <p ref={status}>loading</p>
       <div ref={host} />
-    </main>
+    </div>
   );
 }

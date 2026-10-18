@@ -2,9 +2,13 @@ import type { ComponentProps } from "react";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 import { Check } from "@/icons";
 import { cn } from "@/lib/utils";
+import { useOverlayContainer } from "./overlay-root";
 
-export function DropdownMenu(props: ComponentProps<typeof DropdownMenuPrimitive.Root>) {
-  return <DropdownMenuPrimitive.Root data-slot="dropdown-menu" {...props} />;
+// Not modal by default. A modal menu marks the rest of the page aria-hidden while the page's controls stay in the tab order,
+// which is what axe's `aria-hidden-focus` rule reports; the WAI-ARIA menu button pattern has no such trap (Escape closes the
+// menu, a click outside closes it, and focus goes back to the button). A caller that really wants a modal menu passes `modal`.
+export function DropdownMenu({ modal = false, ...props }: ComponentProps<typeof DropdownMenuPrimitive.Root>) {
+  return <DropdownMenuPrimitive.Root data-slot="dropdown-menu" modal={modal} {...props} />;
 }
 
 export function DropdownMenuTrigger(props: ComponentProps<typeof DropdownMenuPrimitive.Trigger>) {
@@ -16,13 +20,14 @@ export function DropdownMenuGroup(props: ComponentProps<typeof DropdownMenuPrimi
 }
 
 export function DropdownMenuContent({ className, sideOffset = 4, align = "end", ...props }: ComponentProps<typeof DropdownMenuPrimitive.Content>) {
+  const container = useOverlayContainer();
   return (
-    <DropdownMenuPrimitive.Portal>
+    <DropdownMenuPrimitive.Portal container={container}>
       <DropdownMenuPrimitive.Content
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
         align={align}
-        className={cn("min-w-48 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-popover animate-lk-pop-in", className)}
+        className={cn("z-40 min-w-48 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-popover animate-lk-pop-in", className)}
         {...props}
       />
     </DropdownMenuPrimitive.Portal>
@@ -47,6 +52,24 @@ export function DropdownMenuCheckboxItem({ className, children, ...props }: Comp
       </span>
       {children}
     </DropdownMenuPrimitive.CheckboxItem>
+  );
+}
+
+export function DropdownMenuRadioGroup(props: ComponentProps<typeof DropdownMenuPrimitive.RadioGroup>) {
+  return <DropdownMenuPrimitive.RadioGroup data-slot="dropdown-menu-radio-group" {...props} />;
+}
+
+/** One choice of a group where exactly one is on (the theme: Light, Dark, System). The check marks the chosen one. */
+export function DropdownMenuRadioItem({ className, children, ...props }: ComponentProps<typeof DropdownMenuPrimitive.RadioItem>) {
+  return (
+    <DropdownMenuPrimitive.RadioItem data-slot="dropdown-menu-radio-item" className={cn(itemClasses, "pl-7", className)} {...props}>
+      <span className="absolute left-2 flex size-3.5 items-center justify-center">
+        <DropdownMenuPrimitive.ItemIndicator>
+          <Check aria-hidden="true" />
+        </DropdownMenuPrimitive.ItemIndicator>
+      </span>
+      {children}
+    </DropdownMenuPrimitive.RadioItem>
   );
 }
 

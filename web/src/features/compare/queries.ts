@@ -5,6 +5,7 @@ import { EVENT_FED } from "@/lib/query/freshness";
 import { compareKeys, gitKeys } from "@/lib/query/keys";
 import { pagedQuery } from "@/lib/query/paged";
 import { apiQuery } from "@/lib/query/options";
+import type { PageSizes } from "./model";
 
 // Comparisons. A side is a ref (`nfs:<swimlane>`, `baseline:<swimlane>`, `effective:<swimlane>`, `git:base@<ref>`), and a ref
 // moves, so none of these is immutable and none is keyed by a hash: the key holds the refs, and file_observed, drift_changed
@@ -27,15 +28,52 @@ export const compareTreeQuery = (left: string, right: string, prefix: string) =>
     staleTime: EVENT_FED,
   });
 
+/** The first page of the grid is small, so that the first screen is drawn when 50 rows have arrived and not when 2.7 MB has. */
+export const GRID_FIRST_PAGE = 50;
+/** Every other page of the grid is the largest the server gives (500 rows). */
+export const GRID_PAGE = 500;
+export const GRID_PAGE_SIZES: PageSizes = { first: GRID_FIRST_PAGE, next: GRID_PAGE };
+/** A page of the entries of a tree comparison: a path and a state each, so the largest page is small. */
+export const TREE_PAGE = 500;
+
 /**
  * One logical file across swimlanes: a row per setting, a column per swimlane (the caller's `lanes`, in that order). The rows
- * are paged by cursor inside one cache entry; the first page should be small (50) and the page size is the caller's.
+ * are paged by cursor inside one cache entry. With `sizes` the first page has `sizes.first` rows and the others `sizes.next`:
+ * one page of 500 rows by 40 swimlanes is 2.7 MB of JSON and the hub sends no compression, so the real screen always passes
+ * GRID_PAGE_SIZES. Without it no `limit` is sent (the server's default), which is what the shared query test expects.
  */
-export const gridQuery = (file: string, lanes: readonly SwimlaneId[], onlyDiff: boolean, channel: string | null) =>
+export const gridQuery = (file: string, lanes: readonly SwimlaneId[], onlyDiff: boolean, channel: string | null, sizes?: PageSizes) =>
   pagedQuery({
     queryKey: compareKeys.grid(file, lanes, onlyDiff, channel),
     fetch: (cursor, signal) =>
-      getGrid({ file, swimlanes: [...lanes], ...(onlyDiff ? { only_differing: true } : {}), ...(channel === null ? {} : { channel }), ...(cursor === undefined ? {} : { cursor }) }, { signal }).then((grid) => grid.rows),
+      getGrid(
+        {
+          file,
+          swimlanes: [...lanes],
+          ...(onlyDiff ? { only_differing: true } : {}),
+          ...(channel === null ? {} : { channel }),
+          ...(sizes === undefined ? {} : { limit: cursor === undefined ? sizes.first : sizes.next }),
+          ...(cursor === undefined ? {} : { cursor }),
+        },
+        { signal },
+      ).then((grid) => grid.rows),
+    staleTime: EVENT_FED,
+  });
+
+/**
+ * The files that differ between two sides under a folder, as pages that also say how many identical subtrees the server
+ * skipped (`skipped`, the same on every page). It is the key of `compareTreeQuery` with a page that keeps that number, which
+ * `compareTreeQuery` drops; a screen mounts one of them for a key, never both.
+ */
+export const treeComparisonQuery = (left: string, right: string, prefix: string) =>
+  pagedQuery({
+    queryKey: compareKeys.tree(left, right, prefix),
+    fetch: (cursor, signal) =>
+      compareTree({ left, right, limit: TREE_PAGE, ...(prefix === "" ? {} : { prefix }), ...(cursor === undefined ? {} : { cursor }) }, { signal }).then((tree) => ({
+        items: tree.entries.items,
+        next: tree.entries.next,
+        skipped: tree.skipped_identical_subtrees,
+      })),
     staleTime: EVENT_FED,
   });
 

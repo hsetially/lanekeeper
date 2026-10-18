@@ -118,12 +118,14 @@ async function main() {
   const args = options(process.argv.slice(2));
   const config = parseConfig(readFileSync(args.config, "utf8"));
   const runs = args.runs ?? config.runs;
-  const harness = await startHarness({ dist: config.dist, scenario: config.scenario });
+  const harness = await startHarness({ dist: config.dist, scenario: config.pages[0]?.scenario ?? config.scenario });
   const measured = [];
   let lighthouseVersion = "unknown";
   let userAgent = "unknown";
   try {
-    for (const path of config.urls) {
+    for (const { url: path, scenario } of config.pages) {
+      // Each page has the data its screen needs (lighthouserc.json, `scenarios`).
+      harness.setScenario(scenario);
       const scores = [];
       const detail = [];
       for (let i = 0; i < runs; i++) {
@@ -148,7 +150,7 @@ async function main() {
       values: answer.values,
       samples: runs * config.urls.length,
       pages: answer.pages.map((page) => ({ ...page, detail: measured.find((m) => m.url === page.url)?.detail })),
-      note: `Lighthouse ${lighthouseVersion}, desktop preset (simulated throttling), performance category; a page is the median of ${runs} runs in a fresh Chromium each, the budget is the lowest page; the pages are the perf build's test pages behind the harness (the hub's headers, no Content-Encoding)`,
+      note: `Lighthouse ${lighthouseVersion}, desktop preset (simulated throttling), performance category; a page is the median of ${runs} runs in a fresh Chromium each, the budget is the lowest page; the pages are real routes of the production build behind the harness (the hub's headers, no Content-Encoding)`,
       environment: { browser: userAgent, cpus: cpus().length, node: process.version },
     },
     { dir: resultsDir() },

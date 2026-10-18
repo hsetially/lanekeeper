@@ -29,7 +29,7 @@ export function PerfNavLayout() {
     };
   }, [queryClient]);
   return (
-    <div className="flex h-screen flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       <nav aria-label="Pages" className="flex gap-3 border-b border-border p-3">
         {(["a", "b", "c"] as const).map((id) => (
           <Link key={id} to={`/testpages/perf/nav/${id}`} preload="intent" className="underline">
@@ -59,9 +59,9 @@ export function PerfScreen({ title }: { title: string }) {
     [],
   );
   return (
-    <main className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <h1 className="p-3 text-lg font-semibold">{title}</h1>
       <DataTable label={title} rows={pages.items} columns={columns} rowKey={(row) => row.id} state={pages.status === "pending" ? "loading" : pages.status === "error" ? "error" : "ready"} className="min-h-0 flex-1" />
-    </main>
+    </div>
   );
 }

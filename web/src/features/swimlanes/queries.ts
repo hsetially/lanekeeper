@@ -1,4 +1,5 @@
-import { getSwimlane, listPendingRestarts, listSwimlanes } from "@/api/generated/endpoints/swimlanes/swimlanes";
+import { getSwimlane, listDrift, listPendingRestarts, listSwimlanes } from "@/api/generated/endpoints/swimlanes/swimlanes";
+import type { DriftState } from "@/api/generated/model";
 import { EVENT_FED } from "@/lib/query/freshness";
 import { swimlaneKeys } from "@/lib/query/keys";
 import { pagedQuery } from "@/lib/query/paged";
@@ -29,5 +30,17 @@ export const swimlanePickupQuery = (id: string) =>
   pagedQuery({
     queryKey: swimlaneKeys.pickup(id),
     fetch: (cursor, signal) => listPendingRestarts(id, cursor === undefined ? {} : { cursor }, { signal }),
+    staleTime: EVENT_FED,
+  });
+
+/**
+ * The files of a swimlane that are not in sync (the Drift tab), for one state or for all of them. A flat list across the
+ * swimlane, which is what the tree cannot give (it lists one folder at a time). It sits under the swimlane's own key, so every
+ * event that refreshes the swimlane (drift_changed, file_observed, swimlane_changed, the sync windows) refreshes it too.
+ */
+export const swimlaneDriftQuery = (id: string, state: DriftState | null) =>
+  pagedQuery({
+    queryKey: swimlaneKeys.drift(id, state),
+    fetch: (cursor, signal) => listDrift(id, { ...(state === null ? {} : { state }), ...(cursor === undefined ? {} : { cursor }) }, { signal }),
     staleTime: EVENT_FED,
   });

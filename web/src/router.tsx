@@ -1,4 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
+import type { ComponentType } from "react";
 import {
   createRootRouteWithContext,
   createRoute,
@@ -6,17 +7,19 @@ import {
   notFound,
   Outlet,
   redirect,
+  useParams,
+  useSearch,
   type RouterHistory,
 } from "@tanstack/react-router";
 import { SessionProvider, RouteGate } from "@/auth/session";
-import { Frame } from "@/routes/Frame";
 import { Landing } from "@/routes/Landing";
 import { lazyPage } from "@/lib/deploy/lazy-page";
-import { NewVersionBanner } from "@/components/app/NewVersion";
+import { AppShell } from "@/features/shell/AppShell";
 import { LiveProvider } from "@/live/LiveProvider";
 import type { LiveConfig } from "@/live/live";
-import { PAGE_LOADERS, type PageLoader, type PageLoaders } from "@/routes/pages";
+import { PAGE_LOADERS, type AppPageProps, type PageLoader, type PageLoaders } from "@/routes/pages";
 import { useIdlePrefetch } from "@/routes/prefetch";
+import { redirectHref } from "@/routes/redirect";
 import { ErrorScreen, NotFoundScreen, RouteLoading } from "@/routes/screens";
 import { parseAppSearch, pickSearch, stringifySearch } from "@/routes/search";
 import { paramCheck, paramNames, ROUTES, type RouteAccess, type RouteDef } from "@/routes/table";
@@ -53,9 +56,9 @@ function RootLayout({ live }: { live: LiveConfig | undefined }) {
     <SessionProvider>
       <LiveProvider config={live}>
         <IdlePrefetch />
-        <Frame />
-        <NewVersionBanner />
-        <Outlet />
+        <AppShell>
+          <Outlet />
+        </AppShell>
       </LiveProvider>
     </SessionProvider>
   );
@@ -64,22 +67,24 @@ function RootLayout({ live }: { live: LiveConfig | undefined }) {
 /** `/swimlanes/:id` becomes `/swimlanes/$id`. */
 const toTanstack = (path: string): string => path.replace(/:([A-Za-z]+)/g, "$$$1");
 
-function fillParams(path: string, params: Readonly<Record<string, string>>): string {
-  return path.replace(/:([A-Za-z]+)/g, (_m, name: string) => encodeURIComponent(params[name] ?? ""));
-}
-
 /**
  * A page behind the role gate. The page is loaded when the route is first used, and the router preloads it on hover and focus
  * (`defaultPreload: "intent"`) by calling `.preload` on the route's component, which is why the gate is wrapped here and the
  * page's `preload` is put on the wrapper.
  */
 function gated(access: RouteAccess, load: PageLoader) {
-  const Screen = lazyPage(load);
-  const Gated = () => (
-    <RouteGate access={access}>
-      <Screen />
-    </RouteGate>
-  );
+  const Screen = lazyPage<AppPageProps>(load);
+  const Gated = () => {
+    // The page gets the path parameters (already checked by `beforeLoad`) and the search keys `validateSearch` kept, as props:
+    // it never reads the URL by itself.
+    const params = useParams({ strict: false }) as unknown as Record<string, string>;
+    const search = useSearch({ strict: false }) as unknown as Record<string, string | undefined>;
+    return (
+      <RouteGate access={access}>
+        <Screen params={params} search={search} />
+      </RouteGate>
+    );
+  };
   Gated.preload = Screen.preload;
   return Gated;
 }
@@ -127,16 +132,13 @@ export function createAppRouter({
       path: toTanstack(def.path),
       staticData: { access: def.access, title: def.title, routeId: def.id },
       validateSearch: pickSearch(def.search ?? []),
-      beforeLoad: ({ params }: { params: Record<string, string> }) => {
+      beforeLoad: ({ params, search }: { params: Record<string, string>; search: Record<string, string | undefined> }) => {
         for (const name of paramNames(def.path)) {
           const check = paramCheck(def, name);
           const value = params[name];
           if (value === undefined || (check && !check(value))) throw notFound();
         }
-        if (def.redirect) {
-          const target = fillParams(def.redirect.to, params);
-          throw redirect({ href: target });
-        }
+        if (def.redirect) throw redirect({ href: redirectHref(def.redirect, params, search) });
       },
       component: componentFor(def, pages),
     });
@@ -182,7 +184,7 @@ export function createAppRouter({
               staticData: { access: "viewer", title: "Pages", routeId: "lab-perf-nav" },
               component: gated("viewer", () => import("@/testpages/perf/Nav").then((m) => ({ default: m.PerfNavLayout }))),
             });
-            const page = (id: "a" | "b" | "c", load: PageLoader) =>
+            const page = (id: "a" | "b" | "c", load: () => Promise<{ default: ComponentType }>) =>
               createRoute({ getParentRoute: () => nav, path: id, staticData: { access: "viewer", title: `Route ${id.toUpperCase()}`, routeId: `lab-perf-${id}` }, component: lazyPage(load) });
             return nav.addChildren([
               page("a", () => import("@/testpages/perf/RouteA")),

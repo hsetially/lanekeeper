@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 describe("jsdom test setup", () => {
   it("runs in jsdom with jest-dom matchers", () => {
@@ -23,5 +23,14 @@ describe("jsdom test setup", () => {
     expect(window.matchMedia("(prefers-reduced-motion: reduce)").matches).toBe(false);
     expect(() => document.body.scrollIntoView()).not.toThrow();
     expect(document.body.hasPointerCapture(1)).toBe(false);
+  });
+
+  it("has an idle callback that never runs by itself: the app's idle loading (the palette, the sidebar's screens) waits for a test that asks for it", async () => {
+    expect(typeof requestIdleCallback).toBe("function");
+    const run = vi.fn();
+    requestIdleCallback(run, { timeout: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(run).not.toHaveBeenCalled();
+    expect(() => cancelIdleCallback(0)).not.toThrow();
   });
 });

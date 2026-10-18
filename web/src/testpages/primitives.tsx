@@ -25,7 +25,7 @@ export function PrimitivesPage() {
   const [palette, setPalette] = useState(false);
   return (
     <TooltipProvider>
-      <main className="flex flex-col gap-4 p-6">
+      <div className="flex flex-col gap-4 p-6">
         <h1 className="text-lg font-semibold">Primitives</h1>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -78,7 +78,7 @@ export function PrimitivesPage() {
             <PopoverTrigger asChild>
               <Button variant="secondary">Open popover</Button>
             </PopoverTrigger>
-            <PopoverContent>A popover, positioned by floating-ui.</PopoverContent>
+            <PopoverContent aria-label="Example popover">A popover, positioned by floating-ui.</PopoverContent>
           </Popover>
 
           <DropdownMenu>
@@ -138,7 +138,7 @@ export function PrimitivesPage() {
             </CommandGroup>
           </CommandList>
         </Command>
-      </main>
+      </div>
 
       <ConsequenceDialog open={consequence} onOpenChange={setConsequence} title="Raise a pull request" consequence="2 files will be copied into the base repository." actionLabel="Raise PR" onConfirm={() => setConsequence(false)} />
       <DestructiveConfirm open={destructive} onOpenChange={setDestructive} title="Delete file" consequence="The file is removed from the swimlane." confirmValue="core-sit1.yml" actionLabel="Delete file" onConfirm={() => setDestructive(false)} />

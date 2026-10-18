@@ -8,6 +8,12 @@ afterEach(() => {
   Reflect.deleteProperty(document, "cookie");
 });
 
+// Sign out is in the account menu at the foot of the sidebar: open it, then choose the item.
+async function signOutFromMenu(): Promise<void> {
+  await userEvent.click(await screen.findByRole("button", { name: /Ada Lovelace/ }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Sign out" }));
+}
+
 describe("sign out", () => {
   it("posts to /auth/logout with the CSRF token, empties the caches and goes to /signin", async () => {
     apiCaches.etags.set("/api/v1/x", '"a"', "{}");
@@ -16,7 +22,7 @@ describe("sign out", () => {
       if (call.path === "/auth/logout") return new Response(null, { status: 204 });
       return problem(404, "not_found");
     });
-    await userEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+    await signOutFromMenu();
     await waitFor(() => expect(app.location()).toBe("/signin"));
     const logout = app.calls.find((c) => c.path === "/auth/logout");
     expect(logout?.method).toBe("POST");
@@ -31,7 +37,7 @@ describe("sign out", () => {
       if (call.path === "/auth/logout") return problem(500, "internal");
       return problem(404, "not_found");
     });
-    await userEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+    await signOutFromMenu();
     expect(await screen.findByText("Could not sign out")).toBeInTheDocument();
     expect(app.location()).toBe("/swimlanes");
   });

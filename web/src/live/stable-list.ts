@@ -32,9 +32,22 @@ export type StableList<T> = {
   readonly apply: () => void;
 };
 
-export function useStableList<T>(items: readonly T[], keyOf: (item: T) => string): StableList<T> {
+export type StableListOptions = {
+  /**
+   * For a list that pages: rows that come AFTER every row on screen are the next page the screen asked for, not a live change, and
+   * shift nothing under the reader, so they are shown at once and not counted. A row that arrives before, goes or moves is still held.
+   */
+  appendsApply?: boolean;
+};
+
+/** True when `held` is the start of `items` (the same keys in the same order) and `items` goes on. */
+function isAppendedTo<T>(held: readonly T[], items: readonly T[], keyOf: (item: T) => string): boolean {
+  return items.length > held.length && held.every((item, i) => items[i] !== undefined && keyOf(item) === keyOf(items[i] as T));
+}
+
+export function useStableList<T>(items: readonly T[], keyOf: (item: T) => string, { appendsApply = false }: StableListOptions = {}): StableList<T> {
   const [held, setHeld] = useState<readonly T[]>(items);
-  const same = sameKeysInOrder(held, items, keyOf);
+  const same = sameKeysInOrder(held, items, keyOf) || (appendsApply && isAppendedTo(held, items, keyOf));
   // In place: the rows are the latest ones. Otherwise the held list is what is drawn, and the difference is counted.
   useEffect(() => {
     if (same && held !== items) setHeld(items);

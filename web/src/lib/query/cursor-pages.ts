@@ -1,4 +1,4 @@
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { ApiProblem } from "@/api/problem";
 import type { QueryKey } from "./keys";
@@ -12,6 +12,32 @@ import type { QueryKey } from "./keys";
 // result says so when it stopped there, so a screen can say "showing the first N" instead of looking complete.
 
 export const DEFAULT_MAX_PAGES = 50;
+
+/** A "Load more" that a refetch keeps cancelling is asked for at most this many times, and then left for the person to press again. */
+export const MAX_ASKS = 3;
+/** The longest a "Load more" waits for a refetch that is out (the API client's own timeout, so a stuck request cannot hold it). */
+export const IDLE_WAIT_MS = 30_000;
+
+/** Resolves when nothing is fetching under this key (at once if nothing is), or after `limitMs`. */
+export function whenIdle(client: QueryClient, queryKey: QueryKey, limitMs: number): Promise<void> {
+  const busy = (): boolean => client.isFetching({ queryKey, exact: true }) > 0;
+  if (!busy()) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = (): void => {
+      unsubscribe();
+      clearTimeout(timer);
+      resolve();
+    };
+    const unsubscribe = client.getQueryCache().subscribe(() => {
+      if (!busy()) done();
+    });
+    const timer = setTimeout(done, limitMs);
+  });
+}
+
+function pageCount(client: QueryClient, queryKey: QueryKey): number {
+  return client.getQueryData<{ pages: unknown[] }>(queryKey)?.pages.length ?? 0;
+}
 
 export type CursorPageOptions<TPage, TItem> = {
   queryKey: QueryKey;
@@ -73,19 +99,31 @@ export function useCursorPages<TPage, TItem>(options: CursorPageOptions<TPage, T
   const truncated = lastPage !== undefined && pages !== undefined && pages.length >= maxPages && select(lastPage).next !== null;
   const loadMoreError = hasData && query.error ? query.error : null;
 
+  const client = useQueryClient();
   const inFlight = useRef<Promise<void> | null>(null);
   const { hasNextPage, fetchNextPage, refetch: refetchAll } = query;
+  // A request for the next page and a refetch of the list cancel each other: TanStack starts the later one and silently drops the
+  // earlier. The live layer refetches the lists on screen when the stream first connects (and on every event for the list), so a
+  // "Load more" pressed at that moment would be dropped with no error, and the person would see nothing happen. So the page
+  // request waits for a refetch that is out (and does not cancel it), and if a refetch cancels the request, it is made again once
+  // the refetch is done, at most MAX_ASKS times (rule 5).
   const loadMore = useCallback((): Promise<void> => {
     if (inFlight.current) return inFlight.current;
     if (!hasNextPage) return Promise.resolve();
-    const run = fetchNextPage()
-      .then(() => undefined)
-      .finally(() => {
-        inFlight.current = null;
-      });
+    const run = (async (): Promise<void> => {
+      for (let ask = 0; ask < MAX_ASKS; ask += 1) {
+        await whenIdle(client, queryKey, IDLE_WAIT_MS);
+        const before = pageCount(client, queryKey);
+        const result = await fetchNextPage();
+        // A page arrived, the request failed (the error is the entry's, shown by the screen), or there is nothing more: done.
+        if (result.isError || !result.hasNextPage || pageCount(client, queryKey) > before) return;
+      }
+    })().finally(() => {
+      inFlight.current = null;
+    });
     inFlight.current = run;
     return run;
-  }, [hasNextPage, fetchNextPage]);
+  }, [hasNextPage, fetchNextPage, client, queryKey]);
 
   useEffect(() => {
     // A failed page is not asked for again by itself: the screen shows the error and the person decides. `pages` is a

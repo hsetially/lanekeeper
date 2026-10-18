@@ -33,6 +33,8 @@ type VirtualListProps = Omit<HTMLAttributes<HTMLDivElement>, "children" | "role"
   /** The accessible name of the list. */
   label: string;
   count: number;
+  /** How many rows there are in all when that is not `count` (more are still to be loaded): a number, or -1 for "not known", as ARIA says. */
+  totalRows?: number;
   /** Pixels, or one per row. A function must be stable between renders unless the heights really change. */
   rowHeight: number | ((index: number) => number);
   /** `ghost` is true for a row that enters at speed when `ghostWhenFast` is on: draw its shell, not its content. */
@@ -43,6 +45,12 @@ type VirtualListProps = Omit<HTMLAttributes<HTMLDivElement>, "children" | "role"
   getRowProps?: (index: number) => RowProps;
   getRowKey?: (index: number) => Key;
   overscan?: number;
+  /**
+   * Rows drawn beyond the window when the list first appears. The rest of `overscan` is drawn 200 ms later, or as soon as the list
+   * is scrolled: the rows that are about to scroll into view are needed once the person moves, not for the first paint, and a screen
+   * that has just been opened is judged by how soon its first frame is (P10, a route change). Default: the whole overscan at once.
+   */
+  firstOverscan?: number;
   /** The row that must stay rendered whatever the scroll position. */
   pinnedIndex?: number | null;
   /** A list of at most this many rows is rendered whole. Default 100 (the handoff). */
@@ -63,12 +71,15 @@ type VirtualListProps = Omit<HTMLAttributes<HTMLDivElement>, "children" | "role"
 const FAST_ROWS = 8;
 /** How long the scroll must be slower than that before the rows are drawn in full. */
 const SETTLE_MS = 120;
+/** How long after a list appears the rest of its overscan is drawn (`firstOverscan`). */
+const OVERSCAN_MS = 200;
 
 const ROLE_FOR_ROW: Record<ContainerRole, RowRole> = { list: "listitem", listbox: "option", grid: "row", table: "row", tree: "treeitem", treegrid: "row" };
 
 export function VirtualList({
   label,
   count,
+  totalRows,
   rowHeight,
   renderRow,
   role = "list",
@@ -76,6 +87,7 @@ export function VirtualList({
   getRowProps,
   getRowKey,
   overscan = 10,
+  firstOverscan,
   pinnedIndex = null,
   virtualizeAbove = 100,
   header,
@@ -114,11 +126,20 @@ export function VirtualList({
   const [, settle] = useReducer((n: number) => n + 1, 0);
   useEffect(() => () => clearTimeout(settleTimer.current), []);
 
+  // The first frame draws the window and a little more; the rest of the overscan follows (see `firstOverscan`).
+  const staged = firstOverscan !== undefined && firstOverscan < overscan;
+  const [full, setFull] = useReducer(() => true, !staged);
+  useEffect(() => {
+    if (full) return undefined;
+    const timer = setTimeout(setFull, OVERSCAN_MS);
+    return () => clearTimeout(timer);
+  }, [full]);
+
   const virtualizer = useVirtualizer({
     count,
     getScrollElement: () => scrollRef.current,
     estimateSize,
-    overscan,
+    overscan: full ? overscan : (firstOverscan ?? overscan),
     rangeExtractor,
     scrollMargin: headerHeight,
     ...(getRowKey ? { getItemKey: getRowKey } : {}),
@@ -164,8 +185,12 @@ export function VirtualList({
       ref={scrollRef}
       role={containerRole}
       aria-label={label}
-      {...(tabular ? { "aria-rowcount": count + headerRows } : {})}
+      {...(tabular ? { "aria-rowcount": totalRows === -1 ? -1 : (totalRows ?? count) + headerRows } : {})}
       tabIndex={rest.tabIndex ?? 0}
+      onScroll={(event) => {
+        if (!full) setFull();
+        rest.onScroll?.(event);
+      }}
       data-slot="virtual-list"
       className={cn("relative min-h-0 overflow-auto overscroll-contain", className)}
     >
@@ -182,7 +207,7 @@ export function VirtualList({
             <div
               key={item.key}
               // A row of a table says where it is in the whole table; an item of a list says where it is in the whole set.
-              {...(rowIsRow ? { "aria-rowindex": item.index + 1 + offset } : { "aria-posinset": item.index + 1, "aria-setsize": count })}
+              {...(rowIsRow ? { "aria-rowindex": item.index + 1 + offset } : { "aria-posinset": item.index + 1, "aria-setsize": totalRows ?? count })}
               {...rowProps}
               {...(ghost ? { "aria-hidden": true } : {})}
               role={itemRole}

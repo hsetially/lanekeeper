@@ -10,6 +10,7 @@ import { createQueryClient } from "@/lib/query/client";
 import { createAppRouter } from "@/router";
 import type { LiveConfig } from "@/live/live";
 import type { PageLoaders } from "@/routes/pages";
+import { toasts } from "@/features/shell/toast/store";
 
 export type Call = { method: string; path: string; headers: Headers; body: string | undefined };
 export type Api = (call: Call) => Response | Promise<Response>;
@@ -50,7 +51,8 @@ export function me(role: string | null, extra: Record<string, unknown> = {}) {
 export function renderApp(url: string, api: Api, options: { pages?: PageLoaders; live?: LiveConfig; strict?: boolean } = {}) {
   const calls: Call[] = [];
   // jsdom refuses a `__Host-` cookie on an http origin, so the test supplies the cookie string the client reads.
-  Object.defineProperty(document, "cookie", { configurable: true, get: () => `__Host-lk_csrf=${TOKEN}` });
+  // The setter takes what the app writes (the theme cookie) and drops it: nothing in a test reads it back.
+  Object.defineProperty(document, "cookie", { configurable: true, get: () => `__Host-lk_csrf=${TOKEN}`, set: () => undefined });
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: string, init: RequestInit = {}) => {
@@ -65,6 +67,8 @@ export function renderApp(url: string, api: Api, options: { pages?: PageLoaders;
     }),
   );
   apiCaches.clear();
+  // The toasts live in a store of the tab; a test starts without the last one's.
+  toasts.clear();
   const queryClient = createQueryClient();
   const history = createMemoryHistory({ initialEntries: [url] });
   const router = createAppRouter({ queryClient, history, live: options.live ?? { enabled: false }, ...(options.pages ? { pages: options.pages } : {}) });

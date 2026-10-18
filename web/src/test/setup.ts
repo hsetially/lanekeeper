@@ -1,7 +1,20 @@
 // Vitest setup for the jsdom project (components and features). Nothing here touches the network.
 import "@testing-library/jest-dom/vitest";
-import { cleanup } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
 import { afterEach } from "vitest";
+
+// A screen is a lazy chunk, and the first test that opens one evaluates the screen's whole module graph in the test's own thread
+// (a real screen pulls in hundreds of modules), so on a busy machine the first wait can take well over Testing Library's default
+// second. The wait ends as soon as the thing is there; this only says how long to give up after. A test that needs more says so.
+configure({ asyncUtilTimeout: 5_000 });
+
+// Idle work: the shell loads the palette and the sidebar's screens when the browser has nothing else to do. jsdom has no idle
+// callback, so the app falls back to a timer, and a timer that fires in the middle of a test loads dozens of modules in the
+// background: it takes the event loop from the test (a wait that ends in a second on an idle machine ends in five on a busy one),
+// and it can still be loading when the file ends, which Vitest reports as an EnvironmentTeardownError. So here the browser is
+// never idle. A test that is about idle work installs its own callback (routes/prefetch.test.tsx).
+Object.defineProperty(globalThis, "requestIdleCallback", { configurable: true, writable: true, value: (): number => 0 });
+Object.defineProperty(globalThis, "cancelIdleCallback", { configurable: true, writable: true, value: (): void => undefined });
 
 afterEach(() => {
   cleanup();

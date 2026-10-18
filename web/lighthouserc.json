@@ -2,21 +2,37 @@
   "ci": {
     "collect": {
       "numberOfRuns": 3,
-      "url": ["/testpages/perf/grid", "/testpages/perf/diff", "/testpages/perf/nav/a"],
+      "url": [
+        "/compare?file=services%2Fpayments%2Fapplication.yml&lanes=swimlane-01,swimlane-02,swimlane-03,swimlane-04,swimlane-05,swimlane-06,swimlane-07,swimlane-08,swimlane-09,swimlane-10,swimlane-11,swimlane-12,swimlane-13,swimlane-14,swimlane-15,swimlane-16,swimlane-17,swimlane-18,swimlane-19,swimlane-20,swimlane-21,swimlane-22,swimlane-23,swimlane-24,swimlane-25,swimlane-26,swimlane-27,swimlane-28,swimlane-29,swimlane-30,swimlane-31,swimlane-32,swimlane-33,swimlane-34,swimlane-35,swimlane-36,swimlane-37,swimlane-38,swimlane-39,swimlane-40&only=all",
+        "/swimlanes/sitb/files?path=security%2Fsecurity-roles.yml&tab=diff",
+        "/swimlanes"
+      ],
       "settings": {
         "preset": "desktop",
-        "onlyCategories": ["performance"]
+        "onlyCategories": [
+          "performance"
+        ]
       }
     },
     "assert": {
       "assertions": {
-        "categories:performance": ["error", { "minScore": 0.9, "aggregationMethod": "median" }]
+        "categories:performance": [
+          "error",
+          {
+            "minScore": 0.9,
+            "aggregationMethod": "median"
+          }
+        ]
       }
     }
   },
   "lanekeeper": {
-    "note": "The format of Lighthouse CI's lighthouserc, read by scripts/perf/lighthouse.mjs (the plan's W31 fallback: lighthouse 13.5.0 and a small runner, because @lhci/cli's tree has nine audit findings). The paths are on the perf build behind the harness (scenario `perf`), which serves them as the hub does, with no Content-Encoding. A page's score is the median of its runs; the budget is the lowest of the pages, so a page cannot hide behind another.",
-    "dist": "dist-perf",
-    "scenario": "perf"
+    "note": "The format of Lighthouse CI's lighthouserc, read by scripts/perf/lighthouse.mjs (the plan's W31 fallback: lighthouse 13.5.0 and a small runner, because @lhci/cli's tree has nine audit findings). The pages are the REAL routes of the production build behind the harness, which serves them as the hub does, with no Content-Encoding: the Compare grid of 5,000 rows by 40 swimlanes (the first page is 50 rows), the Diff tab of a file of 6,140 lines whose comparison is 6,000 lines of hunks, and the Swimlanes overview of forty. Each page has its mock scenario (`scenarios`; `scenario` is the default). A page's score is the median of its runs; the budget is the lowest of the pages, so a page cannot hide behind another.",
+    "dist": "dist",
+    "scenario": "perf-routes",
+    "scenarios": {
+      "/compare?file=services%2Fpayments%2Fapplication.yml&lanes=swimlane-01,swimlane-02,swimlane-03,swimlane-04,swimlane-05,swimlane-06,swimlane-07,swimlane-08,swimlane-09,swimlane-10,swimlane-11,swimlane-12,swimlane-13,swimlane-14,swimlane-15,swimlane-16,swimlane-17,swimlane-18,swimlane-19,swimlane-20,swimlane-21,swimlane-22,swimlane-23,swimlane-24,swimlane-25,swimlane-26,swimlane-27,swimlane-28,swimlane-29,swimlane-30,swimlane-31,swimlane-32,swimlane-33,swimlane-34,swimlane-35,swimlane-36,swimlane-37,swimlane-38,swimlane-39,swimlane-40&only=all": "design-compare-large",
+      "/swimlanes/sitb/files?path=security%2Fsecurity-roles.yml&tab=diff": "design-file-diff-large"
+    }
   }
 }

@@ -72,6 +72,9 @@ export default defineConfig(({ mode }) => ({
           include: ["src/**/*.test.{ts,tsx}"],
           exclude: ["e2e/**", "node_modules/**", "dist/**", ...NODE_TEST_DIRS],
           setupFiles: ["./src/test/setup.ts"],
+          // A test that waits up to the five seconds of src/test/setup.ts must not be cut off by the runner first.
+          testTimeout: 30_000,
+          hookTimeout: 30_000,
         },
       },
     ],

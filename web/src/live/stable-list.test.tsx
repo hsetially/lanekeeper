@@ -26,6 +26,34 @@ describe("sameKeysInOrder and countChanges", () => {
   });
 });
 
+describe("useStableList with appendsApply (a list that pages)", () => {
+  const setup = (initial: Row[]) => renderHook(({ items }) => useStableList(items, keyOf, { appendsApply: true }), { initialProps: { items: initial } });
+
+  it("shows rows that are appended after the ones on screen, at once and with nothing pending: they are the next page", () => {
+    const { result, rerender } = setup([row("a"), row("b")]);
+    rerender({ items: [row("a"), row("b"), row("c"), row("d")] });
+    expect(result.current.shown.map(keyOf)).toEqual(["a", "b", "c", "d"]);
+    expect(result.current.pending).toBe(0);
+  });
+
+  it("still holds the list when a row arrives before the ones on screen, goes, or moves", () => {
+    const { result, rerender } = setup([row("a"), row("b")]);
+    rerender({ items: [row("c"), row("a"), row("b")] });
+    expect(result.current.shown.map(keyOf)).toEqual(["a", "b"]);
+    expect(result.current.pending).toBe(1);
+    rerender({ items: [row("a"), row("c"), row("b")] });
+    expect(result.current.shown.map(keyOf)).toEqual(["a", "b"]);
+    rerender({ items: [row("b"), row("a"), row("c")] });
+    expect(result.current.pending).toBeGreaterThan(0);
+  });
+
+  it("without the option an appended row is a change that is counted, as before", () => {
+    const { result, rerender } = renderHook(({ items }) => useStableList(items, keyOf), { initialProps: { items: [row("a")] } });
+    rerender({ items: [row("a"), row("b")] });
+    expect(result.current.pending).toBe(1);
+  });
+});
+
 describe("useStableList", () => {
   const setup = (initial: Row[]) => renderHook(({ items }) => useStableList(items, keyOf), { initialProps: { items: initial } });
 

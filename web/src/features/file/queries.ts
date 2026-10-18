@@ -1,7 +1,7 @@
 import { getBlob } from "@/api/generated/endpoints/content-store/content-store";
 import { getFileContent, listFileHistory, listSwimlaneTree } from "@/api/generated/endpoints/swimlanes/swimlanes";
 import type { DriftState, RepoKind } from "@/api/generated/model";
-import { EVENT_FED, IMMUTABLE, IMMUTABLE_GC_MS } from "@/lib/query/freshness";
+import { EVENT_FED, IMMUTABLE, IMMUTABLE_GC_MS, POLLED_MS } from "@/lib/query/freshness";
 import { fileKeys } from "@/lib/query/keys";
 import { pagedQuery } from "@/lib/query/paged";
 import { apiQuery } from "@/lib/query/options";
@@ -62,4 +62,16 @@ export const fileHistoryQuery = (id: string, path: string) =>
     queryKey: fileKeys.history(id, path),
     fetch: (cursor, signal) => listFileHistory(id, { path, ...(cursor === undefined ? {} : { cursor }) }, { signal }),
     staleTime: EVENT_FED,
+  });
+
+/**
+ * The file as the swimlane's baseline has it. Nothing tells the app that a baseline changed (adoption and rebase are rare, and
+ * the contract has no event for the file's baseline copy), so it counts as fresh for a minute and is read again after that.
+ * Its key is `fileKeys.baseline`.
+ */
+export const fileBaselineQuery = (id: string, path: string) =>
+  apiQuery({
+    queryKey: fileKeys.baseline(id, path),
+    queryFn: ({ signal }) => getFileContent(id, { path, source: "baseline" }, { signal }),
+    staleTime: POLLED_MS,
   });

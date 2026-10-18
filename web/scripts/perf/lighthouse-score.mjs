@@ -11,10 +11,11 @@
 import { summarize } from "./results.mjs";
 
 /**
- * @typedef {{ urls: string[]; runs: number; minScore: number; dist: string; scenario: string }} LighthouseConfig
+ * @typedef {{ urls: string[]; runs: number; minScore: number; dist: string; scenario: string; pages: Array<{ url: string; scenario: string }> }} LighthouseConfig
  */
 
-const PATH = /^\/[A-Za-z0-9/_.-]*$/;
+// A path of the harness and, if it has one, its query (the screens are addressed by search keys): no scheme, host or fragment.
+const PATH = /^\/[A-Za-z0-9/_.%-]*(\?[A-Za-z0-9_.%=&,-]*)?$/;
 
 /**
  * @param {string} text the contents of lighthouserc.json
@@ -27,7 +28,7 @@ export function parseConfig(text) {
   const assertion = rc?.ci?.assert?.assertions?.["categories:performance"];
   const urls = collect?.url;
   if (!Array.isArray(urls) || urls.length === 0) throw new Error("lighthouserc.json: ci.collect.url is a non-empty list");
-  for (const u of urls) if (typeof u !== "string" || !PATH.test(u)) throw new Error(`lighthouserc.json: "${String(u)}" is not a path on the harness (it starts with / and has no query or host)`);
+  for (const u of urls) if (typeof u !== "string" || !PATH.test(u)) throw new Error(`lighthouserc.json: "${String(u)}" is not a path on the harness (it starts with /, may have a query, and has no scheme, host or fragment)`);
   const runs = collect?.numberOfRuns;
   if (!Number.isInteger(runs) || runs < 1 || runs > 10) throw new Error("lighthouserc.json: ci.collect.numberOfRuns is a whole number from 1 to 10");
   if (collect?.settings?.preset !== "desktop") throw new Error('lighthouserc.json: the preset is "desktop" (P10)');
@@ -38,7 +39,14 @@ export function parseConfig(text) {
   const dist = rc?.lanekeeper?.dist;
   const scenario = rc?.lanekeeper?.scenario;
   if (typeof dist !== "string" || typeof scenario !== "string") throw new Error("lighthouserc.json: lanekeeper.dist and lanekeeper.scenario say which build and which mock scenario");
-  return { urls, runs, minScore, dist, scenario };
+  // A page may have a scenario of its own (`lanekeeper.scenarios`, by the page's path); the others have `scenario`.
+  const own = rc?.lanekeeper?.scenarios ?? {};
+  if (typeof own !== "object" || own === null || Array.isArray(own)) throw new Error("lighthouserc.json: lanekeeper.scenarios maps a page to a mock scenario");
+  for (const [url, id] of Object.entries(own)) {
+    if (!urls.includes(url)) throw new Error(`lighthouserc.json: lanekeeper.scenarios names "${url}", which is not one of the pages`);
+    if (typeof id !== "string" || id === "") throw new Error(`lighthouserc.json: the scenario of "${url}" is a name`);
+  }
+  return { urls, runs, minScore, dist, scenario, pages: urls.map((url) => ({ url, scenario: typeof own[url] === "string" ? own[url] : scenario })) };
 }
 
 /**

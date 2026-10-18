@@ -1,6 +1,7 @@
 // The scenarios of T1: who is signed in. T4's slices add their own beside this file (src/mocks/design/<slice>/) for the
 // design-parity data of each screen.
 import type { Me, Role } from "../api/generated/model/index.ts";
+import { designScenarios } from "./design/index.ts";
 import { liveScenarios } from "./live.ts";
 import { meBody } from "./me.ts";
 import { perfScenarios } from "./perf/scenarios.ts";
@@ -16,6 +17,16 @@ const signedIn = (id: string, description: string, role: Role | null, overrides:
   responses: [
     { method: "GET", path: "/api/v1/me", body: meBody(role, overrides), headers: { "set-cookie": csrfCookie } },
     { method: "POST", path: "/auth/logout", status: 204 },
+    // What the app shell asks of every signed-in screen: the swimlane list (the sidebar's findings count and the switcher), and
+    // for an Admin the pending proposals and the access requests that wait (the sidebar's Approvals and Admin counts). Empty, so a
+    // screen's own scenario is the one with data.
+    { method: "GET", path: "/api/v1/swimlanes", body: { items: [], next: null } },
+    ...(role === "admin"
+      ? [
+          { method: "GET" as const, path: "/api/v1/proposals", body: { items: [], next: null } },
+          { method: "GET" as const, path: "/api/v1/admin/access-requests", body: { items: [], next: null } },
+        ]
+      : []),
   ],
 });
 
@@ -49,5 +60,8 @@ export const scenarios: Record<string, Scenario> = {
 Object.assign(scenarios, perfScenarios);
 // The data of the live-update runs (src/mocks/live.ts): a list whose first row counts how often it was asked for.
 Object.assign(scenarios, liveScenarios);
+
+// The design-parity data of each T4 slice (src/mocks/design/<slice>/): the pages' own sample data, for the visual comparison.
+Object.assign(scenarios, designScenarios);
 
 export const DEFAULT_SCENARIO = "viewer";

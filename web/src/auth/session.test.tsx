@@ -25,7 +25,7 @@ describe("a 401", () => {
     expect(app.location()).toBe("/signin?next=%2Fswimlanes%2Fsit1%2Ffiles%3Fpath%3Da%252Fb.yml");
     expect(app.queryClient.getQueryCache().getAll().filter((q) => q.state.data !== undefined)).toHaveLength(0);
     expect(apiCaches.etags.size).toBe(0);
-    expect(await screen.findByRole("heading", { level: 1, name: "Sign in" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Lanekeeper" })).toBeInTheDocument();
   });
 
   it("drops a next that is too long to trust, and still goes to sign-in", async () => {
@@ -45,7 +45,7 @@ describe("a 401", () => {
 
   it("does not loop: a 401 while already on a public screen stays there", async () => {
     const app = renderApp("/signin", signedOut);
-    await screen.findByRole("heading", { level: 1, name: "Sign in" });
+    await screen.findByRole("heading", { level: 1, name: "Lanekeeper" });
     expect(app.location()).toBe("/signin");
     expect(app.calls).toHaveLength(0);
   });
@@ -88,14 +88,30 @@ describe("a user with no role yet, or a disabled one", () => {
 describe("the role gate", () => {
   it("shows the permission screen, and does not redirect, to a Viewer on an Admin screen", async () => {
     const app = renderApp("/admin/users", as("viewer"));
-    expect(await screen.findByRole("heading", { level: 1, name: "You do not have access" })).toBeInTheDocument();
-    expect(screen.getByText(/needs the admin role/i)).toBeInTheDocument();
+    // The design's words: "<Screen> needs the <Role> role", the role the person has, and who to ask.
+    expect(await screen.findByRole("heading", { level: 1, name: "Admin needs the Admin role" })).toBeInTheDocument();
+    expect(screen.getByText(/You are signed in as Viewer/)).toBeInTheDocument();
     expect(app.location()).toBe("/admin/users");
+  });
+
+  it("offers the person who can ask the one next step, a role change, on the permission screen of every gated route", async () => {
+    for (const [url, role] of [["/admin/users", "viewer"], ["/approvals", "operator"], ["/audit", "editor"]] as const) {
+      const app = renderApp(url, as(role));
+      expect(await screen.findByRole("heading", { level: 1, name: /needs the Admin role/ })).toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "Request a role change" })).toBeInTheDocument();
+      app.unmount();
+    }
+  });
+
+  it("offers no role change to a person who has no role yet", async () => {
+    renderApp("/swimlanes", as(null));
+    expect(await screen.findByRole("heading", { level: 1, name: "You do not have access" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Request a role change" })).toBeNull();
   });
 
   it("lets an Admin in", async () => {
     renderApp("/admin/users", as("admin"));
-    expect(await screen.findByRole("heading", { level: 1, name: "Users and access requests" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Admin" })).toBeInTheDocument();
   });
 
   it("lets a Viewer open a viewer screen, and not an editor one", async () => {
@@ -109,9 +125,9 @@ describe("the role gate", () => {
   });
 
   it("keeps Approvals and Audit Admin-only", async () => {
-    for (const url of ["/approvals", "/audit", "/swimlanes/sit1/audit"]) {
+    for (const [url, what] of [["/approvals", "Approvals"], ["/audit", "Audit"], ["/swimlanes/sit1/audit", "Audit"]] as const) {
       const app = renderApp(url, as("operator"));
-      expect(await screen.findByRole("heading", { level: 1, name: "You do not have access" })).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { level: 1, name: `${what} needs the Admin role` })).toBeInTheDocument();
       app.unmount();
     }
   });

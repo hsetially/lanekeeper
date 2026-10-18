@@ -151,3 +151,43 @@ describe("DropdownMenu", () => {
     await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
   });
 });
+
+// The page has layers of its own: the sidebar at 5, the top bar at 6, a table's sticky header at 10, the drawers at 30 and the toasts at 45
+// (the handoff draws tooltips and menus at 40). A layer left at `auto` is painted UNDER every one of them: a tooltip on a button in a table
+// went behind the table's header. jsdom has no stacking, so what is checked is the class that says where each overlay sits, and the e2e
+// (e2e/visual/swimlanes/layers.spec.ts) checks what the browser does with it. (The dim of a dialog is NOT in this list on purpose: the
+// handoff draws it over the whole window in the Shell frames and over the page only in the File frames; that is the design owner's call.)
+describe("stacking", () => {
+  it.each([
+    ["a tooltip", "tooltip-content", () => (
+      <Tooltip open>
+        <TooltipTrigger asChild>
+          <Button>With a tip</Button>
+        </TooltipTrigger>
+        <TooltipContent>The tip</TooltipContent>
+      </Tooltip>
+    )],
+    ["a popover", "popover-content", () => (
+      <Popover open>
+        <PopoverTrigger asChild>
+          <Button>Columns</Button>
+        </PopoverTrigger>
+        <PopoverContent aria-label="Choose columns">Column chooser</PopoverContent>
+      </Popover>
+    )],
+    ["a menu", "dropdown-menu-content", () => (
+      <DropdownMenu open>
+        <DropdownMenuTrigger asChild>
+          <Button>Menu</Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent>
+          <DropdownMenuItem>One</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    )],
+  ] as const)("%s is above a sticky header and a drawer (40)", async (_name, slot, example) => {
+    render(example());
+    await waitFor(() => expect(document.querySelector(`[data-slot='${slot}']`)).not.toBeNull());
+    expect(document.querySelector(`[data-slot='${slot}']`)).toHaveClass("z-40");
+  });
+});

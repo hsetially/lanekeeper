@@ -1,5 +1,5 @@
-import type { ComponentProps } from "react";
-import { Command as CommandPrimitive } from "cmdk";
+import { Children, isValidElement, type ComponentProps, type ReactNode } from "react";
+import { Command as CommandPrimitive, useCommandState } from "cmdk";
 import { Search } from "@/icons";
 import { cn } from "@/lib/utils";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./dialog";
@@ -44,12 +44,34 @@ export function CommandInput({ className, ...props }: ComponentProps<typeof Comm
   );
 }
 
-export function CommandList({ className, ...props }: ComponentProps<typeof CommandPrimitive.List>) {
-  return <CommandPrimitive.List data-slot="command-list" className={cn("max-h-[360px] overflow-y-auto overflow-x-hidden p-1", className)} {...props} />;
+/**
+ * The list of results. A listbox must hold options (and groups of them), so it holds nothing else: while the filter leaves nothing the
+ * list is hidden (an empty listbox is an axe `aria-required-children` finding), and the `CommandEmpty` that was written inside it is
+ * drawn beside it, as a status that is said when it appears. A call site keeps writing `<CommandEmpty>` where the design puts it.
+ * (`hidden` can be given, for a palette that does its own filtering and knows better than the filter's count.)
+ */
+export function CommandList({ className, children, hidden, ...props }: ComponentProps<typeof CommandPrimitive.List>) {
+  const nothing = useCommandState((state) => state.filtered.count === 0);
+  const kids = Children.toArray(children);
+  const beside: ReactNode[] = kids.filter((kid) => isValidElement(kid) && kid.type === CommandEmpty);
+  const inside: ReactNode[] = kids.filter((kid) => !(isValidElement(kid) && kid.type === CommandEmpty));
+  return (
+    <>
+      <CommandPrimitive.List data-slot="command-list" hidden={hidden ?? nothing} className={cn("max-h-[360px] overflow-y-auto overflow-x-hidden p-1", className)} {...props}>
+        {inside}
+      </CommandPrimitive.List>
+      {beside}
+    </>
+  );
 }
 
+/** "Nothing matches": shown when the filter leaves nothing. It is a polite status (drawn beside the list by `CommandList`). */
 export function CommandEmpty({ className, ...props }: ComponentProps<typeof CommandPrimitive.Empty>) {
-  return <CommandPrimitive.Empty data-slot="command-empty" className={cn("px-3 py-6 text-center text-sm text-muted-foreground", className)} {...props} />;
+  return (
+    <div role="status">
+      <CommandPrimitive.Empty data-slot="command-empty" className={cn("px-3 py-6 text-center text-sm text-muted-foreground", className)} {...props} />
+    </div>
+  );
 }
 
 export function CommandGroup({ className, ...props }: ComponentProps<typeof CommandPrimitive.Group>) {

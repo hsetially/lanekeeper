@@ -118,6 +118,6 @@ describe("toHandlers", () => {
   });
 
   it("does not answer what the scenario does not know", async () => {
-    expect(await getResponse(toHandlers(scenarios["viewer"] as never), new Request("http://localhost/api/v1/swimlanes"))).toBeUndefined();
+    expect(await getResponse(toHandlers(scenarios["viewer"] as never), new Request("http://localhost/api/v1/compare"))).toBeUndefined();
   });
 });

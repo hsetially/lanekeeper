@@ -53,6 +53,7 @@ const all = (): Array<[string, readonly unknown[]]> => [
   ["me-github-credential", meKeys.githubCredential()],
   ["me-mcp-tokens", meKeys.mcpTokens()],
   ["admin", adminKeys.list("users", { limit: 50 })],
+  ["draft", fileKeys.draft(12)],
 ];
 
 describe("key factories", () => {
@@ -61,7 +62,7 @@ describe("key factories", () => {
     expect(roots).toEqual([
       "me", "swimlanes", "swimlane", "pickup", "tree", "file-head", "content", "blob", "content-ref", "compare", "history", "grid",
       "compare-tree", "git-refs", "findings", "proposals", "proposal", "prs", "pr-job", "docs", "doc", "features", "audit", "activity",
-      "me-github-credential", "me-mcp-tokens", "admin",
+      "me-github-credential", "me-mcp-tokens", "admin", "draft",
     ]);
     for (const [name, key] of all()) {
       expect(key[0], name).toBe(name);
@@ -135,6 +136,42 @@ describe("key factories", () => {
     expect(under(["tree"])).toBe(3);
     expect(under(swimlaneKeys.all())).toBe(1);
     expect(under(["swimlane"])).toBe(0);
+  });
+
+  it("keys the Drift tab under the swimlane's own key, so every event that refreshes the swimlane refreshes it", () => {
+    const client = new QueryClient();
+    client.setQueryData(swimlaneKeys.drift("sit1", null), 1);
+    client.setQueryData(swimlaneKeys.drift("sit1", "git_ahead"), 2);
+    client.setQueryData(swimlaneKeys.drift("sit2", null), 3);
+    expect(swimlaneKeys.drift("sit1", null)).toEqual(["swimlane", "sit1", "drift", null]);
+    expect(swimlaneKeys.drift("sit1", null)).not.toEqual(swimlaneKeys.drift("sit1", "git_ahead"));
+    expect(client.getQueryCache().findAll({ queryKey: [...swimlaneKeys.detail("sit1")] })).toHaveLength(2);
+  });
+
+  it("keys the docs of one file under docs, so doc_indexed (which invalidates every docs list) reaches them", () => {
+    const client = new QueryClient();
+    client.setQueryData(docKeys.forFile("a/b.yml", null), 1);
+    client.setQueryData(docKeys.forFile("a/b.yml", "server.port"), 2);
+    client.setQueryData(docKeys.forFile("a/c.yml", null), 3);
+    expect(docKeys.forFile("a/b.yml", null)[0]).toBe("docs");
+    expect(docKeys.forFile("a/b.yml", null)).not.toEqual(docKeys.forFile("a/b.yml", "server.port"));
+    expect(client.getQueryCache().findAll({ queryKey: [...docKeys.lists()] })).toHaveLength(3);
+    // A docs LIST key (the filters object) never collides with a for-file key.
+    expect(docKeys.list({ limit: 5 })).not.toEqual(docKeys.forFile("a/b.yml", null));
+  });
+
+  it("keys a draft by its id as a string, whether the id came from the route or from a result", () => {
+    expect(fileKeys.draft(12)).toEqual(["draft", "12"]);
+    expect(fileKeys.draft("12")).toEqual(fileKeys.draft(12));
+    expect(isImmutableKey(fileKeys.draft(12))).toBe(false);
+  });
+
+  it("keys the baseline copy of a file apart from every git read, and not as immutable (a baseline is rebased)", () => {
+    expect(fileKeys.baseline("sit1", "a/b.yml")).toEqual(fileKeys.contentRef("sit1", "a/b.yml", "baseline", "baseline"));
+    expect(fileKeys.baseline("sit1", "a/b.yml")).not.toEqual(fileKeys.contentRef("sit1", "a/b.yml", "base", "main"));
+    expect(isImmutableKey(fileKeys.baseline("sit1", "a/b.yml"))).toBe(false);
+    // No branch event reaches it: "baseline" is not a repository.
+    expect(matchers.contentRefOnBranch(fileKeys.baseline("sit1", "a/b.yml"), "base", "main")).toBe(false);
   });
 
   it("hashes params the same whatever order their properties are in", () => {

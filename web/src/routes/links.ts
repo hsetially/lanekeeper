@@ -1,6 +1,7 @@
 // URLs from the route table. A screen builds a link with `hrefFor("files", { id: "sit1" }, { path: "a.yml" })` and never
 // concatenates a path by hand, so every parameter is checked and encoded the same way and a renamed route fails to compile.
 
+import type { ParamsOf, RouteId, SearchOf } from "./props";
 import { stringifySearch } from "./search";
 import { paramCheck, paramNames, routeById } from "./table";
 
@@ -26,4 +27,16 @@ export function hrefFor(routeId: string, params: Readonly<Record<string, string>
     kept[key] = value;
   }
   return `${path}${stringifySearch(kept)}`;
+}
+
+/**
+ * `hrefFor` with the route's own parameter and search names checked at compile time: `linkTo("files", { id }, { path })`.
+ * Screens use this one; `hrefFor` stays loose for the code that works from route ids it reads at run time (the palette, tests).
+ */
+export function linkTo<Id extends RouteId>(
+  routeId: Id,
+  ...rest: keyof ParamsOf<Id> extends never ? [params?: undefined, search?: SearchOf<Id>] : [params: ParamsOf<Id>, search?: SearchOf<Id>]
+): string {
+  const [params, search] = rest;
+  return hrefFor(routeId, (params ?? {}), (search ?? {}));
 }

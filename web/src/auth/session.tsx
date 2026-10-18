@@ -49,7 +49,7 @@ function SessionEndedAlert({ next }: { next: string | undefined }) {
       title="Your session ended"
       action={
         <>
-          {draft !== "" ? <CopyButton value={draft} what="draft" /> : null}
+          {draft !== "" ? <CopyButton value={draft} what="draft" multiline /> : null}
           <Button asChild>
             <a href={loginHref(next)}>Sign in again</a>
           </Button>
@@ -120,6 +120,6 @@ export function RouteGate({ access, children }: { access: RouteAccess; children:
     if (session.problem.status === 401 || session.problem.kind === "access_pending" || session.problem.kind === "access_disabled") return <RouteLoading />;
     return <ErrorScreen error={session.problem} />;
   }
-  if (!roleAtLeast(session.role, access)) return <PermissionScreen need={session.role === null ? null : access} />;
+  if (!roleAtLeast(session.role, access)) return <PermissionScreen need={session.role === null ? null : access} have={session.role} />;
   return <>{children}</>;
 }

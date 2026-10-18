@@ -56,6 +56,16 @@ const POLICY_PATTERN = {
   message: "Only components/app/SanitisedDocHtml.tsx and src/editor use the Trusted Types policies (S12).",
 };
 
+// The copy button of a one-time secret and the read-only field that shows one (src/components/app/secret) are for the displays of
+// a secret that is shown ONCE, and for nothing else. A copy button elsewhere is the generic CopyButton, which refuses a secret.
+// SECRET_DISPLAYS is the whole list; adding to it is a security review item (docs/threat-model.md, "Copying a one-time secret"),
+// and src/components/app/secret/secret-imports.test.ts reads the same list from the source tree.
+export const SECRET_DISPLAYS = ["src/components/app/PersonalTokens.tsx", "src/features/admin/swimlanes/JoinTokenCard.tsx"];
+const SECRET_PATTERN = {
+  group: ["@/components/app/secret", "@/components/app/secret/*", "**/secret", "**/secret/*", "**/secret/SecretCopyButton", "**/secret/SecretField"],
+  message: "SecretCopyButton and SecretField are for the one-time secret displays only (PersonalTokens, JoinTokenCard). Copy anything else with CopyButton, which refuses a secret.",
+};
+
 const rule = ({ paths = [], patterns = [] }) => ["error", { paths: [...BLOCKED_STYLE_INJECTORS, ...BLOCKED_LAZY, ...paths], patterns: [STATE_PATTERN, ...patterns] }];
 
 const TESTS = ["src/**/*.test.{ts,tsx}", "src/handoff/**", "src/test/**"];
@@ -70,6 +80,12 @@ export const restrictedImports = [
     // Product code.
     files: ["src/**/*.{ts,tsx}"],
     ignores: [...TESTS, "src/mocks/**"],
+    rules: { "no-restricted-imports": rule({ paths: [...TEST_ONLY_PATHS, ...MONACO_PATHS], patterns: [HANDOFF_PATTERN, ...TEST_ONLY_PATTERNS, ...MONACO_PATTERNS, POLICY_PATTERN, SECRET_PATTERN] }) },
+  },
+  {
+    // The displays of a one-time secret, and the secret folder itself: product code again, with the secret components allowed.
+    files: [...SECRET_DISPLAYS, "src/components/app/secret/**/*.{ts,tsx}"],
+    ignores: TESTS,
     rules: { "no-restricted-imports": rule({ paths: [...TEST_ONLY_PATHS, ...MONACO_PATHS], patterns: [HANDOFF_PATTERN, ...TEST_ONLY_PATTERNS, ...MONACO_PATTERNS, POLICY_PATTERN] }) },
   },
   {

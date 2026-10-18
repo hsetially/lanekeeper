@@ -7,6 +7,7 @@
 // T1; they were not captured from a running hub, and neither are the frames built below.
 import { readFileSync } from "node:fs";
 import { expect, test } from "../fixtures/test";
+import { signOut } from "../fixtures/shell";
 import type { Harness } from "../harness/serve.ts";
 
 const golden = (name: string): string => readFileSync(new URL(`../fixtures/sse-golden/${name}`, import.meta.url), "utf8");
@@ -49,7 +50,7 @@ test.describe("the stream of a signed-in user", () => {
   test("is closed when the person signs out", async ({ page, harness }) => {
     await page.goto(`${harness.url}/swimlanes`);
     await expect(pill(page)).toHaveAttribute("data-status", "live");
-    await page.getByRole("button", { name: "Sign out" }).click();
+    await signOut(page);
     await expect(page).toHaveURL(/\/signin$/);
     await expect.poll(() => harness.streamCount()).toBe(0);
     await page.waitForTimeout(500);
@@ -60,7 +61,7 @@ test.describe("the stream of a signed-in user", () => {
     harness.refuseStreams(401, 1);
     await page.goto(`${harness.url}/swimlanes`);
     await expect(page).toHaveURL(/\/signin\?next=%2Fswimlanes$/);
-    await expect(page.getByRole("heading", { level: 1, name: "Sign in" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Lanekeeper" })).toBeVisible();
     await page.waitForTimeout(800);
     expect(streams(harness)).toHaveLength(1);
   });

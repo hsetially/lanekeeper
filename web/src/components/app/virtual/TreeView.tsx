@@ -8,12 +8,18 @@ import { VirtualList, type VirtualListHandle } from "./VirtualList";
 // children of a folder that is opened for the first time (`lazy`), because the server lists one folder at a time with a cursor.
 //
 // The keyboard follows the ARIA tree pattern with `aria-activedescendant` on the tree: Down and Up move, Right opens a folder
-// and then enters it, Left closes it and then goes to its parent, Home and End jump, Enter selects. Rows are virtualised.
+// and then enters it, Left closes it and then goes to its parent, Home and End jump, Enter selects, and typing jumps to the next
+// row that starts with what was typed (the keymap's "Tree only: type-ahead"). Rows are virtualised.
 
 export type TreeNode = {
   id: string;
   /** What is shown. Text from a file name is data: wrap it in SafeText. */
   label: ReactNode;
+  /**
+   * What type-ahead matches a typed prefix against, when the label is not plain text: a name without its decoration. Without it
+   * the label is used when it is a string, and the last part of the id otherwise.
+   */
+  text?: string;
   children?: readonly TreeNode[];
   /** A folder whose children are not loaded yet: it can open, and the screen is told to fetch them. */
   lazy?: boolean;
@@ -57,6 +63,14 @@ export function flattenTree(nodes: readonly TreeNode[], expanded: ReadonlySet<st
 
 const ROW_HEIGHT = 28;
 const INDENT = 16;
+/** How long a pause ends what has been typed: the next character starts a new search. */
+const TYPEAHEAD_MS = 1000;
+
+/** The text a typed prefix is compared with, lower case. */
+function typeaheadText(node: TreeNode): string {
+  const own = node.text ?? (typeof node.label === "string" ? node.label : undefined);
+  return (own ?? node.id.slice(node.id.lastIndexOf("/") + 1)).toLowerCase();
+}
 
 type TreeViewProps = Omit<HTMLAttributes<HTMLDivElement>, "children" | "role" | "aria-label" | "onSelect"> & {
   label: string;
@@ -66,15 +80,18 @@ type TreeViewProps = Omit<HTMLAttributes<HTMLDivElement>, "children" | "role" | 
   onExpandedChange: (next: Set<string>, changedId: string) => void;
   selectedId?: string | null;
   onSelect?: (id: string) => void;
+  /** Control or Command and Enter on the row under the cursor (the keymap's "Open in new tab"). Without it the browser keeps the key. */
+  onOpenInNewTab?: (id: string) => void;
 };
 
-export function TreeView({ label, nodes, expanded, onExpandedChange, selectedId = null, onSelect, className, ...rest }: TreeViewProps) {
+export function TreeView({ label, nodes, expanded, onExpandedChange, selectedId = null, onSelect, onOpenInNewTab, className, ...rest }: TreeViewProps) {
   const treeId = useId();
   const listRef = useRef<VirtualListHandle>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const flat = useMemo(() => flattenTree(nodes, expanded), [nodes, expanded]);
   const indexById = useMemo(() => new Map(flat.map((f, i) => [f.node.id, i])), [flat]);
   const activeIndex = activeId === null ? null : (indexById.get(activeId) ?? null);
+  const typed = useRef({ text: "", at: 0 });
 
   const domId = useCallback((index: number) => `${treeId}-n-${index}`, [treeId]);
 
@@ -98,8 +115,40 @@ export function TreeView({ label, nodes, expanded, onExpandedChange, selectedId 
     [flat],
   );
 
+  /** Type-ahead: the row from `from` on (and round to the start) whose text starts with `prefix`, or -1. */
+  const findPrefix = (prefix: string, from: number): number => {
+    for (let step = 0; step < flat.length; step += 1) {
+      const index = (from + step) % flat.length;
+      const item = flat[index];
+      if (item !== undefined && typeaheadText(item.node).startsWith(prefix)) return index;
+    }
+    return -1;
+  };
+
+  const typeAhead = (character: string, at: number): void => {
+    const now = performance.now();
+    const char = character.toLowerCase();
+    const soFar = now - typed.current.at <= TYPEAHEAD_MS ? typed.current.text : "";
+    // The same letter again asks for the next row that starts with it, not for the prefix "bb".
+    const repeated = soFar !== "" && soFar === char.repeat(soFar.length);
+    // Characters that go on from what was typed look for a row that starts with all of them, from the row the cursor is on.
+    let prefix = soFar + char;
+    let found = soFar === "" || repeated ? -1 : findPrefix(prefix, Math.max(at, 0));
+    if (found < 0) {
+      // Anything else is a search of its own for this one character, from the next row on.
+      prefix = repeated ? soFar : char;
+      found = findPrefix(char, at + 1);
+    }
+    typed.current = { text: prefix, at: now };
+    if (found >= 0) moveTo(found);
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.target !== event.currentTarget || event.altKey) return;
+    // Control or Command and Enter is the one chord the tree keeps, when the screen has a new tab to open; any other chord is the
+    // browser's or the shell's.
+    const chord = event.ctrlKey || event.metaKey;
+    if (chord && !(event.key === "Enter" && onOpenInNewTab)) return;
     const at = activeIndex ?? -1;
     const current = at >= 0 ? flat[at] : undefined;
     switch (event.key) {
@@ -127,10 +176,14 @@ export function TreeView({ label, nodes, expanded, onExpandedChange, selectedId 
         break;
       case "Enter":
         if (!current) return;
-        onSelect?.(current.node.id);
+        if (chord) onOpenInNewTab?.(current.node.id);
+        else onSelect?.(current.node.id);
         break;
       default:
-        return;
+        // A printable character is type-ahead (a space only inside what is being typed: it is not a row's key here).
+        if (event.key.length !== 1 || (event.key === " " && typed.current.text === "")) return;
+        typeAhead(event.key, at);
+        break;
     }
     event.preventDefault();
   };

@@ -37,7 +37,7 @@ export function PerfDiff() {
 
   const stats = hunks ? diffStats(hunks) : null;
   return (
-    <main className="flex h-screen flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       <h1 className="p-3 text-lg font-semibold">Diff</h1>
       <div className="flex items-center gap-3 px-3 pb-2 text-sm text-muted-foreground">
         <Link to="/testpages/perf/nav/a" className="underline">
@@ -69,6 +69,6 @@ export function PerfDiff() {
           {query.isError ? "The diff could not be loaded." : "Loading the diff"}
         </p>
       )}
-    </main>
+    </div>
   );
 }

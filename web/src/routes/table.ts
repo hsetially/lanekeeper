@@ -10,6 +10,7 @@
 // says so), and Approvals is Admin-only to open and decide.
 
 import type { Role } from "@/api/generated/model";
+import type { Redirect } from "./redirect";
 
 /** `public` needs no session (and makes no API call); anything else is the minimum role. */
 export type RouteAccess = "public" | Role;
@@ -25,13 +26,15 @@ export type RouteDef = {
   origin: "handoff" | "addition";
   /** The search keys the route reads, all strings. */
   search?: readonly string[];
-  /** Where the route sends the visitor instead of showing a screen (aliases and server-issued links). */
-  redirect?: { to: string; params?: Readonly<Record<string, string>> };
+  /** Where the route sends the visitor instead of showing a screen (aliases and server-issued links), and which search keys go along. */
+  redirect?: Redirect;
 };
 
 const SWIMLANE_FILTERS = ["q"] as const;
 
-export const ROUTES: readonly RouteDef[] = [
+// Written `as const` so that the ids, paths and search keys are literal types (src/routes/props.ts derives `PageProps` from them),
+// and exported below with the looser `RouteDef` type, so that code that walks the table can read `search` and `redirect` on any row.
+export const ROUTE_TABLE = [
   // Before the session (public: no useMe, no event stream, no 401 redirect).
   { id: "signin", path: "/signin", access: "public", title: "Sign in", origin: "handoff", search: ["next"] },
   { id: "access-pending", path: "/access-requested", access: "public", title: "Access requested", origin: "addition" },
@@ -48,17 +51,21 @@ export const ROUTES: readonly RouteDef[] = [
   { id: "files", path: "/swimlanes/:id/files", access: "viewer", title: "Files", origin: "handoff", search: ["path", "line", "diff", "sort", "cursor", "tab", "panel"] },
   { id: "services", path: "/swimlanes/:id/services", access: "viewer", title: "Services", origin: "handoff", search: SWIMLANE_FILTERS },
   { id: "swimlane-findings", path: "/swimlanes/:id/findings", access: "viewer", title: "Findings", origin: "handoff", search: ["code", "severity", "kind"] },
+  { id: "swimlane-restarts-link", path: "/swimlanes/:id/restarts", access: "viewer", title: "Services", origin: "addition", redirect: { to: "/swimlanes/:id/services" } },
+  { id: "swimlane-history-link", path: "/swimlanes/:id/history", access: "viewer", title: "Files", origin: "addition", search: ["path"], redirect: { to: "/swimlanes/:id/files", with: { panel: "history" }, carry: { path: "path" } } },
   { id: "swimlane-audit", path: "/swimlanes/:id/audit", access: "admin", title: "Audit", origin: "handoff" },
   { id: "adopt", path: "/swimlanes/:id/adopt", access: "admin", title: "Adopt this swimlane", origin: "handoff", search: ["step"] },
   { id: "drift", path: "/swimlanes/:id/drift", access: "viewer", title: "Drift", origin: "addition" },
   { id: "activity", path: "/swimlanes/:id/activity", access: "admin", title: "Activity", origin: "addition" },
   // Across swimlanes.
-  { id: "compare", path: "/compare", access: "viewer", title: "Compare", origin: "handoff", search: ["lanes", "file", "only", "channel"] },
+  { id: "compare", path: "/compare", access: "viewer", title: "Compare", origin: "handoff", search: ["lanes", "file", "only", "channel", "left", "right"] },
+  { id: "grid-link", path: "/grid", access: "viewer", title: "Compare", origin: "addition", search: ["file", "swimlanes"], redirect: { to: "/compare", carry: { file: "file", swimlanes: "lanes" } } },
   { id: "status", path: "/status", access: "viewer", title: "Feature status", origin: "handoff", search: ["setting", "lane"] },
   { id: "search", path: "/search", access: "viewer", title: "Search", origin: "handoff", search: ["type", "q", "cs", "rx", "lanes", "glob", "mode"] },
+  { id: "docs-search-link", path: "/docs", access: "viewer", title: "Search", origin: "addition", search: ["q"], redirect: { to: "/search", with: { type: "docs" }, carry: { q: "q" } } },
   { id: "doc", path: "/docs/:slug", access: "viewer", title: "Doc", origin: "handoff", search: ["version"] },
   { id: "doc-view", path: "/docs/view", access: "viewer", title: "Doc", origin: "addition", search: ["path"] },
-  { id: "findings", path: "/findings", access: "viewer", title: "Findings", origin: "handoff", search: ["code", "severity", "lanes", "kind"] },
+  { id: "findings", path: "/findings", access: "viewer", title: "Findings", origin: "handoff", search: ["code", "severity", "lanes", "kind", "swimlane"] },
   { id: "approvals", path: "/approvals", access: "admin", title: "Approvals", origin: "handoff", search: ["state"] },
   { id: "approval", path: "/approvals/:id", access: "admin", title: "Approval", origin: "handoff" },
   { id: "proposal-link", path: "/proposals/:id", access: "admin", title: "Approval", origin: "addition", redirect: { to: "/approvals/:id" } },
@@ -72,7 +79,9 @@ export const ROUTES: readonly RouteDef[] = [
   { id: "not-found", path: "/404", access: "public", title: "Page not found", origin: "handoff", search: ["req"] },
   { id: "error", path: "/error", access: "public", title: "Something went wrong", origin: "handoff", search: ["req"] },
   { id: "forbidden", path: "/403", access: "public", title: "You do not have access", origin: "handoff", search: ["req"] },
-];
+] as const satisfies readonly RouteDef[];
+
+export const ROUTES: readonly RouteDef[] = ROUTE_TABLE;
 
 /** The sections of `/admin/:section` (the handoff's five and the contract's five). */
 export const ADMIN_SECTIONS = ["paths", "merge", "tiers", "folders", "notify", "mcp", "sentinels", "oslogin", "severity", "retention"] as const;

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ROUTES as HANDOFF } from "@/handoff/routes.generated";
 import { Role } from "@/api/generated/model";
 import { hrefFor, LinkError } from "./links";
+import { ROLE_DIFFERENCES } from "./overrides";
 import { ADMIN_SECTIONS, paramCheck, paramNames, ROUTES, routeById } from "./table";
 
 // The table is the reviewed copy of the handoff's screen inventory plus the approved additions. These tests compare it
@@ -24,12 +25,8 @@ describe("route table against the handoff inventory", () => {
   });
 
   it("agrees with the handoff on who may open a screen, except where the plan decided otherwise", () => {
-    const decided = new Map<string, Role>([
-      ["/swimlanes/:id/audit", Role.admin], // handoff: Viewer+. The contract's audit reads are Admin-only (W11).
-      ["/audit", Role.admin], // handoff: Viewer+. Same reason (W11).
-      ["/approvals", Role.admin], // handoff: Editor+. Approvals are Admin to open and decide (W12).
-      ["/approvals/:id", Role.admin],
-    ]);
+    // Where the table differs from the handoff, and why, is src/routes/overrides.ts (W11, W12).
+    const decided = new Map<string, Role>(ROLE_DIFFERENCES.map((d) => [routeById(d.route).path, d.chosen]));
     const fromHandoff = (text: string): Role | "public" => {
       if (/^Anyone|^No role/.test(text)) return "public";
       if (/^Admin/.test(text)) return Role.admin;
@@ -44,6 +41,11 @@ describe("route table against the handoff inventory", () => {
       const lowest = rows.map((r) => fromHandoff(r.role)).reduce((a, b) => (order.indexOf(a) <= order.indexOf(b) ? a : b));
       expect(route.access, route.path).toBe(decided.get(route.path) ?? lowest);
     }
+  });
+
+  it("lists every difference in overrides.ts, and every one is a route whose role the table sets to the decision", () => {
+    for (const d of ROLE_DIFFERENCES) expect(routeById(d.route).access, d.item).toBe(d.chosen);
+    expect(new Set(ROLE_DIFFERENCES.map((d) => d.route)).size).toBe(ROLE_DIFFERENCES.length);
   });
 
   it("has unique ids and unique paths", () => {
@@ -61,6 +63,23 @@ describe("route table against the handoff inventory", () => {
       const keys = route.search ?? [];
       expect(new Set(keys).size, route.id).toBe(keys.length);
     }
+  });
+
+  it("lets a redirect carry only the search keys its own route reads, to a path that is in the table", () => {
+    const paths = new Set(ROUTES.map((r) => r.path));
+    for (const route of ROUTES.filter((r) => r.redirect !== undefined)) {
+      const redirect = route.redirect;
+      if (redirect === undefined) continue;
+      for (const read of Object.keys(redirect.carry ?? {})) expect(route.search ?? [], `${route.id} carries ${read}`).toContain(read);
+      expect(paths.has(redirect.to), `${route.id} redirects to ${redirect.to}`).toBe(true);
+      // The target reads every key the redirect writes.
+      const target = ROUTES.find((r) => r.path === redirect.to);
+      for (const written of [...Object.values(redirect.carry ?? {}), ...Object.keys(redirect.with ?? {})]) expect(target?.search ?? [], `${route.id} writes ${written}`).toContain(written);
+    }
+  });
+
+  it("reads `left` and `right` on the comparison, the CompareRefs the MCP links send", () => {
+    expect(routeById("compare").search).toEqual(["lanes", "file", "only", "channel", "left", "right"]);
   });
 
   it("keeps the admin sections the plan lists", () => {

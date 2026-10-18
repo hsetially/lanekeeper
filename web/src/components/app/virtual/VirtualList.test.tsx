@@ -38,6 +38,53 @@ describe("VirtualList", () => {
     expect(rowNumbers().length).toBeLessThan(101);
   });
 
+  // A screen that has just opened is judged by how soon its first frame is (P10): the window and a little more first, the rest of
+  // the overscan when the page is idle, or at once when the list is scrolled.
+  describe("firstOverscan", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("draws the window and only that many rows beyond it at first, and the whole overscan 200 ms later", () => {
+      vi.useFakeTimers();
+      render(<VirtualList label="Rows" count={5_000} rowHeight={32} renderRow={row} data-test-height="320" overscan={10} firstOverscan={2} />);
+      const first = rowNumbers();
+      expect(first[0]).toBe(0);
+      // 320 px is ten rows; two more beyond them.
+      expect(first).toHaveLength(12);
+      act(() => {
+        vi.advanceTimersByTime(250);
+      });
+      expect(rowNumbers()).toHaveLength(20);
+    });
+
+    it("draws the whole overscan as soon as the list is scrolled, without waiting for the timer", () => {
+      vi.useFakeTimers();
+      render(<VirtualList label="Rows" count={5_000} rowHeight={32} renderRow={row} data-test-height="320" overscan={10} firstOverscan={2} />);
+      scrollTo(screen.getByRole("list", { name: "Rows" }), 32 * 100);
+      const shown = rowNumbers();
+      expect(shown).toContain(100);
+      expect(shown.length).toBeGreaterThanOrEqual(20);
+    });
+
+    it("hands the scroll event on to the screen's own handler", () => {
+      const onScroll = vi.fn();
+      render(<VirtualList label="Rows" count={5_000} rowHeight={32} renderRow={row} data-test-height="320" overscan={10} firstOverscan={2} onScroll={onScroll} />);
+      scrollTo(screen.getByRole("list", { name: "Rows" }), 64);
+      expect(onScroll).toHaveBeenCalledTimes(1);
+    });
+
+    it("changes nothing for a list that does not ask for it", () => {
+      render(<VirtualList label="Rows" count={5_000} rowHeight={32} renderRow={row} data-test-height="320" />);
+      expect(rowNumbers()).toHaveLength(20);
+    });
+
+    it("keeps a list that is short enough to be drawn whole drawn whole", () => {
+      render(<VirtualList label="Rows" count={100} rowHeight={32} renderRow={row} data-test-height="160" overscan={10} firstOverscan={2} />);
+      expect(rowNumbers()).toHaveLength(100);
+    });
+  });
+
   it("calls renderRow only for rows it shows", () => {
     const renderRow = vi.fn(row);
     render(<VirtualList label="Rows" count={5_000} rowHeight={32} renderRow={renderRow} data-test-height="320" />);

@@ -1,6 +1,8 @@
-// P10: a 5,000-row grid scrolls at 60 frames per second. 40 swimlane columns, 5,000 rows loaded through the real paging path
-// (the generated `getGrid`, a keyset cursor, the first page small and then 500 a page), drawn by DataTable over the one
-// virtualiser, scrolled over its whole extent.
+// P10: a 5,000-row grid scrolls at 60 frames per second. This is the Compare screen of the app (/compare, scenario
+// `design-compare-large`): 40 swimlane columns, 5,000 rows loaded through the real paging path (the generated `getGrid`, a keyset
+// cursor, the first page of 50 rows and then 500 a page, each asked for by the button under the rows, eleven requests), drawn by
+// DataTable over the one virtualiser, scrolled over its whole extent. The production build (`dist`), with the screen's toolbar,
+// header and live layer around the grid, as a person has it.
 //
 // HOW THE GATE IS JUDGED (W20, decided by the human on 2026-10-17: "capacity plus control"; plans/08-frontend.blockers.md):
 //
@@ -42,29 +44,55 @@
 // (a box-shadow on every row, a layer for every row, a layer for each of 840 cells gave 1 to 13 late frames), which is what
 // the capacity number is for: its floor of 60 against the 180 or more measured is room for three times today's cost of a frame.
 // Raising the margin needs the same kind of data written next to it.
-import { chromium } from "@playwright/test";
+import { chromium, type Page } from "@playwright/test";
 import { controlVerdict, uncappedFps } from "../../scripts/perf/frame-rule.mjs";
+import { GRID_LANES, GRID_ROWS } from "../../src/mocks/perf/grid.ts";
 import { chromiumPath, launchArgs } from "../harness/browser.ts";
+import type { Harness } from "../harness/serve.ts";
 import { CspWatch, expect, pageViolations, test, watchCsp } from "../fixtures/test";
-import { CONTROL_LIST_HTML, environment, framesPerSecond, longTasks, observeLongTasks, record, round1, scrollRun, settleLive, summarize, values } from "./helpers";
+import { CONTROL_LIST_HTML, environment, framesPerSecond, observeLongTasks, record, round1, scrollRun, settleLive, summarize, values } from "./helpers";
 
-test.use({ dist: "dist-perf", scenario: "perf" });
+test.use({ dist: "dist", scenario: "design-compare-large" });
 
 const RUNS = 5;
 const SCROLL_MS = 5000;
 const CAPACITY_FRAMES = 300;
 const GRID = "[data-testid='grid-scroller']";
+/** The screen's address: the file, the 40 swimlanes of the scenario, every row (not only the differing ones). */
+const ROUTE = `/compare?file=${encodeURIComponent("services/payments/application.yml")}&lanes=${GRID_LANES.join(",")}&only=all`;
 /** Late frames the grid may have beyond the control list's, over the five runs (1,500 frames). See THE MARGIN above. */
 const DROPPED_FRAME_MARGIN = 8;
 /** The floor of the budget, repeated here so the result says what the number is judged against. */
 const CAPACITY_FLOOR_FPS = 60;
 
+/**
+ * Open the screen and load all 5,000 rows the way a person does: the first 50 arrive with the page, and the button under the rows
+ * asks for 500 more, ten times. Then the tab's live stream is open and its first refetch is over, so that nothing but the scroll is
+ * going on while frames are counted. (The rows the person asked for are kept by a refresh, src/features/compare/grid/useGridPages.ts.)
+ */
+async function openLargeGrid(page: Page, harness: Harness): Promise<void> {
+  harness.clearRequests();
+  await page.goto(`${harness.url}${ROUTE}`);
+  const grid = page.getByRole("grid", { name: "application.yml across swimlanes" });
+  await expect(grid).toBeVisible();
+  await expect(grid.getByRole("row").nth(1)).toBeVisible();
+  await settleLive(page, harness);
+  const shown = async (): Promise<number> => Number(((await page.getByText(/^Showing \d+$/).first().textContent()) ?? "").replace(/\D/g, ""));
+  let loaded = await shown();
+  for (let guard = 0; loaded < GRID_ROWS && guard < 20; guard++) {
+    await page.getByRole("button", { name: /^Load \d+ more$/ }).click();
+    await expect.poll(shown, { timeout: 60_000 }).toBeGreaterThan(loaded);
+    loaded = await shown();
+  }
+  await expect(grid).toHaveAttribute("aria-rowcount", String(GRID_ROWS + 1));
+  await settleLive(page, harness, 800);
+}
+
 const CONTEXT = { viewport: { width: 1440, height: 900 }, timezoneId: "UTC", locale: "en-GB", colorScheme: "light", reducedMotion: "reduce" } as const;
 
-test("grid, 5,000 rows by 40 swimlanes: capacity (the budget), late frames against a control list (the assertion)", async ({ page, harness, browser, csp }) => {
+test("the Compare screen, 5,000 rows by 40 swimlanes: capacity (the budget), late frames against a control list (the assertion)", async ({ page, harness, browser, csp }) => {
   const vsync: Array<ReturnType<typeof framesPerSecond> & { longTasks: number; heapMb: number | null }> = [];
   const control: Array<ReturnType<typeof framesPerSecond>> = [];
-  let warmUp: { warmed: boolean; longTasksDuring: number } | undefined;
 
   // The control list lives in a context of its own, with the page's policy off (it has an inline script and style).
   const controlContext = await browser.newContext({ ...CONTEXT, bypassCSP: true });
@@ -73,23 +101,7 @@ test("grid, 5,000 rows by 40 swimlanes: capacity (the budget), late frames again
   // Alternate the grid and the control list, so that a change in the machine between the first run and the last falls on both.
   for (let run = 0; run < RUNS; run++) {
     await observeLongTasks(page);
-    harness.clearRequests();
-    await page.goto(`${harness.url}/testpages/perf/grid`);
-    await page.waitForFunction(() => window.__perf?.phase === "ready", undefined, { timeout: 60_000 });
-    await expect(page.getByRole("grid", { name: "Comparison grid" })).toHaveAttribute("aria-rowcount", "5001");
-    expect(await page.evaluate(() => window.__perf?.rows)).toBe(5000);
-    // The tab's live stream is open and its first refetch is over, so nothing but the scroll is going on while frames are counted.
-    await settleLive(page, harness);
-
-    if (run === 0) {
-      // The editor warm-up fires once the page is idle. It must cost the main thread nothing worth a long task.
-      await page.waitForFunction(() => performance.getEntriesByName("lk:editor-warm:done").length > 0, undefined, { timeout: 30_000 });
-      const window_ = await page.evaluate(() => ({ start: performance.getEntriesByName("lk:editor-warm:start")[0]?.startTime ?? -1, done: performance.getEntriesByName("lk:editor-warm:done")[0]?.startTime ?? -1 }));
-      const during = (await longTasks(page)).filter((t) => t.start + t.duration >= window_.start && t.start <= window_.done);
-      warmUp = { warmed: window_.start >= 0 && window_.done >= window_.start, longTasksDuring: during.length };
-      expect(warmUp.warmed, "the editor warm-up fired").toBe(true);
-      expect(warmUp.longTasksDuring, `long tasks while the editor was warmed: ${JSON.stringify(during)}`).toBe(0);
-    }
+    await openLargeGrid(page, harness);
 
     const result = await scrollRun(page, GRID, { by: "time", durationMs: SCROLL_MS });
     // The run went through the whole list, not a prefix of it.
@@ -114,11 +126,7 @@ test("grid, 5,000 rows by 40 swimlanes: capacity (the budget), late frames again
     const labWatch = new CspWatch();
     await watchCsp(lab, labWatch);
     for (let run = 0; run < RUNS; run++) {
-      harness.clearRequests();
-      await lab.goto(`${harness.url}/testpages/perf/grid`);
-      await lab.waitForFunction(() => window.__perf?.phase === "ready", undefined, { timeout: 60_000 });
-      await expect(lab.getByRole("grid", { name: "Comparison grid" })).toHaveAttribute("aria-rowcount", "5001");
-      await settleLive(lab, harness);
+      await openLargeGrid(lab, harness);
       const result = await scrollRun(lab, GRID, { by: "frames", frames: CAPACITY_FRAMES });
       expect(result.lastIndex).toBeGreaterThanOrEqual(4990);
       capacity.push({ fps: round1(uncappedFps(result.stamps)), frames: result.stamps.length, worstMs: framesPerSecond(result).worstMs, longTasks: result.longTasks, heapMb: result.heapMb });
@@ -156,7 +164,6 @@ test("grid, 5,000 rows by 40 swimlanes: capacity (the budget), late frames again
       droppedFrames: gridDropped,
       runs: vsync,
     },
-    editorWarmUp: warmUp,
     note: "values.min is the grid's CAPACITY in frames a second (uncapped, equal scroll per frame, minimum of 5 runs), judged against a floor of 60; the late-frame comparison with the control list is an assertion of the spec (controlRule); the frame-rate-limited number is vsyncLocked, for information",
   });
   test.info().annotations.push({

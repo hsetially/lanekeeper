@@ -33,7 +33,7 @@ test.describe("the served policy", () => {
 
   test("really watches: a style attribute set from script is refused and the watcher sees it (negative control)", async ({ page, harness, csp }) => {
     await page.goto(`${harness.url}/signin`);
-    await expect(page.getByRole("heading", { level: 1, name: "Sign in" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Lanekeeper" })).toBeVisible();
     // The app never does this. The page's own CSP refuses it, which proves the policy is enforced and the watcher is live.
     await page.evaluate(() => document.body.insertAdjacentHTML("beforeend", "<b style=\"top:0\">x</b>")).catch(() => undefined);
     await page.evaluate(() => {

@@ -63,6 +63,14 @@ describe("Input and SearchInput", () => {
     expect(screen.getByLabelText("Branch")).toHaveValue("sitb");
   });
 
+  it("SearchInput pads 8px before the icon and 4px after a trailing key hint or toggle (the design's search field), and 8px both sides without one", () => {
+    const { rerender } = render(<SearchInput aria-label="Filter" kbd="/" />);
+    const box = screen.getByLabelText("Filter").closest("[data-slot='search-input']");
+    expect(box).toHaveClass("pl-2", "pr-1");
+    rerender(<SearchInput aria-label="Filter" />);
+    expect(screen.getByLabelText("Filter").closest("[data-slot='search-input']")).toHaveClass("px-2");
+  });
+
   it("SearchInput has Match case and Regex toggles with aria-pressed", async () => {
     const user = userEvent.setup();
     const onCase = vi.fn();

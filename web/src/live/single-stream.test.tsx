@@ -44,7 +44,7 @@ describe("a signed-in user holds exactly one stream", () => {
   it("opens one for a screen that needs the session, and is live from its first frame", async () => {
     const hub = new FakeHub();
     app("/swimlanes", as("viewer"), hub);
-    await screen.findByRole("button", { name: "Sign out" });
+    await screen.findByRole("navigation", { name: "Sections" });
     await waitFor(() => expect(hub.connections).toHaveLength(1));
     expect(hub.last.url).toBe("/api/v1/events");
     hub.last.push(FIRST_FRAME);
@@ -54,7 +54,7 @@ describe("a signed-in user holds exactly one stream", () => {
   it("opens one under React's development double effects too (the app's root is strict)", async () => {
     const hub = new FakeHub();
     renderApp("/swimlanes", as("viewer"), { strict: true, live: { stream: { fetch: hub.fetch, random: () => 0.5, onlineTarget: new EventTarget() } } });
-    await screen.findByRole("button", { name: "Sign out" });
+    await screen.findByRole("navigation", { name: "Sections" });
     await quiet();
     expect(hub.connections).toHaveLength(1);
     expect(hub.open).toBe(1);
@@ -63,7 +63,7 @@ describe("a signed-in user holds exactly one stream", () => {
   it("is still one after navigating between screens and after the session is asked again", async () => {
     const hub = new FakeHub();
     const view = app("/swimlanes", as("admin"), hub);
-    await screen.findByRole("button", { name: "Sign out" });
+    await screen.findByRole("navigation", { name: "Sections" });
     await waitFor(() => expect(hub.connections).toHaveLength(1));
     for (const to of ["/compare", "/status", "/findings", "/swimlanes", "/admin/users", "/audit"]) {
       await view.router.navigate({ to: to });
@@ -77,7 +77,8 @@ describe("a signed-in user holds exactly one stream", () => {
   it("closes it on sign-out, and opens none on the sign-in screen it lands on", async () => {
     const hub = new FakeHub();
     const view = app("/swimlanes", as("viewer"), hub);
-    await userEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+    await userEvent.click(await screen.findByRole("button", { name: /Ada Lovelace/ }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Sign out" }));
     await waitFor(() => expect(view.location()).toBe("/signin"));
     await waitFor(() => expect(hub.open).toBe(0));
     await quiet();
