@@ -7,7 +7,7 @@ import { ApiProblem } from "@/api/problem";
 import { STATES } from "@/handoff/states.generated";
 import type { QueryState } from "@/lib/query/use-query-state";
 import { expectNoAxeViolations } from "@/test/axe";
-import { QueryBoundary, QueryBoundaryView } from "./QueryBoundary";
+import { ListSkeleton, QueryBoundary, QueryBoundaryView } from "./QueryBoundary";
 
 // The five states of a query on screen (design: States index, rows L, E, R, U and the "data as of" stamp of O), as one
 // component: loading, error, empty, ready, and the two overlays that never replace content: refreshing and stale.
@@ -213,6 +213,20 @@ describe("stale: a banner that names the cause and when the data is from (design
     expect(b).toHaveTextContent("Last updated 10:42 UTC");
   });
 
+  it("names the request ID of the refresh that failed, so that it can be reported, and says nothing of one the server did not give (found by the T6 visual run: it was lost)", () => {
+    show(view({ error: problem(503, "x", { requestId: "req-9" }), retryable: true, stale: { causes: ["refetch-failed"], asOf: AS_OF } }));
+    expect(banner()).toHaveTextContent("Request ID");
+    expect(banner()).toHaveTextContent("req-9");
+    expect(within(banner()).getByRole("button", { name: /copy request id/i })).toBeInTheDocument();
+  });
+
+  it("has no request ID line when the refresh failed with no answer, or the data is only old", () => {
+    show(view({ error: problem(503, "x"), retryable: true, stale: { causes: ["refetch-failed"], asOf: AS_OF } }));
+    expect(banner()).not.toHaveTextContent("Request ID");
+    show(view({ stale: { causes: ["age"], asOf: AS_OF } }));
+    expect(screen.queryByText("Request ID")).toBeNull();
+  });
+
   it("says its own cause when the stream is also down, and does not repeat what the shell says about the stream", () => {
     show(view({ error: problem(500), stale: { causes: ["refetch-failed", "live-paused"], asOf: AS_OF } }));
     const b = banner();
@@ -325,5 +339,17 @@ describe("connected to a query", () => {
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText("ok")).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  });
+});
+
+describe("ListSkeleton: the blocks' own look", () => {
+  const blocks = (container: HTMLElement) => Array.from(container.querySelectorAll<HTMLElement>("[data-slot='skeleton']"));
+
+  it("gives every block the class a surface asks for (a card in the dark theme is the colour of `muted`), and none otherwise", () => {
+    const { container, rerender } = render(<ListSkeleton rows={2} columns={3} />);
+    expect(blocks(container)).toHaveLength(6);
+    expect(blocks(container).filter((b) => b.classList.contains("bg-accent"))).toHaveLength(0);
+    rerender(<ListSkeleton rows={2} columns={3} blockClassName="bg-accent" />);
+    expect(blocks(container).filter((b) => b.classList.contains("bg-accent"))).toHaveLength(6);
   });
 });

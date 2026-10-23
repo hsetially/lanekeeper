@@ -59,6 +59,8 @@ export const ROUTE_TABLE = [
   { id: "activity", path: "/swimlanes/:id/activity", access: "admin", title: "Activity", origin: "addition" },
   // The hub's link template for a swimlane's pull requests (`LinkTemplates::default().pr`): the page is swimlane-scoped.
   { id: "swimlane-pull-requests", path: "/swimlanes/:id/pull-requests", access: "viewer", title: "Pull requests", origin: "addition", search: ["state"] },
+  // The hub's link template for the text the config-server serves (`LinkTemplates::default().served`): a swimlane page, not a tab of the file.
+  { id: "swimlane-served", path: "/swimlanes/:id/served", access: "viewer", title: "As served", origin: "addition", search: ["application", "tenant", "channel", "file"] },
   // Across swimlanes.
   { id: "compare", path: "/compare", access: "viewer", title: "Compare", origin: "handoff", search: ["lanes", "file", "only", "channel", "left", "right"] },
   { id: "grid-link", path: "/grid", access: "viewer", title: "Compare", origin: "addition", search: ["file", "swimlanes"], redirect: { to: "/compare", carry: { file: "file", swimlanes: "lanes" } } },

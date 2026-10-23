@@ -12,6 +12,7 @@ import { HOSTILE, hostileKeys, makeHostile, markers, pick } from "./hostile.ts";
 import { auditTables } from "./tables.ts";
 import { freezeDate } from "../a11y/helpers.ts";
 import { CORE_FILE, itemsOf, patchJson, raisePr, reveal } from "../a11y/t5.ts";
+import { API as T6_API, bannerRestart, notifyButton, saveFile, servedUrl } from "../a11y/t6.ts";
 import { MARCO } from "../../src/mocks/design/shell/index.ts";
 
 test.use({ dist: process.env["LK_E2E_DIST"] ?? process.env["LK_DIST"] ?? "dist", colorScheme: "light" });
@@ -166,6 +167,127 @@ const SCREENS: Screen[] = [
       await reveal(page);
       await expect(page.locator("[data-slot='revealed-value']")).toBeVisible();
     },
+  },
+  // ---- T6 ----------------------------------------------------------------------------------------------------------------------------------
+  {
+    id: "the text the config-server serves for a file (As served): its lines, the placeholders left in it and the sources it came from",
+    scenario: "design-served-text",
+    url: "/swimlanes/sitb/served?application=tx-infinity-core&tenant=sit7&file=tx-infinity-api%2Fconnection-pool.yml",
+    hostile: [],
+    minMarkers: 4,
+    async before(page) {
+      // The hostile lines in front of the real ones, the sources and the placeholders hostile too (a placeholder is a name from the file).
+      await patchJson(page, /\/api\/v1\/swimlanes\/sitb\/served/, (served) => {
+        const sources = Array.isArray(served["sources"]) ? (served["sources"] as Array<Record<string, unknown>>) : [];
+        const prefix = `${HOSTILE.map((h, i) => `key${i}: ${h.replace(/[\r\n]/g, " ")}`).join("\n")}\n`;
+        return {
+          ...served,
+          text: typeof served["text"] === "string" ? `${prefix}${served["text"]}` : served["text"],
+          masks: undefined,
+          sources: sources.map((source, i) => ({ ...source, path: pick(1 + i * 2) })),
+          unresolved_placeholders: [pick(3), pick(5), pick(8)],
+        };
+      });
+    },
+  },
+  {
+    id: "the pickup chips: files a service waits on, a tree and times the page must not trust (Services tab)",
+    scenario: "design-pickup-hostile",
+    url: "/swimlanes/sitb/services",
+    hostile: [],
+    minMarkers: 3,
+    async open(page) {
+      const rows = page.getByRole("tree").getByRole("treeitem");
+      const before = await rows.count();
+      await page.getByRole("button", { name: "Open tx-infinity-api" }).click();
+      await expect.poll(() => rows.count()).toBeGreaterThan(before);
+      await expect(page.getByRole("tree").locator("[data-slot='pickup-chip']").first()).toBeVisible();
+    },
+  },
+  {
+    id: "the pickup column of the swimlane list, in rows whose names the page must not trust",
+    scenario: "design-pickup-states",
+    url: "/swimlanes",
+    hostile: [[LIST, ["display_name", "project", "tenants"]]],
+    minMarkers: 4,
+    async open(page) {
+      await expect(page.locator("[data-slot='pickup-chip']").first()).toBeVisible();
+    },
+  },
+  {
+    id: "Notify services: the paths and the services it announces, hostile (the Services tab and the dialog)",
+    scenario: "design-notify-services-tab",
+    url: "/swimlanes/sitb/services",
+    hostile: [[DETAIL, ["name", "pending_files"]]],
+    minMarkers: 4,
+    async open(page) {
+      await notifyButton(page).click();
+      await expect(page.getByRole("alertdialog")).toBeVisible();
+    },
+  },
+  {
+    id: "the config-server restart: a Deployment and affected services whose names the page must not trust (the dialog types the name)",
+    scenario: "design-notify-config-server",
+    url: "/swimlanes/sitb/services",
+    hostile: [[T6_API.configServerOffer, ["name"]]],
+    minMarkers: 3,
+    async open(page) {
+      await bannerRestart(page).click();
+      await expect(page.getByRole("alertdialog")).toBeVisible();
+    },
+  },
+  {
+    id: "Restart services of a file: the services the hub lists, hostile (the dialog types the swimlane's id)",
+    scenario: "design-notify-file-saved",
+    url: CORE_FILE,
+    hostile: [],
+    minMarkers: 3,
+    async before(page) {
+      // Names with hidden characters in them (the first strings of the list have none, so `makeHostile` would not do).
+      await patchJson(page, T6_API.restartOffer, (offer) => ({ ...offer, services: [3, 4, 5, 8].map((i) => ({ namespace: "sitb", name: pick(i) })) }));
+    },
+    async open(page) {
+      await saveFile(page);
+      await page.getByRole("button", { name: "Restart services" }).click();
+      await expect(page.getByRole("alertdialog")).toBeVisible();
+    },
+  },
+  {
+    id: "the services of a draft, with names the page must not trust, and the chips beside them",
+    scenario: "design-file-draft",
+    url: "/drafts/7",
+    hostile: [],
+    minMarkers: 4,
+    async before(page) {
+      await patchJson(page, /\/api\/v1\/drafts\/7$/, (draft) => ({
+        ...draft,
+        effects: [3, 4, 5, 6, 9].map((i, n) => [{ namespace: pick(i + 1), name: pick(i) }, ["needs_notify_or_restart", "needs_config_server_restart", "live_within_ttl", "live", "needs_notify_or_restart"][n] ?? "live"]),
+      }));
+    },
+  },
+  {
+    id: "As served: what the answer names (the application, the tenant, the channel and the file), hostile",
+    scenario: "design-served-text",
+    url: servedUrl(),
+    hostile: [],
+    minMarkers: 3,
+    async before(page) {
+      await patchJson(page, T6_API.served, (served) => ({ ...served, application: pick(3), tenant: pick(4), channel: pick(5), file: pick(9) }));
+    },
+  },
+  {
+    id: "As served: an address whose every value is a string the page must not trust (the form says which fields are wrong)",
+    scenario: "design-served-text",
+    url: `/swimlanes/sitb/served?${new URLSearchParams({ application: pick(3), tenant: pick(4), channel: pick(5), file: pick(2) }).toString()}`,
+    hostile: [],
+    minMarkers: 0,
+  },
+  {
+    id: "As served: an address whose names are long unbroken words (a valid request, and its answer)",
+    scenario: "design-served-text",
+    url: servedUrl({ application: "a".repeat(120), channel: "b".repeat(120), file: `${"d".repeat(60)}/${"e".repeat(60)}/${"f".repeat(60)}.yml` }),
+    hostile: [],
+    minMarkers: 0,
   },
   { id: "the sentinels of the admin area", scenario: "design-admin-t5-sentinels", url: "/admin/sentinels", hostile: [[/\/api\/v1\/admin\/sentinels/, ["host", "version"]]], minMarkers: 3 },
   { id: "the OS Login mappings of the admin area", scenario: "design-admin-t5-oslogin", url: "/admin/oslogin", hostile: [[/\/api\/v1\/admin\/os-login-users$/, ["os_login"]], [USERS, ["display_name", "email"]]], minMarkers: 3 },

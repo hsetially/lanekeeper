@@ -1,22 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { PickupState, Role, type ServiceState, type SwimlaneDetail } from "@/api/generated/model";
+import { Role, type ServiceState, type SwimlaneDetail } from "@/api/generated/model";
 import { useSession } from "@/auth/session";
 import { Banner } from "@/components/app/Banner";
 import { EmptyState } from "@/components/app/EmptyState";
 import { GatedButton } from "@/components/app/GatedButton";
 import { SafeText } from "@/components/app/SafeText";
-import { StatusBadge } from "@/components/app/StatusBadge";
-import { useWriteGate, type GateResult } from "@/components/app/write-gate";
 import { VirtualList } from "@/components/app/virtual/VirtualList";
 import { SearchInput } from "@/components/ui/input";
+import { AutoNotifyStatus } from "@/features/notify/AutoNotifyStatus";
+import { ConfigServerRestartBanner } from "@/features/notify/ConfigServerRestartBanner";
+import { useServiceWriteGate } from "@/features/notify/gates";
+import { NotifyServicesButton } from "@/features/notify/NotifyServicesButton";
+import { ServicePickup } from "@/features/pickup";
 import { Server, RotateCw } from "@/icons";
 import { useShortcut } from "@/keyboard";
-import { formatClock, formatRelative } from "@/lib/time";
 import { linkTo } from "@/routes/links";
 import { useNow } from "@/live/use-now";
-import { agentView } from "../agent";
 import { useReplaceTo } from "@/routes/AppLink";
-import { pendingFilesSummary, pickupVariant } from "../pickup";
 import { filterServices } from "./filter";
 import { RestartDialog, type RestartOutcome } from "./RestartDialog";
 
@@ -26,33 +26,6 @@ import { RestartDialog, type RestartOutcome } from "./RestartDialog";
 
 const ROW = 52;
 const COLUMNS = "grid-cols-[minmax(0,1.2fr)_minmax(0,2fr)_112px]";
-
-function ConfigStatus({ service, now }: { service: ServiceState; now: number }) {
-  const files = pendingFilesSummary(service);
-  const waiting = service.pickup === PickupState.needs_notify_or_restart || service.pickup === PickupState.needs_config_server_restart;
-  return (
-    <span className="flex min-w-0 flex-col gap-0.5">
-      <span className="flex min-w-0 items-center gap-2">
-        {service.pickup === PickupState.live_within_ttl && service.live_by !== null ? (
-          <StatusBadge variant="live-by" detail={formatClock(service.live_by)} />
-        ) : (
-          <StatusBadge variant={pickupVariant(service.pickup)} />
-        )}
-        {waiting && service.pending_since !== null ? (
-          <span title={`since ${formatRelative(service.pending_since, now)}`} className="min-w-0 truncate text-xs text-muted-foreground">
-            since {formatRelative(service.pending_since, now)}
-          </span>
-        ) : null}
-      </span>
-      {files.first !== null ? (
-        <span title={files.all.join("\n")} className="truncate text-xs text-muted-foreground">
-          Waiting on <SafeText text={files.first} className="font-mono" />
-          {files.more > 0 ? ` and ${files.more} more` : ""}
-        </span>
-      ) : null}
-    </span>
-  );
-}
 
 export function ServicesTab({ lane, q }: { lane: SwimlaneDetail; q: string }) {
   const now = useNow(true, 30_000);
@@ -88,9 +61,8 @@ export function ServicesTab({ lane, q }: { lane: SwimlaneDetail; q: string }) {
 
   const session = useSession();
   const editorOnly = session.status === "ready" && session.role === Role.editor;
-  const operator = useWriteGate("operator");
-  const agentUp = agentView(lane.agent).connected;
-  const gate: GateResult = !operator.allowed ? operator : agentUp ? operator : { allowed: false, reason: "Unavailable while the agent is offline" };
+  // Operator, live updates up, agent connected: the one gate of every button that acts on the services (src/features/notify/gates.ts).
+  const gate = useServiceWriteGate(lane.agent);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -99,6 +71,7 @@ export function ServicesTab({ lane, q }: { lane: SwimlaneDetail; q: string }) {
           You can edit files here, but restarting services needs the Operator permission.
         </Banner>
       ) : null}
+      <ConfigServerRestartBanner lane={lane} />
       {result ? (
         result.outcome.kind === "applied" ? (
           <Banner
@@ -116,7 +89,7 @@ export function ServicesTab({ lane, q }: { lane: SwimlaneDetail; q: string }) {
           </Banner>
         )
       ) : null}
-      <div className="flex h-8 flex-none items-center gap-2 border-b border-border bg-muted px-4 text-xs text-muted-foreground">
+      <div data-slot="services-strip" className="flex min-h-8 flex-none flex-wrap items-center gap-x-2 gap-y-1 border-b border-border bg-muted px-4 py-1 text-xs text-muted-foreground">
         <SearchInput
           ref={filterRef}
           aria-label="Filter services"
@@ -128,9 +101,15 @@ export function ServicesTab({ lane, q }: { lane: SwimlaneDetail; q: string }) {
             setText(event.target.value);
           }}
         />
-        <span className="ml-auto tabular-nums">
-          {rows.length === lane.services.length ? `${lane.services.length} ${lane.services.length === 1 ? "service" : "services"}` : `${rows.length} of ${lane.services.length} services`}
-        </span>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="tabular-nums">
+            {rows.length === lane.services.length ? `${lane.services.length} ${lane.services.length === 1 ? "service" : "services"}` : `${rows.length} of ${lane.services.length} services`}
+          </span>
+          <NotifyServicesButton lane={lane} />
+        </div>
+      </div>
+      <div className="flex-none border-b border-border px-4 py-1.5">
+        <AutoNotifyStatus lane={lane} />
       </div>
       {lane.services.length === 0 ? (
         <EmptyState icon={Server} title="No services reported" className="flex-1">
@@ -170,7 +149,7 @@ export function ServicesTab({ lane, q }: { lane: SwimlaneDetail; q: string }) {
                   <SafeText text={service.service.name} />
                 </span>
                 <span role="cell" className="min-w-0">
-                  <ConfigStatus service={service} now={now} />
+                  <ServicePickup service={service} now={now} />
                 </span>
                 <span role="cell" className="flex justify-end">
                   <GatedButton

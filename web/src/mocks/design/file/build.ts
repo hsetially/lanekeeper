@@ -230,6 +230,8 @@ export function fileScenario(options: FileScenarioOptions): Scenario {
           SHELL_USERS,
         ]
       : []),
+    // The findings of the swimlane: none. The Services tab, where deleting a file leads back to, reads one finding of the config-server restart kind.
+    { method: "GET", path: "/api/v1/findings", body: { items: [], next: null } },
     // The pull requests of the swimlane (the header's badge): none, unless the scenario is the one where this change has one open.
     {
       method: "GET",

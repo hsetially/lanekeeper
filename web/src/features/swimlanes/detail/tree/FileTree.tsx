@@ -13,6 +13,7 @@ import { SearchInput } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { fileTreeQuery } from "@/features/file/queries";
+import { TreePickup, pickupRollups, type PickupRollup } from "@/features/pickup";
 import { File as FileIcon, Folder, Layers, Plus } from "@/icons";
 import { useCursorPages } from "@/lib/query/cursor-pages";
 import { cn } from "@/lib/utils";
@@ -79,7 +80,7 @@ function Row({ node }: { node: DataNode }) {
   );
 }
 
-function Trailing({ node }: { node: DataNode }) {
+function Trailing({ node, rollup }: { node: DataNode; rollup: PickupRollup | undefined }) {
   return (
     <span className="flex items-center gap-1.5">
       {node.usesTenantFile.length > 0 ? (
@@ -89,11 +90,12 @@ function Trailing({ node }: { node: DataNode }) {
         </span>
       ) : null}
       {!node.isDir && node.more === null && node.drift !== DriftState.in_sync ? <StatusBadge variant={DRIFT_VARIANT[node.drift]} /> : null}
+      <TreePickup node={node} rollup={rollup} />
     </span>
   );
 }
 
-function toTreeNode(node: DataNode): TreeNode {
+function toTreeNode(node: DataNode, rollups: ReadonlyMap<string, PickupRollup>): TreeNode {
   if (node.more !== null) return { id: node.id, label: <span className="text-muted-foreground">Load more…</span> };
   return {
     id: node.id,
@@ -101,8 +103,8 @@ function toTreeNode(node: DataNode): TreeNode {
     text: node.name,
     lazy: node.lazy,
     icon: node.isDir ? <Folder aria-hidden="true" className="size-3.5" /> : <FileIcon aria-hidden="true" className="size-3.5" />,
-    trailing: <Trailing node={node} />,
-    children: node.children.map(toTreeNode),
+    trailing: <Trailing node={node} rollup={rollups.get(node.id)} />,
+    children: node.children.map((child) => toTreeNode(child, rollups)),
   };
 }
 
@@ -135,7 +137,10 @@ export function FileTree({ id, name, filterRef }: { id: string; name: string; fi
 
   const folders = useMemo<Folders>(() => new Map([...data].filter(([, s]) => s.status === "success").map(([prefix, s]) => [prefix, { entries: s.entries, hasMore: s.hasMore }])), [data]);
   const tree = useMemo(() => buildTree(folders, { logical, filter, fileClass }), [folders, logical, filter, fileClass]);
-  const nodes = useMemo(() => tree.map(toTreeNode), [tree]);
+  const nodes = useMemo(() => {
+    const rollups = pickupRollups(tree);
+    return tree.map((node) => toTreeNode(node, rollups));
+  }, [tree]);
   const root = data.get("");
   const open = ["", ...expanded];
 

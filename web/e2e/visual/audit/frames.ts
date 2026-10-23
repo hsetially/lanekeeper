@@ -85,11 +85,17 @@ export const states: FrameDef[] = [
     board: "states", frame: "T02", kind: "state", scenario: AUDIT, path: "/audit", title: "Audit, cut off after 50 pages", why: APP,
     before: endlessLog,
     steps: async ({ page }) => {
+      // Each click is followed by the proof that its page arrived: the count in "Showing N of M loaded" changes. Waiting for the button was
+      // not enough. A button that is loading is still "Load more" (aria-busy and aria-disabled) and an idle one still is before the click is
+      // drawn, so the next click could be made on a button that the last page then took away, and the step timed out about one run in
+      // fifteen (2 of 30 runs alone).
+      const shown = async (): Promise<string> => /Showing ([\d,]+) of/.exec((await page.getByText(/^Showing [\d,]+ of/).first().textContent()) ?? "")?.[1] ?? "";
       for (let i = 0; i < 60; i += 1) {
         const more = page.getByRole("button", { name: "Load more" });
         if ((await more.count()) === 0) break;
+        const before = await shown();
         await more.click();
-        await page.getByRole("button", { name: "Load more" }).or(page.getByText(/cut off|Showing the first/)).first().waitFor();
+        await page.getByText(new RegExp(`^Showing (?!${before} of)[\\d,]+ of`)).or(page.getByText(/cut off|Showing the first/)).first().waitFor();
       }
       await page.getByText(/cut off|Showing the first/).first().waitFor();
     },

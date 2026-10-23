@@ -58,4 +58,26 @@ describe("FileActions", () => {
     expect(await screen.findByRole("button", { name: "History" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Docs for this file" })).toHaveAttribute("aria-pressed", "true");
   });
+
+  it("links to the text the config-server serves for this file, with the file and its tenant filled in (As served is a page, not a tab)", async () => {
+    renderFile(<FileActions {...base} asServed={{ id: "sitb", file: "tx-infinity-api/tx-infinity-core-sit7.yml", tenant: "sit7" }} />);
+    const link = await screen.findByRole("link", { name: "As served" });
+    expect(link).toHaveAttribute("href", "/swimlanes/sitb/served?file=tx-infinity-api%2Ftx-infinity-core-sit7.yml&tenant=sit7");
+  });
+
+  it("leaves the tenant out for a file that belongs to no tenant, and the application out always (it is not on the file)", async () => {
+    renderFile(<FileActions {...base} asServed={{ id: "sitb", file: "tx-infinity-api/tx-infinity-core.yml", tenant: null }} />);
+    const link = await screen.findByRole("link", { name: "As served" });
+    expect(link).toHaveAttribute("href", "/swimlanes/sitb/served?file=tx-infinity-api%2Ftx-infinity-core.yml");
+  });
+
+  it("has no As served link without a swimlane to ask in, and none for a file whose content is withheld", async () => {
+    const view = renderFile(<FileActions {...base} />);
+    await screen.findByRole("button", { name: "History" });
+    expect(screen.queryByRole("link", { name: "As served" })).not.toBeInTheDocument();
+    view.unmount();
+    renderFile(<FileActions {...base} withheld docs="none" asServed={null} />);
+    await screen.findByRole("button", { name: "History" });
+    expect(screen.queryByRole("link", { name: "As served" })).not.toBeInTheDocument();
+  });
 });

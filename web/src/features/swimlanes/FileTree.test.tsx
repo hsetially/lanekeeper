@@ -249,3 +249,36 @@ describe("logical files", () => {
     expect(within(row).getByText("Conflict")).toBeInTheDocument();
   });
 });
+
+describe("the pickup mark on a row", () => {
+  beforeEach(() => {
+    world.tree["sitb"] = {
+      "": [folderEntry("tx-infinity-api"), folderEntry("security"), fileEntry("application.properties", { pickup_state: "needs_notify_or_restart" }), fileEntry("channels.yml", { pickup_state: "live" }), fileEntry("readme.txt")],
+      "tx-infinity-api": [fileEntry("tx-infinity-api/a.yml", { pickup_state: "needs_config_server_restart" }), fileEntry("tx-infinity-api/b.yml", { pickup_state: "live" })],
+      security: [],
+    };
+  });
+  const rowOf = (name: string): HTMLElement => {
+    const row = screen.getByText(name, { selector: "bdi" }).closest<HTMLElement>("[role='treeitem']");
+    if (row === null) throw new Error(`no row for ${name}`);
+    return row;
+  };
+
+  it("marks a file that something waits on, and not a file that is live or one the hub stated nothing for", async () => {
+    open();
+    await tree();
+    expect(within(rowOf("application.properties")).getByRole("img", { name: "Needs notify or restart" })).toBeInTheDocument();
+    expect(within(rowOf("channels.yml")).queryByRole("img")).toBeNull();
+    expect(within(rowOf("readme.txt")).queryByRole("img")).toBeNull();
+  });
+
+  it("marks a folder only once its files are loaded, with what they say, and never calls it live", async () => {
+    open();
+    await tree();
+    expect(within(rowOf("tx-infinity-api/")).queryByRole("img")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Open tx-infinity-api" }));
+    await screen.findByText("a.yml");
+    expect(within(rowOf("tx-infinity-api/")).getByRole("img", { name: "1 Needs config-server restart" })).toBeInTheDocument();
+    expect(within(rowOf("security/")).queryByRole("img")).toBeNull();
+  });
+});

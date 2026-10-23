@@ -16,6 +16,8 @@ import { useNow } from "@/live/use-now";
 import { useNavigateTo } from "@/routes/AppLink";
 import { linkTo } from "@/routes/links";
 import { FileChangedBy, useActorNames } from "@/features/attribution";
+import { FilePickupActions } from "@/features/notify/FilePickupActions";
+import { FilePickup } from "@/features/pickup";
 import { usePrBadges } from "@/features/prs/use-pr-badges";
 import { swimlaneQuery } from "@/features/swimlanes/queries";
 import { DiffPane } from "../diff/DiffPane";
@@ -276,6 +278,7 @@ export function FileScreen({ id, path, tab, panel, side, line }: FileScreenProps
         onDelete={() => setDialog({ kind: "delete" })}
         onHistory={() => goTo(href({ panel: panel === "history" ? null : "history" }))}
         onDocs={() => goTo(href({ panel: panel === "docs" ? null : "docs" }))}
+        asServed={{ id, file: path, tenant }}
       />
     );
 
@@ -356,7 +359,12 @@ export function FileScreen({ id, path, tab, panel, side, line }: FileScreenProps
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {notice === null ? null : (
-        <Banner variant="success" title={`${NOTICE_TITLE[notice.source]}${notice.source === "save" ? ` to ${id} NFS` : ""}`} onDismiss={() => setNotice(null)}>
+        <Banner
+          variant="success"
+          title={`${NOTICE_TITLE[notice.source]}${notice.source === "save" ? ` to ${id} NFS` : ""}`}
+          onDismiss={() => setNotice(null)}
+          action={detail !== undefined && notice.source !== "pr" ? <FilePickupActions lane={detail} path={path} pickup={entry?.pickup_state} /> : undefined}
+        >
           {noticeText}
         </Banner>
       )}
@@ -376,6 +384,7 @@ export function FileScreen({ id, path, tab, panel, side, line }: FileScreenProps
         link={linkTo("files", { id }, { path, ...(line === null ? {} : { line: String(line) }) })}
         linkLine={line}
         prBadge={<PrBadge info={prs.badgeFor({ path, hash: head?.hash ?? entry?.hash ?? null, drift: entry?.drift ?? null })} />}
+        pickup={<FilePickup entry={entry} />}
         // The chip is 24 px high (its target size) and the facts beside it are 22: a 1 px margin above and below keeps the row 22 px tall.
         changedBy={entry === null ? null : <FileChangedBy attribution={entry.attribution} nameOf={nameOf} className="-my-px" />}
         copyHash={!withheld}

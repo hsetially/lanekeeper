@@ -132,3 +132,29 @@ describe("buildTree", () => {
     });
   });
 });
+
+describe("the pickup state of a row", () => {
+  it("is the one the hub stated for the file, or null when it stated none (no state is not Live)", () => {
+    const tree = buildTree(folders(["", [entry("a.yml", { pickup_state: "needs_notify_or_restart" }), entry("b.yml")]]), options);
+    expect(tree.map((n) => [n.name, n.pickup])).toEqual([
+      ["a.yml", "needs_notify_or_restart"],
+      ["b.yml", null],
+    ]);
+  });
+
+  it("is the most urgent of a base file and the tenant files a logical row stands for", () => {
+    const set = folders([
+      "",
+      [
+        entry("core.yml", { logical_file: "core.yml", pickup_state: "live" }),
+        entry("core-sit7.yml", { kind: "tenant", tenant: "sit7", logical_file: "core.yml", pickup_state: "needs_config_server_restart" }),
+        entry("core-sit8.yml", { kind: "tenant", tenant: "sit8", logical_file: "core.yml", pickup_state: null }),
+      ],
+    ]);
+    expect(buildTree(set, { ...options, logical: true })[0]?.pickup).toBe("needs_config_server_restart");
+  });
+
+  it("is null for a Load more row", () => {
+    expect(buildTree(folders(["", [entry("a.yml")], true]), options)[1]?.pickup).toBeNull();
+  });
+});

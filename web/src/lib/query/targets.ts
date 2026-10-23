@@ -61,15 +61,25 @@ export function matches(target: Target, entryKey: QueryKey, data: unknown): bool
 }
 
 /**
- * Invalidate what the targets name, or every active query that is not immutable (`"everything"`, a resync or a window with too
- * many targets to test one by one). Resolves when the entries on screen have refetched; a refetch that fails is that query's
- * own error state, not an error here.
+ * The `meta` of a query that is asked for and never pushed: a round trip that costs something outside the browser (the "As served"
+ * view asks the config-server through an agent, limited at the hub and at the agent) and that no live event names. A resync does not
+ * read it again: it says by itself when it may be old, and the person asks again with a button. Only `"everything"` leaves it out; a
+ * target that names it still does.
+ */
+export const ASKED_BY_HAND = { askedByHand: true } as const;
+
+const askedByHand = (meta: Record<string, unknown> | undefined): boolean => meta?.["askedByHand"] === true;
+
+/**
+ * Invalidate what the targets name, or every active query that is not immutable and not asked for by hand (`"everything"`, a resync
+ * or a window with too many targets to test one by one). Resolves when the entries on screen have refetched; a refetch that fails
+ * is that query's own error state, not an error here.
  */
 export function invalidateTargets(client: QueryClient, targets: readonly Target[] | "everything"): Promise<void> {
   if (targets !== "everything" && targets.length === 0) return Promise.resolve();
   return client
     .invalidateQueries({
-      predicate: (query) => !isImmutableKey(query.queryKey) && (targets === "everything" || targets.some((target) => matches(target, query.queryKey, query.state.data))),
+      predicate: (query) => !isImmutableKey(query.queryKey) && (targets === "everything" ? !askedByHand(query.meta) : targets.some((target) => matches(target, query.queryKey, query.state.data))),
       refetchType: "active",
     })
     .catch(() => undefined);

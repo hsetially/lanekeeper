@@ -50,6 +50,7 @@ const all = (): Array<[string, readonly unknown[]]> => [
   ["features", docKeys.features({ flag: "auto-notify" })],
   ["audit", auditKeys.list({ limit: 50 })],
   ["activity", swimlaneKeys.activity("sit1")],
+  ["served", swimlaneKeys.served("sit1", "tx-core", "sit7", null, "a/b.yml")],
   ["me-github-credential", meKeys.githubCredential()],
   ["me-mcp-tokens", meKeys.mcpTokens()],
   ["admin", adminKeys.list("users", { limit: 50 })],
@@ -62,7 +63,7 @@ describe("key factories", () => {
     expect(roots).toEqual([
       "me", "swimlanes", "swimlane", "pickup", "tree", "file-head", "content", "blob", "content-ref", "compare", "history", "grid",
       "compare-tree", "git-refs", "findings", "proposals", "proposal", "prs", "pr-job", "docs", "doc", "features", "audit", "activity",
-      "me-github-credential", "me-mcp-tokens", "admin", "draft",
+      "served", "me-github-credential", "me-mcp-tokens", "admin", "draft",
     ]);
     for (const [name, key] of all()) {
       expect(key[0], name).toBe(name);
@@ -146,6 +147,29 @@ describe("key factories", () => {
     expect(swimlaneKeys.drift("sit1", null)).toEqual(["swimlane", "sit1", "drift", null]);
     expect(swimlaneKeys.drift("sit1", null)).not.toEqual(swimlaneKeys.drift("sit1", "git_ahead"));
     expect(client.getQueryCache().findAll({ queryKey: [...swimlaneKeys.detail("sit1")] })).toHaveLength(2);
+  });
+
+  it("keys the restart offers under the swimlane's own key, so findings_changed, pickup_changed and swimlane_changed refetch them while a dialog shows one", () => {
+    const client = new QueryClient();
+    client.setQueryData(swimlaneKeys.configServerRestart("sit1"), 1);
+    client.setQueryData(swimlaneKeys.restartOffer("sit1", "core/a.yml"), 2);
+    client.setQueryData(swimlaneKeys.restartOffer("sit1", "core/b.yml"), 3);
+    client.setQueryData(swimlaneKeys.restartOffer("sit2", "core/a.yml"), 4);
+    expect(swimlaneKeys.configServerRestart("sit1")).toEqual(["swimlane", "sit1", "config-server-restart"]);
+    expect(swimlaneKeys.restartOffer("sit1", "core/a.yml")).toEqual(["swimlane", "sit1", "restart-offer", "core/a.yml"]);
+    expect(swimlaneKeys.restartOffer("sit1", "core/a.yml")).not.toEqual(swimlaneKeys.restartOffer("sit1", "core/b.yml"));
+    expect(client.getQueryCache().findAll({ queryKey: [...swimlaneKeys.detail("sit1")] })).toHaveLength(3);
+  });
+
+  it("keys the served text under a root of its own: a swimlane event must not cancel and restart an agent round trip", () => {
+    const client = new QueryClient();
+    client.setQueryData(swimlaneKeys.served("sit1", "tx-core", "sit7", null, "a/b.yml"), 1);
+    client.setQueryData(swimlaneKeys.served("sit1", "tx-core", "sit7", "beta", "a/b.yml"), 2);
+    expect(swimlaneKeys.served("sit1", "tx-core", "sit7", null, "a/b.yml")).toEqual(["served", "sit1", "tx-core", "sit7", null, "a/b.yml"]);
+    expect(swimlaneKeys.served("sit1", "tx-core", "sit7", null, "a/b.yml")).not.toEqual(swimlaneKeys.served("sit1", "tx-core", "sit7", "beta", "a/b.yml"));
+    expect(client.getQueryCache().findAll({ queryKey: [...swimlaneKeys.detail("sit1")] })).toHaveLength(0);
+    expect(client.getQueryCache().findAll({ queryKey: ["served", "sit1"] })).toHaveLength(2);
+    expect(isImmutableKey(swimlaneKeys.served("sit1", "tx-core", "sit7", null, "a/b.yml"))).toBe(false);
   });
 
   it("keys the docs of one file under docs, so doc_indexed (which invalidates every docs list) reaches them", () => {

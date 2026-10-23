@@ -4,6 +4,7 @@ import { DRIFT_VARIANT } from "@/components/app/drift";
 import { SafeText } from "@/components/app/SafeText";
 import { StatusBadge, STATUS_VARIANTS } from "@/components/app/StatusBadge";
 import { TierChip } from "@/components/app/TierBadge";
+import { PickupCounts } from "@/components/pickup";
 import { Button } from "@/components/ui/button";
 import { TenantSet } from "@/features/shell/Tenants";
 import { Check, LoaderCircle, ShieldCheck } from "@/icons";
@@ -13,7 +14,6 @@ import { AppLink } from "@/routes/AppLink";
 import { agentView, offlineSince } from "../agent";
 import { baselineView } from "../baseline";
 import { driftChips, versionLabel } from "../format";
-import { pickupSummary } from "../pickup";
 
 // The cells of the swimlane list, one component each, so that the live tests and the other screens that show a swimlane's
 // drift or agent say it with the same words. A cell shows what the contract carries and nothing it does not: a swimlane
@@ -96,13 +96,7 @@ export function DriftCell({ lane }: { lane: SwimlaneSummary }) {
 }
 
 export function PickupCell({ lane }: { lane: SwimlaneSummary }) {
-  const summary = pickupSummary(lane.pickup_counts);
-  if (summary.variant === null) return <span title={summary.title} className="tabular-nums text-muted-foreground">0</span>;
-  return (
-    <span title={summary.title} className="inline-flex">
-      <StatusBadge variant={summary.variant} count={summary.actionable} compact />
-    </span>
-  );
+  return <PickupCounts counts={lane.pickup_counts} density="compact" whenNone="zero" />;
 }
 
 export function FindingsCell({ lane }: { lane: SwimlaneSummary }) {
@@ -124,7 +118,8 @@ export function BaselineCell({ lane, isAdmin }: { lane: SwimlaneSummary; isAdmin
   const open = view.kind === "in_progress";
   return (
     <span className="flex min-w-0 items-center gap-1.5">
-      <StatusBadge variant="locked" label={open ? "Adoption in progress" : "Adoption needed"} />
+      {/* The badge may shrink (its label ends in an ellipsis) so that the button after it keeps its place: the cell cuts what runs past it. */}
+      <StatusBadge variant="locked" label={open ? "Adoption in progress" : "Adoption needed"} className="min-w-0 shrink" />
       {isAdmin ? (
         <Button asChild size="sm" variant="secondary" className="h-[22px]">
           <AppLink route="adopt" params={{ id: lane.id }}>

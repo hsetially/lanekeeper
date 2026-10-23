@@ -92,10 +92,18 @@ test.describe("the editor under the production policy", () => {
     await page.keyboard.press("Control+Home");
 
     await page.evaluate(`${EDITOR}.setScrollTop(500)`);
-    await expect.poll(async () => (await fidelity(page)).matched).toBeGreaterThan(15);
+    // Monaco draws a scroll on the next animation frame, not when setScrollTop returns: sampled in the same task, none of 29 lines is in
+    // place and the worst is 500 px, the scroll itself (measured), and this spec failed that way about one run in ten. So the check waits
+    // for the frame it is about (at most 5 s), and the assertion is unchanged: lines that never get their place still fail it.
+    let drawn = await fidelity(page);
+    for (let i = 0; i < 50 && !(drawn.matched > 15 && drawn.within2px === drawn.matched); i++) {
+      await sleep(100);
+      drawn = await fidelity(page);
+    }
     const scrolled = await measure(page);
     expect(scrolled.viewLineDistinctTops, "lines inserted after a scroll have their top").toBe(scrolled.viewLines);
-    expectLinesAtRightTop(await fidelity(page), "after scroll");
+    expectLinesAtRightTop(drawn, "after scroll");
+    expectLinesAtRightTop(await fidelity(page), "after scroll, again");
     await page.evaluate(`${EDITOR}.setScrollTop(0)`);
 
     await page.keyboard.press("Control+F");

@@ -3,6 +3,7 @@ import type { ApiProblem } from "@/api/problem";
 import { Banner } from "@/components/app/Banner";
 import { EmptyState } from "@/components/app/EmptyState";
 import { ErrorState } from "@/components/app/ErrorState";
+import { RequestId } from "@/components/app/RequestId";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
@@ -44,13 +45,13 @@ type Props<T> = {
 const WIDTHS = ["w-3/5", "w-4/5", "w-2/5", "w-full", "w-1/2", "w-3/4"] as const;
 
 /** The default skeleton: seven rows at the table row height, so nothing moves when the data arrives. */
-export function ListSkeleton({ rows = 7, columns = 3 }: { rows?: number; columns?: number }) {
+export function ListSkeleton({ rows = 7, columns = 3, blockClassName }: { rows?: number; columns?: number; /** Another look for the blocks: `bg-accent` on a surface that is the colour of `muted` (a card, in the dark theme). */ blockClassName?: string }) {
   return (
     <div data-slot="list-skeleton" className="flex flex-col">
       {Array.from({ length: rows }, (_, row) => (
         <div key={row} className="flex h-8 items-center gap-4 px-4">
           {Array.from({ length: columns }, (_, column) => (
-            <Skeleton key={column} className={cn("h-3", WIDTHS[(row + column) % WIDTHS.length])} />
+            <Skeleton key={column} className={cn("h-3", WIDTHS[(row + column) % WIDTHS.length], blockClassName)} />
           ))}
         </div>
       ))}
@@ -116,6 +117,13 @@ function StaleBanner({ stale, error, onRefresh, now }: { stale: NonNullable<Quer
       }
     >
       {sentences.join(" ")}
+      {/* A refresh that failed with an answer has a request ID, as the first load's error panel does: it is what a report names. */}
+      {causes.includes("refetch-failed") && error?.requestId !== undefined ? (
+        <>
+          {" "}
+          <RequestId id={error.requestId} />
+        </>
+      ) : null}
     </Banner>
   );
 }

@@ -4,12 +4,15 @@
 //
 // What is masked, and why (each a row of design/DEVIATIONS.md, named here by its first column):
 //  - the header: "Swimlane detail: header" (no file count, no "/" hint on Search in), "Swimlanes: Branch column" and "Swimlane
-//    switcher and swimlane headers" (the pickup chip counts services that need a notify or restart: D85; one badge colour is the most
-//    urgent state's), "Copy affordances the design does not draw" (a Copy beside the swimlane name).
+//    switcher and swimlane headers" (one badge, the colour of the most urgent state), "Swimlane detail: header, pickup chips" (one chip for
+//    each pickup state with its own count, where the design has one chip: D85), "Copy affordances the design does not draw" (a Copy beside
+//    the swimlane name).
 //  - the breadcrumb's third crumb names the tab in the app; the design stops at the swimlane (candidate row).
-//  - the tree: "Swimlane detail: file tree" (lazy folders: the app's tree is closed until a folder is opened, no drift counts).
-//  - the tab bar's counts and the panel under it: "Swimlane detail: Services tab", "Swimlane detail: Drift tab", "Swimlane detail:
-//    Findings tab", "Swimlane detail: Activity and Audit tabs".
+//  - the tree: "Swimlane detail: file tree" (lazy folders: the app's tree is closed until a folder is opened, no drift counts, and the
+//    pickup marks on files and folders that the design does not draw).
+//  - the tab bar's counts and the panel under it: "Swimlane detail: Services tab" (the pickup chip, the Notify services button, the
+//    auto-notify line and the config-server banner), "Swimlane detail: Drift tab", "Swimlane detail: Findings tab", "Swimlane detail:
+//    Activity and Audit tabs".
 // What stays compared: the sidebar, the top bar (but for the switcher's badge and the third crumb), the tree's filter strip and the
 // frame around the two panes.
 import { tier1, type FrameCase } from "../access/lib/matrix";
@@ -19,7 +22,7 @@ const BOARD = "Lanekeeper Swimlane Detail.dc.html";
 
 const BADGE: Mask = { x: 1004, y: 8, width: 74, height: 28, why: "Swimlane switcher and swimlane headers (one badge, the colour of the most urgent state)" };
 const CRUMB: Mask = { x: 330, y: 8, width: 140, height: 28, why: "candidate row: the breadcrumb's third crumb names the tab" };
-const HEADER: Mask = { x: 245, y: 56, width: 745, height: 62, why: "Swimlane detail: header; D85 pickup chip; Copy affordances the design does not draw" };
+const HEADER: Mask = { x: 245, y: 56, width: 745, height: 62, why: "Swimlane detail: header; Swimlane detail: header, pickup chips; Copy affordances the design does not draw" };
 const ACTIONS: Mask = { x: 980, y: 56, width: 440, height: 38, why: "Swimlane detail: header (no / hint on Search in)" };
 const TABS: Mask = { x: 691, y: 126, width: 749, height: 34, why: "Swimlane detail: Drift / Findings tabs (counts: the contract has no Untracked state; the Activity dot is a live feed)" };
 const TREE: Mask = { x: 224, y: 203, width: 462, height: 697, why: "Swimlane detail: file tree" };

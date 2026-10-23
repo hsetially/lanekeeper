@@ -6,6 +6,7 @@ import { DRIFT_VARIANT } from "@/components/app/drift";
 import { SafeText } from "@/components/app/SafeText";
 import { StatusBadge } from "@/components/app/StatusBadge";
 import { TierChip } from "@/components/app/TierBadge";
+import { PickupCounts } from "@/components/pickup";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { TenantSet } from "@/features/shell/Tenants";
@@ -74,7 +75,7 @@ export function Header({ id, lane, now }: { id: string; lane: SwimlaneDetail | u
             {chips.map((chip) => (
               <StatusBadge key={chip.state} variant={DRIFT_VARIANT[chip.state]} count={chip.count} />
             ))}
-            {pickup.variant !== null ? <StatusBadge variant={pickup.variant} count={pickup.actionable} /> : null}
+            <PickupCounts counts={lane?.pickup_counts} />
           </div>
         ) : null}
       </div>

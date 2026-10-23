@@ -16,12 +16,15 @@ import { scenarios as compare } from "./compare/index.ts";
 import { scenarios as file } from "./file/index.ts";
 import { scenarios as findings } from "./findings/index.ts";
 import { scenarios as masking } from "./masking/index.ts";
+import { scenarios as notify } from "./notify/index.ts";
+import { scenarios as pickup } from "./pickup/index.ts";
 import { scenarios as prs } from "./prs/index.ts";
 import { scenarios as search } from "./search/index.ts";
+import { scenarios as served } from "./served/index.ts";
 import { scenarios as shell } from "./shell/index.ts";
 import { scenarios as swimlanes } from "./swimlanes/index.ts";
 
-/** The slice folders, in the order of the T4 plan, then the T5 slices (attribution, prs, masking, and the four admin sections). */
+/** The slice folders, in the order of the T4 plan, then the T5 slices (attribution, prs, masking, and the four admin sections), then T6 (pickup, notify, served). */
 export const DESIGN_SLICES = {
   shell,
   access,
@@ -37,6 +40,9 @@ export const DESIGN_SLICES = {
   prs,
   masking,
   "admin-t5": adminT5,
+  pickup,
+  notify,
+  served,
 } as const;
 
 /** Every design scenario by id. An id is `design-<slice>-<name>`, so two slices can never collide; a collision still fails here. */

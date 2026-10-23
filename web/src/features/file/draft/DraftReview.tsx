@@ -9,9 +9,9 @@ import { GatedButton } from "@/components/app/GatedButton";
 import { HashChip, PathChip } from "@/components/app/chips";
 import { ProblemDialog } from "@/components/app/ProblemDialog";
 import { SafeText } from "@/components/app/SafeText";
-import { StatusBadge } from "@/components/app/StatusBadge";
 import { useWriteGate } from "@/components/app/write-gate";
 import { SeverityBadge } from "@/components/attribution";
+import { PickupChip } from "@/components/pickup";
 import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { swimlaneQuery } from "@/features/swimlanes/queries";
@@ -24,7 +24,7 @@ import type { WriteOutcome } from "../edit/outcome";
 import { LockedDialog, SentDialog } from "../edit/OutcomeDialogs";
 import { splitPath, unknownFileCount } from "../model";
 import { ApplyDraftDialog } from "./ApplyDraftDialog";
-import { cannotApply, closedBy, MAX_EFFECTS, pickupVariant } from "./model";
+import { cannotApply, closedBy, MAX_EFFECTS } from "./model";
 
 // A draft, ready to read before it is applied (Draft, review). Everything here is the server's: the diff and the settings that
 // change are the engine's, the severity comes from the severity rules, the services and when each would pick the change up are
@@ -128,7 +128,7 @@ export function DraftReview({ draft, onRefresh }: DraftReviewProps) {
                   <span className="font-mono text-xs">
                     <SafeText text={`${service.namespace}/${service.name}`} />
                   </span>
-                  <StatusBadge variant={pickupVariant(state)} />
+                  <PickupChip state={state} />
                 </li>
               ))}
               {effects.length > MAX_EFFECTS ? <li className="text-xs text-muted-foreground">and {effects.length - MAX_EFFECTS} more services.</li> : null}

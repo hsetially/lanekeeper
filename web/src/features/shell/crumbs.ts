@@ -15,6 +15,7 @@ const TAB: Record<string, string> = {
   "swimlane-audit": "Audit",
   activity: "Activity",
   "swimlane-pull-requests": "Pull requests",
+  "swimlane-served": "As served",
   adopt: "Adopt this swimlane",
 };
 
@@ -85,6 +86,7 @@ export function crumbsFor(routeId: string | undefined, params: Record<string, st
     case "swimlane-audit":
     case "activity":
     case "swimlane-pull-requests":
+    case "swimlane-served":
     case "adopt":
       return [...swimlaneCrumbs(id, true), current(TAB[routeId] ?? route.title)];
     case "search":

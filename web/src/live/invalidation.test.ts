@@ -93,11 +93,14 @@ describe("plan: one row for each kind of event the contract has", () => {
     ]);
   });
 
-  it.each(["pickup_changed", "pending_restart_changed"] as const)("%s: the pickup of the swimlane, the swimlane and the list", (kind) => {
+  it.each(["pickup_changed", "pending_restart_changed"] as const)("%s: the pickup of the swimlane, the swimlane, the list, and the pickup mark of every file on screen", (kind) => {
+    // The event names services and no paths, so the marks in the tree and in the head of a file (`FileEntry.pickup_state`) may all have changed.
     expect(keys(SAMPLE[kind])).toEqual([
       { kind: "key", key: swimlaneKeys.pickup("sit1") },
       { kind: "key", key: swimlaneKeys.detail("sit1") },
       { kind: "key", key: swimlaneKeys.all() },
+      { kind: "key", key: fileKeys.trees("sit1") },
+      { kind: "key", key: fileKeys.heads("sit1") },
     ]);
   });
 

@@ -7,6 +7,13 @@ import type { Language } from "../model";
 
 /** The dark theme of the editor: `vs-dark` with a comment colour that reads. */
 const DARK_THEME = "lk-dark";
+/**
+ * The light theme of the editor: `vs` with the colour of the line that sticks to the top of the editor under the pointer changed. The
+ * line is drawn in the colours of its tokens (the teal of a key, the green of a comment), which are 4.5:1 or a little more on the editor's
+ * white, and `vs` paints the hovered line #F0F0F0, where the teal is 4.18:1 (axe `color-contrast`, found when the pointer happened to
+ * rest on it). The hover stays the editor's own white, so the line reads in every state; nothing else of `vs` changes.
+ */
+const LIGHT_THEME = "lk-light";
 
 // Edit mode's surface: Monaco, which is only ever loaded through src/editor (a lazy chunk, option (e) of the Monaco decision),
 // made into an editor on a box the page sizes. It reports the text and nothing else leaves it. If the chunk cannot be fetched
@@ -80,7 +87,8 @@ function Host({ monaco, label, initialText, language, markers, onTextChange }: O
     // Monaco's own dark theme draws comments in #608B4E on #1E1E1E: 4.2:1, under the 4.5:1 that text needs (axe `color-contrast`). The
     // green of VS Code's Dark+ is 5.0:1. Everything else stays as `vs-dark` has it.
     monaco.editor.defineTheme(DARK_THEME, { base: "vs-dark", inherit: true, rules: [{ token: "comment", foreground: "6A9955" }], colors: {} });
-    monaco.editor.setTheme(dark ? DARK_THEME : "vs");
+    monaco.editor.defineTheme(LIGHT_THEME, { base: "vs", inherit: true, rules: [], colors: { "editorStickyScrollHover.background": "#FFFFFE" } });
+    monaco.editor.setTheme(dark ? DARK_THEME : LIGHT_THEME);
   }, [monaco, dark, made]);
 
   useEffect(() => {

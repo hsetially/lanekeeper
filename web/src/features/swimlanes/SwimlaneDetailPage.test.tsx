@@ -89,6 +89,10 @@ describe("the head", () => {
     open("/swimlanes/sitb/drift");
     await screen.findByText("Baseline confirmed");
     expect(screen.getByText("Needs config-server restart", { selector: "span" })).toBeInTheDocument();
+    expect(screen.getByText("Needs notify or restart", { selector: "span" })).toBeInTheDocument();
+    // One chip for each state, with its own count: one service needs the config-server restarted and two need a notify, not three.
+    const counts = [...document.querySelectorAll("[data-slot='pickup-counts'] [data-slot='status-badge']")].map((badge) => badge.textContent);
+    expect(counts).toEqual(["1Needs config-server restart", "2Needs notify or restart"]);
     expect(screen.queryByText(/pending restart/i)).toBeNull();
   });
 

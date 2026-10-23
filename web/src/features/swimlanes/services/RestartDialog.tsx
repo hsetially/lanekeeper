@@ -8,6 +8,7 @@ import { ProblemDialog } from "@/components/app/ProblemDialog";
 import { SafeText } from "@/components/app/SafeText";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { useServiceWriteGate } from "@/features/notify/gates";
 import { User } from "@/icons";
 import { AppLink } from "@/routes/AppLink";
 import { swimlaneMutations } from "../mutations";
@@ -39,6 +40,10 @@ export function RestartDialog({ lane, service, onClose, onDone }: Props) {
   const isAdmin = roleAtLeast(session.status === "ready" ? session.role : null, Role.admin);
   const mutation = useMutation(swimlaneMutations.restart(client));
   const { reset } = mutation;
+  // The same gate as the button that opened the dialog, read again here: the dialog can outlive the reason the button was on. If live
+  // updates pause, or the agent goes away, or the person's role changes while it is open, the confirm button follows (the server
+  // refuses all of it anyway; this only keeps a press from being sent on a screen that can no longer say what the lane looks like).
+  const gate = useServiceWriteGate(lane.agent);
   const open = service !== null;
   // A dialog that is opened again starts clean: no error and no answer from the time before.
   useEffect(() => {
@@ -118,6 +123,7 @@ export function RestartDialog({ lane, service, onClose, onDone }: Props) {
       actionLabel={`Restart ${name}`}
       workingLabel="Restarting…"
       working={mutation.isPending}
+      canConfirm={gate.allowed}
       error={failure}
       onConfirm={run}
       size="md"
@@ -130,8 +136,15 @@ export function RestartDialog({ lane, service, onClose, onDone }: Props) {
           </p>
         ) : null}
         <Alert variant="warning" icon={<User aria-hidden="true" />}>
-          Other people testing in <SafeText text={lane.display_name} className="font-mono" /> will be interrupted.
+          <span>
+            Other people testing in <SafeText text={lane.display_name} className="font-mono" /> will be interrupted.
+          </span>
         </Alert>
+        {gate.allowed ? null : (
+          <Alert variant="warning">
+            <SafeText text={gate.reason ?? "Not available."} />
+          </Alert>
+        )}
       </div>
     </ConsequenceDialog>
   );

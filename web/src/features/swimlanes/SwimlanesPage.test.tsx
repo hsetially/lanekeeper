@@ -90,6 +90,19 @@ describe("the screen", () => {
     expect(widthOf("Baseline")).toBeGreaterThanOrEqual(208);
   });
 
+  it("lets the Adoption badge give way with an ellipsis while the Adopt button keeps its place, instead of the button being cut off by the cell (labels 40% longer at 2560 wide: found by the T6 layout run)", async () => {
+    open();
+    const presitc = await rowOf("presitc");
+    const badge = within(presitc).getByText("Adoption needed").closest<HTMLElement>("[data-slot='status-badge']");
+    if (badge === null) throw new Error("no badge");
+    // A badge does not shrink unless it says so (`shrink-0` in its base), and the cell cuts what runs past it: the button, after the badge,
+    // went. The badge's own label is `truncate`, so once the badge may shrink the words end in an ellipsis and the button stays.
+    expect(badge.className).toMatch(/(^|\s)shrink(\s|$)/);
+    expect(badge.className).not.toMatch(/(^|\s)shrink-0(\s|$)/);
+    expect(badge.className).toMatch(/(^|\s)min-w-0(\s|$)/);
+    expect(within(presitc).getByRole("link", { name: "Adopt" })).toBeInTheDocument();
+  });
+
   it("lets the Agent cell end in an ellipsis in the room it has, instead of being cut off by the cell (labels 40% longer, at 1024 and 1280 wide)", async () => {
     open();
     const sitb = await rowOf("sitb");
@@ -503,5 +516,16 @@ describe("permission", () => {
     const api: Api = worldApi({ ...world, role: "viewer" });
     renderApp("/swimlanes", api);
     expect(await screen.findByRole("link", { name: "presitc" })).toHaveAttribute("href", "/swimlanes/presitc");
+  });
+});
+
+describe("the Pickup column", () => {
+  it("counts each state under its own name, never the total of two states under the name of one", async () => {
+    world.lanes = world.lanes.map((l) => (l.id === "sitb" ? { ...l, pickup_counts: [["needs_notify_or_restart", 2], ["needs_config_server_restart", 1]] } : l));
+    open();
+    const sitb = await rowOf("sitb");
+    expect(within(sitb).getByRole("img", { name: "1 Needs config-server restart" })).toBeInTheDocument();
+    expect(within(sitb).getByRole("img", { name: "2 Needs notify or restart" })).toBeInTheDocument();
+    expect(within(sitb).queryByRole("img", { name: /^3 / })).toBeNull();
   });
 });

@@ -46,6 +46,7 @@ const LEGEND = [
   ["git", "text-status-git-fg"],
   ["unknown", "text-status-unknown-fg"],
   ["needs-notify-or-restart", "text-status-restart-fg"],
+  ["needs-config-server-restart", "text-status-restart-fg"],
 ] as const;
 
 type Filters = { q: string; tier: string | null; drift: boolean };
@@ -191,7 +192,7 @@ function Screen({ search, query, truncated }: { search: SearchOf<"swimlanes">; q
       base: { width: "88px", minWidth: 88, cell: (lane) => <VersionCell lane={lane} /> },
       agent: { width: "136px", minWidth: 136, cell: (lane) => <AgentCell lane={lane} now={now} /> },
       drift: { width: "minmax(0,1fr)", minWidth: 120, sortable: true, cell: (lane) => <DriftCell lane={lane} /> },
-      pickup: { width: "48px", minWidth: 48, align: "right", cell: (lane) => <PickupCell lane={lane} /> },
+      pickup: { width: "88px", minWidth: 88, align: "right", cell: (lane) => <PickupCell lane={lane} /> },
       findings: { width: "52px", minWidth: 52, align: "right", sortable: true, cell: (lane) => <FindingsCell lane={lane} /> },
       baseline: { width: "208px", minWidth: 208, cell: (lane) => <BaselineCell lane={lane} isAdmin={isAdmin} /> },
       last: { width: "76px", minWidth: 76, sortable: true, cell: (lane) => <LastScanCell lane={lane} now={now} changed={changed.has(lane.id)} /> },

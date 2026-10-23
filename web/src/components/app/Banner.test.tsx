@@ -52,6 +52,22 @@ describe("Banner", () => {
     expect(screen.getByRole("status").querySelector(":scope > div")?.contains(row)).toBe(true);
   });
 
+  it("lets the action drop to a line of its own, to the right, when the words would be squeezed to nothing beside it (a pane of 360 px with a long button, labels 40% longer: found by the layout run)", () => {
+    render(
+      <Banner variant="warning" title="Config-server restart needed" action={<button type="button">Restart config-server</button>}>
+        2 services report needing a config-server restart.
+      </Banner>,
+    );
+    const row = screen.getByRole("button", { name: "Restart config-server" }).closest<HTMLElement>("[data-slot='banner-row']");
+    if (row === null) throw new Error("no banner row");
+    // The row wraps, and the words have a width they keep (the smaller of a line's worth and the whole row), so the button is what moves.
+    expect(row).toHaveClass("flex-wrap");
+    const words = row.firstElementChild as HTMLElement;
+    expect(words.className).toMatch(/min-w-\[min\(100%,14rem\)\]/);
+    const action = screen.getByRole("button", { name: "Restart config-server" }).parentElement as HTMLElement;
+    expect(action).toHaveClass("ml-auto");
+  });
+
   it("can be dismissed only when it is a success", () => {
     const { rerender } = render(<Banner variant="success" title="Saved" onDismiss={() => undefined} />);
     expect(screen.getByRole("button", { name: "Dismiss" })).toBeInTheDocument();

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { designScenarios } from "../index";
 import type { Comparison, DiffHunk } from "@/api/generated/model";
 import { planMasks } from "@/components/masking/plan";
 import { coreComparison, coreFile, coreGitText } from "./data";
@@ -80,5 +81,19 @@ describe("the masks of the core file in the scenarios", () => {
 
   it("names no mask when the file is not masked", () => {
     expect(coreFile({ masked: false }).content.masks).toBeUndefined();
+  });
+});
+
+describe("the swimlane that the file view leads back to", () => {
+  // Deleting a file takes the person back to the swimlane, whose Services tab reads the findings once for its config-server banner
+  // (T6): a scenario of the file view has to answer that read, or the journey ends on a request nobody answered.
+  it("is answered in every scenario of the file view: the findings the Services tab reads", () => {
+    // (The draft page has scenarios of its own, and no way to delete a file.)
+    const fileScenarios = Object.values(designScenarios).filter((s) => s.id.startsWith("design-file-") && !s.id.startsWith("design-file-draft"));
+    expect(fileScenarios.length).toBeGreaterThan(10);
+    for (const scenario of fileScenarios) {
+      const findings = scenario.responses.find((r) => r.method === "GET" && r.path === "/api/v1/findings");
+      expect(findings, `${scenario.id} answers GET /api/v1/findings`).toBeDefined();
+    }
   });
 });

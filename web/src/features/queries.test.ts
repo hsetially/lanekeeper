@@ -10,6 +10,7 @@ import { docListQuery } from "./docs/queries";
 import { blobQuery, fileContentQuery, fileHeadQuery, fileHistoryQuery, fileRefQuery, fileTreeQuery } from "./file/queries";
 import { findingListQuery } from "./findings/queries";
 import { prJobQuery, prListQuery } from "./prs/queries";
+import { SERVED_GC_MS, servedFileQuery } from "./served/queries";
 import { featureStatusQuery } from "./status/queries";
 import { swimlaneListQuery, swimlanePickupQuery, swimlaneQuery } from "./swimlanes/queries";
 import { auditListQuery } from "./audit/queries";
@@ -76,6 +77,7 @@ const CASES: Case[] = [
   { name: "docListQuery", options: () => docListQuery({ path_prefix: "guides/" }), key: docKeys.list({ path_prefix: "guides/" }), path: "/api/v1/docs", query: { path_prefix: "guides/" }, staleTime: EVENT_FED },
   { name: "featureStatusQuery", options: () => featureStatusQuery({ flag: "auto-notify" }), key: docKeys.features({ flag: "auto-notify" }), path: "/api/v1/features/status", query: { flag: "auto-notify" }, staleTime: EVENT_FED },
   { name: "auditListQuery (no event names it: polled)", options: () => auditListQuery({ swimlane: "sit1" }), key: auditKeys.list({ swimlane: "sit1" }), path: "/api/v1/admin/audit", query: { swimlane: "sit1" }, staleTime: POLLED_MS },
+  { name: "servedFileQuery (a channel)", options: () => servedFileQuery("sit1", { file: "core/a.yml", application: "tx-core", tenant: "sit7", channel: "beta" }), key: swimlaneKeys.served("sit1", "tx-core", "sit7", "beta", "core/a.yml"), path: "/api/v1/swimlanes/sit1/served", query: { application: "tx-core", tenant: "sit7", channel: "beta", file: "core/a.yml" }, staleTime: POLLED_MS, gcTime: SERVED_GC_MS },
   // admin
   { name: "admin users", options: () => adminQueries.users({ q: "ada" }), key: adminKeys.list("users", { q: "ada" }), path: "/api/v1/admin/users", query: { q: "ada" }, staleTime: POLLED_MS },
   { name: "admin access requests (access_request_created)", options: () => adminQueries.accessRequests({ status: "pending" }), key: adminKeys.list("access-requests", { status: "pending" }), path: "/api/v1/admin/access-requests", query: { status: "pending" }, staleTime: EVENT_FED },

@@ -373,6 +373,14 @@ describe("the header", () => {
     await waitFor(() => expect(app.location()).toBe("/swimlanes/sitc/pull-requests"));
   });
 
+  it("keeps the person on the As served page of a swimlane when another swimlane is chosen, and asks for nothing the old one had selected", async () => {
+    const app = renderApp("/swimlanes/sitb/served?application=payments&tenant=sit7&file=core%2Fa.yml", server("viewer"));
+    const button = await screen.findByRole("button", { name: /Swimlane: sitb/ });
+    await userEvent.click(button);
+    await userEvent.click(await row("sitc"));
+    await waitFor(() => expect(app.location()).toBe("/swimlanes/sitc/served"));
+  });
+
   it("puts focus in the filter field once the list has loaded, so that typing right after opening filters it", async () => {
     renderApp("/compare", server("viewer"));
     await userEvent.click(await screen.findByRole("button", { name: /Choose a swimlane/ }));

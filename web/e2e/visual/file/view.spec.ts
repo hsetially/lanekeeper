@@ -5,6 +5,9 @@
 //    does not draw" (a link to the file as well as the path and the hash) and "File header and History" (no "CRLF - Git has LF"; who
 //    changed the file, and its pull request badge beside the drift state, which the design's header does not draw).
 //  - the Edit button: "File: Edit" (off while the server masks a value in the file; the design edits it).
+//  - the As served link at the end of the actions: "File: As served link" (a button the design has no place for). The pickup chip at the end
+//    of the title row is not masked: it is a few pixels of a chip the design does not draw, and the rows of its deviation say so
+//    ("File: header, pickup").
 //  - from the tab row down, where the page is the file's body: "File viewer and diff (read-only)" (CodeView and DiffView, a gutter of
 //    their own, not Monaco), "File: Diff and large files" (no outline, no minimap, no truncation notice), "File: view" (no Rendered,
 //    or As served) and the "History" and "Docs for this file" panels' own deviations. What the design draws there is compared
@@ -22,15 +25,16 @@ const file = (path: string, query = ""): string => `/swimlanes/sitb/files?path=$
 
 const FACTS: Mask = { x: 245, y: 90, width: 1195, height: 26, why: "Copy affordances the design does not draw; File header and History (no \"CRLF - Git has LF\", and who changed the file at the end of the row)" };
 const EDIT: Mask = { x: 248, y: 125, width: 68, height: 30, why: "File: Edit (off while a value is masked)" };
+const AS_SERVED: Mask = { x: 852, y: 125, width: 116, height: 30, why: "File: As served link (a button the design has no place for; design/DEVIATIONS.md: \"File: As served link\")" };
 const BODY: Mask = { x: 224, y: 160, width: 1216, height: 740, why: "File viewer and diff (read-only); File: Diff and large files; File: view; the panels" };
 const CHROME_ONLY: Mask = { x: 224, y: 44, width: 1216, height: 856, why: "the page under the top bar: a banner above the title moves it (the banner's own layout is compared on the frame by a person); File: Diff and large files; File: view" };
-const LAYOUT = [FACTS, EDIT, BODY];
+const LAYOUT = [FACTS, EDIT, AS_SERVED, BODY];
 // Where the actions sit depends on whether the facts row and the actions fit on one line: the design's row is a few pixels wider than the
 // app's, so for a file whose facts are long the design wraps the actions under it and the app keeps them beside the title.
 const ACTIONS_BESIDE: Mask = { x: 960, y: 56, width: 470, height: 34, why: "File header: the actions wrap under the facts at a width that differs by a few pixels from the design's" };
 const TITLE_ONLY: Mask = { x: 224, y: 88, width: 1216, height: 812, why: "File header and tab row: the actions wrap under the facts (see ACTIONS_BESIDE)" };
 
-const EDITING_MASKS: Mask[] = [FACTS, EDIT, { x: 224, y: 160, width: 1216, height: 740, why: "File: edit status bar (no validation line, no error count, no cursor position); the editor is Monaco, the design's is a drawing of it" }];
+const EDITING_MASKS: Mask[] = [FACTS, EDIT, AS_SERVED, { x: 224, y: 160, width: 1216, height: 740, why: "File: edit status bar (no validation line, no error count, no cursor position); the editor is Monaco, the design's is a drawing of it" }];
 
 const cases: FrameCase[] = [
   {

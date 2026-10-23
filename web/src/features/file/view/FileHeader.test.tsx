@@ -130,3 +130,24 @@ describe("FileHeader", () => {
     expect(screen.getByText("<U+202E>")).toBeInTheDocument();
   });
 });
+
+describe("FileHeader, the pickup chip", () => {
+  it("is at the end of the title row, after the badges the design draws, and not in the row of the facts, which has no room for it", () => {
+    // The facts row holds the path, the facts, the hash, the link and who changed the file, and at 1440 wide a pickup chip in it pushed
+    // "Changed by" onto a row of its own for a person whose name is "Lanekeeper user aaaaaaaa" (found by tier-1 File View 1d). In the
+    // title row it comes after the drift state, the note and the Editing badge, so none of those moves (tier-1 File View 1i).
+    render(<FileHeader {...base} drift="nfs_ahead" note="Line endings only" editing pickup={<span data-testid="pickup">Needs notify or restart</span>} />);
+    const chip = screen.getByTestId("pickup");
+    const heading = screen.getByRole("heading", { level: 1 });
+    expect(chip.parentElement).toBe(heading.parentElement);
+    expect(chip.parentElement).not.toBe(screen.getByText("CRLF").parentElement);
+    const row = [...(chip.parentElement?.children ?? [])];
+    expect(row.at(-1)).toBe(chip);
+    expect(row.indexOf(chip)).toBeGreaterThan(row.indexOf(screen.getByText("Editing").closest("[data-slot='badge']") as Element));
+  });
+
+  it("is nowhere when the screen gives none", () => {
+    render(<FileHeader {...base} />);
+    expect(screen.queryByTestId("pickup")).toBeNull();
+  });
+});

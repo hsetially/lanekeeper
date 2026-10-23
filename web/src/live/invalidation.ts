@@ -66,7 +66,9 @@ export function plan(event: DomainEvent): Plan {
       return some([key(findingKeys.all()), key(swimlaneKeys.detail(event.swimlane)), key(swimlaneKeys.all())]);
     case "pickup_changed":
     case "pending_restart_changed":
-      return some([key(swimlaneKeys.pickup(event.swimlane)), key(swimlaneKeys.detail(event.swimlane)), key(swimlaneKeys.all())]);
+      // The event names services, not paths, so the pickup mark of every file on screen (the tree rows and the head of a file, both
+      // `FileEntry.pickup_state`) may have changed: only the pages that are on screen are read again (P13).
+      return some([key(swimlaneKeys.pickup(event.swimlane)), key(swimlaneKeys.detail(event.swimlane)), key(swimlaneKeys.all()), key(fileKeys.trees(event.swimlane)), key(fileKeys.heads(event.swimlane))]);
     case "proposal_changed":
       return some([key(proposalKeys.lists()), key(proposalKeys.detail(event.id))], [{ kind: "proposal-changed", id: event.id, status: event.status }]);
     case "agent_status_changed":

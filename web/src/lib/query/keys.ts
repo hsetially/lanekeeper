@@ -62,6 +62,19 @@ export const swimlaneKeys = {
    * sync windows) refreshes it as well.
    */
   drift: (id: string, state: DriftState | null) => ["swimlane", id, "drift", state] as const,
+  /**
+   * The config-server restart that finding C11 asks for (`getConfigServerRestartOffer`, an Operator's read, never stored). Under
+   * the swimlane's own key, so findings_changed, pickup_changed and swimlane_changed refetch it while a dialog shows it.
+   */
+  configServerRestart: (id: string) => ["swimlane", id, "config-server-restart"] as const,
+  /** The services a change to one file calls for restarting (`getRestartOffer`, an Operator's read, never stored). Same place, same events. */
+  restartOffer: (id: string, path: string) => ["swimlane", id, "restart-offer", path] as const,
+  /**
+   * The text the config-server serves for one file, application, tenant and channel (`getServedFile`: an agent round trip).
+   * A root of its own on purpose: under ["swimlane", id], file_observed and drift_changed would cancel and restart the round
+   * trip hundreds of times in a sync window. Nothing names it, so only its own freshness (60 s) and "Ask again" refresh it.
+   */
+  served: (id: string, application: string, tenant: string, channel: string | null, file: string) => ["served", id, application, tenant, channel, file] as const,
 };
 
 /** Files of one swimlane: the tree, the head of a file, its content by hash, a git read, its history, its baseline copy; and drafts. */

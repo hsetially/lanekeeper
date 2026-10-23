@@ -77,7 +77,7 @@ describe("the rows that the visual specs name", () => {
   const known = rows.map((cells) => (cells[0] ?? "").trim());
   const byLength = [...known].sort((a, b) => b.length - a.length);
   const knownSet = new Set(known);
-  const T5_DIRS = ["attribution", "prs", "masking", "admin-t5"];
+  const T5_DIRS = ["attribution", "prs", "masking", "admin-t5", "pickup", "notify", "served"];
   const HELPERS = /\b(?:APP|T5ROW)\("((?:[^"\\]|\\.)*)"/g;
 
   /** The text of a file as the reader sees it: a block of comment lines is one line, and an escaped quote is a quote. */

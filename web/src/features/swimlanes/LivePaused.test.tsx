@@ -1,4 +1,5 @@
 import { act, configure, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { prefs } from "@/lib/prefs";
 import { lane, service } from "@/mocks/design/swimlanes/fixtures";
@@ -40,13 +41,15 @@ const fastTimers = {
   },
 };
 
-async function bringDown(url: string) {
+async function bringDown(url: string, whileUp: () => Promise<void> = () => Promise.resolve()) {
   const app = renderApp(url, worldApi(world), { live: { stream: { fetch: hub.fetch, random: () => 0.5, timers: fastTimers, onlineTarget: new EventTarget() } } });
   await waitFor(() => expect(hub.connections).toHaveLength(1), { timeout: 25_000 });
   await act(async () => {
     hub.last.push(FIRST_FRAME);
     await Promise.resolve();
   });
+  // Whatever the test does while the stream is still up (open a dialog), before it goes down.
+  await whileUp();
   // The hub stays down: every attempt after the open stream breaks is refused, so the screen stays in the paused state.
   for (let i = 0; i < 400; i++) hub.respond(503);
   await act(async () => {
@@ -73,5 +76,24 @@ describe("when live updates are paused", () => {
     expect(button).toHaveAccessibleDescription("Unavailable offline");
     // What was on screen stays: the service and what it waits on.
     expect(within(screen.getByRole("table", { name: "Services" })).getByText("Needs notify or restart")).toBeInTheDocument();
+  }, 60_000);
+
+  // A dialog that was opened while the stream was up is a write that is about to be sent. The button that opened it is off once the
+  // stream is down, but the dialog is already on screen, and its own confirm button must follow the gate as well (found in T6: it
+  // stayed live, and a press sent the restart while the screen could not say whether the lane had changed).
+  it("turns the confirm button of a Restart dialog that was already open off, says why, and a press sends nothing", async () => {
+    const app = await bringDown("/swimlanes/sitb/services", async () => {
+      await userEvent.click(await screen.findByRole("button", { name: "Restart tx-infinity-core" }));
+      await screen.findByRole("alertdialog", { name: "Restart tx-infinity-core in sitb?" });
+    });
+    const dialog = screen.getByRole("alertdialog", { name: "Restart tx-infinity-core in sitb?" });
+    const confirm = within(dialog).getByRole("button", { name: "Restart tx-infinity-core" });
+    expect(confirm).toHaveAttribute("aria-disabled", "true");
+    expect(within(dialog).getByText("Unavailable offline")).toBeInTheDocument();
+    await userEvent.click(confirm);
+    expect(app.calls.filter((c) => c.method === "POST" && c.path.endsWith("/restart"))).toHaveLength(0);
+    // Cancel still closes it: a person is never stuck in a dialog.
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
   }, 60_000);
 });

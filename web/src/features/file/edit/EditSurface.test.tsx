@@ -81,14 +81,15 @@ describe("EditSurface", () => {
     render(<EditSurface {...props} load={() => Promise.resolve(m.api)} />);
     await waitFor(() => expect(m.monaco.editor.setTheme).toHaveBeenCalledWith("lk-dark"));
     act(() => document.documentElement.classList.remove("dark"));
-    await waitFor(() => expect(m.monaco.editor.setTheme).toHaveBeenLastCalledWith("vs"));
+    await waitFor(() => expect(m.monaco.editor.setTheme).toHaveBeenLastCalledWith("lk-light"));
   });
 
   it("draws a comment in the dark theme in a green that reads at 4.5:1 on the editor's background (axe `color-contrast` found Monaco's own #608B4E at 4.2:1)", async () => {
     const m = fakeMonaco();
     render(<EditSurface {...props} load={() => Promise.resolve(m.api)} />);
     await waitFor(() => expect(m.monaco.editor.defineTheme).toHaveBeenCalled());
-    const [name, theme] = m.monaco.editor.defineTheme.mock.calls[0] as unknown as [string, { base: string; inherit: boolean; rules: Array<{ token: string; foreground?: string }> }];
+    const calls = m.monaco.editor.defineTheme.mock.calls as unknown as Array<[string, { base: string; inherit: boolean; rules: Array<{ token: string; foreground?: string }> }]>;
+    const [name, theme] = calls.find(([n]) => n === "lk-dark") ?? ["", { base: "", inherit: false, rules: [] }];
     expect(name).toBe("lk-dark");
     expect(theme.base).toBe("vs-dark");
     expect(theme.inherit).toBe(true);
@@ -103,6 +104,28 @@ describe("EditSurface", () => {
     // vs-dark paints the editor on #1E1E1E.
     const ratio = (luminance(comment) + 0.05) / (luminance("1E1E1E") + 0.05);
     expect(ratio).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("keeps the line that sticks to the top of the editor readable while the pointer is over it, in the light theme (axe `color-contrast` found #008080 on Monaco's #F0F0F0 at 4.18:1)", async () => {
+    const m = fakeMonaco();
+    render(<EditSurface {...props} load={() => Promise.resolve(m.api)} />);
+    await waitFor(() => expect(m.monaco.editor.defineTheme).toHaveBeenCalled());
+    const calls = m.monaco.editor.defineTheme.mock.calls as unknown as Array<[string, { base: string; inherit: boolean; colors: Record<string, string> }]>;
+    const light = calls.find(([n]) => n === "lk-light");
+    expect(light?.[1].base).toBe("vs");
+    expect(light?.[1].inherit).toBe(true);
+    const hover = (light?.[1].colors["editorStickyScrollHover.background"] ?? "").replace("#", "");
+    const luminance = (hex: string): number => {
+      const [r, g, b] = [0, 2, 4].map((i) => {
+        const c = Number.parseInt(hex.slice(i, i + 2), 16) / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * (r ?? 0) + 0.7152 * (g ?? 0) + 0.0722 * (b ?? 0);
+    };
+    expect(hover).toMatch(/^[0-9a-fA-F]{6}$/);
+    // The colours of `vs` that read on the editor's white: the key of a mapping (teal, the token of `zone-118:`) and a comment (green).
+    for (const token of ["008080", "008000"]) expect((luminance("FFFFFF") + 0.05) / (luminance(token) + 0.05), `${token} on the editor's background`).toBeGreaterThanOrEqual(4.5);
+    for (const token of ["008080", "008000"]) expect((luminance(hover) + 0.05) / (luminance(token) + 0.05), `${token} on the hovered sticky line`).toBeGreaterThanOrEqual(4.5);
   });
 
   it("lets go of the editor and the model when it goes", async () => {

@@ -1,4 +1,5 @@
-import { DriftState, type FileClass, type FileEntry } from "@/api/generated/model";
+import { DriftState, type FileClass, type FileEntry, type PickupState } from "@/api/generated/model";
+import { worstPickup } from "@/components/pickup";
 
 // The files of a swimlane as a tree, built from the folders the person has opened. The server lists ONE folder at a time (a
 // keyset page of `FileEntry`), so a folder that has not been opened has no children yet (`lazy`), and the tree only ever holds
@@ -19,6 +20,8 @@ export type DataNode = {
   /** A folder whose entries have not been loaded. */
   readonly lazy: boolean;
   readonly drift: DriftState;
+  /** The most urgent pickup state the hub stated for the files this row stands for (a base file and its tenant files); null when it stated none. */
+  readonly pickup: PickupState | null;
   readonly entry: FileEntry | null;
   /** The tenant files a logical row stands for (empty when it is one file). */
   readonly usesTenantFile: readonly string[];
@@ -42,7 +45,7 @@ const trimSlash = (path: string): string => path.replace(/\/+$/, "");
 const baseName = (path: string): string => path.slice(path.lastIndexOf("/") + 1);
 
 function more(prefix: string): DataNode {
-  return { id: `${MORE_PREFIX}${prefix}`, name: "Load more", isDir: false, lazy: false, drift: DriftState.in_sync, entry: null, usesTenantFile: [], children: [], more: prefix };
+  return { id: `${MORE_PREFIX}${prefix}`, name: "Load more", isDir: false, lazy: false, drift: DriftState.in_sync, pickup: null, entry: null, usesTenantFile: [], children: [], more: prefix };
 }
 
 function merged(entries: readonly FileEntry[]): FileEntry[][] {
@@ -80,6 +83,7 @@ function folderNodes(prefix: string, folders: Folders, options: BuildOptions, de
       isDir: base.is_dir,
       lazy: base.is_dir && !folders.has(id),
       drift: group.reduce<DriftState>((worst, e) => (urgency(e.drift) < urgency(worst) ? e.drift : worst), group[0]?.drift ?? DriftState.in_sync),
+      pickup: worstPickup(group.map((e) => e.pickup_state)),
       entry: base,
       usesTenantFile: options.logical ? tenantFiles : [],
       children,

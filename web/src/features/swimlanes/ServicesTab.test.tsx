@@ -2,10 +2,12 @@ import { configure, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Role } from "@/api/generated/model";
+import { liveByView } from "@/components/pickup";
 import { prefs } from "@/lib/prefs";
 import { lane, service } from "@/mocks/design/swimlanes/fixtures";
 import { newWorld, worldApi, type World } from "@/mocks/design/swimlanes/world";
 import { json, problem, renderApp, TOKEN } from "@/test/app";
+import { expectOneBlockInAlert } from "@/test/alert-sentence";
 
 // The Services tab and the restart dialogs: what each service says about its config (D85), who may restart, and every answer
 // the server can give to a restart: done, sent for approval (202), locked (423), refused (422), and no answer.
@@ -24,7 +26,7 @@ beforeEach(() => {
     service("tx-infinity-core", { pickup: "needs_notify_or_restart", pending_since: NOW - 12 * MIN, pending_files: ["tx-infinity-api/tx-infinity-core-sit7.yml"] }),
     service("tx-infinity-api", { pickup: "needs_notify_or_restart", pending_since: NOW - 3 * MIN, pending_files: ["application.properties", "tx-infinity-api/a.yml", "tx-infinity-api/b.yml"] }),
     service("tx-infinity-gateway"),
-    service("remote-itm-teller", { pickup: "live_within_ttl", live_by: Date.UTC(2026, 9, 17, 14, 32) }),
+    service("remote-itm-teller", { pickup: "live_within_ttl", live_by: NOW + 22 * MIN }),
     service("config-server", { pickup: "needs_config_server_restart", pending_since: NOW - MIN, pending_files: ["channels.yml"] }),
   ];
   world.services["presitc"] = [service("tx-infinity-core", { pickup: "live" }, "presitc")];
@@ -63,7 +65,7 @@ describe("the list of services", () => {
     expect(within(core).getByText(/since 12 min ago/)).toBeInTheDocument();
     expect(within(core).getByText("tx-infinity-core-sit7.yml")).toBeInTheDocument();
     expect(within(await rowOf("tx-infinity-gateway")).getByText("Live")).toBeInTheDocument();
-    expect(within(await rowOf("remote-itm-teller")).getByText("Live by 14:32 UTC")).toBeInTheDocument();
+    expect(within(await rowOf("remote-itm-teller")).getByText(`Live by ${liveByView(NOW + 22 * MIN, Date.now()).text}`)).toBeInTheDocument();
     expect(within(await rowOf("config-server")).getByText("Needs config-server restart")).toBeInTheDocument();
     expect(screen.queryByText(/pending restart/i)).toBeNull();
   });
@@ -152,6 +154,8 @@ describe("restarting a service", () => {
     expect(within(dialog).getByText("Restarting tx-infinity-core replaces its pods. Requests to it can fail while its pods come back.")).toBeInTheDocument();
     expect(within(dialog).getByText("tx-infinity-core-sit7.yml")).toBeInTheDocument();
     expect(within(dialog).getByText(/will be interrupted/)).toBeInTheDocument();
+    // One sentence in its box: the Alert lays its children out as a column, so a name in the middle of it must not be a line of its own.
+    expectOneBlockInAlert(within(dialog).getByText(/will be interrupted/));
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
     expect(within(dialog).getByRole("button", { name: "Restart tx-infinity-core" })).toBeInTheDocument();
   });
@@ -301,5 +305,88 @@ describe("the tab bar of an agent that is offline (States O02)", () => {
     world.lanes = world.lanes.map((l) => (l.id === "sitb" ? { ...l, agent: "disconnected", last_scan_at: NOW - 14 * MIN } : l));
     open("/swimlanes/sitb/services");
     expect(await screen.findByText(/^as of \d\d:\d\d UTC$/)).toBeInTheDocument();
+  });
+});
+
+describe("what the tab says about notifying and about the config-server (T6)", () => {
+  it("has a Notify services button in the strip for an Operator when a service waits on a file", async () => {
+    open("/swimlanes/sitb/services");
+    await rowOf("tx-infinity-core");
+    expect(await screen.findByRole("button", { name: "Notify services" })).toBeEnabled();
+  });
+
+  it("lets the strip wrap, so that the filter, the count and the button are never cut off in the narrow pane of a 1024 px window (found by the layout run)", async () => {
+    open("/swimlanes/sitb/services");
+    await rowOf("tx-infinity-core");
+    const strip = (await screen.findByRole("button", { name: "Notify services" })).closest<HTMLElement>('[data-slot="services-strip"]');
+    if (strip === null) throw new Error("the strip has no data-slot");
+    // The pane beside the file tree is 360 px wide at 1024: the filter (224), the count and the button do not fit in one line, and a
+    // strip of a fixed height cut the button off at the pane's edge. The count and the button go together to the next line instead.
+    expect(strip.className).toMatch(/(^|\s)flex-wrap(\s|$)/);
+    expect(strip.className).toMatch(/(^|\s)min-h-8(\s|$)/);
+    expect(strip.className).not.toMatch(/(^|\s)h-8(\s|$)/);
+    const count = within(strip).getByText("5 services");
+    expect(count.parentElement).toBe(within(strip).getByRole("button", { name: "Notify services" }).parentElement);
+    expect(count.parentElement?.className).toMatch(/(^|\s)ml-auto(\s|$)/);
+  });
+
+  it("disables it, with the reason, below Operator and when no service waits on a file", async () => {
+    const viewer = open("/swimlanes/sitb/services", "viewer");
+    await rowOf("tx-infinity-core");
+    expect(await screen.findByRole("button", { name: "Notify services" })).toHaveAttribute("aria-disabled", "true");
+    viewer.unmount();
+    world.services["sitb"] = [service("tx-infinity-gateway")];
+    open("/swimlanes/sitb/services");
+    await rowOf("tx-infinity-gateway");
+    expect(await screen.findByRole("button", { name: "Notify services" })).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("says whether auto-notify is on, from the swimlane's own answer, and who can change it", async () => {
+    open("/swimlanes/sitb/services");
+    await rowOf("tx-infinity-core");
+    const off = screen.getByRole("group", { name: "Auto-notify" });
+    expect(within(off).getByText("Auto-notify off")).toBeInTheDocument();
+    expect(within(off).getByText("Only an Admin can change this.")).toBeInTheDocument();
+  });
+
+  it("says it is on, with a link to the Admin page for an Admin", async () => {
+    world.auto_notify["sitb"] = true;
+    open("/swimlanes/sitb/services", "admin");
+    await rowOf("tx-infinity-core");
+    const on = screen.getByRole("group", { name: "Auto-notify" });
+    expect(within(on).getByText("Auto-notify on")).toBeInTheDocument();
+    expect(within(on).getByRole("link", { name: "Change in Admin" })).toHaveAttribute("href", "/admin/swimlanes");
+  });
+
+  it("says a config-server restart is needed when a service reports it, with the button to ask for it", async () => {
+    open("/swimlanes/sitb/services");
+    await rowOf("config-server");
+    const banner = (await screen.findByText("Config-server restart needed")).closest<HTMLElement>('[data-slot="alert"]');
+    if (banner === null) throw new Error("the config-server banner is not an Alert");
+    expect(within(banner).getByText(/1 service reports needing a config-server restart\./)).toBeInTheDocument();
+    expect(within(banner).getByRole("button", { name: "Restart config-server (type its name to confirm)" })).toBeEnabled();
+  });
+
+  it("gives the banner's Restart config-server button a name of its own, apart from the Restart button of a service that is itself called config-server (found by the accessible-name check of the T6 accessibility run)", async () => {
+    open("/swimlanes/sitb/services");
+    const row = await rowOf("config-server");
+    const banner = (await screen.findByText("Config-server restart needed")).closest<HTMLElement>('[data-slot="alert"]');
+    if (banner === null) throw new Error("the config-server banner is not an Alert");
+    const rowButton = within(row).getByRole("button", { name: /^Restart config-server/ });
+    const bannerButton = within(banner).getByRole("button", { name: /^Restart config-server/ });
+    expect(bannerButton).not.toBe(rowButton);
+    // The row's restarts the one service and keeps the name it always had; the banner's is the typed-confirmation restart of the
+    // config-server Deployment the hub offers, and says so. A screen reader's list of buttons must tell them apart, and so must a test.
+    expect(screen.getAllByRole("button", { name: "Restart config-server" })).toEqual([rowButton]);
+    expect(bannerButton).toHaveAccessibleName("Restart config-server (type its name to confirm)");
+    // The visible words are still in the name (WCAG 2.5.3, Label in Name).
+    expect(bannerButton).toHaveTextContent("Restart config-server");
+  });
+
+  it("does not say it when nothing needs the config-server to restart", async () => {
+    world.services["sitb"] = [service("tx-infinity-core", { pickup: "needs_notify_or_restart", pending_since: NOW - MIN, pending_files: ["application.properties"] })];
+    open("/swimlanes/sitb/services");
+    await rowOf("tx-infinity-core");
+    expect(screen.queryByText("Config-server restart needed")).toBeNull();
   });
 });

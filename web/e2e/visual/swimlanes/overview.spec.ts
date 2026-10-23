@@ -8,7 +8,8 @@
 //    (Pickup) and "Swimlanes: Last change column" (Last scan) change what four of its columns say, and the rows are in the app's
 //    order (by name) where the design lists its own. The chrome, the title, the toolbar and the footer are compared.
 //  - the subtitle's counts ("4 of 6 agents online" has a Degraded agent that the contract does not have: "Swimlanes: Agent column").
-//  - the footer's legend ends with "Pending restart" in the design and "Needs notify or restart" in the app ("Swimlanes: Restarts column").
+//  - the footer's legend ends with "Pending restart" in the design and "Needs notify or restart" and "Needs config-server restart" in the app
+//    ("Swimlanes: Restarts column").
 //  - the toast: "Toasts" (the app's own toaster, "View swimlane" where the design says "View diff").
 import type { Page } from "@playwright/test";
 import { pushEvents, hold, api } from "../access/lib/steps";
@@ -21,7 +22,7 @@ const SWITCHER: Mask = { x: 820, y: 4, width: 290, height: 36, why: "candidate r
 const SUBTITLE: Mask = { x: 246, y: 90, width: 420, height: 20, why: "Swimlanes: Agent column (no Degraded, so 5 of 6 are online)" };
 const TABLE_SIX: Mask = { x: 249, y: 162, width: 1168, height: 204, why: "Swimlanes: Branch, Agent, Restarts and Last change columns; row order" };
 const TABLE_FORTY: Mask = { x: 249, y: 162, width: 1168, height: 696, why: "Swimlanes: Branch, Agent, Restarts and Last change columns; row order" };
-const LEGEND: Mask = { x: 700, y: 860, width: 710, height: 22, why: "Swimlanes: Restarts column (the legend's last entry is Pickup)" };
+const LEGEND: Mask = { x: 700, y: 860, width: 710, height: 22, why: "Swimlanes: Restarts column (the legend's last entries are the two pickup states that need action)" };
 const FINDINGS_BADGE: Mask = { x: 172, y: 268, width: 40, height: 24, why: "dataset: the sidebar sums the findings of the swimlanes the scenario lists; the Shell page's 11 is typed in" };
 const VIEWER_NAV: Mask = { x: 8, y: 296, width: 208, height: 70, why: "Sidebar: Audit and Approvals (hidden from a Viewer; the design's Viewer frame shows Audit)" };
 const LOADING_LINE = maskOf("[data-slot='query-loading'] [role='status']", "candidate row: a status line, 'Loading swimlanes…', under the skeleton (shared QueryBoundary)", 4);

@@ -3,8 +3,10 @@ import { DIST, callsTo, derive, expect, finish, h1, open, responsesOf, test } fr
 
 test.use({ dist: DIST });
 
-// The findings scenario has no file view behind its links; the file view's answers (same Admin, same swimlanes) are added to it.
-const FILE_VIEW = responsesOf("design-file-core").filter((r) => !["/api/v1/me", "/api/v1/swimlanes", "/api/v1/proposals", "/api/v1/admin/access-requests", "/auth/logout"].includes(r.path));
+// The findings scenario has no file view behind its links; the file view's answers (same Admin, same swimlanes) are added to it, but
+// not the ones the findings scenario gives itself: the file view's empty list of findings (the Services tab's banner reads it) would
+// answer the Findings page's own read first.
+const FILE_VIEW = responsesOf("design-file-core").filter((r) => !["/api/v1/me", "/api/v1/swimlanes", "/api/v1/proposals", "/api/v1/admin/access-requests", "/api/v1/findings", "/auth/logout"].includes(r.path));
 const FINDINGS_AND_FILES = derive("design-findings-open", FILE_VIEW, "journey-findings-files");
 
 test.describe("the findings", () => {

@@ -35,6 +35,8 @@ export type FileHeaderProps = {
   linkLine?: number | null;
   /** The pull-request badge ("PR #418 open", "Fix merged, awaiting sync"), beside the drift state. The screen reads the links once. */
   prBadge?: ReactNode;
+  /** When the services that read this file get its new version (the pickup chip), at the end of the row of the title, after the badges the design draws: the row of the facts has no room for it at 1440 wide. */
+  pickup?: ReactNode;
   /** Who changed the file and how sure the server is (the shared attribution chip), at the end of the facts. */
   changedBy?: ReactNode;
   /** False for a file whose content is withheld: its hash is shown and not offered to be copied (the standing default for a withheld file). */
@@ -43,7 +45,7 @@ export type FileHeaderProps = {
 
 const factClasses = "inline-flex h-[22px] items-center rounded-sm border px-1.5 font-mono text-xs";
 
-export function FileHeader({ title, marker, drift, note, editing, path, facts, hash, unavailable = false, actions, link = null, linkLine = null, prBadge = null, changedBy = null, copyHash = true }: FileHeaderProps) {
+export function FileHeader({ title, marker, drift, note, editing, path, facts, hash, unavailable = false, actions, link = null, linkLine = null, prBadge = null, pickup = null, changedBy = null, copyHash = true }: FileHeaderProps) {
   return (
     <section aria-label="File" className="flex flex-none flex-wrap items-start justify-between gap-x-4 gap-y-3 px-6 pt-3.5 pb-3">
       <div className="flex min-w-0 flex-col gap-2">
@@ -66,6 +68,7 @@ export function FileHeader({ title, marker, drift, note, editing, path, facts, h
               Editing
             </Badge>
           ) : null}
+          {pickup}
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
           <PathChip path={path} />
