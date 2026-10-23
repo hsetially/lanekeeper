@@ -109,7 +109,7 @@ describe("the log", () => {
     expect(within(guess).getByText("Medium")).toBeInTheDocument();
     const sync = await rowOf(18451);
     expect(within(sync).getByText("Sync")).toBeInTheDocument();
-    expect(within(sync).getByText("sit7-sync")).toBeInTheDocument();
+    expect(within(sync).getByText("Sync job sit7-sync")).toBeInTheDocument();
   });
 
   it("names an action it has no words for by its own name, and shows a hidden character in a target instead of hiding it", async () => {
@@ -120,10 +120,10 @@ describe("the log", () => {
     expect(within(row).getByRole("img", { name: /U\+202E/ })).toBeInTheDocument();
   });
 
-  it("falls back to the start of the user id for someone who is not in the user list", async () => {
+  it("falls back to Lanekeeper user and the start of the user id for someone who is not in the user list (never a made-up name)", async () => {
     world.users = [];
     await open();
-    expect(within(await rowOf(18462)).getByText("user ffffffff")).toBeInTheDocument();
+    expect(within(await rowOf(18462)).getByText("Lanekeeper user ffffffff")).toBeInTheDocument();
   });
 
   it("shows event metadata only: nothing of it is a request for a value", async () => {
@@ -291,15 +291,32 @@ describe("the drawer", () => {
     expect(within(drawer).getAllByRole("button", { name: "Copy chain hash" })).toHaveLength(1);
   });
 
-  it("shows the evidence of an attribution: the login, the command and when it was seen", async () => {
+  it("shows the evidence of an attribution with the shared evidence list: the source, how sure, the login, the command and when it was seen", async () => {
     await open();
     await userEvent.click(await rowOf(18454));
     const drawer = await screen.findByRole("dialog", { name: "Event detail" });
     expect(within(drawer).getByText("Attribution evidence")).toBeInTheDocument();
-    expect(within(drawer).getByText("dana_okoye_corp_example")).toBeInTheDocument();
-    expect(within(drawer).getByText("/usr/bin/vim.basic payment-limits-sit1.yml")).toBeInTheDocument();
-    expect(within(drawer).getByText("Dana Okoye")).toBeInTheDocument();
-    expect(within(drawer).getByText("Edited on the NFS VM · High confidence")).toBeInTheDocument();
+    const evidence = drawer.querySelector<HTMLElement>("[data-slot='attribution-evidence']");
+    if (evidence === null) throw new Error("no evidence list");
+    expect(within(evidence).getByText("Source").nextElementSibling).toHaveTextContent("Edited on the NFS VM");
+    expect(within(evidence).getByText("Confidence").nextElementSibling).toHaveTextContent("High");
+    expect(within(evidence).getByText("dana_okoye_corp_example")).toBeInTheDocument();
+    expect(within(evidence).getByText("/usr/bin/vim.basic payment-limits-sit1.yml")).toBeInTheDocument();
+    // The attribution names a person, and the list has the name: the Who section and the evidence both say it.
+    expect(within(evidence).getByText("Author").nextElementSibling).toHaveTextContent("Dana Okoye");
+    expect(within(drawer).getAllByText("Dana Okoye").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("says an event of an unknown author has no confidence, rather than a low one", async () => {
+    await open();
+    await userEvent.click(await rowOf(18459));
+    const drawer = await screen.findByRole("dialog", { name: "Event detail" });
+    const evidence = drawer.querySelector<HTMLElement>("[data-slot='attribution-evidence']");
+    if (evidence === null) throw new Error("no evidence list");
+    expect(within(evidence).getByText("Confidence").nextElementSibling).toHaveTextContent("None");
+    expect(within(evidence).getByText("Author").nextElementSibling).toHaveTextContent("Not identified");
+    expect(within(drawer).queryByText(/Unknown · Low confidence/)).toBeNull();
+    expect(within(drawer).queryByText(/Low confidence/)).toBeNull();
   });
 
   it("says an event made through Cursor was made for a person", async () => {

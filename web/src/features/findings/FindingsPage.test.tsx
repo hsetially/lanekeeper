@@ -265,6 +265,29 @@ describe("the drawer", () => {
     expect(within(drawer).getByRole("link", { name: "Open diff" })).toHaveAttribute("href", "/swimlanes/sitb/files?diff=git&path=a%2Fb.yml&tab=diff");
   });
 
+  it("shows the pull request on the file of a drift finding in its drawer, from one read of that swimlane's links, and not in the table", async () => {
+    world = newWorld([finding(1, { kind: "drift", path: "a/b.yml", locations: [{ path: "x", lines: { start: 7, end: 9 } }] }), finding(2, { kind: "duplicate_keys", path: "a/c.yml" })], "viewer");
+    world.prs = [{ id: 3, swimlane: "sitb", path: "a/b.yml", nfs_hash: "a".repeat(64), state: "open", pr_url: "https://github.com/csp/csp-tenant-data/pull/418", pr_number: 418, author: "x:y", created_at: 1, closed_at: null }];
+    const app = open("/findings", "viewer");
+    await screen.findByRole("grid", { name: "Findings" });
+    // The table is cross-swimlane: no request for links, and no badge in a row.
+    expect(app.calls.some((c) => c.path.startsWith("/api/v1/prs"))).toBe(false);
+    expect(document.querySelector("[data-slot='pr-badge']")).toBeNull();
+    await userEvent.click(await rowFor("b.yml"));
+    const drawer = await screen.findByRole("dialog", { name: "NFS and Git disagree" });
+    expect(await within(drawer).findByRole("link", { name: /PR #418 open/ })).toHaveAttribute("href", "https://github.com/csp/csp-tenant-data/pull/418");
+    expect(app.calls.filter((c) => c.path.startsWith("/api/v1/prs?"))).toHaveLength(2);
+  });
+
+  it("asks for no links, and shows no pull request, in the drawer of a finding that is not a drift", async () => {
+    world = newWorld([finding(2, { kind: "duplicate_keys", path: "a/c.yml" })], "viewer");
+    const app = open("/findings", "viewer");
+    await userEvent.click(await rowFor("c.yml"));
+    const drawer = await screen.findByRole("dialog", { name: "Duplicate keys" });
+    expect(within(drawer).queryByRole("link", { name: /PR #/ })).toBeNull();
+    expect(app.calls.some((c) => c.path.startsWith("/api/v1/prs"))).toBe(false);
+  });
+
   it("opens the file's history for a change a sync overwrote, since that is where the lost version is", async () => {
     open();
     await userEvent.click(await rowFor("gateway-sit7.yml"));

@@ -8,7 +8,9 @@ import { RequestId } from "@/components/app/RequestId";
 import { SafeText } from "@/components/app/SafeText";
 import { TruncationBanner } from "@/components/app/TruncationBanner";
 import { VirtualList } from "@/components/app/virtual/VirtualList";
+import { AttributionChip, type NameLookup } from "@/components/attribution";
 import { Button } from "@/components/ui/button";
+import { EventWho, useActorNames } from "@/features/attribution";
 import { auditListQuery } from "@/features/audit/queries";
 import { swimlaneQuery } from "@/features/swimlanes/queries";
 import { History, RefreshCw } from "@/icons";
@@ -16,7 +18,7 @@ import { useCursorPages } from "@/lib/query/cursor-pages";
 import { cursorPagesSource, useQueryState } from "@/lib/query/use-query-state";
 import { formatRelative, formatTime } from "@/lib/time";
 import { useNow } from "@/live/use-now";
-import { actorLabel, newestFirst, viaLabel } from "./rows";
+import { newestFirst, viaLabel } from "./rows";
 
 // The audit rows of one swimlane, newest first, for an Admin: the Activity tab (a feed) and the swimlane's Audit page (the same
 // rows with the sequence number and the request ID). The contract has one audit read and it is Admin-only (W11), so this is
@@ -28,16 +30,17 @@ import { actorLabel, newestFirst, viaLabel } from "./rows";
 
 export type Variant = "activity" | "audit";
 
-const ROW = 52;
+// Two lines: when, how it came in, what and where; and under them who made it (the chip may wrap in a narrow panel).
+const ROW = 76;
 
-function Row({ event, variant, now }: { event: AuditEvent; variant: Variant; now: number }) {
+function Row({ event, variant, now, nameOf }: { event: AuditEvent; variant: Variant; now: number; nameOf: NameLookup }) {
   return (
-    <div className="grid h-full grid-cols-[96px_64px_minmax(0,1fr)_auto] items-start gap-3 border-b border-border px-4 py-2">
-      <span title={formatTime(event.at, { seconds: true })} className="pt-px text-xs whitespace-nowrap text-muted-foreground tabular-nums">
-        {variant === "audit" ? `#${event.seq}` : formatRelative(event.at, now)}
-      </span>
-      <span className="pt-px text-xs text-muted-foreground">{viaLabel(event.via)}</span>
-      <span className="flex min-w-0 flex-col gap-0.5">
+    <div className="flex h-full flex-col justify-center gap-1 border-b border-border px-4 py-1.5">
+      <div className="grid grid-cols-[96px_64px_minmax(0,1fr)_auto] items-start gap-3">
+        <span title={formatTime(event.at, { seconds: true })} className="pt-px text-xs whitespace-nowrap text-muted-foreground tabular-nums">
+          {variant === "audit" ? `#${event.seq}` : formatRelative(event.at, now)}
+        </span>
+        <span className="pt-px text-xs text-muted-foreground">{viaLabel(event.via)}</span>
         <span className="truncate">
           <SafeText text={event.action} className="font-mono text-xs font-medium" />
           {event.target !== null ? (
@@ -47,18 +50,20 @@ function Row({ event, variant, now }: { event: AuditEvent; variant: Variant; now
             </>
           ) : null}
         </span>
-        <span className="truncate text-xs text-muted-foreground" title={event.actor ?? undefined}>
-          {actorLabel(event.actor)}
-          {variant === "audit" ? ` · ${formatTime(event.at, { seconds: true })}` : ""}
-        </span>
-      </span>
-      {variant === "audit" && event.request_id !== null ? <RequestId id={event.request_id} /> : <span className="text-xs text-muted-foreground">Audit</span>}
+        {variant === "audit" && event.request_id !== null ? <RequestId id={event.request_id} /> : <span className="text-xs text-muted-foreground">Audit</span>}
+      </div>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+        {/* The attribution names who really made a change to a file; an event without one is its recorder's (a login, or Lanekeeper). */}
+        {event.attribution === null ? <EventWho event={event} nameOf={nameOf} className="text-xs" /> : <AttributionChip attribution={event.attribution} nameOf={nameOf} />}
+        {variant === "audit" ? <span>· {formatTime(event.at, { seconds: true })}</span> : null}
+      </div>
     </div>
   );
 }
 
 export function AuditList({ swimlane, variant }: { swimlane: string; variant: Variant }) {
   const now = useNow(true, 30_000);
+  const { nameOf } = useActorNames();
   const pages = useCursorPages({ ...auditListQuery({ swimlane }), autoLoad: false });
   const state = useQueryState(cursorPagesSource(pages), { isEmpty: (items) => items.length === 0 });
   // The swimlane's own query is kept fresh by the live events. If it is newer than the rows, something probably happened since.
@@ -106,7 +111,7 @@ export function AuditList({ swimlane, variant }: { swimlane: string; variant: Va
             getRowKey={(i) => ordered[i]?.id ?? i}
             renderRow={(i) => {
               const event = ordered[i];
-              return event === undefined ? null : <Row event={event} variant={variant} now={now} />;
+              return event === undefined ? null : <Row event={event} variant={variant} now={now} nameOf={nameOf} />;
             }}
           />
           {pages.hasMore ? (

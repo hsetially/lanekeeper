@@ -41,6 +41,7 @@ const LOADERS = {
   activity: () => import("@/features/swimlanes/ActivityPage"),
   "swimlane-findings": () => import("@/features/swimlanes/SwimlaneFindingsPage"),
   "swimlane-audit": () => import("@/features/swimlanes/SwimlaneAuditPage"),
+  "swimlane-pull-requests": () => import("@/features/prs/PullRequestsPage"),
   // File view and the draft screen. S3.
   files: () => import("@/features/file/FilePage"),
   draft: () => import("@/features/file/DraftPage"),

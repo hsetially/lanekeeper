@@ -5,6 +5,7 @@ import { QueryBoundaryView } from "@/components/app/QueryBoundary";
 import { SafeText } from "@/components/app/SafeText";
 import { TruncationBanner } from "@/components/app/TruncationBanner";
 import { DataTable, type Column, type SortState } from "@/components/app/virtual/DataTable";
+import { SeverityBadge } from "@/components/attribution";
 import { Button } from "@/components/ui/button";
 import { CircleCheck, RefreshCw, Search } from "@/icons";
 import { formatClock } from "@/lib/time";
@@ -18,7 +19,6 @@ import { fileHref } from "./lines";
 import { KINDS, codeOf } from "./kinds";
 import { latestScan } from "./scan";
 import { DEFAULT_SORT, sortFindings } from "./severity";
-import { SeverityBadge } from "./SeverityBadge";
 
 // The results of the Findings screen: the table, the drawer for the finding that was opened, and the states of the list
 // (loading, empty, error, stale). The page remounts this when the filters change or the list goes from nothing to something,

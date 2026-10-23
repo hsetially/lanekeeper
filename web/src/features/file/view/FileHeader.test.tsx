@@ -34,6 +34,13 @@ describe("FileHeader", () => {
     expect(screen.getByRole("button", { name: "Copy hash" })).toBeInTheDocument();
   });
 
+  it("offers no copy button for the hash when the content of the file is withheld, and still shows the hash and offers the path", () => {
+    render(<FileHeader {...base} copyHash={false} />);
+    expect(screen.getByText("a3f9c21")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy hash" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Copy path" })).toBeInTheDocument();
+  });
+
   it("shows placeholders for the facts while they are on their way, and none when they are not coming (the file could not be read)", () => {
     const { rerender, container } = render(<FileHeader {...base} facts={null} hash={null} />);
     expect(container.querySelectorAll("[data-slot='skeleton']").length).toBeGreaterThan(0);
@@ -64,6 +71,23 @@ describe("FileHeader", () => {
   it("shows the drift state as colour, icon and words", () => {
     render(<FileHeader {...base} drift="nfs_ahead" />);
     expect(screen.getByText("NFS ahead")).toBeInTheDocument();
+  });
+
+  it("puts the pull-request badge beside the drift state, and who changed the file at the end of the facts", () => {
+    render(<FileHeader {...base} drift="nfs_ahead" prBadge={<span data-testid="pr">PR #418 open</span>} changedBy={<span data-testid="by">Changed by Priya</span>} />);
+    const title = screen.getByRole("heading", { level: 1 }).parentElement as HTMLElement;
+    expect(within(title).getByText("NFS ahead")).toBeInTheDocument();
+    expect(within(title).getByTestId("pr")).toBeInTheDocument();
+    const facts = screen.getByText("412 lines").parentElement as HTMLElement;
+    expect(within(facts).getByTestId("by")).toBeInTheDocument();
+    // After the hash and the link: the last thing on the facts row.
+    expect(facts.lastElementChild).toContainElement(screen.getByTestId("by"));
+  });
+
+  it("draws neither slot when the screen gives none", () => {
+    render(<FileHeader {...base} drift="nfs_ahead" />);
+    expect(screen.queryByTestId("pr")).toBeNull();
+    expect(screen.queryByTestId("by")).toBeNull();
   });
 
   it("flags a line-endings-only change beside the name", () => {

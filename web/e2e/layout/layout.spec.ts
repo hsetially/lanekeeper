@@ -22,7 +22,7 @@ const SIZES = [
 const STATE_SIZES = [SIZES[0], SIZES[2]] as const;
 const CONTENT_CAP = 1680;
 
-test.use({ dist: process.env["LK_DIST"] ?? "dist", colorScheme: "light" });
+test.use({ dist: process.env["LK_E2E_DIST"] ?? process.env["LK_DIST"] ?? "dist", colorScheme: "light" });
 
 for (const c of ALL_CASES) {
   test.describe(c.id, () => {

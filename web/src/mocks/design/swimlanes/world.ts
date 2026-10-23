@@ -1,7 +1,7 @@
 // A small hub for the tests of the swimlane screens: a world (who is signed in, the swimlanes, their services, files, findings and
 // audit rows) and the function that answers `fetch` for it. The tests change the world between two answers to play what a live
 // event announces. Test code only: nothing outside the tests imports it.
-import type { AuditEvent, FileEntry, Finding, Role, ServiceState, SwimlaneDetail, SwimlaneSummary } from "../../../api/generated/model/index.ts";
+import type { AuditEvent, FileEntry, Finding, PrLink, Role, ServiceState, SwimlaneDetail, SwimlaneSummary } from "../../../api/generated/model/index.ts";
 import { json, me, problem, type Api, type Call } from "../../../test/app.tsx";
 import { detailOf } from "./fixtures.ts";
 
@@ -17,6 +17,8 @@ export type World = {
   tree: Record<string, Record<string, FileEntry[]>>;
   findings: Finding[];
   audit: AuditEvent[];
+  /** The pull-request links of every swimlane (`GET /prs`, filtered by `swimlane` and `state`). */
+  prs: PrLink[];
   /** What `POST /restart` answers: a function of the service asked for, or a fixed response. */
   restart: Response | ((body: { namespace: string; name: string }, call: Call) => Response);
   /** When set, the swimlane list answers this problem instead. */
@@ -24,7 +26,7 @@ export type World = {
 };
 
 export function newWorld(role: Role | null, lanes: SwimlaneSummary[] = []): World {
-  return { role, lanes, services: {}, auto_notify: {}, drift: {}, tree: {}, findings: [], audit: [], restart: json({ outcome: "applied", hash: null, audit_id: 7 }), listProblem: null };
+  return { role, lanes, services: {}, auto_notify: {}, drift: {}, tree: {}, findings: [], audit: [], prs: [], restart: json({ outcome: "applied", hash: null, audit_id: 7 }), listProblem: null };
 }
 
 const notFound = (): Response => problem(404, "not_found");
@@ -45,6 +47,11 @@ export function worldApi(world: World): Api {
     if (path === "/api/v1/findings") {
       const swimlane = url.searchParams.get("swimlane");
       return json({ items: world.findings.filter((f) => swimlane === null || f.swimlane === swimlane), next: null });
+    }
+    if (path === "/api/v1/prs") {
+      const lane = url.searchParams.get("swimlane");
+      const state = url.searchParams.get("state");
+      return json({ items: world.prs.filter((l) => (lane === null || l.swimlane === lane) && (state === null || l.state === state)), next: null });
     }
     if (path === "/api/v1/admin/audit") {
       const swimlane = url.searchParams.get("swimlane");

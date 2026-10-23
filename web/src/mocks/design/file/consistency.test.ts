@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Comparison, DiffHunk } from "@/api/generated/model";
+import { planMasks } from "@/components/masking/plan";
 import { coreComparison, coreFile, coreGitText } from "./data";
 
 // A comparison in a scenario is the engine's answer for two texts, so it has to be true of those texts: a screen that folds the
@@ -60,5 +61,24 @@ describe("the core file's comparison in the scenarios", () => {
   it("names the two changes the design shows in the hunks it has", () => {
     const changed = comparison.hunks.flatMap((h) => h.lines.filter((l) => l.kind !== "context").map((l) => `${l.kind}:${l.text.trim()}`));
     expect(changed).toEqual(["removed:enableAccountSorting: false", "added:enableAccountSorting: true", "added:sortOrder: asc", "removed:level: WARN", "added:level: INFO"]);
+  });
+});
+
+// A mask is UTF-8 byte offsets into the whole text, and the web believes nothing it cannot check (it hides a line whose mask is not
+// exactly a marker). The core file's first line has a middle dot (two bytes), so offsets counted in characters are one byte short from
+// the second line on: the first file view dropped such a mask without a word and drew the line as text, which hid this mock's error.
+describe("the masks of the core file in the scenarios", () => {
+  it("point at exactly the marker, counted in UTF-8 bytes, so that the file view draws the value as hidden and not the line", () => {
+    const { content } = coreFile({ masked: true });
+    const plan = planMasks(content.text ?? "", content.masks);
+    expect(plan.status).toBe("ok");
+    if (plan.status !== "ok") return;
+    const line = plan.lines.get(19);
+    expect(line?.kind).toBe("marks");
+    if (line?.kind === "marks") expect(line.marks.map((m) => m.info.rule)).toEqual(["generic_secret"]);
+  });
+
+  it("names no mask when the file is not masked", () => {
+    expect(coreFile({ masked: false }).content.masks).toBeUndefined();
   });
 });

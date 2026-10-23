@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FindingKind, type DriftState, type VersionLabel } from "@/api/generated/model";
 import { codeOf } from "@/features/findings/kinds";
-import { driftChips, findingTitle, versionLabel } from "./format";
+import { driftChips, versionLabel } from "./format";
 
 const commit = "a3f9c21a3f9c21a3f9c21a3f9c21a3f9c21a3f9c";
 
@@ -61,10 +61,5 @@ describe("driftChips", () => {
 describe("finding codes", () => {
   it("numbers the twelve kinds C1 to C12 in the contract's order (the Findings screen's table, which the swimlane's Findings tab uses too)", () => {
     expect(Object.values(FindingKind).map((kind) => codeOf(kind))).toEqual(["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12"]);
-  });
-
-  it("has words for each kind", () => {
-    for (const kind of Object.values(FindingKind)) expect(findingTitle(kind).length).toBeGreaterThan(3);
-    expect(findingTitle("duplicate_keys")).toBe("Duplicate keys");
   });
 });

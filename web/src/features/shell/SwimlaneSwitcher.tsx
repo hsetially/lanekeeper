@@ -21,7 +21,7 @@ import { TenantSet, tenantSummary } from "./Tenants";
 // (`SwimlaneSummary.tier`, CG4); a swimlane without one shows no chip.
 
 /** The routes that belong to one swimlane: choosing another swimlane keeps the person on the same tab. */
-const SWIMLANE_ROUTES = new Set(["swimlane", "files", "services", "drift", "swimlane-findings", "swimlane-audit", "activity", "adopt"]);
+const SWIMLANE_ROUTES = new Set(["swimlane", "files", "services", "drift", "swimlane-findings", "swimlane-audit", "activity", "swimlane-pull-requests", "adopt"]);
 
 const List = lazy(() => import("./SwitcherList"));
 const preloadList = (): void => {

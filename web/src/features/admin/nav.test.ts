@@ -38,9 +38,13 @@ describe("the Admin navigation", () => {
     expect(areaCopy("mcp").title).toBe("MCP personal tokens");
   });
 
-  it("marks the four sections that belong to another task, so the section page can say so", () => {
-    const later = ADMIN_NAV.flatMap((g) => g.items).filter((i) => i.later === true).map((i) => i.id);
-    expect(later.sort()).toEqual(["oslogin", "retention", "sentinels", "severity"]);
+  it("lists every section as one that is built: none is left for another task", () => {
+    expect(ADMIN_NAV.flatMap((g) => g.items).filter((i) => "later" in i)).toEqual([]);
+  });
+
+  it("words the severity lead as the registry rates (the highest severity wins), not as the design did (the first rule wins)", () => {
+    expect(areaCopy("severity").lead).toMatch(/highest severity wins/);
+    expect(areaCopy("severity").lead).not.toMatch(/first matching rule/i);
   });
 
   it("tells a section from anything else", () => {

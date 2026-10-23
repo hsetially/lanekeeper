@@ -3,7 +3,10 @@ import { Dialog as DialogPrimitive } from "radix-ui";
 import type { Finding } from "@/api/generated/model";
 import { CopyValue } from "@/components/app/CopyValue";
 import { SafeText } from "@/components/app/SafeText";
+import { SeverityBadge } from "@/components/attribution";
+import { PrBadge } from "@/components/pr/PrBadge";
 import { Button } from "@/components/ui/button";
+import { usePrBadges } from "@/features/prs/use-pr-badges";
 import { X } from "@/icons";
 import { formatRelative, formatTime } from "@/lib/time";
 import { AppLink } from "@/routes/AppLink";
@@ -11,7 +14,6 @@ import { useNow } from "@/live/use-now";
 import { CodeChip } from "./cells";
 import { KIND_INFO } from "./kinds";
 import { lineLabel } from "./lines";
-import { SeverityBadge } from "./SeverityBadge";
 
 // The drawer: the evidence for one finding and what to do next, in the design's three parts (what this means, the evidence, the
 // recommended next steps) and the actions that open the file. It is a non-modal dialog inside the page's box, as the design
@@ -177,6 +179,10 @@ type DrawerProps = {
 export function FindingDrawer({ finding, onClose, onCloseFocus }: DrawerProps) {
   const info = finding === null ? null : KIND_INFO[finding.kind];
   const close = useRef<HTMLButtonElement>(null);
+  // A drift finding is a file that differs, and a pull request that carries the fix is worth saying beside it. The links of ONE
+  // swimlane are read, and only for a finding that can have one: the table, which spans swimlanes, shows no badge.
+  const withFile = finding !== null && finding.kind === "drift" && finding.path !== null ? finding : null;
+  const prs = usePrBadges(withFile?.swimlane ?? "", { enabled: withFile !== null });
   return (
     <DialogPrimitive.Root
       open
@@ -208,6 +214,7 @@ export function FindingDrawer({ finding, onClose, onCloseFocus }: DrawerProps) {
               <div className="flex flex-wrap items-center gap-1.5">
                 <SeverityBadge severity={finding.severity} long />
                 <CodeChip code={info.code} />
+                {withFile === null || withFile.path === null ? null : <PrBadge info={prs.badgeFor({ path: withFile.path, differs: true })} />}
               </div>
             )}
             <DialogPrimitive.Title className="m-0 text-base leading-[22px] font-semibold tracking-[-0.01em]">{info === null ? "This finding is no longer open" : info.name}</DialogPrimitive.Title>

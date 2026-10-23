@@ -8,8 +8,12 @@ import { findingsApprovalsCases } from "./cases-findings-approvals.ts";
 import type { Case } from "./helpers.ts";
 import { shellAccessCases } from "./cases-shell-access.ts";
 import { swimlanesCases } from "./cases-swimlanes.ts";
+import { t5AdminCases } from "./cases-t5-admin.ts";
+import { t5AttributionCases } from "./cases-t5-attribution.ts";
+import { t5MaskingCases } from "./cases-t5-masking.ts";
+import { t5PrCases } from "./cases-t5-prs.ts";
 
-export const ALL_CASES: readonly Case[] = [...shellAccessCases, ...swimlanesCases, ...fileCases, ...compareSearchCases, ...findingsApprovalsCases, ...adminCases];
+export const ALL_CASES: readonly Case[] = [...shellAccessCases, ...swimlanesCases, ...fileCases, ...compareSearchCases, ...findingsApprovalsCases, ...adminCases, ...t5PrCases, ...t5AttributionCases, ...t5MaskingCases, ...t5AdminCases];
 
 const seen = new Set<string>();
 for (const c of ALL_CASES) {

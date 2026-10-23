@@ -2,6 +2,7 @@ import { Banner } from "@/components/app/Banner";
 import { SafeText } from "@/components/app/SafeText";
 import { GatedButton } from "@/components/app/GatedButton";
 import type { GateResult } from "@/components/app/write-gate";
+import type { WithheldReason } from "@/components/masking/withheld";
 import { Button } from "@/components/ui/button";
 import { Eye, Lock, TriangleAlert, WifiOff } from "@/icons";
 import { formatClock, formatRelative } from "@/lib/time";
@@ -40,12 +41,16 @@ export function AgentOfflineBanner({ lane, asOf, now, canCheck }: { lane: string
   );
 }
 
-/** A file whose content is not kept (D79): name, size, hash and who changed it are all there is. */
-export function WithheldBanner() {
+/**
+ * A file whose content is not shown (D79): name, size, hash and who changed it are all there is. A file of the denied class is a
+ * sensitive type the hub never reads; any other file whose content is withheld is one the hub could not check for secrets, and the
+ * contract fails closed (S14b), so the banner does not call it a sensitive type.
+ */
+export function WithheldBanner({ reason = "denied" }: { reason?: WithheldReason }) {
   return (
     <div role="status" className="flex min-h-10 flex-none flex-wrap items-center gap-2 border-y border-status-locked-border bg-status-locked-bg px-6 py-1.5 text-status-locked-fg">
       <Lock aria-hidden="true" className="size-3.5 shrink-0" />
-      <strong className="font-semibold">Content withheld: sensitive file type</strong>
+      <strong className="font-semibold">{reason === "denied" ? "Content withheld: sensitive file type" : "Content withheld: could not be checked for secrets"}</strong>
       <span>Lanekeeper shows only the name, size, hash and who changed it. There is no edit, upload or download.</span>
     </div>
   );

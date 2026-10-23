@@ -40,10 +40,27 @@ describe("HistoryPanel", () => {
     expect(within(rows[0] as HTMLElement).getByText("Scan found a change")).toBeInTheDocument();
     expect(within(rows[0] as HTMLElement).getByText("Current")).toBeInTheDocument();
     expect(within(rows[0] as HTMLElement).getByText("High")).toBeInTheDocument();
+    // The same chip the rest of the app draws: nothing identified who, so no author and no score (D73), and never "Low".
+    expect(within(rows[0] as HTMLElement).getByText("Unknown author")).toBeInTheDocument();
+    expect(within(rows[0] as HTMLElement).queryByText("Low")).not.toBeInTheDocument();
     expect(within(rows[1] as HTMLElement).getByText("Tool write")).toBeInTheDocument();
     expect(within(rows[1] as HTMLElement).getByText("You")).toBeInTheDocument();
     expect(within(rows[1] as HTMLElement).getByText("via Lanekeeper")).toBeInTheDocument();
     expect(within(rows[1] as HTMLElement).getByText("Certain")).toBeInTheDocument();
+  });
+
+  it("offers a copy button for each version's hash, and none when the content of the file is withheld (the hash is still shown)", async () => {
+    const { unmount } = renderFile(<HistoryPanel {...props} />, { api: routes(list([version(HASH_A), version(HASH_B)])) });
+    const panel = await screen.findByRole("complementary", { name: "History" });
+    await within(panel).findAllByRole("listitem");
+    expect(within(panel).getAllByRole("button", { name: "Copy hash" })).toHaveLength(2);
+    unmount();
+    renderFile(<HistoryPanel {...props} copyHash={false} />, { api: routes(list([version(HASH_A), version(HASH_B)])) });
+    const withheld = await screen.findByRole("complementary", { name: "History" });
+    const rows = await within(withheld).findAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    expect(within(withheld).queryByRole("button", { name: "Copy hash" })).toBeNull();
+    expect(within(rows[0] as HTMLElement).getByText(HASH_A.slice(0, 7))).toBeInTheDocument();
   });
 
   it("offers a revert on every version but the current one", async () => {
@@ -71,7 +88,28 @@ describe("HistoryPanel", () => {
 
   it("names who the contract does not name: another person is not given a made-up name", async () => {
     renderFile(<HistoryPanel {...props} />, { api: routes(list([version(HASH_A, { attribution: { source: "tool_write", confidence: "certain", actor: { kind: "user", user: "11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222" }, evidence: {} } })])) });
-    expect(await screen.findByText("Another Lanekeeper user")).toBeInTheDocument();
+    expect(await screen.findByText("Lanekeeper user 22222222")).toBeInTheDocument();
+  });
+
+  it("gives an Admin the name from the user list, and an Editor the short id with no request for the list", async () => {
+    const OTHER = "11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222";
+    const other = version(HASH_A, { attribution: { source: "tool_write", confidence: "certain", actor: { kind: "user", user: OTHER }, evidence: {} } });
+    const page = { items: [other], next: null };
+    const users = { items: [{ id: OTHER, display_name: "Marco Diaz", email: "marco@example.test", github_login: "mdiaz", role: "editor", status: "active", created_at: 1, last_seen_at: null }], next: null };
+    const admin = renderFile(<HistoryPanel {...props} />, { role: "admin", api: routes({ [HISTORY]: () => page, "GET /api/v1/admin/users": () => users }) });
+    expect(await screen.findByText("Marco Diaz")).toBeInTheDocument();
+    admin.unmount();
+    const editor = renderFile(<HistoryPanel {...props} />, { role: "editor", api: routes({ [HISTORY]: () => page, "GET /api/v1/admin/users": () => users }) });
+    expect(await screen.findByText("Lanekeeper user 22222222")).toBeInTheDocument();
+    expect(editor.calls.some((c) => c.path.startsWith("/api/v1/admin/users"))).toBe(false);
+  });
+
+  it("opens the evidence behind the chip on a press, and hands the severity to the one shared badge", async () => {
+    renderFile(<HistoryPanel {...props} />, { api: routes(list([version(HASH_A, { severity: "critical", attribution: { source: "sentinel_login", confidence: "high", actor: { kind: "os_login", login: "dana.okoye" }, evidence: { executable: "/usr/bin/vi" } } })])) });
+    const row = (await screen.findAllByRole("listitem"))[0] as HTMLElement;
+    expect(row.querySelector("[data-slot='severity-badge'][data-severity='critical']")).not.toBeNull();
+    await userEvent.click(within(row).getByRole("button", { name: /dana\.okoye/ }));
+    expect(await screen.findByText("/usr/bin/vi")).toBeInTheDocument();
   });
 
   it("shows a skeleton while it loads, and an error with the request id when it fails", async () => {

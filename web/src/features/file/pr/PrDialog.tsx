@@ -4,12 +4,15 @@ import type { FileEntry, PrJob, PrLink, PrTarget } from "@/api/generated/model";
 import { ApiProblem } from "@/api/problem";
 import { SafeText } from "@/components/app/SafeText";
 import { WriteError, type WriteErrorInfo } from "@/components/app/WriteError";
+import { DuplicatePr, OpenPrButton } from "@/components/pr/DuplicatePr";
+import { PrJobProgress } from "@/components/pr/PrJobProgress";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { swimlaneListQuery } from "@/features/swimlanes/queries";
+import { duplicatePrOf } from "@/features/prs/duplicate";
 import { prJobQuery } from "@/features/prs/queries";
 import { prMutations } from "@/features/prs/mutations";
 import { BranchChip } from "@/components/app/chips";
@@ -18,15 +21,15 @@ import { useCursorPages } from "@/lib/query/cursor-pages";
 import { cn } from "@/lib/utils";
 import { fromProblem, type WriteOutcome } from "../edit/outcome";
 import { effectiveStem, splitPath } from "../model";
-import { DoneStep, ExistsStep, FailedJobStep, JobStep, MyTokenLink, PushStep, TokenStep, doneAction, existsAction } from "./JobStep";
-import { defaultBody, defaultTitle, duplicateOf, tokenTrouble } from "./model";
+import { MyTokenLink, PushStep, TokenStep, doneAction } from "./JobStep";
+import { defaultBody, defaultTitle, tokenTrouble } from "./model";
 import { TargetStep, type Target } from "./TargetStep";
 import { usePrPreview } from "./usePrPreview";
 
 // Raise a pull request (Consequence dialogs, group 1). Step 1 chooses where it goes, with the repository, the branch and the path
 // each target writes taken from the server's preview before anything exists; step 2 is the title and the description; then the
-// job, which is the server's to report: nothing here says "created" before the job is completed. A second PR for a change that
-// has an open one is refused by the server and shown as a link. GitHub's refusals have their own views: an expired or unusable
+// job, which is the server's to report (the shared job view, kept fresh by `pr_job_progress`): nothing here says "created" before
+// the job is completed. A second PR for a change that has an open one is refused by the server and shown as the shared card. GitHub's refusals have their own views: an expired or unusable
 // token (a link to My token), and no push access (the other target).
 //
 // Not kept across a reload: the job runs on the server and is not lost, but the design's "resumed" job needs a place to keep
@@ -141,7 +144,7 @@ export function PrDialog({ open, onOpenChange, lane, path, entry, tenants, hash,
         setError({ title: "The request failed", detail: "Nothing was created. Try again." });
         return;
       }
-      const duplicate = duplicateOf(thrown);
+      const duplicate = duplicatePrOf(thrown);
       if (duplicate !== null) {
         setView({ kind: "exists", link: duplicate });
         return;
@@ -267,18 +270,20 @@ export function PrDialog({ open, onOpenChange, lane, path, entry, tenants, hash,
       </>
     );
   } else if (view.kind === "exists") {
-    content = <ExistsStep link={view.link} />;
+    content = <DuplicatePr link={view.link} swimlane={lane} />;
     footer = (
       <>
         <Button variant="ghost" onClick={() => onOpenChange(false)}>
           Close
         </Button>
-        {existsAction(view.link)}
+        <OpenPrButton link={view.link} />
       </>
     );
   } else if (view.kind === "job" && job !== null) {
+    // What the job means for the person, said when it is completed: the file stays NFS ahead until the PR merges and syncs.
+    const effect = target === "tenant" ? `The file stays NFS ahead until the PR merges and ${lane} syncs.` : "Base changes reach every swimlane on its next sync after the PR merges.";
+    content = <PrJobProgress jobId={view.job.id} initial={view.job} title={titleValue} effect={effect} />;
     if (job.state === "completed") {
-      content = <DoneStep job={job} target={target} lane={lane} title={titleValue} />;
       footer = (
         <>
           <Button variant="ghost" className="mr-auto" onClick={() => setView({ kind: "target" })}>
@@ -291,7 +296,6 @@ export function PrDialog({ open, onOpenChange, lane, path, entry, tenants, hash,
         </>
       );
     } else if (job.state === "failed") {
-      content = <FailedJobStep job={job} />;
       footer = (
         <>
           <Button variant="ghost" className="mr-auto" onClick={() => onOpenChange(false)}>
@@ -303,7 +307,6 @@ export function PrDialog({ open, onOpenChange, lane, path, entry, tenants, hash,
         </>
       );
     } else {
-      content = <JobStep job={job} resumed={false} />;
       footer = (
         <>
           <span className="mr-auto text-xs text-muted-foreground">Esc closes this dialog, not the job</span>

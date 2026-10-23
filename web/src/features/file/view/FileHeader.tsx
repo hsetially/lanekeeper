@@ -33,11 +33,17 @@ export type FileHeaderProps = {
   link?: string | null;
   /** The line the link points at, when it points at one: the button says so. */
   linkLine?: number | null;
+  /** The pull-request badge ("PR #418 open", "Fix merged, awaiting sync"), beside the drift state. The screen reads the links once. */
+  prBadge?: ReactNode;
+  /** Who changed the file and how sure the server is (the shared attribution chip), at the end of the facts. */
+  changedBy?: ReactNode;
+  /** False for a file whose content is withheld: its hash is shown and not offered to be copied (the standing default for a withheld file). */
+  copyHash?: boolean;
 };
 
 const factClasses = "inline-flex h-[22px] items-center rounded-sm border px-1.5 font-mono text-xs";
 
-export function FileHeader({ title, marker, drift, note, editing, path, facts, hash, unavailable = false, actions, link = null, linkLine = null }: FileHeaderProps) {
+export function FileHeader({ title, marker, drift, note, editing, path, facts, hash, unavailable = false, actions, link = null, linkLine = null, prBadge = null, changedBy = null, copyHash = true }: FileHeaderProps) {
   return (
     <section aria-label="File" className="flex flex-none flex-wrap items-start justify-between gap-x-4 gap-y-3 px-6 pt-3.5 pb-3">
       <div className="flex min-w-0 flex-col gap-2">
@@ -52,6 +58,7 @@ export function FileHeader({ title, marker, drift, note, editing, path, facts, h
             </Badge>
           )}
           {drift === null ? null : <StatusBadge variant={DRIFT_VARIANT[drift]} />}
+          {prBadge}
           {note === null ? null : <Badge className="border-dashed border-input">{note}</Badge>}
           {editing ? (
             <Badge className="border-primary font-semibold text-link">
@@ -75,8 +82,9 @@ export function FileHeader({ title, marker, drift, note, editing, path, facts, h
               </span>
             ))
           )}
-          {hash === null ? unavailable ? null : <Skeleton className="h-[22px] w-20" /> : <HashChip hash={hash} />}
+          {hash === null ? unavailable ? null : <Skeleton className="h-[22px] w-20" /> : <HashChip hash={hash} copy={copyHash} />}
           {link === null ? null : <CopyLink href={link} what={linkLine === null ? "link to this file" : `link to line ${linkLine}`} />}
+          {changedBy}
         </div>
       </div>
       <div className="flex flex-wrap items-center justify-end gap-2">{actions}</div>

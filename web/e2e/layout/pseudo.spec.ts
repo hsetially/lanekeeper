@@ -9,7 +9,7 @@ import { auditLayout, describeReport, hasDefects, requestsQuiet } from "./audit.
 import { pseudoCount, pseudoLocalise } from "./pseudo.ts";
 import { auditTables } from "./tables.ts";
 
-test.use({ dist: process.env["LK_DIST"] ?? "dist", colorScheme: "light" });
+test.use({ dist: process.env["LK_E2E_DIST"] ?? process.env["LK_DIST"] ?? "dist", colorScheme: "light" });
 
 const SIZES = [
   { width: 1024, height: 768 },

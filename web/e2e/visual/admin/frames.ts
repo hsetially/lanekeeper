@@ -6,6 +6,10 @@
 import type { Page } from "@playwright/test";
 import type { Excluded, FrameDef, Step } from "../search/kit";
 import { expectSkeleton, failRequests, holdRequests, expectPaused, pauseStream, pausedMasks } from "../search/steps";
+import {
+  addMapping, addRule, confirmSave, dialog as t5Dialog, dryRun, dryRunShown, editRule, fillMapping, fillRule, invalidInDialog, mappingSaved, osLoginPut, ruleSaved, saveMapping, saveRule, savePolicy,
+  setPolicy, then, typeConfirm,
+} from "../admin-t5/steps";
 
 const APP = (row: string): string => `the section is the app's own, built on the contract's operations (design/DEVIATIONS.md: "${row}")`;
 
@@ -22,6 +26,59 @@ const openDialog = (button: string | RegExp, dialog: string | RegExp): Step => a
   await page.getByRole("button", { name: button }).first().click();
   await page.getByRole("alertdialog", { name: dialog }).waitFor();
 };
+
+// The four sections that task T5 adds are the app's own, on the contract's operations (src/features/admin/sections/{Sentinels,OsLogin,SeverityRules,
+// Retention}Section.tsx, scenarios `design-admin-t5-*`), and each differs from the design by the rows "Admin: Sentinels", "Admin: OS Login",
+// "Admin: Severity rules" and "Admin: Retention" of design/DEVIATIONS.md (the design's sentinel threshold, order of rules, preview of what a rule
+// changes, recent purges and the list of names seen have no operation behind them). Their frames are app-owned baselines like every Admin frame; the
+// design's frame is named in each title, and the states the design does not draw are in e2e/visual/admin-t5.
+const T5ROW = (row: string, what: string): string => `the section is the app's own, on the contract's operations${what === "" ? "" : `: ${what}`} (design/DEVIATIONS.md: "${row}")`;
+const SENT = T5ROW("Admin: Sentinels", "read-only, with no threshold, preview or row to edit");
+const OSL = T5ROW("Admin: OS Login", "the admin's mappings, no table of names seen");
+const SEV = T5ROW("Admin: Severity rules", "the admin's rules, four levels, no order or preview");
+const RET = T5ROW("Admin: Retention", "two numbers, a dry run, a typed confirmation, no purge history");
+
+const SAVE_RULE = then(addRule, fillRule({ id: "ssl-critical", name: "SSL config is Critical", path: "security/ssl/**" }), saveRule);
+const EDIT_RULE4 = editRule(/^Edit rule payments/);
+
+const t5Frames: FrameDef[] = [
+  // Sentinels: 1ao default, 1ap empty, 1bl dark. 1aq to 1as (the threshold) are not drawn: see `excluded`.
+  { board: "admin", frame: "1ao", kind: "app", scenario: "design-admin-t5-sentinels", path: "/admin/sentinels", title: "sentinels, one disconnected, with its alert", why: SENT },
+  { board: "admin", frame: "1ap", kind: "app", scenario: "design-admin-t5-sentinels-empty", path: "/admin/sentinels", title: "no sentinel registered", why: SENT },
+  { board: "admin", frame: "1bl", kind: "app", scenario: "design-admin-t5-sentinels", path: "/admin/sentinels", title: "sentinels, dark", why: SENT },
+  // OS Login: 1at default, 1au empty, 1av editing, 1aw refused, 1ax saved.
+  { board: "admin", frame: "1at", kind: "app", scenario: "design-admin-t5-oslogin", path: "/admin/oslogin", title: "the admin's mappings", why: OSL },
+  { board: "admin", frame: "1au", kind: "app", scenario: "design-admin-t5-oslogin-empty", path: "/admin/oslogin", title: "no mapping", why: OSL },
+  { board: "admin", frame: "1av", kind: "app", scenario: "design-admin-t5-oslogin", path: "/admin/oslogin", title: "adding a mapping by hand", why: OSL, steps: then(addMapping, fillMapping("dana_okoye_work", 1)) },
+  {
+    board: "admin", frame: "1aw", kind: "app", scenario: "design-admin-t5-oslogin", path: "/admin/oslogin", title: "the hub refuses the choice (422): what was typed stays", why: OSL,
+    before: osLoginPut(422, "Unprocessable"),
+    steps: then(addMapping, fillMapping("dana_okoye_work", 1), saveMapping, async ({ page }) => {
+      await t5Dialog(page).getByText(/could not be saved|Unprocessable/).first().waitFor();
+    }),
+  },
+  { board: "admin", frame: "1ax", kind: "app", scenario: "design-admin-t5-oslogin", path: "/admin/oslogin", title: "saved: mapping saved", why: OSL, steps: then(addMapping, fillMapping("dana_okoye_work", 1), saveMapping, mappingSaved) },
+  // Severity rules: 1ay default, 1az empty, 1ba editing, 1bb error, 1bc saved, 1bm dark editing.
+  { board: "admin", frame: "1ay", kind: "app", scenario: "design-admin-t5-severity", path: "/admin/severity", title: "the admin's rules", why: SEV },
+  { board: "admin", frame: "1az", kind: "app", scenario: "design-admin-t5-severity-empty", path: "/admin/severity", title: "no rule of the admin's own", why: SEV },
+  { board: "admin", frame: "1ba", kind: "app", scenario: "design-admin-t5-severity", path: "/admin/severity", title: "editing a rule", why: SEV, steps: EDIT_RULE4 },
+  { board: "admin", frame: "1bb", kind: "app", scenario: "design-admin-t5-severity", path: "/admin/severity", title: "validation error: no id, no name", why: SEV, steps: then(addRule, saveRule, invalidInDialog) },
+  { board: "admin", frame: "1bc", kind: "app", scenario: "design-admin-t5-severity", path: "/admin/severity", title: "saved: rule saved", why: SEV, steps: then(SAVE_RULE, ruleSaved) },
+  { board: "admin", frame: "1bm", kind: "app", scenario: "design-admin-t5-severity", path: "/admin/severity", title: "editing a rule, dark", why: SEV, steps: EDIT_RULE4 },
+  // Retention: 1bd default, 1be never changed, 1bf editing, 1bg error, 1bh saved.
+  { board: "admin", frame: "1bd", kind: "app", scenario: "design-admin-t5-retention", path: "/admin/retention", title: "180 days, last 50 per file, with the saved policy's dry run", why: RET },
+  {
+    board: "admin", frame: "1be", kind: "app", scenario: "design-admin-t5-retention-defaults", path: "/admin/retention", title: "never changed: the defaults apply, and retention deletes", why: `${RET}; the design's "no policy, nothing is ever deleted" is the opposite of the contract (D118: the job deletes by default)`,
+  },
+  { board: "admin", frame: "1bf", kind: "app", scenario: "design-admin-t5-retention", path: "/admin/retention", title: "dropping to 90 days, with the dry run of it", why: RET, steps: then(setPolicy("90", "50"), dryRun, dryRunShown) },
+  {
+    board: "admin", frame: "1bg", kind: "app", scenario: "design-admin-t5-retention", path: "/admin/retention", title: "validation error: below the 30-day minimum, and a count missing", why: RET,
+    steps: then(setPolicy("20", ""), dryRun, async ({ page }) => {
+      await page.getByText("Minimum is 30 days").waitFor();
+    }),
+  },
+  { board: "admin", frame: "1bh", kind: "app", scenario: "design-admin-t5-retention", path: "/admin/retention", title: "saved: policy saved", why: RET, steps: then(setPolicy("90", "50"), dryRun, dryRunShown, savePolicy, typeConfirm, confirmSave) },
+];
 
 export const frames: FrameDef[] = [
   // Users and access requests.
@@ -211,23 +268,23 @@ export const frames: FrameDef[] = [
   { board: "admin", frame: "1bj", kind: "app", scenario: "design-admin-viewer", path: "/admin/users", title: "not an Admin: Admin needs the Admin role", why: APP("Admin area") },
   { board: "admin", frame: "1bk", kind: "app", scenario: "design-admin-mcp-off", path: "/admin/mcp", title: "MCP mode off", why: APP("Admin: MCP") },
   { board: "admin", frame: "1bn", kind: "app", scenario: "design-admin-notify", path: "/admin/notify", title: "notification channels, dark", why: APP("Admin: Notifications") },
+  // Sentinels, OS Login users, Severity rules and Retention (T5).
+  ...t5Frames,
 ];
 
-const T5 = (section: string): string => `the ${section} section is task T5's: the app lists it and says "Not available yet" (design/DEVIATIONS.md: "Admin area", "T5 scope")`;
 const FORM = (what: string): string => `the app has no ${what} (design/DEVIATIONS.md: "Admin: Users", "Admin: Swimlanes"): the contract has no operation for it`;
 
 export const excluded: Excluded[] = [
   { board: "admin", frame: "1d", why: FORM("GitHub login field to be linked or refused, and no approve-without-a-role error: the role is chosen in the dialog") },
   { board: "admin", frame: "1h", why: FORM("register-swimlane form with a live preview of the identity binding (plan CG15)") },
   { board: "admin", frame: "1i", why: FORM("register-swimlane form, so its validation errors cannot be drawn (plan CG15)") },
-  ...(["1ao", "1ap", "1aq", "1ar", "1as"] as const).map((frame) => ({ board: "admin" as const, frame, why: T5("Sentinels") })),
-  ...(["1at", "1au", "1av", "1aw", "1ax"] as const).map((frame) => ({ board: "admin" as const, frame, why: T5("OS Login user mapping") })),
-  ...(["1ay", "1az", "1ba", "1bb", "1bc"] as const).map((frame) => ({ board: "admin" as const, frame, why: T5("Severity rules") })),
-  ...(["1bd", "1be", "1bf", "1bg", "1bh"] as const).map((frame) => ({ board: "admin" as const, frame, why: T5("Retention") })),
+  ...(["1aq", "1ar", "1as"] as const).map((frame) => ({
+    board: "admin" as const,
+    frame,
+    why: "the app has no sentinel threshold to edit, to refuse or to save: the contract lists the sentinels and has no operation to configure one (design/DEVIATIONS.md: \"Admin: Sentinels\", plan CG15), so the page is read-only",
+  })),
   { board: "admin", frame: "1am", why: FORM("validation of a Viewer holding a token, a lifetime or a name format: the personal-token form takes a label only") },
   { board: "admin", frame: "1an", why: FORM("\"Token shown once\" frame of the admin table: the token is shown once in the shared personal-tokens component, whose frame is the MCP page's") },
-  { board: "admin", frame: "1bl", why: T5("Sentinels (dark)") },
-  { board: "admin", frame: "1bm", why: T5("Severity rules (dark)") },
 ];
 
 // The States-index rows of Admin, light, as app-owned baselines (L11 E11 R11 P02 C03).

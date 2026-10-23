@@ -9,7 +9,7 @@ import { auditLayout, describeReport, hasDefects } from "./audit.ts";
 import { auditTables } from "./tables.ts";
 import { freezeDate } from "../a11y/helpers.ts";
 
-test.use({ dist: process.env["LK_DIST"] ?? "dist", colorScheme: "light" });
+test.use({ dist: process.env["LK_E2E_DIST"] ?? process.env["LK_DIST"] ?? "dist", colorScheme: "light" });
 
 const SIZES = [
   { width: 1024, height: 768 },
@@ -30,6 +30,13 @@ const TABLES = [
   ["feature status", "design-search-admin", "/status", "Feature flags"],
   ["admin: swimlanes", "design-admin-swimlanes", "/admin/swimlanes", "Swimlanes"],
   ["admin: users", "design-admin-users", "/admin/users", "Users"],
+  // T5: the pull requests of a swimlane (a list of 95, so the rows scroll under the header), the audit log with a source and a level on
+  // every event, and the grids of the Sentinels, OS Login and Severity rules sections.
+  ["pull requests (all states)", "design-prs-list", "/swimlanes/sitb/pull-requests?state=all", "Pull requests"],
+  ["audit log with the attribution column", "design-attribution-audit", "/audit", "Audit events"],
+  ["admin: sentinels", "design-admin-t5-sentinels", "/admin/sentinels", "Sentinels"],
+  ["admin: OS Login mappings", "design-admin-t5-oslogin", "/admin/oslogin", "OS Login mappings"],
+  ["admin: severity rules", "design-admin-t5-severity", "/admin/severity", "Severity rules"],
 ] as const;
 
 async function gridBox(page: Page, name: string): Promise<{ scrollWidth: number; clientWidth: number; scrollHeight: number; clientHeight: number } | null> {

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { PrJob, PrLink } from "@/api/generated/model";
 import { ApiProblem } from "@/api/problem";
-import { defaultBody, defaultTitle, duplicateOf, httpsUrl, jobSteps, prNumberOf, tokenTrouble } from "./model";
+import { defaultBody, defaultTitle, tokenTrouble } from "./model";
 
-// The pure parts of the pull-request dialog: the words it starts a title and a description with, how a job's state becomes the
-// four steps of the design, what a GitHub token problem means for the person, and which links the dialog will make a link of.
+// The pure parts of the pull-request dialog: the words it starts a title and a description with, and what a GitHub token problem
+// means for the person. (The job's steps, the open pull request a 409 names and a pull request's address are tested with the shared
+// pieces: src/components/pr/job-steps.test.ts, pr-url.test.ts and src/features/prs/duplicate.test.ts.)
 
 const problem = (status: number, kind: string, body: Record<string, unknown> = {}) => new ApiProblem({ status, kind, title: kind, requestId: "req-1", body });
 
@@ -32,27 +32,6 @@ describe("defaultBody", () => {
   });
 });
 
-describe("jobSteps", () => {
-  const states = (state: PrJob["state"]) => jobSteps(state).map((s) => s.status);
-  it("is Preparing, Committing, Opening pull request and Done", () => {
-    expect(jobSteps("pending").map((s) => s.label)).toEqual(["Preparing", "Committing", "Opening pull request", "Done"]);
-  });
-  it("waits for the first step while the job is queued", () => {
-    expect(states("pending")).toEqual(["active", "pending", "pending", "pending"]);
-  });
-  it("moves one step at a time, only as far as the server says", () => {
-    expect(states("preparing")).toEqual(["active", "pending", "pending", "pending"]);
-    expect(states("committing")).toEqual(["done", "active", "pending", "pending"]);
-    expect(states("opening")).toEqual(["done", "done", "active", "pending"]);
-  });
-  it("is all done only when the job is completed", () => {
-    expect(states("completed")).toEqual(["done", "done", "done", "done"]);
-  });
-  it("does not make up a step for a failed job: none is done, none is active", () => {
-    expect(states("failed")).toEqual(["pending", "pending", "pending", "pending"]);
-  });
-});
-
 describe("tokenTrouble", () => {
   it("is an expired token", () => {
     expect(tokenTrouble(problem(401, "token_expired"))).toBe("expired");
@@ -66,36 +45,5 @@ describe("tokenTrouble", () => {
   it("is nothing for any other problem, and for something that is not a problem", () => {
     expect(tokenTrouble(problem(500, "internal"))).toBeNull();
     expect(tokenTrouble(new Error("x"))).toBeNull();
-  });
-});
-
-describe("duplicateOf", () => {
-  const link: PrLink = { id: 1, swimlane: "sitb", path: "a.yml", nfs_hash: "a".repeat(64), state: "open", pr_url: "https://github.com/o/r/pull/418", pr_number: 418, author: "u", created_at: 1, closed_at: null };
-  it("is the open PR the server named", () => {
-    expect(duplicateOf(problem(409, "conflict", { reason: "duplicate_pr", link }))).toEqual(link);
-  });
-  it("is nothing for another conflict, or a link that is not one", () => {
-    expect(duplicateOf(problem(409, "conflict", { current: null }))).toBeNull();
-    expect(duplicateOf(problem(409, "conflict", { reason: "duplicate_pr", link: { pr_number: "x" } }))).toBeNull();
-    expect(duplicateOf(problem(409, "conflict", { reason: "duplicate_pr" }))).toBeNull();
-  });
-});
-
-describe("httpsUrl", () => {
-  it("accepts an https URL", () => {
-    expect(httpsUrl("https://github.com/o/r/pull/1")).toBe("https://github.com/o/r/pull/1");
-  });
-  it("refuses anything else: javascript:, data:, http:, a relative path, junk", () => {
-    for (const bad of ["javascript:alert(1)", "data:text/html,x", "http://github.com/x", "/pull/1", "", "https://", "not a url", "https://a b"]) expect(httpsUrl(bad)).toBeNull();
-  });
-});
-
-describe("prNumberOf", () => {
-  it("reads the number at the end of a pull-request URL", () => {
-    expect(prNumberOf("https://github.com/o/r/pull/419")).toBe(419);
-    expect(prNumberOf("https://github.com/o/r/pull/419/")).toBe(419);
-  });
-  it("is nothing for a URL that does not end like one", () => {
-    expect(prNumberOf("https://github.com/o/r")).toBeNull();
   });
 });

@@ -8,12 +8,16 @@ import { FoldersSection } from "./sections/FoldersSection";
 import { McpSection } from "./sections/McpSection";
 import { MergeSection } from "./sections/MergeSection";
 import { NotifySection } from "./sections/NotifySection";
+import { OsLoginSection } from "./sections/OsLoginSection";
 import { PathsSection } from "./sections/PathsSection";
+import { RetentionSection } from "./sections/RetentionSection";
+import { SentinelsSection } from "./sections/SentinelsSection";
+import { SeverityRulesSection } from "./sections/SeverityRulesSection";
 import { TiersSection } from "./sections/TiersSection";
 
 // The sections of /admin/:section that are not a screen of their own. The route table has already checked that `section` is one of
-// the area's sections; each is built in a file of its own. Four (sentinels, OS Login, severity rules and retention) belong to task
-// T5 and are listed here as not available until its files are added: a link to one opens its page and says so, never a blank.
+// the area's sections; each is built in a file of its own. An area with no section here (the two that are screens of their own are
+// never asked for) says it is not available, never a blank.
 
 function NotYet({ area }: { area: AdminArea }) {
   return (
@@ -39,6 +43,14 @@ function body(area: AdminArea): ReactNode {
       return <NotifySection />;
     case "mcp":
       return <McpSection />;
+    case "sentinels":
+      return <SentinelsSection />;
+    case "oslogin":
+      return <OsLoginSection />;
+    case "severity":
+      return <SeverityRulesSection />;
+    case "retention":
+      return <RetentionSection />;
     default:
       return <NotYet area={area} />;
   }

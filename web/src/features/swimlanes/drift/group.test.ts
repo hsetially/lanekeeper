@@ -28,6 +28,12 @@ describe("groupDrift", () => {
     ]);
   });
 
+  it("puts the most severe file first inside a group, then by path; a file nobody rated comes last", () => {
+    const rated = (path: string, severity: FileEntry["severity"]): FileEntry => ({ ...entry(path, "nfs_ahead"), severity });
+    const groups = groupDrift([rated("a.yml", null), rated("b.yml", "low"), rated("c.yml", "critical"), rated("d.yml", "high"), rated("a-high.yml", "high"), rated("e.yml", "medium")]);
+    expect(groups[0]?.files.map((f) => f.path)).toEqual(["c.yml", "a-high.yml", "d.yml", "e.yml", "b.yml", "a.yml"]);
+  });
+
   it("leaves out what is in sync, a folder, and a state that has no files", () => {
     const folder = { ...entry("dir", "nfs_ahead"), is_dir: true };
     expect(groupDrift([entry("a.yml", "in_sync"), folder])).toEqual([]);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AuditEvent } from "@/api/generated/model";
-import { actorLabel, newestFirst, viaLabel } from "./rows";
+import { newestFirst, viaLabel } from "./rows";
 
 const HASH = "a".repeat(64);
 const event = (id: number, over: Partial<AuditEvent> = {}): AuditEvent => ({
@@ -29,20 +29,6 @@ describe("newestFirst", () => {
     const input = [event(1), event(2)];
     newestFirst(input);
     expect(input.map((e) => e.id)).toEqual([1, 2]);
-  });
-});
-
-describe("actorLabel", () => {
-  it("says Lanekeeper for a change nobody made by hand", () => {
-    expect(actorLabel(null)).toBe("Lanekeeper");
-  });
-
-  it("shortens a user id to the start of the person's own id, because the audit read carries no name", () => {
-    expect(actorLabel("11111111-1111-4111-8111-111111111111:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")).toBe("user aaaaaaaa");
-  });
-
-  it("keeps whatever it cannot read as it is, shortened", () => {
-    expect(actorLabel("x".repeat(40))).toBe(`user ${"x".repeat(8)}`);
   });
 });
 

@@ -2,6 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { FileContent, FileEntry } from "@/api/generated/model";
+import { expectNoAxeViolations } from "@/test/axe";
 import { renderFile } from "../test-utils";
 import { ContentView } from "./ContentView";
 
@@ -35,12 +36,75 @@ describe("ContentView: text", () => {
   it("uses the masked view when the server sent masks, and marks the markers", () => {
     const text = `k: ${MARK}\n`;
     render(<ContentView {...props} content={content({ text, masks: [{ line: 1, start: 3, end: 3 + MARK.length }] })} />);
-    expect(document.querySelector("[data-slot='mask']")).not.toBeNull();
+    expect(document.querySelector("[data-slot='hidden-value']")).not.toBeNull();
+    expect(screen.getByText("Hidden value")).toBeInTheDocument();
+  });
+
+  it("gives the marker a Reveal control only when it is told the swimlane (reveal reads the file on NFS)", async () => {
+    const text = `k: ${MARK}\n`;
+    const masks = [{ line: 1, start: 3, end: 3 + MARK.length, setting: "k" }];
+    const { unmount } = renderFile(<ContentView {...props} content={content({ text, masks })} />);
+    expect(screen.queryByRole("button", { name: /Reveal value of/ })).not.toBeInTheDocument();
+    unmount();
+    renderFile(<ContentView {...props} lane="sitb" content={content({ text, masks })} />);
+    expect(await screen.findByRole("button", { name: "Reveal value of k" })).toBeInTheDocument();
   });
 
   it("points at the line the page names", () => {
     render(<ContentView {...props} content={content({ text: "a\nb\nc\n" })} highlightLine={2} />);
     expect(document.querySelector("[data-highlight='true']")).not.toBeNull();
+  });
+});
+
+// S14b, fail closed. The server says where it put a marker; the web believes nothing it cannot check. A mask whose span is not a
+// marker, or that cannot be placed in the text, means the server and the text disagree about where the value is, so the web must
+// not draw the text as if no mask had been sent. (S3's first view dropped such a mask and drew the raw line: a defect these tests
+// were written against before the view was replaced.)
+describe("ContentView: masks that cannot be trusted never draw the raw text (fail closed)", () => {
+  const RAW = "hunter2-correct-horse";
+
+  it("draws nothing of a line whose masked span is not a marker", () => {
+    const text = `a: 1\nk: ${RAW}\nb: 2\n`;
+    const start = "a: 1\n".length + 3;
+    render(<ContentView {...props} content={content({ text, masks: [{ line: 2, start, end: start + RAW.length }] })} />);
+    expect(document.body.textContent).not.toContain(RAW);
+  });
+
+  it("draws nothing of a text whose mask names a line the text does not have", () => {
+    const text = `a: 1\nk: ${RAW}\n`;
+    render(<ContentView {...props} content={content({ text, masks: [{ line: 9, start: 0, end: MARK.length }] })} />);
+    expect(document.body.textContent).not.toContain(RAW);
+  });
+
+  it("draws nothing of a line whose masked span is off by one byte, so that it holds part of a marker and part of the value", () => {
+    const text = `k: ${MARK}${RAW}\n`;
+    render(<ContentView {...props} content={content({ text, masks: [{ line: 1, start: 4, end: 3 + MARK.length + 1 }] })} />);
+    expect(document.body.textContent).not.toContain(RAW);
+  });
+
+  it("still shows the lines of the text that carry no mask, and says which line it hid", () => {
+    const text = `a: 1\nk: ${RAW}\nb: 2\n`;
+    const start = "a: 1\n".length + 3;
+    render(<ContentView {...props} content={content({ text, masks: [{ line: 2, start, end: start + RAW.length }] })} />);
+    expect(document.body.textContent).toContain("a: 1");
+    expect(document.body.textContent).toContain("b: 2");
+    expect(screen.getByText("Hidden line")).toBeInTheDocument();
+  });
+
+  it("says why it shows nothing when it refuses the whole text, and keeps the other chrome", () => {
+    const text = `a: 1\nk: ${RAW}\n`;
+    render(<ContentView {...props} content={content({ text, masks: [{ line: 9, start: 0, end: MARK.length }] })} />);
+    expect(screen.getByText("This text can't be shown safely")).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("holds when the Reveal control is there too: the raw value is in no reveal button name, token or live region", async () => {
+    const text = `a: 1\nk: ${RAW}\n`;
+    const start = "a: 1\n".length + 3;
+    renderFile(<ContentView {...props} lane="sitb" content={content({ text, masks: [{ line: 2, start, end: start + RAW.length, setting: "k" }] })} />);
+    await screen.findByText("Hidden line");
+    expect(document.body.innerHTML).not.toContain(RAW);
+    expect(screen.queryByRole("button", { name: /Reveal/ })).not.toBeInTheDocument();
   });
 });
 
@@ -96,8 +160,16 @@ describe("ContentView: a file whose content is withheld", () => {
     expect(within(dl).getByText("3.2 KB")).toBeInTheDocument();
     expect(within(dl).getByText("9d2c47e")).toBeInTheDocument();
     expect(within(dl).getByText("2026-10-17 14:05 UTC")).toBeInTheDocument();
-    expect(within(dl).getAllByText("Unknown")).toHaveLength(2);
-    expect(within(dl).getByText("found by scan")).toBeInTheDocument();
+    expect(within(dl).getByText("Unknown author")).toBeInTheDocument();
+    // `unknown` carries `low` as the contract's placeholder (D73: none), so it is no score and never "Low".
+    expect(within(dl).queryByText("Low")).not.toBeInTheDocument();
+    expect(within(dl).getByText("Unknown")).toBeInTheDocument();
+  });
+
+  it("offers no copy for the hash of a file it will not show: nothing about it is a thing to paste elsewhere", async () => {
+    renderFile(<ContentView {...props} name="keystore.jks" entry={entry} content={content({ class: "denied", content_withheld: true, text: null, size: 3277 })} />);
+    await screen.findByText("keystore.jks");
+    expect(screen.queryByRole("button", { name: /copy/i })).not.toBeInTheDocument();
   });
 
   it("has no image, no download and no text for it", async () => {
@@ -111,5 +183,44 @@ describe("ContentView: a file whose content is withheld", () => {
   it("copes with a file the listing does not know", async () => {
     renderFile(<ContentView {...props} name="keystore.jks" entry={null} content={content({ class: "denied", content_withheld: true, text: null, size: 3277 })} />);
     expect(await screen.findAllByText("Not available")).not.toHaveLength(0);
+  });
+
+  // The card is the one the page ships (FileScreen -> ContentView), so these are about it and not about a stand-in: there is nothing to
+  // do with a file whose content is withheld, so the card has nothing to press, follow, type into, select or copy, and the single
+  // control the page may offer is the evidence behind "Changed by".
+  const FORBIDDEN_ROLES = ["link", "textbox", "combobox", "checkbox", "switch", "tab", "menuitem", "img", "table", "grid"];
+  const withheld = content({ class: "denied", content_withheld: true, text: null, size: 3277, path: "security/keystore.jks" });
+
+  it("has nothing to press, follow, type into or copy when nobody is known to have changed it", async () => {
+    const { container } = renderFile(<ContentView {...props} name="keystore.jks" entry={null} content={withheld} />);
+    await screen.findByText("keystore.jks");
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    for (const role of FORBIDDEN_ROLES) expect(screen.queryAllByRole(role), role).toHaveLength(0);
+    expect(container.querySelector("a, input, textarea, select, [contenteditable], [download], pre, code, [data-slot='virtual-list']")).toBeNull();
+  });
+
+  it("has, with an author, the one control that opens the evidence, and nothing that copies", async () => {
+    renderFile(<ContentView {...props} name="keystore.jks" entry={entry} content={withheld} />);
+    await screen.findByText("keystore.jks");
+    const buttons = screen.getAllByRole("button");
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]).toHaveAttribute("aria-haspopup");
+    expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
+    for (const role of FORBIDDEN_ROLES) expect(screen.queryAllByRole(role), role).toHaveLength(0);
+  });
+
+  it("draws hidden characters in the name as visible markers", async () => {
+    renderFile(<ContentView {...props} name={"a\u202eb.jks"} entry={null} content={withheld} />);
+    expect(await screen.findByText("<U+202E>")).toBeInTheDocument();
+  });
+
+  it("has no axe violations, with an author and without", async () => {
+    const { container, unmount } = renderFile(<ContentView {...props} name="keystore.jks" entry={entry} content={withheld} />);
+    await screen.findByText("keystore.jks");
+    await expectNoAxeViolations(container);
+    unmount();
+    const bare = renderFile(<ContentView {...props} name="keystore.jks" entry={null} content={withheld} />);
+    await screen.findByText("keystore.jks");
+    await expectNoAxeViolations(bare.container);
   });
 });

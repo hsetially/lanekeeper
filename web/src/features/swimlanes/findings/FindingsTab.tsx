@@ -5,14 +5,16 @@ import { QueryBoundaryView } from "@/components/app/QueryBoundary";
 import { SafeText } from "@/components/app/SafeText";
 import { TruncationBanner } from "@/components/app/TruncationBanner";
 import { VirtualList } from "@/components/app/virtual/VirtualList";
+import { SeverityBadge } from "@/components/attribution";
+import { PrBadge } from "@/components/pr/PrBadge";
+import { nameOf as findingTitle } from "@/features/findings/kinds";
 import { findingListQuery } from "@/features/findings/queries";
+import { usePrBadges, type PrBadges } from "@/features/prs/use-pr-badges";
 import { ShieldCheck } from "@/icons";
 import { useCursorPages } from "@/lib/query/cursor-pages";
 import { cursorPagesSource, useQueryState } from "@/lib/query/use-query-state";
 import { cn } from "@/lib/utils";
 import { AppLink } from "@/routes/AppLink";
-import { findingTitle } from "../format";
-import { SeverityBadge } from "./SeverityBadge";
 import { byUrgency, codeOf, lineLabel } from "./severity";
 
 // The Findings tab: what the checks (C1 to C12) found on this swimlane, the most severe first. The list is the server's, filtered
@@ -71,17 +73,23 @@ function Lines({ lane, finding, narrow }: { lane: string; finding: Finding; narr
   );
 }
 
-function FindingRow({ lane, finding, narrow }: { lane: string; finding: Finding; narrow: boolean }) {
+function FindingRow({ lane, finding, narrow, badgeFor }: { lane: string; finding: Finding; narrow: boolean; badgeFor: PrBadges["badgeFor"] }) {
   return (
     <div className={cn("grid h-full items-start gap-x-3 gap-y-0.5 overflow-hidden border-b border-border px-4 py-2", narrow ? NARROW_COLUMNS : WIDE_COLUMNS)}>
       <span className="pt-px font-mono text-xs font-medium">{codeOf(finding)}</span>
       <SeverityBadge severity={finding.severity} className="justify-self-start" />
       <span className="flex min-w-0 flex-col gap-0.5">
-        <strong className="font-semibold">{findingTitle(finding.kind)}</strong>
+        <strong className="min-w-0 truncate font-semibold">{findingTitle(finding.kind)}</strong>
         {finding.path !== null ? (
-          <AppLink route="files" params={{ id: lane }} search={{ path: finding.path }} className="min-w-0 truncate font-mono text-xs">
-            <SafeText text={finding.path} />
-          </AppLink>
+          // A drift finding is a file that differs; a pull request that carries the fix is worth saying beside the file. They share a
+          // line: stacked 2 px apart, the two links (20 and 16 px high) would each leave the other less than the 24 px of clear space
+          // an undersized target needs (WCAG 2.5.8).
+          <span className="flex min-w-0 items-center gap-2">
+            <AppLink route="files" params={{ id: lane }} search={{ path: finding.path }} className="min-w-0 truncate font-mono text-xs">
+              <SafeText text={finding.path} />
+            </AppLink>
+            {finding.kind === "drift" ? <PrBadge info={badgeFor({ path: finding.path, differs: true })} className="shrink-0" /> : null}
+          </span>
         ) : null}
         <span className="line-clamp-2 text-muted-foreground">
           <SafeText text={finding.message} />
@@ -96,6 +104,8 @@ export function FindingsTab({ lane, kinds, minSeverity }: { lane: SwimlaneDetail
   const pages = useCursorPages({ ...findingListQuery({ swimlane: lane.id, ...(kinds === undefined ? {} : { kinds }), ...(minSeverity === undefined ? {} : { min_severity: minSeverity }) }), autoLoad: true });
   const state = useQueryState(cursorPagesSource(pages), { isEmpty: (items) => items.length === 0 });
   const ordered = useMemo(() => byUrgency(pages.items), [pages.items]);
+  // One read of the swimlane's pull-request links for every row.
+  const prs = usePrBadges(lane.id);
   const [measure, width] = useWidth();
   const narrow = width > 0 && width < NARROW;
   return (
@@ -128,7 +138,7 @@ export function FindingsTab({ lane, kinds, minSeverity }: { lane: SwimlaneDetail
             getRowKey={(i) => ordered[i]?.id ?? i}
             renderRow={(i) => {
               const finding = ordered[i];
-              return finding === undefined ? null : <FindingRow lane={lane.id} finding={finding} narrow={narrow} />;
+              return finding === undefined ? null : <FindingRow lane={lane.id} finding={finding} narrow={narrow} badgeFor={prs.badgeFor} />;
             }}
           />
         </div>

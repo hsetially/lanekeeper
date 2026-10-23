@@ -171,6 +171,25 @@ describe("PrDialog: the open PR that already exists (1f)", () => {
     expect(screen.getByRole("link", { name: "Open PR #418" })).toBeInTheDocument();
   });
 
+  it("draws the open PR as a card with the file and who opened it, says what is the same, and links the swimlane's pull requests (the shared duplicate-PR view)", async () => {
+    renderFile(<PrDialog {...props} />, { api: server({ create: () => problem(409, "conflict", { reason: "duplicate_pr", link }) }) });
+    await toForm();
+    await userEvent.click(screen.getByRole("button", { name: "Create PR" }));
+    const card = (await screen.findByText("Pull request #418")).closest<HTMLElement>("[data-slot='pr-card']");
+    expect(card).not.toBeNull();
+    expect(within(card as HTMLElement).getByText(PATH)).toBeInTheDocument();
+    expect(screen.getByText(/Same target and same content \(NFS hash aaaaaaaaaaaa\)/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "All pull requests for sitb" })).toHaveAttribute("href", "/swimlanes/sitb/pull-requests");
+  });
+
+  it("does not take a malformed link in the 409 for an open pull request: it is an ordinary conflict", async () => {
+    renderFile(<PrDialog {...props} />, { api: server({ create: () => problem(409, "conflict", { reason: "duplicate_pr", link: { ...link, pr_number: "x" } }) }) });
+    await toForm();
+    await userEvent.click(screen.getByRole("button", { name: "Create PR" }));
+    await waitFor(() => expect(screen.queryByText("PR #418 is already open for this change.")).not.toBeInTheDocument());
+    expect(screen.queryByRole("link", { name: /Open PR/ })).not.toBeInTheDocument();
+  });
+
   it("makes no link of a PR URL that is not https", async () => {
     renderFile(<PrDialog {...props} />, { api: server({ previews: { tenant: () => preview("tenant", { open_pr: { ...link, pr_url: "javascript:alert(1)" } }) } }) });
     await userEvent.click(await screen.findByRole("button", { name: "Continue" }));
@@ -251,6 +270,31 @@ describe("PrDialog: the job (1g to 1i)", () => {
     expect(screen.getByText("Preparing").closest("li")).toHaveAttribute("data-status", "done");
     expect(screen.getByText("Committing").closest("li")).toHaveAttribute("data-status", "active");
     expect(screen.getByText(/Esc closes this dialog, not the job/)).toBeInTheDocument();
+  });
+
+  it("says a queued job has not started, and marks no step as being worked on", async () => {
+    renderFile(<PrDialog {...props} />, { api: server({ create: () => json(job("pending"), 202), job: () => json(job("pending")) }) });
+    await toForm();
+    await userEvent.click(screen.getByRole("button", { name: "Create PR" }));
+    expect(await screen.findByText("Waiting to start.")).toBeInTheDocument();
+    expect(screen.getByText("Preparing").closest("li")).toHaveAttribute("data-status", "waiting");
+    expect(document.querySelector("li[data-status='active']")).toBeNull();
+  });
+
+  it("points to the swimlane's pull requests while the job runs, since the job's id is not kept across a reload", async () => {
+    renderFile(<PrDialog {...props} />, { api: server({ create: () => json(job("committing"), 202), job: () => json(job("committing")) }) });
+    await toForm();
+    await userEvent.click(screen.getByRole("button", { name: "Create PR" }));
+    expect(await screen.findByRole("link", { name: "Find my pull request" })).toHaveAttribute("href", "/swimlanes/sitb/pull-requests");
+    expect(screen.queryByText(/Resumed job/)).not.toBeInTheDocument();
+  });
+
+  it("says what the server reported when the job is completed without an address that can be opened, and never links a PR it cannot name", async () => {
+    renderFile(<PrDialog {...props} />, { api: server({ create: () => json(job("opening"), 202), job: () => json(job("completed", { pr_url: "javascript:alert(1)" })) }) });
+    await toForm();
+    await userEvent.click(screen.getByRole("button", { name: "Create PR" }));
+    expect(await screen.findByText("The job finished, but the server gave no address that can be opened.")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /on GitHub/ })).not.toBeInTheDocument();
   });
 
   it("says a job failed with what the server said, and never says it was created", async () => {

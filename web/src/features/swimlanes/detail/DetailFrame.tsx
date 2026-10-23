@@ -50,6 +50,11 @@ export function DetailFrame({ id, tab, noun, children }: { id: string; tab: TabI
   // has no width to be seen in. `f` ("Filter files") brings it back first, and the filter takes focus once the tree is reachable.
   const [collapsed, setCollapsed] = useState(false);
   const wantsFilter = useRef(false);
+  // Each request for the filter is a render of its own. The tree can be collapsed (the panel says so) before the page has drawn the
+  // `collapsed` the panel reported: an `f` right after Home then asks for the tree to open while `collapsed` is still false, the
+  // report that the tree is open again changes nothing (false to true to false in one render), and an effect that waited for a change
+  // of `collapsed` never ran. So the effect also runs for every request, and finds the tree reachable or waits for the change.
+  const [filterAsks, setFilterAsks] = useState(0);
   const focusFilter = (): void => {
     filterRef.current?.focus();
     filterRef.current?.select();
@@ -58,6 +63,7 @@ export function DetailFrame({ id, tab, noun, children }: { id: string; tab: TabI
     if (treePanel.current?.isCollapsed() === true) {
       wantsFilter.current = true;
       treePanel.current.expand();
+      setFilterAsks((asks) => asks + 1);
       return;
     }
     focusFilter();
@@ -66,7 +72,7 @@ export function DetailFrame({ id, tab, noun, children }: { id: string; tab: TabI
     if (collapsed || !wantsFilter.current) return;
     wantsFilter.current = false;
     focusFilter();
-  }, [collapsed]);
+  }, [collapsed, filterAsks]);
 
   const saved = useRef(prefs.get("splitWidth", TREE_PANEL) ?? DEFAULT_TREE_PX);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);

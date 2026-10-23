@@ -1,6 +1,9 @@
 import type { LucideIcon } from "lucide-react";
-import type { AdminListAuditParams, AttributionSource, AuditEvent, Confidence } from "@/api/generated/model";
+import type { AdminListAuditParams, AuditEvent } from "@/api/generated/model";
+import type { NameLookup } from "@/components/attribution";
 import type { Tone } from "@/features/approvals/chips";
+import type { People } from "@/features/approvals/people";
+import { eventWho } from "@/features/attribution";
 import { Bell, CircleCheck, CircleX, Eye, FileText, GitPullRequest, History, Hourglass, Key, LogOut, Pencil, PanelLeft, Pin, RefreshCw, RotateCw, Server, Settings, Trash2, TriangleAlert, Upload, User, Zap } from "@/icons";
 import type { SearchOf } from "@/routes/props";
 
@@ -94,61 +97,15 @@ export function viaView(event: Pick<AuditEvent, "via" | "attribution">): ViaView
   }
 }
 
-export type Who = { readonly kind: "named"; readonly name: string; readonly probable: boolean } | { readonly kind: "unknown" } | { readonly kind: "system" };
-
 /**
- * Who made the change: the person the attribution names (probably, when it is not sure), else the event's own actor, else nobody
- * known. For a change the tool wrote, the attribution names its author, and the event's actor is who recorded it (the approver).
+ * The name of a user for the shared attribution words: the list's name, or nothing, and then those words say "Lanekeeper user" and
+ * the start of the id. (Who made an event, how sure the attribution is and the source's words are the shared `EventWho`,
+ * `AttributionSourceCell` and `AttributionEvidence`, src/components/attribution and src/features/attribution.)
  */
-export function whoOf(event: Pick<AuditEvent, "actor" | "attribution">, nameOf: (id: string) => string): Who {
-  const a = event.attribution;
-  if (a !== null) {
-    if (a.source === "unknown" || (a.actor === null && a.source !== "tool_write")) return { kind: "unknown" };
-    if (a.actor !== null) {
-      const probable = a.confidence === "low" || a.confidence === "medium";
-      switch (a.actor.kind) {
-        case "user":
-          return { kind: "named", name: nameOf(a.actor.user), probable };
-        case "os_login":
-          return { kind: "named", name: a.actor.login, probable };
-        default:
-          return { kind: "named", name: a.actor.job.name, probable };
-      }
-    }
-  }
-  return event.actor === null ? { kind: "system" } : { kind: "named", name: nameOf(event.actor), probable: false };
-}
-
-export function sourceLabel(source: AttributionSource): string {
-  switch (source) {
-    case "tool_write":
-      return "Via Lanekeeper";
-    case "sentinel_login":
-      return "Edited on the NFS VM";
-    case "sync_job":
-      return "Sync job";
-    case "nfs_client":
-      return "NFS client";
-    case "fs_owner_hint":
-      return "File owner hint";
-    case "unknown":
-      return "Unknown";
-  }
-}
-
-/** The design draws a percentage; the contract has four levels. A bar of a quarter each says the same without a number it does not have. */
-export function confidenceView(confidence: Confidence): { label: string; bar: number; low: boolean } {
-  switch (confidence) {
-    case "certain":
-      return { label: "Certain", bar: 100, low: false };
-    case "high":
-      return { label: "High", bar: 75, low: false };
-    case "medium":
-      return { label: "Medium", bar: 50, low: true };
-    case "low":
-      return { label: "Low", bar: 25, low: true };
-  }
-}
+export const nameLookup =
+  (people: Pick<People, "user">): NameLookup =>
+  (id) =>
+    people.user(id)?.display_name;
 
 // ---- the filters ----
 
@@ -220,7 +177,7 @@ export function searchOf(filters: Filters): SearchOf<"audit"> {
 export type Quick = "all" | "cursor" | "unknown";
 
 const isCursor = (e: AuditEvent): boolean => e.via === "mcp";
-const isUnknown = (e: AuditEvent): boolean => whoOf(e, () => "").kind === "unknown";
+const isUnknown = (e: AuditEvent): boolean => eventWho(e).kind === "unknown";
 
 export function quickCounts(events: readonly AuditEvent[]): Record<Quick, number> {
   return { all: events.length, cursor: events.filter(isCursor).length, unknown: events.filter(isUnknown).length };

@@ -7,12 +7,16 @@ import { Banner } from "@/components/app/Banner";
 import { EmptyState } from "@/components/app/EmptyState";
 import { QueryBoundaryView } from "@/components/app/QueryBoundary";
 import { useWriteGate } from "@/components/app/write-gate";
+import { isContentWithheld, withheldReason } from "@/components/masking/withheld";
+import { PrBadge } from "@/components/pr/PrBadge";
 import { useEditorWarmup } from "@/editor/warm";
 import { useShortcut } from "@/keyboard";
 import { useQueryState } from "@/lib/query/use-query-state";
 import { useNow } from "@/live/use-now";
 import { useNavigateTo } from "@/routes/AppLink";
 import { linkTo } from "@/routes/links";
+import { FileChangedBy, useActorNames } from "@/features/attribution";
+import { usePrBadges } from "@/features/prs/use-pr-badges";
 import { swimlaneQuery } from "@/features/swimlanes/queries";
 import { DiffPane } from "../diff/DiffPane";
 import { diffParamOf, type Side } from "../diff/refs";
@@ -78,6 +82,9 @@ export function FileScreen({ id, path, tab, panel, side, line }: FileScreenProps
   const headQuery = useQuery(fileHeadQuery(id, path));
   const head = headQuery.data;
   const headState = useQueryState(headQuery);
+  // One read of the swimlane's pull-request links for the whole screen (the header's badge), and one of the user names for an Admin.
+  const prs = usePrBadges(id);
+  const { nameOf } = useActorNames();
 
   const edit = useEditSession();
   const editing = edit.session !== null;
@@ -95,7 +102,7 @@ export function FileScreen({ id, path, tab, panel, side, line }: FileScreenProps
   const logical = entry?.logical_file ?? null;
   const tenant = entry?.tenant ?? null;
   const title = logical === null ? name : splitPath(logical).name;
-  const withheld = head !== undefined && (head.content_withheld || head.class === "denied");
+  const withheld = head !== undefined && isContentWithheld(head);
   const masked = (head?.masks?.length ?? 0) > 0;
   const lines = useMemo(() => (head?.text == null ? 0 : lineCount(head.text)), [head?.text]);
   const large = lines > LARGE_FILE_LINES;
@@ -311,7 +318,7 @@ export function FileScreen({ id, path, tab, panel, side, line }: FileScreenProps
     main = (
       <FileTabs tab={tab} onTab={(next) => goTo(href({ tab: next }))} gitLabel={gitLabel} diffCount={canText && diffCount !== null && diffCount > 0 ? diffCount : null}>
         {withheld || tab === "nfs" ? (
-          <ContentView content={head} name={name} where="NFS" highlightLine={line} entry={entry} onCompareWithGit={withheld ? null : compareWithGit} />
+          <ContentView content={head} name={name} where="NFS" highlightLine={line} entry={entry} onCompareWithGit={withheld ? null : compareWithGit} lane={id} />
         ) : tab === "diff" ? (
           <DiffPane
             lane={id}
@@ -368,10 +375,14 @@ export function FileScreen({ id, path, tab, panel, side, line }: FileScreenProps
         actions={actions}
         link={linkTo("files", { id }, { path, ...(line === null ? {} : { line: String(line) }) })}
         linkLine={line}
+        prBadge={<PrBadge info={prs.badgeFor({ path, hash: head?.hash ?? entry?.hash ?? null, drift: entry?.drift ?? null })} />}
+        // The chip is 24 px high (its target size) and the facts beside it are 22: a 1 px margin above and below keeps the row 22 px tall.
+        changedBy={entry === null ? null : <FileChangedBy attribution={entry.attribution} nameOf={nameOf} className="-my-px" />}
+        copyHash={!withheld}
       />
       {/* Under the header, where the handoff has them (frame 3 of File). The file brings them, and the header stands on the page as a
           placeholder before that, so when they come the header does not move. */}
-      {withheld ? <WithheldBanner /> : null}
+      {withheld ? <WithheldBanner reason={withheldReason(head) ?? "denied"} /> : null}
       {head !== undefined && large && !editing && canText ? <LargeFileBanner lines={lines} gate={gates.edit} onEnableEditing={startEdit} /> : null}
       {editing ? <EditingStrip lane={id} file={name} /> : null}
       {changedUnder ? <ChangedWhileEditingBanner /> : null}
@@ -381,7 +392,7 @@ export function FileScreen({ id, path, tab, panel, side, line }: FileScreenProps
       <div key={head === undefined ? "placeholder" : "file"} className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">{main}</div>
         {panel === "history" ? (
-          <HistoryPanel id={id} path={path} currentHash={head?.hash ?? null} revertGate={gates.revert} onRevert={(version) => setDialog({ kind: "revert", version })} onClose={() => goTo(href({ panel: null }))} />
+          <HistoryPanel id={id} path={path} currentHash={head?.hash ?? null} revertGate={gates.revert} onRevert={(version) => setDialog({ kind: "revert", version })} onClose={() => goTo(href({ panel: null }))} copyHash={!withheld} />
         ) : panel === "docs" ? (
           <DocsPanel lane={id} file={entryState.status === "loading" ? null : (logical ?? path)} onClose={() => goTo(href({ panel: null }))} />
         ) : null}

@@ -62,7 +62,11 @@ test.describe("the shell's rows", () => {
     await page.keyboard.press("/");
     await expect(page).toHaveURL(/\/search\?type=text$/);
     // On a screen with a filter, `/` is that filter's (a screen's row beats the shell's): focus moves to it and the address stays.
+    // The filter is off while the list is on its way (the toolbar dims), and the heading and the sidebar are there before the list is:
+    // a `/` pressed on those alone is the filter's and goes nowhere (the next test holds the list back to show it). So wait for the
+    // filter to be on. This was the flake of the full run: the list came after the heading on a busy machine.
     await ready(page, harness.url);
+    await expect(page.getByRole("searchbox", { name: "Filter swimlanes" })).toBeEnabled();
     await page.keyboard.press("/");
     await expect(page.getByRole("searchbox", { name: "Filter swimlanes" })).toBeFocused();
     expect(pathOf(page)).toBe("/swimlanes");
@@ -70,6 +74,31 @@ test.describe("the shell's rows", () => {
     await openPalette(page);
     await page.keyboard.type("a/b");
     await expect(palette(page).getByRole("combobox")).toHaveValue("a/b");
+    expect(pathOf(page)).toBe("/swimlanes");
+  });
+
+  test("global.search-text-focus-query: a / pressed while the Swimlanes list is still loading is the filter's and goes nowhere (the filter is off), and it works once the list is there", async ({ page, harness }) => {
+    // The cause of the flake of the test above, made certain: the list's answer is held back, so the heading and the sidebar are
+    // there and the filter is not on yet.
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/v1/swimlanes", async (route) => {
+      if (route.request().method() === "GET") await held;
+      await route.continue();
+    });
+    await ready(page, harness.url);
+    const filter = page.getByRole("searchbox", { name: "Filter swimlanes" });
+    await expect(filter).toBeDisabled();
+    await page.keyboard.press("/");
+    // Not the shell's row either: the address stays, and nothing took focus.
+    expect(pathOf(page)).toBe("/swimlanes");
+    await expect(filter).not.toBeFocused();
+    release();
+    await expect(filter).toBeEnabled();
+    await page.keyboard.press("/");
+    await expect(filter).toBeFocused();
     expect(pathOf(page)).toBe("/swimlanes");
   });
 
@@ -182,6 +211,9 @@ test.describe("the shell's rows", () => {
     await page.keyboard.type("go to");
     const options = palette(page).getByRole("option");
     await expect(options.nth(1)).toBeVisible();
+    // The actions are there at once; the settings and the docs come after their debounce and are listed below them. "The last row" is
+    // only the last row once they have come (the run-the-nth-result test below waits for the same group), so wait for the last of them.
+    await expect(palette(page).getByRole("option", { name: /Tenant overrides/ })).toBeVisible();
     await expect(selected(page)).toHaveCount(1);
     const first = await selected(page).getAttribute("data-value");
     await page.keyboard.press("ArrowDown");
@@ -194,8 +226,12 @@ test.describe("the shell's rows", () => {
     const count = await options.count();
     expect(await selected(page).getAttribute("data-value")).toBe(await options.nth(count - 1).getAttribute("data-value"));
 
+    // Enter runs the highlighted row. With the actions only (the ">" prefix), nothing arrives later to move the highlight: the settings and
+    // the docs come after a debounce, below the actions or above them, and a row that the highlight is on when they arrive is not always
+    // the one the person meant, so the first version of this step could run a setting instead of the action.
     await page.keyboard.press("Control+a");
-    await page.keyboard.type("go to compare");
+    await page.keyboard.type(">go to compare");
+    await expect(palette(page).getByRole("option")).toHaveCount(1);
     await expect(selected(page)).toHaveAttribute("data-value", "actions:go-compare");
     await page.keyboard.press("Enter");
     await expect(page).toHaveURL(/\/compare$/);
@@ -313,19 +349,55 @@ test.describe("the dialogs' rows", () => {
     expect(await inside(page, "dialog")).toBe(true);
   });
 
-  test(row("dialogs.confirms-only-when-the-primary") + ": Enter confirms a consequence dialog from its action and never a destructive confirm, in the field or on the button", async ({ page, harness }) => {
+  test(row("dialogs.confirms-only-when-the-primary") + ": Enter confirms a consequence dialog only from an enabled action, and never a destructive confirm, in the field or on the button", async ({ page, harness }) => {
     await page.goto(`${harness.url}/testpages/primitives`);
 
-    // A consequence dialog: Enter on the focused Cancel cancels (it is the button that has focus); Tab to the action and Enter runs it.
-    await page.getByRole("button", { name: "Open consequence dialog" }).click();
+    // The page counts the times a dialog ASKED for its write (`onConfirm`), and each assertion reads that count: a dialog that is still open
+    // proves nothing (a real one stays open while it works, and a closing one is still on the screen for a frame), so "Enter did not confirm"
+    // is the count staying where it was, read after the page has had two frames to change it.
+    // While a dialog is open the page behind it is aria-hidden, so the counters are looked up with includeHidden.
+    const count = (name: string) => page.getByRole("status", { name: `${name} confirmations`, includeHidden: true });
+    const settled = () => page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+    const countIs = async (name: string, n: number, why: string) => {
+      await settled();
+      await expect(count(name), why).toHaveText(String(n));
+    };
+
+    // A consequence dialog without a field: Enter on the focused Cancel cancels and asks for nothing; Tab to the action and Enter runs it.
+    const open = page.getByRole("button", { name: "Open consequence dialog" });
+    await open.click();
     let dialog = page.getByRole("alertdialog", { name: "Raise a pull request" });
     await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(dialog).toHaveCount(0);
+    await countIs("Raise PR", 0, "Enter on Cancel");
+    await open.click();
     await page.keyboard.press("Tab");
     await expect(dialog.getByRole("button", { name: "Raise PR" })).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(dialog).toHaveCount(0);
+    await countIs("Raise PR", 1, "Enter on the enabled action");
 
-    // A destructive confirm: the verb is disabled until the exact name is typed, and Enter does nothing before that.
+    // A consequence dialog with a field: Enter in the field asks for the write only when the action is enabled.
+    await page.getByRole("button", { name: "Open rename dialog" }).click();
+    dialog = page.getByRole("alertdialog", { name: "Rename file" });
+    const name = dialog.getByRole("textbox", { name: "New name" });
+    await expect(name).toBeFocused();
+    await expect(dialog.getByRole("button", { name: "Rename file" })).toHaveAttribute("aria-disabled", "true");
+    await page.keyboard.press("Enter");
+    await countIs("Rename file", 0, "Enter in the empty field, the action is disabled");
+    await dialog.getByRole("button", { name: "Rename file" }).focus();
+    await page.keyboard.press("Enter");
+    await countIs("Rename file", 0, "Enter on the disabled action");
+    await expect(dialog).toBeVisible();
+    await name.focus();
+    await page.keyboard.type("core-sit2.yml");
+    await expect(dialog.getByRole("button", { name: "Rename file" })).not.toHaveAttribute("aria-disabled", "true");
+    await page.keyboard.press("Enter");
+    await expect(dialog).toHaveCount(0);
+    await countIs("Rename file", 1, "Enter in the field once the action is enabled");
+
+    // A destructive confirm: the verb is disabled until the exact name is typed, and Enter asks for nothing, before or after that.
     await page.getByRole("button", { name: "Open destructive confirm" }).click();
     dialog = page.getByRole("alertdialog", { name: "Delete file" });
     const field = dialog.getByRole("textbox");
@@ -333,20 +405,26 @@ test.describe("the dialogs' rows", () => {
     await expect(verb).toHaveAttribute("aria-disabled", "true");
     await field.focus();
     await page.keyboard.press("Enter");
+    await countIs("Delete file", 0, "Enter in the field before the name is typed");
     await expect(dialog).toBeVisible();
 
-    // Typed in full: the verb is enabled, and Enter in the field still does not confirm.
+    // Typed in full: the verb is enabled, and Enter in the field still asks for nothing.
     await page.keyboard.type("core-sit1.yml");
     await expect(verb).not.toHaveAttribute("aria-disabled", "true");
     await page.keyboard.press("Enter");
+    await countIs("Delete file", 0, "Enter in the field with the name typed in full");
     await expect(dialog).toBeVisible();
+    await page.keyboard.press("NumpadEnter");
+    await countIs("Delete file", 0, "the numeric keypad's Enter in the field");
 
-    // On the verb itself, Enter does not confirm either; Space does (and so does a click).
+    // On the verb itself, Enter asks for nothing either; Space does (and so does a click).
     await verb.focus();
     await page.keyboard.press("Enter");
+    await countIs("Delete file", 0, "Enter on the destructive button");
     await expect(dialog, "Enter on the destructive button").toBeVisible();
     await page.keyboard.press("Space");
     await expect(dialog, "Space on the destructive button").toHaveCount(0);
+    await countIs("Delete file", 1, "Space on the destructive button");
   });
 });
 

@@ -1,12 +1,13 @@
 // Tier 1, the file view: board "File View" frames 1a to 1o against the app on the `design-file-*` scenarios, 1440x900.
 //
 // What is masked, and why (each a row of design/DEVIATIONS.md, named here by its first column):
-//  - the facts row under the title (path, CRLF, UTF-8, lines, hash): "Copy affordances the design does not draw" (a link to the file
-//    as well as the path and the hash) and "File header and History" (no "CRLF - Git has LF").
+//  - the facts row under the title (path, CRLF, UTF-8, lines, hash, and who changed the file at its end): "Copy affordances the design
+//    does not draw" (a link to the file as well as the path and the hash) and "File header and History" (no "CRLF - Git has LF"; who
+//    changed the file, and its pull request badge beside the drift state, which the design's header does not draw).
 //  - the Edit button: "File: Edit" (off while the server masks a value in the file; the design edits it).
 //  - from the tab row down, where the page is the file's body: "File viewer and diff (read-only)" (CodeView and DiffView, a gutter of
 //    their own, not Monaco), "File: Diff and large files" (no outline, no minimap, no truncation notice), "File: view" (no Rendered,
-//    As served or Reveal) and the "History" and "Docs for this file" panels' own deviations. What the design draws there is compared
+//    or As served) and the "History" and "Docs for this file" panels' own deviations. What the design draws there is compared
 //    by a person on the frame, and by the app's own baseline here.
 // What stays compared: the sidebar, the top bar with the breadcrumb, the title with its chips and the row of actions.
 import { expect, test } from "../../fixtures/test";
@@ -19,7 +20,7 @@ const BOARD = "Lanekeeper File View.dc.html";
 const CORE = "tx-infinity-api%2Ftx-infinity-core-sit7.yml";
 const file = (path: string, query = ""): string => `/swimlanes/sitb/files?path=${path}${query}`;
 
-const FACTS: Mask = { x: 245, y: 90, width: 700, height: 26, why: "Copy affordances the design does not draw; File header and History" };
+const FACTS: Mask = { x: 245, y: 90, width: 1195, height: 26, why: "Copy affordances the design does not draw; File header and History (no \"CRLF - Git has LF\", and who changed the file at the end of the row)" };
 const EDIT: Mask = { x: 248, y: 125, width: 68, height: 30, why: "File: Edit (off while a value is masked)" };
 const BODY: Mask = { x: 224, y: 160, width: 1216, height: 740, why: "File viewer and diff (read-only); File: Diff and large files; File: view; the panels" };
 const CHROME_ONLY: Mask = { x: 224, y: 44, width: 1216, height: 856, why: "the page under the top bar: a banner above the title moves it (the banner's own layout is compared on the frame by a person); File: Diff and large files; File: view" };
@@ -129,15 +130,28 @@ tier1(cases);
 
 // Frames whose subject the app does not have, as the design's rows say: the test asserts the absence, so that the row stays true
 // (and fails the day the feature arrives, when the frame should be compared).
-test.describe("frames the app does not draw, by the DEVIATIONS rows", () => {
-  test("1e and 1f, Reveal: the masked value has no Reveal button and no dialog (File: view)", async ({ page, harness }) => {
+test.describe("frames the app draws differently, or not at all, by the DEVIATIONS rows", () => {
+  test("1d to 1f, Reveal: the masked value is a token, and an Editor has a Reveal button that asks first and sends nothing until asked (File: masked value, File: Reveal dialog)", async ({ page, harness }) => {
     harness.setScenario("design-file-core");
     await pin(page, "light", { width: 1440, height: 900 });
     await signedInAs(page, "editor");
     await page.goto(`${harness.url}${file(CORE)}`);
     await settle(page);
-    await expect(page.getByText("[REDACTED: 22 chars, generic_secret]")).toBeVisible();
-    await expect(page.getByRole("button", { name: /reveal/i })).toHaveCount(0);
+    // The design draws five dots; the app draws a token of words ("Hidden value", and the length the marker states) and, because the
+    // mask names its setting, a Reveal button for an Editor. The marker's text is not on the page as text, and no value is.
+    await expect(page.getByText("Hidden value").first()).toBeVisible();
+    await expect(page.getByText("[REDACTED: 22 chars, generic_secret]")).toHaveCount(0);
+    const reveal = page.getByRole("button", { name: /^Reveal value of / });
+    await expect(reveal).toHaveCount(1);
+    const asked: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes("/reveal")) asked.push(request.url());
+    });
+    await reveal.click();
+    await expect(page.getByRole("alertdialog")).toBeVisible();
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByRole("alertdialog")).toHaveCount(0);
+    expect(asked, "opening the dialog and cancelling it asks the hub for nothing").toEqual([]);
   });
 
   test("1g, Edit with an error at line 88: no validation line, no error count, no cursor position (File: edit status bar)", async ({ page, harness }) => {

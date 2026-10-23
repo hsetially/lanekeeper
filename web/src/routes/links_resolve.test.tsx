@@ -50,13 +50,13 @@ const EXPECTED: Record<string, { route: string; href: string; search: Record<str
   docs_search: { route: "search", href: "/search?q=server.port&type=docs", search: { q: "server.port", type: "docs" } },
   doc: { route: "doc-view", href: "/docs/view?path=core%2Ftx-infinity-core-sit7.yml", search: { path: "core/tx-infinity-core-sit7.yml" } },
   draft: { route: "draft", href: "/drafts/12", search: {} },
+  pr: { route: "swimlane-pull-requests", href: "/swimlanes/sitb/pull-requests", search: {} },
 };
 
 /** Shapes whose screen is a later task. They show the 404 page for now, and the test says so until the screen exists. */
 const LATER: Record<string, string> = {
   effective: "the effective-config view of a file in a swimlane: needs the rendered text of CG8 (T6)",
   served: "the As served view: needs the served-file comparison of CG8 (T6)",
-  pr: "a swimlane's pull requests: the PR badges and list are T5",
 };
 
 // A page that shows which route it is and the search keys the router gave it.

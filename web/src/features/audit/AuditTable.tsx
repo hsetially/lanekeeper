@@ -2,12 +2,13 @@ import { useMemo } from "react";
 import type { AuditEvent } from "@/api/generated/model";
 import { SafeText } from "@/components/app/SafeText";
 import { DataTable, type Column } from "@/components/app/virtual/DataTable";
+import { AttributionSourceCell } from "@/components/attribution";
 import { Chip } from "@/features/approvals/chips";
 import type { People } from "@/features/approvals/people";
-import { CircleHelp, ShieldAlert } from "@/icons";
+import { EventWho } from "@/features/attribution";
+import { ShieldAlert } from "@/icons";
 import { formatTime } from "@/lib/time";
-import { cn } from "@/lib/utils";
-import { actionView, confidenceView, sourceLabel, viaView, whoOf, type Break } from "./model";
+import { actionView, nameLookup, viaView, type Break } from "./model";
 
 // The log: one row per event, 48 px tall (a row says two things in four of its cells), newest first, in the design's columns but
 // the two the contract has nothing for (the hashes of the file before and after, and the approval). It is the shared DataTable (rows
@@ -20,43 +21,6 @@ export const ROW_HEIGHT = 48;
 export function whenParts(at: number): { clock: string; day: string } {
   const text = formatTime(at, { seconds: true });
   return text === "unknown time" ? { clock: text, day: "" } : { clock: text.slice(11, 19), day: text.slice(0, 10) };
-}
-
-function Who({ event, people }: { event: AuditEvent; people: People }) {
-  const who = whoOf(event, people.name);
-  if (who.kind === "unknown") {
-    return (
-      <Chip tone="unknown" Icon={CircleHelp}>
-        unknown author
-      </Chip>
-    );
-  }
-  if (who.kind === "system") return <span className="text-muted-foreground">Lanekeeper</span>;
-  return (
-    <>
-      <b className="max-w-full truncate font-medium">
-        <SafeText text={who.name} />
-      </b>
-      {who.probable ? <small className="text-xs text-muted-foreground">probable</small> : null}
-    </>
-  );
-}
-
-function Attribution({ event }: { event: AuditEvent }) {
-  const a = event.attribution;
-  if (a === null) return <span className="text-muted-foreground">–</span>;
-  const c = confidenceView(a.confidence);
-  return (
-    <>
-      <span className={cn("max-w-full truncate text-xs", a.source === "unknown" && "text-muted-foreground")}>{sourceLabel(a.source)}</span>
-      <span className="inline-flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
-        <span aria-hidden="true" className="block h-1 w-9 overflow-hidden rounded-[2px] bg-accent">
-          <span className={cn("block h-full", c.low ? "bg-warning-fg" : "bg-foreground")} style={{ width: `${c.bar}%` }} />
-        </span>
-        {c.label}
-      </span>
-    </>
-  );
 }
 
 function WhenCell({ event, broken }: { event: AuditEvent; broken: boolean }) {
@@ -109,6 +73,7 @@ type Props = {
 const keyOf = (event: AuditEvent): string => String(event.id);
 
 export function AuditTable({ rows, selectedId, breaks, people, onOpen, moreRows = false, className }: Props) {
+  const nameOf = useMemo(() => nameLookup(people), [people]);
   const columns = useMemo<Column<AuditEvent>[]>(
     () => [
       { id: "time", header: "Time", width: "148px", minWidth: 148, cell: (event) => <WhenCell event={event} broken={breaks.has(event.id)} /> },
@@ -119,7 +84,7 @@ export function AuditTable({ rows, selectedId, breaks, people, onOpen, moreRows 
         minWidth: 156,
         cell: (event) => (
           <span className="flex min-w-0 flex-col items-start gap-0.5">
-            <Who event={event} people={people} />
+            <EventWho event={event} nameOf={nameOf} />
           </span>
         ),
       },
@@ -170,13 +135,11 @@ export function AuditTable({ rows, selectedId, breaks, people, onOpen, moreRows 
         width: "148px",
         minWidth: 148,
         cell: (event) => (
-          <span className="flex min-w-0 flex-col gap-0.5">
-            <Attribution event={event} />
-          </span>
+          <AttributionSourceCell attribution={event.attribution} />
         ),
       },
     ],
-    [breaks, people],
+    [breaks, nameOf],
   );
   const selectedKeys = useMemo<ReadonlySet<string>>(() => new Set(selectedId === null ? [] : [String(selectedId)]), [selectedId]);
   return (

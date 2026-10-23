@@ -8,17 +8,36 @@
 import type { Scenario } from "../scenario.ts";
 import { scenarios as access } from "./access/index.ts";
 import { scenarios as admin } from "./admin/index.ts";
+import { scenarios as adminT5 } from "./admin-t5/index.ts";
 import { scenarios as adoption } from "./adoption/index.ts";
 import { scenarios as approvals } from "./approvals/index.ts";
+import { scenarios as attribution } from "./attribution/index.ts";
 import { scenarios as compare } from "./compare/index.ts";
 import { scenarios as file } from "./file/index.ts";
 import { scenarios as findings } from "./findings/index.ts";
+import { scenarios as masking } from "./masking/index.ts";
+import { scenarios as prs } from "./prs/index.ts";
 import { scenarios as search } from "./search/index.ts";
 import { scenarios as shell } from "./shell/index.ts";
 import { scenarios as swimlanes } from "./swimlanes/index.ts";
 
-/** The slice folders, in the order of the T4 plan. */
-export const DESIGN_SLICES = { shell, access, swimlanes, file, compare, search, findings, adoption, approvals, admin } as const;
+/** The slice folders, in the order of the T4 plan, then the T5 slices (attribution, prs, masking, and the four admin sections). */
+export const DESIGN_SLICES = {
+  shell,
+  access,
+  swimlanes,
+  file,
+  compare,
+  search,
+  findings,
+  adoption,
+  approvals,
+  admin,
+  attribution,
+  prs,
+  masking,
+  "admin-t5": adminT5,
+} as const;
 
 /** Every design scenario by id. An id is `design-<slice>-<name>`, so two slices can never collide; a collision still fails here. */
 export function collectDesignScenarios(slices: Readonly<Record<string, readonly Scenario[]>> = DESIGN_SLICES): Record<string, Scenario> {

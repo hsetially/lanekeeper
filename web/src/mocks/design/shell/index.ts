@@ -4,9 +4,9 @@
 // findings and 6 approvals (the design writes those two numbers into the sidebar; they are not the sum of the page's own rows,
 // so the findings are spread to make the sum 11 here).
 // Loaded by Node (the e2e harness) as well as by Vite: relative imports with the `.ts` extension.
-import type { DocHit, Me, Proposal, SettingHit, SwimlaneSummary } from "../../../api/generated/model/index.ts";
+import type { DocHit, Me, Proposal, SettingHit, SwimlaneSummary, User } from "../../../api/generated/model/index.ts";
 import { meBody } from "../../me.ts";
-import type { Scenario } from "../../scenario.ts";
+import type { MockContext, MockResponse, Scenario } from "../../scenario.ts";
 
 const csrfCookie = "__Host-lk_csrf=mockMockMockMockMockMockMockMockMockMo0; Path=/; Secure; SameSite=Lax";
 
@@ -57,6 +57,19 @@ const proposal = (id: number): Proposal => ({
   decision_comment: null,
 });
 
+// The people the Admin's screens name: the signed-in Admin and the Viewer of the other Shell frame. A user is an id in the contract and
+// the only list of names is the Admin-only user list (an Admin's screens ask for it, 500 at a time, to name who changed a file); a
+// search (`q`, the palette's Users group, 8 at a time) is answered as the hub does, by a match on the name or the email. A slice that
+// has people of its own (the Admin area, the approvals, the attribution frames) takes this response out of the base it starts from.
+const person = (id: string, display_name: string, email: string, role: "admin" | "viewer"): User => ({ id, email, display_name, role, status: "active", requires_approval: false, github_login: null, last_seen_at: NOW });
+export const SHELL_PEOPLE: readonly User[] = [person(PRIYA, "Priya Shah", "priya.shah@example.test", "admin"), person(MARCO, "Marco Diaz", "marco.diaz@example.test", "viewer")];
+const peopleFor = (q: string | null): readonly User[] => {
+  const wanted = q?.trim().toLowerCase() ?? "";
+  return wanted === "" ? SHELL_PEOPLE : SHELL_PEOPLE.filter((u) => u.display_name.toLowerCase().includes(wanted) || u.email.toLowerCase().includes(wanted));
+};
+/** The Admin's user list, as the Shell's Admin answers it; a slice that builds its own base (the file view) adds this to it. */
+export const SHELL_USERS: MockResponse = { method: "GET", path: "/api/v1/admin/users", body: (c: MockContext) => ({ items: peopleFor(c.query.get("q")), next: null }), sample: { query: new URLSearchParams("limit=500") } };
+
 // What the palette's three searches answer, whatever the query (the design's palette shows "core" with files, docs and actions):
 // three settings and two docs, so that a query that matches the six swimlanes too has more than nine results to number.
 const SETTINGS: readonly SettingHit[] = [
@@ -78,6 +91,8 @@ function scenario(id: string, description: string, me: Me): Scenario {
       { method: "GET", path: "/api/v1/me", body: me, headers: { "set-cookie": csrfCookie } },
       { method: "POST", path: "/auth/logout", status: 204 },
       { method: "GET", path: "/api/v1/swimlanes", body: { items: SHELL_LANES, next: null } },
+      // Nobody has raised a pull request in the design's frames; the badges and the pull requests page have scenarios of their own.
+      { method: "GET", path: "/api/v1/prs", body: { items: [], next: null } },
       { method: "GET", path: "/api/v1/search/settings", body: { items: SETTINGS, next: null } },
       { method: "GET", path: "/api/v1/docs/search", body: { hits: DOCS } },
       ...(admin
@@ -85,6 +100,7 @@ function scenario(id: string, description: string, me: Me): Scenario {
             { method: "GET" as const, path: "/api/v1/proposals", body: { items: [1, 2, 3, 4, 5, 6].map(proposal), next: null } },
             // Nothing waits for an Admin, so the sidebar's Admin item has no count, as the design draws it.
             { method: "GET" as const, path: "/api/v1/admin/access-requests", body: { items: [], next: null } },
+            SHELL_USERS,
           ]
         : []),
     ],

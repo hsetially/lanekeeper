@@ -9,7 +9,7 @@ import type { AgentStatus, BaselineState, Comparison, FileEntry, Me, Role, Swiml
 import { meBody } from "../../me.ts";
 import { problemBody, type MockContext, type MockResponse, type Scenario } from "../../scenario.ts";
 import { makeComparison } from "../../perf/diff.ts";
-import { SHELL_LANES } from "../shell/index.ts";
+import { SHELL_LANES, SHELL_USERS } from "../shell/index.ts";
 import {
   binaryComparison,
   coreBaselineText,
@@ -196,8 +196,10 @@ export function fileScenario(options: FileScenarioOptions): Scenario {
       const source = query.get("source");
       // Only the core file has a Git and a baseline copy that differ from NFS; every other file is the same in each place.
       if (file.path !== CORE_PATH) return file.content;
-      if (source === "git") return { ...file.content, hash: H_GIT, text: coreGitText(), format: { eol: "lf", encoding: "utf8", bom: false }, size: coreGitText().length };
-      if (source === "baseline") return { ...file.content, hash: H_BASELINE, text: coreBaselineText(), size: coreBaselineText().length };
+      // The masks are those of the NFS text (offsets into it): the Git and baseline copies are other texts and carry none.
+      const { masks: _nfsMasks, ...copy } = file.content;
+      if (source === "git") return { ...copy, hash: H_GIT, text: coreGitText(), format: { eol: "lf", encoding: "utf8", bom: false }, size: coreGitText().length };
+      if (source === "baseline") return { ...copy, hash: H_BASELINE, text: coreBaselineText(), size: coreBaselineText().length };
       return file.content;
     },
   };
@@ -224,8 +226,18 @@ export function fileScenario(options: FileScenarioOptions): Scenario {
       ? [
           { method: "GET", path: "/api/v1/proposals", body: { items: [], next: null } } satisfies MockResponse,
           { method: "GET", path: "/api/v1/admin/access-requests", body: { items: [], next: null } } satisfies MockResponse,
+          // The names of the people the file's header and history say, which only an Admin may read.
+          SHELL_USERS,
         ]
       : []),
+    // The pull requests of the swimlane (the header's badge): none, unless the scenario is the one where this change has one open.
+    {
+      method: "GET",
+      path: "/api/v1/prs",
+      sample: { query: new URLSearchParams({ swimlane: LANE, state: "open", limit: "100" }) },
+      samples: [{ query: new URLSearchParams({ swimlane: LANE, state: "merged", limit: "100" }) }],
+      body: ({ query }: MockContext) => ({ items: pr === "exists" && query.get("state") === "open" ? [openPr] : [], next: null }),
+    },
     tree,
     content,
     {

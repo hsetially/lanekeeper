@@ -4,23 +4,24 @@ import type { AuditEvent } from "@/api/generated/model";
 import { CopyButton } from "@/components/app/CopyButton";
 import { CopyValue } from "@/components/app/CopyValue";
 import { SafeText } from "@/components/app/SafeText";
+import { AttributionEvidence, userLabel } from "@/components/attribution";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/features/approvals/chips";
 import type { People } from "@/features/approvals/people";
-import { Check, CircleHelp, ShieldAlert, TriangleAlert, X, Zap } from "@/icons";
+import { EventWho, eventWho } from "@/features/attribution";
+import { Check, ShieldAlert, TriangleAlert, X, Zap } from "@/icons";
 import { formatTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { actionView, confidenceView, diffLines, sourceLabel, viaView, whoOf, type Break, type DiffKind } from "./model";
+import { actionView, diffLines, nameLookup, viaView, type Break, type DiffKind } from "./model";
 import { FOCUSABLE_SCROLLER } from "@/components/app/scroll-region";
 
-// The event drawer (Audit page, 600 px): who, how sure, the diff the hub kept with the event, the evidence of the attribution, and
-// the links of the chain. It shows metadata only. The diff is the text the hub stored, already masked by the hub (a flagged line
+// The event drawer (Audit page, 600 px): who, the diff the hub kept with the event, the evidence of the attribution (the shared
+// list: the source, how sure, who, and what was recorded), and the links of the chain. It shows metadata only. The diff is the text the hub stored, already masked by the hub (a flagged line
 // is its marker); it is shown as text, line by line, never as markup, and at most MAX_LINES of it.
 
 const MAX_LINES = 400;
 const n = (value: number): string => value.toLocaleString("en-US");
-const text = (value: string | null | undefined): value is string => typeof value === "string" && value !== "";
 
 const LINE: Record<DiffKind, string> = {
   meta: "bg-muted text-muted-foreground",
@@ -91,13 +92,10 @@ export function EventDrawer({ event, previous, broken, people, onClose }: Props)
   useFocusOnOpen(heading);
   const action = actionView(event.action);
   const via = viaView(event);
-  const who = whoOf(event, people.name);
+  const nameOf = nameLookup(people);
+  const who = eventWho(event, { nameOf });
   const a = event.attribution;
-  const c = a === null ? null : confidenceView(a.confidence);
   const title = event.target === null ? action.label : `${action.label} ${event.target}`;
-  const login = a?.evidence.login_identity;
-  const exe = a?.evidence.executable;
-  const seen = a?.evidence.observed_at;
   const linked = previous !== undefined && previous.seq === event.seq - 1 && broken === undefined;
 
   return (
@@ -141,7 +139,7 @@ export function EventDrawer({ event, previous, broken, people, onClose }: Props)
         ) : event.via === "mcp" && who.kind === "named" ? (
           <Alert variant="info" icon={<Zap aria-hidden="true" />}>
             <AlertTitle>
-              <SafeText text={`Made by a Cursor agent for ${who.name}`} />
+              <SafeText text={`Made by a Cursor agent for ${who.label}`} />
             </AlertTitle>
             <AlertDescription>It came in through the MCP server, on behalf of that person.</AlertDescription>
           </Alert>
@@ -151,26 +149,21 @@ export function EventDrawer({ event, previous, broken, people, onClose }: Props)
           <Rows>
             <K>User</K>
             <V>
-              {who.kind === "unknown" ? (
-                <Chip tone="unknown" Icon={CircleHelp}>
-                  unknown author
-                </Chip>
-              ) : who.kind === "system" ? (
-                "Lanekeeper"
-              ) : (
-                <>
-                  <SafeText text={who.name} />
-                  {who.probable ? <span className="ml-1.5 text-muted-foreground">probable</span> : null}
-                </>
-              )}
+              <EventWho event={event} nameOf={nameOf} />
             </V>
-            <K>Attribution</K>
-            <V>{a === null || c === null ? <span className="text-muted-foreground">None recorded</span> : `${sourceLabel(a.source)} · ${c.label} confidence`}</V>
+            {a === null ? (
+              <>
+                <K>Attribution</K>
+                <V>
+                  <span className="text-muted-foreground">None recorded</span>
+                </V>
+              </>
+            ) : null}
             {event.actor !== null ? (
               <>
                 <K>Recorded by</K>
                 <V>
-                  <SafeText text={people.name(event.actor)} />
+                  <SafeText text={userLabel(event.actor, { nameOf })} />
                 </V>
               </>
             ) : null}
@@ -191,34 +184,11 @@ export function EventDrawer({ event, previous, broken, people, onClose }: Props)
           </Section>
         ) : null}
 
-        {text(login) || text(exe) || typeof seen === "number" ? (
+        {a === null ? null : (
           <Section title="Attribution evidence">
-            <Rows>
-              {text(login) ? (
-                <>
-                  <K>OS Login user</K>
-                  <V mono>
-                    <SafeText text={login} />
-                  </V>
-                </>
-              ) : null}
-              {text(exe) ? (
-                <>
-                  <K>Command (exe)</K>
-                  <V mono>
-                    <SafeText text={exe} />
-                  </V>
-                </>
-              ) : null}
-              {typeof seen === "number" ? (
-                <>
-                  <K>Seen</K>
-                  <V mono>{formatTime(seen, { seconds: true })}</V>
-                </>
-              ) : null}
-            </Rows>
+            <AttributionEvidence attribution={a} nameOf={nameOf} className="rounded-sm border border-border px-3 py-2" />
           </Section>
-        ) : null}
+        )}
 
         <Section title="Chain">
           <Rows>

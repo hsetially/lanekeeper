@@ -1,22 +1,24 @@
 import type { ReactNode } from "react";
 import { getGetBlobUrl } from "@/api/generated/endpoints/content-store/content-store";
-import type { FileContent, FileEntry, Mask } from "@/api/generated/model";
-import { useSession } from "@/auth/session";
+import type { FileContent, FileEntry } from "@/api/generated/model";
 import { EmptyState } from "@/components/app/EmptyState";
 import { HashChip } from "@/components/app/chips";
 import { SafeText } from "@/components/app/SafeText";
 import { CodeView } from "@/components/app/virtual/CodeView";
+import { AttributionChip } from "@/components/attribution";
+import { MaskedTextView } from "@/components/masking/MaskedTextView";
+import { isContentWithheld } from "@/components/masking/withheld";
 import { Button } from "@/components/ui/button";
+import { useActorNames } from "@/features/attribution";
+import { RevealableMaskedText } from "@/features/masking/RevealableMaskedText";
 import { FileImage } from "@/icons";
 import { formatTime } from "@/lib/time";
-import { describeAttribution } from "../history/attribution";
-import { ConfidenceChip } from "../history/ConfidenceChip";
 import { eolLabel, encodingLabel, formatSize, imageKind, languageOf, lineCount, type Language } from "../model";
-import { MaskedCodeView } from "./MaskedCodeView";
 
-// What a file looks like on the NFS, Git and Baseline tabs: its lines (masked where the server masked them), a note and a way
-// forward for an empty file, the picture or the download for a binary one, and for a file whose content the server withholds
-// only what the server does show (name, size, hash, when it changed and by whom). Everything from the file is data: SafeText.
+// What a file looks like on the NFS, Git and Baseline tabs: its lines (masked where the server masked them, failing closed when a
+// mask cannot be checked: see components/masking/plan.ts), a note and a way forward for an empty file, the picture or the download
+// for a binary one, and for a file whose content the server withholds only what the server does show (name, size, hash, when it
+// changed and by whom). Everything from the file is data: SafeText.
 
 const LANGUAGE: Record<Language, string> = { yaml: "YAML", xml: "XML", ini: "Properties", json: "JSON", plaintext: "Plain text" };
 const HASH = /^[0-9a-f]{64}$/;
@@ -32,8 +34,11 @@ export type ContentViewProps = {
   entry: FileEntry | null;
   /** The way forward from an empty file, when a comparison with Git can be made. */
   onCompareWithGit: (() => void) | null;
-  /** A place beside each masked value (T5 puts Reveal there). */
-  maskAction?: (mask: Mask) => ReactNode;
+  /**
+   * The swimlane whose NFS file this is. Given, a masked value that names its setting has a Reveal control (`revealValue` reads the
+   * file on NFS, so only the NFS tab passes it). Absent, a masked value is a token and nothing else: the Git and Baseline tabs.
+   */
+  lane?: string;
 };
 
 function StatusBar({ content, name }: { content: FileContent; name: string }) {
@@ -86,10 +91,8 @@ function Row({ term, children }: { term: string; children: ReactNode }) {
 }
 
 function WithheldCard({ content, name, entry }: { content: FileContent; name: string; entry: FileEntry | null }) {
-  const session = useSession();
-  const meId = session.status === "ready" ? session.me.id : null;
+  const { nameOf } = useActorNames();
   const attribution = entry?.attribution ?? null;
-  const view = attribution === null ? null : describeAttribution(attribution, meId);
   const observed = attribution?.evidence.observed_at ?? null;
   return (
     <div className="flex flex-1 items-start justify-center px-6 py-10">
@@ -99,27 +102,20 @@ function WithheldCard({ content, name, entry }: { content: FileContent; name: st
         </Row>
         <Row term="Size">{formatSize(content.size)}</Row>
         <Row term="Hash">
-          <HashChip hash={content.hash} />
+          {/* A fact about a file the page will not show: nothing in it is worth pasting elsewhere. */}
+          <HashChip hash={content.hash} copy={false} />
         </Row>
         <Row term="Last changed">{observed === null ? "Not available" : formatTime(observed)}</Row>
         <Row term="Changed by">
-          {view === null ? (
-            "Not available"
-          ) : (
-            <>
-              <span className="font-medium">{view.who}</span>
-              <ConfidenceChip view={view} />
-              <span className="text-muted-foreground">{view.how}</span>
-            </>
-          )}
+          <AttributionChip attribution={attribution} nameOf={nameOf} emptyLabel="Not available" />
         </Row>
       </dl>
     </div>
   );
 }
 
-export function ContentView({ content, name, where, highlightLine, entry, onCompareWithGit, maskAction }: ContentViewProps) {
-  if (content.content_withheld || content.class === "denied") return <WithheldCard content={content} name={name} entry={entry} />;
+export function ContentView({ content, name, where, highlightLine, entry, onCompareWithGit, lane }: ContentViewProps) {
+  if (isContentWithheld(content)) return <WithheldCard content={content} name={name} entry={entry} />;
   if (content.class === "binary" || content.text === null) return <BinaryView content={content} name={name} />;
   if (content.text === "") {
     return (
@@ -142,7 +138,11 @@ export function ContentView({ content, name, where, highlightLine, entry, onComp
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 bg-card pt-1">
         {masks.length > 0 ? (
-          <MaskedCodeView label={name} text={content.text} masks={masks} highlightLine={highlightLine} {...(maskAction ? { maskAction } : {})} className="h-full" />
+          lane !== undefined ? (
+            <RevealableMaskedText swimlane={lane} path={content.path} label={name} text={content.text} masks={masks} highlightLine={highlightLine} className="h-full" />
+          ) : (
+            <MaskedTextView label={name} text={content.text} masks={masks} highlightLine={highlightLine} className="h-full" />
+          )
         ) : (
           <CodeView label={name} text={content.text} highlightLine={highlightLine} className="h-full" />
         )}

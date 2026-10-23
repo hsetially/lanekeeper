@@ -18,7 +18,7 @@ const newestFirst = <T extends { id: number }>(items: readonly T[]): T[] => [...
 /** The shell of the app around the page: who is signed in, the swimlanes, the search the palette uses. Not the Shell's own proposals. */
 function shell(role: Role): readonly MockResponse[] {
   const base = shellScenarios.find((s) => s.id === (role === "admin" ? "design-shell-admin" : "design-shell-viewer"));
-  return (base?.responses ?? []).filter((r) => r.path !== PROPOSALS && r.path !== "/api/v1/me");
+  return (base?.responses ?? []).filter((r) => r.path !== PROPOSALS && r.path !== "/api/v1/me" && r.path !== "/api/v1/admin/users");
 }
 
 function me(role: Role): MockResponse {

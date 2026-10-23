@@ -6,7 +6,7 @@ import { settle } from "../a11y/axe.ts";
 import { SIDEBAR, freezeDate } from "../a11y/helpers.ts";
 import { auditLayout, describeReport, hasDefects } from "./audit.ts";
 
-test.use({ dist: process.env["LK_DIST"] ?? "dist", colorScheme: "light" });
+test.use({ dist: process.env["LK_E2E_DIST"] ?? process.env["LK_DIST"] ?? "dist", colorScheme: "light" });
 
 const SIZES = [
   { width: 1024, height: 768 },

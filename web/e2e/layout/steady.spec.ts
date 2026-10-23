@@ -5,7 +5,7 @@ import { requestsQuiet } from "./audit.ts";
 import { pseudoLocalise } from "./pseudo.ts";
 
 test.use({
-  dist: process.env["LK_DIST"] ?? "dist",
+  dist: process.env["LK_E2E_DIST"] ?? process.env["LK_DIST"] ?? "dist",
   colorScheme: "light",
   scenario: "design-compare-default",
 });

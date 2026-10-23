@@ -34,6 +34,34 @@ describe("the head", () => {
     expect(within(head).getByText(PATH)).toBeInTheDocument();
   });
 
+  it("says who changed the file, with the shared attribution chip, and opens the evidence behind it", async () => {
+    open();
+    const head = await screen.findByRole("region", { name: "File" });
+    const by = await within(head).findByText("Changed by");
+    expect(by.closest("[data-slot='file-changed-by']")).not.toBeNull();
+    // Priya is the signed-in Admin of the scenario, so the head says "You"; the chip is a button that opens the evidence.
+    await userEvent.click(within(head).getByRole("button", { name: /You/ }));
+    expect(await screen.findByLabelText("Attribution evidence")).toBeInTheDocument();
+  });
+
+  it("shows the open pull request beside the drift state, from one read of the swimlane's links", async () => {
+    const { calls } = open("design-file-core", files(), (call) =>
+      call.method === "GET" && call.path.startsWith("/api/v1/prs") ? new Response(JSON.stringify({ items: new URL(call.path, "http://x").searchParams.get("state") === "open" ? [{ id: 3, swimlane: "sitb", path: PATH, nfs_hash: "a3f9c21" + "0".repeat(57), state: "open", pr_url: "https://github.com/csp/csp-tenant-data/pull/418", pr_number: 418, author: "x:y", created_at: 1, closed_at: null }] : [], next: null }), { status: 200, headers: { "content-type": "application/json" } }) : undefined,
+    );
+    const head = await screen.findByRole("region", { name: "File" });
+    const badge = await within(head).findByRole("link", { name: /PR #418 open/ });
+    expect(badge).toHaveAttribute("href", "https://github.com/csp/csp-tenant-data/pull/418");
+    // One list of open links and one of merged, however many rows and badges there are: never one request for each file.
+    expect(calls.filter((c) => c.path.startsWith("/api/v1/prs?"))).toHaveLength(2);
+  });
+
+  it("shows no pull-request badge for a file nobody raised one for", async () => {
+    open();
+    const head = await screen.findByRole("region", { name: "File" });
+    await within(head).findByText("412 lines");
+    expect(head.querySelector("[data-slot='pr-badge']")).toBeNull();
+  });
+
   it("marks a tenant file as the effective file for its base file", async () => {
     open();
     expect(await screen.findByText("Effective file for tx-infinity-core")).toBeInTheDocument();
@@ -190,6 +218,19 @@ describe("files that are not text", () => {
     expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "History" })).toBeInTheDocument();
     expect(await screen.findAllByText("Not available")).toHaveLength(2);
+  });
+
+  it("says a file the hub could not check for secrets is withheld for that reason, not as a sensitive file type, and still offers no write", async () => {
+    const base = serveScenario("design-file-denied");
+    renderApp(files("security/keystore.jks"), async (call) => {
+      const answer = await base(call);
+      if (!call.path.startsWith("/api/v1/swimlanes/sitb/files/content")) return answer;
+      const body = (await answer.json()) as Record<string, unknown>;
+      return json({ ...body, class: "structured" });
+    });
+    expect(await screen.findByText("Content withheld: could not be checked for secrets")).toBeInTheDocument();
+    expect(screen.queryByText("Content withheld: sensitive file type")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
   });
 
   it("shows a picture from the blob store, and no editor for it", async () => {

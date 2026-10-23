@@ -1,6 +1,5 @@
 import { FindingKind, Severity } from "@/api/generated/model";
-import { codeOf } from "@/features/findings/kinds";
-import { findingTitle } from "../format";
+import { codeOf, nameOf } from "@/features/findings/kinds";
 
 // The Findings tab can be narrowed from the address: `code` (C1 to C12), `kind` (the check's name) and `severity` (that and above).
 // A value that is not one of the contract's is dropped, so a link with a typo shows everything rather than nothing.
@@ -9,6 +8,9 @@ export type FindingsFilter = { kinds: FindingKind[] | undefined; minSeverity: Se
 
 const KINDS = Object.values(FindingKind);
 const SEVERITIES = Object.values(Severity);
+
+/** The check's name in the middle of a sentence: "Duplicate keys" is "duplicate keys", and "NFS and Git disagree" stays as it is written. */
+const inSentence = (name: string): string => (/^[A-Z][a-z]/.test(name) ? `${name.charAt(0).toLowerCase()}${name.slice(1)}` : name);
 
 function kindOf(search: { readonly code?: string; readonly kind?: string }): FindingKind | undefined {
   if (search.kind !== undefined) {
@@ -26,7 +28,7 @@ export function codeFilter(search: { readonly code?: string; readonly kind?: str
   const kind = kindOf(search);
   const minSeverity = SEVERITIES.find((s) => s === search.severity);
   const parts: string[] = [];
-  if (kind !== undefined) parts.push(`${codeOf(kind)}, ${findingTitle(kind).toLowerCase()}`);
+  if (kind !== undefined) parts.push(`${codeOf(kind)}, ${inSentence(nameOf(kind))}`);
   if (minSeverity !== undefined) parts.push(`${minSeverity} severity and above`);
   return { kinds: kind === undefined ? undefined : [kind], minSeverity, label: parts.length === 0 ? null : parts.join(", ") };
 }

@@ -2,32 +2,33 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { openAdmin, rowIn, installAdminClock } from "@/mocks/design/admin/harness";
+import { openSection } from "@/mocks/design/admin-t5/harness";
+import { newT5World } from "@/mocks/design/admin-t5/world";
 import { newWorld } from "@/mocks/design/admin/world";
 
-// The page of /admin/:section: it chooses the section, inside the Admin area. Four sections (sentinels, OS Login mapping, severity
-// rules, retention) are built by task T5 and are listed in the navigation; until T5 adds them their page says so, and still has the
-// area around it, so a link to one is never a blank or a 404.
+// The page of /admin/:section: it chooses the section, inside the Admin area. The four sections of task T5 (sentinels, OS Login
+// mapping, severity rules, retention) were listed in the navigation before they were built, with a page that said so; each now opens
+// its own section (their tests are in src/features/admin/sections).
 
 installAdminClock();
 
-describe("the sections of another task", () => {
+describe("the sections of task T5", () => {
   it.each([
-    ["sentinels", "Sentinels"],
-    ["oslogin", "OS Login user mapping"],
-    ["severity", "Severity rules"],
-    ["retention", "Retention"],
-  ])("%s opens its page in the Admin area and says it is not available yet", async (section, title) => {
-    await openAdmin(newWorld(), `/admin/${section}`);
+    ["sentinels", "Sentinels", "Sentinels"],
+    ["oslogin", "OS Login user mapping", "OS Login users"],
+    ["severity", "Severity rules", "Severity rules"],
+    ["retention", "Retention", "Retention"],
+  ])("%s opens its section in the Admin area and marks it current", async (section, title, link) => {
+    await openSection(newT5World(), `/admin/${section}`);
     expect(await screen.findByRole("heading", { level: 2, name: title })).toBeInTheDocument();
-    expect(screen.getByText("Not available yet")).toBeInTheDocument();
-    expect(screen.getByText(`${title} is not part of this build of the Admin area yet.`)).toBeInTheDocument();
-    expect(within(screen.getByRole("navigation", { name: "Admin sections" })).getByRole("link", { name: title === "OS Login user mapping" ? "OS Login users" : title })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByText("Not available yet")).toBeNull();
+    expect(within(screen.getByRole("navigation", { name: "Admin sections" })).getByRole("link", { name: link })).toHaveAttribute("aria-current", "page");
   });
 
-  it("asks the hub for nothing of that section", async () => {
-    const app = await openAdmin(newWorld(), "/admin/retention");
-    await screen.findByText("Not available yet");
-    expect(app.calls.some((c) => c.path.startsWith("/api/v1/admin/retention"))).toBe(false);
+  it("asks the hub for the data of the section it opened", async () => {
+    const app = await openSection(newT5World(), "/admin/retention");
+    await screen.findByLabelText("Days to keep versions");
+    expect(app.calls.some((c) => c.path.startsWith("/api/v1/admin/retention"))).toBe(true);
   });
 });
 

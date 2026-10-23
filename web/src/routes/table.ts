@@ -57,6 +57,8 @@ export const ROUTE_TABLE = [
   { id: "adopt", path: "/swimlanes/:id/adopt", access: "admin", title: "Adopt this swimlane", origin: "handoff", search: ["step"] },
   { id: "drift", path: "/swimlanes/:id/drift", access: "viewer", title: "Drift", origin: "addition" },
   { id: "activity", path: "/swimlanes/:id/activity", access: "admin", title: "Activity", origin: "addition" },
+  // The hub's link template for a swimlane's pull requests (`LinkTemplates::default().pr`): the page is swimlane-scoped.
+  { id: "swimlane-pull-requests", path: "/swimlanes/:id/pull-requests", access: "viewer", title: "Pull requests", origin: "addition", search: ["state"] },
   // Across swimlanes.
   { id: "compare", path: "/compare", access: "viewer", title: "Compare", origin: "handoff", search: ["lanes", "file", "only", "channel", "left", "right"] },
   { id: "grid-link", path: "/grid", access: "viewer", title: "Compare", origin: "addition", search: ["file", "swimlanes"], redirect: { to: "/compare", carry: { file: "file", swimlanes: "lanes" } } },

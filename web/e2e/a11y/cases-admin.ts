@@ -1,5 +1,6 @@
 // The states of the Admin area (S8): users and requests, swimlanes and agents (manage panel, join token), the rule sections with their
-// add/edit/delete dialogs, notifications (a webhook field), MCP tokens, the sections that are not built yet, and the permission state.
+// add/edit/delete dialogs, notifications (a webhook field), MCP tokens, a section that does not exist, and the permission state.
+// The four sections that T5 added (sentinels, OS Login, severity rules, retention) are in cases-t5-admin.ts.
 import { expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import type { Case } from "./helpers.ts";
@@ -116,7 +117,7 @@ export const adminCases: Case[] = [
   section("admin folders / no mapping", "design-admin-folders-empty", "/admin/folders"),
   { id: "admin folders / add a mapping", scenario: "design-admin-folders", url: "/admin/folders", open: click("Add mapping") },
 
-  // ---- Notifications, MCP tokens, the sections not built yet ---------------------------------------------------------------------------
+  // ---- Notifications, MCP tokens, a section that does not exist ---------------------------------------------------------------------------
   section("admin notify / the channels", "design-admin-notify", "/admin/notify"),
   section("admin notify / no channel", "design-admin-notify-empty", "/admin/notify"),
   { id: "admin notify / add a channel (the webhook field)", scenario: "design-admin-notify", url: "/admin/notify", open: click("Add channel") },
@@ -124,9 +125,5 @@ export const adminCases: Case[] = [
   section("admin mcp / the admin's own tokens", "design-admin-mcp", "/admin/mcp"),
   section("admin mcp / none issued", "design-admin-mcp-empty", "/admin/mcp"),
   section("admin mcp / the mode is off", "design-admin-mcp-off", "/admin/mcp"),
-  section("admin sentinels / not available yet", "design-admin-users", "/admin/sentinels"),
-  section("admin oslogin / not available yet", "design-admin-users", "/admin/oslogin"),
-  section("admin severity / not available yet", "design-admin-users", "/admin/severity"),
-  section("admin retention / not available yet", "design-admin-users", "/admin/retention"),
   { id: "admin / a section that does not exist", scenario: "design-admin-users", url: "/admin/nothing", noChrome: true },
 ];

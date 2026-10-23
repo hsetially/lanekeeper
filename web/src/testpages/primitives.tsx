@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
@@ -23,10 +24,20 @@ export function PrimitivesPage() {
   const [destructive, setDestructive] = useState(false);
   const [problem, setProblem] = useState<"conflict" | "locked" | "approval" | null>(null);
   const [palette, setPalette] = useState(false);
+  const [rename, setRename] = useState(false);
+  const [newName, setNewName] = useState("");
+  // The times each dialog asked for its write. The keyboard spec reads these (e2e/keyboard/keymap.spec.ts, `dialogs.confirms-only-when-the-primary`):
+  // whether Enter confirmed is a count, not whether a dialog is still on the screen.
+  const [asked, setAsked] = useState({ consequence: 0, rename: 0, destructive: 0 });
+  const ask = (which: keyof typeof asked): void => setAsked((now) => ({ ...now, [which]: now[which] + 1 }));
   return (
     <TooltipProvider>
       <div className="flex flex-col gap-4 p-6">
         <h1 className="text-lg font-semibold">Primitives</h1>
+        <p className="text-sm text-muted-foreground">
+          Writes asked for: Raise PR <output aria-label="Raise PR confirmations">{asked.consequence}</output>, Rename file <output aria-label="Rename file confirmations">{asked.rename}</output>, Delete file{" "}
+          <output aria-label="Delete file confirmations">{asked.destructive}</output>
+        </p>
 
         <div className="flex flex-wrap items-center gap-2">
           <Dialog>
@@ -58,6 +69,14 @@ export function PrimitivesPage() {
           </AlertDialog>
 
           <Button onClick={() => setConsequence(true)}>Open consequence dialog</Button>
+          <Button
+            onClick={() => {
+              setNewName("");
+              setRename(true);
+            }}
+          >
+            Open rename dialog
+          </Button>
           <Button variant="destructive" onClick={() => setDestructive(true)}>
             Open destructive confirm
           </Button>
@@ -140,8 +159,49 @@ export function PrimitivesPage() {
         </Command>
       </div>
 
-      <ConsequenceDialog open={consequence} onOpenChange={setConsequence} title="Raise a pull request" consequence="2 files will be copied into the base repository." actionLabel="Raise PR" onConfirm={() => setConsequence(false)} />
-      <DestructiveConfirm open={destructive} onOpenChange={setDestructive} title="Delete file" consequence="The file is removed from the swimlane." confirmValue="core-sit1.yml" actionLabel="Delete file" onConfirm={() => setDestructive(false)} />
+      <ConsequenceDialog
+        open={consequence}
+        onOpenChange={setConsequence}
+        title="Raise a pull request"
+        consequence="2 files will be copied into the base repository."
+        actionLabel="Raise PR"
+        onConfirm={() => {
+          ask("consequence");
+          setConsequence(false);
+        }}
+      />
+      <ConsequenceDialog
+        open={rename}
+        onOpenChange={setRename}
+        title="Rename file"
+        consequence="The file keeps its history under the new name."
+        actionLabel="Rename file"
+        initialFocus="first-field"
+        canConfirm={newName.trim() !== ""}
+        onConfirm={() => {
+          ask("rename");
+          setRename(false);
+        }}
+      >
+        <div className="flex flex-col gap-1">
+          <label htmlFor="rename-to" className="text-sm">
+            New name
+          </label>
+          <Input id="rename-to" value={newName} onChange={(event) => setNewName(event.target.value)} autoComplete="off" className="font-mono" />
+        </div>
+      </ConsequenceDialog>
+      <DestructiveConfirm
+        open={destructive}
+        onOpenChange={setDestructive}
+        title="Delete file"
+        consequence="The file is removed from the swimlane."
+        confirmValue="core-sit1.yml"
+        actionLabel="Delete file"
+        onConfirm={() => {
+          ask("destructive");
+          setDestructive(false);
+        }}
+      />
       <ProblemDialog open={problem !== null} onOpenChange={(open) => !open && setProblem(null)} variant={problem ?? "conflict"} requestId="req-test-0001" />
       <CommandDialog open={palette} onOpenChange={setPalette} title="Command palette" description="Search swimlanes, docs and settings.">
         <CommandInput placeholder="Type a command" />

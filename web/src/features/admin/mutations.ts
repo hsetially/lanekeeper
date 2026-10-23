@@ -1,4 +1,4 @@
-import type { QueryClient } from "@tanstack/react-query";
+import type { QueryClient, UseMutationOptions } from "@tanstack/react-query";
 import {
   adminApproveAccessRequest,
   adminDeleteAgent,
@@ -51,6 +51,7 @@ import type {
   User,
   UserUpdate,
 } from "@/api/generated/model";
+import type { ApiProblem } from "@/api/problem";
 import { invalidateAfterWrite } from "@/lib/query/invalidate";
 import { optimisticWriteMutation } from "@/lib/query/optimistic";
 import { writeMutation } from "@/lib/query/write";
@@ -100,6 +101,17 @@ export const adminMutations = {
   deleteSeverityRule: (client: QueryClient) => writeMutation<"adminDeleteSeverityRules", string, unknown>(client, { operation: "adminDeleteSeverityRules", run: (id) => adminDeleteSeverityRules(id), context: () => ({}) }),
   putRetention: (client: QueryClient) =>
     writeMutation<"adminPutRetention", { body: RetentionInput }, RetentionSettings>(client, { operation: "adminPutRetention", run: ({ body }) => adminPutRetention(body), context: () => ({}) }),
+  /**
+   * A retention DRY RUN as a mutation, for the screen that shows its answer: the hub computes what the policy would delete and changes
+   * nothing (`dry_run=true`), so nothing is refetched after it, and a second one is a second look, never a retry. The change itself is
+   * `putRetention`. Nothing of the answer is kept once the screen lets go of it.
+   */
+  previewRetention: (): UseMutationOptions<RetentionSettings, ApiProblem, RetentionInput> => ({
+    mutationKey: ["write", "adminPutRetention", "dry_run"],
+    mutationFn: (body) => previewRetentionRequest(body),
+    retry: false,
+    gcTime: 0,
+  }),
 };
 
 /** What a retention change would remove, without changing it (`dry_run`). It writes nothing, so nothing is refetched after it. */

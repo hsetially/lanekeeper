@@ -1,24 +1,16 @@
-import { Severity, type Finding } from "@/api/generated/model";
+import type { Finding } from "@/api/generated/model";
 import type { SortState } from "@/components/app/virtual/DataTable";
+import { SEVERITIES, SEVERITY_LABEL, severityRank } from "@/components/attribution/severity";
 import { KINDS } from "./kinds";
+
+// The levels, their words and their order are the shared severity module's (src/components/attribution/severity.ts), the one
+// definition every screen uses.
+export { SEVERITIES, SEVERITY_LABEL, severityRank };
 
 // How the Findings screen orders what the server found. DISPLAY ONLY: the severity, the kind and the swimlane of a finding are
 // the server's (the registry rates a finding by the engine's rules and the admin's, D103), and the browser never rates or
 // re-rates one. The server lists newest first by id and cannot be asked for another order, so the order a person chooses applies
 // to the findings that are loaded, and the screen says so while more are on their way.
-
-/** Most severe first. */
-export const SEVERITIES: readonly Severity[] = [Severity.critical, Severity.high, Severity.medium, Severity.low];
-
-export const SEVERITY_LABEL: Readonly<Record<Severity, string>> = {
-  [Severity.critical]: "Critical",
-  [Severity.high]: "High",
-  [Severity.medium]: "Medium",
-  [Severity.low]: "Low",
-};
-
-/** 0 for critical up to 3 for low. */
-export const severityRank = (severity: Severity): number => SEVERITIES.indexOf(severity);
 
 /** The order when no column is chosen: the most severe first. */
 export const DEFAULT_SORT: SortState = { column: "severity", direction: "desc" };

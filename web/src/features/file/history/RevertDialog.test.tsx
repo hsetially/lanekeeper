@@ -22,7 +22,8 @@ describe("RevertDialog", () => {
     renderFile(<RevertDialog {...props} />);
     const dialog = await screen.findByRole("alertdialog", { name: "Revert to c19a4e2?" });
     expect(within(dialog).getByText(/replaces the file on NFS with the content of this version/i)).toBeInTheDocument();
-    expect(within(dialog).getByText("Tool write by You, 2026-10-17 13:58 UTC")).toBeInTheDocument();
+    // The author is untrusted text and goes through SafeText, so it is an element of its own inside the sentence.
+    expect(within(dialog).getByText("You").closest("dd")).toHaveTextContent("Tool write by You, 2026-10-17 13:58 UTC");
     expect(within(dialog).getByText(/Nothing is deleted from history\./)).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Revert to c19a4e2" })).toBeInTheDocument();
   });

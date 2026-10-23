@@ -8,7 +8,7 @@ import { FROZEN_NOW } from "../visual/render-references.mjs";
 import { settle } from "./axe.ts";
 import { SIDEBAR, freezeDate } from "./helpers.ts";
 
-test.use({ dist: process.env["LK_DIST"] ?? "dist" });
+test.use({ dist: process.env["LK_E2E_DIST"] ?? process.env["LK_DIST"] ?? "dist" });
 
 async function open(page: Page, url: string): Promise<void> {
   await freezeDate(page);
@@ -203,6 +203,12 @@ test.describe("live regions", () => {
     ["findings", "design-findings-open", "/findings"],
     ["approvals", "design-approvals-pending", "/approvals"],
     ["admin users", "design-admin-users", "/admin/users"],
+    // T5
+    ["pull requests", "design-prs-list", "/swimlanes/sitb/pull-requests"],
+    ["a masked file (the Reveal announcements)", "design-masking-reveal", "/swimlanes/sitb/files?path=tx-infinity-api%2Ftx-infinity-core-sit7.yml"],
+    ["sentinels", "design-admin-t5-sentinels", "/admin/sentinels"],
+    ["retention", "design-admin-t5-retention", "/admin/retention"],
+    ["the audit log with attribution", "design-attribution-audit", "/audit"],
   ] as const) {
     test(`${id}: only an alert is assertive, and every other live region is polite`, async ({ page, harness }) => {
       harness.setScenario(scenario);
@@ -338,6 +344,14 @@ const TAB_PAGES = [
   ["findings", "design-findings-open", "/findings"],
   ["admin users", "design-admin-users", "/admin/users"],
   ["onboarding", "design-access-onboarding", "/access/onboarding"],
+  // T5: the pages whose controls are new (the state filter and the grid of pull requests, the chips of a file's history, the Reveal buttons,
+  // the buttons of the OS Login, severity-rule and retention sections).
+  ["pull requests", "design-prs-list", "/swimlanes/sitb/pull-requests"],
+  ["a masked file", "design-masking-reveal", "/swimlanes/sitb/files?path=tx-infinity-api%2Ftx-infinity-core-sit7.yml"],
+  ["the audit log with attribution", "design-attribution-audit", "/audit"],
+  ["OS Login mappings", "design-admin-t5-oslogin", "/admin/oslogin"],
+  ["severity rules", "design-admin-t5-severity", "/admin/severity"],
+  ["retention", "design-admin-t5-retention", "/admin/retention"],
 ] as const;
 
 for (const colours of ["normal", "forced"] as const) {

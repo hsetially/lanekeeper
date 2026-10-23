@@ -130,7 +130,7 @@ const cases: ParityCase[] = [
     path: FILE,
     prepare: create,
     region: dialog,
-    differences: [...d("head", "lk/sitb-tx-infinity-core-sit7"), ...d("data", "github.com/csp-tenant/csp-tenant-data/pull/419"), ...d("drift", "Drift list now shows", "PR #419 open", "on this file.")],
+    differences: [...d("head", "lk/sitb-tx-infinity-core-sit7"), ...d("data", "github.com/csp-tenant/csp-tenant-data/pull/419")],
   },
   {
     name: "error, the GitHub token has expired",

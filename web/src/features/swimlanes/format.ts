@@ -1,7 +1,8 @@
-import { DriftState, FindingKind, type VersionLabel } from "@/api/generated/model";
+import { DriftState, type VersionLabel } from "@/api/generated/model";
 
-// Small facts the swimlane screens print the same way: a base version, the drift states of a swimlane in order of urgency, the
-// code and the words of a finding. Display only: what a state IS comes from the engine, never from here.
+// Small facts the swimlane screens print the same way: a base version and the drift states of a swimlane in order of urgency. (The
+// code and the words of a finding are the Findings screen's, src/features/findings/kinds.ts, so one check has one name.) Display
+// only: what a state IS comes from the engine, never from here.
 
 /** `v2.3.1 + 4` (four commits past the tag), `v2.3.1` at the tag, the short commit when there is no tag, a dash for none. */
 export function versionLabel(version: VersionLabel | null | undefined): string {
@@ -23,20 +24,3 @@ export function driftChips(counts: readonly (readonly [DriftState, number])[]): 
   }
   return CHIP_ORDER.filter((state) => by.has(state)).map((state) => ({ state, count: by.get(state) ?? 0 }));
 }
-
-const FINDING_TITLE: Record<FindingKind, string> = {
-  [FindingKind.missed_base_changes]: "Missed base changes",
-  [FindingKind.redundant_tenant_file]: "Redundant tenant file",
-  [FindingKind.uneven_tenant_files]: "Uneven tenant files",
-  [FindingKind.orphan_file]: "Orphan file",
-  [FindingKind.drift]: "Drift",
-  [FindingKind.environment_host_mismatch]: "Environment and host mismatch",
-  [FindingKind.overwritten_nfs_change]: "Overwritten NFS change",
-  [FindingKind.duplicate_keys]: "Duplicate keys",
-  [FindingKind.ambiguous_file_name]: "Ambiguous file name",
-  [FindingKind.unresolved_placeholder]: "Unresolved placeholder",
-  [FindingKind.config_server_restart_required]: "Config-server restart required",
-  [FindingKind.served_mismatch]: "Served config differs",
-};
-
-export const findingTitle = (kind: FindingKind): string => FINDING_TITLE[kind];

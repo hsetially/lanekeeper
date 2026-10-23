@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Severity, type FindingKind } from "@/api/generated/model";
 import { SafeText } from "@/components/app/SafeText";
 import { TierChip } from "@/components/app/TierBadge";
+import { MIN_SEVERITY_CHOICES } from "@/components/attribution/severity";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Plus, X } from "@/icons";
@@ -9,7 +10,6 @@ import { cn } from "@/lib/utils";
 import { CodeChip } from "./cells";
 import { NO_FILTERS, isFiltered, toggled, type Filters } from "./filters";
 import { KINDS, codeOf, nameOf } from "./kinds";
-import { SEVERITY_LABEL } from "./severity";
 
 // The toolbar of the Findings screen, after the design's: a dashed "+ Swimlane", "+ Check" and "+ Severity" button each, which
 // fill in (a solid border and the first two values) once a choice is made, and a one-click "Clear filters". Each opens a menu of
@@ -18,13 +18,6 @@ import { SEVERITY_LABEL } from "./severity";
 
 /** A swimlane the menu offers: its tier and the number of open findings the swimlane list says it has, when known. */
 export type LaneChoice = { id: string; tier: string | null; count: number | null };
-
-const AT_LEAST: readonly { value: Severity | "any"; label: string }[] = [
-  { value: "any", label: "Any severity" },
-  { value: Severity.medium, label: `${SEVERITY_LABEL.medium} and above` },
-  { value: Severity.high, label: `${SEVERITY_LABEL.high} and above` },
-  { value: Severity.critical, label: `${SEVERITY_LABEL.critical} only` },
-];
 
 /** The first two values and how many more, as the design's chips write them. */
 const shortList = (values: readonly string[]): string => values.slice(0, 2).join(", ") + (values.length > 2 ? ` +${values.length - 2}` : "");
@@ -107,14 +100,14 @@ export function FilterBar({ filters, onChange, lanes, summary }: { filters: Filt
         </DropdownMenuItem>
       </FilterButton>
 
-      <FilterButton label="Severity" value={AT_LEAST.find((choice) => choice.value === filters.minSeverity)?.label ?? null}>
+      <FilterButton label="Severity" value={MIN_SEVERITY_CHOICES.find((choice) => choice.value === filters.minSeverity)?.label ?? null}>
         <DropdownMenuRadioGroup
           value={filters.minSeverity ?? "any"}
           onValueChange={(value) => {
             onChange({ ...filters, minSeverity: Object.values(Severity).find((s) => s === value) ?? null });
           }}
         >
-          {AT_LEAST.map((choice) => (
+          {MIN_SEVERITY_CHOICES.map((choice) => (
             <DropdownMenuRadioItem key={choice.value} value={choice.value}>
               {choice.label}
             </DropdownMenuRadioItem>

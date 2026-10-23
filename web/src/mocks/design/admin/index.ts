@@ -20,7 +20,7 @@ import { channels, folders, hostTiers, IDS, mcpToken, mergeRules, NOW, pathRules
 const page = <T>(items: readonly T[]): { items: readonly T[]; next: null } => ({ items, next: null });
 // The Shell's own answer to the pending requests is an empty list; the harness answers with the FIRST response that matches, so it
 // must not be here or it hides the page's own (Sam Okafor's request would never be drawn).
-const shellBase = (id: "design-shell-admin" | "design-shell-viewer"): readonly MockResponse[] => (shell.find((s) => s.id === id)?.responses ?? []).filter((r) => !(r.method === "GET" && r.path === "/api/v1/admin/access-requests"));
+const shellBase = (id: "design-shell-admin" | "design-shell-viewer"): readonly MockResponse[] => (shell.find((s) => s.id === id)?.responses ?? []).filter((r) => !(r.method === "GET" && (r.path === "/api/v1/admin/access-requests" || r.path === "/api/v1/admin/users")));
 
 const list = (path: string, items: readonly unknown[]): MockResponse => ({ method: "GET", path, body: page(items) });
 const echo = (method: "PUT" | "POST", path: string, sample: Partial<MockContext>, extra: (c: MockContext) => object = () => ({}), status = 200): MockResponse => ({

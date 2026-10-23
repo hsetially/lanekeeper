@@ -80,7 +80,9 @@ function Frame({ sidebar, header, children, mainRef }: { sidebar: ReactNode; hea
         <PausedBanner />
         <NewVersionBanner />
         <main id="main" ref={mainRef} tabIndex={-1} className="flex min-h-0 flex-1 flex-col overflow-auto outline-none">
-          <div className="mx-auto flex min-h-0 w-full max-w-[1680px] flex-1 flex-col">{children}</div>
+          {/* The screen's box is a stacking context, so a layer a screen draws (a sticky table header, z-10) stays under a dialog. <main> is not one:
+              the menus, popovers and tooltips are portaled into it and must stack above the sidebar (ui/overlay-root.ts). */}
+          <div className="isolate mx-auto flex min-h-0 w-full max-w-[1680px] flex-1 flex-col">{children}</div>
         </main>
       </div>
     </div>

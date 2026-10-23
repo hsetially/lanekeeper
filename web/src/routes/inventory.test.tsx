@@ -16,6 +16,7 @@ const APPROVED_ADDITIONS = [
   "/me/tokens",
   "/swimlanes/:id/drift",
   "/swimlanes/:id/activity",
+  "/swimlanes/:id/pull-requests",
   "/docs/view",
   // The shapes of `LinkTemplates::default()` that are not a screen of their own (links_resolve.test.tsx): each only redirects.
   "/docs",

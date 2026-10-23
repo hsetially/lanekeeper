@@ -11,6 +11,11 @@ describe("codeFilter (what the address narrows the Findings tab to)", () => {
     expect(codeFilter({ code: "c12" }).kinds).toEqual(["served_mismatch"]);
   });
 
+  it("says a check in the Findings screen's words, and keeps an acronym as it is written", () => {
+    expect(codeFilter({ code: "C2" }).label).toBe("C2, override identical to base");
+    expect(codeFilter({ code: "C5" }).label).toBe("C5, NFS and Git disagree");
+  });
+
   it("reads a check by its name", () => {
     expect(codeFilter({ kind: "drift" }).kinds).toEqual(["drift"]);
   });
@@ -20,7 +25,7 @@ describe("codeFilter (what the address narrows the Findings tab to)", () => {
   });
 
   it("combines them", () => {
-    expect(codeFilter({ code: "C2", severity: "medium" }).label).toBe("C2, redundant tenant file, medium severity and above");
+    expect(codeFilter({ code: "C2", severity: "medium" }).label).toBe("C2, override identical to base, medium severity and above");
   });
 
   it("ignores a value it does not know instead of guessing", () => {

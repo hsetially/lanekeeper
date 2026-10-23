@@ -71,10 +71,14 @@ export function coreLines(total: number, options: { secret: "masked" | "env" | "
 /** The text with the line ending of the file. */
 export const joinLines = (lines: readonly string[], eol: "\r\n" | "\n"): string => `${lines.join(eol)}${eol}`;
 
-/** The 0-based UTF-8 byte offset of the start of a 1-based line, in a text whose lines end with `eol`. All the text is ASCII here. */
+/**
+ * The 0-based UTF-8 byte offset of the start of a 1-based line, in a text whose lines end with `eol`. Bytes, not characters: the
+ * first line of the core file has a middle dot, which is two bytes, and a mask counted in characters is a byte short after it.
+ */
 export function lineStart(lines: readonly string[], line: number, eol: "\r\n" | "\n"): number {
+  const encoder = new TextEncoder();
   let at = 0;
-  for (let i = 0; i < line - 1; i++) at += (lines[i]?.length ?? 0) + eol.length;
+  for (let i = 0; i < line - 1; i++) at += encoder.encode(lines[i] ?? "").length + eol.length;
   return at;
 }
 

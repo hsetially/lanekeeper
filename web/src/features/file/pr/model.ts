@@ -1,7 +1,8 @@
-import type { PrJob, PrJobState, PrLink } from "@/api/generated/model";
 import { ApiProblem } from "@/api/problem";
 
-// The pure parts of the pull-request dialog (Consequence dialogs, 1a to 1k).
+// The pure parts of the pull-request dialog (Consequence dialogs, 1a to 1e and the token answers): the title and the description it
+// starts with, and what a GitHub token problem means. The job's steps, the open pull request and a pull request's address are the
+// shared ones (src/components/pr, src/features/prs).
 
 const MAX_TITLE = 256;
 
@@ -30,20 +31,6 @@ export function defaultBody({ lane, path, repo, base, writes, hash }: BodyInput)
   ].join("\n");
 }
 
-export type JobStep = { label: string; status: "done" | "active" | "pending" };
-
-const STEPS = ["Preparing", "Committing", "Opening pull request", "Done"] as const;
-const ACTIVE: Record<PrJobState, number> = { pending: 0, preparing: 0, committing: 1, opening: 2, completed: 4, failed: -1 };
-
-/**
- * The four steps of a job, from the state the server reports and from nothing else. A queued job waits at the first step; a
- * failed job has no step done or active, because the state does not say how far it got.
- */
-export function jobSteps(state: PrJob["state"]): JobStep[] {
-  const at = ACTIVE[state];
-  return STEPS.map((label, i) => ({ label, status: at < 0 ? "pending" : i < at ? "done" : i === at ? "active" : "pending" }));
-}
-
 /** What a GitHub token problem means for the person, or null for any other problem. */
 export function tokenTrouble(error: unknown): "expired" | "unusable" | "no_access" | null {
   if (!(error instanceof ApiProblem)) return null;
@@ -61,29 +48,4 @@ export function tokenTrouble(error: unknown): "expired" | "unusable" | "no_acces
     default:
       return null;
   }
-}
-
-/** The open PR that a 409 `duplicate_pr` names, if the link is whole. */
-export function duplicateOf(error: ApiProblem): PrLink | null {
-  if (error.status !== 409 || error.body["reason"] !== "duplicate_pr") return null;
-  const link = error.body["link"];
-  if (typeof link !== "object" || link === null) return null;
-  const candidate = link as Record<string, unknown>;
-  const ok = typeof candidate["pr_url"] === "string" && typeof candidate["pr_number"] === "number" && Number.isInteger(candidate["pr_number"]) && typeof candidate["id"] === "number";
-  return ok ? (link as PrLink) : null;
-}
-
-/** A URL the dialog may make a link of: https, a host and no spaces. A link from the server is not trusted to be one. */
-export function httpsUrl(value: string): string | null {
-  if (!/^https:\/\/[^\s/]+(?:\/\S*)?$/.test(value)) return null;
-  try {
-    return new URL(value).protocol === "https:" ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-export function prNumberOf(url: string): number | null {
-  const found = /\/pull\/(\d{1,9})\/?$/.exec(url);
-  return found?.[1] === undefined ? null : Number(found[1]);
 }

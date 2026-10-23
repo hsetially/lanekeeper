@@ -4,9 +4,7 @@ import type { ADMIN_SECTIONS } from "@/routes/table";
 import { linkTo } from "@/routes/links";
 
 // The Admin area's own navigation (the left list of the Admin page): four groups of sections. Two sections are screens of their
-// own (`/admin/users`, `/admin/swimlanes`); the others are `/admin/:section`. Four of the twelve (sentinels, OS Login, severity
-// rules, retention) are built by task T5, not this one: they are in the list, so the area looks as designed and a link to one
-// opens its page, which says it is not available yet until T5 adds it (`later`).
+// own (`/admin/users`, `/admin/swimlanes`); the others are `/admin/:section`.
 
 export type AdminArea = "users" | "swimlanes" | (typeof ADMIN_SECTIONS)[number];
 
@@ -14,8 +12,6 @@ export type NavItem = {
   readonly id: AdminArea;
   readonly label: string;
   readonly icon: LucideIcon;
-  /** Built by a later task of the plan (T5). */
-  readonly later?: true;
 };
 
 export type NavGroup = { readonly label: string; readonly items: readonly NavItem[] };
@@ -26,7 +22,7 @@ export const ADMIN_NAV: readonly NavGroup[] = [
     label: "Infrastructure",
     items: [
       { id: "swimlanes", label: "Swimlanes and agents", icon: Layers },
-      { id: "sentinels", label: "Sentinels", icon: Radio, later: true },
+      { id: "sentinels", label: "Sentinels", icon: Radio },
       { id: "tiers", label: "Host tiers", icon: Tag },
     ],
   },
@@ -35,15 +31,15 @@ export const ADMIN_NAV: readonly NavGroup[] = [
     items: [
       { id: "paths", label: "Path mappings", icon: ArrowLeftRight },
       { id: "merge", label: "Merge modes", icon: Split },
-      { id: "severity", label: "Severity rules", icon: ShieldAlert, later: true },
+      { id: "severity", label: "Severity rules", icon: ShieldAlert },
       { id: "folders", label: "Folder mappings", icon: Folder },
-      { id: "oslogin", label: "OS Login users", icon: Server, later: true },
+      { id: "oslogin", label: "OS Login users", icon: Server },
     ],
   },
   {
     label: "Data and alerts",
     items: [
-      { id: "retention", label: "Retention", icon: Hourglass, later: true },
+      { id: "retention", label: "Retention", icon: Hourglass },
       { id: "notify", label: "Notifications", icon: Bell },
       { id: "mcp", label: "MCP personal tokens", icon: Zap },
     ],
@@ -66,9 +62,9 @@ const COPY: Readonly<Record<AdminArea, { readonly title: string; readonly lead: 
   folders: { title: "Folder mappings", lead: "Link each NFS folder to the Deployments that read it, so a restart targets the right service." },
   notify: { title: "Notifications", lead: "Send events to Microsoft Teams. Each channel has one webhook and says which events it carries." },
   mcp: { title: "MCP personal tokens", lead: "Tokens that let a Cursor agent act as a user. The agent proposes changes; an Admin still approves them." },
-  sentinels: { title: "Sentinels", lead: "The agent on each NFS VM that records who edits files. A missing heartbeat means edits go unrecorded." },
+  sentinels: { title: "Sentinels", lead: "The agent on each NFS VM that records who edits files. While one is disconnected, edits on its VM can't be attributed to a person." },
   oslogin: { title: "OS Login user mapping", lead: "Match the Linux account that edited a file on a VM to a Lanekeeper user. Matched by email, with manual overrides." },
-  severity: { title: "Severity rules", lead: "Set a finding's severity by path, change type and finding type. The first matching rule wins." },
+  severity: { title: "Severity rules", lead: "Add rules that raise the severity of a change or a finding by path, finding type or change type. The highest severity wins." },
   retention: { title: "Retention", lead: "How long file versions are kept, and what a purge would delete before it runs." },
 };
 

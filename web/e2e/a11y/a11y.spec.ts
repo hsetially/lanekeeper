@@ -20,7 +20,7 @@ const SIZES = [
 ] as const;
 
 // The build the harness serves: `dist` by default. LK_DIST names another (a throwaway build made while another run uses `dist`).
-test.use({ dist: process.env["LK_DIST"] ?? "dist" });
+test.use({ dist: process.env["LK_E2E_DIST"] ?? process.env["LK_DIST"] ?? "dist" });
 
 for (const scheme of ["light", "dark"] as const satisfies readonly Scheme[]) {
   test.describe(`axe, ${scheme}`, () => {

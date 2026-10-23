@@ -439,4 +439,25 @@ test.describe("the split between the tree and the tabs", () => {
     await expect(handle(page)).toHaveAttribute("aria-orientation", "vertical");
     await expect(handle(page)).toHaveAttribute("aria-valuenow", /\d/);
   });
+
+  // The request for the filter must survive a key that comes before the page has been redrawn for the one before it. Home collapses the
+  // tree and the page learns of it a moment later; an `f` in that moment found a tree it believed was open, asked for it to be opened, and
+  // the change it waited for ("the tree is no longer collapsed") never came, so the filter never took focus. Both keys are sent in one task
+  // here, which is the slowest machine there is: nothing is drawn between them. The control, a frame between the two, always passed.
+  test("split-pane-handle: f right after Home, before the page has redrawn, still puts the keyboard in the filter", async ({ page, harness }) => {
+    await ready(page, harness.url, "/swimlanes/sitb", "sitb");
+    await handle(page).focus();
+    await page.evaluate(() => {
+      const press = (key: string): void => {
+        const target = document.activeElement ?? document.body;
+        target.dispatchEvent(new KeyboardEvent("keydown", { key, code: key === "f" ? "KeyF" : key, bubbles: true, cancelable: true }));
+        target.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true }));
+      };
+      press("Home");
+      press("f");
+    });
+    await expect(filesFilter(page)).toBeFocused();
+    await expect.poll(() => treeWidth(page)).toBeGreaterThanOrEqual(240);
+    await expect(page.locator("#swimlane-tree")).toHaveJSProperty("inert", false);
+  });
 });

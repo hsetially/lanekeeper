@@ -1,7 +1,9 @@
 import { DriftState, type FileEntry } from "@/api/generated/model";
+import { sortBySeverity } from "@/components/attribution/severity";
 
 // The Drift tab groups the files that are not in sync by their state. The order of the groups is the order of urgency; inside a
-// group the files are by path. This is layout: the state of each file is the server's.
+// group the most severe file comes first, then by path, and a file nobody rated comes last. This is layout: the state and the
+// severity of each file are the server's.
 
 const ORDER: readonly DriftState[] = [DriftState.conflict, DriftState.nfs_ahead, DriftState.git_ahead, DriftState.unknown, DriftState.untracked, DriftState.intentional_divergence];
 
@@ -15,7 +17,10 @@ export function groupDrift(entries: readonly FileEntry[]): DriftGroup[] {
     if (files) files.push(entry);
     else by.set(entry.drift, [entry]);
   }
-  return ORDER.filter((state) => by.has(state)).map((state) => ({ state, files: (by.get(state) ?? []).sort((a, b) => a.path.localeCompare(b.path)) }));
+  return ORDER.filter((state) => by.has(state)).map((state) => ({
+    state,
+    files: sortBySeverity(by.get(state) ?? [], (file) => file.severity, (a, b) => a.path.localeCompare(b.path)),
+  }));
 }
 
 export type DriftRow = { readonly kind: "group"; readonly state: DriftState; readonly count: number; readonly open: boolean } | { readonly kind: "file"; readonly file: FileEntry; readonly state: DriftState };

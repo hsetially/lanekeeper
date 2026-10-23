@@ -38,6 +38,13 @@ describe("WithheldBanner", () => {
     expect(await screen.findByText("Content withheld: sensitive file type")).toBeInTheDocument();
     expect(screen.getByText(/shows only the name, size, hash and who changed it/)).toBeInTheDocument();
   });
+
+  it("does not call a file a sensitive type when the hub only could not check it for secrets (it fails closed, S14b)", async () => {
+    renderFile(<WithheldBanner reason="unchecked" />);
+    expect(await screen.findByText("Content withheld: could not be checked for secrets")).toBeInTheDocument();
+    expect(screen.queryByText(/sensitive file type/)).not.toBeInTheDocument();
+    expect(screen.getByText(/shows only the name, size, hash and who changed it/)).toBeInTheDocument();
+  });
 });
 
 describe("LargeFileBanner", () => {

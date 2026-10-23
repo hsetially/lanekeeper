@@ -16,6 +16,7 @@ describe("crumbsFor", () => {
     expect(crumbsFor("drift", { id: "sitb" }, {}).at(-1)).toEqual({ label: "Drift" });
     expect(crumbsFor("swimlane-findings", { id: "sitb" }, {}).at(-1)).toEqual({ label: "Findings" });
     expect(crumbsFor("adopt", { id: "sitb" }, {}).at(-1)).toEqual({ label: "Adopt this swimlane" });
+    expect(crumbsFor("swimlane-pull-requests", { id: "sitb" }, {})).toEqual([{ label: "Swimlanes", href: "/swimlanes" }, { label: "sitb", mono: true, href: "/swimlanes/sitb" }, { label: "Pull requests" }]);
   });
 
   it("walks the path of a file: the swimlane, each folder, and the file as the current page", () => {

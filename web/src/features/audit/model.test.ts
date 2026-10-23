@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Attribution, AuditEvent } from "@/api/generated/model";
-import { actionView, applyQuick, auditParams, chainOf, confidenceView, diffLines, filtersFromSearch, newestFirst, quickCounts, searchOf, sourceLabel, viaView, whoOf, KNOWN_ACTIONS, PAGE_SIZE } from "./model";
+import type { Attribution, AuditEvent, User } from "@/api/generated/model";
+import { actionView, applyQuick, auditParams, chainOf, diffLines, filtersFromSearch, nameLookup, newestFirst, quickCounts, searchOf, viaView, KNOWN_ACTIONS, PAGE_SIZE } from "./model";
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
 const ME = `${TENANT}:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`;
@@ -25,7 +25,6 @@ const event = (seq: number, over: Partial<AuditEvent> = {}): AuditEvent => ({
 });
 
 const attribution = (over: Partial<Attribution> = {}): Attribution => ({ source: "tool_write", confidence: "certain", actor: { kind: "user", user: ME }, evidence: {}, ...over });
-const name = (id: string): string => (id === ME ? "Priya Shah" : id === OTHER ? "Amir Haddad" : "someone");
 
 describe("what an action is called", () => {
   it("names the actions the hub writes", () => {
@@ -67,53 +66,11 @@ describe("how the event arrived", () => {
   });
 });
 
-describe("who made the change", () => {
-  it("is the actor of the event when nothing else is known", () => {
-    expect(whoOf(event(1), name)).toEqual({ kind: "named", name: "Priya Shah", probable: false });
-    expect(whoOf(event(1, { actor: null }), name)).toEqual({ kind: "system" });
-  });
-
-  it("is the person the attribution names, and only probably so when it is not sure", () => {
-    const sure = event(1, { via: "system", actor: null, attribution: attribution({ source: "sentinel_login", confidence: "high", actor: { kind: "user", user: OTHER } }) });
-    expect(whoOf(sure, name)).toEqual({ kind: "named", name: "Amir Haddad", probable: false });
-    const guess = event(1, { via: "system", actor: null, attribution: attribution({ source: "nfs_client", confidence: "medium", actor: { kind: "user", user: OTHER } }) });
-    expect(whoOf(guess, name)).toEqual({ kind: "named", name: "Amir Haddad", probable: true });
-    const login = event(1, { actor: null, attribution: attribution({ source: "sentinel_login", confidence: "low", actor: { kind: "os_login", login: "dana_okoye_corp_example" } }) });
-    expect(whoOf(login, name)).toEqual({ kind: "named", name: "dana_okoye_corp_example", probable: true });
-    const job = event(1, { actor: null, attribution: attribution({ source: "sync_job", actor: { kind: "job", job: { name: "sit7-sync", uid: "7731" } } }) });
-    expect(whoOf(job, name)).toEqual({ kind: "named", name: "sit7-sync", probable: false });
-  });
-
-  it("is unknown when the attribution says so or names no one", () => {
-    expect(whoOf(event(1, { actor: null, attribution: attribution({ source: "unknown", confidence: "low", actor: null }) }), name)).toEqual({ kind: "unknown" });
-    expect(whoOf(event(1, { actor: null, attribution: attribution({ source: "nfs_client", confidence: "low", actor: null }) }), name)).toEqual({ kind: "unknown" });
-  });
-
-  it("falls back to the actor of the event for a change the tool itself wrote and names no one", () => {
-    expect(whoOf(event(1, { attribution: attribution({ source: "tool_write", actor: null }) }), name)).toEqual({ kind: "named", name: "Priya Shah", probable: false });
-  });
-
-  it("names the author of a change the tool wrote, not the person who recorded it (the approver is the actor of the event)", () => {
-    const approved = event(1, { actor: ME, attribution: attribution({ source: "tool_write", actor: { kind: "user", user: OTHER } }) });
-    expect(whoOf(approved, name)).toEqual({ kind: "named", name: "Amir Haddad", probable: false });
-  });
-});
-
-describe("how sure the attribution is", () => {
-  it("has four levels, a word and a bar for each, and calls the two lower ones probable", () => {
-    expect(confidenceView("certain")).toEqual({ label: "Certain", bar: 100, low: false });
-    expect(confidenceView("high")).toEqual({ label: "High", bar: 75, low: false });
-    expect(confidenceView("medium")).toEqual({ label: "Medium", bar: 50, low: true });
-    expect(confidenceView("low")).toEqual({ label: "Low", bar: 25, low: true });
-  });
-
-  it("names every source", () => {
-    expect(sourceLabel("tool_write")).toBe("Via Lanekeeper");
-    expect(sourceLabel("sentinel_login")).toBe("Edited on the NFS VM");
-    expect(sourceLabel("sync_job")).toBe("Sync job");
-    expect(sourceLabel("nfs_client")).toBe("NFS client");
-    expect(sourceLabel("fs_owner_hint")).toBe("File owner hint");
-    expect(sourceLabel("unknown")).toBe("Unknown");
+describe("the names the attribution words are given", () => {
+  it("is the list's name for a user it has, and nothing for one it has not, so the shared words say Lanekeeper user and the start of the id", () => {
+    const lookup = nameLookup({ user: (id) => (id === ME ? ({ id: ME, display_name: "Priya Shah" } as User) : undefined) });
+    expect(lookup(ME)).toBe("Priya Shah");
+    expect(lookup(OTHER)).toBeUndefined();
   });
 });
 

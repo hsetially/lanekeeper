@@ -1,12 +1,12 @@
 import { configure, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Role } from "@/api/generated/model";
+import type { PrLink, Role } from "@/api/generated/model";
 import { prefs } from "@/lib/prefs";
 import { swimlaneKeys } from "@/lib/query/keys";
 import { auditEvent, fileEntry, finding, lane } from "@/mocks/design/swimlanes/fixtures";
 import { newWorld, worldApi, type World } from "@/mocks/design/swimlanes/world";
-import { problem, renderApp } from "@/test/app";
+import { json, problem, renderApp } from "@/test/app";
 
 // The tabs that list things: Drift, Findings and Activity, and the swimlane's Audit page. Each is a route; each has the states of
 // the States index that apply to it.
@@ -57,6 +57,94 @@ describe("the Drift tab", () => {
     expect(within(core).getByText("sit7")).toBeInTheDocument();
     expect(within(core).getByRole("link", { name: "Open file" })).toHaveAttribute("href", "/swimlanes/sitb/files?path=tx-infinity-api%2Ftx-infinity-core-sit7.yml");
     expect(within(core).getByRole("link", { name: "View diff" })).toHaveAttribute("href", "/swimlanes/sitb/files?diff=git&path=tx-infinity-api%2Ftx-infinity-core-sit7.yml");
+  });
+
+  describe("who changed a file, how serious it is, and its pull request", () => {
+    const OPEN: PrLink = { id: 3, swimlane: "sitb", path: "tx-infinity-api/application.properties", nfs_hash: "a".repeat(64), state: "open", pr_url: "https://github.com/csp/csp-tenant-data/pull/418", pr_number: 418, author: "x:y", created_at: 1, closed_at: null };
+    beforeEach(() => {
+      world.drift["sitb"] = [
+        fileEntry("tx-infinity-api/application.properties", { drift: "nfs_ahead", severity: "medium", attribution: { source: "sentinel_login", confidence: "high", actor: { kind: "os_login", login: "dana.okoye" }, evidence: {} } }),
+        fileEntry("tx-infinity-api/z-critical.yml", { drift: "nfs_ahead", severity: "critical", attribution: { source: "unknown", confidence: "low", actor: null, evidence: {} } }),
+        fileEntry("tx-infinity-api/b-unrated.yml", { drift: "nfs_ahead", severity: null }),
+        fileEntry("tx-infinity-api/tx-infinity-core-sit7.yml", { drift: "conflict", severity: "high" }),
+      ];
+      world.prs = [OPEN];
+    });
+    const rowOf = async (path: string): Promise<HTMLElement> => {
+      const row = (await screen.findByText(path)).closest<HTMLElement>("[role='listitem']");
+      if (row === null) throw new Error(`no row for ${path}`);
+      return row;
+    };
+
+    it("puts the most severe file of a group first, and a file nobody rated last", async () => {
+      open("/swimlanes/sitb/drift");
+      await screen.findByText("tx-infinity-api/z-critical.yml");
+      const paths = screen.getAllByText(/^tx-infinity-api\/(application\.properties|z-critical\.yml|b-unrated\.yml)$/).map((n) => n.textContent);
+      expect(paths).toEqual(["tx-infinity-api/z-critical.yml", "tx-infinity-api/application.properties", "tx-infinity-api/b-unrated.yml"]);
+    });
+
+    it("shows each file's severity with the one shared badge, and nothing for a file nobody rated", async () => {
+      open("/swimlanes/sitb/drift");
+      const critical = await rowOf("tx-infinity-api/z-critical.yml");
+      expect(critical.querySelector("[data-slot='severity-badge'][data-severity='critical']")).not.toBeNull();
+      expect((await rowOf("tx-infinity-api/tx-infinity-core-sit7.yml")).querySelector("[data-severity='high']")?.className).toContain("text-status-conflict-fg");
+      expect((await rowOf("tx-infinity-api/b-unrated.yml")).querySelector("[data-slot='severity-badge']")).toBeNull();
+    });
+
+    it("says who changed a file with the attribution chip, which opens its evidence", async () => {
+      open("/swimlanes/sitb/drift");
+      const row = await rowOf("tx-infinity-api/application.properties");
+      await userEvent.click(within(row).getByRole("button", { name: /dana\.okoye/ }));
+      expect(await screen.findByLabelText("Attribution evidence")).toBeInTheDocument();
+      expect(within(await rowOf("tx-infinity-api/z-critical.yml")).getByText("Unknown author")).toBeInTheDocument();
+    });
+
+    it("shows the open pull request on its file from ONE read of the swimlane's links, not one for each row", async () => {
+      const app = open("/swimlanes/sitb/drift");
+      const row = await rowOf("tx-infinity-api/application.properties");
+      expect(await within(row).findByRole("link", { name: /PR #418 open/ })).toHaveAttribute("href", "https://github.com/csp/csp-tenant-data/pull/418");
+      expect((await rowOf("tx-infinity-api/z-critical.yml")).querySelector("[data-slot='pr-badge']")).toBeNull();
+      expect(app.calls.filter((c) => c.path.startsWith("/api/v1/prs?"))).toHaveLength(2);
+    });
+
+    // WCAG 2.5.8 (axe `target-size`): a link under 24 px high needs 24 px of clear space around it, and the chip above the links is a
+    // control of 24 px that sits 2 px over them, so the links are targets of 24 px themselves (found by the axe run at 1024 wide).
+    it("makes the links of a row targets of at least 24 px, as the chip above them is", async () => {
+      open("/swimlanes/sitb/drift");
+      const row = await rowOf("tx-infinity-api/application.properties");
+      for (const name of ["Open file", "View diff"]) expect(within(row).getByRole("link", { name }).className, `the "${name}" link`).toMatch(/(^|\s)min-h-6(\s|$)/);
+    });
+
+    it("keeps the files at a level and above, and says the filter reaches only the loaded files while more are on their way", async () => {
+      const api = worldApi(world);
+      renderApp("/swimlanes/sitb/drift", (call) => {
+        const url = new URL(call.path, "http://x");
+        // A second page that never arrives: the list is not whole.
+        if (url.pathname === "/api/v1/swimlanes/sitb/drift") {
+          if (url.searchParams.has("cursor")) return new Promise<Response>(() => undefined);
+          return json({ items: world.drift["sitb"], next: "c2" });
+        }
+        return api(call);
+      });
+      await screen.findByText("tx-infinity-api/z-critical.yml");
+      expect(screen.queryByText(/loaded so far/)).toBeNull();
+      await userEvent.selectOptions(screen.getByLabelText("Severity"), "high");
+      expect(screen.getByText("Applies to the 4 files loaded so far. More are not loaded.")).toBeInTheDocument();
+      expect(screen.getByText("tx-infinity-api/z-critical.yml")).toBeInTheDocument();
+      expect(screen.getByText("tx-infinity-api/tx-infinity-core-sit7.yml")).toBeInTheDocument();
+      expect(screen.queryByText("tx-infinity-api/application.properties")).toBeNull();
+      expect(screen.queryByText("tx-infinity-api/b-unrated.yml")).toBeNull();
+    });
+
+    it("says no more when every page is loaded, and says when the filter leaves nothing", async () => {
+      open("/swimlanes/sitb/drift");
+      await screen.findByText("tx-infinity-api/z-critical.yml");
+      await userEvent.selectOptions(screen.getByLabelText("Severity"), "critical");
+      expect(screen.queryByText(/loaded so far/)).toBeNull();
+      expect(screen.queryByText("tx-infinity-api/application.properties")).toBeNull();
+      await userEvent.selectOptions(screen.getByLabelText("Severity"), "any");
+      expect(await screen.findByText("tx-infinity-api/application.properties")).toBeInTheDocument();
+    });
   });
 
   it("offers no diff of a file whose content is withheld, and says so", async () => {
@@ -128,12 +216,49 @@ describe("the Findings tab", () => {
   it("lists what the checks found, the most severe first, with the code of the check, its words and its severity", async () => {
     open("/swimlanes/sitb/findings");
     await screen.findByText("Duplicate keys");
-    const titles = screen.getAllByText(/^(Duplicate keys|Drift|Redundant tenant file)$/, { selector: "strong" }).map((s) => s.textContent);
-    expect(titles).toEqual(["Duplicate keys", "Drift", "Redundant tenant file"]);
+    // The words of the Findings screen (features/findings/kinds.ts), so a check is called the same thing in both places.
+    const titles = screen.getAllByText(/^(Duplicate keys|NFS and Git disagree|Override identical to base)$/, { selector: "strong" }).map((s) => s.textContent);
+    expect(titles).toEqual(["Duplicate keys", "NFS and Git disagree", "Override identical to base"]);
     expect(screen.getByText("C8")).toBeInTheDocument();
     expect(screen.getByText("C5")).toBeInTheDocument();
     expect(screen.getByText("C2")).toBeInTheDocument();
     for (const severity of ["Critical", "High", "Low"]) expect(screen.getByText(severity)).toBeInTheDocument();
+  });
+
+  it("draws a severity in the colours of the Findings screen, with the one shared badge", async () => {
+    open("/swimlanes/sitb/findings");
+    await screen.findByText("Duplicate keys");
+    const high = document.querySelector("[data-slot='severity-badge'][data-severity='high']");
+    expect(high?.className).toContain("text-status-conflict-fg");
+    const low = document.querySelector("[data-slot='severity-badge'][data-severity='low']");
+    expect(low?.className).toContain("text-info-fg");
+  });
+
+  it("shows the pull request on the file of a drift finding, from one read of the links, and on no other kind of finding", async () => {
+    world.findings = [
+      finding(1, { kind: "drift", severity: "high", path: "tx-infinity-api/a.yml", message: "NFS ahead.", locations: [] }),
+      finding(2, { kind: "duplicate_keys", severity: "high", path: "tx-infinity-api/a.yml", message: "Twice." }),
+    ];
+    world.prs = [{ id: 3, swimlane: "sitb", path: "tx-infinity-api/a.yml", nfs_hash: "a".repeat(64), state: "open", pr_url: "https://github.com/csp/csp-tenant-data/pull/418", pr_number: 418, author: "x:y", created_at: 1, closed_at: null }];
+    const app = open("/swimlanes/sitb/findings");
+    const drift = (await screen.findByText("NFS ahead.")).closest<HTMLElement>("[role='listitem']");
+    expect(await within(drift as HTMLElement).findByRole("link", { name: /PR #418 open/ })).toBeInTheDocument();
+    const other = screen.getByText("Twice.").closest<HTMLElement>("[role='listitem']");
+    expect(within(other as HTMLElement).queryByRole("link", { name: /PR #/ })).toBeNull();
+    expect(app.calls.filter((c) => c.path.startsWith("/api/v1/prs?"))).toHaveLength(2);
+  });
+
+  // WCAG 2.5.8 (axe `target-size`): the badge is a link of 20 px and the file below it a link of 16 px; stacked 2 px apart, neither has
+  // the 24 px of clear space an undersized target needs (found by the axe run). On one line they are side by side, with room between.
+  it("puts the pull request badge on the line of the file it is for, not over it", async () => {
+    world.findings = [finding(1, { kind: "drift", severity: "high", path: "tx-infinity-api/a.yml", message: "NFS ahead.", locations: [] })];
+    world.prs = [{ id: 3, swimlane: "sitb", path: "tx-infinity-api/a.yml", nfs_hash: "a".repeat(64), state: "open", pr_url: "https://github.com/csp/csp-tenant-data/pull/418", pr_number: 418, author: "x:y", created_at: 1, closed_at: null }];
+    open("/swimlanes/sitb/findings");
+    const row = (await screen.findByText("NFS ahead.")).closest<HTMLElement>("[role='listitem']");
+    if (row === null) throw new Error("no row");
+    const badge = await within(row).findByRole("link", { name: /PR #418 open/ });
+    const file = within(row).getByRole("link", { name: "tx-infinity-api/a.yml" });
+    expect(badge.parentElement, "the badge and the file link are in one line").toBe(file.parentElement);
   });
 
   it("links each line of a finding to the file at that line", async () => {
@@ -257,6 +382,17 @@ describe("the Activity tab", () => {
     expect(rows[1]).toContain("Web");
     expect(rows[1]).toContain("user aaaaaaaa");
     expect(screen.queryByText("proposal.create")).toBeNull();
+  });
+
+  it("says who made a change with the attribution chip where the event carries one, and from the event's actor where it does not", async () => {
+    world.audit = [
+      auditEvent(1, { action: "file.edit", attribution: { source: "sentinel_login", confidence: "high", actor: { kind: "os_login", login: "dana.okoye" }, evidence: {} } }),
+      auditEvent(2, { action: "file.scan", actor: null, attribution: { source: "unknown", confidence: "low", actor: null, evidence: {} } }),
+    ];
+    open("/swimlanes/sitb/activity");
+    const rows = within(await screen.findByRole("list", { name: "Activity" })).getAllByRole("listitem");
+    expect(within(rows[0] as HTMLElement).getByText("Unknown author")).toBeInTheDocument();
+    expect(within(rows[1] as HTMLElement).getByRole("button", { name: /dana\.okoye/ })).toBeInTheDocument();
   });
 
   it("asks the Admin-only audit read for this swimlane", async () => {

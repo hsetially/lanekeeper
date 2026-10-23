@@ -365,6 +365,14 @@ describe("the header", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /Swimlane: sitc/ })).toBeInTheDocument());
   });
 
+  it("keeps the person on the Pull requests tab of a swimlane when another swimlane is chosen", async () => {
+    const app = renderApp("/swimlanes/sitb/pull-requests", server("viewer"));
+    const button = await screen.findByRole("button", { name: /Swimlane: sitb/ });
+    await userEvent.click(button);
+    await userEvent.click(await row("sitc"));
+    await waitFor(() => expect(app.location()).toBe("/swimlanes/sitc/pull-requests"));
+  });
+
   it("puts focus in the filter field once the list has loaded, so that typing right after opening filters it", async () => {
     renderApp("/compare", server("viewer"));
     await userEvent.click(await screen.findByRole("button", { name: /Choose a swimlane/ }));
@@ -497,6 +505,23 @@ describe("landmarks and focus", () => {
     expect(screen.getAllByRole("banner")).toHaveLength(1);
     expect(screen.getByRole("complementary", { name: "Primary" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Skip to content" })).toBeInTheDocument();
+  });
+
+  // The shell's header (z-6) and sidebar (z-5) sit above a dialog's scrim on purpose: the design dims the page and leaves the frame around it
+  // as it is. What a screen draws at a layer of its own (a table's sticky header is z-10) must not reach past the screen into that order, or it
+  // paints over the dialog and its scrim (seen on the severity rule dialog). So the screen's own box is a stacking context.
+  // It is NOT <main>: the menus, popovers and tooltips are portaled into <main> (ui/overlay-root.ts, for the landmark rule) and are stacked at
+  // z-40 in the page's order, above the sidebar and the header that a menu from the account button overlaps. A stacking context on <main> put
+  // them under the sidebar, and the account menu's items could not be clicked.
+  it("stacks what a screen draws inside the screen's own box, and leaves <main>, where the overlays are put, out of that", async () => {
+    renderApp("/swimlanes", server("viewer"));
+    await sections();
+    const main = screen.getByRole("main");
+    expect(main.className).not.toMatch(/(^|\s)isolate(\s|$)/);
+    const screenBox = main.firstElementChild;
+    expect(screenBox?.className).toMatch(/(^|\s)isolate(\s|$)/);
+    // The screen is in it (the swimlanes list has a filter field), and so is nothing that the overlays are portaled beside.
+    await waitFor(() => expect(screenBox?.querySelector("input")).not.toBeNull());
   });
 
   // WCAG 2.4.1 (Bypass Blocks): the skip link is the first stop of a page that has just loaded. Focus on the h1 is for a page the
