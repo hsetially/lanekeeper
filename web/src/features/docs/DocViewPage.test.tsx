@@ -134,6 +134,15 @@ describe("a doc", () => {
     expect(container.querySelector("img")).toBeNull();
   });
 
+  it("never lets a doc act on the page without being drawn: no meta refresh, no base, no link, and the rest of the doc is there", async () => {
+    const head = '<meta http-equiv="refresh" content="0;url=https://evil.example/"><base href="https://evil.example/"><link rel="stylesheet" href="https://evil.example/x.css">';
+    const page = (doc: DocSummary): RenderedDoc => ({ ...renderedDoc(doc), html: `${head}<h2 id="doc-overview">Overview</h2><p>It orders accounts.</p>${head}` });
+    renderApp(viewUrl(GIT_DOC.path), hub("viewer", routes({ page })));
+    await screen.findByText("It orders accounts.");
+    expect(screen.getByRole("heading", { level: 2, name: "Overview" })).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "Document text" }).querySelector("meta, base, link")).toBeNull();
+  });
+
   it("hands a link in the page to the browser as the server wrote it", async () => {
     const page = (doc: DocSummary): RenderedDoc => ({ ...renderedDoc(doc), html: '<p><a href="/%2F%2Fevil.example/" rel="noopener noreferrer">odd</a></p>' });
     renderApp(viewUrl(GIT_DOC.path), hub("viewer", routes({ page })));

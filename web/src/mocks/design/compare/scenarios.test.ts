@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { hunksAround, settingSummary } from "../../../features/compare/grid/drawer";
-import { differingCells } from "../../../features/compare/model";
+import { rowFacts } from "../../../features/compare/model";
 import { GRID_ROWS } from "../../perf/grid";
 import { resolveBody, type MockContext, type MockResponse } from "../../scenario";
 import { scenarios } from "./index";
@@ -70,7 +70,7 @@ describe("the comparison behind the drawer", () => {
   it("has a hunk for every setting whose two cells differ, found by the lines of the cells", () => {
     const grid = designGrid(q(`file=${CORE_FILE}&swimlanes=sit,sitb&only_differing=true&limit=500`));
     const comparison = designCompare(q(`left=effective:sit&right=effective:sitb&file=${CORE_FILE}`));
-    const row = grid.rows.items.find((r) => differingCells(r.cells).size > 0 && r.cells[0]?.value !== null && r.cells[1]?.value !== null && r.cells[0]?.value?.text !== r.cells[1]?.value?.text);
+    const row = grid.rows.items.find((r) => rowFacts(r.cells).differing.size > 0 && r.cells[0]?.value !== null && r.cells[1]?.value !== null && r.cells[0]?.value?.text !== r.cells[1]?.value?.text);
     expect(row).toBeDefined();
     if (row === undefined) return;
     const near = hunksAround(comparison.hunks, row.cells[0]?.location?.lines ?? null, row.cells[1]?.location?.lines ?? null);

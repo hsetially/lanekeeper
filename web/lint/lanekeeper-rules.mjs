@@ -8,14 +8,29 @@
 //  - no `eslint-disable` comment can switch any of this off inside src (noInlineConfig).
 //
 // Every restriction has an id. A file that must break one (the one HTML sink, the one fetch, the Monaco patches) gets a
-// named, documented override in EXCEPTIONS below, never an inline comment. lint/rules.test.ts lints a bad snippet for
+// named, documented override in EXCEPTIONS below, never an inline comment. lint/rules.test.mjs lints a bad snippet for
 // every id and proves each one fires, and that each exception is as narrow as it says.
+//
+// A restriction is written in one or both of two forms, and both are switched off together by an exception:
+//  - `selectors`: a shape of code (no-restricted-syntax). Used for members, keys and strings, where the name is the whole
+//    point (`insertAdjacentHTML`, `{ innerHTML }`, `'srcdoc'`), whoever the object is;
+//  - `globals`: a name that is the browser's own (no-restricted-globals with checkGlobalObject). Scope-aware, so a local or a
+//    property called `fetch` is fine, and `window.fetch`, `globalThis["fetch"]` and `const f = fetch` are all the one global.
+//
+// What this is NOT: a proof. It reads how code is written, so a name built at run time, the global object held in another
+// variable (`const w = window; w.fetch(..)`) or `(() => {}).constructor("..")` are invisible to it (lint/rules.test.mjs lists
+// these limits). The guarantee that does not depend on how the code is written is the browser's: Trusted Types refuses a string at
+// every HTML and script sink, the CSP refuses eval, off-site requests and inline script and style, and the server sanitises the
+// docs HTML. docs/threat-model.md ("Web app (08)", the S12-T row) says which layer holds for what.
 
 import jsxA11y from "eslint-plugin-jsx-a11y";
 import react from "eslint-plugin-react";
 import reactHooks from "eslint-plugin-react-hooks";
 
-/** @typedef {{ id: string; selectors: string[]; message: string }} SyntaxRule */
+/** @typedef {{ id: string; selectors?: string[]; globals?: string[]; message: string }} SyntaxRule */
+
+// The words a name can be written as when it is a member, a key or a string: `x.name`, `{ name }`, `x["name"]`, `` x[`name`] ``.
+const named = (/** @type {string} */ pattern) => [`Identifier[name=/^(${pattern})$/]`, `Literal[value=/^(${pattern})$/]`, `TemplateElement[value.raw=/^(${pattern})$/]`];
 
 /** @type {SyntaxRule[]} */
 export const SYNTAX_RULES = [
@@ -23,28 +38,45 @@ export const SYNTAX_RULES = [
     id: "inner-html",
     selectors: [
       "AssignmentExpression[left.type='MemberExpression'][left.property.name=/^(innerHTML|outerHTML)$/]",
-      "AssignmentExpression[left.type='MemberExpression'][left.computed=true][left.property.value=/^(innerHTML|outerHTML)$/]",
+      // Reading `el.innerHTML` is fine. Writing it by another door is not: a property bag (Object.assign(el, { innerHTML })), a
+      // reflective set, a key held in a variable or a computed access all mention the name as a key or as a string.
+      "ObjectExpression > Property[key.name=/^(innerHTML|outerHTML)$/]",
+      "Literal[value=/^(innerHTML|outerHTML)$/]",
+      "TemplateElement[value.raw=/^(innerHTML|outerHTML)$/]",
     ],
-    message: "Assigning innerHTML or outerHTML is an HTML sink that Trusted Types refuses (S12). Render with React; docs HTML goes through SanitisedDocHtml only.",
+    message: "Assigning innerHTML or outerHTML, by any route, is an HTML sink that Trusted Types refuses (S12). Render with React; docs HTML goes through SanitisedDocHtml only.",
   },
   {
     id: "html-parsers",
     selectors: [
-      "CallExpression[callee.property.name=/^(insertAdjacentHTML|createContextualFragment)$/]",
-      "NewExpression[callee.name='DOMParser']",
-      "CallExpression[callee.object.name='document'][callee.property.name=/^write(ln)?$/]",
+      // Every mention, not only a call: an alias, a destructuring and a computed name reach the parser as well.
+      ...named("insertAdjacentHTML|createContextualFragment|setHTMLUnsafe|parseHTMLUnsafe|setHTML"),
+      "MemberExpression[object.name='document'][property.name=/^write(ln)?$/]",
+      "MemberExpression[object.name='document'][computed=true][property.value=/^write(ln)?$/]",
     ],
-    message: "insertAdjacentHTML, createContextualFragment, DOMParser and document.write parse strings into live DOM (S12). Render with React.",
+    globals: ["DOMParser"],
+    message: "insertAdjacentHTML, createContextualFragment, setHTML, setHTMLUnsafe, parseHTMLUnsafe, DOMParser and document.write parse strings into live DOM (S12). Render with React.",
   },
   {
     id: "srcdoc",
-    selectors: ["AssignmentExpression[left.property.name='srcdoc']", "JSXAttribute[name.name='srcDoc']"],
+    selectors: [
+      "AssignmentExpression[left.property.name='srcdoc']",
+      "JSXAttribute[name.name='srcDoc']",
+      "CallExpression[callee.property.name='setAttribute'][arguments.0.value=/^srcdoc$/i]",
+      "ObjectExpression > Property[key.name='srcdoc']",
+    ],
     message: "srcdoc runs a string as a page (S12). The app has no iframes.",
   },
   {
     id: "dangerous-elements",
-    selectors: ["CallExpression[callee.property.name='createElement'][arguments.0.value=/^(script|iframe|object|embed)$/i]"],
-    message: "Creating a script, iframe, object or embed element is code or content from outside (S12). Bundle code with Vite.",
+    selectors: [
+      "CallExpression[callee.property.name='createElement'][arguments.0.value=/^(script|iframe|object|embed)$/i]",
+      "CallExpression[callee.property.name='createElementNS'][arguments.1.value=/^(script|iframe|object|embed)$/i]",
+      // A tag name that is not written out can be any of them. (React.createElement takes a component, not a tag name.)
+      "CallExpression[callee.property.name='createElement'][callee.object.name!='React'][arguments.0.type!='Literal']",
+      "CallExpression[callee.property.name='createElementNS'][arguments.1.type!='Literal']",
+    ],
+    message: "Creating a script, iframe, object or embed element is code or content from outside (S12), and so is an element whose tag name is not written out. Bundle code with Vite.",
   },
   {
     id: "event-handler-property",
@@ -66,15 +98,16 @@ export const SYNTAX_RULES = [
   },
   {
     id: "eval",
-    selectors: ["CallExpression[callee.name='eval']", "NewExpression[callee.name='Function']", "CallExpression[callee.name='Function']"],
+    // The globals cover eval(x), window.eval(x), (0, eval)(x), const run = eval, new Function(..), globalThis["Function"](..).
+    globals: ["eval", "Function"],
     message: "eval and new Function are refused by the CSP (no 'unsafe-eval').",
   },
   {
     id: "navigation",
     selectors: [
-      "CallExpression[callee.object.name='window'][callee.property.name='open'][arguments.0.type!='Literal']",
+      "CallExpression[callee.object.name=/^(window|globalThis|self)$/][callee.property.name='open'][arguments.0.type!='Literal']",
       "AssignmentExpression[left.object.name='location'][right.type!='Literal']",
-      "AssignmentExpression[left.object.name='window'][left.property.name='location'][right.type!='Literal']",
+      "AssignmentExpression[left.object.name=/^(window|globalThis|self|document)$/][left.property.name='location'][right.type!='Literal']",
       "AssignmentExpression[left.object.property.name='location'][right.type!='Literal']",
       "AssignmentExpression[left.name='location'][right.type!='Literal']",
       "CallExpression[callee.object.name='location'][callee.property.name=/^(assign|replace)$/][arguments.0.type!='Literal']",
@@ -89,17 +122,25 @@ export const SYNTAX_RULES = [
   },
   {
     id: "create-policy",
-    selectors: ["CallExpression[callee.property.name='createPolicy']"],
+    // An access or a destructuring, not a declaration: src/lib/csp/trusted-types-dom.d.ts declares the member and may.
+    selectors: [
+      "MemberExpression[property.name='createPolicy']",
+      "MemberExpression[computed=true][property.value='createPolicy']",
+      "ObjectPattern > Property[key.name='createPolicy']",
+    ],
     message: "Only src/lib/csp/trusted-types.ts creates Trusted Types policies, each once (the hub allows two names).",
   },
   {
     id: "web-storage",
-    selectors: ["Identifier[name=/^(localStorage|sessionStorage|indexedDB|openDatabase)$/]"],
-    message: "Web storage is for src/lib/prefs only (S2, S10): layout choices, never API data. Use the pref helpers.",
+    // By name wherever it is written (a property, a destructuring, `window["localStorage"]`); the Cache Storage is the global `caches`.
+    selectors: named("localStorage|sessionStorage|indexedDB|openDatabase"),
+    globals: ["caches"],
+    message: "Web storage (localStorage, sessionStorage, IndexedDB, the Cache Storage) is for src/lib/prefs only (S2, S10): layout choices, never API data. Use the pref helpers.",
   },
   {
     id: "cookie-write",
     selectors: ["AssignmentExpression[left.type='MemberExpression'][left.property.name='cookie']"],
+    globals: ["cookieStore"],
     message: "Cookies are written by the hub, except the theme choice in src/lib/prefs.",
   },
   {
@@ -135,12 +176,9 @@ export const SYNTAX_RULES = [
   },
   {
     id: "network",
-    selectors: [
-      "CallExpression[callee.name='fetch']",
-      "CallExpression[callee.object.name=/^(window|globalThis|self)$/][callee.property.name='fetch']",
-      "NewExpression[callee.name=/^(XMLHttpRequest|WebSocket|EventSource|SharedWorker)$/]",
-      "CallExpression[callee.property.name='sendBeacon']",
-    ],
+    // Scope-aware: any use of the global (a call, an alias, a reference passed on, `window.fetch`, `globalThis["fetch"]`).
+    globals: ["fetch", "XMLHttpRequest", "WebSocket", "EventSource", "SharedWorker"],
+    selectors: named("sendBeacon"),
     message: "Only src/api/client.ts (and the stream and warm-up clients named in lint/lanekeeper-rules.mjs) talk to the network. Use the generated hooks.",
   },
   {
@@ -160,6 +198,13 @@ export const SYNTAX_RULES = [
     ],
     message: "Patching a built-in prototype changes the whole page. Only src/editor/global-patches.ts may (Monaco under the strict CSP); see docs/threat-model.md.",
   },
+  {
+    id: "messaging",
+    selectors: [...named("postMessage"), "CallExpression[callee.property.name='addEventListener'][arguments.0.value='message']"],
+    globals: ["BroadcastChannel", "MessageChannel"],
+    message:
+      "The page talks to no other window, tab or frame (no iframes, COOP same-origin, no service worker), so a message channel is an entry point that nothing authenticates. Use the router, the query cache or the generated client.",
+  },
 ];
 
 /**
@@ -171,9 +216,24 @@ export function syntaxRule(except = []) {
   const entries = [];
   for (const rule of SYNTAX_RULES) {
     if (except.includes(rule.id)) continue;
-    for (const selector of rule.selectors) entries.push({ selector, message: `[lk/${rule.id}] ${rule.message}` });
+    for (const selector of rule.selectors ?? []) entries.push({ selector, message: `[lk/${rule.id}] ${rule.message}` });
   }
   return ["error", ...entries];
+}
+
+/**
+ * A `no-restricted-globals` value with the globals of every rule except those named: the same exception list as
+ * `syntaxRule`, for the restrictions that are about a name the browser owns. `checkGlobalObject` makes `window.x`,
+ * `globalThis["x"]` and `self.x` the same global.
+ * @param {string[]} [except]
+ */
+export function globalsRule(except = []) {
+  const globals = [];
+  for (const rule of SYNTAX_RULES) {
+    if (except.includes(rule.id)) continue;
+    for (const name of rule.globals ?? []) globals.push({ name, message: `[lk/${rule.id}] ${rule.message}` });
+  }
+  return ["error", { globals, checkGlobalObject: true }];
 }
 
 /**
@@ -222,6 +282,9 @@ export const lanekeeperRules = [
   },
   {
     files: browserFiles,
+    // The global object under its three names. The base `no-eval` only knows `window.eval(x)` when `window` is a declared global,
+    // and the restricted globals below look through these names too; declaring them here gives every config the same scopes.
+    languageOptions: { globals: { window: "readonly", self: "readonly", globalThis: "readonly" } },
     plugins: { react, "jsx-a11y": jsxA11y, "react-hooks": reactHooks },
     settings: { react: { version: "detect" } },
     rules: {
@@ -234,7 +297,7 @@ export const lanekeeperRules = [
       "react/jsx-no-script-url": "error",
       "react/jsx-no-target-blank": ["error", { enforceDynamicLinks: "always", warnOnSpreadAttributes: true }],
       "react/iframe-missing-sandbox": "error",
-      // `role` and `aria-*` props of our own components (RoleBadge role="editor") are not ARIA roles.
+      // `role` and `aria-*` props of our own components (a `role` prop that holds a Lanekeeper role, "editor") are not ARIA roles.
       "jsx-a11y/aria-role": ["error", { ignoreNonDOM: true }],
       // Our form controls are components; a <label> around one of them is a labelled control.
       "jsx-a11y/label-has-associated-control": ["error", { controlComponents: ["Input", "Textarea", "NativeSelect", "Checkbox", "Switch", "RadioGroupItem"], depth: 3 }],
@@ -249,12 +312,12 @@ export const lanekeeperRules = [
   {
     files: productFiles,
     ignores: [...testFiles, "src/api/generated/**", "**/*.generated.ts"],
-    rules: { "no-restricted-syntax": syntaxRule() },
+    rules: { "no-restricted-syntax": syntaxRule(), "no-restricted-globals": globalsRule() },
   },
   ...EXCEPTIONS.map(({ name, files, allow, rules }) => ({
     name: `lanekeeper/exception/${name}`,
     files,
-    rules: { "no-restricted-syntax": syntaxRule(allow), ...rules },
+    rules: { "no-restricted-syntax": syntaxRule(allow), "no-restricted-globals": globalsRule(allow), ...rules },
   })),
   {
     // The one component that may set inner HTML: it renders RenderedDoc.html, which the server sanitised, through the
@@ -275,7 +338,7 @@ export const lanekeeperRules = [
     // Test data holds hostile strings on purpose (javascript: URLs, control characters).
     name: "lanekeeper/tests",
     files: testFiles,
-    rules: { "no-restricted-syntax": "off", "no-script-url": "off", "no-control-regex": "off" },
+    rules: { "no-restricted-syntax": "off", "no-restricted-globals": "off", "no-script-url": "off", "no-control-regex": "off" },
   },
   {
     // Node tooling: scripts, lint, e2e and config files run in Node or in Playwright, not in the page.

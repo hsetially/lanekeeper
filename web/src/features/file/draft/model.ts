@@ -1,7 +1,7 @@
-import type { PickupState, ProposalStatus } from "@/api/generated/model";
-import type { StatusVariant } from "@/components/app/StatusBadge";
+import type { ProposalStatus } from "@/api/generated/model";
 
-// The words of the draft page: what each status of a draft means for the person who made it, and the badge of each pickup state.
+// The words of the draft page: what each status of a draft means for the person who made it. (The badge of a pickup state is
+// `PickupChip`'s, from components/pickup: the one mapping is features/swimlanes/pickup.ts.)
 
 export type Closed = { tone: "info" | "success" | "warning"; title: string; text: string };
 
@@ -39,19 +39,6 @@ export function cannotApply(status: ProposalStatus): string | null {
       return "This draft is waiting for approval.";
     default:
       return "This draft can no longer be applied.";
-  }
-}
-
-export function pickupVariant(state: PickupState): StatusVariant {
-  switch (state) {
-    case "live":
-      return "live";
-    case "live_within_ttl":
-      return "live-by";
-    case "needs_config_server_restart":
-      return "needs-config-server-restart";
-    case "needs_notify_or_restart":
-      return "needs-notify-or-restart";
   }
 }
 

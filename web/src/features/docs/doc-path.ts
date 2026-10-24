@@ -4,9 +4,9 @@
 // server checks it again; checking its shape here means a wrong link is a "that is not a doc" screen and not a request. Nothing
 // here decodes percent escapes: a path is handed to the server as it came (the doc-link rule of docs/interfaces.md, open item 6).
 
+import { hasHiddenOrBackslash } from "@/lib/text/control";
+
 const MAX_PATH = 1024;
-// Control characters (including NUL and line breaks) and bidi / invisible format characters have no place in a path.
-const UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\\]/u;
 
 export type DocSource = "git" | "upload";
 
@@ -14,7 +14,8 @@ export type DocSource = "git" | "upload";
 export function isDocPath(value: string): boolean {
   if (value.length === 0 || value.length > MAX_PATH) return false;
   const source = value.startsWith("/git/") ? "/git/" : value.startsWith("/uploads/") ? "/uploads/" : undefined;
-  if (source === undefined || UNSAFE.test(value)) return false;
+  // Control characters (including NUL and line breaks), bidi and invisible format characters and backslashes have no place in a path.
+  if (source === undefined || hasHiddenOrBackslash(value)) return false;
   const segments = value.slice(source.length).split("/");
   // `/uploads/` alone, `//`, `.` and `..` are not names.
   return segments.length > 0 && segments.every((s) => s !== "" && s !== "." && s !== "..");

@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { Role } from "@/api/generated/model";
 import { roleAtLeast } from "@/auth/roles";
 import { useSession } from "@/auth/session";
+import { saveDataOn, scheduleIdle, type IdleOptions } from "@/lib/idle";
 
 // The editor's idle warm-up (P10). Edit mode opens Monaco, a lazy chunk of a few megabytes (about 1 MB gzipped). For an
 // Editor and above, once the file view is interactive, the editor's files are FETCHED while the browser is idle, so that the
@@ -79,28 +80,17 @@ export async function warmEditor({ doc = document, fetcher = (url, init) => fetc
   return "warmed";
 }
 
-const IDLE_TIMEOUT_MS = 5000;
-
-function scheduleIdle(run: () => void): () => void {
-  if (typeof requestIdleCallback === "function") {
-    const handle = requestIdleCallback(run, { timeout: IDLE_TIMEOUT_MS });
-    return () => {
-      if (typeof cancelIdleCallback === "function") cancelIdleCallback(handle);
-    };
-  }
-  const handle = setTimeout(run, 1000);
-  return () => clearTimeout(handle);
-}
+const IDLE: IdleOptions = { timeoutMs: 5000, fallbackMs: 1000 };
+const scheduleWarmIdle = (run: () => void): (() => void) => scheduleIdle(run, IDLE);
 
 type HookOptions = { doc?: Document; fetcher?: Fetcher; schedule?: (run: () => void) => () => void };
 
 /** Call from the file view with `interactive` true once it can be used: warms the editor for an Editor and above. */
-export function useEditorWarmup(interactive: boolean, { doc, fetcher, schedule = scheduleIdle }: HookOptions = {}): void {
+export function useEditorWarmup(interactive: boolean, { doc, fetcher, schedule = scheduleWarmIdle }: HookOptions = {}): void {
   const session = useSession();
   const role = session.status === "ready" ? session.role : null;
   useEffect(() => {
-    const saveData = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData === true;
-    if (!shouldWarm({ role, interactive, saveData, hidden: document.visibilityState === "hidden" })) return undefined;
+    if (!shouldWarm({ role, interactive, saveData: saveDataOn(), hidden: document.visibilityState === "hidden" })) return undefined;
     const controller = new AbortController();
     const cancel = schedule(() => {
       void warmEditor({ ...(doc ? { doc } : {}), ...(fetcher ? { fetcher } : {}), signal: controller.signal });

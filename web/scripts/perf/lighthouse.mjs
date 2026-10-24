@@ -14,7 +14,7 @@
 // Exit codes: 0 every page's median reaches the score; 1 a page's median is under it; 2 a run could not be made (no browser,
 // Lighthouse failed, no score): nothing is written then, so a broken run cannot pass.
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { cpus, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +22,7 @@ import lighthouse, { desktopConfig } from "lighthouse";
 import { chromiumPath, launchArgs } from "../../e2e/harness/browser.ts";
 import { startHarness } from "../../e2e/harness/serve.ts";
 import { aggregate, parseConfig, retryUnrecorded, toPoints } from "./lighthouse-score.mjs";
+import { removeDir } from "./remove-dir.mjs";
 import { resultsDir, writeResult } from "./results.mjs";
 
 const WEB_ROOT = fileURLToPath(new URL("../../", import.meta.url));
@@ -54,7 +55,14 @@ async function startChromium() {
   const stop = async () => {
     child.kill("SIGKILL");
     await new Promise((resolve) => child.once("exit", resolve));
-    rmSync(profile, { recursive: true, force: true });
+    // SIGKILL ends the browser and not its helper processes, which keep writing into the profile for a moment: a single remove
+    // died with ENOTEMPTY once, after the score was measured, and nothing was written. removeDir waits for them (remove-dir.mjs).
+    // The profile is only a temporary folder, so one that still cannot be removed is reported and never costs the measurement.
+    try {
+      await removeDir(profile);
+    } catch (/** @type {unknown} */ error) {
+      process.stderr.write(`lighthouse: could not remove ${profile}: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
   };
   const port = await new Promise((resolve, reject) => {
     let seen = "";

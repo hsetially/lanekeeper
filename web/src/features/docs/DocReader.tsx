@@ -20,7 +20,7 @@ import type { AppRouter } from "@/router";
 import { DeleteDocDialog } from "./DeleteDocDialog";
 import { docFileName } from "./doc-path";
 import { PROSE } from "./prose";
-import { belowThePageTitle, withoutImages } from "./reader-html";
+import { forTheReader } from "./reader-html";
 import { docByPathQuery, renderedDocQuery } from "./queries";
 import { UploadDocDialog } from "./UploadDocDialog";
 import { formatBytes } from "./upload";
@@ -28,7 +28,7 @@ import { FOCUSABLE_SCROLLER } from "@/components/app/scroll-region";
 
 // The doc reader (the Search page of the handoff, frames 1k to 1m, as a screen of its own): the table of contents, the page the
 // server rendered, and what the doc is. The page is `RenderedDoc.html`, handed to the one HTML sink (SanitisedDocHtml) after
-// `withoutImages`; everything else on this screen is React and every string is data (SafeText).
+// `forTheReader` (images, head tags, heading levels); everything else on this screen is React and every string is data (SafeText).
 //
 // The doc is addressed by path. The reader asks which doc has the path (its id, version, source and size) and then asks for the
 // page keyed by that id, so a live `doc_indexed` event and a replace reach the page that shows the doc.
@@ -106,7 +106,7 @@ export function DocReader({ path }: { path: string }) {
   const pageState = useQueryState(page);
 
   const doc = pageState.data;
-  const sink = useMemo(() => (doc === undefined ? undefined : { ...doc, html: belowThePageTitle(withoutImages(doc.html)) }), [doc]);
+  const sink = useMemo(() => (doc === undefined ? undefined : { ...doc, html: forTheReader(doc.html) }), [doc]);
   const activeId = doc?.headings.some((h) => h.id === hash) === true ? hash : null;
   const prose = useRef<HTMLDivElement>(null);
   useEffect(() => {

@@ -4,6 +4,7 @@ import { useSession } from "@/auth/session";
 import { NewVersionBanner } from "@/components/app/NewVersion";
 import { PausedBanner } from "@/components/app/PausedBanner";
 import { KeyboardProvider, useShortcut } from "@/keyboard";
+import { saveDataOn, scheduleIdle } from "@/lib/idle";
 import { prefs } from "@/lib/prefs";
 import { hrefFor, linkTo } from "@/routes/links";
 import { useNavigateTo } from "@/routes/AppLink";
@@ -38,25 +39,11 @@ const loadPalette = (): void => {
 /** The screens that the Go to keys open, in the order of the binding: g s, g c, g f, g i, g a. */
 const GO_TO: readonly RouteId[] = ["swimlanes", "compare", "status", "findings", "audit"];
 
-function saveDataOn(): boolean {
-  const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
-  return connection?.saveData === true;
-}
-
 /** Load the palette's chunk when the browser is idle, so that the first ⌘K opens it at once. */
 function useIdlePalette(enabled: boolean): void {
   useEffect(() => {
     if (!enabled || saveDataOn()) return undefined;
-    if (typeof requestIdleCallback === "function") {
-      const handle = requestIdleCallback(loadPalette, { timeout: 6000 });
-      return () => {
-        if (typeof cancelIdleCallback === "function") cancelIdleCallback(handle);
-      };
-    }
-    const timer = setTimeout(loadPalette, 1500);
-    return () => {
-      clearTimeout(timer);
-    };
+    return scheduleIdle(loadPalette, { timeoutMs: 6000, fallbackMs: 1500 });
   }, [enabled]);
 }
 

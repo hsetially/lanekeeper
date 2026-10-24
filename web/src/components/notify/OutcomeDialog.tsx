@@ -1,4 +1,5 @@
 import type { ReactNode, RefObject } from "react";
+import { focusDialog } from "@/components/app/focus-dialog";
 import { SafeText } from "@/components/app/SafeText";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -13,13 +14,6 @@ type Tone = "success" | "warning" | "info" | "approval";
 
 const ICON = { success: CircleCheck, warning: TriangleAlert, info: Info, approval: Hourglass } as const;
 const COLOUR: Record<Tone, string> = { success: "text-success-fg", warning: "text-warning-fg", info: "text-info-fg", approval: "text-status-approval-fg" };
-
-function focusDialog(event: Event): void {
-  if (event.target instanceof HTMLElement) {
-    event.preventDefault();
-    event.target.focus();
-  }
-}
 
 type Props = {
   open: boolean;

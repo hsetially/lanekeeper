@@ -8,10 +8,33 @@ import { fail, hold, modal } from "./helpers.ts";
 const CORE = "tx-infinity-api%2Ftx-infinity-core-sit7.yml";
 const file = (path = CORE, extra = ""): string => `/swimlanes/sitb/files?path=${path}${extra}`;
 
+/**
+ * How long the editor may take to arrive. The editor is a lazy chunk of about 3.5 MB that is parsed and run before the surface exists,
+ * so on a machine that is busy with other work (a CI runner with parallel jobs, or a second build alongside) it takes many seconds. It
+ * is a bound on a wait for a state, never a pause: the case goes on the moment the state is there. It sits inside the 90 s of the test.
+ */
+const EDITOR_MS = 45_000;
+
+/** Monaco's input box. The edit surface gives it the name "Editor for <file name>" (EditSurface: `ariaLabel`). */
+const editorBox = (page: Page) => page.getByRole("textbox", { name: /^Editor for / });
+
+/**
+ * Wait until the editor is READY for keys, which `.monaco-editor` being visible does not say. The surface (EditSurface `Host`) makes the
+ * model, attaches the listener that reports the text, makes the editor with `readOnly: false` and only then calls `editor.focus()`.
+ * So a focused box means the model exists and the editor is editable and listening; a drawn line means the model is attached to the
+ * view and the first layout has run. A key typed before that goes nowhere, and the case would audit a page with no change in it.
+ */
+async function editorReady(page: Page): Promise<void> {
+  const editor = page.locator(".monaco-editor").first();
+  await expect(editor).toBeVisible({ timeout: EDITOR_MS });
+  await expect(editorBox(page)).toBeFocused({ timeout: EDITOR_MS });
+  await expect(editor.locator(".view-lines .view-line").first()).toBeVisible({ timeout: EDITOR_MS });
+}
+
 async function startEditing(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Edit", exact: true }).click();
-  await expect(page.locator(".monaco-editor").first()).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole("button", { name: "Cancel" })).toBeVisible();
+  await editorReady(page);
 }
 
 /** The button that sends the change: "Save to sitb NFS", or "Submit for approval" for a person whose writes need it. */
@@ -19,11 +42,15 @@ const sendButton = (page: Page) => page.getByRole("button", { name: /^(Save to s
 
 async function changeEditor(page: Page): Promise<void> {
   await startEditing(page);
-  const box = await page.locator(".monaco-editor").first().boundingBox();
-  if (!box) throw new Error("no editor box");
-  await page.mouse.click(box.x + 200, box.y + 60);
+  // A click inside the editor, 200 px across and 60 px down as before, but through Playwright's own checks (the editor is visible, has
+  // stopped moving and nothing covers the point) and not from a box read once, which a layout change in between would make a miss.
+  await page.locator(".monaco-editor").first().click({ position: { x: 200, y: 60 } });
+  await expect(editorBox(page)).toBeFocused();
   await page.keyboard.press("Control+End");
   await page.keyboard.type("# note");
+  // The keys arrived: the model has the line that was typed (the view draws the last line after Control+End). Only then is "the Save
+  // button is enabled" a statement about the change, and a lost key fails here, by name, and not as a button that never enables.
+  await expect(page.locator(".monaco-editor .view-lines .view-line").filter({ hasText: "# note" })).toBeVisible();
   await expect(sendButton(page)).toBeEnabled();
 }
 

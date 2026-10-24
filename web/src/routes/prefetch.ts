@@ -3,6 +3,7 @@ import { useRouter } from "@tanstack/react-router";
 import type { Role } from "@/api/generated/model";
 import { roleAtLeast } from "@/auth/roles";
 import { useSession } from "@/auth/session";
+import { saveDataOn, scheduleIdle, type IdleOptions } from "@/lib/idle";
 import type { AppRouter } from "@/router";
 import { ROUTES, type RouteDef } from "./table";
 
@@ -33,26 +34,11 @@ type Options = {
   saveData?: () => boolean;
 };
 
-const IDLE_TIMEOUT_MS = 5000;
-
-function scheduleIdle(run: () => void): () => void {
-  if (typeof requestIdleCallback === "function") {
-    const handle = requestIdleCallback(run, { timeout: IDLE_TIMEOUT_MS });
-    return () => {
-      if (typeof cancelIdleCallback === "function") cancelIdleCallback(handle);
-    };
-  }
-  const handle = setTimeout(run, 200);
-  return () => clearTimeout(handle);
-}
-
-function saveDataOn(): boolean {
-  const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
-  return connection?.saveData === true;
-}
+const IDLE: IdleOptions = { timeoutMs: 5000, fallbackMs: 200 };
+const scheduleRouteIdle = (run: () => void): (() => void) => scheduleIdle(run, IDLE);
 
 /** Load the destinations one per idle moment. Returns the function that stops it. */
-export function idlePreload(router: Preloader, targets: readonly RouteDef[], { schedule = scheduleIdle, saveData = saveDataOn }: Options = {}): () => void {
+export function idlePreload(router: Preloader, targets: readonly RouteDef[], { schedule = scheduleRouteIdle, saveData = saveDataOn }: Options = {}): () => void {
   if (saveData() || targets.length === 0) return () => undefined;
   let cancelled = false;
   let cancelPending: (() => void) | undefined;

@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Hourglass, Lock, TriangleAlert } from "@/icons";
+import { focusDialog } from "./focus-dialog";
 import { RequestId } from "./RequestId";
 import { SafeText } from "./SafeText";
 
@@ -27,18 +28,6 @@ const DEFAULTS = {
     Icon: Hourglass,
   },
 } as const;
-
-/**
- * Focus starts on the dialog itself. The first control in it is the request ID's copy button, and a keyboard hint that opens on a
- * button nobody tabbed to takes the first Escape; the footer's first action may be "Discard my changes", which is not a place to
- * start. The dialog is read first (its title and description name it), and Tab goes to the request ID, then the actions.
- */
-function focusDialog(event: Event): void {
-  if (event.target instanceof HTMLElement) {
-    event.preventDefault();
-    event.target.focus();
-  }
-}
 
 type ProblemDialogProps = {
   open: boolean;

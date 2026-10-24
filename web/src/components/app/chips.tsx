@@ -5,7 +5,7 @@ import { CopyButton } from "./CopyButton";
 import { SafeText } from "./SafeText";
 import { truncateMiddle } from "./truncate";
 
-// Path, hash, branch, setting and version chips: mono 12, 20px high, 4px radius, a copy button, and the full value in
+// Path, hash, branch and setting chips: mono 12, 20px high, 4px radius, a copy button, and the full value in
 // a tooltip when the display is shortened. Values are untrusted text, so they go through SafeText.
 const chipClasses = "inline-flex h-5 max-w-full items-center gap-1 rounded-sm border border-border bg-background pr-0.5 pl-1.5 font-mono text-xs text-foreground";
 
@@ -73,9 +73,4 @@ export function BranchChip({ branch, copy = true, className }: { branch: string;
 /** A setting path such as txInfinityOptions.remote-itm-teller.enableAccountSorting. */
 export function SettingChip({ path, maxChars = 56, copy = true, className }: { path: string; maxChars?: number; copy?: boolean; className?: string }) {
   return <Chip value={path} display={truncateMiddle(path, maxChars)} what="setting path" copy={copy} {...(className ? { className } : {})} />;
-}
-
-/** A base version label such as v2.3.1. */
-export function VersionChip({ version, copy = false, className }: { version: string; copy?: boolean; className?: string }) {
-  return <Chip value={version} what="version" copy={copy} {...(className ? { className } : {})} />;
 }

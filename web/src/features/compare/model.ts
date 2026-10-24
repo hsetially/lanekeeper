@@ -1,4 +1,6 @@
 import type { GridCell } from "@/api/generated/model";
+import { matchMarker } from "@/components/masking/marker";
+import { hasControlChar } from "@/lib/text/control";
 import { hrefFor } from "@/routes/links";
 import { routeById } from "@/routes/table";
 
@@ -16,13 +18,6 @@ const CHANNEL = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
 // A side of a comparison (CompareRef in api/openapi.yaml). Control characters are refused on top of the contract's pattern.
 const REF = /^(?:(?:nfs|baseline|effective):[a-z0-9][a-z0-9-]{0,62}|git:(?:base|tenant)@.{1,255})$/;
 
-function hasControl(text: string): boolean {
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    if (code < 0x20 || code === 0x7f) return true;
-  }
-  return false;
-}
 
 export function isSwimlaneId(text: string): boolean {
   return SWIMLANE.test(text);
@@ -42,7 +37,7 @@ export function parseLanes(text: string | undefined): string[] {
 
 /** A base-relative path for the server to look up: no leading slash, no `..` or empty segment, no backslash, no control character. */
 export function isLogicalFile(text: string): boolean {
-  if (text.length === 0 || text.length > 1024 || text.startsWith("/") || text.includes("\\") || hasControl(text)) return false;
+  if (text.length === 0 || text.length > 1024 || text.startsWith("/") || text.includes("\\") || hasControlChar(text)) return false;
   return text.split("/").every((segment) => segment !== "" && segment !== ".." && segment !== ".");
 }
 
@@ -51,7 +46,7 @@ export function isChannelName(text: string): boolean {
 }
 
 export function isCompareRef(text: string): boolean {
-  return text.length <= 300 && REF.test(text) && !hasControl(text);
+  return text.length <= 300 && REF.test(text) && !hasControlChar(text);
 }
 
 export type RefView = {
@@ -132,18 +127,13 @@ export function compareHref(view: CompareView): string {
 
 export type CellKind = "value" | "empty" | "absent" | "hidden";
 
-const MARKER = /^\[REDACTED: ([0-9]+) chars, ([a-z0-9_]+)\]$/;
-
 /**
  * A value the secret scan flagged arrives as its marker, never as the value (S14b). The shape is the contract's own:
  * `[REDACTED: N chars, rule]`. A value that only looks like one (extra text around it) is a value.
  */
 export function hiddenMarker(text: string): { chars: number; rule: string } | null {
-  if (text.charCodeAt(0) !== 91) return null;
-  const match = MARKER.exec(text);
-  const chars = match?.[1];
-  const rule = match?.[2];
-  return chars === undefined || rule === undefined ? null : { chars: Number(chars), rule };
+  const marker = matchMarker(text);
+  return marker === null ? null : { chars: Number(marker.digits), rule: marker.rule };
 }
 
 export function cellKind(cell: GridCell): CellKind {
@@ -207,10 +197,6 @@ export function rowFacts(cells: readonly GridCell[]): RowFacts {
   const facts: RowFacts = { differing, hidden };
   kept.set(cells, facts);
   return facts;
-}
-
-export function differingCells(cells: readonly GridCell[]): ReadonlySet<number> {
-  return rowFacts(cells).differing;
 }
 
 /** `a.b.c` as the part to dim and the part to stress. A dot inside an index or a quoted key is not a split point. */

@@ -30,13 +30,28 @@ function infoOf(digits: string, rule: string): MarkerInfo {
   return { chars: digits.length > MAX_LENGTH_DIGITS ? null : Number(digits), rule };
 }
 
-/** The length and rule of `text` when it is exactly one marker, else null. */
-export function parseMarker(text: string): MarkerInfo | null {
+/**
+ * The digits (as written) and the rule of `text` when it is exactly one marker, else null. THE one place the contract's whole-value
+ * pattern is written: the copy button, the compare grid and this module's renderer all read a marker through it (a test fails when
+ * a second copy of the pattern appears in the source).
+ */
+export function matchMarker(text: string): { readonly digits: string; readonly rule: string } | null {
   if (!text.startsWith(PREFIX)) return null;
   const match = WHOLE.exec(text);
   const digits = match?.[1];
   const rule = match?.[2];
-  return digits === undefined || rule === undefined ? null : infoOf(digits, rule);
+  return digits === undefined || rule === undefined ? null : { digits, rule };
+}
+
+/** Whether `text` is exactly one marker (a masked value, as a surface without a `masks` list recognises it). */
+export function isMarker(text: string): boolean {
+  return matchMarker(text) !== null;
+}
+
+/** The length and rule of `text` when it is exactly one marker, else null. */
+export function parseMarker(text: string): MarkerInfo | null {
+  const match = matchMarker(text);
+  return match === null ? null : infoOf(match.digits, match.rule);
 }
 
 /** A text in the order it is written, as plain runs and markers. The parts always add up to the text. */

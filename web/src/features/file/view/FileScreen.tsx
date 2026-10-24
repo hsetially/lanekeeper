@@ -11,6 +11,7 @@ import { isContentWithheld, withheldReason } from "@/components/masking/withheld
 import { PrBadge } from "@/components/pr/PrBadge";
 import { useEditorWarmup } from "@/editor/warm";
 import { useShortcut } from "@/keyboard";
+import { scheduleIdle } from "@/lib/idle";
 import { useQueryState } from "@/lib/query/use-query-state";
 import { useNow } from "@/live/use-now";
 import { useNavigateTo } from "@/routes/AppLink";
@@ -153,16 +154,7 @@ export function FileScreen({ id, path, tab, panel, side, line }: FileScreenProps
     const warm = (): void => {
       void loadDialogs().catch(() => undefined);
     };
-    if (typeof requestIdleCallback === "function") {
-      const handle = requestIdleCallback(warm, { timeout: 6000 });
-      return () => {
-        if (typeof cancelIdleCallback === "function") cancelIdleCallback(handle);
-      };
-    }
-    const timer = setTimeout(warm, 1500);
-    return () => {
-      clearTimeout(timer);
-    };
+    return scheduleIdle(warm, { timeoutMs: 6000, fallbackMs: 1500 });
   }, [fileHere]);
 
   const href = (over: { tab?: Tab; panel?: Panel | null; side?: Side } = {}): string => {

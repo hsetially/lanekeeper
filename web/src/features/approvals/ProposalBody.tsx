@@ -6,6 +6,7 @@ import { SafeText } from "@/components/app/SafeText";
 import { DiffView } from "@/components/app/diff/DiffView";
 import { CircleCheck, CircleX, Info, Lock, TriangleAlert } from "@/icons";
 import { formatRelative, formatTime } from "@/lib/time";
+import { cn } from "@/lib/utils";
 import { AppLink } from "@/routes/AppLink";
 import type { Banner, BannerVariant } from "./banner";
 import { expiresIn } from "./model";
@@ -51,6 +52,13 @@ export function Section({ title, children }: { title: string; children: ReactNod
     </section>
   );
 }
+
+// The key and value rows of a drawer (this one and the audit event's): a two-column list with the keys at 132 px.
+export function Rows({ children }: { children: ReactNode }) {
+  return <dl className="grid grid-cols-[132px_minmax(0,1fr)] gap-x-3 gap-y-1.5 rounded-sm border border-border px-3 py-2 text-xs">{children}</dl>;
+}
+export const K = ({ children }: { children: ReactNode }) => <dt className="text-muted-foreground">{children}</dt>;
+export const V = ({ children, mono }: { children: ReactNode; mono?: boolean }) => <dd className={cn("min-w-0 [overflow-wrap:anywhere]", mono && "font-mono")}>{children}</dd>;
 
 export function Meta({ p, people, now }: { p: Proposal; people: People; now: number }) {
   const e = expiresIn(p, now);
@@ -164,15 +172,15 @@ export function PathsBlock({ p }: { p: Proposal }) {
 
 export function Facts({ p }: { p: Proposal }) {
   return (
-    <dl className="grid grid-cols-[132px_minmax(0,1fr)] gap-x-3 gap-y-1.5 rounded-sm border border-border px-3 py-2 text-xs">
-      <dt className="text-muted-foreground">Swimlane</dt>
+    <Rows>
+      <K>Swimlane</K>
       <dd>
         <SafeText text={p.swimlane} className="font-mono" />
       </dd>
-      <dt className="text-muted-foreground">Expects</dt>
+      <K>Expects</K>
       <dd>{p.expected.state === "hash" ? <HashChip hash={p.expected.hash} /> : "The file does not exist yet"}</dd>
-      <dt className="text-muted-foreground">Leaves</dt>
+      <K>Leaves</K>
       <dd>{ZERO_HASH.test(p.new_hash) ? "No content (it writes none)" : <HashChip hash={p.new_hash} />}</dd>
-    </dl>
+    </Rows>
   );
 }

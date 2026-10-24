@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GridCell, SettingValue } from "@/api/generated/model";
-import { MAX_GRID_LANES, cellKind, compareHref, describeRef, differingCells, hiddenMarker, isChannelName, isCompareRef, isLogicalFile, pagesToKeep, parseLanes, parseView, rowFacts, splitPath } from "./model";
+import { MAX_GRID_LANES, cellKind, compareHref, describeRef, hiddenMarker, isChannelName, isCompareRef, isLogicalFile, pagesToKeep, parseLanes, parseView, rowFacts, splitPath } from "./model";
 
 const value = (text: string, flag: SettingValue["flag"] = null): GridCell => ({ value: { text, ty: "string", flag }, location: { path: "a", lines: { start: 1, end: 1 } } });
 const absent: GridCell = { value: null, location: null };
@@ -119,6 +119,8 @@ describe("the kind of a cell", () => {
 });
 
 describe("which cells of a row differ from the rest", () => {
+  const differingCells = (cells: readonly GridCell[]) => rowFacts(cells).differing;
+
   it("marks the cells that are not the most common value", () => {
     const cells = [value("5000"), value("5000"), value("10000"), value("5000")];
     expect([...differingCells(cells)]).toEqual([2]);

@@ -55,6 +55,25 @@ export function documentTitle(crumbs: readonly Crumb[]): string {
 }
 
 /**
+ * Focus `target` when a drawer opens, and again once the navigation that opened it has finished (the shell puts focus on the page's
+ * h1 then, which would take it from the drawer). It stops listening after 1.5 s, and when the drawer closes.
+ */
+export function useFocusOnOpen(target: RefObject<HTMLElement | null>): void {
+  const router = useRouter();
+  useEffect(() => {
+    target.current?.focus({ preventScroll: true });
+    const off = router.subscribe("onRendered", () => {
+      target.current?.focus({ preventScroll: true });
+    });
+    const stop = setTimeout(off, 1500);
+    return () => {
+      clearTimeout(stop);
+      off();
+    };
+  }, [router, target]);
+}
+
+/**
  * Move focus to the h1 of the new page whenever the PATH changes (a change of search keys on the same page keeps focus where it
  * is). It waits for the router's `onRendered`, which comes after the new page is on screen: at the moment the location changes
  * the old page is still there (the router keeps it until the new one, a lazy chunk, is ready), and its h1 would take the focus

@@ -5,17 +5,15 @@ import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
 import { render, type RenderResult } from "@testing-library/react";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import type { ReactElement } from "react";
-import { vi } from "vitest";
-import { apiCaches } from "@/api/client";
 import type { Me, Role } from "@/api/generated/model";
 import { SessionContext } from "@/auth/session";
 import { ROLE_ORDER } from "@/auth/roles";
 import { WriteGateProvider } from "@/components/app/write-gate";
 import { KeyboardProvider } from "@/keyboard";
 import { createQueryClient } from "@/lib/query/client";
-import { json, me, problem, TOKEN, type Api, type Call } from "@/test/app";
+import { json, me, problem, routes, stubApi, type Api, type Call } from "@/test/app";
 
-export { json, problem, type Api, type Call };
+export { json, problem, routes, stubApi, type Api, type Call };
 
 export type FileHarness = RenderResult & { calls: Call[]; client: QueryClient };
 
@@ -30,36 +28,6 @@ export type FileHarnessOptions = {
 };
 
 const NOT_FOUND = (): Response => problem(404, "not_found");
-
-/** A multipart body as JSON, for a test to read: each field by name, and a file as `file:<name>:<size>`. */
-function formBody(form: FormData): string {
-  const out: Record<string, string> = {};
-  form.forEach((value, key) => {
-    out[key] = typeof value === "string" ? value : `file:${value.name}:${value.size}`;
-  });
-  return JSON.stringify(out);
-}
-
-/** Answer `fetch` with `api` and record every call. Returns the list. */
-export function stubApi(api: Api): Call[] {
-  const calls: Call[] = [];
-  Object.defineProperty(document, "cookie", { configurable: true, get: () => `__Host-lk_csrf=${TOKEN}`, set: () => undefined });
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: string, init: RequestInit = {}) => {
-      const call: Call = {
-        method: (init.method ?? "GET").toUpperCase(),
-        path: input,
-        headers: new Headers(init.headers),
-        body: typeof init.body === "string" ? init.body : init.body instanceof FormData ? formBody(init.body) : undefined,
-      };
-      calls.push(call);
-      return api(call);
-    }),
-  );
-  apiCaches.clear();
-  return calls;
-}
 
 /** Render `ui` as a signed-in person with `role`, with a router (for links), the keyboard registry and a fake server. */
 export function renderFile(ui: ReactElement, options: FileHarnessOptions = {}): FileHarness {
@@ -81,17 +49,6 @@ export function renderFile(ui: ReactElement, options: FileHarnessOptions = {}): 
   const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ["/"] }) });
   const view = render(<RouterProvider router={router} />);
   return Object.assign(view, { calls, client });
-}
-
-/** A test's fake server: a handler per "METHOD /path" answers with a Response of its own or with the body of a 200; the rest is a 404 problem. */
-export function routes(table: Record<string, (call: Call) => unknown>): Api {
-  return (call) => {
-    const path = call.path.split("?")[0] ?? call.path;
-    const handler = table[`${call.method} ${path}`];
-    if (!handler) return problem(404, "not_found");
-    const out = handler(call);
-    return out instanceof Response ? out : json(out);
-  };
 }
 
 export const HASH_A = "a".repeat(64);

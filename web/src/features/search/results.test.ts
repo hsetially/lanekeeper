@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TextHit } from "@/api/generated/model";
-import { docHref, fileParts, focusWindow, groupTextHits, hitSegments, termSegments, snippetRuns, snippetSegments, pluralise } from "./results";
+import { docHref, fileParts, focusWindow, groupTextHits, termSegments, snippetRuns, snippetSegments, pluralise, windowedHit } from "./results";
 
 // What the screen makes of the server's answers: the lines cut at the ranges the server gave (UTF-8 byte offsets, F10), the
 // hits grouped in the order the server sent them, and the few words of copy that depend on a count. Untrusted text is only ever
@@ -8,9 +8,12 @@ import { docHref, fileParts, focusWindow, groupTextHits, hitSegments, termSegmen
 
 const hit = (over: Partial<TextHit> & Pick<TextHit, "swimlane" | "path" | "line">): TextHit => ({ text: "x", ranges: [], ...over });
 
-describe("hitSegments", () => {
+// The line of a hit as the screen draws it (`windowedHit`): the server's ranges are bytes, the pieces are characters.
+const segmentsOf = (text: string, ranges: ReadonlyArray<readonly [number, number]>) => windowedHit(text, ranges).segments;
+
+describe("windowedHit (a short line: cut at the server's byte ranges)", () => {
   it("cuts the line at the ranges of the server, which are bytes", () => {
-    expect(hitSegments("enableAccountSorting: true", [[0, 6]])).toEqual([
+    expect(segmentsOf("enableAccountSorting: true", [[0, 6]])).toEqual([
       { text: "enable", mark: true },
       { text: "AccountSorting: true", mark: false },
     ]);
@@ -18,30 +21,30 @@ describe("hitSegments", () => {
 
   it("counts bytes, not characters: a character before the match is more than one byte", () => {
     // "é" is two bytes, so the match "ab" starts at byte 3.
-    expect(hitSegments("é ab", [[3, 5]])).toEqual([
+    expect(segmentsOf("é ab", [[3, 5]])).toEqual([
       { text: "é ", mark: false },
       { text: "ab", mark: true },
     ]);
   });
 
   it("handles a match after an emoji, which is four bytes and two UTF-16 units", () => {
-    expect(hitSegments("😀 hit", [[5, 8]])).toEqual([
+    expect(segmentsOf("😀 hit", [[5, 8]])).toEqual([
       { text: "😀 ", mark: false },
       { text: "hit", mark: true },
     ]);
   });
 
   it("drops a range that is not on a character boundary, and shows the line whole", () => {
-    expect(hitSegments("é ab", [[1, 3]])).toEqual([{ text: "é ab", mark: false }]);
+    expect(segmentsOf("é ab", [[1, 3]])).toEqual([{ text: "é ab", mark: false }]);
   });
 
   it("shows a line with no ranges as it is", () => {
-    expect(hitSegments("plain", [])).toEqual([{ text: "plain", mark: false }]);
-    expect(hitSegments("", [])).toEqual([]);
+    expect(segmentsOf("plain", [])).toEqual([{ text: "plain", mark: false }]);
+    expect(segmentsOf("", [])).toEqual([]);
   });
 
   it("marks two matches and merges ranges that touch", () => {
-    expect(hitSegments("abcabc", [[0, 2], [2, 3], [3, 5]])).toEqual([
+    expect(segmentsOf("abcabc", [[0, 2], [2, 3], [3, 5]])).toEqual([
       { text: "abcab", mark: true },
       { text: "c", mark: false },
     ]);

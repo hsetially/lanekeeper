@@ -2,8 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { AgentDot } from "./AgentDot";
-import { BranchChip, HashChip, PathChip, SettingChip, VersionChip } from "./chips";
-import { RoleBadge } from "./RoleBadge";
+import { BranchChip, HashChip, PathChip, SettingChip } from "./chips";
 import { TierBadge } from "./TierBadge";
 import { truncateMiddle } from "./truncate";
 
@@ -72,31 +71,20 @@ describe("chips", () => {
     expect(await navigator.clipboard.readText()).toBe(hash);
   });
 
-  it("BranchChip, SettingChip and VersionChip render their value in mono", () => {
+  it("BranchChip and SettingChip render their value in mono", () => {
     render(
       <div>
         <BranchChip branch="sit7" />
         <SettingChip path="txInfinityOptions.remote-itm-teller.enableAccountSorting" />
-        <VersionChip version="v2.3.1" />
       </div>,
     );
     expect(screen.getByText("sit7")).toHaveClass("font-mono");
-    expect(screen.getByText("v2.3.1")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy branch" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy setting path" })).toBeInTheDocument();
   });
 });
 
-describe("RoleBadge, TierBadge, AgentDot", () => {
-  it("RoleBadge names the role, uses the approval outline for Admin and says 'No role' for none", () => {
-    const { rerender } = render(<RoleBadge role="editor" />);
-    expect(screen.getByText("Editor")).toHaveAttribute("data-variant", "outline");
-    rerender(<RoleBadge role="admin" />);
-    expect(screen.getByText("Admin")).toHaveAttribute("data-variant", "approval");
-    rerender(<RoleBadge role={null} />);
-    expect(screen.getByText("No role")).toHaveAttribute("data-variant", "muted");
-  });
-
+describe("TierBadge, AgentDot", () => {
   it("TierBadge outlines SIT and fills PRESIT", () => {
     const { rerender } = render(<TierBadge tier="sit" />);
     expect(screen.getByText("SIT")).toHaveAttribute("data-variant", "outline");

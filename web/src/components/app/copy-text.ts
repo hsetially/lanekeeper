@@ -1,3 +1,4 @@
+import { isMarker } from "@/components/masking/marker";
 import { splitUnsafe } from "./safe-text";
 
 // What may go on a clipboard. The text of a path, a name or a value is untrusted (S8), and what the person pastes is not
@@ -32,8 +33,7 @@ function hasControl(text: string, allowLineBreak: boolean): boolean {
  * A masked setting value is its marker and nothing else (the contract: `^\[REDACTED: N chars, rule\]$`, S14b). The marker is not the
  * value, so a screen offers no copy for it: there is nothing on the clipboard that the person could use.
  */
-const MARKER = /^\[REDACTED: [0-9]+ chars, [a-z0-9_]+\]$/;
-export const isMaskedValue = (text: string): boolean => MARKER.test(text);
+export const isMaskedValue = (text: string): boolean => isMarker(text);
 
 export type CopyCheck = { ok: true; hidden: boolean } | { ok: false; message: string };
 

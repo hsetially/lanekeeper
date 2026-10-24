@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRouter } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Proposal } from "@/api/generated/model";
 import type { ApiProblem } from "@/api/problem";
 import { ProblemDialog } from "@/components/app/ProblemDialog";
@@ -13,6 +12,7 @@ import { COPY_GROUP, COPY_REVEAL } from "@/components/app/CopyValue";
 import { useWriteGate } from "@/components/app/write-gate";
 import { Button } from "@/components/ui/button";
 import { X } from "@/icons";
+import { useFocusOnOpen } from "@/features/shell/focus";
 import { useQueryState } from "@/lib/query/use-query-state";
 import { formatTime } from "@/lib/time";
 import { linkTo } from "@/routes/links";
@@ -43,22 +43,6 @@ type Props = {
   /** Ask for the queue again: after a refusal that means it is not as it was. */
   onStale: () => void;
 };
-
-/** Focus the heading when the drawer opens, and again once the navigation that opened it has finished (the shell puts it on the page's h1). */
-function useFocusOnOpen(target: RefObject<HTMLElement | null>): void {
-  const router = useRouter();
-  useEffect(() => {
-    target.current?.focus({ preventScroll: true });
-    const off = router.subscribe("onRendered", () => {
-      target.current?.focus({ preventScroll: true });
-    });
-    const stop = setTimeout(off, 1500);
-    return () => {
-      clearTimeout(stop);
-      off();
-    };
-  }, [router, target]);
-}
 
 export function ProposalDrawer({ id, initial, me, people, onClose, onStale }: Props) {
   const query = useQuery({ ...proposalQuery(id), ...(initial === undefined ? {} : { placeholderData: initial }) });

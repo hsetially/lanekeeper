@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { productSources } from "@/test/source-files";
 import { docFileName, docPathFromSlug, docSource, isDocPath, slugFromDocPath } from "./doc-path";
 
 // A doc path is untrusted input: it comes from the address bar. The reader checks its shape before it asks the server, and
@@ -25,6 +26,11 @@ describe("isDocPath", () => {
     ["over 1024 characters", `/uploads/${"a".repeat(1020)}`],
   ])("refuses %s", (_name, path) => {
     expect(isDocPath(path)).toBe(false);
+  });
+
+  it("is defined once: a second copy of a path validator can drift from the first (the doc reader, the file's docs panel and search all use this one)", () => {
+    const definitions = productSources().filter(({ text }) => /\b(function|const)\s+isDocPath\b/.test(text)).map((f) => f.path);
+    expect(definitions).toEqual(["src/features/docs/doc-path.ts"]);
   });
 
   it("accepts exactly 1024 characters", () => {

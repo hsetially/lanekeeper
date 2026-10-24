@@ -1,4 +1,5 @@
 import type { DriftState, EolStyle, FileContent, TextEncoding } from "@/api/generated/model";
+import { hasControlChar } from "@/lib/text/control";
 
 // The plain work of the file view: where a path splits, which language the editor colours, how a line ending, an encoding and a
 // size are spelled, and which values of the page's search are taken at all (the URL is untrusted input).
@@ -13,20 +14,12 @@ export function splitPath(path: string): { dir: string; name: string } {
 
 const MAX_PATH = 1024;
 
-function hasControlCharacter(text: string): boolean {
-  for (let i = 0; i < text.length; i++) {
-    const unit = text.charCodeAt(i);
-    if (unit < 0x20 || unit === 0x7f) return true;
-  }
-  return false;
-}
-
 /**
  * Whether a `path` search value could be an NfsPath (api/openapi.yaml): relative, at most 1024 characters, no `..` or `.` or empty
  * segment, no backslash or control character. The server parses it again; this only keeps a value that cannot be one off the wire.
  */
 export function isPlausibleNfsPath(path: string): boolean {
-  if (path === "" || path.length > MAX_PATH || path.startsWith("/") || path.includes("\\") || hasControlCharacter(path)) return false;
+  if (path === "" || path.length > MAX_PATH || path.startsWith("/") || path.includes("\\") || hasControlChar(path)) return false;
   return path.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
 }
 

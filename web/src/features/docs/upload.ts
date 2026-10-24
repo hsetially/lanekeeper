@@ -19,7 +19,7 @@ const PROBLEMS: Record<UploadProblem, { head: string; message: string }> = {
   not_text: { head: "The file is not text.", message: "A Markdown file is UTF-8 text. Export it again as UTF-8." },
 };
 
-/** 512 B, 18 KB, 3.4 MB. */
+/** 512 B, 18 KB, 3.4 MB: a doc's size as the design draws it. (The retention page counts in binary units, KiB to TiB, with grouping and "unknown": `formatBytes` of admin/sections/retention-model.ts. Two formats on purpose, not one function twice.) */
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;

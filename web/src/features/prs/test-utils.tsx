@@ -5,8 +5,6 @@ import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
 import { render, type RenderResult } from "@testing-library/react";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import type { ReactElement } from "react";
-import { vi } from "vitest";
-import { apiCaches } from "@/api/client";
 import type { Me, PrLink, Role } from "@/api/generated/model";
 import { SessionContext } from "@/auth/session";
 import { ROLE_ORDER } from "@/auth/roles";
@@ -14,9 +12,9 @@ import { WriteGateProvider } from "@/components/app/write-gate";
 import { createQueryClient } from "@/lib/query/client";
 import type { LiveConfig } from "@/live/live";
 import { LiveProvider } from "@/live/LiveProvider";
-import { json, me, problem, TOKEN, type Api, type Call } from "@/test/app";
+import { json, me, problem, routes, stubApi, type Api, type Call } from "@/test/app";
 
-export { json, problem, type Api, type Call };
+export { json, problem, routes, stubApi, type Api, type Call };
 
 export type PrsHarness = RenderResult & { calls: Call[]; client: QueryClient };
 
@@ -30,22 +28,6 @@ export type PrsHarnessOptions = {
 };
 
 const NOT_FOUND = (): Response => problem(404, "not_found");
-
-/** Answer `fetch` with `api` and record every call. */
-export function stubApi(api: Api): Call[] {
-  const calls: Call[] = [];
-  Object.defineProperty(document, "cookie", { configurable: true, get: () => `__Host-lk_csrf=${TOKEN}`, set: () => undefined });
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: string, init: RequestInit = {}) => {
-      const call: Call = { method: (init.method ?? "GET").toUpperCase(), path: input, headers: new Headers(init.headers), body: typeof init.body === "string" ? init.body : undefined };
-      calls.push(call);
-      return api(call);
-    }),
-  );
-  apiCaches.clear();
-  return calls;
-}
 
 /** Render `ui` as a signed-in person with `role`, with a router (for links) and a fake server. */
 export function renderPrs(ui: ReactElement, options: PrsHarnessOptions = {}): PrsHarness {
@@ -84,13 +66,3 @@ export function prLink(over: Partial<PrLink> = {}): PrLink {
   };
 }
 
-/** A fake server by "METHOD /path": the handler's return is the body of a 200, or a Response of its own. The rest is a 404 problem. */
-export function routes(table: Record<string, (call: Call) => unknown>): Api {
-  return (call) => {
-    const path = call.path.split("?")[0] ?? call.path;
-    const handler = table[`${call.method} ${path}`];
-    if (!handler) return problem(404, "not_found");
-    const out = handler(call);
-    return out instanceof Response ? out : json(out);
-  };
-}

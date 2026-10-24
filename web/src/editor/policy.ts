@@ -8,47 +8,113 @@
 // CSSOM and allowed. (Plan W3 option (e), shape "3d" of the G0 measurement; it is measured on every Monaco upgrade by
 // e2e/editor/csp.spec.ts.)
 //
-// The rewrite is tag-aware: it touches an attribute only inside a real tag, honouring quoted values. A regular expression
-// over the whole string also matched model text that happened to contain `style="..."` and corrupted what the editor showed
-// (4 of 5 test lines in G0).
+// The rewrite reads the string the way the HTML tokenizer does and renames the style attribute of a START TAG and nothing else:
+// not text (a regular expression over the whole string also matched model text that happened to contain `style="..."` and
+// corrupted what the editor showed, 4 of 5 test lines in G0), not a comment, a doctype or an end tag, and not another
+// attribute's VALUE. The last one matters beyond looks: a pattern over a whole tag finds ` style='x'` inside
+// `title="a style='x' b"` and renames it in place, which closes the title early and turns the rest of its value into attributes
+// of the tag (D133). So wherever text of a file reaches an attribute value of Monaco's markup (a title, a label), a pattern of that kind
+// lets the text write attributes into it. (The CSP still refuses an inline handler. This keeps the markup the markup Monaco wrote.)
+//
+// What it follows, from the HTML tokenizer: a tag name ends at a space, `/` or `>`; between attributes a space or a `/` is a
+// separator; an attribute name ends at a space, `/`, `>` or `=` (and may begin with `=`); a value is "..." or '...' (which may
+// hold `>` and the other quote) or bare (up to a space or `>`); names are matched without regard to case. What it does not follow
+// is the tokenizer's other states: the text of a raw-text element (textarea, script, style, title) is read as markup, because
+// Monaco makes none of them through a string, and a tag that never closes runs to the end of the string.
 
-const STYLE_ATTR = /(\s)style\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+const isSpace = (ch: string): boolean => ch === " " || ch === "\t" || ch === "\n" || ch === "\f" || ch === "\r";
+const isAsciiAlpha = (ch: string): boolean => (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z");
+const isStyle = (name: string): boolean => name.length === 5 && name.toLowerCase() === "style";
 
-/** `html` with the style attribute of every tag renamed to `attrName`. Text between tags is returned as it came. */
+/** `-->`, or `--!>` (the tokenizer closes a comment at either). */
+const COMMENT_END = /--!?>/g;
+
+/** Where the comment that starts at `lt` (`<!--`) ends, as an index just after it. `<!-->` and `<!--->` are comments of no text. */
+function endOfComment(html: string, lt: number): number {
+  const body = lt + 4;
+  if (html.startsWith(">", body)) return body + 1;
+  if (html.startsWith("->", body)) return body + 2;
+  COMMENT_END.lastIndex = body;
+  const close = COMMENT_END.exec(html);
+  return close === null ? html.length : close.index + close[0].length;
+}
+
+type Edit = { start: number; end: number; text: string };
+
+/**
+ * Read the tag whose name starts at `nameStart` to its `>`, honouring quoted values. Returns where it ends (just after the `>`, or the end
+ * of the string when it never closes) and, when `rewrite` is set, the style attributes to rename.
+ */
+function scanTag(html: string, nameStart: number, rewrite: boolean, attrName: string): { end: number; edits: Edit[] } {
+  const n = html.length;
+  const edits: Edit[] = [];
+  let j = nameStart;
+  while (j < n && !isSpace(html.charAt(j)) && html.charAt(j) !== "/" && html.charAt(j) !== ">") j++;
+  for (;;) {
+    while (j < n && (isSpace(html.charAt(j)) || html.charAt(j) === "/")) j++;
+    if (j >= n) return { end: n, edits };
+    if (html.charAt(j) === ">") return { end: j + 1, edits };
+    // An attribute name (an `=` at its start belongs to it).
+    const nameFrom = j;
+    j++;
+    while (j < n && !isSpace(html.charAt(j)) && html.charAt(j) !== "/" && html.charAt(j) !== ">" && html.charAt(j) !== "=") j++;
+    const name = html.slice(nameFrom, j);
+    let k = j;
+    while (k < n && isSpace(html.charAt(k))) k++;
+    if (html.charAt(k) !== "=") continue; // an attribute with no value
+    k++;
+    while (k < n && isSpace(html.charAt(k))) k++;
+    const first = html.charAt(k);
+    let value: string;
+    let after: number;
+    if (first === '"' || first === "'") {
+      const close = html.indexOf(first, k + 1);
+      if (close === -1) return { end: n, edits }; // the value, and so the tag, never closes
+      value = html.slice(k + 1, close);
+      after = close + 1;
+    } else {
+      after = k;
+      while (after < n && !isSpace(html.charAt(after)) && html.charAt(after) !== ">") after++;
+      value = html.slice(k, after);
+      if (value === "") {
+        j = after; // `style=>`: no value, nothing to rename
+        continue;
+      }
+    }
+    if (rewrite && isStyle(name)) edits.push({ start: nameFrom, end: after, text: `${attrName}="${value.replaceAll('"', "&quot;")}"` });
+    j = after;
+  }
+}
+
+/** `html` with the style attribute of every start tag renamed to `attrName`. Everything else is returned as it came. */
 export function rewriteStyleAttrsInTags(html: string, attrName: string): string {
   const n = html.length;
   let out = "";
+  let copied = 0; // html[0, copied) is already in `out`
   let i = 0;
   while (i < n) {
     const lt = html.indexOf("<", i);
-    if (lt === -1) {
-      out += html.slice(i);
-      break;
+    if (lt === -1) break;
+    const next = html.charAt(lt + 1);
+    if (html.startsWith("<!--", lt)) {
+      i = endOfComment(html, lt);
+    } else if (isAsciiAlpha(next)) {
+      const tag = scanTag(html, lt + 1, true, attrName);
+      for (const edit of tag.edits) {
+        out += html.slice(copied, edit.start) + edit.text;
+        copied = edit.end;
+      }
+      i = tag.end;
+    } else if (next === "/" && isAsciiAlpha(html.charAt(lt + 2))) {
+      i = scanTag(html, lt + 2, false, attrName).end; // an end tag: its attributes are read and thrown away by the browser
+    } else if (next === "!" || next === "/" || next === "?") {
+      const gt = html.indexOf(">", lt + 2); // a doctype, CDATA, `</ x>` or `<?x>`: a comment up to the first `>`
+      i = gt === -1 ? n : gt + 1;
+    } else {
+      i = lt + 1; // a `<` that starts nothing is text
     }
-    out += html.slice(i, lt);
-    if (!/[A-Za-z/!]/.test(html[lt + 1] ?? "")) {
-      out += "<";
-      i = lt + 1;
-      continue;
-    }
-    // Scan to the closing '>' of this tag, honouring quoted attribute values.
-    let j = lt + 1;
-    let quote: string | null = null;
-    while (j < n) {
-      const ch = html.charAt(j);
-      if (quote !== null) {
-        if (ch === quote) quote = null;
-      } else if (ch === '"' || ch === "'") quote = ch;
-      else if (ch === ">") break;
-      j++;
-    }
-    out += html.slice(lt, j + 1).replace(STYLE_ATTR, (_match, ws: string, dq: string | undefined, sq: string | undefined, bare: string | undefined) => {
-      const value = dq ?? (sq !== undefined ? sq.replaceAll('"', "&quot;") : (bare ?? ""));
-      return `${ws}${attrName}="${value}"`;
-    });
-    i = j + 1;
   }
-  return out;
+  return out + html.slice(copied);
 }
 
 /**

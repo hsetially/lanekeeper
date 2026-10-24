@@ -1,5 +1,4 @@
-import { useEffect, useRef, type ReactNode, type RefObject } from "react";
-import { useRouter } from "@tanstack/react-router";
+import { useRef } from "react";
 import type { AuditEvent } from "@/api/generated/model";
 import { CopyButton } from "@/components/app/CopyButton";
 import { CopyValue } from "@/components/app/CopyValue";
@@ -9,7 +8,9 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/features/approvals/chips";
 import type { People } from "@/features/approvals/people";
+import { K, Rows, Section, V } from "@/features/approvals/ProposalBody";
 import { EventWho, eventWho } from "@/features/attribution";
+import { useFocusOnOpen } from "@/features/shell/focus";
 import { Check, ShieldAlert, TriangleAlert, X, Zap } from "@/icons";
 import { formatTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
@@ -31,21 +32,6 @@ const LINE: Record<DiffKind, string> = {
   context: "",
 };
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="flex flex-col gap-1.5">
-      <h3 className="flex items-center gap-2 text-xs font-medium text-muted-foreground after:h-px after:flex-1 after:bg-border">{title}</h3>
-      {children}
-    </section>
-  );
-}
-
-function Rows({ children }: { children: ReactNode }) {
-  return <dl className="grid grid-cols-[132px_minmax(0,1fr)] gap-x-3 gap-y-1.5 rounded-sm border border-border px-3 py-2 text-xs">{children}</dl>;
-}
-const K = ({ children }: { children: ReactNode }) => <dt className="text-muted-foreground">{children}</dt>;
-const V = ({ children, mono }: { children: ReactNode; mono?: boolean }) => <dd className={cn("min-w-0 [overflow-wrap:anywhere]", mono && "font-mono")}>{children}</dd>;
-
 function Diff({ text }: { text: string }) {
   const { lines, more } = diffLines(text, MAX_LINES);
   return (
@@ -61,21 +47,6 @@ function Diff({ text }: { text: string }) {
       {more > 0 ? <p className="border-t border-border bg-muted px-3 py-1 text-xs text-muted-foreground">{n(more)} more lines are not shown.</p> : null}
     </div>
   );
-}
-
-function useFocusOnOpen(target: RefObject<HTMLElement | null>): void {
-  const router = useRouter();
-  useEffect(() => {
-    target.current?.focus({ preventScroll: true });
-    const off = router.subscribe("onRendered", () => {
-      target.current?.focus({ preventScroll: true });
-    });
-    const stop = setTimeout(off, 1500);
-    return () => {
-      clearTimeout(stop);
-      off();
-    };
-  }, [router, target]);
 }
 
 type Props = {

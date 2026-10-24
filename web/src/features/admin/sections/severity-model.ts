@@ -1,5 +1,6 @@
 import { ChangeKind, FindingKind, Severity, type SeverityMatch } from "@/api/generated/model";
 import { KIND_INFO } from "@/features/findings/kinds";
+import { hasHiddenOrBackslash } from "@/lib/text/control";
 
 // The admin's severity rules, as words and as the checks a form makes before it sends. NOTHING HERE RATES ANYTHING: which rules match
 // a change or a finding, and the severity that comes out, are the engine's and the registry's (rule 7, D103). What this file knows of
@@ -37,14 +38,6 @@ export const changeLabel = (kind: ChangeKind): string => CHANGE_LABELS[kind];
 const MAX_GLOB_BYTES = 256;
 const encoder = new TextEncoder();
 
-/** A backslash or a control or format character (C0, DEL, C1, bidi and zero-width) has no place in a path. */
-function hasBadChar(value: string): boolean {
-  for (const char of value) {
-    if (char === "\\" || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(char)) return true;
-  }
-  return false;
-}
-
 const count = (text: string, char: string): number => text.split(char).length - 1;
 
 /**
@@ -56,7 +49,7 @@ export function checkRuleGlob(value: string): string | null {
   const glob = value.trim();
   if (glob === "") return null;
   if (encoder.encode(glob).length > MAX_GLOB_BYTES) return `At most ${MAX_GLOB_BYTES} bytes`;
-  if (hasBadChar(glob)) return "A path can't contain backslashes or control characters";
+  if (hasHiddenOrBackslash(glob)) return "A path can't contain backslashes or control characters";
   if (glob.startsWith("/")) return "Paths start at the config root, with no leading /";
   if (count(glob, "[") > count(glob, "]")) return "Invalid glob: unclosed [";
   if (count(glob, "{") > count(glob, "}")) return "Invalid glob: unclosed {";

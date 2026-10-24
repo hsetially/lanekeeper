@@ -44,14 +44,23 @@ export function me(role: string | null, extra: Record<string, unknown> = {}) {
   };
 }
 
+/** A multipart body as JSON, for a test to read: each field by name, and a file as `file:<name>:<size>`. */
+function formBody(form: FormData): string {
+  const out: Record<string, string> = {};
+  form.forEach((value, key) => {
+    out[key] = typeof value === "string" ? value : `file:${value.name}:${value.size}`;
+  });
+  return JSON.stringify(out);
+}
+
 /**
- * Render the whole app on a memory history. The live stream is OFF unless the test passes `live`: most tests are about
- * something else, and a stream that asks `fetch` for `/api/v1/events` would add a call to every list of calls they assert on.
+ * Answer `fetch` with `api` and record every call. Returns the list. jsdom refuses a `__Host-` cookie on an http origin, so the test
+ * supplies the cookie string the client reads; the setter takes what the app writes (the theme cookie) and drops it: nothing in a test
+ * reads it back. The answer cache of the client starts empty. One copy for every test helper (the file view, the pull requests, the
+ * notify pieces, the whole app).
  */
-export function renderApp(url: string, api: Api, options: { pages?: PageLoaders; live?: LiveConfig; strict?: boolean } = {}) {
+export function stubApi(api: Api): Call[] {
   const calls: Call[] = [];
-  // jsdom refuses a `__Host-` cookie on an http origin, so the test supplies the cookie string the client reads.
-  // The setter takes what the app writes (the theme cookie) and drops it: nothing in a test reads it back.
   Object.defineProperty(document, "cookie", { configurable: true, get: () => `__Host-lk_csrf=${TOKEN}`, set: () => undefined });
   vi.stubGlobal(
     "fetch",
@@ -60,13 +69,33 @@ export function renderApp(url: string, api: Api, options: { pages?: PageLoaders;
         method: (init.method ?? "GET").toUpperCase(),
         path: input,
         headers: new Headers(init.headers),
-        body: typeof init.body === "string" ? init.body : undefined,
+        body: typeof init.body === "string" ? init.body : init.body instanceof FormData ? formBody(init.body) : undefined,
       };
       calls.push(call);
       return api(call);
     }),
   );
   apiCaches.clear();
+  return calls;
+}
+
+/** A fake server by "METHOD /path": the handler's return is the body of a 200, or a Response of its own. The rest is a 404 problem. */
+export function routes(table: Record<string, (call: Call) => unknown>): Api {
+  return (call) => {
+    const path = call.path.split("?")[0] ?? call.path;
+    const handler = table[`${call.method} ${path}`];
+    if (!handler) return problem(404, "not_found");
+    const out = handler(call);
+    return out instanceof Response ? out : json(out);
+  };
+}
+
+/**
+ * Render the whole app on a memory history. The live stream is OFF unless the test passes `live`: most tests are about
+ * something else, and a stream that asks `fetch` for `/api/v1/events` would add a call to every list of calls they assert on.
+ */
+export function renderApp(url: string, api: Api, options: { pages?: PageLoaders; live?: LiveConfig; strict?: boolean } = {}) {
+  const calls = stubApi(api);
   // The toasts live in a store of the tab; a test starts without the last one's.
   toasts.clear();
   const queryClient = createQueryClient();

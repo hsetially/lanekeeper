@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from "react";
 import type { GridRow, SwimlaneSummary } from "@/api/generated/model";
-import { Banner } from "@/components/app/Banner";
 import { visibleText } from "@/components/app/safe-text";
 import { EmptyState } from "@/components/app/EmptyState";
 import { ErrorState } from "@/components/app/ErrorState";
@@ -9,12 +8,13 @@ import { TruncationBanner } from "@/components/app/TruncationBanner";
 import { DataTable, type Column } from "@/components/app/virtual/DataTable";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { Check, FileCode, Layers, RefreshCw, Search, WifiOff } from "@/icons";
+import { Check, FileCode, Layers, Search } from "@/icons";
 import { useShortcut } from "@/keyboard";
 import { cursorPagesSource, useQueryState, type QueryState } from "@/lib/query/use-query-state";
 import { formatClock, formatRelative } from "@/lib/time";
 import { useNow } from "@/live/use-now";
 import { MAX_GRID_LANES, rowFacts, type CompareView } from "../model";
+import { OfflineLanesBanner } from "../OfflineLanesBanner";
 import { GRID_PAGE } from "../queries";
 import { CellDrawer } from "./CellDrawer";
 import { PathCell, ValueCell } from "./cells";
@@ -437,19 +437,9 @@ function OfflineBanner({ lanes, total, now, onRetry }: { lanes: readonly LaneCol
   const asOf = (lane: LaneColumn) => (lane.asOf === null ? `${lane.id} (no scan on record)` : `${lane.id} as of ${formatClock(lane.asOf)}, ${formatRelative(lane.asOf, now)}`);
   const live = total - lanes.length;
   return (
-    <Banner
-      variant="warning"
-      icon={<WifiOff aria-hidden="true" className="size-3.5" />}
-      title={lanes.length === 1 ? `${first.id} agent is offline` : `${lanes.length} agents are offline`}
-      action={
-        <Button variant="secondary" size="sm" onClick={onRetry}>
-          <RefreshCw data-icon="inline-start" />
-          {lanes.length === 1 ? `Retry ${first.id}` : "Retry"}
-        </Button>
-      }
-    >
+    <OfflineLanesBanner lanes={lanes} onRetry={onRetry}>
       {lanes.length === 1 ? `Its column shows the NFS files ${first.asOf === null ? "from the last scan" : `as of ${formatClock(first.asOf)}, ${formatRelative(first.asOf, now)}`}.` : `Their columns show the NFS files of their last scan: ${lanes.map(asOf).join("; ")}.`}{" "}
       {live === 0 ? "No column is live." : `The other ${live} ${live === 1 ? "column is" : "columns are"} live.`}
-    </Banner>
+    </OfflineLanesBanner>
   );
 }

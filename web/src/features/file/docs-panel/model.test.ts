@@ -1,6 +1,38 @@
 import { describe, expect, it } from "vitest";
 import type { FlagStatus } from "@/api/generated/model";
+import { isDocPath } from "@/features/docs/doc-path";
 import { docLink, flagRow } from "./model";
+
+describe("docLink and the doc reader accept the same paths (one definition of a doc path)", () => {
+  const CASES = [
+    "/git/main/docs/account-sorting.md",
+    "/uploads/Ünï.md",
+    "/uploads/%2e%2e/x.md",
+    "/uploads/",
+    "/git/main/../x.md",
+    "/uploads/./a.md",
+    "/uploads//a.md",
+    "/uploads/a\\b.md",
+    "/uploads/a\u0000.md",
+    "/uploads/a\n.md",
+    "/uploads/a\u202Eb.md",
+    "/uploads/a\u2028b.md",
+    "/uploads/a\u200Bb.md",
+    "relative/a.md",
+    "",
+    `/uploads/${"a".repeat(1024 - "/uploads/".length)}`,
+    `/uploads/${"a".repeat(1025 - "/uploads/".length)}`,
+  ];
+
+  it.each(CASES)("%j: a link if and only if the reader would open it", (path) => {
+    expect(docLink(path, null) !== null).toBe(isDocPath(path));
+  });
+
+  it("makes a link for a path of exactly 1024 characters (the contract's bound) and none for 1025", () => {
+    expect(docLink(`/uploads/${"a".repeat(1024 - "/uploads/".length)}`, null)).not.toBeNull();
+    expect(docLink(`/uploads/${"a".repeat(1025 - "/uploads/".length)}`, null)).toBeNull();
+  });
+});
 
 describe("docLink", () => {
   it("opens the reader at the doc, with the path encoded once", () => {

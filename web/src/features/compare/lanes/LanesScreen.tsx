@@ -1,7 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState, type ReactNode } from "react";
 import type { SwimlaneSummary, TreeCompareEntry } from "@/api/generated/model";
-import { Banner } from "@/components/app/Banner";
 import { EmptyState } from "@/components/app/EmptyState";
 import { QueryBoundaryView } from "@/components/app/QueryBoundary";
 import { SafeText } from "@/components/app/SafeText";
@@ -11,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { ArrowLeftRight, CircleCheck, File, FileCode, FileImage, Folder, FolderOpen, GitBranch, Layers, Minus, Plus, RefreshCw, Server, Tag, WifiOff } from "@/icons";
+import { ArrowLeftRight, CircleCheck, File, FileCode, FileImage, Folder, FolderOpen, GitBranch, Layers, Minus, Plus, RefreshCw, Server, Tag } from "@/icons";
 import { useCursorPages } from "@/lib/query/cursor-pages";
 import { compareKeys } from "@/lib/query/keys";
 import { cursorPagesSource, useQueryState, type QueryState } from "@/lib/query/use-query-state";
@@ -20,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { useNow } from "@/live/use-now";
 import { isOffline, laneColumn, type LaneColumn } from "../grid/lanes";
 import type { CompareView } from "../model";
+import { OfflineLanesBanner } from "../OfflineLanesBanner";
 import { treeComparisonQuery } from "../queries";
 import { FilePanel, type SideNote } from "./FilePanel";
 import { SidePicker } from "./SidePicker";
@@ -125,23 +125,11 @@ export function LanesScreen({ view, onView, swimlanes }: Props) {
 
 function OfflineBanner({ lanes, onRetry }: { lanes: readonly LaneColumn[]; onRetry: () => void }) {
   const now = useNow(true, 30_000);
-  const first = lanes[0];
-  if (first === undefined) return null;
   const when = (lane: LaneColumn) => (lane.asOf === null ? "from its last scan" : `as of ${formatClock(lane.asOf)}, ${formatRelative(lane.asOf, now)}`);
   return (
-    <Banner
-      variant="warning"
-      icon={<WifiOff aria-hidden="true" className="size-3.5" />}
-      title={lanes.length === 1 ? `${first.id} agent is offline` : `${lanes.length} agents are offline`}
-      action={
-        <Button variant="secondary" size="sm" onClick={onRetry}>
-          <RefreshCw data-icon="inline-start" />
-          {lanes.length === 1 ? `Retry ${first.id}` : "Retry"}
-        </Button>
-      }
-    >
+    <OfflineLanesBanner lanes={lanes} onRetry={onRetry}>
       {lanes.map((lane) => `${lane.id}: its NFS files ${when(lane)}`).join("; ")}. Differences made since then are not included.
-    </Banner>
+    </OfflineLanesBanner>
   );
 }
 

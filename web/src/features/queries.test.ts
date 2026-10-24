@@ -12,7 +12,7 @@ import { findingListQuery } from "./findings/queries";
 import { prJobQuery, prListQuery } from "./prs/queries";
 import { SERVED_GC_MS, servedFileQuery } from "./served/queries";
 import { featureStatusQuery } from "./status/queries";
-import { swimlaneListQuery, swimlanePickupQuery, swimlaneQuery } from "./swimlanes/queries";
+import { swimlaneListQuery, swimlaneQuery } from "./swimlanes/queries";
 import { auditListQuery } from "./audit/queries";
 
 // The colocated query modules: for each, the key is the one the key factory makes, the call is the generated operation with
@@ -51,7 +51,6 @@ const CASES: Case[] = [
   // swimlanes
   { name: "swimlaneListQuery", options: () => swimlaneListQuery(), key: swimlaneKeys.all(), path: "/api/v1/swimlanes", staleTime: EVENT_FED },
   { name: "swimlaneQuery", options: () => swimlaneQuery("sit1"), key: swimlaneKeys.detail("sit1"), path: "/api/v1/swimlanes/sit1", staleTime: EVENT_FED },
-  { name: "swimlanePickupQuery", options: () => swimlanePickupQuery("sit1"), key: swimlaneKeys.pickup("sit1"), path: "/api/v1/swimlanes/sit1/pending-restarts", staleTime: EVENT_FED },
   // files
   { name: "fileTreeQuery (a folder, drift filter)", options: () => fileTreeQuery("sit1", "core", "git_ahead"), key: fileKeys.tree("sit1", "core", "git_ahead"), path: "/api/v1/swimlanes/sit1/tree", query: { prefix: "core", drift: "git_ahead" }, staleTime: EVENT_FED },
   { name: "fileTreeQuery (the root)", options: () => fileTreeQuery("sit1", "", null), key: fileKeys.tree("sit1", "", null), path: "/api/v1/swimlanes/sit1/tree", query: {}, staleTime: EVENT_FED },

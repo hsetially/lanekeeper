@@ -5,6 +5,7 @@ import type { Tone } from "@/features/approvals/chips";
 import type { People } from "@/features/approvals/people";
 import { eventWho } from "@/features/attribution";
 import { Bell, CircleCheck, CircleX, Eye, FileText, GitPullRequest, History, Hourglass, Key, LogOut, Pencil, PanelLeft, Pin, RefreshCw, RotateCw, Server, Settings, Trash2, TriangleAlert, Upload, User, Zap } from "@/icons";
+import { hasControlChar } from "@/lib/text/control";
 import type { SearchOf } from "@/routes/props";
 
 // What the audit screen says about an event, as pure functions of the event the hub sent. Nothing here is a fact the hub did not
@@ -114,13 +115,6 @@ export type Filters = { actor?: string; action?: string; swimlane?: string; from
 const USER_ID = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}:[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const SWIMLANE_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
-function hasControl(text: string): boolean {
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    if (code < 0x20 || code === 0x7f) return true;
-  }
-  return false;
-}
 const DAY_MS = 86_400_000;
 
 /** The start of a `YYYY-MM-DD` day in UTC, or null for text that is not a real day. */
@@ -141,7 +135,7 @@ export function filtersFromSearch(search: RawSearch): Filters {
   const out: Filters = {};
   if (search.actor !== undefined && USER_ID.test(search.actor)) out.actor = search.actor;
   if (search.swimlane !== undefined && SWIMLANE_ID.test(search.swimlane)) out.swimlane = search.swimlane;
-  if (search.action !== undefined && search.action.length >= 1 && search.action.length <= 256 && !hasControl(search.action)) out.action = search.action;
+  if (search.action !== undefined && search.action.length >= 1 && search.action.length <= 256 && !hasControlChar(search.action)) out.action = search.action;
   if (search.from !== undefined && dayStart(search.from) !== null) out.from = search.from;
   if (search.to !== undefined && dayStart(search.to) !== null) out.to = search.to;
   return out;

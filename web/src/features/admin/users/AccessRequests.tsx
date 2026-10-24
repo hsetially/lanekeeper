@@ -32,7 +32,8 @@ type Deciding = { readonly kind: "approve"; readonly request: AccessRequest; rea
 
 const MAX_REASON = 256;
 
-function initials(email: string): string {
+/** `PS` for priya.shah@example.test: from the local part of an address, which is all an access request has (UserMenu's `initials` reads a display name). */
+function emailInitials(email: string): string {
   const local = email.split("@")[0] ?? "";
   const parts = local.split(/[._-]+/).filter((part) => part !== "");
   const letters = parts.length >= 2 ? [parts[0], parts[1]] : [local.slice(0, 2)];
@@ -51,7 +52,7 @@ function RequestCard({ request, now, onApprove, onReject }: { request: AccessReq
       <div className="min-w-0 flex-1 basis-[280px]">
         <div className="flex items-center gap-2.5">
           <span aria-hidden="true" className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border border-input bg-muted text-xs font-semibold">
-            {initials(request.email)}
+            {emailInitials(request.email)}
           </span>
           <b className="min-w-0 truncate text-sm font-semibold">
             <SafeText text={request.email} />

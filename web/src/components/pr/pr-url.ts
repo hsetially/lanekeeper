@@ -3,6 +3,8 @@
 // is drawn, what is opened and what is copied are ONE string (`href`, the form the URL parser gives), so a button never copies
 // something other than the link opens. A link to GitHub is navigation only: it carries `rel="noopener noreferrer"` where it is drawn.
 
+import { hasControlOrBackslash } from "@/lib/text/control";
+
 export type PrAddress = {
   /** The canonical address: what the link opens and the copy button copies. */
   href: string;
@@ -18,12 +20,7 @@ const MAX_LENGTH = 512;
 // and a backslash (read as a slash by a browser), and so make a different address from the one the server sent.
 const SPACE = /\s/u;
 function hasForbidden(value: string): boolean {
-  if (SPACE.test(value)) return true;
-  for (const char of value) {
-    const code = char.codePointAt(0) ?? 0;
-    if (code < 0x20 || (code >= 0x7f && code <= 0x9f) || char === "\\") return true;
-  }
-  return false;
+  return SPACE.test(value) || hasControlOrBackslash(value);
 }
 const PULL_NUMBER = /\/pull\/(\d{1,9})\/?$/;
 

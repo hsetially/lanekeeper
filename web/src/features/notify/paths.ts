@@ -45,9 +45,3 @@ export function planForServices(services: readonly ServiceState[]): NotifyPlan {
 export function planForFile(path: NfsPath, services: readonly ServiceState[]): NotifyPlan {
   return { ...plan(services.filter(waitsForNotify), [path]), paths: [path] };
 }
-
-/** How many of the services reported their notification setting on and how many off. The setting is shown as reported; nothing is inferred from it (Q35). */
-export function notificationCounts(services: readonly ServiceState[]): { readonly on: number; readonly off: number } {
-  const on = services.filter((service) => service.notifications_enabled).length;
-  return { on, off: services.length - on };
-}

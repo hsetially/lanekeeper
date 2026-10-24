@@ -1,22 +1,12 @@
 import type { FlagStatus } from "@/api/generated/model";
+import { isDocPath } from "@/features/docs/doc-path";
 import { linkTo } from "@/routes/links";
 
 // Pure helpers of the docs panel: the address of a doc at a heading, and one row of the Feature Flags table.
 
-const MAX_DOC_PATH = 1024;
 const MAX_ANCHOR = 80;
-// Control characters, bidi and invisible format characters, line and paragraph separators and backslashes have no place in a
-// doc path (the same rule the doc reader applies to a path from the address bar).
-const UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\\]/u;
 /** The shape of a heading id the server gives (`DocHit.anchor`). A client never builds one from a title. */
 const HEADING_ID = /^doc-[a-z0-9]+(-[a-z0-9]+)*$/;
-
-function isDocPath(path: string): boolean {
-  if (path.length === 0 || path.length > MAX_DOC_PATH || UNSAFE.test(path)) return false;
-  const source = path.startsWith("/git/") ? "/git/" : path.startsWith("/uploads/") ? "/uploads/" : undefined;
-  if (source === undefined) return false;
-  return path.slice(source.length).split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
-}
 
 /**
  * Where the reader opens `path`, at the heading `anchor` when the server gave one of the right shape. The path is handed over

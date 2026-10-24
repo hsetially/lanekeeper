@@ -7,16 +7,7 @@ import { isDocPath } from "@/features/docs/doc-path";
 
 export type Segment = { text: string; mark: boolean };
 
-/** A line cut at the matches the server found. `ranges` are half-open UTF-8 byte offsets into `text` (F10). */
-export function hitSegments(text: string, ranges: ReadonlyArray<readonly [number, number]>): Segment[] {
-  if (text === "") return [];
-  const spans = byteRangesToUtf16(
-    text,
-    ranges.map(([start, end]) => ({ start, end })),
-  );
-  return cut(text, spans);
-}
-
+/** A text cut into plain and marked pieces at half-open UTF-16 spans (touching spans make one marked piece). */
 function cut(text: string, spans: ReadonlyArray<{ start: number; end: number }>): Segment[] {
   const out: Segment[] = [];
   let at = 0;

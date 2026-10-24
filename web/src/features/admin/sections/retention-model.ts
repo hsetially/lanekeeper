@@ -51,7 +51,7 @@ export const formatCount = (n: number): string => n.toLocaleString("en-US");
 
 const UNITS = ["KiB", "MiB", "GiB", "TiB"] as const;
 
-/** Binary units, one decimal: 3.2 GiB. The job's limits are in MiB, so the units are the same. */
+/** Binary units, one decimal: 3.2 GiB. The job's limits are in MiB, so the units are the same. (A doc's size is `formatBytes` of features/docs/upload.ts, in the design's KB and MB: two formats on purpose.) */
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "unknown";
   if (bytes < 1024) return `${formatCount(Math.round(bytes))} B`;

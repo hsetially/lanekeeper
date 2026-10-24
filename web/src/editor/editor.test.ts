@@ -56,6 +56,126 @@ describe("rewriteStyleAttrsInTags", () => {
     expect(r(html)).toBe(html);
   });
 
+  // D133: the rewrite renames the style attribute of a TAG and nothing else. These are the shapes that a pattern over the whole tag gets wrong:
+  // an attribute VALUE that holds ` style='x' ` is not an attribute, and renaming it in place closes the value early, so the rest of the value
+  // becomes attributes of the tag (Monaco puts text of the file into some titles and labels).
+
+  it("never touches text, whatever the text says (a style attribute written as text, an escaped tag, a lone angle bracket)", () => {
+    for (const html of [
+      '<div>a style="x" b</div>',
+      "<span class=\"k\">style='top:5px'</span>",
+      '<div>&lt;div style="top:0"&gt;</div>',
+      '<div>if (a < b) style="x"</div>',
+      'style="x"',
+      '<div>x</div> style = "y" <div>z</div>',
+    ]) {
+      expect(r(html), html).toBe(html);
+    }
+  });
+
+  it("never touches a style that is only part of another attribute's value, in either kind of quote", () => {
+    for (const html of [
+      `<div title="a style='x' b">`,
+      `<div title='a style="x" b'>`,
+      '<div class="a style=z b">',
+      `<div aria-label="x style = 'y' z" data-q='style="w"'>`,
+      `<div title="a style='x' onmouseover=alert(1) b">`,
+      '<div title="a\nstyle=\'x\'">',
+      '<div data-a="style=x" data-b=\'style="y"\'>',
+    ]) {
+      expect(r(html), html).toBe(html);
+    }
+  });
+
+  it("renames the real style attribute of a tag whose other attributes hold style-looking values, and only that one", () => {
+    expect(r(`<div title="a style='x' b" style="top:0">`)).toBe(`<div title="a style='x' b" ${A}="top:0">`);
+    expect(r(`<div style='left:1px' title="a style='x' b">`)).toBe(`<div ${A}="left:1px" title="a style='x' b">`);
+    expect(r('<div class="a style=z" style="top:0" data-x=\'style="w"\'>')).toBe(`<div class="a style=z" ${A}="top:0" data-x='style="w"'>`);
+  });
+
+  it("finds the attribute whatever its spelling: any case, any space or line break around the equals sign, a slash before it", () => {
+    expect(r('<div STYLE="top:0">')).toBe(`<div ${A}="top:0">`);
+    expect(r("<div StYlE='top:0'>")).toBe(`<div ${A}="top:0">`);
+    expect(r('<div style = "top:0">')).toBe(`<div ${A}="top:0">`);
+    expect(r('<div style\n=\n"top:0">')).toBe(`<div ${A}="top:0">`);
+    expect(r("<div\tstyle\t=\ttop:0\tclass=a>")).toBe(`<div\t${A}="top:0"\tclass=a>`);
+    expect(r('<br/style="top:0">')).toBe(`<br/${A}="top:0">`);
+    expect(r('<div class=a  style="top:0"  >')).toBe(`<div class=a  ${A}="top:0"  >`);
+  });
+
+  it("leaves a style without a value, and a name that only contains the word, as they are", () => {
+    for (const html of ["<div style>", "<div style class=a>", "<div style=>", '<div style-x="1" data-style="2" xstyle="3" styled="4">']) expect(r(html), html).toBe(html);
+  });
+
+  it("keeps a > or a quote of the other kind inside the value it renames", () => {
+    expect(r('<div style="a>b">x</div>')).toBe(`<div ${A}="a>b">x</div>`);
+    expect(r("<div style='a>b'>x</div>")).toBe(`<div ${A}="a>b">x</div>`);
+    expect(r('<div style=a"b c=1>')).toBe(`<div ${A}="a&quot;b" c=1>`);
+  });
+
+  it("never reads a comment, a doctype, an end tag or a processing instruction as a tag", () => {
+    for (const html of [
+      '<!-- <div style="x"> -->',
+      '<!-- style="x" --><div style="y">',
+      '<!-->style="x"',
+      '<!--->style="x"',
+      '<!-- a --!> <div style="x">',
+      '<!DOCTYPE html style="x">',
+      '</div style="x">',
+      '</div title=">" style="x">',
+      '<?php style="x" ?>',
+      '<![CDATA[ <div style="x"> ]]>',
+    ]) {
+      const out = r(html);
+      // What follows a comment is a tag again, so only a style outside the comment may change.
+      expect(out.replaceAll(A, "style"), html).toBe(html);
+    }
+    expect(r('<!-- <div style="x"> --><div style="y">')).toBe(`<!-- <div style="x"> --><div ${A}="y">`);
+    expect(r('<!-- a --!><div style="y">')).toBe(`<!-- a --!><div ${A}="y">`);
+    expect(r('<!--><div style="y">')).toBe(`<!--><div ${A}="y">`);
+    expect(r('<!---><div style="y">')).toBe(`<!---><div ${A}="y">`);
+    expect(r('</div title=">"><div style="y">')).toBe(`</div title=">"><div ${A}="y">`);
+  });
+
+  it("agrees with a model of the HTML tag syntax on every tag and text it is given (property)", () => {
+    // The model builds the page and the page that must come out of it together, from attributes it knows the meaning of.
+    const names = ["style", "STYLE", "Style", "class", "title", "data-style", "xstyle", "aria-label", "style-x"];
+    const values = ["top:0", "a b", "a style='x' b", 'say "hi"', "a>b", "style=z", "x style = \"y\" z", "", "&amp; style='q'", "left:1px;width:2px", "p\nstyle='z'"];
+    const equals = ["=", " = ", "\n=\n", "=  ", "\t=\t"];
+    const texts = ["text", ' style="x" ', "a < b", "&lt;div style=&quot;x&quot;&gt;", " > ", "style='y'"];
+    forAll(
+      4_000,
+      (rng) => {
+        let input = "";
+        let expected = "";
+        for (let t = 0, tags = 1 + rng.int(4); t < tags; t++) {
+          const text = rng.pick(texts);
+          input += text;
+          expected += text;
+          const tag = rng.pick(["div", "span", "DIV", "i"]);
+          input += `<${tag}`;
+          expected += `<${tag}`;
+          for (let k = 0, attrs = rng.int(4); k < attrs; k++) {
+            const name = rng.pick(names);
+            const value = rng.pick(values);
+            const sep = rng.pick([" ", "  ", "\n", "\t", " / "]);
+            const eq = rng.pick(equals);
+            // A double quote in the value needs single quotes and the other way round; an unquoted value has neither and no space.
+            const quotes = [value.includes('"') ? null : '"', value.includes("'") ? null : "'", /^[^\s"'>=<`]+$/.test(value) ? "" : null].filter((q): q is string => q !== null);
+            const quote = rng.pick(quotes);
+            const written = `${name}${eq}${quote}${value}${quote}`;
+            input += sep + written;
+            expected += sep + (name.toLowerCase() === "style" ? `${A}="${value.replaceAll('"', "&quot;")}"` : written);
+          }
+          input += ">";
+          expected += ">";
+        }
+        return { input, expected };
+      },
+      ({ input, expected }) => expect(r(input)).toBe(expected),
+    );
+  });
+
   it("never leaves a style attribute inside a tag, and never changes text outside tags (property)", () => {
     const pieces = ['<div style="a:b">', "<span style='c:d'>", "</div>", "</span>", "text", " style=\"x\" ", "a < b", "&amp;", '<i class="q">', "<br/>", "<p style=z>"];
     forAll(

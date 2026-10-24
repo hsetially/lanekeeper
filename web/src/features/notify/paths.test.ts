@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ServiceState } from "@/api/generated/model";
-import { MAX_NOTIFY_PATHS, notificationCounts, planForFile, planForServices } from "./paths";
+import { MAX_NOTIFY_PATHS, planForFile, planForServices } from "./paths";
 
 // What a notification is asked to tell the config-server, worked out from what the agent reports and nothing else: the
 // files that services are waiting on. A notification helps a service that waits for a notify or a restart; it does not help
@@ -89,12 +89,5 @@ describe("planForFile", () => {
   it("does not list a service that waits on the file for the config-server to restart", () => {
     const plan = planForFile("channels.yml", [service("config", { pickup: "needs_config_server_restart", pending_files: ["channels.yml"] })]);
     expect(plan.services).toEqual([]);
-  });
-});
-
-describe("notificationCounts", () => {
-  it("counts the setting as each service reported it, and no more", () => {
-    expect(notificationCounts([service("a"), service("b", { notifications_enabled: false }), service("c", { notifications_enabled: false })])).toEqual({ on: 1, off: 2 });
-    expect(notificationCounts([])).toEqual({ on: 0, off: 0 });
   });
 });

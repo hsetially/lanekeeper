@@ -1,4 +1,5 @@
 import type { ServiceRef } from "@/api/generated/model";
+import { hasControlOrBackslash } from "@/lib/text/control";
 
 // The checks the Admin forms make before they send. They mirror the contract's patterns and lengths (api/openapi.yaml), so a
 // mistake is said next to the field; the hub checks again whatever they let through, and a refusal from it (422) is shown in the
@@ -11,15 +12,6 @@ const KEY_HELP = "Use lower case letters, digits, - and _, starting with a lette
 const K8S_NAME = /^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/;
 const SERVICE_ACCOUNT = /^[a-z][a-z0-9-]*@[a-z][a-z0-9-]*\.iam\.gserviceaccount\.com$/;
 const HOST_PATTERN = /^[A-Za-z0-9*._-]+$/;
-
-/** A backslash or a control character (C0, DEL and C1) has no place in a path. */
-function hasBadPathChar(value: string): boolean {
-  for (const char of value) {
-    const code = char.codePointAt(0) ?? 0;
-    if (char === "\\" || code < 0x20 || (code >= 0x7f && code <= 0x9f)) return true;
-  }
-  return false;
-}
 
 export const MAX_DEPLOYMENTS = 100;
 
@@ -45,7 +37,7 @@ function checkRelativePath(value: string, leadingSlash: string, empty: string): 
   if (value === "") return empty;
   const long = tooLong(value, 1024);
   if (long !== null) return long;
-  if (hasBadPathChar(value)) return "A path can't contain backslashes or control characters";
+  if (hasControlOrBackslash(value)) return "A path can't contain backslashes or control characters";
   if (value.startsWith("/")) return leadingSlash;
   if (value.split("/").includes("..")) return "A path can't contain .. segments";
   return null;

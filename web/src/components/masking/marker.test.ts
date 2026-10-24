@@ -1,9 +1,33 @@
 import { describe, expect, it } from "vitest";
 import { forAll } from "@/test/prng";
-import { MAX_MARKERS, MAX_SCAN_CHARS, parseMarker, splitMarkers } from "./marker";
+import { productSources, withoutComments } from "@/test/source-files";
+import { MAX_MARKERS, MAX_SCAN_CHARS, isMarker, matchMarker, parseMarker, splitMarkers } from "./marker";
 
 // The marker is the contract's own: `[REDACTED: N chars, rule]` (S14b), `^\[REDACTED: [0-9]+ chars, [a-z0-9_]+\]$` as a whole value.
 // The web never makes one; it only recognises what the server sent, and anything that is not exactly that shape is ordinary text.
+
+describe("the one pattern of a marker", () => {
+  it("is written in this module only: the copy button, the compare grid and the masking renderer all read it from here", () => {
+    // A second copy of the pattern can drift from the contract's, and a marker one surface takes for a value is a leak of its
+    // length and rule (and a value another surface takes for a marker is a hole in what it shows).
+    const holders = productSources().filter(({ text }) => /\\\[REDACTED:/.test(withoutComments(text))).map((f) => f.path);
+    expect(holders).toEqual(["src/components/masking/marker.ts"]);
+  });
+
+  it("matchMarker gives the digits as written and the rule, for exactly one whole marker", () => {
+    expect(matchMarker("[REDACTED: 12 chars, aws_key]")).toEqual({ digits: "12", rule: "aws_key" });
+    expect(matchMarker("[REDACTED: 12345678901234567890 chars, k]")).toEqual({ digits: "12345678901234567890", rule: "k" });
+    expect(matchMarker("x [REDACTED: 12 chars, aws_key]")).toBeNull();
+    expect(matchMarker("[REDACTED: twelve chars, aws_key]")).toBeNull();
+    expect(matchMarker("")).toBeNull();
+  });
+
+  it("isMarker says whether a whole value is one", () => {
+    expect(isMarker("[REDACTED: 0 chars, a]")).toBe(true);
+    expect(isMarker("[REDACTED: 0 chars, a]\n")).toBe(false);
+    expect(isMarker("plain")).toBe(false);
+  });
+});
 
 describe("parseMarker", () => {
   it("reads the length and the rule of a whole marker", () => {

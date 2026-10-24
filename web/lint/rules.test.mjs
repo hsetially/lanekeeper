@@ -15,24 +15,105 @@ async function lint(code, file = PRODUCT) {
   const [result] = await eslint.lintText(code, { filePath: join(WEB_ROOT, file) });
   return result.messages;
 }
-const ids = (messages) => messages.filter((m) => m.ruleId === "no-restricted-syntax").map((m) => /^\[lk\/([a-z-]+)\]/.exec(m.message)?.[1]);
+// The restrictions come from two rules: no-restricted-syntax (a shape of code) and no-restricted-globals (a name that is the browser's,
+// scope-aware, also through window, globalThis and self). Both carry `[lk/<id>]` in the message.
+const LK_RULES = new Set(["no-restricted-syntax", "no-restricted-globals"]);
+const ids = (messages) => messages.filter((m) => LK_RULES.has(m.ruleId)).map((m) => /\[lk\/([a-z-]+)\]/.exec(m.message)?.[1]);
 const rules = (messages) => messages.map((m) => m.ruleId);
 
 /** id -> snippets that must each produce that id. */
 const BAD = {
-  "inner-html": ["el.innerHTML = x;", "el.outerHTML = '<b>';", "el['innerHTML'] = x;", "document.body.innerHTML += x;"],
-  "html-parsers": ["el.insertAdjacentHTML('beforeend', x);", "range.createContextualFragment(x);", "new DOMParser().parseFromString(x, 'text/html');", "document.write(x);", "document.writeln(x);"],
-  srcdoc: ["frame.srcdoc = x;", "const a = <iframe srcDoc={x} sandbox='' />;"],
-  "dangerous-elements": ["document.createElement('script');", "document.createElement('IFRAME');", "document.createElement('object');", "document.createElement('embed');"],
+  "inner-html": [
+    "el.innerHTML = x;",
+    "el.outerHTML = '<b>';",
+    "el['innerHTML'] = x;",
+    "document.body.innerHTML += x;",
+    // The same sink by another door: a property bag, a reflective set, a key held in a variable.
+    "Object.assign(el, { innerHTML });",
+    "Object.assign(el, { innerHTML: x });",
+    "Object.assign(el, { ['outerHTML']: x });",
+    "Reflect.set(el, 'innerHTML', x);",
+    "Object.defineProperty(el, 'innerHTML', { set: f });",
+    "const key = 'innerHTML'; el[key] = x;",
+    "el[`innerHTML`] = x;",
+  ],
+  "html-parsers": [
+    "el.insertAdjacentHTML('beforeend', x);",
+    "range.createContextualFragment(x);",
+    "new DOMParser().parseFromString(x, 'text/html');",
+    "document.write(x);",
+    "document.writeln(x);",
+    // The newer parsers (setHTMLUnsafe skips even the sanitiser), and every way of reaching a parser without a plain call.
+    "el.setHTMLUnsafe(x);",
+    "Document.parseHTMLUnsafe(x);",
+    "el.setHTML(x);",
+    "el['setHTMLUnsafe'](x);",
+    "el['insertAdjacentHTML']('beforeend', x);",
+    "const { insertAdjacentHTML } = el;",
+    "const w = document.write;",
+    "document['write'](x);",
+    "new window.DOMParser();",
+    "const P = DOMParser; new P();",
+  ],
+  srcdoc: ["frame.srcdoc = x;", "const a = <iframe srcDoc={x} sandbox='' />;", "frame.setAttribute('srcdoc', x);", "frame.setAttribute('SRCDOC', x);", "Object.assign(frame, { srcdoc: x });"],
+  "dangerous-elements": [
+    "document.createElement('script');",
+    "document.createElement('IFRAME');",
+    "document.createElement('object');",
+    "document.createElement('embed');",
+    // Namespaced elements are the same elements; a tag name held in a variable can be any of them.
+    "document.createElementNS('http://www.w3.org/1999/xhtml', 'script');",
+    "document.createElementNS(ns, 'iframe');",
+    "document.createElementNS(ns, tag);",
+    "document.createElement(tag);",
+    "doc.createElement(`${tag}`);",
+  ],
   "event-handler-property": ["el.onclick = f;", "window.onerror = f;", "el.setAttribute('onload', 'x()');"],
   "set-attribute-style": ["el.setAttribute('style', 'top:0');", "el.setAttribute('STYLE', x);"],
   "javascript-url": ["const u = 'javascript:alert(1)';", "const u = ' JavaScript:alert(1)';", "const u = `javascript:${x}`;"],
-  eval: ["eval(x);", "new Function('return 1');", "Function('return 1')();"],
-  navigation: ["window.open(x);", "location.href = x;", "window.location = x;", "window.location.href = x;", "location = x;", "location.assign(x);", "window.location.replace(x);"],
+  eval: [
+    "eval(x);",
+    "new Function('return 1');",
+    "Function('return 1')();",
+    // Through the global object (the base no-eval is told what `window` is, and the restricted global sees through it), indirect, aliased.
+    "window.eval(x);",
+    "globalThis.eval(x);",
+    "self['eval'](x);",
+    "(0, eval)(x);",
+    "const run = eval; run(x);",
+    "new window.Function('return 1');",
+    "globalThis['Function']('return 1')();",
+  ],
+  navigation: [
+    "window.open(x);",
+    "location.href = x;",
+    "window.location = x;",
+    "window.location.href = x;",
+    "location = x;",
+    "location.assign(x);",
+    "window.location.replace(x);",
+    "globalThis.open(x);",
+    "document.location = x;",
+    "globalThis.location.href = x;",
+    "self.location.assign(x);",
+  ],
   "dynamic-regexp": ["new RegExp(q);", "RegExp(q, 'i');", "new RegExp(`^${q}`);"],
-  "create-policy": ["window.trustedTypes.createPolicy('x', {});", "trustedTypes.createPolicy('x', {});"],
-  "web-storage": ["localStorage.setItem('a', 'b');", "window.sessionStorage.clear();", "indexedDB.open('x');"],
-  "cookie-write": ["document.cookie = 'a=b';"],
+  "create-policy": ["window.trustedTypes.createPolicy('x', {});", "trustedTypes.createPolicy('x', {});", "trustedTypes['createPolicy']('x', {});", "const { createPolicy } = trustedTypes;"],
+  "web-storage": [
+    "localStorage.setItem('a', 'b');",
+    "window.sessionStorage.clear();",
+    "indexedDB.open('x');",
+    // By computed access, through the global object, by alias, and the other persistent stores.
+    "window['localStorage'].clear();",
+    "globalThis['sessionStorage'].clear();",
+    "self.indexedDB.open('x');",
+    "const store = localStorage;",
+    "const { sessionStorage } = window;",
+    "caches.open('x');",
+    "window.caches.delete('x');",
+    "globalThis['caches'].open('x');",
+  ],
+  "cookie-write": ["document.cookie = 'a=b';", "cookieStore.set('a', 'b');", "window.cookieStore.delete('a');"],
   "form-submit": ["const f = <form method='post'><button>x</button></form>;", "const f = <form action='/x' />;"],
   "optimistic-update": ["useMutation({ onMutate: () => {} });", "client.setQueryData(key, 1);", "client.setQueriesData({ queryKey: key }, f);"],
   "query-key-literal": [
@@ -59,9 +140,42 @@ const BAD = {
     "client.cancelQueries();",
     "client.removeQueries({ type: 'all' });",
   ],
-  network: ["fetch('/api/v1/x');", "fetch(`/api/v1/${id}`);", "window.fetch(u);", "globalThis.fetch(u);", "new XMLHttpRequest();", "new WebSocket(u);", "new EventSource(u);", "navigator.sendBeacon(u, d);"],
+  network: [
+    "fetch('/api/v1/x');",
+    "fetch(`/api/v1/${id}`);",
+    "window.fetch(u);",
+    "globalThis.fetch(u);",
+    "new XMLHttpRequest();",
+    "new WebSocket(u);",
+    "new EventSource(u);",
+    "navigator.sendBeacon(u, d);",
+    // The same requests without the plain call: an alias, a computed name, a reference passed on, the global object under any name.
+    "const f = fetch; f('/api/v1/x');",
+    "globalThis['fetch']('/api/v1/x');",
+    "window['fetch'](u);",
+    "self.fetch(u);",
+    "const f = window.fetch;",
+    "run(fetch);",
+    "new window.WebSocket(u);",
+    "const S = EventSource; new S(u);",
+    "navigator['sendBeacon'](u, d);",
+    "const { sendBeacon } = navigator;",
+  ],
   worker: ["new Worker(url);", "new SharedWorker(url);", "URL.createObjectURL(blob);", "navigator.serviceWorker.register(url);"],
   "global-patch": ["Element.prototype.setAttribute = f;", "Document.prototype.createElement = f;", "Object.defineProperty(HTMLElement.prototype, 'x', {});"],
+  // The page talks to no other window, tab or frame (no iframes, COOP same-origin, no service worker), so a message channel is
+  // an entry point that nothing authenticates.
+  messaging: [
+    "window.postMessage(x, '*');",
+    "postMessage(x);",
+    "window['postMessage'](x, origin);",
+    "worker.postMessage(x);",
+    "window.addEventListener('message', f);",
+    "self.addEventListener('message', f);",
+    "new BroadcastChannel('x');",
+    "const { port1 } = new MessageChannel();",
+    "window.BroadcastChannel;",
+  ],
 };
 
 describe("every restriction fires, with its id", () => {
@@ -77,7 +191,7 @@ describe("every restriction fires, with its id", () => {
   }
 
   it("says why in the message, not just that it is banned", async () => {
-    const [m] = (await lint("el.innerHTML = x;\n")).filter((x) => x.ruleId === "no-restricted-syntax");
+    const [m] = (await lint("el.innerHTML = x;\n")).filter((x) => LK_RULES.has(x.ruleId));
     expect(m?.message).toMatch(/Trusted Types/);
   });
 });
@@ -94,6 +208,25 @@ describe("what is allowed", () => {
     "el.setAttribute('aria-label', 'x');",
     "el.addEventListener('click', f);",
     "const w = new Worker('/x.js');",
+    // Names the restrictions are about, used as something else: a property, a key, a type, a local of the same name.
+    "const { innerHTML } = el;",
+    "const o = { fetch: (cursor, signal) => get(cursor, signal), once: true };",
+    "const f = options.fetch ?? run;",
+    "const fetchPage = (fetch) => fetch(1);",
+    "function load(fetch) { return fetch('/x'); }",
+    "type Fetcher = typeof fetch;",
+    "const a = React.createElement(Comp, props);",
+    "const b = createElement(Comp, props);",
+    "const a = document.createElement('a');",
+    "window.addEventListener('resize', f);",
+    "window.matchMedia('(min-width: 1px)');",
+    "window.setTimeout(f, 10);",
+    "globalThis.crypto.randomUUID();",
+    "window.scrollTo(0, 0);",
+    "const e = new CustomEvent('x', { detail: 1 });",
+    "el.dispatchEvent(e);",
+    "interface TrustedTypePolicyFactory { createPolicy(name: string): Policy }",
+    "type Msg = { postMessageCount: number };",
   ])("passes %s", async (code) => {
     // `new Worker('/x.js')` has a literal argument; the worker rule is for built URLs.
     expect(ids(await lint(`${code}\n`)), code).toEqual([]);
@@ -109,6 +242,24 @@ describe("what is allowed", () => {
     for (const file of ["scripts/x.mjs", "e2e/csp/x.ts", "playwright.config.ts"]) {
       expect(ids(await lint("fetch(u); el.innerHTML = x;\n", file)), file).toEqual([]);
     }
+  });
+});
+
+// The lint reads the shape of the code, with scopes for names the browser owns. It is a build-time guard against the ways of
+// writing these things that people and agents actually use, not a proof, and docs/threat-model.md ("Web app (08)", row S12-T)
+// says so and says which layer holds for each of the following: Trusted Types (a string is refused at the sink), the CSP (no
+// 'unsafe-eval', connect-src 'self', no frames) and the server's sanitiser. This inventory pins the limits so that the threat
+// model cannot drift from the rule: if you close one, move its snippet to BAD above and update that row.
+describe("what the lint cannot see (known limits; the layer that holds is named in docs/threat-model.md)", () => {
+  it.each([
+    ["the global object under another name", "const w = window; w.fetch('/x');", "connect-src 'self'"],
+    ["a global read out of the global object by destructuring", "const { fetch: f } = window; f('/x');", "connect-src 'self'"],
+    ["a sink reached through a name built at run time", "const name = ['inner', 'HTML'].join(''); el[name] = x;", "Trusted Types"],
+    ["Function reached through a constructor", "(() => undefined).constructor('return 1')();", "no 'unsafe-eval'"],
+    ["a module imported from a variable", "const m = await import(url);", "script-src 'self'"],
+    ["a javascript: URL put in an href at run time", "link.setAttribute('href', value);", "script-src without 'unsafe-inline'"],
+  ])("does not flag %s (held by: %s)", async (_name, code) => {
+    expect(ids(await lint(`${code}\n`)), code).toEqual([]);
   });
 });
 
@@ -151,6 +302,22 @@ describe("the named exceptions are as narrow as they say", () => {
       expect(ids(await lint("el.setAttribute('style', 'top:0');\n", file))).toContain("set-attribute-style");
     });
   }
+
+  it("lifts the scope-aware forms of a restriction with the same exception, and only there", async () => {
+    // Each exception that lifts a restriction lifts every way of writing it in its file (the global object, an alias, a computed name)...
+    const FORMS = {
+      "src/api/client.ts": ["await globalThis.fetch(u);", "const f = fetch;", "window['fetch'](u);"],
+      "src/live/sse-client.ts": ["globalThis.fetch(u);", "const impl = options.fetch ?? fetch;"],
+      "src/lib/prefs/index.ts": ["window['localStorage'].clear();", "const s = sessionStorage;", "caches.delete('x');", "cookieStore.delete('a');"],
+    };
+    for (const [file, snippets] of Object.entries(FORMS)) {
+      for (const code of snippets) expect(ids(await lint(`${code}\n`, file)).filter((id) => id === "network" || id === "web-storage" || id === "cookie-write"), `${code} in ${file}`).toEqual([]);
+    }
+    // ...and none of them anywhere else.
+    for (const [file, snippets] of Object.entries(FORMS)) {
+      for (const code of snippets) expect(ids(await lint(`${code}\n`, "src/features/x/other.ts")).length, `${code} outside ${file}`).toBeGreaterThan(0);
+    }
+  });
 
   it("keeps the same restrictions on the neighbours of an exception file", async () => {
     expect(ids(await lint("fetch(u);\n", "src/api/other.ts"))).toContain("network");
@@ -226,7 +393,7 @@ describe("query keys and invalidation are written one way", () => {
   });
 
   it("says where the keys are, in the message", async () => {
-    const [m] = (await lint("useQuery({ queryKey: ['a'] });\n")).filter((x) => x.ruleId === "no-restricted-syntax");
+    const [m] = (await lint("useQuery({ queryKey: ['a'] });\n")).filter((x) => LK_RULES.has(x.ruleId));
     expect(m?.message).toMatch(/src\/lib\/query\/keys\.ts/);
   });
 });

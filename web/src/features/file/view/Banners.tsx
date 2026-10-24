@@ -3,10 +3,9 @@ import { SafeText } from "@/components/app/SafeText";
 import { GatedButton } from "@/components/app/GatedButton";
 import type { GateResult } from "@/components/app/write-gate";
 import type { WithheldReason } from "@/components/masking/withheld";
-import { Button } from "@/components/ui/button";
 import { Eye, Lock, TriangleAlert, WifiOff } from "@/icons";
 import { formatClock, formatRelative } from "@/lib/time";
-import { AppLink } from "@/routes/AppLink";
+import { checkAgentAction } from "@/features/shell/check-agent";
 
 // The notices across the top of the file view, in the words of the design (File, States P03 and O03).
 
@@ -26,15 +25,7 @@ export function AgentOfflineBanner({ lane, asOf, now, canCheck }: { lane: string
       variant="warning"
       icon={<WifiOff aria-hidden="true" />}
       title={`Agent for ${lane} is offline`}
-      {...(canCheck
-        ? {
-            action: (
-              <Button asChild variant="secondary" size="sm">
-                <AppLink route="admin-swimlanes">Check agent</AppLink>
-              </Button>
-            ),
-          }
-        : {})}
+      {...checkAgentAction(canCheck)}
     >
       {asOf === null ? "Showing the data from the last scan." : `Showing data as of ${formatClock(asOf)} (${formatRelative(asOf, now)}).`} Saving on {lane} is off.
     </Banner>
