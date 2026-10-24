@@ -69,6 +69,16 @@ use support::pg::TestDb;
 /// samples 300,000 rows, which is every row of every table here, so the statistics are exact and the plans are the same every time.
 const EXACT_ANALYZE: &str = "SET default_statistics_target = 1000; ANALYZE";
 
+/// The instant the attribution fixture (T7) counts as "now": a constant, never the database clock. The fixture spreads 150 days of
+/// records around it and makes the month partitions of `sentinel_records` for it, and the plans depend on where those rows fall. On the
+/// clock they moved with the date of the run. The last days of the spread (`now() + 75 days`) pass 1 January 2027, the end of the last
+/// partition `maintain_sentinel_partitions()` makes in October, and land in the default partition, inside the look-back of
+/// `FROM_OBSERVATIONS_SQL`: none of the 7,500 records of a sentinel on 2026-10-17, 125 on the 20th and 325 on the 24th. The planner read that
+/// partition with an index scan on the first of those dates and a bitmap heap scan on the others. In other months the partitions have
+/// other names, so the snapshots named the wrong ones. The snapshots were taken on 2026-10-17, so this is that day at noon UTC: September
+/// to December 2026 have a partition, the records of August are in the default one (all older than the look-back), and none are later.
+const ATTRIBUTION_NOW: &str = "timestamptz '2026-10-17 12:00:00+00'";
+
 /// Tables that hold thousands of rows at design scale. A sequential scan of one of these is a failure.
 const LARGE: [&str; 12] = [
     "findings",
@@ -1427,6 +1437,7 @@ async fn attribution_queries_have_no_sequential_scan_on_large_tables() {
         "sentinels",
         "users",
         "os_login_user_map",
+        "sentinel_records_default",
     ] {
         sqlx::raw_sql(&format!("ALTER TABLE {table} SET (autovacuum_enabled = false)"))
             .execute(&mut admin)
@@ -1436,20 +1447,43 @@ async fn attribution_queries_have_no_sequential_scan_on_large_tables() {
     for sql in [
         "INSERT INTO projects (id, display_name) VALUES ('p1', 'Project 1')",
         "INSERT INTO swimlanes (id, project_id, display_name, nfs_export) SELECT 'lane' || n, 'p1', 'lane', '/export' FROM generate_series(1, 40) n",
+        // The month partitions for ATTRIBUTION_NOW, made the way `maintain_sentinel_partitions()` makes them for `now()` (last month, this
+        // month and the next two; 0001_init.sql), by the role that owns that function. The ones the migration made for the date of the
+        // run are dropped first (the table is empty), so that the plans name the same partitions on every date. They are not vacuumed:
+        // a vacuum that runs between the seeding and the EXPLAIN is a background worker's timing, as for the tables of `SEEDED`.
+        "SET ROLE lanekeeper_migrator; \
+         DO $$ \
+         DECLARE r record; month_ts timestamp; lo timestamptz; hi timestamptz; part text; \
+         BEGIN \
+           FOR r IN SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid \
+                    WHERE i.inhparent = 'public.sentinel_records'::regclass AND c.relname <> 'sentinel_records_default' LOOP \
+             EXECUTE format('DROP TABLE public.%I', r.relname); \
+           END LOOP; \
+           FOR i IN -1..2 LOOP \
+             month_ts := date_trunc('month', {now} AT TIME ZONE 'UTC') + make_interval(months => i); \
+             lo := month_ts AT TIME ZONE 'UTC'; \
+             hi := (month_ts + interval '1 month') AT TIME ZONE 'UTC'; \
+             part := format('sentinel_records_y%sm%s', to_char(month_ts, 'YYYY'), to_char(month_ts, 'MM')); \
+             EXECUTE format('CREATE TABLE public.%I (LIKE public.sentinel_records INCLUDING DEFAULTS INCLUDING CONSTRAINTS) \
+                             WITH (autovacuum_enabled = false)', part); \
+             EXECUTE format('ALTER TABLE public.sentinel_records ATTACH PARTITION public.%I FOR VALUES FROM (%L) TO (%L)', part, lo, hi); \
+           END LOOP; \
+         END $$; \
+         RESET ROLE",
         "INSERT INTO sentinels (vm, swimlane_id, export_root, last_seen_at) \
-         SELECT 'vm' || n, 'lane' || n, '/export', now() FROM generate_series(1, 40) n",
+         SELECT 'vm' || n, 'lane' || n, '/export', {now} FROM generate_series(1, 40) n",
         // 500 files of each swimlane, four observations of each over the last hour, the newest of each with no attribution beyond unknown
         // (the state the job is for) and the others already attributed (the state history is mostly in).
         "INSERT INTO file_observations (swimlane_id, path, hash, source, observed_at, recorded_at, attribution_source, attribution_confidence) \
          SELECT 'lane' || l, 'dir' || (f % 50) || '/file' || f || '.yml', sha256(('v' || l || '-' || f || '-' || k)::bytea), 'scan', \
-                now() - (k * 15 || ' minutes')::interval, now() - (k * 15 || ' minutes')::interval, \
+                {now} - (k * 15 || ' minutes')::interval, {now} - (k * 15 || ' minutes')::interval, \
                 CASE WHEN k = 1 THEN 'unknown' ELSE 'sync_job' END, CASE WHEN k = 1 THEN 'low' ELSE 'high' END \
          FROM generate_series(1, 40) l, generate_series(1, 500) f, generate_series(1, 4) k",
-        // 300,000 records: 7,500 for each sentinel, over 150 days around now, so that every month's partition and the default one hold
-        // rows (an empty partition is read by a sequential scan, rightly, and says nothing about the table).
-        "INSERT INTO sentinel_records (sentinel_id, batch_seq, record_index, observed_at, path, operation, success, login_user, effective_user, exe, comm) \
-         SELECT s.id, (r / 50) + 1, r % 50, now() + ((r * 7919) % 216000 - 108000) * interval '1 minute', \
-                'dir' || (r % 50) || '/file' || (r % 500) || '.yml', 'write', true, 'ada_example_com', 'root', '/usr/bin/vim', 'vim' \
+        // 300,000 records: 7,500 for each sentinel, over 150 days around ATTRIBUTION_NOW, so that every month's partition and the default
+        // one hold rows (an empty partition is read by a sequential scan, rightly, and says nothing about the table).
+        "INSERT INTO sentinel_records (sentinel_id, batch_seq, record_index, observed_at, path, operation, success, login_user, effective_user, exe, comm, received_at) \
+         SELECT s.id, (r / 50) + 1, r % 50, {now} + ((r * 7919) % 216000 - 108000) * interval '1 minute', \
+                'dir' || (r % 50) || '/file' || (r % 500) || '.yml', 'write', true, 'ada_example_com', 'root', '/usr/bin/vim', 'vim', {now} \
          FROM sentinels s, generate_series(1, 7500) r",
         "INSERT INTO users (tid, oid, email, display_name, role, status) \
          SELECT '72f988bf-86f1-41af-91ab-2d7cd011db47', lpad(n::text, 36, '0'), 'user' || n || '@example.com', 'User', 'viewer', \
@@ -1458,12 +1492,19 @@ async fn attribution_queries_have_no_sequential_scan_on_large_tables() {
          SELECT 'local_' || n, '72f988bf-86f1-41af-91ab-2d7cd011db47', lpad(n::text, 36, '0') FROM generate_series(1, 100) n",
         EXACT_ANALYZE,
     ] {
-        sqlx::raw_sql(sql).execute(&mut admin).await.unwrap();
+        assert!(
+            !sql.contains("now()"),
+            "the attribution fixture counts from ATTRIBUTION_NOW, not from the database clock: {sql}"
+        );
+        let sql = sql.replace("{now}", ATTRIBUTION_NOW);
+        sqlx::raw_sql(&sql).execute(&mut admin).await.unwrap();
     }
-    let now_ms: i64 = sqlx::query_scalar("SELECT (EXTRACT(EPOCH FROM now()) * 1000)::bigint")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let now_ms: i64 = sqlx::query_scalar(&format!(
+        "SELECT (EXTRACT(EPOCH FROM {ATTRIBUTION_NOW}) * 1000)::bigint"
+    ))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let window = 60_000_i64;
     let weak = || Arg::TextArray(vec!["low".to_owned(), "medium".to_owned()]);
 
