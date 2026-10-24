@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 9e3f0db5fdaa2a36bc803da0e260f697524c7f888e9526a1405419e78edf309d # shrinks to ops = [(Adopt, false)]
 cc 44fbe0912d56a7a18de392c46a59eb8598e1211723642cdcfd14b3f22299bc50 # shrinks to ops = [(Nfs { file: 0, text: 0 }, false), (Nfs { file: 4, text: 0 }, false)]
+cc d4513fc9474ec14badf4a8b4abbffc12e244dd2dfb7b69f5dced65d2cc7dc884 # shrinks to ops = [(Nfs { file: 2, text: 0 }, false), (NfsDelete { file: 2 }, false)]
