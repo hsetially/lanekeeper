@@ -6,7 +6,7 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test";
 import { settle } from "./axe.ts";
-import { SIDEBAR, freezeDate, modal } from "./helpers.ts";
+import { SIDEBAR, describedText, freezeDate, modal, slowScheduler } from "./helpers.ts";
 import { CORE_FILE, frame, goOffline, itemsOf, jobIs, openReveal, patchJson, raisePr, reveal, sendReveal, withPrs } from "./t5.ts";
 import { BY_SOURCE } from "../../src/mocks/design/attribution/data.ts";
 import { REVEALED_VALUE } from "../../src/mocks/design/masking/data.ts";
@@ -114,6 +114,8 @@ test.describe("the attribution chip", () => {
   test("what it says is words: the source, the person and the confidence are text, and the bars are hidden from assistive technology", async ({ page, harness }) => {
     await open(page, `${harness.url}${CORE_FILE}`);
     await page.getByRole("button", { name: "History", exact: true }).click();
+    // The panel opens at once, with its loading state, and the versions come with the answer of the hub: read the rows when they are there.
+    await expect(page.locator("aside [data-slot='attribution']")).toHaveCount(9);
     const rows = await page.evaluate(() =>
       [...document.querySelectorAll("aside [data-slot='attribution']")].map((el) => ({
         unknown: el.getAttribute("data-who") === "unknown",
@@ -480,10 +482,22 @@ test.describe("a masked value", () => {
     const reason = dialog(page).getByRole("textbox", { name: /Reason/ });
     await expect(reason).toHaveAttribute("aria-invalid", "true");
     await expect(dialog(page).getByText("Enter a reason")).toBeVisible();
-    const describedBy = (await reason.getAttribute("aria-describedby")) ?? "";
-    const texts = await page.evaluate((ids) => ids.split(/\s+/).map((id) => document.getElementById(id)?.textContent ?? ""), describedBy);
-    expect(texts.join(" "), "the error is part of what the field is described by").toContain("Enter a reason");
+    await expect.poll(() => describedText(reason), { message: "the error is part of what the field is described by" }).toContain("Enter a reason");
     expect(harness.requests().filter((r) => r.path.endsWith("/files/reveal")).length).toBe(before);
+  });
+
+  // The read above waits for the page; this one does not, and the page is made slow. The error is on the page and the field is invalid
+  // in one commit, and the field names the error in that same commit, not in a render that the scheduler gets to a task later (which
+  // is what a slow machine, a busy tab or a screen reader asking in between would find: a field that is invalid and described by nothing).
+  test("no reason: the error is tied to the field in the commit that shows it, not a task later", async ({ page, harness }) => {
+    await open(page, `${harness.url}${CORE_FILE}`);
+    await openReveal(page);
+    await slowScheduler(page);
+    await dialog(page).getByRole("button", { name: "Reveal value", exact: true }).click();
+    const reason = dialog(page).getByRole("textbox", { name: /Reason/ });
+    await expect(reason).toHaveAttribute("aria-invalid", "true");
+    await expect(dialog(page).getByText("Enter a reason")).toBeVisible();
+    expect(await describedText(reason), "the error is part of what the field is described by, as soon as it is shown").toContain("Enter a reason");
   });
 
   test("revealed: Hide has focus, the announcement is polite and never holds the value, and Hide gives focus back to Reveal", async ({ page, harness }) => {

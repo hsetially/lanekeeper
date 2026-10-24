@@ -1,7 +1,9 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { useState, type ReactNode } from "react";
+import { flushSync } from "react-dom";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Checkbox } from "./checkbox";
 import { Field, FieldControl, FieldDescription, FieldError, FieldLabel } from "./field";
 import { Input, SearchInput } from "./input";
@@ -52,6 +54,70 @@ describe("Field wiring", () => {
       </Field>,
     );
     expect(screen.getByText("Required")).toHaveAttribute("role", "alert");
+  });
+});
+
+// What a person, a screen reader or a script can see of a Field is the page between two tasks of the browser. Testing Library's act() runs
+// every follow-up render before it returns, which hides a control that is invalid for one task with its message not yet tied to it, so
+// these tests render the way the browser's event loop does: no act(), and flushSync for the commit a click or a key would make. What
+// is read straight after is what a task that runs next (a screen reader's query, a test's `evaluate`, a paint) would find.
+describe("Field wiring between two tasks", () => {
+  type Env = { IS_REACT_ACT_ENVIRONMENT?: boolean | undefined };
+  let host: HTMLElement;
+  let root: Root;
+  let actEnvironment: boolean | undefined;
+
+  beforeEach(() => {
+    actEnvironment = (globalThis as Env).IS_REACT_ACT_ENVIRONMENT;
+    (globalThis as Env).IS_REACT_ACT_ENVIRONMENT = false;
+    host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+  });
+
+  afterEach(() => {
+    root.unmount();
+    host.remove();
+    (globalThis as Env).IS_REACT_ACT_ENVIRONMENT = actEnvironment;
+  });
+
+  const commit = (node: ReactNode): void => flushSync(() => root.render(node));
+  const nextTask = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+  const field = (invalid: boolean): ReactNode => (
+    <Field invalid={invalid}>
+      <FieldLabel>Reason</FieldLabel>
+      <FieldControl>
+        <Input />
+      </FieldControl>
+      <FieldError>Enter a reason</FieldError>
+      <FieldDescription>Why you need it.</FieldDescription>
+    </Field>
+  );
+  const input = (): HTMLElement => host.querySelector("input") as HTMLElement;
+  const describedBy = (): string[] => (input().getAttribute("aria-describedby") ?? "").split(/\s+/).filter((id) => id !== "");
+  const textsOf = (ids: string[]): string[] => ids.map((id) => document.getElementById(id)?.textContent ?? "(no element)");
+
+  it("describes the control by its description in the commit that puts both on the page", () => {
+    commit(field(false));
+    expect(textsOf(describedBy())).toEqual(["Why you need it."]);
+  });
+
+  it("describes the control by its error in the commit that marks it invalid and shows the error", async () => {
+    commit(field(false));
+    await nextTask();
+    commit(field(true));
+    expect(input()).toHaveAttribute("aria-invalid", "true");
+    expect(host.querySelector("[data-slot='field-error']")).toHaveTextContent("Enter a reason");
+    expect(textsOf(describedBy())).toEqual(expect.arrayContaining(["Enter a reason", "Why you need it."]));
+  });
+
+  it("stops naming the error in the commit that takes it off the page", async () => {
+    commit(field(true));
+    await nextTask();
+    commit(field(false));
+    expect(input()).not.toHaveAttribute("aria-invalid");
+    expect(host.querySelector("[data-slot='field-error']")).toBeNull();
+    expect(textsOf(describedBy()), "no id of an element that is gone").toEqual(["Why you need it."]);
   });
 });
 

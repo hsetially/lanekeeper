@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState, type ComponentProps } from "react";
+import { createContext, useCallback, useContext, useId, useLayoutEffect, useMemo, useState, type ComponentProps } from "react";
 import { Slot } from "radix-ui";
 import { cn } from "@/lib/utils";
 import { Label } from "./label";
@@ -63,11 +63,15 @@ export function FieldControl({ children }: { children: React.ReactNode }) {
   );
 }
 
+// A layout effect, not an effect: the control's aria-describedby is rebuilt from what registers here, and an effect runs a task after
+// the commit that put the message on the page (React flushes the follow-up render of an effect on the scheduler's own task). For
+// that task the control said aria-invalid with its message not tied to it, and a screen reader, a paint or a script that asked in
+// between found a field with no description. A layout effect's update is flushed before the commit returns to the browser.
 function useRegistered(part: string, idProp: string | undefined): string {
   const { register } = useField(part);
   const generated = useId();
   const id = idProp ?? generated;
-  useEffect(() => register(id), [register, id]);
+  useLayoutEffect(() => register(id), [register, id]);
   return id;
 }
 

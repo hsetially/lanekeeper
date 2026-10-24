@@ -213,6 +213,9 @@ test.describe("live regions", () => {
     test(`${id}: only an alert is assertive, and every other live region is polite`, async ({ page, harness }) => {
       harness.setScenario(scenario);
       await open(page, `${harness.url}${url}`);
+      // The pill is "Connecting" until the stream is open and says "Live updates are on" after: the stream is the hub's answer, which comes
+      // after the screen has drawn, so read the regions when the pill has said so.
+      await expect.poll(async () => (await regionsOf(page)).some((r) => /Live updates/.test(r.label)), { message: "the live indicator is a live region" }).toBe(true);
       const regions = await regionsOf(page);
       expect(regions.length, "a screen with live data has at least the live pill").toBeGreaterThan(0);
       for (const r of regions) {

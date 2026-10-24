@@ -1,6 +1,6 @@
 // Small things the accessibility and layout specs share: a typed case, holding or failing an API call so that a loading or an
 // error state can be looked at, and the names of the page's landmarks.
-import type { Page, Route } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
 import type { CspWatch } from "../fixtures/test.ts";
 import type { Harness } from "../harness/serve.ts";
 import { FROZEN_NOW } from "../visual/render-references.mjs";
@@ -76,4 +76,29 @@ export async function freezeDate(page: Page): Promise<void> {
     }
     window.Date = FrozenDate as unknown as DateConstructor;
   }, FROZEN_NOW);
+}
+
+/**
+ * What a control is described by, as text: the elements its `aria-describedby` names, in that order, read in one go (one state of
+ * the page, not the attribute at one moment and the elements at another). An id with no element in the page reads as nothing.
+ */
+export function describedText(control: Locator): Promise<string> {
+  return control.evaluate((el) => (el.getAttribute("aria-describedby") ?? "").split(/\s+/).map((id) => document.getElementById(id)?.textContent ?? "").join(" "));
+}
+
+/**
+ * Make the tasks that React's scheduler posts for itself run late, as they do on a slow machine or in a busy tab: a render that is
+ * not urgent (the follow-up of an effect, a refetched list) waits `ms` more, while everything else in the page (the commit of a click,
+ * a layout effect) runs when it did. A page must not show one half of a change for that long, so a check that reads the page right
+ * after a change and does not wait for it, can be run with this and no longer depends on the speed of the machine. Call it after the
+ * page has loaded (it patches the port the scheduler posts through); it lasts until the page is left.
+ */
+export async function slowScheduler(page: Page, ms = 150): Promise<void> {
+  await page.evaluate((delay) => {
+    const port = MessagePort.prototype as unknown as { postMessage: (this: MessagePort, ...args: unknown[]) => void };
+    const post = port.postMessage;
+    port.postMessage = function slowPost(this: MessagePort, ...args: unknown[]): void {
+      setTimeout(() => post.apply(this, args), delay);
+    };
+  }, ms);
 }

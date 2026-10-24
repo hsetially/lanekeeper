@@ -7,7 +7,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, pageViolations, test } from "../fixtures/test";
 import { modalHoldsFocus, settle } from "./axe.ts";
-import { freezeDate, modal } from "./helpers.ts";
+import { describedText, freezeDate, modal, slowScheduler } from "./helpers.ts";
 import { API, CORE_FILE, SERVICES_URL, bannerRestart, chips, confirmNotify, openConfigServerRestart, openNotify, notifyButton, patchServed, refuse, saveFile, servedUrl } from "./t6.ts";
 
 test.use({ dist: process.env["LK_E2E_DIST"] ?? process.env["LK_DIST"] ?? "dist" });
@@ -366,13 +366,25 @@ test.describe("As served", () => {
     for (const [name, message] of [["File", "A file is required"], ["Application", "An application is required"], ["Tenant", "A tenant is required"]] as const) {
       const field = page.getByRole(name === "Tenant" ? "combobox" : "textbox", { name, exact: true });
       await expect(field).toHaveAttribute("aria-invalid", "true");
-      const described = await field.evaluate((el) => (el.getAttribute("aria-describedby") ?? "").split(/\s+/).map((id) => document.getElementById(id)?.textContent ?? "").join(" "));
-      expect(described, `${name}: the message is the field's description`).toContain(message);
+      await expect.poll(() => describedText(field), { message: `${name}: the message is the field's description` }).toContain(message);
     }
     await expect(page.getByRole("textbox", { name: "File" })).toBeFocused();
     await page.getByRole("textbox", { name: "File" }).fill("tx-infinity-api/connection-pool.yml");
     await expect(page.getByRole("textbox", { name: "File" })).not.toHaveAttribute("aria-invalid", "true");
     expect(harness.requests().filter((r) => r.path.includes("/served")), "a form that cannot be a request sends nothing").toEqual([]);
+  });
+
+  // The read above waits for the page; this one does not, and the page is made slow: each message is the description of its field in the
+  // commit that marks the field invalid, not in a render the scheduler gets to a task later (see the masked value's twin in t5.spec.ts).
+  test("a wrong field is described by its message in the commit that marks it invalid, not a task later", async ({ page, harness }) => {
+    await open(page, `${harness.url}${SERVED_ADDRESS}`);
+    await slowScheduler(page);
+    await page.getByRole("button", { name: "Show served text" }).click();
+    for (const [name, message] of [["File", "A file is required"], ["Application", "An application is required"], ["Tenant", "A tenant is required"]] as const) {
+      const field = page.getByRole(name === "Tenant" ? "combobox" : "textbox", { name, exact: true });
+      await expect(field).toHaveAttribute("aria-invalid", "true");
+      expect(await describedText(field), `${name}: the message is the field's description, as soon as the field is invalid`).toContain(message);
+    }
   });
 
   test("the text is a table named for the file with a row for each line, the facts and the status are groups, and what the page does not offer is not there", async ({ page, harness }) => {
