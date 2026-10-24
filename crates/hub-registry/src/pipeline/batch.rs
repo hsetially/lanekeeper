@@ -342,8 +342,19 @@ struct Prepared {
     entry: LaneEntry,
     affected: BTreeSet<NfsPath>,
     old: BTreeMap<NfsPath, Option<RowSig>>,
+    /// The affected paths whose row in the database has no file on NFS: the trace of a removal. When such a path is on neither side
+    /// now, its row has to go even if the entry never held the path (a file created and removed before the pipeline was told).
+    traces: BTreeSet<NfsPath>,
     inputs: Inputs,
     logicals: BTreeSet<LogicalFile>,
+    decisions: Decisions,
+}
+
+/// What an incremental batch keeps of a swimlane while the engine computes, to plan the write afterwards.
+struct Kept {
+    rules: LaneRules,
+    old: BTreeMap<NfsPath, Option<RowSig>>,
+    traces: BTreeSet<NfsPath>,
     decisions: Decisions,
 }
 
@@ -766,11 +777,17 @@ impl Inner {
             entry.adopted = rules.adopted;
             entry.severity = Arc::clone(&rules.global.severity);
             let lane_inputs = inputs.remove(&rules.swimlane).unwrap_or_default();
+            let traces = affected
+                .iter()
+                .filter(|p| lane_inputs.rows.get(*p).is_some_and(|row| row.nfs.is_none()))
+                .cloned()
+                .collect();
             prepared.push(Prepared {
                 rules,
                 entry,
                 affected,
                 old,
+                traces,
                 inputs: lane_inputs,
                 logicals,
                 decisions: Decisions::default(),
@@ -870,8 +887,7 @@ impl Inner {
         drop(wanted);
         // 4. The engine.
         let mut jobs: Vec<IncJob> = Vec::with_capacity(ready.len());
-        let mut keep: Vec<(LaneRules, BTreeMap<NfsPath, Option<RowSig>>, Decisions)> =
-            Vec::with_capacity(ready.len());
+        let mut keep: Vec<Kept> = Vec::with_capacity(ready.len());
         for mut p in ready {
             let previous = p.entry.state.take();
             jobs.push(IncJob {
@@ -879,12 +895,17 @@ impl Inner {
                 previous,
                 affected: p.affected,
             });
-            keep.push((p.rules, p.old, p.decisions));
+            keep.push(Kept {
+                rules: p.rules,
+                old: p.old,
+                traces: p.traces,
+                decisions: p.decisions,
+            });
         }
         let (pool, limits) = (Arc::clone(&self.pool), Arc::clone(&self.limits));
         let hosts = keep.first().map_or_else(
             || Arc::new(HostRules::default()),
-            |(r, _, _)| Arc::clone(&r.global.hosts),
+            |k| Arc::clone(&k.rules.global.hosts),
         );
         let computed = blocking(
             self.config.git_timeout.max(std::time::Duration::from_secs(120)),
@@ -906,10 +927,10 @@ impl Inner {
         // at a time (a commit is a transaction on a connection of its own, and the time of a push that concerns every swimlane is
         // mostly the commits' waiting for the disk).
         let mut planned = Vec::with_capacity(jobs.len());
-        for ((job, state), (rules, old, decisions)) in jobs.into_iter().zip(states).zip(keep) {
-            let id = rules.swimlane.clone();
+        for ((job, state), kept) in jobs.into_iter().zip(states).zip(keep) {
+            let id = kept.rules.swimlane.clone();
             match state {
-                Ok(state) => match Self::plan_incremental(job, state, &rules, &old, decisions, view) {
+                Ok(state) => match Self::plan_incremental(job, state, kept, view) {
                     Ok(plan) => planned.push(plan),
                     Err(error) => results.push((id, Err(error))),
                 },
@@ -942,11 +963,15 @@ impl Inner {
     fn plan_incremental(
         job: IncJob,
         state: LaneState,
-        rules: &LaneRules,
-        old: &BTreeMap<NfsPath, Option<RowSig>>,
-        decisions: Decisions,
+        kept: Kept,
         view: &Arc<GitView>,
     ) -> Result<IncrementalPlan, RegistryError> {
+        let Kept {
+            rules,
+            old,
+            traces,
+            decisions,
+        } = kept;
         let IncJob {
             mut entry,
             previous,
@@ -987,6 +1012,14 @@ impl Inner {
                             sig: now,
                         });
                     }
+                }
+                // Neither in memory nor in the swimlane now, but the database still has the row ingestion kept for a file that was
+                // created and removed before the pipeline was told about it: a computation from scratch deletes that row (`finish_full`:
+                // a row without a file on NFS whose path is not in the swimlane), so an update does too. The delete is guarded by
+                // `nfs_hash IS NULL`, so a file that is back on NFS by the time of the commit keeps its row.
+                (None, None) if traces.contains(path) => {
+                    drift.push(path.clone());
+                    deletes.push(path.clone());
                 }
                 (None, None) => {}
             }
