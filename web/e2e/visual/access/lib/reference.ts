@@ -165,11 +165,10 @@ export async function reference(browser: Browser, board: string, id: string): Pr
 const refreshed = new Set<string>();
 
 /**
- * The design's page of one frame, open, to ask what is at a point of it (e2e/visual/diff-report.mjs): only for the report of a frame that
- * failed its comparison, because the references are kept as pictures and their page is closed. It opens the board again (a few seconds),
- * moves the frame to the window's corner as its photograph was taken, and answers for the frame's own pixels. `close` ends it.
+ * The design's page of one frame, open, with the frame moved to the window's corner as its photograph was taken: to ask it what is where
+ * (the boxes of its elements). `close` ends it. The page is the board with every frame of it drawn, normalised as the references are (S0).
  */
-export async function probeReference(browser: Browser, board: string, id: string): Promise<{ probe: ReturnType<typeof elementProbe>; close: () => Promise<void> }> {
+export async function referencePage(browser: Browser, board: string, id: string): Promise<{ page: Page; close: () => Promise<void> }> {
   const frame = frameOf(board, id);
   const server = await startReferenceServer();
   const context = await browser.newContext({ viewport: { width: Math.max(1600, frame.size.w), height: Math.max(1000, frame.size.h) }, timezoneId: "UTC", locale: "en-GB", colorScheme: "light", reducedMotion: "reduce" });
@@ -182,11 +181,21 @@ export async function probeReference(browser: Browser, board: string, id: string
     await page.locator(frameSelector(id)).first().evaluate((el) => {
       el.setAttribute("style", `${el.getAttribute("style") ?? ""};position:fixed!important;left:0!important;top:0!important;margin:0!important;z-index:2147483647!important`);
     });
-    return { probe: elementProbe(page), close };
+    return { page, close };
   } catch (error) {
     await close();
     throw error;
   }
+}
+
+/**
+ * The design's page of one frame, open, to ask what is at a point of it (e2e/visual/diff-report.mjs): only for the report of a frame that
+ * failed its comparison, because the references are kept as pictures and their page is closed. It opens the board again (a few seconds),
+ * moves the frame to the window's corner as its photograph was taken, and answers for the frame's own pixels. `close` ends it.
+ */
+export async function probeReference(browser: Browser, board: string, id: string): Promise<{ probe: ReturnType<typeof elementProbe>; close: () => Promise<void> }> {
+  const { page, close } = await referencePage(browser, board, id);
+  return { probe: elementProbe(page), close };
 }
 
 /** The visible text of a frame, one line per line the browser laid out, as it reads in the reference (rendered with the PNG). */

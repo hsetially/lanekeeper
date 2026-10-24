@@ -12,12 +12,20 @@
 //    their own, not Monaco), "File: Diff and large files" (no outline, no minimap, no truncation notice), "File: view" (no Rendered,
 //    or As served) and the "History" and "Docs for this file" panels' own deviations. What the design draws there is compared
 //    by a person on the frame, and by the app's own baseline here.
-// What stays compared: the sidebar, the top bar with the breadcrumb, the title with its chips and the row of actions.
+// What stays compared: the sidebar, the top bar with the breadcrumb, the title with its chips and the row of actions. Frame 1m (the binary
+// file) compares the sidebar and the top bar only, and its breadcrumb is masked (file/masks.ts, file/frame-1m.ts): the app names every folder
+// of the path and the design only the parent folder, so that text is different, and how many of its pixels cross the threshold depends on
+// the machine's text anti-aliasing (file/breadcrumb-mask.spec.ts says what the mask covers).
 import { expect, test } from "../../fixtures/test";
 import { pin, settle } from "../access/lib/app";
 import { tier1, type FrameCase } from "../access/lib/matrix";
 import type { Mask } from "../access/lib/compare";
+import { FRAME_1M } from "./frame-1m";
+import { CHROME_ONLY } from "./masks";
 import { signedInAs } from "../access/lib/steps";
+
+// Which build the harness serves: `dist`, or another directory for a run on a private build (LK_DIST), as the other visual specs do.
+test.use({ dist: process.env["LK_DIST"] ?? "dist" });
 
 const BOARD = "Lanekeeper File View.dc.html";
 const CORE = "tx-infinity-api%2Ftx-infinity-core-sit7.yml";
@@ -27,7 +35,6 @@ const FACTS: Mask = { x: 245, y: 90, width: 1195, height: 26, why: "Copy afforda
 const EDIT: Mask = { x: 248, y: 125, width: 68, height: 30, why: "File: Edit (off while a value is masked)" };
 const AS_SERVED: Mask = { x: 852, y: 125, width: 116, height: 30, why: "File: As served link (a button the design has no place for; design/DEVIATIONS.md: \"File: As served link\")" };
 const BODY: Mask = { x: 224, y: 160, width: 1216, height: 740, why: "File viewer and diff (read-only); File: Diff and large files; File: view; the panels" };
-const CHROME_ONLY: Mask = { x: 224, y: 44, width: 1216, height: 856, why: "the page under the top bar: a banner above the title moves it (the banner's own layout is compared on the frame by a person); File: Diff and large files; File: view" };
 const LAYOUT = [FACTS, EDIT, AS_SERVED, BODY];
 // Where the actions sit depends on whether the facts row and the actions fit on one line: the design's row is a few pixels wider than the
 // app's, so for a file whose facts are long the design wraps the actions under it and the app keeps them beside the title.
@@ -89,7 +96,7 @@ const cases: FrameCase[] = [
     masks: LAYOUT,
   },
   { name: "large file", board: BOARD, ids: ["1l"], scenario: "design-file-large", path: file("security%2Fsecurity-roles.yml"), masks: [CHROME_ONLY] },
-  { name: "binary file, image comparison", board: BOARD, ids: ["1m"], scenario: "design-file-binary", path: file("document-service%2Fresources%2Freceipt-logo.jpeg", "&tab=diff"), masks: [CHROME_ONLY] },
+  FRAME_1M,
   { name: "denied file, content withheld", board: BOARD, ids: ["1n"], scenario: "design-file-denied", path: file("security%2Fkeystore.jks"), masks: [CHROME_ONLY] },
   { name: "Docs for this file panel", board: BOARD, ids: ["1o"], scenario: "design-file-core", path: file(CORE, "&panel=docs"), masks: LAYOUT },
   {

@@ -163,3 +163,53 @@ describe("a tier-1 comparison that goes over its limit says where", () => {
     for (const name of ["design", "app", "diff"]) expect(pieces, `elements.ts attaches ${name}`).toContain(`attach("${name}"`);
   });
 });
+
+// The bootstrap job's first run failed two tier-1 comparisons by a hair (File View 1m, 0.558% against 0.5%; the meter "High" of File 1j, 7
+// to 8 of 1,134 pixels). The runner draws text with sub-pixel (LCD) anti-aliasing, its font configuration asks for it, and the sandbox does
+// not; with `FONTCONFIG_FILE` pointing at a configuration that sets `rgba=rgb` the sandbox's Chromium gives 1,422 pixels for frame 1m (the
+// runner: 1,423) and 7 for the meter. Neither was a tolerance to loosen: the frame's breadcrumb is a different text in the app and in the
+// design, and the pieces' stage drew the app's text grey and the design's LCD. These read the sources so that the three things that fix
+// them stay: the limits, the breadcrumb mask and the stage.
+describe("the two tier-1 comparisons that the runner's text anti-aliasing failed", () => {
+  const read = (file) => readFileSync(new URL(file, web), "utf8");
+
+  it("keep the plan's limits: 0.2 per pixel and 0.5% of the pixels, in the frames' comparison and in the pieces'", () => {
+    for (const file of ["e2e/visual/access/lib/compare.ts", "e2e/visual/attribution/elements.ts"]) {
+      const text = read(file);
+      expect(text, `${file} limit`).toMatch(/export const MAX_RATIO = 0\.005;/);
+      expect(text, `${file} threshold`).toMatch(/export const THRESHOLD = 0\.2;/);
+    }
+    expect(read("e2e/visual/file/view.spec.ts"), "frame 1m has no ratio of its own").not.toMatch(/maxRatio|overrideReason/);
+  });
+
+  it("mask the breadcrumb of frame 1m, a rectangle inside the top bar, and say which row of DEVIATIONS.md it is", () => {
+    const masks = read("e2e/visual/file/masks.ts");
+    const rect = /export const BREADCRUMB: Mask = \{ x: (\d+), y: (\d+), width: (\d+), height: (\d+), why: "((?:[^"\\]|\\.)*)" \};/.exec(masks);
+    expect(rect, "BREADCRUMB is a fixed rectangle with a reason").not.toBeNull();
+    const [x, y, width, height] = [rect?.[1], rect?.[2], rect?.[3], rect?.[4]].map(Number);
+    // The top bar is 44 px high and starts at the sidebar's edge (x 224); the switcher starts at x 864.
+    expect(x).toBeGreaterThanOrEqual(224);
+    expect(y + height).toBeLessThanOrEqual(44);
+    expect(x + width).toBeLessThanOrEqual(864);
+    expect(height, "the breadcrumb is 19 px high at most, a margin of 3 px on each side").toBeLessThanOrEqual(25);
+    const why = (rect?.[5] ?? "").replace(/\\"/g, '"');
+    const row = "Header: switcher and breadcrumb off a swimlane's own pages";
+    expect(why).toContain(`design/DEVIATIONS.md: "${row}"`);
+    expect(readFileSync(new URL("design/DEVIATIONS.md", root), "utf8")).toContain(`| ${row} |`);
+    const frame = read("e2e/visual/file/frame-1m.ts");
+    expect(frame).toMatch(/masks: \[CHROME_ONLY, BREADCRUMB\],/);
+    expect(read("e2e/visual/file/view.spec.ts"), "the frame is read from its module").toContain("FRAME_1M,");
+  });
+
+  it("draw the stage of the pieces on a layer that never has LCD text, on both sides, so that the text does not depend on the machine", () => {
+    const stage = read("e2e/visual/attribution/stage.ts");
+    const stages = stage.match(/Object\.assign\(stage\.style, \{[^\n]*\}\);/g) ?? [];
+    expect(stages.length, "the design's stage and the app's").toBe(2);
+    for (const one of stages) expect(one).toContain('willChange: "transform"');
+    const spec = read("e2e/visual/attribution/stage.spec.ts");
+    expect(spec, "a browser whose font configuration asks for LCD text").toMatch(/FONTCONFIG_FILE/);
+    expect(spec).toMatch(/rgba[^\n]*rgb/);
+    expect(spec, "the same bytes, not a margin").toContain("a.equals(b)");
+    expect(spec, "in CI a browser that cannot tell the renderings apart is a failure, not a skip").toMatch(/if \(IN_CI\) throw new Error\("the browser with the LCD font configuration drew grey text/);
+  });
+});
