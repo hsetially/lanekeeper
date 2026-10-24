@@ -1,0 +1,4 @@
+id: 41
+event: file_observed
+data: {"type":"file_observed","swimlane":"sit1","path":"core/core-sit1.yml","hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","source":"scan"}
+

@@ -1,0 +1,103 @@
+// Imports the app must not make. Flat-config objects, consumed by eslint.config.js (and lint/syntax-config.mjs).
+
+// Radix Select and ScrollArea render a <style> whose content is set through innerHTML, and sonner injects a
+// <style> too. Under Trusted Types and a nonce-only style-src (S12) they throw or are blocked. radix-ui's umbrella
+// package installs them, so they are banned by name; use NativeSelect, native scrolling and the app's own toaster.
+const BLOCKED_STYLE_INJECTORS = [
+  { name: "sonner", message: "sonner injects a <style> element at runtime, which the CSP refuses (S12). Use the app's own toaster." },
+  { name: "@radix-ui/react-select", message: "Radix Select injects a <style> built with innerHTML (S12). Use NativeSelect, or Popover plus Command." },
+  { name: "@radix-ui/react-scroll-area", message: "Radix ScrollArea injects a <style> built with innerHTML (S12). Use native overflow scrolling." },
+  {
+    name: "radix-ui",
+    importNames: ["Select", "ScrollArea"],
+    message: "Radix Select and ScrollArea inject a <style> built with innerHTML (S12). Use NativeSelect and native scrolling.",
+  },
+];
+
+// Server data lives in ONE place, the QueryClient (src/lib/query), and the only other state is the non-server prefs of
+// src/lib/prefs. A second store (Redux, Zustand, Jotai, Valtio, Recoil, MobX) is a second copy of what the server said, which
+// the live events can no longer find, so none of them may be imported (and src/lib/query/server-state.test.ts fails when one
+// is a dependency).
+const STATE_LIBRARIES = ["zustand", "redux", "@reduxjs/toolkit", "react-redux", "redux-thunk", "jotai", "valtio", "recoil", "mobx", "mobx-react", "mobx-react-lite", "nanostores", "@nanostores/react", "@preact/signals-react", "unstated-next"];
+const STATE_MESSAGE = "Server data is kept in the QueryClient and nowhere else. A client-state library is a second store of what the server said, which live updates cannot refresh; use a query (src/features/<domain>/queries.ts), React state for a view's own state, or src/lib/prefs.";
+const STATE_PATTERN = { group: STATE_LIBRARIES.flatMap((name) => [name, `${name}/*`]), message: STATE_MESSAGE };
+
+// TanStack Router's `lazyRouteComponent` reloads the whole page, once, when a chunk is missing, and keeps its "reloaded already"
+// flag in sessionStorage. A reload throws away an unsaved edit, and the app keeps web storage to lib/prefs. src/lib/deploy/lazy-page.ts
+// is the replacement: the same `.preload()`, and a missing chunk is an error the router shows as "A new version is available".
+const BLOCKED_LAZY = [
+  {
+    name: "@tanstack/react-router",
+    importNames: ["lazyRouteComponent"],
+    message: "lazyRouteComponent reloads the page by itself when a chunk is missing, losing unsaved work. Use lazyPage from @/lib/deploy/lazy-page.",
+  },
+];
+
+// Test and mock tooling that must never reach the production bundle (P10: the initial JavaScript is under 250 KB).
+const TEST_ONLY_PATHS = [
+  { name: "msw", message: "msw is for tests, mocks and the e2e harness; it must not be in the bundle." },
+  { name: "@faker-js/faker", message: "faker is for mocks; it must not be in the bundle." },
+];
+const TEST_ONLY_PATTERNS = [{ group: ["@/mocks", "@/mocks/*", "**/generated/endpoints/**/*.msw"], message: "Mocks are for tests and the e2e harness; they must not be in the bundle." }];
+
+const HANDOFF_PATTERN = {
+  group: ["@/handoff", "@/handoff/*", "**/handoff/*.generated"],
+  message: "src/handoff is test and tooling data from the design handoff; product code must not import it.",
+};
+
+// Monaco is lazy and lives behind src/editor (T2 loads it on the file and diff routes only). One import elsewhere would put
+// 4 MB into the initial chunk.
+const MONACO_PATHS = [{ name: "monaco-editor", message: "Only src/editor imports monaco-editor, behind the lazy loader (P10)." }];
+const MONACO_PATTERNS = [{ group: ["monaco-editor/*"], message: "Only src/editor imports monaco-editor, behind the lazy loader (P10)." }];
+
+// Only the one HTML sink and the editor may reach the Trusted Types policies.
+const POLICY_PATTERN = {
+  group: ["@/lib/csp/trusted-types", "**/csp/trusted-types"],
+  message: "Only components/app/SanitisedDocHtml.tsx and src/editor use the Trusted Types policies (S12).",
+};
+
+// The copy button of a one-time secret and the read-only field that shows one (src/components/app/secret) are for the displays of
+// a secret that is shown ONCE, and for nothing else. A copy button elsewhere is the generic CopyButton, which refuses a secret.
+// SECRET_DISPLAYS is the whole list; adding to it is a security review item (docs/threat-model.md, "Copying a one-time secret"),
+// and src/components/app/secret/secret-imports.test.ts reads the same list from the source tree.
+export const SECRET_DISPLAYS = ["src/components/app/PersonalTokens.tsx", "src/features/admin/swimlanes/JoinTokenCard.tsx"];
+const SECRET_PATTERN = {
+  group: ["@/components/app/secret", "@/components/app/secret/*", "**/secret", "**/secret/*", "**/secret/SecretCopyButton", "**/secret/SecretField"],
+  message: "SecretCopyButton and SecretField are for the one-time secret displays only (PersonalTokens, JoinTokenCard). Copy anything else with CopyButton, which refuses a secret.",
+};
+
+const rule = ({ paths = [], patterns = [] }) => ["error", { paths: [...BLOCKED_STYLE_INJECTORS, ...BLOCKED_LAZY, ...paths], patterns: [STATE_PATTERN, ...patterns] }];
+
+const TESTS = ["src/**/*.test.{ts,tsx}", "src/handoff/**", "src/test/**"];
+
+export const restrictedImports = [
+  {
+    // Everything under src, tests included.
+    files: ["src/**/*.{ts,tsx}"],
+    rules: { "no-restricted-imports": rule({}) },
+  },
+  {
+    // Product code.
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: [...TESTS, "src/mocks/**"],
+    rules: { "no-restricted-imports": rule({ paths: [...TEST_ONLY_PATHS, ...MONACO_PATHS], patterns: [HANDOFF_PATTERN, ...TEST_ONLY_PATTERNS, ...MONACO_PATTERNS, POLICY_PATTERN, SECRET_PATTERN] }) },
+  },
+  {
+    // The displays of a one-time secret, and the secret folder itself: product code again, with the secret components allowed.
+    files: [...SECRET_DISPLAYS, "src/components/app/secret/**/*.{ts,tsx}"],
+    ignores: TESTS,
+    rules: { "no-restricted-imports": rule({ paths: [...TEST_ONLY_PATHS, ...MONACO_PATHS], patterns: [HANDOFF_PATTERN, ...TEST_ONLY_PATTERNS, ...MONACO_PATTERNS, POLICY_PATTERN] }) },
+  },
+  {
+    // The one HTML sink and the Trusted Types module's own folder may use the policies.
+    files: ["src/components/app/SanitisedDocHtml.tsx", "src/lib/csp/**/*.ts"],
+    ignores: TESTS,
+    rules: { "no-restricted-imports": rule({ paths: [...TEST_ONLY_PATHS, ...MONACO_PATHS], patterns: [HANDOFF_PATTERN, ...TEST_ONLY_PATTERNS, ...MONACO_PATTERNS] }) },
+  },
+  {
+    // The editor may import Monaco and the policies.
+    files: ["src/editor/**/*.{ts,tsx}"],
+    ignores: TESTS,
+    rules: { "no-restricted-imports": rule({ paths: TEST_ONLY_PATHS, patterns: [HANDOFF_PATTERN, ...TEST_ONLY_PATTERNS] }) },
+  },
+];

@@ -1,0 +1,43 @@
+import type { ReactNode } from "react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { X } from "@/icons";
+import { cn } from "@/lib/utils";
+
+type BannerProps = {
+  variant: "info" | "success" | "warning" | "danger" | "locked";
+  title: string;
+  /** Buttons or links on the right. */
+  action?: ReactNode;
+  /** Replaces the icon of the variant (the paused banner's wifi-off). Decorative: the title says it. */
+  icon?: ReactNode;
+  /** Only a success banner can be dismissed: a warning or an error stays until the cause is gone. */
+  onDismiss?: () => void;
+  children?: ReactNode;
+  className?: string;
+};
+
+/** A full-width Alert: NFS ahead, PR open, Pending approval, Conflict, Saved (restart needed), Offline, Locked. */
+export function Banner({ variant, title, action, icon, onDismiss, children, className }: BannerProps) {
+  return (
+    <Alert variant={variant} {...(icon === undefined ? {} : { icon })} className={cn("items-center rounded-none border-x-0 px-4", className)}>
+      {/* The Alert lays its children out in a column, so the words, the action and the dismiss button are ONE child of it, a row: the
+          design's banner is a single line with its button at the right (a column put the button under the words). */}
+      {/* The row wraps: in a pane of 360 px (the Services tab at 1024 wide) a long button and the words do not both fit in a line, and the
+          words, which can shrink to nothing, were drawn under the button. They keep a width (a line's worth, or all of the row if it is
+          narrower), and the button is what drops to the next line, at the right. */}
+      <div data-slot="banner-row" className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1.5">
+        <div className="flex min-w-[min(100%,14rem)] flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+          <AlertTitle>{title}</AlertTitle>
+          {children ? <AlertDescription className="min-w-0 flex-1">{children}</AlertDescription> : null}
+        </div>
+        {action ? <div className="ml-auto flex shrink-0 items-center gap-2">{action}</div> : null}
+        {variant === "success" && onDismiss ? (
+          <Button variant="ghost" size="icon-sm" aria-label="Dismiss" onClick={onDismiss} className="text-success-fg">
+            <X />
+          </Button>
+        ) : null}
+      </div>
+    </Alert>
+  );
+}

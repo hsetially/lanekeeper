@@ -613,6 +613,11 @@ fn only_budgets_with_a_harness_are_registered() {
         "P9.get_docs_for_file",
         "P9.get_feature_status",
         "P9.get_served_config",
+        "P10.initial_js_gzip_kb",
+        "P10.route_change_ms",
+        "P10.diff_6000_lines_ms",
+        "P10.grid_5000_rows_fps",
+        "P10.lighthouse_perf",
     ];
     let reg = registry();
     let registered: BTreeSet<&str> = reg
