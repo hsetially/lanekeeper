@@ -15,7 +15,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Browser, Page } from "@playwright/test";
 import { FRAMES } from "../../../src/handoff/boards.generated.ts";
+import { expect, test } from "../../fixtures/test";
 import { compareImages } from "../compare.mjs";
+import { elementProbe, reportDifference } from "../diff-report.mjs";
 import { FROZEN_NOW, reactUmd, startReferenceServer } from "../render-references.mjs";
 
 export type Box = { x: number; y: number; width: number; height: number };
@@ -93,15 +95,23 @@ export function clipOf(box: Box): Box {
   return { x, y, width: Math.round(box.x + box.width) - x, height: Math.round(box.y + box.height) - y };
 }
 
+/** Where each photograph of the app was taken (its page and its clip), to ask the page what is under a point of it when a piece differs. */
+const taken = new WeakMap<Buffer, { page: Page; clip: Box }>();
+
 /** Photograph the boxes of the app's pieces, by name. `pick` runs in the app's page and returns the boxes in the window's coordinates. */
 export async function appPieces(page: Page, pick: (page: Page) => Promise<Record<string, Box>>): Promise<Map<string, Buffer>> {
   const boxes = await pick(page);
   const out = new Map<string, Buffer>();
-  for (const [name, box] of Object.entries(boxes)) out.set(name, await page.screenshot({ clip: clipOf(box), animations: "disabled", caret: "hide" }));
+  for (const [name, box] of Object.entries(boxes)) {
+    const clip = clipOf(box);
+    const shot = await page.screenshot({ clip, animations: "disabled", caret: "hide" });
+    taken.set(shot, { page, clip });
+    out.set(name, shot);
+  }
   return out;
 }
 
-export type Piece = { name: string; ratio: number; diff: number; width: number; height: number } | { name: string; error: string };
+export type Piece = { name: string; ratio: number; diff: number; width: number; height: number; diffPng: string } | { name: string; error: string };
 
 /** LK_VISUAL_OUT=<dir> keeps the design's photograph, the app's and the difference of every piece there, to look at (as e2e/visual/search/kit.ts does for a frame). */
 const OUT = process.env["LK_VISUAL_OUT"];
@@ -118,7 +128,7 @@ export async function comparePieces(page: Page, design: Map<string, Buffer>, app
     }
     try {
       const result = await compareImages(page, a, b, { threshold: THRESHOLD });
-      out.push({ name, ratio: result.ratio, diff: result.diff, width: result.width, height: result.height });
+      out.push({ name, ratio: result.ratio, diff: result.diff, width: result.width, height: result.height, diffPng: result.diffPng });
       keep(group, name, a, b, Buffer.from(result.diffPng.split(",")[1] ?? "", "base64"));
     } catch (error) {
       keep(group, name, a, b, undefined);
@@ -136,4 +146,48 @@ function keep(group: string, name: string, design: Buffer, app: Buffer, diff: Bu
   writeFileSync(join(dir, `${base}-design.png`), design);
   writeFileSync(join(dir, `${base}-app.png`), app);
   if (diff) writeFileSync(join(dir, `${base}-diff.png`), diff);
+}
+
+/** What `expectSamePiece` needs besides the piece: the page that decodes pictures, the photographs of both sides, and the name of the group. */
+export type PieceContext = { scratch: Page; design: Map<string, Buffer>; app: Map<string, Buffer>; group: string };
+
+/**
+ * A piece that the design and the app draw the same way (a piece that a row of design/DEVIATIONS.md says differs is not checked with this):
+ * the same size, and at most MAX_RATIO of its pixels differ. When it is over the limit the failure says WHERE the pixels differ
+ * (e2e/visual/diff-report.mjs, also to the console) and attaches the design's photograph, the app's and the difference, which is what
+ * the bootstrap job keeps of a failed run. The design's page is closed once its pieces are photographed, so only the app is asked
+ * what is under each cluster (the piece's own copy on the stage, in the page that is still open).
+ */
+export async function expectSamePiece(piece: Piece, ctx: PieceContext): Promise<void> {
+  if ("error" in piece) {
+    expect.soft(piece.error, `${piece.name}: the design and the app do not draw this piece at the same size`).toBe("");
+    return;
+  }
+  let where = "";
+  if (piece.ratio > MAX_RATIO) where = await wherePieceDiffers(piece, ctx);
+  expect.soft(piece.ratio, `${piece.name}: share of the pixels that differ at threshold 0.2 (${piece.diff} of ${piece.width * piece.height})${where}`).toBeLessThanOrEqual(MAX_RATIO);
+}
+
+async function wherePieceDiffers(piece: Extract<Piece, { ratio: number }>, ctx: PieceContext): Promise<string> {
+  const design = ctx.design.get(piece.name);
+  const app = ctx.app.get(piece.name);
+  if (design === undefined || app === undefined) return "";
+  await test.info().attach("design", { body: design, contentType: "image/png" });
+  await test.info().attach("app", { body: app, contentType: "image/png" });
+  await test.info().attach("diff", { body: Buffer.from(piece.diffPng.split(",")[1] ?? "", "base64"), contentType: "image/png" });
+  const origin = taken.get(app);
+  const text = await reportDifference(
+    ctx.scratch,
+    { reference: design, app, diffPng: piece.diffPng },
+    {
+      label: `${ctx.group}, piece "${piece.name}"`,
+      ratio: piece.ratio,
+      limit: MAX_RATIO,
+      differing: piece.diff,
+      compared: piece.width * piece.height,
+      notes: ["design page: not queried (it is closed once its pieces are photographed). x and y are the piece's own; an element's box is where its copy sits on the stage"],
+      ...(origin ? { probes: { app: elementProbe(origin.page, { x: origin.clip.x, y: origin.clip.y }) } } : {}),
+    },
+  );
+  return `\n${text}`;
 }

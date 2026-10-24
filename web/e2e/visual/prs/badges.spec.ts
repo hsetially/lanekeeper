@@ -10,7 +10,7 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "../../fixtures/test";
 import { collapse } from "../access/lib/parity";
-import { MAX_RATIO, appPieces, comparePieces, designPieces, umd, type DesignPick } from "../attribution/elements";
+import { appPieces, comparePieces, designPieces, expectSamePiece, umd, type DesignPick } from "../attribution/elements";
 import { openApp, type FrameDef } from "../search/kit";
 
 const IN_CI = Boolean(process.env["CI"]);
@@ -161,10 +161,7 @@ test("tier 1 · Consequence Dialogs 1l: the badges \"PR #418 open\" and \"Fix me
   try {
     const compared = await comparePieces(scratch, design, app, ["badge open", "badge merged"], "Consequence Dialogs 1l badges");
     test.info().annotations.push({ type: "pieces", description: JSON.stringify(compared.map((c) => ("error" in c ? { name: c.name, error: c.error } : { name: c.name, ratio: Number((c.ratio * 100).toFixed(3)), size: `${c.width}x${c.height}` }))) });
-    for (const piece of compared) {
-      if ("error" in piece) expect.soft(piece.error, `${piece.name}: the design and the app do not draw this badge at the same size`).toBe("");
-      else expect.soft(piece.ratio, `${piece.name}: share of the pixels that differ at threshold 0.2 (${piece.diff} of ${piece.width * piece.height})`).toBeLessThanOrEqual(MAX_RATIO);
-    }
+    for (const piece of compared) await expectSamePiece(piece, { scratch, design, app, group: "Consequence Dialogs 1l badges" });
   } finally {
     await scratch.close();
   }

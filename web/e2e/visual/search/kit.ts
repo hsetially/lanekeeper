@@ -32,6 +32,7 @@ import { baselineIsNotRun } from "../baseline-rule.mjs";
 import { expect, test } from "../../fixtures/test";
 import type { Harness } from "../../harness/serve.ts";
 import { compareImages } from "../compare.mjs";
+import { elementProbe, reportDifference } from "../diff-report.mjs";
 import { FROZEN_NOW, openReference, reactUmd, startReferenceServer } from "../render-references.mjs";
 
 export type Rect = { x: number; y: number; width: number; height: number };
@@ -369,7 +370,15 @@ export function registerFrames(area: string, defs: readonly FrameDef[]): void {
             appendFileSync(join(OUT, "ratios.jsonl"), `${JSON.stringify({ area, board: def.board, frame: def.frame, theme, ratio, diff: result.diff, compared: share, limit })}\n`);
           }
           test.info().annotations.push({ type: "ratio", description: JSON.stringify({ ratio, compared: share, limit, ...(def.overrideReason ? { override: def.overrideReason } : {}) }) });
-          expect(ratio, `${def.board} ${def.frame}: share of pixels that differ at threshold ${THRESHOLD} (${(share * 100).toFixed(1)}% of the frame compared)`).toBeLessThanOrEqual(limit);
+          let where = "";
+          if (ratio > limit) {
+            // Both pages are open: the reference's, which the comparison was made with, and the app's. Where the pixels differ, to the log and into the message.
+            await test.info().attach("reference", { body: refMasked, contentType: "image/png" });
+            await test.info().attach("app", { body: appMasked, contentType: "image/png" });
+            await test.info().attach("diff", { body: Buffer.from(result.diffPng.split(",")[1] ?? "", "base64"), contentType: "image/png" });
+            where = `\n${await reportDifference(ref, { reference: refMasked, app: appMasked, diffPng: result.diffPng }, { label: `${def.board} ${def.frame} (${theme})`, ratio, limit, differing: result.diff, compared: Math.round(compared), probes: { app: elementProbe(page), design: elementProbe(ref) } })}`;
+          }
+          expect(ratio, `${def.board} ${def.frame}: share of pixels that differ at threshold ${THRESHOLD} (${(share * 100).toFixed(1)}% of the frame compared)${where}`).toBeLessThanOrEqual(limit);
         } finally {
           await context.close();
         }

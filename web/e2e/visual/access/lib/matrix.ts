@@ -12,12 +12,13 @@
 // Without the React 18 files (`LK_REACT18_DIR`) a tier-1 test is NOT RUN, and in CI (`CI` set) it fails instead: a missing
 // reference is never a pass. A tier-1 test also fails on any CSP or Trusted Types violation of the page it drives.
 import { existsSync } from "node:fs";
-import type { Locator, Page } from "@playwright/test";
+import type { Browser, Locator, Page } from "@playwright/test";
 import { expect, test } from "../../../fixtures/test";
 import { baselineIsNotRun } from "../../baseline-rule.mjs";
 import { LIVE_REGIONS, pin, settle, type Clock, type Prepare, type Viewport } from "./app";
-import { MAX_RATIO, compareFrames, keep, type Aligned, type Mask } from "./compare";
-import { frameOf, reference, referencesAvailable, specimenLines, type Theme } from "./reference";
+import { MAX_RATIO, compareFrames, keep, type Aligned, type Comparison, type Mask } from "./compare";
+import { elementProbe, reportDifference } from "../../diff-report.mjs";
+import { frameOf, probeReference, reference, referencesAvailable, specimenLines, type Theme } from "./reference";
 
 /** A rectangle that is not compared: fixed, or measured in the app once the state is reached. */
 export type MaskSpec = Mask | ((page: Page) => Promise<readonly Mask[]>);
@@ -67,6 +68,35 @@ async function resolveMasks(page: Page, specs: readonly MaskSpec[]): Promise<Mas
   return out;
 }
 
+/**
+ * Where a frame that is over its limit differs (e2e/visual/diff-report.mjs): to the console, which is what a CI log holds, and returned
+ * to go into the failure message. The design's page is not open (the references are pictures), so it is opened again to be asked what is
+ * under each cluster; if that cannot be done the report says so and goes on without it.
+ */
+async function whereItDiffers(args: { scratch: Page; page: Page; browser: Browser; board: string; id: string; label: string; result: Comparison }): Promise<string> {
+  const { scratch, page, browser, board, id, label, result } = args;
+  const notes: string[] = [];
+  let design: ReturnType<typeof elementProbe> | undefined;
+  let close = async (): Promise<void> => {};
+  try {
+    const opened = await probeReference(browser, board, id);
+    design = opened.probe;
+    close = opened.close;
+  } catch (error) {
+    notes.push(`design page: not queried (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`);
+  }
+  try {
+    const text = await reportDifference(
+      scratch,
+      { reference: result.painted.reference, app: result.painted.app, diffPng: result.diffPng },
+      { label, ratio: result.ratio, limit: MAX_RATIO, differing: result.diff, compared: result.considered, notes, probes: { app: elementProbe(page), ...(design ? { design } : {}) } },
+    );
+    return `\n${text}`;
+  } finally {
+    await close();
+  }
+}
+
 export function tier1(cases: readonly FrameCase[]): void {
   for (const c of cases) {
     for (const id of c.ids) {
@@ -98,12 +128,14 @@ export function tier1(cases: readonly FrameCase[]): void {
           const result = await compareFrames(scratch, ref, app, masks, c.aligned ?? []);
           keep(name, ref, app, result, { masks, aligned: c.aligned ?? [] });
           test.info().annotations.push({ type: "ratio", description: JSON.stringify({ frame: id, theme, ratio: Number((result.ratio * 100).toFixed(3)), maskedShare: Number(((result.masked / (result.width * result.height)) * 100).toFixed(1)), aligned: result.aligned, masks: masks.map((m) => m.why) }) });
+          let where = "";
           if (result.ratio > MAX_RATIO) {
             await test.info().attach("reference", { body: ref, contentType: "image/png" });
             await test.info().attach("app", { body: app, contentType: "image/png" });
             await test.info().attach("diff", { body: Buffer.from(result.diffPng.split(",")[1] ?? "", "base64"), contentType: "image/png" });
+            where = await whereItDiffers({ scratch, page, browser, board: c.board, id, label: `frame ${id} (${theme})`, result });
           }
-          expect(result.ratio, `frame ${id} (${theme}): share of the unmasked pixels that differ (${result.masked} of ${result.width * result.height} pixels masked)`).toBeLessThanOrEqual(MAX_RATIO);
+          expect(result.ratio, `frame ${id} (${theme}): share of the unmasked pixels that differ (${result.masked} of ${result.width * result.height} pixels masked)${where}`).toBeLessThanOrEqual(MAX_RATIO);
         } finally {
           await scratch.close();
         }

@@ -7,7 +7,7 @@
 import { expect, test } from "../../fixtures/test";
 import type { Page } from "@playwright/test";
 import { signedInAs } from "../access/lib/steps";
-import { MAX_RATIO, appPieces, comparePieces, designPieces, umd, type DesignPick } from "../attribution/elements";
+import { MAX_RATIO, appPieces, comparePieces, designPieces, expectSamePiece, umd, type DesignPick } from "../attribution/elements";
 import { openApp, registerFrames, type FrameDef } from "../search/kit";
 import { frames, REASON } from "./frames";
 
@@ -112,8 +112,7 @@ test("tier 1 · File View 1f (dark): the revealed value, Hide and the note are t
     for (const piece of compared) {
       const row = DIFFERS[piece.name];
       if (row === undefined) {
-        if ("error" in piece) expect.soft(piece.error, `${piece.name}: the design and the app do not draw this piece at the same size`).toBe("");
-        else expect.soft(piece.ratio, `${piece.name}: share of the pixels that differ at threshold 0.2 (${piece.diff} of ${piece.width * piece.height})`).toBeLessThanOrEqual(MAX_RATIO);
+        await expectSamePiece(piece, { scratch, design, app, group: "File View 1f revealed" });
       } else {
         const differs = "error" in piece || piece.ratio > MAX_RATIO;
         expect.soft(differs, `${piece.name} is now the same as the design's, so the row "${row}" is out of date: compare the piece`).toBe(true);

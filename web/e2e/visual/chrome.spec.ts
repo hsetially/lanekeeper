@@ -17,6 +17,7 @@ import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test";
 import { compareImages } from "./compare.mjs";
+import { elementProbe, reportDifference } from "./diff-report.mjs";
 import { FROZEN_NOW, openReference, reactUmd, startReferenceServer } from "./render-references.mjs";
 
 const VIEWPORT = { width: 1440, height: 900 };
@@ -74,9 +75,18 @@ test.describe("the chrome against the Shell frames", () => {
         const apps = { sidebar: await appShot(page, REGIONS.sidebar), header: await appShot(page, REGIONS.header) };
 
         const ratios: Record<string, number> = {};
+        // Where the pixels of a region that is over its limit differ (e2e/visual/diff-report.mjs): the reference's page and the app's are both open.
+        const where: Record<string, string> = {};
         for (const name of ["sidebar", "header"] as const) {
           const result = await compareImages(ref, references[name], apps[name], { threshold: THRESHOLD });
           ratios[name] = result.ratio;
+          if (result.ratio > MAX_RATIO) {
+            await test.info().attach("reference", { body: references[name], contentType: "image/png" });
+            await test.info().attach("app", { body: apps[name], contentType: "image/png" });
+            await test.info().attach("diff", { body: Buffer.from(result.diffPng.split(",")[1] ?? "", "base64"), contentType: "image/png" });
+            const corner = { x: REGIONS[name].x, y: REGIONS[name].y };
+            where[name] = `\n${await reportDifference(ref, { reference: references[name], app: apps[name], diffPng: result.diffPng }, { label: `${frame} ${name}`, ratio: result.ratio, limit: MAX_RATIO, differing: result.diff, compared: result.width * result.height, probes: { app: elementProbe(page, corner), design: elementProbe(ref, corner) } })}`;
+          }
           if (OUT) {
             mkdirSync(OUT, { recursive: true });
             writeFileSync(join(OUT, `${frame}-${name}-reference.png`), references[name]);
@@ -86,7 +96,7 @@ test.describe("the chrome against the Shell frames", () => {
         }
         if (OUT) writeFileSync(join(OUT, `${frame}-ratios.json`), JSON.stringify({ frame, theme, threshold: THRESHOLD, max: MAX_RATIO, ratios }, null, 2));
         test.info().annotations.push({ type: "ratio", description: JSON.stringify(ratios) });
-        for (const name of ["sidebar", "header"] as const) expect(ratios[name], `${frame} ${name}: share of pixels that differ`).toBeLessThanOrEqual(MAX_RATIO);
+        for (const name of ["sidebar", "header"] as const) expect(ratios[name], `${frame} ${name}: share of pixels that differ${where[name] ?? ""}`).toBeLessThanOrEqual(MAX_RATIO);
       } finally {
         await context.close();
         await server.close();

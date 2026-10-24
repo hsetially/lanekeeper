@@ -26,7 +26,8 @@ export type Mask = Rect & { why: string };
  */
 export type Aligned = { ref: Rect; app: Rect; why: string };
 
-export type Comparison = { width: number; height: number; diff: number; considered: number; masked: number; ratio: number; diffPng: string; aligned: number };
+/** `painted` are the two pictures as they were compared (the masks painted out of both): what `diffPng`, the picture of the difference, was made from (see e2e/visual/diff-report.mjs). */
+export type Comparison = { width: number; height: number; diff: number; considered: number; masked: number; ratio: number; diffPng: string; aligned: number; painted: { reference: Buffer; app: Buffer } };
 
 /** Paint the rectangles one flat colour, and count the pixels they cover (their union, inside the image). */
 async function paint(page: Page, png: Buffer, rects: readonly Rect[]): Promise<{ png: Buffer; covered: number }> {
@@ -109,7 +110,7 @@ export async function compareFrames(page: Page, reference: Buffer, app: Buffer, 
     diff += part.diff;
     considered += part.width * part.height;
   }
-  return { width: result.width, height: result.height, diff, considered, masked: a.covered, ratio: considered > 0 ? diff / considered : 0, diffPng: result.diffPng, aligned: aligned.length };
+  return { width: result.width, height: result.height, diff, considered, masked: a.covered, ratio: considered > 0 ? diff / considered : 0, diffPng: result.diffPng, aligned: aligned.length, painted: { reference: a.png, app: b.png } };
 }
 
 /** `LK_VISUAL_OUT=<dir>` keeps the reference, the app, the difference and the numbers of each comparison there, to look at. */
@@ -119,6 +120,6 @@ export function keep(name: string, reference: Buffer, app: Buffer, comparison: C
   writeFileSync(join(OUT, `${name}-reference.png`), reference);
   writeFileSync(join(OUT, `${name}-app.png`), app);
   writeFileSync(join(OUT, `${name}-diff.png`), Buffer.from(comparison.diffPng.split(",")[1] ?? "", "base64"));
-  const { diffPng: _diffPng, ...numbers } = comparison;
+  const { diffPng: _diffPng, painted: _painted, ...numbers } = comparison;
   writeFileSync(join(OUT, `${name}-ratio.json`), JSON.stringify({ name, threshold: THRESHOLD, max: MAX_RATIO, ...numbers, ...extra }, null, 2));
 }

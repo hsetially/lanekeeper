@@ -47,7 +47,8 @@ describe("the workflow as a whole", () => {
   it("uploads an artifact from the baseline job only (the other jobs keep their numbers in the log: a wrong pin there would fail a required check before any step ran)", () => {
     for (const [name, job] of Object.entries(jobs)) {
       const uploads = job.steps?.filter((step) => step.uses?.startsWith("actions/upload-artifact@")) ?? [];
-      expect(uploads.length, name).toBe(name === "visual-baselines" ? 1 : 0);
+      // The baseline job has two: the baselines, when the passes went well, and the results of the tests, when they did not.
+      expect(uploads.length, name).toBe(name === "visual-baselines" ? 2 : 0);
     }
   });
 
@@ -389,6 +390,77 @@ describe("the baseline bootstrap on the pull request (label bootstrap-baselines)
     expect(upload.with.name).toBe("visual-baselines");
     expect(upload.with.path).toBe("web/e2e/visual/__baselines__");
     expect(upload.with["if-no-files-found"]).toBe("error");
+    expect(upload.if).toBeUndefined();
     expect(job.steps.indexOf(upload)).toBeLessThan(job.steps.indexOf(commit));
+  });
+});
+
+// The first run of the bootstrap failed its second pass, and because the job stopped there nothing it had measured was kept: no
+// picture of the design, none of the app, none of the difference. The failed run now leaves them (the tests attach them when a
+// comparison is over its limit) in an artifact. Only this job: the shards and `perf` are the gate that a branch protection requires,
+// and a step they do not need is one more thing that can fail them.
+describe("the bootstrap job keeps the pictures of a failed run", () => {
+  const job = jobs["visual-baselines"];
+  const uploads = job.steps.filter((step) => step.uses?.startsWith("actions/upload-artifact@"));
+  const baselines = uploads.find((step) => step.with.name === "visual-baselines");
+  const failed = uploads.find((step) => step.with.name !== "visual-baselines");
+  const secondPass = job.steps.findLastIndex((step) => typeof step.run === "string" && step.run.includes("playwright test --project=chromium e2e/visual"));
+  const commit = stepWith(job, "Commit the baselines");
+
+  it("has a step of its own for it, that runs only when an earlier step failed", () => {
+    expect(failed).toBeDefined();
+    expect(failed.if).toBe("failure()");
+  });
+
+  it("uses the same action, by the same commit SHA, as the upload that already ran on GitHub (a new pin would be unchecked)", () => {
+    expect(failed.uses).toBe(baselines.uses);
+    expect(failed.uses).toMatch(/^actions\/upload-artifact@[0-9a-f]{40}$/);
+  });
+
+  it("uploads Playwright's results folder, which holds the reference, the app and the difference of every comparison that failed", () => {
+    expect(failed.with.path).toBe("web/test-results");
+    // The folder is the one the config writes to, and the specs attach the three pictures when a comparison is over its limit.
+    const config = readFileSync(new URL("web/playwright.config.ts", root), "utf8");
+    expect(config).toMatch(/outputDir: "test-results"/);
+    const attaches = { "web/e2e/visual/access/lib/matrix.ts": ["reference", "app", "diff"], "web/e2e/visual/search/kit.ts": ["reference", "app", "diff"], "web/e2e/visual/attribution/elements.ts": ["design", "app", "diff"] };
+    for (const [file, names] of Object.entries(attaches)) {
+      const source = readFileSync(new URL(file, root), "utf8");
+      for (const name of names) expect(source, `${file} attaches ${name}`).toContain(`attach("${name}"`);
+    }
+  });
+
+  it("keeps it for 7 days, says nothing when there is nothing to keep, and names the artifact after the attempt (a re-run does not collide with the first)", () => {
+    expect(failed.with["retention-days"]).toBe(7);
+    expect(failed.with["if-no-files-found"]).toBe("ignore");
+    expect(failed.with.name).toContain("${{ github.run_attempt }}");
+    expect(failed.with.name).not.toBe("visual-baselines");
+  });
+
+  it("reads no secret and uploads nothing but that folder: no token, no credentials, no .git, no wildcard that reaches outside it", () => {
+    expect(JSON.stringify(failed)).not.toMatch(/secrets\.|github\.token|GITHUB_TOKEN|\.git\b|\.\./);
+    expect(failed.with.path.split("\n").map((line) => line.trim()).filter(Boolean)).toEqual(["web/test-results"]);
+    expect(failed.env).toBeUndefined();
+  });
+
+  it("comes after the second pass and the baselines upload and before the commit, which stays the last step, and hides no failure", () => {
+    expect(job.steps.indexOf(failed)).toBeGreaterThan(secondPass);
+    expect(job.steps.indexOf(failed)).toBeGreaterThan(job.steps.indexOf(baselines));
+    expect(job.steps.indexOf(failed)).toBeLessThan(job.steps.indexOf(commit));
+    expect(job.steps.indexOf(commit)).toBe(job.steps.length - 1);
+    expect(failed["continue-on-error"]).toBeUndefined();
+    // The step that uploads the baselines does not run after a failure: there is nothing to commit then.
+    expect(baselines.if).toBeUndefined();
+  });
+
+  it("has a bound of its own, shorter than the job's", () => {
+    expect(failed["timeout-minutes"]).toBeGreaterThan(0);
+    expect(failed["timeout-minutes"]).toBeLessThan(job["timeout-minutes"]);
+  });
+
+  it("is explained in the header (what it keeps, for how long, and that only this job has it)", () => {
+    const header = text.slice(0, text.indexOf("\nname:"));
+    expect(header).toMatch(/test-results/);
+    expect(header).toMatch(/failed run|a run that failed|fails/);
+    expect(header).toMatch(/7 days/);
   });
 });

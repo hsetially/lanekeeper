@@ -8,7 +8,7 @@ import { test, expect } from "../../fixtures/test";
 import type { Page } from "@playwright/test";
 import { openApp, type FrameDef } from "../search/kit";
 import { attributedDrift, HISTORY } from "./frames";
-import { MAX_RATIO, appPieces, comparePieces, designPieces, umd, type DesignPick } from "./elements";
+import { MAX_RATIO, appPieces, comparePieces, designPieces, expectSamePiece, umd, type DesignPick } from "./elements";
 
 const IN_CI = Boolean(process.env["CI"]);
 const FILE_VIEW = "Lanekeeper File View.dc.html";
@@ -213,8 +213,7 @@ for (const group of groups) {
       for (const piece of compared) {
         const row = group.differs?.[piece.name];
         if (row === undefined) {
-          if ("error" in piece) expect.soft(piece.error, `${piece.name}: the design and the app do not draw this piece at the same size`).toBe("");
-          else expect.soft(piece.ratio, `${piece.name}: share of the pixels that differ at threshold 0.2 (${piece.diff} of ${piece.width * piece.height})`).toBeLessThanOrEqual(MAX_RATIO);
+          await expectSamePiece(piece, { scratch, design, app, group: group.name });
         } else {
           // A documented difference: it has to still be one. A piece that is now the same is a row to delete and a piece to compare.
           const differs = "error" in piece || piece.ratio > MAX_RATIO;

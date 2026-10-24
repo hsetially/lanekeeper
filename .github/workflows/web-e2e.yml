@@ -57,6 +57,12 @@
 #   - The job does not remove the label (that needs pull-requests: write, which it does not ask for): a maintainer removes it, and
 #     adding it again runs the job again.
 #   - A baseline that exists is compared, not replaced. To refresh one, delete its PNG in a commit and add the label again.
+#   - A run that fails keeps what it found. The second pass compares the app with the design and with its own pictures, and when it
+#     fails the job ends before the baselines are uploaded or committed. A step that runs only after a failure uploads Playwright's
+#     results folder (web/test-results) as the artifact `visual-baselines-failed-attempt-N`, for 7 days: for every tier-1 comparison that
+#     went over its limit, the design's picture, the app's and the difference. The log has the same comparison in words: which clusters
+#     of pixels differ, where, by how much, whether a shift of a pixel explains them, and which element is under each (web/e2e/visual/
+#     diff-report.mjs). Only this job has the step; the shards and `perf` are what a branch protection requires and upload nothing.
 #   - web/.gitignore ignores the baselines folder on purpose (nothing reaches a commit by accident), so the job adds the PNGs with
 #     `git add -f`; once they are tracked they are compared like any other file.
 name: web-e2e
@@ -276,6 +282,20 @@ jobs:
           path: web/e2e/visual/__baselines__
           if-no-files-found: error
           retention-days: 14
+      # A failed run only (see the header): the second pass is what fails, and the job ends there, so the pictures that its failed
+      # comparisons attached (the design's, the app's and the difference, in Playwright's results folder) are kept for a person to look at.
+      # This job alone: the shards and `perf` are the gate that a branch protection requires and get no step that they do not need. The
+      # same action, by the same SHA, as the upload above (it has run on GitHub). The folder holds screenshots and the notes
+      # Playwright writes about a failed page (the synthetic pages of the mock API); no token, no environment and no credentials.
+      - name: Keep the results of the failed run
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        timeout-minutes: 5
+        with:
+          name: visual-baselines-failed-attempt-${{ github.run_attempt }}
+          path: web/test-results
+          if-no-files-found: ignore
+          retention-days: 7
       # The label's run only. Adds the .png files that the passes above made and nothing else (a symlink, a report or any other file that
       # a test left there is not staged, and anything else that is staged fails the step), commits them as the Actions bot, and pushes
       # the commit onto the pull request's branch as a fast-forward: if the branch moved since the label was added, the push is

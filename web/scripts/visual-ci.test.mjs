@@ -123,3 +123,43 @@ describe("a baseline that is missing (the app against its own picture)", () => {
     for (const line of ["e2e/visual/__baselines__/", "e2e/**/*-snapshots/", "/dist-*/", "test-results/", "playwright-report/", "e2e/visual/.refs/", "dist-perf/"]) expect(ignore, line).toContain(line);
   });
 });
+
+// The first run of the baseline bootstrap failed two tier-1 comparisons by 0.2 and 0.06 of a percentage point and the log said only how
+// many pixels differ. Every place that turns a comparison with the design into a failure now says where the pixels are (e2e/visual/
+// diff-report.mjs: clusters with their boxes, the colour difference, the shift that would make the two agree, the element under each),
+// in the failure message and in the console, which is what a CI log holds. A place that is added without it fails here.
+describe("a tier-1 comparison that goes over its limit says where", () => {
+  const read = (file) => readFileSync(new URL(file, web), "utf8");
+
+  it("is done by one module, and prints to the console as well as into the message", () => {
+    const report = read("e2e/visual/diff-report.mjs");
+    expect(report).toMatch(/export async function explainDifference/);
+    expect(report).toMatch(/export async function reportDifference/);
+    expect(report).toMatch(/console\.log\(/);
+  });
+
+  it("is used by every place that compares a picture of the app with the design's", () => {
+    for (const file of ["e2e/visual/access/lib/matrix.ts", "e2e/visual/search/kit.ts", "e2e/visual/chrome.spec.ts", "e2e/visual/attribution/elements.ts"]) {
+      const text = read(file);
+      expect(text, `${file} imports the report`).toMatch(/from "[^"]*diff-report\.mjs"/);
+      expect(text, `${file} reports a difference`).toMatch(/reportDifference\(|explainDifference\(/);
+    }
+  });
+
+  it("is used by the three specs of the pieces through the one helper of attribution/elements.ts, and by no copy of the check", () => {
+    for (const file of ["e2e/visual/attribution/elements.spec.ts", "e2e/visual/prs/badges.spec.ts", "e2e/visual/masking/masking.spec.ts"]) {
+      const text = read(file);
+      expect(text, `${file} uses the helper`).toContain("expectSamePiece(");
+      expect(text, `${file} still has its own copy of the check`).not.toContain("share of the pixels that differ at threshold 0.2");
+    }
+  });
+
+  it("attaches the pictures of a comparison that failed, so that the bootstrap job's artifact holds them", () => {
+    for (const file of ["e2e/visual/access/lib/matrix.ts", "e2e/visual/search/kit.ts", "e2e/visual/chrome.spec.ts"]) {
+      const text = read(file);
+      for (const name of ["reference", "app", "diff"]) expect(text, `${file} attaches ${name}`).toContain(`attach("${name}"`);
+    }
+    const pieces = read("e2e/visual/attribution/elements.ts");
+    for (const name of ["design", "app", "diff"]) expect(pieces, `elements.ts attaches ${name}`).toContain(`attach("${name}"`);
+  });
+});

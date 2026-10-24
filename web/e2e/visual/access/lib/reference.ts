@@ -17,8 +17,9 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Browser } from "@playwright/test";
+import type { Browser, BrowserContext, Page } from "@playwright/test";
 import { FRAMES } from "../../../../src/handoff/boards.generated.ts";
+import { elementProbe } from "../../diff-report.mjs";
 import { BACKGROUND, FROZEN_NOW, SCREENS_DIR, reactUmd, startReferenceServer } from "../../render-references.mjs";
 
 export type Theme = "light" | "dark";
@@ -72,6 +73,37 @@ function boardIds(board: string): string[] {
   return FRAMES.filter((f) => f.board === board && !f.dynamic).map((f) => f.id);
 }
 
+/** The first element of the first host under the frame's slot: the board's `.dv-card` (a page) or its `.stage` (a dialog specimen). */
+const frameSelector = (id: string): string => `[id='${id}'] .sc-host > *`;
+
+/** A page of `context` with the board open and every frame of `ids` drawn, normalised as the references are (S0). */
+async function openBoard(context: BrowserContext, server: { origin: string }, board: string, ids: readonly string[]): Promise<Page> {
+  if (!umd.ok) throw new Error(`cannot render a reference: ${umd.reason ?? "no React"}`);
+  const page = await context.newPage();
+  await page.clock.setFixedTime(FROZEN_NOW);
+  await page.addInitScript(
+    ({ react, reactDom }) => {
+      // support.js uses window.React and window.ReactDOM when they are there, and asks unpkg when they are not.
+      (0, eval)(react);
+      (0, eval)(reactDom);
+    },
+    { react: umd.react, reactDom: umd.reactDom },
+  );
+  await page.goto(`${server.origin}/${encodeURIComponent(board)}`);
+  await page.waitForFunction(
+    (selectors) => selectors.every((selector) => {
+      const element = document.querySelector(selector);
+      return element !== null && element.getBoundingClientRect().height > 100;
+    }),
+    ids.map(frameSelector),
+    { timeout: 60_000 },
+  );
+  await page.addStyleTag({ content: "html,body{margin:0!important}button{font:inherit}*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
+  for (const selector of OMITTED) await page.evaluate((sel) => document.querySelectorAll(sel).forEach((el) => el.remove()), selector);
+  await page.evaluate(() => document.fonts.ready);
+  return page;
+}
+
 /** Render every frame of a board, write the PNGs to the cache, and return nothing: the caller reads them back. */
 async function renderBoard(browser: Browser, board: string): Promise<void> {
   if (!umd.ok) throw new Error(`cannot render a reference: ${umd.reason}`);
@@ -79,30 +111,7 @@ async function renderBoard(browser: Browser, board: string): Promise<void> {
   const server = await startReferenceServer();
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 }, timezoneId: "UTC", locale: "en-GB", colorScheme: "light", reducedMotion: "reduce" });
   try {
-    const page = await context.newPage();
-    await page.clock.setFixedTime(FROZEN_NOW);
-    await page.addInitScript(
-      ({ react, reactDom }) => {
-        // support.js uses window.React and window.ReactDOM when they are there, and asks unpkg when they are not.
-        (0, eval)(react);
-        (0, eval)(reactDom);
-      },
-      { react: umd.react, reactDom: umd.reactDom },
-    );
-    await page.goto(`${server.origin}/${encodeURIComponent(board)}`);
-    // The first element of the first host under the frame's slot: the board's `.dv-card` (a page) or its `.stage` (a dialog specimen).
-    const frameSelector = (id: string): string => `[id='${id}'] .sc-host > *`;
-    await page.waitForFunction(
-      (selectors) => selectors.every((selector) => {
-        const element = document.querySelector(selector);
-        return element !== null && element.getBoundingClientRect().height > 100;
-      }),
-      ids.map(frameSelector),
-      { timeout: 60_000 },
-    );
-    await page.addStyleTag({ content: "html,body{margin:0!important}button{font:inherit}*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
-    for (const selector of OMITTED) await page.evaluate((sel) => document.querySelectorAll(sel).forEach((el) => el.remove()), selector);
-    await page.evaluate(() => document.fonts.ready);
+    const page = await openBoard(context, server, board, ids);
     mkdirSync(cacheDir(), { recursive: true });
     for (const id of ids) {
       const frame = frameOf(board, id);
@@ -154,6 +163,31 @@ export async function reference(browser: Browser, board: string, id: string): Pr
 }
 
 const refreshed = new Set<string>();
+
+/**
+ * The design's page of one frame, open, to ask what is at a point of it (e2e/visual/diff-report.mjs): only for the report of a frame that
+ * failed its comparison, because the references are kept as pictures and their page is closed. It opens the board again (a few seconds),
+ * moves the frame to the window's corner as its photograph was taken, and answers for the frame's own pixels. `close` ends it.
+ */
+export async function probeReference(browser: Browser, board: string, id: string): Promise<{ probe: ReturnType<typeof elementProbe>; close: () => Promise<void> }> {
+  const frame = frameOf(board, id);
+  const server = await startReferenceServer();
+  const context = await browser.newContext({ viewport: { width: Math.max(1600, frame.size.w), height: Math.max(1000, frame.size.h) }, timezoneId: "UTC", locale: "en-GB", colorScheme: "light", reducedMotion: "reduce" });
+  const close = async (): Promise<void> => {
+    await context.close();
+    await server.close();
+  };
+  try {
+    const page = await openBoard(context, server, board, boardIds(board));
+    await page.locator(frameSelector(id)).first().evaluate((el) => {
+      el.setAttribute("style", `${el.getAttribute("style") ?? ""};position:fixed!important;left:0!important;top:0!important;margin:0!important;z-index:2147483647!important`);
+    });
+    return { probe: elementProbe(page), close };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
 
 /** The visible text of a frame, one line per line the browser laid out, as it reads in the reference (rendered with the PNG). */
 export async function referenceText(browser: Browser, board: string, id: string): Promise<string> {
