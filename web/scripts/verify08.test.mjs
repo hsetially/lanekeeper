@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -57,6 +58,18 @@ describe("verify-08", () => {
     expect(text.indexOf("pnpm build &&")).toBeLessThan(text.indexOf("playwright test"));
     expect(text).toContain("pnpm build:perf");
     expect(recipe("web-fixture").body).toContain("cargo build --locked -p hub --example web_fixture");
+  });
+
+  it("web-e2e runs the shard that LK_E2E_SHARD names (the workflow's matrix sets it), and every test when it is not set", () => {
+    const body = recipe("web-e2e").body;
+    const expansion = /\$\{LK_E2E_SHARD:\+--shard=\$LK_E2E_SHARD\}/.exec(body)?.[0];
+    expect(expansion, "web-e2e passes ${LK_E2E_SHARD:+--shard=$LK_E2E_SHARD} to playwright").toBeDefined();
+    expect(body.indexOf("playwright test --project=chromium")).toBeLessThan(body.indexOf(expansion));
+    // What `sh` (just runs each line with it) makes of the expansion, set and not set.
+    const expand = (env) => spawnSync("sh", ["-c", `printf '%s' "x ${expansion}"`], { env: { PATH: process.env["PATH"], ...env }, encoding: "utf8" }).stdout;
+    expect(expand({})).toBe("x ");
+    expect(expand({ LK_E2E_SHARD: "" })).toBe("x ");
+    expect(expand({ LK_E2E_SHARD: "3/4" })).toBe("x --shard=3/4");
   });
 
   it("keeps the timing specs out of web-e2e and runs them alone in web-perf", () => {

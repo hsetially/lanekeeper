@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { removeDir } from "./remove-dir.mjs";
 
-// scripts/perf/lighthouse.mjs starts a Chromium for every run and removes its profile folder when the run is over. The runner
+// scripts/perf/chromium-process.mjs (started by lighthouse-run.mjs) starts a Chromium for every run and removes its profile folder when the run is over. The runner
 // kills the browser with SIGKILL, which ends the main process and not the helper processes that it started (zygote, GPU,
 // renderer, network service): they keep writing into the profile until they notice that the main process is gone, so a single
 // `rmSync` can find the folder not empty again (ENOTEMPTY) and throw. The first Lighthouse run of the round-1 review died that
@@ -122,8 +122,8 @@ describe("removeDir on the file system", () => {
   }, 20_000);
 });
 
-describe("lighthouse.mjs", () => {
-  const source = readFileSync(new URL("./lighthouse.mjs", import.meta.url), "utf8");
+describe("chromium-process.mjs (the Chromium of the Lighthouse runs, and its profile)", () => {
+  const source = readFileSync(new URL("./chromium-process.mjs", import.meta.url), "utf8");
 
   it("removes the Chromium profile with removeDir and never with a bare rmSync", () => {
     expect(source).toMatch(/import \{ removeDir \} from "\.\/remove-dir\.mjs"/);
@@ -133,6 +133,8 @@ describe("lighthouse.mjs", () => {
 
   it("does not let a profile that cannot be removed throw away a score that was measured", () => {
     // The removal is the last thing a run does; its failure is reported on stderr and the run goes on.
-    expect(source).toMatch(/catch \([^)]*\) \{[^}]*process\.stderr\.write\(`lighthouse: could not remove/);
+    expect(source).toMatch(/catch \([^)]*\) \{[^}]*report\(`lighthouse: could not remove/);
+    // `report` is stderr unless a test says otherwise.
+    expect(source).toMatch(/report = \(message\) => process\.stderr\.write\(message\)/);
   });
 });

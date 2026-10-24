@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import { baselineIsNotRun } from "../e2e/visual/baseline-rule.mjs";
 
 // The visual tests compare the app with the design as it is RENDERED, by the design's own runtime, which needs React 18.3.1 (the two
@@ -61,9 +62,19 @@ describe("the web-e2e workflow supplies the references", () => {
     expect(workflow).toContain("react-dom.production.min.js");
   });
 
-  it("puts that step before the end-to-end run", () => {
-    expect(workflow.indexOf("LK_REACT18_DIR")).toBeGreaterThan(0);
-    expect(workflow.indexOf("LK_REACT18_DIR")).toBeLessThan(workflow.indexOf("just web-e2e"));
+  it("puts that step before the end-to-end run in every shard (the tests that need the references are in every one of them)", () => {
+    const shard = parse(workflow).jobs["e2e-shard"];
+    const at = (needle) => shard.steps.findIndex((step) => `${step.name ?? ""}\n${step.run ?? ""}`.includes(needle));
+    expect(at("LK_REACT18_DIR")).toBeGreaterThanOrEqual(0);
+    expect(at("LK_REACT18_DIR")).toBeLessThan(at("just web-e2e"));
+    expect(at("just web-e2e")).toBeGreaterThan(0);
+  });
+
+  it("is the same step, word for word, in the shards and in the job that makes the baselines (one copy that drifts is a comparison against the wrong file)", () => {
+    const jobs = parse(workflow).jobs;
+    const react = (job) => job.steps.find((step) => typeof step.run === "string" && step.run.includes("npm pack --silent react@18.3.1"));
+    expect(react(jobs["e2e-shard"])).toBeDefined();
+    expect(react(jobs["e2e-shard"]).run).toBe(react(jobs["visual-baselines"]).run);
   });
 
   it("does not add React 18 to the dependencies of the app (dev-only, never bundled, W30)", () => {

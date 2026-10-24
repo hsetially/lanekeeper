@@ -623,9 +623,11 @@ web-mock scenario="admin": web-fixture
     cd web && pnpm build && node e2e/harness/serve.ts --dist dist --scenario {{scenario}}
 
 # End to end under the production CSP (S12): the app, every overlay and the editor, in a real Chromium. `build:perf` is the
-# test-only build with the extra routes (the overlay and editor pages); it is never the production dist.
+# test-only build with the extra routes (the overlay and editor pages); it is never the production dist. The whole project is
+# about 75 minutes of two workers, so CI runs it as a matrix of Playwright shards (.github/workflows/web-e2e.yml): a shard
+# runs when LK_E2E_SHARD is set to `i/N` (`LK_E2E_SHARD=2/5 just web-e2e`), and every test when it is not.
 web-e2e: web-fixture
-    cd web && pnpm build && pnpm build:perf && pnpm exec playwright test --project=chromium
+    cd web && pnpm build && pnpm build:perf && pnpm exec playwright test --project=chromium ${LK_E2E_SHARD:+--shard=$LK_E2E_SHARD}
 
 # P10 performance gates, measured here and judged by `web-bench-check`: the bundle (the end of `pnpm build`), then, in the
 # `perf` Playwright project with one worker so that nothing else shares the machine, the route change, the 6,000-line diff and

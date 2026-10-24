@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -7,7 +8,11 @@ import { parse } from "yaml";
 //   - the P10 timing budgets are ENFORCED on every pull request (a perf job), not only measured on a developer's machine;
 //   - the baselines of the visual tests can be made on the pull request itself (a label), with the least privilege that allows
 //     and without weakening the rule that a missing baseline fails the run;
-//   - no action is added that nobody has checked (S19), and nothing here reads a secret.
+//   - no action is added that nobody has checked (S19), and nothing here reads a secret;
+//   - the end-to-end run is split across a matrix of shards that each end inside their own timeout (the first run showed that one
+//     job cannot run the whole suite in 40 minutes), and ONE job named `e2e` says if all of them passed, so that the check a
+//     branch protection requires does not change with the number of shards;
+//   - every step that can stall has a bound of its own (the first run's Lighthouse step hung for 38 minutes with nothing logged).
 // What a text can not prove (that the jobs run, and how noisy the runner is) is listed in plans/08-frontend.blockers.md.
 const root = new URL("../../../", import.meta.url);
 const text = readFileSync(new URL(".github/workflows/web-e2e.yml", root), "utf8");
@@ -35,8 +40,22 @@ const KNOWN_ACTIONS = new Set([
 ]);
 
 describe("the workflow as a whole", () => {
-  it("has the jobs: e2e, perf and visual-baselines", () => {
-    expect(Object.keys(jobs)).toEqual(["e2e", "perf", "visual-baselines"]);
+  it("has the jobs: e2e-shard (the matrix), e2e (its verdict), perf and visual-baselines", () => {
+    expect(Object.keys(jobs)).toEqual(["e2e-shard", "e2e", "perf", "visual-baselines"]);
+  });
+
+  it("uploads an artifact from the baseline job only (the other jobs keep their numbers in the log: a wrong pin there would fail a required check before any step ran)", () => {
+    for (const [name, job] of Object.entries(jobs)) {
+      const uploads = job.steps?.filter((step) => step.uses?.startsWith("actions/upload-artifact@")) ?? [];
+      expect(uploads.length, name).toBe(name === "visual-baselines" ? 1 : 0);
+    }
+  });
+
+  it("gives every job a timeout, and every step that runs a long command a timeout of its own that is shorter than the job's", () => {
+    for (const [name, job] of Object.entries(jobs)) {
+      expect(job["timeout-minutes"], `${name} has a timeout`).toBeGreaterThan(0);
+      for (const step of job.steps ?? []) if (step["timeout-minutes"] !== undefined) expect(step["timeout-minutes"], `${name}: ${step.name ?? step.run}`).toBeLessThan(job["timeout-minutes"]);
+    }
   });
 
   it("uses only actions that were already pinned here or in ci.yml, each by a full commit SHA (S19)", () => {
@@ -91,7 +110,7 @@ describe("the perf job (P10 is enforced in CI)", () => {
   const perf = jobs.perf;
 
   it("runs on every pull request and every push to main, and not on a label or by hand", () => {
-    expect(perf.if).toBe(jobs.e2e.if);
+    expect(perf.if).toBe(jobs["e2e-shard"].if);
     expect(perf.if).toContain("github.event_name != 'workflow_dispatch'");
     expect(perf.if).toContain("github.event.action != 'labeled'");
   });
@@ -99,9 +118,20 @@ describe("the perf job (P10 is enforced in CI)", () => {
   it("has a timeout and a runner of its own (timings must not share a machine with the other tests)", () => {
     expect(perf["runs-on"]).toBe("ubuntu-latest");
     expect(perf["timeout-minutes"]).toBeGreaterThanOrEqual(20);
-    expect(perf["timeout-minutes"]).toBeLessThanOrEqual(90);
+    expect(perf["timeout-minutes"]).toBeLessThanOrEqual(45);
     expect(perf.needs).toBeUndefined();
-    expect(jobs.e2e.needs).toBeUndefined();
+    expect(jobs["e2e-shard"].needs).toBeUndefined();
+  });
+
+  it("bounds the measuring step and the judging step on their own, so that a stall ends in minutes with the name of the step and not at the end of the job", () => {
+    // The first run: the specs passed at minute 7, then nothing was logged until the job was cancelled at minute 45.
+    const measure = stepWith(perf, "just web-perf");
+    const judge = stepWith(perf, "just web-bench-check");
+    expect(measure["timeout-minutes"]).toBeGreaterThanOrEqual(25);
+    expect(measure["timeout-minutes"]).toBeLessThanOrEqual(35);
+    expect(judge["timeout-minutes"]).toBeGreaterThanOrEqual(5);
+    expect(judge["timeout-minutes"]).toBeLessThanOrEqual(15);
+    expect(measure["timeout-minutes"] + judge["timeout-minutes"]).toBeLessThan(perf["timeout-minutes"]);
   });
 
   it("measures with `just web-perf` and then judges the five P10 budgets with `just web-bench-check`, in that order, as steps of their own", () => {
@@ -133,6 +163,8 @@ describe("the perf job (P10 is enforced in CI)", () => {
     expect(serialised).not.toMatch(/continue-on-error/);
     expect(serialised).not.toMatch(/\|\| ?true/);
     expect(serialised).not.toMatch(/retry/i);
+    // A timeout is not a retry: it ends the step, and the job fails.
+    expect(serialised).not.toMatch(/\bcontinue-on-error\b/);
     expect(stepWith(perf, "just web-perf").if).toBeUndefined();
     expect(stepWith(perf, "just web-bench-check").if).toBeUndefined();
   });
@@ -142,15 +174,111 @@ describe("the perf job (P10 is enforced in CI)", () => {
   });
 });
 
-describe("the e2e job", () => {
-  it("does not run for a label, and asks for no permission of its own", () => {
-    expect(jobs.e2e.if).toContain("github.event.action != 'labeled'");
-    expect(jobs.e2e.permissions).toBeUndefined();
+describe("the e2e shards (the whole suite does not fit in one job)", () => {
+  const shard = jobs["e2e-shard"];
+  const total = shard.strategy.matrix.shard.length;
+
+  it("run on the same events as perf, not for a label or by hand, and ask for no permission of their own", () => {
+    expect(shard.if).toContain("github.event_name != 'workflow_dispatch'");
+    expect(shard.if).toContain("github.event.action != 'labeled'");
+    expect(shard.permissions).toBeUndefined();
+    expect(shard["runs-on"]).toBe("ubuntu-latest");
+    expect(shard.needs).toBeUndefined();
   });
 
-  it("never makes a baseline: a missing one fails the run (baseline-rule.mjs)", () => {
-    expect(JSON.stringify(jobs.e2e)).not.toContain("LK_UPDATE_BASELINES");
+  it("are a matrix of Playwright shards 1/N to N/N of one N, and a shard that fails does not cancel the others (the failures of all of them are wanted in one run)", () => {
+    expect(total).toBeGreaterThanOrEqual(3);
+    expect(total).toBeLessThanOrEqual(6);
+    expect(shard.strategy.matrix.shard).toEqual(Array.from({ length: total }, (_, i) => `${i + 1}/${total}`));
+    expect(shard.strategy["fail-fast"]).toBe(false);
+    expect(Object.keys(shard.strategy.matrix)).toEqual(["shard"]);
+  });
+
+  it("hand the shard to the recipe through LK_E2E_SHARD, and run the same recipe as before (`just web-e2e`)", () => {
+    expect(shard.env).toEqual({ LK_E2E_SHARD: "${{ matrix.shard }}" });
+    const run = stepWith(shard, "just web-e2e");
+    expect(run.run.trim()).toBe("just web-e2e");
+    // The recipe takes the shard from the environment; a second --shard on the command line would run the wrong tests.
+    expect(commands(shard).join("\n")).not.toContain("--shard");
+    expect(justfile).toMatch(/playwright test --project=chromium \$\{LK_E2E_SHARD:\+--shard=\$LK_E2E_SHARD\}/);
+  });
+
+  it("each have a timeout with room for the set-up and for the longest shard, and a bound on the tests that is shorter than the job's", () => {
+    // Estimated from the cost of a test in each directory (plans/08-frontend.blockers.md, FIX round 1 follow-up: a11y 1.52 s,
+    // layout 1.22 s, visual 1.54 s without baselines, the rest less) and the real cut that Playwright makes for each N
+    // (`playwright test --list --shard=i/N`): the longest shard of the cut, in minutes of two workers. The first run of CI did
+    // 1,706 tests in 34 minutes, which is what these costs give for the same tests. A shard of a number that is not here has not
+    // been measured: add it with its numbers.
+    const longest = { 3: 28, 4: 24, 5: 19.5, 6: 16 };
+    const setup = 6;
+    expect(longest[total], `${total} shards have not been measured`).toBeDefined();
+    const needed = Math.ceil(longest[total] * 1.5) + setup;
+    expect(shard["timeout-minutes"], `${total} shards, the longest ${longest[total]} minutes of tests`).toBeGreaterThanOrEqual(needed);
+    expect(shard["timeout-minutes"]).toBeLessThanOrEqual(60);
+    const tests = stepWith(shard, "just web-e2e");
+    expect(tests["timeout-minutes"]).toBeLessThan(shard["timeout-minutes"]);
+    expect(tests["timeout-minutes"]).toBeGreaterThanOrEqual(Math.ceil(longest[total] * 1.5));
+  });
+
+  it("each build the Rust fixture (rust-cache before the recipe, which builds it) and get React 18 before the tests, like the single job did", () => {
+    expect(indexOfStep(shard, "Swatinem/rust-cache")).toBeGreaterThanOrEqual(0);
+    expect(indexOfStep(shard, "Swatinem/rust-cache")).toBeLessThan(indexOfStep(shard, "just web-e2e"));
+    expect(indexOfStep(shard, "React 18.3.1")).toBeGreaterThan(indexOfStep(shard, "playwright install"));
+    expect(indexOfStep(shard, "React 18.3.1")).toBeLessThan(indexOfStep(shard, "just web-e2e"));
+    expect(indexOfStep(shard, "playwright install")).toBeLessThan(indexOfStep(shard, "just web-e2e"));
+    expect(indexOfStep(shard, "just web-install")).toBeLessThan(indexOfStep(shard, "just web-e2e"));
+    expect(indexOfStep(shard, "just web-gen-check")).toBeLessThan(indexOfStep(shard, "just web-e2e"));
+    expect(stepWith(shard, "taiki-e/install-action").with.tool).toBe("just");
+    expect(commands(shard).join("\n")).toMatch(/playwright install --with-deps chromium/);
+  });
+
+  it("never make a baseline: a missing one fails the run (baseline-rule.mjs), in every shard", () => {
+    expect(JSON.stringify(shard)).not.toContain("LK_UPDATE_BASELINES");
     expect(JSON.stringify(jobs.perf)).not.toContain("LK_UPDATE_BASELINES");
+    expect(JSON.stringify(jobs.e2e)).not.toContain("LK_UPDATE_BASELINES");
+  });
+
+  it("hide no failure", () => {
+    expect(JSON.stringify(shard)).not.toMatch(/continue-on-error|\|\| ?true|retry/i);
+  });
+});
+
+describe("the e2e job (the one check that a branch protection requires)", () => {
+  const verdict = jobs.e2e;
+
+  it("is named e2e, waits for every shard, and runs when they failed (it is how a failure becomes the check) but not when the run was cancelled", () => {
+    expect(verdict.name ?? "e2e").toBe("e2e");
+    expect(verdict.needs).toEqual(["e2e-shard"]);
+    expect(verdict.if).toContain("!cancelled()");
+    expect(verdict.if).toContain("github.event_name != 'workflow_dispatch'");
+    expect(verdict.if).toContain("github.event.action != 'labeled'");
+    expect(verdict.permissions).toBeUndefined();
+  });
+
+  it("fails unless the result of the matrix is success: a failed, a cancelled and a skipped shard all fail it", () => {
+    expect(verdict.steps).toHaveLength(1);
+    const step = verdict.steps[0];
+    expect(step.uses).toBeUndefined();
+    // The result goes through the environment, never into the text of the script.
+    expect(step.env).toEqual({ SHARDS: "${{ needs.e2e-shard.result }}" });
+    expect(step.run).not.toContain("${{");
+    for (const result of ["success", "failure", "cancelled", "skipped"]) {
+      const code = spawnSync("sh", ["-c", step.run], { env: { ...process.env, SHARDS: result } }).status;
+      expect(code, result).toBe(result === "success" ? 0 : 1);
+    }
+  });
+
+  it("is small and quick (it checks out nothing and installs nothing)", () => {
+    expect(verdict["timeout-minutes"]).toBeLessThanOrEqual(5);
+    expect(verdict["runs-on"]).toBe("ubuntu-latest");
+  });
+
+  it("is explained in the header: which checks a branch protection requires, and why", () => {
+    const header = text.slice(0, text.indexOf("\nname:"));
+    expect(header).toMatch(/required check/i);
+    expect(header).toMatch(/`e2e`/);
+    expect(header).toMatch(/`perf`/);
+    expect(header).toMatch(/e2e-shard/);
   });
 });
 
@@ -165,6 +293,16 @@ describe("the baseline bootstrap on the pull request (label bootstrap-baselines)
     expect(job.if).toContain("github.event.label.name == 'bootstrap-baselines'");
     // A fork's pull request never gets it: its code must not run with a write token.
     expect(job.if).toContain("github.event.pull_request.head.repo.full_name == github.repository");
+  });
+
+  it("has a timeout that fits its two passes and the set-up with a margin (24 and 14 minutes measured, 6 of set-up), and a bound on each pass", () => {
+    // The two passes are one job on purpose: the second compares the PNGs that the first made, on the same machine.
+    expect(job["timeout-minutes"]).toBeGreaterThanOrEqual(Math.ceil((24 + 14 + 6) * 1.5));
+    expect(job["timeout-minutes"]).toBeLessThanOrEqual(120);
+    const passes = job.steps.filter((step) => typeof step.run === "string" && step.run.includes("playwright test --project=chromium e2e/visual"));
+    expect(passes[0]["timeout-minutes"]).toBeGreaterThanOrEqual(Math.ceil(24 * 1.5));
+    expect(passes[1]["timeout-minutes"]).toBeGreaterThanOrEqual(Math.ceil(14 * 1.5));
+    for (const pass of passes) expect(pass["timeout-minutes"]).toBeLessThan(job["timeout-minutes"]);
   });
 
   it("holds the only write permission of the workflow, contents: write and nothing else", () => {

@@ -40,10 +40,25 @@ export function chromiumPath(): string {
   throw new Error("no Chromium found: set LK_CHROMIUM, or run `pnpm exec playwright install chromium`");
 }
 
-export function launchArgs(): string[] {
+/**
+ * The flags that the machine needs, for a browser that this code starts itself (Lighthouse, scripts/perf/chromium-process.mjs) or
+ * that Playwright starts with `executablePath` (playwright.config.ts). The sandbox is left ON unless one of three things says
+ * otherwise:
+ *  - the user is root: Chromium refuses to run as root with it on, and the sandbox of a container is the container;
+ *  - `GITHUB_ACTIONS=true`: `ubuntu-latest` is 24.04, where AppArmor does not let an unprivileged user make the namespaces that
+ *    the sandbox needs, and the runner is not root, so a Chromium started with the sandbox exits before it opens a port ("No
+ *    usable sandbox!"; the likely reason the Lighthouse browser of the first run of the perf job exited, which then hung the step). The machine is thrown away after the run, nothing of
+ *    ours that is secret is on it (the workflow reads no secret; only the job that commits baselines holds a token, and it runs
+ *    Playwright, which has the sandbox off in every environment), and the pages are our own build behind the harness;
+ *  - `LK_NO_SANDBOX=1`: someone on a machine with the same restriction asks for it, knowing what it is.
+ * A person who runs the gates on a workstation as an ordinary user keeps the sandbox. Playwright adds `--no-sandbox` itself to
+ * every browser it starts (unless `chromiumSandbox: true`), so it makes no difference to the specs.
+ * @param env defaults to the process's environment
+ * @param uid defaults to the process's user (undefined where there is none, on Windows)
+ */
+export function launchArgs(env: NodeJS.ProcessEnv = process.env, uid: number | undefined = typeof process.getuid === "function" ? process.getuid() : undefined): string[] {
   const args = ["--disable-dev-shm-usage"];
-  // Chromium refuses to run as root without it. The sandbox of CI containers is the container.
-  if (typeof process.getuid === "function" && process.getuid() === 0) args.push("--no-sandbox");
+  if (uid === 0 || env["GITHUB_ACTIONS"] === "true" || env["LK_NO_SANDBOX"] === "1") args.push("--no-sandbox");
   return args;
 }
 
