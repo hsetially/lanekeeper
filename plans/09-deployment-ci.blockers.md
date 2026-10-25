@@ -1,8 +1,8 @@
 # Plan 09 blockers
 
-Status on 2026-10-25, third T1 run (after a human allowed `us.aws.cdn.hf.co` and merged the plan amendment, PR #29):
-**B1, B2 and B3 are all resolved.** T1 is complete; the commit `e2c199d` holds the code and the measurements below were
-taken at it.
+Status on 2026-10-25, T3 run: **B1 to B4 are resolved; B5 is open and stops `just verify-09` (and nothing else of T3).**
+The T1 sections below are from the third T1 run (after a human allowed `us.aws.cdn.hf.co` and merged the plan amendment, PR #29):
+T1 is complete; the commit `e2c199d` holds the code and the measurements were taken at it.
 
 | | State | Resolved by |
 |---|---|---|
@@ -10,6 +10,8 @@ taken at it.
 | B2 | resolved (second run) | `scan.sh` reaches the grype database and names findings by CVE id (below, unchanged) |
 | B3 | resolved | plan amendment A32 (PR #29): the runtime and builders moved to Debian 13; no exception in `grype.yaml` |
 | B4 | resolved (T3 run) | a human allowed `get.helm.sh`; helm 4.3.0 is pinned by the sha256 of a download made here (section B4 below) |
+| B5 | **open** (T3) | `api.github.com/meta` is refused, so GitHub's webhook ranges cannot be written; the gcp chart refuses to render until a person runs one command (section B5, T3 notes below) |
+| B6 | informational (T3) | `docs.cloud.google.com` and `registry.k8s.io` are refused; Google-specific shapes in the hub chart are unverified (T3 notes below) |
 
 ## B1 (T1): resolved. The model lock is filled in, from a download made here
 
@@ -183,3 +185,108 @@ left helm out; T3 is the first task that runs it. A human then allowed `get.helm
 | The `docker-hub-mirror` action (SIGHUP reload of the daemon, restart as the fallback) | changing the sandbox's Docker daemon settings was not appropriate | `docker-hub-mirror.mjs`, which writes the settings, is unit-tested (13 cases); `builder.sh` with `LK_DOCKER_HUB_MIRROR=mirror.gcr.io` starts a BuildKit that accepts the mirror configuration |
 | A full hub or agent build with the pinned BuildKit | not attempted: T1 found that containers on Docker's bridge network have no DNS here, so a container-driver builder would need proxy and CA settings that only this sandbox needs, and the disk had 3 GB free | `builder-test.sh`: the pinned BuildKit v0.34.0 starts, reports its version, and writes one OCI archive for the same files twice with `rewrite-timestamp=true` and two without it (the control); the T1 measurements used the built-in BuildKit of Docker 29.9.2, which is also v0.34.0 |
 | The time of the benchmark and fuzz jobs | they do not run here | each job has a `timeout-minutes` (the structural rule `check-workflows.mjs` enforces); the values are estimates from the number of targets (10 minutes each in `nightly`), not measurements |
+
+
+# T3 notes (2026-10-25)
+
+T3 is built and its checks pass, except those that need GitHub's webhook ranges: **B5 is open.** Everything else the plan's T3
+row lists exists, was run, and is shown below.
+
+## B5 (T3): GitHub's webhook ranges cannot be fetched here, so the gcp chart refuses to render
+
+**The host.** `https://api.github.com/meta`. The egress proxy answers 403 with `This GitHub API path is not available: sessions are
+bound to their configured repositories. Use repository-scoped endpoints (repos/{owner}/{repo}/...)`. That is a rule of this
+sandbox, not a missing allowlist entry for one host: `/meta` is not a repository endpoint. (`docs.github.com` is refused too, but
+the ranges would not be copied from a web page in any case.)
+
+**What it blocks.** `deploy/values/hub/github-hook-ranges.yaml` holds the `hooks` list of `/meta` for the Cloud Armor rule that
+allows GitHub on `/hooks/github` (plan T3, Q28). A range typed in by hand would let a server that is not GitHub's call the webhook
+path, or drop real deliveries, so none was typed in or copied. The file is committed as the **unresolved marker** (an empty
+list and a header that says so), the same way `hub-model.lock` was before B1.
+
+**How it shows.** The gcp chart's template stops with `cloudArmor.githubHookRanges is empty ... Run node
+deploy/tools/github-hook-ranges.mjs --write`, so `deploy/tests/render.sh` fails for the gcp chart with the prod and staging values
+(lint, which Helm runs with `fail` turned off, does not notice), and `just deploy-render`, `policy-check` and `deploy-planted`
+exit non-zero. The hub chart, the policies, the schemas, the tools and every other check are unaffected, and they pass.
+
+**To resolve it** (a person with network access, no code change): `node deploy/tools/github-hook-ranges.mjs --write`, then
+commit `deploy/values/hub/github-hook-ranges.yaml`. The tool validates what it reads (a `hooks` list of at most 64 CIDRs, none
+wider than /16 or /32, so a garbled answer cannot open Cloud Armor) and writes only when all of it passes.
+`nightly.yml` job `hook-ranges` runs `--check` every night and fails when the file differs from GitHub's list.
+
+**Proved without the host.** The tool and its tests use a synthetic `/meta` document (documentation addresses, labelled as such
+in `deploy/tools/testdata/meta.json`): `node --test deploy/tools/*.test.mjs` 30 of 30. The gcp chart, kubeconform and the policies
+were run on a render with six synthetic ranges (swapped in for the run, then restored; `git diff` shows the committed marker): 1 resource
+valid, 112 of 112 policy checks pass, and the three Cloud Armor planted cases (`the default rule allows`, `a hook range for every
+path`, `no users' ranges`) are each refused for their own reason. With the synthetic file in place `just deploy-check` ran to the
+end and only `tools-test` failed, on its check that the committed file is generated output or the unresolved marker, which is
+the check doing its job.
+
+## B6 (T3, informational): documentation hosts and what could not be checked against them
+
+`docs.cloud.google.com` (where `cloud.google.com` redirects) and `registry.k8s.io` are refused. Neither is needed for a pin or a
+check of T3, so this is not a stop. It does mean that Google's own description of these GKE shapes could not be read:
+
+- the Gateway's `tls.options` keys `networking.gke.io/pre-shared-certs` and `/cert-manager-certs`, and `addresses[].type: NamedAddress`
+  (the vendored Gateway API schema allows the type; the options are free-form in the schema);
+- the `cloud.google.com/l4-rbs: "enabled"` annotation of the agent Service;
+- Cloud Armor's limit of five sub-expressions in a custom expression (the chart splits at four ranges plus the path; a larger real
+  limit would only make rules fewer) and the ten ranges of a `SRC_IPS_V1` rule;
+- that the proxies of `gke-l7-global-external-managed` and its health checks come from `35.191.0.0/16` and `130.211.0.0/22`;
+- the schemas of `GCPBackendPolicy`, `HealthCheckPolicy` and `FQDNNetworkPolicy` are the community catalog's (Google publishes no CRD
+  file); they reject unknown fields (checked with planted fields) but may lag the cluster.
+
+They are listed in `deploy/charts/hub/README.md` as "Not verified here". The first apply to a cluster is their test. `registry.k8s.io`
+matters only to a local kind run (T5 runs kind in CI).
+
+## Hosts T3 needed, probed from this sandbox
+
+| Host | Result | Used for |
+|---|---|---|
+| `get.helm.sh` | reachable (a human allowed it) | the helm release file and its checksum (B4) |
+| `raw.githubusercontent.com` | reachable | the schema sources, by commit (`deploy/schemas/fetch.py`) |
+| `github.com` (git over HTTPS) | reachable | `git ls-remote` and shallow fetches, to read tags, commit ids and dates |
+| `docker.io` (registry-1) | reachable | the pinned conftest image |
+| `api.github.com/meta` | **refused** | GitHub's hook ranges: **B5** |
+| `docs.cloud.google.com`, `registry.k8s.io` | refused | documentation, kind: **B6** |
+
+No kind image was needed by T3 (the kind job is T5).
+
+## What T3 proved (committed tree, 2026-10-25)
+
+| Check | Result |
+|---|---|
+| `just ops-tools-check` | exit 0, helm v4.3.0 among the tools |
+| `python3 -B -I -m unittest` (converter) and `node --test deploy/schemas/verify.test.mjs`, `node deploy/schemas/verify.mjs` | 9 of 9, 10 of 10, `schemas: 36 files equal the lock`; `fetch.py --check` fetched all 36 again and they equal the lock |
+| `just policy-test` (`conftest verify`, all namespaces) | 237 of 237: hardening 45, network 95, secrets 22, topology 21, resources 15, images 9, storage 8, dockerfile 22 |
+| Mutation of the policies | every `deny` and `warn` rule of the seven manifest policies (114 rules) was disabled one at a time in a scratch copy and `conftest verify` run on each. Three survived (the empty external host, an external rule without ports, and an empty list of GitHub ranges); each got a planted test, and the 59 `network` mutants were run again: none survived. Earlier hand-picked mutations had also shown `test_deny_gateway_http_listener` passing through other rules; it was rewritten to change only the protocol |
+| `deploy/tests/render.sh` lint, render, policy, hub chart, kind/staging/prod | helm lint clean; kubeconform `-strict`: 6, 13 and 13 resources valid; conftest 112 of 112 (kind: 4 warnings that are its fallbacks) |
+| `deploy/tests/render.sh planted` | 15 template refusals (no digest, short digest, a tag, empty agent ranges, the internet as a range, ...), kubeconform refusing a planted field in each of six kinds and a kind without a schema, and 40 planted changes to the real hub output (one per S16 field, P11, S19, S6/S7, D62, S18, S10) each refused for its own message, plus 3 for Cloud Armor that run only once the ranges exist (B5) |
+| `deploy/tests/env-names.sh` and its self-test | every `LK_*` of the chart and its values is read by `crates/hub/src/config.rs`; a misspelt and a secret-looking name are refused |
+| `node --test deploy/tools/*.test.mjs` | 30 of 30; seven mutations of the tool each fail a test |
+| `cargo test -p hub --test hardening` | 5 of 5, with new planted cases for the CA and credentials `items`, the startup probe and the operations port; two mutations of the new checks each fail the planted test; `cargo fmt --check` and `cargo clippy -p hub --tests -D warnings` clean |
+| `just ci-lint`, `just pins-test` | actionlint, zizmor (offline), the pin check and the workflow rules clean for 9 workflows (the new `deploy.yml` and the nightly `hook-ranges` job included), shellcheck on 14 scripts; 77 of 77 |
+| Helm 4.3.0 against Helm 3.21.4 | the same manifests apart from blank lines, for the hub chart with all three values files, and byte for byte for the gcp chart (synthetic ranges) |
+
+Found while building (fixed): the first Gateway rendered by kubeconform was refused by the vendored Gateway API schema
+(`addresses[0]`): `crd2schema.py` had closed the branches of a `oneOf`, which kubeconform's own converter also does. The converter
+now closes only objects that describe the resource, has a test for it, and only the two Gateway schemas changed.
+
+## Decisions T3 made that a reviewer should look at
+
+1. **Helm 4.3.0, not 3.x.** It is the newest 4.x release at least 14 days old (4.3.1 is 11 days old), and Helm 3 is in its security-only
+   window. Cross-checked against Helm 3.21.4 (above), because ArgoCD may render with Helm 3.
+2. **Kubernetes 1.34.0 schemas.** The GKE channel is not known; `sources.json` has one line to change it.
+3. **Schemas from the projects' own CRD files** (CloudNativePG v1.30.1, Gateway API v1.6.3, Argo CD v3.5.4, Config Connector v1.159.0) at
+   commits at least 14 days old, converted by `crd2schema.py`; only the three GKE policy kinds come from a third party
+   (`datreeio/CRDs-catalog` at a pinned commit). `pod`, `job` and `cronjob` schemas (2 MB) are left out until a chart renders them.
+4. **The hub's mirror volume is a `volumeClaimTemplate`**, as the plan says; HARDENING.md still shows the Pod with a claim, and says so.
+5. **HARDENING.md and `hardening.rs` changed** (Extra-paths of the approved plan): `items` on the two Secret volumes (A9 and the
+   credentials), a startup probe, and ingress on 9090 from Google's two ranges (A10); the web port is admitted from the same two ranges, since
+   Google's proxies are the callers there. Each has planted cases.
+6. **Optional egress, not in HARDENING.md's table:** the OpenTelemetry rule exists only when `config.otlpEndpoint` is set (A30), and the Teams host
+   only when it is named, in an annotation and a pattern (Q9).
+7. **Placeholder digest.** `prod.yaml` and `staging.yaml` carry 64 zeros as the image digest until the first publish (A29). It cannot be
+   pulled, and the images policy warns; it is the only warning that prod and staging tolerate.
+8. **Not done in T3, by the plan:** the hub binary does not serve yet (A1), so `/readyz` cannot pass; `contract.rego` (rendered output
+   against HARDENING.md) is T4's; no threat-model text (T7).
