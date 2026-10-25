@@ -5,29 +5,65 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit",
+    "gen:api": "orval && node scripts/api/gen-roles.mjs",
+    "gen:handoff": "node scripts/handoff/generate.mjs",
+    "check:handoff": "node scripts/handoff/generate.mjs --check",
+    "typecheck": "tsc -b",
+    "build": "tsc -b && vite build && node scripts/dist-check.mjs && node scripts/perf/check-bundle.mjs",
+    "build:perf": "vite build --mode perf && node scripts/dist-check.mjs dist-perf --allow-test-pages",
     "lint": "eslint .",
-    "test": "vitest"
+    "test": "vitest",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@tanstack/react-query": "5.104.0",
+    "@tanstack/react-router": "1.170.41",
+    "@tanstack/react-virtual": "3.14.13",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "cmdk": "1.1.1",
+    "lucide-react": "1.49.0",
+    "monaco-editor": "0.57.0",
+    "radix-ui": "1.6.7",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "react-resizable-panels": "4.14.1",
+    "tailwind-merge": "3.7.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
+    "@faker-js/faker": "10.6.0",
+    "@playwright/test": "1.63.0",
+    "@tailwindcss/node": "4.3.3",
+    "@tailwindcss/vite": "4.3.3",
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.7",
+    "@types/node": "22.20.4",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^4.7.0",
+    "acorn": "8.18.0",
+    "ajv": "8.20.0",
+    "axe-core": "4.13.0",
     "eslint": "^9.39.5",
+    "eslint-plugin-jsx-a11y": "6.10.2",
     "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "jsdom": "29.1.1",
+    "lighthouse": "13.5.0",
+    "msw": "3.0.1",
+    "orval": "8.39.0",
+    "tailwindcss": "4.3.3",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.70.1",
-    "vite": "^6.4.3",
-    "vitest": "^3.2.7"
+    "vite": "^6.4.4",
+    "vitest": "4.1.11",
+    "yaml": "2.9.1"
   },
   "packageManager": "pnpm@10.34.6",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.18"
   }
 }

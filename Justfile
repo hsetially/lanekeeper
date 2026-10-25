@@ -66,7 +66,7 @@ fuzz-smoke: fuzz-tools-check
 # Local dev: Postgres (pgvector + pg_trgm), hub, web
 dev:
     docker compose -f deploy/dev/compose.yaml up -d --wait
-    @echo "hub and web dev servers are added by prompts 03b and 08"
+    @echo "the hub dev server is added by prompt 03b; the web app: 'just web-dev' (Vite with a proxy to a running hub) or 'just web-mock' (the production build behind the hub's headers with mock data)"
 
 dev-down:
     docker compose -f deploy/dev/compose.yaml down
@@ -591,8 +591,85 @@ writes-bench:
     if [ "$found" -ne "$wanted" ]; then echo "writes-bench: found $found of $wanted budgets in perf/budgets.toml"; exit 1; fi
     cargo xtask bench-check --budgets "$tmp/budgets.toml"
 
-verify-08:
-    @echo "verify-08 not implemented yet" && exit 1
+# Prompt 08 (web). The web app is served by the hub itself, so its tests run behind the hub's own header code: `web-fixture`
+# builds the Rust example (crates/hub/examples/web_fixture.rs) that serves web/dist with the production CSP, and the Playwright
+# harness (web/e2e/harness) puts the mock API in front of it. No browser is needed for lint, typecheck or the unit tests.
+web-install:
+    cd web && pnpm install --frozen-lockfile
+
+# The generated API client is committed (the image build copies only web/, so it cannot read ../api). It must be what
+# `pnpm gen:api` writes from api/openapi.yaml now: regenerate and fail if anything under src/api changed or is new.
+web-gen-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd web
+    pnpm gen:api
+    if [ -n "$(git status --porcelain -- src/api)" ]; then
+        echo "web-gen-check: src/api is stale; run 'pnpm gen:api' in web/ and commit the result"
+        git status --porcelain -- src/api | head -20
+        exit 1
+    fi
+
+web-fixture:
+    cargo build --locked -p hub --example web_fixture
+
+# Vite's dev server with the proxy to a running hub (LK_HUB_URL, default http://127.0.0.1:8080). It has no production CSP:
+# CSP checks run in `web-e2e`, behind the hub's header code.
+web-dev:
+    cd web && pnpm dev
+
+# The production build behind the hub's headers with a mock scenario (admin by default): `just web-mock`, then open the URL it prints.
+web-mock scenario="admin": web-fixture
+    cd web && pnpm build && node e2e/harness/serve.ts --dist dist --scenario {{scenario}}
+
+# End to end under the production CSP (S12): the app, every overlay and the editor, in a real Chromium. `build:perf` is the
+# test-only build with the extra routes (the overlay and editor pages); it is never the production dist. The whole project is
+# about 75 minutes of two workers, so CI runs it as a matrix of Playwright shards (.github/workflows/web-e2e.yml): a shard
+# runs when LK_E2E_SHARD is set to `i/N` (`LK_E2E_SHARD=2/5 just web-e2e`), and every test when it is not.
+web-e2e: web-fixture
+    cd web && pnpm build && pnpm build:perf && pnpm exec playwright test --project=chromium ${LK_E2E_SHARD:+--shard=$LK_E2E_SHARD}
+
+# P10 performance gates, measured here and judged by `web-bench-check`: the bundle (the end of `pnpm build`), then, in the
+# `perf` Playwright project with one worker so that nothing else shares the machine, the route change, the 6,000-line diff and
+# the 5,000-row grid, then Lighthouse (web/scripts/perf/lighthouse.mjs, web/lighthouserc.json). Every web result is removed
+# first, so only this run's numbers can pass. The functional specs of the same pages are in `web-e2e` (the `chromium` project).
+# The grid number is the grid's CAPACITY (frames a second with the frame-rate limit off, the same scroll in every frame, the
+# minimum of five runs, floor 60), and the spec ALSO fails when the grid drops more frames than a control list on the same
+# machine in the same run, plus a margin (W20, decided 2026-10-17; web/e2e/perf/grid-5000.spec.ts). It is not the display's rate.
+web-perf: web-fixture
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -f "${CARGO_TARGET_DIR:-target}"/perf-results/web-*.json
+    cd web
+    pnpm build
+    pnpm build:perf
+    pnpm exec playwright test --project=perf --workers=1
+    node scripts/perf/lighthouse.mjs
+
+# The five P10 budgets, judged on their own (the full registry needs every other prompt's benchmarks, see writes-bench).
+# `web/scripts/verify08.test.mjs` fails if this list and the registered `web/` budgets of perf/budgets.toml drift apart.
+web_budgets := "P10.initial_js_gzip_kb P10.route_change_ms P10.diff_6000_lines_ms P10.grid_5000_rows_fps P10.lighthouse_perf"
+web-bench-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    awk -v ids="{{web_budgets}}" 'BEGIN { RS = ""; ORS = "\n\n"; n = split(ids, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 } /^\[\[budget\]\]/ { if (match($0, /\nid = "[^"]+"/)) { id = substr($0, RSTART + 7, RLENGTH - 8); if (id in want) print } }' perf/budgets.toml > "$tmp/budgets.toml"
+    found="$(grep -c '^\[\[budget\]\]' "$tmp/budgets.toml" || true)"
+    wanted="$(wc -w <<< "{{web_budgets}}")"
+    if [ "$found" -ne "$wanted" ]; then echo "web-bench-check: found $found of $wanted budgets in perf/budgets.toml"; exit 1; fi
+    cargo xtask bench-check --budgets "$tmp/budgets.toml"
+
+# Prompt 08 gate: install, the generated client is fresh, lint, typecheck, unit tests, the production build (bundle report and
+# the dist scan), the end-to-end CSP run, the performance gates, then the P10 budgets. Stops at the first failure.
+verify-08: web-install web-gen-check
+    cd web && pnpm lint
+    cd web && pnpm typecheck
+    cd web && pnpm exec vitest run
+    cd web && pnpm build
+    just web-e2e
+    just web-perf
+    just web-bench-check
 verify-09:
     @echo "verify-09 not implemented yet" && exit 1
 verify-11:

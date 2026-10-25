@@ -1,0 +1,17 @@
+# Build and test output. The root .gitignore ignores web/dist and node_modules.
+dist-perf/
+# A build made on the side for a test run (LK_E2E_DIST, LK_DIST): `vite build --outDir dist-<name>`.
+/dist-*/
+# The list of modules of each chunk, written by the build for the bundle gate (scripts/perf/check-bundle.mjs).
+.build-report/
+test-results/
+playwright-report/
+# References rendered from the design handoff for the visual tests (T4); a committed manifest.json beside them records the inputs.
+e2e/visual/.refs/
+*.tsbuildinfo
+# The visual specs' baselines (the app against itself) are made in CI and committed by the `visual-baselines` job of web-e2e.yml with
+# `git add -f`; a PNG from a run on a developer's machine is not a source file and must not reach a commit by accident. A baseline that
+# is already tracked is not affected by this line. Playwright's own default folder (`<spec>.ts-snapshots`) is ignored too, in case a run
+# is made with another config.
+e2e/visual/__baselines__/
+e2e/**/*-snapshots/

@@ -1,0 +1,346 @@
+# The web app under the production CSP (prompt 08, S12) and the P10 performance gates. Actions are pinned by commit SHA (S19). The
+# workflow reads no secret and asks for contents: read; only the job that commits baselines asks for more (see below). The jobs
+# below had not run on GitHub when they were written (the sandbox that wrote them cannot reach it): the first run is their test.
+#
+# e2e-shard and e2e (every pull request that touches web/, and main). The app under the production CSP: the page is served by the
+#   hub's own header code (the Rust example `web_fixture`) with the mock API in front of it (web/e2e/harness), and a real Chromium
+#   drives it: every route, every overlay and the editor, light and dark, failing on any CSP or Trusted Types violation. The visual
+#   tests (08/T4) compare the app with the design's own pages, rendered by the design's runtime in the same browser: that runtime
+#   needs React 18.3.1, which it asks unpkg for. The runner does not depend on unpkg: the same two UMD files come from the npm
+#   registry, checked against pinned integrity values here and against the SRI in the design's support.js by the test (W30). In CI
+#   a missing reference is a failed test, never a skipped one, and so is a missing baseline of the app against itself: a baseline
+#   is never created silently (web/e2e/visual/baseline-rule.mjs), so until the baselines are committed those tests fail here.
+#   THE SHARDS. The project is 3,474 tests and about 75 minutes of two workers, which no job of 40 minutes can run (the first run
+#   was cancelled at its limit with the tests that it had finished passing). So `e2e-shard` is a matrix of five Playwright shards
+#   (`--shard=i/5`, handed to `just web-e2e` as LK_E2E_SHARD), each on a runner of its own that builds its own Rust fixture and gets
+#   its own React 18: Playwright cuts the sorted list of tests into five runs of consecutive tests, which together are all of
+#   them and which share none (checked with `playwright test --list --shard=i/5`). Measured per test (plans/08-frontend.blockers.md,
+#   FIX round 1 follow-up), the a11y shard is the longest, about 19 minutes of tests, and the shortest is about 9, plus 5 to 6
+#   minutes of set-up; the limit of a shard is 40, and its tests have 33. The shards show up as the checks `e2e-shard (1/5)` to
+#   `e2e-shard (5/5)`. THE REQUIRED CHECKS: a branch protection requires `e2e` and `perf`, and not the shards. `e2e` is a job of
+#   its own that waits for every shard and fails unless all of them passed (a shard that failed, was cancelled or was skipped
+#   fails it), so the name of the required check does not change when the number of shards does. (A required check that a
+#   workflow never reports, because the pull request touches none of the paths below, stays pending: that is how required checks
+#   and path filters go together on GitHub, and it was the same with the single job.)
+#
+# perf (the same triggers, on a runner of its own so that nothing else shares the machine). ENFORCES the five P10 budgets of
+#   perf/budgets.toml: the web-perf recipe of the Justfile builds the production bundle (the 250 KB gzip gate is the end of `pnpm build`),
+#   then measures, in the `perf` Playwright project with one worker, the route change, the diff of 6,000 lines and the 5,000-row
+#   grid, then runs Lighthouse (desktop preset, three pages, median of three); the web-bench-check recipe judges the five numbers
+#   with `cargo xtask bench-check`, and a number that is missing is a failure, not a pass. A miss fails the job. Nothing retries
+#   it or hides it (no retry wrapper, no continue-on-error): running a job again after a miss is a person's decision. The thresholds
+#   are the ones registered in perf/budgets.toml and are not touched here. They were measured on a quiet 4-core machine (route
+#   change p95 49 to 63 ms against 100, diff 89 ms against 500, grid capacity 287 fps against 60, Lighthouse 93 against 90;
+#   plans/08-frontend.blockers.md), and a shared GitHub runner is noisier than that: expect the Lighthouse margin (3 points) to be
+#   the first to show it. Read the numbers in the job's log before anything else.
+#   EVERY WAIT IS BOUNDED. The first run printed `3 passed` for the specs and then nothing for 38 minutes, until the job's limit:
+#   the browser of the Lighthouse step had exited before it opened a port (most likely a Chromium started with its sandbox on a
+#   runner that does not allow it), and the clean-up waited for an exit that had already happened. Now the Lighthouse step ends at once with the
+#   exit code and what Chromium printed (web/scripts/perf/chromium-process.mjs), a hung run ends at 3 minutes and the whole step at 20
+#   (web/scripts/perf/lighthouse-run.mjs), and the two steps below have a limit of their own (30 and 10 minutes) inside the job's 45,
+#   so a stall names its step. A run takes about a minute (nine of them, eight minutes), the set-up and the specs about eight, the judging a
+#   few: about twenty minutes when it goes well.
+#
+# visual-baselines makes the app-owned baselines (the app against itself) on the runner that compares them, in two passes: the first
+#   creates the missing ones (and fails, once, for the ones it made), the second must pass on its own output. Two ways to start it.
+#   By hand: Actions, web-e2e, Run workflow; the PNGs are an artifact for a person to review and commit.
+#   By label: adding the label `bootstrap-baselines` to a pull request of THIS repository (never a fork's) also commits the PNGs to
+#   the pull request's branch. What to know about it:
+#   - It runs the pull request's own code (pnpm install, the build, Playwright) in a job that holds a write token, so it is limited
+#     to pull requests from branches of this repository (their authors can already push) and the token reaches only its last step:
+#     the checkout leaves no credentials on disk, and that step stages the .png files of the baselines folder and nothing else
+#     (it fails if anything else is staged), commits as the Actions bot and pushes as a fast-forward of the branch. permissions:
+#     contents: write is asked for by this job alone.
+#   - A push made with the default GITHUB_TOKEN starts no workflow, so e2e does not run on the commit this job adds, and a checks
+#     page that requires it stays empty for that commit. A maintainer has to start it: close and reopen the pull request, or push
+#     any commit from a normal account. Running the old run again would test the old merge commit, which has no PNGs.
+#   - The job does not remove the label (that needs pull-requests: write, which it does not ask for): a maintainer removes it, and
+#     adding it again runs the job again.
+#   - A baseline that exists is compared, not replaced. To refresh one, delete its PNG in a commit and add the label again.
+#   - A run that fails keeps what it found. The second pass compares the app with the design and with its own pictures, and when it
+#     fails the job ends before the baselines are uploaded or committed. A step that runs only after a failure uploads Playwright's
+#     results folder (web/test-results) as the artifact `visual-baselines-failed-attempt-N`, for 7 days: for every tier-1 comparison that
+#     went over its limit, the design's picture, the app's and the difference. The log has the same comparison in words: which clusters
+#     of pixels differ, where, by how much, whether a shift of a pixel explains them, and which element is under each (web/e2e/visual/
+#     diff-report.mjs). Only this job has the step; the shards and `perf` are what a branch protection requires and upload nothing.
+#   - web/.gitignore ignores the baselines folder on purpose (nothing reaches a commit by accident), so the job adds the PNGs with
+#     `git add -f`; once they are tracked they are compared like any other file.
+name: web-e2e
+on:
+  workflow_dispatch:
+  pull_request:
+    # `labeled` is for the bootstrap job; the other jobs skip it (their `if`), and a label never cancels a run of the tests (the group).
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - "web/**"
+      - "crates/hub/**"
+      - "api/openapi.yaml"
+      - "Justfile"
+      - ".github/workflows/web-e2e.yml"
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  # A run that a label started has a group of its own, per label: it never cancels the tests in progress on the same pull request,
+  # and another label never cancels a bootstrap that is committing.
+  group: web-e2e-${{ github.ref }}-${{ github.event.action == 'labeled' && format('label-{0}', github.event.label.name) || 'run' }}
+  cancel-in-progress: ${{ github.event.action != 'labeled' }}
+
+jobs:
+  # One fifth of the end-to-end tests (see the header). The shards are separate runners: each builds its own fixture, installs its
+  # own Chromium and gets its own React 18. None of them makes a baseline, so a missing one fails the shard that holds that test.
+  e2e-shard:
+    if: github.event_name != 'workflow_dispatch' && github.event.action != 'labeled'
+    runs-on: ubuntu-latest
+    # The longest shard is about 19 minutes of tests (the a11y one) and 6 of set-up; 40 is a margin of one half and more.
+    timeout-minutes: 40
+    strategy:
+      # The failures of all the shards are wanted in one run: one shard that fails does not cancel the others.
+      fail-fast: false
+      matrix:
+        shard: ["1/5", "2/5", "3/5", "4/5", "5/5"]
+    env:
+      LK_E2E_SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: just web-install
+      # Playwright's own Chromium, for the pinned @playwright/test (web/e2e/harness/browser.ts finds it).
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: web
+        timeout-minutes: 10
+      - run: just web-gen-check
+      - name: React 18.3.1 for the visual references (W30)
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/react18"
+          mkdir -p "$dir/pack" "$dir/umd"
+          cd "$dir/pack"
+          npm pack --silent react@18.3.1 react-dom@18.3.1
+          check() {
+            got="sha512-$(openssl dgst -sha512 -binary "$1" | base64 -w0)"
+            if [ "$got" != "$2" ]; then echo "$1: $got is not the pinned $2"; exit 1; fi
+          }
+          check react-18.3.1.tgz "sha512-wS+hAgJShR0KhEvPJArfuPVN1+Hz1t0Y6n5jLrGQbkb4urgPE/0Rve+1kMB1v/oWgHgm4WIcV+i7F2pTVj+2iQ=="
+          check react-dom-18.3.1.tgz "sha512-5m4nQKp+rZRb09LNH59GM4BxTh9251/ylbKIbpe7TpGxfJ+9kv6BLkLBXIjjspbgbnIBNqlI23tRnTWT0snUIw=="
+          tar -xzf react-18.3.1.tgz package/umd/react.production.min.js
+          tar -xzf react-dom-18.3.1.tgz package/umd/react-dom.production.min.js
+          cp package/umd/react.production.min.js package/umd/react-dom.production.min.js "$dir/umd/"
+          echo "LK_REACT18_DIR=$dir/umd" >> "$GITHUB_ENV"
+      # Builds the Rust fixture, the production dist (with the dist scan) and the perf-mode dist, then runs this shard of the Playwright
+      # project: the recipe passes `--shard=$LK_E2E_SHARD`. The tests have a limit of their own, so that a stall names this step.
+      - name: Tests of shard ${{ matrix.shard }}
+        run: just web-e2e
+        timeout-minutes: 33
+
+  # The one check that a branch protection requires for the end-to-end tests (see the header): it fails unless every shard passed.
+  # `!cancelled()` makes it run when a shard failed (a job whose `needs` failed is otherwise skipped, and a skipped check counts as
+  # passed for a branch protection); a cancelled run is not reported. The result reaches the script through the environment.
+  e2e:
+    needs: [e2e-shard]
+    if: ${{ !cancelled() && github.event_name != 'workflow_dispatch' && github.event.action != 'labeled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every shard passed
+        env:
+          SHARDS: ${{ needs.e2e-shard.result }}
+        run: |
+          if [ "$SHARDS" != "success" ]; then
+            echo "The end-to-end shards finished as '$SHARDS': read the e2e-shard jobs of this run for the tests that failed."
+            exit 1
+          fi
+          echo "Every end-to-end shard passed."
+
+  # P10, enforced (see the header). A runner of its own: the timings must not share a machine with the other tests. No retry, no
+  # continue-on-error: a budget that is missed fails this job, and a person decides whether to run it again.
+  perf:
+    if: github.event_name != 'workflow_dispatch' && github.event.action != 'labeled'
+    runs-on: ubuntu-latest
+    # About 20 minutes when it goes well (see the header); the two steps that can stall have limits of their own inside this.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: just web-install
+      # Playwright's own Chromium, for the pinned @playwright/test and for Lighthouse (web/e2e/harness/browser.ts finds it).
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: web
+        timeout-minutes: 10
+      # Removes the old web results, builds the Rust fixture and both web builds, then measures: the specs of the `perf` project one at
+      # a time, then Lighthouse. The numbers are written to target/perf-results.
+      - name: Measure the P10 numbers
+        run: just web-perf
+        timeout-minutes: 30
+      # The five P10 budgets of perf/budgets.toml, judged by `cargo xtask bench-check`. A result that is missing fails.
+      - name: Judge the five P10 budgets
+        run: just web-bench-check
+        timeout-minutes: 10
+
+  # By hand (Actions, web-e2e, Run workflow) or by the label `bootstrap-baselines` on a pull request of this repository (see the
+  # header): the baselines of the app against itself, made on the runner that compares them. The artifact is for review; on the
+  # label's run the PNGs are also committed to the pull request's branch, by the last step.
+  visual-baselines:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'bootstrap-baselines' &&
+      github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    # Measured on a quiet 4-core machine (plans/08-frontend.blockers.md): the first pass makes the 684 PNGs of the 732 visual tests in
+    # 24 minutes and the second compares them in 14, plus 6 of set-up: 44 minutes. 80 leaves a margin of four fifths; both passes
+    # together are one job on purpose (the second must compare the PNGs that the first made, on the same machine).
+    timeout-minutes: 80
+    # The only write permission of the workflow, and nothing else. It reaches the last step only (see the header).
+    permissions:
+      contents: write
+    concurrency:
+      group: web-baselines-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # The head commit of the pull request, not the merge commit, so that the baselines land on the branch that they were made
+          # for. A run by hand has no pull request and uses its own ref. No credentials are left in .git/config for the code that the
+          # steps below run: the token reaches the last step through its environment, and nowhere else.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: just web-install
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: web
+      - name: React 18.3.1 for the visual references (W30)
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/react18"
+          mkdir -p "$dir/pack" "$dir/umd"
+          cd "$dir/pack"
+          npm pack --silent react@18.3.1 react-dom@18.3.1
+          check() {
+            got="sha512-$(openssl dgst -sha512 -binary "$1" | base64 -w0)"
+            if [ "$got" != "$2" ]; then echo "$1: $got is not the pinned $2"; exit 1; fi
+          }
+          check react-18.3.1.tgz "sha512-wS+hAgJShR0KhEvPJArfuPVN1+Hz1t0Y6n5jLrGQbkb4urgPE/0Rve+1kMB1v/oWgHgm4WIcV+i7F2pTVj+2iQ=="
+          check react-dom-18.3.1.tgz "sha512-5m4nQKp+rZRb09LNH59GM4BxTh9251/ylbKIbpe7TpGxfJ+9kv6BLkLBXIjjspbgbnIBNqlI23tRnTWT0snUIw=="
+          tar -xzf react-18.3.1.tgz package/umd/react.production.min.js
+          tar -xzf react-dom-18.3.1.tgz package/umd/react-dom.production.min.js
+          cp package/umd/react.production.min.js package/umd/react-dom.production.min.js "$dir/umd/"
+          echo "LK_REACT18_DIR=$dir/umd" >> "$GITHUB_ENV"
+      - run: just web-fixture
+      - run: pnpm build
+        working-directory: web
+      # LK_UPDATE_BASELINES makes Playwright create the baselines that are missing (web/e2e/visual/baseline-rule.mjs) and fail the tests that
+      # needed one; the tests that compare with the design run as in the e2e job. Two passes: the first creates the baselines (it
+      # fails, once, for the ones it made), the second must pass on its own output.
+      - run: pnpm exec playwright test --project=chromium e2e/visual
+        working-directory: web
+        env:
+          LK_UPDATE_BASELINES: "1"
+        continue-on-error: true
+        timeout-minutes: 45
+      - run: pnpm exec playwright test --project=chromium e2e/visual
+        working-directory: web
+        timeout-minutes: 30
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: visual-baselines
+          path: web/e2e/visual/__baselines__
+          if-no-files-found: error
+          retention-days: 14
+      # A failed run only (see the header): the second pass is what fails, and the job ends there, so the pictures that its failed
+      # comparisons attached (the design's, the app's and the difference, in Playwright's results folder) are kept for a person to look at.
+      # This job alone: the shards and `perf` are the gate that a branch protection requires and get no step that they do not need. The
+      # same action, by the same SHA, as the upload above (it has run on GitHub). The folder holds screenshots and the notes
+      # Playwright writes about a failed page (the synthetic pages of the mock API); no token, no environment and no credentials.
+      - name: Keep the results of the failed run
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        timeout-minutes: 5
+        with:
+          name: visual-baselines-failed-attempt-${{ github.run_attempt }}
+          path: web/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+      # The label's run only. Adds the .png files that the passes above made and nothing else (a symlink, a report or any other file that
+      # a test left there is not staged, and anything else that is staged fails the step), commits them as the Actions bot, and pushes
+      # the commit onto the pull request's branch as a fast-forward: if the branch moved since the label was added, the push is
+      # refused and the job fails, and nothing is overwritten. The token is built into a header for that one push and masked, and
+      # git hooks are off. This is not a defence against the author of the pull request, who also writes this workflow file (a
+      # pull_request run uses the pull request's own copy of it); what limits the job is who can add the label, that a fork's
+      # pull request never gets it, and that the token can do nothing but write contents.
+      - name: Commit the baselines to the pull request's branch
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          base=web/e2e/visual/__baselines__
+          if [ ! -d "$base" ]; then echo "no baselines were made"; exit 1; fi
+          find "$base" -type f -name '*.png' -print0 | xargs -0 -r git add -f --
+          bad="$(git diff --cached --name-only | grep -v -E '^web/e2e/visual/__baselines__/.+\.png$' || true)"
+          if [ -n "$bad" ]; then printf 'staged paths outside the baselines folder:\n%s\n' "$bad"; exit 1; fi
+          if git diff --cached --quiet; then
+            echo "::notice::The baselines on this branch are what the runner makes; nothing to commit."
+            echo "The baselines on this branch are what the runner makes: nothing was committed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          count="$(git diff --cached --name-only | wc -l)"
+          msg="$RUNNER_TEMP/baselines-commit-message"
+          cat > "$msg" <<EOF
+          web: app-owned visual baselines
+
+          Made by the visual-baselines job of the web-e2e workflow when the label bootstrap-baselines
+          was added to this pull request, from commit ${HEAD_SHA}.
+          The job adds only the .png files of web/e2e/visual/__baselines__: review them as images
+          before merging. It pushed with the default token, so no workflow has run on this commit.
+
+          Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+          Claude-Session: https://claude.ai/code/session_01Mgp6qLACxRR9AFYLjr8okC
+          EOF
+          git -c core.hooksPath=/dev/null -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -F "$msg"
+          basic="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          echo "::add-mask::$basic"
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic" \
+            git -c core.hooksPath=/dev/null push "https://github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${HEAD_REF}"
+          {
+            echo "### Baselines committed"
+            echo
+            echo "${count} PNG files were added or updated on ${HEAD_REF}. This push starts no workflow: close and reopen the pull request, or push any commit, to run web-e2e on it. Remove the label bootstrap-baselines when you are done."
+          } >> "$GITHUB_STEP_SUMMARY"

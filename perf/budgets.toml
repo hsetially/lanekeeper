@@ -586,7 +586,7 @@ statistic = "max"
 threshold = 250
 unit = "kb"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P10.route_change_ms"
@@ -596,7 +596,7 @@ statistic = "p95"
 threshold = 100
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P10.diff_6000_lines_ms"
@@ -606,7 +606,7 @@ statistic = "p95"
 threshold = 500
 unit = "ms"
 scale = "target"
-registered = false
+registered = true
 
 [[budget]]
 id = "P10.grid_5000_rows_fps"
@@ -617,7 +617,7 @@ threshold = 60
 unit = "fps"
 scale = "target"
 direction = "lower"
-registered = false
+registered = true
 
 [[budget]]
 id = "P10.lighthouse_perf"
@@ -628,7 +628,7 @@ threshold = 90
 unit = "score"
 scale = "target"
 direction = "lower"
-registered = false
+registered = true
 
 [[budget]]
 id = "P11"

@@ -1,0 +1,54 @@
+/* Tailwind v4, CSS first. The entry point of the app's styles (main.tsx imports only this file).
+   Tokens come from the design handoff: tokens.css holds the variables, theme.generated.css maps them to
+   utilities, both written by `pnpm gen:handoff`. Components use utilities and tokens, never hex colours. */
+@import "tailwindcss";
+@import "./fonts.css";
+@import "./tokens.css";
+@import "./theme.generated.css";
+@import "./base.css";
+
+/* Dark mode follows the class or attribute the theme script sets on <html>, never prefers-color-scheme
+   directly: "light, dark, system" is a user choice (see public/theme-init.js, added in T1). */
+@custom-variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
+
+/* Motion: 100 to 150 ms ease-out for state changes. A pulse and a spinner, no bounce, no page transition.
+   Tailwind's own animations (spin, ping, pulse, bounce) are cleared. */
+@theme {
+  --animate-*: initial;
+  --animate-lk-spin: lk-spin 0.8s linear infinite;
+  --animate-lk-pulse: lk-pulse 1.6s ease-in-out infinite;
+  --animate-lk-fade-in: lk-fade-in 120ms var(--ease-out);
+  --animate-lk-pop-in: lk-pop-in 120ms var(--ease-out);
+
+  @keyframes lk-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes lk-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
+    }
+  }
+  @keyframes lk-fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes lk-pop-in {
+    from {
+      opacity: 0;
+      transform: scale(0.98);
+    }
+  }
+}
+
+/* The pressed state of a button: the Style Guide's "Active" row, an inset shadow with a 1px drop
+   (the drop is `active:translate-y-px`). The one colour literal in the styles; it is a black alpha. */
+@utility shadow-pressed {
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+}
