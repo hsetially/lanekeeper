@@ -2,15 +2,16 @@
 # fetches each `file` from https://huggingface.co/<repo>/resolve/<revision>/<path>, and stops the build unless the size and
 # sha256 match. Nothing else about the model is trusted: not the name, not the host's own checksums.
 #
-# Regenerate with `deploy/images/update-model-lock.sh <repo> <revision>` on a machine that can reach huggingface.co, and
+# Regenerate with `deploy/images/update-model-lock.sh <revision>` on a machine that can reach huggingface.co, and
 # check with `node deploy/images/model-lock.mjs check deploy/images/hub-model.lock`. The revision must be at least 14 days
 # old (AGENTS.md rule 15). Prompt 14 confirms the model or changes this lock.
 #
 # Lines: `model <dir under /app/models>`, `repo <owner/name>`, `revision <40-hex commit>`, `date <commit date, UTC>`,
 # then one `file <sha256> <size in bytes> <path in the repo>` per file.
-# UNRESOLVED: huggingface.co is not reachable from the environment this was written in (the egress proxy refuses it), so
-# the revision and the file hashes have not been read. The checker and the image build both refuse this lock until
-# update-model-lock.sh fills it in (plans/09-deployment-ci.blockers.md, B1).
+# UNRESOLVED: the ONNX graph cannot be downloaded from the environment this was written in. huggingface.co answers, but it
+# redirects LFS files to its CDN (us.aws.cdn.hf.co), which the egress proxy refuses, so onnx/model.onnx has not been hashed.
+# The checker and the image build both refuse this lock until update-model-lock.sh fills it in
+# (plans/09-deployment-ci.blockers.md, B1).
 model bge-small-en-v1.5
 repo BAAI/bge-small-en-v1.5
 revision UNRESOLVED

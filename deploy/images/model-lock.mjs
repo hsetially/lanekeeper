@@ -57,7 +57,7 @@ export function checkLock(text, { now = new Date() } = {}) {
   }
   const [model = '', repo = '', revision = '', date = ''] = ['model', 'repo', 'revision', 'date'].map((k) => single[k][0]);
   if (revision === 'UNRESOLVED') {
-    errors.push('the lock is UNRESOLVED: run deploy/images/update-model-lock.sh where huggingface.co is reachable');
+    errors.push('the lock is UNRESOLVED: run deploy/images/update-model-lock.sh where huggingface.co and its LFS CDN are reachable');
   } else if (single.revision.length === 1 && !REVISION.test(revision)) {
     errors.push(`the revision must be a full 40-hex commit, never a branch or tag: ${revision}`);
   }

@@ -52,7 +52,8 @@ checked is that one commit gives one.
 | Image | Builds | Result |
 |---|---|---|
 | agent | `reproducible-check.sh agent`: two `--no-cache` builds from two `git archive` extractions | identical: `sha256:167548e1a6a654fdc2982d16f1e8a42547edf902be0fe76a7efd2144df9f96a4` |
+| agent, again at commit `f02523a` (`SOURCE_DATE_EPOCH=1792911878`) | the same, with an empty build cache (`docker builder prune -af` first) | identical: `sha256:b175553354141423395634222f4ca3a9b4cbeaf83d3bd2287bbcdbebc1aa8e67` |
 | hub without the `model` stage | the same two builds of the hub Dockerfile with the model stage and its `COPY` removed (a one-off check, the web app and the binary) | identical: `sha256:2810c71cb39c216b2f6303613747ee93fa5716a6778d64a65d4e133735670035` |
-| hub | | not measured: `hub-model.lock` is unresolved (`plans/09-deployment-ci.blockers.md`, B1), so the `model` stage refuses to run. The model files are fixed by their sha256, so they cannot add a difference; their file times are rewritten like every other file's |
+| hub | | not measured: `hub-model.lock` is unresolved (`plans/09-deployment-ci.blockers.md`, B1: the ONNX graph is served from Hugging Face's CDN, which the build environment cannot reach), so the `model` stage refuses to run. The model files are fixed by their sha256, so they cannot add a difference; their file times are rewritten like every other file's |
 
 No differences were found, so none is listed as accepted.
