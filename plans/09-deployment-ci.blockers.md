@@ -1,6 +1,6 @@
 # Plan 09 blockers
 
-Status on 2026-10-25, T3 run: **B1 to B4 are resolved; B5 is open and stops `just verify-09` (and nothing else of T3).**
+Status on 2026-10-25, T4 run: **B1 to B4 are resolved; B5 is open and stops `just verify-09` (and nothing else of T3 or T4); B7 and B8 are new, informational, and need a human before a swimlane is deployed.**
 The T1 sections below are from the third T1 run (after a human allowed `us.aws.cdn.hf.co` and merged the plan amendment, PR #29):
 T1 is complete; the commit `e2c199d` holds the code and the measurements were taken at it.
 
@@ -12,6 +12,8 @@ T1 is complete; the commit `e2c199d` holds the code and the measurements were ta
 | B4 | resolved (T3 run) | a human allowed `get.helm.sh`; helm 4.3.0 is pinned by the sha256 of a download made here (section B4 below) |
 | B5 | **open** (T3) | `api.github.com/meta` is refused, so GitHub's webhook ranges cannot be written; the gcp chart refuses to render until a person runs one command (section B5, T3 notes below) |
 | B6 | informational (T3) | `docs.cloud.google.com` and `registry.k8s.io` are refused; Google-specific shapes in the hub chart are unverified (T3 notes below) |
+| B7 | **open, informational (T4)** | the agent contract dials the hub on 443; the hub chart's agent load balancer listens on 8444 (T4 notes below) |
+| B8 | **open, informational (T4)** | the agent contract lets the agent reach the config-server only in the agent's own namespace (T4 notes below) |
 
 ## B1 (T1): resolved. The model lock is filled in, from a download made here
 
@@ -290,3 +292,127 @@ now closes only objects that describe the resource, has a test for it, and only 
    pulled, and the images policy warns; it is the only warning that prod and staging tolerate.
 8. **Not done in T3, by the plan:** the hub binary does not serve yet (A1), so `/readyz` cannot pass; `contract.rego` (rendered output
    against HARDENING.md) is T4's; no threat-model text (T7).
+
+
+# T4 notes (2026-10-25)
+
+T4 is built and every check it owns passes. `just verify-09` still stops, for **B5 and nothing else**: the gcp chart refuses to render
+until a person runs `node deploy/tools/github-hook-ranges.mjs --write`. Nothing was typed in, copied or faked to get around that:
+`deploy/values/hub/github-hook-ranges.yaml` is still the unresolved marker, the gcp chart still refuses, and no test was touched
+to make a recipe pass. The two findings below (B7, B8) are not blockers of T4's checks; they are disagreements between two contract
+files that no check can see, and a human has to settle them before the first swimlane is deployed.
+
+## What T4 proved (committed tree, 2026-10-25)
+
+Every recipe of `verify-09` was run on its own (`just` stops at the first failure), twice, the second time after the last edit:
+
+| Recipe | Result |
+|---|---|
+| `ops-tools-check`, `ci-lint`, `pins-test`, `images-policy-test`, `images-builder-test`, `images-publish-test` | exit 0 |
+| `schemas-verify`, `deploy-lint`, `policy-test`, `contract-check`, `env-names-test`, `tools-test` | exit 0 |
+| `deploy-render` | exit 1: kubeconform passes for hub (6, 13, 13 resources valid) and **agent (9 of 9 valid)**; it fails only for the gcp chart with staging and prod values, with the B5 message |
+| `policy-check` | exit 1: conftest passes for hub (kind, staging, prod) and **agent (155 of 155)**; it fails only for the gcp chart, with the B5 message |
+| `deploy-planted` | exit 1: **151 cases report `ok`** (kubeconform, template refusals, planted changes to the real output of the hub and agent charts, each refused for its own message, and the accepted variants of the agent chart); the one failure is the Cloud Armor group that cannot run without the ranges (`the gcp chart does not render with the committed hook ranges ...`) |
+
+T4's own checks, from those runs:
+
+| Check | Result |
+|---|---|
+| agent chart render, `helm lint --strict` | clean; `helm template` of `deploy/values/agent/sit1.yaml` gives 9 resources |
+| kubeconform `-strict`, offline | Deployment, ServiceAccount, Secret, ConfigMap, Role x2, RoleBinding x2 and NetworkPolicy: 9 valid, 0 skipped. Five more kinds got planted invalid fields (`deploy/tests/planted/kubeconform.yaml`): each refused, for the field only |
+| conftest, `rbac.rego` and the rest, on the agent's output | 155 of 155 (the manifest policies: hardening, secrets, topology, resources, storage, network, rbac) |
+| `contract.rego` with the real `crates/agent/RBAC.md` and `HARDENING.md` extracted by `contract-extract.sh` | 25 of 25: the rendered Roles equal RBAC.md, the egress equals the contract |
+| the Secret-list rejection | `rbac_test.rego::test_deny_secret_list`, `test_deny_secret_list_alone`, `test_deny_secret_watch`, `test_deny_unnamed_secret` (and 40 other cases in that file, 44 in all) refuse a planted Role; on the real output, `plant "list on Secrets"`, `"watch on Secrets"`, `"create on Secrets"`, `"an unnamed Secret grant"`, `"another Secret"` are each refused for the verb or the name |
+| `conftest verify` over `deploy/policy` | 433 of 433 (237 before T4) |
+| accepted variants | the join token with and without Workload Identity, two watched namespaces, other ids for the export's owner, several hub addresses, tunables, an image pull secret and another audience each pass kubeconform, the policies and the contract |
+| `node --test .github/scripts/*.test.mjs` | 77 of 77; `actionlint` clean on `deploy.yml` (whose paths now include `crates/agent/RBAC.md`, `HARDENING.md` and `src/config.rs`) |
+| `shellcheck -x` (0.11.0) | clean on `render.sh`, `contract-extract.sh`, `env-names.sh` |
+
+**Mutation.** Every `deny` rule T4 wrote or changed (89: rbac 16, contract 25, network 12, hardening 31, secrets 5) was disabled one at
+a time in a scratch copy, and `conftest verify` was run on each. Eight survived the first time, all in `rbac.rego` and `contract.rego`:
+four had no test that needed them (a binding with no subject; a NetworkPolicy of the wrong name alone; the Secrets Role in a watched
+namespace; a second container), and four shared their words with another rule that satisfied the test (the two missing contract files
+and the missing Role and RoleBinding in RBAC.md). Each got a test with a fragment only that rule says, or an input only that rule
+refuses, and the 41 mutants of those two files were run again: none survived.
+Eleven mutations of the chart's templates (a Secret `list`, no `keep`, a writable root, no token, the config-server in every
+namespace, a `secretKeyRef`, root as the user, ...) were each refused by the policy that guards the field. Five mutations of the
+schema and helpers were tried: three were refused by a planted template case, one is an equivalent mutant (the schema refuses the same
+digest first), and one was not caught: with the private-key check removed, the planted case (a lone key) was still refused by the
+"starts with a certificate" check, although a certificate followed by a key would have rendered. That case is planted now. The
+self-tests of `contract-extract.sh` and `env-names.sh` were mutated the same way (nine mutations): seven were refused, one is
+equivalent (a missing file is refused by awk anyway), and one was masked: an unclosed block was refused as "no yaml block" in a file
+with no other block, so the case now follows a good block and only the unclosed check can refuse it.
+
+## B7 (T4): the agent dials the hub on 443, and the hub's agent load balancer listens on 8444
+
+Two committed contracts disagree, and no check sees it because each is right by its own file:
+
+- `crates/agent/HARDENING.md` lists "The hub's address, 443/TCP" as the agent's one egress to the hub, and its test
+  (`hardening_contract_egress_is_hub_kube_configserver_metadata_dns_only`) requires `https endpoint TCP/443`.
+- `crates/hub/HARDENING.md` puts the agents on the container port `agent` 8444, and the T3 chart's `Service/lanekeeper-hub-agent`
+  exposes **port 8444** (`network.rego` requires exactly `{8444}`, citing HARDENING.md, which in fact only names the container port).
+
+The T4 chart follows the agent's contract (443), so an agent would dial `LB:443` where the load balancer listens on 8444. Neither
+contract file names the load balancer's own port, so the least change that keeps both files as they are is in the T3 chart: the
+Service listens on 443 and forwards to the `agent` container port (`port: 443, targetPort: agent`), with the one policy rule, its
+planted case and the README changed to match. The alternative is the agent dialling 8444 (HARDENING.md and
+`crates/agent/tests/hardening.rs` change, which are not 09's to change without the plan's Extra-paths). A28 also says the sentinel
+"reaches the agent port (8444)", so the sentinel's port needs the same decision. **Not changed here**: it is a design choice about a
+T3 deliverable and a possible contract change, so it is left for a human. Until then T4 is correct against its contract, and the two
+charts do not talk to each other.
+
+## B8 (T4): the config-server egress selects pods in the agent's own namespace
+
+HARDENING.md's rule for `NotifyConfigServer` and `FetchServed` is `podSelector: {matchLabels: {app: csp-configuration-server}}` with no
+`namespaceSelector`, which selects pods **in the policy's namespace**, the agent's own (`lanekeeper` in the examples). The config-server
+runs in a namespace the agent watches (`LK_CONFIG_SERVER_DEPLOYMENT` is `namespace/name` with that namespace in `LK_NAMESPACES`,
+`sit1-core` in the agent's test), and the RBAC.md examples have the agent in `lanekeeper` and the workloads in `sit1`. If the
+config-server is not in the agent's namespace, the rule matches nothing and every notify and fetch is denied by default. The chart
+renders the contract as written, `contract.rego` requires it, and no test can tell which namespace the real config-server is in.
+The fix, if the config-server is elsewhere, is a `configServer.namespace` value and a `namespaceSelector` in the rule, with
+HARDENING.md and its test changed first (the agent's owner's files). Not changed here. Related: the hub requires the Operator role
+and audits the call, and the endpoint has no authentication of its own (Q37), so a rule that is too wide here is worse than one that
+is too narrow.
+
+## Decisions T4 made that a reviewer should look at
+
+1. **`contract.rego` covers the agent only, and not the hub.** The hub's `HARDENING.md` Pod block deliberately differs from the
+   chart (a claim, where the chart has a `volumeClaimTemplate`), so a comparison would need exceptions for the point of the chart.
+   The hub's contract stays in `hardening.rego` and `network.rego`, as T3 wrote it. The final gate's `contract-check` is the agent's.
+2. **What the contract check compares, and what it leaves to others.** Roles (as sets, with the join-token grant present exactly when
+   `LK_JOIN_TOKEN_SECRET` is set, and the names in the Role equal to the names in the environment), RoleBindings, the
+   NetworkPolicy (the hub's and the API server's addresses are values, so the contract's blocks stand for "an address block" and the
+   metadata server's address is literal) and the pod's token, host fields, seccomp, the container's security context, ports and
+   probes. **Not** the environment, volumes and mounts: the spool arrives with T8. `hardening.rego` holds the paths (the export,
+   `/tmp` and the hub CA are the paths of their mounts) and `env-names.sh` the variable names until then. The ids and the
+   resources are values.
+3. **The hub's CA is not in the committed values.** The chart refuses to render without `hubCa.pem` (a certificate, never a key),
+   and the values file carries none, because the real one is the public certificate of an agent CA that does not exist yet.
+   `render.sh` passes a synthetic one (`deploy/tests/testdata/synthetic-hub-ca.pem`; a throwaway EC certificate whose key was
+   deleted at once, subject `SYNTHETIC test data`). T6's swimlane files and the runbook need to say where the real one comes from.
+4. **One values file, `deploy/values/agent/sit1.yaml`,** a synthetic swimlane that matches the examples of RBAC.md and HARDENING.md.
+   T6 adds the per-swimlane files and may rename it; `render.sh` takes every file under `deploy/values/agent`.
+5. **The names of the agent's two Secrets are fixed in the chart** (`lanekeeper-agent-cert`, `lanekeeper-agent-join-token`), not
+   values: the Roles grant exactly those, and a value that differed would be an agent that cannot read its certificate.
+   `secrets.rego` exempts the two variables that hold them (`LK_CERT_SECRET`, `LK_JOIN_TOKEN_SECRET` look like secrets and are
+   names) and requires their values to be those names; `env-names.sh` exempts the same two and nothing else.
+6. **`hardening.rego` changed for the agent's token.** The rule "every pod has `automountServiceAccountToken: false`" is now "every
+   pod but `Deployment/lanekeeper-agent`, whose token must be mounted and says so": the agent is a Kubernetes client (HARDENING.md).
+   The hub's cases still pass unchanged.
+7. **`LK_JOIN_MODE` is always set** (`workload-identity`, `token` or `auto`, by what the values enable), so the mode is never implicit.
+   It is not in HARDENING.md's list; `crates/agent/src/config.rs` reads it.
+8. **`strategy: Recreate` and the spool are T8's, as planned.** The agent stops at start without its spool directory, so the chart is
+   checked and not deployable yet (the chart README and NOTES say so). `hardening.rego` already allows the volume name `spool`.
+9. **Kubernetes namespaces `kube-system`, `kube-public` and `kube-node-lease` cannot be watched** (the schema refuses them): the
+   agent patches Deployments in every namespace it watches, so these are not its to be given.
+10. **Two edits to T3's tests, both strengthening.** The planted kubeconform file used `namespace: n`, which YAML 1.1 reads as the
+    boolean false, so every document there failed for that as well as for its planted field; it is `planted-ns` now, and the Gateway
+    and FQDN documents lost the empty lists that were a second reason. Each of the 12 documents now fails for one reason, checked.
+    And `secrets_test.rego::test_agent_cert_secret_is_allowed_empty` now plants the Secret the way the chart renders it (`Opaque`,
+    with the `keep` annotation) instead of `kubernetes.io/tls`, which the API server refuses empty.
+
+## Environment
+
+The Docker daemon of the sandbox was not running at the start of this run (`Cannot connect to the Docker daemon`), and conftest runs
+from the pinned image. It was started with `dockerd` and its default settings, nothing changed; the images were still there. No host
+was refused in this run: every pin and check T4 needed (helm 4.3.0, kubeconform, conftest, the vendored schemas) was already in place.

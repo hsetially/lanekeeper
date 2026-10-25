@@ -46,6 +46,26 @@ hub_name := "lanekeeper-hub"
 
 hub_statefulsets := named("StatefulSet", hub_name)
 
+agent_name := "lanekeeper-agent"
+
+agent_deployments := named("Deployment", agent_name)
+
+# The value of an environment variable of a container (undefined when it is not set, or is set from a reference).
+env_value(container, name) := e.value if {
+	some e in object.get(container, "env", [])
+	e.name == name
+}
+
+# The value of an environment variable of the agent's container.
+agent_env(name) := v if {
+	some d in agent_deployments
+	some c in d.spec.template.spec.containers
+	v := env_value(c, name)
+}
+
+# The namespaces the agent is configured to watch: LK_NAMESPACES, a comma separated list.
+agent_namespaces := {trim_space(n) | some n in split(agent_env("LK_NAMESPACES"), ",")}
+
 # A Kubernetes quantity of memory in mebibytes. Only the binary units and plain bytes; anything else is undefined, and the
 # policy that asks says so.
 mebibytes(q) := n if {

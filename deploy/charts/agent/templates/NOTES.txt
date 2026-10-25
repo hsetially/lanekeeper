@@ -1,0 +1,14 @@
+lanekeeper-agent: swimlane {{ .Values.swimlane.id }}, watching {{ join ", " .Values.namespaces }}, in {{ .Release.Namespace }}.
+{{- if .Values.joinToken.enabled }}
+
+NOTE: joinToken.enabled is true. The agent may read the Secret lanekeeper-agent-join-token (key `token`) in {{ .Release.Namespace }},
+and the chart never fills it: an Admin issues a one-time token for this swimlane in the hub, and it is put there out of band
+(deploy/ADDING-A-SWIMLANE.md). Workload Identity is the normal way (S5, Q26).
+{{- end }}
+{{- if not .Values.serviceAccount.gcpServiceAccount }}
+
+WARNING: serviceAccount.gcpServiceAccount is empty. There is no Workload Identity, so the agent can join only with a join token (S5).
+{{- end }}
+
+The agent keeps no spool yet: the spool volume, its claim and the Recreate strategy arrive with T8 (D74), and the agent stops at
+start without its spool directory. The chart is not deployable until then.

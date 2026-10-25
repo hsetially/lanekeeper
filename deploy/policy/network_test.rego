@@ -518,3 +518,154 @@ test_deny_two_rules_with_one_priority if {
 	rule := json.patch(fixtures.armor_rule_hooks, [{"op": "replace", "path": "/priority", "value": 1000}])
 	refused_gcp(fixtures.gcp_with_rules([fixtures.armor_rule_users, rule, fixtures.armor_rule_default]), "priority")
 }
+
+# --- the agent (S17, S18): default deny, and exactly the five destinations of crates/agent/HARDENING.md
+
+agent_netpol(ops) := fixtures.agent_patch("NetworkPolicy", "lanekeeper-agent", ops)
+
+agent_add_egress(rule) := agent_netpol([{"op": "add", "path": "/spec/egress/-", "value": rule}])
+
+agent_add_ingress(rule) := agent_netpol([{"op": "add", "path": "/spec/ingress/-", "value": rule}])
+
+test_agent_egress_exact if {
+	count(deny) == 0 with input as fixtures.agent
+	count(warn) == 0 with input as fixtures.agent
+}
+
+test_deny_agent_without_a_network_policy if {
+	refused(fixtures.agent_without("NetworkPolicy"), "NetworkPolicy/lanekeeper-agent is missing")
+}
+
+test_deny_agent_policy_without_default_deny_egress if {
+	refused(agent_netpol([{"op": "replace", "path": "/spec/policyTypes", "value": ["Ingress"]}]), "not default deny")
+}
+
+test_deny_agent_policy_without_default_deny_ingress if {
+	refused(agent_netpol([{"op": "replace", "path": "/spec/policyTypes", "value": ["Egress"]}]), "not default deny")
+}
+
+test_deny_agent_policy_that_selects_every_pod if {
+	refused(agent_netpol([{"op": "replace", "path": "/spec/podSelector", "value": {}}]), "selects")
+}
+
+test_deny_agent_policy_that_selects_other_pods if {
+	refused(agent_netpol([{"op": "replace", "path": "/spec/podSelector/matchLabels", "value": {"app.kubernetes.io/name": "lanekeeper-hub"}}]), "selects")
+}
+
+test_deny_agent_egress_to_anywhere if {
+	refused(agent_add_egress({"to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}], "ports": [tcp(443)]}), "unrecognised")
+}
+
+test_deny_agent_egress_to_every_destination if {
+	refused(agent_add_egress({"ports": [tcp(443)]}), "every destination")
+}
+
+test_deny_agent_egress_on_every_port if {
+	refused(agent_add_egress({"to": [{"ipBlock": {"cidr": "203.0.113.99/32"}}]}), "every port")
+}
+
+# The hub's and the API server's addresses are single hosts or small blocks: a /24 at most.
+test_deny_agent_egress_to_a_wide_hub_block if {
+	refused(agent_netpol([{"op": "replace", "path": "/spec/egress/0/to/0/ipBlock/cidr", "value": "203.0.0.0/16"}]), "unrecognised")
+}
+
+test_deny_agent_egress_to_a_private_range if {
+	refused(agent_netpol([{"op": "replace", "path": "/spec/egress/1/to/0/ipBlock/cidr", "value": "10.0.0.0/8"}]), "unrecognised")
+}
+
+test_agent_egress_to_a_slash_24_is_allowed if {
+	count(deny) == 0 with input as agent_netpol([{"op": "replace", "path": "/spec/egress/1/to/0/ipBlock/cidr", "value": "198.51.100.0/24"}])
+}
+
+# The hub may have several addresses: the rule is still one rule, for the hub.
+test_agent_egress_to_several_hub_addresses_is_allowed if {
+	planted := agent_netpol([{"op": "add", "path": "/spec/egress/0/to/-", "value": {"ipBlock": {"cidr": "203.0.113.11/32"}}}, {"op": "add", "path": "/spec/egress/1/to/-", "value": {"ipBlock": {"cidr": "198.51.100.3/32"}}}])
+	count(deny) == 0 with input as planted
+}
+
+test_deny_agent_egress_block_with_exceptions if {
+	refused(agent_netpol([{"op": "add", "path": "/spec/egress/0/to/0/ipBlock/except", "value": ["203.0.113.1/32"]}]), "unrecognised")
+}
+
+# Two rules for the two endpoints, the hub and the API server (HARDENING.md): a third one is a destination the agent does not have.
+test_deny_agent_egress_to_a_third_endpoint if {
+	refused(agent_add_egress({"to": [{"ipBlock": {"cidr": "192.0.2.77/32"}}], "ports": [tcp(443)]}), "exactly")
+}
+
+test_deny_agent_egress_with_a_missing_endpoint if {
+	refused(agent_netpol([{"op": "remove", "path": "/spec/egress/1"}]), "exactly")
+}
+
+test_deny_agent_egress_to_the_hub_on_another_port if {
+	refused(agent_netpol([{"op": "add", "path": "/spec/egress/0/ports/-", "value": tcp(8444)}]), "exactly")
+}
+
+test_deny_agent_egress_to_the_hub_on_ssh if {
+	refused(agent_netpol([{"op": "replace", "path": "/spec/egress/0/ports/0/port", "value": 22}]), "exactly")
+}
+
+test_deny_agent_egress_missing_config_server if {
+	refused(agent_netpol([{"op": "remove", "path": "/spec/egress/2"}]), "exactly")
+}
+
+test_deny_agent_egress_to_the_config_server_on_another_port if {
+	refused(agent_netpol([{"op": "replace", "path": "/spec/egress/2/ports/0/port", "value": 8080}]), "exactly")
+}
+
+test_deny_agent_egress_to_the_config_server_in_another_namespace if {
+	planted := agent_netpol([{"op": "add", "path": "/spec/egress/2/to/0/namespaceSelector", "value": {"matchLabels": {"kubernetes.io/metadata.name": "other"}}}])
+	refused(planted, "unrecognised")
+}
+
+test_deny_agent_egress_to_other_pods_on_the_config_server_port if {
+	refused(agent_netpol([{"op": "replace", "path": "/spec/egress/2/to/0/podSelector/matchLabels", "value": {"app": "something-else"}}]), "unrecognised")
+}
+
+test_deny_agent_egress_missing_metadata_server if {
+	refused(agent_netpol([{"op": "remove", "path": "/spec/egress/3"}]), "exactly")
+}
+
+test_deny_agent_egress_to_the_metadata_range if {
+	refused(agent_netpol([{"op": "replace", "path": "/spec/egress/3/to/0/ipBlock/cidr", "value": "169.254.0.0/16"}]), "unrecognised")
+}
+
+test_deny_agent_egress_missing_dns if {
+	refused(agent_netpol([{"op": "remove", "path": "/spec/egress/4"}]), "exactly")
+}
+
+test_deny_agent_egress_to_dns_in_every_namespace if {
+	refused(agent_netpol([{"op": "remove", "path": "/spec/egress/4/to/0/namespaceSelector"}]), "unrecognised")
+}
+
+# An FQDN policy beside the agent's own would let it reach hosts by name that the NetworkPolicy does not list.
+test_deny_agent_with_an_fqdn_policy if {
+	refused(fixtures.agent_with_doc(fixtures.fqdnpolicy), "FQDNNetworkPolicy")
+}
+
+# --- the agent: who may reach the health port
+
+test_deny_agent_ingress_from_everywhere if {
+	refused(agent_netpol([{"op": "replace", "path": "/spec/ingress", "value": [{"ports": [tcp(9090)]}]}]), "names no callers")
+}
+
+test_deny_agent_ingress_from_another_namespace if {
+	refused(agent_netpol([{"op": "replace", "path": "/spec/ingress/0/from/0/namespaceSelector/matchLabels", "value": {"kubernetes.io/metadata.name": "other"}}]), "monitoring")
+}
+
+test_deny_agent_ingress_on_another_port if {
+	refused(agent_netpol([{"op": "replace", "path": "/spec/ingress/0/ports/0/port", "value": 8080}]), "9090")
+}
+
+test_deny_agent_ingress_from_a_block if {
+	refused(agent_add_ingress({"from": [{"ipBlock": {"cidr": "198.51.100.0/24"}}], "ports": [tcp(9090)]}), "monitoring")
+}
+
+test_deny_agent_ingress_from_the_cluster if {
+	refused(agent_add_ingress({"from": [{"podSelector": {}}], "ports": [tcp(9090)]}), "monitoring")
+}
+
+# The agent has no door of its own: its only Service-shaped surface would be a load balancer, and the hub's is the one that exists.
+test_deny_agent_load_balancer if {
+	lb := {"apiVersion": "v1", "kind": "Service", "metadata": {"name": "lanekeeper-agent", "namespace": "lanekeeper"}, "spec": {"type": "LoadBalancer", "ports": [{"port": 9090}]}}
+	refused(fixtures.agent_with_doc(lb), "LoadBalancer")
+}

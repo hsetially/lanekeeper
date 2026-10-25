@@ -614,3 +614,147 @@ deny contains msg if {
 	count(priorities) != count({x | some x in priorities})
 	msg := sprintf("%s: two rules have one priority; the order of evaluation would be undefined (S18)", [lk.who(p)])
 }
+
+# --- the agent: default deny, and the five destinations of crates/agent/HARDENING.md (S17, S18) ----------------------------------
+
+# Everything the agent says goes to one of five places: the hub and the Kubernetes API server (two IP blocks on 443, each no wider
+# than a /24), the config-server's pods in its own namespace (8888), the metadata server (80) and kube-dns (53). Everything else is
+# denied, and the agent has no external host by name.
+agent_selector := {"app.kubernetes.io/name": "lanekeeper-agent"}
+
+agent_policies := lk.named("NetworkPolicy", lk.agent_name)
+
+metadata_cidr := "169.254.169.254/32"
+
+# An address block as small as the contract allows: IPv4 /24 at most, IPv6 /64 at most, a plain block without exceptions.
+narrow(cidr) if {
+	not contains(cidr, ":")
+	lk.prefix_length(cidr) >= 24
+}
+
+narrow(cidr) if {
+	contains(cidr, ":")
+	lk.prefix_length(cidr) >= 64
+}
+
+agent_destination(d) := "metadata" if {
+	d.ipBlock.cidr == metadata_cidr
+	not d.ipBlock.except
+}
+
+agent_destination(d) := "endpoint" if {
+	d.ipBlock.cidr != metadata_cidr
+	not d.ipBlock.except
+	narrow(d.ipBlock.cidr)
+}
+
+agent_destination(d) := "dns" if {
+	d.namespaceSelector.matchLabels == {"kubernetes.io/metadata.name": "kube-system"}
+	d.podSelector.matchLabels == {"k8s-app": "kube-dns"}
+}
+
+agent_destination(d) := "config-server" if {
+	d.podSelector.matchLabels == {"app": "csp-configuration-server"}
+	not d.namespaceSelector
+}
+
+deny contains msg if {
+	count(lk.agent_deployments) > 0
+	count(agent_policies) == 0
+	msg := "NetworkPolicy/lanekeeper-agent is missing: nothing denies by default for the agent's pod (S17, S18)"
+}
+
+deny contains msg if {
+	some p in agent_policies
+	missing := {"Ingress", "Egress"} - {t | some t in object.get(p.spec, "policyTypes", [])}
+	count(missing) > 0
+	msg := sprintf("%s: not default deny: policyTypes must list Ingress and Egress, %v is missing (S17, S18)", [lk.who(p), sort(missing)])
+}
+
+deny contains msg if {
+	some p in agent_policies
+	object.get(p.spec.podSelector, "matchLabels", {}) != agent_selector
+	msg := sprintf("%s: it selects pods other than the agent's; an empty selector is every pod (S18)", [lk.who(p)])
+}
+
+deny contains msg if {
+	some p in agent_policies
+	some rule in egress_rules(p)
+	count(object.get(rule, "to", [])) == 0
+	msg := sprintf("%s: an egress rule allows every destination (it has no `to`) (S17)", [lk.who(p)])
+}
+
+deny contains msg if {
+	some p in agent_policies
+	some rule in egress_rules(p)
+	count(object.get(rule, "ports", [])) == 0
+	msg := sprintf("%s: an egress rule allows every port (it has no `ports`) (S17)", [lk.who(p)])
+}
+
+deny contains msg if {
+	some p in agent_policies
+	some rule in egress_rules(p)
+	some d in object.get(rule, "to", [])
+	not agent_destination(d)
+	msg := sprintf("%s: an unrecognised egress destination: %v; an address block is a /24 at most and has no exceptions (S17)", [lk.who(p), d])
+}
+
+agent_pairs(p) := {sprintf("%s %s/%d", [agent_destination(d), object.get(port, "protocol", "TCP"), port.port]) |
+	some rule in egress_rules(p)
+	some d in object.get(rule, "to", [])
+	some port in object.get(rule, "ports", [])
+}
+
+expected_agent_egress := {"endpoint TCP/443", "config-server TCP/8888", "metadata TCP/80", "dns UDP/53", "dns TCP/53"}
+
+deny contains msg if {
+	some p in agent_policies
+	agent_pairs(p) != expected_agent_egress
+	msg := sprintf("%s: egress must be exactly %v; found %v (S17)", [lk.who(p), sort(expected_agent_egress), sort(agent_pairs(p))])
+}
+
+# The hub and the API server each have a rule of their own (HARDENING.md has two blocks on 443). One rule, or three, is another agent.
+endpoint_rules(p) := {i |
+	some i, rule in egress_rules(p)
+	some d in object.get(rule, "to", [])
+	agent_destination(d) == "endpoint"
+}
+
+deny contains msg if {
+	some p in agent_policies
+	count(endpoint_rules(p)) != 2
+	msg := sprintf("%s: egress must have exactly two rules for address blocks, the hub and the Kubernetes API server; found %d (S17)", [lk.who(p), count(endpoint_rules(p))])
+}
+
+# The agent reaches no host by name: a FQDNNetworkPolicy beside its own would widen what it can reach.
+deny contains msg if {
+	count(lk.agent_deployments) > 0
+	some p in lk.of_kind("FQDNNetworkPolicy")
+	msg := sprintf("%s: the agent reaches the hub and the API server by address and no host by name; a FQDNNetworkPolicy widens its egress (S17)", [lk.who(p)])
+}
+
+# Ingress: Prometheus, from the monitoring namespace, on the health port, and no one else.
+deny contains msg if {
+	some p in agent_policies
+	some rule in ingress_rules(p)
+	count(object.get(rule, "from", [])) == 0
+	msg := sprintf("%s: an ingress rule names no callers (empty or missing `from` admits everyone) (S18)", [lk.who(p)])
+}
+
+deny contains msg if {
+	some p in agent_policies
+	some rule in ingress_rules(p)
+	count(object.get(rule, "from", [])) > 0
+	not from_monitoring(rule.from)
+	msg := sprintf("%s: ingress is from the monitoring namespace only, not %v (S18)", [lk.who(p), rule.from])
+}
+
+# (A call inside `not` is evaluated before it, so an undefined `caller` would make the whole rule undefined and admit the rule.)
+from_monitoring(from) if caller(from) == "monitoring"
+
+deny contains msg if {
+	some p in agent_policies
+	some rule in ingress_rules(p)
+	{[port.protocol, port.port] | some port in object.get(rule, "ports", [])} != {["TCP", 9090]}
+	msg := sprintf("%s: ingress is on the health port, TCP 9090, and nothing else (S18)", [lk.who(p)])
+}

@@ -2,43 +2,43 @@
 # custom resource has a field its schema does not have, and the last kind has no schema at all, which is an error and not a skip.
 apiVersion: networking.gke.io/v1
 kind: GCPBackendPolicy
-metadata: {name: planted, namespace: n}
+metadata: {name: planted, namespace: planted-ns}
 spec:
   default: {securityPolicy: x, bogusField: 1}
   targetRef: {group: "", kind: Service, name: s}
 ---
 apiVersion: networking.gke.io/v1
 kind: HealthCheckPolicy
-metadata: {name: planted, namespace: n}
+metadata: {name: planted, namespace: planted-ns}
 spec:
   default: {checkIntervalSec: 5, bogusField: 1}
   targetRef: {group: "", kind: Service, name: s}
 ---
 apiVersion: networking.gke.io/v1alpha1
 kind: FQDNNetworkPolicy
-metadata: {name: planted, namespace: n}
+metadata: {name: planted, namespace: planted-ns}
 spec:
   podSelector: {matchLabels: {a: b}}
   bogusField: 1
-  egress: []
+  egress: [{matches: [{pattern: example.com}], ports: [{protocol: TCP, port: 443}]}]
 ---
 apiVersion: compute.cnrm.cloud.google.com/v1beta1
 kind: ComputeSecurityPolicy
-metadata: {name: planted, namespace: n}
+metadata: {name: planted, namespace: planted-ns}
 spec:
   bogusField: 1
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
-metadata: {name: planted, namespace: n}
+metadata: {name: planted, namespace: planted-ns}
 spec:
   gatewayClassName: x
   bogusField: 1
-  listeners: []
+  listeners: [{name: l, protocol: HTTPS, port: 443}]
 ---
 apiVersion: apps/v1
 kind: StatefulSet
-metadata: {name: planted, namespace: n}
+metadata: {name: planted, namespace: planted-ns}
 spec:
   bogusField: 1
   serviceName: s
@@ -47,6 +47,43 @@ spec:
     metadata: {labels: {a: b}}
     spec: {containers: [{name: c, image: x}]}
 ---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: planted, namespace: planted-ns}
+spec:
+  bogusField: 1
+  selector: {matchLabels: {a: b}}
+  template:
+    metadata: {labels: {a: b}}
+    spec: {containers: [{name: c, image: x}]}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: planted, namespace: planted-ns}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get]
+    bogusField: 1
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: planted, namespace: planted-ns}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: r, bogusField: 1}
+subjects: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: planted, namespace: planted-ns}
+spec:
+  bogusField: 1
+  podSelector: {}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: planted, namespace: planted-ns}
+bogusField: 1
+---
 apiVersion: networking.gke.io/v1
 kind: SomethingWithoutASchema
-metadata: {name: planted, namespace: n}
+metadata: {name: planted, namespace: planted-ns}

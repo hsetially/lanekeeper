@@ -919,7 +919,15 @@ policy-check: (ops-tools-check "helm") images-tools-check
 deploy-planted: (ops-tools-check "helm kubeconform") images-tools-check
     deploy/tests/render.sh planted
 
-# The hub chart names only variables that crates/hub/src/config.rs reads, and the tool that finds them is shown to refuse a typo.
+# The agent chart's rendered Roles, NetworkPolicy and pod against the contract files of the agent's owner: crates/agent/RBAC.md and
+# crates/agent/HARDENING.md. The YAML blocks of the two files are extracted (and the extraction is shown to refuse a file it cannot
+# read), then deploy/policy/contract.rego compares them with the real output of the chart (09/T4; S16, S17).
+contract-check: (ops-tools-check "helm") images-tools-check
+    deploy/tests/contract-extract.sh --self-test
+    deploy/tests/render.sh contract
+
+# The charts name only variables that the binaries read (crates/hub/src/config.rs, crates/agent/src/config.rs), and the tool that
+# finds them is shown to refuse a typo.
 env-names-test:
     deploy/tests/env-names.sh --self-test
     deploy/tests/env-names.sh
@@ -929,9 +937,9 @@ tools-test:
     node --test deploy/tools/*.test.mjs
 
 # Everything that checks the charts (what the deploy workflow runs): schemas, lint, kubeconform, the policies and their planted cases.
-deploy-check: schemas-verify deploy-lint deploy-render policy-test policy-check deploy-planted env-names-test tools-test
+deploy-check: schemas-verify deploy-lint deploy-render policy-test policy-check contract-check deploy-planted env-names-test tools-test
 
-# The T3 gate so far (T4 to T8 add to it): the pinned tools, the workflow lint, the pin tests, the image checks, and the charts.
+# The T4 gate so far (T5 to T8 add to it): the pinned tools, the workflow lint, the pin tests, the image checks, and the charts.
 verify-09: ops-tools-check ci-lint pins-test images-policy-test images-builder-test images-publish-test deploy-check
 verify-11:
     @echo "verify-11 not implemented yet" && exit 1

@@ -11,10 +11,25 @@ import data.lk
 
 # --- the pod ----------------------------------------------------------------------------------------------------------
 
+# No pod mounts a service-account token unless its work needs the Kubernetes API, and then it says so. The one pod that does is the
+# agent (crates/agent/HARDENING.md, S16): it watches workloads, patches the restart annotation and updates its certificate Secret.
+needs_token(doc) if {
+	doc.kind == "Deployment"
+	doc.metadata.name == lk.agent_name
+}
+
 deny contains msg if {
 	some p in lk.pods
+	not needs_token(p.doc)
 	object.get(p.spec, "automountServiceAccountToken", true) != false
 	msg := sprintf("%s: automountServiceAccountToken must be stated and false (S16)", [lk.who(p.doc)])
+}
+
+deny contains msg if {
+	some p in lk.pods
+	needs_token(p.doc)
+	object.get(p.spec, "automountServiceAccountToken", null) != true
+	msg := sprintf("%s: automountServiceAccountToken must be stated and true: the agent calls the Kubernetes API with it (crates/agent/HARDENING.md)", [lk.who(p.doc)])
 }
 
 deny contains msg if {
@@ -189,3 +204,97 @@ probes_ok(c) if {
 	probe_port(c, "livenessProbe") == "ops"
 	probe_port(c, "readinessProbe") == "ops"
 }
+
+# --- the agent's own contract (crates/agent/HARDENING.md; 09/T4) ----------------------------------------------------------------
+#
+# One replica, its own service account (the Roles are bound to it), one port (ops 9090), the probes of the contract, volumes from
+# the four it has (the NFS export, /tmp, the spool, the hub's CA), writable only where the code writes, and the paths it is given
+# are the paths of its mounts. The spool volume arrives with T8, which adds its rules; the names below already allow it.
+
+agent_volumes := {"nfs", "tmp", "spool", "hub-ca"}
+
+agent_writable_volumes := {"nfs", "tmp", "spool"}
+
+agent_containers := [{"doc": d, "container": c} | some d in lk.agent_deployments; some c in d.spec.template.spec.containers]
+
+deny contains msg if {
+	some d in lk.agent_deployments
+	object.get(d.spec, "replicas", 0) != 1
+	msg := sprintf("%s: the agent runs 1 replica, not %v: two agents would write the same export and share one identity (crates/agent/HARDENING.md)", [lk.who(d), object.get(d.spec, "replicas", "unset")])
+}
+
+deny contains msg if {
+	some d in lk.agent_deployments
+	object.get(d.spec.template.spec, "serviceAccountName", "default") != lk.agent_name
+	msg := sprintf("%s: serviceAccountName must be %s, the account its Roles are bound to (crates/agent/HARDENING.md)", [lk.who(d), lk.agent_name])
+}
+
+deny contains msg if {
+	some x in agent_containers
+	declared := {[p.name, p.containerPort] | some p in object.get(x.container, "ports", [])}
+	declared != {["ops", 9090]}
+	msg := sprintf("%s: the container ports must be exactly ops 9090 (crates/agent/HARDENING.md)", [lk.who(x.doc)])
+}
+
+deny contains msg if {
+	some x in agent_containers
+	not probes_ok(x.container)
+	msg := sprintf("%s: the probes must be /healthz (liveness) and /readyz (readiness) on the ops port (crates/agent/HARDENING.md)", [lk.who(x.doc)])
+}
+
+agent_volume_list(d) := object.get(d.spec.template.spec, "volumes", [])
+
+deny contains msg if {
+	some d in lk.agent_deployments
+	some v in agent_volume_list(d)
+	not v.name in agent_volumes
+	msg := sprintf("%s: volume %s is not one of the agent's %v (crates/agent/HARDENING.md)", [lk.who(d), v.name, sort(agent_volumes)])
+}
+
+deny contains msg if {
+	some d in lk.agent_deployments
+	some v in agent_volume_list(d)
+	v.name == "nfs"
+	not "nfs" in object.keys(v)
+	msg := sprintf("%s: volume nfs must be an NFS volume, the export the agent keeps in sync (crates/agent/HARDENING.md)", [lk.who(d)])
+}
+
+deny contains msg if {
+	some d in lk.agent_deployments
+	some v in agent_volume_list(d)
+	v.name == "hub-ca"
+	not "configMap" in object.keys(v)
+	msg := sprintf("%s: volume hub-ca must be the ConfigMap of the hub's CA, not a Secret or anything else (crates/agent/HARDENING.md)", [lk.who(d)])
+}
+
+deny contains msg if {
+	some x in agent_containers
+	some m in object.get(x.container, "volumeMounts", [])
+	object.get(m, "readOnly", false) != true
+	not m.name in agent_writable_volumes
+	msg := sprintf("%s: %s is mounted writable; only %v may be (crates/agent/HARDENING.md)", [lk.who(x.doc), m.name, sort(agent_writable_volumes)])
+}
+
+mount_path(c, volume) := m.mountPath if {
+	some m in object.get(c, "volumeMounts", [])
+	m.name == volume
+}
+
+# LK_NFS_ROOT and LK_TMP_DIR are the mount paths of the volumes they name, and LK_HUB_CA_FILE is a file inside the hub-ca mount.
+# The agent writes where its variables say, so a variable that names another path is a write to the read-only root.
+deny contains msg if {
+	some x in agent_containers
+	some pair in [["LK_NFS_ROOT", "nfs"], ["LK_TMP_DIR", "tmp"]]
+	not path_is_mount(x.container, pair[0], pair[1])
+	msg := sprintf("%s: %s must be the path of the %s mount (crates/agent/HARDENING.md)", [lk.who(x.doc), pair[0], pair[1]])
+}
+
+path_is_mount(c, variable, volume) if lk.env_value(c, variable) == mount_path(c, volume)
+
+deny contains msg if {
+	some x in agent_containers
+	not hub_ca_file_in_mount(x.container)
+	msg := sprintf("%s: LK_HUB_CA_FILE must be a file inside the hub-ca mount (crates/agent/HARDENING.md)", [lk.who(x.doc)])
+}
+
+hub_ca_file_in_mount(c) if startswith(lk.env_value(c, "LK_HUB_CA_FILE"), concat("", [mount_path(c, "hub-ca"), "/"]))

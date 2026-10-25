@@ -1,4 +1,4 @@
-# The Helm charts (09/T3; D62, S6, S7, S10, S16, S18, P11): every chart rendered with every values file, then kubeconform -strict
+# The Helm charts (09/T3, T4; D62, S6, S7, S10, S16, S17, S18, P11): every chart rendered with every values file, then kubeconform -strict
 # against the vendored schemas (offline: a kind without a schema is an error), then the Rego policies on the real output, then
 # the same checks on planted violations, which must each be refused for their own reason. `just deploy-check` is what runs here,
 # so a developer runs exactly what CI runs.
@@ -22,6 +22,10 @@ on:
       - "deploy/images/tools.env"
       - "crates/hub/HARDENING.md"
       - "crates/hub/src/config.rs"
+      # The agent chart is checked against these (contract.rego, env-names.sh): a change to one must run the check.
+      - "crates/agent/RBAC.md"
+      - "crates/agent/HARDENING.md"
+      - "crates/agent/src/config.rs"
       - "perf/budgets.toml"
       - "Justfile"
       - ".github/workflows/deploy.yml"

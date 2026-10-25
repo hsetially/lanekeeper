@@ -236,3 +236,226 @@ test_deny_liveness_on_the_wrong_path if {
 test_deny_readiness_missing if {
 	refused(fixtures.sts_remove("/spec/template/spec/containers/0/readinessProbe"), "probes")
 }
+
+# ============================================================================================================================
+# The agent (09/T4; S16, S17): the same fields as the hub, one planted case per field, and the agent's own contract
+# (crates/agent/HARDENING.md): it calls the Kubernetes API, so its token is mounted; one replica; the writable mounts are the NFS
+# export, /tmp and the spool; the paths it is given are the paths of its mounts.
+# ============================================================================================================================
+
+agent_pod := "/spec/template/spec/"
+
+agent_c := "/spec/template/spec/containers/0/"
+
+test_agent_good_passes if {
+	count(deny) == 0 with input as fixtures.agent
+}
+
+# --- the pod's security context (S16)
+
+test_agent_deny_run_as_non_root_missing if {
+	refused(fixtures.agent_remove(concat("", [agent_pod, "securityContext/runAsNonRoot"])), "runAsNonRoot")
+}
+
+test_agent_deny_run_as_non_root_false if {
+	refused(fixtures.agent_set(concat("", [agent_pod, "securityContext/runAsNonRoot"]), false), "runAsNonRoot")
+}
+
+test_agent_deny_run_as_root_user if {
+	refused(fixtures.agent_set(concat("", [agent_pod, "securityContext/runAsUser"]), 0), "runAsUser")
+}
+
+test_agent_deny_run_as_user_missing if {
+	refused(fixtures.agent_remove(concat("", [agent_pod, "securityContext/runAsUser"])), "runAsUser")
+}
+
+test_agent_deny_run_as_root_group if {
+	refused(fixtures.agent_set(concat("", [agent_pod, "securityContext/runAsGroup"]), 0), "runAsGroup")
+}
+
+test_agent_deny_run_as_group_missing if {
+	refused(fixtures.agent_remove(concat("", [agent_pod, "securityContext/runAsGroup"])), "runAsGroup")
+}
+
+test_agent_deny_seccomp_missing if {
+	refused(fixtures.agent_remove(concat("", [agent_pod, "securityContext/seccompProfile"])), "seccomp")
+}
+
+test_agent_deny_seccomp_unconfined if {
+	refused(fixtures.agent_set(concat("", [agent_pod, "securityContext/seccompProfile/type"]), "Unconfined"), "seccomp")
+}
+
+# --- the container's security context (S16)
+
+test_agent_deny_privilege_escalation_missing if {
+	refused(fixtures.agent_remove(concat("", [agent_c, "securityContext/allowPrivilegeEscalation"])), "allowPrivilegeEscalation")
+}
+
+test_agent_deny_privilege_escalation_true if {
+	refused(fixtures.agent_set(concat("", [agent_c, "securityContext/allowPrivilegeEscalation"]), true), "allowPrivilegeEscalation")
+}
+
+test_agent_deny_privileged if {
+	refused(fixtures.agent_set(concat("", [agent_c, "securityContext/privileged"]), true), "privileged")
+}
+
+test_agent_deny_writable_root_missing if {
+	refused(fixtures.agent_remove(concat("", [agent_c, "securityContext/readOnlyRootFilesystem"])), "readOnlyRootFilesystem")
+}
+
+test_agent_deny_writable_root_false if {
+	refused(fixtures.agent_set(concat("", [agent_c, "securityContext/readOnlyRootFilesystem"]), false), "readOnlyRootFilesystem")
+}
+
+test_agent_deny_drop_all_missing if {
+	refused(fixtures.agent_remove(concat("", [agent_c, "securityContext/capabilities"])), "drop ALL")
+}
+
+test_agent_deny_drop_something_else if {
+	refused(fixtures.agent_set(concat("", [agent_c, "securityContext/capabilities/drop"]), ["NET_RAW"]), "drop ALL")
+}
+
+test_agent_deny_added_capability if {
+	planted := fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "add", "path": concat("", [agent_c, "securityContext/capabilities/add"]), "value": ["NET_ADMIN"]}])
+	refused(planted, "adds capabilities")
+}
+
+# --- resources (S16)
+
+test_agent_deny_requests_cpu_missing if {
+	refused(fixtures.agent_remove(concat("", [agent_c, "resources/requests/cpu"])), "resources.requests.cpu")
+}
+
+test_agent_deny_requests_memory_missing if {
+	refused(fixtures.agent_remove(concat("", [agent_c, "resources/requests/memory"])), "resources.requests.memory")
+}
+
+test_agent_deny_limits_cpu_missing if {
+	refused(fixtures.agent_remove(concat("", [agent_c, "resources/limits/cpu"])), "resources.limits.cpu")
+}
+
+test_agent_deny_limits_memory_missing if {
+	refused(fixtures.agent_remove(concat("", [agent_c, "resources/limits/memory"])), "resources.limits.memory")
+}
+
+# --- the token and the host
+
+# The agent is a Kubernetes client (restarts, watches, its certificate Secret), so its token is mounted: that is its contract, and
+# a pod that cannot call the API cannot do its job. Every other pod mounts none.
+test_agent_deny_token_automount_missing if {
+	refused(fixtures.agent_remove(concat("", [agent_pod, "automountServiceAccountToken"])), "must be stated and true")
+}
+
+test_agent_deny_token_automount_false if {
+	refused(fixtures.agent_set(concat("", [agent_pod, "automountServiceAccountToken"]), false), "must be stated and true")
+}
+
+test_deny_token_automount_true_on_another_deployment if {
+	planted := fixtures.agent_with_doc(json.patch(fixtures.agent_deployment, [
+		{"op": "replace", "path": "/metadata/name", "value": "lanekeeper-other"},
+	]))
+	refused(planted, "must be stated and false")
+}
+
+test_agent_deny_host_network if {
+	refused(fixtures.agent_patch("Deployment", "lanekeeper-agent", [fixtures.agent_pod_op("add", "hostNetwork", true)]), "hostNetwork")
+}
+
+test_agent_deny_host_pid if {
+	refused(fixtures.agent_patch("Deployment", "lanekeeper-agent", [fixtures.agent_pod_op("add", "hostPID", true)]), "hostPID")
+}
+
+test_agent_deny_host_ipc if {
+	refused(fixtures.agent_patch("Deployment", "lanekeeper-agent", [fixtures.agent_pod_op("add", "hostIPC", true)]), "hostIPC")
+}
+
+test_agent_deny_host_path_volume if {
+	planted := fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "add", "path": concat("", [agent_pod, "volumes/-"]), "value": {"name": "host", "hostPath": {"path": "/"}}}])
+	refused(planted, "hostPath")
+}
+
+test_agent_deny_host_port if {
+	refused(fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "add", "path": concat("", [agent_c, "ports/0/hostPort"]), "value": 9090}]), "hostPort")
+}
+
+# --- the agent's contract (crates/agent/HARDENING.md)
+
+test_agent_deny_two_replicas if {
+	refused(fixtures.agent_set("/spec/replicas", 2), "1 replica")
+}
+
+test_agent_deny_no_replica_count if {
+	refused(fixtures.agent_remove("/spec/replicas"), "1 replica")
+}
+
+test_agent_deny_another_service_account if {
+	refused(fixtures.agent_set(concat("", [agent_pod, "serviceAccountName"]), "default"), "serviceAccountName")
+}
+
+test_agent_deny_the_default_service_account if {
+	refused(fixtures.agent_remove(concat("", [agent_pod, "serviceAccountName"])), "serviceAccountName")
+}
+
+test_agent_deny_extra_port if {
+	planted := fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "add", "path": concat("", [agent_c, "ports/-"]), "value": {"name": "debug", "containerPort": 6060, "protocol": "TCP"}}])
+	refused(planted, "ports")
+}
+
+test_agent_deny_ops_port_moved if {
+	refused(fixtures.agent_set(concat("", [agent_c, "ports/0/containerPort"]), 8080), "ports")
+}
+
+test_agent_deny_liveness_on_the_wrong_path if {
+	refused(fixtures.agent_set(concat("", [agent_c, "livenessProbe/httpGet/path"]), "/readyz"), "probes")
+}
+
+test_agent_deny_readiness_missing if {
+	refused(fixtures.agent_remove(concat("", [agent_c, "readinessProbe"])), "probes")
+}
+
+test_agent_deny_extra_volume if {
+	planted := fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "add", "path": concat("", [agent_pod, "volumes/-"]), "value": {"name": "scratch", "emptyDir": {}}}])
+	refused(planted, "scratch")
+}
+
+test_agent_deny_secret_volume if {
+	planted := fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "add", "path": concat("", [agent_pod, "volumes/-"]), "value": {"name": "keys", "secret": {"secretName": "something"}}}])
+	refused(planted, "keys")
+}
+
+test_agent_deny_the_export_as_something_else if {
+	refused(fixtures.agent_set(concat("", [agent_pod, "volumes/0"]), {"name": "nfs", "emptyDir": {}}), "an NFS volume")
+}
+
+test_agent_deny_the_hub_ca_as_a_secret if {
+	refused(fixtures.agent_set(concat("", [agent_pod, "volumes/2"]), {"name": "hub-ca", "secret": {"secretName": "lanekeeper-hub-ca"}}), "ConfigMap")
+}
+
+test_agent_deny_hub_ca_mounted_writable if {
+	refused(fixtures.agent_remove(concat("", [agent_c, "volumeMounts/2/readOnly"])), "writable")
+}
+
+test_agent_deny_extra_writable_mount if {
+	planted := fixtures.agent_patch("Deployment", "lanekeeper-agent", [
+		{"op": "add", "path": concat("", [agent_pod, "volumes/-"]), "value": {"name": "scratch", "emptyDir": {}}},
+		{"op": "add", "path": concat("", [agent_c, "volumeMounts/-"]), "value": {"name": "scratch", "mountPath": "/scratch"}},
+	])
+	refused(planted, "writable")
+}
+
+# The paths the agent is given are the paths of its mounts (the agent test does the same for the contract).
+test_agent_deny_nfs_root_that_is_not_the_mount if {
+	refused(fixtures.agent_set(concat("", [agent_c, "env/8/value"]), "/mnt/elsewhere"), "LK_NFS_ROOT")
+}
+
+test_agent_deny_tmp_dir_that_is_not_the_mount if {
+	refused(fixtures.agent_set(concat("", [agent_c, "env/12/value"]), "/var/tmp"), "LK_TMP_DIR")
+}
+
+test_agent_deny_hub_ca_file_outside_the_mount if {
+	refused(fixtures.agent_set(concat("", [agent_c, "env/2/value"]), "/etc/ssl/ca.pem"), "LK_HUB_CA_FILE")
+}
+
+test_agent_deny_nfs_root_missing if {
+	refused(fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "remove", "path": concat("", [agent_c, "env/8"])}]), "LK_NFS_ROOT")
+}

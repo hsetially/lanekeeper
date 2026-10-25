@@ -4,6 +4,7 @@
 #   deploy/tests/render.sh lint      helm lint --strict
 #   deploy/tests/render.sh render    helm template | kubeconform -strict, offline, with the vendored schemas
 #   deploy/tests/render.sh policy    helm template | conftest (deploy/policy), with perf/budgets.toml and the values files
+#   deploy/tests/render.sh contract  the agent chart's Roles, NetworkPolicy and pod against crates/agent/RBAC.md and HARDENING.md
 #   deploy/tests/render.sh planted   the checks above must FAIL on planted violations, each for its own reason
 #   deploy/tests/render.sh all       all of them
 #
@@ -19,8 +20,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 export PATH="$PWD/target/ops-tools/bin:$PATH"
 
 mode="${1:-all}"
-case "$mode" in lint | render | policy | planted | all) ;; *)
-    echo "usage: deploy/tests/render.sh lint|render|policy|planted|all" >&2
+case "$mode" in lint | render | policy | contract | planted | all) ;; *)
+    echo "usage: deploy/tests/render.sh lint|render|policy|contract|planted|all" >&2
     exit 2
     ;;
 esac
@@ -50,8 +51,11 @@ schema_args=(
     -schema-location 'deploy/schemas/crds/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
 )
 hook_ranges=deploy/values/hub/github-hook-ranges.yaml
-# Every namespace of the manifest policies. dockerfile.rego is for Dockerfiles and is run by `just images-policy-test`.
-policy_namespaces=(hardening secrets topology resources storage network)
+# Every namespace of the manifest policies. dockerfile.rego is for Dockerfiles and is run by `just images-policy-test`; contract.rego
+# needs the two contract files and is run apart (`contract` mode).
+policy_namespaces=(hardening secrets topology resources storage network rbac)
+# The agent chart refuses to render without the hub's CA, which no values file carries (deploy/tests/testdata/README.md).
+synthetic_hub_ca=deploy/tests/testdata/synthetic-hub-ca.pem
 
 conftest() { docker run --rm -i -v "$PWD:/repo:ro" -v "$work:/work:ro" -w /repo "$LK_CONFTEST_IMAGE" "$@"; }
 
@@ -63,18 +67,24 @@ for chart in hub gcp; do
         [ -f "deploy/values/$chart/$env.yaml" ] && combos+=("$chart:$env")
     done
 done
+# The agent has one values file per swimlane (deploy/values/agent/<swimlane>.yaml).
+for f in deploy/values/agent/*.yaml; do
+    [ -f "$f" ] && combos+=("agent:$(basename "$f" .yaml)")
+done
 [ ${#combos[@]} -gt 0 ] || {
     echo "render.sh: no values files under deploy/values" >&2
     exit 1
 }
 
-namespace_of() { case "$1" in hub) echo lanekeeper ;; gcp) echo lanekeeper-gcp ;; esac; }
+namespace_of() { case "$1" in hub | agent) echo lanekeeper ;; gcp) echo lanekeeper-gcp ;; esac; }
 
 # value_args CHART ENV: the -f arguments, in the order they apply.
 value_args() {
     local chart="$1" env="$2"
     [ "$chart" = gcp ] && printf -- '-f\n%s\n' "$hook_ranges"
     printf -- '-f\n%s\n' "deploy/values/$chart/$env.yaml"
+    [ "$chart" = agent ] && printf -- '--set-file\nhubCa.pem=%s\n' "$synthetic_hub_ca"
+    return 0
 }
 
 # render CHART ENV [helm args...] > output
@@ -103,6 +113,18 @@ check_policy() {
     conftest test --combine "${fail_on_warn[@]}" --policy deploy/policy "${ns[@]}" "${data[@]}" --no-color "/work/${rendered##*/}" "${files[@]:1}" || status=$?
     conftest test --combine --policy deploy/policy --namespace images --no-color "/work/${rendered##*/}" || status=$?
     return "$status"
+}
+
+# check_contract FILE: conftest over the agent chart's output and the two contract files, extracted from the Markdown that the
+# agent's owner wrote and the agent's own tests lint (crates/agent/RBAC.md and HARDENING.md). Prints the output; returns conftest's
+# status. The contract files are not part of check_policy's input: their Roles and Pod would be taken for the chart's.
+check_contract() {
+    local rendered="$1"
+    mkdir -p "$work/contract"
+    deploy/tests/contract-extract.sh crates/agent/RBAC.md "$work/contract/agent-rbac-contract.yaml" || return 1
+    deploy/tests/contract-extract.sh crates/agent/HARDENING.md "$work/contract/agent-hardening-contract.yaml" || return 1
+    conftest test --combine --policy deploy/policy --namespace contract --no-color "/work/${rendered##*/}" \
+        /work/contract/agent-rbac-contract.yaml /work/contract/agent-hardening-contract.yaml
 }
 
 # Every stage runs for every chart and environment, and reports every failure, so that one broken values file does not hide the
@@ -141,9 +163,19 @@ policy_one() {
     check_policy "$work/$chart-$env.yaml" "$chart" "$env" || return 1
 }
 
+# Only the agent chart has a contract file (RBAC.md, HARDENING.md); the other charts' contracts are in their policies.
+contract_one() {
+    local chart="$1" env="$2"
+    [ "$chart" = agent ] || return 0
+    echo "== contract $chart ($env)"
+    render "$chart" "$env" >"$work/$chart-$env.yaml" || return 1
+    check_contract "$work/$chart-$env.yaml" || return 1
+}
+
 lint() { each_combo lint_one; }
 kubeconform_all() { each_combo kubeconform_one; }
 policy_all() { each_combo policy_one; }
+contract_all() { each_combo contract_one; }
 
 # --- planted violations ---------------------------------------------------------------------------------------------------
 # Each case changes the real output of the chart (a line of text, so no YAML parser is needed), and the check that guards that
@@ -242,6 +274,234 @@ planted_hardening() {
     plant "an unencrypted volume class" hub prod 's/storageClassName: lanekeeper-hub-cmek/storageClassName: standard-rwo/' "customer-managed"
 }
 
+# --- the agent chart (09/T4): the same checks on the real output, one planted change at a time -----------------------------------------
+
+# append_doc FILE TEXT: the output with one more YAML document.
+append_doc() { printf '%s\n---\n%s\n' "$(cat "$1")" "$2"; }
+
+# plant_append NAME CHART ENV TEXT FRAGMENT: the rendered output with one more document, which the policies must refuse.
+plant_append() {
+    local name="$1" chart="$2" env="$3" text="$4" fragment="$5"
+    local good="$work/good-$chart-$env.yaml" bad="$work/planted.yaml"
+    [ -f "$good" ] || render "$chart" "$env" >"$good"
+    append_doc "$good" "$text" >"$bad"
+    expect_policy_failure "$name" "$bad" "$chart" "$env" "$fragment"
+}
+
+# expect_contract_failure NAME FILE FRAGMENT: the contract check must refuse FILE, for FRAGMENT.
+expect_contract_failure() {
+    local name="$1" file="$2" fragment="$3" out
+    if out="$(check_contract "$file" 2>&1)"; then
+        fail "$name: the contract check accepted it"
+    elif ! grep -qF -- "$fragment" <<<"$out"; then
+        fail "$name: refused, but not for '$fragment':"$'\n'"$out"
+    else
+        echo "  ok  $name"
+    fi
+}
+
+# plant_contract NAME SED FRAGMENT: apply SED to the agent's output, which must differ from it.
+plant_contract() {
+    local name="$1" expr="$2" fragment="$3"
+    local good="$work/good-agent-sit1.yaml" bad="$work/planted.yaml"
+    [ -f "$good" ] || render agent sit1 >"$good"
+    sed -E "$expr" "$good" >"$bad"
+    if cmp -s "$good" "$bad"; then
+        fail "$name: the sed expression changed nothing, so the case tests nothing"
+        return
+    fi
+    expect_contract_failure "$name" "$bad" "$fragment"
+}
+
+planted_agent() {
+    echo "== planted: the policies refuse the real output of the agent chart with one thing wrong"
+    local good="$work/good-agent-sit1.yaml"
+    render agent sit1 >"$good"
+    echo "-- the unchanged output passes"
+    check_policy "$good" agent sit1 >/dev/null || fail "the unchanged render of the agent chart was refused"
+    check_contract "$good" >/dev/null || fail "the unchanged render of the agent chart was refused by the contract check"
+
+    # S16: one case per field.
+    plant "runAsNonRoot" agent sit1 '/^ *runAsNonRoot: true$/d' "runAsNonRoot"
+    plant "runAsUser" agent sit1 '/^ *runAsUser: 1010$/d' "runAsUser"
+    plant "runAsGroup" agent sit1 '/^ *runAsGroup: 1010$/d' "runAsGroup"
+    plant "root" agent sit1 's/^( *)runAsUser: 1010$/\1runAsUser: 0/' "is root"
+    plant "seccomp" agent sit1 's/^( *)type: RuntimeDefault$/\1type: Unconfined/' "seccomp"
+    plant "allowPrivilegeEscalation" agent sit1 's/allowPrivilegeEscalation: false/allowPrivilegeEscalation: true/' "allowPrivilegeEscalation"
+    plant "privileged" agent sit1 's/privileged: false/privileged: true/' "privileged"
+    plant "readOnlyRootFilesystem" agent sit1 's/readOnlyRootFilesystem: true/readOnlyRootFilesystem: false/' "readOnlyRootFilesystem"
+    plant "drop ALL" agent sit1 's/drop: \["ALL"\]/drop: ["NET_RAW"]/' "drop ALL"
+    plant "requests.cpu" agent sit1 '/^ *cpu: 25m$/d' "resources.requests.cpu"
+    plant "limits.cpu" agent sit1 '/^ *cpu: "1"$/d' "resources.limits.cpu"
+    plant "limits.memory" agent sit1 '/^ *memory: 128Mi$/d' "resources.limits.memory"
+    plant "requests.memory" agent sit1 '/^ *memory: 64Mi$/d' "resources.requests.memory"
+    plant "hostNetwork" agent sit1 's/hostNetwork: false/hostNetwork: true/' "hostNetwork"
+    plant "hostPID" agent sit1 's/hostPID: false/hostPID: true/' "hostPID"
+    plant "hostIPC" agent sit1 's/hostIPC: false/hostIPC: true/' "hostIPC"
+
+    # S16, S17: the token is the agent's, and one agent is one.
+    plant "no token for the agent" agent sit1 's/^( *)automountServiceAccountToken: true$/\1automountServiceAccountToken: false/' "must be stated and true"
+    plant "two agents" agent sit1 's/replicas: 1/replicas: 2/' "1 replica"
+    plant "another service account" agent sit1 's/serviceAccountName: lanekeeper-agent/serviceAccountName: default/' "serviceAccountName"
+    plant "the export is not a mount" agent sit1 's#^( *)value: /mnt/csp-configuration$#\1value: /mnt/elsewhere#' "LK_NFS_ROOT"
+    plant "the hub CA is writable" agent sit1 '/^ *readOnly: true$/d' "writable"
+    plant "a secret in the environment" agent sit1 's/^( *)- name: LK_TMP_DIR$/\1- name: LK_HUB_TOKEN/' "looks like a secret"
+    plant "the certificate Secret's name" agent sit1 's/^( *)value: lanekeeper-agent-cert$/\1value: lanekeeper-db-app/' "must be lanekeeper-agent-cert"
+    plant "image by tag" agent sit1 's/@sha256:[0-9a-f]{64}/:latest/' "not pinned by digest"
+
+    # S7: the Secret and the ConfigMap.
+    plant "the certificate Secret is not kept" agent sit1 '/helm.sh\/resource-policy: keep/d' "helm.sh/resource-policy"
+    plant "a private key as the CA" agent sit1 's/-----BEGIN CERTIFICATE-----/-----BEGIN PRIVATE KEY-----/' "private key"
+
+    # S17: what the Roles grant.
+    plant "list on Secrets" agent sit1 's/verbs: \["get", "update"\]/verbs: ["get", "list", "update"]/' "the verb list on Secrets"
+    plant "watch on Secrets" agent sit1 's/verbs: \["get", "update"\]/verbs: ["get", "watch", "update"]/' "the verb watch on Secrets"
+    plant "create on Secrets" agent sit1 's/verbs: \["get", "update"\]/verbs: ["get", "create", "update"]/' "the verb create on Secrets"
+    plant "an unnamed Secret grant" agent sit1 '/resourceNames: \["lanekeeper-agent-cert"\]/d' "without resourceNames"
+    plant "another Secret" agent sit1 's/resourceNames: \["lanekeeper-agent-cert"\]/resourceNames: ["lanekeeper-db-app"]/' "lanekeeper-db-app"
+    plant "delete on Deployments" agent sit1 's/verbs: \["patch"\]/verbs: ["patch", "delete"]/' "the verb delete on deployments"
+    plant "a wildcard" agent sit1 's/resources: \["jobs"\]/resources: ["*"]/' "a wildcard"
+    plant "a binding to a ClusterRole" agent sit1 's/^  kind: Role$/  kind: ClusterRole/' "binds a ClusterRole"
+    plant "a binding to a service account elsewhere" agent sit1 's/^    namespace: lanekeeper$/    namespace: kube-system/' "the agent's namespace"
+    plant_append "a ClusterRole" agent sit1 $'apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: lanekeeper-agent-everything\nrules:\n  - apiGroups: [""]\n    resources: ["secrets"]\n    verbs: ["get", "list"]' "ClusterRole"
+    plant_append "a Role in a namespace the agent does not watch" agent sit1 $'apiVersion: rbac.authorization.k8s.io/v1\nkind: Role\nmetadata:\n  name: lanekeeper-agent-workloads\n  namespace: kube-system\nrules:\n  - apiGroups: ["apps"]\n    resources: ["deployments"]\n    verbs: ["get"]' "kube-system"
+
+    # S17, S18: the network.
+    plant "egress only" agent sit1 's/policyTypes: \[Ingress, Egress\]/policyTypes: [Egress]/' "not default deny"
+    plant "the hub on a wide block" agent sit1 's#cidr: "203.0.113.10/32"#cidr: "203.0.0.0/16"#' "unrecognised"
+    plant "the internet as the API server" agent sit1 's#cidr: "198.51.100.2/32"#cidr: "0.0.0.0/0"#' "unrecognised"
+    plant "the config-server on another port" agent sit1 's/port: 8888/port: 8889/' "egress must be exactly"
+    plant "ssh to the hub" agent sit1 '0,/port: 443/s/port: 443/port: 22/' "egress must be exactly"
+    plant "ingress from another namespace" agent sit1 's#kubernetes.io/metadata.name: monitoring#kubernetes.io/metadata.name: default#' "monitoring"
+    plant "ingress on another port" agent sit1 's/port: 9090}/port: 8080}/' "9090"
+    plant_append "a FQDN policy" agent sit1 $'apiVersion: networking.gke.io/v1alpha1\nkind: FQDNNetworkPolicy\nmetadata:\n  name: lanekeeper-agent-external\n  namespace: lanekeeper\nspec:\n  podSelector:\n    matchLabels:\n      app.kubernetes.io/name: lanekeeper-agent\n  egress:\n    - matches:\n        - pattern: example.com\n      ports:\n        - {protocol: TCP, port: 443}' "FQDNNetworkPolicy"
+    plant_append "a second door" agent sit1 $'apiVersion: v1\nkind: Service\nmetadata:\n  name: lanekeeper-agent\n  namespace: lanekeeper\nspec:\n  type: LoadBalancer\n  ports:\n    - {port: 9090}' "LoadBalancer"
+
+    echo "== planted: the contract check refuses what the files do not say"
+    plant_contract "the workload Role gives less than RBAC.md" 's/verbs: \["patch"\]/verbs: ["get"]/' "differs from RBAC.md"
+    plant_contract "the workload Role gives more than RBAC.md" 's/resources: \["jobs"\]/resources: ["jobs", "cronjobs"]/' "differs from RBAC.md"
+    plant_contract "a watched namespace without a Role" 's/^( *)value: "sit1"$/\1value: "sit1,sit2"/' "sit2"
+    plant_contract "the config-server's port" 's/port: 8888/port: 8889/' "differs from HARDENING.md"
+    plant_contract "the health port" 's/port: 9090}/port: 8080}/' "differs from HARDENING.md"
+    plant_contract "the liveness probe" 's/periodSeconds: 20/periodSeconds: 60/' "livenessProbe"
+    plant_contract "the readiness probe" 's#path: /readyz#path: /healthz#' "readinessProbe"
+    plant_contract "the container's security context" 's/readOnlyRootFilesystem: true/readOnlyRootFilesystem: false/' "securityContext"
+    plant_contract "no token" 's/^( *)automountServiceAccountToken: true$/\1automountServiceAccountToken: false/' "automountServiceAccountToken"
+    plant_contract "the binding's role" '/^  kind: Role$/{n;s/name: lanekeeper-agent-secrets/name: lanekeeper-agent-workloads/}' "roleRef"
+}
+
+# accept_variant NAME HELM_ARG...: the agent chart with other values must still pass every check (kubeconform, the policies and the
+# contract), so that the checks above are not passing only because the chart has one shape. The output is left in $work/variant.yaml.
+accept_variant() {
+    local name="$1"
+    shift
+    local out="$work/variant.yaml" ok=1
+    if ! render agent sit1 "$@" >"$out" 2>"$work/variant.err"; then
+        fail "$name: the chart did not render: $(tail -n1 "$work/variant.err")"
+        return 1
+    fi
+    kubeconform "${schema_args[@]}" "$out" >/dev/null || { fail "$name: kubeconform refused it"; ok=0; }
+    check_policy "$out" agent sit1 >/dev/null 2>&1 || { fail "$name: the policies refused it"; ok=0; }
+    check_contract "$out" >/dev/null 2>&1 || { fail "$name: the contract check refused it"; ok=0; }
+    [ "$ok" = 1 ] && echo "  ok  $name"
+    return 0
+}
+
+# in_variant REGEX NAME: the last variant's output has a line that matches.
+in_variant() {
+    grep -Eq -- "$1" "$work/variant.yaml" || fail "$2: the output does not have a line matching '$1'"
+}
+
+agent_variants() {
+    echo "== the agent chart with other values still passes every check"
+    accept_variant "Workload Identity only (the default)"
+    in_variant '^ +value: "workload-identity"$' "Workload Identity only"
+    accept_variant "the join token and Workload Identity" --set joinToken.enabled=true
+    in_variant '^ +value: "auto"$' "the join token and Workload Identity"
+    in_variant '^ +resourceNames: \["lanekeeper-agent-join-token"\]$' "the join token and Workload Identity"
+    in_variant '^ +- name: LK_JOIN_TOKEN_SECRET$' "the join token and Workload Identity"
+    accept_variant "the join token alone, on a cluster without Workload Identity" --set joinToken.enabled=true --set serviceAccount.gcpServiceAccount=
+    in_variant '^ +value: "token"$' "the join token alone"
+    ! grep -q 'iam.gke.io/gcp-service-account' "$work/variant.yaml" || fail "the join token alone: the service account has a Workload Identity annotation"
+    accept_variant "two watched namespaces" --set-json 'namespaces=["sit1","sit2"]'
+    local ns
+    for ns in sit1 sit2; do
+        [ "$(grep -c "^  namespace: $ns\$" "$work/variant.yaml")" = 2 ] || fail "two watched namespaces: expected a Role and a RoleBinding in $ns"
+    done
+    in_variant '^ +value: "sit1,sit2"$' "two watched namespaces"
+    accept_variant "other ids for the export's owner" --set nfs.uid=2020 --set nfs.gid=2021
+    in_variant '^ +fsGroup: 2021$' "other ids"
+    accept_variant "several addresses for the hub" --set-json 'network.hubAddresses=["203.0.113.10/32","203.0.113.11/32","192.0.2.0/24"]'
+    accept_variant "tunables" --set-json 'config.tuning={"LK_LOG":"debug","LK_SYNC_JOB_LABEL":"sync=true","LK_POOL_THREADS":2}'
+    in_variant '^ +- name: LK_LOG$' "tunables"
+    accept_variant "an image pull secret" --set-json 'imagePullSecrets=["ghcr-pull"]'
+    in_variant '^ +- name: "ghcr-pull"$' "an image pull secret"
+    accept_variant "a different hub audience" --set hub.audience=https://hub-audience.example.com
+    in_variant 'value: "https://hub-audience.example.com"' "a different hub audience"
+}
+
+# The agent chart must stop before it writes a manifest that breaks a rule it owns. $1 is the case, $2 the fragment of the message,
+# and the rest are helm arguments; render_agent_plain does not add the synthetic CA, for the cases about the CA.
+expect_agent_failure() {
+    local name="$1" fragment="$2"
+    shift 2
+    local out
+    if out="$(render agent sit1 "$@" 2>&1 >/dev/null)"; then
+        fail "$name: helm rendered it"
+    elif ! grep -qF -- "$fragment" <<<"$out"; then
+        fail "$name: refused, but not for '$fragment':"$'\n'"$out"
+    else
+        echo "  ok  $name"
+    fi
+}
+
+expect_agent_failure_without_ca() {
+    local name="$1" fragment="$2"
+    shift 2
+    local out
+    if out="$(helm template lanekeeper deploy/charts/agent --namespace lanekeeper --kube-version "$kube_version" -f deploy/values/agent/sit1.yaml "$@" 2>&1 >/dev/null)"; then
+        fail "$name: helm rendered it"
+    elif ! grep -qF -- "$fragment" <<<"$out"; then
+        fail "$name: refused, but not for '$fragment':"$'\n'"$out"
+    else
+        echo "  ok  $name"
+    fi
+}
+
+planted_agent_templates() {
+    echo "== planted: the agent templates and schema refuse values that break a rule"
+    expect_agent_failure "no image digest" "digest" --set image.digest=
+    expect_agent_failure "a short digest" "digest" --set image.digest=sha256:abc
+    expect_agent_failure "a tag instead of a digest" "digest" --set image.digest=latest
+    expect_agent_failure_without_ca "no CA for the hub" "hubCa.pem is required"
+    expect_agent_failure "a private key as the CA" "private key" --set-literal $'hubCa.pem=-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----'
+    expect_agent_failure "a CA bundle with a private key in it" "private key" --set-literal $'hubCa.pem=-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n-----BEGIN EC PRIVATE KEY-----\nAAAA\n-----END EC PRIVATE KEY-----'
+    expect_agent_failure "a CA that is not a certificate" "not a PEM certificate" --set-literal hubCa.pem=hello
+    expect_agent_failure "no way to join" "no way to join" --set serviceAccount.gcpServiceAccount=
+    expect_agent_failure "a Google service account that is not one" "gcpServiceAccount" --set serviceAccount.gcpServiceAccount=someone@example.com
+    expect_agent_failure "no address for the hub" "hubAddresses" --set-json 'network.hubAddresses=[]'
+    expect_agent_failure "a wide block for the hub" "hubAddresses" --set-json 'network.hubAddresses=["203.0.113.0/16"]'
+    expect_agent_failure "the internet as the hub" "hubAddresses" --set-json 'network.hubAddresses=["0.0.0.0/0"]'
+    expect_agent_failure "a bare address for the hub" "hubAddresses" --set-json 'network.hubAddresses=["203.0.113.10"]'
+    expect_agent_failure "no address for the API server" "kubeApiAddresses" --set-json 'network.kubeApiAddresses=[]'
+    expect_agent_failure "the internet as the API server" "kubeApiAddresses" --set-json 'network.kubeApiAddresses=["0.0.0.0/0"]'
+    expect_agent_failure "no namespace" "namespaces" --set-json 'namespaces=[]'
+    expect_agent_failure "kube-system" "namespaces" --set-json 'namespaces=["kube-system"]'
+    expect_agent_failure "a namespace twice" "namespaces" --set-json 'namespaces=["sit1","sit1"]'
+    expect_agent_failure "a namespace that is not a name" "namespaces" --set-json 'namespaces=["Sit 1"]'
+    expect_agent_failure "root as the owner of the export" "uid" --set nfs.uid=0
+    expect_agent_failure "an export that is not a path" "exportPath" --set nfs.exportPath=export
+    expect_agent_failure "a hub that is not https" "endpoint" --set hub.endpoint=http://hub.example.com
+    expect_agent_failure "a hub with credentials" "endpoint" --set hub.endpoint=https://user:pass@hub.example.com
+    expect_agent_failure "a hub with a path" "endpoint" --set hub.endpoint=https://hub.example.com/agents
+    expect_agent_failure "a swimlane id that is not one" "id" --set swimlane.id=Bad_Id
+    expect_agent_failure "a tunable the agent does not have" "LK_CERT_SECRET" --set-json 'config.tuning={"LK_CERT_SECRET":"x"}'
+    expect_agent_failure "a path as a tunable" "LK_NFS_ROOT" --set-json 'config.tuning={"LK_NFS_ROOT":"/x"}'
+    expect_agent_failure "a log level that is not one" "LK_LOG" --set-json 'config.tuning={"LK_LOG":"loud"}'
+    expect_agent_failure "a replica count" "replicas" --set replicas=2
+    expect_agent_failure "an unknown value" "not_a_value" --set not_a_value=1
+}
+
 planted_gcp() {
     echo "== planted: Cloud Armor"
     if ! render gcp prod >"$work/good-gcp-prod.yaml" 2>"$work/gcp.err"; then
@@ -260,7 +520,7 @@ planted_kubeconform() {
     out="$(kubeconform "${schema_args[@]}" deploy/tests/planted/kubeconform.yaml 2>&1)" || status=$?
     [ "$status" -ne 0 ] || fail "kubeconform accepted deploy/tests/planted/kubeconform.yaml"
     local kind
-    for kind in GCPBackendPolicy HealthCheckPolicy FQDNNetworkPolicy ComputeSecurityPolicy Gateway StatefulSet; do
+    for kind in GCPBackendPolicy HealthCheckPolicy FQDNNetworkPolicy ComputeSecurityPolicy Gateway StatefulSet Deployment Role RoleBinding NetworkPolicy ConfigMap; do
         grep -E -q -- "- $kind planted is invalid" <<<"$out" || fail "kubeconform did not refuse the planted $kind:"$'\n'"$out"
     done
     grep -q -- "could not find schema for SomethingWithoutASchema" <<<"$out" || fail "a kind without a schema was skipped, not refused"
@@ -304,6 +564,9 @@ planted_all() {
     planted_kubeconform
     planted_templates
     planted_hardening
+    planted_agent_templates
+    planted_agent
+    agent_variants
     planted_gcp
     if [ "$failures" -ne 0 ]; then
         echo "render.sh: $failures planted case(s) failed" >&2
@@ -316,12 +579,14 @@ case "$mode" in
     lint) lint ;;
     render) kubeconform_all ;;
     policy) policy_all ;;
+    contract) contract_all ;;
     planted) planted_all ;;
     all)
         status=0
         lint || status=1
         kubeconform_all || status=1
         policy_all || status=1
+        contract_all || status=1
         planted_all || status=1
         exit "$status"
         ;;

@@ -12,6 +12,9 @@ refused(planted, fragment) if {
 	contains(msg, fragment)
 }
 
+# The agent's certificate Secret as the chart renders it: empty, Opaque, and kept when the release goes (09/T4).
+agent_cert_secret(extra) := object.union(fixtures.agent_cert_secret, extra)
+
 env_op(env) := {"op": "add", "path": "/spec/template/spec/containers/0/env/-", "value": env}
 
 secret(name, extra) := object.union({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": name}}, extra)
@@ -34,7 +37,7 @@ test_deny_secret_object_without_data if {
 }
 
 test_agent_cert_secret_is_allowed_empty if {
-	count(deny) == 0 with input as fixtures.with_doc(secret("lanekeeper-agent-cert", {"type": "kubernetes.io/tls"}))
+	count(deny) == 0 with input as fixtures.with_doc(agent_cert_secret({}))
 }
 
 test_deny_agent_cert_secret_with_data if {
@@ -118,4 +121,63 @@ test_deny_jwt_in_values if {
 
 test_rendered_documents_are_not_scanned_as_values if {
 	count(deny) == 0 with input as fixtures.hub
+}
+
+# --- the agent's certificate Secret (09/T4, plan 09 A14)
+
+test_agent_chart_output_passes if {
+	count(deny) == 0 with input as fixtures.agent
+}
+
+# The agent renews its certificate into this Secret; a chart upgrade or an uninstall must not empty it, or the agent has to join again.
+test_deny_agent_cert_secret_without_keep if {
+	refused(fixtures.agent_patch("Secret", "lanekeeper-agent-cert", [{"op": "remove", "path": "/metadata/annotations"}]), "helm.sh/resource-policy")
+}
+
+test_deny_agent_cert_secret_with_another_policy if {
+	refused(fixtures.agent_patch("Secret", "lanekeeper-agent-cert", [{"op": "replace", "path": "/metadata/annotations/helm.sh~1resource-policy", "value": "delete"}]), "helm.sh/resource-policy")
+}
+
+# A kubernetes.io/tls Secret is refused by the API server without tls.crt and tls.key, and the policy requires it empty.
+test_deny_agent_cert_secret_of_type_tls if {
+	refused(fixtures.agent_patch("Secret", "lanekeeper-agent-cert", [{"op": "replace", "path": "/type", "value": "kubernetes.io/tls"}]), "Opaque")
+}
+
+# --- the names of the agent's Secrets are variables, and are not secrets (09/T4)
+
+test_agent_secret_name_variables_pass if {
+	planted := fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "add", "path": "/spec/template/spec/containers/0/env/-", "value": {"name": "LK_JOIN_TOKEN_SECRET", "value": "lanekeeper-agent-join-token"}}])
+	count(deny) == 0 with input as planted
+}
+
+test_deny_agent_cert_secret_variable_naming_another_secret if {
+	planted := fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "replace", "path": "/spec/template/spec/containers/0/env/9/value", "value": "lanekeeper-db-app"}])
+	refused(planted, "must be lanekeeper-agent-cert")
+}
+
+test_deny_agent_join_token_variable_naming_another_secret if {
+	planted := fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "add", "path": "/spec/template/spec/containers/0/env/-", "value": {"name": "LK_JOIN_TOKEN_SECRET", "value": "lanekeeper-db-app"}}])
+	refused(planted, "must be lanekeeper-agent-join-token")
+}
+
+# Only those two names are exempt: any other variable that looks like a secret is refused as before.
+test_deny_agent_secret_looking_variable_other_than_the_two_names if {
+	planted := fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "add", "path": "/spec/template/spec/containers/0/env/-", "value": {"name": "LK_HUB_TOKEN", "value": "x"}}])
+	refused(planted, "looks like a secret")
+}
+
+# --- the hub's CA is public; a private key in a ConfigMap is not (S7)
+
+test_deny_private_key_in_a_config_map if {
+	planted := fixtures.agent_patch("ConfigMap", "lanekeeper-hub-ca", [{"op": "add", "path": "/data/ca.key", "value": "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n"}])
+	refused(planted, "private key")
+}
+
+test_deny_ec_private_key_in_a_config_map if {
+	planted := fixtures.agent_patch("ConfigMap", "lanekeeper-hub-ca", [{"op": "replace", "path": "/data/ca.pem", "value": "-----BEGIN EC PRIVATE KEY-----\nAAAA\n-----END EC PRIVATE KEY-----\n"}])
+	refused(planted, "private key")
+}
+
+test_certificate_in_a_config_map_is_fine if {
+	count(deny) == 0 with input as fixtures.agent
 }

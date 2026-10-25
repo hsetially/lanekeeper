@@ -1,0 +1,75 @@
+# Defaults for the agent chart (09/T4). Hardened by default: nothing here loosens S16, S17 or S18. One release is one swimlane
+# (D26: each cluster's own ArgoCD deploys its agent from this chart, with the values file deploy/values/agent/<swimlane>.yaml).
+# The fields without a usable default (the image digest, the swimlane, the hub, the NFS export, the namespaces, the hub's and the
+# API server's addresses, and the hub's CA) must be set by that file; the chart refuses to render without them.
+
+image:
+  repository: ghcr.io/hsetially/lanekeeper/agent
+  # sha256:<64 hex digits>. A tag is never deployed (S19, plan 09 A29): images.yml prints the digest of what it published.
+  digest: ""
+
+# Names of image-pull Secrets created out of band (Q8, plan 09 A6). The chart never creates one.
+imagePullSecrets: []
+
+# Who this agent is (sent in Hello). LK_SWIMLANE, LK_CLUSTER, LK_PROJECT.
+swimlane:
+  id: ""
+  cluster: ""
+  project: ""
+
+# The hub, as the agent dials it: https://host[:port] (LK_HUB_ENDPOINT). The host names the hub's agent load balancer, whose address
+# is network.hubAddresses; it is not the users' host. The audience of the ID token is the hub (S5); empty means the endpoint.
+hub:
+  endpoint: ""
+  audience: ""
+
+# The hub's CA certificate (PEM), which the agent pins (LK_HUB_CA_FILE). Public, and rendered into the ConfigMap lanekeeper-hub-ca.
+# Never a private key: the chart refuses one. Set it in the swimlane's values file, or with --set-file hubCa.pem=ca.pem.
+hubCa:
+  pem: ""
+
+# The configuration export that the agent keeps in sync (D82). Its files are owned by uid and gid 1010 (Q4), so the pod runs as
+# that uid and gid and fsGroup is the gid (Q11): a different owner is a value change. root_squash and anonuid are still open.
+nfs:
+  server: ""
+  exportPath: ""
+  uid: 1010
+  gid: 1010
+
+# The namespaces the agent watches (LK_NAMESPACES). One workload Role and RoleBinding is rendered in each, and nothing else is
+# granted anywhere else (crates/agent/RBAC.md).
+namespaces: []
+
+serviceAccount:
+  # The Google service account that Workload Identity maps this swimlane's Kubernetes service account to (S5, Q26). The agent proves
+  # its identity to the hub with that account's ID token. Empty only where the cluster has no Workload Identity: then joinToken.
+  gcpServiceAccount: ""
+
+# The fallback of S5 for a cluster without Workload Identity (Q26): a one-time join token, kept in the Secret
+# lanekeeper-agent-join-token (key `token`) in this namespace. With it the chart grants `get` on that one Secret by name and sets
+# LK_JOIN_TOKEN_SECRET. The chart never renders the token: create the Secret out of band (deploy/ADDING-A-SWIMLANE.md).
+joinToken:
+  enabled: false
+
+# Variables the agent reads that are not set by the chart's other values (crates/agent/src/config.rs). The schema allows exactly the
+# tunables that are safe to set from a values file; addresses, paths and Secret names are the chart's.
+config:
+  tuning: {}
+
+# The P4 budget is 50 mCPU and 64 MiB at steady state; the limit leaves room for a full rehash, a walk burst and four deltas
+# (crates/agent/HARDENING.md). To be confirmed on the pilot.
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    cpu: "1"
+    memory: 128Mi
+
+network:
+  # The hub's address(es) and the Kubernetes API server's, as small blocks: a /24 at most (Q1; crates/agent/HARDENING.md). The
+  # agent reaches nothing else on the network except the config-server, the metadata server and kube-dns.
+  hubAddresses: []
+  kubeApiAddresses: []
+  # The namespace of Prometheus, which scrapes the health port.
+  monitoringNamespace: monitoring
