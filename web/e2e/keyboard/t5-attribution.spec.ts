@@ -5,6 +5,7 @@
 // The file page of `design-attribution-history` has the chip in two places: the head of the file ("Changed by") and every version of
 // the History panel. The hostile scenario has text a VM or a cluster could send (a right-to-left override, markup, a script).
 import type { Locator, Page } from "@playwright/test";
+import { holdTimers, releaseTimers } from "../a11y/helpers.ts";
 import { pageViolations } from "../fixtures/test";
 import { DIST, expect, keyboardOnly, pathOf, ready, test } from "./support";
 
@@ -110,6 +111,36 @@ test.describe("the chip on the file page", () => {
     await page.keyboard.press("Escape");
     await expect(chips.nth(8)).toBeFocused();
     expect(await pointer()).toEqual([]);
+  });
+});
+
+test.describe("one evidence closing as the next chip is pressed", () => {
+  test.use({ scenario: "design-attribution-hostile" });
+
+  // Radix gives focus back to a closed popover's chip in a timer of its own, a task after the evidence has gone. A key that is already
+  // waiting when the page gets to that task (a slow runner, a switch device, a script) is handled first: focus is on the next chip, its
+  // evidence is open, and then the return took focus away from it, which closed it. The timers are held so that this is what the test
+  // sees whatever the speed of the machine.
+  test("the focus a closed evidence gives back to its chip, late, does not take focus from the next chip nor close the evidence opened from it", async ({ page, harness }) => {
+    await openFile(page, harness.url, 4);
+    await holdTimers(page);
+    const chips = historyChips(page);
+    await chips.nth(0).focus();
+    await page.keyboard.press("Enter");
+    await expect(evidence(page)).toContainText("invoice<U+202E>gnp.exe");
+    await page.keyboard.press("Escape");
+    // No wait for focus to come back: the next chip is pressed while the first one's evidence is closed and its return is still to come.
+    await chips.nth(1).focus();
+    await page.keyboard.press("Enter");
+    await expect(evidence(page)).toContainText("csp<U+200B>-tenant-data-sit7");
+    await expect(chips.nth(0)).not.toBeFocused();
+    await releaseTimers(page);
+    await expect(evidence(page), "the late return of the first chip did not close the second one's evidence").toContainText("csp<U+200B>-tenant-data-sit7");
+    await expect(evidence(page), "nor take focus out of it").toBeFocused();
+    // The return of the second one is as it was: Escape, and focus is on its chip.
+    await page.keyboard.press("Escape");
+    await expect(evidence(page)).toHaveCount(0);
+    await expect(chips.nth(1)).toBeFocused();
   });
 });
 

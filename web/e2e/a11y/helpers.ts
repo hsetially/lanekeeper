@@ -102,3 +102,48 @@ export async function slowScheduler(page: Page, ms = 150): Promise<void> {
     };
   }, ms);
 }
+
+/**
+ * Hold the zero-delay timers of the page (`setTimeout(fn, 0)`) until `releaseTimers`, which is a slow machine taken to its end: the
+ * page's thread was busy, a key that was already waiting was handled first (the browser serves input before timers), and the timers
+ * ran after it. Radix returns focus to a closed popover's trigger in such a timer, so with this the next key reaches the page while
+ * that return is still to come, whatever the speed of the machine. Every other timer is as it was. Call it after the page has loaded;
+ * it lasts until `releaseTimers` or until the page is left.
+ */
+export async function holdTimers(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const w = window as unknown as { __lkTimers?: { release: () => Promise<void> } };
+    const held = new Map<number, () => void>();
+    let holding = true;
+    const real = window.setTimeout.bind(window);
+    const realClear = window.clearTimeout.bind(window);
+    window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      if (!holding || typeof handler !== "function" || (timeout ?? 0) > 0) return real(handler, timeout, ...args);
+      const run = handler as (...rest: unknown[]) => unknown;
+      const id = real(() => undefined, 2 ** 30);
+      realClear(id);
+      held.set(id, () => run(...args));
+      return id;
+    }) as typeof window.setTimeout;
+    window.clearTimeout = ((id?: number) => {
+      if (id !== undefined) held.delete(id);
+      realClear(id);
+    }) as typeof window.clearTimeout;
+    w.__lkTimers = {
+      release: () =>
+        new Promise<void>((resolve) => {
+          holding = false;
+          const due = [...held.values()];
+          held.clear();
+          for (const run of due) real(run, 0);
+          // Two more tasks behind them: whatever a timer set going has run when this resolves.
+          real(() => real(resolve, 0), 0);
+        }),
+    };
+  });
+}
+
+/** Let the timers that `holdTimers` held run now, in the order they were set, and return once they have. Timers set afterwards are not held. */
+export async function releaseTimers(page: Page): Promise<void> {
+  await page.evaluate(() => (window as unknown as { __lkTimers: { release: () => Promise<void> } }).__lkTimers.release());
+}
