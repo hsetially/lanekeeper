@@ -6,7 +6,8 @@ and its policy test. `tests/hardening.rs` reads the YAML blocks below, so the fi
 apart:
 
 - `hub_dockerfile_is_hardened`: a distroless final image, a numeric non-root user, every base image pinned by digest, no
-  shell, no package manager, and only two things copied in (the binary and `web/dist`).
+  shell, no package manager, and only three things copied in (the binary, `web/dist` and the embedding model checked
+  against `deploy/images/hub-model.lock`).
 - `hardening_md_pod_contract_is_complete`: the Pod block below has every control S16 lists, mounts nothing writable except
   the mirror volume and `/tmp`, mounts no service-account token, and passes only variables that `src/config.rs` reads.
 - `hardening_md_network_policy_denies_by_default_and_lists_only_allowed_egress`: the NetworkPolicy blocks allow exactly the
@@ -20,10 +21,18 @@ Values in `<angle brackets>` or marked "from values" are the chart's to fill in.
 
 - **Base:** `gcr.io/distroless/cc-debian12:nonroot`: glibc, libgcc and CA certificates. No shell, no package manager,
   nothing to `exec` into (S16).
-- **Pinned by digest**, all three bases. Renovate proposes new digests, and a person reviews them.
-- **Two things in it:** `/usr/local/bin/hub`, built with `cargo build --release --locked -p hub`, and `/app/web/dist`, the
-  web app built with `pnpm install --frozen-lockfile && pnpm build`. The hub refuses to start when `index.html` has no
-  `__CSP_NONCE__` placeholder (the web build must emit it, prompt 08).
+- **Pinned by digest**, every base and the Dockerfile frontend. Renovate proposes new digests, and a person reviews them.
+- **Three things in it:**
+  - `/usr/local/bin/hub`, built with `cargo build --release --locked -p hub` (dependencies first, through cargo-chef);
+  - `/app/web/dist`, the web app built with `pnpm install --frozen-lockfile && pnpm build`. The hub refuses to start when
+    `index.html` has no `__CSP_NONCE__` placeholder (the web build must emit it, prompt 08);
+  - `/app/models/<model>/`, the embedding model's files (D53; plan 09 A3: `bge-small-en-v1.5`, the ONNX graph and its
+    tokenizer files). The `model` stage fetches each file named in `deploy/images/hub-model.lock` from the pinned Hugging
+    Face commit and stops the build unless its size and sha256 match. The files are read-only to the hub's user; the
+    embedding code (prompt 14) is pointed at this directory and never downloads a model at run time.
+- **Reproducible:** `deploy/images/build.sh hub` builds it from `git archive HEAD` with `SOURCE_DATE_EPOCH` and rewritten
+  timestamps, and `just images-repro` checks that two builds of a commit give one digest
+  (`deploy/images/REPRODUCIBILITY.md`).
 - **User:** `USER 65532:65532`, numeric.
 
 ## The pods
@@ -260,9 +269,9 @@ spec:
 
 These stay open after the tests pass. Each is a residual risk in `docs/threat-model.md` (Hub platform section).
 
-- **The image build.** The Dockerfile has been linted and the digests were read from the registries, but whether
-  `docker build` succeeds, that `aws-lc-sys` compiles in the builder image, and that the binary runs on the distroless base
-  are shown by CI, not by the tests here.
+- **The image build.** The Dockerfile has been linted and the digests were read from the registries, but whether the build
+  succeeds, that `aws-lc-sys` compiles in the builder image, and that the binary runs on the distroless base are shown by
+  `deploy/images/build.sh` and CI (09/T1), not by the tests here.
 - **What the cluster enforces.** Whether the cluster's CNI enforces NetworkPolicy and FQDN policy at all is a property of
   the cluster. A cluster without enforcement ignores both policies; the chart's policy test (09) checks the rendering, not
   the cluster.

@@ -35,6 +35,25 @@ fn is_digest_pinned(reference: &str) -> bool {
     })
 }
 
+/// The instructions of a Dockerfile, with `\` continuation lines joined (comments and blank lines already removed).
+fn instructions(lines: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for line in lines {
+        if let Some(head) = line.strip_suffix('\\') {
+            current.push_str(head.trim_end());
+            current.push(' ');
+        } else {
+            current.push_str(line);
+            out.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
 /// Why a Dockerfile does not meet S16. Empty when it does.
 fn dockerfile_problems(text: &str) -> Vec<String> {
     let mut problems = Vec::new();
@@ -80,7 +99,8 @@ fn dockerfile_problems(text: &str) -> Vec<String> {
             }
         }
     }
-    // Only two things reach the final image, and both come from a build stage: the binary and the web app.
+    // Only three things reach the final image, and each comes from a build stage: the binary, the web app and the
+    // embedding model that the model stage checked against deploy/images/hub-model.lock (09/T1).
     let mut copied = BTreeSet::new();
     for line in final_stage {
         match word(line).as_str() {
@@ -104,7 +124,7 @@ fn dockerfile_problems(text: &str) -> Vec<String> {
             _ => {}
         }
     }
-    let expected: BTreeSet<String> = ["/usr/local/bin/hub", "/app/web/dist"]
+    let expected: BTreeSet<String> = ["/usr/local/bin/hub", "/app/web/dist", "/app/models"]
         .iter()
         .map(|s| (*s).to_owned())
         .collect();
@@ -136,6 +156,15 @@ fn dockerfile_problems(text: &str) -> Vec<String> {
     {
         problems.push("the web build must install with `pnpm install --frozen-lockfile`".to_owned());
     }
+    // The model files come only from the lock: a build stage reads deploy/images/hub-model.lock, and every file it fetches
+    // is checked against the lock's sha256 before the final image can copy it (09/T1, S19).
+    let model_stage_checks = instructions(&lines[..last])
+        .iter()
+        .any(|i| i.starts_with("RUN ") && i.contains("hub-model.lock") && i.contains("sha256sum -c"));
+    if !model_stage_checks {
+        problems
+            .push("the model stage must verify every file against deploy/images/hub-model.lock".to_owned());
+    }
     problems
 }
 
@@ -163,6 +192,14 @@ fn hub_dockerfile_is_hardened() {
     for must in [".git", "target", "node_modules"] {
         assert!(ignore.lines().any(|l| l == must), "{must} is not ignored");
     }
+    // deploy/ stays out of the build context except the model lock, which the model stage reads (09/T1).
+    assert!(ignore.lines().any(|l| l == "deploy"), "deploy is not ignored");
+    assert!(
+        ignore.lines().any(|l| l == "!deploy/images/hub-model.lock"),
+        "the model lock is not in the build context"
+    );
+    // The model's files land under /app/models/<name>/, the directory the hub's embedding code is pointed at.
+    assert!(text.contains("COPY --from=model /models /app/models\n"));
 }
 
 #[test]
@@ -200,6 +237,10 @@ fn hardening_lint_rejects_planted_dockerfile_violations() {
         format!("{good}\nCOPY . /app\n"),
         good.replace("COPY --from=web /src/web/dist /app/web/dist\n", ""),
         format!("{good}\nCOPY --from=build /src/.env /app/.env\n"),
+        // 09/T1: the model comes from the checked model stage, never straight from the build context, and never unchecked.
+        format!("{good}\nCOPY deploy/images/models /app/models\n"),
+        good.replace("COPY --from=model /models /app/models\n", ""),
+        good.replace("sha256sum -c", "sha256sum"),
     ];
     for (n, bad) in planted.iter().enumerate() {
         assert!(

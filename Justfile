@@ -670,6 +670,54 @@ verify-08: web-install web-gen-check
     just web-e2e
     just web-perf
     just web-bench-check
+
+# Prompt 09, T1 (S16, S19, S20): the images. Every tool runs from a digest-pinned image (deploy/images/tools.env), so the
+# recipes need Docker, git, jq, node and python3, and fail at once without them, never skip.
+images-tools-check:
+    @docker info >/dev/null 2>&1 || { echo "the image recipes need a running Docker daemon with buildx"; exit 1; }
+    @docker buildx version >/dev/null 2>&1 || { echo "the image recipes need docker buildx"; exit 1; }
+    @for t in git jq node python3; do command -v "$t" >/dev/null 2>&1 || { echo "the image recipes need $t"; exit 1; }; done
+
+# One image as an OCI archive in target/images, from `git archive HEAD` (see deploy/images/build.sh for LK_BUILD_CA and
+# the other settings).
+images-build image: images-tools-check
+    deploy/images/build.sh {{image}}
+
+# The T1 Verify: each image built twice from the same commit without the cache gives one digest.
+images-repro: images-tools-check
+    deploy/images/reproducible-check.sh hub agent
+
+# The CycloneDX SBOM (image plus Rust crates) and the scan that fails on any critical finding, for an image already built.
+images-sbom image: images-tools-check
+    deploy/images/sbom.sh {{image}}
+
+images-scan image: images-tools-check
+    deploy/images/scan.sh {{image}}
+
+# The lock and Dockerfile policies: the model lock's checker and its planted cases, the Rego unit tests, the planted
+# Dockerfile through conftest's real parser (every expected rule must fire), both Dockerfiles, the crates' own Dockerfile
+# lints, the hub's model-stage script against planted locks, and last the committed lock (refused while UNRESOLVED).
+images-policy-test: images-tools-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . deploy/images/tools.env
+    conftest() { docker run --rm -v "$PWD:/repo:ro" -w /repo "$LK_CONFTEST_IMAGE" "$@"; }
+    node --test deploy/images/tests/*.test.mjs
+    conftest verify --policy deploy/policy --namespace dockerfile --no-color
+    planted="$(conftest test --parser dockerfile --policy deploy/policy --namespace dockerfile --no-color deploy/policy/testdata/dockerfile/planted.Dockerfile || true)"
+    while IFS= read -r rule; do
+        grep -qF -- "$rule" <<<"$planted" || { echo "images-policy-test: the planted Dockerfile did not trigger: $rule"; echo "$planted"; exit 1; }
+    done < deploy/policy/testdata/dockerfile/planted.expected
+    conftest test --parser dockerfile --policy deploy/policy --namespace dockerfile --no-color crates/hub/Dockerfile crates/agent/Dockerfile
+    cargo test -p hub --test hardening
+    cargo test -p agent --test hardening
+    deploy/images/tests/model-stage-test.sh
+    node deploy/images/model-lock.mjs check deploy/images/hub-model.lock
+
+# The scan blocks a critical finding: a planted SBOM with CVE-2021-44228 must fail it (needs the grype database).
+images-scan-test: images-tools-check
+    deploy/images/tests/scan-test.sh
+
 verify-09:
     @echo "verify-09 not implemented yet" && exit 1
 verify-11:
