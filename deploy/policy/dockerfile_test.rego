@@ -4,9 +4,9 @@ package dockerfile
 
 import rego.v1
 
-rust := "docker.io/library/rust:1.88.0-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0"
+rust := "docker.io/library/rust:1.88.0-trixie@sha256:f2a17efbe58b00470be6e73dbea79705a789ee20ee8de2dcdaf73c0c6091f1db"
 
-distroless := "gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f"
+distroless := "gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2"
 
 # The shape conftest's parser produces (see the header of dockerfile.rego). The last argument is a note for the reader.
 ins(stage, cmd, value, flags, _) := {
@@ -46,7 +46,7 @@ test_good_passes if {
 }
 
 test_deny_tag_only_base if {
-	refused(with_at(0, ins(0, "from", ["docker.io/library/rust:1.88.0-bookworm", "AS", "build"], [], "FROM rust:1.88.0")), "not pinned by digest")
+	refused(with_at(0, ins(0, "from", ["docker.io/library/rust:1.88.0-trixie", "AS", "build"], [], "FROM rust:1.88.0")), "not pinned by digest")
 }
 
 test_deny_stage_name_base if {
@@ -54,7 +54,7 @@ test_deny_stage_name_base if {
 }
 
 test_deny_unpinned_final if {
-	refused(with_at(7, ins(2, "from", ["gcr.io/distroless/cc-debian12:nonroot"], [], "FROM distroless")), "not pinned by digest")
+	refused(with_at(7, ins(2, "from", ["gcr.io/distroless/cc-debian13:nonroot"], [], "FROM distroless")), "not pinned by digest")
 }
 
 test_deny_non_distroless_final if {

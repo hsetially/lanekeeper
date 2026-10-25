@@ -10,19 +10,21 @@
 # final stage is distroless with the binary alone.
 #
 # Every base image is pinned by digest (the multi-architecture index), so a build today and a build next year start from
-# the same bytes. The digests were read from the registries (rust and distroless on 2026-10-10, the Dockerfile frontend
-# 1.28.0 on 2026-10-25):
+# the same bytes. The digests were read from the registries on 2026-10-25 (rust, distroless and the Dockerfile frontend
+# 1.28.0):
 #
-#     docker buildx imagetools inspect docker.io/library/rust:1.88.0-bookworm
-#     docker buildx imagetools inspect gcr.io/distroless/cc-debian12:nonroot
+#     docker buildx imagetools inspect docker.io/library/rust:1.88.0-trixie
+#     docker buildx imagetools inspect gcr.io/distroless/cc-debian13:nonroot
 #
-# Renovate proposes new digests. The builder's Rust is the toolchain in rust-toolchain.toml (1.88.0), and Debian 12 on
-# both sides keeps the glibc of the build and the run the same.
+# Renovate proposes new digests. The builder's Rust is the toolchain in rust-toolchain.toml (1.88.0), and Debian 13
+# (trixie) on both sides keeps the glibc of the build and the run the same. The runtime is cc-debian13 because
+# cc-debian12 is deprecated: it carries critical findings that will not be fixed, which the image scan refuses (plan 09
+# A32).
 #
 # Network steps take an optional `build_ca` secret: a CA bundle for builds behind a TLS-intercepting proxy. It is mounted
 # over the system bundle for that one instruction and is never part of a layer. CI does not pass it.
 
-FROM docker.io/library/rust:1.88.0-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS planner
+FROM docker.io/library/rust:1.88.0-trixie@sha256:f2a17efbe58b00470be6e73dbea79705a789ee20ee8de2dcdaf73c0c6091f1db AS planner
 # The toolchain the image ships, never one rustup would fetch for rust-toolchain.toml (whose components, rustfmt and clippy,
 # the build does not need).
 ENV RUSTUP_TOOLCHAIN=1.88.0 CARGO_NET_RETRY=3
@@ -33,7 +35,7 @@ WORKDIR /src
 COPY . .
 RUN cargo chef prepare --recipe-path /recipe.json
 
-FROM docker.io/library/rust:1.88.0-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS build
+FROM docker.io/library/rust:1.88.0-trixie@sha256:f2a17efbe58b00470be6e73dbea79705a789ee20ee8de2dcdaf73c0c6091f1db AS build
 ENV RUSTUP_TOOLCHAIN=1.88.0 CARGO_NET_RETRY=3
 RUN --mount=type=secret,id=build_ca,target=/etc/ssl/certs/ca-certificates.crt,required=false \
     cargo install --locked cargo-chef --version 0.1.78
@@ -55,7 +57,7 @@ RUN cargo build --release --locked -p agent
 # Distroless: glibc, libgcc and CA certificates, and no shell, no package manager, nothing to exec into (S16, S17).
 # `nonroot` runs as uid and gid 65532 unless the pod says otherwise; the chart sets the uid and gid that own the NFS files
 # (Q11) with runAsUser and runAsGroup.
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2
 LABEL org.opencontainers.image.title="lanekeeper-agent" \
       org.opencontainers.image.description="Lanekeeper in-cluster agent" \
       org.opencontainers.image.licenses="UNLICENSED"

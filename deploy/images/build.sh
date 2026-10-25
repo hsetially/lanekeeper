@@ -20,6 +20,11 @@
 #   LK_BUILD_CA       a CA bundle for builds behind a TLS-intercepting proxy. It is passed as the `build_ca` secret, so
 #                     it never reaches a layer or the cache key.
 #   LK_BUILD_NETWORK  passed to `--network` (for example `host`), when the build containers need it to reach the network.
+#   HTTPS_PROXY, NO_PROXY
+#                     when set, passed to the build as the predefined build args of the same names (BuildKit keeps them
+#                     out of the image history). Behind an egress proxy the build containers cannot resolve hosts such as
+#                     huggingface.co themselves, so the model stage needs them; with `host` as the network they reach a proxy
+#                     on 127.0.0.1. CI on GitHub-hosted runners sets none of these.
 set -euo pipefail
 
 usage() { echo "usage: $0 <hub|agent> [--out DIR] [--no-cache] [--worktree]" >&2; exit 2; }
@@ -69,6 +74,8 @@ args=(
 [ -z "$no_cache" ] || args+=(--no-cache)
 [ -z "${LK_BUILDER:-}" ] || args+=(--builder "$LK_BUILDER")
 [ -z "${LK_BUILD_NETWORK:-}" ] || args+=(--network "$LK_BUILD_NETWORK")
+[ -z "${HTTPS_PROXY:-}" ] || args+=(--build-arg "HTTPS_PROXY=$HTTPS_PROXY")
+[ -z "${NO_PROXY:-}" ] || args+=(--build-arg "NO_PROXY=$NO_PROXY")
 if [ -n "${LK_BUILD_CA:-}" ]; then
     [ -r "$LK_BUILD_CA" ] || { echo "LK_BUILD_CA is not a readable file: $LK_BUILD_CA" >&2; exit 1; }
     args+=(--secret "id=build_ca,src=$LK_BUILD_CA")

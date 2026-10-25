@@ -8,10 +8,12 @@
 #
 # Lines: `model <dir under /app/models>`, `repo <owner/name>`, `revision <40-hex commit>`, `date <commit date, UTC>`,
 # then one `file <sha256> <size in bytes> <path in the repo>` per file.
-# UNRESOLVED: the ONNX graph cannot be downloaded from the environment this was written in. huggingface.co answers, but it
-# redirects LFS files to its CDN (us.aws.cdn.hf.co), which the egress proxy refuses, so onnx/model.onnx has not been hashed.
-# The checker and the image build both refuse this lock until update-model-lock.sh fills it in
-# (plans/09-deployment-ci.blockers.md, B1).
 model bge-small-en-v1.5
 repo BAAI/bge-small-en-v1.5
-revision UNRESOLVED
+revision 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
+date 2024-02-22T03:36:23Z
+file 828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35 133093490 onnx/model.onnx
+file d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66 711396 tokenizer.json
+file 094f8e891b932f2000c92cfc663bac4c62069f5d8af5b5278c4306aef3084750 743 config.json
+file b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3 125 special_tokens_map.json
+file 9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3 366 tokenizer_config.json

@@ -11,18 +11,20 @@
 # sha256; the final stage is distroless with those three things alone.
 #
 # Every base image is pinned by digest (the multi-architecture index), so a build today and a build next year start from
-# the same bytes. The digests were read from the registries (node, rust and distroless on 2026-10-11, the Dockerfile
-# frontend 1.28.0 on 2026-10-25):
+# the same bytes. The digests were read from the registries on 2026-10-25 (node, rust, distroless and the Dockerfile
+# frontend 1.28.0):
 #
-#     docker buildx imagetools inspect gcr.io/distroless/cc-debian12:nonroot      # and the same for each base
+#     docker buildx imagetools inspect gcr.io/distroless/cc-debian13:nonroot      # and the same for each base
 #
 # Renovate proposes new digests. The web stage's Node is the major in web/.nvmrc, and pnpm is the version in package.json;
-# the Rust stages' toolchain is the one in rust-toolchain.toml (1.88.0), and Debian 12 on both sides keeps glibc the same.
+# the Rust stages' toolchain is the one in rust-toolchain.toml (1.88.0), and Debian 13 (trixie) on both sides keeps glibc
+# the same. The runtime is cc-debian13 because cc-debian12 is deprecated: it carries critical findings that will not be
+# fixed, which the image scan refuses (plan 09 A32).
 #
 # Network steps take an optional `build_ca` secret: a CA bundle for builds behind a TLS-intercepting proxy. It is mounted
 # for that one instruction and is never part of a layer. CI does not pass it.
 
-FROM docker.io/library/node:22.20.0-bookworm-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e AS web
+FROM docker.io/library/node:22.20.0-trixie-slim@sha256:f3bca16c4b87ad0c7abfad97f6803898ee9b08a1f153a269140f0a08f50231d2 AS web
 # Read only when the build_ca secret is mounted; Node warns and goes on without it.
 ENV NODE_EXTRA_CA_CERTS=/run/secrets/build_ca
 WORKDIR /src/web
@@ -32,7 +34,7 @@ RUN --mount=type=secret,id=build_ca,required=false corepack enable && corepack p
 COPY web/ ./
 RUN pnpm build
 
-FROM docker.io/library/rust:1.88.0-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS planner
+FROM docker.io/library/rust:1.88.0-trixie@sha256:f2a17efbe58b00470be6e73dbea79705a789ee20ee8de2dcdaf73c0c6091f1db AS planner
 # The toolchain the image ships, never one rustup would fetch for rust-toolchain.toml (whose components, rustfmt and clippy,
 # the build does not need).
 ENV RUSTUP_TOOLCHAIN=1.88.0 CARGO_NET_RETRY=3
@@ -43,7 +45,7 @@ WORKDIR /src
 COPY . .
 RUN cargo chef prepare --recipe-path /recipe.json
 
-FROM docker.io/library/rust:1.88.0-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS build
+FROM docker.io/library/rust:1.88.0-trixie@sha256:f2a17efbe58b00470be6e73dbea79705a789ee20ee8de2dcdaf73c0c6091f1db AS build
 ENV RUSTUP_TOOLCHAIN=1.88.0 CARGO_NET_RETRY=3
 RUN --mount=type=secret,id=build_ca,target=/etc/ssl/certs/ca-certificates.crt,required=false \
     cargo install --locked cargo-chef --version 0.1.78
@@ -64,7 +66,7 @@ RUN cargo build --release --locked -p hub
 # The embedding model (D53), fetched from the pinned Hugging Face revision in deploy/images/hub-model.lock. Each file must
 # have the lock's size and sha256, or the build stops (S19, S20). The URL is built from the lock's repo, revision and path,
 # so the lock cannot point anywhere else; only HTTPS is followed, redirects included.
-FROM docker.io/library/rust:1.88.0-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS model
+FROM docker.io/library/rust:1.88.0-trixie@sha256:f2a17efbe58b00470be6e73dbea79705a789ee20ee8de2dcdaf73c0c6091f1db AS model
 RUN --mount=type=bind,source=deploy/images/hub-model.lock,target=/hub-model.lock \
     --mount=type=secret,id=build_ca,target=/etc/ssl/certs/ca-certificates.crt,required=false \
     set -eu; \
@@ -90,7 +92,7 @@ RUN --mount=type=bind,source=deploy/images/hub-model.lock,target=/hub-model.lock
 
 # Distroless: glibc, libgcc and CA certificates, and no shell, no package manager, nothing to exec into (S16).
 # `nonroot` runs as uid and gid 65532.
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2
 LABEL org.opencontainers.image.title="lanekeeper-hub" \
       org.opencontainers.image.description="Lanekeeper hub" \
       org.opencontainers.image.licenses="UNLICENSED"

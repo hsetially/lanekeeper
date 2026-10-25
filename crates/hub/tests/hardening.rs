@@ -54,6 +54,21 @@ fn instructions(lines: &[&str]) -> Vec<String> {
     out
 }
 
+/// The Debian release of a base image, as a number: `rust:1.88.0-trixie` and `gcr.io/distroless/cc-debian13` are both 13.
+/// The binary is linked against the builder's glibc and runs on the runtime image's, so the two must be the same release
+/// (09/T1; a base that Debian no longer fixes, such as `cc-debian12`, is moved on both sides together).
+fn debian_release(reference: &str) -> Option<u32> {
+    if let Some((_, rest)) = reference.split_once("/cc-debian") {
+        return rest.split(':').next()?.parse().ok();
+    }
+    let tag = reference.split_once("rust:")?.1.split('@').next()?;
+    match tag.rsplit('-').next()? {
+        "bookworm" => Some(12),
+        "trixie" => Some(13),
+        _ => None,
+    }
+}
+
 /// Why a Dockerfile does not meet S16. Empty when it does.
 fn dockerfile_problems(text: &str) -> Vec<String> {
     let mut problems = Vec::new();
@@ -76,6 +91,16 @@ fn dockerfile_problems(text: &str) -> Vec<String> {
         let reference = lines[at].split_whitespace().nth(1).unwrap_or("");
         if !is_digest_pinned(reference) {
             problems.push(format!("base image not pinned by digest: {}", lines[at]));
+        }
+    }
+    let release = debian_release(lines[last].split_whitespace().nth(1).unwrap_or(""));
+    for &at in &froms {
+        let reference = lines[at].split_whitespace().nth(1).unwrap_or("");
+        if reference.contains("/rust:") && (release.is_none() || debian_release(reference) != release) {
+            problems.push(format!(
+                "the builder and the runtime image are not the same Debian release: {}",
+                lines[at]
+            ));
         }
     }
     let final_base = lines[last].split_whitespace().nth(1).unwrap_or("");
@@ -173,11 +198,17 @@ fn hub_dockerfile_is_hardened() {
     let text = read("Dockerfile");
     let problems = dockerfile_problems(&text);
     assert!(problems.is_empty(), "{problems:#?}");
+    // Debian 13 throughout: `cc-debian12` is deprecated and carries critical findings that will not be fixed (plan 09 A32).
     assert!(
-        text.contains("rust:1.88.0-bookworm@sha256:"),
+        text.contains("rust:1.88.0-trixie@sha256:"),
         "the builder is the toolchain in rust-toolchain.toml"
     );
-    assert!(text.contains("gcr.io/distroless/cc-debian12:nonroot@sha256:"));
+    assert!(text.contains("gcr.io/distroless/cc-debian13:nonroot@sha256:"));
+    let code: Vec<&str> = text.lines().filter(|l| !l.trim_start().starts_with('#')).collect();
+    assert!(
+        !code.iter().any(|l| l.contains("bookworm") || l.contains("cc-debian12")),
+        "no Debian 12 image is left"
+    );
     assert!(
         text.contains("node:22"),
         "the web stage uses the Node major of web/.nvmrc"
@@ -216,10 +247,13 @@ fn hardening_lint_rejects_planted_dockerfile_violations() {
     let planted = [
         good.replace(&format!("@sha256:{digest}"), ""),
         good.replace(
-            "gcr.io/distroless/cc-debian12:nonroot",
-            "gcr.io/distroless/cc-debian12:debug-nonroot",
+            "gcr.io/distroless/cc-debian13:nonroot",
+            "gcr.io/distroless/cc-debian13:debug-nonroot",
         ),
-        good.replace("gcr.io/distroless/cc-debian12:nonroot", "debian:12-slim"),
+        good.replace("gcr.io/distroless/cc-debian13:nonroot", "debian:13-slim"),
+        // The runtime moves to another Debian release than the builder, or the builder does.
+        good.replace("gcr.io/distroless/cc-debian13:nonroot", "gcr.io/distroless/cc-debian12:nonroot"),
+        good.replace("rust:1.88.0-trixie@", "rust:1.88.0-bookworm@"),
         good.lines()
             .filter(|l| !l.starts_with("USER "))
             .collect::<Vec<_>>()
