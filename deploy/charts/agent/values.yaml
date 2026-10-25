@@ -56,6 +56,24 @@ joinToken:
 config:
   tuning: {}
 
+# The durable spool (D74): the agent keeps every observed version the hub has not acknowledged on a volume of its own, so the versions
+# between two hub outages survive a restart. A claim of 1 GiB on a disk encrypted with a customer-managed key (S10), read and written by
+# one pod at a time; the Deployment replaces its pod (strategy Recreate) and does not surge it. The claim is never pruned or removed with
+# the release: it holds changes the hub has not seen.
+spool:
+  size: 1Gi
+  # LK_SPOOL_MAX_BYTES, the bound the agent puts on the spool (crates/agent/src/config.rs: 4 MiB to 64 GiB, 512 MiB by default). The claim must
+  # be larger: the bound counts the segment files, and the small state file is on top. storage.rego compares the two on every render.
+  maxBytes: 536870912
+  # A Cloud KMS key, projects/P/locations/L/keyRings/R/cryptoKeys/K (S10). With it the chart renders a StorageClass that encrypts the disk with
+  # it; the Compute Engine service agent of the cluster's project needs cloudkms.cryptoKeyEncrypterDecrypter on the key
+  # (deploy/ADDING-A-SWIMLANE.md). Without it the claim uses the cluster's default class, which is Google-managed encryption, and the policy
+  # warns (plan 09 A11b, Q29).
+  cmekKey: ""
+  diskType: pd-balanced
+  # Only used without cmekKey.
+  fallbackClassName: standard-rwo
+
 # The P4 budget is 50 mCPU and 64 MiB at steady state; the limit leaves room for a full rehash, a walk burst and four deltas
 # (crates/agent/HARDENING.md). To be confirmed on the pilot.
 resources:

@@ -322,3 +322,106 @@ fallback_docs(d) := json.patch(d, [
 }
 
 fallback_docs(d) := d if d.metadata.name != "example-project-lanekeeper-docs-prod"
+
+# --- the agent's spool (09/T8; D74, S10): one claim of 1 GiB on a class with a customer-managed key, larger than the bound the agent
+# puts on the spool (LK_SPOOL_MAX_BYTES, 512 MiB unless it is set), read and written by one pod at a time.
+
+claim_change(ops) := fixtures.agent_patch("PersistentVolumeClaim", "lanekeeper-agent-spool", ops)
+
+claim_request(q) := claim_change([{"op": "replace", "path": "/spec/resources/requests/storage", "value": q}])
+
+raised_bound(n) := fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "replace", "path": "/spec/template/spec/containers/0/env/13/value", "value": n}])
+
+test_agent_good_storage_passes if {
+	count(deny) == 0 with input as fixtures.agent
+	count(warn) == 0 with input as fixtures.agent
+}
+
+test_agent_spool_pvc_1gi if {
+	pvcs := [d | some d in fixtures.agent_docs; d.kind == "PersistentVolumeClaim"]
+	count(pvcs) == 1
+	pvcs[0].metadata.name == "lanekeeper-agent-spool"
+	pvcs[0].spec.resources.requests.storage == "1Gi"
+	count(deny) == 0 with input as fixtures.agent
+}
+
+test_deny_agent_spool_pvc_as_big_as_the_bound if {
+	refused(claim_request("512Mi"), "must be larger")
+}
+
+test_deny_agent_spool_pvc_smaller_than_the_bound if {
+	refused(claim_request("256Mi"), "must be larger")
+}
+
+test_deny_agent_spool_pvc_smaller_than_a_raised_bound if {
+	refused(raised_bound("2147483648"), "must be larger")
+}
+
+test_agent_spool_pvc_larger_than_a_raised_bound_passes if {
+	planted := fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "replace", "path": "/spec/template/spec/containers/0/env/13/value", "value": "2147483648"}])
+	bigger := fixtures.agent_with(array.concat(
+		[d | some d in planted[0].contents; d.kind != "PersistentVolumeClaim"],
+		[json.patch(fixtures.agent_spool_pvc, [{"op": "replace", "path": "/spec/resources/requests/storage", "value": "3Gi"}])],
+	))
+	count(deny) == 0 with input as bigger
+}
+
+# Without the variable the agent's own default is the bound (crates/agent/src/config.rs: 536870912).
+test_deny_agent_spool_pvc_smaller_than_the_default_bound if {
+	planted := fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "remove", "path": "/spec/template/spec/containers/0/env/13"}])
+	small := fixtures.agent_with(array.concat(
+		[d | some d in planted[0].contents; d.kind != "PersistentVolumeClaim"],
+		[json.patch(fixtures.agent_spool_pvc, [{"op": "replace", "path": "/spec/resources/requests/storage", "value": "500Mi"}])],
+	))
+	refused(small, "must be larger")
+}
+
+test_deny_agent_spool_bound_that_is_not_a_number if {
+	refused(raised_bound("lots"), "LK_SPOOL_MAX_BYTES")
+}
+
+test_deny_agent_spool_size_in_a_unit_the_policy_cannot_compare if {
+	refused(claim_request("2G"), "cannot be compared")
+}
+
+test_deny_agent_without_its_spool_claim if {
+	refused(fixtures.agent_without("PersistentVolumeClaim"), "is not rendered")
+}
+
+test_deny_agent_spool_pvc_without_cmek_class if {
+	refused(claim_change([{"op": "replace", "path": "/spec/storageClassName", "value": "standard-rwo"}]), "customer-managed")
+}
+
+test_deny_agent_spool_class_without_a_key if {
+	planted := fixtures.agent_patch("StorageClass", "lanekeeper-agent-cmek", [{"op": "remove", "path": "/parameters/disk-encryption-kms-key"}])
+	refused(planted, "customer-managed")
+}
+
+test_agent_spool_fallback_warns_instead_of_failing if {
+	planted := fixtures.agent_with(array.concat(
+		[d | some d in fixtures.agent_docs; d.kind != "PersistentVolumeClaim"; d.kind != "StorageClass"],
+		[json.patch(fixtures.agent_spool_pvc, [
+			{"op": "replace", "path": "/spec/storageClassName", "value": "standard-rwo"},
+			{"op": "add", "path": "/metadata/annotations/lanekeeper.io~1cmek", "value": "fallback"},
+		])],
+	))
+	count(deny) == 0 with input as planted
+	warned(planted, "Google-managed")
+}
+
+test_deny_agent_spool_pvc_read_write_many if {
+	refused(claim_change([{"op": "replace", "path": "/spec/accessModes", "value": ["ReadWriteMany"]}]), "exactly ReadWriteOnce")
+}
+
+test_deny_agent_spool_pvc_with_two_access_modes if {
+	refused(claim_change([{"op": "replace", "path": "/spec/accessModes", "value": ["ReadWriteOnce", "ReadWriteMany"]}]), "exactly ReadWriteOnce")
+}
+
+# The spool holds changes the hub has not acknowledged: a chart refactor or a sync that prunes the claim must not delete it.
+test_deny_agent_spool_pvc_that_can_be_pruned if {
+	refused(claim_change([{"op": "remove", "path": "/metadata/annotations/argocd.argoproj.io~1sync-options"}]), "Prune=false")
+}
+
+test_deny_agent_spool_pvc_that_helm_removes if {
+	refused(claim_change([{"op": "remove", "path": "/metadata/annotations/helm.sh~1resource-policy"}]), "helm.sh/resource-policy")
+}

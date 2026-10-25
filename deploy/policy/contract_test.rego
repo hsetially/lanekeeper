@@ -359,3 +359,77 @@ test_deny_two_network_policies if {
 	second := json.patch(fixtures.agent_networkpolicy, [{"op": "replace", "path": "/metadata/name", "value": "lanekeeper-agent-extra"}])
 	refused(fixtures.agent_contract_with(array.concat(fixtures.agent_docs, [second])), "exactly one")
 }
+
+# --- the spool, and the pod's paths (09/T8; D74): the volumes, the mounts and the path variables equal HARDENING.md, the pod is
+# replaced and not surged because a volume of the contract is a claim, and the claim the contract names is rendered
+
+spool_volume_op(value) := {"op": "replace", "path": "/spec/template/spec/volumes/2", "value": value}
+
+test_deny_volume_that_differs_from_the_contract if {
+	refused(patched("Deployment", "lanekeeper-agent", [spool_volume_op({"name": "spool", "persistentVolumeClaim": {"claimName": "lanekeeper-agent-other"}})]), "volume spool is")
+}
+
+test_deny_volume_of_another_kind_than_the_contract if {
+	refused(patched("Deployment", "lanekeeper-agent", [spool_volume_op({"name": "spool", "emptyDir": {}})]), "volume spool is")
+}
+
+test_deny_volume_the_contract_has_and_the_pod_lacks if {
+	refused(patched("Deployment", "lanekeeper-agent", [{"op": "remove", "path": "/spec/template/spec/volumes/2"}]), "the pod has no volume spool")
+}
+
+test_deny_volume_the_contract_lacks if {
+	refused(patched("Deployment", "lanekeeper-agent", [{"op": "add", "path": "/spec/template/spec/volumes/-", "value": {"name": "scratch", "emptyDir": {}}}]), "volume scratch is not in HARDENING.md")
+}
+
+test_deny_hub_ca_volume_from_another_config_map if {
+	refused(patched("Deployment", "lanekeeper-agent", [{"op": "replace", "path": "/spec/template/spec/volumes/3/configMap/name", "value": "other-ca"}]), "volume hub-ca is")
+}
+
+test_deny_tmp_volume_without_the_size_limit if {
+	refused(patched("Deployment", "lanekeeper-agent", [{"op": "replace", "path": "/spec/template/spec/volumes/1/emptyDir", "value": {}}]), "volume tmp is")
+}
+
+test_deny_mount_path_that_differs_from_the_contract if {
+	refused(patched("Deployment", "lanekeeper-agent", [{"op": "replace", "path": "/spec/template/spec/containers/0/volumeMounts/2/mountPath", "value": "/var/spool/lk"}]), "volumeMounts differ from HARDENING.md")
+}
+
+test_deny_mount_the_contract_lacks if {
+	refused(patched("Deployment", "lanekeeper-agent", [{"op": "add", "path": "/spec/template/spec/containers/0/volumeMounts/-", "value": {"name": "scratch", "mountPath": "/scratch"}}]), "volumeMounts differ from HARDENING.md")
+}
+
+test_deny_hub_ca_mount_that_is_not_read_only if {
+	refused(patched("Deployment", "lanekeeper-agent", [{"op": "remove", "path": "/spec/template/spec/containers/0/volumeMounts/3/readOnly"}]), "volumeMounts differ from HARDENING.md")
+}
+
+test_deny_spool_dir_that_differs_from_the_contract if {
+	refused(patched("Deployment", "lanekeeper-agent", [{"op": "replace", "path": "/spec/template/spec/containers/0/env/12/value", "value": "/var/spool/lk"}]), "LK_SPOOL_DIR is")
+}
+
+test_deny_tmp_dir_that_differs_from_the_contract if {
+	refused(patched("Deployment", "lanekeeper-agent", [{"op": "replace", "path": "/spec/template/spec/containers/0/env/14/value", "value": "/var/tmp"}]), "LK_TMP_DIR is")
+}
+
+test_deny_path_variable_the_pod_lacks if {
+	refused(patched("Deployment", "lanekeeper-agent", [{"op": "remove", "path": "/spec/template/spec/containers/0/env/12"}]), "the pod does not set LK_SPOOL_DIR")
+}
+
+test_deny_path_variable_the_contract_lacks if {
+	refused(hardening_changed("Pod", "lanekeeper-agent", [{"op": "remove", "path": "/spec/containers/0/env/1"}]), "HARDENING.md does not set LK_NFS_ROOT")
+}
+
+test_deny_rolling_update_when_a_volume_of_the_contract_is_a_claim if {
+	refused(patched("Deployment", "lanekeeper-agent", [{"op": "replace", "path": "/spec/strategy/type", "value": "RollingUpdate"}]), "strategy.type must be Recreate")
+}
+
+test_recreate_is_not_asked_when_the_contract_has_no_claim if {
+	no_claim := hardening_changed("Pod", "lanekeeper-agent", [{"op": "replace", "path": "/spec/volumes/2", "value": {"name": "spool", "emptyDir": {}}}])
+	planted := array.concat(
+		[{"path": "rendered/agent.yaml", "contents": [json.patch(d, [{"op": "replace", "path": "/spec/strategy/type", "value": "RollingUpdate"}]) | some d in fixtures.agent_docs; d.kind == "Deployment"]}],
+		[no_claim[1]],
+	)
+	not refused(planted, "strategy.type must be Recreate")
+}
+
+test_deny_claim_the_contract_names_but_the_chart_does_not_render if {
+	refused(fixtures.agent_contract_with([d | some d in fixtures.agent_docs; d.kind != "PersistentVolumeClaim"]), "renders no PersistentVolumeClaim lanekeeper-agent-spool")
+}

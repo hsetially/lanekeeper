@@ -132,3 +132,14 @@ deny contains msg if {
 	object.get(sts.spec, "serviceName", "") != headless_name
 	msg := sprintf("%s: serviceName must be %s, the headless Service (D62)", [lk.who(sts), headless_name])
 }
+
+# --- the agent (09/T8; D74) ---------------------------------------------------------------------------------------------------------
+#
+# The agent's spool is a ReadWriteOnce volume that one agent writes. A rolling update (Kubernetes' default) starts the new pod beside the
+# old one, and the two would write the same spool and the same export under one identity. Recreate stops the old pod first.
+
+deny contains msg if {
+	some d in lk.agent_deployments
+	object.get(d.spec, ["strategy", "type"], "RollingUpdate") != "Recreate"
+	msg := sprintf("%s: strategy.type must be Recreate: the spool is a ReadWriteOnce volume that one agent writes, and a rolling update would start a second agent beside the first (D74)", [lk.who(d)])
+}

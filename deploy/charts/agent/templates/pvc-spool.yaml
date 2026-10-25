@@ -1,0 +1,24 @@
+# The agent's durable spool (D74, crates/agent/HARDENING.md): every observed version the hub has not acknowledged, so that the versions
+# between two hub outages survive a restart. One claim, read and written by one pod at a time (the Deployment is Recreate); never pruned
+# and never removed with the release, because it holds changes the hub has not seen.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lanekeeper-agent-spool
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-agent.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false
+    {{- if not .Values.spool.cmekKey }}
+    # No customer-managed key (Q29): Google-managed encryption, which the policy allows with a warning.
+    lanekeeper.io/cmek: fallback
+    {{- end }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ ternary "lanekeeper-agent-cmek" .Values.spool.fallbackClassName (not (empty .Values.spool.cmekKey)) | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.spool.size | quote }}

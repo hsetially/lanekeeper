@@ -629,3 +629,25 @@ test_two_watched_namespaces_pass if {
 	)
 	count(deny) == 0 with input as planted
 }
+
+# --- the agent's spool (09/T8): a claim in the namespaced list, and the one StorageClass the agent chart makes, by name
+
+test_deny_the_agent_project_with_a_storage_class_of_any_name if {
+	refused(fixtures.ac_agent_project_patch([{"op": "remove", "path": "/spec/clusterResourceWhitelist/1/name"}]), "extra [\"storage.k8s.io/StorageClass/\"]")
+}
+
+test_deny_the_agent_project_with_a_storage_class_of_another_name if {
+	refused(fixtures.ac_agent_project_patch([{"op": "replace", "path": "/spec/clusterResourceWhitelist/1/name", "value": "lanekeeper-hub-cmek"}]), "missing [\"storage.k8s.io/StorageClass/lanekeeper-agent-cmek\"]")
+}
+
+test_deny_the_agent_project_without_its_storage_class if {
+	refused(fixtures.ac_agent_project_patch([{"op": "remove", "path": "/spec/clusterResourceWhitelist/1"}]), "missing [\"storage.k8s.io/StorageClass/lanekeeper-agent-cmek\"]")
+}
+
+test_deny_the_agent_project_without_persistent_volume_claims if {
+	refused(fixtures.ac_agent_project_patch([{"op": "remove", "path": "/spec/namespaceResourceWhitelist/7"}]), "missing [\"/PersistentVolumeClaim\"]")
+}
+
+test_deny_the_workloads_project_with_persistent_volume_claims if {
+	refused(fixtures.ac_workloads_patch([{"op": "add", "path": "/spec/namespaceResourceWhitelist/-", "value": {"group": "", "kind": "PersistentVolumeClaim"}}]), "extra [\"/PersistentVolumeClaim\"]")
+}

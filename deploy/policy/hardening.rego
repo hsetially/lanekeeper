@@ -209,7 +209,7 @@ probes_ok(c) if {
 #
 # One replica, its own service account (the Roles are bound to it), one port (ops 9090), the probes of the contract, volumes from
 # the four it has (the NFS export, /tmp, the spool, the hub's CA), writable only where the code writes, and the paths it is given
-# are the paths of its mounts. The spool volume arrives with T8, which adds its rules; the names below already allow it.
+# are the paths of its mounts. The spool (09/T8; D74) is a PersistentVolumeClaim of its own, writable, outside the export.
 
 agent_volumes := {"nfs", "tmp", "spool", "hub-ca"}
 
@@ -280,11 +280,11 @@ mount_path(c, volume) := m.mountPath if {
 	m.name == volume
 }
 
-# LK_NFS_ROOT and LK_TMP_DIR are the mount paths of the volumes they name, and LK_HUB_CA_FILE is a file inside the hub-ca mount.
-# The agent writes where its variables say, so a variable that names another path is a write to the read-only root.
+# LK_NFS_ROOT, LK_TMP_DIR and LK_SPOOL_DIR are the mount paths of the volumes they name, and LK_HUB_CA_FILE is a file inside the hub-ca
+# mount. The agent writes where its variables say, so a variable that names another path is a write to the read-only root.
 deny contains msg if {
 	some x in agent_containers
-	some pair in [["LK_NFS_ROOT", "nfs"], ["LK_TMP_DIR", "tmp"]]
+	some pair in [["LK_NFS_ROOT", "nfs"], ["LK_TMP_DIR", "tmp"], ["LK_SPOOL_DIR", "spool"]]
 	not path_is_mount(x.container, pair[0], pair[1])
 	msg := sprintf("%s: %s must be the path of the %s mount (crates/agent/HARDENING.md)", [lk.who(x.doc), pair[0], pair[1]])
 }
@@ -298,3 +298,46 @@ deny contains msg if {
 }
 
 hub_ca_file_in_mount(c) if startswith(lk.env_value(c, "LK_HUB_CA_FILE"), concat("", [mount_path(c, "hub-ca"), "/"]))
+
+# --- the spool (09/T8; D74) --------------------------------------------------------------------------------------------------------
+
+spool_claim := "lanekeeper-agent-spool"
+
+# The spool outlives a pod: the changes the hub has not acknowledged are in it. An emptyDir or a host path would lose them, or share them.
+deny contains msg if {
+	some d in lk.agent_deployments
+	some v in agent_volume_list(d)
+	v.name == "spool"
+	object.get(object.get(v, "persistentVolumeClaim", {}), "claimName", "") != spool_claim
+	msg := sprintf("%s: volume spool must be the PersistentVolumeClaim %s (D74): the spool outlives a pod, and any other kind of volume loses it or shares it", [lk.who(d), spool_claim])
+}
+
+# The agent stops at start without its spool directory (crates/agent/HARDENING.md).
+deny contains msg if {
+	some d in lk.agent_deployments
+	count([v | some v in agent_volume_list(d); v.name == "spool"]) == 0
+	msg := sprintf("%s: it has no volume spool, and the agent stops at start without its spool directory (D74)", [lk.who(d)])
+}
+
+deny contains msg if {
+	some x in agent_containers
+	some m in object.get(x.container, "volumeMounts", [])
+	m.name == "spool"
+	object.get(m, "readOnly", false) == true
+	msg := sprintf("%s: the spool is mounted read-only, and the agent writes its spool there (D74)", [lk.who(x.doc)])
+}
+
+# The spool may not be inside the export: its files would be tracked as configuration and sent to the hub again, for ever. The agent
+# refuses such a path at start; this refuses it before. Inside is by path component: /mnt/csp-configuration-spool is not inside
+# /mnt/csp-configuration.
+inside(path, root) if path == root
+
+inside(path, root) if startswith(path, concat("", [trim_suffix(root, "/"), "/"]))
+
+deny contains msg if {
+	some x in agent_containers
+	spool := lk.env_value(x.container, "LK_SPOOL_DIR")
+	root := lk.env_value(x.container, "LK_NFS_ROOT")
+	inside(spool, root)
+	msg := sprintf("%s: LK_SPOOL_DIR %s is inside the NFS root %s: the spool would be tracked as configuration and sent again, for ever (crates/agent/HARDENING.md)", [lk.who(x.doc), spool, root])
+}

@@ -39,7 +39,8 @@ pair, and refuses `prod` values under a `staging` label).
 - **Automated, self-healing sync.** What is in Git is what runs, and a change made in the cluster by hand is put back. `allowEmpty` is
   refused: a broken template that renders nothing would otherwise prune everything. `Replace` and `Force` (they delete and recreate) and
   skipping the dry run are not sync options here.
-- **Prune only where a removal from Git should remove it from the cluster:** the hub and the agent. Never the database (a CloudNativePG
+- **Prune only where a removal from Git should remove it from the cluster:** the hub and the agent (but not the agent's spool claim, which
+  carries `Prune=false` itself: it holds changes the hub has not seen). Never the database (a CloudNativePG
   cluster is not deleted because a file left Git) and never the Google Cloud resources. The buckets, the admission policy, the attestor and
   the note also carry `Prune=false` and `deletion-policy: abandon` themselves (charts/gcp).
 - **No `resources-finalizer`.** With it, deleting an Application deletes everything it made. Deleting an Application here leaves what
@@ -47,7 +48,8 @@ pair, and refuses `prod` values under a `staging` label).
 - **`CreateNamespace=true`, and the project allows that Namespace by name.** Argo CD checks the namespace it makes against the
   project's cluster-scoped kinds like any other resource (`gitops-engine/pkg/sync/sync_context.go` at v3.5.4: the namespace task passes
   the permission validator), so each project lists the one Namespace it creates, by name, and nothing else cluster-scoped but the
-  StorageClass. The policy checks that pairing.
+  StorageClass of the charts that make one: the hub's (any name) and the agent's spool class (`lanekeeper-agent-cmek`, by name; 09/T8).
+  The policy checks that pairing.
 - **The agent's certificate Secret (plan 09 A14).** The agent writes its certificate into `Secret/lanekeeper-agent-cert`, which the chart
   renders empty. With self-heal on, Argo CD would put the empty Secret back at the next sync. The agent's Application therefore has
   `ignoreDifferences` on exactly that Secret's `/data`, and `RespectIgnoreDifferences=true`, so that the sync does not write the ignored

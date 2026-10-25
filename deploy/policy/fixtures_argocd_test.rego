@@ -75,6 +75,7 @@ ac_agent_kinds := [
 	{"group": "rbac.authorization.k8s.io", "kind": "Role"},
 	{"group": "rbac.authorization.k8s.io", "kind": "RoleBinding"},
 	{"group": "networking.k8s.io", "kind": "NetworkPolicy"},
+	{"group": "", "kind": "PersistentVolumeClaim"},
 ]
 
 ac_project(name, labels, namespaces, cluster_kinds, kinds) := {
@@ -99,7 +100,11 @@ ac_proj_workloads := ac_project("lanekeeper-workloads", {}, ["lanekeeper"], [{"g
 
 ac_proj_cloud := ac_project("lanekeeper-cloud", {}, ["lanekeeper-gcp"], [ac_namespace_entry("lanekeeper-gcp")], ac_cloud_kinds)
 
-ac_proj_agent := ac_project("lanekeeper-agent", {"lanekeeper.io/swimlane": "sit1"}, ["lanekeeper", "sit1"], [ac_namespace_entry("lanekeeper")], ac_agent_kinds)
+# The agent's spool is on a StorageClass of the agent chart (a customer-managed key, S10), which is cluster-scoped: the project allows that
+# one by name.
+ac_agent_storageclass_entry := {"group": "storage.k8s.io", "kind": "StorageClass", "name": "lanekeeper-agent-cmek"}
+
+ac_proj_agent := ac_project("lanekeeper-agent", {"lanekeeper.io/swimlane": "sit1"}, ["lanekeeper", "sit1"], [ac_namespace_entry("lanekeeper"), ac_agent_storageclass_entry], ac_agent_kinds)
 
 ac_agent_app := object.union(
 	ac_app("lanekeeper-agent", "lanekeeper-agent", "agent", "lanekeeper", ["../../values/agent/sit1.yaml"], {"lanekeeper.io/swimlane": "sit1"}, true),

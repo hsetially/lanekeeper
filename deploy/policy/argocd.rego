@@ -330,17 +330,18 @@ approved_namespaced := {
 	},
 	"lanekeeper-agent": {
 		"/ServiceAccount", "/Secret", "/ConfigMap", "apps/Deployment", "rbac.authorization.k8s.io/Role",
-		"rbac.authorization.k8s.io/RoleBinding", "networking.k8s.io/NetworkPolicy",
+		"rbac.authorization.k8s.io/RoleBinding", "networking.k8s.io/NetworkPolicy", "/PersistentVolumeClaim",
 	},
 }
 
 # Cluster-scoped kinds, as group/kind/name. CreateNamespace=true makes the Application's namespace as part of the sync, and Argo CD checks that
 # Namespace against the project like any resource (gitops-engine, sync_context.go: the namespace task goes through the permission validator),
 # so each project allows the Namespace of its own, by name, and no other cluster-scoped kind but the StorageClass of the charts that make one.
+# The agent's spool (09/T8) is on a StorageClass with a customer-managed key, which the agent chart makes: that one, by name.
 approved_cluster := {
 	"lanekeeper-workloads": {"storage.k8s.io/StorageClass/", "/Namespace/lanekeeper"},
 	"lanekeeper-cloud": {"/Namespace/lanekeeper-gcp"},
-	"lanekeeper-agent": {"/Namespace/lanekeeper"},
+	"lanekeeper-agent": {"/Namespace/lanekeeper", "storage.k8s.io/StorageClass/lanekeeper-agent-cmek"},
 }
 
 approved_namespaces := {

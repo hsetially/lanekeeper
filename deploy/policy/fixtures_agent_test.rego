@@ -59,6 +59,8 @@ agent_container := {
 		{"name": "LK_CERT_SECRET", "value": "lanekeeper-agent-cert"},
 		{"name": "LK_JOIN_MODE", "value": "workload-identity"},
 		{"name": "LK_NAMESPACES", "value": "sit1"},
+		{"name": "LK_SPOOL_DIR", "value": "/var/lib/lanekeeper/spool"},
+		{"name": "LK_SPOOL_MAX_BYTES", "value": "536870912"},
 		{"name": "LK_TMP_DIR", "value": "/tmp"},
 		{"name": "LK_CONFIG_SERVER_URL", "value": "http://csp-configuration-server:8888"},
 		{"name": "LK_HEALTH_ADDR", "value": "0.0.0.0:9090"},
@@ -66,6 +68,7 @@ agent_container := {
 	"volumeMounts": [
 		{"name": "nfs", "mountPath": "/mnt/csp-configuration"},
 		{"name": "tmp", "mountPath": "/tmp"},
+		{"name": "spool", "mountPath": "/var/lib/lanekeeper/spool"},
 		{"name": "hub-ca", "mountPath": "/etc/lanekeeper/hub-ca", "readOnly": true},
 	],
 }
@@ -76,6 +79,8 @@ agent_deployment := {
 	"metadata": {"name": agent_name, "namespace": namespace, "labels": agent_pod_labels},
 	"spec": {
 		"replicas": 1,
+		# The spool is a ReadWriteOnce volume that one agent writes: a rolling update would start a second agent beside the first.
+		"strategy": {"type": "Recreate"},
 		"selector": {"matchLabels": agent_pod_labels},
 		"template": {
 			"metadata": {"labels": agent_pod_labels, "annotations": {"checksum/hub-ca": "0000000000000000000000000000000000000000000000000000000000000000"}},
@@ -94,6 +99,7 @@ agent_deployment := {
 				"volumes": [
 					{"name": "nfs", "nfs": {"server": "192.0.2.10", "path": "/export/csp-configuration", "readOnly": false}},
 					{"name": "tmp", "emptyDir": {"sizeLimit": "64Mi"}},
+					{"name": "spool", "persistentVolumeClaim": {"claimName": "lanekeeper-agent-spool"}},
 					{"name": "hub-ca", "configMap": {"name": "lanekeeper-hub-ca"}},
 				],
 			},
@@ -130,6 +136,38 @@ agent_hub_ca := {
 	"kind": "ConfigMap",
 	"metadata": {"name": "lanekeeper-hub-ca", "namespace": namespace, "labels": agent_pod_labels},
 	"data": {"ca.pem": "-----BEGIN CERTIFICATE-----\nMIIBsynthetic\n-----END CERTIFICATE-----\n"},
+}
+
+# The spool (D74): one claim of 1 GiB on a class that carries a customer-managed key (S10), which the chart renders with it. The class
+# name is the one agent/templates/storageclass.yaml makes.
+agent_storageclass := {
+	"apiVersion": "storage.k8s.io/v1",
+	"kind": "StorageClass",
+	"metadata": {"name": "lanekeeper-agent-cmek", "labels": agent_pod_labels},
+	"provisioner": "pd.csi.storage.gke.io",
+	"parameters": {"type": "pd-balanced", "disk-encryption-kms-key": "projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-disk-sit1"},
+	"volumeBindingMode": "WaitForFirstConsumer",
+	"allowVolumeExpansion": true,
+	"reclaimPolicy": "Delete",
+}
+
+agent_spool_pvc := {
+	"apiVersion": "v1",
+	"kind": "PersistentVolumeClaim",
+	"metadata": {
+		"name": "lanekeeper-agent-spool",
+		"namespace": namespace,
+		"labels": agent_pod_labels,
+		"annotations": {
+			"helm.sh/resource-policy": "keep",
+			"argocd.argoproj.io/sync-options": "Prune=false",
+		},
+	},
+	"spec": {
+		"accessModes": ["ReadWriteOnce"],
+		"storageClassName": "lanekeeper-agent-cmek",
+		"resources": {"requests": {"storage": "1Gi"}},
+	},
 }
 
 # RBAC.md, rendered: one workload Role and RoleBinding per watched namespace (here sit1) and one pair for the two Secrets.
@@ -200,6 +238,8 @@ agent_docs := [
 	agent_binding("lanekeeper-agent-secrets", namespace),
 	agent_cert_secret,
 	agent_hub_ca,
+	agent_storageclass,
+	agent_spool_pvc,
 	agent_networkpolicy,
 ]
 
@@ -291,7 +331,25 @@ agent_contract_pod := {
 			"ports": [{"name": "ops", "containerPort": 9090, "protocol": "TCP"}],
 			"livenessProbe": {"httpGet": {"path": "/healthz", "port": "ops"}, "periodSeconds": 20, "timeoutSeconds": 3, "failureThreshold": 3},
 			"readinessProbe": {"httpGet": {"path": "/readyz", "port": "ops"}, "periodSeconds": 10, "timeoutSeconds": 3},
+			"env": [
+				{"name": "LK_HUB_CA_FILE", "value": "/etc/lanekeeper/hub-ca/ca.pem"},
+				{"name": "LK_NFS_ROOT", "value": "/mnt/csp-configuration"},
+				{"name": "LK_SPOOL_DIR", "value": "/var/lib/lanekeeper/spool"},
+				{"name": "LK_TMP_DIR", "value": "/tmp"},
+			],
+			"volumeMounts": [
+				{"name": "nfs", "mountPath": "/mnt/csp-configuration", "readOnly": false},
+				{"name": "tmp", "mountPath": "/tmp"},
+				{"name": "spool", "mountPath": "/var/lib/lanekeeper/spool"},
+				{"name": "hub-ca", "readOnly": true, "mountPath": "/etc/lanekeeper/hub-ca"},
+			],
 		}],
+		"volumes": [
+			{"name": "nfs", "nfs": {"server": "<nfs server>", "path": "<export path>", "readOnly": false}},
+			{"name": "tmp", "emptyDir": {"sizeLimit": "64Mi"}},
+			{"name": "spool", "persistentVolumeClaim": {"claimName": "lanekeeper-agent-spool"}},
+			{"name": "hub-ca", "configMap": {"name": "lanekeeper-hub-ca"}},
+		],
 	},
 }
 

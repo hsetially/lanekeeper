@@ -392,6 +392,20 @@ planted_agent() {
     plant "the certificate Secret's name" agent sit1 's/^( *)value: lanekeeper-agent-cert$/\1value: lanekeeper-db-app/' "must be lanekeeper-agent-cert"
     plant "image by tag" agent sit1 's/@sha256:[0-9a-f]{64}/:latest/' "not pinned by digest"
 
+    # D74, S10: the spool is a claim of its own on a customer-managed key, larger than its bound, written by one pod at a time, and kept.
+    plant "the spool claim is not larger than its bound" agent sit1 's/^( *)storage: "1Gi"$/\1storage: "512Mi"/' "must be larger"
+    plant "a bound that the claim cannot hold" agent sit1 's/^( *)value: "536870912"$/\1value: "2147483648"/' "must be larger"
+    plant "a bound that is not a number" agent sit1 's/^( *)value: "536870912"$/\1value: "lots"/' "is not a number of bytes"
+    plant "the spool on the cluster's default class" agent sit1 's/^( *)storageClassName: "lanekeeper-agent-cmek"$/\1storageClassName: "standard-rwo"/' "customer-managed"
+    plant "the spool claim is read-write-many" agent sit1 's/^( *)- ReadWriteOnce$/\1- ReadWriteMany/' "exactly ReadWriteOnce"
+    plant "the spool claim can be pruned" agent sit1 '/argocd.argoproj.io\/sync-options: Prune=false/d' "Prune=false is missing"
+    plant "the spool claim goes with the release" agent sit1 '/^kind: PersistentVolumeClaim$/,/^spec:$/{/helm.sh\/resource-policy: keep/d}' "helm.sh/resource-policy: keep is missing"
+    plant "a rolling update" agent sit1 '/^  strategy:$/{N;d}' "strategy.type must be Recreate"
+    plant "the spool is an emptyDir" agent sit1 '/^        - name: spool$/{n;N;s/.*/          emptyDir: {}/}' "must be the PersistentVolumeClaim"
+    plant "the spool path is not the mount" agent sit1 's#^( *)value: /var/lib/lanekeeper/spool$#\1value: /var/spool/lk#' "LK_SPOOL_DIR must be the path of the spool mount"
+    plant "the spool is mounted read-only" agent sit1 's#^( *)mountPath: /var/lib/lanekeeper/spool$#&\n\1readOnly: true#' "spool is mounted read-only"
+    plant "the spool is inside the export" agent sit1 's#^( *)value: /var/lib/lanekeeper/spool$#\1value: /mnt/csp-configuration/spool#;s#^( *)mountPath: /var/lib/lanekeeper/spool$#\1mountPath: /mnt/csp-configuration/spool#' "is inside the NFS root"
+
     # S7: the Secret and the ConfigMap.
     plant "the certificate Secret is not kept" agent sit1 '/helm.sh\/resource-policy: keep/d' "helm.sh/resource-policy"
     plant "a private key as the CA" agent sit1 's/-----BEGIN CERTIFICATE-----/-----BEGIN PRIVATE KEY-----/' "private key"
@@ -431,6 +445,12 @@ planted_agent() {
     plant_contract "the container's security context" 's/readOnlyRootFilesystem: true/readOnlyRootFilesystem: false/' "securityContext"
     plant_contract "no token" 's/^( *)automountServiceAccountToken: true$/\1automountServiceAccountToken: false/' "automountServiceAccountToken"
     plant_contract "the binding's role" '/^  kind: Role$/{n;s/name: lanekeeper-agent-secrets/name: lanekeeper-agent-workloads/}' "roleRef"
+    # D74: the volumes, the mounts and the path variables equal HARDENING.md; its claim makes the pod Recreate, and the chart renders the claim.
+    plant_contract "the spool claim of the pod" 's/claimName: lanekeeper-agent-spool/claimName: lanekeeper-agent-other/' "volume spool is"
+    plant_contract "the spool mount's path" 's#^( *)mountPath: /var/lib/lanekeeper/spool$#\1mountPath: /var/spool/lk#' "volumeMounts differ from HARDENING.md"
+    plant_contract "the spool directory" 's#^( *)value: /var/lib/lanekeeper/spool$#\1value: /var/spool/lk#' "LK_SPOOL_DIR is"
+    plant_contract "a rolling update" '/^  strategy:$/{N;d}' "strategy.type must be Recreate, because the pod of HARDENING.md"
+    plant_contract "no claim is rendered" '/^# Source: lanekeeper-agent\/templates\/pvc-spool.yaml$/,/^---$/d' "renders no PersistentVolumeClaim"
 }
 
 # accept_variant NAME HELM_ARG...: the agent chart with other values must still pass every check (kubeconform, the policies and the
@@ -481,6 +501,16 @@ agent_variants() {
     in_variant '^ +- name: "ghcr-pull"$' "an image pull secret"
     accept_variant "a different hub audience" --set hub.audience=https://hub-audience.example.com
     in_variant 'value: "https://hub-audience.example.com"' "a different hub audience"
+    accept_variant "a larger spool with a raised bound" --set spool.size=4Gi --set spool.maxBytes=2147483648
+    in_variant '^ +storage: "4Gi"$' "a larger spool with a raised bound"
+    in_variant '^ +value: "2147483648"$' "a larger spool with a raised bound"
+    accept_variant "a spool on faster disks" --set spool.diskType=pd-ssd
+    in_variant '^ +type: pd-ssd$' "a spool on faster disks"
+    # Without a key the claim is on the cluster's default class and says so; the policy allows it with a warning (A11b, Q29).
+    accept_variant "no customer-managed key for the spool (the fallback)" --set spool.cmekKey= --set spool.fallbackClassName=premium-rwo
+    in_variant '^ +lanekeeper.io/cmek: fallback$' "the fallback"
+    in_variant '^ +storageClassName: "premium-rwo"$' "the fallback"
+    ! grep -q '^kind: StorageClass$' "$work/variant.yaml" || fail "the fallback: a StorageClass was rendered without a key"
 }
 
 # The agent chart must stop before it writes a manifest that breaks a rule it owns. $1 is the case, $2 the fragment of the message,
@@ -543,6 +573,17 @@ planted_agent_templates() {
     expect_agent_failure "a log level that is not one" "LK_LOG" --set-json 'config.tuning={"LK_LOG":"loud"}'
     expect_agent_failure "a replica count" "replicas" --set replicas=2
     expect_agent_failure "an unknown value" "not_a_value" --set not_a_value=1
+    # D74, S10: the spool's values. The tunable LK_SPOOL_MAX_BYTES is the chart's (spool.maxBytes), not a tunable, so the claim cannot be left
+    # behind it.
+    expect_agent_failure "a spool bound as a tunable" "LK_SPOOL_MAX_BYTES" --set-json 'config.tuning={"LK_SPOOL_MAX_BYTES":"1"}'
+    expect_agent_failure "a spool path as a tunable" "LK_SPOOL_DIR" --set-json 'config.tuning={"LK_SPOOL_DIR":"/mnt/csp-configuration/spool"}'
+    expect_agent_failure "a spool in a unit the policy cannot compare" "size" --set spool.size=1Ti
+    expect_agent_failure "a spool size that is not a size" "size" --set spool.size=big
+    expect_agent_failure "a spool bound under the agent's floor" "maxBytes" --set spool.maxBytes=1000
+    expect_agent_failure "a spool bound over the agent's ceiling" "maxBytes" --set spool.maxBytes=68719476737
+    expect_agent_failure "a spool key that is not a key" "cmekKey" --set spool.cmekKey=my-key
+    expect_agent_failure "a spool disk type that is not one" "diskType" --set spool.diskType=pd-extreme
+    expect_agent_failure "a spool value that does not exist" "reclaim" --set spool.reclaim=Retain
 }
 
 planted_gcp() {

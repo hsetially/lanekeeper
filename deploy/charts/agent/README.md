@@ -8,7 +8,9 @@ The Application for a swimlane is `deploy/argocd/swimlanes/<swimlane>.yaml`, and
 
 | Renders | Why |
 |---|---|
-| `Deployment/lanekeeper-agent` | 1 replica (not a value), the HARDENING.md pod: non-root as the export's owner (1010 by default, Q11), read-only root, seccomp `RuntimeDefault`, all capabilities dropped, the NFS export, `/tmp`, and the hub's CA |
+| `Deployment/lanekeeper-agent` | 1 replica (not a value) and `strategy: Recreate`, the HARDENING.md pod: non-root as the export's owner (1010 by default, Q11), read-only root, seccomp `RuntimeDefault`, all capabilities dropped, the NFS export, `/tmp`, the spool, and the hub's CA |
+| `PersistentVolumeClaim/lanekeeper-agent-spool` | the durable spool (D74): 1 GiB, ReadWriteOnce, mounted at `LK_SPOOL_DIR` (`/var/lib/lanekeeper/spool`), never pruned and never removed with the release (`Prune=false`, `helm.sh/resource-policy: keep`). It is larger than `LK_SPOOL_MAX_BYTES` (`spool.maxBytes`, 512 MiB), which `storage.rego` compares on every render |
+| `StorageClass/lanekeeper-agent-cmek` | the spool's disk, encrypted with the customer-managed key `spool.cmekKey` (S10). Without a key the claim uses `spool.fallbackClassName`, is marked `lanekeeper.io/cmek: fallback`, and the policy warns (A11b, Q29) |
 | `ServiceAccount/lanekeeper-agent` | `iam.gke.io/gcp-service-account` for Workload Identity (S5, Q26). Its token **is** mounted: the agent calls the Kubernetes API |
 | `Role` and `RoleBinding` `lanekeeper-agent-workloads`, in each namespace of `namespaces` | get, list, watch on Deployments, Pods and Jobs, and patch on Deployments for the restart annotation. RBAC.md, verbatim |
 | `Role` and `RoleBinding` `lanekeeper-agent-secrets`, in the agent's namespace | get and update on `lanekeeper-agent-cert`, and get on `lanekeeper-agent-join-token` only with `joinToken.enabled`. By name; **no list, no watch, no create** (S17) |
@@ -41,22 +43,31 @@ just deploy-check        # schemas, lint, kubeconform -strict (offline), the pol
 just contract-check      # this chart against RBAC.md and HARDENING.md
 ```
 
-Three policies guard it, and each fails on its own: `rbac.rego` (what a Role may grant: the allow-list, never read from RBAC.md),
+Four policies guard it, and each fails on its own: `storage.rego` and `topology.rego` (the spool), `rbac.rego` (what a Role may grant: the allow-list, never read from RBAC.md),
 `network.rego` (the five destinations) and `hardening.rego` (S16 and the agent's contract). `contract.rego` shows that the rendered
 Roles, bindings, NetworkPolicy and pod equal the two contract files, which `deploy/tests/contract-extract.sh` reads out of the
 Markdown. A change to the chart that the files do not say, and a change to the files that the chart does not follow, are both
 refused. `deploy/tests/render.sh planted` changes the real output one thing at a time (a Secret `list`, a wide address block, a
 second replica, a missing probe) and requires the policy that guards it to refuse it with its own message.
 
-## Not done yet
+## The spool (D74)
 
-- **The spool (T8, D74).** The agent keeps its durable spool at `LK_SPOOL_DIR`, a persistent volume that the chart does not make
-  yet, and it stops at start without the directory. T8 adds the volume claim on the CMEK class, the mount, the variable and
-  `strategy: Recreate` (with one replica, a rolling update would start the new agent beside the old one). Until then the chart is
-  checked but not deployable.
-- **The environment, volumes and mounts are not compared with HARDENING.md by `contract.rego`.** `hardening.rego` checks the
-  paths (the export, `/tmp`, the hub CA are the paths of their mounts) and `deploy/tests/env-names.sh` the names. T8 extends the
-  comparison when the spool arrives.
+The agent keeps every observed version the hub has not acknowledged on a volume of its own, so the versions between two hub outages survive a
+restart, and it stops at start without the directory. The chart makes the claim and mounts it. Three things follow from the volume being
+`ReadWriteOnce` and written by one agent:
+
+- **`strategy: Recreate`.** A rolling update would start the new pod beside the old one: two agents on one spool and one export, under one
+  identity. `topology.rego` requires Recreate, and `contract.rego` requires it because the pod of HARDENING.md mounts a claim. The cost is a
+  short gap in the agent's reports at every upgrade, which the spool and the root comparison cover.
+- **The claim is larger than the bound.** `LK_SPOOL_MAX_BYTES` counts the segment files and the small state file is on top, so a volume of
+  exactly the bound would fail an append when full. `storage.rego` refuses a claim that is not larger than the bound, whichever of the two
+  values is changed, and one whose size it cannot read (`Mi` and `Gi` only: the schema refuses the rest).
+- **The claim outlives the release and is never pruned.** It holds changes the hub has not seen. Removing it is a person's act in the cluster.
+
+The disk is encrypted with a Cloud KMS key (S10). The Compute Engine service agent of the **cluster's** project needs
+`roles/cloudkms.cryptoKeyEncrypterDecrypter` on the key before the claim can be bound; the gcp chart makes that grant for the platform's own
+project only (`deploy/ADDING-A-SWIMLANE.md`, step 2). The class is cluster-scoped, so the swimlane's Argo CD project allows exactly one
+StorageClass, by name, and nothing else outside the namespace (`argocd.rego`).
 
 ## Not verified here
 

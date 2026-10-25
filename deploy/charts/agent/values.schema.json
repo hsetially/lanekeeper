@@ -97,6 +97,18 @@
         }
       }
     },
+    "spool": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The durable spool (D74): a claim of its own on a customer-managed key (S10). The policy holds the claim larger than maxBytes.",
+      "properties": {
+        "size": { "type": "string", "pattern": "^[1-9][0-9]{0,5}(Mi|Gi)$", "description": "Mi or Gi: the policy compares it with maxBytes." },
+        "maxBytes": { "type": "integer", "minimum": 4194304, "maximum": 68719476736, "description": "LK_SPOOL_MAX_BYTES: 4 MiB to 64 GiB, the agent's own range." },
+        "cmekKey": { "type": "string", "pattern": "^(projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+)?$" },
+        "diskType": { "type": "string", "enum": ["pd-balanced", "pd-ssd"] },
+        "fallbackClassName": { "type": "string", "minLength": 1 }
+      }
+    },
     "resources": {
       "type": "object",
       "additionalProperties": false,

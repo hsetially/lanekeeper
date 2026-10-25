@@ -23,11 +23,15 @@ spec:
     # The namespaces of `namespaces` in deploy/values/agent/sit1.yaml: the agent's Roles are there.
     - server: https://kubernetes.default.svc
       namespace: sit1
-  # The one Namespace that CreateNamespace=true makes, by name, and nothing else cluster-scoped.
+  # The one Namespace that CreateNamespace=true makes, and the one StorageClass of the spool (a customer-managed key, S10), each by name, and
+  # nothing else cluster-scoped.
   clusterResourceWhitelist:
     - group: ""
       kind: Namespace
       name: lanekeeper
+    - group: storage.k8s.io
+      kind: StorageClass
+      name: lanekeeper-agent-cmek
   namespaceResourceWhitelist:
     - group: ""
       kind: ServiceAccount
@@ -43,6 +47,9 @@ spec:
       kind: RoleBinding
     - group: networking.k8s.io
       kind: NetworkPolicy
+    # The spool (D74).
+    - group: ""
+      kind: PersistentVolumeClaim
   orphanedResources:
     warn: true
 ---

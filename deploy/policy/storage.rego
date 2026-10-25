@@ -217,3 +217,65 @@ deny contains msg if {
 	count(key_grants(key(b))) == 0
 	msg := sprintf("%s: no IAMPolicyMember grants the Cloud Storage service agent cryptoKeyEncrypterDecrypter on %s, so the bucket could not be written (S10)", [what(b), key(b)])
 }
+
+# --- the agent's spool (09/T8; D74, S10) -------------------------------------------------------------------------------------------
+#
+# The agent keeps every observed version it has not delivered in a volume of its own, bounded by LK_SPOOL_MAX_BYTES. The claim is on a
+# class with a customer-managed key (the rules above cover every claim), is larger than the bound it has to hold, is read and written by
+# one pod at a time (the Deployment recreates the pod, topology.rego), and is never pruned: it holds changes the hub has not acknowledged.
+
+spool_claim_name := "lanekeeper-agent-spool"
+
+# The agent's own default (crates/agent/src/config.rs, DEFAULT of LK_SPOOL_MAX_BYTES), used when the chart does not set the variable.
+default_spool_max_bytes := 536870912
+
+spool_claims := lk.named("PersistentVolumeClaim", spool_claim_name)
+
+spool_max_bytes := to_number(lk.agent_env("LK_SPOOL_MAX_BYTES")) if regex.match(`^[0-9]+$`, lk.agent_env("LK_SPOOL_MAX_BYTES"))
+
+spool_max_bytes := default_spool_max_bytes if not lk.agent_env("LK_SPOOL_MAX_BYTES")
+
+spool_request(c) := object.get(c.spec, ["resources", "requests", "storage"], "")
+
+deny contains msg if {
+	some d in lk.agent_deployments
+	count(spool_claims) == 0
+	msg := sprintf("%s: PersistentVolumeClaim/%s is not rendered, and the agent stops at start without its spool (D74)", [lk.who(d), spool_claim_name])
+}
+
+deny contains msg if {
+	some d in lk.agent_deployments
+	not regex.match(`^[0-9]+$`, lk.agent_env("LK_SPOOL_MAX_BYTES"))
+	msg := sprintf("%s: LK_SPOOL_MAX_BYTES %q is not a number of bytes, so the spool claim cannot be held against it (D74)", [lk.who(d), lk.agent_env("LK_SPOOL_MAX_BYTES")])
+}
+
+deny contains msg if {
+	some c in spool_claims
+	not lk.mebibytes(spool_request(c))
+	msg := sprintf("%s: the request %q cannot be compared with LK_SPOOL_MAX_BYTES: only Ki, Mi, Gi and a number of bytes are understood here", [lk.who(c), spool_request(c)])
+}
+
+deny contains msg if {
+	some c in spool_claims
+	bytes := lk.mebibytes(spool_request(c)) * 1048576
+	bytes <= spool_max_bytes
+	msg := sprintf("%s: it requests %v bytes and LK_SPOOL_MAX_BYTES is %v; the volume must be larger than the bound, which counts the segment files with the small state file on top (crates/agent/HARDENING.md)", [lk.who(c), bytes, spool_max_bytes])
+}
+
+deny contains msg if {
+	some c in spool_claims
+	object.get(c.spec, "accessModes", []) != ["ReadWriteOnce"]
+	msg := sprintf("%s: accessModes must be exactly ReadWriteOnce: one agent at a time writes the spool, and the Deployment recreates its pod (D74)", [lk.who(c)])
+}
+
+deny contains msg if {
+	some c in spool_claims
+	object.get(c.metadata, ["annotations", "argocd.argoproj.io/sync-options"], "") != "Prune=false"
+	msg := sprintf("%s: the annotation argocd.argoproj.io/sync-options: Prune=false is missing; a sync could prune the claim and the changes the hub has not acknowledged (D74)", [lk.who(c)])
+}
+
+deny contains msg if {
+	some c in spool_claims
+	object.get(c.metadata, ["annotations", "helm.sh/resource-policy"], "") != "keep"
+	msg := sprintf("%s: the annotation helm.sh/resource-policy: keep is missing; removing the release would delete the claim and the changes the hub has not acknowledged (D74)", [lk.who(c)])
+}

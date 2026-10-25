@@ -114,7 +114,26 @@ test_deny_a_cluster_role_for_the_agent if {
 	refused(swimlane(planted), "ClusterRole")
 }
 
-test_deny_a_persistent_volume_claim_until_the_project_knows_it if {
-	pvc := {"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": {"name": "lanekeeper-agent-spool", "namespace": "lanekeeper"}}
-	refused(swimlane(array.concat(fixtures.agent_docs, [pvc])), "PersistentVolumeClaim")
+test_the_agent_spool_claim_and_its_class_are_allowed if {
+	# fixtures.agent_docs holds both; the claim is namespaced and the class is allowed by name.
+	kinds := {d.kind | some d in fixtures.agent_docs}
+	"PersistentVolumeClaim" in kinds
+	"StorageClass" in kinds
+	count(deny) == 0 with input as swimlane(fixtures.agent_docs)
+}
+
+test_deny_a_storage_class_of_another_name_for_the_agent if {
+	class := json.patch(fixtures.agent_storageclass, [{"op": "replace", "path": "/metadata/name", "value": "lanekeeper-hub-cmek"}])
+	planted := array.concat([d | some d in fixtures.agent_docs; d.kind != "StorageClass"], [class])
+	refused(swimlane(planted), "StorageClass")
+}
+
+test_deny_a_persistent_volume_in_the_agents_namespace if {
+	pv := {"apiVersion": "v1", "kind": "PersistentVolume", "metadata": {"name": "x"}}
+	refused(swimlane(array.concat(fixtures.agent_docs, [pv])), "PersistentVolume")
+}
+
+test_deny_a_persistent_volume_claim_in_a_namespace_the_swimlane_does_not_watch if {
+	pvc := json.patch(fixtures.agent_spool_pvc, [{"op": "replace", "path": "/metadata/namespace", "value": "sit2"}])
+	refused(swimlane(array.concat([d | some d in fixtures.agent_docs; d.kind != "PersistentVolumeClaim"], [pvc])), "sit2")
 }

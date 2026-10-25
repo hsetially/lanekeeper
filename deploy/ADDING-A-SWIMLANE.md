@@ -29,6 +29,7 @@ joins, or it is refused.
 | the NFS server address, export path, mount path, the uid and gid that own the files, the NFS version | `nfs.*` | Q11 (`docs/open-questions.md`); the uid and gid default to 1010 (D82), and `root_squash` and `anonuid` in `/etc/exports` decide which uid the agent must run as |
 | the namespaces the config-server's files belong to | `namespaces` | the cluster; one Role and one RoleBinding are made in each (`crates/agent/RBAC.md`). `kube-system` cannot be watched |
 | the cluster's outbound IP | step 5 | Q1: run the command in `docs/open-questions.md` from a pod |
+| the Cloud KMS key for the spool's disk, and the number of the cluster's project | `spool.cmekKey`, and the grant in step 2 | Q29: the platform team's key ring; `gcloud projects describe <project> --format='value(projectNumber)'` |
 | the cluster's control-plane address | `network.kubeApiAddresses` | `gcloud container clusters describe <cluster> --format='value(endpoint)'` |
 | the address of the hub's agent load balancer | `network.hubAddresses`, `hub.endpoint` | the hub's `Service/lanekeeper-hub-agent`, and the DNS name that points at it |
 | the NFS VM's outbound IP | step 5 | the platform team (plan 09 A28: the sentinel reaches the agent port too) |
@@ -83,6 +84,19 @@ read -rs TOKEN && printf '%s' "$TOKEN" | kubectl -n lanekeeper create secret gen
 
 Do this within the 24 hours and before the agent first starts. The Secret is not rendered by the chart and Argo CD does not manage it.
 
+**The key for the spool's disk (S10).** The agent keeps a volume of 1 GiB for its spool (D74), encrypted with a customer-managed key. The
+Compute Engine service agent of the **cluster's project** must be allowed to use that key, or the claim stays `Pending`:
+
+```
+gcloud kms keys add-iam-policy-binding <key> --keyring <ring> --location <location> --project <key project> \
+  --member "serviceAccount:service-<project number of the cluster's project>@compute-system.iam.gserviceaccount.com" \
+  --role roles/cloudkms.cryptoKeyEncrypterDecrypter
+```
+
+The gcp chart makes this grant for the platform's own project (`cmek.diskKeys`) and for no other; a swimlane in another project gets it from
+this command. The member is the one the gcp chart uses; Google's documentation could not be read to confirm the command (plan 09 blockers,
+B6). Without a key (Q29) the chart falls back to the cluster's default class and the policy warns.
+
 ## 3. The values file
 
 Copy `deploy/values/agent/sit1.yaml` to `deploy/values/agent/<swimlane>.yaml` and set, in this order:
@@ -97,6 +111,7 @@ Copy `deploy/values/agent/sit1.yaml` to `deploy/values/agent/<swimlane>.yaml` an
 | `serviceAccount.gcpServiceAccount` | step 2; empty only with `joinToken.enabled` |
 | `network.hubAddresses` | the hub's agent load balancer, as `/32` or a small block; the agent can reach nothing else of the hub's |
 | `network.kubeApiAddresses` | the cluster's control plane |
+| `spool.cmekKey` | the Cloud KMS key of step 2, `projects/P/locations/L/keyRings/R/cryptoKeys/K`. The size (1 GiB) and the bound (512 MiB) are the defaults; the policy keeps the size larger than the bound |
 | `imagePullSecrets` | the name of the pull secret for GHCR, made out of band in the cluster (Q8) |
 | `hubCa.pem` | the **public** certificate of the hub's agent CA, below |
 

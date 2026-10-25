@@ -12,8 +12,12 @@
 #     addresses are values, so the contract's blocks stand for "an address block"; the metadata server's address is literal.
 #   - Pod: the service account, the token, the host fields, seccomp, the container's security context, ports and probes.
 #     The ids and the resources are values (HARDENING.md says its numbers are to be confirmed on the pilot).
-#   - Not yet: environment, volumes and mounts. The spool arrives with T8; hardening.rego and deploy/tests/env-names.sh hold
-#     the pod's paths and variable names until then.
+#   - Volumes, mounts and paths (09/T8): each volume by name with its kind and the one detail that is not a value (the claim, the
+#     ConfigMap, the size limit), the mounts as a set of (name, path, read-only), and the four variables that name a path
+#     (LK_NFS_ROOT, LK_SPOOL_DIR, LK_TMP_DIR, LK_HUB_CA_FILE). A volume of the contract that is a claim makes the Deployment
+#     Recreate, and the claim has to be rendered.
+#   - Not compared: the other environment variables, whose values are the swimlane's (addresses, ids) or are checked by
+#     deploy/tests/env-names.sh (the names the binary reads).
 #
 # Each policy that guards a field on its own (hardening.rego, rbac.rego, network.rego) does not read these files, so the two
 # barriers fail separately: a field that is wrong in the file and in the chart together is still refused there.
@@ -338,4 +342,111 @@ deny contains msg if {
 	some d in agent_deployments
 	count(d.spec.template.spec.containers) != 1
 	msg := sprintf("%s: one container and no sidecar, as HARDENING.md says; found %d (S16)", [lk.who(d), count(d.spec.template.spec.containers)])
+}
+
+# --- volumes, mounts and paths equal HARDENING.md (09/T8; D74) ------------------------------------------------------------------
+
+# A volume is compared by its kind and by the one detail of it that is not a value: the claim a claim volume names, the ConfigMap, the
+# size limit of an emptyDir, and whether an NFS volume is read-only. The server and the path of the export are the swimlane's.
+volume_kinds(v) := {k | some k in object.keys(v); k != "name"}
+
+volume_detail(v) := object.get(v.persistentVolumeClaim, "claimName", "") if v.persistentVolumeClaim
+
+volume_detail(v) := object.get(v.configMap, "name", "") if v.configMap
+
+volume_detail(v) := object.get(v.emptyDir, "sizeLimit", "") if v.emptyDir
+
+volume_detail(v) := object.get(v.nfs, "readOnly", false) if v.nfs
+
+volume_detail(v) := "" if {
+	not v.persistentVolumeClaim
+	not v.configMap
+	not v.emptyDir
+	not v.nfs
+}
+
+volume_sig(v) := [sort(volume_kinds(v)), volume_detail(v)]
+
+volumes_by_name(spec) := {v.name: v | some v in object.get(spec, "volumes", [])}
+
+deny contains msg if {
+	some d in agent_deployments
+	some name, want in volumes_by_name(contract_pod.spec)
+	got := volumes_by_name(d.spec.template.spec)[name]
+	volume_sig(got) != volume_sig(want)
+	msg := sprintf("%s: volume %s is %v and HARDENING.md says %v", [lk.who(d), name, volume_sig(got), volume_sig(want)])
+}
+
+deny contains msg if {
+	some d in agent_deployments
+	some name, _ in volumes_by_name(contract_pod.spec)
+	not name in object.keys(volumes_by_name(d.spec.template.spec))
+	msg := sprintf("%s: the pod has no volume %s, and HARDENING.md has it", [lk.who(d), name])
+}
+
+deny contains msg if {
+	some d in agent_deployments
+	some name, _ in volumes_by_name(d.spec.template.spec)
+	count(object.keys(volumes_by_name(contract_pod.spec))) > 0
+	not name in object.keys(volumes_by_name(contract_pod.spec))
+	msg := sprintf("%s: volume %s is not in HARDENING.md", [lk.who(d), name])
+}
+
+mount_sigs(c) := {[m.name, m.mountPath, object.get(m, "readOnly", false)] | some m in object.get(c, "volumeMounts", [])}
+
+deny contains msg if {
+	some d in agent_deployments
+	count(d.spec.template.spec.containers) == 1
+	count(contract_pod.spec.containers) == 1
+	want := mount_sigs(contract_pod.spec.containers[0])
+	got := mount_sigs(d.spec.template.spec.containers[0])
+	got != want
+	msg := sprintf("%s: volumeMounts differ from HARDENING.md: extra %v, missing %v", [lk.who(d), sort(got - want), sort(want - got)])
+}
+
+# The variables that name a path of a mount: the agent writes where they say. The other variables are values.
+path_variables := {"LK_HUB_CA_FILE", "LK_NFS_ROOT", "LK_SPOOL_DIR", "LK_TMP_DIR"}
+
+deny contains msg if {
+	some d in agent_deployments
+	count(d.spec.template.spec.containers) == 1
+	count(contract_pod.spec.containers) == 1
+	some name in path_variables
+	want := lk.env_value(contract_pod.spec.containers[0], name)
+	got := lk.env_value(d.spec.template.spec.containers[0], name)
+	got != want
+	msg := sprintf("%s: %s is %q and HARDENING.md says %q", [lk.who(d), name, got, want])
+}
+
+deny contains msg if {
+	some d in agent_deployments
+	count(d.spec.template.spec.containers) == 1
+	count(contract_pod.spec.containers) == 1
+	some name in path_variables
+	lk.env_value(contract_pod.spec.containers[0], name)
+	not lk.env_value(d.spec.template.spec.containers[0], name)
+	msg := sprintf("%s: the pod does not set %s, and HARDENING.md does", [lk.who(d), name])
+}
+
+deny contains msg if {
+	count(contract_pod.spec.containers) == 1
+	some name in path_variables
+	not lk.env_value(contract_pod.spec.containers[0], name)
+	msg := sprintf("HARDENING.md does not set %s, so the path of the chart's mount cannot be compared (S16)", [name])
+}
+
+# A claim in the contract is a ReadWriteOnce volume that one agent writes: the pod is replaced, never surged, and the claim is rendered.
+contract_claims := {v.persistentVolumeClaim.claimName | some v in object.get(contract_pod.spec, "volumes", []); v.persistentVolumeClaim}
+
+deny contains msg if {
+	count(contract_claims) > 0
+	some d in agent_deployments
+	object.get(d.spec, ["strategy", "type"], "RollingUpdate") != "Recreate"
+	msg := sprintf("%s: strategy.type must be Recreate, because the pod of HARDENING.md mounts a PersistentVolumeClaim that one agent writes (D74)", [lk.who(d)])
+}
+
+deny contains msg if {
+	some claim in contract_claims
+	count(named(rendered, "PersistentVolumeClaim", claim)) == 0
+	msg := sprintf("the chart renders no PersistentVolumeClaim %s, which the pod of HARDENING.md mounts (D74)", [claim])
 }

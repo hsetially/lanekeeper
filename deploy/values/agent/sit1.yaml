@@ -27,6 +27,12 @@ nfs:
 namespaces:
   - sit1
 
+spool:
+  size: 1Gi
+  # EXAMPLE key (Q29): the Cloud KMS key that encrypts the spool's disk. The swimlane's project needs the grant described in
+  # deploy/ADDING-A-SWIMLANE.md before the claim can be bound.
+  cmekKey: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-disk-sit1
+
 serviceAccount:
   # EXAMPLE service account (Q26).
   gcpServiceAccount: lanekeeper-agent-sit1@example-project.iam.gserviceaccount.com

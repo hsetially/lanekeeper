@@ -147,3 +147,23 @@ test_headless_service_selects_other_pods if {
 	planted := fixtures.patch("Service", "lanekeeper-hub-replicas", [{"op": "replace", "path": "/spec/selector", "value": {"app.kubernetes.io/name": "other"}}])
 	refused(planted, "selects")
 }
+
+# --- the agent (09/T8; D74): its spool is a ReadWriteOnce volume that one agent writes, so the pod is replaced, never surged
+
+test_agent_recreate if {
+	fixtures.agent_deployment.spec.strategy.type == "Recreate"
+	count(deny) == 0 with input as fixtures.agent
+}
+
+test_deny_agent_rolling_update if {
+	refused(fixtures.agent_set("/spec/strategy/type", "RollingUpdate"), "Recreate")
+}
+
+# Kubernetes defaults a Deployment to RollingUpdate.
+test_deny_agent_without_a_strategy if {
+	refused(fixtures.agent_remove("/spec/strategy"), "Recreate")
+}
+
+test_deny_agent_strategy_spelled_in_lower_case if {
+	refused(fixtures.agent_set("/spec/strategy/type", "recreate"), "Recreate")
+}

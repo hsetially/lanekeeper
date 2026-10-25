@@ -428,11 +428,11 @@ test_agent_deny_the_export_as_something_else if {
 }
 
 test_agent_deny_the_hub_ca_as_a_secret if {
-	refused(fixtures.agent_set(concat("", [agent_pod, "volumes/2"]), {"name": "hub-ca", "secret": {"secretName": "lanekeeper-hub-ca"}}), "ConfigMap")
+	refused(fixtures.agent_set(concat("", [agent_pod, "volumes/3"]), {"name": "hub-ca", "secret": {"secretName": "lanekeeper-hub-ca"}}), "ConfigMap")
 }
 
 test_agent_deny_hub_ca_mounted_writable if {
-	refused(fixtures.agent_remove(concat("", [agent_c, "volumeMounts/2/readOnly"])), "writable")
+	refused(fixtures.agent_remove(concat("", [agent_c, "volumeMounts/3/readOnly"])), "writable")
 }
 
 test_agent_deny_extra_writable_mount if {
@@ -449,7 +449,7 @@ test_agent_deny_nfs_root_that_is_not_the_mount if {
 }
 
 test_agent_deny_tmp_dir_that_is_not_the_mount if {
-	refused(fixtures.agent_set(concat("", [agent_c, "env/12/value"]), "/var/tmp"), "LK_TMP_DIR")
+	refused(fixtures.agent_set(concat("", [agent_c, "env/14/value"]), "/var/tmp"), "LK_TMP_DIR")
 }
 
 test_agent_deny_hub_ca_file_outside_the_mount if {
@@ -458,4 +458,52 @@ test_agent_deny_hub_ca_file_outside_the_mount if {
 
 test_agent_deny_nfs_root_missing if {
 	refused(fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "remove", "path": concat("", [agent_c, "env/8"])}]), "LK_NFS_ROOT")
+}
+
+# --- the spool (09/T8; D74): a volume of its own on a claim, writable, outside the export
+
+test_agent_deny_spool_as_an_empty_dir if {
+	refused(fixtures.agent_set(concat("", [agent_pod, "volumes/2"]), {"name": "spool", "emptyDir": {}}), "must be the PersistentVolumeClaim")
+}
+
+test_agent_deny_spool_claim_of_another_name if {
+	refused(fixtures.agent_set(concat("", [agent_pod, "volumes/2"]), {"name": "spool", "persistentVolumeClaim": {"claimName": "lanekeeper-db-1"}}), "must be the PersistentVolumeClaim")
+}
+
+test_agent_deny_spool_without_a_volume if {
+	refused(fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "remove", "path": concat("", [agent_pod, "volumes/2"])}]), "no volume spool")
+}
+
+test_agent_deny_spool_mounted_read_only if {
+	refused(fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "add", "path": concat("", [agent_c, "volumeMounts/2/readOnly"]), "value": true}]), "spool is mounted read-only")
+}
+
+test_agent_deny_spool_dir_that_is_not_the_mount if {
+	refused(fixtures.agent_set(concat("", [agent_c, "env/12/value"]), "/var/spool/elsewhere"), "LK_SPOOL_DIR must be the path of the spool mount")
+}
+
+test_agent_deny_spool_dir_missing if {
+	refused(fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "remove", "path": concat("", [agent_c, "env/12"])}]), "LK_SPOOL_DIR must be the path of the spool mount")
+}
+
+test_agent_deny_spool_mount_missing if {
+	refused(fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "remove", "path": concat("", [agent_c, "volumeMounts/2"])}]), "LK_SPOOL_DIR must be the path of the spool mount")
+}
+
+# A spool inside the export would be tracked as configuration and sent again, for ever; the agent refuses it at start, and so does this.
+test_agent_deny_spool_inside_the_export if {
+	planted := fixtures.agent_patch("Deployment", "lanekeeper-agent", [
+		{"op": "replace", "path": concat("", [agent_c, "env/12/value"]), "value": "/mnt/csp-configuration/spool"},
+		{"op": "replace", "path": concat("", [agent_c, "volumeMounts/2/mountPath"]), "value": "/mnt/csp-configuration/spool"},
+	])
+	refused(planted, "is inside the NFS root")
+}
+
+# "Inside" is a path prefix by component: a directory whose name merely starts with the export's is not inside it.
+test_agent_spool_next_to_the_export_is_not_inside_it if {
+	planted := fixtures.agent_patch("Deployment", "lanekeeper-agent", [
+		{"op": "replace", "path": concat("", [agent_c, "env/12/value"]), "value": "/mnt/csp-configuration-spool"},
+		{"op": "replace", "path": concat("", [agent_c, "volumeMounts/2/mountPath"]), "value": "/mnt/csp-configuration-spool"},
+	])
+	count(deny) == 0 with input as planted
 }

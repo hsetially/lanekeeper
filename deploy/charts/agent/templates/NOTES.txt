@@ -10,5 +10,10 @@ and the chart never fills it: an Admin issues a one-time token for this swimlane
 WARNING: serviceAccount.gcpServiceAccount is empty. There is no Workload Identity, so the agent can join only with a join token (S5).
 {{- end }}
 
-The agent keeps no spool yet: the spool volume, its claim and the Recreate strategy arrive with T8 (D74), and the agent stops at
-start without its spool directory. The chart is not deployable until then.
+The spool ({{ .Values.spool.size }}, ReadWriteOnce) is PersistentVolumeClaim/lanekeeper-agent-spool, and the Deployment recreates its pod: the
+agent stops for the moment between the old pod and the new one (D74).
+{{- if not .Values.spool.cmekKey }}
+
+WARNING: spool.cmekKey is empty. The spool's disk uses {{ .Values.spool.fallbackClassName }}, which is Google-managed encryption and not a
+customer-managed key (S10, Q29).
+{{- end }}
