@@ -4,6 +4,8 @@
 #
 #   deploy/images/scan.sh <hub|agent> [--out DIR]     reads DIR/<image>.oci.tar and DIR/<image>.cdx.json
 #   deploy/images/scan.sh --sbom FILE                  scans one SBOM (the planted-critical test uses this)
+#   deploy/images/scan.sh --image REF                  scans an image in a registry, by digest: REF is name@sha256:<64 hex digits>, with the
+#                                                      registry host, never a tag (the database image of deploy/images/scan-db.sh)
 #
 # Exceptions live in deploy/images/grype.yaml, each with the vulnerability id, the reason and a review date; a human
 # approves every one in review. `--by-cve` reports each finding by its CVE id where it has one (not the advisory's own
@@ -20,7 +22,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(git -C "$here" rev-parse --show-toplevel)"
 # shellcheck source=deploy/images/tools.env
 . "$here/tools.env"
-usage() { echo "usage: $0 <hub|agent> [--out DIR] | $0 --sbom FILE" >&2; exit 2; }
+usage() { echo "usage: $0 <hub|agent> [--out DIR] | $0 --sbom FILE | $0 --image REF" >&2; exit 2; }
 [ $# -ge 1 ] || usage
 
 cache="$root/target/grype-db"
@@ -41,6 +43,18 @@ grype() {
         -v "$cache:/cache" -v "$dir:/in:ro" -v "$here/grype.yaml:/grype.yaml:ro" \
         "$LK_GRYPE_IMAGE" --config /grype.yaml --fail-on critical --by-cve --output table "$@"
 }
+
+if [ "$1" = "--image" ]; then
+    [ $# -eq 2 ] || usage
+    # A digest names the bytes; a tag can be moved between the scan and the deploy. Checked before anything runs, because REF becomes an
+    # argument of a container: it starts with a letter or a digit, so it cannot be an option, and it has no space or shell character.
+    ref="$2"
+    ref_pattern='^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]+)?/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$'
+    [[ "$ref" =~ $ref_pattern ]] || { echo "scan.sh: --image takes name@sha256:<64 hex digits> with the registry host (ghcr.io/org/image@sha256:...), never a tag: $ref" >&2; exit 2; }
+    grype "$here" "registry:$ref"
+    echo "scan.sh: $ref has no critical findings"
+    exit
+fi
 
 if [ "$1" = "--sbom" ]; then
     [ $# -eq 2 ] || usage

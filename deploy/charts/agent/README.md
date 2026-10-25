@@ -4,6 +4,8 @@ The Lanekeeper agent of one swimlane (09/T4; S16, S17, S18): one replica, harden
 Roles of `crates/agent/RBAC.md` and nothing wider. Each cluster's own ArgoCD deploys it from this chart, with one values file per
 swimlane (D26, `deploy/values/agent/<swimlane>.yaml`).
 
+The Application for a swimlane is `deploy/argocd/swimlanes/<swimlane>.yaml`, and `deploy/ADDING-A-SWIMLANE.md` is the runbook that adds one.
+
 | Renders | Why |
 |---|---|
 | `Deployment/lanekeeper-agent` | 1 replica (not a value), the HARDENING.md pod: non-root as the export's owner (1010 by default, Q11), read-only root, seccomp `RuntimeDefault`, all capabilities dropped, the NFS export, `/tmp`, and the hub's CA |

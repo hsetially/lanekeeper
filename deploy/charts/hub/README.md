@@ -3,6 +3,8 @@
 The Lanekeeper hub (09/T3; D62, S6, S7, S10, S16, S18, P11): three replicas of a StatefulSet, one volume each for the Git mirror,
 hardened as `crates/hub/HARDENING.md` says, behind a Gateway for users and a TCP pass-through load balancer for agents.
 
+The platform cluster's Argo CD deploys it with `deploy/argocd/platform/hub.yaml` (the prod values, at a pinned commit; `deploy/argocd/README.md`).
+
 | Renders | Why |
 |---|---|
 | `StatefulSet/lanekeeper-hub` | 3 replicas (not a value), required anti-affinity over zones, `volumeClaimTemplates` for the mirror, the HARDENING.md pod |

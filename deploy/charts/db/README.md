@@ -3,6 +3,10 @@
 The Lanekeeper database (09/T5; D29, D40, D62, D124, S6, S7, S10, S16, S18): a CloudNativePG `Cluster` of three PostgreSQL 16
 instances with pgvector and pg_trgm, TLS 1.3 only, backed up to Google Cloud Storage for 30 days, with a NetworkPolicy of its own.
 
+The platform cluster's Argo CD deploys it with `deploy/argocd/platform/db.yaml` (the prod values, at a pinned commit, without prune: a database is
+never deleted because a file left Git). The database image is scanned for critical findings every night by digest (`just images-scan-db`, the
+`db-image` job of `nightly.yml`), because it is CloudNativePG's and not built by `images.yml` (plans/09-deployment-ci.blockers.md, B9, B10).
+
 | Renders | Why |
 |---|---|
 | `Cluster/lanekeeper-db` | 3 instances (not a value), required anti-affinity over zones, `enablePDB`, the image by digest, `ssl_min_protocol_version: TLSv1.3` and `pg_hba` that rejects `hostnossl` first, no superuser Secret, the database `lanekeeper` owned by `lanekeeper_migrator` on `en_US.utf8`, the managed role `lanekeeper_app`, barman to `gs://BUCKET/lanekeeper-db` through Workload Identity (`retentionPolicy: 30d`, no key file), the operator's pod defaults written out (S16) |

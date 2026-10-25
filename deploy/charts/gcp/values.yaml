@@ -60,3 +60,28 @@ cloudArmor:
   # is written by `node deploy/tools/github-hook-ranges.mjs --write` from GitHub's /meta, layered over these values, and a
   # nightly job fails when it is stale.
   githubHookRanges: []
+
+# Admission (09/T6; S19, S20, plan 09 A5): only images signed by CI run. There is no switch to turn it off: the fallback while Q24 is
+# open is the dry-run mode below, which audits and does not block.
+binaryAuthorization:
+  # DRYRUN_AUDIT_LOG_ONLY: an image without an attestation is written to the audit log as one that would have been blocked, and runs.
+  # ENFORCED_BLOCK_AND_AUDIT_LOG: it is blocked. The default is dry-run until Q24 is answered (is Binary Authorization available on the
+  # platform cluster and the swimlane clusters?); setting it to ENFORCED is a person's decision, made in the environment's values.
+  enforcementMode: DRYRUN_AUDIT_LOG_ONLY
+  # The name of the attestor and of its Container Analysis note.
+  attestorName: lanekeeper-ci
+  # The public keys the attestor trusts: the CI signing key in Cloud KMS (images.yml signs with it when LK_COSIGN_KMS_KEY is set). No default and
+  # not in the committed values: the key does not exist until a person makes it, and the chart refuses to render without one. One entry
+  # per key version that may sign (rotation adds a version, then removes the old one):
+  #   - keyVersion: projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N
+  #     signatureAlgorithm: ECDSA_P256_SHA256
+  #     publicKeyPem: |
+  #       -----BEGIN PUBLIC KEY-----
+  #       ... (gcloud kms keys versions get-public-key N --key K --keyring R --location L)
+  #       -----END PUBLIC KEY-----
+  publicKeys: []
+  # Image name patterns (registry/path, with a * only at the end) that skip the check, besides Google's own system images, which Google's
+  # global policy lets through. Empty. The policy (deploy/policy/binauthz.rego) refuses a pattern that covers an image of ours. Before
+  # the mode is ENFORCED, the third-party images that run in the cluster (the CloudNativePG operator and instances, Argo CD, Config
+  # Connector) need an attestation of ours or an entry here; the audit log of the dry run lists them.
+  admissionWhitelistPatterns: []

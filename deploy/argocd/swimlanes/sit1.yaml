@@ -1,0 +1,84 @@
+# The agent of the swimlane sit1, in that cluster's OWN Argo CD (09/T6; D26): a synthetic swimlane, like deploy/values/agent/sit1.yaml.
+# One file per swimlane, applied once to that swimlane's cluster by whoever runs its Argo CD (deploy/ADDING-A-SWIMLANE.md, step 4). The
+# project belongs to the swimlane: it may deploy to the agent's namespace and to the namespaces the agent watches (one Role and one
+# RoleBinding in each), and nothing else.
+#
+# Not deployable as it is, on purpose: the revision is a PLACEHOLDER (40 zeros; see deploy/argocd/platform/hub.yaml), and the values
+# file has no hub CA yet, so the chart refuses to render until step 3 of the runbook is done.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: lanekeeper-agent
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: lanekeeper
+    lanekeeper.io/swimlane: sit1
+spec:
+  description: The Lanekeeper agent of one swimlane (charts/agent)
+  sourceRepos:
+    - https://github.com/hsetially/lanekeeper
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: lanekeeper
+    # The namespaces of `namespaces` in deploy/values/agent/sit1.yaml: the agent's Roles are there.
+    - server: https://kubernetes.default.svc
+      namespace: sit1
+  # The one Namespace that CreateNamespace=true makes, by name, and nothing else cluster-scoped.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+      name: lanekeeper
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ServiceAccount
+    - group: ""
+      kind: Secret
+    - group: ""
+      kind: ConfigMap
+    - group: apps
+      kind: Deployment
+    - group: rbac.authorization.k8s.io
+      kind: Role
+    - group: rbac.authorization.k8s.io
+      kind: RoleBinding
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+  orphanedResources:
+    warn: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: lanekeeper-agent
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: lanekeeper
+    lanekeeper.io/swimlane: sit1
+spec:
+  project: lanekeeper-agent
+  source:
+    repoURL: https://github.com/hsetially/lanekeeper
+    targetRevision: "0000000000000000000000000000000000000000"
+    path: deploy/charts/agent
+    helm:
+      releaseName: lanekeeper-agent
+      valueFiles:
+        - ../../values/agent/sit1.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: lanekeeper
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # With self-heal on, Argo CD would put the certificate Secret back to the empty one the chart renders, and the agent would lose its
+      # certificate at the next sync. The agent writes the Secret's data (S5), so Argo CD ignores it, and does not write it either
+      # (RespectIgnoreDifferences) (plan 09 A14).
+      - RespectIgnoreDifferences=true
+  ignoreDifferences:
+    - kind: Secret
+      name: lanekeeper-agent-cert
+      jsonPointers:
+        - /data

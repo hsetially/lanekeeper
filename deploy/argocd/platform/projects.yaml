@@ -1,0 +1,93 @@
+# The Argo CD projects of the platform cluster (09/T6; S16, S19, plan 09 D26). An Application in the `default` project can deploy anything, from
+# any repository, to any namespace: these two cannot. `lanekeeper-workloads` deploys the hub and the database to one namespace and may
+# make nothing that grants access to Google Cloud; `lanekeeper-cloud` deploys the Config Connector resources (buckets, IAM, Cloud Armor,
+# Binary Authorization) to a namespace of their own, and nothing else. deploy/policy/argocd.rego holds the list of what each may deploy,
+# and deploy/tests/render.sh renders every chart to show that the project allows everything the chart makes.
+#
+# Applied once to the platform cluster's Argo CD, in its namespace `argocd`, by whoever installs it (deploy/argocd/README.md).
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: lanekeeper-workloads
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: lanekeeper
+spec:
+  description: The Lanekeeper hub and its database (charts/hub, charts/db)
+  sourceRepos:
+    - https://github.com/hsetially/lanekeeper
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: lanekeeper
+  # The StorageClass of the charts, and the one Namespace that CreateNamespace=true makes: Argo CD checks that Namespace against the
+  # project like any resource, so the project allows it by name, and no other.
+  clusterResourceWhitelist:
+    - group: storage.k8s.io
+      kind: StorageClass
+    - group: ""
+      kind: Namespace
+      name: lanekeeper
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ServiceAccount
+    - group: ""
+      kind: Service
+    - group: apps
+      kind: StatefulSet
+    - group: policy
+      kind: PodDisruptionBudget
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+    - group: networking.gke.io
+      kind: FQDNNetworkPolicy
+    - group: networking.gke.io
+      kind: GCPBackendPolicy
+    - group: networking.gke.io
+      kind: HealthCheckPolicy
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+    - group: postgresql.cnpg.io
+      kind: Cluster
+    - group: postgresql.cnpg.io
+      kind: ScheduledBackup
+  orphanedResources:
+    warn: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: lanekeeper-cloud
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: lanekeeper
+spec:
+  description: The Google Cloud resources of Lanekeeper, as Config Connector resources (charts/gcp)
+  sourceRepos:
+    - https://github.com/hsetially/lanekeeper
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: lanekeeper-gcp
+  # The one Namespace that CreateNamespace=true makes, by name, and nothing else cluster-scoped.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+      name: lanekeeper-gcp
+  namespaceResourceWhitelist:
+    - group: storage.cnrm.cloud.google.com
+      kind: StorageBucket
+    - group: iam.cnrm.cloud.google.com
+      kind: IAMServiceAccount
+    - group: iam.cnrm.cloud.google.com
+      kind: IAMPolicyMember
+    - group: compute.cnrm.cloud.google.com
+      kind: ComputeSecurityPolicy
+    - group: binaryauthorization.cnrm.cloud.google.com
+      kind: BinaryAuthorizationPolicy
+    - group: binaryauthorization.cnrm.cloud.google.com
+      kind: BinaryAuthorizationAttestor
+    - group: containeranalysis.cnrm.cloud.google.com
+      kind: ContainerAnalysisNote
+  orphanedResources:
+    warn: true

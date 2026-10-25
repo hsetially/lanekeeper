@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Render every chart with every values file, and check what comes out (09/T3 to T5; S6, S7, S9, S10, S16, S18, P11).
+# Render every chart with every values file, and check what comes out (09/T3 to T6; S6, S7, S9, S10, S16, S18, S19, S20, P11).
 #
 #   deploy/tests/render.sh lint      helm lint --strict
 #   deploy/tests/render.sh render    helm template | kubeconform -strict, offline, with the vendored schemas
@@ -10,28 +10,35 @@
 #   deploy/tests/render.sh data      the data layer (09/T5) alone: the db chart and the gcp chart without Cloud Armor, through lint,
 #                                    kubeconform and the policies, their planted violations, and the cross-chart check. A SUBSET of
 #                                    `all`, for the part that does not wait for GitHub's hook ranges (B5); it is never the gate.
+#   deploy/tests/render.sh argocd    the Argo CD files (09/T6) alone: kubeconform, the policies, the paths, the scope of each project against the
+#                                    rendered charts, and their planted violations. A SUBSET of `all`: the scope of the gcp chart with Cloud
+#                                    Armor waits for GitHub's ranges (B5) and is left out of it; it is never the gate.
 #   deploy/tests/render.sh all       all of them
+#
+# The Argo CD files (deploy/argocd, 09/T6) go through the same stages: kubeconform (render), then the argocd policy, the files each Application
+# names and the scope of each project against the charts it deploys (policy), and planted changes to the real files (planted).
 #
 # What it needs: helm and kubeconform (`just ops-tools-install helm kubeconform`), Docker (conftest runs from the image pinned in
 # deploy/images/tools.env), node. It never skips a check and never fetches a schema: kubeconform has no -ignore-missing-schemas,
 # so a kind without a vendored schema is an error (deploy/schemas).
 #
 # The gcp chart is also rendered as `gcp-storage`: the same chart and values with Cloud Armor off (`--set cloudArmor.enabled=false`), so
-# that its buckets, keys and IAM (09/T5) are checked on their own. That is an ADDITION to the gcp chart's own checks, never a
+# that everything in it but Cloud Armor (the buckets, keys and IAM of 09/T5, the admission policy of T6) is checked on its own. That is an ADDITION to the gcp chart's own checks, never a
 # replacement: the gcp chart with the committed values still refuses to render until GitHub's hook ranges exist (plan 09 blockers, B5),
 # and every stage reports that failure. `gcp-storage` renders no ComputeSecurityPolicy (checked), and no committed gcp values file
 # turns Cloud Armor off (checked), so it cannot stand in for the chart.
 #
 # Warnings. A policy warning is a fallback that is allowed to render (plan 09 A11, A13): kind has no zone, no Gateway and no FQDN
-# policy, and a cluster without a CMEK key uses Google-managed encryption. In prod and staging a warning fails the run. Only the
-# image policy's warning, the placeholder digest of plan 09 A29, is tolerated there, until the first image is published.
+# policy, and a cluster without a CMEK key uses Google-managed encryption. In prod and staging a warning fails the run. Only the warnings
+# of the images and binauthz policies are tolerated there, and the Argo CD policy's: the placeholder digest and revision (plan 09 A29) until
+# the first publish, and Binary Authorization in dry run until Q24 is answered (A5). All of them are printed on every run.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 export PATH="$PWD/target/ops-tools/bin:$PATH"
 
 mode="${1:-all}"
-case "$mode" in lint | render | policy | contract | planted | data | all) ;; *)
-    echo "usage: deploy/tests/render.sh lint|render|policy|contract|planted|data|all" >&2
+case "$mode" in lint | render | policy | contract | planted | data | argocd | all) ;; *)
+    echo "usage: deploy/tests/render.sh lint|render|policy|contract|planted|data|argocd|all" >&2
     exit 2
     ;;
 esac
@@ -61,11 +68,16 @@ schema_args=(
     -schema-location 'deploy/schemas/crds/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
 )
 hook_ranges=deploy/values/hub/github-hook-ranges.yaml
+# Where the values files are. Only a test of this script changes it (the synthetic key stands in only while the values have none).
+values_root=deploy/values
 # Every namespace of the manifest policies. dockerfile.rego is for Dockerfiles and is run by `just images-policy-test`; contract.rego
 # needs the two contract files and is run apart (`contract` mode).
 policy_namespaces=(hardening secrets topology resources storage network rbac database iam)
 # The agent chart refuses to render without the hub's CA, which no values file carries (deploy/tests/testdata/README.md).
 synthetic_hub_ca=deploy/tests/testdata/synthetic-hub-ca.pem
+# The gcp chart refuses to render without the public key of the CI signing key, which no values file carries until a person makes the
+# key. This file stands in for it, and only while the environment's values have none (09/T6; deploy/tests/testdata/README.md).
+synthetic_attestor_key=deploy/tests/testdata/synthetic-attestor-key.yaml
 
 conftest() { docker run --rm -i -v "$PWD:/repo:ro" -v "$work:/work:ro" -w /repo "$LK_CONFTEST_IMAGE" "$@"; }
 
@@ -92,6 +104,10 @@ done
 
 namespace_of() { case "$1" in hub | agent | db) echo lanekeeper ;; gcp | gcp-storage) echo lanekeeper-gcp ;; esac; }
 
+# The Helm release name is the name of the Argo CD Application that deploys the chart (deploy/argocd), so the labels that the policies see
+# are the labels that the cluster gets.
+release_of() { case "$1" in hub | db | agent) echo "lanekeeper-$1" ;; gcp | gcp-storage) echo lanekeeper-gcp ;; esac; }
+
 # The chart (and the values directory) of a name that is a chart or the gcp chart without Cloud Armor.
 chart_dir() { case "$1" in gcp-storage) echo gcp ;; *) echo "$1" ;; esac; }
 
@@ -99,7 +115,11 @@ chart_dir() { case "$1" in gcp-storage) echo gcp ;; *) echo "$1" ;; esac; }
 value_args() {
     local chart="$1" env="$2"
     [ "$chart" = gcp ] && printf -- '-f\n%s\n' "$hook_ranges"
-    printf -- '-f\n%s\n' "deploy/values/$(chart_dir "$chart")/$env.yaml"
+    printf -- '-f\n%s\n' "$values_root/$(chart_dir "$chart")/$env.yaml"
+    # The synthetic key stands in only while the values have none: once a person puts the real public key in, that key is what is checked.
+    if [ "$chart" = gcp ] || [ "$chart" = gcp-storage ]; then
+        grep -q '^ *publicKeyPem:' "$values_root/gcp/$env.yaml" || printf -- '-f\n%s\n' "$synthetic_attestor_key"
+    fi
     [ "$chart" = gcp-storage ] && printf -- '--set\ncloudArmor.enabled=false\n'
     [ "$chart" = agent ] && printf -- '--set-file\nhubCa.pem=%s\n' "$synthetic_hub_ca"
     return 0
@@ -111,7 +131,7 @@ render() {
     shift 2
     local args=()
     mapfile -t args < <(value_args "$chart" "$env")
-    helm template lanekeeper "deploy/charts/$(chart_dir "$chart")" --namespace "$(namespace_of "$chart")" --kube-version "$kube_version" "${args[@]}" "$@"
+    helm template "$(release_of "$chart")" "deploy/charts/$(chart_dir "$chart")" --namespace "$(namespace_of "$chart")" --kube-version "$kube_version" "${args[@]}" "$@"
 }
 
 # check_policy FILE CHART ENV: conftest over one rendered file. Prints the output; returns conftest's status.
@@ -127,9 +147,10 @@ check_policy() {
     for n in "${policy_namespaces[@]}"; do ns+=(--namespace "$n"); done
     local fail_on_warn=()
     [ "$env" = kind ] || fail_on_warn=(--fail-on-warn)
-    # The images policy is run apart: its warning is the placeholder digest, tolerated until the first publish.
+    # The images and binauthz policies are run apart: their warnings are fallbacks that may render in every environment, and are printed
+    # on every run: the placeholder digest until the first publish (plan 09 A29), and Binary Authorization in dry-run until Q24 is answered (A5).
     conftest test --combine "${fail_on_warn[@]}" --policy deploy/policy "${ns[@]}" "${data[@]}" --no-color "/work/${rendered##*/}" "${files[@]:1}" || status=$?
-    conftest test --combine --policy deploy/policy --namespace images --no-color "/work/${rendered##*/}" || status=$?
+    conftest test --combine --policy deploy/policy --namespace images --namespace binauthz --no-color "/work/${rendered##*/}" || status=$?
     return "$status"
 }
 
@@ -481,7 +502,7 @@ expect_agent_failure_without_ca() {
     local name="$1" fragment="$2"
     shift 2
     local out
-    if out="$(helm template lanekeeper deploy/charts/agent --namespace lanekeeper --kube-version "$kube_version" -f deploy/values/agent/sit1.yaml "$@" 2>&1 >/dev/null)"; then
+    if out="$(helm template lanekeeper-agent deploy/charts/agent --namespace lanekeeper --kube-version "$kube_version" -f deploy/values/agent/sit1.yaml "$@" 2>&1 >/dev/null)"; then
         fail "$name: helm rendered it"
     elif ! grep -qF -- "$fragment" <<<"$out"; then
         fail "$name: refused, but not for '$fragment':"$'\n'"$out"
@@ -760,6 +781,422 @@ planted_gcp_storage() {
     echo "  ok  no committed gcp values file turns Cloud Armor off"
 }
 
+# --- charts/gcp: admission (09/T6; S19, S20, plan 09 A5) ----------------------------------------------------------------------------
+
+planted_gcp_admission_templates() {
+    echo "== planted: the gcp templates and schema refuse values that break a rule (admission)"
+    local ok_key='"keyVersion":"projects/example-project/locations/example-location/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1","signatureAlgorithm":"ECDSA_P256_SHA256"'
+    local pem='-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n'
+    expect_render_failure "no public key" gcp-storage prod "binaryAuthorization.publicKeys is empty" --set-json 'binaryAuthorization.publicKeys=[]'
+    expect_render_failure "a private key inside the public key" gcp-storage prod "holds a private key" --set-json "binaryAuthorization.publicKeys=[{$ok_key,\"publicKeyPem\":\"-----BEGIN PUBLIC KEY-----\\n-----BEGIN PRIVATE KEY-----\\nAAAA\\n-----END PRIVATE KEY-----\\n-----END PUBLIC KEY-----\\n\"}]"
+    expect_render_failure "a private key as the key" gcp-storage prod "publicKeyPem" --set-json "binaryAuthorization.publicKeys=[{$ok_key,\"publicKeyPem\":\"-----BEGIN PRIVATE KEY-----\\nAAAA\\n-----END PRIVATE KEY-----\\n\"}]"
+    expect_render_failure "a certificate as the key" gcp-storage prod "publicKeyPem" --set-json "binaryAuthorization.publicKeys=[{$ok_key,\"publicKeyPem\":\"-----BEGIN CERTIFICATE-----\\nAAAA\\n-----END CERTIFICATE-----\\n\"}]"
+    expect_render_failure "a key version that is not one" gcp-storage prod "keyVersion" --set-json "binaryAuthorization.publicKeys=[{\"keyVersion\":\"my-key\",\"signatureAlgorithm\":\"ECDSA_P256_SHA256\",\"publicKeyPem\":\"$pem\"}]"
+    expect_render_failure "a key (not a version) as the key version" gcp-storage prod "keyVersion" --set-json "binaryAuthorization.publicKeys=[{\"keyVersion\":\"projects/p/locations/l/keyRings/r/cryptoKeys/k\",\"signatureAlgorithm\":\"ECDSA_P256_SHA256\",\"publicKeyPem\":\"$pem\"}]"
+    expect_render_failure "a weak signature algorithm" gcp-storage prod "signatureAlgorithm" --set-json "binaryAuthorization.publicKeys=[{\"keyVersion\":\"projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1\",\"signatureAlgorithm\":\"RSA_SIGN_PKCS1_2048_SHA256\",\"publicKeyPem\":\"$pem\"}]"
+    expect_render_failure "a key without a signature algorithm" gcp-storage prod "signatureAlgorithm" --set-json "binaryAuthorization.publicKeys=[{\"keyVersion\":\"projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1\",\"publicKeyPem\":\"$pem\"}]"
+    expect_render_failure "an enforcement mode that is not one" gcp-storage prod "enforcementMode" --set binaryAuthorization.enforcementMode=WARN
+    expect_render_failure "no enforcement mode" gcp-storage prod "enforcementMode" --set binaryAuthorization.enforcementMode=
+    expect_render_failure "an attestor name that is not a name" gcp-storage prod "attestorName" --set binaryAuthorization.attestorName=Bad_Name
+    expect_render_failure "a pattern with no registry" gcp-storage prod "admissionWhitelistPatterns" --set-json 'binaryAuthorization.admissionWhitelistPatterns=["*"]'
+    expect_render_failure "a pattern with a * in the middle" gcp-storage prod "admissionWhitelistPatterns" --set-json 'binaryAuthorization.admissionWhitelistPatterns=["ghcr.io/*/x"]'
+    expect_render_failure "an unknown admission value" gcp-storage prod "not_a_value" --set binaryAuthorization.not_a_value=1
+
+    # The committed values carry no key, so the chart refuses to render with them alone: that is how a missing key shows (the synthetic key
+    # in deploy/tests/testdata is added by render.sh, never by the values). When a person has put the real key in, there is nothing to show.
+    local env out
+    for env in staging prod; do
+        if grep -q '^ *publicKeyPem:' "deploy/values/gcp/$env.yaml"; then
+            echo "  (deploy/values/gcp/$env.yaml has its public key, so the refusal without one is not shown)"
+        elif out="$(helm template lanekeeper-gcp deploy/charts/gcp --namespace lanekeeper-gcp --kube-version "$kube_version" -f "deploy/values/gcp/$env.yaml" --set cloudArmor.enabled=false 2>&1 >/dev/null)"; then
+            fail "the gcp chart rendered with the committed $env values and no public key for the attestor"
+        elif ! grep -qF "binaryAuthorization.publicKeys is empty" <<<"$out"; then
+            fail "the gcp chart with the committed $env values was refused, but not for the missing public key:"$'\n'"$out"
+        else
+            echo "  ok  the committed $env values have no public key, and the chart refuses them"
+        fi
+    done
+}
+
+planted_gcp_admission() {
+    echo "== planted: the policies refuse the real output of the gcp chart's admission resources with one thing wrong"
+    local good="$work/good-gcp-storage-prod.yaml"
+    [ -f "$good" ] || render gcp-storage prod >"$good"
+    local in_policy='/^kind: BinaryAuthorizationPolicy$/,/^---$/'
+    local in_attestor='/^kind: BinaryAuthorizationAttestor$/,/^---$/'
+    local in_note='/^kind: ContainerAnalysisNote$/,/^---$/'
+
+    echo "-- the unchanged output passes, and says that it is in dry-run"
+    local out
+    if ! out="$(check_policy "$good" gcp-storage prod 2>&1)"; then
+        fail "the unchanged prod render of the gcp chart was refused: $out"
+    elif ! grep -qF "is in dry-run (DRYRUN_AUDIT_LOG_ONLY)" <<<"$out"; then
+        fail "the unchanged prod render does not say that Binary Authorization is in dry-run"
+    else
+        echo "  ok  the committed mode is dry-run, and the policy says so"
+    fi
+    sed -E 's/enforcementMode: DRYRUN_AUDIT_LOG_ONLY/enforcementMode: ENFORCED_BLOCK_AND_AUDIT_LOG/' "$good" >"$work/enforced.yaml"
+    if ! out="$(check_policy "$work/enforced.yaml" gcp-storage prod 2>&1)"; then
+        fail "the enforcing render was refused: $out"
+    elif grep -qF "dry-run" <<<"$out"; then
+        fail "the enforcing render still says that it is in dry-run"
+    else
+        echo "  ok  the enforcing mode passes, without the dry-run warning"
+    fi
+
+    # S20: the default rule.
+    plant "the default rule admits everything" gcp-storage prod 's/evaluationMode: REQUIRE_ATTESTATION/evaluationMode: ALWAYS_ALLOW/' "REQUIRE_ATTESTATION"
+    plant "an enforcement mode that is not one" gcp-storage prod 's/enforcementMode: DRYRUN_AUDIT_LOG_ONLY/enforcementMode: WARN/' "enforcementMode"
+    plant "no attestor is required" gcp-storage prod '/^    requireAttestationsBy:$/,/^      - name: lanekeeper-ci$/d' "requireAttestationsBy is empty"
+    plant "an attestor that is not ours" gcp-storage prod 's/^      - name: lanekeeper-ci$/      - name: someone-elses/' "not an attestor in this output"
+    plant "Google's global policy off" gcp-storage prod 's/globalPolicyEvaluationMode: ENABLE/globalPolicyEvaluationMode: DISABLE/' "globalPolicyEvaluationMode"
+    plant "a rule that admits a namespace" gcp-storage prod 's/^  globalPolicyEvaluationMode: ENABLE$/&\n  kubernetesNamespaceAdmissionRules:\n    lanekeeper:\n      evaluationMode: ALWAYS_ALLOW\n      enforcementMode: ENFORCED_BLOCK_AND_AUDIT_LOG/' "kubernetesNamespaceAdmissionRules"
+    plant "a rule that admits a cluster" gcp-storage prod 's/^  globalPolicyEvaluationMode: ENABLE$/&\n  clusterAdmissionRules:\n    europe-west2.some-cluster:\n      evaluationMode: ALWAYS_ALLOW\n      enforcementMode: ENFORCED_BLOCK_AND_AUDIT_LOG/' "clusterAdmissionRules"
+    plant "our images skip the check" gcp-storage prod 's#^  globalPolicyEvaluationMode: ENABLE$#&\n  admissionWhitelistPatterns:\n    - namePattern: "ghcr.io/hsetially/lanekeeper/*"#' "covers ghcr.io/hsetially/lanekeeper/hub"
+    plant "the whole registry skips the check" gcp-storage prod 's#^  globalPolicyEvaluationMode: ENABLE$#&\n  admissionWhitelistPatterns:\n    - namePattern: "ghcr.io/*"#' "covers"
+    plant "everything skips the check" gcp-storage prod 's#^  globalPolicyEvaluationMode: ENABLE$#&\n  admissionWhitelistPatterns:\n    - namePattern: "*"#' "a bare * would skip the check"
+    plant_append "a second policy" gcp-storage prod $'apiVersion: binaryauthorization.cnrm.cloud.google.com/v1beta1\nkind: BinaryAuthorizationPolicy\nmetadata:\n  name: second\n  namespace: lanekeeper-gcp\nspec:\n  projectRef: {external: "projects/example-project"}\n  defaultAdmissionRule: {evaluationMode: ALWAYS_ALLOW, enforcementMode: ENFORCED_BLOCK_AND_AUDIT_LOG}' "exactly one admission policy"
+
+    # S20: what the attestor trusts.
+    plant "a key that is not in Cloud KMS" gcp-storage prod "$in_attestor"'s#id: "//cloudkms.googleapis.com/v1/#id: "ni:///sha-256;#' "not a Cloud KMS key version"
+    plant "a weak signature algorithm" gcp-storage prod "$in_attestor"'s/signatureAlgorithm: ECDSA_P256_SHA256/signatureAlgorithm: RSA_SIGN_PKCS1_2048_SHA256/' "signatureAlgorithm"
+    plant "no key" gcp-storage prod "$in_attestor"'{/^    publicKeys:$/,/signatureAlgorithm: /d}' "no public key"
+    plant "a private key as the public key" gcp-storage prod "$in_attestor"'s/-----BEGIN PUBLIC KEY-----/-----BEGIN PRIVATE KEY-----/' "holds a private key"
+    plant "a note that is not in the output" gcp-storage prod "$in_attestor"'s/^      name: lanekeeper-ci$/      name: another-note/' "is not in this output"
+    plant "a note without a name for its authority" gcp-storage prod "$in_note"'{/humanReadableName: /d}' "humanReadableName"
+    plant "a policy of another project" gcp-storage prod "$in_policy"'s#external: "projects/example-project"#external: "projects/another-project"#' "spec.projectRef.external"
+
+    # S20: removing a resource from Git must not remove it from the project.
+    plant "the policy is deleted with its resource" gcp-storage prod "$in_policy"'s/cnrm.cloud.google.com\/deletion-policy: abandon/cnrm.cloud.google.com\/deletion-policy: delete/' "BinaryAuthorizationPolicy/lanekeeper: the annotation cnrm.cloud.google.com/deletion-policy: abandon"
+    plant "the policy may be pruned" gcp-storage prod "$in_policy"'s/Prune=false/Prune=true/' "BinaryAuthorizationPolicy/lanekeeper: the annotation argocd.argoproj.io/sync-options: Prune=false"
+    plant "the attestor is deleted with its resource" gcp-storage prod "$in_attestor"'{/cnrm.cloud.google.com\/deletion-policy: abandon/d}' "BinaryAuthorizationAttestor/lanekeeper-ci: the annotation cnrm.cloud.google.com/deletion-policy: abandon"
+    plant "the note may be pruned" gcp-storage prod "$in_note"'{/argocd.argoproj.io\/sync-options: Prune=false/d}' "ContainerAnalysisNote/lanekeeper-ci: the annotation argocd.argoproj.io/sync-options: Prune=false"
+
+    # The synthetic key stands in only while the values have none: with a key in the values, the output has that key and not the synthetic one.
+    local real="$work/vr/gcp/prod.yaml" rendered
+    mkdir -p "$work/vr/gcp"
+    {
+        cat deploy/values/gcp/prod.yaml
+        printf 'binaryAuthorization:\n  publicKeys:\n    - keyVersion: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/a-real-key/cryptoKeyVersions/7\n'
+        printf '      signatureAlgorithm: ECDSA_P256_SHA256\n      publicKeyPem: |\n        -----BEGIN PUBLIC KEY-----\n'
+        printf '        MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEreal0real0real0real0real0real0real0real0real0\n'
+        printf '        real0real0real0real0real0real0real0real0real0real0real0real0real0==\n        -----END PUBLIC KEY-----\n'
+    } >"$real"
+    if ! rendered="$(values_root="$work/vr" render gcp-storage prod 2>&1)"; then
+        fail "the gcp chart did not render with a public key in the values: $(tail -n1 <<<"$rendered")"
+    elif ! grep -q 'cryptoKeys/a-real-key/cryptoKeyVersions/7' <<<"$rendered" || grep -q 'lanekeeper-ci-cosign' <<<"$rendered"; then
+        fail "with a public key in the values, the output does not have exactly that key: the synthetic key was layered over it"
+    else
+        echo "  ok  with a public key in the values, that key is the one rendered and checked"
+    fi
+}
+
+# --- Argo CD (09/T6): the Applications and projects of deploy/argocd ---------------------------------------------------------------------
+
+# How many times the argocd policy and the project scope were run: argocd_policy_all counts them against the files, so that a check that is
+# deleted or skipped from it fails there and does not pass by doing nothing.
+policy_runs=0
+scope_runs=0
+
+# conftest over the files that one Argo CD applies. The warnings (a placeholder revision, plan 09 A29) are printed and do not fail.
+argocd_conftest() {
+    local namespace="$1"
+    shift
+    [ "$namespace" != argocd ] || policy_runs=$((policy_runs + 1))
+    conftest test --combine --policy deploy/policy --namespace "$namespace" --no-color "$@"
+}
+
+argocd_kubeconform() {
+    echo "== kubeconform deploy/argocd"
+    kubeconform "${schema_args[@]}" deploy/argocd/platform/*.yaml deploy/argocd/swimlanes/*.yaml
+}
+
+# The scalar a file gives for a key, at any indentation (quotes and a trailing comment dropped); empty when it has none.
+yaml_scalar() { sed -nE "s@^ *$2: *\"?([^\"# ]+)\"?( *#.*)?\$@\1@p" "$1" | head -n1; }
+
+# argocd_paths ARGO_DIR VALUES_DIR: every file that an Application names exists, and swimlanes and their Applications go in pairs. ARGO_DIR has
+# platform/ and swimlanes/; VALUES_DIR has hub/, db/, gcp/ and agent/ as deploy/values does. The policy has already shown that the Application
+# names exactly the files its labels say, so reading the labels here is reading the same thing.
+argocd_paths() {
+    local argo="$1" values="$2" status=0 f chart env id
+    for f in "$argo"/platform/hub.yaml "$argo"/platform/db.yaml "$argo"/platform/gcp.yaml; do
+        [ -f "$f" ] || { echo "$f does not exist"; status=1; continue; }
+        chart="$(yaml_scalar "$f" path)"
+        chart="${chart##*/}"
+        env="$(yaml_scalar "$f" lanekeeper.io/environment)"
+        if [ -z "$chart" ] || [ -z "$env" ]; then
+            echo "$f: cannot read the chart and the environment from its path and labels"
+            status=1
+            continue
+        fi
+        [ -f "$values/$chart/$env.yaml" ] || { echo "$f deploys $values/$chart/$env.yaml, which does not exist"; status=1; }
+        if [ "$chart" = gcp ]; then
+            [ -f "$values/hub/github-hook-ranges.yaml" ] || { echo "$f deploys $values/hub/github-hook-ranges.yaml, which does not exist"; status=1; }
+        fi
+    done
+    for f in "$argo"/swimlanes/*.yaml; do
+        [ -f "$f" ] || continue
+        id="$(basename "$f" .yaml)"
+        [ -f "$values/agent/$id.yaml" ] || { echo "$f has no values file: $values/agent/$id.yaml does not exist"; status=1; }
+    done
+    for f in "$values"/agent/*.yaml; do
+        [ -f "$f" ] || continue
+        id="$(basename "$f" .yaml)"
+        [ -f "$argo/swimlanes/$id.yaml" ] || { echo "$f is the values of the swimlane $id, which has values but no Application: $argo/swimlanes/$id.yaml does not exist"; status=1; }
+    done
+    return "$status"
+}
+
+# What each project allows against what its charts render. The platform's Applications deploy hub and db (the workloads project) and gcp (the
+# cloud project); a swimlane's deploys agent. The gcp chart is rendered with Cloud Armor and without (B5: only the render without it
+# exists until GitHub's ranges do).
+argocd_scope_one() {
+    local chart="$1" env="$2" projects="$3" status=0
+    scope_runs=$((scope_runs + 1))
+    echo "== argocd scope: $chart ($env) against $projects"
+    render "$chart" "$env" >"$work/scope-$chart-$env.yaml" || return 1
+    argocd_conftest argocd_scope "/work/scope-$chart-$env.yaml" "$projects" || status=1
+    return "$status"
+}
+
+argocd_policy_all() {
+    local status=0 f chart env id lanes=0
+    policy_runs=0
+    scope_runs=0
+    echo "== argocd policy: the platform cluster's files"
+    argocd_conftest argocd deploy/argocd/platform/*.yaml || status=1
+    for f in deploy/argocd/swimlanes/*.yaml; do
+        [ -f "$f" ] || continue
+        id="$(basename "$f" .yaml)"
+        echo "== argocd policy: the swimlane $id"
+        argocd_conftest argocd "$f" "deploy/values/agent/$id.yaml" || status=1
+    done
+    echo "== argocd paths: every file that an Application names exists"
+    argocd_paths deploy/argocd deploy/values || status=1
+    for f in deploy/argocd/platform/hub.yaml deploy/argocd/platform/db.yaml deploy/argocd/platform/gcp.yaml; do
+        chart="$(yaml_scalar "$f" path)"
+        chart="${chart##*/}"
+        env="$(yaml_scalar "$f" lanekeeper.io/environment)"
+        if [ -z "$chart" ] || [ -z "$env" ]; then
+            echo "$f: cannot read the chart and the environment" >&2
+            status=1
+            continue
+        fi
+        # The gcp chart with Cloud Armor waits for GitHub's ranges (B5); `argocd` mode (a subset, never the gate) leaves it out, and says so.
+        if [ "$chart" = gcp ] && [ "${scope_full_gcp:-1}" = 0 ]; then
+            echo "== argocd scope: gcp ($env) with Cloud Armor is left out of this mode (B5); \`all\` and \`policy\` check it"
+        else
+            argocd_scope_one "$chart" "$env" deploy/argocd/platform/projects.yaml || { echo "render.sh: argocd scope FAILED for the $chart chart with the $env values" >&2; status=1; }
+        fi
+        if [ "$chart" = gcp ]; then
+            argocd_scope_one gcp-storage "$env" deploy/argocd/platform/projects.yaml || { echo "render.sh: argocd scope FAILED for the gcp chart without Cloud Armor with the $env values" >&2; status=1; }
+        fi
+    done
+    for f in deploy/argocd/swimlanes/*.yaml; do
+        [ -f "$f" ] || continue
+        id="$(basename "$f" .yaml)"
+        argocd_scope_one agent "$id" "$f" || { echo "render.sh: argocd scope FAILED for the agent chart of $id" >&2; status=1; }
+    done
+    # The tripwire. The policy runs once for the platform's files and once for each swimlane; the scope runs for hub, db, gcp (with Cloud Armor,
+    # unless this mode leaves it out), gcp-storage, and each swimlane's agent. Counted from the directory, not from the loops above.
+    for f in deploy/argocd/swimlanes/*.yaml; do
+        [ -f "$f" ] && lanes=$((lanes + 1))
+    done
+    local want_policy=$((1 + lanes)) want_scope=$((4 + lanes))
+    [ "${scope_full_gcp:-1}" != 0 ] || want_scope=$((want_scope - 1))
+    if [ "$policy_runs" -ne "$want_policy" ] || [ "$scope_runs" -ne "$want_scope" ]; then
+        echo "render.sh: the Argo CD checks ran the policy $policy_runs times and the scope $scope_runs times, and the files call for $want_policy and $want_scope" >&2
+        status=1
+    fi
+    return "$status"
+}
+
+# --- planted violations of the Argo CD files ---
+
+# A fresh copy of what the policy reads: deploy/argocd and the agent values, under $work/ap (the paths end the same way).
+reset_argocd_copy() {
+    rm -rf "$work/ap"
+    mkdir -p "$work/ap/platform" "$work/ap/swimlanes" "$work/ap/values/agent"
+    cp deploy/argocd/platform/*.yaml "$work/ap/platform/"
+    cp deploy/argocd/swimlanes/*.yaml "$work/ap/swimlanes/"
+    cp deploy/values/agent/*.yaml "$work/ap/values/agent/"
+}
+
+# The check of the group a file belongs to, over the copy: the platform's files together, or one swimlane's file with its values.
+check_argocd_copy() {
+    local file="$1" id
+    local files=() f
+    case "$file" in
+        platform/*)
+            for f in "$work"/ap/platform/*.yaml; do files+=("/work/ap/platform/$(basename "$f")"); done
+            argocd_conftest argocd "${files[@]}"
+            ;;
+        swimlanes/*)
+            id="$(basename "$file" .yaml)"
+            argocd_conftest argocd "/work/ap/$file" "/work/ap/values/agent/$id.yaml"
+            ;;
+        values/agent/*)
+            id="$(basename "$file" .yaml)"
+            argocd_conftest argocd "/work/ap/swimlanes/$id.yaml" "/work/ap/$file"
+            ;;
+    esac
+}
+
+# plant_argocd NAME FILE SED FRAGMENT: apply SED to FILE (under deploy/argocd, or values/agent/..), which must change it; the check must refuse the copy.
+plant_argocd() {
+    local name="$1" file="$2" expr="$3" fragment="$4" out
+    reset_argocd_copy
+    cp "$work/ap/$file" "$work/ap-before"
+    sed -E -i "$expr" "$work/ap/$file"
+    if cmp -s "$work/ap-before" "$work/ap/$file"; then
+        fail "$name: the sed expression changed nothing, so the case tests nothing"
+        return
+    fi
+    if out="$(check_argocd_copy "$file" 2>&1)"; then
+        fail "$name: the policy accepted it"
+    elif ! grep -qF -- "$fragment" <<<"$out"; then
+        fail "$name: refused, but not for '$fragment':"$'\n'"$out"
+    else
+        echo "  ok  $name"
+    fi
+}
+
+# expect_paths_failure NAME FRAGMENT: argocd_paths over the copy (and a copy of the values) must refuse, for FRAGMENT.
+expect_paths_failure() {
+    local name="$1" fragment="$2" out
+    if out="$(argocd_paths "$work/ap" "$work/apv" 2>&1)"; then
+        fail "$name: the paths check accepted it"
+    elif ! grep -qF -- "$fragment" <<<"$out"; then
+        fail "$name: refused, but not for '$fragment':"$'\n'"$out"
+    else
+        echo "  ok  $name"
+    fi
+}
+
+reset_values_copy() {
+    rm -rf "$work/apv"
+    mkdir -p "$work/apv"
+    cp -r deploy/values/. "$work/apv/"
+}
+
+planted_argocd() {
+    echo "== planted: the Argo CD policy refuses the real files with one thing wrong"
+    reset_argocd_copy
+    echo "-- the unchanged files pass"
+    check_argocd_copy platform/hub.yaml >/dev/null || fail "the unchanged platform files were refused"
+    check_argocd_copy swimlanes/sit1.yaml >/dev/null || fail "the unchanged swimlane files were refused"
+    local out
+    out="$(check_argocd_copy platform/hub.yaml 2>&1)" || true
+    grep -qF "placeholder" <<<"$out" || fail "the placeholder revision of the committed files is not warned about"
+
+    local hub=platform/hub.yaml db=platform/db.yaml gcp=platform/gcp.yaml projects=platform/projects.yaml lane=swimlanes/sit1.yaml
+    # S19: what is deployed is a commit of this repository.
+    plant_argocd "a branch as the revision" $hub 's/^( *)targetRevision: .*/\1targetRevision: main/' "targetRevision"
+    plant_argocd "a tag as the revision" $hub 's/^( *)targetRevision: .*/\1targetRevision: "v1.0.0"/' "targetRevision"
+    plant_argocd "a short commit as the revision" $hub 's/^( *)targetRevision: .*/\1targetRevision: "abcdef1"/' "targetRevision"
+    plant_argocd "a branch as the revision of a swimlane" $lane 's/^( *)targetRevision: .*/\1targetRevision: main/' "targetRevision"
+    plant_argocd "another repository" $hub 's#^( *)repoURL: .*#\1repoURL: https://github.com/someone/lanekeeper#' "repoURL"
+    plant_argocd "a Helm repository as the source" $hub 's/^( *)path: deploy\/charts\/hub$/&\n\1chart: hub/' "Helm repository"
+    plant_argocd "inline values" $hub 's/^( *)releaseName: lanekeeper-hub$/&\n\1values: "replicas: 1"/' "spec.source.helm.values"
+    plant_argocd "inline parameters" $hub 's/^( *)releaseName: lanekeeper-hub$/&\n\1parameters:\n\1  - {name: image.digest, value: "sha256:x"}/' "spec.source.helm.parameters"
+    plant_argocd "a missing values file ignored" $hub 's/^( *)releaseName: lanekeeper-hub$/&\n\1ignoreMissingValueFiles: true/' "spec.source.helm.ignoreMissingValueFiles"
+    plant_argocd "another release name" $hub 's/releaseName: lanekeeper-hub/releaseName: lanekeeper/' "releaseName"
+    plant_argocd "the staging values for prod" $hub 's#values/hub/prod.yaml#values/hub/staging.yaml#' "valueFiles"
+    plant_argocd "the cloud resources without the hook ranges" $gcp '/github-hook-ranges.yaml/d' "valueFiles"
+    plant_argocd "the cloud resources with the ranges last" $gcp 's#^( *)- \.\./\.\./values/hub/github-hook-ranges.yaml$#\1- ../../values/gcp/prod.yaml#;t;s#^( *)- \.\./\.\./values/gcp/prod.yaml$#\1- ../../values/hub/github-hook-ranges.yaml#' "valueFiles"
+    plant_argocd "the agent with another swimlane's values" $lane 's#values/agent/sit1.yaml#values/agent/sit2.yaml#' "valueFiles"
+    plant_argocd "a label that names no environment" $hub 's#lanekeeper.io/environment: prod#lanekeeper.io/environment: dev#' "lanekeeper.io/environment"
+    plant_argocd "no environment label" $hub '/lanekeeper.io\/environment/d' "lanekeeper.io/environment"
+    plant_argocd "a file that is not named after its swimlane" $lane 's#lanekeeper.io/swimlane: sit1#lanekeeper.io/swimlane: sit2#' "named after its swimlane"
+
+    # S16: the project and the namespace are the chart's own.
+    plant_argocd "the default project" $hub 's/project: lanekeeper-workloads/project: default/' "spec.project"
+    plant_argocd "the cloud resources in the workloads project" $gcp 's/project: lanekeeper-cloud/project: lanekeeper-workloads/' "spec.project"
+    plant_argocd "another chart" $hub 's#path: deploy/charts/hub#path: deploy/charts/db#' "spec.source.path"
+    plant_argocd "the hub in the system's namespace" $hub 's/^( *)namespace: lanekeeper$/\1namespace: kube-system/' "spec.destination.namespace"
+    plant_argocd "another cluster" $hub 's#server: https://kubernetes.default.svc#server: https://203.0.113.5#' "spec.destination.server"
+    plant_argocd "an Application outside the Argo CD namespace" $hub 's/^  namespace: argocd$/  namespace: default/' "metadata.namespace"
+
+    # D26: what is in Git is what runs.
+    plant_argocd "manual sync" $hub '/^    automated:$/,/^      selfHeal: true$/d' "spec.syncPolicy.automated"
+    plant_argocd "no self-heal" $hub 's/selfHeal: true/selfHeal: false/' "selfHeal"
+    plant_argocd "an empty render synced" $hub 's/^( *)selfHeal: true$/&\n\1allowEmpty: true/' "allowEmpty"
+    plant_argocd "the hub without prune" $hub 's/prune: true/prune: false/' "prune"
+    plant_argocd "the database with prune" $db 's/prune: false/prune: true/' "prune"
+    plant_argocd "the cloud resources with prune" $gcp 's/prune: false/prune: true/' "prune"
+    plant_argocd "the agent without prune" $lane 's/prune: true/prune: false/' "prune"
+    plant_argocd "replace" $hub 's/^( *)- CreateNamespace=true$/&\n\1- Replace=true/' "syncOptions"
+    plant_argocd "the Application deletes the workloads with it" $hub 's/^  namespace: argocd$/&\n  finalizers:\n    - resources-finalizer.argocd.argoproj.io/' "resources-finalizer"
+    plant_argocd "the Application deletes the database with it" $db 's/^  namespace: argocd$/&\n  finalizers:\n    - resources-finalizer.argocd.argoproj.io/' "resources-finalizer"
+
+    # A14: the agent's certificate Secret.
+    plant_argocd "the certificate Secret not ignored" $lane '/^  ignoreDifferences:$/,/^        - \/data$/d' "ignoreDifferences"
+    plant_argocd "more than the data ignored" $lane 's#^( *)- /data$#&\n\1- /metadata#' "ignoreDifferences"
+    plant_argocd "the whole Secret ignored" $lane 's#^( *)- /data$#\1- /#' "ignoreDifferences"
+    plant_argocd "ignored but written" $lane '/- RespectIgnoreDifferences=true/d' "RespectIgnoreDifferences"
+    plant_argocd "differences ignored on the hub" $hub 's/^  destination:$/  ignoreDifferences:\n    - group: apps\n      kind: StatefulSet\n      jsonPointers:\n        - \/spec\n&/' "only the agent's certificate Secret is ignored"
+
+    # The projects.
+    plant_argocd "a project that reads any repository" $projects 's#^( *)- https://github.com/hsetially/lanekeeper$#\1- "*"#' "sourceRepos"
+    plant_argocd "a project that deploys to any namespace" $projects 's/^( *)namespace: lanekeeper-gcp$/\1namespace: "*"/' "namespace pattern"
+    plant_argocd "a project that deploys to the system's namespace" $projects 's/^( *)namespace: lanekeeper$/\1namespace: kube-system/' "must not deploy to"
+    plant_argocd "a project that deploys to Argo CD's namespace" $projects 's/^( *)namespace: lanekeeper-gcp$/\1namespace: argocd/' "must not deploy to"
+    plant_argocd "a cluster-scoped kind in the workloads project" $projects 's/^      kind: StorageClass$/&\n    - group: rbac.authorization.k8s.io\n      kind: ClusterRole/' "clusterResourceWhitelist"
+    plant_argocd "Secrets in the workloads project" $projects 's/^( *)kind: ServiceAccount$/&\n    - group: ""\n      kind: Secret/' "namespaceResourceWhitelist"
+    plant_argocd "every kind in the cloud project" $projects 's/^( *)kind: StorageBucket$/&\n    - group: "*"\n      kind: "*"/' "namespaceResourceWhitelist"
+    plant_argocd "project tokens" $projects 's/^  orphanedResources:$/  roles:\n    - name: ci\n      policies: ["p, proj:x:ci, applications, sync, x\/*, allow"]\n&/' "spec.roles"
+    plant_argocd "the swimlane's project with a cluster role" $lane 's/^      name: lanekeeper$/&\n    - group: rbac.authorization.k8s.io\n      kind: ClusterRole/' "clusterResourceWhitelist"
+    plant_argocd "a namespace made by a project that does not allow it" $lane '/^  clusterResourceWhitelist:$/,/^      name: lanekeeper$/d' "CreateNamespace=true"
+    plant_argocd "every namespace allowed to a project" $projects 's/^      name: lanekeeper-gcp$/      name: "*"/' "clusterResourceWhitelist"
+    plant_argocd "the swimlane's project in another namespace" $lane 's/^      namespace: sit1$/      namespace: sit2/' "namespaces of deploy/values/agent/sit1.yaml"
+    plant_argocd "a watched namespace the project does not know" values/agent/sit1.yaml 's/^  - sit1$/&\n  - sit2/' "namespaces of deploy/values/agent/sit1.yaml"
+
+    # The files the Applications name.
+    echo "== planted: the paths check refuses an Application and its files that do not go together"
+    reset_argocd_copy
+    reset_values_copy
+    argocd_paths "$work/ap" "$work/apv" >/dev/null || fail "the unchanged files were refused by the paths check"
+    rm "$work/apv/hub/prod.yaml"
+    expect_paths_failure "the hub's values file is gone" "hub/prod.yaml, which does not exist"
+    reset_values_copy
+    rm "$work/apv/hub/github-hook-ranges.yaml"
+    expect_paths_failure "the hook ranges file is gone" "github-hook-ranges.yaml, which does not exist"
+    reset_values_copy
+    rm "$work/apv/agent/sit1.yaml"
+    expect_paths_failure "a swimlane Application without values" "has no values file"
+    reset_values_copy
+    rm "$work/ap/swimlanes/sit1.yaml"
+    expect_paths_failure "swimlane values without an Application" "has values but no Application"
+    reset_argocd_copy
+    sed -E -i 's#^( *)path: deploy/charts/hub$#\1path: deploy/charts/#' "$work/ap/platform/hub.yaml"
+    expect_paths_failure "an Application whose chart cannot be read" "cannot read the chart"
+    reset_argocd_copy
+    rm "$work/ap/platform/db.yaml"
+    expect_paths_failure "an Application file that is gone" "db.yaml does not exist"
+
+    # What a project allows against what the charts render: a planted kind in the output.
+    echo "== planted: a chart that makes a kind its project does not allow is refused"
+    local rendered="$work/scope-planted.yaml"
+    render hub prod >"$rendered"
+    printf -- '---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: planted\n  namespace: lanekeeper\n' >>"$rendered"
+    if out="$(argocd_conftest argocd_scope "/work/scope-planted.yaml" deploy/argocd/platform/projects.yaml 2>&1)"; then
+        fail "a Secret in the hub's output was accepted by the scope check"
+    elif ! grep -qF "no project allows the kind Secret" <<<"$out"; then
+        fail "a Secret in the hub's output was refused, but not for its kind:"$'\n'"$out"
+    else
+        echo "  ok  a Secret in the hub's output is not allowed by its project"
+    fi
+    render agent sit1 >"$rendered"
+    printf -- '---\napiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: planted\n' >>"$rendered"
+    if out="$(argocd_conftest argocd_scope "/work/scope-planted.yaml" deploy/argocd/swimlanes/sit1.yaml 2>&1)"; then
+        fail "a ClusterRole in the agent's output was accepted by the scope check"
+    elif ! grep -qF "cluster-scoped, and no project allows the kind ClusterRole" <<<"$out"; then
+        fail "a ClusterRole in the agent's output was refused, but not for its kind:"$'\n'"$out"
+    else
+        echo "  ok  a ClusterRole in the agent's output is not allowed by its project"
+    fi
+}
+
 # --- the charts agree with one another (09/T5) ---------------------------------------------------------------------------------------
 # The db chart's backups go to the bucket that the gcp chart makes, as the Google service account that it makes and lets write there;
 # the Kubernetes service accounts that Workload Identity maps are the ones the hub and the database run as; the keys of the disks are
@@ -899,7 +1336,7 @@ planted_kubeconform() {
     out="$(kubeconform "${schema_args[@]}" deploy/tests/planted/kubeconform.yaml 2>&1)" || status=$?
     [ "$status" -ne 0 ] || fail "kubeconform accepted deploy/tests/planted/kubeconform.yaml"
     local kind
-    for kind in GCPBackendPolicy HealthCheckPolicy FQDNNetworkPolicy ComputeSecurityPolicy Gateway StatefulSet Deployment Role RoleBinding NetworkPolicy ConfigMap Cluster ScheduledBackup StorageBucket IAMPolicyMember IAMServiceAccount; do
+    for kind in GCPBackendPolicy HealthCheckPolicy FQDNNetworkPolicy ComputeSecurityPolicy Gateway StatefulSet Deployment Role RoleBinding NetworkPolicy ConfigMap Cluster ScheduledBackup StorageBucket IAMPolicyMember IAMServiceAccount BinaryAuthorizationPolicy BinaryAuthorizationAttestor ContainerAnalysisNote Application AppProject; do
         grep -E -q -- "- $kind planted is invalid" <<<"$out" || fail "kubeconform did not refuse the planted $kind:"$'\n'"$out"
     done
     grep -q -- "could not find schema for SomethingWithoutASchema" <<<"$out" || fail "a kind without a schema was skipped, not refused"
@@ -951,7 +1388,10 @@ planted_all() {
     planted_db
     planted_gcp_templates
     planted_gcp_storage
+    planted_gcp_admission_templates
+    planted_gcp_admission
     planted_cross
+    planted_argocd
     if [ "$failures" -ne 0 ]; then
         echo "render.sh: $failures planted case(s) failed" >&2
         return 1
@@ -972,6 +1412,8 @@ data_all() {
     planted_db
     planted_gcp_templates
     planted_gcp_storage
+    planted_gcp_admission_templates
+    planted_gcp_admission
     planted_cross
     if [ "$failures" -ne 0 ]; then
         echo "render.sh: $failures planted case(s) failed" >&2
@@ -981,18 +1423,46 @@ data_all() {
     return "$status"
 }
 
+# The Argo CD files alone (09/T6), and nothing else. It reports every failure and exits non-zero on any.
+argocd_only() {
+    local status=0
+    scope_full_gcp=0
+    argocd_kubeconform || status=1
+    argocd_policy_all || status=1
+    planted_argocd
+    if [ "$failures" -ne 0 ]; then
+        echo "render.sh: $failures planted case(s) failed" >&2
+        status=1
+    fi
+    [ "$status" -eq 0 ] && echo "render.sh: the Argo CD files pass every check, and every planted case was refused for its own reason"
+    return "$status"
+}
+
 case "$mode" in
     lint) lint ;;
     data) data_all ;;
-    render) kubeconform_all ;;
-    policy) policy_all ;;
+    render)
+        status=0
+        kubeconform_all || status=1
+        argocd_kubeconform || status=1
+        exit "$status"
+        ;;
+    policy)
+        status=0
+        policy_all || status=1
+        argocd_policy_all || status=1
+        exit "$status"
+        ;;
     contract) contract_all && cross_chart ;;
     planted) planted_all ;;
+    argocd) argocd_only ;;
     all)
         status=0
         lint || status=1
         kubeconform_all || status=1
+        argocd_kubeconform || status=1
         policy_all || status=1
+        argocd_policy_all || status=1
         contract_all || status=1
         cross_chart || status=1
         planted_all || status=1

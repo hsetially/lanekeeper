@@ -144,6 +144,68 @@
           "uniqueItems": true
         }
       }
+    },
+    "binaryAuthorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enforcementMode": {
+          "type": "string",
+          "enum": [
+            "DRYRUN_AUDIT_LOG_ONLY",
+            "ENFORCED_BLOCK_AND_AUDIT_LOG"
+          ]
+        },
+        "attestorName": {
+          "type": "string",
+          "pattern": "^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
+        },
+        "publicKeys": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "keyVersion",
+              "signatureAlgorithm",
+              "publicKeyPem"
+            ],
+            "properties": {
+              "keyVersion": {
+                "type": "string",
+                "pattern": "^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+/cryptoKeyVersions/[0-9]+$"
+              },
+              "signatureAlgorithm": {
+                "type": "string",
+                "enum": [
+                  "ECDSA_P256_SHA256",
+                  "EC_SIGN_P256_SHA256",
+                  "ECDSA_P384_SHA384",
+                  "EC_SIGN_P384_SHA384",
+                  "RSA_PSS_3072_SHA256",
+                  "RSA_PSS_4096_SHA256",
+                  "RSA_PSS_4096_SHA512",
+                  "RSA_SIGN_PKCS1_3072_SHA256",
+                  "RSA_SIGN_PKCS1_4096_SHA256",
+                  "RSA_SIGN_PKCS1_4096_SHA512"
+                ]
+              },
+              "publicKeyPem": {
+                "type": "string",
+                "pattern": "^-----BEGIN PUBLIC KEY-----[\\s\\S]+-----END PUBLIC KEY-----\\s*$"
+              }
+            }
+          }
+        },
+        "admissionWhitelistPatterns": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]+)?/[A-Za-z0-9._/-]*\\*?$"
+          }
+        }
+      }
     }
   }
 }

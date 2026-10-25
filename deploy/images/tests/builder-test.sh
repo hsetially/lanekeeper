@@ -23,7 +23,10 @@ got="$("$here/../builder.sh" "${names[0]}")"
 [ "$got" = "${names[0]}" ] || fail "builder.sh printed '$got', not the builder's name"
 version="${LK_BUILDKIT_IMAGE%@*}"
 version="${version##*:}"
-docker buildx inspect "${names[0]}" | grep -q "BuildKit version: *$version" || fail "the builder does not report BuildKit $version"
+# The output is captured first: `docker buildx inspect | grep -q` under pipefail fails now and then (about 6 runs in 100 here), because
+# grep -q exits at its match and docker gets SIGPIPE while it is still writing, which makes the pipeline fail although the line is there.
+inspected="$(docker buildx inspect "${names[0]}")"
+grep -q "BuildKit version: *$version" <<<"$inspected" || fail "the builder does not report BuildKit $version"
 echo "builder-test: builder ${names[0]} runs BuildKit $version"
 
 # 2. A mirror is accepted: BuildKit parses the generated config and starts.

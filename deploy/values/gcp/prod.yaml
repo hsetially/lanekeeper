@@ -32,3 +32,10 @@ cmek:
   diskKeys:
     # The key of the hub's mirror disks (charts/hub storage.cmekKey) and of the database's (charts/db storage.cmekKey).
     - projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-disk-prod
+
+# Admission (09/T6, plan 09 A5): images that CI did not sign. DRYRUN_AUDIT_LOG_ONLY audits and does not block, until Q24 (is Binary
+# Authorization available on the clusters?) is answered; ENFORCED_BLOCK_AND_AUDIT_LOG blocks, and read charts/gcp/README.md ("Admission") first.
+# The public key of the CI signing key is NOT here: the key does not exist until a person makes it in Cloud KMS, and the chart refuses to
+# render until its public half is put in as binaryAuthorization.publicKeys (the README shows how). It is never typed in or invented.
+binaryAuthorization:
+  enforcementMode: DRYRUN_AUDIT_LOG_ONLY

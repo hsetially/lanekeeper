@@ -696,7 +696,8 @@ images-scan image: images-tools-check
 
 # The lock and Dockerfile policies: the model lock's checker and its planted cases, the Rego unit tests, the planted
 # Dockerfile through conftest's real parser (every expected rule must fire), both Dockerfiles, the crates' own Dockerfile
-# lints, the hub's model-stage script against planted locks, and last the committed lock (refused while UNRESOLVED).
+# lints, the hub's model-stage script against planted locks, the database-image scan's refusals (a tag, a placeholder), and last the
+# committed lock (refused while UNRESOLVED).
 images-policy-test: images-tools-check
     #!/usr/bin/env bash
     set -euo pipefail
@@ -713,11 +714,18 @@ images-policy-test: images-tools-check
     cargo test -p agent --test hardening
     deploy/images/tests/model-stage-test.sh
     deploy/images/tests/build-args-test.sh
+    deploy/images/tests/scan-db-test.sh
     node deploy/images/model-lock.mjs check deploy/images/hub-model.lock
 
 # The scan blocks a critical finding: a planted SBOM with CVE-2021-44228 must fail it (needs the grype database).
 images-scan-test: images-tools-check
     deploy/images/tests/scan-test.sh
+
+# The database image (CloudNativePG's, not built by images.yml; 09/T6, plans/09-deployment-ci.blockers.md B9 and B10) scanned by the digest
+# that deploy/values/db deploys, with the grype setup of the images we build: any critical finding fails. The nightly job `db-image` runs it.
+# It pulls the image's layers, so it needs the registry (ghcr.io and the host that serves its layers) and the grype database.
+images-scan-db: images-tools-check
+    deploy/images/scan-db.sh
 
 # Prompt 09, T2 (S19, S20): the workflow and CI gates. The tools that run on the host are release files, pinned by version and by
 # the sha256 of the file (plan 09 A22). Each sha256 was computed from the bytes downloaded for the pinned version; for actionlint,
@@ -900,7 +908,8 @@ schemas-verify:
 deploy-lint: (ops-tools-check "helm")
     deploy/tests/render.sh lint
 
-# helm template | kubeconform -strict, offline: a field or a kind without a vendored schema is an error, never a skip.
+# helm template | kubeconform -strict, offline: a field or a kind without a vendored schema is an error, never a skip. The Argo CD files
+# (deploy/argocd) go through kubeconform too.
 deploy-render: schemas-verify (ops-tools-check "helm kubeconform")
     deploy/tests/render.sh render
 
@@ -911,11 +920,14 @@ policy-test: images-tools-check
     . deploy/images/tools.env
     docker run --rm -v "$PWD:/repo:ro" -w /repo "$LK_CONFTEST_IMAGE" verify --policy deploy/policy --no-color
 
-# The policies on the real output of every chart. In prod and staging a warning fails; in kind the fallbacks it allows are printed.
+# The policies on the real output of every chart. In prod and staging a warning fails; in kind the fallbacks it allows are printed
+# (and Binary Authorization's dry run, and a placeholder revision, are printed everywhere: plan 09 A5, A29). The Argo CD files (09/T6): the
+# argocd policy on each cluster's files, the files they name, and the scope of each project against the charts it deploys.
 policy-check: (ops-tools-check "helm") images-tools-check
     deploy/tests/render.sh policy
 
-# The checks refuse planted violations, each for its own reason: kubeconform, the templates, and the policies on the real output.
+# The checks refuse planted violations, each for its own reason: kubeconform, the templates, and the policies on the real output
+# (the Argo CD files and the admission policy included).
 deploy-planted: (ops-tools-check "helm kubeconform") images-tools-check
     deploy/tests/render.sh planted
 
@@ -936,17 +948,26 @@ env-names-test:
 tools-test:
     node --test deploy/tools/*.test.mjs
 
-# Everything that checks the charts (what the deploy workflow runs): schemas, lint, kubeconform, the policies and their planted cases.
+# Everything that checks the charts and the Argo CD files (what the deploy workflow runs): schemas, lint, kubeconform, the policies and
+# their planted cases.
 deploy-check: schemas-verify deploy-lint deploy-render policy-test policy-check contract-check deploy-planted env-names-test tools-test
 
-# The data layer of 09/T5 alone: the db chart, and the gcp chart's buckets, keys and IAM rendered without Cloud Armor, through lint,
-# kubeconform -strict, the policies, their planted violations and the check that the db, gcp and hub charts name the same things. It is a
-# SUBSET of deploy-check, for the part that does not wait for GitHub's hook ranges (plans/09-deployment-ci.blockers.md, B5): the gcp
-# chart with Cloud Armor still refuses to render until a person runs deploy/tools/github-hook-ranges.mjs, and deploy-check says so.
+# The data layer of 09/T5 alone: the db chart, and the gcp chart's buckets, keys, IAM and admission policy (09/T6) rendered without
+# Cloud Armor, through lint, kubeconform -strict, the policies, their planted violations and the check that the db, gcp and hub charts name
+# the same things. It is a SUBSET of deploy-check, for the part that does not wait for GitHub's hook ranges
+# (plans/09-deployment-ci.blockers.md, B5): the gcp chart with Cloud Armor still refuses to render until a person runs
+# deploy/tools/github-hook-ranges.mjs, and deploy-check says so.
 deploy-data: schemas-verify policy-test (ops-tools-check "helm kubeconform") images-tools-check
     deploy/tests/render.sh data
 
-# The T5 gate so far (T6 to T8 add to it): the pinned tools, the workflow lint, the pin tests, the image checks, and the charts.
+# The Argo CD files of 09/T6 alone: kubeconform, the argocd policy, the files each Application names, the scope of each project against the
+# charts it deploys, and their planted violations. A SUBSET of deploy-check, for the part that does not wait for GitHub's hook ranges (B5):
+# the scope of the gcp chart with Cloud Armor is left out of it, and deploy-check checks it. It is never the gate.
+deploy-argocd: schemas-verify policy-test (ops-tools-check "helm kubeconform") images-tools-check
+    deploy/tests/render.sh argocd
+
+# The T6 gate so far (T7 and T8 add to it): the pinned tools, the workflow lint, the pin tests, the image checks, and the charts with
+# the Argo CD files.
 verify-09: ops-tools-check ci-lint pins-test images-policy-test images-builder-test images-publish-test deploy-check
 verify-11:
     @echo "verify-11 not implemented yet" && exit 1

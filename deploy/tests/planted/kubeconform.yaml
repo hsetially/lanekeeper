@@ -123,6 +123,43 @@ kind: ConfigMap
 metadata: {name: planted, namespace: planted-ns}
 bogusField: 1
 ---
+apiVersion: binaryauthorization.cnrm.cloud.google.com/v1beta1
+kind: BinaryAuthorizationPolicy
+metadata: {name: planted, namespace: planted-ns}
+spec:
+  projectRef: {external: projects/p}
+  defaultAdmissionRule: {evaluationMode: REQUIRE_ATTESTATION, enforcementMode: DRYRUN_AUDIT_LOG_ONLY, bogusField: 1}
+---
+apiVersion: binaryauthorization.cnrm.cloud.google.com/v1beta1
+kind: BinaryAuthorizationAttestor
+metadata: {name: planted, namespace: planted-ns}
+spec:
+  projectRef: {external: projects/p}
+  userOwnedDrydockNote: {noteRef: {name: a-note}, bogusField: 1}
+---
+apiVersion: containeranalysis.cnrm.cloud.google.com/v1beta1
+kind: ContainerAnalysisNote
+metadata: {name: planted, namespace: planted-ns}
+spec:
+  attestation: {hint: {humanReadableName: x}}
+  bogusField: 1
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata: {name: planted, namespace: planted-ns}
+spec:
+  project: p
+  source: {repoURL: "https://example.com/r", path: p, targetRevision: x}
+  destination: {server: "https://kubernetes.default.svc", namespace: some-ns}
+  bogusField: 1
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata: {name: planted, namespace: planted-ns}
+spec:
+  description: x
+  bogusField: 1
+---
 apiVersion: networking.gke.io/v1
 kind: SomethingWithoutASchema
 metadata: {name: planted, namespace: planted-ns}

@@ -1,4 +1,4 @@
-# The Helm charts (09/T3, T4; D62, S6, S7, S10, S16, S17, S18, P11): every chart rendered with every values file, then kubeconform -strict
+# The Helm charts and the Argo CD files (09/T3 to T6; D62, S6, S7, S10, S16, S17, S18, S19, S20, P11): every chart rendered with every values file, then kubeconform -strict
 # against the vendored schemas (offline: a kind without a schema is an error), then the Rego policies on the real output, then
 # the same checks on planted violations, which must each be refused for their own reason. `just deploy-check` is what runs here,
 # so a developer runs exactly what CI runs.
@@ -15,6 +15,7 @@ on:
     paths:
       - "deploy/charts/**"
       - "deploy/values/**"
+      - "deploy/argocd/**"
       - "deploy/policy/**"
       - "deploy/schemas/**"
       - "deploy/tests/**"

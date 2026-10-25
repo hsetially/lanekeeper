@@ -1,0 +1,82 @@
+{{- /*
+Admission (09/T6; S19, S20, plan 09 A5): only images signed by CI run in the cluster. Three Config Connector resources:
+  1. a Container Analysis note, the place an attestation about an image is written;
+  2. an attestor that trusts one public key, the CI signing key in Cloud KMS (a key that cannot be exported; the same key that
+     images.yml signs with when LK_COSIGN_KMS_KEY is set), and reads attestations from that note;
+  3. the project's admission policy: the default rule requires an attestation from that attestor.
+`enforcementMode` is a value. It is DRYRUN_AUDIT_LOG_ONLY until Q24 is answered (is Binary Authorization available on the clusters?):
+images without an attestation are audit-logged as ones that would have been blocked, and still run. Setting it to
+ENFORCED_BLOCK_AND_AUDIT_LOG is the one-line change that makes the policy block.
+The public key is not in the committed values: the key is made in Cloud KMS by a person, and its public half is put into the
+environment's values by whoever makes it (deploy/charts/gcp/README.md, "Admission"). Without it the chart refuses to render.
+deploy/policy/binauthz.rego checks the rendering: the default rule requires an attestation, no rule overrides it, no name pattern covers
+an image of ours, the attestor trusts a Cloud KMS key and nothing else, and none of the three can be deleted by removing it from Git.
+*/ -}}
+{{- $ba := .Values.binaryAuthorization -}}
+{{- $project := required "project is required: the Google Cloud project of the Config Connector resources" .Values.project -}}
+{{- $env := include "lanekeeper-gcp.environment" . -}}
+{{- $name := required "binaryAuthorization.attestorName is required" $ba.attestorName -}}
+{{- $mode := required "binaryAuthorization.enforcementMode is required: DRYRUN_AUDIT_LOG_ONLY or ENFORCED_BLOCK_AND_AUDIT_LOG (plan 09 A5, Q24)" $ba.enforcementMode -}}
+{{- if not $ba.publicKeys -}}
+{{- fail "binaryAuthorization.publicKeys is empty: the attestor has no key to trust, so every signature would fail (S20). Make the CI signing key in Cloud KMS and put its public key here (deploy/charts/gcp/README.md, \"Admission\")" -}}
+{{- end -}}
+{{- range $i, $k := $ba.publicKeys -}}
+{{- if contains "PRIVATE KEY" (toString $k.publicKeyPem) -}}
+{{- fail (printf "binaryAuthorization.publicKeys[%d].publicKeyPem holds a private key; only the public key goes into the values (S7, S20)" $i) -}}
+{{- end -}}
+{{- end -}}
+apiVersion: containeranalysis.cnrm.cloud.google.com/v1beta1
+kind: ContainerAnalysisNote
+metadata:
+  {{- include "lanekeeper-gcp.admissionMeta" (dict "root" . "project" $project "env" $env "name" $name) | nindent 2 }}
+spec:
+  shortDescription: Lanekeeper CI image signature
+  attestation:
+    hint:
+      humanReadableName: Lanekeeper CI
+---
+apiVersion: binaryauthorization.cnrm.cloud.google.com/v1beta1
+kind: BinaryAuthorizationAttestor
+metadata:
+  {{- include "lanekeeper-gcp.admissionMeta" (dict "root" . "project" $project "env" $env "name" $name) | nindent 2 }}
+spec:
+  projectRef:
+    external: {{ printf "projects/%s" $project | quote }}
+  description: Images signed by the Lanekeeper CI key in Cloud KMS
+  userOwnedDrydockNote:
+    noteRef:
+      name: {{ $name }}
+    publicKeys:
+      {{- range $ba.publicKeys }}
+      - comment: {{ printf "Cloud KMS key version %s" .keyVersion | quote }}
+        # The id by which a signature names the key that made it: the Cloud KMS key version.
+        id: {{ printf "//cloudkms.googleapis.com/v1/%s" .keyVersion | quote }}
+        pkixPublicKey:
+          publicKeyPem: |
+            {{- .publicKeyPem | trim | nindent 12 }}
+          signatureAlgorithm: {{ .signatureAlgorithm }}
+      {{- end }}
+---
+# The project has one admission policy. It has the default rule only: a rule for a cluster or a namespace would override it.
+apiVersion: binaryauthorization.cnrm.cloud.google.com/v1beta1
+kind: BinaryAuthorizationPolicy
+metadata:
+  {{- include "lanekeeper-gcp.admissionMeta" (dict "root" . "project" $project "env" $env "name" "lanekeeper") | nindent 2 }}
+spec:
+  projectRef:
+    external: {{ printf "projects/%s" $project | quote }}
+  description: Only images signed by the Lanekeeper CI key
+  # Google's own system images are let through by Google's policy.
+  globalPolicyEvaluationMode: ENABLE
+  {{- with $ba.admissionWhitelistPatterns }}
+  # Images that skip the check, by name. None covers an image of ours (deploy/policy/binauthz.rego).
+  admissionWhitelistPatterns:
+    {{- range . }}
+    - namePattern: {{ . | quote }}
+    {{- end }}
+  {{- end }}
+  defaultAdmissionRule:
+    evaluationMode: REQUIRE_ATTESTATION
+    enforcementMode: {{ $mode }}
+    requireAttestationsBy:
+      - name: {{ $name }}

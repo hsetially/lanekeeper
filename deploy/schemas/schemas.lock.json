@@ -35,6 +35,13 @@
    "source": "https://raw.githubusercontent.com/GoogleCloudPlatform/k8s-config-connector/53e892102c1bf0845d2dfabcb7ba90d5df945f7f/config/crds/resources/apiextensions.k8s.io_v1_customresourcedefinition_computesecuritypolicies.compute.cnrm.cloud.google.com.yaml",
    "sourceSha256": "697fefcc534cc41a9d9056a0187f5d294f67d7031437761eebd5ae756204993c"
   },
+  "crds/containeranalysis.cnrm.cloud.google.com/containeranalysisnote_v1beta1.json": {
+   "bytes": 22984,
+   "how": "crd2schema.py",
+   "sha256": "aa89198e4c0d912f3c79d57569d6864e9457e9c6fe8bf320e7de957a345fc2d0",
+   "source": "https://raw.githubusercontent.com/GoogleCloudPlatform/k8s-config-connector/53e892102c1bf0845d2dfabcb7ba90d5df945f7f/config/crds/resources/apiextensions.k8s.io_v1_customresourcedefinition_containeranalysisnotes.containeranalysis.cnrm.cloud.google.com.yaml",
+   "sourceSha256": "543695d8176e87275c72c3e6b3efec25636ba8db72dba0a9eb0e153ae60235a8"
+  },
   "crds/gateway.networking.k8s.io/gateway_v1.json": {
    "bytes": 71751,
    "how": "crd2schema.py",

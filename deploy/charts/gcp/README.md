@@ -1,7 +1,8 @@
 # gcp chart
 
 The Google Cloud resources of Lanekeeper as Config Connector manifests (plan 09 A4). **09/T3 starts it with Cloud Armor;** T5 adds
-the buckets, the service accounts and the IAM around them, T6 Binary Authorization. Secret containers only, never values.
+the buckets, the service accounts and the IAM around them, and **T6 adds Binary Authorization** (admission, below). Secret containers only,
+never values.
 
 `templates/cloudarmor.yaml` renders `ComputeSecurityPolicy/<cloudArmor.policyName>` (the hub chart's `gateway.securityPolicyName`):
 
@@ -43,9 +44,73 @@ the bucket's `location`. Without a key a bucket falls back to Google-managed enc
 KEK) and the hub's Secret Manager and KMS bindings are **not in this commit**: their names are the hub's configuration, which is not
 composed yet (plan 09 A1).
 
+## Admission: only images signed by CI run (09/T6; S19, S20, plan 09 A5)
+
+`templates/binauthz.yaml` renders three Config Connector resources, in this order of dependence:
+
+| Renders | Why |
+|---|---|
+| `ContainerAnalysisNote/<attestorName>` | the place an attestation about an image is written; an attestation authority (`attestation.hint.humanReadableName`) |
+| `BinaryAuthorizationAttestor/<attestorName>` | trusts the **public key of the CI signing key in Cloud KMS** (`binaryAuthorization.publicKeys`), and reads attestations from that note. A key that cannot be exported, never one kept somewhere: the key `id` must be a Cloud KMS key version, and the PEM must be a public key |
+| `BinaryAuthorizationPolicy/lanekeeper` | the project's one admission policy. The default rule is `REQUIRE_ATTESTATION` by that attestor, `globalPolicyEvaluationMode: ENABLE` so that Google's system images are let through by Google's policy, and **no other rule** (a rule for a cluster or a namespace overrides the default) |
+
+None of the three is deleted by removing it from Git or pruned by a sync (`deletion-policy: abandon`, `Prune=false`): deleting the
+policy resets the project to the default policy, which (as far as the authors know; Google's documentation could not be read, B6) admits every image.
+
+**Dry run is the default (plan 09 A5, Q24).** `binaryAuthorization.enforcementMode` is `DRYRUN_AUDIT_LOG_ONLY` until Q24 (is Binary
+Authorization available on the platform cluster and the swimlane clusters?) is answered: an image without an attestation is written to
+the audit log as one that would have been blocked, and runs. `deploy/policy/binauthz.rego` says so on every run (`WARN ... is in
+dry-run`), and allows it in every environment. Setting `ENFORCED_BLOCK_AND_AUDIT_LOG` is the one-line change that blocks, made in the
+environment's values by a person. **Before that**, read the dry run's audit log: every image in the cluster that is not ours and not
+Google's (the CloudNativePG operator and instances, Argo CD, Config Connector) would be blocked, and needs an attestation of ours or a
+name pattern in `binaryAuthorization.admissionWhitelistPatterns`. The policy refuses a pattern that covers an image of ours (`ghcr.io/*`,
+`ghcr.io/hsetially/lanekeeper/*`).
+
+**The public key is not in the committed values, and the chart refuses to render without it.** The CI signing key is made in Cloud
+KMS by a person (an asymmetric signing key, `EC_SIGN_P256_SHA256` for example, in the project and location of the environment; the
+`images.yml` job `publish` signs with it through Workload Identity Federation when the repository variable `LK_COSIGN_KMS_KEY` is
+set), and its public half is put into the environment's values:
+
+```
+gcloud kms keys versions get-public-key 1 --key=<key> --keyring=<ring> --location=<location> --project=<project> > public.pem
+```
+
+```yaml
+binaryAuthorization:
+  publicKeys:
+    - keyVersion: projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<key>/cryptoKeyVersions/1
+      signatureAlgorithm: ECDSA_P256_SHA256
+      publicKeyPem: |
+        -----BEGIN PUBLIC KEY-----
+        ...
+        -----END PUBLIC KEY-----
+```
+
+Rotation adds a version to the list, signs with it, and then removes the old one. Until a person does this, the missing key shows as
+the chart's refusal, the way the missing GitHub ranges do. `deploy/tests/render.sh` stands in a throwaway public key
+(`deploy/tests/testdata/synthetic-attestor-key.yaml`, SYNTHETIC: its private half never existed on disk) so that the policies and the
+planted cases can run, and only while the environment's values have no key; once a person has put the real one in, that key is the one
+that is checked.
+
+**What this chart does not do, and has not verified.** The CI signing key itself, the Workload Identity Federation pool and provider
+that GitHub's OIDC token signs in through, and the IAM that lets only this repository's CI sign with the key are **not made here**
+(plan 09 A4 lists them among the resources of this chart; T3, T5 and T6 do not make them): the platform team makes them, and the
+`images.yml` variables name them. The project's two Google APIs (`binaryauthorization.googleapis.com` and
+`containeranalysis.googleapis.com`) must be enabled. The policy is **per project**, so this one protects the platform project's
+clusters; a swimlane cluster in another project needs a policy there that requires the same attestor, which this chart does not make
+(Q24 asks whether Binary Authorization is available there at all). And Google's documentation (`docs.cloud.google.com`) could not be
+read in the sandbox that wrote this (plan 09 blockers, B6), so these are taken from the Config Connector CRDs (v1.159.0) and its
+samples, not from the product's documentation: that a **cosign signature** made with the KMS key is what a classic attestor accepts
+(the attestor reads attestations from Container Analysis, and `images.yml` writes a signature to the registry), that the key `id` has
+the form `//cloudkms.googleapis.com/v1/<key version>`, and that Binary Authorization's service account needs no IAM binding on the
+note that this chart does not make. The dry run is how the first apply finds out. Config Connector v1.159.0 also has
+`BinaryAuthorizationPlatformPolicy` (alpha), whose `sigstoreSignatureCheck` takes a cosign public key directly; it is not a drop-in (its spec
+has no `enforcementMode` field, so not the dry-run default of plan 09 A5), and it is the alternative to ask about if the attestor cannot see
+cosign signatures.
+
 ### Checked without Cloud Armor
 
-Everything in this section is checked on its own, with `--set cloudArmor.enabled=false` (`deploy/tests/render.sh` calls this render
-`gcp-storage`; `just deploy-data` runs it). That is an addition to the checks of the whole chart, not a replacement for them: with the
-committed values the chart still refuses to render until GitHub's ranges exist (B5, above), and `render.sh` checks that the isolated
-render has no Cloud Armor policy and that no committed values file turns Cloud Armor off.
+Everything in the sections above but Cloud Armor is checked on its own, with `--set cloudArmor.enabled=false` (`deploy/tests/render.sh`
+calls this render `gcp-storage`; `just deploy-data` runs it). That is an addition to the checks of the whole chart, not a replacement for
+them: with the committed values the chart still refuses to render until GitHub's ranges exist (B5, above), and `render.sh` checks that the
+isolated render has no Cloud Armor policy and that no committed values file turns Cloud Armor off.

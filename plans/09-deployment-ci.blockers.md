@@ -1,6 +1,6 @@
 # Plan 09 blockers
 
-Status on 2026-10-25, T5 run: **B1 to B4 are resolved; B5 is open and stops `just verify-09` (and nothing else of T3, T4 or T5); B7 and B8 are informational and need a human before a swimlane is deployed; B9 is informational; B10 is a decision that T5 needs from a human (the backup method and the image of the database), built meanwhile with the interim choice below.**
+Status on 2026-10-25, T6 run: **B1 to B4 are resolved; B5 is open by a human's decision and stops `just verify-09` (and nothing else of T3 to T6); B7 and B8 are informational and need a human before a swimlane is deployed; B9 is informational; B10 is decided (a human confirmed the interim image, below); B11 and B12 are informational findings of T6.**
 The T1 sections below are from the third T1 run (after a human allowed `us.aws.cdn.hf.co` and merged the plan amendment, PR #29):
 T1 is complete; the commit `e2c199d` holds the code and the measurements were taken at it.
 
@@ -15,7 +15,9 @@ T1 is complete; the commit `e2c199d` holds the code and the measurements were ta
 | B7 | **open, informational (T4)** | the agent contract dials the hub on 443; the hub chart's agent load balancer listens on 8444 (T4 notes below) |
 | B8 | **open, informational (T4)** | the agent contract lets the agent reach the config-server only in the agent's own namespace (T4 notes below) |
 | B9 | **open, informational (T5)** | `pkg-containers.githubusercontent.com` (where `ghcr.io` keeps image layers) is refused: the database image's layers and config cannot be read here (T5 notes below) |
-| B10 | **open, decision needed (T5)** | the plan names CloudNativePG's `standard` image for the database and built-in barman for the backups; the `standard` image has no barman (T5 notes below) |
+| B10 | **decided (T6 run)** | the plan names CloudNativePG's `standard` image for the database and built-in barman for the backups; the `standard` image has no barman. **A human confirmed the interim image** (`16.15-202610050823-system-trixie`, built-in barman). Moving to the Barman Cloud plugin is a later open question (B10 section below) |
+| B11 | **open, informational (T6)** | no operation creates a swimlane in the hub, so step 1 of `deploy/ADDING-A-SWIMLANE.md` cannot be completed by following it (T6 notes below) |
+| B12 | **open, informational (T6)** | what Binary Authorization needs that no chart makes, and what could not be confirmed without Google's documentation (T6 notes below) |
 
 ## B1 (T1): resolved. The model lock is filled in, from a download made here
 
@@ -503,6 +505,14 @@ bootstrap runs, so such a grant would fail the bootstrap, and none is needed.
 
 ## B10 (T5): the plan's image has no barman, and the built-in barman it relies on is deprecated
 
+**Decided by a human (told to the T6 run, 2026-10-25): keep the interim image.** The database stays on
+`ghcr.io/cloudnative-pg/postgresql:16.15-202610050823-system-trixie` (digest `sha256:c2a18065...30af4`, the `system` variant for the barman
+binaries, Debian 13) with the built-in `barmanObjectStore`, exactly as built in T5; option 1 below. Nothing in the db chart changes for this.
+**Migrating to the Barman Cloud plugin (option 2) is a later open question**, not a task of this plan: the built-in barman and
+`spec.backup.retentionPolicy` are deprecated in CloudNativePG (since 1.26) and "remain functional for now", and nobody knows when they go; when a
+CloudNativePG release removes them, or a person decides to move first, option 2 below lists what changes. Because B9 meant the image could not be
+scanned here, T6 added a nightly scan of it by digest (`just images-scan-db`, the `db-image` job of `nightly.yml`; "Decisions T6 made", 8).
+
 **The plan.** T5 and A26: "`ghcr.io/cloudnative-pg/postgresql:16-standard-bookworm`, with pgvector", "barman to GCS through Workload
 Identity; `retentionPolicy: "30d"`; a daily `ScheduledBackup`".
 
@@ -583,3 +593,169 @@ stanza), `deploy/policy/database.rego` (the `# backups` section) and `database_t
 | `raw.githubusercontent.com` | reachable | CloudNativePG's source and documentation at the commit of the schemas (`2a35abb4`) |
 | `github.com` (git over HTTPS) | reachable | `cloudnative-pg/postgres-containers`, shallow |
 | `docker.io` (registry-1) | reachable | `pgvector/pgvector:pg16` by its digest, to check the PostgreSQL 16 defaults (removed afterwards) |
+
+
+# T6 notes (2026-10-25)
+
+T6 is built and every check it owns passes. `just verify-09` still stops, for **B5 and nothing else**: the gcp chart refuses to render until a
+person runs `node deploy/tools/github-hook-ranges.mjs --write`. Nothing was typed in, copied or faked to get around that, and no range was swapped
+in, even for one run: `deploy/values/hub/github-hook-ranges.yaml` is still the unresolved marker, `cloudarmor.yaml` and its refusal are unchanged,
+`planted_gcp` is unchanged and still counts its failure, and no test was touched to make a recipe pass. A human decided that B5 stays open, and it does.
+
+## How T6 is verified without weakening B5
+
+- **Admission** (`charts/gcp/templates/binauthz.yaml`) is in the gcp chart, as the plan says, and `render.sh` checks it through the render T5 made for this
+  (`gcp-storage`: the same chart and values with `--set cloudArmor.enabled=false`). Every stage runs for the gcp chart exactly as before and fails for it
+  exactly as before, **and also** for `gcp-storage`, which now holds the admission resources too. The T5 safeguards stand: `render.sh planted` fails if
+  the isolated render has a `ComputeSecurityPolicy`, and fails if a committed gcp values file says `enabled: false`; there is no `enabled` switch for
+  admission, so none could be added to dodge the key (below). `just deploy-data` runs the data layer plus admission; it is a subset of `deploy-check`.
+- **The Argo CD files** do not depend on B5 except in one place: the scope of the gcp chart *with* Cloud Armor against its project. `render.sh argocd`
+  (`just deploy-argocd`, a subset) leaves that one out and says so; `render.sh policy` (so `policy-check` and `verify-09`) runs it, and it fails with the
+  B5 message for the gcp chart, as every other check of that render does.
+- **The public key of the CI signing key** is the second thing that is *not typed in*, for the same reason as the ranges: it does not exist until a
+  person makes the key in Cloud KMS. The committed gcp values carry no key, and the chart refuses to render without one (`binaryAuthorization.publicKeys
+  is empty`). `render.sh` stands in a throwaway public key (`deploy/tests/testdata/synthetic-attestor-key.yaml`, labelled SYNTHETIC, its private half
+  never written to disk), **only while the environment's values have none**: with a key in the values, the output has that key and not the synthetic
+  one (a planted case shows it). So the committed `values/gcp/{prod,staging}.yaml` do not render by themselves with `helm template`: they fail for the
+  ranges (B5) and for the key, each with its own message, and a person fixes each by running one command. That is a second "unresolved marker" in the same chart.
+
+## B11 (T6, informational): nothing creates a swimlane in the hub
+
+Step 1 of the runbook (`deploy/ADDING-A-SWIMLANE.md`, "Create the swimlane") has two halves. The infrastructure half is the platform team's. The half in
+the hub cannot be written as steps, because there is nothing to follow:
+
+- A swimlane is a row of `swimlanes` (`db/migrations/0001_init.sql`: id, project, display name, cluster, tier, NFS server, export and mount root).
+- `api/openapi.yaml` has `GET /api/v1/swimlanes` and `GET /api/v1/swimlanes/{id}`, `PUT /api/v1/admin/agents/{swimlane}` (the agent's service account,
+  for a swimlane that exists), and the tenant set and auto-notify of a swimlane. **It has no operation that creates a swimlane.**
+- In the code, `crates/hub-platform/src/join/google.rs` reads `swimlanes.agent_service_account` when an agent joins; nothing writes it, and
+  `INSERT INTO swimlanes` appears only in tests.
+
+The hub does not serve yet (plan 09 A1), so steps 1, 2 (the registration) and 6 of the runbook describe the contract and not a running system; this
+one is a hole in the contract itself. The runbook says so in step 1. Who fills the swimlane registry (an endpoint, a seed, a migration) is for a
+human to assign, and it is not 09's: it is application code, which this prompt does not own.
+
+## B12 (T6, informational): what Binary Authorization needs that no chart makes, and what could not be confirmed
+
+The plan's A5 says "to my knowledge" and "(to confirm)", and Google's documentation (`docs.cloud.google.com`, B6) is still refused, so these were taken
+from the Config Connector CRDs and samples at the vendored commit (v1.159.0) and from the code, and are listed here so that the first apply is read as
+their test. The policy is in `DRYRUN_AUDIT_LOG_ONLY` (A5, Q24) precisely so that finding out blocks nothing.
+
+1. **Does a classic attestor accept a cosign signature?** The chart makes the classic pieces the plan names (a Container Analysis note, an attestor with the
+   CI KMS key's public key, the project's admission policy). `images.yml` signs the image with that key by cosign, which writes a signature to the
+   registry. To my knowledge a classic attestor reads *attestations* in Container Analysis, not signatures in the registry, so the CI job may also need a
+   step that writes an attestation (`gcloud container binauthz attestations ...`). Not confirmed, not changed (`images.yml` is T2's). The same CRD set has
+   `BinaryAuthorizationPlatformPolicy` (v1alpha1) with `sigstoreSignatureCheck`, which takes a cosign public key directly; its spec has no
+   `enforcementMode` field, so it is not a drop-in for the plan's dry-run default, and it is what to ask about if the answer to the question above is no.
+2. **The trust root is not made by any chart.** Plan A4 lists the CI cosign key, the Workload Identity Federation pool and provider for GitHub, and the IAM
+   that lets only this repository's `main` and tags sign with the key, among the resources of the gcp chart. T3, T5 and T6 do not make them (T5's notes say
+   so for the keys; T6's row lists only the attestor and the policy). `images.yml` reads their names from repository variables
+   (`LK_COSIGN_KMS_KEY`, `LK_GCP_WIF_PROVIDER`, `LK_GCP_SERVICE_ACCOUNT`). The plan's own risk section calls this "the trust root of signing and admission";
+   a human should assign it, and the chart's README ("Admission") lists it as not done.
+3. **The policy is per Google project.** The gcp chart's policy protects the platform project's clusters. A swimlane cluster in another project has no policy
+   until one is made there that requires the same attestor. Nothing in this repository makes it (the gcp chart's checks forbid the switch that would let
+   it be rendered without Cloud Armor, on purpose), and Q24 still asks whether Binary Authorization is available on the swimlane clusters.
+4. **Before enforcing**, the third-party images in a cluster (the CloudNativePG operator and instances, Argo CD, Config Connector) would be blocked: they need
+   an attestation of ours or an entry in `binaryAuthorization.admissionWhitelistPatterns` (the policy refuses a pattern that covers an image of ours). The
+   dry run's audit log lists them.
+5. **Smaller:** the key `id` is written as `//cloudkms.googleapis.com/v1/<key version>`; that deleting the policy resets the project to a policy that admits every
+   image (the reason for `abandon` and `Prune=false`) is from memory; the project's two Google APIs must be enabled; and whether Binary
+   Authorization's service agent needs an IAM binding on the note, which the chart does not make, is unconfirmed.
+
+## Decisions T6 made that a reviewer should look at
+
+1. **Admission is the classic project policy and attestor of plan A5, in dry run.** `enforcementMode` is a value, `DRYRUN_AUDIT_LOG_ONLY` in the chart's
+   defaults and written out in `values/gcp/{prod,staging}.yaml`, until Q24 is answered. `binauthz.rego` *warns* about it on every run and the warning is
+   allowed to render in every environment, the way the placeholder image digest is (`render.sh` runs the `images` and `binauthz` policies apart, without
+   `--fail-on-warn`). A warning that failed prod and staging would make the committed values fail until Q24 is answered, which is not what A5 says.
+2. **The public key is not in the committed values** (the section above). The alternative, an EXAMPLE key in `values/gcp/*.yaml`, would have rendered
+   without a stand-in and put key material that looks real into a prod file.
+3. **No `values/gcp/kind.yaml`.** The plan's row says `values/{hub,db,gcp}/{prod,staging,kind}.yaml`; kind has no Google Cloud, no Config Connector, and
+   the gcp chart's checks forbid the only switch (`enabled: false`) that could make a kind render of it meaningful. hub and db have all three.
+4. **The Helm release name is the Application's name** (`lanekeeper-hub`, `-db`, `-gcp`, `-agent`), required by `argocd.rego`, and `render.sh` renders
+   each chart under that name (it was `lanekeeper` for all). Only labels carry it, and Argo CD's documentation warns that a release name that differs
+   from the Application name can break selectors that use `app.kubernetes.io/instance`. Nothing else changed in any render.
+5. **Three Argo CD projects with approved lists** (`argocd.rego`), not the `default` project, which allows anything: `lanekeeper-workloads` (hub, db),
+   `lanekeeper-cloud` (gcp) and `lanekeeper-agent` (one per swimlane, in the swimlane's file, destinations compared with its values file). Each allows
+   the Namespace that `CreateNamespace=true` makes, by name: read in Argo CD's source at the vendored commit (gitops-engine `sync_context.go`: the
+   auto-created namespace task passes the permission validator), so without it the first sync would stop. `argocd_scope.rego` renders every chart and
+   shows its project allows everything the chart makes. **The agent project does not allow a PersistentVolumeClaim yet**: T8's spool adds one, and
+   T8 must add the kind to the approved list, with its test (`test_deny_a_persistent_volume_claim_until_the_project_knows_it` marks the place).
+6. **`targetRevision` is a placeholder (40 zeros) with a warning**, like the image digests (A29): a commit cannot name the commit that contains it.
+   `deploy/argocd/README.md`, "Moving a revision", is the procedure; Argo CD cannot resolve the placeholder, so nothing syncs until it is replaced.
+7. **No staging Applications.** The plan lists one file per component and nothing says which cluster staging runs on. The policy accepts the staging
+   pair (`staging` label with `staging.yaml`) and a planted case shows it.
+8. **The nightly `db-image` job, and `scan.sh --image`, `scan-db.sh` and `scan-db-test.sh`, are an addition that a human asked for inside this
+   task's commit** (B9 meant the database image could not be scanned here). `scan.sh --image REF` takes `name@sha256:<64 hex>` only (a tag, a short digest,
+   an upper-case host and anything with a space or a leading dash are refused before a container runs); `scan-db.sh` reads the repository from the db chart
+   and the digest from every `values/db/*.yaml` and fails closed on a missing, placeholder or malformed digest or no file at all; the test runs in
+   `images-policy-test` and needs no Docker. Nothing else of the nightly workflow changed.
+9. **Prune is off for the database and the Google Cloud resources; no Application has `resources-finalizer`.** Deleting an Application leaves what runs.
+10. **A flaky gate was fixed: `deploy/images/tests/builder-test.sh` (T2's) failed in 2 of the 4 runs made while other checks were running** in this
+    run's `images-builder-test` ("the builder does not report BuildKit v0.34.0") although `builder.sh` had just checked the version. Root cause, measured: the test ran
+    `docker buildx inspect NAME | grep -q ...` under `set -o pipefail`; `grep -q` exits at its match, `docker` gets SIGPIPE while it is still
+    writing, and the pipeline fails with the line in the output. Over 300 runs of that pipeline on an idle machine 18 failed (6%); with the output
+    captured first, 0 of 100 did. The test now captures the output and then greps it (12 runs of `just images-builder-test` in a row pass). It checks the same
+    thing as before. The other `| grep -q` pipelines under `deploy/` and the Justfile read the one line of a version command, which is written
+    in one piece, and were not changed.
+11. **`scan.sh --image` was proved end to end on a real image**, since the database image's layers are refused here (B9): on the test registry image of
+    `tools.env` (`docker.io/library/registry@sha256:6c5666b8...`, run only by the publish test and never deployed), grype pulled it by digest and failed on its
+    critical findings (CVE-2026-33186 in `google.golang.org/grpc`, CVE-2026-63073 in `libcrypto3` and `libssl3`) with exit 2, using the same
+    `--fail-on critical` function as the images we build. Renovate proposes a newer digest of that test image; it is not a deployed one. The scan of the database image itself
+    could not run here, and its first run is the nightly job.
+12. **`crates/*` is untouched**, and no contract path changed. Not changed either: B7 and B8, the hub chart's `network.rego` gap (a second NetworkPolicy, T5's
+    note), `images.yml`.
+
+## Not done in T6
+
+- **The CI signing key, the Workload Identity Federation pool and the IAM around them** (B12, 2), **Binary Authorization for the swimlane projects** (B12, 3).
+- **The hub-side swimlane registry** (B11).
+- **The kind job** (still T5's omission: nothing in this sandbox can run it, and the hub does not serve, A1).
+- **Renovate does not move `targetRevision`**; a person does, by the procedure. **No `CODEOWNERS` entry** for `deploy/argocd/**` or `deploy/policy/**`: a human
+  may want the platform team to review them.
+- **Pod Security labels on the namespaces** (`deploy/argocd/README.md`, "Not verified here").
+
+## Which commands pass and which fail only because of B5 (committed tree, each recipe run on its own, `just` stops at the first failure)
+
+| Recipe | Result |
+|---|---|
+| `ops-tools-check`, `ci-lint`, `pins-test`, `images-policy-test`, `images-publish-test`, `schemas-verify`, `deploy-lint`, `policy-test`, `contract-check`, `env-names-test`, `tools-test` | exit 0 (`pins-test` 77 of 77; `schemas-verify` 37 files equal the lock; `deploy-lint` 11 charts and values linted, 0 failed; `policy-test` **851 of 851**, 630 before T6; `tools-test` 30 of 30; `images-policy-test` includes the new `scan-db-test.sh`) |
+| `images-builder-test` | exit 1 in the first full run (the flake of "Decisions", 10), exit 0 in 12 runs in a row after the fix |
+| `deploy-render` | exit 1, **B5 only**: hub 6, 13, 13 resources valid; db 2, 4, 4; **`gcp-storage` 19 and 19 (it was 16: the note, the attestor and the policy)**; agent 9; **the Argo CD files 7 of 7**. The two failures are `gcp` with staging and prod, with the B5 message |
+| `policy-check` | exit 1, **B5 only**: conftest passes for hub, db, `gcp-storage` (with Binary Authorization's dry-run warning printed), agent, the Argo CD policy on the platform's files and on the swimlane's, the paths, and the scope of hub, db, `gcp-storage` and agent against their projects. It fails for `gcp` with staging and prod, and for the scope of `gcp` with Cloud Armor, each with the B5 message |
+| `deploy-planted` | exit 1, **B5 only**: **388 cases report `ok`** (288 before T6); the one failure is the Cloud Armor group, `the gcp chart does not render with the committed hook ranges` |
+| `deploy-data` | **exit 0** (178 planted cases `ok`; 137 before T6): the db chart and `gcp-storage`, which now includes admission |
+| `deploy-argocd` (new) | **exit 0**: kubeconform, the argocd policy on both groups, the paths, the scope of each project against its charts, and 59 planted cases |
+| `just verify-09` | stops at `deploy-render`, for B5 |
+
+The T6 Verify of the plan, "`helm template` with every values file, then conftest for hardening and network rules", therefore passes for every chart and
+values file but one: the **gcp chart with Cloud Armor** (staging and prod), which fails only because of B5. What is not proven until B5 is resolved:
+kubeconform, conftest and the project scope on one render that holds Cloud Armor *and* the admission resources and the buckets. As in T5 no rule reads
+both, so this is a small gap, but it is a gap.
+
+## What T6 proved
+
+| Check | Result |
+|---|---|
+| `conftest verify` | 851 of 851: `binauthz_test.rego` 62 tests, `argocd_test.rego` 140, `argocd_scope_test.rego` 19, each rule with a test whose fragment only that rule says |
+| Mutation of the new rules | all 72 `deny` and `warn` rules of `binauthz.rego` (23), `argocd.rego` (46) and `argocd_scope.rego` (3) were disabled one at a time in a scratch copy and `conftest verify` run on each. **Six survived the first run** (the end of a PEM, a project missing from the input, `ignoreDifferences` on a non-agent Application, a namespace pattern in a destination, the agent project's swimlane label, its own namespace): in each, another rule's message contained the fragment the test looked for. Each test now looks for a fragment that only its rule says, and the 72 were run again: **72 killed, 0 survived** |
+| Mutation of the shell checks | `scan-db.sh` and `scan.sh --image`: 12 mutants (each check removed, the dedupe, the key it reads, the pattern loosened to a tag or to upper case), all killed by `scan-db-test.sh`. `render.sh`'s new checks, 9 mutants (each check of `argocd_paths`, the binauthz policy not run, the synthetic key always layered, and the calls that run the argocd policy and the project scope): **three survived the first run**, the deleted calls (the planted cases test the policies, not that the real run calls them). `argocd_policy_all` now counts its runs against the files in the directory (a tripwire), and the three are killed, each with the tripwire's message |
+| Fixture bug found by a planted case | `object.union` in a fixture helper merged a patched file into the original, so a `remove` in six tests removed nothing; the helper replaces the file now, and the six tests ran red before they ran green |
+| kubeconform `-strict`, offline | 5 new kinds got planted invalid fields (`BinaryAuthorizationPolicy`, `BinaryAuthorizationAttestor`, `ContainerAnalysisNote`, `Application`, `AppProject`), each refused for the field only; `ContainerAnalysisNote` is a new vendored schema, from the CRD at the pinned Config Connector commit (`deploy/schemas/fetch.py`, the lock holds its hash) |
+| the real files, changed one thing at a time | 25 admission cases on the gcp chart's output and 14 refusals of its templates (a private key inside the public key, a certificate, a weak algorithm, a key version that is not one, no key, ...), and 59 on the Argo CD files (a branch, a tag, a short commit, another repository, inline values, `default` as the project, another namespace, no self-heal, prune on the database, `Replace`, a finalizer, the certificate Secret not ignored or ignored too much, a project with every namespace, Secrets or a ClusterRole, project tokens, a namespace the project does not allow, ...), each refused for its own reason |
+| the paths between the files | an Application whose values file is gone, a swimlane's values without an Application and the other way round, the hook ranges file gone, a chart path that cannot be read, a gone Application file: each refused; and a Secret in the hub's output and a ClusterRole in the agent's are refused by their projects |
+| a real key is never replaced | with a public key in the environment's values, the render has that key and not the synthetic one (a planted case) |
+| `ADDING-A-SWIMLANE.md` | not run: the hub does not serve (A1). Its commands that need nothing of the hub were written from the chart and the contracts and not executed |
+
+## Hosts probed in this run
+
+No new host was refused, and nothing was pinned from a guess.
+
+| Host | Result | Used for |
+|---|---|---|
+| `github.com` (git over HTTPS) | reachable | the Config Connector samples and CRD list at the vendored commit `53e89210`, and Argo CD's source and documentation at `d6d5b248` (v3.5.4), by shallow sparse fetches, read as data and never run |
+| `raw.githubusercontent.com` | reachable | the `ContainerAnalysisNote` CRD, by `deploy/schemas/fetch.py` at the vendored commit; the lock holds its hash |
+| `api.github.com` | **403 for another repository's contents** (`repos/GoogleCloudPlatform/k8s-config-connector/contents/...`) | nothing: the same rule as B5 (the sandbox is bound to its own repository), so git over HTTPS was used instead; no pin depended on it |
+| `docker.io` (registry-1) | reachable | the grype image, and `docker.io/library/registry@sha256:6c5666b8...` by digest, for the end-to-end run of `scan.sh --image` |
+| `grype.anchore.io` | reachable | grype's vulnerability database (downloaded once, then cached in `target/grype-db`) |
+| `ghcr.io` and `pkg-containers.githubusercontent.com` | not probed again | the database image's layers are still B9; the nightly job is the first scan of it |
+| `docs.cloud.google.com`, `registry.k8s.io` | not probed again | still B6 |

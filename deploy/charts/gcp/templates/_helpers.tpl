@@ -127,3 +127,21 @@ spec:
 {{- define "lanekeeper-gcp.gsa" -}}
 {{- printf "serviceAccount:lanekeeper-%s@%s.iam.gserviceaccount.com" .part .root.Values.project -}}
 {{- end }}
+
+{{/*
+The metadata of the three admission resources (binauthz.yaml): the note, the attestor and the policy. Takes a dict with root, project, env
+and name. None of them is deleted from the project when it is removed from Git, and Argo CD does not prune them: without the policy
+the project admits every image (S20).
+*/}}
+{{- define "lanekeeper-gcp.admissionMeta" -}}
+name: {{ .name }}
+namespace: {{ .root.Release.Namespace }}
+labels:
+  {{- include "lanekeeper-gcp.labels" .root | nindent 2 }}
+  lanekeeper.io/purpose: admission
+  lanekeeper.io/environment: {{ .env }}
+annotations:
+  cnrm.cloud.google.com/project-id: {{ .project | quote }}
+  cnrm.cloud.google.com/deletion-policy: abandon
+  argocd.argoproj.io/sync-options: Prune=false
+{{- end }}
