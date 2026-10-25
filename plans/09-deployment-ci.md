@@ -1,6 +1,6 @@
 # Plan 09: Deployment, CI and supply chain
 
-Status: DRAFT
+Status: APPROVED
 Contract-change: none
 Extra-paths: `crates/hub/Dockerfile`, `crates/hub/Dockerfile.dockerignore`, `crates/agent/Dockerfile`, `crates/agent/Dockerfile.dockerignore`, `crates/hub/tests/hardening.rs`, `crates/hub/HARDENING.md`
 Prompt: prompts/09-deployment-ci.md
