@@ -721,14 +721,14 @@ images-scan-test: images-tools-check
 
 # Prompt 09, T2 (S19, S20): the workflow and CI gates. The tools that run on the host are release files, pinned by version and by
 # the sha256 of the file (plan 09 A22). Each sha256 was computed from the bytes downloaded for the pinned version; for actionlint,
-# kubeconform, kind, osv-scanner, cosign and crane it equals the one in the checksum file that the release publishes (zizmor and
-# shellcheck publish none, so theirs is the hash of the download alone). To move one: change the version, download the file
+# kubeconform, kind, osv-scanner, cosign, crane and helm it equals the one in the checksum file that the release publishes (zizmor
+# and shellcheck publish none, so theirs is the hash of the download alone). To move one: change the version, download the file
 # again, compare its sha256 with the release's checksum file if there is one, and put the value here. The one tool that runs as a
 # container (BuildKit) is pinned by digest in deploy/images/tools.env. Every version was released at least 14 days before it was
 # chosen (2026-10-25): actionlint 1.7.12 on 2026-03-31, kubeconform 0.8.0 on 2026-06-04, kind 0.33.0 on 2026-08-26, osv-scanner
 # 2.6.0 on 2026-09-14, zizmor 1.30.1 on 2026-09-09, cosign 3.1.3 on 2026-08-05, crane 0.22.1 on 2026-09-03, shellcheck 0.11.0 on
-# 2025-08-03. helm is not here: get.helm.sh, where its release files live, is not reachable from the sandbox that wrote this
-# (plans/09-deployment-ci.blockers.md, B4), so its pin comes with T3, the first task that needs it.
+# 2025-08-03, helm 4.3.0 on 2026-09-09 (4.3.1, tagged 2026-10-14, was 11 days old, so it waits; Helm 3 is in its security-only
+# window). helm's file comes from get.helm.sh (plans/09-deployment-ci.blockers.md, B4).
 ops_tools_bin := "target/ops-tools/bin"
 actionlint_version := "1.7.12"
 actionlint_sha256 := "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
@@ -746,6 +746,8 @@ crane_version := "0.22.1"
 crane_sha256 := "0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0"
 shellcheck_version := "0.11.0"
 shellcheck_sha256 := "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+helm_version := "4.3.0"
+helm_sha256 := "86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb"
 # Installed in CI by taiki-e/install-action (just) and `cargo install --locked` (sqlx-cli, which must match the sqlx in Cargo.toml).
 just_version := "1.40.0"
 sqlx_cli_version := "0.8.6"
@@ -787,6 +789,7 @@ ops-tools-install *tools:
     fetch cosign "https://github.com/sigstore/cosign/releases/download/v{{cosign_version}}/cosign-linux-amd64" "{{cosign_sha256}}"
     fetch crane "https://github.com/google/go-containerregistry/releases/download/v{{crane_version}}/go-containerregistry_Linux_x86_64.tar.gz" "{{crane_sha256}}" crane
     fetch shellcheck "https://github.com/koalaman/shellcheck/releases/download/v{{shellcheck_version}}/shellcheck-v{{shellcheck_version}}.linux.x86_64.tar.xz" "{{shellcheck_sha256}}" shellcheck-v{{shellcheck_version}}/shellcheck
+    fetch helm "https://get.helm.sh/helm-v{{helm_version}}-linux-amd64.tar.gz" "{{helm_sha256}}" linux-amd64/helm
 
 # Fails at once, with the fix, when a pinned tool is missing or has another version. Never skips. `just ops-tools-check actionlint
 # zizmor` checks only those (with none, every tool). A tool found on PATH counts when it reports the pinned version, so a developer's
@@ -809,8 +812,9 @@ ops-tools-check *tools:
     want cosign && need cosign "{{cosign_version}}" "$(cosign version 2>/dev/null | sed -n 's/^GitVersion: *v\{0,1\}//p' || true)"
     want crane && need crane "{{crane_version}}" "$(crane version 2>/dev/null | sed 's/^v//' || true)"
     want shellcheck && need shellcheck "{{shellcheck_version}}" "$(shellcheck --version 2>/dev/null | sed -n 's/^version: //p' || true)"
+    want helm && need helm "v{{helm_version}}" "$(helm version --short 2>/dev/null | sed 's/+.*//' || true)"
     for t in "${wanted[@]}"; do
-        case "$t" in actionlint | kubeconform | kind | osv-scanner | zizmor | cosign | crane | shellcheck) ;; *) echo "ops-tools-check: unknown tool '$t'"; fail=1 ;; esac
+        case "$t" in actionlint | kubeconform | kind | osv-scanner | zizmor | cosign | crane | shellcheck | helm) ;; *) echo "ops-tools-check: unknown tool '$t'"; fail=1 ;; esac
     done
     node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' || { echo "ops-tools-check: the .github scripts need Node 22 or later"; fail=1; }
     # Every image a script runs is pinned by digest (S19): a tag alone can be moved.

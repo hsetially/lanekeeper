@@ -9,6 +9,7 @@ taken at it.
 | B1 | resolved | the model lock was filled in by `update-model-lock.sh` from my own download (below) |
 | B2 | resolved (second run) | `scan.sh` reaches the grype database and names findings by CVE id (below, unchanged) |
 | B3 | resolved | plan amendment A32 (PR #29): the runtime and builders moved to Debian 13; no exception in `grype.yaml` |
+| B4 | resolved (T3 run) | a human allowed `get.helm.sh`; helm 4.3.0 is pinned by the sha256 of a download made here (section B4 below) |
 
 ## B1 (T1): resolved. The model lock is filled in, from a download made here
 
@@ -139,22 +140,37 @@ Nothing is left open in T1.
 # T2 notes (2026-10-25)
 
 T2 is complete except for two items that the sandbox cannot do. Neither stops the T2 Verify (`actionlint` passes and `pins-test`
-refuses a tag, a branch, a short SHA and an undigested `docker://` reference), so this is not a stop; the first needs a human
-before T3.
+refuses a tag, a branch, a short SHA and an undigested `docker://` reference), so this is not a stop; the first needed a human
+before T3, who allowed the host, and B4 is resolved (below).
 
-## B4 (T2, needed by T3): helm cannot be pinned, because get.helm.sh is refused by the egress proxy
+## B4 (T2, needed by T3): resolved. helm is pinned, from a download made here
 
-The plan's T2 row pins helm, kubeconform, conftest, actionlint and kind with a version and a sha256 (A22). helm's release files
-are served from `get.helm.sh`, and the proxy answers 403 to the CONNECT (`curl -I https://get.helm.sh/helm-v3.18.0-linux-amd64.tar.gz`
-gives HTTP code 000; the proxy status lists `connect_rejected get.helm.sh:443`). The helm GitHub release has no binary assets. The
-sha256 of a pin must be the hash of bytes that were downloaded here (the rule T1 followed for `hub-model.lock`), not a value copied
-from a web page, so no pin was written.
+**The problem (kept for the record).** The plan's T2 row pins helm, kubeconform, conftest, actionlint and kind with a version
+and a sha256 (A22). helm's release files are served from `get.helm.sh`, which the proxy refused during T2 (the CONNECT was
+answered 403, `curl -I https://get.helm.sh/helm-v3.18.0-linux-amd64.tar.gz` gave HTTP code 000, the proxy status listed
+`connect_rejected get.helm.sh:443`). The helm GitHub release has no binary assets. T2 therefore pinned the other four tools and
+left helm out; T3 is the first task that runs it. A human then allowed `get.helm.sh`.
 
-What T2 did instead: the other four tools are pinned and checked (`just ops-tools-check`), conftest stays the digest-pinned image of
-`deploy/images/tools.env` (T1), and `ops-tools-install` / `ops-tools-check` have no helm entry. T3 is the first task that runs helm.
+**What was done (T3 run, 2026-10-25).**
 
-**Needs a human before T3:** allow `get.helm.sh` for the sandbox (or tell the implementer another place to get helm from). Then T3
-adds `helm_version` and `helm_sha256` next to the others in the Justfile, computed from the download, and a `fetch helm` line.
+| Step | Result |
+|---|---|
+| Which version | `git ls-remote --tags https://github.com/helm/helm` lists 3.22.1 and 4.3.1 as the newest of each line. Tag dates, read by fetching each tag: v4.3.1 on 2026-10-14 (11 days old, under rule 15's 14), v3.22.1 on 2026-10-15 (10 days), v4.3.0 on 2026-09-09 (46 days), v4.2.4 on 2026-08-13. The newest release that is at least 14 days old in the 4 line is **4.3.0**. The 4 line is chosen over 3 because Helm 3 is in its security-only window, which ends within weeks of today. Renovate, with `minimumReleaseAge` of 14 days, proposes 4.3.1 once it is old enough. |
+| Download | `curl https://get.helm.sh/helm-v4.3.0-linux-amd64.tar.gz` into a new empty directory: HTTP 200, 20321063 bytes |
+| Hash | `sha256sum` of those bytes: `86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb`. This is the pin. It was computed here, not copied. |
+| Cross-check | the release's own `helm-v4.3.0-linux-amd64.tar.gz.sha256sum`, fetched afterwards, holds the same value. It was read only to compare, after the hash was computed. |
+| The binary | `linux-amd64/helm` from that archive reports `v4.3.0+gbec5b06`; tag v4.3.0 is commit `bec5b06ed841fe5269972d864d5177944fd5970f`, so the binary and the tag agree |
+| Justfile | `helm_version := "4.3.0"` and `helm_sha256` next to the other pins; a `fetch helm` line (member `linux-amd64/helm`) in `ops-tools-install`; `want helm` and the `helm` case in `ops-tools-check` (it compares `helm version --short` without the `+g<commit>` suffix) |
+
+**Proof.** Before the edit `just ops-tools-check helm` failed with `unknown tool 'helm'` (red). After it:
+
+- `just ops-tools-check helm` with no helm installed fails with `need helm v4.3.0, found 'nothing'; run: just ops-tools-install helm`.
+- `just ops-tools-install helm` downloads the file again and installs it ("ops-tools-install: helm installed"); the Justfile's pin matched
+  the bytes of a second, independent download.
+- `just ops-tools-check helm` then exits 0, and so does `just ops-tools-check` for every tool.
+- Mutation, pin: `just --set helm_sha256 000...0 ops-tools-install helm` refuses the file ("has sha256 86584a54..., the pin is 0000...").
+- Mutation, version: `just --set helm_version 4.2.4 ops-tools-check helm` fails with `need helm v4.2.4, found 'v4.3.0'`.
+- `node --test .github/scripts/*.test.mjs`: 77 of 77 pass.
 
 ## Not provable in the sandbox (recorded so the first CI run is read as the test)
 
