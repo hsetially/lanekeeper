@@ -1,0 +1,9 @@
+name: bad-many
+on: [push]
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@main
+      - uses: docker://alpine:3.20

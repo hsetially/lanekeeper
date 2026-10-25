@@ -712,14 +712,179 @@ images-policy-test: images-tools-check
     cargo test -p hub --test hardening
     cargo test -p agent --test hardening
     deploy/images/tests/model-stage-test.sh
+    deploy/images/tests/build-args-test.sh
     node deploy/images/model-lock.mjs check deploy/images/hub-model.lock
 
 # The scan blocks a critical finding: a planted SBOM with CVE-2021-44228 must fail it (needs the grype database).
 images-scan-test: images-tools-check
     deploy/images/tests/scan-test.sh
 
-verify-09:
-    @echo "verify-09 not implemented yet" && exit 1
+# Prompt 09, T2 (S19, S20): the workflow and CI gates. The tools that run on the host are release files, pinned by version and by
+# the sha256 of the file (plan 09 A22). Each sha256 was computed from the bytes downloaded for the pinned version; for actionlint,
+# kubeconform, kind, osv-scanner, cosign and crane it equals the one in the checksum file that the release publishes (zizmor and
+# shellcheck publish none, so theirs is the hash of the download alone). To move one: change the version, download the file
+# again, compare its sha256 with the release's checksum file if there is one, and put the value here. The one tool that runs as a
+# container (BuildKit) is pinned by digest in deploy/images/tools.env. Every version was released at least 14 days before it was
+# chosen (2026-10-25): actionlint 1.7.12 on 2026-03-31, kubeconform 0.8.0 on 2026-06-04, kind 0.33.0 on 2026-08-26, osv-scanner
+# 2.6.0 on 2026-09-14, zizmor 1.30.1 on 2026-09-09, cosign 3.1.3 on 2026-08-05, crane 0.22.1 on 2026-09-03, shellcheck 0.11.0 on
+# 2025-08-03. helm is not here: get.helm.sh, where its release files live, is not reachable from the sandbox that wrote this
+# (plans/09-deployment-ci.blockers.md, B4), so its pin comes with T3, the first task that needs it.
+ops_tools_bin := "target/ops-tools/bin"
+actionlint_version := "1.7.12"
+actionlint_sha256 := "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+kubeconform_version := "0.8.0"
+kubeconform_sha256 := "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883"
+kind_version := "0.33.0"
+kind_sha256 := "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d"
+osv_scanner_version := "2.6.0"
+osv_scanner_sha256 := "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108"
+zizmor_version := "1.30.1"
+zizmor_sha256 := "e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a"
+cosign_version := "3.1.3"
+cosign_sha256 := "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
+crane_version := "0.22.1"
+crane_sha256 := "0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0"
+shellcheck_version := "0.11.0"
+shellcheck_sha256 := "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+# Installed in CI by taiki-e/install-action (just) and `cargo install --locked` (sqlx-cli, which must match the sqlx in Cargo.toml).
+just_version := "1.40.0"
+sqlx_cli_version := "0.8.6"
+
+# Downloads the pinned release files into target/ops-tools/bin and refuses any file whose sha256 differs from the pin. Linux amd64
+# only: on another machine install the versions that ops-tools-check names. `just ops-tools-install actionlint zizmor` installs
+# only those (CI jobs install what they use); with no argument it installs every tool.
+ops-tools-install *tools:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ "$(uname -s)/$(uname -m)" = "Linux/x86_64" ] || { echo "ops-tools-install: the pinned release files are linux/amd64 builds; on this machine install the versions that 'just ops-tools-check' names"; exit 1; }
+    bin="$PWD/{{ops_tools_bin}}"
+    mkdir -p "$bin"
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+    wanted=({{tools}})
+    # fetch NAME URL SHA256 [MEMBER]: MEMBER is the file to take out of an archive; without it the download is the binary.
+    fetch() {
+        local name="$1" url="$2" sha="$3" member="${4:-}"
+        if [ ${#wanted[@]} -gt 0 ] && [[ ! " ${wanted[*]} " == *" $name "* ]]; then return 0; fi
+        curl --fail --silent --show-error --location --retry 3 --max-time 300 --output "$work/$name.download" "$url"
+        local got
+        got="$(sha256sum "$work/$name.download" | cut -d' ' -f1)"
+        [ "$got" = "$sha" ] || { echo "ops-tools-install: $name from $url has sha256 $got, the pin is $sha"; exit 1; }
+        if [ -n "$member" ]; then
+            mkdir "$work/$name.x"
+            tar -xf "$work/$name.download" -C "$work/$name.x" "$member"
+            install -m 0755 "$work/$name.x/$member" "$bin/$name"
+        else
+            install -m 0755 "$work/$name.download" "$bin/$name"
+        fi
+        echo "ops-tools-install: $name installed"
+    }
+    fetch actionlint "https://github.com/rhysd/actionlint/releases/download/v{{actionlint_version}}/actionlint_{{actionlint_version}}_linux_amd64.tar.gz" "{{actionlint_sha256}}" actionlint
+    fetch kubeconform "https://github.com/yannh/kubeconform/releases/download/v{{kubeconform_version}}/kubeconform-linux-amd64.tar.gz" "{{kubeconform_sha256}}" kubeconform
+    fetch kind "https://github.com/kubernetes-sigs/kind/releases/download/v{{kind_version}}/kind-linux-amd64" "{{kind_sha256}}"
+    fetch osv-scanner "https://github.com/google/osv-scanner/releases/download/v{{osv_scanner_version}}/osv-scanner_linux_amd64" "{{osv_scanner_sha256}}"
+    fetch zizmor "https://github.com/zizmorcore/zizmor/releases/download/v{{zizmor_version}}/zizmor-x86_64-unknown-linux-gnu.tar.gz" "{{zizmor_sha256}}" zizmor
+    fetch cosign "https://github.com/sigstore/cosign/releases/download/v{{cosign_version}}/cosign-linux-amd64" "{{cosign_sha256}}"
+    fetch crane "https://github.com/google/go-containerregistry/releases/download/v{{crane_version}}/go-containerregistry_Linux_x86_64.tar.gz" "{{crane_sha256}}" crane
+    fetch shellcheck "https://github.com/koalaman/shellcheck/releases/download/v{{shellcheck_version}}/shellcheck-v{{shellcheck_version}}.linux.x86_64.tar.xz" "{{shellcheck_sha256}}" shellcheck-v{{shellcheck_version}}/shellcheck
+
+# Fails at once, with the fix, when a pinned tool is missing or has another version. Never skips. `just ops-tools-check actionlint
+# zizmor` checks only those (with none, every tool). A tool found on PATH counts when it reports the pinned version, so a developer's
+# own install is fine.
+ops-tools-check *tools:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PATH="$PWD/{{ops_tools_bin}}:$PATH"
+    fail=0
+    wanted=({{tools}})
+    need() { # NAME WANTED FOUND
+        if [ "$3" != "$2" ]; then echo "ops-tools-check: need $1 $2, found '${3:-nothing}'; run: just ops-tools-install $1"; fail=1; fi
+    }
+    want() { [ ${#wanted[@]} -eq 0 ] || [[ " ${wanted[*]} " == *" $1 "* ]]; }
+    want actionlint && need actionlint "{{actionlint_version}}" "$(actionlint -version 2>/dev/null | head -n1 || true)"
+    want kubeconform && need kubeconform "v{{kubeconform_version}}" "$(kubeconform -v 2>/dev/null || true)"
+    want kind && need kind "v{{kind_version}}" "$(kind version 2>/dev/null | awk '{print $2}' || true)"
+    want osv-scanner && need osv-scanner "{{osv_scanner_version}}" "$(osv-scanner --version 2>/dev/null | sed -n 's/^osv-scanner version: //p' || true)"
+    want zizmor && need zizmor "zizmor {{zizmor_version}}" "$(zizmor --version 2>/dev/null || true)"
+    want cosign && need cosign "{{cosign_version}}" "$(cosign version 2>/dev/null | sed -n 's/^GitVersion: *v\{0,1\}//p' || true)"
+    want crane && need crane "{{crane_version}}" "$(crane version 2>/dev/null | sed 's/^v//' || true)"
+    want shellcheck && need shellcheck "{{shellcheck_version}}" "$(shellcheck --version 2>/dev/null | sed -n 's/^version: //p' || true)"
+    for t in "${wanted[@]}"; do
+        case "$t" in actionlint | kubeconform | kind | osv-scanner | zizmor | cosign | crane | shellcheck) ;; *) echo "ops-tools-check: unknown tool '$t'"; fail=1 ;; esac
+    done
+    node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' || { echo "ops-tools-check: the .github scripts need Node 22 or later"; fail=1; }
+    # Every image a script runs is pinned by digest (S19): a tag alone can be moved.
+    while IFS= read -r line; do
+        case "$line" in LK_*_IMAGE=*@sha256:????????????????????????????????????????????????????????????????) ;; LK_*_IMAGE=*) echo "ops-tools-check: not pinned by digest in deploy/images/tools.env: $line"; fail=1 ;; esac
+    done < deploy/images/tools.env
+    exit "$fail"
+
+# The workflow checks: actionlint (which runs the pinned shellcheck on every run: script), zizmor, the SHA-pin check, the structural
+# rules of check-workflows.mjs, and shellcheck on the shell scripts under deploy/ and .github/. zizmor's online audits (does a
+# pinned SHA belong to the action's repository? does the version comment match the SHA?) run with LK_ZIZMOR_ONLINE=1 and a GH_TOKEN,
+# as in CI; otherwise zizmor runs offline and says so.
+ci-lint: (ops-tools-check "actionlint zizmor shellcheck")
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PATH="$PWD/{{ops_tools_bin}}:$PATH"
+    actionlint
+    node .github/scripts/check-pins.mjs
+    node .github/scripts/check-workflows.mjs
+    zizmor_args=(--config .github/zizmor.yml --no-progress)
+    if [ "${LK_ZIZMOR_ONLINE:-}" != "1" ]; then zizmor_args+=(--offline); echo "ci-lint: zizmor runs offline and skips its online audits (CI sets LK_ZIZMOR_ONLINE=1 and GH_TOKEN)"; fi
+    zizmor "${zizmor_args[@]}" .github/workflows .github/actions
+    mapfile -t scripts < <(git ls-files --cached --others --exclude-standard -- 'deploy/*.sh' '.github/*.sh')
+    shellcheck -x "${scripts[@]}"
+    echo "ci-lint: ${#scripts[@]} shell scripts checked"
+
+# osv-scanner over every lockfile of the repository (S19): the workspace's Cargo.lock, the lockfiles of the fuzz crates, and the pnpm
+# lockfiles of the root and of web/. It asks api.osv.dev, so it needs the network; with the API unreachable osv-scanner fails
+# (exit 127), it never reports a clean run. The list comes from git, so a new fuzz crate is scanned without a change here.
+osv-scan: (ops-tools-check "osv-scanner")
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PATH="$PWD/{{ops_tools_bin}}:$PATH"
+    mapfile -t locks < <(git ls-files -- ':(glob)**/Cargo.lock' ':(glob)**/pnpm-lock.yaml')
+    for must in Cargo.lock pnpm-lock.yaml web/pnpm-lock.yaml; do
+        printf '%s\n' "${locks[@]}" | grep -qxF "$must" || { echo "osv-scan: $must is not among the tracked lockfiles"; exit 1; }
+    done
+    args=()
+    for f in "${locks[@]}"; do args+=(-L "$f"); done
+    echo "osv-scan: ${#locks[@]} lockfiles"
+    osv-scanner scan source "${args[@]}"
+
+# Every registered budget the Rust benchmarks produce, judged by `cargo xtask bench-check`. perf/budgets.toml also holds the P10 web
+# budgets, whose numbers come from the web-e2e workflow's `perf` job (web-bench-check), so a registry without them is cut here, the
+# way the per-prompt bench recipes cut theirs. A registered budget without a result still fails.
+bench-check-rust:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    # One entry runs from its [[budget]] line to the next one (a few are preceded by comment lines without a blank line).
+    awk 'function flush() { if (buf != "" && buf !~ /\nbench = "web\//) printf "%s\n\n", buf; buf = "" } /^\[\[budget\]\]/ { flush(); buf = $0; next } buf != "" { buf = buf "\n" $0 } END { flush() }' perf/budgets.toml > "$tmp/budgets.toml"
+    total="$(grep -c '^\[\[budget\]\]' perf/budgets.toml)"
+    kept="$(grep -c '^\[\[budget\]\]' "$tmp/budgets.toml")"
+    web="$(grep -c '^bench = "web/' perf/budgets.toml)"
+    if [ "$((kept + web))" -ne "$total" ]; then echo "bench-check-rust: kept $kept and cut $web of $total budgets"; exit 1; fi
+    echo "bench-check-rust: $kept of $total budgets ($web web budgets are judged by web-bench-check)"
+    cargo xtask bench-check --budgets "$tmp/budgets.toml"
+
+# S19: the SHA-pin check, the workflow rules and the Renovate settings, each against planted violations as well as the real files.
+pins-test:
+    node --test .github/scripts/*.test.mjs
+
+# The pinned BuildKit (deploy/images/builder.sh) starts, reports the pinned version, and builds the same OCI archive twice.
+images-builder-test: images-tools-check
+    deploy/images/tests/builder-test.sh
+
+# deploy/images/publish.sh against a registry on localhost: the digest that is pushed is the digest that was built, and a signature,
+# an SBOM attestation and their verification work with a throwaway key. Keyless signing needs GitHub's OIDC and runs in CI only.
+images-publish-test: images-tools-check (ops-tools-check "cosign crane")
+    deploy/images/tests/publish-test.sh
+
+# The T2 gate so far (T3 to T8 add to it): the pinned tools, the workflow lint, the pin tests, and the image checks.
+verify-09: ops-tools-check ci-lint pins-test images-policy-test images-builder-test images-publish-test
 verify-11:
     @echo "verify-11 not implemented yet" && exit 1
 verify-14:

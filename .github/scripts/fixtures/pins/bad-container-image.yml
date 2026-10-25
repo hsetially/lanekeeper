@@ -1,0 +1,9 @@
+name: bad-container-image
+on: [push]
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    container:
+      image: node:22
+    steps:
+      - run: true

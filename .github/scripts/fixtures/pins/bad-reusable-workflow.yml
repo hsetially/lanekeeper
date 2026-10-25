@@ -1,0 +1,5 @@
+name: bad-reusable-workflow
+on: [push]
+jobs:
+  r:
+    uses: example/repo/.github/workflows/w.yml@v1

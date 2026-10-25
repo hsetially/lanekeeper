@@ -1,0 +1,7 @@
+name: bad-no-ref
+on: [push]
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout

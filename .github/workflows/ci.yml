@@ -1,54 +1,42 @@
-# CI. Actions are pinned by commit SHA (S19), and Renovate keeps the pins current.
+# Checks of the workflows themselves (09/T2; S19, S20): actionlint, zizmor, the SHA-pin check and the workflow rules, all through
+# `just ci-lint` so that a developer runs exactly what CI runs. The checks of the code are in rust.yml, web.yml, contracts.yml,
+# bench.yml and images.yml; each has a path filter, so a change to one area starts only its own workflow. A required status check
+# whose workflow a pull request does not start stays "expected": require the checks that always apply (this one) or make the
+# branch rule path-aware.
 name: ci
 on:
   pull_request:
+    paths:
+      - ".github/**"
+      - "deploy/**/*.sh"
+      - "renovate.json"
+      - "Justfile"
   push:
     branches: [main]
-permissions:
-  contents: read
+permissions: {}
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  pinned-actions:
+  workflows:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      # zizmor's online audits ask the GitHub API whether a pinned SHA belongs to the action's repository (impostor commits),
+      # whether its version comment matches the SHA, and whether the action has known vulnerabilities. A token that can read
+      # public data is all they need.
+      LK_ZIZMOR_ONLINE: "1"
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - run: scripts/check-actions-pinned.sh
-
-  rust:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+        with:
+          persist-credentials: false
       - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
         with:
-          tool: cargo-deny,cargo-audit
-      # rust-toolchain.toml makes the runner's rustup install the pinned toolchain
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
-      - run: cargo deny check
-      - run: cargo audit
-
-  web:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
-        with:
-          package_json_file: web/package.json
-      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
-        with:
-          node-version-file: web/.nvmrc
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm test --run
-      - run: pnpm build
+          tool: just@1.40.0
+      - run: just ops-tools-install actionlint zizmor shellcheck
+      - run: just ci-lint
+      - run: just pins-test

@@ -1,0 +1,7 @@
+name: bad-docker-sha-tag-only
+on: [push]
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker://ghcr.io/example/tool:v1@sha256:abc123

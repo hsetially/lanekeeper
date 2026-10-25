@@ -1,0 +1,15 @@
+name: bad-no-timeout
+on:
+  push:
+    branches: [main]
+permissions: {}
+jobs:
+  fine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: true
+  slow:
+    runs-on: ubuntu-latest
+    steps:
+      - run: true

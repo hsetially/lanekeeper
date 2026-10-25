@@ -1,0 +1,5 @@
+name: local docker action
+description: builds from a Dockerfile in the repository
+runs:
+  using: docker
+  image: Dockerfile

@@ -1,0 +1,17 @@
+# Text inside a block scalar is not a reference: the checker must not read it as one.
+name: block-scalar-text
+on: [push]
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          cat <<'YAML'
+          steps:
+            - uses: actions/checkout@v4
+            image: ubuntu:latest
+          YAML
+      - name: folded
+        run: >-
+          echo uses: actions/checkout@main
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683

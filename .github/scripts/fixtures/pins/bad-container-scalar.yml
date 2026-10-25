@@ -1,0 +1,8 @@
+name: bad-container-scalar
+on: [push]
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    container: node:22
+    steps:
+      - run: true

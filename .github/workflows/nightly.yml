@@ -1,0 +1,129 @@
+# Every night (09/T2; S19, S22, rule 14): the fuzz targets for ten minutes each instead of thirty seconds, the whole benchmark suite
+# at target scale, and the supply-chain scans again, because an advisory can be published against a dependency that did not
+# change. A job that fails shows up as a failed run of the workflow on main; the people who watch main read it.
+name: nightly
+on:
+  schedule:
+    - cron: "47 2 * * *"
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "3"
+
+jobs:
+  fuzz:
+    # Each recipe runs every target of its crate: the longest, engine-fuzz, has ten targets, so a recipe takes up to 100 minutes.
+    name: fuzz ${{ matrix.recipe }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        recipe:
+          - fuzz-smoke
+          - agent-fuzz
+          - identity-fuzz
+          - platform-fuzz
+          - engine-fuzz
+          - registry-fuzz
+          - mcp-fuzz
+          - writes-fuzz
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just@1.40.0,cargo-deny@0.19.9,cargo-audit@0.22.2
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+      - name: Install the fuzz toolchain and cargo-fuzz (the versions of the Justfile)
+        run: |
+          set -euo pipefail
+          nightly="$(just --evaluate fuzz_nightly)"
+          rustup toolchain install "$nightly" --profile minimal
+          cargo "+$nightly" install --locked cargo-fuzz --version "$(just --evaluate cargo_fuzz_version)"
+      - name: Fuzz for ten minutes per target
+        env:
+          RECIPE: ${{ matrix.recipe }}
+        run: just fuzz_seconds=600 "$RECIPE"
+      - name: Keep what a crash left behind
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-artifacts-${{ matrix.recipe }}
+          path: |
+            fuzz/artifacts
+            crates/*/fuzz/artifacts
+          if-no-files-found: ignore
+          retention-days: 14
+
+  bench:
+    runs-on: ${{ vars.LK_BENCH_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 300
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: mirror.gcr.io/pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+        env:
+          POSTGRES_USER: lanekeeper
+          POSTGRES_PASSWORD: lanekeeper-ci-only
+          POSTGRES_DB: lanekeeper
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lanekeeper -d lanekeeper"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      LK_REQUIRE_DOCKER: "1"
+      LK_TEST_PG_ADMIN_URL: postgres://lanekeeper:lanekeeper-ci-only@localhost:5432/lanekeeper
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/docker-hub-mirror
+        with:
+          restart: "false"
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just@1.40.0
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+      - run: just agent-fixtures
+      - run: cargo bench --workspace --benches --locked
+      - run: just bench-check-rust
+      - name: Keep the criterion results for the trend
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: criterion-nightly
+          path: |
+            target/criterion
+            target/perf-results
+          if-no-files-found: ignore
+          retention-days: 30
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just@1.40.0,cargo-deny@0.19.9,cargo-audit@0.22.2
+      - run: cargo deny check
+      - run: cargo audit
+      - run: just ops-tools-install osv-scanner
+      - run: just osv-scan

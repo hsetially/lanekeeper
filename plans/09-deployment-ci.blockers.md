@@ -135,3 +135,35 @@ Proved on 2026-10-25 (Docker 29.9.2, its built-in BuildKit, 4 vCPUs, `LK_BUILD_C
   is clean on all the scripts under `deploy/images`.
 
 Nothing is left open in T1.
+
+# T2 notes (2026-10-25)
+
+T2 is complete except for two items that the sandbox cannot do. Neither stops the T2 Verify (`actionlint` passes and `pins-test`
+refuses a tag, a branch, a short SHA and an undigested `docker://` reference), so this is not a stop; the first needs a human
+before T3.
+
+## B4 (T2, needed by T3): helm cannot be pinned, because get.helm.sh is refused by the egress proxy
+
+The plan's T2 row pins helm, kubeconform, conftest, actionlint and kind with a version and a sha256 (A22). helm's release files
+are served from `get.helm.sh`, and the proxy answers 403 to the CONNECT (`curl -I https://get.helm.sh/helm-v3.18.0-linux-amd64.tar.gz`
+gives HTTP code 000; the proxy status lists `connect_rejected get.helm.sh:443`). The helm GitHub release has no binary assets. The
+sha256 of a pin must be the hash of bytes that were downloaded here (the rule T1 followed for `hub-model.lock`), not a value copied
+from a web page, so no pin was written.
+
+What T2 did instead: the other four tools are pinned and checked (`just ops-tools-check`), conftest stays the digest-pinned image of
+`deploy/images/tools.env` (T1), and `ops-tools-install` / `ops-tools-check` have no helm entry. T3 is the first task that runs helm.
+
+**Needs a human before T3:** allow `get.helm.sh` for the sandbox (or tell the implementer another place to get helm from). Then T3
+adds `helm_version` and `helm_sha256` next to the others in the Justfile, computed from the download, and a `fetch helm` line.
+
+## Not provable in the sandbox (recorded so the first CI run is read as the test)
+
+| What | Why it could not be run here | What was run instead |
+|---|---|---|
+| The workflows (`rust`, `web`, `contracts`, `bench`, `nightly`, `images`, `ci`) on GitHub | no route to GitHub's runners | `actionlint` 1.7.12 with the pinned shellcheck on every `run:` script, zizmor 1.30.1 (offline audits), `check-pins.mjs`, `check-workflows.mjs`; every pinned action SHA was compared with its version tag in the action's own repository (`git ls-remote`) |
+| zizmor's online audits (impostor commits, version-comment mismatch, known-vulnerable actions) | `api.github.com` is closed for repositories other than this one | CI sets `LK_ZIZMOR_ONLINE=1` and a `GH_TOKEN`; the SHA-to-tag comparison above is the part of those audits that could be done by hand |
+| Keyless signing, the SBOM attestation, `actions/attest-build-provenance`, the KMS signature through Workload Identity Federation, `gh attestation verify` | they need GitHub's OIDC token and the Sigstore services | `deploy/images/tests/publish-test.sh` runs `publish.sh` with the pinned cosign 3.1.3 and crane 0.22.1 against a registry on localhost with a throwaway key: push by digest, sign, attach the SBOM, verify, and every refusal (wrong archive, a tag, a wrong key, an unsigned image, a missing attestation) |
+| `osv-scanner` on the lockfiles | `api.osv.dev` is refused by the proxy (osv-scanner then exits 127, it does not report a clean run) | `just osv-scan` was run as far as the API call: it found 11 lockfiles (the workspace's, the 8 of the fuzz crates, the 2 of pnpm) and read 3,885 packages from them, and exited 127 at the refused call |
+| The `docker-hub-mirror` action (SIGHUP reload of the daemon, restart as the fallback) | changing the sandbox's Docker daemon settings was not appropriate | `docker-hub-mirror.mjs`, which writes the settings, is unit-tested (13 cases); `builder.sh` with `LK_DOCKER_HUB_MIRROR=mirror.gcr.io` starts a BuildKit that accepts the mirror configuration |
+| A full hub or agent build with the pinned BuildKit | not attempted: T1 found that containers on Docker's bridge network have no DNS here, so a container-driver builder would need proxy and CA settings that only this sandbox needs, and the disk had 3 GB free | `builder-test.sh`: the pinned BuildKit v0.34.0 starts, reports its version, and writes one OCI archive for the same files twice with `rewrite-timestamp=true` and two without it (the control); the T1 measurements used the built-in BuildKit of Docker 29.9.2, which is also v0.34.0 |
+| The time of the benchmark and fuzz jobs | they do not run here | each job has a `timeout-minutes` (the structural rule `check-workflows.mjs` enforces); the values are estimates from the number of targets (10 minutes each in `nightly`), not measurements |

@@ -1,0 +1,7 @@
+name: bad-uppercase-sha
+on: [push]
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11BD71901BBE5B1630CEEA73D27597364C9AF683

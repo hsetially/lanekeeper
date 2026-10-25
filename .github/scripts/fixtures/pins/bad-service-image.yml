@@ -1,0 +1,10 @@
+name: bad-service-image
+on: [push]
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+    steps:
+      - run: true

@@ -1,0 +1,7 @@
+# zizmor configuration (09/T2; S19, S20). Findings are fixed, not hidden: a rule is switched off only here, with the reason.
+rules:
+  # zizmor suggests `uses: $/.github/actions/x` for the actions of this repository. `./` is read by every tool that reads a
+  # workflow here (actionlint, Renovate, .github/scripts/check-pins.mjs) and means the same thing, because every job that uses one
+  # checks the repository out first. Move to `$/` when actionlint and the pin check read it.
+  self-repository:
+    disable: true

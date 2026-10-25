@@ -1,0 +1,106 @@
+# Benchmarks against the performance budgets (09/T2; P1 to P15, rule 14). Every criterion benchmark and every harness of the Rust
+# crates runs at design scale (the target-scale fixtures: 40 swimlanes, about 80,000 files) on one runner of a fixed size, and
+# `cargo xtask bench-check` judges the numbers against perf/budgets.toml. A budget that is missed, or has no result, fails the job.
+# The P10 web budgets are judged in web-e2e.yml (its `perf` job).
+#
+# THE RUNNER. Set the repository variable LK_BENCH_RUNNER to the label of a larger runner (plan 09 A20): the budgets were
+# measured on a quiet 4-core machine, and a shared standard runner is noisier. Without the variable the job runs on
+# ubuntu-latest and says so in the summary: the gate is the same, but a miss near a budget may be noise, so read the numbers first.
+#
+# THE COMPARISON WITH main. A run on main saves criterion's baseline `main` (`--save-baseline main`) and stores it in the Actions
+# cache (only the `main` directories of target/criterion, not the reports); a pull request restores the newest one and runs with
+# `--baseline-lenient main`, so criterion prints the change from main for every benchmark that has a baseline (and none for a new
+# one). The harnesses that are not criterion ignore both flags.
+# The comparison is for the reader and appears in the log; the gate is bench-check against the budgets, not the change.
+name: bench
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/**"
+      - "perf/**"
+      - "db/**"
+      - "deploy/dev/**"
+      - "Justfile"
+      - ".github/workflows/bench.yml"
+      - ".github/actions/docker-hub-mirror/**"
+  push:
+    branches: [main]
+permissions: {}
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "3"
+
+jobs:
+  bench:
+    runs-on: ${{ vars.LK_BENCH_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: mirror.gcr.io/pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+        env:
+          POSTGRES_USER: lanekeeper
+          POSTGRES_PASSWORD: lanekeeper-ci-only
+          POSTGRES_DB: lanekeeper
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lanekeeper -d lanekeeper"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      LK_REQUIRE_DOCKER: "1"
+      LK_TEST_PG_ADMIN_URL: postgres://lanekeeper:lanekeeper-ci-only@localhost:5432/lanekeeper
+      LK_BENCH_RUNNER_LABEL: ${{ vars.LK_BENCH_RUNNER }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/docker-hub-mirror
+        with:
+          restart: "false"
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just@1.40.0
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+      - name: Say which runner the numbers come from
+        run: |
+          set -euo pipefail
+          if [ -z "$LK_BENCH_RUNNER_LABEL" ]; then
+            echo "::warning::LK_BENCH_RUNNER is not set: the benchmarks run on a shared ubuntu-latest runner, which is noisier than the machine the budgets were measured on."
+            echo "The benchmarks ran on a shared ubuntu-latest runner (the repository variable LK_BENCH_RUNNER is not set)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The benchmarks ran on the runner labelled \`$LK_BENCH_RUNNER_LABEL\`." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - run: just agent-fixtures
+      - name: Restore the baseline of main
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: target/criterion/**/main
+          # No key matches exactly; the newest cache that starts with the prefix is restored.
+          key: criterion-baseline-none
+          restore-keys: criterion-baseline-main-
+      - name: Benchmarks, compared with main
+        if: github.event_name == 'pull_request'
+        run: cargo bench --workspace --benches --locked -- --baseline-lenient main
+      - name: Benchmarks, saving the baseline of main
+        if: github.event_name != 'pull_request'
+        run: cargo bench --workspace --benches --locked -- --save-baseline main
+      - name: Judge the numbers against perf/budgets.toml
+        run: just bench-check-rust
+      - name: Keep the baseline of main
+        if: github.event_name != 'pull_request'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: target/criterion/**/main
+          key: criterion-baseline-main-${{ github.sha }}

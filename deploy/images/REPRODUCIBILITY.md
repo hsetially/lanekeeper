@@ -15,7 +15,8 @@ equal; on a difference it prints the config fields, layers and files that differ
 | The Rust toolchain | the one in the pinned rust image; `RUSTUP_TOOLCHAIN=1.88.0`, so rustup never fetches another |
 | npm packages and pnpm | `pnpm-lock.yaml` with `--frozen-lockfile`; pnpm 10.34.6 through corepack (signature-checked) |
 | The embedding model | `hub-model.lock`: commit, size and sha256 of every file, checked in the build |
-| The supply-chain tools | digest-pinned images in `tools.env` |
+| The supply-chain tools | digest-pinned images in `tools.env` (syft, grype, conftest), release files pinned by version and sha256 in the Justfile (cosign, crane, actionlint, zizmor, ...) |
+| BuildKit | the image in `tools.env` (`LK_BUILDKIT_IMAGE`, v0.34.0, by digest); `builder.sh` makes a builder from it and refuses a different version (T2) |
 
 ## What would differ, and what removes it
 
@@ -36,13 +37,20 @@ equal; on a difference it prints the config fields, layers and files that differ
 ## Known limits
 
 - **The builder.** The layer encoding (tar headers, gzip) is BuildKit's. The claim is "same commit, same BuildKit version,
-  same digest". CI pins BuildKit by digest (`LK_BUILDER`, T2); a local build through another Docker version's built-in
-  BuildKit can give a different digest for the same files. `oci-diff.py` then reports "same files, metadata and content:
-  the difference is in the tar or gzip encoding".
+  same digest". CI pins BuildKit by digest: `images.yml` creates its builder with `deploy/images/builder.sh` and passes it to
+  `build.sh` as `LK_BUILDER`, so a build in CI never uses the BuildKit that ships with the runner's Docker. A local build through
+  another Docker version's built-in BuildKit can give a different digest for the same files; `oci-diff.py` then reports "same
+  files, metadata and content: the difference is in the tar or gzip encoding". To get the digest CI publishes, build with
+  `LK_BUILDER="$(deploy/images/builder.sh)"`. The T1 measurements below were made with the built-in BuildKit of Docker 29.9.2,
+  which is also v0.34.0; that the digests are then equal across the two drivers has not been measured (the CI job measures that
+  the pinned builder agrees with itself).
 - **Registries.** A base-image digest pins its bytes, but a registry can delete it. The build then fails; it never picks up
   other bytes.
   Docker Hub also limits anonymous pulls per IP address (100 manifest requests an hour); an exhausted limit fails a build with
-  `429 Too Many Requests`, never with other bytes.
+  `429 Too Many Requests`, never with other bytes. GitHub-hosted runners share addresses, so CI pulls Docker Hub images through
+  a mirror (`mirror.gcr.io`, set up by the `docker-hub-mirror` action for the Docker daemon and by `builder.sh` for BuildKit)
+  and stores no Docker Hub token (S19, S20). A digest names the bytes, so a mirror cannot substitute others; if it fails the
+  pull goes to Docker Hub.
 - **The model host.** The same applies to the model: Hugging Face serving different bytes for a pinned commit fails the
   `sha256sum -c` check.
 
@@ -62,3 +70,10 @@ depends on the commit time, so another commit gives another digest; what is chec
 The whole run (`just images-repro`, four builds) took 22 minutes. No differences were found, so none is listed as accepted.
 The earlier measurements on the Debian 12 images (agent at `8563b6c` and `f02523a`, hub without its model stage) also gave
 identical digests; they are superseded by the table above, because the base and the builder changed.
+
+## CI (T2)
+
+`images.yml` runs `reproducible-check.sh` for each image on every run that touches the build inputs, with the pinned builder,
+and the SBOM and the scan are made from the first of its two builds; the publish job pushes that build's archive. So the digest
+that was scanned is the digest that is signed, and two builds of the commit on the pinned BuildKit agreed before anything was
+published. These jobs have not run on GitHub yet; the first run measures it, and a difference it finds is listed above.

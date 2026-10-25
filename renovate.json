@@ -1,11 +1,43 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests", "docker:pinDigests"],
   "minimumReleaseAge": "14 days",
   "internalChecksFilter": "strict",
+  "automerge": false,
+  "dependencyDashboard": true,
+  "ignorePaths": ["**/node_modules/**", ".github/scripts/fixtures/**", "deploy/policy/testdata/**"],
   "packageRules": [
     { "matchManagers": ["cargo"], "groupName": "rust dependencies" },
     { "matchManagers": ["npm"], "groupName": "web dependencies" },
-    { "matchFileNames": ["crates/domain/**", "crates/ports/**", "proto/**", "api/**", "db/**"], "automerge": false, "labels": ["contract-change"] }
+    { "matchManagers": ["github-actions"], "groupName": "github actions" },
+    { "matchDatasources": ["docker"], "groupName": "docker images and digests" },
+    { "matchManagers": ["helmv3", "helm-values", "helmfile", "kubernetes"], "groupName": "helm and kubernetes" },
+    {
+      "description": "Contract paths change only through a contract-change PR that a human approves (AGENTS.md, Ownership): never merge by itself, and say so.",
+      "matchFileNames": [
+        "crates/domain/**",
+        "crates/ports/**",
+        "crates/proto/**",
+        "proto/**",
+        "api/**",
+        "db/migrations/**",
+        "docs/mcp-tools.md",
+        "perf/budgets.toml",
+        "design/handoff/**"
+      ],
+      "automerge": false,
+      "labels": ["contract-change"]
+    }
+  ],
+  "customManagers": [
+    {
+      "description": "The tool images that the scripts run, pinned by digest in deploy/images/tools.env (tag and digest move together).",
+      "customType": "regex",
+      "managerFilePatterns": ["/^deploy/images/tools\\.env$/"],
+      "matchStrings": [
+        "LK_[A-Z_]+_IMAGE=(?<depName>[a-z0-9.-]+(?:/[a-z0-9._-]+)+):(?<currentValue>[A-Za-z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    }
   ]
 }

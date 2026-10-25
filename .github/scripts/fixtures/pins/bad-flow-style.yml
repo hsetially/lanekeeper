@@ -1,0 +1,7 @@
+name: bad-flow-style
+on: [push]
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - { uses: actions/checkout@v4 }

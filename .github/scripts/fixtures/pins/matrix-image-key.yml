@@ -1,0 +1,16 @@
+# A matrix key that happens to be called `image` is a name, not an image reference.
+name: matrix-image-key
+on: [push]
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [hub, agent]
+        include:
+          - image: other
+            flavour: big
+    steps:
+      - run: echo "$IMAGE"
+        env:
+          IMAGE: ${{ matrix.image }}

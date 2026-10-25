@@ -1,0 +1,12 @@
+name: bad-pull-request-target
+on:
+  pull_request_target:
+    paths:
+      - "src/**"
+permissions: {}
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: true

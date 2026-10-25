@@ -1,0 +1,11 @@
+name: bad-read-all
+on:
+  push:
+    branches: [main]
+permissions: read-all
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: true

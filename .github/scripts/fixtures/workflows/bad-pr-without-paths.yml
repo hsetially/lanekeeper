@@ -1,0 +1,11 @@
+name: bad-pr-without-paths
+on:
+  pull_request:
+    types: [opened, synchronize]
+permissions: {}
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: true

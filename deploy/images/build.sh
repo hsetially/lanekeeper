@@ -16,7 +16,10 @@
 # Output in DIR (default target/images): <image>.oci.tar, <image>.metadata.json and <image>.digest.
 #
 # Environment:
-#   LK_BUILDER        a buildx builder to use (CI sets one up with a pinned BuildKit); the current builder otherwise.
+#   LK_BUILDER        a buildx builder to use (CI creates one with deploy/images/builder.sh, which runs the BuildKit pinned in
+#                     tools.env); the current builder otherwise.
+#   LK_IMAGE_SOURCE   the repository's https URL, written as the org.opencontainers.image.source label. GitHub links a container
+#                     package to the repository by that label, and the workflow's GITHUB_TOKEN can push only to a linked package.
 #   LK_BUILD_CA       a CA bundle for builds behind a TLS-intercepting proxy. It is passed as the `build_ca` secret, so
 #                     it never reaches a layer or the cache key.
 #   LK_BUILD_NETWORK  passed to `--network` (for example `host`), when the build containers need it to reach the network.
@@ -45,6 +48,11 @@ while [ $# -gt 0 ]; do
         *) usage ;;
     esac
 done
+# The value ends up in an image label and on a command line: a plain https URL, nothing that could add an argument.
+if [ -n "${LK_IMAGE_SOURCE:-}" ] && ! [[ "$LK_IMAGE_SOURCE" =~ ^https://[A-Za-z0-9._~/:-]+$ ]]; then
+    echo "build.sh: LK_IMAGE_SOURCE must be a plain https URL, not '$LK_IMAGE_SOURCE'" >&2
+    exit 2
+fi
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 
@@ -72,6 +80,7 @@ args=(
     --metadata-file "$out/$image.metadata.json"
 )
 [ -z "$no_cache" ] || args+=(--no-cache)
+[ -z "${LK_IMAGE_SOURCE:-}" ] || args+=(--label "org.opencontainers.image.source=$LK_IMAGE_SOURCE")
 [ -z "${LK_BUILDER:-}" ] || args+=(--builder "$LK_BUILDER")
 [ -z "${LK_BUILD_NETWORK:-}" ] || args+=(--network "$LK_BUILD_NETWORK")
 [ -z "${HTTPS_PROXY:-}" ] || args+=(--build-arg "HTTPS_PROXY=$HTTPS_PROXY")
