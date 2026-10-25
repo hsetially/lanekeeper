@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "lanekeeper-db values",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["image", "environment"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": { "type": "string", "const": "ghcr.io/cloudnative-pg/postgresql" },
+        "tag": { "type": "string", "pattern": "^$|^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$" },
+        "digest": { "type": "string" }
+      }
+    },
+    "environment": { "type": "string", "enum": ["kind", "staging", "prod"] },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "migratorSecretName": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 },
+        "appSecretName": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "size": { "type": "string", "pattern": "^[1-9][0-9]*(Gi|Ti)$" },
+        "cmekKey": { "type": "string", "pattern": "^$|^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+$" },
+        "diskType": { "type": "string", "enum": ["pd-ssd", "pd-balanced"] },
+        "fallbackClassName": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": { "type": "object", "additionalProperties": false, "properties": { "cpu": { "type": ["string", "number"] }, "memory": { "type": "string" } } },
+        "limits": { "type": "object", "additionalProperties": false, "properties": { "cpu": { "type": ["string", "number"] }, "memory": { "type": "string" } } }
+      }
+    },
+    "postgresql": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sharedBuffers": { "type": "string", "pattern": "^[1-9][0-9]*(MB|GB)$" }
+      }
+    },
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "mode": { "type": "string", "enum": ["zone", "kind"] } }
+    },
+    "backup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "bucket": { "type": "string", "pattern": "^$|^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$" },
+        "path": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,200}$" },
+        "schedule": { "type": "string", "pattern": "^[0-9]+ [0-9]+ [0-9]+ \\* \\* \\*$" }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gcpServiceAccount": { "type": "string", "pattern": "^$|^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\\.iam\\.gserviceaccount\\.com$" }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operatorNamespace": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 }
+      }
+    }
+  }
+}

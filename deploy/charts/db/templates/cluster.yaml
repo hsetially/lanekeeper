@@ -1,0 +1,124 @@
+{{- $env := include "lanekeeper-db.environment" . }}
+{{- $backup := include "lanekeeper-db.backup" . }}
+{{- if and (eq .Values.topology.mode "kind") (ne $env "kind") }}
+{{- fail (printf "topology.mode is kind in %s: spreading by host is for kind only (D62, plan 09 A13)" $env) }}
+{{- end }}
+{{- if and (ne .Values.topology.mode "kind") (eq $env "kind") }}
+{{- fail "topology.mode must be kind in kind: it has one zone, so the instances can only prefer different hosts (plan 09 A13)" }}
+{{- end }}
+{{- if eq .Values.secrets.migratorSecretName .Values.secrets.appSecretName }}
+{{- fail "secrets.migratorSecretName and secrets.appSecretName are the same Secret: the app would log in as the owner of the database" }}
+{{- end }}
+{{- if eq .Values.secrets.migratorSecretName "lanekeeper-db-app" }}
+{{- fail "secrets.migratorSecretName is lanekeeper-db-app, the name the operator and the hub use for the app role's credentials" }}
+{{- end }}
+# The database (D29, D62): three instances of PostgreSQL 16 with pgvector and pg_trgm, TLS 1.3 only (S6), backed up to Google Cloud
+# Storage for 30 days (D40). deploy/policy/database.rego checks the rendering, field by field.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: lanekeeper-db
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-db.labels" . | nindent 4 }}
+  {{- if not .Values.storage.cmekKey }}
+  annotations:
+    # No customer-managed key (Q29): the volumes use the cluster's default class, which is Google-managed encryption. The policy warns;
+    # render.sh fails the warning for prod and staging.
+    lanekeeper.io/cmek: fallback
+  {{- end }}
+spec:
+  description: The Lanekeeper database
+  instances: 3
+  imageName: {{ include "lanekeeper-db.image" . | quote }}
+  imagePullPolicy: IfNotPresent
+  # No postgres superuser password, so no Secret for it (S7).
+  enableSuperuserAccess: false
+  # A node drain cannot take the primary and a replica at once.
+  enablePDB: true
+  # The operator makes the pods. These are its documented defaults, written out so that they can be checked (S16).
+  seccompProfile:
+    type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    privileged: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    capabilities:
+      drop: ["ALL"]
+  {{- if eq $backup "true" }}
+  # Workload Identity for the backups (S7): the Kubernetes service account the operator makes is mapped to a Google one.
+  serviceAccountTemplate:
+    metadata:
+      annotations:
+        iam.gke.io/gcp-service-account: {{ required "serviceAccount.gcpServiceAccount is required with backups (Workload Identity)" .Values.serviceAccount.gcpServiceAccount | quote }}
+  {{- end }}
+  bootstrap:
+    initdb:
+      database: lanekeeper
+      # The owner runs the migrations; lanekeeper_app is a managed role below and owns nothing (db/migrations/README.md).
+      owner: lanekeeper_migrator
+      # Its password is in a Secret of our own: left to the operator it would be in lanekeeper-db-app, which is the app role's.
+      secret:
+        name: {{ .Values.secrets.migratorSecretName }}
+      encoding: UTF8
+      # The collation the registry's tests and plans were taken on (D124).
+      localeCollate: en_US.utf8
+      localeCType: en_US.utf8
+      # Only the extensions. The app role does not exist yet at this point (the operator makes it after the bootstrap), and what it may
+      # do is what the migrations grant, table by table.
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS vector
+        - CREATE EXTENSION IF NOT EXISTS pg_trgm
+  postgresql:
+    parameters:
+      # TLS 1.3 only (S6). The operator's own default, written out.
+      ssl_min_protocol_version: TLSv1.3
+      ssl_max_protocol_version: TLSv1.3
+      password_encryption: scram-sha-256
+      shared_buffers: {{ .Values.postgresql.sharedBuffers | quote }}
+    # The generated pg_hba.conf has the operator's own rules first (peer on the socket, certificates for replication), then these, then
+    # `host all all all scram-sha-256`. A connection without TLS is refused before it can reach that one (S6).
+    pg_hba:
+      - hostnossl all all all reject
+  managed:
+    roles:
+      - name: lanekeeper_app
+        ensure: present
+        login: true
+        superuser: false
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+        # Made out of band (plan 09 A7); the chart never has a password.
+        passwordSecret:
+          name: {{ .Values.secrets.appSecretName }}
+  storage:
+    size: {{ .Values.storage.size }}
+    storageClass: {{ include "lanekeeper-db.storageClassName" . }}
+  resources:
+    {{- toYaml .Values.resources | nindent 4 }}
+  affinity:
+    enablePodAntiAffinity: true
+    {{- if eq .Values.topology.mode "kind" }}
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: preferred
+    {{- else }}
+    topologyKey: topology.kubernetes.io/zone
+    podAntiAffinityType: required
+    {{- end }}
+  {{- if eq $backup "true" }}
+  backup:
+    # Thirty days of backups and the WAL between them (D40). The cluster deletes what has expired; the bucket does not.
+    retentionPolicy: "30d"
+    barmanObjectStore:
+      destinationPath: {{ printf "gs://%s/%s" (required "backup.bucket is required with backups (the bucket of charts/gcp buckets.backup.name)" .Values.backup.bucket) .Values.backup.path | quote }}
+      googleCredentials:
+        # Workload Identity, no key file (S7).
+        gkeEnvironment: true
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+  {{- end }}

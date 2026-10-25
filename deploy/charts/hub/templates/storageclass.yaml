@@ -1,6 +1,6 @@
 {{- if .Values.storage.cmekKey }}
 # Encrypts the mirror disks with the customer-managed key (S10). The Compute Engine service agent needs
-# cloudkms.cryptoKeyEncrypterDecrypter on the key (charts/gcp, T5).
+# cloudkms.cryptoKeyEncrypterDecrypter on the key (charts/gcp, cmek.diskKeys; render.sh checks that it has it).
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:

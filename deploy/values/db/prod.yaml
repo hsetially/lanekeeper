@@ -1,0 +1,23 @@
+# The database in prod (09/T5). Every value that names something of ours is a documentation or example value until the question that
+# decides it is answered, and says which: the project and the Google service account (the GCP project is not named yet), the CMEK key
+# (Q29), the bucket (charts/gcp). No real project, bucket or key (rule 12).
+image:
+  tag: "16.15-202610050823-system-trixie"
+  # Read from ghcr.io on 2026-10-25 (the index digest of that tag, built on 2026-10-05, so at least 14 days old, rule 15). An image
+  # with pgvector, the locales and barman: the "standard" image has no barman (plans/09-deployment-ci.blockers.md, B10).
+  digest: "sha256:c2a1806568615fbd1a675d772fc10641dbc33c10fef00a7b7ee2f2b6b8730af4"
+
+environment: prod
+
+storage:
+  size: 20Gi
+  # EXAMPLE key (Q29). The hub chart's storage.cmekKey is the same key, and charts/gcp cmek.diskKeys grants it to Compute Engine.
+  cmekKey: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-disk-prod
+
+backup:
+  # EXAMPLE bucket: charts/gcp buckets.backup.name.
+  bucket: example-project-lanekeeper-backup-prod
+
+serviceAccount:
+  # EXAMPLE (the project is not named yet): charts/gcp makes lanekeeper-db@PROJECT.
+  gcpServiceAccount: lanekeeper-db@example-project.iam.gserviceaccount.com

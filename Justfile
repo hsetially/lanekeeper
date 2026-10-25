@@ -939,7 +939,14 @@ tools-test:
 # Everything that checks the charts (what the deploy workflow runs): schemas, lint, kubeconform, the policies and their planted cases.
 deploy-check: schemas-verify deploy-lint deploy-render policy-test policy-check contract-check deploy-planted env-names-test tools-test
 
-# The T4 gate so far (T5 to T8 add to it): the pinned tools, the workflow lint, the pin tests, the image checks, and the charts.
+# The data layer of 09/T5 alone: the db chart, and the gcp chart's buckets, keys and IAM rendered without Cloud Armor, through lint,
+# kubeconform -strict, the policies, their planted violations and the check that the db, gcp and hub charts name the same things. It is a
+# SUBSET of deploy-check, for the part that does not wait for GitHub's hook ranges (plans/09-deployment-ci.blockers.md, B5): the gcp
+# chart with Cloud Armor still refuses to render until a person runs deploy/tools/github-hook-ranges.mjs, and deploy-check says so.
+deploy-data: schemas-verify policy-test (ops-tools-check "helm kubeconform") images-tools-check
+    deploy/tests/render.sh data
+
+# The T5 gate so far (T6 to T8 add to it): the pinned tools, the workflow lint, the pin tests, the image checks, and the charts.
 verify-09: ops-tools-check ci-lint pins-test images-policy-test images-builder-test images-publish-test deploy-check
 verify-11:
     @echo "verify-11 not implemented yet" && exit 1

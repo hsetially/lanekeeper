@@ -1,0 +1,28 @@
+{{- /*
+The three buckets (09/T5; S9, S10, D29, D40). All three: uniform access, public access prevention enforced, a customer-managed key
+(Q29), and not deleted with their Kubernetes resource. deploy/policy/storage.rego checks the rendering, and iam.rego the bindings
+in iam.yaml. Config Connector creates them in the project named by the annotation.
+*/ -}}
+# CloudNativePG's base backups and WAL archive. Kept for 30 days by the cluster's own retention policy (charts/db), not by a rule
+# here and not by a lock: barman deletes what has expired, and a lock would stop it.
+{{ include "lanekeeper-gcp.bucket" (dict "root" . "purpose" "backup" "cfg" .Values.buckets.backup "path" "buckets.backup") }}
+---
+# The audit chain's hourly checkpoints (S9). Objects cannot be deleted or replaced until the retention period has passed, and in prod
+# the policy is locked, so that not even an owner can shorten it. The hub's service account may only create and read here (iam.yaml).
+{{- $audit := .Values.buckets.auditCheckpoint }}
+{{- $period := int $audit.retentionPeriodSeconds }}
+{{- if le $period 0 }}
+{{- fail "buckets.auditCheckpoint.retentionPeriodSeconds is required and has no default: it is a decision, and a locked policy cannot be undone (S9, plan 09 A19)" }}
+{{- end }}
+{{- if and $audit.isLocked (ne (include "lanekeeper-gcp.environment" .) "prod") }}
+{{- fail "buckets.auditCheckpoint.isLocked is true outside prod: a lock cannot be undone, so it is set in prod only (S9, plan 09 A19)" }}
+{{- end }}
+{{ include "lanekeeper-gcp.bucket" (dict "root" . "purpose" "audit-checkpoint" "cfg" $audit "path" "buckets.auditCheckpoint") }}
+  retentionPolicy:
+    retentionPeriod: {{ $period }}
+    isLocked: {{ $audit.isLocked | default false }}
+---
+# The documentation files. Versioning keeps what an overwrite or a delete replaces.
+{{ include "lanekeeper-gcp.bucket" (dict "root" . "purpose" "docs" "cfg" .Values.buckets.docs "path" "buckets.docs") }}
+  versioning:
+    enabled: true

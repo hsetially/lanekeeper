@@ -1,9 +1,34 @@
-# Cloud Armor for staging (09/T3). Documentation addresses and an example project until Q2 is answered (the GlobalProtect egress
+# The Google Cloud resources of staging (09/T3: Cloud Armor; T5: buckets, keys and IAM). Documentation addresses and an example project until Q2 is answered (the GlobalProtect egress
 # ranges) and the project is named (rule 12: nothing real in the repository).
 project: example-project
+# EXAMPLE number (the project's number, not its id): Google's service agents are named by it.
+projectNumber: "123456789012"
+environment: staging
+# EXAMPLE location (Q29): a customer-managed key must be in the same one.
+location: example-location
 
 cloudArmor:
   policyName: lanekeeper-hub-staging
   # EXAMPLE (Q2).
   usersRanges:
     - 192.0.2.0/24
+
+# EXAMPLE names and keys (Q29: the key ring is not chosen yet). A bucket name is global to Google Cloud.
+buckets:
+  backup:
+    name: example-project-lanekeeper-backup-staging
+    cmekKey: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-backup-staging
+  auditCheckpoint:
+    name: example-project-lanekeeper-audit-staging
+    cmekKey: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-audit-staging
+    # EXAMPLE period (plan 09 A19): one week. Staging is never locked.
+    retentionPeriodSeconds: 604800
+    isLocked: false
+  docs:
+    name: example-project-lanekeeper-docs-staging
+    cmekKey: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-docs-staging
+
+cmek:
+  diskKeys:
+    # The key of the hub's mirror disks (charts/hub storage.cmekKey) and of the database's (charts/db storage.cmekKey).
+    - projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-disk-staging

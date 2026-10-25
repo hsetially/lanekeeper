@@ -3,17 +3,146 @@
   "title": "lanekeeper-gcp values",
   "type": "object",
   "additionalProperties": false,
-  "required": ["project", "cloudArmor"],
+  "required": [
+    "project",
+    "cloudArmor"
+  ],
   "properties": {
-    "project": { "type": "string", "pattern": "^[a-z][a-z0-9-]{4,28}[a-z0-9]$" },
+    "project": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
+    },
     "cloudArmor": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": { "type": "boolean" },
-        "policyName": { "type": "string", "pattern": "^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$" },
-        "usersRanges": { "type": "array", "items": { "type": "string", "pattern": "^[0-9a-fA-F:.]+(/[0-9]{1,3})?$" } },
-        "githubHookRanges": { "type": "array", "items": { "type": "string", "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$" } }
+        "enabled": {
+          "type": "boolean"
+        },
+        "policyName": {
+          "type": "string",
+          "pattern": "^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"
+        },
+        "usersRanges": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F:.]+(/[0-9]{1,3})?$"
+          }
+        },
+        "githubHookRanges": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$"
+          }
+        }
+      }
+    },
+    "projectNumber": {
+      "type": "string",
+      "pattern": "^$|^[0-9]{6,20}$"
+    },
+    "environment": {
+      "type": "string",
+      "enum": [
+        "",
+        "staging",
+        "prod"
+      ]
+    },
+    "location": {
+      "type": "string",
+      "pattern": "^$|^[a-z][a-z0-9-]*[a-z0-9]$"
+    },
+    "workloadIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "hubServiceAccount": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "dbServiceAccount": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        }
+      }
+    },
+    "buckets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backup": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^$|^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$"
+            },
+            "cmekKey": {
+              "type": "string",
+              "pattern": "^$|^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+$"
+            }
+          }
+        },
+        "auditCheckpoint": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^$|^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$"
+            },
+            "cmekKey": {
+              "type": "string",
+              "pattern": "^$|^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+$"
+            },
+            "retentionPeriodSeconds": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "isLocked": {
+              "type": "boolean"
+            }
+          }
+        },
+        "docs": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^$|^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$"
+            },
+            "cmekKey": {
+              "type": "string",
+              "pattern": "^$|^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+$"
+            }
+          }
+        }
+      }
+    },
+    "cmek": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "diskKeys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+$"
+          },
+          "uniqueItems": true
+        }
       }
     }
   }

@@ -36,6 +36,45 @@ spec:
   bogusField: 1
   listeners: [{name: l, protocol: HTTPS, port: 443}]
 ---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata: {name: planted, namespace: planted-ns}
+spec:
+  instances: 3
+  bogusField: 1
+  storage: {size: 1Gi}
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata: {name: planted, namespace: planted-ns}
+spec:
+  schedule: "0 0 2 * * *"
+  cluster: {name: planted}
+  bogusField: 1
+---
+apiVersion: storage.cnrm.cloud.google.com/v1beta1
+kind: StorageBucket
+metadata: {name: planted, namespace: planted-ns}
+spec:
+  location: l
+  bogusField: 1
+---
+apiVersion: iam.cnrm.cloud.google.com/v1beta1
+kind: IAMPolicyMember
+metadata: {name: planted, namespace: planted-ns}
+spec:
+  role: roles/x
+  member: "serviceAccount:x"
+  resourceRef: {kind: StorageBucket, name: b}
+  bogusField: 1
+---
+apiVersion: iam.cnrm.cloud.google.com/v1beta1
+kind: IAMServiceAccount
+metadata: {name: planted, namespace: planted-ns}
+spec:
+  displayName: x
+  bogusField: 1
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata: {name: planted, namespace: planted-ns}

@@ -1,0 +1,54 @@
+# Who may reach the database (S18). Nothing is admitted but the hub's pods on 5432, the operator on 8000 and 5432 (its own documented
+# needs), and the instances among themselves on both. Egress is not restricted here: see README.md ("Not done here").
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lanekeeper-db
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-db.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: lanekeeper-db
+  policyTypes: [Ingress]
+  ingress:
+    # The hub, in the same namespace.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: lanekeeper-hub
+      ports:
+        - {protocol: TCP, port: 5432}
+    # The operator: the status port of the instance manager, and PostgreSQL.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.network.operatorNamespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cloudnative-pg
+      ports:
+        - {protocol: TCP, port: 5432}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.network.operatorNamespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cloudnative-pg
+      ports:
+        - {protocol: TCP, port: 8000}
+    # The instances: replication, and the status port.
+    - from:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: lanekeeper-db
+      ports:
+        - {protocol: TCP, port: 5432}
+    - from:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: lanekeeper-db
+      ports:
+        - {protocol: TCP, port: 8000}

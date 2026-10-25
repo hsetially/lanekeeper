@@ -1,0 +1,72 @@
+{{- /*
+The Google service accounts of the hub and the database, what each may do, and the keys that Google's own services may use
+(09/T5; S5, S7, S9, S10). One role on one resource for each binding, to a service account and to nobody else: deploy/policy/iam.rego
+refuses a person, a group, a public member, a basic role, a role on the whole project (but Cloud Trace) and anything not listed there.
+*/ -}}
+{{- $project := required "project is required: the Google Cloud project of the Config Connector resources" .Values.project }}
+{{- $wi := .Values.workloadIdentity }}
+{{- $b := .Values.buckets }}
+{{- $location := required "location is required: the region or multi-region of the buckets" .Values.location }}
+{{- $parts := list "hub" "db" }}
+{{- range $part := $parts }}
+---
+apiVersion: iam.cnrm.cloud.google.com/v1beta1
+kind: IAMServiceAccount
+metadata:
+  name: lanekeeper-{{ $part }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-gcp.labels" $ | nindent 4 }}
+    lanekeeper.io/purpose: identity
+  annotations:
+    cnrm.cloud.google.com/project-id: {{ $project | quote }}
+spec:
+  displayName: {{ printf "Lanekeeper %s" $part | quote }}
+{{- end }}
+{{- /* Workload Identity (S5, S7): the Kubernetes service account may act as the Google one. */}}
+{{- range $part := $parts }}
+---
+{{ include "lanekeeper-gcp.member" (dict "root" $ "name" (printf "lanekeeper-%s-workload-identity" $part) "role" "roles/iam.workloadIdentityUser" "member" (printf "serviceAccount:%s.svc.id.goog[%s/%s]" $project $wi.namespace (ternary $wi.hubServiceAccount $wi.dbServiceAccount (eq $part "hub"))) "ref" (printf "apiVersion: iam.cnrm.cloud.google.com/v1beta1\nkind: IAMServiceAccount\nname: lanekeeper-%s" $part)) }}
+{{- end }}
+{{- $hub := include "lanekeeper-gcp.gsa" (dict "root" . "part" "hub") }}
+{{- $db := include "lanekeeper-gcp.gsa" (dict "root" . "part" "db") }}
+{{- $bucketRef := "apiVersion: storage.cnrm.cloud.google.com/v1beta1\nkind: StorageBucket\nname: %s" }}
+---
+# The database's own account reads, writes and deletes in the backup bucket (barman), and nowhere else.
+{{ include "lanekeeper-gcp.member" (dict "root" . "name" "lanekeeper-db-backup" "role" "roles/storage.objectUser" "member" $db "ref" (printf $bucketRef (required "buckets.backup.name is required" $b.backup.name))) }}
+---
+# The hub creates checkpoints and reads them back, and can neither delete nor replace one (S9). The retention policy says the same
+# again, in the bucket.
+{{ include "lanekeeper-gcp.member" (dict "root" . "name" "lanekeeper-hub-audit-create" "role" "roles/storage.objectCreator" "member" $hub "ref" (printf $bucketRef (required "buckets.auditCheckpoint.name is required" $b.auditCheckpoint.name))) }}
+---
+{{ include "lanekeeper-gcp.member" (dict "root" . "name" "lanekeeper-hub-audit-read" "role" "roles/storage.objectViewer" "member" $hub "ref" (printf $bucketRef $b.auditCheckpoint.name)) }}
+---
+{{ include "lanekeeper-gcp.member" (dict "root" . "name" "lanekeeper-hub-docs" "role" "roles/storage.objectUser" "member" $hub "ref" (printf $bucketRef (required "buckets.docs.name is required" $b.docs.name))) }}
+---
+# Traces go to Cloud Trace (S10: ids and hashes, never contents). Cloud Trace has no resource smaller than the project.
+{{ include "lanekeeper-gcp.member" (dict "root" . "name" "lanekeeper-hub-trace" "role" "roles/cloudtrace.agent" "member" $hub "ref" (printf "kind: Project\nexternal: projects/%s" $project)) }}
+{{- /*
+  The keys. A bucket is written by the Cloud Storage service agent, and a disk by the Compute Engine service agent, with the key of the
+  bucket or the disk: each agent may use the keys it needs, and the agents are named by the project's number. A key shared by two
+  buckets is granted once.
+*/}}
+{{- $bucketKeys := list }}
+{{- range $path, $cfg := dict "buckets.backup" $b.backup "buckets.auditCheckpoint" $b.auditCheckpoint "buckets.docs" $b.docs }}
+{{- $key := include "lanekeeper-gcp.key" (list (printf "%s.cmekKey" $path) $cfg.cmekKey $location) }}
+{{- if $key }}{{ $bucketKeys = append $bucketKeys $key }}{{ end }}
+{{- end }}
+{{- $diskKeys := list }}
+{{- range $i, $key := .Values.cmek.diskKeys }}
+{{- $diskKeys = append $diskKeys (include "lanekeeper-gcp.key" (list (printf "cmek.diskKeys[%d]" $i) $key $location)) }}
+{{- end }}
+{{- if or $bucketKeys $diskKeys }}
+{{- $number := required "projectNumber is required when a customer-managed key is used: Google's service agents are named by it" .Values.projectNumber }}
+{{- range $key := uniq $bucketKeys }}
+---
+{{ include "lanekeeper-gcp.member" (dict "root" $ "name" (printf "lanekeeper-gcs-agent-%s" (trunc 10 (sha256sum $key))) "role" "roles/cloudkms.cryptoKeyEncrypterDecrypter" "member" (printf "serviceAccount:service-%s@gs-project-accounts.iam.gserviceaccount.com" $number) "ref" (printf "kind: KMSCryptoKey\nexternal: %s" $key)) }}
+{{- end }}
+{{- range $key := uniq $diskKeys }}
+---
+{{ include "lanekeeper-gcp.member" (dict "root" $ "name" (printf "lanekeeper-compute-agent-%s" (trunc 10 (sha256sum $key))) "role" "roles/cloudkms.cryptoKeyEncrypterDecrypter" "member" (printf "serviceAccount:service-%s@compute-system.iam.gserviceaccount.com" $number) "ref" (printf "kind: KMSCryptoKey\nexternal: %s" $key)) }}
+{{- end }}
+{{- end }}

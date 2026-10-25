@@ -1,9 +1,34 @@
-# Cloud Armor for prod (09/T3). Documentation addresses and an example project until Q2 is answered (the GlobalProtect egress
+# The Google Cloud resources of prod (09/T3: Cloud Armor; T5: buckets, keys and IAM). Documentation addresses and an example project until Q2 is answered (the GlobalProtect egress
 # ranges) and the project is named (rule 12: nothing real in the repository).
 project: example-project
+# EXAMPLE number (the project's number, not its id): Google's service agents are named by it.
+projectNumber: "123456789012"
+environment: prod
+# EXAMPLE location (Q29): a customer-managed key must be in the same one.
+location: example-location
 
 cloudArmor:
   policyName: lanekeeper-hub-prod
   # EXAMPLE (Q2).
   usersRanges:
     - 192.0.2.0/24
+
+# EXAMPLE names and keys (Q29: the key ring is not chosen yet). A bucket name is global to Google Cloud.
+buckets:
+  backup:
+    name: example-project-lanekeeper-backup-prod
+    cmekKey: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-backup-prod
+  auditCheckpoint:
+    name: example-project-lanekeeper-audit-prod
+    cmekKey: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-audit-prod
+    # EXAMPLE period (plan 09 A19): one year. A person confirms the period BEFORE the first apply of prod: the lock below cannot be undone.
+    retentionPeriodSeconds: 31536000
+    isLocked: true
+  docs:
+    name: example-project-lanekeeper-docs-prod
+    cmekKey: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-docs-prod
+
+cmek:
+  diskKeys:
+    # The key of the hub's mirror disks (charts/hub storage.cmekKey) and of the database's (charts/db storage.cmekKey).
+    - projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-disk-prod

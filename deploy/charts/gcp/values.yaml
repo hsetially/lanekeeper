@@ -1,8 +1,53 @@
-# Defaults for the gcp chart (09/T3). Config Connector resources: a person applies this chart once per project through the
+# Defaults for the gcp chart (09/T3, T5). Config Connector resources: a person applies this chart once per project through the
 # platform ArgoCD (plan 09 A4). The fields without a usable default must be set by the values file of the environment.
 
 # The Google Cloud project the resources belong to (the Config Connector annotation cnrm.cloud.google.com/project-id).
 project: ""
+
+# The project's number, not its id. Google's own service agents (Cloud Storage, Compute Engine) are named by it, and they are the ones
+# that use a customer-managed key. Required when any key is set.
+projectNumber: ""
+
+# staging or prod. The audit checkpoint bucket's retention policy must be locked in prod, and the policies (deploy/policy/storage.rego)
+# read this label to know it. Required.
+environment: ""
+
+# Where the buckets are: a region, or a multi-region, such as europe-west2 or eu. A customer-managed key must be in the same location.
+# Required.
+location: ""
+
+# The Kubernetes service accounts that Workload Identity maps to the Google service accounts lanekeeper-hub and lanekeeper-db that this
+# chart makes (S5, S7). The hub chart's serviceAccount.name, and CloudNativePG's service account, which is named after the cluster.
+workloadIdentity:
+  namespace: lanekeeper
+  hubServiceAccount: lanekeeper-hub
+  dbServiceAccount: lanekeeper-db
+
+# The buckets (09/T5). Names are global to Google Cloud, so there is no default. Each takes a customer-managed key (S10, Q29), a Cloud
+# KMS key as projects/P/locations/L/keyRings/R/cryptoKeys/K. Without one the bucket uses Google-managed encryption and the policy warns
+# (plan 09 A11b); render.sh fails that warning for prod and staging. Every bucket has uniform access and no public access, and is not
+# deleted when its Kubernetes resource is (cnrm.cloud.google.com/deletion-policy: abandon).
+buckets:
+  # CloudNativePG's backups and WAL archive (D29, D40). charts/db's backup.bucket is this name.
+  backup:
+    name: ""
+    cmekKey: ""
+  # The hourly checkpoints of the audit chain (S9). The retention period is a person's decision (plan 09 A19), so it has no default; a
+  # locked policy cannot be undone, so isLocked is true only in prod, after that person has confirmed the period.
+  auditCheckpoint:
+    name: ""
+    cmekKey: ""
+    retentionPeriodSeconds: 0
+    isLocked: false
+  # The documentation files (prompt 14). Versioning is on.
+  docs:
+    name: ""
+    cmekKey: ""
+
+# Other customer-managed keys that Google's services use on our behalf: the keys of the disks (charts/hub storage.cmekKey and
+# charts/db storage.cmekKey). The Compute Engine service agent is given use of each.
+cmek:
+  diskKeys: []
 
 cloudArmor:
   enabled: true
