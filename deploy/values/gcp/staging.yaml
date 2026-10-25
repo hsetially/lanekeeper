@@ -1,0 +1,9 @@
+# Cloud Armor for staging (09/T3). Documentation addresses and an example project until Q2 is answered (the GlobalProtect egress
+# ranges) and the project is named (rule 12: nothing real in the repository).
+project: example-project
+
+cloudArmor:
+  policyName: lanekeeper-hub-staging
+  # EXAMPLE (Q2).
+  usersRanges:
+    - 192.0.2.0/24

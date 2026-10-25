@@ -1,0 +1,7 @@
+apiVersion: v2
+name: lanekeeper-gcp
+description: The Google Cloud resources of Lanekeeper, declared for Config Connector (09/T3 starts it with Cloud Armor; T5 adds buckets and keys, T6 Binary Authorization). Secret containers only, never values (plan 09 A4).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.30.0-0"

@@ -1,0 +1,19 @@
+lanekeeper-hub: 3 replicas in {{ .Release.Namespace }}.
+{{- if not .Values.storage.cmekKey }}
+
+WARNING: storage.cmekKey is empty. The mirror volumes use the cluster's default class: Google-managed encryption, not a
+customer-managed key (S10, Q29). Set storage.cmekKey for production.
+{{- end }}
+{{- if not .Values.network.fqdnPolicy }}
+
+WARNING: network.fqdnPolicy is false. External hosts are reached by 443 to every address outside the private ranges, which is
+weaker than by name (S18, plan 09 A11).
+{{- end }}
+{{- if eq .Values.topology.mode "kind" }}
+
+WARNING: topology.mode is kind. The replicas only prefer different hosts; they are not kept in different zones (D62, plan 09 A13).
+{{- end }}
+{{- if not .Values.gateway.enabled }}
+
+NOTE: gateway.enabled is false. Nothing serves users, and GitHub's webhooks have no path (the hub polls instead, Q28).
+{{- end }}

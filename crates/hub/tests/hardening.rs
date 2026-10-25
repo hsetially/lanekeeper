@@ -421,6 +421,13 @@ fn container_problems(container: &Value) -> Vec<String> {
             problems.push(format!("resources.{section}.{field} is not set"));
         }
     }
+    // The startup probe asks /healthz, which does not depend on the database, so a database outage never looks like a failed
+    // start and the liveness probe never judges a slow start (P11; plan 09 T3).
+    if container["startupProbe"]["httpGet"]["path"] != "/healthz"
+        || container["startupProbe"]["httpGet"]["port"] != "ops"
+    {
+        problems.push("the startup probe must be /healthz on the ops port".to_owned());
+    }
     if container["livenessProbe"]["httpGet"]["path"] != "/healthz"
         || container["readinessProbe"]["httpGet"]["path"] != "/readyz"
         || container["livenessProbe"]["httpGet"]["port"] != "ops"
@@ -505,6 +512,26 @@ fn volume_problems(spec: &Value, container: &Value) -> Vec<String> {
             problems.push(format!("{variable} is not a file inside the {volume} mount"));
         }
     }
+    // Each Secret reaches the pod through one key. CloudNativePG's CA Secret also holds ca.key, which signs server certificates
+    // (plan 09 A9), and the credentials Secret holds the user name and password besides the connection URL (S7).
+    for (volume, key) in [("db-ca", "ca.crt"), ("db-credentials", "uri")] {
+        let keys: Vec<String> = volumes
+            .iter()
+            .find(|v| v["name"] == volume)
+            .and_then(|v| v["secret"]["items"].as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| i["key"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if keys != [key] {
+            problems.push(format!(
+                "{volume} must mount only the {key} key of its Secret (items), found {keys:?}"
+            ));
+        }
+    }
     // A Secret that holds a password is readable by the group only (mode 0440).
     let credentials = volumes.iter().find(|v| v["name"] == "db-credentials");
     if credentials.is_none_or(|v| v["secret"]["defaultMode"].as_u64().is_none_or(|m| m & 0o007 != 0)) {
@@ -548,6 +575,9 @@ fn environment_problems(container: &Value) -> Vec<String> {
     }
     problems
 }
+
+/// Where the users' load balancer, its proxies and its health checks come from (plan 09 A10).
+const GOOGLE_RANGES: [&str; 2] = ["35.191.0.0/16", "130.211.0.0/22"];
 
 const EXPECTED_HOSTS: [&str; 7] = [
     "login.microsoftonline.com",
@@ -681,7 +711,7 @@ fn network_problems(docs: &[Value]) -> Vec<String> {
     }
     // Ingress: exactly the four listeners, each from its own callers.
     let ingress = policy["spec"]["ingress"].as_array().cloned().unwrap_or_default();
-    let mut by_port = std::collections::BTreeMap::new();
+    let mut by_port = BTreeSet::new();
     for rule in &ingress {
         let ports: Vec<u64> = rule["ports"]
             .as_array()
@@ -718,13 +748,26 @@ fn network_problems(docs: &[Value]) -> Vec<String> {
         } else {
             "other"
         };
-        by_port.insert(ports[0], caller);
+        // The operations port is for Prometheus and for the load balancer's health checks (plan 09 A10), which come from
+        // Google's two ranges and no others.
+        if ports[0] == 9090 && caller == "block" {
+            for d in &from {
+                let cidr = d["ipBlock"]["cidr"].as_str().unwrap_or("");
+                if !GOOGLE_RANGES.contains(&cidr) {
+                    problems.push(format!(
+                        "port 9090 admits {cidr}; from outside only the load balancer's health-check ranges {GOOGLE_RANGES:?}"
+                    ));
+                }
+            }
+        }
+        by_port.insert((ports[0], caller));
     }
-    let expected: std::collections::BTreeMap<u64, &str> = [
+    let expected: BTreeSet<(u64, &str)> = [
         (8443, "block"),
         (8444, "block"),
         (8445, "hub"),
         (9090, "monitoring"),
+        (9090, "block"),
     ]
     .into();
     if by_port != expected {
@@ -941,6 +984,54 @@ fn hardening_lint_rejects_planted_violations() {
                 d["spec"]["containers"].as_array_mut().unwrap().push(c);
             }),
         ),
+        (
+            "the whole CA Secret",
+            mutate("Pod", |d| {
+                d["spec"]["volumes"][3]["secret"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("items");
+            }),
+        ),
+        (
+            "the CA key as well as the certificate",
+            mutate("Pod", |d| {
+                d["spec"]["volumes"][3]["secret"]["items"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({"key": "ca.key", "path": "ca.key"}))
+            }),
+        ),
+        (
+            "every key of the credentials Secret",
+            mutate("Pod", |d| {
+                d["spec"]["volumes"][2]["secret"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("items");
+            }),
+        ),
+        (
+            "the password key of the credentials Secret",
+            mutate("Pod", |d| {
+                d["spec"]["volumes"][2]["secret"]["items"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({"key": "password", "path": "password"}))
+            }),
+        ),
+        (
+            "no startup probe",
+            mutate("Pod", |d| {
+                container(d).as_object_mut().unwrap().remove("startupProbe");
+            }),
+        ),
+        (
+            "a startup probe that depends on the database",
+            mutate("Pod", |d| {
+                container(d)["startupProbe"]["httpGet"]["path"] = "/readyz".into()
+            }),
+        ),
     ];
     for (label, docs) in &pod_cases {
         assert!(
@@ -1024,6 +1115,25 @@ fn hardening_lint_rejects_planted_violations() {
             "a non-HTTPS port",
             mutate("FQDNNetworkPolicy", |d| {
                 d["spec"]["egress"][0]["ports"][0]["port"] = Value::from(80)
+            }),
+        ),
+        (
+            "the operations port open to another block",
+            policy(|d| {
+                d["spec"]["ingress"][4]["from"] =
+                    serde_json::json!([{"ipBlock": {"cidr": "198.51.100.0/24"}}])
+            }),
+        ),
+        (
+            "the operations port open to the internet",
+            policy(|d| {
+                d["spec"]["ingress"][4]["from"] = serde_json::json!([{"ipBlock": {"cidr": "0.0.0.0/0"}}])
+            }),
+        ),
+        (
+            "the operations port without the monitoring rule",
+            policy(|d| {
+                d["spec"]["ingress"].as_array_mut().unwrap().remove(3);
             }),
         ),
     ];

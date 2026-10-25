@@ -1,0 +1,146 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "lanekeeper-hub values",
+  "description": "Helm checks the values against this before rendering. Unknown keys are refused, so a typo cannot silently turn a setting off.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["image", "serviceAccount", "network"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "digest"],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[a-z0-9][a-z0-9./_-]*$" },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "A tag is never deployed (S19)." }
+      }
+    },
+    "imagePullSecrets": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "gcpServiceAccount"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "gcpServiceAccount": { "type": "string", "pattern": "^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\\.iam\\.gserviceaccount\\.com$" }
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "trustedProxyHops": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "otlpEndpoint": { "type": "string", "pattern": "^(https?://[^\\s]+)?$" },
+        "git": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "baseUrl": { "type": "string", "pattern": "^(https://[^\\s]+)?$" },
+            "tenantUrl": { "type": "string", "pattern": "^(https://[^\\s]+)?$" },
+            "baseRepo": { "type": "string", "pattern": "^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?$" },
+            "tenantRepo": { "type": "string", "pattern": "^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?$" }
+          }
+        },
+        "tuning": {
+          "type": "object",
+          "description": "The tunables of crates/hub/src/config.rs. Addresses, paths, files and secrets are the chart's, not tunables.",
+          "additionalProperties": false,
+          "properties": {
+            "LK_BLOB_CACHE_MIB": { "type": ["integer", "string"] },
+            "LK_BODY_MAX_BYTES": { "type": ["integer", "string"] },
+            "LK_BUCKET_CAPACITY": { "type": ["integer", "string"] },
+            "LK_DB_ACQUIRE_TIMEOUT_SECS": { "type": ["integer", "string"] },
+            "LK_DB_MAX_CONNECTIONS": { "type": ["integer", "string"] },
+            "LK_DB_STATEMENT_TIMEOUT_SECS": { "type": ["integer", "string"] },
+            "LK_GIT_FETCH_TIMEOUT_SECS": { "type": ["integer", "string"] },
+            "LK_GIT_QUEUE_CAPACITY": { "type": ["integer", "string"] },
+            "LK_IP_BURST": { "type": ["integer", "string"] },
+            "LK_IP_RATE_PER_SEC": { "type": ["integer", "number", "string"] },
+            "LK_JSON_DEPTH": { "type": ["integer", "string"] },
+            "LK_MAX_CONNECTIONS": { "type": ["integer", "string"] },
+            "LK_REQUEST_TIMEOUT_SECS": { "type": ["integer", "string"] },
+            "LK_SHUTDOWN_DRAIN_SECS": { "type": ["integer", "string"] },
+            "LK_SHUTDOWN_GRACE_SECS": { "type": ["integer", "string"] },
+            "LK_TREE_INDEX_ENTRIES": { "type": ["integer", "string"] },
+            "LK_TRUSTED_TYPES": { "type": "string", "pattern": "^[A-Za-z0-9_.#=,-]*$" },
+            "LK_USER_BURST": { "type": ["integer", "string"] },
+            "LK_USER_RATE_PER_SEC": { "type": ["integer", "number", "string"] }
+          }
+        }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "clusterName": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$" },
+        "credentialsSecretName": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$" },
+        "caSecretName": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9.-]*-db-ca)$" }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "size": { "type": "string", "pattern": "^[0-9]+(Gi|Ti)$" },
+        "cmekKey": { "type": "string", "pattern": "^(projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+)?$" },
+        "diskType": { "type": "string", "enum": ["pd-balanced", "pd-ssd"] },
+        "fallbackClassName": { "type": "string", "minLength": 1 }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests", "limits"],
+      "properties": {
+        "requests": { "type": "object", "required": ["cpu", "memory"], "additionalProperties": false, "properties": { "cpu": { "type": ["string", "number"] }, "memory": { "type": "string" } } },
+        "limits": { "type": "object", "required": ["cpu", "memory"], "additionalProperties": false, "properties": { "cpu": { "type": ["string", "number"] }, "memory": { "type": "string" } } }
+      }
+    },
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "mode": { "type": "string", "enum": ["zone", "kind"] } }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agentSourceRanges"],
+      "properties": {
+        "googleRanges": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$" } },
+        "agentSourceRanges": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^[0-9a-fA-F:.]+(/[0-9]{1,3})?$" }, "description": "Required and never empty: an empty allowlist is an open port (S18, Q1)." },
+        "monitoringNamespace": { "type": "string", "minLength": 1 },
+        "fqdnPolicy": { "type": "boolean" },
+        "teamsWebhookHost": { "type": "string", "pattern": "^([a-z0-9]([a-z0-9.-]*[a-z0-9])?)?$" }
+      }
+    },
+    "agentLoadBalancer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "ipAddress": { "type": "string", "pattern": "^([0-9.]+)?$" },
+        "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "hostname": { "type": "string", "pattern": "^([a-z0-9]([a-z0-9.-]*[a-z0-9])?)?$" },
+        "addressName": { "type": "string", "pattern": "^([a-z]([a-z0-9-]*[a-z0-9])?)?$" },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "preSharedCerts": { "type": "string", "pattern": "^([a-z0-9,-]*)$" },
+            "certManagerCerts": { "type": "string", "pattern": "^([a-z0-9,/._-]*)$" }
+          }
+        },
+        "securityPolicyName": { "type": "string", "pattern": "^[a-z]([a-z0-9-]*[a-z0-9])?$" },
+        "timeoutSec": { "type": "integer", "minimum": 30, "maximum": 86400 }
+      }
+    }
+  }
+}

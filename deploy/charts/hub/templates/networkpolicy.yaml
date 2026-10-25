@@ -1,0 +1,141 @@
+{{- include "lanekeeper-hub.requireRanges" (list "network.agentSourceRanges" .Values.network.agentSourceRanges) -}}
+{{- include "lanekeeper-hub.requireRanges" (list "network.googleRanges" .Values.network.googleRanges) -}}
+# Default deny for the hub's pods: both policy types are set, so everything not listed is denied (S18). This is the contract of
+# crates/hub/HARDENING.md, rendered; network.rego checks the rendering against it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lanekeeper-hub
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-hub.labels" . | nindent 4 }}
+  {{- if not .Values.network.fqdnPolicy }}
+  annotations:
+    # No FQDNNetworkPolicy on this cluster (plan 09 A11): the external egress below is by address, which is weaker.
+    lanekeeper.io/weaker-egress: "true"
+  {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "lanekeeper-hub.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # The users' load balancer: its proxies come from Google's ranges (the client address is checked by Cloud Armor).
+    - from:
+        {{- range .Values.network.googleRanges }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 8443}
+    # The agents and the NFS sentinel: the clusters' outbound IPs, the same ranges as the load balancer's allowlist.
+    - from:
+        {{- range .Values.network.agentSourceRanges }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 8444}
+    # The other replicas.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "lanekeeper-hub.selectorLabels" . | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: 8445}
+    # Prometheus.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.network.monitoringNamespace }}
+      ports:
+        - {protocol: TCP, port: 9090}
+    # The load balancer's health checks, which ask /readyz on the operations port (plan 09 A10).
+    - from:
+        {{- range .Values.network.googleRanges }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 9090}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    # Postgres, with full TLS verification (S6).
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: {{ .Values.database.clusterName }}
+      ports:
+        - {protocol: TCP, port: 5432}
+    # The other replicas.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "lanekeeper-hub.selectorLabels" . | nindent 14 }}
+      ports:
+        - {protocol: TCP, port: 8445}
+    # The GKE metadata server, for Workload Identity.
+    - to:
+        - ipBlock: {cidr: 169.254.169.254/32}
+      ports:
+        - {protocol: TCP, port: 80}
+    {{- if .Values.config.otlpEndpoint }}
+    # The OpenTelemetry collector (plan 09 A30), when there is one.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.network.monitoringNamespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: otel-collector
+      ports:
+        - {protocol: TCP, port: 4317}
+    {{- end }}
+    {{- if not .Values.network.fqdnPolicy }}
+    # Entra, GitHub and Google by address: 443 to everything outside the private and link-local ranges. Weaker than by name.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"]
+      ports:
+        - {protocol: TCP, port: 443}
+    {{- end }}
+{{- if .Values.network.fqdnPolicy }}
+---
+# A Kubernetes NetworkPolicy cannot name a host, so the external destinations are GKE's FQDN network policy: Entra sign-in,
+# GitHub, the Google APIs and, when it is known, the Teams webhook host. Names without wildcards, HTTPS only (S18).
+apiVersion: networking.gke.io/v1alpha1
+kind: FQDNNetworkPolicy
+metadata:
+  name: lanekeeper-hub-external
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-hub.labels" . | nindent 4 }}
+  {{- with .Values.network.teamsWebhookHost }}
+  annotations:
+    lanekeeper.io/teams-webhook-host: {{ . | quote }}
+  {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "lanekeeper-hub.selectorLabels" . | nindent 6 }}
+  egress:
+    - matches:
+        - pattern: login.microsoftonline.com
+        - pattern: github.com
+        - pattern: api.github.com
+        - pattern: secretmanager.googleapis.com
+        - pattern: cloudkms.googleapis.com
+        - pattern: www.googleapis.com
+        {{- with .Values.network.teamsWebhookHost }}
+        - pattern: {{ . | quote }}
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: 443}
+{{- end }}

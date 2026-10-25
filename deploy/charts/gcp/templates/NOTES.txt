@@ -1,0 +1,1 @@
+lanekeeper-gcp {{ .Release.Name }}: Config Connector resources for project {{ .Values.project }}.

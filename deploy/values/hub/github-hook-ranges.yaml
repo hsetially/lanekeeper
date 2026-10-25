@@ -1,0 +1,10 @@
+# GitHub's webhook delivery ranges (Q28), for the Cloud Armor rule that allows them on /hooks/github (charts/gcp).
+#
+# UNRESOLVED. This file is written by `node deploy/tools/github-hook-ranges.mjs --write`, which reads the `hooks` list of
+# https://api.github.com/meta. The sandbox that wrote the tool cannot reach that endpoint (plan 09 blockers, B5), and the ranges are
+# never typed in by hand, so the list is empty. The gcp chart refuses to render with an empty list, which is how an unresolved file
+# fails: `just deploy-render` and `just policy-check` stop at it for prod and staging. A person with network access runs the
+# command above and commits the result; the nightly job (`github-hook-ranges.mjs --check`) fails whenever the file differs from
+# GitHub's list.
+cloudArmor:
+  githubHookRanges: []

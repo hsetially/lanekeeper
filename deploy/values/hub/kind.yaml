@@ -1,0 +1,31 @@
+# The hub in kind (the kind job of images.yml, plan 09 T5). No GKE: no Gateway, no load balancer, no FQDN policy, one zone.
+# Documentation addresses only (RFC 5737).
+image:
+  repository: ghcr.io/hsetially/lanekeeper/hub
+  # The kind job builds the image and passes the digest it loaded: --set image.digest=sha256:...
+  digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+serviceAccount:
+  gcpServiceAccount: lanekeeper-hub@example-project.iam.gserviceaccount.com
+
+config:
+  trustedProxyHops: 0
+
+topology:
+  mode: kind
+
+storage:
+  cmekKey: ""
+  size: 5Gi
+  fallbackClassName: standard
+
+network:
+  agentSourceRanges:
+    - 198.51.100.0/24
+  fqdnPolicy: false
+
+agentLoadBalancer:
+  enabled: false
+
+gateway:
+  enabled: false

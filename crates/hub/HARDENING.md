@@ -9,13 +9,15 @@ apart:
   shell, no package manager, and only three things copied in (the binary, `web/dist` and the embedding model checked
   against `deploy/images/hub-model.lock`).
 - `hardening_md_pod_contract_is_complete`: the Pod block below has every control S16 lists, mounts nothing writable except
-  the mirror volume and `/tmp`, mounts no service-account token, and passes only variables that `src/config.rs` reads.
+  the mirror volume and `/tmp`, mounts no service-account token, mounts each database Secret through the one key the hub
+  needs, and passes only variables that `src/config.rs` reads.
 - `hardening_md_network_policy_denies_by_default_and_lists_only_allowed_egress`: the NetworkPolicy blocks allow exactly the
   destinations S18 names, and ingress exactly the four listeners from exactly their callers.
 - `hardening_lint_rejects_planted_violations`: each of those checks is shown to refuse a manifest that breaks it.
 
-Values in `<angle brackets>` or marked "from values" are the chart's to fill in. The documentation addresses
-(`203.0.113.0/24`, `198.51.100.0/24`) stand for the real load-balancer ranges.
+Values in `<angle brackets>` or marked "from values" are the chart's to fill in. `198.51.100.0/24` is a documentation
+address that stands for the real source ranges of the agents (the clusters' outbound IPs, Q1). `35.191.0.0/16` and
+`130.211.0.0/22` are real: they are where Google's load balancers, proxies and health checks come from (plan 09 A10).
 
 ## The image
 
@@ -41,7 +43,9 @@ Values in `<angle brackets>` or marked "from values" are the chart's to fill in.
 Three replicas (D62), each its own pod with its own mirror volume and a stable DNS name through the headless service, which
 is how replicas find one another (`agent_connections.replica_address`). One container, no sidecars. The hub does not talk to
 the Kubernetes API, so it mounts no service-account token; Workload Identity reaches Google through the metadata server.
-The chart renders this pod as a StatefulSet template.
+The chart renders this pod as a StatefulSet template: the `mirror` volume below is the set's `volumeClaimTemplate`, so each
+replica gets its own claim (`mirror-lanekeeper-hub-0`, `-1`, `-2`), on a StorageClass that encrypts with a customer-managed key
+(S10), and the replicas are kept in different zones (D62).
 
 **Ports.** `web` 8443 (HTTPS, behind the users' load balancer), `agent` 8444 (agents and the NFS sentinel, mTLS), `replica`
 8445 (replica-to-replica, mTLS), `ops` 9090 (plain HTTP: `/healthz`, `/readyz`, `/metrics`, cluster-internal). T3 and T4 add
@@ -49,7 +53,9 @@ the settings that bind 8444 and 8445.
 
 **Secrets are files, not variables.** The database URL holds a password, so it is read from a mounted Secret file
 (`LK_DATABASE_URL_FILE`); no variable in this contract takes its value from a Secret reference, and none has a name that
-suggests a secret. Everything else secret comes from Secret Manager at run time (S7).
+suggests a secret. Everything else secret comes from Secret Manager at run time (S7). Each Secret is mounted through the one
+key the hub needs (`items`): the credentials Secret only `uri`, not the user name or the password it also holds; and
+CloudNativePG's CA Secret only `ca.crt`, because it also holds `ca.key`, which signs server certificates (S6, plan 09 A9).
 
 ```yaml
 apiVersion: v1
@@ -89,6 +95,11 @@ spec:
     - {name: agent, containerPort: 8444, protocol: TCP}
     - {name: replica, containerPort: 8445, protocol: TCP}
     - {name: ops, containerPort: 9090, protocol: TCP}
+    startupProbe:
+      httpGet: {path: /healthz, port: ops}
+      periodSeconds: 2
+      timeoutSeconds: 2
+      failureThreshold: 30
     livenessProbe:
       httpGet: {path: /healthz, port: ops}
       periodSeconds: 10
@@ -132,10 +143,22 @@ spec:
   - name: mirror
     persistentVolumeClaim: {claimName: lanekeeper-hub-mirror}
   - name: db-credentials
-    secret: {secretName: lanekeeper-db-app, defaultMode: 288}
+    secret:
+      secretName: lanekeeper-db-app
+      defaultMode: 288
+      items:
+      - {key: uri, path: uri}
   - name: db-ca
-    secret: {secretName: lanekeeper-db-ca}
+    secret:
+      secretName: lanekeeper-db-ca
+      items:
+      - {key: ca.crt, path: ca.crt}
 ```
+
+**Probes.** Start-up is budgeted at 10 s (P11), and the startup probe allows 60 s (30 tries, 2 s apart) so that a slow node is
+not a crash loop. It asks `/healthz`, which does not depend on the database: a database outage must never look like a failed
+start, and the liveness probe does not begin until the start has succeeded. `/readyz` is readiness only, and it is also what
+the users' load balancer's health check asks.
 
 `LK_TRUSTED_PROXY_HOPS` is 2 behind Google's external HTTPS load balancer, which appends the client address and then its own
 (`client_ip.rs` counts from the right). The value must be re-checked whenever the path to the hub changes.
@@ -171,9 +194,12 @@ destinations.
 | `secretmanager.googleapis.com`, `cloudkms.googleapis.com`, `www.googleapis.com` | 443/TCP | Secret Manager, Cloud KMS (T2), and the keys that verify Google ID tokens (T3). |
 | the Teams webhook host | 443/TCP | Notifications (Q9: the host depends on the answer). |
 
-In: the web port from the users' load balancer range, the agent port from the agent load balancer range, the replica port
-from the hub's own pods, and the operations port from the `monitoring` namespace. The kubelet's probes come from the node.
-The load balancers' own source-IP allowlists, and the GitHub hook ranges on the webhook path, are the chart's (S18, Q28).
+In: the web port from the users' load balancer, whose proxies come from Google's two ranges (the client address is checked by
+Cloud Armor, not here); the agent port from the agent load balancer's source ranges, which are the same list as the load
+balancer's own allowlist; the replica port from the hub's own pods; and the operations port from the `monitoring` namespace and
+from Google's two ranges, because the users' load balancer health-checks `/readyz` on it (plan 09 A10) and no other range may.
+The kubelet's probes come from the node. The load balancers' own source-IP allowlists, and the GitHub hook ranges on the
+webhook path, are the chart's (S18, Q28).
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -188,7 +214,8 @@ spec:
   policyTypes: [Ingress, Egress]
   ingress:
   - from:
-    - ipBlock: {cidr: 203.0.113.0/24}
+    - ipBlock: {cidr: 35.191.0.0/16}
+    - ipBlock: {cidr: 130.211.0.0/22}
     ports:
     - {protocol: TCP, port: 8443}
   - from:
@@ -205,6 +232,11 @@ spec:
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: monitoring
+    ports:
+    - {protocol: TCP, port: 9090}
+  - from:
+    - ipBlock: {cidr: 35.191.0.0/16}
+    - ipBlock: {cidr: 130.211.0.0/22}
     ports:
     - {protocol: TCP, port: 9090}
   egress:

@@ -1,0 +1,104 @@
+# Defaults for the hub chart (09/T3). Hardened by default: nothing here loosens S16 or S18. The fields without a usable default
+# (the image digest, the service account, the agent source ranges, and for a Gateway the host name and the certificate) must be
+# set by the values file of the environment (deploy/values/hub/<env>.yaml); the chart refuses to render without them.
+
+image:
+  repository: ghcr.io/hsetially/lanekeeper/hub
+  # sha256:<64 hex digits>. A tag is never deployed (S19, plan 09 A29): images.yml prints the digest of what it published.
+  digest: ""
+
+# Names of image-pull Secrets created out of band (Q8, plan 09 A6). The chart never creates one.
+imagePullSecrets: []
+
+serviceAccount:
+  name: lanekeeper-hub
+  # The Google service account that Workload Identity maps this Kubernetes service account to (S5, S7): Secret Manager, KMS, GCS
+  # and Cloud Trace are reached with it.
+  gcpServiceAccount: ""
+
+# Settings for the hub; only variables that crates/hub/src/config.rs reads (deploy/tests/env-names.sh checks that).
+config:
+  # How many proxies sit in front of the hub. 2 behind Google's external HTTPS load balancer (HARDENING.md); 0 where nothing is.
+  trustedProxyHops: 2
+  # The OpenTelemetry collector (OTLP/gRPC). Empty: no collector is deployed and the hub exports nothing (plan 09 A30).
+  otlpEndpoint: ""
+  # The Git repositories (D8): all four or none.
+  git:
+    baseUrl: ""
+    tenantUrl: ""
+    baseRepo: ""
+    tenantRepo: ""
+  # Other LK_* tunables, by variable name. The schema allows exactly the tunables the hub has; the addresses, paths and secrets
+  # are the chart's.
+  tuning: {}
+
+database:
+  # The CloudNativePG cluster the hub talks to, and the two Secrets it reads one file from each (HARDENING.md, plan 09 A7, A9).
+  clusterName: lanekeeper-db
+  credentialsSecretName: lanekeeper-db-app
+  caSecretName: lanekeeper-db-ca
+
+# The Git mirror: a volume per replica (D62).
+storage:
+  size: 50Gi
+  # A Cloud KMS key, projects/P/locations/L/keyRings/R/cryptoKeys/K (S10). With it the chart renders a StorageClass that encrypts
+  # the disks with it. Without it the volumes use the cluster's default class, which is Google-managed encryption, and the policy
+  # warns (plan 09 A11b, Q29); render.sh fails that warning for prod and staging.
+  cmekKey: ""
+  diskType: pd-balanced
+  # Only used without cmekKey.
+  fallbackClassName: standard-rwo
+
+resources:
+  requests:
+    cpu: 500m
+    # The P11 budget (perf/budgets.toml, P11.memory_mib = 1536): resources.rego fails any other value.
+    memory: 1536Mi
+  limits:
+    cpu: "4"
+    memory: 2Gi
+
+topology:
+  # zone: the replicas must be in different zones (D62). kind: one zone, so the replicas only prefer different hosts, and the
+  # policy warns every time (plan 09 A13). Never use kind outside kind.
+  mode: zone
+
+network:
+  # Where the users' load balancer's proxies and health checks come from (plan 09 A10): Google's two ranges.
+  googleRanges:
+    - 35.191.0.0/16
+    - 130.211.0.0/22
+  # Who may reach the agent port: the clusters' outbound IPs (Q1) and the NFS VM's (plan 09 A28). Required. Used by the
+  # LoadBalancer's loadBalancerSourceRanges and by the NetworkPolicy, so that the two cannot differ.
+  agentSourceRanges: []
+  # The namespace of Prometheus and of the OpenTelemetry collector.
+  monitoringNamespace: monitoring
+  # GKE's FQDNNetworkPolicy (plan 09 A11). false: external hosts are reached by 443 to every address outside the private ranges,
+  # which is weaker, is marked, and is warned about.
+  fqdnPolicy: true
+  # The Teams webhook host (Q9). Empty until it is known: then there is no Teams egress.
+  teamsWebhookHost: ""
+
+# The agents' entry point (D25): a TCP pass-through load balancer with a source allowlist (Q1).
+agentLoadBalancer:
+  enabled: true
+  # A reserved regional external IP address, if there is one.
+  ipAddress: ""
+  # GKE's backend-service-based external passthrough load balancer.
+  annotations:
+    cloud.google.com/l4-rbs: "enabled"
+
+# The users' entry point (D25): a Gateway with TLS, behind a Cloud Armor policy (Q2).
+gateway:
+  enabled: true
+  hostname: ""
+  # The name of a reserved global external IP address.
+  addressName: ""
+  # Exactly one: Compute Engine SSL certificates by name, or Certificate Manager certificates by name. Never a Kubernetes Secret.
+  tls:
+    preSharedCerts: ""
+    certManagerCerts: ""
+  # The Cloud Armor policy of the gcp chart (charts/gcp), attached to the web Service.
+  securityPolicyName: lanekeeper-hub
+  # A server-sent-events stream is one request; the default 30 s would cut every live view.
+  timeoutSec: 3600

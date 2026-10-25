@@ -1,6 +1,6 @@
 # Every night (09/T2; S19, S22, rule 14): the fuzz targets for ten minutes each instead of thirty seconds, the whole benchmark suite
-# at target scale, and the supply-chain scans again, because an advisory can be published against a dependency that did not
-# change. A job that fails shows up as a failed run of the workflow on main; the people who watch main read it.
+# at target scale, GitHub's webhook ranges against the file Cloud Armor is built from, and the supply-chain scans again, because an
+# advisory can be published against a dependency that did not change. A job that fails shows up as a failed run of the workflow on main; the people who watch main read it.
 name: nightly
 on:
   schedule:
@@ -110,6 +110,24 @@ jobs:
             target/perf-results
           if-no-files-found: ignore
           retention-days: 30
+
+  hook-ranges:
+    # GitHub's webhook ranges (Q28) in deploy/values/hub/github-hook-ranges.yaml equal the list GitHub publishes. A stale file
+    # means Cloud Armor drops real deliveries, or still allows addresses that are no longer GitHub's. To fix a failure, run
+    # `node deploy/tools/github-hook-ranges.mjs --write` and commit the file (plan 09 T3).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: "22"
+      - run: node --test deploy/tools/github-hook-ranges.test.mjs
+      - run: node deploy/tools/github-hook-ranges.mjs --check
 
   supply-chain:
     runs-on: ubuntu-latest

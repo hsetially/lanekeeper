@@ -1,0 +1,17 @@
+# Defaults for the gcp chart (09/T3). Config Connector resources: a person applies this chart once per project through the
+# platform ArgoCD (plan 09 A4). The fields without a usable default must be set by the values file of the environment.
+
+# The Google Cloud project the resources belong to (the Config Connector annotation cnrm.cloud.google.com/project-id).
+project: ""
+
+cloudArmor:
+  enabled: true
+  # The name of the policy; the hub chart's gateway.securityPolicyName is the same string.
+  policyName: lanekeeper-hub
+  # The users' entry point (D25, Q2): the GlobalProtect egress ranges. Required: an empty list would deny everyone, and a
+  # list with the internet in it would allow everyone, so the chart refuses both.
+  usersRanges: []
+  # GitHub's webhook delivery ranges (Q28), allowed on /hooks/github only. Not set by hand: deploy/values/hub/github-hook-ranges.yaml
+  # is written by `node deploy/tools/github-hook-ranges.mjs --write` from GitHub's /meta, layered over these values, and a
+  # nightly job fails when it is stale.
+  githubHookRanges: []

@@ -1,0 +1,51 @@
+# The Helm charts (09/T3; D62, S6, S7, S10, S16, S18, P11): every chart rendered with every values file, then kubeconform -strict
+# against the vendored schemas (offline: a kind without a schema is an error), then the Rego policies on the real output, then
+# the same checks on planted violations, which must each be refused for their own reason. `just deploy-check` is what runs here,
+# so a developer runs exactly what CI runs.
+#
+# No token beyond contents: read, and nothing is published. Docker is needed for conftest, which runs from the image pinned by
+# digest in deploy/images/tools.env, through the Docker Hub mirror (see the docker-hub-mirror action).
+#
+# NOT YET RUN ON GITHUB. The sandbox that wrote this workflow cannot reach GitHub's runners; `just deploy-check` was run there, with
+# one failure that is the point of the gate: deploy/values/hub/github-hook-ranges.yaml is unresolved until a person runs
+# deploy/tools/github-hook-ranges.mjs (plan 09 blockers, B5), and the gcp chart refuses to render without it.
+name: deploy
+on:
+  pull_request:
+    paths:
+      - "deploy/charts/**"
+      - "deploy/values/**"
+      - "deploy/policy/**"
+      - "deploy/schemas/**"
+      - "deploy/tests/**"
+      - "deploy/tools/**"
+      - "deploy/images/tools.env"
+      - "crates/hub/HARDENING.md"
+      - "crates/hub/src/config.rs"
+      - "perf/budgets.toml"
+      - "Justfile"
+      - ".github/workflows/deploy.yml"
+      - ".github/actions/docker-hub-mirror/**"
+  push:
+    branches: [main]
+permissions: {}
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  charts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/docker-hub-mirror
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just@1.40.0
+      - run: just ops-tools-install helm kubeconform
+      - run: just deploy-check

@@ -1,0 +1,13 @@
+# A drain or an upgrade may take one replica at a time, never two (D62).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: lanekeeper-hub
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-hub.labels" . | nindent 4 }}
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      {{- include "lanekeeper-hub.selectorLabels" . | nindent 6 }}

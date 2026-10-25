@@ -1,0 +1,29 @@
+# The hub in staging (09/T3). Every value that names something of ours is a documentation or example value until the question that
+# decides it is answered, and says which: the digest (plan 09 A29: images.yml prints it after the first publish), the project and
+# the Google service account (the GCP project is not named yet), the CMEK key (Q29), the agents' source ranges (Q1, Q2), the
+# host name, address and certificate (Q2). Documentation addresses only (RFC 5737); no real tenant or cluster data (rule 12).
+image:
+  repository: ghcr.io/hsetially/lanekeeper/hub
+  # PLACEHOLDER, 64 zeros: it cannot be pulled, and the images policy warns about it. Replace with the published digest (A29).
+  digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+serviceAccount:
+  gcpServiceAccount: lanekeeper-hub@example-project.iam.gserviceaccount.com
+
+storage:
+  size: 50Gi
+  # EXAMPLE key (Q29).
+  cmekKey: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-disk-staging
+
+network:
+  # EXAMPLE ranges (Q1: the clusters' outbound IPs; plan 09 A28: the NFS VM's egress IP).
+  agentSourceRanges:
+    - 198.51.100.0/24
+
+gateway:
+  # EXAMPLE names (Q2).
+  hostname: lanekeeper-staging.example.com
+  addressName: lanekeeper-hub-staging-ip
+  tls:
+    preSharedCerts: lanekeeper-hub-staging
+  securityPolicyName: lanekeeper-hub-staging

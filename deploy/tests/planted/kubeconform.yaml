@@ -1,0 +1,52 @@
+# Planted: kubeconform -strict with the vendored schemas must refuse every document here (deploy/tests/render.sh planted). Each
+# custom resource has a field its schema does not have, and the last kind has no schema at all, which is an error and not a skip.
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata: {name: planted, namespace: n}
+spec:
+  default: {securityPolicy: x, bogusField: 1}
+  targetRef: {group: "", kind: Service, name: s}
+---
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata: {name: planted, namespace: n}
+spec:
+  default: {checkIntervalSec: 5, bogusField: 1}
+  targetRef: {group: "", kind: Service, name: s}
+---
+apiVersion: networking.gke.io/v1alpha1
+kind: FQDNNetworkPolicy
+metadata: {name: planted, namespace: n}
+spec:
+  podSelector: {matchLabels: {a: b}}
+  bogusField: 1
+  egress: []
+---
+apiVersion: compute.cnrm.cloud.google.com/v1beta1
+kind: ComputeSecurityPolicy
+metadata: {name: planted, namespace: n}
+spec:
+  bogusField: 1
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata: {name: planted, namespace: n}
+spec:
+  gatewayClassName: x
+  bogusField: 1
+  listeners: []
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: planted, namespace: n}
+spec:
+  bogusField: 1
+  serviceName: s
+  selector: {matchLabels: {a: b}}
+  template:
+    metadata: {labels: {a: b}}
+    spec: {containers: [{name: c, image: x}]}
+---
+apiVersion: networking.gke.io/v1
+kind: SomethingWithoutASchema
+metadata: {name: planted, namespace: n}

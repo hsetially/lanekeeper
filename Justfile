@@ -887,8 +887,52 @@ images-builder-test: images-tools-check
 images-publish-test: images-tools-check (ops-tools-check "cosign crane")
     deploy/images/tests/publish-test.sh
 
-# The T2 gate so far (T3 to T8 add to it): the pinned tools, the workflow lint, the pin tests, and the image checks.
-verify-09: ops-tools-check ci-lint pins-test images-policy-test images-builder-test images-publish-test
+# Prompt 09, T3 (D62, S6, S7, S10, S16, S18, P11): the charts. deploy/tests/render.sh renders every chart with every values file and
+# runs helm lint, kubeconform and the policies on the result; the recipes below are its parts and the tests of its tools.
+
+# The vendored schemas equal their lock, and the converter that makes them passes its tests.
+schemas-verify:
+    python3 -B -I -m unittest discover -s deploy/schemas -p 'test_*.py'
+    node --test deploy/schemas/verify.test.mjs
+    node deploy/schemas/verify.mjs
+
+# helm lint --strict of every chart with every values file.
+deploy-lint: (ops-tools-check "helm")
+    deploy/tests/render.sh lint
+
+# helm template | kubeconform -strict, offline: a field or a kind without a vendored schema is an error, never a skip.
+deploy-render: schemas-verify (ops-tools-check "helm kubeconform")
+    deploy/tests/render.sh render
+
+# The unit tests of the Rego policies: every rule has a planted case that it must refuse.
+policy-test: images-tools-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . deploy/images/tools.env
+    docker run --rm -v "$PWD:/repo:ro" -w /repo "$LK_CONFTEST_IMAGE" verify --policy deploy/policy --no-color
+
+# The policies on the real output of every chart. In prod and staging a warning fails; in kind the fallbacks it allows are printed.
+policy-check: (ops-tools-check "helm") images-tools-check
+    deploy/tests/render.sh policy
+
+# The checks refuse planted violations, each for its own reason: kubeconform, the templates, and the policies on the real output.
+deploy-planted: (ops-tools-check "helm kubeconform") images-tools-check
+    deploy/tests/render.sh planted
+
+# The hub chart names only variables that crates/hub/src/config.rs reads, and the tool that finds them is shown to refuse a typo.
+env-names-test:
+    deploy/tests/env-names.sh --self-test
+    deploy/tests/env-names.sh
+
+# The tool that writes GitHub's webhook ranges passes its tests, which use a synthetic /meta document.
+tools-test:
+    node --test deploy/tools/*.test.mjs
+
+# Everything that checks the charts (what the deploy workflow runs): schemas, lint, kubeconform, the policies and their planted cases.
+deploy-check: schemas-verify deploy-lint deploy-render policy-test policy-check deploy-planted env-names-test tools-test
+
+# The T3 gate so far (T4 to T8 add to it): the pinned tools, the workflow lint, the pin tests, the image checks, and the charts.
+verify-09: ops-tools-check ci-lint pins-test images-policy-test images-builder-test images-publish-test deploy-check
 verify-11:
     @echo "verify-11 not implemented yet" && exit 1
 verify-14:
