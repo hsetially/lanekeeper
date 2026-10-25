@@ -1,6 +1,6 @@
 # Plan 09 blockers
 
-Status on 2026-10-25, T4 run: **B1 to B4 are resolved; B5 is open and stops `just verify-09` (and nothing else of T3 or T4); B7 and B8 are new, informational, and need a human before a swimlane is deployed.**
+Status on 2026-10-25, T5 run: **B1 to B4 are resolved; B5 is open and stops `just verify-09` (and nothing else of T3, T4 or T5); B7 and B8 are informational and need a human before a swimlane is deployed; B9 is informational; B10 is a decision that T5 needs from a human (the backup method and the image of the database), built meanwhile with the interim choice below.**
 The T1 sections below are from the third T1 run (after a human allowed `us.aws.cdn.hf.co` and merged the plan amendment, PR #29):
 T1 is complete; the commit `e2c199d` holds the code and the measurements were taken at it.
 
@@ -14,6 +14,8 @@ T1 is complete; the commit `e2c199d` holds the code and the measurements were ta
 | B6 | informational (T3) | `docs.cloud.google.com` and `registry.k8s.io` are refused; Google-specific shapes in the hub chart are unverified (T3 notes below) |
 | B7 | **open, informational (T4)** | the agent contract dials the hub on 443; the hub chart's agent load balancer listens on 8444 (T4 notes below) |
 | B8 | **open, informational (T4)** | the agent contract lets the agent reach the config-server only in the agent's own namespace (T4 notes below) |
+| B9 | **open, informational (T5)** | `pkg-containers.githubusercontent.com` (where `ghcr.io` keeps image layers) is refused: the database image's layers and config cannot be read here (T5 notes below) |
+| B10 | **open, decision needed (T5)** | the plan names CloudNativePG's `standard` image for the database and built-in barman for the backups; the `standard` image has no barman (T5 notes below) |
 
 ## B1 (T1): resolved. The model lock is filled in, from a download made here
 
@@ -416,3 +418,168 @@ is too narrow.
 The Docker daemon of the sandbox was not running at the start of this run (`Cannot connect to the Docker daemon`), and conftest runs
 from the pinned image. It was started with `dockerd` and its default settings, nothing changed; the images were still there. No host
 was refused in this run: every pin and check T4 needed (helm 4.3.0, kubeconform, conftest, the vendored schemas) was already in place.
+
+
+# T5 notes (2026-10-25)
+
+T5 is built and every check it owns passes. `just verify-09` still stops, for **B5 and nothing else**: the gcp chart refuses to render
+until a person runs `node deploy/tools/github-hook-ranges.mjs --write`. Nothing was typed in, copied or faked to get around that, and
+no range was swapped in even for one run (T3 did that with synthetic ones; this run did not): `deploy/values/hub/github-hook-ranges.yaml`
+is still the unresolved marker, `cloudarmor.yaml` and its refusal are unchanged, `planted_gcp` is unchanged and still counts its
+failure, and no test was touched to make a recipe pass. B10 needs a human but does not stop a check.
+
+## How T5 is verified without weakening B5
+
+The new gcp resources (buckets, service accounts, IAM) are in their own templates (`buckets.yaml`, `iam.yaml`), and `deploy/tests/render.sh`
+renders the gcp chart a second time as `gcp-storage`: the same chart and values with `--set cloudArmor.enabled=false`. Every stage (lint,
+kubeconform, the policies, the planted cases) runs for the gcp chart exactly as before, and fails for it exactly as before, **and also**
+for `gcp-storage`. The isolation cannot stand in for the chart: `render.sh planted` fails if the isolated render has a
+`ComputeSecurityPolicy`, and fails if any committed `deploy/values/gcp/*.yaml` says `enabled: false`. `just deploy-data` runs the data layer
+alone (the db chart, `gcp-storage`, their planted cases and the cross-chart check); it is a subset of `deploy-check` and never the gate.
+
+## Which commands pass and which fail only because of B5 (committed tree, each run on its own, `just` stops at the first failure)
+
+| Recipe | Result |
+|---|---|
+| `ops-tools-check`, `ci-lint`, `pins-test`, `images-policy-test`, `images-builder-test`, `images-publish-test` | exit 0 |
+| `schemas-verify`, `deploy-lint`, `policy-test`, `contract-check`, `env-names-test`, `tools-test` | exit 0 (`policy-test`: 630 of 630; `contract-check` includes the new cross-chart check) |
+| `deploy-render` | exit 1, **B5 only**: hub 6, 13, 13 resources valid; **db 2, 4, 4 valid; `gcp-storage` 16 and 16 valid**; agent 9. The two failures are `gcp` with staging and prod, with the B5 message |
+| `policy-check` | exit 1, **B5 only**: conftest passes for hub, **db (kind with 3 warnings that are its fallbacks, staging and prod clean), `gcp-storage` (staging and prod clean)** and agent; it fails for `gcp` with staging and prod, with the B5 message |
+| `deploy-planted` | exit 1, **B5 only**: 288 cases report `ok` (151 before T5); the one failure is the Cloud Armor group, `the gcp chart does not render with the committed hook ranges` |
+| `deploy-data` (new) | **exit 0**: lint, kubeconform and the policies on the db chart (kind, staging, prod) and `gcp-storage` (staging, prod); 137 planted cases (22 template refusals of the db chart, 17 of the gcp chart, 61 and 28 on the real output of the two, 7 cross-chart, 2 that the isolation is what it says) each refused for its own reason |
+
+The T5 Verify of the plan, "`helm template` plus kubeconform plus conftest on the db and gcp charts; the policy tests reject a public,
+non-CMEK or unlocked-in-prod bucket and a cluster without TLS", therefore splits like this: the **db chart**, the **buckets, keys and
+IAM of the gcp chart** and **all policy tests** pass on their own; the **gcp chart as a whole** (Cloud Armor and buckets in one render)
+fails only because of B5. What is not proven until B5 is resolved: kubeconform and conftest on one render that holds both Cloud Armor
+and the buckets. No rule reads both (storage, iam and database do not look at a `ComputeSecurityPolicy`; network does not look at a
+bucket), so this is a small gap, but it is a gap.
+
+## What T5 proved
+
+| Check | Result |
+|---|---|
+| `conftest verify` | 630 of 630 (433 before T5, so 197 new: `database` 119, `iam` 31 and 47 more in `storage`), with the fixtures in `fixtures_data_test.rego` |
+| Mutation of the new rules | all 105 `deny` and `warn` rules of `database.rego`, `iam.rego` and `storage.rego` were disabled one at a time in a scratch copy and `conftest verify` run on each. **Seven survived** (another cluster; kind's spread and its warning; the owner's Secret named like the hub's; the scheduled backup's method; the pod's `runAsNonRoot`; the "everyone" member). Each got a test whose fragment only that rule says, and the seven were run again: **all killed** |
+| kubeconform `-strict`, offline, vendored schemas | db 2, 4, 4; `gcp-storage` 16, 16 (3 `StorageBucket`, 2 `IAMServiceAccount`, 11 `IAMPolicyMember`); five new kinds got planted invalid fields (`deploy/tests/planted/kubeconform.yaml`): each refused for the field only |
+| the real output, changed one field at a time | 61 cases on the db chart (TLS 1.2, a first `pg_hba` rule that lets non-TLS in, trust and md5, a parameter that is not ours, two instances, spread by host in prod, image by tag, collation C, no pgvector, a grant at bootstrap, one Secret for both roles, each flag of the app role, no backup, 7 days, a key file, no Workload Identity, no scheduled backup, each S16 field, an unencrypted class, a class that deletes the disk, every caller of the network policy, a second policy that admits everyone, a second cluster, kind with a key file) and 28 on the gcp chart's buckets and IAM (each bucket rule, the unlocked audit bucket in prod, no retention, a lock on the docs, no versioning, a key without a grant, a person, `allUsers`, owner, the audit bucket that can be overwritten, the hub in the backups, a role on the project, Workload Identity for `default`, another pool, a key granted to the hub, the fallback failing in prod) |
+| templates and schemas | 22 refusals of the db chart and 17 of the gcp chart (no digest, a tag, another repository, no environment, no backups outside kind, no bucket, no service account, a lock in staging, a key in another location, no retention period, a bucket name that is not one, a password in the values, ...) |
+| the cross-chart check | the backup bucket, the Google service accounts, the Workload Identity members and the disk keys agree between the db, gcp and hub charts; seven planted disagreements are each refused for their own reason |
+| `shellcheck -x` (0.11.0) | clean on `render.sh` |
+
+Found while building (fixed): the first run of the planted cases showed that a second `NetworkPolicy` that selects the database's pods
+and admits everyone was accepted, because the rules looked at the policy named `lanekeeper-db` only and policies add up. `database.rego`
+now refuses any other NetworkPolicy in the db chart's output. **The same gap exists in `network.rego` for the hub (T3)** and was not
+changed here: a second policy that selects the hub's pods is not looked at. It is T3's file and was not asked for; a reviewer should
+decide.
+
+## B9 (T5, informational): `pkg-containers.githubusercontent.com` is refused, so the database image's contents cannot be read
+
+**The host.** `pkg-containers.githubusercontent.com` (the CONNECT is refused by the egress proxy). `ghcr.io` itself answers: the tag list
+and the manifests were read with the pinned `crane` 0.22.1. The layers and the config of an image are served from the other host.
+
+**What it blocks.** Reading the image config (so the creation date is not read from the image) and the layers (so that pgvector, pg_trgm,
+the `en_US.utf8` locale and barman are not seen in the image, and the image is not scanned with grype, and the signature that CloudNativePG
+says it makes is not verified). It does not block the pin: **the digest was read from the registry, not guessed or copied**
+(`crane digest ghcr.io/cloudnative-pg/postgresql:16.15-202610050823-system-trixie`).
+
+| Item | Value |
+|---|---|
+| tag | `16.15-202610050823-system-trixie`; the timestamp is the publisher's (2026-10-05 08:23, 20 days before 2026-10-25, rule 15 needs 14). The newer tags, `202610120828` (13 days) and `202610190818`, `202610190958` (6), are too young |
+| index digest | `sha256:c2a1806568615fbd1a675d772fc10641dbc33c10fef00a7b7ee2f2b6b8730af4`; linux/amd64 `sha256:29044d6e...` and linux/arm64 `sha256:81ce0d12...`, and two attestation manifests |
+| what is known about its contents | from the build recipe, not from the image: `github.com/cloudnative-pg/postgres-containers` at `4c2710a` (2026-10-22), `Dockerfile` and `docker-bake.hcl`: `standard` = `minimal` + `locales-all` + pgaudit + pgvector + pg-failover-slots, `system` = `standard` + `barman[cloud,google,...]` 3.20.1 |
+
+**Why the work went on.** The instruction was to record the host and stop if a refusal means a pin cannot be had. The pin could be had; the
+refusal only stops the check of what is inside. If that reading is wrong, the image is one `digest` line in each of
+`deploy/values/db/{kind,staging,prod}.yaml`, and the README lists what is unverified. In CI nothing is refused: the kind job (not written, see
+below) will run `CREATE EXTENSION vector` against the real image.
+
+**What the sandbox did verify of the database design** (it could pull `pgvector/pgvector:pg16`, the CI image, by its digest from compose.yaml,
+and the container was removed afterwards): on PostgreSQL 16, with no `GRANT` at all, a role created like `lanekeeper_app` has `CONNECT`
+and `USAGE` on `public` and not `CREATE`, the owner of the database has `CREATE` on `public` (`public` is owned by `pg_database_owner`), and
+`CREATE EXTENSION vector` and `pg_trgm` succeed; `datcollate` is `en_US.utf8`. That is why `postInitApplicationSQL` creates the two extensions
+and carries none of the grants of `deploy/dev/init.sql` (the plan's row says it should): a managed role does not exist yet when the
+bootstrap runs, so such a grant would fail the bootstrap, and none is needed.
+
+## B10 (T5): the plan's image has no barman, and the built-in barman it relies on is deprecated
+
+**The plan.** T5 and A26: "`ghcr.io/cloudnative-pg/postgresql:16-standard-bookworm`, with pgvector", "barman to GCS through Workload
+Identity; `retentionPolicy: "30d"`; a daily `ScheduledBackup`".
+
+**What was found.**
+- **The `standard` image has no barman.** `postgres-containers` README: "Both `minimal` and `standard` images are designed to work with
+  backup plugins such as Barman Cloud. The `system` images, built on top of the `standard` ones, also include the Barman Cloud binaries."
+  The `Dockerfile` installs barman only in the `system` stage. With the built-in `barmanObjectStore` on a `standard` image the WAL
+  archiving cannot run (`barman-cloud-wal-archive` is not there), and an archive that fails keeps its WAL on the volume.
+- **The `system` images are deprecated**, and so is what they exist for. README: "will be removed once in-core support for Barman Cloud
+  in CloudNativePG is phased out". CloudNativePG 1.30.1 (`docs/src/backup.md`, `appendixes/backup_barmanobjectstore.md`): "native Barman
+  Cloud support is deprecated" since 1.26, "remains functional for now"; `spec.backup.retentionPolicy` "is deprecated and will be removed in
+  a future release". The vendored 1.30.1 CRD still has all of it, and kubeconform accepts it.
+- **The plan's Debian release.** The plan says `bookworm`. T1 (B3, amendment A32) moved the images 09 builds to Debian 13 because Debian 12's
+  libc6 has a critical finding that will not be fixed (CVE-2026-5450). The same recipe is published for trixie
+  (`16.15-202610050823-{standard,system}-{bookworm,trixie}`). The database image could not be scanned here (B9), so whether the
+  bookworm one has the same finding is not measured; the reasoning of A32 says it would.
+
+**What was built meanwhile (interim, and the least that works):** the image `16.15-202610050823-system-trixie` (the `system` variant, for the
+barman binaries; trixie, as A32 did for the others) with the built-in barman exactly as the plan describes it. It is flagged in the values
+files, in `deploy/charts/db/README.md` and here. It is a substitution of the plan's literal, so a human should confirm it.
+
+**Options for the human.**
+1. **Keep the interim** (`system` image, built-in barman): works today; both are deprecated, the horizon of the removal is unknown, and
+   `retentionPolicy` is a deprecated field. Nothing to change. Plan a migration.
+2. **`standard` image and the Barman Cloud plugin** (CloudNativePG's supported path): `charts/db` changes (an `ObjectStore` object of the
+   plugin, `plugins:` in the Cluster, `method: plugin` in the ScheduledBackup, the retention in the `ObjectStore`), the plugin has to be
+   installed (a new component, with its own image and pins, and, I believe, cert-manager, which I could not check here), the schema of its
+   `ObjectStore` has to be vendored (`deploy/schemas/sources.json`), and `database.rego`'s backup section changes with its tests. The gcp chart does
+   not change.
+3. **A custom image** under `deploy/images/postgres/` (A26's fallback): `standard` plus barman, pinned and scanned by us, patched by us.
+
+Where each choice lands: `deploy/values/db/*.yaml` (the image), `deploy/charts/db/templates/{cluster,scheduledbackup}.yaml` (the backup
+stanza), `deploy/policy/database.rego` (the `# backups` section) and `database_test.rego`.
+
+## Decisions T5 made that a reviewer should look at
+
+1. **The interim image and backup method** (B10).
+2. **Only the extensions in `postInitApplicationSQL`, none of `init.sql`'s grants** (B9: verified on PostgreSQL 16). A policy rule refuses any other
+   statement there.
+3. **The owner's Secret is `lanekeeper-db-migrator`, set explicitly** (`bootstrap.initdb.secret.name`). Left to the operator it would be made in
+   `lanekeeper-db-app`, the name the hub reads (T3, A7): the hub would connect as the owner of the database. A policy rule refuses the clash.
+4. **Ingress only for the database's network policy**, as the plan's row says. The egress of the database pods is not restricted: it needs the API
+   server's addresses per cluster and Google Cloud Storage by name, and the FQDN rules of `network.rego` are written for the hub alone. Proposed
+   as a follow-up; until then the database pods can reach anything the node can.
+5. **The keys are referenced, not made.** A bucket and a disk take the name of an existing Cloud KMS key (Q29 has not chosen the ring), and
+   the chart grants Google's service agents their use. The signing keys of the hub (agent CA, replica CA, audit checkpoint, token KEK, CI cosign) and
+   the hub's Secret Manager and KMS bindings are **not** in T5: their names are the hub's configuration (A1). Chart.yaml's old sentence "T5 adds
+   buckets and keys" is corrected.
+6. **A19: prod's audit bucket is locked in the committed prod values, with an EXAMPLE period of one year.** The policy requires the lock in prod, so
+   the values must have it to pass; the file says in a comment that a person confirms the period before prod is applied, and the project in
+   it is an example, so it cannot be applied as it is. Staging is never locked (the template and the policy refuse it).
+7. **The buckets cannot be deleted by their Kubernetes resource** (`deletion-policy: abandon`, `Prune=false`): the backups and the checkpoints
+   outlive a mistake in Git. Removing one is a person's act in Google Cloud.
+8. **The data disk class has `reclaimPolicy: Retain`** (the hub's mirror class is `Delete`, since a mirror is a cache).
+9. **Sizing is a placeholder** (2 CPU, 2 GiB, 20 GiB, `shared_buffers` 512 MB): the load test of prompt 16 measures. No planner parameter is
+   changed (D124), and a policy refuses any parameter outside a short list.
+10. **The hub chart's `storageclass.yaml` comment** now says where the grant is (`charts/gcp` `cmek.diskKeys`), and `render.sh` checks that it exists.
+
+## Not done in T5
+
+- **The kind job** (`deploy/tests/kind/run.sh`, the job `kind-e2e` of `images.yml`, `just kind-e2e`). The plan's traceability gives acceptance 3 to T3 and T5, T3's
+  notes say "the kind job is T5", but T5's row lists no file for it, nothing in this sandbox can run it (the CloudNativePG operator image is on
+  `ghcr.io`, whose layers are B9, and the disk has 2.4 GB free), and it cannot pass until the hub serves (A1). A script
+  that was never run would be a guess, so it is left for a task of its own; `deploy/values/{hub,db}/kind.yaml` exist for it.
+- **Renovate does not see the database image** (`deploy/values/db/*.yaml` holds the tag and digest in a shape its managers do not match). It is
+  updated by hand, at least 14 days after publication (rule 15). A custom manager could not be tested here.
+- **Egress of the database pods** (decision 4) and **monitoring on 9187**.
+- **The signing keys and the hub's own bindings** (decision 5).
+- **The hub's `network.rego` gap** (a second NetworkPolicy), above.
+- **B7 and B8 were not touched**: no contract file was changed and no T3 or T4 chart was changed to settle them.
+
+## Hosts probed in this run
+
+| Host | Result | Used for |
+|---|---|---|
+| `ghcr.io` | reachable (tags, manifests) | the database image's tag list and digest |
+| `pkg-containers.githubusercontent.com` | **refused** | the image's layers and config: **B9** |
+| `raw.githubusercontent.com` | reachable | CloudNativePG's source and documentation at the commit of the schemas (`2a35abb4`) |
+| `github.com` (git over HTTPS) | reachable | `cloudnative-pg/postgres-containers`, shallow |
+| `docker.io` (registry-1) | reachable | `pgvector/pgvector:pg16` by its digest, to check the PostgreSQL 16 defaults (removed afterwards) |
