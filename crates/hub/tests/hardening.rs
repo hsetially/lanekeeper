@@ -204,9 +204,14 @@ fn hub_dockerfile_is_hardened() {
         "the builder is the toolchain in rust-toolchain.toml"
     );
     assert!(text.contains("gcr.io/distroless/cc-debian13:nonroot@sha256:"));
-    let code: Vec<&str> = text.lines().filter(|l| !l.trim_start().starts_with('#')).collect();
+    let code: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect();
     assert!(
-        !code.iter().any(|l| l.contains("bookworm") || l.contains("cc-debian12")),
+        !code
+            .iter()
+            .any(|l| l.contains("bookworm") || l.contains("cc-debian12")),
         "no Debian 12 image is left"
     );
     assert!(
@@ -252,7 +257,10 @@ fn hardening_lint_rejects_planted_dockerfile_violations() {
         ),
         good.replace("gcr.io/distroless/cc-debian13:nonroot", "debian:13-slim"),
         // The runtime moves to another Debian release than the builder, or the builder does.
-        good.replace("gcr.io/distroless/cc-debian13:nonroot", "gcr.io/distroless/cc-debian12:nonroot"),
+        good.replace(
+            "gcr.io/distroless/cc-debian13:nonroot",
+            "gcr.io/distroless/cc-debian12:nonroot",
+        ),
         good.replace("rust:1.88.0-trixie@", "rust:1.88.0-bookworm@"),
         good.lines()
             .filter(|l| !l.starts_with("USER "))

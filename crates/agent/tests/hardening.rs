@@ -151,9 +151,14 @@ fn dockerfile_is_distroless_nonroot_pinned() {
         "the builder is the toolchain in rust-toolchain.toml"
     );
     assert!(text.contains("gcr.io/distroless/cc-debian13:nonroot@sha256:"));
-    let code: Vec<&str> = text.lines().filter(|l| !l.trim_start().starts_with('#')).collect();
+    let code: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect();
     assert!(
-        !code.iter().any(|l| l.contains("bookworm") || l.contains("cc-debian12")),
+        !code
+            .iter()
+            .any(|l| l.contains("bookworm") || l.contains("cc-debian12")),
         "no Debian 12 image is left"
     );
     // The binary is the only thing in the final image.
@@ -183,7 +188,10 @@ fn dockerfile_lint_rejects_planted_violations() {
         ),
         good.replace("gcr.io/distroless/cc-debian13:nonroot", "debian:13-slim"),
         // The runtime moves to another Debian release than the builder, or the builder does.
-        good.replace("gcr.io/distroless/cc-debian13:nonroot", "gcr.io/distroless/cc-debian12:nonroot"),
+        good.replace(
+            "gcr.io/distroless/cc-debian13:nonroot",
+            "gcr.io/distroless/cc-debian12:nonroot",
+        ),
         good.replace("rust:1.88.0-trixie@", "rust:1.88.0-bookworm@"),
         good.lines()
             .filter(|l| !l.starts_with("USER "))

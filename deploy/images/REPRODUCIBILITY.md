@@ -30,6 +30,7 @@ equal; on a difference it prints the config fields, layers and files that differ
 | Build paths in the binaries (panic locations, debug strings) | `--remap-path-prefix` for `/src` and `/usr/local/cargo`; every build uses the same paths anyway |
 | Parallel code generation | `codegen-units = 1` in `[profile.release]` |
 | The build CA secret (`LK_BUILD_CA`) | a secret mount: never in a layer, never in the cache key |
+| The proxy of a build behind an egress proxy (`HTTPS_PROXY`, `NO_PROXY`) | passed as BuildKit's predefined build args, which are kept out of the image history and config (checked in the hub image's config); CI sets none |
 | The revision label | the same for both builds of a commit, by definition |
 
 ## Known limits
@@ -40,20 +41,24 @@ equal; on a difference it prints the config fields, layers and files that differ
   the difference is in the tar or gzip encoding".
 - **Registries.** A base-image digest pins its bytes, but a registry can delete it. The build then fails; it never picks up
   other bytes.
+  Docker Hub also limits anonymous pulls per IP address (100 manifest requests an hour); an exhausted limit fails a build with
+  `429 Too Many Requests`, never with other bytes.
 - **The model host.** The same applies to the model: Hugging Face serving different bytes for a pinned commit fails the
   `sha256sum -c` check.
 
 ## Measurements
 
-Measured on 2026-10-25 with Docker 29.9.2 (its built-in BuildKit, containerd image store), 4 vCPUs, at commit `8563b6c`
-(`SOURCE_DATE_EPOCH=1792910251`). The digest depends on the commit time, so another commit gives another digest; what is
-checked is that one commit gives one.
+Measured on 2026-10-25 with Docker 29.9.2 (its built-in BuildKit, containerd image store) on 4 vCPUs, after the move to
+Debian 13 (builder `rust:1.88.0-trixie`, runtime `gcr.io/distroless/cc-debian13:nonroot`), at commit `e2c199d`
+(`SOURCE_DATE_EPOCH=1792949090`), with the build cache emptied first (`docker builder prune -af`) and the settings of a
+build behind this environment's egress proxy (`LK_BUILD_CA`, `LK_BUILD_NETWORK=host`, `HTTPS_PROXY` and `NO_PROXY`). The digest
+depends on the commit time, so another commit gives another digest; what is checked is that one commit gives one.
 
 | Image | Builds | Result |
 |---|---|---|
-| agent | `reproducible-check.sh agent`: two `--no-cache` builds from two `git archive` extractions | identical: `sha256:167548e1a6a654fdc2982d16f1e8a42547edf902be0fe76a7efd2144df9f96a4` |
-| agent, again at commit `f02523a` (`SOURCE_DATE_EPOCH=1792911878`) | the same, with an empty build cache (`docker builder prune -af` first) | identical: `sha256:b175553354141423395634222f4ca3a9b4cbeaf83d3bd2287bbcdbebc1aa8e67` |
-| hub without the `model` stage | the same two builds of the hub Dockerfile with the model stage and its `COPY` removed (a one-off check, the web app and the binary) | identical: `sha256:2810c71cb39c216b2f6303613747ee93fa5716a6778d64a65d4e133735670035` |
-| hub | | not measured: `hub-model.lock` is unresolved (`plans/09-deployment-ci.blockers.md`, B1: the ONNX graph is served from Hugging Face's CDN, which the build environment cannot reach), so the `model` stage refuses to run. The model files are fixed by their sha256, so they cannot add a difference; their file times are rewritten like every other file's |
+| hub | `reproducible-check.sh hub`: two `--no-cache` builds from two `git archive` extractions, including the `model` stage (the five files of `hub-model.lock` downloaded from Hugging Face and checked) | identical: `sha256:0117df0be05cd1a3fb6d49b318000dd81544a7a2bbee7a89f92da7c24a5c0e85`; the two OCI archives are byte for byte equal (`cmp`) |
+| agent | `reproducible-check.sh agent`: the same | identical: `sha256:35d95ba845bd7398cb427553ecd6a0590c49dbde0cd0cf71d3d0d62ee3c4750c`; the two OCI archives are byte for byte equal (`cmp`) |
 
-No differences were found, so none is listed as accepted.
+The whole run (`just images-repro`, four builds) took 22 minutes. No differences were found, so none is listed as accepted.
+The earlier measurements on the Debian 12 images (agent at `8563b6c` and `f02523a`, hub without its model stage) also gave
+identical digests; they are superseded by the table above, because the base and the builder changed.
