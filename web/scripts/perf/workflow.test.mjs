@@ -18,6 +18,10 @@ const root = new URL("../../../", import.meta.url);
 const text = readFileSync(new URL(".github/workflows/web-e2e.yml", root), "utf8");
 const ci = readFileSync(new URL(".github/workflows/ci.yml", root), "utf8");
 const justfile = readFileSync(new URL("Justfile", root), "utf8");
+// The browser install is a script (it gives apt timeouts and retries; .github/scripts/playwright-install.test.sh tests it), which runs
+// the same `pnpm exec playwright install --with-deps chromium` that the steps used to hold.
+const installScript = readFileSync(new URL(".github/scripts/playwright-install.sh", root), "utf8");
+const INSTALL = "playwright-install.sh";
 const workflow = parse(text);
 const jobs = workflow.jobs;
 
@@ -154,8 +158,10 @@ describe("the perf job (P10 is enforced in CI)", () => {
     expect(stepWith(perf, "pnpm/action-setup")).toBeDefined();
     expect(stepWith(perf, "actions/setup-node")).toBeDefined();
     expect(indexOfStep(perf, "just web-install")).toBeGreaterThan(0);
-    expect(commands(perf).join("\n")).toMatch(/playwright install --with-deps chromium/);
-    expect(indexOfStep(perf, "playwright install")).toBeLessThan(indexOfStep(perf, "just web-perf"));
+    expect(commands(perf).join("\n")).toContain(`../.github/scripts/${INSTALL}`);
+    expect(installScript).toMatch(/playwright install --with-deps chromium/);
+    expect(indexOfStep(perf, INSTALL)).toBeGreaterThan(0);
+    expect(indexOfStep(perf, INSTALL)).toBeLessThan(indexOfStep(perf, "just web-perf"));
     expect(indexOfStep(perf, "just web-install")).toBeLessThan(indexOfStep(perf, "just web-perf"));
   });
 
@@ -224,13 +230,15 @@ describe("the e2e shards (the whole suite does not fit in one job)", () => {
   it("each build the Rust fixture (rust-cache before the recipe, which builds it) and get React 18 before the tests, like the single job did", () => {
     expect(indexOfStep(shard, "Swatinem/rust-cache")).toBeGreaterThanOrEqual(0);
     expect(indexOfStep(shard, "Swatinem/rust-cache")).toBeLessThan(indexOfStep(shard, "just web-e2e"));
-    expect(indexOfStep(shard, "React 18.3.1")).toBeGreaterThan(indexOfStep(shard, "playwright install"));
+    expect(indexOfStep(shard, INSTALL)).toBeGreaterThan(0);
+    expect(indexOfStep(shard, "React 18.3.1")).toBeGreaterThan(indexOfStep(shard, INSTALL));
     expect(indexOfStep(shard, "React 18.3.1")).toBeLessThan(indexOfStep(shard, "just web-e2e"));
-    expect(indexOfStep(shard, "playwright install")).toBeLessThan(indexOfStep(shard, "just web-e2e"));
+    expect(indexOfStep(shard, INSTALL)).toBeLessThan(indexOfStep(shard, "just web-e2e"));
     expect(indexOfStep(shard, "just web-install")).toBeLessThan(indexOfStep(shard, "just web-e2e"));
     expect(indexOfStep(shard, "just web-gen-check")).toBeLessThan(indexOfStep(shard, "just web-e2e"));
     expect(stepWith(shard, "taiki-e/install-action").with.tool).toBe("just");
-    expect(commands(shard).join("\n")).toMatch(/playwright install --with-deps chromium/);
+    expect(commands(shard).join("\n")).toContain(`../.github/scripts/${INSTALL}`);
+    expect(installScript).toMatch(/playwright install --with-deps chromium/);
   });
 
   it("never make a baseline: a missing one fails the run (baseline-rule.mjs), in every shard", () => {
