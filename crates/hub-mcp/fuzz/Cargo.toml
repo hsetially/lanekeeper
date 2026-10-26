@@ -43,7 +43,7 @@ ports = { path = "../../ports", version = "0.1.0", features = ["fakes"] }
 axum = { version = "=0.8.9", default-features = false }
 tower = { version = "=0.5.3", default-features = false, features = ["util"] }
 http-body-util = "=0.1.5"
-tokio = { version = "=1.53.1", default-features = false, features = ["rt", "time"] }
+tokio = { version = "=1.53.3", default-features = false, features = ["rt", "time"] }
 
 [[bin]]
 name = "mcp_bearer_header"
