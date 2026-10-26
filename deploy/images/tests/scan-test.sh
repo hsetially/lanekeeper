@@ -5,6 +5,11 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Started as root, step down to the unprivileged user that a CI runner is. As root, no permission is ever refused, and the grype container
+# could not write its /tmp as the runner's uid (the first CI run): this test would not have seen it. The repository's target/ belongs to
+# root here, so the database is cached under the user's HOME.
+[ "$(id -u)" -ne 0 ] || exec "$here/../../tests/as-user.sh" "${BASH_SOURCE[0]}" "$@"
+[ -z "${LK_AS_USER:-}" ] || export LK_GRYPE_DB_CACHE="$HOME/grype-db"
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 if "$here/../scan.sh" --sbom "$here/critical.cdx.json" >"$log" 2>&1; then

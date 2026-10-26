@@ -10,7 +10,8 @@
 # Exceptions live in deploy/images/grype.yaml, each with the vulnerability id, the reason and a review date; a human
 # approves every one in review. `--by-cve` reports each finding by its CVE id where it has one (not the advisory's own
 # GHSA id), so the output and the exceptions name findings the same way. The vulnerability database is cached in
-# target/grype-db between runs.
+# target/grype-db between runs (LK_GRYPE_DB_CACHE names another directory). The container runs as the user who runs this script, with a
+# /tmp and a HOME that user owns (container.sh: the image's own /tmp is root's), and the cache belongs to that user too.
 #
 # grype downloads that database from grype.anchore.io. Behind a TLS-intercepting proxy, the same variables as build.sh
 # apply: LK_BUILD_NETWORK is passed to `--network` (for example `host`, so the container reaches a proxy on 127.0.0.1),
@@ -22,11 +23,16 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(git -C "$here" rev-parse --show-toplevel)"
 # shellcheck source=deploy/images/tools.env
 . "$here/tools.env"
+# shellcheck source=deploy/images/container.sh
+. "$here/container.sh"
+lk_explain_failures
 usage() { echo "usage: $0 <hub|agent> [--out DIR] | $0 --sbom FILE | $0 --image REF" >&2; exit 2; }
 [ $# -ge 1 ] || usage
 
-cache="$root/target/grype-db"
+cache="${LK_GRYPE_DB_CACHE:-$root/target/grype-db}"
 mkdir -p "$cache"
+cache="$(cd "$cache" && pwd)"
+[ -w "$cache" ] || { echo "scan.sh: the database cache $cache is not writable by uid $(id -u), and the grype container runs as that uid; use a directory that user owns (LK_GRYPE_DB_CACHE)" >&2; exit 1; }
 net=()
 [ -z "${LK_BUILD_NETWORK:-}" ] || net+=(--network "$LK_BUILD_NETWORK")
 [ -z "${HTTPS_PROXY:-}" ] || net+=(-e HTTPS_PROXY)
@@ -38,7 +44,7 @@ fi
 grype() {
     local dir="$1"
     shift
-    docker run --rm --user "$(id -u):$(id -g)" "${net[@]}" \
+    lk_container_run grype "${net[@]}" \
         -e GRYPE_CHECK_FOR_APP_UPDATE=false -e GRYPE_DB_CACHE_DIR=/cache \
         -v "$cache:/cache" -v "$dir:/in:ro" -v "$here/grype.yaml:/grype.yaml:ro" \
         "$LK_GRYPE_IMAGE" --config /grype.yaml --fail-on critical --by-cve --output table "$@"

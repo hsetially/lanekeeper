@@ -13,6 +13,9 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(git -C "$here" rev-parse --show-toplevel)"
 # shellcheck source=deploy/images/tools.env
 . "$here/tools.env"
+# shellcheck source=deploy/images/container.sh
+. "$here/container.sh"
+lk_explain_failures
 usage() { echo "usage: $0 <hub|agent> [--out DIR]" >&2; exit 2; }
 [ $# -ge 1 ] || usage
 image="$1"
@@ -32,10 +35,9 @@ cargo cyclonedx --version 2>/dev/null | grep -qxE "cargo-cyclonedx(-cyclonedx)? 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# 1. The image, as the registry will hold it.
-docker run --rm --user "$(id -u):$(id -g)" -e SYFT_CHECK_FOR_APP_UPDATE=false \
-    -v "$out:/in:ro" -v "$work:/out" "$LK_SYFT_IMAGE" \
-    "oci-archive:/in/$image.oci.tar" --output "cyclonedx-json=/out/image.cdx.json" --quiet
+# 1. The image, as the registry will hold it. syft runs as this user with a /tmp that this user owns, and is not quiet: on a CI runner
+# the image's own /tmp, root's, refused it, and `--quiet` hid the message, so the job ended with exit code 1 and no line of output.
+lk_syft "$out" "oci-archive:/in/$image.oci.tar" "$work" image.cdx.json
 
 # 2. The crates in the binary: every transitive normal and build dependency of the binary's package (`--all`; the default
 # is top-level only), for the target it runs on, with the default features `cargo build -p <image>` uses. cargo-cyclonedx
@@ -50,8 +52,13 @@ cleanup() {
     rm -rf "$work"
 }
 trap cleanup EXIT
+# Its output is kept and shown when it fails: `--quiet` would hide the reason.
 cargo cyclonedx --manifest-path "$root/crates/$image/Cargo.toml" --all --format json --spec-version 1.5 \
-    --target x86_64-unknown-linux-gnu --quiet
+    --target x86_64-unknown-linux-gnu >"$work/cyclonedx.log" 2>&1 || {
+    cat "$work/cyclonedx.log" >&2
+    echo "sbom.sh: cargo cyclonedx failed for crates/$image (its output is above)" >&2
+    exit 1
+}
 [ -f "$root/crates/$image/$image.cdx.json" ] || { echo "sbom.sh: cargo cyclonedx wrote no SBOM for $image" >&2; exit 1; }
 cp "$root/crates/$image/$image.cdx.json" "$work/crates.cdx.json"
 

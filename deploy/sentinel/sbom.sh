@@ -13,6 +13,9 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(git -C "$here" rev-parse --show-toplevel)"
 # shellcheck source=deploy/images/tools.env
 . "$root/deploy/images/tools.env"
+# shellcheck source=deploy/images/container.sh
+. "$root/deploy/images/container.sh"
+lk_explain_failures
 usage() { echo "usage: $0 --rpm FILE [--out DIR]" >&2; exit 2; }
 rpm_file="" out=""
 while [ $# -gt 0 ]; do
@@ -45,15 +48,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 1. The RPM, as a package syft knows.
+# 1. The RPM, as a package syft knows. No network; syft runs as this user with a /tmp that this user owns, and is not quiet (container.sh).
 mkdir "$work/in"
 cp "$rpm_file" "$work/in/"
-docker run --rm --network none --user "$(id -u):$(id -g)" -e SYFT_CHECK_FOR_APP_UPDATE=false \
-    -v "$work/in:/in:ro" -v "$work:/out" "$LK_SYFT_IMAGE" "dir:/in" --output "cyclonedx-json=/out/rpm.cdx.json" --quiet
+lk_syft "$work/in" "dir:/in" "$work" rpm.cdx.json --network none
 
 # 2. The crates in the binary: every transitive normal and build dependency of the sentinel package, for the target it is built for.
+# Its output is kept and shown when it fails: `--quiet` would hide the reason.
 cargo cyclonedx --manifest-path "$root/crates/sentinel/Cargo.toml" --all --format json --spec-version 1.5 \
-    --target x86_64-unknown-linux-musl --quiet
+    --target x86_64-unknown-linux-musl >"$work/cyclonedx.log" 2>&1 || {
+    cat "$work/cyclonedx.log" >&2
+    echo "sbom.sh: cargo cyclonedx failed for crates/sentinel (its output is above)" >&2
+    exit 1
+}
 [ -f "$root/crates/sentinel/sentinel.cdx.json" ] || { echo "sbom.sh: cargo cyclonedx wrote no SBOM for the sentinel" >&2; exit 1; }
 cp "$root/crates/sentinel/sentinel.cdx.json" "$work/crates.cdx.json"
 

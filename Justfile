@@ -717,9 +717,12 @@ images-policy-test: images-tools-check
     deploy/images/tests/scan-db-test.sh
     node deploy/images/model-lock.mjs check deploy/images/hub-model.lock
 
-# The scan blocks a critical finding: a planted SBOM with CVE-2021-44228 must fail it (needs the grype database).
+# The scan blocks a critical finding: a planted SBOM with CVE-2021-44228 must fail it (needs the grype database). And the tool containers
+# (grype, syft) work as an unprivileged user, the way a CI runner runs them, and say why when they fail (the first CI run's failures: both
+# tests step down from root first, deploy/tests/as-user.sh).
 images-scan-test: images-tools-check
     deploy/images/tests/scan-test.sh
+    deploy/images/tests/container-user-test.sh
 
 # The database image (CloudNativePG's, not built by images.yml; 09/T6, plans/09-deployment-ci.blockers.md B9 and B10) scanned by the digest
 # that deploy/values/db deploys, with the grype setup of the images we build: any critical finding fails. The nightly job `db-image` runs it.
