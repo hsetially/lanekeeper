@@ -4,7 +4,7 @@
 # P11: the hub starts in under 10 seconds (docs/performance.md; perf/budgets.toml, `P11`, 10000 ms, p95 at design scale).
 P11_BUDGET_S=10
 
-# p11_verdict BUDGET-SECONDS < "NAME SECONDS" lines
+# p11_verdict [BUDGET-SECONDS, default P11_BUDGET_S] < "NAME SECONDS" lines
 #   One line per replica: its name and the whole seconds from the start of its container to its Ready condition (the Ready condition is
 #   the readinessProbe's, on /readyz of the operations port, so it includes the probe's period of 5 s at most, and the API's timestamps have a
 #   resolution of one second; a replica that is Ready within the budget therefore started within it). Prints one line per replica, sets
@@ -12,7 +12,7 @@ P11_BUDGET_S=10
 #   without a whole number of seconds, a budget that is not a whole number): never a pass on nothing.
 P11_WORST=""
 p11_verdict() {
-    local budget="${1:-}" name secs extra n=0 over=0
+    local budget="${1-$P11_BUDGET_S}" name secs extra n=0 over=0
     P11_WORST=""
     [[ "$budget" =~ ^[0-9]+$ ]] || { echo "p11: the budget '$budget' is not a whole number of seconds" >&2; return 2; }
     while read -r name secs extra; do
