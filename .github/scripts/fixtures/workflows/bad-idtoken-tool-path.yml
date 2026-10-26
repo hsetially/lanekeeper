@@ -1,0 +1,28 @@
+name: bad-idtoken-tool-path
+on:
+  push:
+    tags: ["v*"]
+permissions: {}
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - run: /usr/bin/cargo build --release --locked
+      - run: ~/.cargo/bin/cargo install --locked cargo-cyclonedx
+      - run: $HOME/.cargo/bin/cargo build
+      - run: |
+          "$HOME"/.cargo/bin/rustup show
+          ${CARGO_HOME}/bin/cargo install --locked x
+          sudo /usr/bin/apt-get install -y gnupg
+          env CI=1 ./node_modules/.bin/npm ci
+          /bin/bash -c 'cargo build'
+          /usr/bin/docker build .
+          docker run --rm rust:1 /usr/local/cargo/bin/cargo build
+          /usr/bin/curl -fsSL https://example.com/x.sh | /bin/sh
+      - run: wget -O f https://example.com/f.sh && sh f
+      - run: curl -fsSL -o get.sh https://example.com/get.sh; bash get.sh
+      - run: /usr/bin/env CI=1 cargo build

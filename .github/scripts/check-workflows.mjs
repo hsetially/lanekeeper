@@ -21,7 +21,9 @@
 //       workflow federates with. So the job that signs or federates handles files that another job built, with tools fetched by a
 //       digest or a hash. Values are read as YAML reads them (`id-token: "write"`, `run: 'cargo install x'`), and a command is
 //       looked for where one can start (the start of a line or after `&&`, `||`, `;`, `|`, `(`, `$(`, then/do/else, past sudo, env,
-//       timeout, time, nice, xargs and VAR=value). A line that ends in `\` is joined with the next. Refused, as a command in a `run:`:
+//       timeout, time, nice, xargs and VAR=value). A command called by its path is the command (`/usr/bin/cargo build`,
+//       `~/.cargo/bin/cargo install`, `$HOME/.cargo/bin/cargo`, `/bin/bash -c '...'`, `/usr/bin/env cargo`), and so is a tool on the command
+//       line of `docker run IMAGE /usr/local/cargo/bin/cargo`. A line that ends in `\` is joined with the next. Refused, as a command in a `run:`:
 //         - cargo, rustc, rustdoc, rustup, npm, npx, pnpm, yarn, corepack, bun, bunx, uv, uvx, pip, pip3, pipx, poetry, conda, mamba,
 //           `python -m pip|pipx|build|poetry|uv|venv|ensurepip`, `python setup.py`, go build/install/run/test/get/generate, gem install,
 //           bundle, mvn, gradle, dotnet build/restore/publish/run/test, make, cmake, ninja, and apt, apt-get, dnf, yum, zypper, brew
@@ -30,15 +32,18 @@
 //         - `docker run|exec|create` with one of those tools on its command line (`docker run IMAGE cargo build`), and
 //           `docker build`, `docker buildx build|bake`, `docker image build`, `docker builder build`, `docker compose build`;
 //         - a download that is run: `curl|wget ... | sh|bash|python|perl|ruby|node`, `bash <(curl ...)`, `eval|source|. "$(curl ...)"`,
-//           `sh -c "$(curl ...)"`;
+//           `sh -c "$(curl ...)"`, and a download that is saved and run in the same command line, with the interpreter given the file the
+//           download was saved to (`wget -O f URL && sh f`, `curl -o f URL; bash f`; not `... && sha256sum -c ... && sh f`, which checks);
 //         and, as a step, the actions docker/build-push-action and docker/bake-action.
 //       NOT SEEN, and read by a person (the threat model lists each): what a script, a `just` recipe or a `make` target called by a
 //       step does (`./build.sh`, `deploy/sentinel/build.sh`, `just build` start no command that this rule knows); the steps of a local
 //       composite action (`uses: ./.github/actions/...`; the file is not opened) and of a reusable workflow; a tool that a step
 //       installs and then runs under a name this list does not hold (a binary from a download that is checked, an `npx`-free
 //       `node script.js`, `python script.py`, `deno run`, `java -jar`); a command assembled in a variable or by `eval` of a string that
-//       is not a download; a quoted `run:` that spans several lines; and a multi-line value of `sh -c` whose command starts on a line
-//       after the first. A tool behind `rustup run stable cargo` is seen because rustup itself is refused. A `docker build` that a
+//       is not a download; a download that is saved and run from another line or by another command (`wget -O f URL` on one line and `sh f`
+//       on the next, `chmod +x f && ./f`, `curl -O URL && sh name-from-the-url`), which no per-line text rule can tell from a download that
+//       is checked first; a tool reached through a link or an alias of another name; a quoted `run:` that spans several lines; and a
+//       multi-line value of `sh -c` whose command starts on a line after the first. A tool behind `rustup run stable cargo` is seen because rustup itself is refused. A `docker build` that a
 //       script runs is not seen (that build runs in a container which is given none of the job's variables; sentinel.yml's
 //       `sign-release` is the one case, and its tools stage is held by dockerfile_artifact.rego and tools-graph.sh instead).
 //
@@ -122,23 +127,32 @@ function children(body) {
 
 // W6. Where a command can start: at the start of a line or after `&&`, `||`, `;`, `|`, `(`, `{`, a backtick, `$(`, `then`, `do` or `else`,
 // past the words that only prefix a command (sudo, env and VAR=value, time, exec, nice, xargs, timeout N). A word inside a string that
-// echo prints, or an argument of grep, does not start a command.
+// echo prints, or an argument of grep, does not start a command. A command may be called by its path (`/usr/bin/cargo`,
+// `~/.cargo/bin/cargo`, `$HOME/.cargo/bin/cargo`, `"$HOME"/.cargo/bin/cargo`, `/usr/bin/env cargo`): BY_PATH is a word that ends in a slash and
+// sits right before the command's name, so a word that only starts with a tool's name (`make-release.sh`, `./gradlew`) is not the tool. A
+// path has no `=`: the value of `--remap-path-prefix=/usr/local/cargo=/cargo` is an option, not a way to run cargo; and none of `;&|()<>`,
+// which end a command, so that a long line of them is read in linear time.
+const BY_PATH = String.raw`(?:[^\s=;&|()<>]*/)?`;
 const BUILD_TOOLS = String.raw`(?:cargo|rustc|rustdoc|rustup|npm|npx|pnpm|yarn|corepack|bunx?|uvx?|pip3?|pipx|poetry|conda|mamba|python3?\s+-m\s+(?:pip|pipx|build|poetry|uv|venv|ensurepip)|python3?\s+(?:\S+/)?setup\.py|go\s+(?:build|install|run|test|get|generate)|gem\s+install|bundle|mvn|gradle|dotnet\s+(?:build|restore|publish|run|test)|make|cmake|ninja|(?:apt|apt-get|dnf|yum|zypper|brew)\s+install|apk\s+add)`;
-const COMMAND_START = String.raw`(?:^|&&|\|\||[;|({\`]|\$\(|\b(?:then|do|else)\b)\s*(?:(?:sudo|time|exec|command|nice|xargs|env)\s+(?:-\S+\s+)*|timeout\s+(?:-\S+\s+)*\d+[smhd]?\s+|[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*`;
+const COMMAND_START = String.raw`(?:^|&&|\|\||[;|({\`]|\$\(|\b(?:then|do|else)\b)\s*(?:${BY_PATH}(?:sudo|time|exec|command|nice|xargs|env)\s+(?:-\S+\s+)*|timeout\s+(?:-\S+\s+)*\d+[smhd]?\s+|[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*${BY_PATH}`;
 const BUILD_COMMAND = new RegExp(`${COMMAND_START}(${BUILD_TOOLS})(?=\\s|$)`);
 const BUILD_ACTION = /^docker\/(?:build-push-action|bake-action)@/;
 // A shell that is given its command as a string: `bash -c '...'`, `sh -ec "..."`, `bash -o pipefail -c '...'`. Group 1 is a double-quoted
 // string, group 2 a single-quoted one.
 const SHELL_C = new RegExp(String.raw`${COMMAND_START}(?:ba|da|z|k)?sh\s+(?:(?:-o\s+\S+|-\S+)\s+)*-[A-Za-z]*c[A-Za-z]*\s+(?:--\s+)?(?:"((?:\\.|[^"\\])*)"|'([^']*)')`, 'g');
 // docker run IMAGE cargo build: the tool is a word of the command line (or the first word of a quoted string, as in `sh -c 'cargo build'`).
-const DOCKER_RUN = new RegExp(String.raw`${COMMAND_START}docker\s+(?:container\s+)?(?:run|exec|create)\s[^|;&\n]*?[\s'"](${BUILD_TOOLS})(?=[\s'"]|$)`);
+const DOCKER_RUN = new RegExp(String.raw`${COMMAND_START}docker\s+(?:container\s+)?(?:run|exec|create)\s[^|;&\n]*?[\s'"](?:[^\s'"=]*/)?(${BUILD_TOOLS})(?=[\s'"]|$)`);
 const DOCKER_BUILD = new RegExp(String.raw`${COMMAND_START}docker\s+(?:buildx\s+(?:build|bake)|compose\s+build|(?:image\s+|builder\s+)?build)(?=\s|$)`);
 // Code that is downloaded and run without being kept and checked.
 const INTERPRETER = String.raw`(?:(?:ba|da|z|k)?sh|python3?|perl|ruby|node)`;
 const FETCH_AND_RUN = [
-  new RegExp(String.raw`${COMMAND_START}(?:curl|wget)(?=\s)[^|;&\n]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?${INTERPRETER}(?=\s|$)`),
+  new RegExp(String.raw`${COMMAND_START}(?:curl|wget)(?=\s)[^|;&\n]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?${BY_PATH}${INTERPRETER}(?=\s|$)`),
   new RegExp(String.raw`${COMMAND_START}${INTERPRETER}\s+(?:-\S+\s+)*<\(\s*(?:curl|wget)(?=\s)`),
   new RegExp(String.raw`${COMMAND_START}(?:eval|source|\.)\s+"?(?:\$\(|<\()\s*(?:curl|wget)(?=\s)`),
+  // A download that is saved and run in the same command line: `wget -O f URL && sh f`, `curl -o f URL; bash f`. The file the download is
+  // saved to (-o, -O, --output, --output-document) is the word the interpreter is given. A download that something checks first has
+  // another command between the two (`&& sha256sum -c ... && sh f`) and is not this.
+  new RegExp(String.raw`${COMMAND_START}(?:curl|wget)(?=\s)[^;&|\n]*?\s(?:-[A-Za-z]*[oO]|--output(?:-document)?)(?:\s+|=)(\S{1,200})[^;&|\n]*(?:&&|;)\s*(?:sudo\s+(?:-\S+\s+)*)?${BY_PATH}${INTERPRETER}\s+(?:-\S+\s+)*\1(?=[\s;&|)]|$)`),
 ];
 const FETCHED_SUBSTITUTION = /^\s*"?\$\(\s*(?:curl|wget)(?=\s)/;
 const MAX_SHELL_DEPTH = 3;

@@ -125,6 +125,28 @@ test('a package manager behind python or uv, rustup, and code that is downloaded
   assert.equal(found(r.out, 'bad-idtoken-fetch.yml').length, 7, r.out);
 });
 
+// W6, review round 3: a tool called by its path is the tool (`/usr/bin/cargo build`, `~/.cargo/bin/cargo install`, `$HOME/.cargo/bin/cargo`),
+// and a download that is saved and run in the same command line (`wget -O f URL && sh f`) is a download that is run.
+test('a build tool, a shell, docker and a download called by a path are refused, and so is a saved download that is run at once', () => {
+  const r = run(fx('bad-idtoken-tool-path.yml'));
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /bad-idtoken-tool-path\.yml:14: .*\/usr\/bin\/cargo build.*W6/);
+  assert.match(r.out, /bad-idtoken-tool-path\.yml:15: .*~\/\.cargo\/bin\/cargo install.*W6/);
+  assert.match(r.out, /bad-idtoken-tool-path\.yml:16: .*\$HOME\/\.cargo\/bin\/cargo build.*W6/);
+  assert.match(r.out, /bad-idtoken-tool-path\.yml:18: .*rustup.*W6/);
+  assert.match(r.out, /bad-idtoken-tool-path\.yml:19: .*cargo install.*W6/);
+  assert.match(r.out, /bad-idtoken-tool-path\.yml:20: .*apt-get install.*W6/);
+  assert.match(r.out, /bad-idtoken-tool-path\.yml:21: .*npm ci.*W6/);
+  assert.match(r.out, /bad-idtoken-tool-path\.yml:22: .*bash -c 'cargo build'.*W6/);
+  assert.match(r.out, /bad-idtoken-tool-path\.yml:23: .*docker build.*W6/);
+  assert.match(r.out, /bad-idtoken-tool-path\.yml:24: .*docker run.*cargo.*W6/);
+  assert.match(r.out, /bad-idtoken-tool-path\.yml:25: .*curl .*\| \/bin\/sh.*W6/);
+  assert.match(r.out, /bad-idtoken-tool-path\.yml:26: .*wget -O f .*sh f.*W6/);
+  assert.match(r.out, /bad-idtoken-tool-path\.yml:27: .*curl .*bash get\.sh.*W6/);
+  assert.match(r.out, /bad-idtoken-tool-path\.yml:28: .*\/usr\/bin\/env CI=1 cargo build.*W6/);
+  assert.equal(found(r.out, 'bad-idtoken-tool-path.yml').length, 14, r.out);
+});
+
 test('a job without the token may build, and prose that names a command is not a command', () => {
   const r = run(fx('good-idtoken-no-build.yml'));
   assert.equal(r.code, 0, r.out);
