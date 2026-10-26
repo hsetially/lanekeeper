@@ -160,59 +160,75 @@ The first attempt, `cargo bench --workspace --no-fail-fast` as one command, was 
 The run below is the same benchmarks in 44 pieces that can be resumed. The workspace has 44 `[[bench]]` targets in 8 packages (`cargo metadata`); no `#[bench]` function exists (`grep -rn '#\[bench\]' crates` finds none, and the libtest `#[bench]` attribute is unavailable on stable Rust 1.88), so the lib and bin harnesses that `cargo bench --workspace` also builds run no benchmark, and the 44 targets are all of them. Each target is one command, `cargo bench -p <package> --bench <target> --no-fail-fast`, run **one after the other** (never in parallel, so that no timing disturbs another), by `target/bench-logs/run-benches.sh <package>`. The script writes `target/bench-logs/<package>__<target>.log` and, only when the command has ended, `<package>__<target>.exit` holding `<exit code> <seconds>`. A target with an `.exit` file is skipped, so a restart resumes at the first target that did not finish. Before the first target, `target/criterion` and `target/perf-results` were moved aside (above), `dockerd` was started with its default settings (the registry and writes benches start Postgres 16 with pgvector through testcontainers), and `git status` was clean. 4 vCPUs, 16 GB, Rust 1.88.0, the `bench` profile (`release`: thin LTO, one codegen unit). The seconds of the first target of a package include the compile. Raw logs are under `target/bench-logs/` (ignored by git), not in the repository.
 
 <!-- bench-pieces:start -->
-| Package | Bench target | `cargo bench -p ... --bench ... --no-fail-fast` exit | Seconds |
-|---|---|---|---|
-| agent | full_rehash | 0 | 290 |
-| agent | idle_traffic | 0 | 36 |
-| agent | oob_change | 0 | 162 |
-| agent | spool_replay | 0 | 19 |
-| agent | stat_walk | 0 | 28 |
-| agent | steady_state | 0 | 221 |
-| engine | compare | 0 | 75 |
-| engine | full_recompute | 0 | 67 |
-| engine | grid | 0 | 26 |
-| engine | incremental | 0 | 44 |
-| engine | index_settings | 0 | 11 |
-| engine | parse_flatten | 0 | 25 |
-| engine | search_text | 0 | 30 |
-| hub | startup | 0 | 355 |
-| hub-identity | audit_record | not run yet | |
-| hub-identity | auth_middleware | 0 | 129 |
-| hub-mcp | read_tools | 0 | 462 |
-| hub-platform | ack_throughput | 0 | 313 |
-| hub-platform | blob_endpoint | 0 | 156 |
-| hub-platform | blob_get_cached | 0 | 133 |
-| hub-platform | diff_trees | 0 | 80 |
-| hub-platform | memory_at_design_scale | 0 | 226 |
-| hub-platform | push_to_drift_webhook | 0 | 143 |
-| hub-platform | sse_delivery | 0 | 134 |
-| hub-registry | adoption_rank_per_swimlane | 0 | 462 |
-| hub-registry | compare_6000_lines | 0 | 354 |
-| hub-registry | delta_to_drift_changed | 0 | 193 |
-| hub-registry | file_content_cached | 0 | 318 |
-| hub-registry | file_content_cold | 0 | 327 |
-| hub-registry | file_tree | 0 | 358 |
-| hub-registry | full_recompute_target_scale | 0 | 302 |
-| hub-registry | grid_40_swimlanes | not run yet | |
-| hub-registry | head_moved_to_drift | not run yet | |
-| hub-registry | incremental_recompute_base | 0 | 201 |
-| hub-registry | incremental_recompute_per_file_per_swimlane | 0 | 193 |
-| hub-registry | ingest_versions_per_s | not run yet | |
-| hub-registry | search_settings_all_swimlanes | 0 | 295 |
-| hub-registry | search_text_all_swimlanes | 0 | 394 |
-| hub-registry | sentinel_attribution | 0 | 265 |
-| hub-registry | steady_state_queries | 0 | 311 |
-| hub-registry | swimlane_list | 0 | 297 |
-| hub-registry | whole_swimlane_compare | 0 | 312 |
-| hub-writes | edit_applied | 0 | 362 |
-| hub-writes | write_queries | 0 | 123 |
+| Package | Bench target | Run 1: exit, seconds | Run 1 UTC start to end | Overlapped the other session's test run | Rerun: exit, seconds, UTC start |
+|---|---|---|---|---|---|
+| agent | full_rehash | 0, 290 | 04:39 to 04:43 | no | - |
+| agent | idle_traffic | 0, 36 | 04:43 to 04:44 | no | - |
+| agent | oob_change | 0, 162 | 04:44 to 04:47 | no | - |
+| agent | spool_replay | 0, 19 | 04:47 to 04:47 | no | - |
+| agent | stat_walk | 0, 28 | 04:47 to 04:48 | no | - |
+| agent | steady_state | 0, 221 | 04:48 to 04:51 | no | - |
+| engine | compare | 0, 75 | 04:53 to 04:55 | no | - |
+| engine | full_recompute | 0, 67 | 04:55 to 04:56 | no | - |
+| engine | grid | 0, 26 | 04:56 to 04:56 | no | - |
+| engine | incremental | 0, 44 | 04:56 to 04:57 | no | - |
+| engine | index_settings | 0, 31 | 04:57 to 04:57 | no | 0, 11, 07:36 |
+| engine | parse_flatten | 0, 25 | 04:57 to 04:58 | no | - |
+| engine | search_text | 0, 30 | 04:58 to 04:58 | no | - |
+| hub | startup | 0, 355 | 04:58 to 05:04 | no | - |
+| hub-identity | audit_record | 0, 193 | 05:04 to 05:08 | no | 0, 13, 07:41 |
+| hub-identity | auth_middleware | 0, 129 | 05:08 to 05:10 | no | - |
+| hub-mcp | read_tools | 0, 462 | 05:10 to 05:17 | no | - |
+| hub-platform | ack_throughput | 0, 313 | 05:17 to 05:23 | yes | - |
+| hub-platform | blob_endpoint | 0, 156 | 05:23 to 05:25 | yes | - |
+| hub-platform | blob_get_cached | 0, 133 | 05:25 to 05:27 | yes | - |
+| hub-platform | diff_trees | 0, 80 | 05:27 to 05:29 | yes | - |
+| hub-platform | memory_at_design_scale | 0, 226 | 05:29 to 05:33 | yes | - |
+| hub-platform | push_to_drift_webhook | 0, 143 | 05:33 to 05:35 | yes | - |
+| hub-platform | sse_delivery | 0, 134 | 05:35 to 05:37 | yes | - |
+| hub-registry | adoption_rank_per_swimlane | 0, 462 | 05:37 to 05:45 | yes | - |
+| hub-registry | compare_6000_lines | 0, 354 | 05:45 to 05:51 | yes | - |
+| hub-registry | delta_to_drift_changed | 0, 193 | 05:51 to 05:54 | yes | - |
+| hub-registry | file_content_cached | 0, 318 | 05:54 to 05:59 | yes | - |
+| hub-registry | file_content_cold | 0, 327 | 05:59 to 06:05 | yes | - |
+| hub-registry | file_tree | 0, 358 | 06:05 to 06:11 | yes | - |
+| hub-registry | full_recompute_target_scale | 0, 302 | 06:11 to 06:16 | yes | - |
+| hub-registry | grid_40_swimlanes | 0, 325 | 06:16 to 06:21 | yes | 0, 128, 07:36 |
+| hub-registry | head_moved_to_drift | 0, 281 | 06:21 to 06:26 | yes | 0, 96, 07:38 |
+| hub-registry | incremental_recompute_base | 0, 201 | 06:26 to 06:29 | yes | - |
+| hub-registry | incremental_recompute_per_file_per_swimlane | 0, 193 | 06:29 to 06:32 | yes | - |
+| hub-registry | ingest_versions_per_s | 0, 180 | 06:32 to 06:35 | yes | 0, 65, 07:40 |
+| hub-registry | search_settings_all_swimlanes | 0, 295 | 06:35 to 06:40 | yes | - |
+| hub-registry | search_text_all_swimlanes | 0, 394 | 06:40 to 06:47 | yes | - |
+| hub-registry | sentinel_attribution | 0, 265 | 06:47 to 06:51 | yes | - |
+| hub-registry | steady_state_queries | 0, 311 | 07:02 to 07:07 | yes | - |
+| hub-registry | swimlane_list | 0, 297 | 07:07 to 07:12 | yes | - |
+| hub-registry | whole_swimlane_compare | 0, 312 | 07:12 to 07:18 | yes | - |
+| hub-writes | edit_applied | 0, 362 | 07:18 to 07:24 | yes | - |
+| hub-writes | write_queries | 0, 123 | 07:24 to 07:26 | yes | - |
 
-40 of 44 bench targets have run; 0 of them exited non-zero.
+44 of 44 bench targets have run in run 1; 0 of them exited non-zero; 27 of the 44 overlapped the other session's test run; 5 were run again.
 <!-- bench-pieces:end -->
 
-**Checkpoint, not final.** All 44 targets ran and exited 0. `cargo xtask bench-check` on that run (run 1, below) exits 1: 63 pass, 8 fail, 2 unmet of 73. Five of the failures are the five web budgets (no result: `cargo bench` never makes them). Three are over budget and are being rerun (run 2).
+**Result, in one line: `cargo xtask bench-check` exits 1 on this tree.** All 44 targets ran and exited 0, but the gate reports `65 pass, 6 fail, 2 unmet of 73 budgets` (final output below). Two failures are real misses of budgets that belong to earlier prompts (**B15**: `P6.index_settings`, `P12.audit_record`), four are web budgets that cannot be produced here, and the two unmet rows are not registered. Nothing is ticked on the strength of this section.
 
-Run 1, `cargo xtask bench-check`, exit 1, output as printed:
+#### What else ran on the machine, and what was done about it
+
+Another agent's session used the same 4 vCPUs and the same Docker daemon while run 1 was going (the coordinator told me afterwards): a `cargo check --workspace --all-targets` of about 9.5 minutes at full parallelism (I was not given its time), and, from 05:22:04 to about 07:34 UTC, a `nice -n 19` per-crate `cargo test` run of the `lockfile-advisories` worktree (`hub-identity` tests 05:34 to 06:00, `hub-registry` tests 06:00 to 06:54, then `hub-writes`, `hub-mcp`, `hub-platform` and `hub`, `xtask`). Its Postgres containers were not niced. I did not record the load during run 1. In the table above, "Overlapped the other session's test run" is `yes` for the 27 targets whose run 1 time overlaps 05:22 to 07:34; **`no` does not mean quiet**, because the time of the `cargo check` is unknown, so no run 1 timing can be called unperturbed. Load can only make a benchmark slower, so a run 1 result that passes with room stands. A result that was near or over its budget was run again once the coordinator reported the machine quiet: the three over-budget results (`P6.index_settings`, `P7.grid`, `P12.audit_record`) and the two narrow passes (`P2.hub_head_moved_to_drift` 956.5 of 1000 ms, `P15.registry_ingest_versions_per_s` 1065 against a floor of 1000). Checked by script on the run 2 output, with "near" meaning 80% of an upper bound or within 20% of a floor: the only near or over results were `P6.index_settings`, `P12.audit_record` and `P15.registry_ingest_versions_per_s` (`P2.hub_head_moved_to_drift` was near in run 1 and is not in run 2).
+
+Those five were run again with a sampler writing the load and the three busiest processes every 10 s (`target/bench-logs/contention-run2.log`, `contention-extra.log`, `contention-extra2.log`). Load average 0.7 to 1.3 for the five extra runs of `index_settings` and `audit_record` and nothing in the sampler but the bench, Docker, Postgres and this run's cargo; 0.7 to 3.9 for the `ingest_versions_per_s` runs, which is the bench's own Postgres. The run 2 log has two single samples of other processes, `rm -rf target` (07:37:56, during the grid rerun) and `cargo metadata` (07:41:37, during the `audit_record` rerun), owner unknown.
+
+p95 in ms (`P15`: min, versions per second), as `bench-check` printed it after each run:
+
+| Budget | Run 1 | Run 2 | Extra 1 | Extra 2 | Extra 3 | Budget | Reading |
+|---|---|---|---|---|---|---|---|
+| `P6.index_settings` | 68.862 | 72.135 | 67.623 | 67.054 | 62.439 | 60 | **over on all 5 runs** (B15) |
+| `P12.audit_record` | 3.472 | 3.590 | 3.571 | 3.137 | 3.342 | 3 | **over on all 5 runs** (B15) |
+| `P7.grid` | 200.968 | 105.241 | | | | 150 | run 1 was load; passes quiet (one quiet run) |
+| `P2.hub_head_moved_to_drift` | 956.532 | 741.565 | | | | 1000 | passes (one quiet run) |
+| `P15.registry_ingest_versions_per_s` | 1065.008 | 1162.003 | 1190.026 | 1158.237 | | 1000 (floor) | passes on all 4 runs |
+
+Run 1, `cargo xtask bench-check`, exit 1, output as printed (63 pass, 8 fail, 2 unmet):
 
 ```
 PASS  P1                                     9591.855 p95 <= 15000 ms  
@@ -291,7 +307,95 @@ PASS  P15.registry_ingest_versions_per_s     1065.008 min >= 1000 versions_per_s
 bench-check (default): 63 pass, 8 fail, 2 unmet of 73 budgets
 ```
 
-PENDING: the analysis of the three over-budget results and the final budget table.
+Final, `cargo xtask bench-check` after the reruns and after `pnpm build` (which writes the one web result that can be made here), exit 1, output as printed. Every row shows the latest run of its target; the five targets above show their last run (`index_settings` extra 3, `audit_record` extra 3, `ingest_versions_per_s` extra 2, `grid_40_swimlanes` and `head_moved_to_drift` run 2):
+
+```
+PASS  P1                                     9591.855 p95 <= 15000 ms  
+PASS  P2                                       41.231 p95 <= 10000 ms  
+PASS  P3                                          672 p95 <= 1024 bytes_per_min  
+PASS  P4                                       22.297 p95 <= 20000 ms  
+PASS  P4.stat_walk                              4.035 p95 <= 1000 ms  
+PASS  P4.cpu_mcores                                 4 p95 <= 50 mcores  
+PASS  P4.memory_mib                            22.707 max <= 64 mib  
+PASS  P5                                       34.416 p95 <= 50 ms  
+PASS  P5.per_file_per_swimlane                  0.591 p95 <= 2 ms  
+PASS  P6                                     1650.470 p95 <= 180000 ms  
+PASS  P6.parse_flatten                         12.678 p95 <= 20 ms  
+FAIL  P6.index_settings                        62.439 p95 <= 60 ms  over budget
+PASS  P7.swimlane_list                          5.273 p95 <= 50 ms  
+PASS  P7.file_tree                              8.782 p95 <= 100 ms  
+PASS  P7.file_content_cached                    1.976 p95 <= 30 ms  
+PASS  P7.file_content_cold                      4.176 p95 <= 80 ms  
+PASS  P7.compare                               29.075 p95 <= 100 ms  
+PASS  P7.engine_grid                           39.733 p95 <= 150 ms  
+PASS  P7.engine_text_search                   193.734 p95 <= 400 ms  
+PASS  P5.engine_base                            3.517 p95 <= 50 ms  
+PASS  P5.engine_per_file_per_swimlane           0.115 p95 <= 2 ms  
+PASS  P7.grid                                 105.241 p95 <= 150 ms  
+PASS  P7.whole_swimlane_compare                42.303 p95 <= 300 ms  
+PASS  P7.settings_search                       61.654 p95 <= 200 ms  
+PASS  P7.text_search                          230.563 p95 <= 400 ms  
+UNMET P7.docs_search                                - p95 <= 150 ms  not registered; no benchmark yet
+UNMET P7.feature_status                             - p95 <= 200 ms  not registered; no benchmark yet
+PASS  P7.blob_get_cached                        0.001 p95 <= 1 ms  
+PASS  P7.auth_middleware                        0.009 p95 <= 2 ms  
+PASS  P7.blob_endpoint                          0.006 p95 <= 30 ms  
+PASS  P7.auth_middleware_cold                   0.782 p95 <= 2 ms  
+PASS  P8                                       26.609 p95 <= 1500 ms  
+PASS  P9                                       14.541 p95 <= 300 ms  
+PASS  P9.list_swimlanes                         0.698 p95 <= 300 ms  
+PASS  P9.get_swimlane                           0.864 p95 <= 300 ms  
+PASS  P9.list_files                             0.966 p95 <= 300 ms  
+PASS  P9.read_file                             90.563 p95 <= 300 ms  
+PASS  P9.get_effective_config                   1.120 p95 <= 300 ms  
+PASS  P9.compare                                1.985 p95 <= 300 ms  
+PASS  P9.compare_tree                           0.727 p95 <= 300 ms  
+PASS  P9.compare_grid                           8.908 p95 <= 300 ms  
+PASS  P9.search_settings                        1.291 p95 <= 300 ms  
+PASS  P9.search_text                            1.637 p95 <= 300 ms  
+PASS  P9.find_inconsistencies                   1.416 p95 <= 300 ms  
+PASS  P9.get_drift                              1.212 p95 <= 300 ms  
+PASS  P9.get_pending_restarts                   0.890 p95 <= 300 ms  
+PASS  P9.get_history                            0.755 p95 <= 300 ms  
+PASS  P9.search_docs                            1.242 p95 <= 300 ms  
+PASS  P9.read_doc                               3.270 p95 <= 300 ms  
+PASS  P9.grep_docs                              1.346 p95 <= 300 ms  
+PASS  P9.get_docs_for_file                      1.039 p95 <= 300 ms  
+PASS  P9.get_feature_status                     2.587 p95 <= 300 ms  
+PASS  P9.get_served_config                      3.499 p95 <= 300 ms  
+PASS  P10.initial_js_gzip_kb                  195.908 max <= 250 kb  
+FAIL  P10.route_change_ms                           - p95 <= 100 ms  registered but no result
+FAIL  P10.diff_6000_lines_ms                        - p95 <= 500 ms  registered but no result
+FAIL  P10.grid_5000_rows_fps                        - min >= 60 fps  registered but no result
+FAIL  P10.lighthouse_perf                           - p50 >= 90 score  registered but no result
+PASS  P11                                      41.168 p95 <= 10000 ms  
+PASS  P11.memory_mib                          746.527 max <= 1536 mib  
+FAIL  P12.audit_record                          3.342 p95 <= 3 ms  over budget
+PASS  P12.hub_writes_queries                   10.379 p95 <= 50 ms  
+PASS  P12.steady_state_query_ms                19.371 p95 <= 50 ms  
+PASS  P13                                      13.093 p95 <= 1000 ms  
+PASS  P14                                    4726.959 p95 <= 30000 ms  
+PASS  P15.spool_replay_versions_per_s      273256.110 min >= 1000 versions_per_s  
+PASS  P15.hub_ack_versions_per_s            20155.206 min >= 1000 versions_per_s  
+PASS  P1.hub_delta_to_drift                   277.199 p95 <= 2000 ms  
+PASS  P2.hub_head_moved_to_drift              741.565 p95 <= 1000 ms  
+PASS  P6.hub_full_recompute                 15605.752 p95 <= 180000 ms  
+PASS  P6.adoption_rank                         63.658 p95 <= 5000 ms  
+PASS  P7.compare_api                           47.839 p95 <= 100 ms  
+PASS  P15.registry_ingest_versions_per_s     1158.237 min >= 1000 versions_per_s  
+bench-check (default): 65 pass, 6 fail, 2 unmet of 73 budgets
+```
+
+#### Which budgets were checked and which were not
+
+| Group | Budgets | State |
+|---|---|---|
+| Measured and within budget | 65 | the `PASS` rows above, including the ones 09 depends on: `P11` (hub startup) 41.168 of 10000 ms, `P11.memory_mib` 746.527 of 1536 MiB, `P2` (webhook to drift) 41.231 of 10000 ms, `P2.hub_head_moved_to_drift` 741.565 of 1000 ms, and `P10.initial_js_gzip_kb` 195.908 of 250 KB (written by `pnpm build`, `web/scripts/perf/check-bundle.mjs`) |
+| Measured and over budget | 2 | `P6.index_settings` and `P12.audit_record`, **B15**, escalated to a human; the budgets, benches and crates are unchanged |
+| Not measured here | 4 | `P10.route_change_ms`, `P10.diff_6000_lines_ms`, `P10.grid_5000_rows_fps`, `P10.lighthouse_perf`: they come from `just web-perf` (prompt 08's gate), which needs Playwright's Chromium and Lighthouse. No browser is installed and `cdn.playwright.dev` and `playwright.download.prss.microsoft.com` answer HTTP 000 from this sandbox. `bench-check` fails them as "registered but no result"; I did not fake or copy a result |
+| Not registered (UNMET) | 2 | `P7.docs_search`, `P7.feature_status`: `registered = false`, "no benchmark yet", the same as before this branch |
+
+Of the 73 budgets, 67 were measured in this run (65 within budget and 2 over). No bench target was skipped: 44 of 44 ran and exited 0, 5 of them twice or more. The `P11` benches that prompt 09's resource policy ties to ran once each (`hub/startup` 04:58 to 05:04, before the other session's test run; `memory_at_design_scale` 05:29 to 05:33, during it) and pass by a wide margin, so no rerun was needed.
 
 ## New dependencies
 
