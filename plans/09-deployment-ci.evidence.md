@@ -25,7 +25,8 @@ Tree under test: **the round-2 refresh (section "Review round 2") was made on br
 | **B13** | open, informational | The RPM release key and its Workload Identity trust root do not exist (`RPM-GPG-KEY-lanekeeper.pub` is an unresolved marker). The Rocky and Debian hosts are refused, so the install test ran with a labelled stand-in for the `audit` package. |
 | **B11** | open, informational | Nothing creates a swimlane in the hub; step 1 of `deploy/ADDING-A-SWIMLANE.md` describes a contract, not something that can be followed. |
 | **B12** | open, informational | The CI signing key, the Workload Identity Federation pool and the IAM around them are made by no chart; whether a classic Binary Authorization attestor accepts a cosign signature is unconfirmed; the policy is per project and in dry run. |
-| B7, B8 | open, informational | The agent dials the hub on 443 while the hub's agent load balancer listens on 8444; the config-server egress rule selects pods in the agent's own namespace. |
+| B7 | **resolved** (human decision of 2026-10-26) | The agent dials the hub on 443; the hub's agent load balancer used to listen on 8444 and now listens on 443 and forwards to the container port `agent` (8444). Neither contract file changed. |
+| B8 | open, informational | The config-server egress rule selects pods in the agent's own namespace. |
 | B10 | **decided by a human** | Keep the interim database image (`system` variant, built-in barman). Migration to the Barman Cloud plugin is a later open question. |
 | B1 to B4 | resolved | Model lock filled from a download made here (B1); the scan runs (B2); the images moved to Debian 13 by plan amendment A32 (B3); helm 4.3.0 pinned from a download made here (B4). |
 

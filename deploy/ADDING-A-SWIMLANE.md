@@ -157,14 +157,14 @@ network:
     - 203.0.113.7/32    # <swimlane>'s outbound IP (an example address)
 ```
 
-**Also add the NFS VM's outbound IP** (plan 09 A28): the sentinel that runs on the NFS VM reaches the agent port (8444) from there, through
+**Also add the NFS VM's outbound IP** (plan 09 A28): the sentinel that runs on the NFS VM reaches the agent load balancer on 443 from there, through
 the same list. The one list feeds both the load balancer's `loadBalancerSourceRanges` and the hub's NetworkPolicy, so the two cannot differ.
 The chart refuses an empty list and the policy a range wider than a `/16`. The sentinel itself is a signed RPM that configuration management installs on the NFS VM (`deploy/sentinel/README.md`: how to verify it, and what the package does and does not do); this runbook only lets its address in.
 
 Then move the hub's revision and let the platform Argo CD sync it (`deploy/argocd/README.md`). **Do this before the agent starts**: an agent
 whose address is not in the list is dropped at the load balancer and shows only as a connection that never completes.
-(`plans/09-deployment-ci.blockers.md`, B7, is a disagreement between the hub chart and the agent's contract about the port the agent dials,
-443 or 8444; it has to be settled by a person before a swimlane is deployed.)
+(The load balancer listens on 443, the port the agent dials (`crates/agent/HARDENING.md`), and forwards to the hub pods' port 8444
+(`crates/hub/HARDENING.md`); the agent's `hub.endpoint` needs no port. `plans/09-deployment-ci.blockers.md`, B7, decided by a human on 2026-10-26.)
 
 ## 6. Run the adoption pass
 

@@ -193,7 +193,7 @@ service_agent := {
 		"externalTrafficPolicy": "Local",
 		"loadBalancerSourceRanges": ["198.51.100.0/24"],
 		"selector": selector,
-		"ports": [{"name": "agent", "port": 8444, "targetPort": "agent", "protocol": "TCP"}],
+		"ports": [{"name": "agent", "port": 443, "targetPort": "agent", "protocol": "TCP"}],
 	},
 }
 

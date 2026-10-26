@@ -68,8 +68,8 @@ network:
   googleRanges:
     - 35.191.0.0/16
     - 130.211.0.0/22
-  # Who may reach the agent port: the clusters' outbound IPs (Q1) and the NFS VM's (plan 09 A28). Required. Used by the
-  # LoadBalancer's loadBalancerSourceRanges and by the NetworkPolicy, so that the two cannot differ.
+  # Who may reach the agent load balancer (443, forwarded to the pods' 8444): the clusters' outbound IPs (Q1) and the NFS VM's
+  # (plan 09 A28). Required. Used by the LoadBalancer's loadBalancerSourceRanges and by the NetworkPolicy, so that the two cannot differ.
   agentSourceRanges: []
   # The namespace of Prometheus and of the OpenTelemetry collector.
   monitoringNamespace: monitoring

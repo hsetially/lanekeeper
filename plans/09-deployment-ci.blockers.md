@@ -1,6 +1,6 @@
 # Plan 09 blockers
 
-Status on 2026-10-26, T8 run: **B1 to B4 are resolved; B5 is open by a human's decision and stops `just verify-09` (and nothing else of T3 to T8); B7 and B8 are informational and need a human before a swimlane is deployed; B9 is informational; B10 is decided (a human confirmed the interim image, below); B11 and B12 are informational findings of T6; B13 is an informational finding of T8: the RPM release key and its trust root do not exist, and the Rocky and Debian repositories are refused, so the real `audit` package and a musl C toolchain could not be installed.**
+Status on 2026-10-26, T8 run: **B1 to B4 are resolved; B5 is open by a human's decision and stops `just verify-09` (and nothing else of T3 to T8); B7 is resolved on 2026-10-26 (the agent load balancer listens on 443) and B8 is informational and needs a human before a swimlane is deployed; B9 is informational; B10 is decided (a human confirmed the interim image, below); B11 and B12 are informational findings of T6; B13 is an informational finding of T8: the RPM release key and its trust root do not exist, and the Rocky and Debian repositories are refused, so the real `audit` package and a musl C toolchain could not be installed.**
 **Review round 1 (FIX step, 2026-10-26, commits `643a896` to `df624a6`): four blocking findings fixed in the repository (disk steps lost in the merge with `origin/main`, a build step in the `sign-release` job, `storage.googleapis.com` missing from the hub's egress, the kind test missing) and one non-blocking one; one new blocker, B16 (no kind cluster can start in this sandbox); B5, B14, B15 and A19 untouched, as instructed. Status stays PARTIAL. See the last section.**
 **Review round 2 (FIX step, 2026-10-26, commits `077e32e` to `3a67982`): one blocking finding fixed (the `sign-release` job compiled the sentinel through `build.sh --tools`; the tools image is now a stage of its own that builds nothing of ours) and three non-blocking ones (the workflow rule's quoting and shell blind spots, the kind test's `/readyz` proxy read and its P11 assertion, Renovate's coverage of the kind pins). B14 is resolved by PR 30 (merge `7e53bf5`, brought in by `9eef6b4`): `just verify` passes. B5, B15, A1 and A19 were left alone, as instructed. Status stays PARTIAL. See the last section.**
 The T1 sections below are from the third T1 run (after a human allowed `us.aws.cdn.hf.co` and merged the plan amendment, PR #29):
@@ -14,7 +14,7 @@ T1 is complete; the commit `e2c199d` holds the code and the measurements were ta
 | B4 | resolved (T3 run) | a human allowed `get.helm.sh`; helm 4.3.0 is pinned by the sha256 of a download made here (section B4 below) |
 | B5 | **open** (T3) | `api.github.com/meta` is refused, so GitHub's webhook ranges cannot be written; the gcp chart refuses to render until a person runs one command (section B5, T3 notes below) |
 | B6 | informational (T3) | `docs.cloud.google.com` and `registry.k8s.io` are refused; Google-specific shapes in the hub chart are unverified (T3 notes below) |
-| B7 | **open, informational (T4)** | the agent contract dials the hub on 443; the hub chart's agent load balancer listens on 8444 (T4 notes below) |
+| B7 | **resolved (human decision of 2026-10-26)** | the agent contract dials the hub on 443; the hub chart's agent load balancer listened on 8444. `Service/lanekeeper-hub-agent` now listens on 443 and forwards to the container port `agent` (8444); neither contract file changed (section B7 below) |
 | B8 | **open, informational (T4)** | the agent contract lets the agent reach the config-server only in the agent's own namespace (T4 notes below) |
 | B9 | **open, informational (T5)** | `pkg-containers.githubusercontent.com` (where `ghcr.io` keeps image layers) is refused: the database image's layers and config cannot be read here (T5 notes below) |
 | B10 | **decided (T6 run)** | the plan names CloudNativePG's `standard` image for the database and built-in barman for the backups; the `standard` image has no barman. **A human confirmed the interim image** (`16.15-202610050823-system-trixie`, built-in barman). Moving to the Barman Cloud plugin is a later open question (B10 section below) |
@@ -354,6 +354,17 @@ equivalent (a missing file is refused by awk anyway), and one was masked: an unc
 with no other block, so the case now follows a good block and only the unclosed check can refuse it.
 
 ## B7 (T4): the agent dials the hub on 443, and the hub's agent load balancer listens on 8444
+
+**RESOLVED on 2026-10-26, by the `09/fix:` commit that changed `deploy/charts/hub/templates/services.yaml` (find it with `git log --grep='B7' -- deploy/charts/hub/templates/services.yaml`).**
+The human asked for the fix proposed below. `Service/lanekeeper-hub-agent` now has `port: 443, targetPort: agent`; the container port stays 8444
+and the hub pods' NetworkPolicy ingress on 8444 stays, so `crates/agent/HARDENING.md`, `crates/hub/HARDENING.md` and every crate test are unchanged.
+`network.rego` now requires exactly {443} with `targetPort: agent` (a Service on 8444, on another port, or forwarding to a number or another
+name is refused: six policy tests and three planted cases in `render.sh`), and the README, `deploy/ADDING-A-SWIMLANE.md`, the agent chart's README
+and the threat model (residual 9) say 443. **The sentinel:** nothing in `crates/sentinel` (a stub `main.rs`) or `deploy/sentinel` names a hub
+address or port (checked with grep for `844x`, `endpoint` and `443`; the unit file says only "reaches the hub outbound over mutual TLS"), so there
+was nothing to edit; whoever writes the sentinel's configuration (prompt 17) should use the load balancer on 443. **Left open:** no check compares
+the agent's port with the hub's Service (`contract.rego` covers the agent only), and no cluster has run the two charts together. B8 is not part
+of this decision and stays open. The text below is the finding as it was written.
 
 Two committed contracts disagree, and no check sees it because each is right by its own file:
 

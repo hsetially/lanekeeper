@@ -304,7 +304,10 @@ planted_hardening() {
     plant "egress only" hub kind 's/policyTypes: \[Ingress, Egress\]/policyTypes: [Egress]/' "default deny"
     plant "ingress from the internet" hub kind 's#cidr: "198.51.100.0/24"#cidr: "0.0.0.0/0"#' "too wide"
     plant "an open load balancer" hub prod 's#- "198.51.100.0/24"#- "0.0.0.0/0"#' "too wide"
-    plant "a port on the load balancer" hub prod 's/port: 8444/port: 22/' "8444"
+    # B7: the agent load balancer listens on 443 and forwards to the container port named agent (the pods listen on 8444).
+    plant "a port on the load balancer" hub prod '/name: lanekeeper-hub-agent$/,/targetPort: agent/s/port: 443/port: 22/' "must expose port 443 and nothing else"
+    plant "the load balancer on the container port" hub prod '/name: lanekeeper-hub-agent$/,/targetPort: agent/s/port: 443/port: 8444/' "must expose port 443 and nothing else"
+    plant "the load balancer forwarding to a number" hub prod '/name: lanekeeper-hub-agent$/,/protocol: TCP/s/targetPort: agent/targetPort: 8444/' "must forward to the container port named agent"
     plant "a wildcard external host" hub prod 's/pattern: github.com/pattern: "*.com"/' "wildcard"
     plant "external port 80" hub prod '/pattern: www.googleapis.com/,/port: 443/s/port: 443/port: 80/' "443"
     plant "no certificate" hub prod '/networking.gke.io\/pre-shared-certs/d' "certificate"

@@ -340,10 +340,22 @@ deny contains msg if {
 	msg := sprintf("%s: externalTrafficPolicy must be Local, so that the allowlist sees the clients' addresses (S18)", [lk.who(s)])
 }
 
+# The two contracts meet here (plan 09 B7, decided by a human on 2026-10-26). The agents dial the hub on 443 (crates/agent/HARDENING.md:
+# the agent's one egress to the hub), and the hub's pods listen on the container port named agent, 8444 (crates/hub/HARDENING.md). The
+# Service listens on 443 and forwards to that port BY NAME, so it follows the container port that hardening.rego pins and a number
+# cannot drift from it. The pods' NetworkPolicy admits 8444 and not 443: it sees the traffic after the Service has forwarded it.
 deny contains msg if {
 	some s in agent_lbs
-	{p.port | some p in object.get(s.spec, "ports", [])} != {8444}
-	msg := sprintf("%s: it must expose port 8444 and nothing else (HARDENING.md)", [lk.who(s)])
+	{p.port | some p in object.get(s.spec, "ports", [])} != {443}
+	msg := sprintf("%s: it must expose port 443 and nothing else; the agents dial 443 (crates/agent/HARDENING.md, plan 09 B7)", [lk.who(s)])
+}
+
+deny contains msg if {
+	some s in agent_lbs
+	some p in object.get(s.spec, "ports", [])
+	target := object.get(p, "targetPort", object.get(p, "port", null))
+	target != "agent"
+	msg := sprintf("%s: port %v must forward to the container port named agent (targetPort: agent, 8444 in crates/hub/HARDENING.md), not to %v (plan 09 B7)", [lk.who(s), object.get(p, "port", null), target])
 }
 
 # --- the users' entry point: a Gateway with TLS, Cloud Armor and a health check -------------------------------------------

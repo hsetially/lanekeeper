@@ -71,9 +71,10 @@ StorageClass, by name, and nothing else outside the namespace (`argocd.rego`).
 
 ## Not verified here
 
-- That the hub accepts an agent on **443**. HARDENING.md has the agent dial the hub on 443, and the hub chart's agent load balancer
-  listens on 8444 (`plans/09-deployment-ci.blockers.md`, B7). The chart follows the agent's contract; the two have to be reconciled
-  before a swimlane is deployed.
+- That the hub accepts an agent on **443** in a real cluster. HARDENING.md has the agent dial the hub on 443, and the hub chart's agent
+  load balancer (`Service/lanekeeper-hub-agent`) listens on 443 and forwards to the hub pods' container port `agent`, 8444
+  (`plans/09-deployment-ci.blockers.md`, B7, decided by a human on 2026-10-26). The policies check that rule on both sides; no cluster has
+  run the two charts together.
 - That the cluster enforces NetworkPolicy at all, and that the metadata server and the control plane are reachable from the pod
   network as the policy assumes (a property of each cluster, Q1).
 - That the config-server runs in the agent's own namespace. The contract allows its pods in the agent's namespace only; if it runs

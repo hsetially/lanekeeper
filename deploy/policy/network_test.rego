@@ -305,7 +305,41 @@ test_deny_agent_load_balancer_that_hides_the_client_address if {
 
 test_deny_agent_load_balancer_with_another_port if {
 	planted := fixtures.patch("Service", "lanekeeper-hub-agent", [{"op": "add", "path": "/spec/ports/-", "value": {"name": "web", "port": 8443, "targetPort": "web"}}])
-	refused(planted, "8444")
+	refused(planted, "must expose port 443 and nothing else")
+}
+
+# B7: the agents dial the hub on 443 (crates/agent/HARDENING.md) and the hub's pods listen on 8444 (crates/hub/HARDENING.md). The
+# Service is the join between them: it listens on 443 and forwards to the container port named agent. The pods' NetworkPolicy
+# still admits 8444, because it sees the traffic after the Service has forwarded it.
+test_deny_agent_load_balancer_on_the_container_port if {
+	planted := fixtures.patch("Service", "lanekeeper-hub-agent", [{"op": "replace", "path": "/spec/ports/0/port", "value": 8444}])
+	refused(planted, "must expose port 443 and nothing else")
+}
+
+test_deny_agent_load_balancer_on_another_port if {
+	planted := fixtures.patch("Service", "lanekeeper-hub-agent", [{"op": "replace", "path": "/spec/ports/0/port", "value": 22}])
+	refused(planted, "must expose port 443 and nothing else")
+}
+
+test_deny_agent_load_balancer_that_forwards_to_a_number if {
+	planted := fixtures.patch("Service", "lanekeeper-hub-agent", [{"op": "replace", "path": "/spec/ports/0/targetPort", "value": 8444}])
+	refused(planted, "must forward to the container port named agent")
+}
+
+test_deny_agent_load_balancer_that_forwards_to_another_named_port if {
+	planted := fixtures.patch("Service", "lanekeeper-hub-agent", [{"op": "replace", "path": "/spec/ports/0/targetPort", "value": "web"}])
+	refused(planted, "must forward to the container port named agent")
+}
+
+# Without a targetPort Kubernetes forwards to the same number, 443, where nothing listens.
+test_deny_agent_load_balancer_without_a_target_port if {
+	planted := fixtures.patch("Service", "lanekeeper-hub-agent", [{"op": "remove", "path": "/spec/ports/0/targetPort"}])
+	refused(planted, "must forward to the container port named agent")
+}
+
+# The pods' ingress is on the container port, and the load balancer's change did not move it.
+test_deny_agent_ingress_on_the_load_balancer_port if {
+	refused(netpol([{"op": "replace", "path": "/spec/ingress/1/ports/0/port", "value": 443}]), "exactly")
 }
 
 # The web port is behind the Gateway and Cloud Armor; a second public door would go around both.

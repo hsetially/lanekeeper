@@ -11,7 +11,7 @@ The platform cluster's Argo CD deploys it with `deploy/argocd/platform/hub.yaml`
 | `PodDisruptionBudget`, headless `Service/lanekeeper-hub-replicas` | `minAvailable: 2`; the replicas find one another by DNS (`agent_connections.replica_address`) |
 | `StorageClass/lanekeeper-hub-cmek` | with `storage.cmekKey`: disks encrypted with that Cloud KMS key (S10). Without it the claim says `lanekeeper.io/cmek: fallback` and the policy warns |
 | `ServiceAccount/lanekeeper-hub` | `iam.gke.io/gcp-service-account` for Workload Identity; no token is mounted |
-| `Service/lanekeeper-hub-agent` | `LoadBalancer`, `externalTrafficPolicy: Local`, `loadBalancerSourceRanges` = `network.agentSourceRanges` (never empty) |
+| `Service/lanekeeper-hub-agent` | `LoadBalancer` on **443**, the port the agents dial, forwarding to the container port named `agent` (8444, which the NetworkPolicy admits); `externalTrafficPolicy: Local`, `loadBalancerSourceRanges` = `network.agentSourceRanges` (never empty) |
 | `Service/lanekeeper-hub-web`, `Gateway`, `HTTPRoute`, `GCPBackendPolicy`, `HealthCheckPolicy` | the users' door: HTTPS only, a named certificate (never a Secret), Cloud Armor attached, health check `/readyz` on 9090 |
 | `NetworkPolicy/lanekeeper-hub`, `FQDNNetworkPolicy/lanekeeper-hub-external` | default deny; only what HARDENING.md lists. Without FQDN policy (`network.fqdnPolicy: false`) the external hosts are reached by address, which is weaker and marked |
 
