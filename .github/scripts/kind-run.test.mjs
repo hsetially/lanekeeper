@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const run = readFileSync(join(root, 'deploy', 'tests', 'kind', 'run.sh'), 'utf8');
+const libSh0 = join(root, 'deploy', 'tests', 'kind', 'lib.sh');
 
 /** Runs p11_verdict from lib.sh with `input` on its standard input; returns { code, out, worst }. */
 function verdict(budget, input) {
@@ -76,7 +77,7 @@ test('run.sh asserts P11 per replica once they are Ready, and says so when it co
 test('the A1 failure path is unchanged: the refusal is named, nothing is faked', () => {
   assert.match(run, /THE HUB REFUSES TO START, ON PURPOSE \(plan 09 A1\)/);
   assert.match(run, /fail_reason="A1: the hub binary exits 1 by design until it is composed \(03a and 05\); the replicas started and refused"/);
-  assert.match(run, /\[ "\$refused" -eq 3 \]/);
+  assert.match(readFileSync(libSh0, 'utf8'), /\[ "\$refused" -eq 3 \]/, 'all three replicas must have refused for the A1 verdict (lib.sh hub_verdict)');
 });
 
 // ---- the registry stage (CI first run, 2026-10-26: `hub image` failed in 0 s with "dial tcp [::1]:32768: connect: connection refused") ----
@@ -88,7 +89,8 @@ test('the A1 failure path is unchanged: the refusal is named, nothing is faked',
 // answering is shown: it waits within a bound, says which route answered, reaches the registry by another route when one is gone, and
 // prints the container's state and log when none answers.
 import { spawn } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { after } from 'node:test';
@@ -106,6 +108,7 @@ function exec(cmd, args, { env = {}, cwd, input } = {}) {
     child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => (err += d));
     child.on('close', (code) => resolve({ code, out, err, all: `${out}${err}` }));
+    child.stdin.on('error', () => {}); // a child that has already exited does not read its standard input
     child.stdin.end(input ?? '');
   });
 }
@@ -189,10 +192,44 @@ case "$1" in
     while [ $# -gt 0 ] && [ "$1" = "-i" ]; do shift; done
     shift # the container
     case "$*" in
+      *"exec -i lanekeeper-db-1"*) # psql in the database pod, as run.sh asks for it
+        cat > /dev/null
+        case "$*" in
+          *sslmode=disable*)
+            case "\${SHIM_S6_DISABLE:-reject}" in
+              connect) echo 1; exit 0 ;;
+              wrongpw) echo 'psql: error: connection to server at "lanekeeper-db-rw.lanekeeper.svc" (10.96.150.117), port 5432 failed: FATAL:  password authentication failed for user "lanekeeper_app"' >&2; exit 2 ;;
+              *) echo 'psql: error: connection to server at "lanekeeper-db-rw.lanekeeper.svc" (10.96.150.117), port 5432 failed: FATAL:  pg_hba.conf rejects connection for host "10.244.2.1", user "lanekeeper_app", database "lanekeeper", no encryption' >&2; exit 2 ;;
+            esac ;;
+          *ssl_max_protocol_version*) echo 'psql: error: connection to server at "lanekeeper-db-rw.lanekeeper.svc" (10.96.150.117), port 5432 failed: SSL error: tlsv1 alert protocol version' >&2; exit 2 ;;
+          *pg_stat_ssl*) echo TLSv1.3 ;;
+          *pg_extension*) echo pg_trgm,vector ;;
+          *"vector(3)"*) echo '[1,2,3]' ;;
+          *datcollate*) echo en_US.utf8 ;;
+        esac ;;
       *"get nodes --no-headers"*) printf 'n1 Ready\\nn2 Ready\\nn3 Ready\\nn4 Ready\\n' ;;
       *"get nodes"*) echo "NAME STATUS" ;;
+      *"get pods -l app.kubernetes.io/name=lanekeeper-hub -o json"*) cat "$SHIM_DIR/pods.json" ;;
+      *"get pods -l"*) echo "NAME READY STATUS RESTARTS" ;;
       *"get pods"*) echo '{"items":[]}' ;;
-      *" wait "*) [ "\${SHIM_WAIT_EXIT:-0}" = 0 ] || { echo "error: timed out waiting for the condition on nodes/lanekeeper-e2e-worker" >&2; exit "$SHIM_WAIT_EXIT"; } ;;
+      *"get pod lanekeeper-hub-"*) n="$(sed -n 's/.*get pod lanekeeper-hub-\\([0-9]\\).*/\\1/p' <<<"$*")"; cat "$SHIM_DIR/pod-$n.json" ;;
+      *" logs lanekeeper-hub-"*)
+        pod="$(sed -n 's/.* logs \\(lanekeeper-hub-[0-9]\\).*/\\1/p' <<<"$*")"
+        n="$(cat "$SHIM_DIR/logcalls-$pod" 2>/dev/null || echo 0)"; echo $((n + 1)) > "$SHIM_DIR/logcalls-$pod"
+        var="SHIM_LOGS_\${pod##*-}"; mode="\${!var:-ok}"
+        refusal='{"timestamp":"2026-10-26T18:25:00.059597Z","level":"ERROR","fields":{"message":"this build has no identity module (prompt 03a) and no registry (prompt 05) linked in; refusing to start without them"},"target":"hub"}'
+        unavailable() { # what the first runner showed: exit 0 and a sentence in place of a log, for a container that the kubelet had removed
+          case "$*" in *--previous*) echo "unable to retrieve container logs for containerd://f0ccf06c64bd0f461849de9c1599469ae5bd5b93d369e9a69c2a8134efce14a5"; exit 0 ;; esac
+          echo "Error from server (BadRequest): container \\"hub\\" in pod \\"$pod\\" is waiting to start: CrashLoopBackOff" >&2; exit 1
+        }
+        case "$mode" in
+          ok) echo "$refusal" ;;
+          retry:*) if [ "$n" -lt "\${mode#retry:}" ]; then unavailable "$@"; else echo "$refusal"; fi ;;
+          never) unavailable "$@" ;;
+          other:*) echo '{"timestamp":"2026-10-26T18:25:01.000000Z","level":"ERROR","fields":{"message":"'"\${mode#other:}"'"},"target":"hub"}' ;;
+        esac ;;
+      *"wait --for=condition=Ready node"*) [ "\${SHIM_WAIT_EXIT:-0}" = 0 ] || { echo "error: timed out waiting for the condition on nodes/lanekeeper-e2e-worker" >&2; exit "$SHIM_WAIT_EXIT"; } ;;
+      *" apply "*) cat > /dev/null ;;
       *crictl*) [ "\${SHIM_CRICTL_EXIT:-0}" = 0 ] || { echo "FATA[0000] pulling image: failed to resolve reference" >&2; exit "$SHIM_CRICTL_EXIT"; } ;;
       sh\\ *) cat > /dev/null ;;
     esac ;;
@@ -226,7 +263,12 @@ esac
 
 /** A copy of the scripts under test in a scratch repository (so that run.sh finds no real tools in target/ops-tools/bin), the stand-ins,
  *  and a tiny image archive with its recorded digest. */
-async function scene(name, env = {}) {
+const crashed = (restarts = 2) => ({ name: 'hub', ready: false, restartCount: restarts,
+  state: { waiting: { reason: 'CrashLoopBackOff', message: 'back-off 10s restarting failed container=hub pod=lanekeeper-hub-0' } },
+  lastState: { terminated: { containerID: 'containerd://2679bc8a', exitCode: 1, reason: 'Error', startedAt: '2026-10-26T18:25:00Z', finishedAt: '2026-10-26T18:25:00Z' } } });
+const imagePull = () => ({ name: 'hub', ready: false, restartCount: 0, state: { waiting: { reason: 'ImagePullBackOff', message: 'Back-off pulling image' } } });
+
+async function scene(name, env = {}, { pods = [crashed(1), crashed(2), crashed(1)] } = {}) {
   const dir = join(scratch, name);
   const repo = join(dir, 'repo');
   const bin = join(dir, 'bin');
@@ -251,13 +293,22 @@ async function scene(name, env = {}) {
     chmodSync(join(bin, file), 0o755);
   }
   writeFileSync(join(dir, 'kind-config.yaml'), 'kind: Cluster\n');
+  // The operator's manifest is local, with the pinned image named twice as the release's file names it, so that no stage needs the network.
+  const pinsFile = join(repo, 'deploy', 'tests', 'kind', 'pins.env');
+  const base = /^LK_CNPG_OPERATOR_IMAGE=(\S+?)@sha256:/m.exec(readFileSync(pinsFile, 'utf8'))[1];
+  const manifest = `        - name: OPERATOR_IMAGE_NAME\n          value: ${base}\n        image: ${base}\n`;
+  writeFileSync(join(dir, 'cnpg.yaml'), manifest);
+  appendFileSync(pinsFile, `LK_CNPG_MANIFEST_URL=file://${join(dir, 'cnpg.yaml')}\nLK_CNPG_MANIFEST_SHA256=${createHash('sha256').update(manifest).digest('hex')}\n`);
+  // The hub pods as the API server shows them: one JSON document of the list, and one per pod.
+  writeFileSync(join(dir, 'pods.json'), JSON.stringify({ items: pods.map((status, i) => ({ metadata: { name: `lanekeeper-hub-${i}` }, status: { conditions: [{ type: 'Ready', status: 'False' }], containerStatuses: [status] } })) }));
+  pods.forEach((status, i) => writeFileSync(join(dir, `pod-${i}.json`), JSON.stringify({ status: { containerStatuses: [status] } })));
   const { server, port } = await listen();
   const closed = await closedPort();
   const log = join(dir, 'calls.log');
   writeFileSync(log, '');
   const shimEnv = {
     PATH: `${bin}:${process.env.PATH}`, SHIM_LOG: log, SHIM_DIR: dir, SHIM_IMAGES: images, REAL_CURL: which,
-    SHIM_REGISTRY_PORT: String(port), SHIM_CLOSED_PORT: String(closed), LK_WAIT_STEP: '0.2', LK_KIND_REGISTRY_WAIT: '3',
+    SHIM_REGISTRY_PORT: String(port), SHIM_CLOSED_PORT: String(closed), LK_WAIT_STEP: '0.2', LK_KIND_REGISTRY_WAIT: '3', LK_KIND_LOG_WAIT: '2', LK_KIND_LOG_STEP: '0.2',
     LK_KIND_CONFIG_FILE: join(dir, 'kind-config.yaml'), ...env,
   };
   const runSh = (...args) => exec(join(repo, 'deploy', 'tests', 'kind', 'run.sh'), [...args, '--images-dir', images, '--out', join(dir, 'out')], { env: shimEnv });
@@ -344,4 +395,113 @@ test('with Ready nodes the run goes on to the hub image stage, which pushes, the
   const calls = await s.calls();
   const at = (needle) => calls.indexOf(needle);
   assert.ok(at('wait --for=condition=Ready node') > at('network connect') && at('crane push') > at('wait --for=condition=Ready node') && at('crictl pull') > at('crane push'), calls);
+});
+
+// ---- the hub stage (CI third run, 2026-10-26, run 40374410436) ----
+//
+// All three replicas crashed with the A1 refusal, and the script said "2 of 3 replicas ... the chart, the database connection or the cluster is
+// at fault". For lanekeeper-hub-1 `kubectl logs --previous` had answered with exit 0 and the sentence "unable to retrieve container logs for
+// containerd://...", in place of a log, for a container that the kubelet had already removed; the script took that sentence for the log and did
+// not ask again. These tests give the real run.sh a kubectl that does exactly that, for one replica, for good, and a different error for another.
+const REFUSAL = 'this build has no identity module (prompt 03a) and no registry (prompt 05) linked in; refusing to start without them';
+
+test('the refusal that run.sh looks for is the one that crates/hub/src/main.rs logs', () => {
+  assert.ok(readFileSync(join(root, 'crates', 'hub', 'src', 'main.rs'), 'utf8').includes(`"${REFUSAL}"`));
+  assert.ok(readFileSync(libSh, 'utf8').includes(`HUB_REFUSAL_TEXT='${REFUSAL}'`));
+});
+
+test('hub: logs that cannot be fetched at first, and then can, still count: A1 on 3 of 3 replicas, as designed, and P11 stays NOT MEASURED', async () => {
+  const s = await scene('hub-retry', { SHIM_LOGS_1: 'retry:3' });
+  const r = await s.runSh();
+  s.server.close();
+  assert.equal(r.code, 1, r.all);
+  assert.match(r.all, /\| s6 \| PASS \|/);
+  assert.match(r.all, /THE HUB REFUSES TO START, ON PURPOSE \(plan 09 A1\)/);
+  assert.match(r.all, /FAILED in the stage 'hub': A1: the hub binary exits 1 by design until it is composed \(03a and 05\); the replicas started and refused/);
+  assert.match(r.all, /\| hub \| FAIL \|/);
+  assert.match(r.all, /\| P11 hub start-up \(10 s per replica\) \| NOT MEASURED \|/);
+  assert.doesNotMatch(r.all, /is at fault/, 'the chart, the database and the cluster are not blamed');
+  assert.match(r.all, /"restartCount":2/, 'the state of each replica is printed');
+});
+
+test('hub: a replica whose log never comes: A1 on 2 of 3, says that no log was retrieved, claims A1 for no one without a log, blames nothing', async () => {
+  const s = await scene('hub-nolog', { SHIM_LOGS_1: 'never' });
+  const r = await s.runSh();
+  s.server.close();
+  assert.equal(r.code, 1, r.all);
+  assert.match(r.all, /FAILED in the stage 'hub': A1 seen in the logs of 2 of 3 replicas; no log could be retrieved for lanekeeper-hub-1 in 2 s, and its state is the same as theirs \(exit 1, never Ready\); A1 is not claimed for it/);
+  assert.doesNotMatch(r.all, /at fault/);
+  assert.doesNotMatch(r.all, /the replicas started and refused/, 'the all-three verdict is not given');
+  assert.doesNotMatch(r.all, /THE HUB REFUSES TO START, ON PURPOSE/);
+  assert.match(r.all, /\| P11 hub start-up \(10 s per replica\) \| NOT MEASURED \|/);
+  assert.match(r.all, /unable to retrieve container logs|no log could be retrieved/);
+});
+
+test('hub: another error in a log is reported as it is, and is not A1', async () => {
+  const s = await scene('hub-other', { SHIM_LOGS_2: 'other:failed to connect to the database: connection refused' });
+  const r = await s.runSh();
+  s.server.close();
+  assert.equal(r.code, 1, r.all);
+  assert.match(r.all, /FAILED in the stage 'hub': not A1: the log of lanekeeper-hub-2 shows another error: .*failed to connect to the database: connection refused/);
+  assert.match(r.all, /2 of 3 replicas logged the A1 refusal/);
+  assert.doesNotMatch(r.all, /THE HUB REFUSES TO START, ON PURPOSE/);
+});
+
+test('hub: a replica with no log whose state is not that of a crashed hub is named with its state, and is not A1', async () => {
+  const s = await scene('hub-pull', { SHIM_LOGS_2: 'never' }, { pods: [crashed(2), crashed(2), imagePull()] });
+  const r = await s.runSh();
+  s.server.close();
+  assert.equal(r.code, 1, r.all);
+  assert.match(r.all, /FAILED in the stage 'hub': not explained by A1: lanekeeper-hub-2 has no log and its state is .*ImagePullBackOff/);
+  assert.match(r.all, /A1 was seen in the logs of 2 of 3 replicas/);
+  assert.doesNotMatch(r.all, /THE HUB REFUSES TO START, ON PURPOSE/);
+});
+
+test('hub: no replica has a log: nothing is claimed, and nothing is blamed', async () => {
+  const s = await scene('hub-nologs', { SHIM_LOGS_0: 'never', SHIM_LOGS_1: 'never', SHIM_LOGS_2: 'never' });
+  const r = await s.runSh();
+  s.server.close();
+  assert.equal(r.code, 1, r.all);
+  assert.match(r.all, /FAILED in the stage 'hub': no log could be retrieved for any replica in 2 s; all 3 ended with exit 1 and were never Ready, but A1 is not claimed without a log/);
+  assert.doesNotMatch(r.all, /at fault|A1: the hub binary exits 1/);
+});
+
+test('s6: a connection with sslmode=disable that succeeds is a violation, and the stage fails', async () => {
+  const s = await scene('s6-connect', { SHIM_S6_DISABLE: 'connect' });
+  const r = await s.runSh();
+  s.server.close();
+  assert.equal(r.code, 1, r.all);
+  assert.match(r.all, /FAILED in the stage 's6': S6 VIOLATED: psql with sslmode=disable connected to the database/);
+  assert.doesNotMatch(r.all, /^kind-e2e: == hub$/m, 'the hub stage is not reached');
+});
+
+test('s6: a refusal for another reason than pg_hba (a wrong password) does not pass the check', async () => {
+  const s = await scene('s6-wrongpw', { SHIM_S6_DISABLE: 'wrongpw' });
+  const r = await s.runSh();
+  s.server.close();
+  assert.equal(r.code, 1, r.all);
+  assert.match(r.all, /FAILED in the stage 's6': sslmode=disable failed, but not because pg_hba rejects an unencrypted connection \(S6\)/);
+});
+
+test('hub_log_usable and hub_replica_class: a sentence in place of a log is no log, and a state is never a refusal', async () => {
+  const cls = async (log, term, code, ready) => (await lib(`hub_replica_class "$1" ${term} ${code} ${ready}`.replace('"$1"', JSON.stringify(log)))).out.trim();
+  assert.equal(await cls(`{"fields":{"message":"${REFUSAL}"}}`, 'true', 1, 'false'), 'refused');
+  assert.equal(await cls('{"fields":{"message":"failed to connect to the database"}}', 'true', 1, 'false'), 'other');
+  assert.equal(await cls('unable to retrieve container logs for containerd://f0ccf06c64bd', 'true', 1, 'false'), 'unlogged-exit1');
+  assert.equal(await cls('', 'true', 1, 'false'), 'unlogged-exit1');
+  assert.equal(await cls('', 'true', 2, 'false'), 'unexplained', 'another exit code is not the refusal\'s');
+  assert.equal(await cls('', 'false', '""', 'false'), 'unexplained', 'a container that never ended is not a crashed hub');
+  assert.equal(await cls('', 'true', 1, 'true'), 'unexplained', 'a Ready replica is not a refusal');
+});
+
+test('hub_verdict: another error wins, then an unexplained state; only 3 refusals are the A1 verdict', async () => {
+  const v = async (...n) => (await lib(`hub_verdict ${n.join(' ')}`)).out.trim();
+  assert.equal(await v(3, 0, 0, 0), 'a1');
+  assert.equal(await v(2, 0, 1, 0), 'a1-partial');
+  assert.equal(await v(1, 0, 2, 0), 'a1-partial');
+  assert.equal(await v(0, 0, 3, 0), 'no-logs');
+  assert.equal(await v(2, 1, 0, 0), 'other-error');
+  assert.equal(await v(1, 1, 0, 1), 'other-error');
+  assert.equal(await v(2, 0, 0, 1), 'unexplained');
+  assert.equal(await v(0, 0, 0, 3), 'unexplained');
 });

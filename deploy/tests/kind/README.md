@@ -8,7 +8,7 @@ helm and crane at the versions of the Justfile).
 | File | What it is |
 |---|---|
 | `run.sh` | the test: stages `registry`, `cluster`, `hub image`, `operator`, `database`, `s6`, `hub`, each timed; the first failure stops it with the stage named. `--registry-only` runs `registry` and `hub image` without a cluster |
-| `lib.sh` | what needs no cluster, so that `.github/scripts/kind-run.test.mjs` can test it: the P11 verdict, and the registry helpers (`wait_for_http`, `registry_report`, `registry_container_ip`) |
+| `lib.sh` | what needs no cluster, so that `.github/scripts/kind-run.test.mjs` can test it: the P11 verdict, the registry helpers (`wait_for_http`, `registry_report`, `registry_container_ip`) and the verdict on the hub replicas (`hub_log_usable`, `hub_replica_class`, `hub_verdict`) |
 | `registry-test.sh` | `run.sh --registry-only` and the registry helpers against a real registry container, crane and Docker (`just kind-registry-test`, part of `verify-09`, run by the `policies and scripts` job) |
 | `pins.env` | what the test installs, each pin read from a registry or a release (never guessed) and at least 14 days old |
 
@@ -29,10 +29,12 @@ the container was doing then. The script now:
   networks and addresses, the last 30 lines of its log and the host's listening sockets on the port; the same goes to `diagnostics.txt`;
 - names any command that fails with no reason of its own (`a command failed with exit N at run.sh:LINE ...`), through the ERR trap.
 
-What is **not** known, and the script does not claim to know, is why the published port stopped answering (a registry that died, or a
-mapping that Docker dropped when the registry joined the kind network, are both possible, and the log cannot tell them apart). The second
-route is the registry's address on the Docker network, which a Linux host reaches directly (the runner is one; Docker Desktop's VM is not,
-and there the published port is the only route). The next run's output decides it.
+**The third run answered it** (run 40374410436). The probe that `run.sh` now makes right after the registry joins the kind network printed
+`http://127.0.0.1:32768/v2/ does NOT answer (after the registry joined the kind network): ... Couldn't connect to server` and
+`http://172.18.0.6:80/v2/ answers`. So joining the kind network takes the published loopback port away on the runner, the container is alive, and the
+second route (its address on the kind network) carried the push: `NOTE: the published port ... does not answer any more`, `hub image` passed in 2 s. Why
+Docker does it was not investigated. Where a container's address is not reachable from the host (Docker Desktop's VM), neither route would answer after
+the join; pushing before the join would be the order that works there, and it was not needed on the runner, which is the target.
 
 The `cluster` stage also waits (`LK_KIND_NODES_TIMEOUT`, 180 s) for all four nodes to be Ready: `kind create --wait` waits for the control
 plane only, and the workers were still `NotReady` when the first run printed them.
@@ -40,8 +42,17 @@ plane only, and the workers were still `NotReady` when the first run printed the
 ## Where the hub stage stands
 
 - **A1.** `crates/hub/src/main.rs` exits 1 by design until the identity module (03a) and the registry (05) are composed into the binary, so
-  the three replicas start, refuse and crash, and the `hub` stage fails with that reason. The script reports it as such (it counts the
-  "refusing to start without them" lines of all three replicas) and fakes nothing. The summary then says **P11 NOT MEASURED**.
+  the three replicas start, refuse and crash, and the `hub` stage fails with that reason. It fakes nothing, and the summary says **P11 NOT MEASURED**.
+  The verdict is made from what is retrieved, replica by replica (`collect_replica` in `run.sh`, `hub_verdict` in `lib.sh`). Each replica's log is asked
+  for, from its current and its previous container, for up to `LK_KIND_LOG_WAIT` seconds (30), because the kubelet may not have it yet or may have
+  removed the container, and `kubectl logs` then answers with exit 0 and the sentence `unable to retrieve container logs for containerd://...` in place
+  of a log (the third run: that sentence was taken for the log of one replica, and the stage said that 2 of 3 replicas refused and that the chart, the
+  database or the cluster was at fault: wrong). Each replica's state (restart count, ready, waiting reason, exit code, started, finished) is printed.
+  A replica counts as an A1 refusal only if a retrieved log holds the exact text of `main.rs`, never from its state. The stage is red in every case:
+  **all 3 refused**: the A1 verdict; **some refused and the rest have no log but ended with exit 1 and were never Ready**: "A1 seen in the logs of N of
+  3 replicas; no log could be retrieved for ...; A1 is not claimed for it"; **a log with another error**: that error, verbatim, as the failure ("not
+  A1"); **a replica without a log whose state is not a crashed hub's** (waiting to pull, still starting, another exit code): its state, "not explained
+  by A1"; **no log at all**: nothing is claimed. It never says that the chart, the database or the cluster is at fault.
 - **Readiness.** A pod's `Ready` condition is the answer of `/readyz` on the operations port, as the kubelet's readinessProbe sees it. The
   test does not ask the port again from outside the pod: the hub chart's NetworkPolicy admits 9090 only from the monitoring namespace and
   Google's ranges, so a request through the API server's pod proxy would be refused by the very policy the chart ships.
@@ -49,11 +60,16 @@ plane only, and the workers were still `NotReady` when the first run printed the
   `p11_verdict` in `lib.sh`). The number includes the probes' own timing, not only the hub's start: the kubelet runs no readinessProbe until the
   startupProbe has succeeded, so the time to Ready can hold up to the startupProbe's period (2 s, `deploy/charts/hub/templates/statefulset.yaml:96-100`)
   and then up to the readinessProbe's (5 s, the same file, lines 106 to 108), and the API's one-second timestamps: up to about 7 s of the 10 s in the
-  worst case, from the periods and not measured (the test has never run). A replica that passes started within the budget; **a red P11 on kind may be
+  worst case, from the periods and not measured (the hub has never started in this test). A replica that passes started within the budget; **a red P11 on kind may be
   probe overhead, so read it against those periods before reading it as a slow start.** The budget is the design scale's, and kind's CPUs and disks are not: a miss is a finding to read, not
   a flake to retry.
-- **Unproven.** That the CNI of kind (kindnet) enforces the hub's NetworkPolicy, and that the kubelet's probes are not filtered by it. No kind
-  cluster could start where this was written (cgroup v1, and `pkg-containers.githubusercontent.com` refused: blockers B16 and B9).
+- **Proven on a runner (run 40374410436):** the stages `registry`, `cluster`, `hub image`, `operator`, `database` and `s6` pass. The `s6` stage checked what
+  the plan says: a TLS connection works and is TLSv1.3 (the positive control), `psql sslmode=disable` is refused with `pg_hba.conf rejects connection for
+  host ..., no encryption` (the chart's `hostnossl ... reject`, not a missing entry or a wrong password), and a client that offers TLS 1.2 at most is
+  refused with `SSL error: tlsv1 alert protocol version`; then `vector` and `pg_trgm` and the collation. The `database` stage took 97 s of the 900 s that
+  `LK_KIND_DB_TIMEOUT` allows (three instances, with their image pulled), so a runner several times slower still fits.
+- **Unproven.** That the CNI of kind (kindnet) enforces the hub's NetworkPolicy, and that the kubelet's probes are not filtered by it; the hub stage past A1
+  and P11 (the hub does not start yet).
 
 ## The pins, and who moves them
 

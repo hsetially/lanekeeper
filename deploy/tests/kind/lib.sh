@@ -97,3 +97,54 @@ registry_report() {
         fi
     } >&2
 }
+
+# ---- the verdict on the hub replicas ------------------------------------------------------------------------------------------
+# The hub binary exits 1 by design until it is composed (plan 09 A1). The stage that finds the replicas crashing must say what it knows
+# about each replica, and no more. The first run that reached it (2026-10-26, run 40374410436) said "the chart, the database connection or the
+# cluster is at fault" for three replicas that all crashed with the A1 refusal: `kubectl logs --previous` had answered for one of them, with
+# exit 0, with the sentence "unable to retrieve container logs for containerd://..." (the kubelet had already removed that container), and
+# run.sh took the sentence for the log.
+
+# The refusal, as crates/hub/src/main.rs logs it (kind-run.test.mjs checks the two against each other).
+HUB_REFUSAL_TEXT='this build has no identity module (prompt 03a) and no registry (prompt 05) linked in; refusing to start without them'
+
+# hub_log_usable LOG: succeeds when LOG is a log: not empty, and not the sentence that kubectl prints in place of the log of a container that
+# the kubelet no longer has.
+hub_log_usable() {
+    [ -n "${1//[[:space:]]/}" ] && [[ "$1" != "unable to retrieve container logs"* ]]
+}
+
+# hub_replica_class LOG TERMINATED EXIT READY: what one replica shows, from what was retrieved (TERMINATED is true or false: the container ended at
+# least once; EXIT is the exit code of its last end; READY is true or false):
+#   refused         a usable log holds the A1 refusal
+#   other           a usable log holds something else (a real failure to read, or a log that was read too early)
+#   unlogged-exit1  no usable log; the container ended with exit 1 and was never Ready, as the replicas that did log the refusal did
+#   unexplained     no usable log, and a state that is not that (waiting to pull an image, still starting, ended with another code, ...)
+hub_replica_class() {
+    local log="$1" terminated="$2" exit_code="$3" ready="$4"
+    if hub_log_usable "$log"; then
+        if grep -q -F -- "$HUB_REFUSAL_TEXT" <<<"$log"; then echo refused; else echo other; fi
+    elif [ "$terminated" = true ] && [ "$exit_code" = 1 ] && [ "$ready" != true ]; then
+        echo unlogged-exit1
+    else
+        echo unexplained
+    fi
+}
+
+# hub_verdict REFUSED OTHER UNLOGGED UNEXPLAINED (the counts of the classes above, 3 replicas in all). Prints one word:
+#   other-error  a replica logged something that is not the refusal: a real failure, whatever the others did
+#   unexplained  a replica without a log is in a state that A1 does not explain
+#   a1           all 3 replicas logged the refusal: the verdict as designed
+#   a1-partial   some logged the refusal, and each of the others has no log but ended with exit 1 and was never Ready. Reported as what it is
+#                (A1 seen on N of 3, no log for the rest): the three pods are one StatefulSet with one image and one configuration, so the
+#                same exit is likely the same cause, but a state is not a log, so A1 is not claimed for a replica that has none
+#   no-logs      no log was retrieved for any replica: the exit code 1 of all three is consistent with A1 and shows nothing
+hub_verdict() {
+    local refused="$1" other="$2" unlogged="$3" unexplained="$4"
+    if [ "$other" -gt 0 ]; then echo other-error
+    elif [ "$unexplained" -gt 0 ]; then echo unexplained
+    elif [ "$refused" -eq 3 ]; then echo a1
+    elif [ "$refused" -gt 0 ] && [ "$((refused + unlogged))" -eq 3 ]; then echo a1-partial
+    else echo no-logs
+    fi
+}

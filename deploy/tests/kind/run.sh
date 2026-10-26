@@ -43,9 +43,13 @@
 #
 # THE HUB DOES NOT BECOME READY TODAY, AND THIS TEST SAYS SO. crates/hub/src/main.rs exits 1 by design until the identity module (03a)
 # and the registry (05) are composed into the binary (plan 09 A1; plans/09-deployment-ci.blockers.md). A hub that exits 1 cannot
-# answer /readyz, so the hub stage fails, and the output says that the replicas started, read their settings and then refused: the chart
-# is not the fault. Nothing here fakes readiness, retries until it passes, or skips the stage; the test is red until a human assigns
-# the composition and the hub binary runs. Acceptance 3 stays unticked until then.
+# answer /readyz, so the hub stage fails, and when the logs of all three replicas hold the refusal the output says that the replicas
+# started, read their settings and then refused: the chart is not the fault. The verdict is made from what is retrieved, replica by
+# replica: a replica counts as a refusal only if a log of it holds the exact text of main.rs (never from its state), a log that cannot be
+# had after LK_KIND_LOG_WAIT seconds is said so and A1 is not claimed for it, and another error in a log is reported as it is (lib.sh
+# hub_verdict; the stage never says that the chart, the database or the cluster is at fault). Nothing here fakes readiness, retries until
+# it passes, or skips the stage; the test is red until a human assigns the composition and the hub binary runs. Acceptance 3 stays
+# unticked until then.
 #
 # Needs: Docker (a daemon with cgroup v2: the pinned node image's kubelet refuses cgroup v1), kind, helm and crane at the versions of the
 # Justfile (`just ops-tools-install kind helm crane`; `just kind-e2e` checks them), curl, jq, openssl and python3 (publish.sh). kubectl is the
@@ -56,6 +60,7 @@
 #                        yours to make.
 #   LK_KIND_DB_TIMEOUT, LK_KIND_HUB_TIMEOUT   seconds to wait for the database (default 900) and the hub (default 300).
 #   LK_KIND_REGISTRY_WAIT, LK_KIND_NODES_TIMEOUT   seconds to wait for the registry (default 60) and for the four nodes to be Ready (180).
+#   LK_KIND_LOG_WAIT, LK_KIND_LOG_STEP   seconds to ask for each hub replica's log (default 30) and between two asks (2).
 #   LK_WAIT_STEP         seconds between two asks of the registry (default 1; the tests set it lower).
 #
 # A FAILURE IS NEVER SILENT. A stage that knows why it failed says so (the line `FAILED in the stage ...: reason`). A command that fails
@@ -82,6 +87,9 @@ DB_TIMEOUT="${LK_KIND_DB_TIMEOUT:-900}"
 HUB_TIMEOUT="${LK_KIND_HUB_TIMEOUT:-300}"
 REGISTRY_WAIT="${LK_KIND_REGISTRY_WAIT:-60}"
 NODES_TIMEOUT="${LK_KIND_NODES_TIMEOUT:-180}"
+# How long a replica's log is asked for (the kubelet may not have it yet, or may have removed the container), and the pause between two asks.
+LOG_WAIT="${LK_KIND_LOG_WAIT:-30}"
+LOG_STEP="${LK_KIND_LOG_STEP:-2}"
 # The Docker network that kind creates for its nodes: the registry joins it, and nodes resolve the registry's name there.
 KIND_NETWORK="kind"
 
@@ -199,8 +207,12 @@ diagnostics() {
             for pod in $(k -n "$ns" get pods -o json | jq -r '.items[] | select(((.status.conditions // []) | any(.type == "Ready" and .status == "True")) | not) | .metadata.name'); do
                 echo "== describe $ns/$pod"
                 k -n "$ns" describe pod "$pod"
-                echo "== logs $ns/$pod (previous, else current; the last 40 lines of each container)"
-                k -n "$ns" logs "$pod" --all-containers --tail=40 --previous 2>&1 || k -n "$ns" logs "$pod" --all-containers --tail=40 2>&1 || true
+                # Both, always: for a container that the kubelet has removed, `logs --previous` exits 0 with a sentence instead of a log (the third CI run),
+                # so a fallback to the current container's log after a failure would never run.
+                echo "== logs $ns/$pod, previous container (the last 40 lines of each)"
+                k -n "$ns" logs "$pod" --all-containers --tail=40 --previous 2>&1 || true
+                echo "== logs $ns/$pod, current container (the last 40 lines of each)"
+                k -n "$ns" logs "$pod" --all-containers --tail=40 2>&1 || true
             done
         done
     } >> "$out/diagnostics.txt" 2>&1 || true
@@ -476,32 +488,89 @@ hub_state() {
         | "\(map(select(.ready)) | length) \(length) \(map(select((.restarts >= 2) and (.ready | not))) | length)"'
 }
 
+# One replica, as far as it can be known: its container state, and its log, retried for up to LOG_WAIT seconds. A log is taken from the
+# current container and from the previous one, whichever is usable (lib.sh hub_log_usable); one that holds the refusal ends the wait at once, any
+# other usable log ends it once the container has ended (a log of a running container may be unfinished). Sets R_LOG (empty when none could be
+# retrieved), R_STATE (the container status as JSON), R_SUMMARY (what the verdict reads, as one line), R_TERMINATED, R_EXIT and R_READY.
+collect_replica() { # POD
+    local pod="$1" deadline=$((SECONDS + LOG_WAIT)) prev out args
+    R_LOG=""
+    while :; do
+        R_STATE="$(k -n "$NS" get pod "$pod" -o json 2>/dev/null | jq -c '.status.containerStatuses[0] // {}' 2>/dev/null || true)"
+        [ -n "$R_STATE" ] || R_STATE="{}"
+        R_SUMMARY="$(jq -c '{restartCount: (.restartCount // null), ready: (.ready // false), waiting: (.state.waiting.reason // null), exitCode: (.state.terminated.exitCode // .lastState.terminated.exitCode // null), startedAt: (.state.terminated.startedAt // .lastState.terminated.startedAt // .state.running.startedAt // null), finishedAt: (.state.terminated.finishedAt // .lastState.terminated.finishedAt // null)}' <<<"$R_STATE" 2>/dev/null || echo '{}')"
+        R_TERMINATED="$(jq -r '((.state.terminated // .lastState.terminated) != null)' <<<"$R_STATE" 2>/dev/null || echo false)"
+        R_EXIT="$(jq -r '(.state.terminated.exitCode // .lastState.terminated.exitCode // "")' <<<"$R_STATE" 2>/dev/null || true)"
+        R_READY="$(jq -r '(.ready // false)' <<<"$R_STATE" 2>/dev/null || echo false)"
+        for prev in "" "--previous"; do
+            args=(-n "$NS" logs "$pod" -c hub --tail=20)
+            [ -z "$prev" ] || args+=("$prev")
+            if out="$(k "${args[@]}" 2>&1)" && hub_log_usable "$out"; then
+                if grep -q -F -- "$HUB_REFUSAL_TEXT" <<<"$out"; then R_LOG="$out"; return 0; fi
+                [ -n "$R_LOG" ] || R_LOG="$out"
+            fi
+        done
+        if [ -n "$R_LOG" ] && [ "$R_TERMINATED" = true ]; then return 0; fi
+        [ "$SECONDS" -lt "$deadline" ] || return 0
+        sleep "$LOG_STEP"
+    done
+}
+
+# The verdict on the replicas of a hub that does not become Ready (lib.sh hub_verdict). The stage is red in every case, as acceptance 3 is
+# not met; what differs is what it claims. It never says that the chart, the database or the cluster is at fault: it says what each replica
+# showed, and for a replica without a log, only its state.
 hub_failed() {
-    local pod i log refused=0
+    local pod i class verdict refused=0 other=0 unlogged=0 unexplained=0 refused_pods="" other_line="" other_pod="" unlogged_pods="" unexplained_pods="" unexplained_state=""
     echo "---- the hub pods"
     k -n "$NS" get pods -l "$HUB_SELECTOR" -o wide || true
     for i in 0 1 2; do
         pod="lanekeeper-hub-$i"
-        echo "---- $pod: state"
-        k -n "$NS" get pod "$pod" -o json 2>/dev/null | jq -c '.status.containerStatuses[0] | {restartCount, state, lastState}' || true
-        log="$(k -n "$NS" logs "$pod" --previous --tail=20 2>/dev/null || k -n "$NS" logs "$pod" --tail=20 2>/dev/null || true)"
-        echo "---- $pod: log"
-        echo "$log"
-        grep -q 'refusing to start without them' <<<"$log" && refused=$((refused + 1))
+        collect_replica "$pod"
+        class="$(hub_replica_class "$R_LOG" "$R_TERMINATED" "$R_EXIT" "$R_READY")"
+        echo "---- $pod: state (restartCount, ready, waiting reason, exit code, started, finished): $R_SUMMARY"
+        echo "---- $pod: log ($class)"
+        if hub_log_usable "$R_LOG"; then echo "$R_LOG"; else echo "(no log could be retrieved in ${LOG_WAIT} s)"; fi
+        case "$class" in
+            refused) refused=$((refused + 1)); refused_pods="$refused_pods $pod" ;;
+            other) other=$((other + 1)); if [ -z "$other_pod" ]; then other_pod="$pod"; other_line="$(grep -v '^[[:space:]]*$' <<<"$R_LOG" | tail -n 1 | cut -c1-600)"; fi ;;
+            unlogged-exit1) unlogged=$((unlogged + 1)); unlogged_pods="$unlogged_pods $pod" ;;
+            unexplained) unexplained=$((unexplained + 1)); if [ -z "$unexplained_pods" ]; then unexplained_state="$R_SUMMARY"; fi; unexplained_pods="$unexplained_pods $pod" ;;
+        esac
     done
-    if [ "$refused" -eq 3 ]; then
-        cat <<'EOF'
-----
+    verdict="$(hub_verdict "$refused" "$other" "$unlogged" "$unexplained")"
+    echo "----"
+    case "$verdict" in
+        a1)
+            cat <<'EOF'
 THE HUB REFUSES TO START, ON PURPOSE (plan 09 A1). All three replicas started, read their settings and got past telemetry, and then
 logged that this build has no identity module (prompt 03a) and no registry (prompt 05) linked in, and exited with code 1
 (crates/hub/src/main.rs). A hub that exits 1 cannot answer /readyz. The chart, the database, the image and the cluster are not at fault.
 This stays red until a human assigns the composition of the binary; acceptance 3 is not met until then, and this test does not
 pretend otherwise.
 EOF
-        fail_reason="A1: the hub binary exits 1 by design until it is composed (03a and 05); the replicas started and refused"
-    else
-        fail_reason="the hub did not become Ready, and its logs are not the refusal of A1 (${refused} of 3 replicas): the chart, the database connection or the cluster is at fault"
-    fi
+            fail_reason="A1: the hub binary exits 1 by design until it is composed (03a and 05); the replicas started and refused"
+            ;;
+        a1-partial)
+            echo "A1 (plan 09), seen on $refused of 3 replicas: their logs hold the refusal of crates/hub/src/main.rs, and they exited with code 1."
+            echo "No log could be retrieved in ${LOG_WAIT} s for${unlogged_pods}; its state is the same as theirs (exit 1, never Ready), and nothing in it says more."
+            echo "A1 is not claimed for a replica without a log. This stays red: acceptance 3 is not met, and P11 is not measured."
+            fail_reason="A1 seen in the logs of $refused of 3 replicas; no log could be retrieved for${unlogged_pods} in ${LOG_WAIT} s, and its state is the same as theirs (exit 1, never Ready); A1 is not claimed for it"
+            ;;
+        other-error)
+            echo "THIS IS NOT THE A1 REFUSAL. The log of $other_pod holds another error, which is the failure to look at (the whole logs are above):"
+            echo "$other_line"
+            fail_reason="not A1: the log of $other_pod shows another error: $other_line ($refused of 3 replicas logged the A1 refusal)"
+            ;;
+        unexplained)
+            echo "NOT EXPLAINED BY A1:${unexplained_pods} has no log, and its state is not that of a crashed hub: $unexplained_state"
+            fail_reason="not explained by A1:${unexplained_pods} has no log and its state is $unexplained_state; A1 was seen in the logs of $refused of 3 replicas"
+            ;;
+        *)
+            echo "No log could be retrieved for any replica in ${LOG_WAIT} s. All 3 ended with exit 1 and were never Ready, which is what A1 looks like and what"
+            echo "other crashes of this binary look like too; A1 is not claimed without a log."
+            fail_reason="no log could be retrieved for any replica in ${LOG_WAIT} s; all 3 ended with exit 1 and were never Ready, but A1 is not claimed without a log"
+            ;;
+    esac
     return 1
 }
 
@@ -518,7 +587,11 @@ install_hub() {
         say "hub: $ready of 3 Ready ($total pods, $crashing restarting), $((SECONDS - t0)) s after the install"
         [ "$ready" = 3 ] && break
         if [ "${crashing:-0}" -gt 0 ]; then hub_failed; return 1; fi
-        [ "$((SECONDS - t0))" -lt "$HUB_TIMEOUT" ] || { fail_reason="the hub was not Ready on all 3 replicas in ${HUB_TIMEOUT} s"; hub_failed || true; return 1; }
+        if [ "$((SECONDS - t0))" -ge "$HUB_TIMEOUT" ]; then
+            hub_failed || true
+            fail_reason="the hub was not Ready on all 3 replicas in ${HUB_TIMEOUT} s; $fail_reason"
+            return 1
+        fi
         sleep 3
     done
     local to_ready="$((SECONDS - t0))"
