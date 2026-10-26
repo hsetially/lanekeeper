@@ -19,6 +19,7 @@ T1 is complete; the commit `e2c199d` holds the code and the measurements were ta
 | B11 | **open, informational (T6)** | no operation creates a swimlane in the hub, so step 1 of `deploy/ADDING-A-SWIMLANE.md` cannot be completed by following it (T6 notes below) |
 | B12 | **open, informational (T6)** | what Binary Authorization needs that no chart makes, and what could not be confirmed without Google's documentation (T6 notes below) |
 | B13 | **open, informational (T8)** | the RPM release key and its Workload Identity trust root are made by no one (`RPM-GPG-KEY-lanekeeper.pub` is a marker); `dl.rockylinux.org`, `mirrors.rockylinux.org` and `deb.debian.org` are refused, so the install test ran with a labelled stand-in for `audit` and the musl build has no C toolchain (T8 notes below) |
+| B14 | **open, needs a human (FINAL)** | `cargo deny check` and `cargo audit` fail on three RustSec advisories published 2026-10-13 to 2026-10-20, and every fixed release is younger than rule 15's 14 days, so the fix and the dependency rule conflict (section B14 at the end). Not caused by this branch: `Cargo.lock`, `Cargo.toml` and `deny.toml` are unchanged by it |
 
 ## B1 (T1): resolved. The model lock is filled in, from a download made here
 
@@ -886,3 +887,38 @@ The Docker daemon was not running at the start of the run and was started with `
 the run): `target/grype-db` (3.3 GB of vulnerability database, downloaded each time the scan ran) was removed after each scan, the Docker builder cache was pruned (934 MB, then
 11 GB once the rust image was removed), the unused `fedora` image was removed, and the rust base image was pulled again from `mirror.gcr.io` by digest. `target/debug` (7.8 GB)
 was kept for the hardening tests. Nothing tracked was deleted.
+
+
+# FINAL notes (2026-10-26)
+
+## B14 (FINAL): `cargo deny check` and `cargo audit` fail on advisories whose fixed releases are younger than 14 days
+
+**What failed (the committed tree at `d164637`, run 2026-10-26; the toolchain pins are the Justfile's: cargo-deny 0.19.9 and cargo-audit 0.22.2, built here with
+`cargo +stable install --locked`).**
+
+| Advisory | Crate in `Cargo.lock` | Found by | Fixed in | Fixed release published | Age on 2026-10-26 |
+|---|---|---|---|---|---|
+| RUSTSEC-2026-0382 (2026-10-20), certificate verification may accept distrusted emSign intermediates | `rustls-webpki` 0.103.15 | `cargo deny` (vulnerability, error) and `cargo audit` (vulnerability) | `>=0.103.16, <0.104.0-alpha.1` | `0.103.16` on 2026-10-20 | 6 days |
+| RUSTSEC-2026-0383 (2026-10-19), bundled roots allow trust in distrusted emSign intermediates | `webpki-root-certs` 1.0.9 | `cargo audit` only (`deny.toml` limits the graph to Linux targets, where this crate is not reached) | `>=1.0.10` | `1.0.10` on 2026-10-19 | 7 days |
+| RUSTSEC-2026-0386 (2026-10-13), `tokio::io::unix::AsyncFd::new` and the related constructors violate I/O safety | `tokio` 1.53.1 | `cargo deny` (unsound, error) and `cargo audit` (warning: unsound) | `>=1.53.3` (or `>=1.51.6, <1.52.0`); `1.54.0` is yanked | `1.53.3` on 2026-10-13 | 13 days |
+
+`cargo deny check`: `advisories FAILED, bans ok, licenses ok, sources ok` (exit 1; the duplicate-version and one unused-licence-exception messages are warnings).
+`cargo audit`: `error: 2 vulnerabilities found!` and `warning: 1 allowed warning found` (exit 1). Publication dates are from the crates.io API.
+
+**Why this is a conflict and not something to fix.** AGENTS.md rule 15 says pinned versions must be at least 14 days old. The three fixed releases are 6, 7 and 13 days old, so
+`cargo update -p rustls-webpki -p webpki-root-certs -p tokio` would pin releases the rule forbids, and Renovate (`minimumReleaseAge` 14 days) will not propose them yet. The other
+way to make the gates pass is an `ignore` entry in `deny.toml` or `.cargo/audit.toml`, which weakens a check. Neither was done. Only a human can decide between a security fix and the
+dependency age rule (AGENTS.md "Stop and escalate": a security requirement conflicts with another requirement).
+
+**Not caused by prompt 09.** This branch did not touch `Cargo.lock`, `Cargo.toml`, `deny.toml` or `.cargo/audit.toml` (`git diff 5d67817^..HEAD` on them is empty). The two gates read only those files and the advisory database, so they give the same verdict on the lockfile this
+branch started with: the advisories are newer than that lockfile. (The current main was not checked; if its lockfile has moved, it may differ.) `just verify` therefore cannot be green on this
+branch until the lockfile moves, whatever happens to B5.
+
+**What the human can choose.**
+1. **Wait.** `tokio` 1.53.3 is 14 days old on 2026-10-27, `webpki-root-certs` 1.0.10 on 2026-11-02 and `rustls-webpki` 0.103.16 on 2026-11-03. A lockfile-only PR (`cargo update -p ... --precise ...`; no contract path
+   changes) then clears both gates and the full `cargo test --workspace` is run again on it.
+2. **Take the fix now**, recording in `docs/decisions.md` that a published security fix overrides the 14-day rule for these three crates. The same lockfile-only PR, today.
+3. **A time-boxed ignore** for the advisories, which is the weakest and is not recommended.
+
+Where the crates matter: `rustls-webpki` is reached through `rustls` by `tonic`, `reqwest`, `kube-client` and `octocrab` (the hub's and the agent's outbound TLS) as well as by the test dependency
+`testcontainers`; `tokio` is in every crate. Whether the hub's trust anchors contain an emSign root (the condition in RUSTSEC-2026-0382) was not checked here.
