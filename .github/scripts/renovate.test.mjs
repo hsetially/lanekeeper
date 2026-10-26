@@ -102,3 +102,73 @@ test('the Rocky Linux images of the sentinel test are not moved to another relea
   const rule = (config.packageRules ?? []).find((r) => (r.matchPackageNames ?? []).includes('docker.io/rockylinux/rockylinux'));
   assert.ok(rule && rule.enabled === false, 'no rule that turns updates of docker.io/rockylinux/rockylinux off');
 });
+
+// The pins of the kind end-to-end test (deploy/tests/kind/pins.env; review round 2, non-blocking 3). Renovate sees what it can express: the two
+// images (tag and digest move together), and the version and the manifest URL of CloudNativePG. It cannot compute the sha256 of the release's
+// manifest, and the vendored CRDs name the version too, so the CloudNativePG update waits for a person on the dependency dashboard.
+const pins = readFileSync(join(root, 'deploy/tests/kind/pins.env'), 'utf8');
+const pinLine = (name) => {
+  const m = new RegExp(`^${name}=.*$`, 'm').exec(pins);
+  assert.ok(m, `pins.env has no ${name}`);
+  return m[0];
+};
+const managerRe = (m) => new RegExp(m.matchStrings[0]);
+const managers = config.customManagers ?? [];
+const patternCovers = (m, file) => m.managerFilePatterns.some((p) => new RegExp(p.replace(/^\/|\/$/g, '')).test(file));
+
+test('the node image and the CloudNativePG operator image of pins.env are seen by the docker custom manager', () => {
+  const manager = managers.find((m) => m.customType === 'regex' && m.datasourceTemplate === 'docker');
+  assert.ok(manager && patternCovers(manager, 'deploy/tests/kind/pins.env'), 'the docker custom manager does not cover deploy/tests/kind/pins.env');
+  assert.ok(patternCovers(manager, 'deploy/images/tools.env'), 'the docker custom manager stopped covering deploy/images/tools.env');
+  for (const [name, dep] of [['LK_KIND_NODE_IMAGE', 'kindest/node'], ['LK_CNPG_OPERATOR_IMAGE', 'ghcr.io/cloudnative-pg/cloudnative-pg']]) {
+    const m = managerRe(manager).exec(pinLine(name));
+    assert.ok(m?.groups, `not matched: ${name}`);
+    assert.equal(m.groups.depName, dep);
+    assert.match(m.groups.currentValue, /^v?\d+\.\d+\.\d+$/);
+    assert.match(m.groups.currentDigest, /^sha256:[0-9a-f]{64}$/);
+  }
+});
+
+test('the version of CloudNativePG and the manifest URL are seen from the GitHub releases, and the URL is rebuilt whole', () => {
+  const version = /^LK_CNPG_VERSION=(\S+)$/m.exec(pins)?.[1];
+  const byLine = (name) => managers.find((m) => m.customType === 'regex' && m.datasourceTemplate === 'github-releases' && m.matchStrings[0].includes(name));
+  for (const name of ['LK_CNPG_VERSION', 'LK_CNPG_MANIFEST_URL']) {
+    const m = byLine(name);
+    assert.ok(m, `no github-releases custom manager for ${name}`);
+    assert.ok(patternCovers(m, 'deploy/tests/kind/pins.env'));
+    assert.equal(m.depNameTemplate, 'cloudnative-pg/cloudnative-pg');
+    assert.equal(m.extractVersionTemplate, '^v(?<version>.+)$', 'the release tag is v1.2.3 and the pin is 1.2.3');
+    const hit = managerRe(m).exec(pinLine(name));
+    assert.equal(hit?.groups?.currentValue, version, `${name}: the manager reads another version than LK_CNPG_VERSION`);
+  }
+  // The URL names the version twice (the tag and the file), so Renovate rebuilds the line: with today's version, the line is today's line.
+  const url = byLine('LK_CNPG_MANIFEST_URL');
+  assert.ok(url.autoReplaceStringTemplate, 'a URL that names the version twice needs autoReplaceStringTemplate');
+  assert.equal(url.autoReplaceStringTemplate.replaceAll('{{{newValue}}}', version), pinLine('LK_CNPG_MANIFEST_URL'));
+  // With another version, both places move.
+  assert.match(url.autoReplaceStringTemplate.replaceAll('{{{newValue}}}', '9.8.7'), /\/v9\.8\.7\/cnpg-9\.8\.7\.yaml$/);
+});
+
+test('a CloudNativePG update is one group that waits for a person: the sha256 of the manifest and the vendored CRDs are not Renovate\'s', () => {
+  const rule = (config.packageRules ?? []).find((r) => (r.matchPackageNames ?? []).includes('ghcr.io/cloudnative-pg/cloudnative-pg'));
+  assert.ok(rule, 'no packageRule for the CloudNativePG operator image');
+  assert.ok((rule.matchPackageNames ?? []).includes('cloudnative-pg/cloudnative-pg'), 'the rule leaves the release version out of the group');
+  assert.ok(rule.groupName, 'the image, the version and the URL must move in one pull request');
+  assert.equal(rule.dependencyDashboardApproval, true, 'no pull request until a person approves it on the dashboard');
+  assert.equal(rule.automerge, false);
+  const notes = (rule.prBodyNotes ?? []).join('\n');
+  assert.match(notes, /LK_CNPG_MANIFEST_SHA256/);
+  assert.match(notes, /deploy\/schemas/);
+  // The rule must come after the docker group, which would otherwise win the group name for the image.
+  const rules = config.packageRules ?? [];
+  assert.ok(rules.indexOf(rule) > rules.findIndex((r) => (r.matchDatasources ?? []).includes('docker') && r.groupName));
+});
+
+test('the README of the kind test says which pins Renovate moves and which a person does', () => {
+  const readme = readFileSync(join(root, 'deploy/tests/kind/README.md'), 'utf8');
+  for (const name of ['LK_KIND_NODE_IMAGE', 'LK_CNPG_OPERATOR_IMAGE', 'LK_CNPG_VERSION', 'LK_CNPG_MANIFEST_URL', 'LK_CNPG_MANIFEST_SHA256']) {
+    assert.ok(readme.includes(name), `the README does not mention ${name}`);
+  }
+  assert.match(readme, /cannot compute/i);
+  assert.match(readme, /Justfile/);
+});
