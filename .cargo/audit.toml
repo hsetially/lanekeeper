@@ -1,6 +1,6 @@
 # cargo-audit configuration (S19). Run: cargo audit
 #
-# One ignore, approved by a human as an extra path of plan 01.
+# The first ignore (rsa) was approved by a human as an extra path of plan 01.
 #
 # RUSTSEC-2023-0071 (rsa, Marvin attack, no fixed release): with sqlx's `macros` feature, Cargo.lock
 # lists `sqlx-mysql`, and `sqlx-mysql` depends on `rsa`. Lanekeeper uses PostgreSQL only, so `rsa` is
@@ -8,5 +8,13 @@
 #   cargo tree -i rsa -e all --target all
 # which prints nothing ("nothing to print", or "did not match any packages" while the lockfile has no `rsa`).
 # Remove this ignore if that command ever prints a path, or when sqlx drops the dependency.
+#
+# Four zstd advisories, ignored until 2026-11-30 and not longer. Decided by a human on 2026-10-26 (docs/decisions.md D135); the same list
+# and the reasons are in deny.toml. The one user of `zstd` is `tonic` 0.14.6, which requires `zstd ^0.13` and calls only
+# `zstd::stream::read::{Encoder, Decoder}::new` and `std::io::copy`:
+#   RUSTSEC-2026-0391 (zstd, `with_context`), RUSTSEC-2026-0398 (zstd-safe, the seekable API),
+#   RUSTSEC-2026-0403 (zstd-safe, `stream::write::Decoder` only), RUSTSEC-2026-0410 (zstd-sys, wasm32 only).
+# cargo-audit cannot expire an ignore by itself: remove them on 2026-11-30, or when `tonic` can take `zstd` >= 0.14.3.
+# (The ten `unsound` zstd-safe notices are warnings in cargo-audit and do not fail it; they are not ignored.)
 [advisories]
-ignore = ["RUSTSEC-2023-0071"]
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0391", "RUSTSEC-2026-0398", "RUSTSEC-2026-0403", "RUSTSEC-2026-0410"]
