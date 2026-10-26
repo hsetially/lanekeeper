@@ -45,6 +45,26 @@ test('a matrix key called image is a name, not an image', () => {
   assert.equal(r.code, 0, r.out);
 });
 
+// Review bot, PR 31: the skip of a `matrix:` key must not hide the references under a job, a service or any other key that is merely
+// called `matrix`. Only the `matrix:` of a `strategy:` holds names.
+test('a job called matrix is a job: its container, its service and its steps are checked, and the strategy matrix inside it is not', () => {
+  const r = run(fx('bad-matrix-job-name.yml'));
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /bad-matrix-job-name\.yml:12: .*alpine:3.*digest/);
+  assert.match(r.out, /bad-matrix-job-name\.yml:15: .*postgres:16.*digest/);
+  assert.match(r.out, /bad-matrix-job-name\.yml:17: .*actions\/checkout@v4.*tag or branch/);
+  assert.doesNotMatch(r.out, /bad-matrix-job-name\.yml:(9|10): /, 'the image of the strategy matrix is a name');
+  assert.match(r.out, /3 of 3 references are not pinned/);
+});
+
+test('a service called matrix, and a matrix key that is not under a strategy, are checked', () => {
+  const r = run(fx('bad-matrix-service-name.yml'));
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /bad-matrix-service-name\.yml:9: .*postgres:16.*digest/);
+  assert.match(r.out, /bad-matrix-service-name\.yml:14: .*redis:7.*digest/);
+  assert.match(r.out, /bad-matrix-service-name\.yml:15: .*actions\/checkout@v4/);
+});
+
 const refused = [
   ['bad-matrix-expression.yml', /bad-matrix-expression\.yml:11: .*expression/],
   ['bad-after-matrix.yml', /bad-after-matrix\.yml:12: .*postgres:16.*digest/],

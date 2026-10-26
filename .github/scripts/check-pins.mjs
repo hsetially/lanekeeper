@@ -16,8 +16,10 @@
 // A local reference (uses: ./path) is part of this repository and is not checked further. In an action.yml, `image:` may name
 // a Dockerfile of the action itself. An expression (${{ ... }}) cannot be verified by reading the file, so it is refused.
 //
-// Text inside a block scalar (`run: |`) is a script, not a reference, and is skipped, and so are the keys of a `matrix:` (a
-// matrix key called `image` names a variant; an image pulled by one of them must be written as an expression, which is refused).
+// Text inside a block scalar (`run: |`) is a script, not a reference, and is skipped, and so are the keys of the `matrix:` of a
+// `strategy:` (a matrix key called `image` names a variant; an image pulled by one of them must be written as an expression, which is
+// refused). Only a `matrix:` that is a direct child of `strategy:` is skipped: a job, a service or any other key that is merely called
+// `matrix` is read like everything else (review of PR 31: a job named `matrix` hid every reference under it).
 // The exception is a reference that is itself written as a block scalar (`uses: >-` with the action on the next line, or `image: |`):
 // its lines are the value, and are checked as one (a `#` inside it is part of the value, not a comment).
 // A version comment after the SHA (`# v4.2.2`) is allowed and not required.
@@ -81,6 +83,7 @@ export function checkText(text, { isActionFile = false } = {}) {
   let refs = 0;
   let blockCol = null; // the column of the key that opened a block scalar, while its lines are being skipped
   let matrixCol = null; // the column of a `matrix:` key, while its lines are being read: its keys are names, not references
+  const parents = []; // the mapping keys that enclose the current line, as { col, key }: a `matrix:` is skipped only under `strategy:`
 
   const visit = (kind, raw, lineNo, verbatim = false) => {
     const value = verbatim ? raw.trim() : scalar(raw);
@@ -106,11 +109,20 @@ export function checkText(text, { isActionFile = false } = {}) {
     const rest = line.slice(keyCol);
 
     // A matrix names variants (`image: [hub, agent]`). An image that a job pulls by one of them is written as an expression,
-    // which is refused wherever it stands, so skipping the keys of the matrix hides no reference.
+    // which is refused wherever it stands, so skipping the keys of the matrix hides no reference. That holds for the matrix of a
+    // strategy only: a job called `matrix` has real references under it.
     if (matrixCol !== null && first <= matrixCol) matrixCol = null;
-    if (matrixCol === null && /^matrix\s*:\s*(#.*)?$/.test(rest)) {
-      matrixCol = keyCol;
-      continue;
+    if (matrixCol === null) {
+      const mapKey = /^("[^"]+"|'[^']+'|[A-Za-z0-9_.-]+)\s*:(?:\s|$)/.exec(rest);
+      if (mapKey) {
+        while (parents.length > 0 && parents[parents.length - 1].col >= keyCol) parents.pop();
+        const name = mapKey[1].replace(/^["']|["']$/g, '');
+        if (name === 'matrix' && /^matrix\s*:\s*(#.*)?$/.test(rest) && parents[parents.length - 1]?.key === 'strategy') {
+          matrixCol = keyCol;
+          continue;
+        }
+        parents.push({ col: keyCol, key: name });
+      }
     }
     if (matrixCol !== null) continue;
 
