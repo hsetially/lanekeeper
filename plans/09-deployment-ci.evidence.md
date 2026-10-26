@@ -186,11 +186,11 @@ The run below is the same benchmarks in 44 pieces that can be resumed. The works
 | hub-platform | memory_at_design_scale | 0 | 226 |
 | hub-platform | push_to_drift_webhook | 0 | 143 |
 | hub-platform | sse_delivery | 0 | 134 |
-| hub-registry | adoption_rank_per_swimlane | not run yet | |
-| hub-registry | compare_6000_lines | not run yet | |
-| hub-registry | delta_to_drift_changed | not run yet | |
-| hub-registry | file_content_cached | not run yet | |
-| hub-registry | file_content_cold | not run yet | |
+| hub-registry | adoption_rank_per_swimlane | 0 | 462 |
+| hub-registry | compare_6000_lines | 0 | 354 |
+| hub-registry | delta_to_drift_changed | 0 | 193 |
+| hub-registry | file_content_cached | 0 | 318 |
+| hub-registry | file_content_cold | 0 | 327 |
 | hub-registry | file_tree | not run yet | |
 | hub-registry | full_recompute_target_scale | not run yet | |
 | hub-registry | grid_40_swimlanes | not run yet | |
@@ -207,7 +207,7 @@ The run below is the same benchmarks in 44 pieces that can be resumed. The works
 | hub-writes | edit_applied | not run yet | |
 | hub-writes | write_queries | not run yet | |
 
-24 of 44 bench targets have run; 0 of them exited non-zero.
+29 of 44 bench targets have run; 0 of them exited non-zero.
 <!-- bench-pieces:end -->
 
 PENDING: the budget table, from `cargo xtask bench-check` after every piece has run.
