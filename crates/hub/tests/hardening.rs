@@ -515,6 +515,13 @@ fn environment_problems(container: &Value) -> Vec<String> {
                     .to_owned(),
             );
         }
+        // T2 (G4): the migrator can change the schema. Its settings belong to the migration Job; a serving pod that carried
+        // them would be a pod that could be asked to.
+        if hub::config::JOB_ONLY_VARIABLES.contains(&name) {
+            problems.push(format!(
+                "{name} is a setting of the migration Job; the hub pod must not carry the migrator credential"
+            ));
+        }
     }
     problems
 }
@@ -798,6 +805,23 @@ fn hardening_lint_rejects_planted_violations() {
                 container(d)["env"].as_array_mut().unwrap().push(
                     serde_json::json!({"name": "LK_WEB_CERT_PEM", "value": "-----BEGIN CERTIFICATE-----"}),
                 )
+            }),
+        ),
+        (
+            "the migrator credential in the hub pod",
+            mutate("Pod", |d| {
+                container(d)["env"].as_array_mut().unwrap().push(
+                    serde_json::json!({"name": "LK_MIGRATOR_URL_FILE", "value": "/etc/lanekeeper/migrator/uri"}),
+                )
+            }),
+        ),
+        (
+            "the migration time limit in the hub pod",
+            mutate("Pod", |d| {
+                container(d)["env"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({"name": "LK_MIGRATE_TIMEOUT_SECS", "value": "600"}))
             }),
         ),
         (

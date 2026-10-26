@@ -1,4 +1,5 @@
-//! Everything a hub needs to start in a process test: a TLS Postgres, a web certificate, a web root and a secrets directory.
+//! Everything a hub needs to start in a process test: a TLS Postgres with the schema applied, a web certificate, a web root and
+//! a secrets directory.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::PathBuf;
@@ -18,7 +19,15 @@ pub struct Rig {
 }
 
 impl Rig {
+    /// A database with the roles and every migration applied (what a hub finds after the migration Job has run).
     pub async fn start() -> Option<Self> {
+        let rig = Self::start_unmigrated().await?;
+        rig.pg.migrate().await;
+        Some(rig)
+    }
+
+    /// A database with the roles and no schema: what a hub finds when nobody has run `hub migrate`.
+    pub async fn start_unmigrated() -> Option<Self> {
         let ca = TestCa::new("lanekeeper-test-ca");
         let pg = tls_pg::start(&ca).await?;
         let leaf = ca.leaf(&["localhost"]);

@@ -204,7 +204,13 @@ async fn no_planted_secret_appears_in_the_process_output() {
     let Some(rig) = Rig::start().await else { return };
     // Things that must not appear: the database password (also in the URL file), the web key, and a recognisable slice of it.
     let key_slice: String = rig.leaf.key_pem.lines().nth(1).unwrap().to_owned();
-    let planted = [tls_pg::PLANTED_PASSWORD.to_owned(), key_slice, rig.pg.url()];
+    let planted = [
+        tls_pg::PLANTED_PASSWORD.to_owned(),
+        tls_pg::APP_ROLE.1.to_owned(),
+        tls_pg::MIGRATOR_ROLE.1.to_owned(),
+        key_slice,
+        rig.pg.url(),
+    ];
 
     // A run that serves, takes some requests (one of them bad) and stops.
     let mut hub = rig.spawn(&[("LK_SHUTDOWN_GRACE_SECS", "0")]).await;
@@ -243,4 +249,51 @@ async fn no_planted_secret_appears_in_the_process_output() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn readyz_follows_the_schema_and_a_hub_that_is_ahead_of_it_says_which_check() {
+    use sqlx::Connection;
+
+    let Some(rig) = Rig::start().await else { return };
+    let mut hub = rig.spawn(&[("LK_SHUTDOWN_GRACE_SECS", "0")]).await;
+    let (_web, ops) = hub.wait_listening(Duration::from_secs(30));
+    becomes_ready(ops).await;
+
+    // The schema loses what migration 8 added (a restore to an older backup, or a person at a console): the hub is not ready,
+    // and says which check, without serving errors in the meantime.
+    let options = hub::db::connect_options_for(
+        &domain::Secret::new(rig.pg.url_for("postgres", tls_pg::PLANTED_PASSWORD)),
+        &rig.pg.ca_file(),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let mut admin = hub::db::connect_one(&options).await.unwrap();
+    sqlx::query("ALTER TABLE blobs RENAME COLUMN touched_at TO touched_at_gone")
+        .execute(&mut admin)
+        .await
+        .unwrap();
+    eventually(
+        Duration::from_secs(5),
+        "/readyz failing on the schema",
+        || async move {
+            let reply = net::http_get(ops, "/readyz").await;
+            reply.status == 503 && reply.body.contains("schema")
+        },
+    )
+    .await;
+    let reply = net::http_get(ops, "/readyz").await;
+    assert!(
+        !reply.body.contains("postgres") && !reply.body.contains("touched_at"),
+        "the body names a check, not the SQL: {reply:?}"
+    );
+
+    sqlx::query("ALTER TABLE blobs RENAME COLUMN touched_at_gone TO touched_at")
+        .execute(&mut admin)
+        .await
+        .unwrap();
+    becomes_ready(ops).await;
+    admin.close().await.unwrap();
+    hub.signal("TERM");
+    assert_eq!(hub.exit_within(Duration::from_secs(15)).code(), Some(0));
 }

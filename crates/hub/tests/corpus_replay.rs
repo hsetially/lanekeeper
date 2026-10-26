@@ -1,4 +1,4 @@
-//! The committed fuzz seeds, replayed on stable (plan 18, T1; rule 13; S7, S10).
+//! The committed fuzz seeds, replayed on stable (plan 18, T1 and T2; rule 13; S7, S10).
 //!
 //! `crates/hub/fuzz/` holds the fuzz targets (nightly, `just hub-fuzz`) and `invariants.rs`, which this test includes: every
 //! seed in `fuzz/corpus/<target>/` is replayed with the checks the fuzzer runs, so `cargo test -p hub` (and so `just verify`)
@@ -75,6 +75,22 @@ fn every_settings_seed_keeps_its_verdict_and_its_invariants() {
 #[test]
 fn every_command_line_seed_keeps_its_verdict_and_its_invariants() {
     replay("hub_cli_args", invariants::hub_cli_args);
+}
+
+#[test]
+fn the_migrator_seeds_keep_the_migrators_verdict() {
+    // `hub migrate` reads the same shape of input as the hub (T2). A seed's name gives the serving hub's verdict; these three
+    // exist for the migrator's, and a test fails if one stops meaning what it says.
+    for (name, want) in [
+        ("accepted_migrator_job", Verdict::Accepted),
+        ("accepted_migrator_job_with_a_bad_timeout", Verdict::Rejected),
+        ("accepted_migrator_job_without_its_credential", Verdict::Rejected),
+    ] {
+        let data = fs::read(corpus("hub_settings").join(name)).unwrap();
+        assert_eq!(invariants::migrator_settings(&data), Ok(want), "{name}");
+        // The serving hub accepts all three: it reads none of the migrator's variables.
+        assert_eq!(invariants::hub_settings(&data), Ok(Verdict::Accepted), "{name}");
+    }
 }
 
 #[test]
@@ -227,6 +243,23 @@ fn regenerate_the_seeds() {
                 "rejected_csp_injection",
                 text("LK_TRUSTED_TYPES=a; script-src *\n"),
             ),
+            // `hub migrate`'s settings (T2): the serving hub accepts all three, because it reads none of these variables.
+            (
+                "accepted_migrator_job",
+                text(
+                    "LK_MIGRATOR_URL_FILE=/run/migrator/uri\nLK_DB_CA_FILE=/run/db-ca/ca.crt\nLK_MIGRATE_TIMEOUT_SECS=900\nFILE_CONTENT=postgres://lanekeeper_migrator:not-a-real-password@db.example/lanekeeper\n",
+                ),
+            ),
+            (
+                "accepted_migrator_job_with_a_bad_timeout",
+                text(
+                    "LK_MIGRATOR_URL_FILE=/run/migrator/uri\nLK_DB_CA_FILE=/run/db-ca/ca.crt\nLK_MIGRATE_TIMEOUT_SECS=0\nFILE_CONTENT=postgres://lanekeeper_migrator:not-a-real-password@db.example/lanekeeper\n",
+                ),
+            ),
+            (
+                "accepted_migrator_job_without_its_credential",
+                text("LK_DB_CA_FILE=/run/db-ca/ca.crt\nLK_MIGRATE_TIMEOUT_SECS=900\n"),
+            ),
         ],
     );
     write_seeds(
@@ -237,11 +270,15 @@ fn regenerate_the_seeds() {
             ("accepted_help", text("help")),
             ("accepted_long_help", text("--help")),
             ("accepted_short_help", text("-h")),
-            ("rejected_unknown_command", text("migrate")),
+            ("accepted_migrate", text("migrate")),
+            ("rejected_unknown_command", text("restart")),
             ("rejected_an_empty_word", vec![0]),
             ("rejected_extra_argument", text("serve\0now")),
             ("rejected_a_pasted_secret", text("hunter2-planted-secret")),
             ("rejected_help_then_serve", text("help\0serve")),
+            ("rejected_migrate_extra_argument", text("migrate\0now")),
+            ("rejected_migrate_capitalised", text("Migrate")),
+            ("rejected_help_then_migrate", text("help\0migrate")),
         ],
     );
     let key = rcgen::KeyPair::generate().unwrap();

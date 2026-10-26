@@ -154,6 +154,27 @@ the log line names the component and the variable, never a value. On SIGTERM or 
 (25), and exits 0; a second signal exits at once. The pod's `terminationGracePeriodSeconds` must be longer than the two together, or
 the kubelet kills a hub that is still draining; `tests/hardening.rs` holds the Pod block to grace + drain + 10 seconds.
 
+### The migration Job
+
+The schema is changed by a Job and not by the hub (plan 18, T2, G4). The hub runs as `lanekeeper_app`, which reads and writes rows and
+cannot change a table (S9, S21). Migrating at start would put a credential that can change the schema into a pod that faces users,
+and would have three replicas race for it. So `hub migrate` runs first, as a Job from the same image (`args: ["migrate"]`), and the
+hub only checks, at start and in `/readyz` (the check is named `schema`), that the migrations it needs are there. A hub on an
+unmigrated or older schema exits 1 and names the first migration that is missing; it never migrates for itself.
+
+| | The Job |
+|---|---|
+| Variables | `LK_MIGRATOR_URL_FILE` (the path of the mounted Secret that holds the `lanekeeper_migrator` URL), `LK_DB_CA_FILE` (the same CA file the hub uses), and optionally `LK_MIGRATE_TIMEOUT_SECS` (600 by default) |
+| Volumes | the migrator's Secret (mode `0440`) and the database CA, both read-only; `/tmp` as the only writable mount |
+| Network | Postgres on 5432 and DNS; nothing else, no ingress, no ports |
+| Security context | the hub pod's, unchanged: non-root, read-only root, no capabilities, no service-account token |
+| Exit codes | 0 the schema is complete (whether or not this run changed anything), 1 it could not be completed, 2 a setting was refused |
+| Order | before the hub rolls (a Helm pre-install and pre-upgrade hook, or an Argo CD `PreSync` hook); safe to retry, and safe to run twice at once |
+
+The Job's variables are the Job's alone. `tests/hardening.rs` fails if the hub pod carries `LK_MIGRATOR_URL_FILE` or
+`LK_MIGRATE_TIMEOUT_SECS`, and its volume allowlist already refuses a pod that mounts a fifth volume, so the migrator's credential
+cannot be in a serving pod. How to run the command, and what it refuses, is in `README.md`.
+
 ### Where the hub writes
 
 The root filesystem is read-only. Two mounts are writable, and the code writes nowhere else:

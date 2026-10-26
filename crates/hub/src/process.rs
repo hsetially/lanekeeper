@@ -31,7 +31,9 @@ use crate::compose::{BuildError, Deps, Hub};
 use crate::config::{ConfigError, DatabaseSettings, HubSettings, WebTlsSettings};
 use crate::db::{self, DbError, PostgresReady};
 use crate::edges::Edges;
+use crate::migrate;
 use crate::ready::{CertsReady, Expiring};
+use crate::schema::{self, SchemaError, SchemaReady};
 use crate::serve::{self, ServeLimits};
 use crate::session_auth::DenySessions;
 use crate::shutdown::{Drain, Stop};
@@ -49,6 +51,9 @@ pub enum StartError {
     Google,
     #[error("the database is not usable: {0}")]
     Database(DbError),
+    /// The hub never migrates (T2, G4): a database that lacks a migration is for `hub migrate` to fix, not for the hub to start on.
+    #[error("the database schema is not usable: {0}")]
+    Schema(SchemaError),
     #[error("the web certificate could not be loaded (LK_WEB_CERT_REF, LK_WEB_KEY_REF): {0}")]
     WebCertificate(WebTlsError),
     #[error("the web listener's TLS configuration was refused")]
@@ -147,7 +152,7 @@ struct Loaded {
     web_cert: Arc<WebCert>,
 }
 
-/// Connect to the database and load the web certificate, at the same time, each under the start timeout.
+/// Connect to the database, check its schema, and load the web certificate, at the same time, each under the start timeout.
 ///
 /// Both steps run to their end even when one fails, so that a start that fails on two things says both (a network policy that
 /// blocks Postgres and Google at once is one cause with two symptoms, and the first symptom alone sends a person the wrong
@@ -161,7 +166,11 @@ async fn load(
     let begun = Instant::now();
     let (pool, web_cert) = tokio::join!(
         bounded(plan.start_timeout, "database", async {
-            db::connect(database).await.map_err(StartError::Database)
+            let pool = db::connect(database).await.map_err(StartError::Database)?;
+            // Not "migrate if it is behind": the hub holds no credential that could (G4). Behind is an exit that names the
+            // migration, and the Job that runs `hub migrate` is what fixes it.
+            schema::verify(&pool).await.map_err(StartError::Schema)?;
+            Ok(pool)
         }),
         bounded(plan.start_timeout, "web certificate", async {
             WebCert::load(&*edges.secrets, web_tls, &*edges.clock)
@@ -204,6 +213,7 @@ async fn compose(
         static_files: Some(Arc::new(files)),
         checks: vec![
             ("postgres", Arc::new(PostgresReady(loaded.pool.clone()))),
+            ("schema", Arc::new(SchemaReady::new(loaded.pool.clone()))),
             (
                 "certificates",
                 Arc::new(CertsReady::new(Arc::clone(&edges.clock), held)),
@@ -384,7 +394,7 @@ pub async fn run(settings: HubSettings, edges: Edges, mut stop: Stop) -> Outcome
 
 /// Print one line for a person: the hub's streams are for machines once telemetry is up, and nothing is up yet.
 #[allow(clippy::print_stderr)]
-fn say(message: &str) {
+pub(crate) fn say(message: &str) {
     eprintln!("hub: {message}");
 }
 
@@ -414,6 +424,8 @@ where
             print_usage();
             return ExitCode::SUCCESS;
         }
+        // The Job that migrates the schema before the hub rolls (T2): it reads its own settings and starts nothing of the hub.
+        Ok(Command::Migrate) => return migrate::entry(lookup),
         Ok(Command::Serve) => {}
         Err(error) => return usage_error(error),
     }
@@ -490,6 +502,7 @@ mod tests {
         for error in [
             StartError::Google,
             StartError::Database(DbError::Connect),
+            StartError::Schema(SchemaError::Query),
             StartError::WebCertificate(WebTlsError::Expired),
             StartError::Tls,
             StartError::Bind("web"),
@@ -514,11 +527,24 @@ mod tests {
             StartError::WebCertificate(WebTlsError::Pem(crate::web_tls::PemError::KeyMismatch)).to_string(),
             StartError::WebApp(StaticError::NoPlaceholder).to_string(),
             StartError::TimedOut("web certificate").to_string(),
+            StartError::Schema(SchemaError::Missing {
+                version: 4,
+                description: "write additions",
+            })
+            .to_string(),
         ];
         assert!(shown[0].contains("database"));
         assert!(shown[1].contains("LK_WEB_CERT_REF") && shown[1].contains("does not belong"));
         assert!(shown[2].contains("LK_WEB_DIST"));
         assert!(shown[3].contains("web certificate"));
+        // T2: a schema that is behind names the migration and the command that fixes it, and the hub does not fix it itself.
+        assert!(
+            shown[4].contains("0004")
+                && shown[4].contains("write additions")
+                && shown[4].contains("hub migrate"),
+            "{}",
+            shown[4]
+        );
     }
 
     /// A stop request that arrives while a start is still waiting ends the run cleanly and starts nothing.

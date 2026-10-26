@@ -4,13 +4,15 @@
 //! variable and never prints the value, because the value may be a secret (the database URL holds a password).
 //!
 //! The settings are in groups, one file each under `config/`, and every group is read through [`Reader`]: process and
-//! listeners (this file), request limits, the database, Git, Google Cloud and the web certificate. A group arrives with the task
-//! that needs it, and `tests/hardening.rs` reads every `LK_*` literal in these files to check the pod contract against them.
+//! listeners (this file), request limits, the database, Git, Google Cloud and the web certificate; `hub migrate` has its own
+//! small group, [`MigratorSettings`], that the serving hub never reads. A group arrives with the task that needs it, and
+//! `tests/hardening.rs` reads every `LK_*` literal in these files to check the pod contract against them.
 
 mod database;
 mod gcp;
 mod git;
 mod limits;
+mod migrator;
 mod reader;
 mod web_tls;
 
@@ -23,6 +25,7 @@ pub use database::DatabaseSettings;
 pub use gcp::GcpSettings;
 pub use git::{GitCredentialSource, GitSettings};
 pub use limits::{LimitSettings, Rate};
+pub use migrator::{DEFAULT_TIMEOUT_SECS, JOB_ONLY_VARIABLES, MigratorSettings};
 pub use reader::Reader;
 pub use web_tls::{DEFAULT_RELOAD_SECS, WebTlsSettings};
 
@@ -507,6 +510,150 @@ mod tests {
                 env.retain(|(k, _)| *k != name);
                 env.push((name, value.as_str()));
                 if let Err(error) = with_files(&env, &[]) {
+                    let shown = format!("{error} {error:?}");
+                    proptest::prop_assert!(!shown.contains("zz9q"), "{name}: {shown}");
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------ T2 (plan 18): hub migrate
+
+    fn migrator(env: &[(&str, &str)], files: &[(&str, &str)]) -> Result<MigratorSettings, ConfigError> {
+        let env: HashMap<String, String> = env
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        let files: HashMap<String, String> = files
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        MigratorSettings::from_parts(
+            move |name| env.get(name).cloned(),
+            move |path| {
+                files
+                    .get(path.to_string_lossy().as_ref())
+                    .cloned()
+                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+            },
+        )
+    }
+
+    #[test]
+    fn the_migrator_credential_is_a_mounted_file_read_trimmed_and_redacted() {
+        let settings = migrator(
+            &[
+                ("LK_MIGRATOR_URL_FILE", "/run/migrator/uri"),
+                ("LK_DB_CA_FILE", "/run/ca/ca.pem"),
+            ],
+            &[(
+                "/run/migrator/uri",
+                "postgres://lanekeeper_migrator:hunter2@db/x\n",
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            settings.url.expose(),
+            "postgres://lanekeeper_migrator:hunter2@db/x"
+        );
+        assert_eq!(settings.ca_file, PathBuf::from("/run/ca/ca.pem"));
+        assert_eq!(settings.timeout, Duration::from_secs(DEFAULT_TIMEOUT_SECS));
+        assert!(!format!("{settings:?}").contains("hunter2"));
+    }
+
+    #[test]
+    fn the_migrator_settings_name_what_is_missing_before_they_read_the_file() {
+        assert_eq!(
+            migrator(&[], &[]).unwrap_err(),
+            ConfigError::Missing("LK_MIGRATOR_URL_FILE")
+        );
+        // The credential is a file and only a file: the plain variable of the hub's own pool is not an alternative.
+        assert_eq!(
+            migrator(
+                &[
+                    ("LK_MIGRATOR_URL", "postgres://m:x@db/y"),
+                    ("LK_DB_CA_FILE", "/ca")
+                ],
+                &[]
+            )
+            .unwrap_err(),
+            ConfigError::Missing("LK_MIGRATOR_URL_FILE")
+        );
+        assert_eq!(
+            migrator(&[("LK_MIGRATOR_URL_FILE", "/u")], &[("/u", "postgres://m@db/y")]).unwrap_err(),
+            ConfigError::Missing("LK_DB_CA_FILE")
+        );
+    }
+
+    #[test]
+    fn a_missing_empty_or_unreadable_migrator_file_is_refused_without_naming_the_path() {
+        let env = [
+            ("LK_MIGRATOR_URL_FILE", "/run/migrator/uri"),
+            ("LK_DB_CA_FILE", "/ca"),
+        ];
+        let missing = migrator(&env, &[]).unwrap_err();
+        assert_eq!(missing, ConfigError::Invalid("LK_MIGRATOR_URL_FILE"));
+        assert!(!format!("{missing}").contains("/run/migrator"));
+        assert_eq!(
+            migrator(&env, &[("/run/migrator/uri", " \n")]).unwrap_err(),
+            ConfigError::Invalid("LK_MIGRATOR_URL_FILE")
+        );
+        assert_eq!(
+            migrator(&env, &[("/run/migrator/uri", "postgres://a\nb")]).unwrap_err(),
+            ConfigError::Invalid("LK_MIGRATOR_URL_FILE")
+        );
+    }
+
+    #[test]
+    fn the_migration_time_limit_is_bounded() {
+        let base = [("LK_MIGRATOR_URL_FILE", "/u"), ("LK_DB_CA_FILE", "/ca")];
+        let files = [("/u", "postgres://lanekeeper_migrator@db/x")];
+        let with = |value: &str| {
+            let mut env = base.to_vec();
+            env.push(("LK_MIGRATE_TIMEOUT_SECS", value));
+            migrator(&env, &files)
+        };
+        assert_eq!(with("90").unwrap().timeout, Duration::from_secs(90));
+        assert_eq!(with("7200").unwrap().timeout, Duration::from_secs(7200));
+        for bad in ["0", "7201", "soon", "-1", "1.5"] {
+            assert_eq!(
+                with(bad).unwrap_err(),
+                ConfigError::Invalid("LK_MIGRATE_TIMEOUT_SECS"),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_job_only_variables_are_the_ones_the_migrator_reads_and_the_hub_does_not() {
+        let source = include_str!("config/migrator.rs");
+        let code = source.split("impl MigratorSettings").nth(1).unwrap();
+        for name in JOB_ONLY_VARIABLES {
+            assert!(code.contains(&format!("\"{name}\"")), "{name} is not read");
+        }
+        // Nothing of the serving settings reads them.
+        let serving = include_str!("config.rs").split("#[cfg(test)]").next().unwrap();
+        for name in JOB_ONLY_VARIABLES {
+            assert!(
+                !serving.contains(&format!("\"{name}\"")),
+                "{name} is read by the hub"
+            );
+        }
+    }
+
+    proptest::proptest! {
+        /// S7, S10: whatever a migrator variable holds, a refusal names the variable and never the value.
+        #[test]
+        fn the_migrator_errors_never_print_a_value(tail in "[ -~]{0,40}") {
+            let value = format!("zz9q{tail}");
+            for name in ["LK_MIGRATOR_URL_FILE", "LK_DB_CA_FILE", "LK_MIGRATE_TIMEOUT_SECS"] {
+                let mut env = vec![
+                    ("LK_MIGRATOR_URL_FILE", "/u"),
+                    ("LK_DB_CA_FILE", "/ca"),
+                ];
+                env.retain(|(k, _)| *k != name);
+                env.push((name, value.as_str()));
+                if let Err(error) = migrator(&env, &[("/u", value.as_str())]) {
                     let shown = format!("{error} {error:?}");
                     proptest::prop_assert!(!shown.contains("zz9q"), "{name}: {shown}");
                 }

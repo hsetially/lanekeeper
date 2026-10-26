@@ -45,7 +45,10 @@ serde_json.workspace = true
 # webpki-roots (CDLA-Permissive-2.0), which deny.toml does not allow, so this is the nearest variant that passes
 # `cargo deny`: it uses ring for the database leg only (the hub's own listeners are rustls on aws-lc-rs, built with
 # `builder_with_provider`) and trusts only the CA file in the settings, never the system roots. Escalated in the PR.
-sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "tls-rustls-ring-native-roots"] }
+# `migrate` (T2): `hub migrate` applies the compiled-in migrations with sqlx's `Migrator`. It adds no package to the root lockfile
+# (the dev-dependency below already enabled it); the hub's fuzz lockfile gains the packages that feature lists, each at the version
+# and checksum the root lockfile has.
+sqlx = { workspace = true, features = ["migrate", "postgres", "runtime-tokio", "tls-rustls-ring-native-roots"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-rustls.workspace = true

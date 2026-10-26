@@ -179,6 +179,105 @@ fn an_unreachable_database_is_exit_1_inside_the_start_timeout_and_the_message_na
     );
 }
 
+// ------------------------------------------------------------------------------------------------ hub migrate (T2)
+
+/// Run the real binary as `hub migrate` with exactly these variables.
+fn run_migrate(args: &[&str], vars: &[(&str, &str)]) -> (Option<i32>, String) {
+    let mut hub = Child::spawn(&child::real_binary(), args, &env(vars));
+    let status = hub.exit_within(Duration::from_secs(20));
+    (status.code(), hub.output())
+}
+
+#[test]
+fn migrate_names_what_is_missing_and_starts_nothing() {
+    let (code, output) = run_migrate(&["migrate"], &[]);
+    assert_refused(code, &output, 2, "LK_MIGRATOR_URL_FILE is required");
+    let dir = tempfile::tempdir().unwrap();
+    let url = dir.path().join("migrator-url");
+    std::fs::write(
+        &url,
+        format!("postgres://lanekeeper_migrator:{PLANTED}@127.0.0.1:1/lanekeeper"),
+    )
+    .unwrap();
+    let (code, output) = run_migrate(
+        &["migrate"],
+        &[("LK_MIGRATOR_URL_FILE", &url.display().to_string())],
+    );
+    assert_refused(code, &output, 2, "LK_DB_CA_FILE is required");
+}
+
+#[test]
+fn the_hubs_own_database_credential_is_not_a_migrator_credential() {
+    // A Job given the serving settings (the app role's URL file, its CA) is not a Job that can migrate: the migrator's URL is
+    // its own variable, and the app role's variable is not read as a fallback.
+    let (_dir, settings) = serving();
+    let vars: Vec<(&str, &str)> = settings.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let (code, output) = run_migrate(&["migrate"], &vars);
+    assert_refused(code, &output, 2, "LK_MIGRATOR_URL_FILE is required");
+}
+
+#[test]
+fn migrate_with_a_malformed_setting_names_the_variable_and_never_the_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = dir.path().join("migrator-url");
+    std::fs::write(
+        &url,
+        format!("postgres://lanekeeper_migrator:{PLANTED}@127.0.0.1:1/x"),
+    )
+    .unwrap();
+    let url = url.display().to_string();
+    for (name, value) in [
+        ("LK_MIGRATE_TIMEOUT_SECS", PLANTED.to_owned()),
+        ("LK_DB_CA_FILE", format!("{PLANTED}\n")),
+        ("LK_MIGRATOR_URL_FILE", format!("/nonexistent/{PLANTED}")),
+    ] {
+        let mut vars = vec![
+            ("LK_MIGRATOR_URL_FILE", url.as_str()),
+            ("LK_DB_CA_FILE", "/ca.pem"),
+        ];
+        vars.retain(|(n, _)| *n != name);
+        vars.push((name, value.as_str()));
+        let (code, output) = run_migrate(&["migrate"], &vars);
+        assert_refused(code, &output, 2, &format!("{name} is not valid"));
+    }
+}
+
+#[test]
+fn migrate_against_a_database_that_is_not_there_is_exit_1_and_holds_no_secret() {
+    // Nothing listens on port 1, and the CA file is not a certificate: the run ends, it does not hang, and says only that it
+    // could not connect.
+    let dir = tempfile::tempdir().unwrap();
+    let url = dir.path().join("migrator-url");
+    std::fs::write(
+        &url,
+        format!("postgres://lanekeeper_migrator:{PLANTED}@127.0.0.1:1/lanekeeper"),
+    )
+    .unwrap();
+    let ca = dir.path().join("ca.pem");
+    std::fs::write(&ca, "not a certificate").unwrap();
+    let (code, output) = run_migrate(
+        &["migrate"],
+        &[
+            ("LK_MIGRATOR_URL_FILE", &url.display().to_string()),
+            ("LK_DB_CA_FILE", &ca.display().to_string()),
+            ("LK_MIGRATE_TIMEOUT_SECS", "20"),
+        ],
+    );
+    assert_refused(
+        code,
+        &output,
+        1,
+        "could not connect to the database as the migrator",
+    );
+    assert!(!output.contains("127.0.0.1"), "{output}");
+}
+
+#[test]
+fn migrate_takes_no_arguments() {
+    let (code, output) = run_migrate(&["migrate", PLANTED], &[]);
+    assert_refused(code, &output, 2, "unexpected argument");
+}
+
 // ------------------------------------------------------------------------------------------------ with a real database
 
 #[tokio::test]
@@ -227,4 +326,32 @@ async fn an_address_that_is_taken_is_exit_1_and_names_the_listener() {
         hub.output()
     );
     drop(taken);
+}
+
+#[tokio::test]
+async fn an_unmigrated_database_is_exit_1_names_the_migration_and_is_left_as_it_was() {
+    // The roles exist and the schema does not: nobody has run `hub migrate`. The hub holds no credential that could, so it
+    // says which migration is missing and stops (G4, G22). It does not start and fall over on its first query.
+    let Some(rig) = Rig::start_unmigrated().await else {
+        return;
+    };
+    let mut hub = rig.spawn(&[]).await;
+    let status = hub.exit_within(Duration::from_secs(30));
+    assert_eq!(status.code(), Some(1), "{}", hub.output());
+    let output = hub.output();
+    assert!(
+        output.contains("the database schema is not usable")
+            && output.contains("migration 0001 (init)")
+            && output.contains("hub migrate"),
+        "{output}"
+    );
+    for secret in [tls_pg::APP_ROLE.1, tls_pg::PLANTED_PASSWORD] {
+        assert!(!output.contains(secret), "{output}");
+    }
+    // And it changed nothing: still no schema.
+    let pool = rig.pg.app_pool().await;
+    assert_eq!(
+        hub::schema::missing(&pool).await.unwrap().len(),
+        hub::migrate::EMBEDDED.len()
+    );
 }

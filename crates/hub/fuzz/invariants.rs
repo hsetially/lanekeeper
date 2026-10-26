@@ -1,4 +1,4 @@
-//! What must hold for every input of the hub's three parsers at a trust boundary (plan 18, T1; rule 13; S7, S10).
+//! What must hold for every input of the hub's parsers at a trust boundary (plan 18, T1 and T2; rule 13; S7, S10).
 //!
 //! The fuzz targets and the stable test `crates/hub/tests/corpus_replay.rs` both include this file, so every committed seed is
 //! replayed by `cargo test -p hub` with the same checks the fuzzer runs. A function returns the verdict (the input was
@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use domain::Secret;
 use hub::cli::{self, CliError, Command};
-use hub::config::HubSettings;
+use hub::config::{HubSettings, MigratorSettings};
 use hub::web_tls::{self, MAX_CHAIN_LEN, PemError};
 
 /// Whether the parser took the input.
@@ -27,20 +27,12 @@ pub type Check = fn(&[u8]) -> Result<Verdict, String>;
 /// The input is lines of `NAME=value`. A line `FILE_CONTENT=...` is what every `*_FILE` setting reads from disk; a line that
 /// is not `LK_*` or `FILE_CONTENT` is ignored. Settings come from the environment and from files, so this is the shape of
 /// everything `HubSettings` can be given.
+///
+/// The verdict is the serving hub's. `hub migrate` reads the same shape of input with its own settings (T2), and the same
+/// input is held to the migrator's invariants too (see [`migrator_settings`]); the migrator's verdict is its own.
 pub fn hub_settings(data: &[u8]) -> Result<Verdict, String> {
-    let text = String::from_utf8_lossy(data);
-    let mut vars: BTreeMap<String, String> = BTreeMap::new();
-    let mut file = String::new();
-    for line in text.split('\n') {
-        let Some((name, value)) = line.split_once('=') else {
-            continue;
-        };
-        if name == "FILE_CONTENT" {
-            value.clone_into(&mut file);
-        } else if name.starts_with("LK_") {
-            vars.insert(name.to_owned(), value.to_owned());
-        }
-    }
+    let (vars, file) = parse_lines(data);
+    migrator_settings_with(&vars, &file)?;
     let lookup = |name: &str| vars.get(name).cloned();
     let read_file = |_: &std::path::Path| Ok(file.clone());
     match HubSettings::from_parts(lookup, read_file) {
@@ -56,6 +48,66 @@ pub fn hub_settings(data: &[u8]) -> Result<Verdict, String> {
         }
         Ok(settings) => {
             check_settings(&settings, &vars, &file)?;
+            Ok(Verdict::Accepted)
+        }
+    }
+}
+
+fn parse_lines(data: &[u8]) -> (BTreeMap<String, String>, String) {
+    let text = String::from_utf8_lossy(data);
+    let mut vars: BTreeMap<String, String> = BTreeMap::new();
+    let mut file = String::new();
+    for line in text.split('\n') {
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        if name == "FILE_CONTENT" {
+            value.clone_into(&mut file);
+        } else if name.starts_with("LK_") {
+            vars.insert(name.to_owned(), value.to_owned());
+        }
+    }
+    (vars, file)
+}
+
+/// The settings of `hub migrate` (T2) over the same input shape as [`hub_settings`]: the verdict is whether the migrator would
+/// run with them. Seeds of `hub_settings` that exercise it say so in their names (`*_migrator_*`).
+pub fn migrator_settings(data: &[u8]) -> Result<Verdict, String> {
+    let (vars, file) = parse_lines(data);
+    migrator_settings_with(&vars, &file)
+}
+
+fn migrator_settings_with(vars: &BTreeMap<String, String>, file: &str) -> Result<Verdict, String> {
+    let lookup = |name: &str| vars.get(name).cloned();
+    let read_file = |_: &std::path::Path| Ok(file.to_owned());
+    match MigratorSettings::from_parts(lookup, read_file) {
+        Err(error) => {
+            let shown = format!("{error}");
+            if !is_fixed_settings_error(&shown) || format!("{error:?}").len() > 200 {
+                return Err(format!(
+                    "a migrator error that is not a variable name and a fixed phrase: {shown}"
+                ));
+            }
+            Ok(Verdict::Rejected)
+        }
+        Ok(settings) => {
+            // The limit is inside its range, the CA is a path and not the credential, and the credential is the file's text and
+            // is not in the debug output of the settings that hold it (S7), unless the same text is also the CA path.
+            let secs = settings.timeout.as_secs();
+            if !(1..=7200).contains(&secs) {
+                return Err(format!(
+                    "the migration time limit accepted outside its range: {secs}"
+                ));
+            }
+            let url = file.trim();
+            let shown = format!("{settings:?}");
+            let ca = settings.ca_file.display().to_string();
+            if url.len() >= 12 && shown.contains(url) && !ca.contains(url) {
+                return Err("the migrator URL is in the debug output of its settings".to_owned());
+            }
+            if settings.url.expose() != url {
+                return Err("the migrator URL is not the file's trimmed text".to_owned());
+            }
             Ok(Verdict::Accepted)
         }
     }
@@ -156,10 +208,11 @@ pub fn hub_cli_args(data: &[u8]) -> Result<Verdict, String> {
             .collect()
     };
     let got = cli::parse(args.iter().map(String::as_str));
-    let word = |s: &str| matches!(s, "serve" | "help" | "--help" | "-h");
+    let word = |s: &str| matches!(s, "serve" | "migrate" | "help" | "--help" | "-h");
     let want = match args.as_slice() {
         [] => Ok(Command::Serve),
         [one] if one == "serve" => Ok(Command::Serve),
+        [one] if one == "migrate" => Ok(Command::Migrate),
         [one] if word(one) => Ok(Command::Help),
         [first, ..] if !word(first) => Err(CliError::UnknownCommand),
         _ => Err(CliError::UnexpectedArgument),
