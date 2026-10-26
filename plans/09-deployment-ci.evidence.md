@@ -789,3 +789,40 @@ Review round 3 (`plans/09-deployment-ci.review.md`, commit `86bdc40`) APPROVED w
 **Gates after the cleanup (head `5931895`).** `just ci-lint` 0; `just pins-test` 0 (115 of 115); `just policy-test` 0 (1021 of 1021); `just deploy-lint` 0 (11 charts, 0 failed). `verify-09`, each recipe alone: `ops-tools-check` 0; `images-policy-test` 0 (25 lock tests, 22 Rego, 30 of 30 on both Dockerfiles, `hub` and `agent` `--test hardening` 5 of 5 each); `images-builder-test` 0; `images-publish-test` 0; `schemas-verify` 0 (37 files); **`deploy-render` 1, `policy-check` 1, `deploy-planted` 1 (417 `ok`, 1 failed: the Cloud Armor group), each with the B5 message** `cloudarmor.yaml:7:4: cloudArmor.githubHookRanges is empty` and no other error; `contract-check` 0 (34 of 34); `env-names-test` 0; `tools-test` 0 (30); `sentinel-check` 0 (33 node tests, 115 Rego tests, 23 on the unit, 18 on the real `Dockerfile.build`). **`just verify-09` as one command: exit 1 at `deploy-render`, 55 s, for B5 only.**
 
 **Not run in this cleanup:** `just verify` as one command (80 minutes; today it stops at `cargo deny check`, B17, which was run alone), `cargo xtask bench-check` and the benchmarks (the last result, 65 pass, 6 fail, 2 unmet of 73, stands; B15 is open), `just fuzz-smoke`, `images-repro`, `images-scan`, `images-sbom`, `sentinel-test`, `sentinel-repro`, `kind-e2e` past its cgroup v1 preflight, anything on GitHub or Google. **Not done, as instructed:** the `docker save` hand-over of the tools image, the B7 port change, anything in `crates/*`, and any edit to a dependency file for B17. The status stays PARTIAL. Open for a human: B5, A1, B15, A19, **B17**, B7 to B13, B16.
+
+## Human decisions of 2026-10-26 (FIX step)
+
+A human answered the open questions in chat on 2026-10-26. Commits, in order (nothing pushed): `733fb2f` (A19), `8882646` (B7), `49be91b` (B20), `10a1ae9` (B17 and B19: osv-scanner), then the `09/fix:` commit that holds the records (this section, the blockers file's last section, the PR text). The full account, with what each answer changed and the limits, is the last section of `plans/09-deployment-ci.blockers.md`. The frozen plan, every contract path, `crates/*`, `deny.toml` and `.cargo/audit.toml` are unchanged (`git diff fb35dff..HEAD --stat` over those paths prints nothing).
+
+**Decisions.** A19 resolved: three months, 7,776,000 s, still locked. B7 resolved: the agent load balancer listens on 443, chart only. B20 relaxed: `codegen-units = 16` for `jsonschema` in the bench profile, saving unmeasured. B17 decided: a time-boxed ignore until 2026-11-30 in `deny.toml` and `.cargo/audit.toml`, which **a separate PR on `main` carries**, so this branch does not touch those two files and **its supply-chain job stays red until that PR is merged into it**; this branch carries the osv-scanner half. B19 decided: wait for the 14-day dates (undici 7.30.1 and @vitest/mocker 4.1.12 on 2026-10-29, fast-uri 3.1.9 on 2026-11-02; the dompurify fix 3.4.17 is a separate PR). B15 decided: the two thresholds are loosened by a separate contract-change PR, so `bench-check` still fails here. Still open: A1, B5, B8. Branch-protection check names are changed by a person after the merge.
+
+**Test first, red then green.**
+- A19: `node --test .github/scripts/audit-retention.test.mjs` was red (`retentionPeriodSeconds: 31536000` in `prod.yaml`; `31536000` in `fixtures_data_test.rego:223`), green after the fix.
+- B7: `just policy-test` with the fixture and tests changed and the old rule: `1028 tests, 1014 passed, 14 failures`; with the new rule: `1027 tests, 1027 passed, 0 failures`.
+- B20: `node --test .github/scripts/cargo-profile.test.mjs` was red on the missing override (the other two cases were already green by design), green after.
+- osv: `node --test .github/scripts/osv-config.test.mjs` was red (no `osv-scanner.toml`), green (6 of 6). Mutations, each restored after: the recipe without `--config`; one entry without `ignoreUntil`; one zstd reason changed; an npm (`GHSA-`) ignore added; a misspelt key. Each turned the test red.
+
+**Checks on the real tools.**
+- `RUSTC_BOOTSTRAP=1 cargo build --profile bench --unit-graph -Z unstable-options --locked --offline -p hub-mcp --benches --tests`, and the same with `--profile release`, compile nothing; diffing the codegen units of every unit: one line differs, `jsonschema@0.58.3 lib` 16 (bench) against 1 (release).
+- `target/ops-tools/bin/osv-scanner scan source --help` (2.6.0) lists `--config`. With the committed file the `domain` override applies: `Package crates.io/domain/0.1.0 has been filtered out because: RUSTSEC-2026-0310 is about the `domain` DNS crate of NLnet Labs ...`. With `ignoreUntill` misspelt it stops: `unknown keys in config file: IgnoredVulns.ignoreUntill`. Without `--config`, `-L Cargo.lock` finds `osv-scanner.toml` and `-L crates/agent/fuzz/Cargo.lock` does not.
+- `just osv-scan`: `osv-scan: 11 lockfiles`, the override filters 9 packages, then `request failed: Post "https://api.osv.dev/v1/querybatch": Forbidden`, exit 127. No clean osv-scan run has been seen; no entry has been observed to suppress a real finding.
+- `cargo tree --locked --offline -i zstd -e normal,build,dev --target all --depth 1`: `zstd v0.13.3` is used by `tonic v0.14.6` only. `cargo deny check advisories` (read-only today): `advisories FAILED` with four ids in the root lockfile, RUSTSEC-2026-0391, -0398, -0403, -0410. The human's list has 14; the other ten could not be matched against a database here (osv's API is refused), and were entered as instructed.
+
+**Gates** (baseline from `fb35dff`, then the final tree). The failures of the three Cloud Armor recipes are the baseline's, line for line.
+
+| Command | Baseline | Now |
+|---|---|---|
+| `just policy-test` | 1021 of 1021 | **1027 of 1027** |
+| `just deploy-lint` | not run | exit 0 |
+| `just deploy-render` | exit 1, 2 `FAILED` (gcp staging, prod: B5) | exit 1, the same 2 lines |
+| `just policy-check` | exit 1, 3 `FAILED` (B5) | exit 1, the same 3 lines |
+| `deploy/tests/render.sh planted` | exit 1, 417 ok, 1 failed (B5, the Cloud Armor group) | exit 1, **419 ok** (the two new plants), the same 1 failed; run on a copy of the tree at the B7 state |
+| `deploy/tests/render.sh data` | exit 0 | exit 0 (copies at `733fb2f` and at `10a1ae9`) |
+| `just contract-check`, `env-names-test`, `tools-test`, `schemas-verify` | not run | exit 0 (34 of 34; 30; 10) |
+| `just pins-test` | not run | exit 0, **155 of 155** (the three new files add 13) |
+| `check-pins.mjs`, `check-workflows.mjs` | not run | exit 0 (122 references pinned; 10 workflows) |
+| `just ci-lint` | not run | exit 0 (shellcheck on 33 scripts, `render.sh` among them) |
+| `cargo metadata --locked --format-version 1` | not run | exit 0; `Cargo.lock` unchanged |
+
+**Not run:** `cargo test`, a cold compile, any benchmark or `cargo xtask bench-check`, `just verify`, `just verify-09` as one command, `images-*`, `sentinel-*`, `kind-e2e`, `fuzz-smoke`, `cargo audit`, and everything that needs GitHub, Google, a cluster or the OSV database. The status stays PARTIAL.
+

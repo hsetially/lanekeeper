@@ -1,6 +1,6 @@
 # 09: Deployment, CI and supply chain
 
-**This branch is NOT ready to merge green.** It is ready for human review with four human-owned gates open: B5, B15, B17 and A1 (details below). Nothing is ticked that command output does not prove. The full evidence is `plans/09-deployment-ci.evidence.md`; the blockers are `plans/09-deployment-ci.blockers.md` (B1 to B17); the three review rounds are `plans/09-deployment-ci.review.md`.
+**This branch is NOT ready to merge green.** (Human decisions of 2026-10-26 changed which gates are open: see "Human decisions of 2026-10-26" below.) It is ready for human review with four human-owned gates open: B5, B15, B17 and A1 (details below). Nothing is ticked that command output does not prove. The full evidence is `plans/09-deployment-ci.evidence.md`; the blockers are `plans/09-deployment-ci.blockers.md` (B1 to B17); the three review rounds are `plans/09-deployment-ci.review.md`.
 
 ## Prompt
 
@@ -97,6 +97,19 @@ The plan's A-table with what was decided is in the evidence file. The ones that 
 5. **B8 (a contract disagreement between HARDENING.md files):** the config-server egress rule has no `namespaceSelector`, so it matches nothing if the config-server runs outside the agent's namespace. Open. (B7, the agent's port, is resolved: a human decided on 2026-10-26 that the hub's agent load balancer listens on 443 and forwards to the pods' 8444.)
 6. **Branch protection:** `ci.yml` no longer holds the `rust`, `web` and `pinned-actions` jobs (moved to path-filtered workflows). Required-check names need updating.
 7. **B11 and B12 and B13:** nothing creates a swimlane; no chart creates the CI signing key, the Workload Identity pool or the Binary Authorization trust root; the RPM release key and its trust root do not exist. A release tag stops at `sign-release` until they do.
+
+## Human decisions of 2026-10-26
+
+Answered in chat; four `09/fix:` commits (`733fb2f`, `8882646`, `49be91b`, `10a1ae9`) and these records. Details and limits: the last section of `plans/09-deployment-ci.blockers.md`.
+
+- **A19, resolved:** prod's audit checkpoint bucket keeps **three months** (7,776,000 s) and stays locked. The chart still has no default period.
+- **B7, resolved:** the hub's agent load balancer listens on **443** and forwards to the container port `agent` (8444). Chart and policy only; neither HARDENING.md nor any crate changed. `network.rego` requires it (policy tests 1021 to 1027; three new planted cases).
+- **B20, relaxed:** `[profile.bench.package.jsonschema] codegen-units = 16`; the release profile is untouched. **The saving is unmeasured** until the next cold CI bench run.
+- **B17, decided, not complete on this branch:** a time-boxed ignore until 2026-11-30 (zstd) and 2027-04-30 (rsa) in `deny.toml` and `.cargo/audit.toml`, carried by **a separate PR on `main`**. This branch does not touch those two files, so **its supply-chain job (`cargo deny`, `cargo audit`) stays red until that PR is merged into it.** This branch carries `osv-scanner.toml` (the 14 zstd ids, rsa, and the `domain` name collision) and `just osv-scan` passes it.
+- **B19, decided:** wait. undici 7.30.1 and @vitest/mocker 4.1.12 are old enough on 2026-10-29, fast-uri 3.1.9 on 2026-11-02; the dompurify fix 3.4.17 is a separate PR. The `osv` job stays red for the npm findings until the bumps are merged.
+- **B15, decided:** the two thresholds are loosened by a separate contract-change PR (`perf/budgets.toml` is not this branch's). `bench-check` still fails here until then.
+- **Still open:** A1 (the hub binary exits 1), B5 (the hook ranges: `deploy-render`, `policy-check`, `deploy-planted` and `verify-09` fail on purpose, and their failures are exactly the baseline's), B8. A person changes the branch-protection check names after the merge.
+- **Not run for these commits:** `cargo test`, any cold compile, `bench-check`, `just verify`, `cargo audit`, osv-scanner against the real database (its API answers 403 here), and anything on GitHub. `just osv-scan` exits 127 here as it did.
 
 ## Reviewer agent verdict
 
