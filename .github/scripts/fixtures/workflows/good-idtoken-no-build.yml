@@ -1,0 +1,33 @@
+name: good-idtoken-no-build
+on:
+  push:
+    branches: [main]
+permissions: {}
+jobs:
+  build:
+    # A job without the token may build: this is where the dependencies' code runs.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - run: cargo install --locked cargo-cyclonedx --version 0.5.7
+      - run: cargo build --release --locked
+      - run: npm ci && npm run build
+  publish:
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      # Prose is not a command: neither this comment nor the strings below start a build.
+      - name: Say what is not run here (cargo install, npm ci, make)
+        run: |
+          echo "cargo install and npm ci are never run in this job"
+          printf '%s\n' "run make sure the tag matches Cargo.toml" > /dev/null
+          grep -n 'cargo build' Justfile || true
+      - run: just ops-tools-install cosign
+      - run: cosign sign-blob --yes file.rpm

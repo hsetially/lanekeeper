@@ -16,7 +16,7 @@ function run(...args) {
 }
 const fx = (name) => join(fixtures, name);
 
-for (const name of ['good.yml', 'good-read-only-top.yml']) {
+for (const name of ['good.yml', 'good-read-only-top.yml', 'good-idtoken-no-build.yml']) {
   test(`${name} passes`, () => {
     const r = run(fx(name));
     assert.equal(r.code, 0, r.out);
@@ -34,6 +34,10 @@ const refused = [
   ['bad-pr-without-paths.yml', /bad-pr-without-paths\.yml:3: .*pull_request.*paths/],
   ['bad-pr-inline.yml', /bad-pr-inline\.yml:2: .*pull_request.*paths/],
   ['bad-job-write-all.yml', /bad-job-write-all\.yml:10: .*write-all/],
+  // W6: a job that can mint an OIDC token runs no build step. Line numbers are those of the command.
+  ['bad-idtoken-cargo-install.yml', /bad-idtoken-cargo-install\.yml:22: .*job sign-release.*id-token: write.*cargo install.*W6/],
+  ['bad-idtoken-npm-flow.yml', /bad-idtoken-npm-flow\.yml:12: .*job publish.*npm ci.*W6/],
+  ['bad-idtoken-build-action.yml', /bad-idtoken-build-action\.yml:14: .*job publish.*docker\/build-push-action.*W6/],
 ];
 for (const [file, pattern] of refused) {
   test(`${file} is refused`, () => {
@@ -42,6 +46,21 @@ for (const [file, pattern] of refused) {
     assert.match(r.out, pattern);
   });
 }
+
+test('every build command behind sudo, env, a subshell or a chain is found in a job with the token', () => {
+  const r = run(fx('bad-idtoken-chained.yml'));
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /bad-idtoken-chained\.yml:18: .*cargo \+stable build/);
+  assert.match(r.out, /bad-idtoken-chained\.yml:20: .*pnpm install/);
+  assert.match(r.out, /bad-idtoken-chained\.yml:21: .*go build/);
+  assert.match(r.out, /bad-idtoken-chained\.yml:22: .*yarn/);
+  assert.equal(r.out.split('\n').filter((l) => /W6/.test(l)).length, 4, r.out);
+});
+
+test('a job without the token may build, and prose that names a command is not a command', () => {
+  const r = run(fx('good-idtoken-no-build.yml'));
+  assert.equal(r.code, 0, r.out);
+});
 
 test('a job that calls a reusable workflow needs no timeout of its own', () => {
   const r = run(fx('good.yml'));

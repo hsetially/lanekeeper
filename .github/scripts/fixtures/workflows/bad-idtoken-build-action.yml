@@ -1,0 +1,16 @@
+name: bad-idtoken-build-action
+on:
+  push:
+    branches: [main]
+permissions: {}
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: docker/build-push-action@0000000000000000000000000000000000000000 # v6.0.0
+        with:
+          push: true

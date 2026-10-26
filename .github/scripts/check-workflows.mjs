@@ -15,6 +15,15 @@
 //       workflow. A job that hangs must not hold a runner for the default six hours.
 //   W4  No `pull_request_target` trigger. It runs with a write token on code from a fork.
 //   W5  A `pull_request` trigger names `paths` or `paths-ignore`, so a change to one area does not start every job.
+//   W6  A job that holds `id-token: write` runs no build step. `cargo install` and `npm ci` run the build scripts, proc-macros and
+//       install scripts of every dependency as the runner user, in a process whose environment carries the variables that let it
+//       ask GitHub for an OIDC token; with that token the code is the job's identity to Sigstore, Google Cloud or whatever the
+//       workflow federates with. So the job that signs or federates handles files that another job built, with tools fetched by a
+//       digest or a hash. Refused, as a command in a `run:` step: cargo, rustc, rustdoc, npm, npx, pnpm, yarn, corepack, bun,
+//       pip, pipx, poetry, go build/install/run/test/get/generate, gem install, bundle, mvn, gradle, dotnet build/restore/publish/
+//       run/test, make, cmake, ninja; and the actions docker/build-push-action and docker/bake-action. NOT seen: what a script or a
+//       `just` recipe called by a step does, and a `docker build` run by a script (that code runs in a container which is not given
+//       the job's variables). Those are read by a person; the threat model says which jobs rely on that.
 //
 // Exit codes: 0 all rules hold; 1 a rule is broken (printed as file:line: reason); 2 nothing to check or an unreadable path.
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -59,6 +68,45 @@ function children(body) {
   if (body.length === 0) return [];
   const min = Math.min(...body.map((l) => l.indent));
   return body.filter((l) => l.indent === min);
+}
+
+// W6. A build tool, where a command can start: at the start of a line or after `&&`, `||`, `;`, `|`, `(`, `{`, a backtick, `$(`,
+// `then`, `do` or `else`, past the words that only prefix a command (sudo, env and VAR=value, time, exec, nice, xargs). A word inside
+// a string that echo prints, or an argument of grep, does not start a command.
+const BUILD_TOOLS = String.raw`(?:cargo|rustc|rustdoc|npm|npx|pnpm|yarn|corepack|bun|pip3?|pipx|poetry|go\s+(?:build|install|run|test|get|generate)|gem\s+install|bundle|mvn|gradle|dotnet\s+(?:build|restore|publish|run|test)|make|cmake|ninja)`;
+const COMMAND_START = String.raw`(?:^|&&|\|\||[;|({\`]|\$\(|\b(?:then|do|else)\b)\s*(?:(?:sudo|time|exec|command|nice|xargs|env)\s+(?:-\S+\s+)*|[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*`;
+const BUILD_COMMAND = new RegExp(`${COMMAND_START}(${BUILD_TOOLS})(?=\\s|$)`);
+const BUILD_ACTION = /^docker\/(?:build-push-action|bake-action)@/;
+
+/** The steps of a job that run something, as [{ no, text }] per command line: each line of a `run:` value, or the action of a `uses:`. */
+function stepCommands(lines, job) {
+  const out = [];
+  const body = bodyOf(lines, lines.indexOf(job));
+  for (let i = 0; i < body.length; i += 1) {
+    const dash = /^-\s+/.exec(body[i].text);
+    const kv = keyValue(dash ? body[i].text.slice(dash[0].length) : body[i].text);
+    if (!kv) continue;
+    if (kv.key === 'uses' && BUILD_ACTION.test(kv.value)) out.push({ no: body[i].no, text: kv.value, action: true });
+    if (kv.key !== 'run') continue;
+    if (!/^[|>][+-]?\d*$/.test(kv.value)) {
+      out.push({ no: body[i].no, text: kv.value });
+      continue;
+    }
+    const keyIndent = body[i].indent + (dash ? dash[0].length : 0);
+    for (let k = i + 1; k < body.length && body[k].indent > keyIndent; k += 1) out.push({ no: body[k].no, text: body[k].text });
+  }
+  return out;
+}
+
+/** Does the job's `permissions:` grant id-token: write (a mapping, a flow mapping, or write-all)? */
+function holdsIdToken(lines, perms) {
+  const { value } = keyValue(perms.text);
+  if (value === 'write-all') return true;
+  if (value !== '') return /(^|[{,\s])id-token\s*:\s*write\b/.test(value);
+  return children(bodyOf(lines, lines.indexOf(perms))).some((l) => {
+    const kv = keyValue(l.text);
+    return kv?.key === 'id-token' && kv.value === 'write';
+  });
 }
 
 /**
@@ -121,6 +169,14 @@ export function checkWorkflow(text) {
       if (perms) {
         const v = keyValue(perms.text).value;
         if (v === 'write-all' || v === 'read-all') add(perms.no, `job ${kv.key}: permissions: ${v} is too wide; write out the scopes (W2)`);
+      }
+      if (perms && holdsIdToken(lines, perms)) {
+        for (const c of stepCommands(lines, job)) {
+          const hit = c.action ? c.text : BUILD_COMMAND.exec(c.text)?.[1];
+          if (!hit) continue;
+          const what = c.action ? `uses ${hit}` : `runs \`${c.text.length > 90 ? `${c.text.slice(0, 90)}...` : c.text}\``;
+          add(c.no, `job ${kv.key} holds id-token: write and ${what}; a build step in the job that can ask for an OIDC token lets a dependency's code ask for one too. Build in a job without the token and hand the files on (W6)`);
+        }
       }
       if (get('uses')) continue; // a call of a reusable workflow: the timeout belongs to the called jobs
       const t = get('timeout-minutes');

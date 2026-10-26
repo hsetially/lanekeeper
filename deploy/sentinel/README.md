@@ -60,8 +60,10 @@ digests (after 14 days) and never the Rocky releases, which are the targets.
 - **A release** (`sentinel-v<version>` tag) is signed with the **release key**. Its private half is in Secret Manager. The `sign-release`
   job, in the protected `release` environment, reads it through Workload Identity Federation and pipes it into the signing container's
   memory (`sign.sh release`), which refuses unless its fingerprint is that of `RPM-GPG-KEY-lanekeeper.pub`, and which checks the result with
-  that file. The key is never on the runner's disk. Then `publish` signs the RPM and its SBOM keyless with cosign (`publish.sh`), verifies
-  both from the same job, attaches a provenance attestation and creates the GitHub release.
+  that file. The key is never on the runner's disk. That job compiles and installs nothing: the SBOM of the signed RPM is written and scanned
+  by the later `sbom` job, which holds no token (`check-workflows.mjs` W6 refuses a build command in any job with `id-token: write`). Then
+  `publish` signs the RPM and that SBOM keyless with cosign (`publish.sh`), verifies both from the same job, attaches a provenance
+  attestation and creates the GitHub release.
 - The signature is **RSA** with SHA-256, a kind the rpm 4.14 of Rocky 8 verifies (the install test shows it; no other key type was tried). The key has no subkey, so there is one fingerprint to compare.
 - dnf **does not check the signature of a local file** unless `localpkg_gpgcheck=1` is set; `install.sh` sets it and shows that an unsigned
   package and a package with a changed byte are refused. Config management should set it, or check with `rpm -K`.
