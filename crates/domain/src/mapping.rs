@@ -11,6 +11,11 @@
 //! - reverse mapping strips an exact `-<tenant>` immediately before the extension, and only for a
 //!   known tenant. Names like `tx-infinity-core` contain hyphens of their own, so nothing is ever
 //!   split on the first hyphen;
+//! - a tenant file whose name ends in a dot is refused (`MapError::TrailingDot`). Such a name has no extension, so the
+//!   suffix would go after the dot (`core-sit1.` would become `core-sit1.-sit1`), where reverse mapping reads it as the
+//!   extension and cuts the name in the wrong place: two repository paths (`core-sit1.` and `core.-sit1`) would be one NFS
+//!   path, and a tenant file would read back as another file or as a base file. Tenant ids hold no dot so that a suffix is
+//!   never an extension; a trailing dot is the one name that would put it in one;
 //! - when several known tenants match, the longest wins;
 //! - a base file whose name coincidentally ends with a known tenant id is reported as a tenant file.
 //!   This is a documented limit of the naming scheme, not a bug.
@@ -26,6 +31,9 @@ pub enum MapError {
     OutsideRoot,
     #[error("mapped path is invalid")]
     InvalidPath(#[from] PathError),
+    /// A tenant file whose name ends in a dot: the suffix would land after the dot and read back as an extension.
+    #[error("a tenant file name ends with a dot, so its tenant suffix cannot be read back")]
+    TrailingDot,
 }
 
 /// The tenants deployed to one swimlane (Q34: a set, never exactly one).
@@ -148,8 +156,18 @@ impl PathMappingRule {
 
     /// Tenant repo path on branch `tenant` to NFS path: the root prefix is dropped and `-<tenant>` is
     /// inserted before the extension.
+    ///
+    /// # Errors
+    ///
+    /// `OutsideRoot` for a path that is not below the tenant root, `InvalidPath` for a result that is not a valid
+    /// NFS path, `TrailingDot` for a name that ends in a dot.
     pub fn tenant_to_nfs(&self, repo_path: &RepoPath, tenant: &TenantId) -> Result<NfsPath, MapError> {
         let rel = NfsPath::parse(repo_path.below(&self.tenant_root).ok_or(MapError::OutsideRoot)?)?;
+        // A name that ends in a dot has no extension (`split_name`), so the suffix would go after the dot, where `reverse`
+        // reads it as the extension: two repository paths would be one NFS path. Refuse it rather than rename it.
+        if rel.file_name().ends_with('.') {
+            return Err(MapError::TrailingDot);
+        }
         let (stem, ext) = split_name(rel.file_name());
         let renamed = join_name(&format!("{stem}-{tenant}"), ext);
         Ok(NfsPath::parse(&join_dir(rel.dir_str(), &renamed))?)

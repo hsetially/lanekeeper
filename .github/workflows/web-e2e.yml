@@ -77,6 +77,7 @@ on:
       - "api/openapi.yaml"
       - "Justfile"
       - ".github/workflows/web-e2e.yml"
+      - ".github/scripts/playwright-install.sh"
   push:
     branches: [main]
 permissions:
@@ -120,9 +121,11 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - run: just web-install
       # Playwright's own Chromium, for the pinned @playwright/test (web/e2e/harness/browser.ts finds it).
-      - run: pnpm exec playwright install --with-deps chromium
+      # The Ubuntu mirror stalls now and then on the font packages of --with-deps and the step ran out its limit: the script gives apt
+      # short timeouts and retries the install (see it). 20 minutes is room for its 3 attempts.
+      - run: ../.github/scripts/playwright-install.sh
         working-directory: web
-        timeout-minutes: 10
+        timeout-minutes: 20
       - run: just web-gen-check
       - name: React 18.3.1 for the visual references (W30)
         run: |
@@ -191,9 +194,11 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - run: just web-install
       # Playwright's own Chromium, for the pinned @playwright/test and for Lighthouse (web/e2e/harness/browser.ts finds it).
-      - run: pnpm exec playwright install --with-deps chromium
+      # The Ubuntu mirror stalls now and then on the font packages of --with-deps and the step ran out its limit: the script gives apt
+      # short timeouts and retries the install (see it). 20 minutes is room for its 3 attempts.
+      - run: ../.github/scripts/playwright-install.sh
         working-directory: web
-        timeout-minutes: 10
+        timeout-minutes: 20
       # Removes the old web results, builds the Rust fixture and both web builds, then measures: the specs of the `perf` project one at
       # a time, then Lighthouse. The numbers are written to target/perf-results.
       - name: Measure the P10 numbers
@@ -246,8 +251,12 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
       - run: just web-install
-      - run: pnpm exec playwright install --with-deps chromium
+      # Playwright's own Chromium, for the pinned @playwright/test.
+      # The Ubuntu mirror stalls now and then on the font packages of --with-deps and the step ran out its limit: the script gives apt
+      # short timeouts and retries the install (see it). 20 minutes is room for its 3 attempts.
+      - run: ../.github/scripts/playwright-install.sh
         working-directory: web
+        timeout-minutes: 20
       - name: React 18.3.1 for the visual references (W30)
         run: |
           set -euo pipefail
