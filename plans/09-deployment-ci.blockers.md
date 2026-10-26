@@ -1008,3 +1008,34 @@ Reviewed at `9eef6b4` (`plans/09-deployment-ci.review.md`, commit `33d6cf3`): CH
 ### Non-blocking items of the review left as they are
 
 5 (commit names: a note), 6 (what cannot be verified here: the SHA-to-tag mapping of the pinned actions, any GitHub run, kind past cluster creation) and 7 (B5, A1, B15, A19, B7 to B13: still reported honestly).
+
+## B17 (review round 3, reproduced in the cleanup step): `cargo deny check` and `cargo audit` fail on four zstd advisories, and a lockfile bump cannot reach the fix
+
+**State: open. A human decides. The same class as B14, but not the same way out.** Not caused by this branch, and not fixable inside prompt 09's paths. Review round 3 found it (`plans/09-deployment-ci.review.md`, round 3, non-blocking 1); this section is what I reproduced myself.
+
+**Reproduced on 2026-10-26 at 14:27 UTC, on branch head `86bdc40`, each command alone, with the advisory database fetched by the tools themselves.**
+- `cargo deny check`: **exit 1**, `advisories FAILED, bans ok, licenses ok, sources ok`, four `error[vulnerability]`.
+- `cargo audit`: **exit 1**, `Loaded 1378 security advisories`, `error: 4 vulnerabilities found!`, `warning: 10 allowed warnings found` (ten `unsound` warnings on zstd-safe 7.3.0: RUSTSEC-2026-0395, -0396, -0397, -0399, -0400, -0401, -0402, -0404, -0405, -0406; warnings, not failures).
+
+| Advisory | Locked crate | Title | Fixed in | Fix published (crates.io API, read 2026-10-26) |
+|---|---|---|---|---|
+| RUSTSEC-2026-0391 | zstd 0.13.3 | Data from an abandoned stream leaks into the next stream on a reused context | >= 0.14.3 | zstd 0.14.3, 2026-10-16 16:59:51 UTC |
+| RUSTSEC-2026-0398 | zstd-safe 7.3.0 | `Seekable::decompress` sets a `Vec` length beyond its capacity for offsets past the end | >= 8.2.0 | zstd-safe 8.2.0, 2026-10-16 16:59:12 UTC |
+| RUSTSEC-2026-0403 | zstd-safe 7.3.0 | Uninitialized memory exposed when streaming decompression of a legacy frame fails | >= 8.2.0 | same |
+| RUSTSEC-2026-0410 | zstd-sys 2.0.16+zstd.1.5.7 | WebAssembly allocator shim corrupts memory on allocation failure | >= 2.1.2 | zstd-sys 2.1.2+zstd.1.5.7, 2026-10-16 16:59:08 UTC |
+
+All four advisories are dated 2026-10-16. None of the fixed releases is yanked. Rule 15's 14-day minimum is met for all three from **2026-10-30 at 16:59 UTC**.
+
+**Why `just verify` passed on 2026-10-26 and does not reproduce now.** The one-command run (12:27:55 to 13:47:55 UTC, on `3a67982`) printed `advisories ok` and `Loaded 1355 security advisories` (lines 12287 and 12290 of its log). The advisory database now holds 1378 entries (newest commit `a78282a`, dated 2026-10-26 13:45:01 UTC) and contains these four. The lockfile did not change; the database did. I did not record which database commit the run used, so I cannot say to the minute when the entries arrived. `just verify` was not re-run as one command in this step (80 minutes): it stops at `cargo deny check`, the step before `cargo audit`, and both steps were run alone.
+
+**This branch is not the cause, and main fails the same way.** `Cargo.lock`, `Cargo.toml`, `deny.toml` and `.cargo/audit.toml` on this branch are identical to `origin/main` (`7e53bf5`; `git diff --quiet` on each file, also against the tip fetched at 14:28 UTC). No dependency file was edited in this step either, and no ignore was added.
+
+**Who pulls zstd in.** Only `tonic` 0.14.6 (`cargo tree -i zstd`): its `zstd` feature, which `hub-platform` and `proto` enable for compressed gRPC streams (P4, and the stack names "tonic with zstd compression"). `zstd` brings in `zstd-safe` and `zstd-sys`.
+
+**Why waiting for 2026-10-30 may not be enough.**
+- `tonic` 0.14.6 is the newest tonic on crates.io (published 2026-05-07), and it declares `zstd = "0.13.0"` (optional), which excludes 0.14.x. `zstd` 0.13.3 needs `zstd-safe` 7.x. So `cargo update -p zstd` cannot reach the fix while tonic 0.14.6 is the newest tonic: the lockfile cannot leave the 0.13 line.
+- So the way B14 was closed (D134: a recorded override of the age rule, then a lockfile bump) does not carry over by itself. After 2026-10-30 the age rule is no longer in the way, but the dependency range still is.
+- What would unblock it, none of which I tried (no dependency file may be touched here) and none of which I checked beyond the registry: a tonic release that accepts zstd 0.14; a recorded decision to accept the advisories for now (an `ignore` in `deny.toml` and `.cargo/audit.toml` with the reason and an expiry, as `RUSTSEC-2023-0071` already has); or a decision about the tonic `zstd` feature itself (P4 and the stack name it).
+- Whether the four advisories can be reached by how the hub and the agent use zstd (tonic's gRPC message compression between mTLS-authenticated peers) was **not analysed**. That belongs in the human's decision.
+
+**For a human:** decide between (a) a recorded override or ignore with an expiry, (b) waiting for a tonic release that takes zstd 0.14 (and for 2026-10-30 for the age rule), (c) something else. Until then `just verify` is not green on this branch or on `main`, and the PR text must not say it is.
