@@ -3,8 +3,9 @@ minimumReleaseAge: 20160
 # Lifecycle scripts stay blocked (pnpm's default). esbuild works without its postinstall check.
 ignoredBuiltDependencies:
   - esbuild
-# Monaco's package.json pins dompurify 3.4.15, which has two low advisories (GHSA-p98j-92pf-mc4p, GHSA-6688-9rhm-gjv2).
-# The 3.4.16 patch release is 23 days old on 2026-10-17. Monaco also ships its own vendored copy under
+# Monaco's package.json pins dompurify 3.4.15, which has advisories (GHSA-p98j-92pf-mc4p, GHSA-6688-9rhm-gjv2) that 3.4.16 did not
+# close either: 3.4.17 does close GHSA-c6gr-qvv4-5v3f, GHSA-cg2g-xh64-v4q7 (9.2) and GHSA-mrv2-3pqr-j5jr. It was published on
+# 2026-10-12 and is 14 days old on 2026-10-26. Monaco also ships its own vendored copy under
 # esm/vs/base/browser/dompurify/, which this override cannot change; src/editor never reaches it (see docs/threat-model.md).
 overrides:
-  dompurify: 3.4.16
+  dompurify: 3.4.17
