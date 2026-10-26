@@ -67,6 +67,8 @@ Rocky releases, which are the targets; it cannot move the apt versions, so those
 - **A pull request** is signed with a **throwaway RSA key** made inside a container with no network, for that run (`sign.sh ephemeral`). The
   secret half exists only in a tmpfs until the command ends. The signature shows that the package is intact; it says nothing about who
   built it. Its public half goes with the artifact so that `rpm -K` and dnf's check can be tried with a key.
+  The container runs as the user who runs `sign.sh` (not as root: on a CI runner root without a capability cannot write the runner's `--out`),
+  with no network, no capability, a read-only root file system and tmpfs that this user owns; the files in `--out` belong to that user.
 - **A release** (`sentinel-v<version>` tag) is signed with the **release key**. Its private half is in Secret Manager. The `sign-release`
   job, in the protected `release` environment, reads it through Workload Identity Federation and pipes it into the signing container's
   memory (`sign.sh release`), which refuses unless its fingerprint is that of `RPM-GPG-KEY-lanekeeper.pub`, and which checks the result with
