@@ -579,13 +579,17 @@ fn environment_problems(container: &Value) -> Vec<String> {
 /// Where the users' load balancer, its proxies and its health checks come from (plan 09 A10).
 const GOOGLE_RANGES: [&str; 2] = ["35.191.0.0/16", "130.211.0.0/22"];
 
-const EXPECTED_HOSTS: [&str; 7] = [
+/// One name for each thing the hub's code calls outside the cluster. `storage.googleapis.com` is the audit-checkpoint writer's
+/// (`hub-identity/src/audit/bucket.rs`, `GcsCheckpointBucket::HOST`, S9): without it default deny blocks the second copy of the
+/// audit chain in the locked bucket. `deploy/policy/network.rego` (`required_hosts`) keeps the same list for the rendered chart.
+const EXPECTED_HOSTS: [&str; 8] = [
     "login.microsoftonline.com",
     "github.com",
     "api.github.com",
     "secretmanager.googleapis.com",
     "cloudkms.googleapis.com",
     "www.googleapis.com",
+    "storage.googleapis.com",
     "<teams webhook host>",
 ];
 
@@ -1109,6 +1113,19 @@ fn hardening_lint_rejects_planted_violations() {
             "a missing host",
             mutate("FQDNNetworkPolicy", |d| {
                 d["spec"]["egress"][0]["matches"].as_array_mut().unwrap().pop();
+            }),
+        ),
+        (
+            "the audit bucket host missing",
+            mutate("FQDNNetworkPolicy", |d| {
+                let matches = d["spec"]["egress"][0]["matches"].as_array_mut().unwrap();
+                let before = matches.len();
+                matches.retain(|m| m["pattern"] != "storage.googleapis.com");
+                assert_eq!(
+                    before - matches.len(),
+                    1,
+                    "the contract names storage.googleapis.com once"
+                );
             }),
         ),
         (

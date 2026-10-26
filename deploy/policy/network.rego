@@ -150,9 +150,12 @@ deny contains msg if {
 
 # --- egress to the external hosts: names and 443 ---------------------------------------------------------------------------
 
+# One host for each thing the hub's code calls outside the cluster: Entra (sign-in and its keys), GitHub (git and the API), Secret
+# Manager, Cloud KMS, Google's key set for ID tokens (www.googleapis.com), and Cloud Storage for the audit checkpoints (S9,
+# crates/hub-identity/src/audit/bucket.rs, GcsCheckpointBucket::HOST). crates/hub/tests/hardening.rs keeps the same list.
 required_hosts := {
 	"login.microsoftonline.com", "github.com", "api.github.com",
-	"secretmanager.googleapis.com", "cloudkms.googleapis.com", "www.googleapis.com",
+	"secretmanager.googleapis.com", "cloudkms.googleapis.com", "www.googleapis.com", "storage.googleapis.com",
 }
 
 # The Teams webhook host is not known yet (Q9). When it is, it is named in this annotation and in a pattern.

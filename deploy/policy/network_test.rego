@@ -149,6 +149,13 @@ test_deny_external_missing_host if {
 	refused(planted, "login.microsoftonline.com")
 }
 
+# The audit-checkpoint writer (crates/hub-identity/src/audit/bucket.rs, GcsCheckpointBucket::HOST) puts each checkpoint in the locked
+# bucket over storage.googleapis.com (S9). Without the name, default deny blocks the second copy of the audit chain.
+test_deny_external_missing_audit_bucket_host if {
+	planted := fixtures.patch("FQDNNetworkPolicy", "lanekeeper-hub-external", [{"op": "remove", "path": "/spec/egress/0/matches/6"}])
+	refused(planted, "storage.googleapis.com")
+}
+
 test_deny_external_port_other_than_443 if {
 	planted := fixtures.patch("FQDNNetworkPolicy", "lanekeeper-hub-external", [{"op": "add", "path": "/spec/egress/0/ports/-", "value": tcp(80)}])
 	refused(planted, "443")

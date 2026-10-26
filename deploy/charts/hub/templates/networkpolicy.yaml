@@ -109,7 +109,8 @@ spec:
 {{- if .Values.network.fqdnPolicy }}
 ---
 # A Kubernetes NetworkPolicy cannot name a host, so the external destinations are GKE's FQDN network policy: Entra sign-in,
-# GitHub, the Google APIs and, when it is known, the Teams webhook host. Names without wildcards, HTTPS only (S18).
+# GitHub, the Google APIs (Secret Manager, Cloud KMS, the key set for ID tokens, and Cloud Storage for the audit checkpoints, S9) and,
+# when it is known, the Teams webhook host. Names without wildcards, HTTPS only (S18).
 apiVersion: networking.gke.io/v1alpha1
 kind: FQDNNetworkPolicy
 metadata:
@@ -133,6 +134,7 @@ spec:
         - pattern: secretmanager.googleapis.com
         - pattern: cloudkms.googleapis.com
         - pattern: www.googleapis.com
+        - pattern: storage.googleapis.com
         {{- with .Values.network.teamsWebhookHost }}
         - pattern: {{ . | quote }}
         {{- end }}

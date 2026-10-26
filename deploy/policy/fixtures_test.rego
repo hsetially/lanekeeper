@@ -314,6 +314,7 @@ fqdnpolicy := {
 				{"pattern": "secretmanager.googleapis.com"},
 				{"pattern": "cloudkms.googleapis.com"},
 				{"pattern": "www.googleapis.com"},
+				{"pattern": "storage.googleapis.com"},
 			],
 			"ports": [{"protocol": "TCP", "port": 443}],
 		}],

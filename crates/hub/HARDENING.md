@@ -192,6 +192,7 @@ destinations.
 | `login.microsoftonline.com` | 443/TCP | Entra sign-in and its signing keys (03a). |
 | `github.com`, `api.github.com` | 443/TCP | Git fetch and the GitHub API (T7, 06). |
 | `secretmanager.googleapis.com`, `cloudkms.googleapis.com`, `www.googleapis.com` | 443/TCP | Secret Manager, Cloud KMS (T2), and the keys that verify Google ID tokens (T3). |
+| `storage.googleapis.com` | 443/TCP | Cloud Storage: the audit-checkpoint writer puts each checkpoint in the locked bucket (`GcsCheckpointBucket::HOST`, S9). |
 | the Teams webhook host | 443/TCP | Notifications (Q9: the host depends on the answer). |
 
 In: the web port from the users' load balancer, whose proxies come from Google's two ranges (the client address is checked by
@@ -293,6 +294,7 @@ spec:
     - pattern: secretmanager.googleapis.com
     - pattern: cloudkms.googleapis.com
     - pattern: www.googleapis.com
+    - pattern: storage.googleapis.com
     - pattern: <teams webhook host>
     ports:
     - {protocol: TCP, port: 443}
