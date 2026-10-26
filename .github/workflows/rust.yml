@@ -82,11 +82,23 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      # Main run 40166747415 (head 4234929, PR 25) ran out of disk in `cargo test --workspace`: Postgres error 53100 "No space left
+      # on device" in the explain tests. The debug build and the Postgres containers with their large seeded tables share the
+      # runner's root disk. Remove what this job never uses, and print df so the headroom is visible. The same two steps are in
+      # the image job of images.yml and in the bench jobs (bench.yml, nightly.yml); consistency.test.mjs keeps the copies equal.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: ./.github/actions/docker-hub-mirror
         with:
           restart: "false"
       - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
       - run: cargo test --workspace --locked
+      - name: Disk left
+        if: always()
+        run: df -h /
 
   sqlx:
     # `cargo sqlx prepare --check` compiles every query macro against a migrated database and fails when .sqlx is out of date.

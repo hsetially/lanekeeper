@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { expectNoAxeViolations } from "@/test/axe";
@@ -121,6 +121,67 @@ describe("Popover", () => {
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByText("Column chooser")).not.toBeInTheDocument());
     expect(trigger).toHaveFocus();
+  });
+
+  // Radix gives focus back to the trigger in a timer it sets when the content goes (`FocusScope`), so there is a task in which the
+  // popover is closed, focus has not come back yet and the next thing a person, a switch device or a script does can already run. These
+  // tests take that task apart: nothing here awaits a macrotask until `lateFocusReturn`, so the timer is still pending in between.
+  describe("when the focus return of a closed popover is a task late", () => {
+    function Two() {
+      return (
+        <>
+          {(["First", "Second"] as const).map((name) => (
+            <Popover key={name}>
+              <PopoverTrigger asChild>
+                <Button>{name}</Button>
+              </PopoverTrigger>
+              <PopoverContent aria-label={`${name} evidence`}>{name} text</PopoverContent>
+            </Popover>
+          ))}
+          <input aria-label="Elsewhere" />
+        </>
+      );
+    }
+    const press = (key: string) => fireEvent.keyDown(document.activeElement ?? document.body, { key });
+    /** Let the timers that are due run (the focus return is a zero-delay timer), then whatever they made React do. */
+    const lateFocusReturn = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+    function openFirstThenEscape() {
+      render(<Two />);
+      const first = screen.getByRole("button", { name: "First" });
+      first.focus();
+      fireEvent.click(first);
+      expect(screen.getByRole("dialog", { name: "First evidence" })).toBeVisible();
+      press("Escape");
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      return first;
+    }
+
+    it("does not take focus back from a control that already has it", async () => {
+      openFirstThenEscape();
+      const elsewhere = screen.getByRole("textbox", { name: "Elsewhere" });
+      elsewhere.focus();
+      await lateFocusReturn();
+      expect(elsewhere).toHaveFocus();
+    });
+
+    it("does not close the popover that was opened meanwhile by taking focus out of it", async () => {
+      openFirstThenEscape();
+      const second = screen.getByRole("button", { name: "Second" });
+      second.focus();
+      fireEvent.click(second);
+      const dialog = screen.getByRole("dialog", { name: "Second evidence" });
+      expect(dialog).toHaveFocus();
+      await lateFocusReturn();
+      expect(screen.getByRole("dialog", { name: "Second evidence" })).toBeVisible();
+      expect(screen.getByRole("dialog", { name: "Second evidence" })).toHaveFocus();
+    });
+
+    it("still gives focus back to the trigger when nothing else has taken it", async () => {
+      const first = openFirstThenEscape();
+      expect(first).not.toHaveFocus();
+      await lateFocusReturn();
+      expect(first).toHaveFocus();
+    });
   });
 });
 
