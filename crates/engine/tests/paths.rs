@@ -235,6 +235,61 @@ fn the_longest_known_tenant_wins() {
     assert_eq!(facts.logical.as_str(), "x/core.yml");
 }
 
+/// The input that CI's `engine_path_mapping` run crashed on (also a corpus seed, so the replay in `tests/corpus_replay.rs` holds
+/// every invariant on it). Its third piece is the repository path `data/config/x/core-sit1.`, a tenant file whose name ends in
+/// a dot: the suffix went after the dot and read back as an extension, so the file read back as `data/config/x/core.-sit1`.
+const TRAILING_DOT_CRASH: &[u8] =
+    include_bytes!("../fuzz/corpus/engine_path_mapping/trailing_dot_tenant_collision");
+
+#[test]
+fn the_fuzz_crash_input_is_refused_with_a_typed_error() {
+    let text = String::from_utf8_lossy(TRAILING_DOT_CRASH);
+    let mut pieces = text.split('\0');
+    let (_nfs, tenant_text, repo_text) = (
+        pieces.next().unwrap(),
+        pieces.next().unwrap(),
+        pieces.next().unwrap(),
+    );
+    assert_eq!(repo_text, "data/config/x/core-sit1.");
+    let rule = PathMappingRule::default();
+    let ids: Vec<&str> = tenant_text.split_whitespace().collect();
+    assert_eq!(ids, ["sit1", "a-sit1"]);
+    for id in ids {
+        assert_eq!(
+            map_path(&rule, &RepoSource::Tenant(tenant(id)), &repo(repo_text)),
+            Err(MapError::TrailingDot),
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn a_tenant_file_that_ends_with_a_dot_is_refused_not_mapped_onto_another_file() {
+    let rule = PathMappingRule::default();
+    let sit1 = RepoSource::Tenant(tenant("sit1"));
+    assert_eq!(
+        map_path(&rule, &sit1, &repo("data/config/x/core-sit1.")),
+        Err(MapError::TrailingDot)
+    );
+    // The file it used to collide with keeps its path, and reads back as itself.
+    let mapped = map_path(&rule, &sit1, &repo("data/config/x/core.-sit1")).unwrap();
+    assert_eq!(mapped, nfs("x/core-sit1.-sit1"));
+    match reverse_map(&rule, &mapped, &tenants(&["sit1"])).unwrap() {
+        ReverseMapping::Tenant {
+            tenant: t, repo_path, ..
+        } => {
+            assert_eq!(t, tenant("sit1"));
+            assert_eq!(repo_path, repo("data/config/x/core.-sit1"));
+        }
+        other => panic!("{other:?}"),
+    }
+    // A base file with that name is not renamed, so nothing changes for it.
+    assert_eq!(
+        map_path(&rule, &RepoSource::Base, &repo("config/x/core-sit1.")).unwrap(),
+        nfs("x/core-sit1.")
+    );
+}
+
 #[test]
 fn hostile_paths_never_escape_mapping() {
     let rule = PathMappingRule::default();
