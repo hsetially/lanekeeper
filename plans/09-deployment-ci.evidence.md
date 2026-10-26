@@ -153,7 +153,64 @@ Where in code, and the named tests that fail if the protection is removed (all t
 
 Prompt 09 adds no benchmark and no budget (`perf/budgets.toml` is unchanged). Its performance items are: **P11** (resources): `resources_test.rego::test_hub_memory_request_matches_p11` reads `perf/budgets.toml` and ties the hub's memory request to the budget (it passes in the 1002); the budgets themselves are the existing hub benches `hub/startup` and `hub/memory_at_design_scale_mib`; **P2** (webhook route): `network_test.rego::test_hooks_route_exists` and `test_hooks_ranges_only_on_hooks_path`; the timing is 05's `hub-registry/head_moved_to_drift` and 03b's `hub-platform/push_to_drift_webhook`.
 
-PENDING: `cargo bench --workspace --no-fail-fast`, then `cargo xtask bench-check`.
+### How the benchmark run was made
+
+The first attempt, `cargo bench --workspace --no-fail-fast` as one command, was killed by a container restart. The restart also stopped the Docker daemon. The result files it had written (31 files in `target/perf-results` and 6 groups in `target/criterion`, written 04:06 to 04:34 UTC on 2026-10-26, the last ones from `hub-registry`) have no log (none survived in the scratchpad) and were **not used**. They were moved to `target/bench-logs/killed-run-results/` so that `cargo xtask bench-check` can only read numbers from the run below.
+
+The run below is the same benchmarks in 44 pieces that can be resumed. The workspace has 44 `[[bench]]` targets in 8 packages (`cargo metadata`); no `#[bench]` function exists (`grep -rn '#\[bench\]' crates` finds none, and the libtest `#[bench]` attribute is unavailable on stable Rust 1.88), so the lib and bin harnesses that `cargo bench --workspace` also builds run no benchmark, and the 44 targets are all of them. Each target is one command, `cargo bench -p <package> --bench <target> --no-fail-fast`, run **one after the other** (never in parallel, so that no timing disturbs another), by `target/bench-logs/run-benches.sh <package>`. The script writes `target/bench-logs/<package>__<target>.log` and, only when the command has ended, `<package>__<target>.exit` holding `<exit code> <seconds>`. A target with an `.exit` file is skipped, so a restart resumes at the first target that did not finish. Before the first target, `target/criterion` and `target/perf-results` were moved aside (above), `dockerd` was started with its default settings (the registry and writes benches start Postgres 16 with pgvector through testcontainers), and `git status` was clean. 4 vCPUs, 16 GB, Rust 1.88.0, the `bench` profile (`release`: thin LTO, one codegen unit). The seconds of the first target of a package include the compile. Raw logs are under `target/bench-logs/` (ignored by git), not in the repository.
+
+<!-- bench-pieces:start -->
+| Package | Bench target | `cargo bench -p ... --bench ... --no-fail-fast` exit | Seconds |
+|---|---|---|---|
+| agent | full_rehash | 0 | 290 |
+| agent | idle_traffic | 0 | 36 |
+| agent | oob_change | 0 | 162 |
+| agent | spool_replay | 0 | 19 |
+| agent | stat_walk | 0 | 28 |
+| agent | steady_state | 0 | 221 |
+| engine | compare | not run yet | |
+| engine | full_recompute | not run yet | |
+| engine | grid | not run yet | |
+| engine | incremental | not run yet | |
+| engine | index_settings | not run yet | |
+| engine | parse_flatten | not run yet | |
+| engine | search_text | not run yet | |
+| hub | startup | not run yet | |
+| hub-identity | audit_record | not run yet | |
+| hub-identity | auth_middleware | not run yet | |
+| hub-mcp | read_tools | not run yet | |
+| hub-platform | ack_throughput | not run yet | |
+| hub-platform | blob_endpoint | not run yet | |
+| hub-platform | blob_get_cached | not run yet | |
+| hub-platform | diff_trees | not run yet | |
+| hub-platform | memory_at_design_scale | not run yet | |
+| hub-platform | push_to_drift_webhook | not run yet | |
+| hub-platform | sse_delivery | not run yet | |
+| hub-registry | adoption_rank_per_swimlane | not run yet | |
+| hub-registry | compare_6000_lines | not run yet | |
+| hub-registry | delta_to_drift_changed | not run yet | |
+| hub-registry | file_content_cached | not run yet | |
+| hub-registry | file_content_cold | not run yet | |
+| hub-registry | file_tree | not run yet | |
+| hub-registry | full_recompute_target_scale | not run yet | |
+| hub-registry | grid_40_swimlanes | not run yet | |
+| hub-registry | head_moved_to_drift | not run yet | |
+| hub-registry | incremental_recompute_base | not run yet | |
+| hub-registry | incremental_recompute_per_file_per_swimlane | not run yet | |
+| hub-registry | ingest_versions_per_s | not run yet | |
+| hub-registry | search_settings_all_swimlanes | not run yet | |
+| hub-registry | search_text_all_swimlanes | not run yet | |
+| hub-registry | sentinel_attribution | not run yet | |
+| hub-registry | steady_state_queries | not run yet | |
+| hub-registry | swimlane_list | not run yet | |
+| hub-registry | whole_swimlane_compare | not run yet | |
+| hub-writes | edit_applied | not run yet | |
+| hub-writes | write_queries | not run yet | |
+
+6 of 44 bench targets have run; 0 of them exited non-zero.
+<!-- bench-pieces:end -->
+
+PENDING: the budget table, from `cargo xtask bench-check` after every piece has run.
 
 | P# | Benchmark | Result | Budget |
 |---|---|---|---|
