@@ -432,7 +432,7 @@ Where in code, and the named tests that fail if the protection is removed (all t
 |---|---|---|---|
 | S6 TLS 1.3, mTLS, Postgres verify-full | `deploy/charts/db` (`ssl_min_protocol_version`, `pg_hba`), the hub chart's `items: [ca.crt]` db-ca mount | `database_test.rego::test_deny_tls12_min`, `test_deny_hostnossl_allowed`; `hardening_test.rego::test_db_ca_only_ca_crt` | the kind check that `psql sslmode=disable` is rejected: written (`deploy/tests/kind/run.sh`, stage `s6`), its patterns shown against a stand-in PostgreSQL, **never run against CloudNativePG** |
 | S7 no Kubernetes Secrets but the agent cert Secret and CNPG's; secrets from Secret Manager | `deploy/policy/secrets.rego`, the charts | `secrets_test.rego::test_deny_secret_object`, `test_deny_env_secretkeyref`, `test_deny_secret_in_values` | the Secret Manager containers and bindings are the hub's configuration (A1) |
-| S9 locked audit checkpoint bucket | `deploy/charts/gcp/templates/buckets.yaml`, `storage.rego` | `storage_test.rego::test_deny_unlocked_audit_bucket_in_prod`, `test_deny_missing_retention` | prod's lock and a one-year period are an EXAMPLE a person must confirm (A19, deviation below) |
+| S9 locked audit checkpoint bucket | `deploy/charts/gcp/templates/buckets.yaml`, `storage.rego` | `storage_test.rego::test_deny_unlocked_audit_bucket_in_prod`, `test_deny_missing_retention` | prod's lock and its period of three months (7,776,000 s), which a human decided on 2026-10-26 (A19) |
 | S10 CMEK on buckets and disks, encrypted backups | the gcp chart, the hub, db and agent `StorageClass`es | `storage_test.rego::test_deny_bucket_without_cmek`, `test_deny_pvc_without_cmek_class`, `test_deny_backup_without_cmek_bucket` | the keys are referenced, not made (T5 decision 5); the fallback to Google-managed keys warns |
 | S16 container hardening, distroless non-root images | the hub and agent charts, `crates/{hub,agent}/Dockerfile`, `dockerfile.rego` | `hardening_test.rego` (one test per field, listed in T3 above); `dockerfile_test.rego::test_deny_tag_only_base`, `test_deny_non_distroless_final`, `test_deny_missing_user`, `test_deny_root_user`; `cargo test -p hub -p agent --test hardening` 5 and 5 | the cluster's admission of the pods (no apply ever ran) |
 | S17 agent: minimal RBAC, no Secret list, egress limited | `deploy/charts/agent`, `rbac.rego`, `contract.rego` | `rbac_test.rego::test_deny_secret_list`, `test_deny_secret_watch`, `test_deny_unnamed_secret`, `test_deny_clusterrole`; `contract_test.rego` (Roles equal RBAC.md); `network_test.rego::test_agent_egress_exact` | B7, B8 |
@@ -744,7 +744,7 @@ The plan's A-table, with what was decided or done (the plan is frozen; this is t
 | A16 | The RPM release key is a marker; PR runs sign with a throwaway key. B13. |
 | A17 | The socket is in a `0750 root:lanekeeper-sentinel` directory; prompt 17 confirms against the daemon. Not run against the real audit package. |
 | A18 | The sentinel binary is a stub; "starts" proves the unit and not the daemon. |
-| A19 | **Not as planned**: the committed prod values carry an EXAMPLE one-year period with `isLocked: true`, because the policy requires the lock in prod. A comment says a person confirms the period before the first apply. Staging is never locked. |
+| A19 | **Decided by a human on 2026-10-26**: prod's audit bucket keeps the checkpoints for three months (`retentionPeriodSeconds: 7776000`, 90 days) with `isLocked: true`, because the policy requires the lock in prod. The first commit of this branch carried an EXAMPLE one-year period; it was replaced. Staging is never locked. |
 | A20 | `bench.yml` runs on `vars.LK_BENCH_RUNNER`; the comparison with `main` is reported, not gating. It has not run. |
 | A21 | Lighthouse stays in 08's `web-e2e.yml` `perf` job. |
 | A22 | Tools are pinned by version and sha256 in the Justfile or by digest in `tools.env`; the table above. |
@@ -763,7 +763,7 @@ Each is also in `plans/09-deployment-ci.blockers.md` unless it says otherwise.
 
 1. **The kind job, its script and the `kind-e2e` recipe were not written in T5 to T8** ("Not done in T5"). **Review round 1 (blocking item 4) wrote them** (`0032cee`), so the deviation is closed in the repository; acceptance 3 stays unproven (A1, and the test has never run past cluster creation).
 2. **The database image and backup method** differ from the plan's literal (B10, a human confirmed).
-3. **Prod's audit bucket is locked in the committed values with an example period** (A19, T5 decision 6).
+3. **Prod's audit bucket is locked in the committed values** (A19, T5 decision 6), with the period of three months that a human decided on 2026-10-26 (it was an example of one year before).
 4. **No `values/gcp/kind.yaml`** (T6 decision 3): kind has no Google Cloud.
 5. **`contract.rego` compares the agent only**, not the hub (T4 decision 1).
 6. **Helm 4.3.0** is pinned, which the plan did not name (B4).

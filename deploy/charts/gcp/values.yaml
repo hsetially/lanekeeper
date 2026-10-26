@@ -32,8 +32,9 @@ buckets:
   backup:
     name: ""
     cmekKey: ""
-  # The hourly checkpoints of the audit chain (S9). The retention period is a person's decision (plan 09 A19), so it has no default; a
-  # locked policy cannot be undone, so isLocked is true only in prod, after that person has confirmed the period.
+  # The hourly checkpoints of the audit chain (S9). The retention period is a person's decision (plan 09 A19), so it has no default and
+  # the chart refuses to render without one. Prod's is three months (7,776,000 s), decided by a human on 2026-10-26 (values/gcp/prod.yaml).
+  # A locked policy cannot be undone, so isLocked is true only in prod.
   auditCheckpoint:
     name: ""
     cmekKey: ""

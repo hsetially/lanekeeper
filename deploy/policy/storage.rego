@@ -151,7 +151,7 @@ deny contains msg if {
 }
 
 # The audit checkpoint bucket (S9): objects are kept for a period that nobody can shorten. The period is a human's decision
-# (plan 09 A19), so it has no default; the lock is irreversible, so it is on only in prod.
+# (plan 09 A19; prod's was decided on 2026-10-26: three months), so it has no default; the lock is irreversible, so it is on only in prod.
 audit_buckets := [b | some b in buckets; purpose(b) == "audit-checkpoint"]
 
 retention(b) := b.spec.retentionPolicy.retentionPeriod

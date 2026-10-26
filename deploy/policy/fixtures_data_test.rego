@@ -220,7 +220,7 @@ gs_bucket(name, purpose, extra) := {
 
 gs_backup_bucket := gs_bucket("example-project-lanekeeper-backup-prod", "backup", {})
 
-gs_audit_bucket := gs_bucket("example-project-lanekeeper-audit-prod", "audit-checkpoint", {"retentionPolicy": {"retentionPeriod": 31536000, "isLocked": true}})
+gs_audit_bucket := gs_bucket("example-project-lanekeeper-audit-prod", "audit-checkpoint", {"retentionPolicy": {"retentionPeriod": 7776000, "isLocked": true}})
 
 gs_docs_bucket := gs_bucket("example-project-lanekeeper-docs-prod", "docs", {"versioning": {"enabled": true}})
 

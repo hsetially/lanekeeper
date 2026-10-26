@@ -21,8 +21,8 @@ buckets:
   auditCheckpoint:
     name: example-project-lanekeeper-audit-prod
     cmekKey: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-audit-prod
-    # EXAMPLE period (plan 09 A19): one year. A person confirms the period BEFORE the first apply of prod: the lock below cannot be undone.
-    retentionPeriodSeconds: 31536000
+    # Plan 09 A19, decided by a human on 2026-10-26: three months (90 days = 7,776,000 s); the lock cannot be undone.
+    retentionPeriodSeconds: 7776000
     isLocked: true
   docs:
     name: example-project-lanekeeper-docs-prod

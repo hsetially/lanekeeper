@@ -82,7 +82,7 @@ The plan's A-table with what was decided is in the evidence file. The ones that 
 
 - **A32 (human amendment, PR 29):** images moved to Debian 13 (`cc-debian13` runtime, trixie builder) because the Debian 12 base had two critical findings that will not be fixed.
 - **B10 (human decision):** keep the CloudNativePG `system-trixie` image with the built-in barman, both deprecated; migration to the Barman Cloud plugin is a later question. A nightly `db-image` job scans it by digest and has not run yet.
-- **A19:** `deploy/values/gcp/prod.yaml` commits `isLocked: true` on the audit checkpoint bucket with an **example** one-year retention. **A human must confirm or change the period before anything is applied; a lock cannot be undone.**
+- **A19 (decided by a human on 2026-10-26):** `deploy/values/gcp/prod.yaml` commits `isLocked: true` on the audit checkpoint bucket with a retention of **three months** (`retentionPeriodSeconds: 7776000`, 90 days). The lock cannot be undone; the file's project and names are still examples, so nothing is applied or locked yet.
 - **A1:** composing the hub binary is not in this prompt (it owns no application code). A human assigns it.
 - **A5:** Binary Authorization runs in `DRYRUN_AUDIT_LOG_ONLY` until Q24 is answered.
 - The reproducibility claim holds for the pinned BuildKit v0.34.0; the pinned CI builder's own reproducibility has not been tested.
@@ -95,9 +95,8 @@ The plan's A-table with what was decided is in the evidence file. The ones that 
 3. **B15:** the two benchmark misses above.
 4. **A1:** the hub binary composition, which also decides whether the kind job can ever go green.
 5. **B7 and B8 (contract disagreements between HARDENING.md files; as built an agent cannot reach the hub):** the agent chart and `crates/agent/HARDENING.md` use 443, the hub's agent load balancer listens on 8444. The config-server egress rule has no `namespaceSelector`. The blockers file proposes making the hub Service listen on 443.
-6. **A19:** confirm the audit bucket retention period.
-7. **Branch protection:** `ci.yml` no longer holds the `rust`, `web` and `pinned-actions` jobs (moved to path-filtered workflows). Required-check names need updating.
-8. **B11 and B12 and B13:** nothing creates a swimlane; no chart creates the CI signing key, the Workload Identity pool or the Binary Authorization trust root; the RPM release key and its trust root do not exist. A release tag stops at `sign-release` until they do.
+6. **Branch protection:** `ci.yml` no longer holds the `rust`, `web` and `pinned-actions` jobs (moved to path-filtered workflows). Required-check names need updating.
+7. **B11 and B12 and B13:** nothing creates a swimlane; no chart creates the CI signing key, the Workload Identity pool or the Binary Authorization trust root; the RPM release key and its trust root do not exist. A release tag stops at `sign-release` until they do.
 
 ## Reviewer agent verdict
 

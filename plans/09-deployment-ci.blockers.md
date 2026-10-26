@@ -567,9 +567,13 @@ stanza), `deploy/policy/database.rego` (the `# backups` section) and `database_t
    the chart grants Google's service agents their use. The signing keys of the hub (agent CA, replica CA, audit checkpoint, token KEK, CI cosign) and
    the hub's Secret Manager and KMS bindings are **not** in T5: their names are the hub's configuration (A1). Chart.yaml's old sentence "T5 adds
    buckets and keys" is corrected.
-6. **A19: prod's audit bucket is locked in the committed prod values, with an EXAMPLE period of one year.** The policy requires the lock in prod, so
-   the values must have it to pass; the file says in a comment that a person confirms the period before prod is applied, and the project in
-   it is an example, so it cannot be applied as it is. Staging is never locked (the template and the policy refuse it).
+6. **A19: prod's audit bucket is locked in the committed prod values. RESOLVED on 2026-10-26: the period is three months.** The policy requires
+   the lock in prod, so the values must have it to pass. This was written with an EXAMPLE period of one year; a human decided on 2026-10-26 that
+   the period is **three months (90 days = 7,776,000 s)**, and `deploy/values/gcp/prod.yaml` now has `retentionPeriodSeconds: 7776000` with
+   `isLocked: true` (the lock stays; no policy was weakened). The chart still has no default period and refuses to render without one. The project
+   and the names in the file are still examples, so it cannot be applied as it is, and nothing is locked until it is. Staging is never locked
+   (the template and the policy refuse it), and its one-week period is still an example (the decision named prod). See "Human decisions of
+   2026-10-26" at the end.
 7. **The buckets cannot be deleted by their Kubernetes resource** (`deletion-policy: abandon`, `Prune=false`): the backups and the checkpoints
    outlive a mistake in Git. Removing one is a person's act in Google Cloud.
 8. **The data disk class has `reclaimPolicy: Retain`** (the hub's mirror class is `Delete`, since a mirror is a cache).

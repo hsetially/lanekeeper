@@ -27,7 +27,7 @@ the missing step shows (plan 09 blockers, B5).
 | Renders | Why |
 |---|---|
 | `StorageBucket` x 3: backup, audit checkpoint, docs | uniform access, `publicAccessPrevention: enforced`, a customer-managed key (S10), and `cnrm.cloud.google.com/deletion-policy: abandon` with `argocd.argoproj.io/sync-options: Prune=false`, so that removing or pruning the resource never deletes a bucket |
-| the audit checkpoint bucket's `retentionPolicy` | a required period (no default: it is a person's decision, plan 09 A19), **locked in prod only**, because a lock cannot be undone (S9) |
+| the audit checkpoint bucket's `retentionPolicy` | a required period (no default: it is a person's decision, plan 09 A19; prod's is three months, 7,776,000 s, decided by a human on 2026-10-26), **locked in prod only**, because a lock cannot be undone (S9) |
 | the docs bucket's `versioning` | on |
 | `IAMServiceAccount` `lanekeeper-hub` and `lanekeeper-db` | what the two run as; the hub chart's `serviceAccount.gcpServiceAccount` and the db chart's are these |
 | `IAMPolicyMember` Workload Identity x 2 | `PROJECT.svc.id.goog[NAMESPACE/NAME]` may act as the Google account (S5, S7) |

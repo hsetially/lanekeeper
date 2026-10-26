@@ -9,6 +9,7 @@ in iam.yaml. Config Connector creates them in the project named by the annotatio
 ---
 # The audit chain's hourly checkpoints (S9). Objects cannot be deleted or replaced until the retention period has passed, and in prod
 # the policy is locked, so that not even an owner can shorten it. The hub's service account may only create and read here (iam.yaml).
+# The period has no default, so a values file without one does not render. Prod's is a human's decision of 2026-10-26: three months.
 {{- $audit := .Values.buckets.auditCheckpoint }}
 {{- $period := int $audit.retentionPeriodSeconds }}
 {{- if le $period 0 }}
