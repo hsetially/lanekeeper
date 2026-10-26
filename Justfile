@@ -302,6 +302,23 @@ platform-fuzz: fuzz-tools-check
     done
     echo "platform-fuzz: {{platform_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
 
+# S22, rule 13: the hub binary's own fuzz crate (plan 18, T1; `fuzz-smoke` does not run it): the settings, the command line and the
+# PEM of the web certificate. Its lockfile is complete and passes cargo deny and cargo audit (S19), then each target runs
+# {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in crates/hub/fuzz/artifacts/. `crates/hub/tests/justfile_gate.rs`
+# fails if this list and fuzz_targets/ drift apart. The committed seeds also replay on stable in `cargo test -p hub --test corpus_replay`.
+hub_fuzz_targets := "hub_cli_args hub_pem hub_settings"
+hub-fuzz: fuzz-tools-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo +{{fuzz_nightly}} metadata --locked --format-version 1 --manifest-path crates/hub/fuzz/Cargo.toml > /dev/null
+    cargo deny --manifest-path crates/hub/fuzz/Cargo.toml check --config deny.toml
+    cargo audit --file crates/hub/fuzz/Cargo.lock
+    for target in {{hub_fuzz_targets}}; do
+        mkdir -p "target/fuzz-corpus/$target"
+        cargo +{{fuzz_nightly}} fuzz run "$target" --fuzz-dir crates/hub/fuzz "target/fuzz-corpus/$target" "crates/hub/fuzz/corpus/$target" -- -max_total_time={{fuzz_seconds}}
+    done
+    echo "hub-fuzz: {{hub_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
+
 # P2, P7 (blob), P11, P13 and P15 (acks): the criterion benchmarks and the harnesses that write target/perf-results/, at target
 # scale (`cargo xtask gen-fixtures --scale target` first, as `agent-fixtures` does), then the check against perf/budgets.toml. A
 # registered budget without a result fails, and the check covers the whole registry, so the agent's benchmarks (prompt 02) and

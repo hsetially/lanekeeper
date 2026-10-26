@@ -2714,6 +2714,7 @@ dependencies = [
  "axum",
  "bytes",
  "domain",
+ "fastrand",
  "futures",
  "hex",
  "http",
@@ -2747,6 +2748,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "x509-parser",
+ "zeroize",
 ]
 
 [[package]]

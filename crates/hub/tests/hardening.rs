@@ -250,14 +250,33 @@ fn strings(value: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The `LK_*` variables the settings read: every string literal of that form in `src/config.rs`.
+/// The `LK_*` variables the settings read: every string literal of that form in `src/config.rs` and in each file of
+/// `src/config/` (the groups of settings).
 fn known_variables() -> BTreeSet<String> {
-    read("src/config.rs")
-        .split('"')
+    let mut text = read("src/config.rs");
+    let mut groups: Vec<_> = fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    groups.sort();
+    for group in groups {
+        text.push('\n');
+        text.push_str(&fs::read_to_string(group).unwrap());
+    }
+    text.split('"')
         .filter(|s| s.starts_with("LK_") && s.bytes().all(|b| b.is_ascii_uppercase() || b == b'_'))
         .map(str::to_owned)
         .collect()
 }
+
+/// What the binary refuses to start without (plan 18, T1): a pod that omits one of these is a pod that cannot start.
+const REQUIRED_VARIABLES: [&str; 5] = [
+    "LK_DATABASE_URL_FILE",
+    "LK_DB_CA_FILE",
+    "LK_WEB_CERT_REF",
+    "LK_WEB_KEY_REF",
+    "LK_GCP_PROJECT",
+];
 
 const WRITABLE_VOLUMES: [&str; 2] = ["tmp", "mirror"];
 const ALLOWED_VOLUMES: [&str; 4] = ["tmp", "mirror", "db-credentials", "db-ca"];
@@ -297,6 +316,18 @@ fn pod_level_problems(spec: &Value) -> Vec<String> {
             "automountServiceAccountToken must be stated, and false: the hub never calls the Kubernetes API"
                 .to_owned(),
         );
+    }
+    // The hub drains for the grace and the drain period after SIGTERM (plan 18, T1). A pod whose termination period is not
+    // longer is killed by the kubelet while it is still draining, which is a dropped request and not a clean exit.
+    let (grace, drain) = shutdown_periods(spec);
+    let needed = grace + drain + 10;
+    if spec["terminationGracePeriodSeconds"]
+        .as_u64()
+        .is_none_or(|secs| secs < needed)
+    {
+        problems.push(format!(
+            "terminationGracePeriodSeconds must be at least {needed} (grace {grace} + drain {drain} + 10)"
+        ));
     }
     let security = &spec["securityContext"];
     if security["runAsNonRoot"] != Value::Bool(true) {
@@ -362,6 +393,21 @@ fn container_problems(container: &Value) -> Vec<String> {
         ));
     }
     problems
+}
+
+/// The shutdown grace and drain the container will run with, in seconds: its variables, or the hub's defaults.
+fn shutdown_periods(spec: &Value) -> (u64, u64) {
+    let defaults = hub::HubSettings::default();
+    let container = &spec["containers"][0];
+    let seconds = |name: &str, default: u64| {
+        env_value(container, name)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    };
+    (
+        seconds("LK_SHUTDOWN_GRACE_SECS", defaults.shutdown_grace.as_secs()),
+        seconds("LK_SHUTDOWN_DRAIN_SECS", defaults.shutdown_drain.as_secs()),
+    )
 }
 
 fn env_value(container: &Value, name: &str) -> Option<String> {
@@ -436,6 +482,13 @@ fn volume_problems(spec: &Value, container: &Value) -> Vec<String> {
 fn environment_problems(container: &Value) -> Vec<String> {
     let mut problems = Vec::new();
     let known = known_variables();
+    for required in REQUIRED_VARIABLES {
+        if env_value(container, required).is_none() {
+            problems.push(format!(
+                "{required} is not set: the hub refuses to start without it"
+            ));
+        }
+    }
     for env in container["env"].as_array().into_iter().flatten() {
         let name = env["name"].as_str().unwrap_or("");
         if !known.contains(name) {
@@ -710,6 +763,65 @@ fn hardening_lint_rejects_planted_violations() {
             "no seccomp",
             mutate("Pod", |d| {
                 d["spec"]["securityContext"]["seccompProfile"]["type"] = "Unconfined".into()
+            }),
+        ),
+        (
+            "no web certificate reference",
+            mutate("Pod", |d| {
+                container(d)["env"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|e| e["name"] != "LK_WEB_CERT_REF")
+            }),
+        ),
+        (
+            "no web key reference",
+            mutate("Pod", |d| {
+                container(d)["env"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|e| e["name"] != "LK_WEB_KEY_REF")
+            }),
+        ),
+        (
+            "no Google project",
+            mutate("Pod", |d| {
+                container(d)["env"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|e| e["name"] != "LK_GCP_PROJECT")
+            }),
+        ),
+        (
+            "the web certificate as a variable",
+            mutate("Pod", |d| {
+                container(d)["env"].as_array_mut().unwrap().push(
+                    serde_json::json!({"name": "LK_WEB_CERT_PEM", "value": "-----BEGIN CERTIFICATE-----"}),
+                )
+            }),
+        ),
+        (
+            "no termination grace period",
+            mutate("Pod", |d| {
+                let _ = d["spec"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("terminationGracePeriodSeconds");
+            }),
+        ),
+        (
+            "a termination grace period shorter than the drain",
+            mutate("Pod", |d| {
+                d["spec"]["terminationGracePeriodSeconds"] = Value::from(30)
+            }),
+        ),
+        (
+            "a longer drain than the termination period allows",
+            mutate("Pod", |d| {
+                container(d)["env"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({"name": "LK_SHUTDOWN_DRAIN_SECS", "value": "60"}))
             }),
         ),
         (

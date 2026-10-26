@@ -166,3 +166,55 @@ fn platform_fuzz_runs_every_target_the_platform_has_and_checks_its_lockfile() {
         );
     }
 }
+
+#[test]
+fn hub_fuzz_runs_every_target_the_hub_has_and_checks_its_lockfile() {
+    let source = justfile();
+    let (deps, body) = recipe(&source, "hub-fuzz").expect("a hub-fuzz recipe");
+    assert!(
+        deps.iter().any(|d| d == "fuzz-tools-check"),
+        "it must fail, not skip, without the tools"
+    );
+    assert!(body.contains("--fuzz-dir crates/hub/fuzz"));
+    assert!(body.contains("cargo deny --manifest-path crates/hub/fuzz/Cargo.toml"));
+    assert!(body.contains("cargo audit --file crates/hub/fuzz/Cargo.lock"));
+    assert!(body.contains("--locked"), "the lockfile must be complete");
+
+    let listed: BTreeSet<String> = source
+        .lines()
+        .find_map(|l| l.strip_prefix("hub_fuzz_targets := "))
+        .expect("hub_fuzz_targets")
+        .trim_matches('"')
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz");
+    let on_disk: BTreeSet<String> = fs::read_dir(dir.join("fuzz_targets"))
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.unwrap().file_name().to_string_lossy().into_owned();
+            name.strip_suffix(".rs").map(str::to_owned)
+        })
+        .collect();
+    assert_eq!(
+        listed, on_disk,
+        "hub-fuzz must run every target in crates/hub/fuzz/fuzz_targets"
+    );
+    // The plan names these three (rule 13): the settings, the command line, and the PEM at the web certificate.
+    for target in ["hub_settings", "hub_cli_args", "hub_pem"] {
+        assert!(listed.contains(target), "{target} is not fuzzed");
+    }
+    for target in &listed {
+        assert!(
+            dir.join("corpus").join(target).is_dir(),
+            "no seed corpus for {target}"
+        );
+    }
+    // The fuzz crate is outside the workspace and has its own lockfile, like the other crates'.
+    assert!(dir.join("Cargo.lock").is_file());
+    let manifest = fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+    assert!(
+        manifest.contains("\n[workspace]\n"),
+        "the fuzz crate must not join the root workspace"
+    );
+}

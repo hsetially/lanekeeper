@@ -52,6 +52,7 @@ metadata:
 spec:
   serviceAccountName: lanekeeper-hub
   automountServiceAccountToken: false
+  terminationGracePeriodSeconds: 45
   hostNetwork: false
   hostPID: false
   hostIPC: false
@@ -105,6 +106,12 @@ spec:
       value: /var/lib/lanekeeper/mirror
     - name: LK_OTLP_ENDPOINT
       value: http://otel-collector.monitoring.svc:4317
+    - name: LK_GCP_PROJECT
+      value: <gcp project id>
+    - name: LK_WEB_CERT_REF
+      value: lanekeeper-web-cert
+    - name: LK_WEB_KEY_REF
+      value: lanekeeper-web-key
     volumeMounts:
     - name: tmp
       mountPath: /tmp
@@ -129,6 +136,23 @@ spec:
 
 `LK_TRUSTED_PROXY_HOPS` is 2 behind Google's external HTTPS load balancer, which appends the client address and then its own
 (`client_ip.rs` counts from the right). The value must be re-checked whenever the path to the hub changes.
+
+**The web certificate.** The web listener serves HTTPS with a certificate chain and a key that the hub reads from two Secret
+Manager secrets, named by `LK_WEB_CERT_REF` and `LK_WEB_KEY_REF` (plan 18, G3). They are not a Kubernetes Secret, not a mounted file
+and not a variable, so the pod has no volume for them. The hub reads them at start and again every `LK_WEB_CERT_RELOAD_SECS` (300 by
+default, each wait jittered by a fifth): a rotated certificate is served from the next handshake on, connections already open keep the
+one they started with, and a replacement that does not parse, does not match its key or has already expired changes nothing and is
+counted (`lanekeeper_web_cert_reload_failures_total`). The two secrets are rotated one after the other, so a read can find the new
+certificate beside the old key; that read is refused and the next one succeeds. The certificate in use is exported
+(`lanekeeper_web_cert_not_after_seconds`), and `/readyz` fails once it has expired. The names are `*_REF` and not `*_SECRET` or `*_KEY`
+because the pod contract flags any variable whose name looks like a secret, and these hold a name, not a secret.
+
+**Starting and stopping.** A setting that is missing or malformed is exit 2 and nothing starts; anything that cannot be reached while
+starting is exit 1, because the hub never falls back to a fake. Each step of starting is bounded by `LK_START_TIMEOUT_SECS` (8), and
+the log line names the component and the variable, never a value. On SIGTERM or SIGINT the hub fails `/readyz` at once, waits
+`LK_SHUTDOWN_GRACE_SECS` (5) so that the load balancer notices, stops accepting, gives requests in flight `LK_SHUTDOWN_DRAIN_SECS`
+(25), and exits 0; a second signal exits at once. The pod's `terminationGracePeriodSeconds` must be longer than the two together, or
+the kubelet kills a hub that is still draining; `tests/hardening.rs` holds the Pod block to grace + drain + 10 seconds.
 
 ### Where the hub writes
 

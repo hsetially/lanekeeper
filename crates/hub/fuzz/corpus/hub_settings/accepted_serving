@@ -1,0 +1,5 @@
+LK_DATABASE_URL=postgres://u:p@db/x
+LK_DB_CA_FILE=/ca.pem
+LK_WEB_CERT_REF=web-cert
+LK_WEB_KEY_REF=web-key
+LK_GCP_PROJECT=lanekeeper-prod

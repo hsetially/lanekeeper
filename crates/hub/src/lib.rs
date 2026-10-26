@@ -14,11 +14,13 @@
 )]
 
 pub mod blobs;
+pub mod cli;
 pub mod client_ip;
 pub mod compose;
 pub mod config;
 pub mod db;
 pub mod edge;
+pub mod edges;
 pub mod events;
 pub mod git;
 pub mod headers;
@@ -26,11 +28,15 @@ pub mod limits;
 pub mod mcp;
 pub mod metrics;
 pub mod ops;
+pub mod process;
 pub mod random;
+pub mod ready;
 pub mod serve;
+pub mod session_auth;
 pub mod shutdown;
 pub mod static_files;
 pub mod telemetry;
+pub mod web_tls;
 
 pub use blobs::BlobsModule;
 pub use compose::{BuildError, Deps, Hub, Module};

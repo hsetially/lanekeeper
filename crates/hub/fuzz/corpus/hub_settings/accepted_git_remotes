@@ -1,0 +1,6 @@
+LK_GIT_BASE_URL=https://github.com/acme/configuration-base-saas.git
+LK_GIT_TENANT_URL=https://github.com/acme/csp-tenant-data.git
+LK_GIT_BASE_REPO=acme/configuration-base-saas
+LK_GIT_TENANT_REPO=acme/csp-tenant-data
+LK_GIT_READ_REF=my-read-token
+LK_GIT_WEBHOOK_REF=my-hook
