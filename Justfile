@@ -857,6 +857,8 @@ ci-lint: (ops-tools-check "actionlint zizmor shellcheck")
 # osv-scanner over every lockfile of the repository (S19): the workspace's Cargo.lock, the lockfiles of the fuzz crates, and the pnpm
 # lockfiles of the root and of web/. It asks api.osv.dev, so it needs the network; with the API unreachable osv-scanner fails
 # (exit 127), it never reports a clean run. The list comes from git, so a new fuzz crate is scanned without a change here.
+# osv-scanner.toml (B17) is passed with --config because osv-scanner otherwise reads a config file only beside the lockfile it scans, so
+# the fuzz crates' lockfiles would not see the root one. Its ignores are time-boxed and decided by a human; the npm findings have none.
 osv-scan: (ops-tools-check "osv-scanner")
     #!/usr/bin/env bash
     set -euo pipefail
@@ -867,8 +869,9 @@ osv-scan: (ops-tools-check "osv-scanner")
     done
     args=()
     for f in "${locks[@]}"; do args+=(-L "$f"); done
+    [ -f osv-scanner.toml ] || { echo "osv-scan: osv-scanner.toml is missing"; exit 1; }
     echo "osv-scan: ${#locks[@]} lockfiles"
-    osv-scanner scan source "${args[@]}"
+    osv-scanner scan source --config osv-scanner.toml "${args[@]}"
 
 # Every registered budget the Rust benchmarks produce, judged by `cargo xtask bench-check`. perf/budgets.toml also holds the P10 web
 # budgets, whose numbers come from the web-e2e workflow's `perf` job (web-bench-check), so a registry without them is cut here, the

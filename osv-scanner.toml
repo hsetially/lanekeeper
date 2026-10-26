@@ -1,0 +1,97 @@
+# osv-scanner configuration (S19; plan 09 blockers, B17 and B19). `just osv-scan` passes this file with `--config osv-scanner.toml`, so one
+# file judges every lockfile of the repository: the root Cargo.lock, the fuzz crates' lockfiles and both pnpm lockfiles. (Without --config,
+# osv-scanner looks for an osv-scanner.toml beside each lockfile, and the fuzz crates would not see this one.) The format is osv-scanner v2's:
+# `[[IgnoredVulns]]` takes id, ignoreUntil (an unquoted date) and reason; `[[PackageOverrides]]` takes name, version, ecosystem, ignore,
+# reason and an optional effectiveUntil. The pinned 2.6.0 (Justfile: osv_scanner_version) accepts --config.
+#
+# Every entry was decided by a human, says so in its reason, and (but for the package override) ends on a date, after which osv-scanner
+# reports the advisory again and the job fails. .github/scripts/osv-config.test.mjs checks the shape of each entry and the recipe.
+#
+# NOT ignored, on purpose: the npm findings (dompurify, undici, fast-uri, @vitest/mocker, zod). A human decided on 2026-10-26 to WAIT for
+# their fixes to be 14 days old (rule 15) instead of ignoring them: undici 7.30.1 and @vitest/mocker 4.1.12 on 2026-10-29, fast-uri 3.1.9
+# on 2026-11-02; the dompurify fix is a separate PR. The job stays red for them until then (plans/09-deployment-ci.blockers.md, B19).
+
+# The zstd advisories (B17). One shared wording in each reason, and one date.
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0391"
+ignoreUntil = 2026-11-30
+reason = "Decided by a human on 2026-10-26: a time-boxed ignore. The only user of zstd is tonic 0.14.6 (its `zstd` feature requires zstd ^0.13; no tonic release moves to zstd 0.14), which calls only `zstd::stream::read::{Encoder,Decoder}::new` and `std::io::copy`: not `with_context`, not the seekable API, not dictionaries, not `try_clone`, not `train_from_buffer`, not the write-side Decoder; RUSTSEC-2026-0410 is wasm32 only and the shipped targets are Linux. Revisit by 2026-11-30."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0395"
+ignoreUntil = 2026-11-30
+reason = "Decided by a human on 2026-10-26: a time-boxed ignore. The only user of zstd is tonic 0.14.6 (its `zstd` feature requires zstd ^0.13; no tonic release moves to zstd 0.14), which calls only `zstd::stream::read::{Encoder,Decoder}::new` and `std::io::copy`: not `with_context`, not the seekable API, not dictionaries, not `try_clone`, not `train_from_buffer`, not the write-side Decoder; RUSTSEC-2026-0410 is wasm32 only and the shipped targets are Linux. Revisit by 2026-11-30."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0396"
+ignoreUntil = 2026-11-30
+reason = "Decided by a human on 2026-10-26: a time-boxed ignore. The only user of zstd is tonic 0.14.6 (its `zstd` feature requires zstd ^0.13; no tonic release moves to zstd 0.14), which calls only `zstd::stream::read::{Encoder,Decoder}::new` and `std::io::copy`: not `with_context`, not the seekable API, not dictionaries, not `try_clone`, not `train_from_buffer`, not the write-side Decoder; RUSTSEC-2026-0410 is wasm32 only and the shipped targets are Linux. Revisit by 2026-11-30."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0397"
+ignoreUntil = 2026-11-30
+reason = "Decided by a human on 2026-10-26: a time-boxed ignore. The only user of zstd is tonic 0.14.6 (its `zstd` feature requires zstd ^0.13; no tonic release moves to zstd 0.14), which calls only `zstd::stream::read::{Encoder,Decoder}::new` and `std::io::copy`: not `with_context`, not the seekable API, not dictionaries, not `try_clone`, not `train_from_buffer`, not the write-side Decoder; RUSTSEC-2026-0410 is wasm32 only and the shipped targets are Linux. Revisit by 2026-11-30."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0398"
+ignoreUntil = 2026-11-30
+reason = "Decided by a human on 2026-10-26: a time-boxed ignore. The only user of zstd is tonic 0.14.6 (its `zstd` feature requires zstd ^0.13; no tonic release moves to zstd 0.14), which calls only `zstd::stream::read::{Encoder,Decoder}::new` and `std::io::copy`: not `with_context`, not the seekable API, not dictionaries, not `try_clone`, not `train_from_buffer`, not the write-side Decoder; RUSTSEC-2026-0410 is wasm32 only and the shipped targets are Linux. Revisit by 2026-11-30."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0399"
+ignoreUntil = 2026-11-30
+reason = "Decided by a human on 2026-10-26: a time-boxed ignore. The only user of zstd is tonic 0.14.6 (its `zstd` feature requires zstd ^0.13; no tonic release moves to zstd 0.14), which calls only `zstd::stream::read::{Encoder,Decoder}::new` and `std::io::copy`: not `with_context`, not the seekable API, not dictionaries, not `try_clone`, not `train_from_buffer`, not the write-side Decoder; RUSTSEC-2026-0410 is wasm32 only and the shipped targets are Linux. Revisit by 2026-11-30."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0400"
+ignoreUntil = 2026-11-30
+reason = "Decided by a human on 2026-10-26: a time-boxed ignore. The only user of zstd is tonic 0.14.6 (its `zstd` feature requires zstd ^0.13; no tonic release moves to zstd 0.14), which calls only `zstd::stream::read::{Encoder,Decoder}::new` and `std::io::copy`: not `with_context`, not the seekable API, not dictionaries, not `try_clone`, not `train_from_buffer`, not the write-side Decoder; RUSTSEC-2026-0410 is wasm32 only and the shipped targets are Linux. Revisit by 2026-11-30."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0401"
+ignoreUntil = 2026-11-30
+reason = "Decided by a human on 2026-10-26: a time-boxed ignore. The only user of zstd is tonic 0.14.6 (its `zstd` feature requires zstd ^0.13; no tonic release moves to zstd 0.14), which calls only `zstd::stream::read::{Encoder,Decoder}::new` and `std::io::copy`: not `with_context`, not the seekable API, not dictionaries, not `try_clone`, not `train_from_buffer`, not the write-side Decoder; RUSTSEC-2026-0410 is wasm32 only and the shipped targets are Linux. Revisit by 2026-11-30."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0402"
+ignoreUntil = 2026-11-30
+reason = "Decided by a human on 2026-10-26: a time-boxed ignore. The only user of zstd is tonic 0.14.6 (its `zstd` feature requires zstd ^0.13; no tonic release moves to zstd 0.14), which calls only `zstd::stream::read::{Encoder,Decoder}::new` and `std::io::copy`: not `with_context`, not the seekable API, not dictionaries, not `try_clone`, not `train_from_buffer`, not the write-side Decoder; RUSTSEC-2026-0410 is wasm32 only and the shipped targets are Linux. Revisit by 2026-11-30."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0403"
+ignoreUntil = 2026-11-30
+reason = "Decided by a human on 2026-10-26: a time-boxed ignore. The only user of zstd is tonic 0.14.6 (its `zstd` feature requires zstd ^0.13; no tonic release moves to zstd 0.14), which calls only `zstd::stream::read::{Encoder,Decoder}::new` and `std::io::copy`: not `with_context`, not the seekable API, not dictionaries, not `try_clone`, not `train_from_buffer`, not the write-side Decoder; RUSTSEC-2026-0410 is wasm32 only and the shipped targets are Linux. Revisit by 2026-11-30."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0404"
+ignoreUntil = 2026-11-30
+reason = "Decided by a human on 2026-10-26: a time-boxed ignore. The only user of zstd is tonic 0.14.6 (its `zstd` feature requires zstd ^0.13; no tonic release moves to zstd 0.14), which calls only `zstd::stream::read::{Encoder,Decoder}::new` and `std::io::copy`: not `with_context`, not the seekable API, not dictionaries, not `try_clone`, not `train_from_buffer`, not the write-side Decoder; RUSTSEC-2026-0410 is wasm32 only and the shipped targets are Linux. Revisit by 2026-11-30."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0405"
+ignoreUntil = 2026-11-30
+reason = "Decided by a human on 2026-10-26: a time-boxed ignore. The only user of zstd is tonic 0.14.6 (its `zstd` feature requires zstd ^0.13; no tonic release moves to zstd 0.14), which calls only `zstd::stream::read::{Encoder,Decoder}::new` and `std::io::copy`: not `with_context`, not the seekable API, not dictionaries, not `try_clone`, not `train_from_buffer`, not the write-side Decoder; RUSTSEC-2026-0410 is wasm32 only and the shipped targets are Linux. Revisit by 2026-11-30."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0406"
+ignoreUntil = 2026-11-30
+reason = "Decided by a human on 2026-10-26: a time-boxed ignore. The only user of zstd is tonic 0.14.6 (its `zstd` feature requires zstd ^0.13; no tonic release moves to zstd 0.14), which calls only `zstd::stream::read::{Encoder,Decoder}::new` and `std::io::copy`: not `with_context`, not the seekable API, not dictionaries, not `try_clone`, not `train_from_buffer`, not the write-side Decoder; RUSTSEC-2026-0410 is wasm32 only and the shipped targets are Linux. Revisit by 2026-11-30."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0410"
+ignoreUntil = 2026-11-30
+reason = "Decided by a human on 2026-10-26: a time-boxed ignore. The only user of zstd is tonic 0.14.6 (its `zstd` feature requires zstd ^0.13; no tonic release moves to zstd 0.14), which calls only `zstd::stream::read::{Encoder,Decoder}::new` and `std::io::copy`: not `with_context`, not the seekable API, not dictionaries, not `try_clone`, not `train_from_buffer`, not the write-side Decoder; RUSTSEC-2026-0410 is wasm32 only and the shipped targets are Linux. Revisit by 2026-11-30."
+
+# rsa (B17). The same advisory and reasoning as .cargo/audit.toml.
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+ignoreUntil = 2027-04-30
+reason = "Approved by a human as an extra path of plan 01, and the same ignore as .cargo/audit.toml. RUSTSEC-2023-0071 (rsa, Marvin attack) has no fixed release. With sqlx's `macros` feature the lockfiles list `sqlx-mysql`, and `sqlx-mysql` depends on `rsa`: osv-scanner reads the lockfiles, not the compiled graph, and sees `rsa` in the root Cargo.lock and in the hub-identity, hub-registry and hub-writes fuzz lockfiles. Lanekeeper uses PostgreSQL only, so `rsa` is never compiled into any binary. Prove it with `cargo tree -i rsa -e all --target all`, which prints nothing. Remove this ignore if that command ever prints a path, or when sqlx drops the dependency. Revisit by 2027-04-30."
+
+# Our own crate `domain` against the NLnet Labs crate of the same name (B17).
+[[PackageOverrides]]
+name = "domain"
+version = "0.1.0"
+ecosystem = "crates.io"
+ignore = true
+reason = "RUSTSEC-2026-0310 is about the `domain` DNS crate of NLnet Labs, published on crates.io. Ours is a path crate of this workspace (crates/domain, version 0.1.0, no `source` in Cargo.lock) that has the same name: a name collision, not the vulnerable crate. The override names version 0.1.0 only, so a registry crate called `domain` at any other version would still be reported."
