@@ -114,6 +114,15 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      # Same cause as the test job of rust.yml (PR 25, main run 40166747415: "No space left on device"), and this job needs more
+      # room than that one: two `--no-cache` builds of the same image keep their layers and the build cache of the whole Rust
+      # dependency tree in /var/lib/docker, next to two OCI archives and the vulnerability database of the scan (about 3.3 GB).
+      # Remove what the job never uses, and print df so the headroom is visible.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: ./.github/actions/docker-hub-mirror
       - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
         with:
@@ -155,6 +164,9 @@ jobs:
             target/images/repro/a/${{ matrix.image }}.cdx.json
           if-no-files-found: error
           retention-days: 3
+      - name: Disk left
+        if: always()
+        run: df -h /
 
   publish:
     name: publish ${{ matrix.image }}

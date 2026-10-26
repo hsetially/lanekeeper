@@ -91,3 +91,41 @@ test('every tool image of tools.env is pinned by digest', () => {
   assert.ok(lines.length >= 5);
   for (const l of lines) assert.match(l, /@sha256:[0-9a-f]{64}$/, l);
 });
+
+// Disk space on a hosted runner (PR 25). Main run 40166747415 failed in `cargo test --workspace` with Postgres error 53100 "No space
+// left on device": the debug build of the workspace and the Postgres containers with large seeded tables share the runner's root
+// disk. The job that ran those tests moved from ci.yml to rust.yml and lost the two steps that PR added, so a job that does the same
+// kind of work must carry them: remove what the job never uses before the first heavy step, and print `df` at the end even on failure.
+const HEAVY = /cargo test --workspace|cargo bench --workspace|reproducible-check\.sh/;
+const FREE_STEP = /^ +- name: Free disk space\n(?: +if: .*\n)? +run: \|\n +df -h \/\n +(sudo rm -rf [^\n]+)\n +df -h \/\n/m;
+
+/** The jobs of a workflow as [{ name, text }], from the `jobs:` block (job keys sit at two spaces). */
+function jobsOf(text) {
+  const at = text.search(/^jobs:\s*$/m);
+  assert.ok(at >= 0, 'a workflow without a jobs: block');
+  const parts = text.slice(at).split(/^ {2}([A-Za-z0-9_-]+):\s*$/m);
+  const jobs = [];
+  for (let i = 1; i + 1 < parts.length; i += 2) jobs.push({ name: parts[i], text: parts[i + 1] });
+  return jobs;
+}
+
+test('a job that runs the workspace tests, the benchmarks or the reproducible image build frees disk first and prints what is left', () => {
+  let heavy = 0;
+  const removals = new Set();
+  for (const { name: file, text } of workflows) {
+    for (const j of jobsOf(text)) {
+      const job = { name: j.name, text: j.text.replace(/^ *#.*\n/gm, '') }; // a comment that names a command is not a step
+      const first = job.text.search(HEAVY);
+      if (first < 0) continue;
+      heavy += 1;
+      const where = `${file} job ${job.name}`;
+      const free = FREE_STEP.exec(job.text);
+      assert.ok(free, `${where} has no "Free disk space" step (df, sudo rm -rf of the unused toolchains, df) before its heavy step`);
+      assert.ok(free.index < first, `${where}: the "Free disk space" step comes after the first heavy step`);
+      removals.add(free[1]);
+      assert.match(job.text, /^ +- name: Disk left\n +if: always\(\)\n +run: df -h \/\n/m, `${where} has no "Disk left" step with if: always()`);
+    }
+  }
+  assert.ok(heavy >= 4, `only ${heavy} heavy jobs were found (rust test, images image, bench, nightly bench): the check is not reading the workflows`);
+  assert.equal(removals.size, 1, `the jobs remove different paths, so the copies of the step have drifted apart: ${[...removals].join(' | ')}`);
+});
