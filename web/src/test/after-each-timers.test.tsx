@@ -1,6 +1,6 @@
 import { render } from "@testing-library/react";
 import { Dialog } from "radix-ui";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 
 // src/test/setup.ts waits one turn of the event loop after it unmounts a test's tree. Radix's FocusScope hands focus back from a
 // `setTimeout(..., 0)` that it queues when a dialog unmounts. Left pending when the last test of a file ended, that timer fired
@@ -27,5 +27,21 @@ describe("the shared afterEach", () => {
 
   it("has let that timer fire before the next test starts", () => {
     expect(closeAutoFocus).toHaveBeenCalledTimes(1);
+  });
+});
+
+// A test that leaves fake timers installed must not hang the hook: it waits on the real `setTimeout` taken when the setup file loaded.
+describe("the shared afterEach with fake timers left installed", () => {
+  afterAll(() => {
+    vi.useRealTimers();
+  });
+
+  it("installs fake timers and leaves them", () => {
+    vi.useFakeTimers();
+    expect(vi.isFakeTimers()).toBe(true);
+  });
+
+  it("is reached: the hook after the previous test did not wait on a fake timer", () => {
+    expect(vi.isFakeTimers()).toBe(true);
   });
 });

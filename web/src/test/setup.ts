@@ -21,9 +21,11 @@ Object.defineProperty(globalThis, "cancelIdleCallback", { configurable: true, wr
 // jsdom's, and Vitest reported `TypeError: Failed to execute 'dispatchEvent' on 'EventTarget': parameter 1 is not of type 'Event'`
 // as an unhandled error: the run failed with every test passing (CI, 2026-10-26, DeleteDialog.test.tsx). Waiting one turn of the
 // event loop after the unmount lets the timers that it queued fire while the window is still there (after-each-timers.test.tsx).
+// The real `setTimeout`, taken before any test can install fake timers: a test that leaves them installed must not hang this hook.
+const realSetTimeout = globalThis.setTimeout;
 afterEach(async () => {
   cleanup();
-  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  await new Promise<void>((resolve) => realSetTimeout(resolve, 0));
 });
 
 // jsdom has no layout. Components that measure (the virtualiser, Radix popper) read these.
