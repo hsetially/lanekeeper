@@ -19,11 +19,28 @@
 //       install scripts of every dependency as the runner user, in a process whose environment carries the variables that let it
 //       ask GitHub for an OIDC token; with that token the code is the job's identity to Sigstore, Google Cloud or whatever the
 //       workflow federates with. So the job that signs or federates handles files that another job built, with tools fetched by a
-//       digest or a hash. Refused, as a command in a `run:` step: cargo, rustc, rustdoc, npm, npx, pnpm, yarn, corepack, bun,
-//       pip, pipx, poetry, go build/install/run/test/get/generate, gem install, bundle, mvn, gradle, dotnet build/restore/publish/
-//       run/test, make, cmake, ninja; and the actions docker/build-push-action and docker/bake-action. NOT seen: what a script or a
-//       `just` recipe called by a step does, and a `docker build` run by a script (that code runs in a container which is not given
-//       the job's variables). Those are read by a person; the threat model says which jobs rely on that.
+//       digest or a hash. Values are read as YAML reads them (`id-token: "write"`, `run: 'cargo install x'`), and a command is
+//       looked for where one can start (the start of a line or after `&&`, `||`, `;`, `|`, `(`, `$(`, then/do/else, past sudo, env,
+//       timeout, time, nice, xargs and VAR=value). A line that ends in `\` is joined with the next. Refused, as a command in a `run:`:
+//         - cargo, rustc, rustdoc, rustup, npm, npx, pnpm, yarn, corepack, bun, bunx, uv, uvx, pip, pip3, pipx, poetry, conda, mamba,
+//           `python -m pip|pipx|build|poetry|uv|venv|ensurepip`, `python setup.py`, go build/install/run/test/get/generate, gem install,
+//           bundle, mvn, gradle, dotnet build/restore/publish/run/test, make, cmake, ninja, and apt, apt-get, dnf, yum, zypper, brew
+//           install and apk add (the maintainer scripts of a package run as the runner's root);
+//         - the same inside `sh -c`, `bash -c`, `dash`, `zsh` or `ksh -c '...'` (also `-ec`, `-lc`, `-o pipefail -c`), to a depth of 3;
+//         - `docker run|exec|create` with one of those tools on its command line (`docker run IMAGE cargo build`), and
+//           `docker build`, `docker buildx build|bake`, `docker image build`, `docker builder build`, `docker compose build`;
+//         - a download that is run: `curl|wget ... | sh|bash|python|perl|ruby|node`, `bash <(curl ...)`, `eval|source|. "$(curl ...)"`,
+//           `sh -c "$(curl ...)"`;
+//         and, as a step, the actions docker/build-push-action and docker/bake-action.
+//       NOT SEEN, and read by a person (the threat model lists each): what a script, a `just` recipe or a `make` target called by a
+//       step does (`./build.sh`, `deploy/sentinel/build.sh`, `just build` start no command that this rule knows); the steps of a local
+//       composite action (`uses: ./.github/actions/...`; the file is not opened) and of a reusable workflow; a tool that a step
+//       installs and then runs under a name this list does not hold (a binary from a download that is checked, an `npx`-free
+//       `node script.js`, `python script.py`, `deno run`, `java -jar`); a command assembled in a variable or by `eval` of a string that
+//       is not a download; a quoted `run:` that spans several lines; and a multi-line value of `sh -c` whose command starts on a line
+//       after the first. A tool behind `rustup run stable cargo` is seen because rustup itself is refused. A `docker build` that a
+//       script runs is not seen (that build runs in a container which is given none of the job's variables; sentinel.yml's
+//       `sign-release` is the one case, and its tools stage is held by dockerfile_artifact.rego and tools-graph.sh instead).
 //
 // Exit codes: 0 all rules hold; 1 a rule is broken (printed as file:line: reason); 2 nothing to check or an unreadable path.
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -50,10 +67,43 @@ function structure(text) {
   return out;
 }
 
-/** A `key: value` line as { key, value }, or null. */
+/**
+ * The text of a quoted YAML scalar at the start of `s` and what follows its closing quote, or null when `s` does not start with one.
+ * Double quotes: a backslash takes the next character as it is. Single quotes: `''` is one quote.
+ */
+function unquote(s) {
+  const q = s[0];
+  if (q !== '"' && q !== "'") return null;
+  let text = '';
+  for (let i = 1; i < s.length; i += 1) {
+    const c = s[i];
+    if (q === '"' && c === '\\' && i + 1 < s.length) {
+      text += s[i + 1];
+      i += 1;
+    } else if (c === q && q === "'" && s[i + 1] === "'") {
+      text += "'";
+      i += 1;
+    } else if (c === q) {
+      return { text, rest: s.slice(i + 1) };
+    } else {
+      text += c;
+    }
+  }
+  return null;
+}
+
+/**
+ * A `key: value` line as { key, value, quoted }, or null. A quoted value is the text inside its quotes, as YAML reads it (`"write"` and
+ * `write` are one grant; `'cargo install x'` and `cargo install x` are one command), with `quoted` set so that `"|"` is not a block scalar.
+ */
 function keyValue(text) {
   const m = /^([A-Za-z0-9_.-]+|"[^"]+"|'[^']+')\s*:(?:\s+(.*))?$/.exec(text);
-  return m ? { key: m[1].replace(/^["']|["']$/g, ''), value: stripComment(m[2] ?? '') } : null;
+  if (!m) return null;
+  const key = m[1].replace(/^["']|["']$/g, '');
+  const raw = (m[2] ?? '').trim();
+  const q = unquote(raw);
+  if (q && /^\s*(#.*)?$/.test(q.rest)) return { key, value: q.text.trim(), quoted: true };
+  return { key, value: stripComment(raw), quoted: false };
 }
 
 /** The lines below `lines[at]` that are indented deeper than it. */
@@ -70,15 +120,51 @@ function children(body) {
   return body.filter((l) => l.indent === min);
 }
 
-// W6. A build tool, where a command can start: at the start of a line or after `&&`, `||`, `;`, `|`, `(`, `{`, a backtick, `$(`,
-// `then`, `do` or `else`, past the words that only prefix a command (sudo, env and VAR=value, time, exec, nice, xargs). A word inside
-// a string that echo prints, or an argument of grep, does not start a command.
-const BUILD_TOOLS = String.raw`(?:cargo|rustc|rustdoc|npm|npx|pnpm|yarn|corepack|bun|pip3?|pipx|poetry|go\s+(?:build|install|run|test|get|generate)|gem\s+install|bundle|mvn|gradle|dotnet\s+(?:build|restore|publish|run|test)|make|cmake|ninja)`;
-const COMMAND_START = String.raw`(?:^|&&|\|\||[;|({\`]|\$\(|\b(?:then|do|else)\b)\s*(?:(?:sudo|time|exec|command|nice|xargs|env)\s+(?:-\S+\s+)*|[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*`;
+// W6. Where a command can start: at the start of a line or after `&&`, `||`, `;`, `|`, `(`, `{`, a backtick, `$(`, `then`, `do` or `else`,
+// past the words that only prefix a command (sudo, env and VAR=value, time, exec, nice, xargs, timeout N). A word inside a string that
+// echo prints, or an argument of grep, does not start a command.
+const BUILD_TOOLS = String.raw`(?:cargo|rustc|rustdoc|rustup|npm|npx|pnpm|yarn|corepack|bunx?|uvx?|pip3?|pipx|poetry|conda|mamba|python3?\s+-m\s+(?:pip|pipx|build|poetry|uv|venv|ensurepip)|python3?\s+(?:\S+/)?setup\.py|go\s+(?:build|install|run|test|get|generate)|gem\s+install|bundle|mvn|gradle|dotnet\s+(?:build|restore|publish|run|test)|make|cmake|ninja|(?:apt|apt-get|dnf|yum|zypper|brew)\s+install|apk\s+add)`;
+const COMMAND_START = String.raw`(?:^|&&|\|\||[;|({\`]|\$\(|\b(?:then|do|else)\b)\s*(?:(?:sudo|time|exec|command|nice|xargs|env)\s+(?:-\S+\s+)*|timeout\s+(?:-\S+\s+)*\d+[smhd]?\s+|[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*`;
 const BUILD_COMMAND = new RegExp(`${COMMAND_START}(${BUILD_TOOLS})(?=\\s|$)`);
 const BUILD_ACTION = /^docker\/(?:build-push-action|bake-action)@/;
+// A shell that is given its command as a string: `bash -c '...'`, `sh -ec "..."`, `bash -o pipefail -c '...'`. Group 1 is a double-quoted
+// string, group 2 a single-quoted one.
+const SHELL_C = new RegExp(String.raw`${COMMAND_START}(?:ba|da|z|k)?sh\s+(?:(?:-o\s+\S+|-\S+)\s+)*-[A-Za-z]*c[A-Za-z]*\s+(?:--\s+)?(?:"((?:\\.|[^"\\])*)"|'([^']*)')`, 'g');
+// docker run IMAGE cargo build: the tool is a word of the command line (or the first word of a quoted string, as in `sh -c 'cargo build'`).
+const DOCKER_RUN = new RegExp(String.raw`${COMMAND_START}docker\s+(?:container\s+)?(?:run|exec|create)\s[^|;&\n]*?[\s'"](${BUILD_TOOLS})(?=[\s'"]|$)`);
+const DOCKER_BUILD = new RegExp(String.raw`${COMMAND_START}docker\s+(?:buildx\s+(?:build|bake)|compose\s+build|(?:image\s+|builder\s+)?build)(?=\s|$)`);
+// Code that is downloaded and run without being kept and checked.
+const INTERPRETER = String.raw`(?:(?:ba|da|z|k)?sh|python3?|perl|ruby|node)`;
+const FETCH_AND_RUN = [
+  new RegExp(String.raw`${COMMAND_START}(?:curl|wget)(?=\s)[^|;&\n]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?${INTERPRETER}(?=\s|$)`),
+  new RegExp(String.raw`${COMMAND_START}${INTERPRETER}\s+(?:-\S+\s+)*<\(\s*(?:curl|wget)(?=\s)`),
+  new RegExp(String.raw`${COMMAND_START}(?:eval|source|\.)\s+"?(?:\$\(|<\()\s*(?:curl|wget)(?=\s)`),
+];
+const FETCHED_SUBSTITUTION = /^\s*"?\$\(\s*(?:curl|wget)(?=\s)/;
+const MAX_SHELL_DEPTH = 3;
 
-/** The steps of a job that run something, as [{ no, text }] per command line: each line of a `run:` value, or the action of a `uses:`. */
+/** What this command line starts that W6 refuses, as a few words, or null. `depth` counts the shells whose strings were opened. */
+export function refusedCommand(text, depth = 0) {
+  const build = BUILD_COMMAND.exec(text);
+  if (build) return build[1];
+  if (DOCKER_BUILD.test(text)) return 'docker build';
+  const run = DOCKER_RUN.exec(text);
+  if (run) return `docker run ${run[1]}`;
+  if (FETCH_AND_RUN.some((re) => re.test(text))) return 'a download that is run';
+  if (depth < MAX_SHELL_DEPTH) {
+    for (const sh of text.matchAll(SHELL_C)) {
+      const inner = sh[1] !== undefined ? sh[1].replace(/\\(.)/g, '$1') : sh[2];
+      const hit = refusedCommand(inner, depth + 1) ?? (FETCHED_SUBSTITUTION.test(inner) ? 'a download that is run' : null);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+/**
+ * The steps of a job that run something, as [{ no, text }] per command line: each logical line of a `run:` value (a line that ends in a
+ * backslash is joined with the next, and `no` is the first line's), a quoted or one-line `run:`, or the action of a `uses:`.
+ */
 function stepCommands(lines, job) {
   const out = [];
   const body = bodyOf(lines, lines.indexOf(job));
@@ -88,12 +174,22 @@ function stepCommands(lines, job) {
     if (!kv) continue;
     if (kv.key === 'uses' && BUILD_ACTION.test(kv.value)) out.push({ no: body[i].no, text: kv.value, action: true });
     if (kv.key !== 'run') continue;
-    if (!/^[|>][+-]?\d*$/.test(kv.value)) {
+    if (kv.quoted || !/^[|>][+-]?\d*$/.test(kv.value)) {
       out.push({ no: body[i].no, text: kv.value });
       continue;
     }
     const keyIndent = body[i].indent + (dash ? dash[0].length : 0);
-    for (let k = i + 1; k < body.length && body[k].indent > keyIndent; k += 1) out.push({ no: body[k].no, text: body[k].text });
+    let open = null; // a command whose line ended in a backslash
+    for (let k = i + 1; k < body.length && body[k].indent > keyIndent; k += 1) {
+      const line = open ? { no: open.no, text: `${open.text} ${body[k].text.trim()}` } : { no: body[k].no, text: body[k].text };
+      if (/\\\s*$/.test(line.text)) {
+        open = { no: line.no, text: line.text.replace(/\\\s*$/, '').trimEnd() };
+      } else {
+        open = null;
+        out.push(line);
+      }
+    }
+    if (open) out.push(open);
   }
   return out;
 }
@@ -102,7 +198,7 @@ function stepCommands(lines, job) {
 function holdsIdToken(lines, perms) {
   const { value } = keyValue(perms.text);
   if (value === 'write-all') return true;
-  if (value !== '') return /(^|[{,\s])id-token\s*:\s*write\b/.test(value);
+  if (value !== '') return /(^|[{,\s])["']?id-token["']?\s*:\s*["']?write\b/.test(value);
   return children(bodyOf(lines, lines.indexOf(perms))).some((l) => {
     const kv = keyValue(l.text);
     return kv?.key === 'id-token' && kv.value === 'write';
@@ -172,10 +268,10 @@ export function checkWorkflow(text) {
       }
       if (perms && holdsIdToken(lines, perms)) {
         for (const c of stepCommands(lines, job)) {
-          const hit = c.action ? c.text : BUILD_COMMAND.exec(c.text)?.[1];
+          const hit = c.action ? c.text : refusedCommand(c.text);
           if (!hit) continue;
           const what = c.action ? `uses ${hit}` : `runs \`${c.text.length > 90 ? `${c.text.slice(0, 90)}...` : c.text}\``;
-          add(c.no, `job ${kv.key} holds id-token: write and ${what}; a build step in the job that can ask for an OIDC token lets a dependency's code ask for one too. Build in a job without the token and hand the files on (W6)`);
+          add(c.no, `job ${kv.key} holds id-token: write and ${what}; code that is built or fetched in the job that can ask for an OIDC token can ask for one too. Build in a job without the token and hand the files on (W6)`);
         }
       }
       if (get('uses')) continue; // a call of a reusable workflow: the timeout belongs to the called jobs

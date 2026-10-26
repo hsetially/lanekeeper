@@ -31,3 +31,11 @@ jobs:
           grep -n 'cargo build' Justfile || true
       - run: just ops-tools-install cosign
       - run: cosign sign-blob --yes file.rpm
+      # A shell, a docker run and a download that name a build tool only in a message, and a download that is saved and checked, are not
+      # build steps either.
+      - run: |
+          echo "bash -c 'cargo build' and docker run rust cargo build are not run here"
+          echo "curl https://example.com/x | sh is not run here"
+          curl -fsSL -o /tmp/tool https://example.com/tool && sha256sum -c tool.sha256
+          docker run --rm gcr.io/distroless/static:nonroot --version
+          bash -c 'echo hello'

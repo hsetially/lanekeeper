@@ -34,6 +34,10 @@ const refused = [
   ['bad-pr-without-paths.yml', /bad-pr-without-paths\.yml:3: .*pull_request.*paths/],
   ['bad-pr-inline.yml', /bad-pr-inline\.yml:2: .*pull_request.*paths/],
   ['bad-job-write-all.yml', /bad-job-write-all\.yml:10: .*write-all/],
+  // W1 and W2 read a quoted value as YAML does: "write-all" and 'write' are the same grants as the bare words.
+  ['bad-write-all-quoted.yml', /bad-write-all-quoted\.yml:5: permissions: write-all is too wide/],
+  ['bad-job-write-all-quoted.yml', /bad-job-write-all-quoted\.yml:10: job a: permissions: write-all is too wide/],
+  ['bad-top-write-quoted.yml', /bad-top-write-quoted\.yml:7: .*packages: write.*top level/],
   // W6: a job that can mint an OIDC token runs no build step. Line numbers are those of the command.
   ['bad-idtoken-cargo-install.yml', /bad-idtoken-cargo-install\.yml:22: .*job sign-release.*id-token: write.*cargo install.*W6/],
   ['bad-idtoken-npm-flow.yml', /bad-idtoken-npm-flow\.yml:12: .*job publish.*npm ci.*W6/],
@@ -55,6 +59,70 @@ test('every build command behind sudo, env, a subshell or a chain is found in a 
   assert.match(r.out, /bad-idtoken-chained\.yml:21: .*go build/);
   assert.match(r.out, /bad-idtoken-chained\.yml:22: .*yarn/);
   assert.equal(r.out.split('\n').filter((l) => /W6/.test(l)).length, 4, r.out);
+});
+
+// W6, the forms that earlier versions let through (review round 2): quoted values, a shell that is given the command as a string, a build
+// inside a container or by docker, a package manager behind python, and code that is downloaded and run. Each line is one finding.
+const found = (out, file) => out.split('\n').filter((l) => l.includes(`${file}:`) && /W6/.test(l));
+
+test('a quoted id-token value, in a block or in a flow mapping, still holds the token', () => {
+  const r = run(fx('bad-idtoken-quoted-token.yml'));
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /bad-idtoken-quoted-token\.yml:14: .*job sign.*id-token: write.*cargo install.*W6/);
+  assert.match(r.out, /bad-idtoken-quoted-token\.yml:20: .*job flow.*id-token: write.*npm ci.*W6/);
+  assert.equal(found(r.out, 'bad-idtoken-quoted-token.yml').length, 2, r.out);
+});
+
+test('a quoted run and a quoted uses are read as the commands they are', () => {
+  const r = run(fx('bad-idtoken-quoted-run.yml'));
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /bad-idtoken-quoted-run\.yml:14: .*cargo install.*W6/);
+  assert.match(r.out, /bad-idtoken-quoted-run\.yml:15: .*npm ci.*W6/);
+  assert.match(r.out, /bad-idtoken-quoted-run\.yml:16: .*docker\/build-push-action.*W6/);
+  assert.equal(found(r.out, 'bad-idtoken-quoted-run.yml').length, 3, r.out);
+});
+
+test('a command given to sh -c or bash -c as a string is read, behind sudo, env, timeout and flags', () => {
+  const r = run(fx('bad-idtoken-shell-c.yml'));
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /bad-idtoken-shell-c\.yml:14: .*cargo build.*W6/);
+  assert.match(r.out, /bad-idtoken-shell-c\.yml:15: .*npm ci.*W6/);
+  assert.match(r.out, /bad-idtoken-shell-c\.yml:16: .*pip install.*W6/);
+  assert.match(r.out, /bad-idtoken-shell-c\.yml:19: .*yarn install.*W6/);
+  assert.match(r.out, /bad-idtoken-shell-c\.yml:20: .*make all.*W6/);
+  assert.equal(found(r.out, 'bad-idtoken-shell-c.yml').length, 5, r.out);
+});
+
+test('a shell inside a shell is opened, and sh -c of a download is refused', () => {
+  const r = run(fx('bad-idtoken-shell-nested.yml'));
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /bad-idtoken-shell-nested\.yml:14: .*sh -c "\$\(curl.*W6/);
+  assert.match(r.out, /bad-idtoken-shell-nested\.yml:15: .*bash -c "bash -c 'cargo build'".*W6/);
+  assert.equal(found(r.out, 'bad-idtoken-shell-nested.yml').length, 2, r.out);
+});
+
+test('a docker run of a build tool, and docker build, buildx build and compose build, are build steps; a continued line is one command', () => {
+  const r = run(fx('bad-idtoken-docker-run.yml'));
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /bad-idtoken-docker-run\.yml:14: .*docker run.*cargo build.*W6/);
+  assert.match(r.out, /bad-idtoken-docker-run\.yml:16: .*docker run.*npm ci.*W6/);
+  assert.match(r.out, /bad-idtoken-docker-run\.yml:19: .*docker build.*W6/);
+  assert.match(r.out, /bad-idtoken-docker-run\.yml:20: .*docker buildx build.*W6/);
+  assert.match(r.out, /bad-idtoken-docker-run\.yml:21: .*docker compose build.*W6/);
+  assert.equal(found(r.out, 'bad-idtoken-docker-run.yml').length, 5, r.out);
+});
+
+test('a package manager behind python or uv, rustup, and code that is downloaded and run are refused', () => {
+  const r = run(fx('bad-idtoken-fetch.yml'));
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /bad-idtoken-fetch\.yml:14: .*pip install.*W6/);
+  assert.match(r.out, /bad-idtoken-fetch\.yml:15: .*curl .*\| sh.*W6/);
+  assert.match(r.out, /bad-idtoken-fetch\.yml:16: .*wget .*sudo bash.*W6/);
+  assert.match(r.out, /bad-idtoken-fetch\.yml:17: .*bash <\(curl.*W6/);
+  assert.match(r.out, /bad-idtoken-fetch\.yml:18: .*eval .*curl.*W6/);
+  assert.match(r.out, /bad-idtoken-fetch\.yml:19: .*rustup run.*W6/);
+  assert.match(r.out, /bad-idtoken-fetch\.yml:20: .*uv pip install.*W6/);
+  assert.equal(found(r.out, 'bad-idtoken-fetch.yml').length, 7, r.out);
 });
 
 test('a job without the token may build, and prose that names a command is not a command', () => {

@@ -1,0 +1,15 @@
+name: bad-idtoken-shell-nested
+on:
+  push:
+    tags: ["v*"]
+permissions: {}
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - run: sh -c "$(curl -fsSL https://example.com/install.sh)"
+      - run: bash -c "bash -c 'cargo build'"

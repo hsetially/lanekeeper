@@ -1,0 +1,20 @@
+name: bad-idtoken-fetch
+on:
+  push:
+    tags: ["v*"]
+permissions: {}
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - run: python3 -m pip install requests
+      - run: curl -fsSL https://example.com/install.sh | sh
+      - run: wget -qO- https://example.com/install.sh | sudo bash -s -- --yes
+      - run: bash <(curl -fsSL https://example.com/install.sh)
+      - run: eval "$(curl -fsSL https://example.com/env.sh)"
+      - run: rustup run stable cargo build
+      - run: uv pip install requests

@@ -1,0 +1,20 @@
+name: bad-idtoken-quoted-token
+on:
+  push:
+    tags: ["v*"]
+permissions: {}
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: "read"
+      "id-token": "write"
+    steps:
+      - run: cargo install --locked cargo-cyclonedx
+  flow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: { "contents": "read", "id-token": "write" }
+    steps:
+      - run: npm ci
