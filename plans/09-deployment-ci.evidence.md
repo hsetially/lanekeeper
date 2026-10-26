@@ -168,13 +168,13 @@ The run below is the same benchmarks in 44 pieces that can be resumed. The works
 | agent | spool_replay | 0 | 19 |
 | agent | stat_walk | 0 | 28 |
 | agent | steady_state | 0 | 221 |
-| engine | compare | not run yet | |
-| engine | full_recompute | not run yet | |
-| engine | grid | not run yet | |
-| engine | incremental | not run yet | |
-| engine | index_settings | not run yet | |
-| engine | parse_flatten | not run yet | |
-| engine | search_text | not run yet | |
+| engine | compare | 0 | 75 |
+| engine | full_recompute | 0 | 67 |
+| engine | grid | 0 | 26 |
+| engine | incremental | 0 | 44 |
+| engine | index_settings | 0 | 31 |
+| engine | parse_flatten | 0 | 25 |
+| engine | search_text | 0 | 30 |
 | hub | startup | not run yet | |
 | hub-identity | audit_record | not run yet | |
 | hub-identity | auth_middleware | not run yet | |
@@ -207,7 +207,7 @@ The run below is the same benchmarks in 44 pieces that can be resumed. The works
 | hub-writes | edit_applied | not run yet | |
 | hub-writes | write_queries | not run yet | |
 
-6 of 44 bench targets have run; 0 of them exited non-zero.
+13 of 44 bench targets have run; 0 of them exited non-zero.
 <!-- bench-pieces:end -->
 
 PENDING: the budget table, from `cargo xtask bench-check` after every piece has run.
