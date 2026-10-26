@@ -198,16 +198,16 @@ The run below is the same benchmarks in 44 pieces that can be resumed. The works
 | hub-registry | incremental_recompute_base | 0 | 201 |
 | hub-registry | incremental_recompute_per_file_per_swimlane | 0 | 193 |
 | hub-registry | ingest_versions_per_s | 0 | 180 |
-| hub-registry | search_settings_all_swimlanes | not run yet | |
-| hub-registry | search_text_all_swimlanes | not run yet | |
-| hub-registry | sentinel_attribution | not run yet | |
-| hub-registry | steady_state_queries | not run yet | |
-| hub-registry | swimlane_list | not run yet | |
-| hub-registry | whole_swimlane_compare | not run yet | |
+| hub-registry | search_settings_all_swimlanes | 0 | 295 |
+| hub-registry | search_text_all_swimlanes | 0 | 394 |
+| hub-registry | sentinel_attribution | 0 | 265 |
+| hub-registry | steady_state_queries | 0 | 311 |
+| hub-registry | swimlane_list | 0 | 297 |
+| hub-registry | whole_swimlane_compare | 0 | 312 |
 | hub-writes | edit_applied | not run yet | |
 | hub-writes | write_queries | not run yet | |
 
-36 of 44 bench targets have run; 0 of them exited non-zero.
+42 of 44 bench targets have run; 0 of them exited non-zero.
 <!-- bench-pieces:end -->
 
 PENDING: the budget table, from `cargo xtask bench-check` after every piece has run.
