@@ -20,8 +20,11 @@ helm and crane at the versions of the Justfile).
   test does not ask the port again from outside the pod: the hub chart's NetworkPolicy admits 9090 only from the monitoring namespace and
   Google's ranges, so a request through the API server's pod proxy would be refused by the very policy the chart ships.
 - **P11.** Once all three replicas are Ready, each must be Ready within **10 s** of its container's start (`perf/budgets.toml` `P11`, 10000 ms;
-  `p11_verdict` in `lib.sh`). The number includes the readinessProbe's period (5 s at most) and the API's one-second timestamps, so a replica
-  that passes started within the budget. The budget is the design scale's, and kind's CPUs and disks are not: a miss is a finding to read, not
+  `p11_verdict` in `lib.sh`). The number includes the probes' own timing, not only the hub's start: the kubelet runs no readinessProbe until the
+  startupProbe has succeeded, so the time to Ready can hold up to the startupProbe's period (2 s, `deploy/charts/hub/templates/statefulset.yaml:96-100`)
+  and then up to the readinessProbe's (5 s, the same file, lines 106 to 108), and the API's one-second timestamps: up to about 7 s of the 10 s in the
+  worst case, from the periods and not measured (the test has never run). A replica that passes started within the budget; **a red P11 on kind may be
+  probe overhead, so read it against those periods before reading it as a slow start.** The budget is the design scale's, and kind's CPUs and disks are not: a miss is a finding to read, not
   a flake to retry.
 - **Unproven.** That the CNI of kind (kindnet) enforces the hub's NetworkPolicy, and that the kubelet's probes are not filtered by it. No kind
   cluster could start where this was written (cgroup v1, and `pkg-containers.githubusercontent.com` refused: blockers B16 and B9).

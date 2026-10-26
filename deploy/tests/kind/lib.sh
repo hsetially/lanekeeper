@@ -6,8 +6,11 @@ P11_BUDGET_S=10
 
 # p11_verdict [BUDGET-SECONDS, default P11_BUDGET_S] < "NAME SECONDS" lines
 #   One line per replica: its name and the whole seconds from the start of its container to its Ready condition (the Ready condition is
-#   the readinessProbe's, on /readyz of the operations port, so it includes the probe's period of 5 s at most, and the API's timestamps have a
-#   resolution of one second; a replica that is Ready within the budget therefore started within it). Prints one line per replica, sets
+#   the readinessProbe's, on /readyz of the operations port. The kubelet runs no readinessProbe until the startupProbe has succeeded, so the
+#   number includes up to the startupProbe's period (2 s, deploy/charts/hub/templates/statefulset.yaml:96-100) and then up to the
+#   readinessProbe's (5 s, lines 106-108), and the API's timestamps have a resolution of one second. A replica that is Ready within the
+#   budget therefore started within it; a replica that is not may have lost the time to probe overhead (up to about 7 s of the 10 s in the
+#   worst case, from the periods and not measured), so a red P11 on kind is read against that before it is read as a slow start). Prints one line per replica, sets
 #   P11_WORST to the slowest, and returns 0 when none is over BUDGET, 1 when one is, and 2 when there is nothing to judge (no line, a line
 #   without a whole number of seconds, a budget that is not a whole number): never a pass on nothing.
 P11_WORST=""

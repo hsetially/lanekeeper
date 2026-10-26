@@ -27,7 +27,8 @@
 #              Google's ranges, so a request through the API server's pod proxy would be refused by the policy it is meant to test.
 #              P11 is asserted once they are Ready: each replica must be Ready within 10 s of its container's start (lib.sh,
 #              p11_verdict). The budget is the design scale's and kind's CPUs and disks are not, so a miss is a finding to read
-#              (the readinessProbe's period of 5 s is inside the number), not a flake to retry. While the hub cannot start (below),
+#              (the number includes the startupProbe's period of 2 s and the readinessProbe's of 5 s, statefulset.yaml:96-108, so a miss may be
+#              probe overhead: lib.sh and README.md say how much), not a flake to retry. While the hub cannot start (below),
 #              the summary says "NOT MEASURED" for P11; it never reports a number it did not measure.
 #
 # THE HUB DOES NOT BECOME READY TODAY, AND THIS TEST SAYS SO. crates/hub/src/main.rs exits 1 by design until the identity module (03a)
