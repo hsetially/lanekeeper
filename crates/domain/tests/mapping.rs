@@ -1,7 +1,7 @@
 //! D13/D82-D84: Git path <-> NFS path mapping, including the tenant-suffix rename.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use domain::{NfsPath, PathMappingRule, RepoPath, ReverseMapping, TenantId, TenantSet};
+use domain::{MapError, NfsPath, PathMappingRule, RepoPath, ReverseMapping, TenantId, TenantSet};
 use proptest::prelude::*;
 
 fn tenant(s: &str) -> TenantId {
@@ -99,6 +99,44 @@ fn dotfiles_and_multi_dot_names() {
             panic!("expected tenant mapping for {n:?}");
         };
         assert!(repo_path.as_str().starts_with("data/config/"));
+    }
+}
+
+/// A name that ends in a dot has no extension, so the suffix used to go after the dot (`core-sit1.` became `core-sit1.-sit1`),
+/// where `reverse` reads it as the extension: `core-sit1.` and `core.-sit1` were one NFS path, and the first read back as the
+/// second. The `engine_path_mapping` fuzz target found it.
+#[test]
+fn a_tenant_file_name_that_ends_with_a_dot_is_refused() {
+    let rule = PathMappingRule::default();
+    let sit1 = tenant("sit1");
+    for name in ["core-sit1.", "a.", "a..", ".env.", "b.tar.gz."] {
+        assert_eq!(
+            rule.tenant_to_nfs(&repo(&format!("data/config/x/{name}")), &sit1),
+            Err(MapError::TrailingDot),
+            "{name}"
+        );
+    }
+    // The file it collided with is a fine tenant file under its own name, and reads back as itself.
+    let other = repo("data/config/x/core.-sit1");
+    let mapped = rule.tenant_to_nfs(&other, &sit1).unwrap();
+    assert_eq!(mapped.as_str(), "x/core-sit1.-sit1");
+    match rule.reverse(&mapped, &tenants(&["sit1"])).unwrap() {
+        ReverseMapping::Tenant {
+            tenant: back,
+            repo_path,
+            ..
+        } => {
+            assert_eq!(back, sit1);
+            assert_eq!(repo_path, other);
+        }
+        base @ ReverseMapping::Base { .. } => panic!("expected tenant, got {base:?}"),
+    }
+    // A base file is never renamed, so a trailing dot is no problem there, and it reads back as itself.
+    let base = rule.base_to_nfs(&repo("config/x/core-sit1.")).unwrap();
+    assert_eq!(base.as_str(), "x/core-sit1.");
+    match rule.reverse(&base, &tenants(&["sit1"])).unwrap() {
+        ReverseMapping::Base { repo_path, .. } => assert_eq!(repo_path.as_str(), "config/x/core-sit1."),
+        tenant @ ReverseMapping::Tenant { .. } => panic!("expected base, got {tenant:?}"),
     }
 }
 
