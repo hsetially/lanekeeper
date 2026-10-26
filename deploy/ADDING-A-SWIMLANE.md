@@ -159,7 +159,7 @@ network:
 
 **Also add the NFS VM's outbound IP** (plan 09 A28): the sentinel that runs on the NFS VM reaches the agent port (8444) from there, through
 the same list. The one list feeds both the load balancer's `loadBalancerSourceRanges` and the hub's NetworkPolicy, so the two cannot differ.
-The chart refuses an empty list and the policy a range wider than a `/16`.
+The chart refuses an empty list and the policy a range wider than a `/16`. The sentinel itself is a signed RPM that configuration management installs on the NFS VM (`deploy/sentinel/README.md`: how to verify it, and what the package does and does not do); this runbook only lets its address in.
 
 Then move the hub's revision and let the platform Argo CD sync it (`deploy/argocd/README.md`). **Do this before the agent starts**: an agent
 whose address is not in the list is dropped at the load balancer and shows only as a connection that never completes.

@@ -43,7 +43,7 @@ just deploy-check        # schemas, lint, kubeconform -strict (offline), the pol
 just contract-check      # this chart against RBAC.md and HARDENING.md
 ```
 
-Four policies guard it, and each fails on its own: `storage.rego` and `topology.rego` (the spool), `rbac.rego` (what a Role may grant: the allow-list, never read from RBAC.md),
+Five policies guard it, and each fails on its own: `storage.rego` and `topology.rego` (the spool), `rbac.rego` (what a Role may grant: the allow-list, never read from RBAC.md),
 `network.rego` (the five destinations) and `hardening.rego` (S16 and the agent's contract). `contract.rego` shows that the rendered
 Roles, bindings, NetworkPolicy and pod equal the two contract files, which `deploy/tests/contract-extract.sh` reads out of the
 Markdown. A change to the chart that the files do not say, and a change to the files that the chart does not follow, are both

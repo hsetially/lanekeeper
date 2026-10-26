@@ -20,8 +20,8 @@
 #       the package is unsigned, was signed by another key, or has changed.
 #
 # The tools are rpm and gpg from the image that `deploy/sentinel/build.sh --tools` makes (LK_RPM_TOOLS_IMAGE, default
-# lanekeeper-rpm-tools). The key is RSA, because the rpm 4.14 of Rocky Linux 8 reads RSA and DSA signatures and not EdDSA, and has no
-# subkey, so there is one fingerprint to compare. Signatures use SHA-256.
+# lanekeeper-rpm-tools). The key is RSA, which the rpm 4.14 of Rocky Linux 8 verifies (tests/install.sh shows it; no other type was tried),
+# and has no subkey, so there is one fingerprint to compare. Signatures use SHA-256.
 set -euo pipefail
 
 die() { echo "sign.sh: $*" >&2; exit 2; }

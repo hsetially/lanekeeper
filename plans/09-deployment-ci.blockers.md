@@ -1,6 +1,6 @@
 # Plan 09 blockers
 
-Status on 2026-10-25, T6 run: **B1 to B4 are resolved; B5 is open by a human's decision and stops `just verify-09` (and nothing else of T3 to T6); B7 and B8 are informational and need a human before a swimlane is deployed; B9 is informational; B10 is decided (a human confirmed the interim image, below); B11 and B12 are informational findings of T6.**
+Status on 2026-10-26, T8 run: **B1 to B4 are resolved; B5 is open by a human's decision and stops `just verify-09` (and nothing else of T3 to T8); B7 and B8 are informational and need a human before a swimlane is deployed; B9 is informational; B10 is decided (a human confirmed the interim image, below); B11 and B12 are informational findings of T6; B13 is an informational finding of T8: the RPM release key and its trust root do not exist, and the Rocky and Debian repositories are refused, so the real `audit` package and a musl C toolchain could not be installed.**
 The T1 sections below are from the third T1 run (after a human allowed `us.aws.cdn.hf.co` and merged the plan amendment, PR #29):
 T1 is complete; the commit `e2c199d` holds the code and the measurements were taken at it.
 
@@ -18,6 +18,7 @@ T1 is complete; the commit `e2c199d` holds the code and the measurements were ta
 | B10 | **decided (T6 run)** | the plan names CloudNativePG's `standard` image for the database and built-in barman for the backups; the `standard` image has no barman. **A human confirmed the interim image** (`16.15-202610050823-system-trixie`, built-in barman). Moving to the Barman Cloud plugin is a later open question (B10 section below) |
 | B11 | **open, informational (T6)** | no operation creates a swimlane in the hub, so step 1 of `deploy/ADDING-A-SWIMLANE.md` cannot be completed by following it (T6 notes below) |
 | B12 | **open, informational (T6)** | what Binary Authorization needs that no chart makes, and what could not be confirmed without Google's documentation (T6 notes below) |
+| B13 | **open, informational (T8)** | the RPM release key and its Workload Identity trust root are made by no one (`RPM-GPG-KEY-lanekeeper.pub` is a marker); `dl.rockylinux.org`, `mirrors.rockylinux.org` and `deb.debian.org` are refused, so the install test ran with a labelled stand-in for `audit` and the musl build has no C toolchain (T8 notes below) |
 
 ## B1 (T1): resolved. The model lock is filled in, from a download made here
 
@@ -759,3 +760,129 @@ No new host was refused, and nothing was pinned from a guess.
 | `grype.anchore.io` | reachable | grype's vulnerability database (downloaded once, then cached in `target/grype-db`) |
 | `ghcr.io` and `pkg-containers.githubusercontent.com` | not probed again | the database image's layers are still B9; the nightly job is the first scan of it |
 | `docs.cloud.google.com`, `registry.k8s.io` | not probed again | still B6 |
+
+
+# T8 notes (2026-10-26)
+
+T8 is built and every check it owns passes. `just verify-09` still stops, for **B5 and nothing else**: the gcp chart refuses to render until a
+person runs `node deploy/tools/github-hook-ranges.mjs --write`. Nothing was typed in, copied or faked to get around that, and no range was swapped in,
+even for one run: `deploy/values/hub/github-hook-ranges.yaml` is still the unresolved marker, `cloudarmor.yaml` and its refusal are unchanged,
+`planted_gcp` is unchanged and still counts its failure, and no test was touched to make a recipe pass. T8 added no `enabled` switch for anything.
+
+## Which commands of `verify-09` pass, and which fail only because of B5 (committed tree, each recipe run on its own, `just` stops at the first failure)
+
+| Recipe | Result |
+|---|---|
+| `ops-tools-check`, `ci-lint`, `pins-test`, `images-policy-test`, `images-builder-test`, `images-publish-test`, `schemas-verify`, `deploy-lint`, `contract-check`, `env-names-test`, `tools-test` | exit 0 (`ci-lint`: actionlint, the pin check over 112 references, the workflow rules over 10 workflows, zizmor offline with no finding, shellcheck on 26 scripts; `pins-test` 78 of 78; `images-policy-test` includes `cargo test -p hub --test hardening` and `-p agent --test hardening`, 5 of 5 each; `contract-check` 34 of 34 on the real RBAC.md and HARDENING.md) |
+| `policy-test` | exit 0: **1,002 of 1,002** (851 before T8; 905 after the agent's spool, 1,002 with the sentinel's two policies) |
+| `sentinel-check` (new, now part of `verify-09`) | exit 0: 20 unit-parser tests, the S25 policy (72) and the Dockerfile.build policy (25) tests, the policies on the real unit (23) and the real `Dockerfile.build` (14), the 13 planted Dockerfile rules through the real parser, and a unit with a capability refused through the real parser |
+| `deploy-render` | exit 1, **B5 only**: hub 6, 13, 13 resources valid; db 2, 4, 4; `gcp-storage` 19 and 19; **agent 11 of 11 (it was 9: the StorageClass and the claim)**; the Argo CD files 7 of 7. The two failures are `gcp` with staging and prod, with the B5 message |
+| `policy-check` | exit 1, **B5 only**: conftest passes for hub, db, `gcp-storage` and **agent (270 of 270)**, the Argo CD policy on both clusters' files, and the scope of hub, db, `gcp-storage` and **agent** against their projects; it fails for `gcp` with staging and prod, and for the scope of `gcp` with Cloud Armor, each with the B5 message |
+| `deploy-planted` | exit 1, **B5 only**: 417 cases report `ok` (388 before T8); the one failure is the Cloud Armor group, `the gcp chart does not render with the committed hook ranges` |
+| `just verify-09` | stops at `deploy-render`, for B5 |
+
+The T8 Verify of the plan is `just sentinel-test`, which is not part of `verify-09` (it needs Docker and a privileged container, as `images-repro` does):
+**exit 0 in 3 min 13 s**, from the committed files (`git archive HEAD`), with the audit stand-in of B13 below. Its checks, in order: the signing script (every case), a
+throwaway key signs the RPM, the CycloneDX SBOM (2 components) is written and scanned (grype v0.120.1: "No vulnerabilities found"), then on **Rocky Linux 8.9 (systemd
+239-78.el8) and 8.10 (239-82.el8)**: `rpm -K` refuses the package until the key is imported, passes after, and refuses a changed byte; dnf refuses the unsigned and the
+changed package; dnf refuses the package until `audit` is there; the files, owners and modes; `rpm -V` clean; `systemd-analyze verify` silent; `systemctl start`; the probe;
+removal and reinstall. Then the exposure score: **1.7** (limit 2.0), scored by systemd 252 (252-67.el9_8.6.alma.1), and the self-test (10 worse units refused). Then the
+cosign script. 124 `ok` lines, no failure.
+
+## A15: the exposure score, measured, and no escalation was needed
+
+`systemd-analyze security --offline=true --threshold=20` on the unit packaged in the RPM, by the pinned AlmaLinux 9.8 image: **1.7 OK**. Counted against it (11 items): `PrivateNetwork` 0.5, the two
+address-family items 0.3 and 0.1, `ProtectClock`, `ProtectKernelLogs`, `ProtectProc`, `PrivateUsers` and `IPAddressDeny` 0.2 each, `ProtectHostname`, `ProcSubset` and
+`RootDirectory` 0.1 each (the table of the analyzer is in the README of deploy/sentinel). An early draft of the unit that also set `ProtectClock`, `ProtectHostname`,
+`ProtectKernelLogs`, `ProtectProc` and `ProcSubset` scored 1.2 against 1.9 without them; **the unit does not set them**, and a mutant that does is refused by
+`exposure.sh` for exactly that reason ("Unknown lvalue" on 8.9 and 8.10) although its score is better. What each directive of the unit is worth was measured by
+removing it (3.7 without `CapabilityBoundingSet=`, 3.3 without `SystemCallFilter`, 2.4 without `RestrictNamespaces`, 2.1 without `User=` or without
+`RestrictAddressFamilies`, and 1.7 to 1.9 for the rest, so the limit of 2.0 is 0.3 above the unit).
+
+Two things found while doing it. (1) `systemd-analyze verify` on 239 prints `Unknown lvalue 'ProtectClock' in section 'Service'` and **exits 0**, so a check on its exit status
+would accept a unit that Rocky 8 half ignores: `install.sh` and `exposure.sh` check that its output is empty. (2) **Rocky's 239-78.el8 and 239-82.el8 are not upstream 239**:
+they read `RestrictSUIDSGID` (upstream 242), `PrivateMounts` and the rest of the 239 list, and not `ProtectClock`, `ProtectHostname`, `ProtectKernelLogs`, `ProtectProc`
+or `ProcSubset` (each tested on both). The unit sets `RestrictSUIDSGID=yes` (0.2 of score, and a real restriction) on the strength of that measurement; on an EL8 whose systemd is
+older it would be ignored with a line in the journal.
+
+## B13 (T8, informational): the RPM release key does not exist, and three hosts were refused
+
+**The key.** Plan A16: the RPM release key is a GPG key in Secret Manager, read through Workload Identity Federation by the protected `release` job, and "no stored keys".
+Nothing makes the key, the secret, the pool and provider that admit only this repository's `sentinel-v*` tags in the `release` environment, the service account, the
+environment or the three repository variables (`LK_RPM_WIF_PROVIDER`, `LK_RPM_SERVICE_ACCOUNT`, `LK_RPM_SIGNING_SECRET`, now known to actionlint). It is the same
+situation as B12 (2) for the CI signing key, and it is handled like B5 and B1: `deploy/sentinel/RPM-GPG-KEY-lanekeeper.pub` is committed as an **unresolved marker** (the
+plan lists the file; a key made here would be a trust root with a private half that nobody holds), `sign.sh release` refuses a marker ("is not a public key") and a secret
+key whose fingerprint is not the committed one, and a release tag stops at `sign-release`. One command makes the key (`sign.sh new-release-key --out ... | gcloud secrets
+versions add ... --data-file=-`: the secret key goes to standard output once). Pull requests are signed with a throwaway key made inside a container for the run, and
+verified with it, so every verification step is tested. The invariant "the committed file is the marker or a public key, never a private key" is a test.
+
+**The hosts** (probed from this sandbox on 2026-10-26; the proxy answers the CONNECT with 403):
+
+| Host | Result | Used for |
+|---|---|---|
+| `dl.rockylinux.org`, `mirrors.rockylinux.org`, `download.rockylinux.org`, `rockylinux.org` | **refused** (the proxy's status lists these four as `connect_rejected`) | Rocky Linux 8 repositories: the real `audit` package for the install test. **That piece stopped**: the test ran with `deploy/sentinel/tests/audit-stand-in.spec`, a package that only provides `audit` and the directories it owns (labelled in its own name and release, installed only with `--audit stand-in`, and announced in capitals by the test). CI uses `--audit repo` (`dnf -y install audit`), which has never run |
+| `deb.debian.org`, `security.debian.org` | **refused** (`connect_rejected` in the proxy's status) | Debian packages: `rpm` for the builder and `musl-tools` for a musl C compiler. The RPM is built with Ubuntu 24.04's rpm instead (see decisions); a musl C toolchain is not in `Dockerfile.build`, so the static build works for a crate with no C code (the stub) and a dependency with C code (prompt 17's mutual TLS) needs one added and tested |
+| `repo.almalinux.org`, `mirrors.almalinux.org`, `vault.almalinux.org`, `vault.centos.org`, `mirror.stream.centos.org`, `dl.fedoraproject.org`, `mirrors.fedoraproject.org`, `cdn-ubi.redhat.com`, `registry.access.redhat.com`, `quay.io`, `snapshot.debian.org`, `ftp.debian.org`, `mirrors.kernel.org`, `repo.rockylinux.org`, `sources.debian.org`, `packages.debian.org`, `cdn-fastly.deb.debian.org` | no answer to curl (code 000) | looked at as other sources for rpmbuild and for `audit`; none was needed once Ubuntu's archive worked |
+| `archive.ubuntu.com` | reachable | `rpm` 4.18.2+dfsg-2.1build2 and `gpg`, checked by apt against the archive's signatures |
+| `static.rust-lang.org` | reachable | the musl standard library of Rust 1.88.0 (hashed here) |
+| `registry-1.docker.io` | reachable; **429 once** | Docker Hub's anonymous limit was hit again by the rust base image after the builder cache was pruned. The same digest was pulled from `mirror.gcr.io` (`docker pull mirror.gcr.io/library/rust@sha256:f2a17efb...`) and tagged locally; no daemon setting was changed |
+| `mirror.gcr.io`, `ghcr.io`, `gcr.io`, `index.crates.io`, `static.crates.io`, `grype.anchore.io`, `pypi.org`, `proxy.golang.org`, `github.com` (git) | reachable | pins read from the registries (`crane digest`), the crates index, the vulnerability database |
+
+Every pin was read, not guessed: the Rocky tags `8.9` and `8.10` and the Ubuntu tag `noble-20260930.1` with `crane digest` on docker.io **and** mirror.gcr.io (same
+digests), the AlmaLinux tag `9.8-20261002` (which is also `9.8` and `latest` today), the musl standard library's sha256 from a download hashed here and compared with the
+`.sha256` file Rust publishes afterwards.
+
+## What T8 proved
+
+| Check | Result |
+|---|---|
+| The agent's spool, test first | 54 new Rego tests (905), then 97 for the sentinel (1,002). Every new rule was disabled one at a time in a scratch copy and `conftest verify` run on each: hardening 4, storage 7, topology 1, contract 9, systemd 22, dockerfile_artifact 14 (+ the one rule whose message is a literal, covered by its test) and three edits of the approved lists. **One survived the first run** (the pin rule for the final stage of `Dockerfile.build`: another rule refused the same input); it got a test and was killed. Three existing tests used list positions that the new env, mount and volume moved (`volumes/2`, `volumeMounts/2`, `env/12`); they now use the new positions, and one of them (`test_agent_deny_the_hub_ca_as_a_secret`) would have kept passing for the wrong reason |
+| The agent chart on the real output | kubeconform 11 of 11; policies 270 of 270; contract 34 of 34; 12 planted changes to the real output (the claim not larger than the bound, a bound the claim cannot hold, a bound that is not a number, the default class, read-write-many, prunable, deleted with the release, a rolling update, the spool as an emptyDir, a wrong path, read-only, inside the export) each refused for its own message, 5 more against the contract (another claim, the mount path, the directory, a rolling update, no claim rendered); 3 variants accepted (a larger spool and a raised bound, faster disks, no key: the fallback) and 9 template refusals (the bound or the path as a tunable, `1Ti`, `big`, a bound under 4 MiB or over 64 GiB, a key that is not one, a disk type, an unknown value) |
+| The install checks on a worse unit | the unit with a directive removed or added, built, signed and installed on 8.9: `ProtectClock` added (the 239 check), no `CapabilityBoundingSet` (`CapBnd` not empty), no `PrivateTmp`, no `PrivateDevices`, no `ProtectHome`, no `ProtectSystem`, no `SystemCallFilter`, no `NoNewPrivileges`. **Two were not caught by the process probe the first time** (without `ProtectSystem` the user cannot write `/etc` anyway; without `SystemCallFilter` the other directives still install a seccomp filter), and got probes: a directory the user owns outside the spool, and `nice(2)`, which is in `@resources`. `NoNewPrivileges` is caught by `systemctl show` and not by the process (a seccomp filter implies it), which is stated here and not hidden |
+| The signing script on a worse script | fingerprint comparison removed, the unsigned check removed, the secret-key count removed: each killed. One mutant survived (the grep after signing in `sign_and_check`): the verify subcommand, run next, is a second barrier. It is an equivalent mutant in practice, not a proof |
+| Reproducibility | `reproducible.sh` (two `--no-cache` builds): the same binary (`56cf2581...`) and the same RPM; a third build earlier gave the same RPM again |
+| What the VM's systemd reads | `PrivateMounts=yes` and `RestrictSUIDSGID=yes` are read by Rocky's 239; the user the package makes is a system account (uid 998 in the container) with `/sbin/nologin` and the home `/var/lib/lanekeeper-sentinel` |
+
+## Decisions T8 made that a reviewer should look at
+
+1. **The RPM is built with Ubuntu 24.04's rpm, pinned by digest, in a Dockerfile.** Rocky's images have no `rpmbuild`, their repositories are refused here, and Debian's are
+   too. The spec fixes the payload (gzip), the file digests (SHA-256), the build host and the file times so that the rpm 4.14 of Rocky 8 reads it and two builds agree.
+   Only `rpm` is pinned to a version (the release pocket's, which does not move); `gpg` takes the archive's security updates. If a reviewer prefers every package
+   pinned, the price is a build that breaks when the archive moves on.
+2. **A15 is read as "the unit sets only directives that the VM's systemd reads", and checked by that systemd**, not as "directives from a list of 239's": a list would go stale
+   and would have missed Rocky's backports. The score is of that unit, so what 239 cannot do is counted against it.
+3. **`RestrictSUIDSGID=yes` is set** although upstream 239 does not have it (above).
+4. **The socket's mode is `0666` inside a `0750 root:lanekeeper-sentinel` directory** (A17), because the plugin runs as root and cannot set a group, and a unix socket is
+   connected to with write permission on the file. Prompt 17 confirms it against the daemon. A reviewer who dislikes a world-writable socket mode should look at the directory.
+5. **The unit has an `[Install]` section (`WantedBy=multi-user.target`)** so that configuration management can `enable` it; the policy allows that and nothing else there. The
+   package neither enables nor starts it.
+6. **`ReadWritePaths=` and `StateDirectory=` both name the spool**, so the one writable path is stated in a line that the policy reads, and systemd makes the directory.
+7. **A separate policy for `Dockerfile.build`** (`dockerfile_artifact.rego`) instead of loosening `dockerfile.rego`: the runtime rules (distroless, a numeric user, an entrypoint)
+   do not apply to an export, and a switch in `dockerfile.rego` that skips them for a final `FROM scratch` would let a runtime image skip them too.
+8. **Separate repository variables for the RPM key** (`LK_RPM_*`), not the image signing account's: the account that signs images must not read the RPM key, and the reverse.
+   The tag pattern is `sentinel-v*`, not `v*`, so a product tag does not create two releases.
+9. **The agent's StorageClass is rendered by the agent chart** (cluster-scoped), because `storage.rego` requires the class of every claim to be rendered with it and
+   carry a key. So the swimlane's Argo CD project grows one cluster-scoped kind, by name (`lanekeeper-agent-cmek`), and the policy compares it. `reclaimPolicy: Delete`:
+   the hub recovers lost spool contents by root comparison (HARDENING.md).
+10. **`spool.maxBytes` is a value of the chart, not a tunable**, so that `storage.rego` can compare the claim with the bound; `config.tuning` refuses `LK_SPOOL_MAX_BYTES`
+    and `LK_SPOOL_DIR`. The claim cannot be smaller than the agent's range allows (4 MiB) by the schema, and the policy keeps it larger than the bound.
+11. **`contract.rego` now compares volumes (kind and one detail), the mounts as a set, and four path variables** with HARDENING.md, and ties `Recreate` and the rendered
+    claim to the contract's own claim. It still does not compare the other variables (their values are the swimlane's, and `env-names.sh` holds the names).
+12. **Renovate**: the custom manager's pattern now accepts digits in the variable name (`LK_ROCKY_8_9_IMAGE` was invisible to it, and so to its own test, whose filter had the
+    same flaw), and the Rocky images are not proposed for another release.
+13. **`crates/*` is untouched, and no contract path changed.** Not changed either: B5, B7, B8, the hub chart's `network.rego` gap, `images.yml`.
+
+## Not done in T8
+
+- **The release key and its trust root** (B13); the real `audit` package in the install test; a cgroup v2 host; the audisp plugin and SELinux against the real daemon (A17); a musl C
+  toolchain; the sentinel's configuration and arguments (prompt 17); the sentinel workflow on GitHub; keyless signing and the release.
+- **`CODEOWNERS`** has no entry for `deploy/sentinel/**`, `.github/workflows/sentinel.yml` or `RPM-GPG-KEY-lanekeeper.pub`; once the key exists, that file is a trust root
+  and a change to it should need a platform reviewer.
+- **The kind job** (still T5's omission, and A1).
+
+## Environment
+
+The Docker daemon was not running at the start of the run and was started with `dockerd` and its default settings. Disk was the constraint again (2.4 to 3.8 GB free for most of
+the run): `target/grype-db` (3.3 GB of vulnerability database, downloaded each time the scan ran) was removed after each scan, the Docker builder cache was pruned (934 MB, then
+11 GB once the rust image was removed), the unused `fedora` image was removed, and the rust base image was pulled again from `mirror.gcr.io` by digest. `target/debug` (7.8 GB)
+was kept for the hardening tests. Nothing tracked was deleted.

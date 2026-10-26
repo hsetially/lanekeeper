@@ -434,6 +434,14 @@ planted_agent() {
     plant_append "a FQDN policy" agent sit1 $'apiVersion: networking.gke.io/v1alpha1\nkind: FQDNNetworkPolicy\nmetadata:\n  name: lanekeeper-agent-external\n  namespace: lanekeeper\nspec:\n  podSelector:\n    matchLabels:\n      app.kubernetes.io/name: lanekeeper-agent\n  egress:\n    - matches:\n        - pattern: example.com\n      ports:\n        - {protocol: TCP, port: 443}' "FQDNNetworkPolicy"
     plant_append "a second door" agent sit1 $'apiVersion: v1\nkind: Service\nmetadata:\n  name: lanekeeper-agent\n  namespace: lanekeeper\nspec:\n  type: LoadBalancer\n  ports:\n    - {port: 9090}' "LoadBalancer"
 
+    # Without a key the claim is on the cluster's default class and says so, and the policy allows that with a warning (A11b, Q29). A swimlane
+    # is a real cluster, so the run fails on the warning, as it does for prod and staging; only kind renders it.
+    render agent sit1 --set spool.cmekKey= --set spool.fallbackClassName=premium-rwo >"$work/fallback.yaml"
+    if ! grep -q '^ *lanekeeper.io/cmek: fallback$' "$work/fallback.yaml" || ! grep -q '^ *storageClassName: "premium-rwo"$' "$work/fallback.yaml" || grep -q '^kind: StorageClass$' "$work/fallback.yaml"; then
+        fail "the fallback: the claim is not marked, or not on the fallback class, or a StorageClass was rendered without a key"
+    fi
+    expect_policy_failure "no customer-managed key for the spool (the fallback)" "$work/fallback.yaml" agent sit1 "Google-managed encryption"
+
     echo "== planted: the contract check refuses what the files do not say"
     plant_contract "the workload Role gives less than RBAC.md" 's/verbs: \["patch"\]/verbs: ["get"]/' "differs from RBAC.md"
     plant_contract "the workload Role gives more than RBAC.md" 's/resources: \["jobs"\]/resources: ["jobs", "cronjobs"]/' "differs from RBAC.md"
@@ -506,11 +514,6 @@ agent_variants() {
     in_variant '^ +value: "2147483648"$' "a larger spool with a raised bound"
     accept_variant "a spool on faster disks" --set spool.diskType=pd-ssd
     in_variant '^ +type: pd-ssd$' "a spool on faster disks"
-    # Without a key the claim is on the cluster's default class and says so; the policy allows it with a warning (A11b, Q29).
-    accept_variant "no customer-managed key for the spool (the fallback)" --set spool.cmekKey= --set spool.fallbackClassName=premium-rwo
-    in_variant '^ +lanekeeper.io/cmek: fallback$' "the fallback"
-    in_variant '^ +storageClassName: "premium-rwo"$' "the fallback"
-    ! grep -q '^kind: StorageClass$' "$work/variant.yaml" || fail "the fallback: a StorageClass was rendered without a key"
 }
 
 # The agent chart must stop before it writes a manifest that breaks a rule it owns. $1 is the case, $2 the fragment of the message,
