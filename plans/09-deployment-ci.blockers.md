@@ -1039,3 +1039,31 @@ All four advisories are dated 2026-10-16. None of the fixed releases is yanked. 
 - Whether the four advisories can be reached by how the hub and the agent use zstd (tonic's gRPC message compression between mTLS-authenticated peers) was **not analysed**. That belongs in the human's decision.
 
 **For a human:** decide between (a) a recorded override or ignore with an expiry, (b) waiting for a tonic release that takes zstd 0.14 (and for 2026-10-30 for the age rule), (c) something else. Until then `just verify` is not green on this branch or on `main`, and the PR text must not say it is.
+
+# CI first run (2026-10-26, after the first GitHub run of PR 31 at `671fe4e`)
+
+The full account, with the commands and the output, is in `plans/09-deployment-ci.evidence.md`, section "CI first run". This is the part that a person has to read.
+
+## What failed on GitHub, the root cause, and the fix (all local commits, not pushed, **nothing proven on GitHub yet**)
+
+| Job | Root cause | Fix |
+|---|---|---|
+| `images` / `scan-test` | the grype image's `/tmp` is root's (0755); `scan.sh` ran it as the runner's uid | `60f1693`: `deploy/images/container.sh`, a `/tmp` and `HOME` that the caller owns |
+| `sentinel` / `sign with a throwaway key` | `--cap-drop ALL` and no `--user`: root without `CAP_DAC_OVERRIDE` cannot write a directory the runner owns | `bc57355`: the container runs as the caller's uid, tmpfs owned by it; isolation unchanged and checked |
+| `images` / `image hub`, `image agent` ("Write the SBOM", exit 1, no output) | syft hit the same `/tmp`, and `--quiet` hid the message | `60f1693`, `8ecbe8b`, `7b45bf7`: not quiet, every failure says which command, line and exit code |
+| `bench` (33 min, then `Unrecognized option: 'baseline-lenient'`) | `--benches` also runs the lib and bin unit-test harnesses, which reject criterion's options | `a3093de`: `--bench '*'`, rule W7, timeout 240 to 300 minutes |
+| review bot, 5 findings | 1 did not reproduce as stated (its variants did), 2, 3 (`./gradlew` only), 4, 5 reproduced | `5fbed87` (2), `a3093de` (1, 3, 4, 5); gaps that remain are named in the checker's header and in threat-model residual 28 |
+
+## New, for a human (none of them is in prompt 09's paths, and none is touched)
+
+**B18. The six fuzz jobs of `rust.yml` fail on the first run: the fuzz crates are out of step with the workspace.** `fuzz agent-fuzz` and `fuzz mcp-fuzz`: `failed to select a version for tokio`, `=1.53.3` required by the crate against `=1.53.1` pinned by the fuzz crate's own manifest; `fuzz registry-fuzz`, `writes-fuzz`, `identity-fuzz`, `platform-fuzz`: `cannot update the lock file crates/<crate>/fuzz/Cargo.lock because --locked was passed`. The fuzz crates belong to their own prompts and carry their own lockfiles. The nightly workflow runs the same recipes, so it will fail the same way. Probably the workspace pins moved (PR 30) and the fuzz manifests and locks were not moved with them: not checked beyond the log. **For a human:** whoever owns those crates regenerates the fuzz manifests and lockfiles; 09 can add a CI check that a fuzz crate's pins equal the workspace's, once they agree.
+
+**B19. `osv-scan` (the `osv` job of `web.yml`) fails: advisories in lockfiles.** Besides the zstd crates (B17): `dompurify` 3.4.16 (GHSA-cg2g-xh64-v4q7, CVSS 9.2, fixed in 3.4.17; GHSA-mrv2-3pqr-j5jr 7.6; GHSA-c6gr-qvv4-5v3f), `undici` 7.29.1 and 7.30.0 (7.30.1), `fast-uri` 3.1.8 (3.1.9), `@vitest/mocker` 4.1.11 (4.1.12), `zod` 3.25.76 and 4.6.5 (4.6.6), all in `web/pnpm-lock.yaml`, and `RUSTSEC-2026-0310` against `domain 0.1.0` in `fuzz/Cargo.lock` and the other fuzz lockfiles: that is almost certainly osv-scanner matching this workspace's own path crate `domain` to an unrelated crates.io crate of the same name, a false positive. `dompurify` is not the docs sanitiser (that is ammonia, on the server, S12): it is Monaco's Markdown renderer's dependency, pinned to 3.4.16 by an override in the lockfile, and `web/src/editor/entry.ts` says the hub's CSP does not let it create its Trusted Types policy. Whether that makes the 9.2 advisory unreachable was **not analysed**; it belongs in the human's decision. Dependency files and exceptions are not 09's. **For a human:** bump the npm packages (each fixed release must be at least 14 days old, rule 15, or the age rule needs a recorded override as in B14), and decide how the `domain` collision is to be excluded (an osv-scanner ignore entry with a reason, or a rename of the crate).
+
+**B20 (informational). The first cold-cache compile of the bench job took 33 minutes, 28 of them in `jsonschema 0.58.3`.** The workspace `[profile.release]` has `codegen-units = 1` and `lto = "thin"`, which the bench profile inherits, so one generic-heavy dev-dependency of `hub-mcp` compiles on a single core. Not changed (the workspace `Cargo.toml` is not 09's). A candidate for whoever owns it: `[profile.bench.package.jsonschema] codegen-units = 16` or `opt-level = 1`, measured on a cold cache. `bench.yml`'s timeout is now 300 minutes because of it.
+
+**Not a blocker, seen once: `web-e2e` shard 2 of 5** failed at `pnpm exec playwright install --with-deps chromium` after 10 minutes on the re-run, where the other shards took 20 seconds. If it repeats, the step needs a timeout and a retry.
+
+## What is still unproven, said plainly
+
+The three container fixes are proven for uid 1001 with the Docker group on a machine that is not a hosted runner (real grype database, real syft and rpm tools, real scripts end to end where possible); they are not proven on GitHub. The hub and agent images were not put through `sbom.sh` and `scan.sh` here (a hand-made image archive and a one-file image were). `scan.sh --image` (the database image, **B9**) was not run. Every job that was never reached because a job before it failed has not run at all: `sentinel` / `SBOM and scan`, `install on Rocky Linux 8.9 and 8.10`, `exposure score`, `sign with the release key`, `publish the release`; `images` / `publish`; `kind-e2e` (**A1**, **B16**). The bench timeout is an estimate from two measurements on different machines. The checker changes are proven on their fixtures and on 4,882 lines of this repository; the rule is text, and residual 28 says what it cannot see.
