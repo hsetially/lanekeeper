@@ -34,6 +34,12 @@ test('text inside a block scalar is not a reference', () => {
   assert.match(r.out, /1 references checked/);
 });
 
+test('a pinned reference written as a folded block scalar is read and counted', () => {
+  const r = run(fx('good-uses-folded.yml'));
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /1 references checked/);
+});
+
 test('a matrix key called image is a name, not an image', () => {
   const r = run(fx('matrix-image-key.yml'));
   assert.equal(r.code, 0, r.out);
@@ -55,6 +61,10 @@ const refused = [
   ['bad-container-image.yml', /bad-container-image\.yml:7: .*node:22.*digest/],
   ['bad-reusable-workflow.yml', /bad-reusable-workflow\.yml:5: .*w\.yml@v1.*tag or branch/],
   ['bad-flow-style.yml', /bad-flow-style\.yml:7: .*actions\/checkout@v4/],
+  // A block scalar (`>-`, `>`, `|`) holds the reference on the lines below the key; the line reported is the one with the text.
+  ['bad-uses-folded.yml', /bad-uses-folded\.yml:8: .*actions\/setup-node@v4.*tag or branch/],
+  ['bad-uses-literal.yml', /bad-uses-literal\.yml:9: .*actions\/checkout@main.*tag or branch/],
+  ['bad-image-folded.yml', /bad-image-folded\.yml:9: .*pgvector\/pgvector:pg16.*digest/],
 ];
 for (const [file, pattern] of refused) {
   test(`${file} is refused`, () => {
@@ -63,6 +73,14 @@ for (const [file, pattern] of refused) {
     assert.match(r.out, pattern);
   });
 }
+
+test('both images of a file written as block scalars are reported', () => {
+  const r = run(fx('bad-image-folded.yml'));
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /bad-image-folded\.yml:9: .*pgvector/);
+  assert.match(r.out, /bad-image-folded\.yml:12: .*node:22/);
+  assert.match(r.out, /2 of 2 references are not pinned/);
+});
 
 test('every violation in a file is reported, not only the first', () => {
   const r = run(fx('bad-many.yml'));

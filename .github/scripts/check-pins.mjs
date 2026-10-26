@@ -18,6 +18,8 @@
 //
 // Text inside a block scalar (`run: |`) is a script, not a reference, and is skipped, and so are the keys of a `matrix:` (a
 // matrix key called `image` names a variant; an image pulled by one of them must be written as an expression, which is refused).
+// The exception is a reference that is itself written as a block scalar (`uses: >-` with the action on the next line, or `image: |`):
+// its lines are the value, and are checked as one (a `#` inside it is part of the value, not a comment).
 // A version comment after the SHA (`# v4.2.2`) is allowed and not required.
 //
 // Exit codes: 0 every reference is pinned; 1 at least one is not (each is printed as file:line: reason); 2 nothing to check
@@ -80,8 +82,8 @@ export function checkText(text, { isActionFile = false } = {}) {
   let blockCol = null; // the column of the key that opened a block scalar, while its lines are being skipped
   let matrixCol = null; // the column of a `matrix:` key, while its lines are being read: its keys are names, not references
 
-  const visit = (kind, raw, lineNo) => {
-    const value = scalar(raw);
+  const visit = (kind, raw, lineNo, verbatim = false) => {
+    const value = verbatim ? raw.trim() : scalar(raw);
     if (kind !== 'uses' && value === '') return; // opens a mapping
     refs += 1;
     const why = kind === 'uses' ? checkUses(value) : checkImage(value, isActionFile);
@@ -118,6 +120,21 @@ export function checkText(text, { isActionFile = false } = {}) {
     }
 
     const key = /^(uses|image|container)\s*:(?:\s+(.*))?$/.exec(rest);
+    if (key && blockCol !== null) {
+      // The value is a block scalar: the reference is on the lines below the key, folded or not. Join them and check the result; the
+      // line reported is the first one with text. The loop skips these lines afterwards because blockCol stays set.
+      const body = [];
+      let textLine = i + 1;
+      for (let j = i + 1; j < lines.length; j += 1) {
+        const at = lines[j].search(/\S/);
+        if (at < 0) continue;
+        if (at <= keyCol) break;
+        if (body.length === 0) textLine = j + 1;
+        body.push(lines[j].trim());
+      }
+      visit(key[1], body.join(' '), textLine, true);
+      continue;
+    }
     if (key && blockCol === null) {
       visit(key[1], key[2] ?? '', i + 1);
       continue;

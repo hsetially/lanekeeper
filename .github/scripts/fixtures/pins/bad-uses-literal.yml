@@ -1,0 +1,9 @@
+name: bad-uses-literal
+on: [push]
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - name: A literal block scalar is a value too
+        uses: |
+          actions/checkout@main
