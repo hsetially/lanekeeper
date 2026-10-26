@@ -53,13 +53,19 @@ need_out() {
     out="$(cd "$out" && pwd)"
 }
 
-# The container: no network, a tmpfs for the key (GNUPGHOME) and one for the work, the RPM read-only, the output directory writable.
+# The container: no network, no capability, a read-only root, a tmpfs for the key (GNUPGHOME) and one for the work, the RPM read-only, the
+# output directory writable. It runs as the user who runs this script, and its tmpfs are that user's: the output directory belongs to that
+# user (`mkdir -p` above made it, or a CI step did), and a container root without CAP_DAC_OVERRIDE, which is root with none of the
+# capabilities this drops, cannot write a directory that another uid owns (the first CI run: `cp: cannot create regular file '/out/...'`).
+# Running as that uid and not adding a capability keeps the isolation, and the files that land in --out belong to the caller.
 run_tools() { # SCRIPT [docker run args...]
-    local script="$1"
+    local script="$1" uid gid
+    uid="$(id -u)" gid="$(id -g)"
     shift
-    docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
-        --tmpfs /gnupg:rw,mode=0700,size=32m --tmpfs /work:rw,mode=0755,size=128m --tmpfs /tmp:rw,size=16m \
-        -e GNUPGHOME=/gnupg "$@" "$tools" sh -eu -c "$script" sh
+    docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user "$uid:$gid" \
+        --tmpfs "/gnupg:rw,mode=0700,uid=$uid,gid=$gid,size=32m" --tmpfs "/work:rw,mode=0755,uid=$uid,gid=$gid,size=128m" \
+        --tmpfs /tmp:rw,mode=1777,size=16m \
+        -e GNUPGHOME=/gnupg -e HOME=/tmp "$@" "$tools" sh -eu -c "$script" sh
 }
 
 # The pieces of shell that run inside the container: single quotes on purpose, nothing here is for the host's shell to expand.

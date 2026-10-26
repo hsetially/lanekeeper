@@ -10,6 +10,9 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Started as root, step down to the unprivileged user that a CI runner is. As root, no permission is ever refused, and the container of
+# sign.sh, which has no capability, could not write a directory that the runner owns (the first CI run): this test would not have seen it.
+[ "$(id -u)" -ne 0 ] || exec "$here/../../tests/as-user.sh" "${BASH_SOURCE[0]}" "$@"
 root="$(git -C "$here" rev-parse --show-toplevel)"
 sign="$root/deploy/sentinel/sign.sh"
 rpm_file=""
