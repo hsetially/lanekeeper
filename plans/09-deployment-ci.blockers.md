@@ -1,6 +1,7 @@
 # Plan 09 blockers
 
 Status on 2026-10-26, T8 run: **B1 to B4 are resolved; B5 is open by a human's decision and stops `just verify-09` (and nothing else of T3 to T8); B7 and B8 are informational and need a human before a swimlane is deployed; B9 is informational; B10 is decided (a human confirmed the interim image, below); B11 and B12 are informational findings of T6; B13 is an informational finding of T8: the RPM release key and its trust root do not exist, and the Rocky and Debian repositories are refused, so the real `audit` package and a musl C toolchain could not be installed.**
+**Review round 1 (FIX step, 2026-10-26, commits `643a896` to `df624a6`): four blocking findings fixed in the repository (disk steps lost in the merge with `origin/main`, a build step in the `sign-release` job, `storage.googleapis.com` missing from the hub's egress, the kind test missing) and one non-blocking one; one new blocker, B16 (no kind cluster can start in this sandbox); B5, B14, B15 and A19 untouched, as instructed. Status stays PARTIAL. See the last section.**
 The T1 sections below are from the third T1 run (after a human allowed `us.aws.cdn.hf.co` and merged the plan amendment, PR #29):
 T1 is complete; the commit `e2c199d` holds the code and the measurements were taken at it.
 
@@ -20,6 +21,7 @@ T1 is complete; the commit `e2c199d` holds the code and the measurements were ta
 | B12 | **open, informational (T6)** | what Binary Authorization needs that no chart makes, and what could not be confirmed without Google's documentation (T6 notes below) |
 | B13 | **open, informational (T8)** | the RPM release key and its Workload Identity trust root are made by no one (`RPM-GPG-KEY-lanekeeper.pub` is a marker); `dl.rockylinux.org`, `mirrors.rockylinux.org` and `deb.debian.org` are refused, so the install test ran with a labelled stand-in for `audit` and the musl build has no C toolchain (T8 notes below) |
 | B14 | **open, needs a human (FINAL)** | `cargo deny check` and `cargo audit` fail on three RustSec advisories published 2026-10-13 to 2026-10-20, and every fixed release is younger than rule 15's 14 days, so the fix and the dependency rule conflict (section B14 at the end). Not caused by this branch: `Cargo.lock`, `Cargo.toml` and `deny.toml` are unchanged by it |
+| B16 | **open, informational (review round 1)** | the kind end-to-end test is written but cannot be run here: the host is cgroup v1 and runc in a kind node fails (`failed to update /proc/self/oom_score_adj: Permission denied`), and the CloudNativePG operator and database images are on a refused host (B9). It is also red by design until A1 (section "Review round 1") |
 | B15 | **open, needs a human (FINAL, benchmarks)** | two registered budgets are missed on every run, including five runs on a quiet machine: `P6.index_settings` (prompt 04's bench, p95 62.4 to 72.1 ms against 60 ms) and `P12.audit_record` (prompt 03a's bench, p95 3.14 to 3.59 ms against 3 ms). Not caused by this branch (it changed neither crate nor `perf/budgets.toml`). Nothing was changed to make them pass (section B15 at the end) |
 
 ## B1 (T1): resolved. The model lock is filled in, from a download made here
@@ -579,7 +581,7 @@ stanza), `deploy/policy/database.rego` (the `# backups` section) and `database_t
 - **The kind job** (`deploy/tests/kind/run.sh`, the job `kind-e2e` of `images.yml`, `just kind-e2e`). The plan's traceability gives acceptance 3 to T3 and T5, T3's
   notes say "the kind job is T5", but T5's row lists no file for it, nothing in this sandbox can run it (the CloudNativePG operator image is on
   `ghcr.io`, whose layers are B9, and the disk has 2.4 GB free), and it cannot pass until the hub serves (A1). A script
-  that was never run would be a guess, so it is left for a task of its own; `deploy/values/{hub,db}/kind.yaml` exist for it.
+  that was never run would be a guess, so it is left for a task of its own; `deploy/values/{hub,db}/kind.yaml` exist for it. **[Review round 1 wrote it anyway, as the reviewer required (blocking item 4): `deploy/tests/kind/run.sh`. It has still never run past the creation of a cluster (B16 below).]**
 - **Renovate does not see the database image** (`deploy/values/db/*.yaml` holds the tag and digest in a shape its managers do not match). It is
   updated by hand, at least 14 days after publication (rule 15). A custom manager could not be tested here.
 - **Egress of the database pods** (decision 4) and **monitoring on 9187**.
@@ -712,7 +714,7 @@ their test. The policy is in `DRYRUN_AUDIT_LOG_ONLY` (A5, Q24) precisely so that
 
 - **The CI signing key, the Workload Identity Federation pool and the IAM around them** (B12, 2), **Binary Authorization for the swimlane projects** (B12, 3).
 - **The hub-side swimlane registry** (B11).
-- **The kind job** (still T5's omission: nothing in this sandbox can run it, and the hub does not serve, A1).
+- **The kind job** (still T5's omission: nothing in this sandbox can run it, and the hub does not serve, A1). **Written in review round 1; see "Review round 1" at the end.**
 - **Renovate does not move `targetRevision`**; a person does, by the procedure. **No `CODEOWNERS` entry** for `deploy/argocd/**` or `deploy/policy/**`: a human
   may want the platform team to review them.
 - **Pod Security labels on the namespaces** (`deploy/argocd/README.md`, "Not verified here").
@@ -880,7 +882,7 @@ digests), the AlmaLinux tag `9.8-20261002` (which is also `9.8` and `latest` tod
   toolchain; the sentinel's configuration and arguments (prompt 17); the sentinel workflow on GitHub; keyless signing and the release.
 - **`CODEOWNERS`** has no entry for `deploy/sentinel/**`, `.github/workflows/sentinel.yml` or `RPM-GPG-KEY-lanekeeper.pub`; once the key exists, that file is a trust root
   and a change to it should need a platform reviewer.
-- **The kind job** (still T5's omission, and A1).
+- **The kind job** (still T5's omission, and A1). **Written in review round 1; see "Review round 1" at the end.**
 
 ## Environment
 
@@ -948,3 +950,36 @@ Run 1 ran while another agent's session used the same 4 vCPUs and Docker daemon 
 **What a human can choose.** (1) Measure on the bench runner CI uses (`vars.LK_BENCH_RUNNER`, "a quiet 4-core machine" per `bench.yml` A20; this sandbox is a 4-vCPU VM of unknown speed) and treat these two as noise or as real by that result. (2) Send them back to prompts 04 and 03a for a fix or a measured explanation. (3) Change the two thresholds through a `contract-change` PR, which only a human can approve. The same run also leaves the four web budgets below without a result; they are not a regression (next paragraph).
 
 **Not measured in this run.** `P10.route_change_ms`, `P10.diff_6000_lines_ms`, `P10.grid_5000_rows_fps` and `P10.lighthouse_perf` come from `just web-perf` (Playwright's Chromium and Lighthouse), which prompt 08 owns. No browser is installed here and the download hosts `cdn.playwright.dev` and `playwright.download.prss.microsoft.com` answer HTTP 000 from this sandbox, so they have no result and `bench-check` fails on them ("registered but no result"). `P10.initial_js_gzip_kb` was measured: running `pnpm build` writes it, 195.908 KB against 250. `P7.docs_search` and `P7.feature_status` are `registered = false` in the registry ("no benchmark yet") and are UNMET, as they were before this branch.
+
+## Review round 1 (FIX step): what was fixed, what is new, what is still unproven
+
+Commits `643a896` (merge of `origin/main`), `f5402a5`, `d7a8aaa`, `c88a5c9`, `0032cee`, `df624a6`. Gates re-run recipe by recipe on `df624a6` (`plans/09-deployment-ci.evidence.md`, "Review round 1"): `just verify-09` still fails only at `deploy-render`, `policy-check` and `deploy-planted` for B5; `pins-test` 92 of 92, `policy-test` 1003 of 1003, `contract-check` 34 of 34, `cargo test -p hub --test hardening` 5 of 5.
+
+### What changed, and what each fix leaves unproven
+
+1. **Disk (resolved in the repository).** The PR 25 steps ("Free disk space", "Disk left") were carried into `rust.yml` `test` (merge commit `643a896`) and added to `images.yml` `image`, `bench.yml` `bench`, `nightly.yml` `bench` and the new `kind-e2e` job; `consistency.test.mjs` keeps them. Unproven: that the freed space is enough on a real runner; no workflow has run on GitHub.
+2. **`sign-release` (resolved in the repository).** It compiles nothing now; the SBOM moved to a job without a token (`sbom`), and rule W6 of `check-workflows.mjs` refuses a build command in any job with `id-token: write`. **What W6 does not cover, and a person reads:** `sign-release` still runs `build.sh --tools` (a `docker build` of rpm and gpg from Ubuntu packages; the build container is given neither the job's token variables nor the key) and `sign.sh`; scripts and `just` recipes that a step calls are not looked into. Moving the tools-image build out of the signing job, as an artifact, would close that, at the price of trusting the artifact where the RPM is already trusted. Not done; not asked. Unproven: the artifact hand-over of `sentinel-sbom` into `target/sentinel/signed`, which relies on `upload-artifact`'s root-directory rule.
+3. **`storage.googleapis.com` (resolved in the repository).** Added to the hub chart's FQDN policy, `network.rego`, `HARDENING.md`, `hardening.rs`, with a planted case at each layer. Every other outside host of the hub crates was compared with the list; it was the only one missing. Unproven: enforcement by a cluster.
+4. **The kind test (written, never run past cluster creation: B16).**
+5. **`check-pins.mjs` (non-blocking 2, resolved).** A reference written as a block scalar is read.
+
+### B16 (review round 1, informational): the kind test cannot be run here
+
+**What was tried (2026-10-26).** `deploy/tests/kind/run.sh` with the pinned node image `kindest/node:v1.37.0@sha256:a1ed56cf...` (pulled in 17 s from Docker Hub).
+- Without a configuration of my own, the script stops in its preflight: `this host uses cgroup v1, and the kubelet of the pinned node image ... refuses to run on it` (exit 2). The kubelet's own message: `kubelet is configured to not run on a host using cgroup v1`.
+- With a scratch configuration that sets `failCgroupV1: false` (outside the repository, passed in `LK_KIND_CONFIG_FILE`), the kubelet starts and the control plane never comes up, because no pod sandbox can be created: `OCI runtime create failed: runc create failed: unable to start container process: can't get final child's PID from pipe: EOF; runc init error(s): nsexec[...]: failed to update /proc/self/oom_score_adj: Permission denied`. This is the sandbox's nested-container limit, not the script, the configuration or Kubernetes. The script's output for that run: `FAILED in the stage 'cluster': kind could not create the cluster`, its summary table, exit 1, the cluster and the registry removed.
+- Even a working cluster could not pull the CloudNativePG operator image or the database image: **`pkg-containers.githubusercontent.com` is refused** (`crane config` of `ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1`: `Forbidden`), which is B9 again. `registry.k8s.io` answers HTTP 000, which a kind node does not need (its images are in the node image).
+
+**Hosts probed from this sandbox:** `registry-1.docker.io` 401 (reachable, the node image pulled), `auth.docker.io` 200, `mirror.gcr.io` 401, `ghcr.io` 401 (manifests are readable; `crane digest` worked), `gcr.io` 401, `github.com` 200 (the kind binary and the CloudNativePG manifest downloaded), `hub.docker.com` 200, `objects.githubusercontent.com` 404, **`registry.k8s.io` 000**, **`pkg-containers.githubusercontent.com` 403**.
+
+**What this means.** Everything in `run.sh` past `kind create cluster` is unproven: the registry push and a node's pull by digest, containerd's `config_path` for `kind-registry.test` (the node image's own `config.toml` has none, so `run.sh` patches it through `containerdConfigPatches`), the operator, the database, every S6 check against CloudNativePG, the hub stage, `/readyz`, the time to Ready, and the A1 report on real pods. What was shown instead is in the evidence file: the S6 patterns against a stand-in PostgreSQL 16 with pgvector and the chart's `pg_hba` order, the manifest pin and rewrite, the `jq` expressions on canned data, the cgroup refusal. **The first CI run on a cgroup v2 runner is the test of the rest.** A person should expect it to find at least a small mistake.
+
+**It fails by design until A1 is resolved.** When the three replicas log `refusing to start without them` and exit 1 (`crates/hub/src/main.rs`), `run.sh` prints that this is plan 09 A1, that the replicas started and read their settings, and that the chart, the database and the image are not at fault; it exits 1. Nothing retries, fakes readiness or skips the stage. **For a human:** (a) assign the composition of the hub binary (A1); (b) decide whether a red `kind-e2e` blocks a merge (the `publish` job does not wait for it, so images are still published); (c) a nightly run of the kind test was not added (it would re-run the whole `images.yml`), say if you want one.
+
+### B14 after this step
+
+PR 30 (`7e53bf5`, "lockfile advisories") was merged into `origin/main` while this step was running. The instruction was not to merge it, so this branch was merged only up to `2d7d1cc`, the commit before it. B14 therefore still stands on this branch: `Cargo.lock`, `Cargo.toml`, `deny.toml` and `.cargo/audit.toml` are untouched. A plain `git merge origin/main` brings the fix in (`git merge-tree HEAD origin/main` is clean; the difference is `Cargo.lock`, `Cargo.toml` and `docs/decisions.md` only); whoever does it should then re-run `cargo deny check`, `cargo audit` and `just verify`.
+
+### Non-blocking items of the review that were left as they are
+
+1 (B7 and B8), 3 (`network.rego` and a second NetworkPolicy; `contract.rego` and the hub), 4 (B9 and B10), 5 (B11, B12, B13 and what never ran), 6 (`build_ca` secret mounts in the production Dockerfiles), 7 (`bench.yml` and `bench-check-rust`), 8 (branch protection and required-check names), 9 (`items: [uri]`, startup probe), 10 (T3 ticked while Cloud Armor is unproven), 11 (what the reviewer did not re-run).
