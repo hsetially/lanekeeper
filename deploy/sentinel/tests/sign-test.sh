@@ -73,6 +73,10 @@ check "the key file is a public key" is_public_key "$pub"
 check "the signed package verifies with its own key" "$sign" verify --rpm "$signed" --public-key "$pub"
 check "the signed package differs from the unsigned one" differ "$rpm_file" "$signed"
 expect_fail "the input is left unsigned" "not signed" "$sign" verify --rpm "$rpm_file" --public-key "$pub"
+# A container that exits with a code says so, as whom, on one line after its own messages (the first CI run had a step that ended with
+# exit code 1 and nothing to read).
+expect_fail "a container that fails says so in one line" "the container with rpm and gpg exited with code 1, run as uid $(id -u)" "$sign" verify --rpm "$rpm_file" --public-key "$pub"
+expect_fail "a command of the script that fails says which, and where" "sign.sh: line" "$sign" verify --rpm "$rpm_file" --public-key "$pub"
 
 echo "== it does not verify when it should not"
 mkdir "$work/tampered"

@@ -24,6 +24,11 @@
 # and has no subkey, so there is one fingerprint to compare. Signatures use SHA-256.
 set -euo pipefail
 
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=deploy/images/container.sh
+. "$here/../images/container.sh"
+lk_explain_failures # a command that fails under set -e says which, and where, on standard error (never on standard output: that carries a key)
+
 die() { echo "sign.sh: $*" >&2; exit 2; }
 usage() { sed -n '2,/^set -euo/p' "$0" | sed -n '/^#   deploy/,/^# The tools/p' | sed 's/^# \{0,1\}//' | head -n -1 >&2; exit 2; }
 
@@ -59,13 +64,16 @@ need_out() {
 # capabilities this drops, cannot write a directory that another uid owns (the first CI run: `cp: cannot create regular file '/out/...'`).
 # Running as that uid and not adding a capability keeps the isolation, and the files that land in --out belong to the caller.
 run_tools() { # SCRIPT [docker run args...]
-    local script="$1" uid gid
+    local script="$1" uid gid status=0
     uid="$(id -u)" gid="$(id -g)"
     shift
     docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user "$uid:$gid" \
         --tmpfs "/gnupg:rw,mode=0700,uid=$uid,gid=$gid,size=32m" --tmpfs "/work:rw,mode=0755,uid=$uid,gid=$gid,size=128m" \
         --tmpfs /tmp:rw,mode=1777,size=16m \
-        -e GNUPGHOME=/gnupg -e HOME=/tmp "$@" "$tools" sh -eu -c "$script" sh
+        -e GNUPGHOME=/gnupg -e HOME=/tmp "$@" "$tools" sh -eu -c "$script" sh || status=$?
+    # One line after the container's own messages, on standard error: standard output may carry the secret key (new-release-key).
+    [ "$status" -eq 0 ] || echo "sign.sh: the container with rpm and gpg exited with code $status, run as uid $uid; the lines above it are its own messages" >&2
+    return "$status"
 }
 
 # The pieces of shell that run inside the container: single quotes on purpose, nothing here is for the host's shell to expand.
