@@ -75,7 +75,52 @@ function scalar(value, at) {
   return str[1].replace(/\\(["\\])/g, '$1');
 }
 
+/**
+ * The ids in the `ignore = [ ... ]` array of the [advisories] table of a cargo-audit configuration. The array may span lines and carry
+ * `#` comments (stripped the way parse() does it). Like parse(), this accepts only the shape the file uses, a double-quoted RUSTSEC id
+ * per element, and THROWS on anything else.
+ */
+function auditIgnores(text) {
+  const code = text.split('\n').map((raw, i) => stripComment(raw, `line ${i + 1}`)).join('\n');
+  const m = /^\[advisories\][ \t]*\n(?:(?!\[)[^\n]*\n)*?[ \t]*ignore[ \t]*=[ \t]*\[([^\]]*)\]/m.exec(code);
+  assert.ok(m, 'the cargo-audit configuration has no `ignore = [ ... ]` array in its [advisories] table');
+  const body = m[1];
+  const left = body.replace(/"[^"]*"/g, '').replace(/[,\s]/g, '');
+  assert.equal(left, '', `the ignore array holds something other than double-quoted strings: ${left}`);
+  const ids = [...body.matchAll(/"([^"]*)"/g)].map((x) => x[1]);
+  for (const id of ids) assert.match(id, /^RUSTSEC-\d{4}-\d{4}$/, `${id} is not a RustSec advisory id`);
+  assert.equal(new Set(ids).size, ids.length, 'the ignore array names an advisory twice');
+  return ids;
+}
+
 const config = parse(read('osv-scanner.toml'));
+
+// What a human decided for each advisory that cargo-audit ignores, and until when: the rsa advisory is plan 01's extra path, and the four
+// zstd advisories are docs/decisions.md D135. cargo-audit cannot expire an ignore by itself, so osv-scanner.toml carries the date.
+const DECIDED_UNTIL = {
+  'RUSTSEC-2023-0071': '2027-04-30',
+  'RUSTSEC-2026-0391': '2026-11-30',
+  'RUSTSEC-2026-0398': '2026-11-30',
+  'RUSTSEC-2026-0403': '2026-11-30',
+  'RUSTSEC-2026-0410': '2026-11-30',
+};
+
+test('the cargo-audit ignore reader takes a multi-line array with comments, and refuses what is outside that shape', () => {
+  const text = '# top ] comment\n[advisories]\nignore = [\n  "RUSTSEC-2023-0071", # a ] and a "quote" in a comment\n  # a whole-line comment with "RUSTSEC-2000-0000"\n  "RUSTSEC-2026-0391",\n]\n';
+  assert.deepEqual(auditIgnores(text), ['RUSTSEC-2023-0071', 'RUSTSEC-2026-0391']);
+  assert.deepEqual(auditIgnores('[advisories]\nignore = ["RUSTSEC-2023-0071"]\n'), ['RUSTSEC-2023-0071']);
+  assert.deepEqual(auditIgnores('[advisories]\nignore = []\n'), []);
+  const bad = [
+    ['ignore = ["RUSTSEC-2023-0071"]\n', 'no `ignore'], // not in the [advisories] table
+    ['[other]\nignore = ["RUSTSEC-2023-0071"]\n', 'no `ignore'],
+    ['[advisories]\n[other]\nignore = ["RUSTSEC-2023-0071"]\n', 'no `ignore'],
+    ['[advisories]\nignore = ["RUSTSEC-2023-0071", 7]\n', 'other than double-quoted'],
+    ['[advisories]\nignore = ["RUSTSEC-2023-0071" "RUSTSEC-2026-0391" x]\n', 'other than double-quoted'],
+    ['[advisories]\nignore = ["not-an-id"]\n', 'not a RustSec advisory id'],
+    ['[advisories]\nignore = ["RUSTSEC-2023-0071", "RUSTSEC-2023-0071"]\n', 'twice'],
+  ];
+  for (const [t, why] of bad) assert.throws(() => auditIgnores(t), new RegExp(why.replace(/[`]/g, '\\`')), t);
+});
 
 test('the parser refuses what is outside the subset the file may use', () => {
   const bad = [
@@ -132,7 +177,18 @@ test('the rsa advisory is ignored until 2027-04-30, for the reason .cargo/audit.
   assert.equal(rsa[0].ignoreUntil.date, '2027-04-30');
   assert.match(rsa[0].reason, /sqlx-mysql/);
   assert.match(rsa[0].reason, /no fixed release/i);
-  assert.match(read('.cargo/audit.toml'), /ignore = \["RUSTSEC-2023-0071"\]/, 'cargo-audit and osv-scanner must ignore the same advisory for the same reason');
+  assert.ok(auditIgnores(read('.cargo/audit.toml')).includes('RUSTSEC-2023-0071'), 'cargo-audit and osv-scanner must ignore the same advisory for the same reason');
+});
+
+test('every advisory cargo-audit ignores is also ignored by osv-scanner, until the date the human decided', () => {
+  // One way only: osv-scanner ignores fourteen zstd advisories where cargo-audit needs four (D135), so the reverse is not required.
+  for (const id of auditIgnores(read('.cargo/audit.toml'))) {
+    const until = DECIDED_UNTIL[id];
+    assert.ok(until, `${id} is ignored by cargo-audit, but this test records no date a human decided for it: add it to osv-scanner.toml with that date, then to DECIDED_UNTIL`);
+    const entries = config.IgnoredVulns.filter((e) => e.id === id);
+    assert.equal(entries.length, 1, `${id} is ignored by cargo-audit, so osv-scanner.toml must ignore it too (cargo-audit and osv-scanner must agree on what is ignored)`);
+    assert.equal(entries[0].ignoreUntil.date, until, `${id} must be ignored by osv-scanner until ${until}, the date a human decided`);
+  }
 });
 
 test('the one package override is our own path crate `domain`, which shares a name with a DNS crate of another project', () => {
