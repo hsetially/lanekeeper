@@ -172,11 +172,11 @@ The run below is the same benchmarks in 44 pieces that can be resumed. The works
 | engine | full_recompute | 0 | 67 |
 | engine | grid | 0 | 26 |
 | engine | incremental | 0 | 44 |
-| engine | index_settings | 0 | 31 |
+| engine | index_settings | 0 | 11 |
 | engine | parse_flatten | 0 | 25 |
 | engine | search_text | 0 | 30 |
 | hub | startup | 0 | 355 |
-| hub-identity | audit_record | 0 | 193 |
+| hub-identity | audit_record | not run yet | |
 | hub-identity | auth_middleware | 0 | 129 |
 | hub-mcp | read_tools | 0 | 462 |
 | hub-platform | ack_throughput | 0 | 313 |
@@ -193,28 +193,105 @@ The run below is the same benchmarks in 44 pieces that can be resumed. The works
 | hub-registry | file_content_cold | 0 | 327 |
 | hub-registry | file_tree | 0 | 358 |
 | hub-registry | full_recompute_target_scale | 0 | 302 |
-| hub-registry | grid_40_swimlanes | 0 | 325 |
-| hub-registry | head_moved_to_drift | 0 | 281 |
+| hub-registry | grid_40_swimlanes | not run yet | |
+| hub-registry | head_moved_to_drift | not run yet | |
 | hub-registry | incremental_recompute_base | 0 | 201 |
 | hub-registry | incremental_recompute_per_file_per_swimlane | 0 | 193 |
-| hub-registry | ingest_versions_per_s | 0 | 180 |
+| hub-registry | ingest_versions_per_s | not run yet | |
 | hub-registry | search_settings_all_swimlanes | 0 | 295 |
 | hub-registry | search_text_all_swimlanes | 0 | 394 |
 | hub-registry | sentinel_attribution | 0 | 265 |
 | hub-registry | steady_state_queries | 0 | 311 |
 | hub-registry | swimlane_list | 0 | 297 |
 | hub-registry | whole_swimlane_compare | 0 | 312 |
-| hub-writes | edit_applied | not run yet | |
-| hub-writes | write_queries | not run yet | |
+| hub-writes | edit_applied | 0 | 362 |
+| hub-writes | write_queries | 0 | 123 |
 
-42 of 44 bench targets have run; 0 of them exited non-zero.
+40 of 44 bench targets have run; 0 of them exited non-zero.
 <!-- bench-pieces:end -->
 
-PENDING: the budget table, from `cargo xtask bench-check` after every piece has run.
+**Checkpoint, not final.** All 44 targets ran and exited 0. `cargo xtask bench-check` on that run (run 1, below) exits 1: 63 pass, 8 fail, 2 unmet of 73. Five of the failures are the five web budgets (no result: `cargo bench` never makes them). Three are over budget and are being rerun (run 2).
 
-| P# | Benchmark | Result | Budget |
-|---|---|---|---|
-| PENDING | | | |
+Run 1, `cargo xtask bench-check`, exit 1, output as printed:
+
+```
+PASS  P1                                     9591.855 p95 <= 15000 ms  
+PASS  P2                                       41.231 p95 <= 10000 ms  
+PASS  P3                                          672 p95 <= 1024 bytes_per_min  
+PASS  P4                                       22.297 p95 <= 20000 ms  
+PASS  P4.stat_walk                              4.035 p95 <= 1000 ms  
+PASS  P4.cpu_mcores                                 4 p95 <= 50 mcores  
+PASS  P4.memory_mib                            22.707 max <= 64 mib  
+PASS  P5                                       34.416 p95 <= 50 ms  
+PASS  P5.per_file_per_swimlane                  0.591 p95 <= 2 ms  
+PASS  P6                                     1650.470 p95 <= 180000 ms  
+PASS  P6.parse_flatten                         12.678 p95 <= 20 ms  
+FAIL  P6.index_settings                        68.862 p95 <= 60 ms  over budget
+PASS  P7.swimlane_list                          5.273 p95 <= 50 ms  
+PASS  P7.file_tree                              8.782 p95 <= 100 ms  
+PASS  P7.file_content_cached                    1.976 p95 <= 30 ms  
+PASS  P7.file_content_cold                      4.176 p95 <= 80 ms  
+PASS  P7.compare                               29.075 p95 <= 100 ms  
+PASS  P7.engine_grid                           39.733 p95 <= 150 ms  
+PASS  P7.engine_text_search                   193.734 p95 <= 400 ms  
+PASS  P5.engine_base                            3.517 p95 <= 50 ms  
+PASS  P5.engine_per_file_per_swimlane           0.115 p95 <= 2 ms  
+FAIL  P7.grid                                 200.968 p95 <= 150 ms  over budget
+PASS  P7.whole_swimlane_compare                42.303 p95 <= 300 ms  
+PASS  P7.settings_search                       61.654 p95 <= 200 ms  
+PASS  P7.text_search                          230.563 p95 <= 400 ms  
+UNMET P7.docs_search                                - p95 <= 150 ms  not registered; no benchmark yet
+UNMET P7.feature_status                             - p95 <= 200 ms  not registered; no benchmark yet
+PASS  P7.blob_get_cached                        0.001 p95 <= 1 ms  
+PASS  P7.auth_middleware                        0.009 p95 <= 2 ms  
+PASS  P7.blob_endpoint                          0.006 p95 <= 30 ms  
+PASS  P7.auth_middleware_cold                   0.782 p95 <= 2 ms  
+PASS  P8                                       26.609 p95 <= 1500 ms  
+PASS  P9                                       14.541 p95 <= 300 ms  
+PASS  P9.list_swimlanes                         0.698 p95 <= 300 ms  
+PASS  P9.get_swimlane                           0.864 p95 <= 300 ms  
+PASS  P9.list_files                             0.966 p95 <= 300 ms  
+PASS  P9.read_file                             90.563 p95 <= 300 ms  
+PASS  P9.get_effective_config                   1.120 p95 <= 300 ms  
+PASS  P9.compare                                1.985 p95 <= 300 ms  
+PASS  P9.compare_tree                           0.727 p95 <= 300 ms  
+PASS  P9.compare_grid                           8.908 p95 <= 300 ms  
+PASS  P9.search_settings                        1.291 p95 <= 300 ms  
+PASS  P9.search_text                            1.637 p95 <= 300 ms  
+PASS  P9.find_inconsistencies                   1.416 p95 <= 300 ms  
+PASS  P9.get_drift                              1.212 p95 <= 300 ms  
+PASS  P9.get_pending_restarts                   0.890 p95 <= 300 ms  
+PASS  P9.get_history                            0.755 p95 <= 300 ms  
+PASS  P9.search_docs                            1.242 p95 <= 300 ms  
+PASS  P9.read_doc                               3.270 p95 <= 300 ms  
+PASS  P9.grep_docs                              1.346 p95 <= 300 ms  
+PASS  P9.get_docs_for_file                      1.039 p95 <= 300 ms  
+PASS  P9.get_feature_status                     2.587 p95 <= 300 ms  
+PASS  P9.get_served_config                      3.499 p95 <= 300 ms  
+FAIL  P10.initial_js_gzip_kb                        - max <= 250 kb  registered but no result
+FAIL  P10.route_change_ms                           - p95 <= 100 ms  registered but no result
+FAIL  P10.diff_6000_lines_ms                        - p95 <= 500 ms  registered but no result
+FAIL  P10.grid_5000_rows_fps                        - min >= 60 fps  registered but no result
+FAIL  P10.lighthouse_perf                           - p50 >= 90 score  registered but no result
+PASS  P11                                      41.168 p95 <= 10000 ms  
+PASS  P11.memory_mib                          746.527 max <= 1536 mib  
+FAIL  P12.audit_record                          3.472 p95 <= 3 ms  over budget
+PASS  P12.hub_writes_queries                   10.379 p95 <= 50 ms  
+PASS  P12.steady_state_query_ms                19.371 p95 <= 50 ms  
+PASS  P13                                      13.093 p95 <= 1000 ms  
+PASS  P14                                    4726.959 p95 <= 30000 ms  
+PASS  P15.spool_replay_versions_per_s      273256.110 min >= 1000 versions_per_s  
+PASS  P15.hub_ack_versions_per_s            20155.206 min >= 1000 versions_per_s  
+PASS  P1.hub_delta_to_drift                   277.199 p95 <= 2000 ms  
+PASS  P2.hub_head_moved_to_drift              956.532 p95 <= 1000 ms  
+PASS  P6.hub_full_recompute                 15605.752 p95 <= 180000 ms  
+PASS  P6.adoption_rank                         63.658 p95 <= 5000 ms  
+PASS  P7.compare_api                           47.839 p95 <= 100 ms  
+PASS  P15.registry_ingest_versions_per_s     1065.008 min >= 1000 versions_per_s  
+bench-check (default): 63 pass, 8 fail, 2 unmet of 73 budgets
+```
+
+PENDING: the analysis of the three over-budget results and the final budget table.
 
 ## New dependencies
 
