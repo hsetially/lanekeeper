@@ -11,3 +11,7 @@ apt-get upgrade or dist-upgrade
 lets unauthenticated packages in
 rpm must be pinned to a version
 a secret-looking variable in a build stage
+gpg must be pinned to a version
+the rpm-tools stage must start from a pinned image
+the rpm-tools stage uses another stage
+the rpm-tools stage runs a build tool

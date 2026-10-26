@@ -5,8 +5,9 @@
 #       Writes DIR/lanekeeper-sentinel (the static musl binary), DIR/lanekeeper-sentinel-<version>-1.x86_64.rpm and DIR/SHA256SUMS
 #       (default DIR: target/sentinel), and prints the RPM's sha256.
 #   deploy/sentinel/build.sh --tools [--tag NAME]
-#       Builds the `rpm` stage as a local image (default tag lanekeeper-rpm-tools) and prints the tag: rpm 4.18 and gpg, which sign.sh
-#       and the tests run to sign and to build the stand-in packages. It holds no key and nothing of ours but the build tree of the RPM.
+#       Builds the `rpm-tools` stage as a local image (default tag lanekeeper-rpm-tools) and prints the tag: rpm 4.18 and gpg, which sign.sh
+#       and the tests run to sign and to build the stand-in packages. It holds no key and nothing of ours, and building it compiles nothing:
+#       the stage depends on no other, so BuildKit runs only the apt install (see the header of Dockerfile.build).
 #
 # By default the build context is `git archive HEAD`: exactly the committed files, with the commit's own timestamps and git's normalised
 # modes, so two builds of one commit see the same input whatever else is in the checkout. `--worktree` builds the working tree instead;
@@ -19,7 +20,7 @@
 #   LK_BUILDER        a buildx builder to use (CI creates one with deploy/images/builder.sh, which runs the BuildKit pinned in tools.env).
 #   LK_BUILD_CA       a CA bundle for builds behind a TLS-intercepting proxy, passed as the `build_ca` secret (never in a layer).
 #   LK_BUILD_NETWORK  passed to `--network` (for example `host`), when the build containers need it to reach the network.
-#   LK_APT_MIRROR     the Ubuntu archive for the rpm stage (default http://archive.ubuntu.com/ubuntu); https for a build behind such a proxy.
+#   LK_APT_MIRROR     the Ubuntu archive for the rpm-tools stage (default http://archive.ubuntu.com/ubuntu); https for a build behind such a proxy.
 #   HTTPS_PROXY, NO_PROXY
 #                     when set, passed as the predefined build args of the same names (BuildKit keeps them out of the image history).
 #                     CI on GitHub-hosted runners sets none of these.
@@ -70,8 +71,6 @@ args=(
     --platform linux/amd64
     --provenance=false
     --sbom=false
-    --build-arg "SOURCE_DATE_EPOCH=$epoch"
-    --build-arg "LK_VERSION=$version"
 )
 [ -z "$no_cache" ] || args+=(--no-cache)
 [ -z "${LK_BUILDER:-}" ] || args+=(--builder "$LK_BUILDER")
@@ -84,12 +83,17 @@ if [ -n "${LK_BUILD_CA:-}" ]; then
     args+=(--secret "id=build_ca,src=$LK_BUILD_CA")
 fi
 
+# The tools image is the `rpm-tools` stage and only that: it depends on no other stage (dockerfile_artifact.rego and tests/tools-graph.sh
+# hold it to that), so this build runs the apt install and never `cargo build`. The job that signs a release runs this command, with the
+# release key and a cloud credential close by. It takes none of the build arguments of the RPM (the version and the source date).
 if [ -n "$tools" ]; then
-    echo "build.sh: the rpm tools image $tag" >&2
-    docker buildx build "${args[@]}" --target rpm --load --tag "$tag" "$context" >&2
+    echo "build.sh: the rpm tools image $tag (target rpm-tools)" >&2
+    docker buildx build "${args[@]}" --target rpm-tools --load --tag "$tag" "$context" >&2
     echo "$tag"
     exit 0
 fi
+
+args+=(--build-arg "SOURCE_DATE_EPOCH=$epoch" --build-arg "LK_VERSION=$version")
 
 rm -rf "$out"
 mkdir -p "$out"

@@ -1005,6 +1005,13 @@ sentinel-check: images-tools-check
     grep -qF "CapabilityBoundingSet= must be set and empty" "$work/bad.out" || { echo "sentinel-check: refused, but not for the capability"; cat "$work/bad.out"; exit 1; }
     echo "sentinel-check: the unit passes the S25 policy, Dockerfile.build passes its policy, and the planted cases are refused"
 
+# BuildKit's own plan of the target that the signing job builds (`build.sh --tools`, the stage `rpm-tools`): every step it would run must be a step
+# of that stage, none of the `binary` stage (cargo and the build scripts of every crate). Needs Docker and the pinned base images, so it is
+# not part of verify-09 (a refused registry answers "inconclusive", never a pass); CI runs it in the `policy` job of sentinel.yml, and the
+# static form of the same rule (dockerfile_artifact.rego) is part of sentinel-check. See deploy/sentinel/tests/tools-graph.sh.
+sentinel-tools-graph:
+    deploy/sentinel/tests/tools-graph.sh rpm-tools
+
 # The sentinel binary and the unsigned RPM in target/sentinel/unsigned, from `git archive HEAD`, and the image with the tools that sign (see
 # deploy/sentinel/build.sh for LK_BUILD_CA and the other settings).
 sentinel-build: images-tools-check

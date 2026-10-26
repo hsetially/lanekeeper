@@ -84,6 +84,8 @@ jobs:
         with:
           tool: just@1.40.0
       - run: just sentinel-check
+      # BuildKit's plan of the target that `sign-release` builds holds no step of the `binary` stage (cargo, build scripts).
+      - run: just sentinel-tools-graph
 
   build:
     name: build twice, same bytes

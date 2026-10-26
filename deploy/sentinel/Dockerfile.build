@@ -5,9 +5,17 @@
 #
 #     deploy/sentinel/build.sh --out target/sentinel
 #
-# Stages: `binary` builds the sentinel as a static x86_64-unknown-linux-musl executable and checks that it is static; `rpm` packages it
-# with rpmbuild from deploy/sentinel/lanekeeper-sentinel.spec; `out` holds the two files and nothing else. Signing is not here, because
-# a signing key must never be part of a build or a layer (sign.sh runs the same tools with a key that only lives in memory).
+# Stages: `binary` builds the sentinel as a static x86_64-unknown-linux-musl executable and checks that it is static; `rpm-tools` is
+# rpm and gpg from Ubuntu's signed archive and nothing of ours; `rpm` extends `rpm-tools` with the binary and packages it with rpmbuild
+# from deploy/sentinel/lanekeeper-sentinel.spec; `out` holds the two files and nothing else. Signing is not here, because a signing key
+# must never be part of a build or a layer (sign.sh runs the tools of `rpm-tools` with a key that only lives in memory).
+#
+# WHY `rpm-tools` IS A STAGE OF ITS OWN. The job that signs a release holds the Workload Identity credential and receives the release
+# key, and it needs the image with rpm and gpg (`build.sh --tools`, which builds this target). BuildKit builds the whole dependency graph
+# of a target, so if the tools image were the `rpm` stage (which copies the binary), that job would run `cargo build` and the build
+# script of every crate in the sentinel's tree first. `rpm-tools` depends on no other stage, so building it runs the apt install and
+# nothing else. dockerfile_artifact.rego refuses a change that gives it a dependency or a build tool, and tests/tools-graph.sh shows the
+# same on BuildKit's own plan of the target.
 #
 # Every base image is pinned by digest (the multi-architecture index), read from the registries on 2026-10-26:
 #
@@ -53,10 +61,16 @@ RUN set -eu; \
     if readelf -dW "$bin" 2>/dev/null | grep -q NEEDED; then echo "the sentinel needs a shared library: it is not static"; exit 1; fi; \
     echo "static: no interpreter, no shared library"
 
-FROM docker.io/library/ubuntu:noble-20260930.1@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS rpm
+FROM docker.io/library/ubuntu:noble-20260930.1@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS rpm-tools
 ARG LK_APT_MIRROR=http://archive.ubuntu.com/ubuntu
-# rpm is pinned to the version of the archive's release pocket (which does not change); gpg and its agent are the tools that sign, and take the archive's
-# security updates. Both come from the signed archive: apt checks its signatures. Nothing else is installed (--no-install-recommends).
+# What is pinned and what is not (S19, S20). The base is pinned by digest. rpm is pinned to the version of the archive's release pocket,
+# which does not change, because it builds the package and so is part of what the package is. gpg and its agent are the tools that sign:
+# their upstream version is pinned and the archive's revision is a glob (`2.4.4-2ubuntu17*`, quoted so that the shell leaves it), because the archive drops a superseded
+# revision from its index (an exact pin would fail the build at each security update) and a signing tool should take security fixes. The
+# libraries they load (libgcrypt20, libgnutls30t64, libassuan0 and the rest) are not pinned and float inside noble, noble-updates and
+# noble-security. Everything is checked by apt against the Ubuntu archive keyring; no other repository is configured; nothing else is
+# installed (--no-install-recommends). The exact versions that were installed are printed by this step and kept in
+# /usr/share/lanekeeper-tools-packages.txt, so the log of a release build and `docker run IMAGE cat` say what signed it.
 # (mode=0444: apt reads the bundle as its own unprivileged user, _apt.)
 RUN --mount=type=secret,id=build_ca,target=/etc/ssl/certs/ca-certificates.crt,required=false,mode=0444 \
     set -eu; \
@@ -64,9 +78,12 @@ RUN --mount=type=secret,id=build_ca,target=/etc/ssl/certs/ca-certificates.crt,re
     printf 'Types: deb\nURIs: %s\nSuites: noble noble-updates noble-security\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n' "$LK_APT_MIRROR" > /etc/apt/sources.list.d/lanekeeper.sources; \
     if [ -n "${HTTPS_PROXY:-}" ]; then printf 'Acquire::https::Proxy "%s";\nAcquire::https::CaInfo "/etc/ssl/certs/ca-certificates.crt";\n' "$HTTPS_PROXY" > /etc/apt/apt.conf.d/99proxy; fi; \
     apt-get update; \
-    apt-get install --yes --no-install-recommends rpm=4.18.2+dfsg-2.1build2 gpg gpg-agent; \
+    apt-get install --yes --no-install-recommends rpm=4.18.2+dfsg-2.1build2 'gpg=2.4.4-2ubuntu17*' 'gpg-agent=2.4.4-2ubuntu17*'; \
+    dpkg-query -W -f='${Package}=${Version}\n' | sort | tee /usr/share/lanekeeper-tools-packages.txt; \
     rm -rf /var/lib/apt/lists/* /etc/apt/apt.conf.d/99proxy
 WORKDIR /build
+
+FROM rpm-tools AS rpm
 ARG SOURCE_DATE_EPOCH
 ARG LK_VERSION
 COPY --from=binary /src/target/x86_64-unknown-linux-musl/release/sentinel /build/SOURCES/lanekeeper-sentinel
