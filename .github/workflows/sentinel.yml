@@ -24,12 +24,17 @@
 #
 # WHAT THE SPLIT PROTECTS. `build` and `sbom` run the code of dependencies (cargo build scripts and proc-macros: the sentinel's, and
 # cargo-cyclonedx's). They run with `contents: read` only: no id-token, no packages, no secrets. The two jobs that can ask for a token,
-# `sign-release` (the release key, through Workload Identity Federation) and `publish` (keyless cosign), compile and install nothing on
-# the runner: they handle the files that other jobs made, with tools that are fetched by a digest or a hash. check-workflows.mjs (W6)
-# refuses a cargo, npm, pip or go command, or a build action, in any job that holds `id-token: write`.
-# What W6 cannot see, and a person reads: `sign-release` builds the rpm tools image with docker (`build.sh --tools`: rpm and gpg from
-# Ubuntu packages, in a build container that is given neither the job's token variables nor the key), and runs sign.sh, which uses that
-# image with no network. `publish` runs deploy/sentinel/publish.sh and a pinned cosign.
+# `sign-release` (the release key, through Workload Identity Federation) and `publish` (keyless cosign), compile no crate and install no
+# package from a language registry: they handle the files that other jobs made, with tools that are fetched by a digest or a hash.
+# check-workflows.mjs (W6) refuses a cargo, npm, pip or go command, or a build action, in any job that holds `id-token: write`.
+# What W6 cannot see, and a person reads: `sign-release` builds the tools image with docker (`build.sh --tools`). That builds the
+# `rpm-tools` stage of Dockerfile.build, which depends on no other stage, so BuildKit runs one thing: `apt-get install` of rpm, gpg and
+# gpg-agent (and what they need) from Ubuntu's signed archive, as root in a build container, BEFORE the authentication step. It runs no
+# cargo and no crates.io code (`dockerfile_artifact.rego` and `tests/tools-graph.sh`, which the `policy` job runs, hold the stage to
+# that; an earlier version built `--target rpm`, which depends on the `binary` stage, and did compile the sentinel here). What stays:
+# the maintainer scripts of Ubuntu's packages run as root in that container, the build container is given neither the job's token
+# variables nor the key, and the signing script then runs the image with no network. `publish` runs deploy/sentinel/publish.sh and a
+# cosign pinned by sha256.
 #
 # SETUP THAT A PERSON DOES (not in the repository; plan 09 blockers, B13): the `release` environment (required reviewers, tags
 # sentinel-v* only), the repository variables LK_RPM_WIF_PROVIDER, LK_RPM_SERVICE_ACCOUNT and LK_RPM_SIGNING_SECRET (the provider admits
@@ -175,8 +180,10 @@ jobs:
           set -euo pipefail
           version="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/sentinel/Cargo.toml | head -n1)"
           [ "$TAG" = "sentinel-v$version" ] || { echo "::error::the tag is $TAG, and crates/sentinel/Cargo.toml says version $version"; exit 1; }
-      # The image with rpm and gpg is made by docker from digest-pinned bases and Ubuntu packages, before the credentials exist. Nothing
-      # here compiles or installs code on the runner (check-workflows.mjs W6): the SBOM, which needs cargo-cyclonedx, is the `sbom` job's.
+      # The image with rpm and gpg is the `rpm-tools` stage: a digest-pinned base and Ubuntu's signed packages, built before the credentials
+      # exist. The stage depends on no other, so the sentinel is not compiled here (tools-graph.sh, in the `policy` job, shows BuildKit's plan
+      # of this target); the apt install is the one thing that runs. No crate is compiled on the runner (check-workflows.mjs W6): the SBOM,
+      # which needs cargo-cyclonedx, is the `sbom` job's.
       - name: The image with rpm and gpg
         run: deploy/sentinel/build.sh --tools
       - name: Authenticate to Google Cloud with Workload Identity Federation
