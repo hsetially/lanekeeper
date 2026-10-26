@@ -966,6 +966,15 @@ deploy-data: schemas-verify policy-test (ops-tools-check "helm kubeconform") ima
 deploy-argocd: schemas-verify policy-test (ops-tools-check "helm kubeconform") images-tools-check
     deploy/tests/render.sh argocd
 
+# The kind end-to-end test (09 acceptance 3; D62, S6, S7, P11): the hub chart with CloudNativePG on a kind cluster of one control plane
+# and three workers, from the hub image of target/images (`just images-build hub` makes it; CI downloads the one the image job scanned).
+# It checks that `psql sslmode=disable` is rejected, that the database speaks TLS 1.3 only, that /readyz answers on all three replicas,
+# and how long they take to be Ready. Needs Docker on a cgroup v2 host and the network (Docker Hub, ghcr.io, github.com). Like images-repro
+# and sentinel-test it is not part of verify-09, fails without Docker, and is never skipped. CI runs it as the kind-e2e job of images.yml.
+# It is red until plan 09 A1 is resolved (the hub binary exits 1, so no replica becomes Ready), and its output says so.
+kind-e2e: images-tools-check (ops-tools-check "kind helm crane")
+    deploy/tests/kind/run.sh
+
 # Prompt 09, T8 (S19, S20, S25, plan 09 A15 to A18): the sentinel's RPM. `sentinel-check` is what needs no RPM and no key, and is part of
 # verify-09: the parser of the unit file and its tests, the policy on the unit (S25), the policy on Dockerfile.build and its planted cases
 # through the real Dockerfile parser, and the self-tests of the signing and install scripts' helpers. The recipes below it build, sign and

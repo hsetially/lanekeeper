@@ -30,6 +30,7 @@ GCP project are answered (rule 12), and the image digest is a placeholder of 64 
 ```
 just deploy-check        # schemas, lint, kubeconform -strict (offline), the policies on the real output, the planted cases
 deploy/tests/render.sh policy      # one stage of it
+just kind-e2e            # the chart with CloudNativePG on kind (Docker, cgroup v2, network): red until the hub binary runs (plan 09 A1)
 ```
 
 `deploy/tests/render.sh planted` changes the real output of the chart one thing at a time (a hardening field, a range, a
