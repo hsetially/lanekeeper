@@ -175,10 +175,10 @@ The run below is the same benchmarks in 44 pieces that can be resumed. The works
 | engine | index_settings | 0 | 31 |
 | engine | parse_flatten | 0 | 25 |
 | engine | search_text | 0 | 30 |
-| hub | startup | not run yet | |
-| hub-identity | audit_record | not run yet | |
-| hub-identity | auth_middleware | not run yet | |
-| hub-mcp | read_tools | not run yet | |
+| hub | startup | 0 | 355 |
+| hub-identity | audit_record | 0 | 193 |
+| hub-identity | auth_middleware | 0 | 129 |
+| hub-mcp | read_tools | 0 | 462 |
 | hub-platform | ack_throughput | not run yet | |
 | hub-platform | blob_endpoint | not run yet | |
 | hub-platform | blob_get_cached | not run yet | |
@@ -207,7 +207,7 @@ The run below is the same benchmarks in 44 pieces that can be resumed. The works
 | hub-writes | edit_applied | not run yet | |
 | hub-writes | write_queries | not run yet | |
 
-13 of 44 bench targets have run; 0 of them exited non-zero.
+17 of 44 bench targets have run; 0 of them exited non-zero.
 <!-- bench-pieces:end -->
 
 PENDING: the budget table, from `cargo xtask bench-check` after every piece has run.
