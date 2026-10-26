@@ -1,7 +1,7 @@
 # Plan 18: Hub assembly
 
-Status: DRAFT
-Contract-change: needed
+Status: APPROVED
+Contract-change: APPROVED
 Extra-paths: `docs/decisions.md`, `crates/xtask/tests/budgets_registry.rs`, `crates/hub-platform/src/session_auth.rs`, `crates/hub-platform/src/events/sse.rs`, `crates/hub-platform/tests/events_sse.rs`
 Prompt: prompts/18-hub-assembly.md
 Branch: agent/18-hub-assembly
