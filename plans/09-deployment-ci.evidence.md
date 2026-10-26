@@ -179,13 +179,13 @@ The run below is the same benchmarks in 44 pieces that can be resumed. The works
 | hub-identity | audit_record | 0 | 193 |
 | hub-identity | auth_middleware | 0 | 129 |
 | hub-mcp | read_tools | 0 | 462 |
-| hub-platform | ack_throughput | not run yet | |
-| hub-platform | blob_endpoint | not run yet | |
-| hub-platform | blob_get_cached | not run yet | |
-| hub-platform | diff_trees | not run yet | |
-| hub-platform | memory_at_design_scale | not run yet | |
-| hub-platform | push_to_drift_webhook | not run yet | |
-| hub-platform | sse_delivery | not run yet | |
+| hub-platform | ack_throughput | 0 | 313 |
+| hub-platform | blob_endpoint | 0 | 156 |
+| hub-platform | blob_get_cached | 0 | 133 |
+| hub-platform | diff_trees | 0 | 80 |
+| hub-platform | memory_at_design_scale | 0 | 226 |
+| hub-platform | push_to_drift_webhook | 0 | 143 |
+| hub-platform | sse_delivery | 0 | 134 |
 | hub-registry | adoption_rank_per_swimlane | not run yet | |
 | hub-registry | compare_6000_lines | not run yet | |
 | hub-registry | delta_to_drift_changed | not run yet | |
@@ -207,7 +207,7 @@ The run below is the same benchmarks in 44 pieces that can be resumed. The works
 | hub-writes | edit_applied | not run yet | |
 | hub-writes | write_queries | not run yet | |
 
-17 of 44 bench targets have run; 0 of them exited non-zero.
+24 of 44 bench targets have run; 0 of them exited non-zero.
 <!-- bench-pieces:end -->
 
 PENDING: the budget table, from `cargo xtask bench-check` after every piece has run.
