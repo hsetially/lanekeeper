@@ -10,8 +10,9 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # root here, so the database is cached under the user's HOME.
 [ "$(id -u)" -ne 0 ] || exec "$here/../../tests/as-user.sh" "${BASH_SOURCE[0]}" "$@"
 [ -z "${LK_AS_USER:-}" ] || export LK_GRYPE_DB_CACHE="$HOME/grype-db"
-log="$(mktemp)"
-trap 'rm -f "$log"' EXIT
+work="$(mktemp -d)"
+log="$work/log"
+trap 'rm -rf "$work"' EXIT
 if "$here/../scan.sh" --sbom "$here/critical.cdx.json" >"$log" 2>&1; then
     cat "$log"
     echo "scan-test: the planted critical SBOM passed the scan"
@@ -23,3 +24,20 @@ if ! grep -q 'CVE-2021-44228' "$log" || ! grep -qi 'critical' "$log"; then
     exit 1
 fi
 echo "scan-test: the planted critical finding (CVE-2021-44228) fails the scan"
+
+# The scan of an image, as the image jobs run it (`scan.sh agent --out DIR`): grype unpacks the image archive into its /tmp, which is where
+# the runner's user was refused, and reads the SBOM. A clean image of one file must pass, and scan.sh must say so.
+mkdir "$work/image"
+python3 -I "$here/tiny-oci.py" "$work/image/agent.oci.tar"
+printf '{"bomFormat":"CycloneDX","specVersion":"1.5","version":1,"components":[]}\n' >"$work/image/agent.cdx.json"
+if ! "$here/../scan.sh" agent --out "$work/image" >"$log" 2>&1; then
+    cat "$log"
+    echo "scan-test: a clean image archive and its SBOM did not pass the scan"
+    exit 1
+fi
+if ! grep -q 'agent has no critical findings' "$log"; then
+    cat "$log"
+    echo "scan-test: the scan of a clean image passed without saying so"
+    exit 1
+fi
+echo "scan-test: a clean image archive and its SBOM pass the scan, as uid $(id -u)"

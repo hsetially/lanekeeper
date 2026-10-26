@@ -37,42 +37,7 @@ is_cyclonedx() { jq -e '.bomFormat == "CycloneDX"' "$1" >/dev/null; }
 nothing_left() { [ -z "$(ls -A "$TMPDIR")" ]; }
 
 # An OCI image of one layer holding one file, written by hand, so that no builder and no registry is needed.
-python3 -I - "$work/in/image.oci.tar" <<'PY'
-import hashlib, io, json, sys, tarfile
-
-def blob(data):
-    return hashlib.sha256(data).hexdigest(), data
-
-def tar_of(members):
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode='w') as t:
-        for name, content in members:
-            info = tarfile.TarInfo(name)
-            info.size = len(content)
-            info.mtime = 0
-            t.addfile(info, io.BytesIO(content))
-    return buf.getvalue()
-
-layer_digest, layer = blob(tar_of([('hello', b'hello\n')]))
-config_digest, config = blob(json.dumps({'architecture': 'amd64', 'os': 'linux', 'config': {},
-                                          'rootfs': {'type': 'layers', 'diff_ids': ['sha256:' + layer_digest]}}).encode())
-manifest_digest, manifest = blob(json.dumps({
-    'schemaVersion': 2, 'mediaType': 'application/vnd.oci.image.manifest.v1+json',
-    'config': {'mediaType': 'application/vnd.oci.image.config.v1+json', 'digest': 'sha256:' + config_digest, 'size': len(config)},
-    'layers': [{'mediaType': 'application/vnd.oci.image.layer.v1.tar', 'digest': 'sha256:' + layer_digest, 'size': len(layer)}],
-}).encode())
-index = json.dumps({'schemaVersion': 2, 'manifests': [{
-    'mediaType': 'application/vnd.oci.image.manifest.v1+json', 'digest': 'sha256:' + manifest_digest, 'size': len(manifest),
-    'platform': {'architecture': 'amd64', 'os': 'linux'}}]}).encode()
-files = [('oci-layout', b'{"imageLayoutVersion":"1.0.0"}'), ('index.json', index)]
-files += [('blobs/sha256/' + d, b) for d, b in (blob(layer), blob(config), blob(manifest))]
-with tarfile.open(sys.argv[1], 'w') as t:
-    for name, content in files:
-        info = tarfile.TarInfo(name)
-        info.size = len(content)
-        info.mtime = 0
-        t.addfile(info, io.BytesIO(content))
-PY
+python3 -I "$here/tiny-oci.py" "$work/in/image.oci.tar"
 printf 'not an image\n' >"$work/bad/image.oci.tar"
 echo hello >"$work/dir/file.txt"
 
