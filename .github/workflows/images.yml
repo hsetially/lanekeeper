@@ -1,7 +1,8 @@
 # The container images: built reproducibly, scanned, and published signed (09/T2; S16, S19, S20).
 #
 # EVERY RUN (pull requests, main, tags):
-#   policy     the Dockerfile and model-lock policies, the pinned BuildKit, and the publishing script against a local registry.
+#   policy     the Dockerfile and model-lock policies, the pinned BuildKit, the publishing script against a local registry, and the
+#              registry stages of the kind test against a real registry (no cluster).
 #   scan-test  the vulnerability scan must fail on a planted critical finding (log4j), so a scan that cannot fail is noticed.
 #   image      per image (hub, agent): build it twice from the same commit with the pinned BuildKit and require one digest
 #              (deploy/images/reproducible-check.sh), write its CycloneDX SBOM (the image and the Rust crates in the binary),
@@ -28,9 +29,11 @@
 # BUILDKIT. The digest of an image holds for one BuildKit version, so builds use the builder that deploy/images/builder.sh creates
 # from the image pinned in deploy/images/tools.env, never the one that ships with the runner's Docker.
 #
-# NOT YET RUN ON GITHUB. The sandbox that wrote this workflow cannot reach GitHub's runners, so the first run is its test; what
-# could be run there (the scripts, against a local registry and a local BuildKit of the same version) was. The keyless signing and
-# attestation steps need GitHub's OIDC and can only be proved here.
+# WHAT HAS RUN ON GITHUB (PR 31, run 40366344156): policy, scan-test and both image jobs are green (two builds and one digest, the SBOM, the
+# scan). kind-e2e ran for the first time: its cluster stage passed (1 control plane and 3 workers) and `hub image` failed, because the registry
+# did not answer on the published port; that stage now waits, tries every route and prints the container's state (deploy/tests/kind/README.md).
+# Not run yet: everything in kind-e2e after the registry, and `publish` (main and tags only), whose keyless signing and attestation need
+# GitHub's OIDC token and can only be proved on GitHub.
 name: images
 on:
   pull_request:
@@ -90,6 +93,7 @@ jobs:
       - run: just images-policy-test
       - run: just images-builder-test
       - run: just images-publish-test
+      - run: just kind-registry-test
 
   scan-test:
     runs-on: ubuntu-latest

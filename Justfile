@@ -980,6 +980,13 @@ deploy-argocd: schemas-verify policy-test (ops-tools-check "helm kubeconform") i
 kind-e2e: images-tools-check (ops-tools-check "kind helm crane")
     deploy/tests/kind/run.sh
 
+# The registry stages of the kind test (deploy/tests/kind/run.sh --registry-only) against a real registry container, crane and Docker, with
+# no cluster: the registry is started and waited for, a tiny image is pushed under its recorded digest to 127.0.0.1, a wrong archive is
+# refused with the registry's state printed, and the helpers that read a container (lib.sh) work on a real one. It is what showed the first
+# CI run's `hub image` failure to be a stage with no wait at the point of use and no word about the container. Part of verify-09.
+kind-registry-test: images-tools-check (ops-tools-check "crane")
+    deploy/tests/kind/registry-test.sh
+
 # Prompt 09, T8 (S19, S20, S25, plan 09 A15 to A18): the sentinel's RPM. `sentinel-check` is what needs no RPM and no key, and is part of
 # verify-09: the parser of the unit file and its tests, the policy on the unit (S25), the policy on Dockerfile.build and its planted cases
 # through the real Dockerfile parser, and the self-tests of the signing and install scripts' helpers. The recipes below it build, sign and
@@ -1047,7 +1054,7 @@ sentinel-test: sentinel-sign (ops-tools-check "cosign")
 
 # The T8 gate so far (T7 and T8 add to it): the pinned tools, the workflow lint, the pin tests, the image checks, the charts with the Argo CD
 # files, and the sentinel's unit and Dockerfile policies. The RPM itself is `just sentinel-test`, with Docker, as images-repro is for T1.
-verify-09: ops-tools-check ci-lint pins-test images-policy-test images-builder-test images-publish-test deploy-check sentinel-check
+verify-09: ops-tools-check ci-lint pins-test images-policy-test images-builder-test images-publish-test kind-registry-test deploy-check sentinel-check
 verify-11:
     @echo "verify-11 not implemented yet" && exit 1
 verify-14:

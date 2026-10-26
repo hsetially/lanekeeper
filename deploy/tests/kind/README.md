@@ -7,9 +7,35 @@ helm and crane at the versions of the Justfile).
 
 | File | What it is |
 |---|---|
-| `run.sh` | the test: stages `cluster`, `hub image`, `operator`, `database`, `s6`, `hub`, each timed; the first failure stops it with the stage named |
-| `lib.sh` | what needs no cluster, so that `.github/scripts/kind-run.test.mjs` can test it: the P11 verdict |
+| `run.sh` | the test: stages `registry`, `cluster`, `hub image`, `operator`, `database`, `s6`, `hub`, each timed; the first failure stops it with the stage named. `--registry-only` runs `registry` and `hub image` without a cluster |
+| `lib.sh` | what needs no cluster, so that `.github/scripts/kind-run.test.mjs` can test it: the P11 verdict, and the registry helpers (`wait_for_http`, `registry_report`, `registry_container_ip`) |
+| `registry-test.sh` | `run.sh --registry-only` and the registry helpers against a real registry container, crane and Docker (`just kind-registry-test`, part of `verify-09`, run by the `policies and scripts` job) |
 | `pins.env` | what the test installs, each pin read from a registry or a release (never guessed) and at least 14 days old |
+
+## The registry, and what the first CI run showed
+
+The first run on GitHub (run 40366344156) created the cluster (50 s) and then failed in `hub image` after 0 s: `crane` got `connection refused` from
+`[::1]:32768` for `https://localhost:32768/v2/` and for `http://localhost:32768/v2/`. The registry had answered on `127.0.0.1:32768` when it
+was started (the `cluster` stage waited for it and passed), so a missing wait at the start was not the cause. What the log proves is that
+the one route the push used, the host port that Docker published, no longer answered 46 s later, and that nothing in the output said what
+the container was doing then. The script now:
+
+- starts the registry in its own stage and waits for `/v2/` within `LK_KIND_REGISTRY_WAIT` seconds (60), one ask per second;
+- asks again before the push, on **every route** (`127.0.0.1:<published port>` first, then the container's address on the kind network, port 80),
+  for up to the same bound, and pushes to the first that answers. It reaches the registry by `127.0.0.1`, never `localhost`, which a runner
+  resolves to `::1` first. When the published port is not the route that answers, the output says so (`NOTE: ...`);
+- probes both routes right after the registry joins the kind network and again when a stage fails, so the next run shows which step took a route away;
+- on a failure of the `registry`, `cluster` or `hub image` stage, prints the container's status, exit code and OOM flag, the published ports, its
+  networks and addresses, the last 30 lines of its log and the host's listening sockets on the port; the same goes to `diagnostics.txt`;
+- names any command that fails with no reason of its own (`a command failed with exit N at run.sh:LINE ...`), through the ERR trap.
+
+What is **not** known, and the script does not claim to know, is why the published port stopped answering (a registry that died, or a
+mapping that Docker dropped when the registry joined the kind network, are both possible, and the log cannot tell them apart). The second
+route is the registry's address on the Docker network, which a Linux host reaches directly (the runner is one; Docker Desktop's VM is not,
+and there the published port is the only route). The next run's output decides it.
+
+The `cluster` stage also waits (`LK_KIND_NODES_TIMEOUT`, 180 s) for all four nodes to be Ready: `kind create --wait` waits for the control
+plane only, and the workers were still `NotReady` when the first run printed them.
 
 ## Where the hub stage stands
 

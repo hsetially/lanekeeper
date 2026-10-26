@@ -36,3 +36,64 @@ p11_verdict() {
     [ "$n" -gt 0 ] || { echo "p11: no replica was measured" >&2; return 2; }
     [ "$over" -eq 0 ]
 }
+
+# ---- the local registry ------------------------------------------------------------------------------------------------------
+# run.sh starts a registry in a container, publishes it on the loopback address of the host, and (once the cluster exists) joins it to
+# the kind network. The first CI run (2026-10-26) showed that it answered when it was started and refused a connection on the published
+# port 46 s later, with nothing in the log about the container. These functions wait for it within a bound, try every route to it, and say
+# what the container is doing when none answers.
+
+# wait_for_http SECONDS URL...
+#   Asks every URL in turn, once per round (curl, 2 s each, LK_WAIT_STEP seconds between rounds, default 1: the tests set it lower), until
+#   one answers with a 2xx: returns 0 and sets HTTP_ANSWERED to that URL, so a dead route never hides a live one. After SECONDS it returns 1
+#   and prints, on standard error, what each URL said at its last attempt. 2 for a budget that is not a whole number of seconds or no URL.
+HTTP_ANSWERED=""
+# shellcheck disable=SC2034 # HTTP_ANSWERED is read by run.sh and registry-test.sh, which source this file
+wait_for_http() {
+    local budget="${1-}" url deadline step="${LK_WAIT_STEP:-1}" last i
+    HTTP_ANSWERED=""
+    [[ "$budget" =~ ^[0-9]+$ ]] || { echo "wait_for_http: the budget '$budget' is not a whole number of seconds" >&2; return 2; }
+    shift
+    [ $# -gt 0 ] || { echo "wait_for_http: no URL to wait for" >&2; return 2; }
+    local -A said=()
+    deadline=$((SECONDS + budget))
+    while :; do
+        for url in "$@"; do
+            if last="$(curl -fsS --max-time 2 -o /dev/null "$url" 2>&1)"; then HTTP_ANSWERED="$url"; return 0; fi
+            said["$url"]="$last"
+        done
+        [ "$SECONDS" -lt "$deadline" ] || break
+        sleep "$step"
+    done
+    echo "wait_for_http: nothing answered in $budget s:" >&2
+    for i in "$@"; do echo "  $i  $(printf '%s' "${said[$i]-}" | tr '\n' ' ')" >&2; done
+    return 1
+}
+
+# registry_container_ip CONTAINER NETWORK
+#   The address of the container on the Docker network NETWORK: empty when it is not on it (or docker cannot say).
+registry_container_ip() {
+    docker inspect --format "{{with index .NetworkSettings.Networks \"$2\"}}{{.IPAddress}}{{end}}" "$1" 2>/dev/null || true
+}
+
+# registry_report CONTAINER [HOST-PORT]
+#   What a person needs when the registry does not answer, on standard error: the container's state (status, exit code, whether the
+#   kernel killed it for memory), the ports Docker published, the networks it is on and its addresses, the last 30 lines of its log, and,
+#   if `ss` exists, the sockets of the host that listen on the published port. It never fails.
+registry_report() {
+    local container="$1" port="${2:-}"
+    {
+        echo "---- the registry container $container: state"
+        docker inspect --format 'status={{.State.Status}} running={{.State.Running}} exit_code={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} error={{printf "%q" .State.Error}} started={{.State.StartedAt}} finished={{.State.FinishedAt}}' "$container" 2>&1 || echo "docker cannot inspect $container"
+        echo "---- the registry container $container: published ports"
+        docker port "$container" 2>&1 || true
+        echo "---- the registry container $container: networks and addresses"
+        docker inspect --format '{{range $n, $v := .NetworkSettings.Networks}}{{$n}} {{$v.IPAddress}}{{"\n"}}{{end}}' "$container" 2>&1 || true
+        echo "---- the registry container $container: the last 30 lines of its log"
+        docker logs --tail 30 "$container" 2>&1 || true
+        if [ -n "$port" ] && command -v ss >/dev/null 2>&1; then
+            echo "---- sockets of this host that listen on port $port"
+            ss -ltn "sport = :$port" 2>&1 || true
+        fi
+    } >&2
+}
