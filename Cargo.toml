@@ -43,7 +43,7 @@ sha2 = { version = "=0.10.9", default-features = false }
 bytes = "=1.12.1"
 futures = { version = "=0.3.34", default-features = false, features = ["std", "async-await"] }
 async-trait = "=0.1.92"
-tokio = { version = "=1.53.1", default-features = false }
+tokio = { version = "=1.53.3", default-features = false }
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
 # Database. No TLS feature here: sqlx's rustls roots pull webpki-roots (CDLA-Permissive-2.0), which deny.toml does not allow. 0.9 needs rustc 1.94.
 sqlx = { version = "=0.8.6", default-features = false }
