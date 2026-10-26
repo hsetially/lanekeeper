@@ -21,9 +21,14 @@
 #              here, as the chart's README says a person makes them (A7); the passwords exist for this run only.
 #   s6         S6 on the running database: a TLS 1.3 connection with the app role works, and `psql sslmode=disable` is REJECTED by
 #              pg_hba (hostnossl reject), as is a connection that offers TLS 1.2 at most. Also vector, pg_trgm and the collation.
-#   hub        the hub chart with deploy/values/hub/kind.yaml and the image digest: three replicas become Ready, and /readyz answers
-#              on each of them (through the API server's pod proxy, so it is the real route to the operations port). Time to Ready is
-#              measured for P11 (informational: kind's CPUs and disks are not the design scale).
+#   hub        the hub chart with deploy/values/hub/kind.yaml and the image digest: three replicas become Ready. A pod's Ready condition
+#              IS the answer of /readyz on the operations port (its readinessProbe), as the kubelet sees it; the test does not ask
+#              again from outside the pod, because the hub chart's NetworkPolicy admits port 9090 only from the monitoring namespace and
+#              Google's ranges, so a request through the API server's pod proxy would be refused by the policy it is meant to test.
+#              P11 is asserted once they are Ready: each replica must be Ready within 10 s of its container's start (lib.sh,
+#              p11_verdict). The budget is the design scale's and kind's CPUs and disks are not, so a miss is a finding to read
+#              (the readinessProbe's period of 5 s is inside the number), not a flake to retry. While the hub cannot start (below),
+#              the summary says "NOT MEASURED" for P11; it never reports a number it did not measure.
 #
 # THE HUB DOES NOT BECOME READY TODAY, AND THIS TEST SAYS SO. crates/hub/src/main.rs exits 1 by design until the identity module (03a)
 # and the registry (05) are composed into the binary (plan 09 A1; plans/09-deployment-ci.blockers.md). A hub that exits 1 cannot
@@ -48,6 +53,8 @@ PATH="$root/target/ops-tools/bin:$PATH"
 . "$here/pins.env"
 # shellcheck source=deploy/images/tools.env
 . "$root/deploy/images/tools.env"
+# shellcheck source=deploy/tests/kind/lib.sh
+. "$here/lib.sh"
 
 CLUSTER="lanekeeper-e2e"
 NS="lanekeeper"
@@ -123,6 +130,7 @@ fail_reason=""
 registry_port=""
 hub_digest=""
 app_pw=""
+p11_measured=""
 
 # kubectl is the node image's, so its version is the cluster's. `ki` passes standard input through (apply -f -).
 k() { docker exec "$cp" kubectl --kubeconfig=/etc/kubernetes/admin.conf "$@"; }
@@ -176,6 +184,9 @@ on_exit() {
     trap - EXIT
     if [ "$status" -ne 0 ]; then
         record "$current_stage" FAIL "$((SECONDS - stage_started))" "$fail_reason"
+        if [ "$current_stage" = hub ] && [ -z "$p11_measured" ]; then
+            record "P11 hub start-up (10 s per replica)" "NOT MEASURED" "-" "the replicas were not all Ready, so no start-up time exists to judge"
+        fi
         say "FAILED in the stage '$current_stage'${fail_reason:+: $fail_reason}"
         say "== the cluster, as it was when the stage failed (all of it is in $out/diagnostics.txt)"
         diagnostics
@@ -386,7 +397,7 @@ EOF
 }
 
 install_hub() {
-    local t0=$SECONDS ready total crashing got i
+    local t0=$SECONDS ready total crashing
     helm upgrade --install lanekeeper-hub "$root/deploy/charts/hub" --namespace "$NS" -f "$root/deploy/values/hub/kind.yaml" \
         --set "image.repository=$REGISTRY/lanekeeper/hub" --set "image.digest=$hub_digest" > "$out/helm-hub.log" 2>&1 || {
         tail -n 20 "$out/helm-hub.log" >&2
@@ -402,15 +413,22 @@ install_hub() {
         sleep 3
     done
     local to_ready="$((SECONDS - t0))"
-    for i in 0 1 2; do
-        # /readyz is on the operations port (9090). The API server's pod proxy is the route; a non-2xx answer fails the command.
-        got="$(k get --raw "/api/v1/namespaces/$NS/pods/lanekeeper-hub-$i:9090/proxy/readyz")" || { fail_reason="/readyz on lanekeeper-hub-$i did not answer 200"; return 1; }
-        say "/readyz on lanekeeper-hub-$i: $got"
-    done
-    # P11, informational: from the container's start to the Ready condition (the API's timestamps have a resolution of one second).
-    k -n "$NS" get pods -l "$HUB_SELECTOR" -o json | jq -r '.items[] | "\(.metadata.name) \((((.status.conditions[] | select(.type == "Ready") | .lastTransitionTime) | fromdateiso8601) - (.status.containerStatuses[0].state.running.startedAt | fromdateiso8601))) s from the start of the container to Ready"' | tee "$out/time-to-ready.txt"
-    say "P11 (informational: kind is not the design scale): all 3 replicas Ready ${to_ready} s after the install (P11's start-up budget is 10 s per replica)"
-    record "hub time to Ready" INFO "$to_ready" "see time-to-ready.txt"
+    # P11, asserted: from each container's start to its Ready condition (the API's timestamps have a resolution of one second).
+    k -n "$NS" get pods -l "$HUB_SELECTOR" -o json | jq -r '.items[] | "\(.metadata.name) \(((.status.conditions[] | select(.type == "Ready") | .lastTransitionTime) | fromdateiso8601) - (.status.containerStatuses[0].state.running.startedAt | fromdateiso8601))"' > "$out/time-to-ready.txt" || {
+        fail_reason="the start-up times of the replicas could not be read from the pods (P11 was not measured)"
+        return 1
+    }
+    p11_measured=1
+    local p11_rc=0
+    p11_verdict "$P11_BUDGET_S" < "$out/time-to-ready.txt" > "$out/p11.txt" 2>&1 || p11_rc=$?
+    cat "$out/p11.txt"
+    say "all 3 replicas Ready ${to_ready} s after the install; the slowest replica took ${P11_WORST:-?} s from its container's start (P11's budget is ${P11_BUDGET_S} s per replica; kind is not the design scale)"
+    if [ "$p11_rc" -ne 0 ]; then
+        record "P11 hub start-up (${P11_BUDGET_S} s per replica)" FAIL "${P11_WORST:-?}" "slowest replica; $(tr '\n' ';' < "$out/p11.txt")"
+        fail_reason="P11: a replica was not Ready within ${P11_BUDGET_S} s of its container's start (the slowest took ${P11_WORST:-?} s): $(grep -E 'OVER|not measured|no replica' "$out/p11.txt" | head -n 3 | tr '\n' ';')"
+        return 1
+    fi
+    record "P11 hub start-up (${P11_BUDGET_S} s per replica)" PASS "$P11_WORST" "slowest of 3 replicas, container start to Ready; install to all Ready ${to_ready} s"
 }
 
 # ---- run ---------------------------------------------------------------------------------------------------------------------
