@@ -105,9 +105,14 @@ test.describe("losing the stream and getting it back", () => {
     await page.goto(`${harness.url}/swimlanes`);
     await expect(pill(page)).toHaveAttribute("data-status", "live");
     harness.emit(golden("file-observed.txt"));
-    harness.refuseStreams(503, 3);
+    // The hub keeps saying no until the test lets it stop. Offline lasts until the next attempt, and the backoff draws that wait
+    // anywhere from 0.2 to 8 seconds, so a hub that refused exactly three attempts could be back before a poll of the pill ever
+    // saw Offline (once on CI: reconnecting, then Live, for 60 s), or while the banner was being read.
+    harness.refuseStreams(503, 1000);
     harness.closeStreams();
     await expect(pill(page)).toHaveAttribute("data-status", "offline", { timeout: 60_000 });
+    // Offline comes after three refused attempts in a row, not fewer (the clean close before them is not one).
+    expect(streams(harness).filter((r) => r.status === 503).length).toBeGreaterThanOrEqual(3);
     await expect(pill(page)).toContainText(/Offline · data from \d\d:\d\d UTC/);
     const banner = page.getByText("Live updates paused, retrying");
     await expect(banner).toBeVisible();
