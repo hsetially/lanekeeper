@@ -191,13 +191,13 @@ The run below is the same benchmarks in 44 pieces that can be resumed. The works
 | hub-registry | delta_to_drift_changed | 0 | 193 |
 | hub-registry | file_content_cached | 0 | 318 |
 | hub-registry | file_content_cold | 0 | 327 |
-| hub-registry | file_tree | not run yet | |
-| hub-registry | full_recompute_target_scale | not run yet | |
-| hub-registry | grid_40_swimlanes | not run yet | |
-| hub-registry | head_moved_to_drift | not run yet | |
-| hub-registry | incremental_recompute_base | not run yet | |
-| hub-registry | incremental_recompute_per_file_per_swimlane | not run yet | |
-| hub-registry | ingest_versions_per_s | not run yet | |
+| hub-registry | file_tree | 0 | 358 |
+| hub-registry | full_recompute_target_scale | 0 | 302 |
+| hub-registry | grid_40_swimlanes | 0 | 325 |
+| hub-registry | head_moved_to_drift | 0 | 281 |
+| hub-registry | incremental_recompute_base | 0 | 201 |
+| hub-registry | incremental_recompute_per_file_per_swimlane | 0 | 193 |
+| hub-registry | ingest_versions_per_s | 0 | 180 |
 | hub-registry | search_settings_all_swimlanes | not run yet | |
 | hub-registry | search_text_all_swimlanes | not run yet | |
 | hub-registry | sentinel_attribution | not run yet | |
@@ -207,7 +207,7 @@ The run below is the same benchmarks in 44 pieces that can be resumed. The works
 | hub-writes | edit_applied | not run yet | |
 | hub-writes | write_queries | not run yet | |
 
-29 of 44 bench targets have run; 0 of them exited non-zero.
+36 of 44 bench targets have run; 0 of them exited non-zero.
 <!-- bench-pieces:end -->
 
 PENDING: the budget table, from `cargo xtask bench-check` after every piece has run.
