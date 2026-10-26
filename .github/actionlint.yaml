@@ -7,9 +7,18 @@
 #   LK_COSIGN_KMS_KEY        the Cloud KMS key URI of the second image signature (images.yml, plan 09 A5): gcpkms://projects/...
 #   LK_GCP_WIF_PROVIDER      the Workload Identity Federation provider that the images workflow authenticates to
 #   LK_GCP_SERVICE_ACCOUNT   the service account it impersonates; the account may use the signing key and nothing else
+#   LK_RPM_WIF_PROVIDER      the Workload Identity Federation provider of the release job of sentinel.yml (09/T8, plan 09 A16): it admits only
+#                            this repository's sentinel-v* tags, in the `release` environment
+#   LK_RPM_SERVICE_ACCOUNT   the service account that job impersonates; it may read the one Secret Manager secret below and nothing else, and
+#                            it is not the account that signs images
+#   LK_RPM_SIGNING_SECRET    the Secret Manager secret that holds the RPM release key (projects/P/secrets/NAME): the ASCII-armoured secret
+#                            key made by `deploy/sentinel/sign.sh new-release-key`. A name, not the key
 config-variables:
   - LK_BENCH_RUNNER
   - LK_COSIGN_KMS_KEY
   - LK_GCP_WIF_PROVIDER
   - LK_GCP_SERVICE_ACCOUNT
+  - LK_RPM_WIF_PROVIDER
+  - LK_RPM_SERVICE_ACCOUNT
+  - LK_RPM_SIGNING_SECRET
 # No self-hosted runner labels: the jobs run on GitHub-hosted runners, and LK_BENCH_RUNNER names a larger hosted runner.

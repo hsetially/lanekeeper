@@ -966,9 +966,67 @@ deploy-data: schemas-verify policy-test (ops-tools-check "helm kubeconform") ima
 deploy-argocd: schemas-verify policy-test (ops-tools-check "helm kubeconform") images-tools-check
     deploy/tests/render.sh argocd
 
-# The T6 gate so far (T7 and T8 add to it): the pinned tools, the workflow lint, the pin tests, the image checks, and the charts with
-# the Argo CD files.
-verify-09: ops-tools-check ci-lint pins-test images-policy-test images-builder-test images-publish-test deploy-check
+# Prompt 09, T8 (S19, S20, S25, plan 09 A15 to A18): the sentinel's RPM. `sentinel-check` is what needs no RPM and no key, and is part of
+# verify-09: the parser of the unit file and its tests, the policy on the unit (S25), the policy on Dockerfile.build and its planted cases
+# through the real Dockerfile parser, and the self-tests of the signing and install scripts' helpers. The recipes below it build, sign and
+# test the package, need Docker (and, for the RPM install, a privileged container that boots systemd), and are separate from verify-09 like
+# images-repro: they fail without Docker and are never skipped. CI runs them in .github/workflows/sentinel.yml.
+sentinel-check: images-tools-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . deploy/images/tools.env
+    conftest() { docker run --rm -v "$PWD:/repo:ro" -w /repo "$LK_CONFTEST_IMAGE" "$@"; }
+    node --test deploy/sentinel/tests/*.test.mjs
+    conftest verify --policy deploy/policy --namespace systemd --namespace dockerfile_artifact --no-color
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+    node deploy/sentinel/tests/unit2json.mjs deploy/sentinel/lanekeeper-sentinel.service > "$work/unit.json"
+    docker run --rm -v "$PWD:/repo:ro" -v "$work:/work:ro" -w /repo "$LK_CONFTEST_IMAGE" test --policy deploy/policy --namespace systemd --no-color /work/unit.json
+    conftest test --parser dockerfile --policy deploy/policy --namespace dockerfile_artifact --no-color deploy/sentinel/Dockerfile.build
+    planted="$(conftest test --parser dockerfile --policy deploy/policy --namespace dockerfile_artifact --no-color deploy/policy/testdata/dockerfile/planted-artifact.Dockerfile || true)"
+    while IFS= read -r rule; do
+        grep -qF -- "$rule" <<<"$planted" || { echo "sentinel-check: the planted Dockerfile did not trigger: $rule"; echo "$planted"; exit 1; }
+    done < deploy/policy/testdata/dockerfile/planted-artifact.expected
+    # A unit that breaks S25 is refused through the real parser too: the converter and the policy agree on the shape.
+    sed 's/^CapabilityBoundingSet=$/CapabilityBoundingSet=CAP_SYS_ADMIN/' deploy/sentinel/lanekeeper-sentinel.service > "$work/bad.service"
+    node deploy/sentinel/tests/unit2json.mjs "$work/bad.service" > "$work/bad.json"
+    if docker run --rm -v "$PWD:/repo:ro" -v "$work:/work:ro" -w /repo "$LK_CONFTEST_IMAGE" test --policy deploy/policy --namespace systemd --no-color /work/bad.json > "$work/bad.out" 2>&1; then
+        echo "sentinel-check: a unit with a capability was accepted"; exit 1
+    fi
+    grep -qF "CapabilityBoundingSet= must be set and empty" "$work/bad.out" || { echo "sentinel-check: refused, but not for the capability"; cat "$work/bad.out"; exit 1; }
+    echo "sentinel-check: the unit passes the S25 policy, Dockerfile.build passes its policy, and the planted cases are refused"
+
+# The sentinel binary and the unsigned RPM in target/sentinel/unsigned, from `git archive HEAD`, and the image with the tools that sign (see
+# deploy/sentinel/build.sh for LK_BUILD_CA and the other settings).
+sentinel-build: images-tools-check
+    deploy/sentinel/build.sh --out target/sentinel/unsigned
+    deploy/sentinel/build.sh --tools
+
+# Two builds of one commit give one binary and one RPM (the reproducibility of T8, as images-repro is for T1).
+sentinel-repro: images-tools-check
+    deploy/sentinel/tests/reproducible.sh
+
+# The RPM signed with a throwaway key (a pull request's), with its CycloneDX SBOM scanned for critical findings (needs cargo-cyclonedx,
+# and the vulnerability database from grype.anchore.io).
+sentinel-sign: sentinel-build
+    deploy/sentinel/tests/sign-test.sh --rpm target/sentinel/unsigned/lanekeeper-sentinel-*-1.x86_64.rpm
+    rm -rf target/sentinel/signed
+    deploy/sentinel/sign.sh ephemeral --rpm target/sentinel/unsigned/lanekeeper-sentinel-*-1.x86_64.rpm --out target/sentinel/signed
+    deploy/sentinel/sbom.sh --rpm target/sentinel/signed/lanekeeper-sentinel-*-1.x86_64.rpm
+    deploy/images/scan.sh --sbom target/sentinel/signed/lanekeeper-sentinel-*-1.x86_64.cdx.json
+
+# The T8 Verify: the RPM installs and starts on Rocky Linux 8.9 and 8.10, its signature verifies, and the unit's exposure score is 2.0 or
+# lower by directives that systemd 239 knows. LK_SENTINEL_AUDIT is `repo` (the real audit package, from the Rocky repositories: what CI
+# does and the default) or `stand-in` (tests/audit-stand-in.spec, for a place that cannot reach them; the test says so loudly).
+sentinel-test: sentinel-sign (ops-tools-check "cosign")
+    deploy/sentinel/tests/install.sh --rpm target/sentinel/signed/lanekeeper-sentinel-*-1.x86_64.rpm --unsigned target/sentinel/unsigned/lanekeeper-sentinel-*-1.x86_64.rpm --public-key target/sentinel/signed/RPM-GPG-KEY-ephemeral.pub --audit "${LK_SENTINEL_AUDIT:-repo}"
+    deploy/sentinel/tests/exposure.sh --rpm target/sentinel/signed/lanekeeper-sentinel-*-1.x86_64.rpm
+    deploy/sentinel/tests/exposure.sh --self-test
+    deploy/sentinel/tests/publish-test.sh
+
+# The T8 gate so far (T7 and T8 add to it): the pinned tools, the workflow lint, the pin tests, the image checks, the charts with the Argo CD
+# files, and the sentinel's unit and Dockerfile policies. The RPM itself is `just sentinel-test`, with Docker, as images-repro is for T1.
+verify-09: ops-tools-check ci-lint pins-test images-policy-test images-builder-test images-publish-test deploy-check sentinel-check
 verify-11:
     @echo "verify-11 not implemented yet" && exit 1
 verify-14:

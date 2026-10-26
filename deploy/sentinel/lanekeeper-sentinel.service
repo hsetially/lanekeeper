@@ -1,0 +1,76 @@
+# The Lanekeeper sentinel on an NFS VM (09/T8; S25, D72). It reads auditd's records of writes under the export from the audisp plugin's
+# socket and tells the hub who made them: paths, operations, times, OS Login names and executable names. It never reads or sends file
+# content, listens on no port, and reaches the hub outbound over mutual TLS.
+#
+# This unit is the hardening of S25 and of plan 09 A15. Everything in it is a directive that systemd 239 (Rocky Linux 8) knows, because a
+# directive an older systemd does not know is ignored, not enforced; `systemd-analyze verify` on Rocky 8.9 and 8.10 refuses the unit
+# otherwise (deploy/sentinel/tests/install.sh), and a newer systemd-analyze scores it at 2.0 or lower (tests/exposure.sh). What the
+# systemd of Rocky 8.9 and 8.10 cannot do (ProtectClock, ProtectHostname, ProtectKernelLogs, ProtectProc, ProcSubset) is not set here and
+# is counted against the score. policy/systemd.rego checks the S25 part of this file on every change.
+#
+# Installed by configuration management and started by it: the package does not enable or start the unit.
+[Unit]
+Description=Lanekeeper NFS VM sentinel (who changed a file: metadata only)
+Documentation=https://github.com/hsetially/lanekeeper
+# After auditd, which loads the audisp plugin and so makes its socket, and after the network, which the hub is on.
+After=network-online.target auditd.service
+Wants=network-online.target
+# A crash loop stops at ten starts in five minutes and says so in the journal and in systemctl.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/lanekeeper-sentinel
+# Its own user and group (created by the package). The group is how it reaches the audisp socket: the socket is in a directory that is
+# root:lanekeeper-sentinel, mode 0750 (audisp/af_unix.conf, plan 09 A17).
+User=lanekeeper-sentinel
+Group=lanekeeper-sentinel
+Restart=on-failure
+RestartSec=5s
+
+# The only place it writes: the spool of records the hub has not acknowledged (at most 50 MiB, prompt 17). StateDirectory makes it
+# (0700, owned by the user); ReadWritePaths says in one line what ProtectSystem=strict leaves writable.
+StateDirectory=lanekeeper-sentinel
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/lanekeeper-sentinel
+
+# S25. No capability at all, not even in the bounding set; nothing can add one; no new privilege by setuid, file capabilities or exec.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+# The whole file system is read-only but the spool; no home directories; a private /tmp.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# No writable and executable memory. A static musl Rust binary does not need it.
+MemoryDenyWriteExecute=yes
+# The audisp socket (AF_UNIX) and the hub (AF_INET, AF_INET6). No netlink, no packet sockets, nothing exotic.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# The rest of the hardening that systemd 239 has (A15).
+PrivateDevices=yes
+PrivateMounts=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+# Not in upstream systemd 239, but backported in Rocky Linux 8 (239-78.el8 and 239-82.el8 read it: `systemd-analyze verify` on both is
+# silent, and says "Unknown lvalue" for the directives that are not there). Checked by tests/install.sh on 8.9 and 8.10.
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0077
+KeyringMode=private
+DevicePolicy=closed
+# A core dump of the sentinel would hold paths and names from memory.
+LimitCORE=0
+TasksMax=64
+
+[Install]
+# Config management enables the unit (`systemctl enable lanekeeper-sentinel`); the package does not.
+WantedBy=multi-user.target

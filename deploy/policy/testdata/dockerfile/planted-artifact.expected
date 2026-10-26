@@ -1,0 +1,13 @@
+base image not pinned by digest
+the final stage must be FROM scratch
+the final stage may only copy files
+the final stage copies from the build context
+ADD is not allowed
+without --locked
+a download piped into a shell
+a download that is not checked with sha256sum -c
+apt-get install without --no-install-recommends
+apt-get upgrade or dist-upgrade
+lets unauthenticated packages in
+rpm must be pinned to a version
+a secret-looking variable in a build stage

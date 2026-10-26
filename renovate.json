@@ -13,6 +13,11 @@
     { "matchDatasources": ["docker"], "groupName": "docker images and digests" },
     { "matchManagers": ["helmv3", "helm-values", "helmfile", "kubernetes"], "groupName": "helm and kubernetes" },
     {
+      "description": "The sentinel's RPM is tested on Rocky Linux 8.9 and 8.10 exactly (deploy/sentinel/tests/install.sh, 09/T8). Those minor releases are the targets, so a newer tag is a decision and not an update.",
+      "matchPackageNames": ["docker.io/rockylinux/rockylinux"],
+      "enabled": false
+    },
+    {
       "description": "Contract paths change only through a contract-change PR that a human approves (AGENTS.md, Ownership): never merge by itself, and say so.",
       "matchFileNames": [
         "crates/domain/**",
@@ -35,7 +40,7 @@
       "customType": "regex",
       "managerFilePatterns": ["/^deploy/images/tools\\.env$/"],
       "matchStrings": [
-        "LK_[A-Z_]+_IMAGE=(?<depName>[a-z0-9.-]+(?:/[a-z0-9._-]+)+):(?<currentValue>[A-Za-z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+        "LK_[A-Z0-9_]+_IMAGE=(?<depName>[a-z0-9.-]+(?:/[a-z0-9._-]+)+):(?<currentValue>[A-Za-z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
       ],
       "datasourceTemplate": "docker"
     }

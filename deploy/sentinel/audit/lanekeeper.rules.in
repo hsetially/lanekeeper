@@ -1,0 +1,11 @@
+## The audit rule of the Lanekeeper sentinel (09/T8; D72, S25): one watch for each NFS export root on this VM, written for write and
+## attribute-change events (-p wa), under the key `lanekeeper`. Only paths, operations, times, user ids and executable names are in the
+## records that result; the sentinel never reads the files.
+##
+## This is a TEMPLATE. @EXPORT_ROOT@ is replaced by one absolute path, once for each export root the sentinel is configured with, and the
+## rendered file is installed by configuration management as /etc/audit/rules.d/lanekeeper.rules (then `augenrules --load`). A root is a
+## clean absolute path: it starts with /, has no `..`, no white space and no control character. The package does not render this file,
+## because it cannot know the roots. Prompt 17 (the sentinel) renders it from its configuration and checks the rule on Rocky 8.9 and 8.10:
+##
+##     ausearch -k lanekeeper     # shows an edit made with `sudo vi`, with the original login identity (auid) of the OS Login user
+-w @EXPORT_ROOT@ -p wa -k lanekeeper

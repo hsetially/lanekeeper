@@ -87,11 +87,18 @@ test('every image of deploy/images/tools.env is seen by a custom manager', () =>
   assert.ok(manager, 'no regex custom manager for docker images');
   assert.ok(manager.managerFilePatterns.some((p) => new RegExp(p.replace(/^\/|\/$/g, '')).test('deploy/images/tools.env')));
   const text = readFileSync(join(root, 'deploy/images/tools.env'), 'utf8');
-  const lines = text.split('\n').filter((l) => /^LK_[A-Z_]+_IMAGE=/.test(l));
+  const lines = text.split('\n').filter((l) => /^LK_[A-Z0-9_]+_IMAGE=/.test(l));
   assert.ok(lines.length >= 5, `only ${lines.length} image lines`);
+  // The names may hold digits (LK_ROCKY_8_9_IMAGE): a pattern that stopped at the first digit would leave those images unseen.
+  assert.ok(lines.some((l) => l.startsWith('LK_ROCKY_8_9_IMAGE=')), 'the filter does not see the Rocky image lines');
   const re = new RegExp(manager.matchStrings[0]);
   for (const line of lines) {
     const m = re.exec(line);
     assert.ok(m?.groups?.depName && m.groups.currentValue && m.groups.currentDigest, `not matched: ${line}`);
   }
+});
+
+test('the Rocky Linux images of the sentinel test are not moved to another release by an update', () => {
+  const rule = (config.packageRules ?? []).find((r) => (r.matchPackageNames ?? []).includes('docker.io/rockylinux/rockylinux'));
+  assert.ok(rule && rule.enabled === false, 'no rule that turns updates of docker.io/rockylinux/rockylinux off');
 });

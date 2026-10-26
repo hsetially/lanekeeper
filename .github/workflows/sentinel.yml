@@ -1,0 +1,318 @@
+# The NFS VM sentinel as a signed RPM (09/T8; S19, S20, S25, plan 09 A15 to A18): built statically for x86_64-unknown-linux-musl, packaged,
+# signed, scanned, installed on Rocky Linux 8.9 and 8.10, and scored; and, on a release tag, signed again with the release key and with
+# cosign, and published.
+#
+# EVERY RUN (pull requests, main, sentinel-v* tags)
+#   policy    the S25 policy on the unit file, the policy on Dockerfile.build, and their planted cases (`just sentinel-check`).
+#   build     builds the binary and the RPM twice without the cache and requires the same bytes (tests/reproducible.sh).
+#   sign      PULL REQUESTS AND MAIN: signs the RPM with a throwaway GPG key made for the run (sign.sh ephemeral), so that `rpm -K` and dnf's
+#             check are tested with a key, writes the CycloneDX SBOM and scans it: a critical finding fails the job. The key is gone when
+#             the job's container ends; the signature proves the package is intact, and nothing about who built it.
+#   install   per release (8.9, 8.10): boots systemd 239 in the pinned Rocky Linux image, installs the signed RPM with the real `audit`
+#             package from the release's repositories, starts the unit, and shows the restrictions on a real process (tests/install.sh).
+#   exposure  scores the unit with the systemd-analyze of a newer systemd (2.0 or lower), and shows that systemd 239 reads every directive.
+# SENTINEL-V* TAGS ONLY
+#   sign-release   signs with the RELEASE KEY (plan 09 A16): the GPG key lives in Secret Manager and is read through Workload Identity
+#                  Federation, only by this job, in the protected `release` environment, and piped into a container's memory (a tmpfs);
+#                  it is never written to the runner's disk. sign.sh refuses unless the key is the one committed in
+#                  deploy/sentinel/RPM-GPG-KEY-lanekeeper.pub, and that file is what `install` then verifies with.
+#   publish        the only job that can write: signs the RPM and its SBOM keyless with cosign (GitHub's OIDC token, the Sigstore log),
+#                  verifies both from the same job, attaches a build provenance attestation, and creates the GitHub release.
+#
+# WHAT THE SPLIT PROTECTS. The build runs the code of every dependency (cargo build scripts). It runs in jobs with `contents: read` only: no
+# id-token, no packages, no secrets. The jobs that hold the release key or can sign run no build step; they handle the files the build made.
+#
+# SETUP THAT A PERSON DOES (not in the repository; plan 09 blockers, B13): the `release` environment (required reviewers, tags
+# sentinel-v* only), the repository variables LK_RPM_WIF_PROVIDER, LK_RPM_SERVICE_ACCOUNT and LK_RPM_SIGNING_SECRET (the provider admits
+# only this repository's sentinel-v* tags in that environment; the service account may read the one secret that holds the key, and is not
+# the account that signs images), and the key itself: `deploy/sentinel/sign.sh new-release-key`.
+#
+# NOT YET RUN ON GITHUB. The sandbox that wrote this workflow cannot reach GitHub's runners, so the first run is its test. What could be
+# run there (every script, the build, the signing, the install on both releases with a stand-in for `audit`, the exposure score) was.
+# Keyless signing, the release key through Workload Identity Federation, the attestation and the GitHub release need GitHub and Google.
+name: sentinel
+on:
+  pull_request:
+    paths:
+      - "deploy/sentinel/**"
+      - "deploy/policy/systemd*.rego"
+      - "deploy/policy/dockerfile_artifact*.rego"
+      - "deploy/policy/testdata/dockerfile/planted-artifact*"
+      - "deploy/images/tools.env"
+      - "deploy/images/scan.sh"
+      - "deploy/images/grype.yaml"
+      - "crates/sentinel/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "Justfile"
+      - ".github/workflows/sentinel.yml"
+      - ".github/actions/docker-hub-mirror/**"
+  push:
+    branches: [main]
+    tags: ["sentinel-v*"]
+permissions: {}
+concurrency:
+  group: sentinel-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "3"
+
+jobs:
+  policy:
+    name: policies and scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/docker-hub-mirror
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just@1.40.0
+      - run: just sentinel-check
+
+  build:
+    name: build twice, same bytes
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/docker-hub-mirror
+      # The committed files are built (git archive HEAD), as the tag or the merge commit has them.
+      - name: Build twice without the cache and compare
+        run: deploy/sentinel/tests/reproducible.sh
+      - name: Keep the unsigned files for the next jobs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sentinel-unsigned
+          path: |
+            target/sentinel/repro/a/lanekeeper-sentinel
+            target/sentinel/repro/a/lanekeeper-sentinel-*-1.x86_64.rpm
+            target/sentinel/repro/a/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 3
+
+  sign:
+    name: sign with a throwaway key, SBOM and scan
+    needs: [build]
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/docker-hub-mirror
+      - name: Fetch the unsigned files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sentinel-unsigned
+          path: target/sentinel/unsigned
+      - name: Install cargo-cyclonedx (the SBOM of the crates in the binary)
+        run: |
+          set -euo pipefail
+          . deploy/images/tools.env
+          cargo install --locked cargo-cyclonedx --version "$LK_CARGO_CYCLONEDX_VERSION"
+      - name: The image with rpm and gpg
+        run: deploy/sentinel/build.sh --tools
+      - name: Test the signing script
+        run: deploy/sentinel/tests/sign-test.sh --rpm target/sentinel/unsigned/lanekeeper-sentinel-*-1.x86_64.rpm
+      - name: Sign with a throwaway key
+        run: deploy/sentinel/sign.sh ephemeral --rpm target/sentinel/unsigned/lanekeeper-sentinel-*-1.x86_64.rpm --out target/sentinel/signed
+      - name: Write the SBOM
+        run: deploy/sentinel/sbom.sh --rpm target/sentinel/signed/lanekeeper-sentinel-*-1.x86_64.rpm
+      - name: Scan the SBOM (a critical finding fails the job)
+        run: deploy/images/scan.sh --sbom target/sentinel/signed/lanekeeper-sentinel-*-1.x86_64.cdx.json
+      - name: Keep the signed files for the next jobs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sentinel-signed
+          path: |
+            target/sentinel/unsigned/lanekeeper-sentinel-*-1.x86_64.rpm
+            target/sentinel/signed/*
+          if-no-files-found: error
+          retention-days: 3
+
+  sign-release:
+    name: sign with the release key
+    needs: [build]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Protected: required reviewers, and tags sentinel-v* only (the setup above). Only this job and `publish` hold id-token: write.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation: GitHub's OIDC token, exchanged for a short-lived Google credential
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/docker-hub-mirror
+      - name: Fetch the unsigned files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sentinel-unsigned
+          path: target/sentinel/unsigned
+      - name: The tag names the version that was built
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/sentinel/Cargo.toml | head -n1)"
+          [ "$TAG" = "sentinel-v$version" ] || { echo "::error::the tag is $TAG, and crates/sentinel/Cargo.toml says version $version"; exit 1; }
+      - name: Install cargo-cyclonedx (the SBOM of the crates in the binary)
+        run: |
+          set -euo pipefail
+          . deploy/images/tools.env
+          cargo install --locked cargo-cyclonedx --version "$LK_CARGO_CYCLONEDX_VERSION"
+      - name: The image with rpm and gpg
+        run: deploy/sentinel/build.sh --tools
+      - name: Authenticate to Google Cloud with Workload Identity Federation
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.LK_RPM_WIF_PROVIDER }}
+          service_account: ${{ vars.LK_RPM_SERVICE_ACCOUNT }}
+      # The key goes from Secret Manager to the signing container's standard input, and from there into a tmpfs: no file on the runner holds it.
+      # sign.sh refuses unless its fingerprint is the one of the committed public key, so a key put in the secret by mistake signs nothing.
+      - name: Sign with the release key
+        env:
+          SECRET: ${{ vars.LK_RPM_SIGNING_SECRET }}
+        run: |
+          set -euo pipefail
+          [ -n "$SECRET" ] || { echo "::error::LK_RPM_SIGNING_SECRET is not set"; exit 1; }
+          gcloud secrets versions access latest --secret="$SECRET" |
+            deploy/sentinel/sign.sh release --rpm target/sentinel/unsigned/lanekeeper-sentinel-*-1.x86_64.rpm --out target/sentinel/signed \
+              --public-key deploy/sentinel/RPM-GPG-KEY-lanekeeper.pub
+          install -m 0644 deploy/sentinel/RPM-GPG-KEY-lanekeeper.pub target/sentinel/signed/RPM-GPG-KEY-lanekeeper.pub
+      - name: Write the SBOM
+        run: deploy/sentinel/sbom.sh --rpm target/sentinel/signed/lanekeeper-sentinel-*-1.x86_64.rpm
+      - name: Scan the SBOM (a critical finding fails the job)
+        run: deploy/images/scan.sh --sbom target/sentinel/signed/lanekeeper-sentinel-*-1.x86_64.cdx.json
+      - name: Keep the signed files for the next jobs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sentinel-signed
+          path: |
+            target/sentinel/unsigned/lanekeeper-sentinel-*-1.x86_64.rpm
+            target/sentinel/signed/*
+          if-no-files-found: error
+          retention-days: 3
+
+  install:
+    name: install on Rocky Linux ${{ matrix.release }}
+    needs: [sign, sign-release]
+    if: ${{ !cancelled() && (needs.sign.result == 'success' || needs['sign-release'].result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["8.9", "8.10"]
+    env:
+      RELEASE: ${{ matrix.release }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/docker-hub-mirror
+      - name: Fetch the signed files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sentinel-signed
+          path: target/sentinel
+      # A pull request is verified with its throwaway key, a release with the committed one.
+      - name: Install, verify and start (with the real audit package)
+        run: |
+          set -euo pipefail
+          pub=target/sentinel/signed/RPM-GPG-KEY-lanekeeper.pub
+          [ -f "$pub" ] || pub=target/sentinel/signed/RPM-GPG-KEY-ephemeral.pub
+          deploy/sentinel/tests/install.sh --rpm target/sentinel/signed/lanekeeper-sentinel-*-1.x86_64.rpm \
+            --unsigned target/sentinel/unsigned/lanekeeper-sentinel-*-1.x86_64.rpm --public-key "$pub" --audit repo "$RELEASE"
+
+  exposure:
+    name: exposure score
+    needs: [sign, sign-release]
+    if: ${{ !cancelled() && (needs.sign.result == 'success' || needs['sign-release'].result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/docker-hub-mirror
+      - name: Fetch the signed files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sentinel-signed
+          path: target/sentinel
+      - run: deploy/sentinel/tests/exposure.sh --rpm target/sentinel/signed/lanekeeper-sentinel-*-1.x86_64.rpm
+      - run: deploy/sentinel/tests/exposure.sh --self-test
+
+  publish:
+    name: publish the release
+    needs: [sign-release, install, exposure]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # create the GitHub release and attach the files
+      id-token: write # keyless signing: GitHub's OIDC token, exchanged for a short-lived Sigstore certificate
+      attestations: write # the provenance attestation
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just@1.40.0
+      - run: just ops-tools-install cosign
+      - name: Fetch the signed files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sentinel-signed
+          path: target/sentinel
+      - name: Sign the RPM and its SBOM with cosign, keyless, and verify both
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/target/ops-tools/bin:$PATH"
+          cd target/sentinel/signed
+          # The signer must be this repository's sentinel workflow, run on a sentinel-v* tag, and nothing else.
+          repo_re="$(printf '%s' "$GITHUB_REPOSITORY" | sed -e 's/[][\.*^$+?(){}|]/\\&/g')"
+          identity="^https://github\\.com/${repo_re}/\\.github/workflows/sentinel\\.yml@refs/tags/sentinel-v.+\$"
+          for f in lanekeeper-sentinel-*-1.x86_64.rpm lanekeeper-sentinel-*-1.x86_64.cdx.json; do
+            "$GITHUB_WORKSPACE/deploy/sentinel/publish.sh" sign-blob "$f"
+            "$GITHUB_WORKSPACE/deploy/sentinel/publish.sh" verify-blob "$f" --identity-regexp "$identity" --issuer https://token.actions.githubusercontent.com
+          done
+      - name: Attach SLSA build provenance to the RPM
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: target/sentinel/signed/lanekeeper-sentinel-*-1.x86_64.rpm
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd target/sentinel/signed
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Lanekeeper sentinel ${TAG#sentinel-v}" \
+            --notes "The NFS VM sentinel for Rocky Linux 8.9 and 8.10. Verify the RPM with RPM-GPG-KEY-lanekeeper.pub (rpm -K), and the files with cosign verify-blob (the .cosign.bundle beside each). Install only through configuration management." \
+            lanekeeper-sentinel-*-1.x86_64.rpm lanekeeper-sentinel-*-1.x86_64.rpm.cosign.bundle \
+            lanekeeper-sentinel-*-1.x86_64.cdx.json lanekeeper-sentinel-*-1.x86_64.cdx.json.cosign.bundle RPM-GPG-KEY-lanekeeper.pub
