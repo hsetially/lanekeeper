@@ -32,7 +32,8 @@ pub enum RepoSource {
 /// # Errors
 ///
 /// `OutsideRoot` for a path that is not below the rule's root for that repository (so a base path is never read as a tenant
-/// path or the other way round), `InvalidPath` for a result that is not a valid NFS path.
+/// path or the other way round), `InvalidPath` for a result that is not a valid NFS path, `TrailingDot` for a tenant file
+/// whose name ends in a dot (its suffix would read back as an extension, and two Git files would be one NFS path).
 pub fn map_path(
     rule: &PathMappingRule,
     source: &RepoSource,

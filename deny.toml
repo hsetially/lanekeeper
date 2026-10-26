@@ -10,6 +10,18 @@ targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 [advisories]
 version = 2
 yanked = "deny"
+# Four zstd advisories, ignored until 2026-11-30 and not longer. Decided by a human on 2026-10-26 (docs/decisions.md D135); the same
+# list is in .cargo/audit.toml. The one user of `zstd` is `tonic` 0.14.6 (its `zstd` feature requires `zstd ^0.13`, and no `tonic`
+# release moves to `zstd` 0.14, where the fixes are), and it calls only `zstd::stream::read::Encoder::new`, `Decoder::new` and
+# `std::io::copy`. Remove an entry when `tonic` can take `zstd` >= 0.14.3 (`zstd-safe` >= 8.2.0, `zstd-sys` >= 2.1.2), and all of
+# them on 2026-11-30 whether or not that happened: they are not a permanent exception. cargo-deny cannot expire an ignore by itself,
+# so the date is kept by a person (D135).
+ignore = [
+  { id = "RUSTSEC-2026-0391", reason = "zstd: the `with_context` constructors reuse a context. tonic builds each stream with `Encoder::new` and `Decoder::new`, which own a fresh context." },
+  { id = "RUSTSEC-2026-0398", reason = "zstd-safe: `Seekable::decompress` (the `seekable` API). tonic does not use it." },
+  { id = "RUSTSEC-2026-0403", reason = "zstd-safe: `DCtx::decompress_stream` exposes uninitialized memory through `zstd::stream::write::Decoder`. The advisory says `stream::read::Decoder`, which tonic uses, is not affected." },
+  { id = "RUSTSEC-2026-0410", reason = "zstd-sys: the allocator shim of wasm32. Everything shipped is Linux (`targets` above)." },
+]
 
 [licenses]
 version = 2
