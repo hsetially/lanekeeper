@@ -47,7 +47,7 @@ jobs:
           ls -l /usr/bin/cargo "$HOME/.cargo/bin/cargo" || true
           /usr/local/bin/cosign sign-blob --yes file.rpm
           ./scripts/make-release-notes.sh
-          ./gradlew --version
+          ./scripts/gradle-notes.sh
           RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=/cargo -C target-feature=+crt-static" ./scripts/report.sh
           docker run --rm -e CARGO_BIN=/usr/local/cargo/bin/cargo gcr.io/distroless/static:nonroot --version
           # A download that is saved and then checked is not run by what follows; a file with another name is not the download.

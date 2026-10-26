@@ -34,8 +34,10 @@ web-verify:
 lk-test:
     node --test scripts/lk.test.mjs
 
+# The 44 bench targets of the workspace, as bench.yml and the nightly run them (`--bench '*'` leaves out the unit-test harnesses of the libs and
+# bins, which reject criterion's options, and `--no-fail-fast` runs every target). `just bench && cargo xtask bench-check`.
 bench:
-    cargo bench --workspace
+    cargo bench --workspace --bench '*' --no-fail-fast
 
 # Fail early, with the install command, when the pinned nightly toolchain or cargo-fuzz is missing. Never skips.
 fuzz-tools-check:

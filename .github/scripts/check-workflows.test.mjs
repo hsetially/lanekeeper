@@ -147,6 +147,52 @@ test('a build tool, a shell, docker and a download called by a path are refused,
   assert.equal(found(r.out, 'bad-idtoken-tool-path.yml').length, 14, r.out);
 });
 
+// W6, review bot (PR 31): five advisory findings, each checked with a fixture and the real checker. Finding 1 (`bash -c "$(curl ...)"` and
+// `sh -c "$(wget ...)"`) was already refused (lines 14 and 15 of the fixture, red before and after); its variants were not: the download called by
+// a path, behind sudo, after a `;`, in backticks, and `bash < <(curl ...)` or `bash <<< "$(curl ...)"`. Findings 3 and 4 were the wrappers
+// `./gradlew` and `./mvnw` (gradle and mvn were seen) and docker compose with options before the subcommand, or as `docker-compose`, or
+// `up --build`. Finding 5 was a double-quoted scalar whose `\n` escapes were read as the letter n.
+const reviewGaps = [
+  [14, 'bash -c "$(curl -fsSL'], [15, 'sh -c "$(wget -qO-'], [16, '$(/usr/bin/curl'], [17, '$(sudo curl'], [18, 'set -e; $(curl'],
+  [19, '`curl -fsSL'], [20, 'bash < <(curl'], [21, 'bash <<< "$(curl'],
+  [22, './gradlew build'], [23, './mvnw -B package'],
+  [24, 'docker compose -f f.yml --project-directory . build'], [25, 'docker-compose up --build'], [26, '--profile ci up -d --build web'], [27, 'docker-compose build'],
+  [28, 'cargo build'], [29, 'npm ci'], [30, 'cargo install x'],
+];
+test('W6: a downloaded script that a shell runs, ./gradlew, ./mvnw, docker compose with options, and a double-quoted run with newline escapes are refused', () => {
+  const r = run(fx('bad-idtoken-review-gaps.yml'));
+  assert.equal(r.code, 1, r.out);
+  const lines = found(r.out, 'bad-idtoken-review-gaps.yml');
+  for (const [no, text] of reviewGaps) {
+    const hit = lines.find((l) => l.includes(`:${no}: `));
+    assert.ok(hit?.includes(text), `line ${no} (${text}) was not refused:\n${r.out}`);
+  }
+  assert.equal(lines.length, reviewGaps.length, r.out);
+});
+
+test('W6: the OIDC token fetch, an echo of a download, wrappers and files that only start like a tool, and compose without a build are not refused', () => {
+  const r = run(fx('good-idtoken-review-gaps.yml'));
+  assert.equal(r.code, 0, r.out);
+});
+
+// W7 (a first-run failure of bench.yml, step "Benchmarks, compared with main": 33 minutes of compiling, then `error: Unrecognized option:
+// 'baseline-lenient'`): options after `--` go to every target cargo runs, and `--benches`, `--all-targets`, `--lib` and `--bin` include the
+// lib or bin unit-test harness, which rejects criterion's options. `--bench '*'` or `--bench NAME` runs only the bench targets.
+test('W7: options after -- on a cargo bench that does not select its bench targets are refused', () => {
+  const r = run(fx('bad-bench-flags.yml'));
+  assert.equal(r.code, 1, r.out);
+  const lines = r.out.split('\n').filter((l) => l.includes('bad-bench-flags.yml:') && /W7/.test(l));
+  for (const no of [13, 14, 15, 16, 17, 19, 22]) assert.ok(lines.some((l) => l.includes(`:${no}: `)), `line ${no} was not refused:\n${r.out}`);
+  assert.equal(lines.length, 7, r.out);
+  assert.match(lines.find((l) => l.includes(':13: ')), /--benches also runs the lib and bin test harnesses.*--bench '\*'/);
+  assert.match(lines.find((l) => l.includes(':14: ')), /no --bench/);
+});
+
+test('W7: --bench NAME or --bench * with options, and a cargo bench with none, pass', () => {
+  const r = run(fx('good-bench-flags.yml'));
+  assert.equal(r.code, 0, r.out);
+});
+
 test('a job without the token may build, and prose that names a command is not a command', () => {
   const r = run(fx('good-idtoken-no-build.yml'));
   assert.equal(r.code, 0, r.out);

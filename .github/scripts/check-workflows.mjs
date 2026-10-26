@@ -19,20 +19,24 @@
 //       install scripts of every dependency as the runner user, in a process whose environment carries the variables that let it
 //       ask GitHub for an OIDC token; with that token the code is the job's identity to Sigstore, Google Cloud or whatever the
 //       workflow federates with. So the job that signs or federates handles files that another job built, with tools fetched by a
-//       digest or a hash. Values are read as YAML reads them (`id-token: "write"`, `run: 'cargo install x'`), and a command is
+//       digest or a hash. Values are read as YAML reads them (`id-token: "write"`, `run: 'cargo install x'`, and the escapes of a double-quoted value: `"echo hi\ncargo build"`
+//       is two commands), and a command is
 //       looked for where one can start (the start of a line or after `&&`, `||`, `;`, `|`, `(`, `$(`, then/do/else, past sudo, env,
 //       timeout, time, nice, xargs and VAR=value). A command called by its path is the command (`/usr/bin/cargo build`,
 //       `~/.cargo/bin/cargo install`, `$HOME/.cargo/bin/cargo`, `/bin/bash -c '...'`, `/usr/bin/env cargo`), and so is a tool on the command
 //       line of `docker run IMAGE /usr/local/cargo/bin/cargo`. A line that ends in `\` is joined with the next. Refused, as a command in a `run:`:
 //         - cargo, rustc, rustdoc, rustup, npm, npx, pnpm, yarn, corepack, bun, bunx, uv, uvx, pip, pip3, pipx, poetry, conda, mamba,
 //           `python -m pip|pipx|build|poetry|uv|venv|ensurepip`, `python setup.py`, go build/install/run/test/get/generate, gem install,
-//           bundle, mvn, gradle, dotnet build/restore/publish/run/test, make, cmake, ninja, and apt, apt-get, dnf, yum, zypper, brew
+//           bundle, mvn, mvnw, gradle, gradlew (the wrappers download and run a distribution), dotnet build/restore/publish/run/test, make, cmake, ninja, and apt, apt-get, dnf, yum, zypper, brew
 //           install and apk add (the maintainer scripts of a package run as the runner's root);
 //         - the same inside `sh -c`, `bash -c`, `dash`, `zsh` or `ksh -c '...'` (also `-ec`, `-lc`, `-o pipefail -c`), to a depth of 3;
 //         - `docker run|exec|create` with one of those tools on its command line (`docker run IMAGE cargo build`), and
-//           `docker build`, `docker buildx build|bake`, `docker image build`, `docker builder build`, `docker compose build`;
-//         - a download that is run: `curl|wget ... | sh|bash|python|perl|ruby|node`, `bash <(curl ...)`, `eval|source|. "$(curl ...)"`,
-//           `sh -c "$(curl ...)"`, and a download that is saved and run in the same command line, with the interpreter given the file the
+//           `docker build`, `docker buildx build|bake`, `docker image build`, `docker builder build`, and `docker compose` or `docker-compose`, with
+//           options before the subcommand, with `build`, or with `up`, `run` or `create` and `--build`;
+//         - a download that is run: `curl|wget ... | sh|bash|python|perl|ruby|node`, `bash <(curl ...)`, `bash < <(curl ...)`,
+//           `bash <<< "$(curl ...)"`, `eval|source|. "$(curl ...)"`, a shell given a command that is the output of a download
+//           (`sh -c "$(curl ...)"`, also with the download called by its path or behind sudo, after a `;` or `&&` in the string, or in
+//           backticks; not `TOKEN=$(curl ...)` or `echo "$(curl ...)"`, which are data), and a download that is saved and run in the same command line, with the interpreter given the file the
 //           download was saved to (`wget -O f URL && sh f`, `curl -o f URL; bash f`; not `... && sha256sum -c ... && sh f`, which checks);
 //         and, as a step, the actions docker/build-push-action and docker/bake-action.
 //       NOT SEEN, and read by a person (the threat model lists each): what a script, a `just` recipe or a `make` target called by a
@@ -43,9 +47,20 @@
 //       is not a download; a download that is saved and run from another line or by another command (`wget -O f URL` on one line and `sh f`
 //       on the next, `chmod +x f && ./f`, `curl -O URL && sh name-from-the-url`), which no per-line text rule can tell from a download that
 //       is checked first; a tool reached through a link or an alias of another name; a quoted `run:` that spans several lines; and a
-//       multi-line value of `sh -c` whose command starts on a line after the first. A tool behind `rustup run stable cargo` is seen because rustup itself is refused. A `docker build` that a
+//       multi-line value of `sh -c` whose command starts on a line after the first. Also not seen, and named here because a review found them: a
+//       download that is substituted behind another command inside the substitution (`bash -c "$(cd d && curl ...)"`); what `docker compose up`
+//       builds when the compose file has a `build:` and the line has no `--build`; options before the docker subcommand itself (`docker --context c
+//       build .`); and any build tool that is not in the list above (sbt, ant, bazel, mill, lein, mix, composer, deno task, swift build: the
+//       list is not complete and cannot be, which is why a person reads each job with the token). A compose project that is itself called
+//       `build` (`docker compose -p build up`) is refused as a build. A tool behind `rustup run stable cargo` is seen because rustup itself is refused. A `docker build` that a
 //       script runs is not seen (that build runs in a container which is given none of the job's variables; sentinel.yml's
 //       `sign-release` is the one case, and its tools stage is held by dockerfile_artifact.rego and tools-graph.sh instead).
+//
+//   W7  A `cargo bench` with options after `--` selects its bench targets with `--bench NAME` or `--bench '*'`. Cargo gives those options to
+//       every target it runs, and with no target selected, or with `--benches`, `--all-targets`, `--lib`, `--bins` or `--bin`, that includes the
+//       unit-test harness of each lib and bin, which stops at the first option it does not know ("Unrecognized option: 'baseline-lenient'", after
+//       the 33 minutes that the first CI run of bench.yml spent compiling). Applies to every job. A `cargo bench` with nothing after `--` is not
+//       refused, and neither is `just bench`: the rule reads the commands of `run:` lines, and the Justfile's recipe uses `--bench '*'` as well.
 //
 // Exit codes: 0 all rules hold; 1 a rule is broken (printed as file:line: reason); 2 nothing to check or an unreadable path.
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -72,9 +87,15 @@ function structure(text) {
   return out;
 }
 
+// The escapes of a double-quoted YAML scalar (YAML 1.2, 5.7): `\n` is a newline, not the letter n. An escape that is not in this list is kept as the
+// character after the backslash.
+const YAML_ESCAPES = { 0: '\0', a: '\x07', b: '\b', t: '\t', '\t': '\t', n: '\n', v: '\v', f: '\f', r: '\r', e: '\x1b', ' ': ' ', '"': '"', '/': '/', '\\': '\\', N: '\x85', _: '\xa0', L: '\u2028', P: '\u2029' };
+const HEX_ESCAPE_WIDTH = { x: 2, u: 4, U: 8 };
+
 /**
  * The text of a quoted YAML scalar at the start of `s` and what follows its closing quote, or null when `s` does not start with one.
- * Double quotes: a backslash takes the next character as it is. Single quotes: `''` is one quote.
+ * Double quotes: a backslash escape is decoded as YAML decodes it (`\n`, `\t`, `\r`, `\"`, `\\`, `\xNN`, `\uNNNN`, `\UNNNNNNNN`). Single quotes:
+ * `''` is one quote, and nothing else is an escape.
  */
 function unquote(s) {
   const q = s[0];
@@ -83,8 +104,16 @@ function unquote(s) {
   for (let i = 1; i < s.length; i += 1) {
     const c = s[i];
     if (q === '"' && c === '\\' && i + 1 < s.length) {
-      text += s[i + 1];
-      i += 1;
+      const e = s[i + 1];
+      const width = HEX_ESCAPE_WIDTH[e];
+      const hex = width ? s.slice(i + 2, i + 2 + width) : '';
+      if (width && hex.length === width && /^[0-9A-Fa-f]+$/.test(hex) && parseInt(hex, 16) <= 0x10ffff) {
+        text += String.fromCodePoint(parseInt(hex, 16));
+        i += 1 + width;
+      } else {
+        text += YAML_ESCAPES[e] ?? e;
+        i += 1;
+      }
     } else if (c === q && q === "'" && s[i + 1] === "'") {
       text += "'";
       i += 1;
@@ -129,12 +158,13 @@ function children(body) {
 // past the words that only prefix a command (sudo, env and VAR=value, time, exec, nice, xargs, timeout N). A word inside a string that
 // echo prints, or an argument of grep, does not start a command. A command may be called by its path (`/usr/bin/cargo`,
 // `~/.cargo/bin/cargo`, `$HOME/.cargo/bin/cargo`, `"$HOME"/.cargo/bin/cargo`, `/usr/bin/env cargo`): BY_PATH is a word that ends in a slash and
-// sits right before the command's name, so a word that only starts with a tool's name (`make-release.sh`, `./gradlew`) is not the tool. A
+// sits right before the command's name, so a word that only starts with a tool's name (`make-release.sh`, `gradle-notes.sh`) is not the tool. A
 // path has no `=`: the value of `--remap-path-prefix=/usr/local/cargo=/cargo` is an option, not a way to run cargo; and none of `;&|()<>`,
 // which end a command, so that a long line of them is read in linear time.
 const BY_PATH = String.raw`(?:[^\s=;&|()<>]*/)?`;
-const BUILD_TOOLS = String.raw`(?:cargo|rustc|rustdoc|rustup|npm|npx|pnpm|yarn|corepack|bunx?|uvx?|pip3?|pipx|poetry|conda|mamba|python3?\s+-m\s+(?:pip|pipx|build|poetry|uv|venv|ensurepip)|python3?\s+(?:\S+/)?setup\.py|go\s+(?:build|install|run|test|get|generate)|gem\s+install|bundle|mvn|gradle|dotnet\s+(?:build|restore|publish|run|test)|make|cmake|ninja|(?:apt|apt-get|dnf|yum|zypper|brew)\s+install|apk\s+add)`;
-const COMMAND_START = String.raw`(?:^|&&|\|\||[;|({\`]|\$\(|\b(?:then|do|else)\b)\s*(?:${BY_PATH}(?:sudo|time|exec|command|nice|xargs|env)\s+(?:-\S+\s+)*|timeout\s+(?:-\S+\s+)*\d+[smhd]?\s+|[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*${BY_PATH}`;
+const BUILD_TOOLS = String.raw`(?:cargo|rustc|rustdoc|rustup|npm|npx|pnpm|yarn|corepack|bunx?|uvx?|pip3?|pipx|poetry|conda|mamba|python3?\s+-m\s+(?:pip|pipx|build|poetry|uv|venv|ensurepip)|python3?\s+(?:\S+/)?setup\.py|go\s+(?:build|install|run|test|get|generate)|gem\s+install|bundle|mvn|mvnw|gradle|gradlew|dotnet\s+(?:build|restore|publish|run|test)|make|cmake|ninja|(?:apt|apt-get|dnf|yum|zypper|brew)\s+install|apk\s+add)`;
+const WRAPPERS = String.raw`(?:${BY_PATH}(?:sudo|time|exec|command|nice|xargs|env)\s+(?:-\S+\s+)*|timeout\s+(?:-\S+\s+)*\d+[smhd]?\s+|[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*`;
+const COMMAND_START = String.raw`(?:^|&&|\|\||[;|({\`]|\$\(|\b(?:then|do|else)\b)\s*${WRAPPERS}${BY_PATH}`;
 const BUILD_COMMAND = new RegExp(`${COMMAND_START}(${BUILD_TOOLS})(?=\\s|$)`);
 const BUILD_ACTION = /^docker\/(?:build-push-action|bake-action)@/;
 // A shell that is given its command as a string: `bash -c '...'`, `sh -ec "..."`, `bash -o pipefail -c '...'`. Group 1 is a double-quoted
@@ -142,19 +172,24 @@ const BUILD_ACTION = /^docker\/(?:build-push-action|bake-action)@/;
 const SHELL_C = new RegExp(String.raw`${COMMAND_START}(?:ba|da|z|k)?sh\s+(?:(?:-o\s+\S+|-\S+)\s+)*-[A-Za-z]*c[A-Za-z]*\s+(?:--\s+)?(?:"((?:\\.|[^"\\])*)"|'([^']*)')`, 'g');
 // docker run IMAGE cargo build: the tool is a word of the command line (or the first word of a quoted string, as in `sh -c 'cargo build'`).
 const DOCKER_RUN = new RegExp(String.raw`${COMMAND_START}docker\s+(?:container\s+)?(?:run|exec|create)\s[^|;&\n]*?[\s'"](?:[^\s'"=]*/)?(${BUILD_TOOLS})(?=[\s'"]|$)`);
-const DOCKER_BUILD = new RegExp(String.raw`${COMMAND_START}docker\s+(?:buildx\s+(?:build|bake)|compose\s+build|(?:image\s+|builder\s+)?build)(?=\s|$)`);
+// `docker compose` and `docker-compose` take options before the subcommand (`-f FILE`, `--project-directory DIR`, `--profile NAME`): each is a word that
+// starts with a dash, with at most one value. A build is `build`, or `up`, `run` or `create` with `--build`.
+const COMPOSE = String.raw`(?:docker\s+compose|docker-compose)(?:\s+-{1,2}[A-Za-z][\w-]*(?:=\S+|\s+[^\s-]\S*)?)*`;
+const DOCKER_BUILD = new RegExp(String.raw`${COMMAND_START}(?:docker\s+(?:buildx\s+(?:build|bake)|(?:image\s+|builder\s+)?build)|${COMPOSE}\s+(?:build|(?:up|run|create)\s[^|;&\n]*?--build))(?=\s|$)`);
 // Code that is downloaded and run without being kept and checked.
 const INTERPRETER = String.raw`(?:(?:ba|da|z|k)?sh|python3?|perl|ruby|node)`;
 const FETCH_AND_RUN = [
   new RegExp(String.raw`${COMMAND_START}(?:curl|wget)(?=\s)[^|;&\n]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?${BY_PATH}${INTERPRETER}(?=\s|$)`),
-  new RegExp(String.raw`${COMMAND_START}${INTERPRETER}\s+(?:-\S+\s+)*<\(\s*(?:curl|wget)(?=\s)`),
+  new RegExp(String.raw`${COMMAND_START}${INTERPRETER}\s+(?:-\S+\s+)*(?:(?:<\s*)?<\(\s*(?:curl|wget)(?=\s)|<<<\s*"?\$\(\s*(?:curl|wget)(?=\s))`),
   new RegExp(String.raw`${COMMAND_START}(?:eval|source|\.)\s+"?(?:\$\(|<\()\s*(?:curl|wget)(?=\s)`),
   // A download that is saved and run in the same command line: `wget -O f URL && sh f`, `curl -o f URL; bash f`. The file the download is
   // saved to (-o, -O, --output, --output-document) is the word the interpreter is given. A download that something checks first has
   // another command between the two (`&& sha256sum -c ... && sh f`) and is not this.
   new RegExp(String.raw`${COMMAND_START}(?:curl|wget)(?=\s)[^;&|\n]*?\s(?:-[A-Za-z]*[oO]|--output(?:-document)?)(?:\s+|=)(\S{1,200})[^;&|\n]*(?:&&|;)\s*(?:sudo\s+(?:-\S+\s+)*)?${BY_PATH}${INTERPRETER}\s+(?:-\S+\s+)*\1(?=[\s;&|)]|$)`),
 ];
-const FETCHED_SUBSTITUTION = /^\s*"?\$\(\s*(?:curl|wget)(?=\s)/;
+// Inside the string that `sh -c` is given: a command that IS the output of a download (`$(curl ...)` or backticks at a command position: the start,
+// after `;`, `&&` and the like), called by its path or behind sudo and the other wrappers. `TOKEN=$(curl ...)` and `echo "$(curl ...)"` are data.
+const FETCHED_SUBSTITUTION = new RegExp(String.raw`${COMMAND_START}"?(?:\$\(|\`)\s*${WRAPPERS}${BY_PATH}(?:curl|wget)(?=\s)`);
 const MAX_SHELL_DEPTH = 3;
 
 /** What this command line starts that W6 refuses, as a few words, or null. `depth` counts the shells whose strings were opened. */
@@ -175,9 +210,48 @@ export function refusedCommand(text, depth = 0) {
   return null;
 }
 
+// W7. `cargo bench ... -- OPTIONS` hands OPTIONS to every target that cargo runs. With no target selected that is the lib and the bin unit-test
+// harnesses as well, and so it is with `--benches` and `--all-targets` (a lib or a bin has `bench = true` unless its manifest says otherwise), and
+// with `--lib` and `--bin`: libtest stops at the first option it does not know, after the whole workspace has been compiled (bench.yml's first
+// CI run: 33 minutes, then `error: Unrecognized option: 'baseline-lenient'`). `--bench NAME` or `--bench '*'` selects bench targets only.
+const CARGO_BENCH = new RegExp(String.raw`${COMMAND_START}cargo(?:\s+\+\S+)?\s+bench(?=\s|$)([^;&|\n]*)`, 'g');
+const HARNESS_TARGETS = new Set(['--benches', '--all-targets', '--lib', '--bins', '--bin']);
+
+/** Why a `cargo bench` on this command line passes options to a test harness that rejects them, or null. */
+export function benchProblem(text) {
+  for (const m of text.matchAll(CARGO_BENCH)) {
+    const words = m[1].trim().split(/\s+/).filter(Boolean);
+    const at = words.indexOf('--');
+    if (at < 0 || at === words.length - 1) continue; // nothing is passed on
+    const before = words.slice(0, at);
+    const wide = before.find((w) => HARNESS_TARGETS.has(w) || w.startsWith('--bin='));
+    if (wide) return `cargo bench passes the options after -- to every target it runs, and ${wide} also runs the lib and bin test harnesses, which reject them ("Unrecognized option"); select the bench targets only with --bench '*' or --bench NAME`;
+    if (!before.some((w) => w === '--bench' || w.startsWith('--bench='))) return "cargo bench passes the options after -- to every target it runs, the lib and bin test harnesses included, which reject them (\"Unrecognized option\"); there is no --bench: select the bench targets only with --bench '*' or --bench NAME";
+  }
+  return null;
+}
+
+/** Joins each line that ends in a backslash with the next: [{ no, text }] in and out, `no` being the first line's. */
+function joinContinued(physical) {
+  const out = [];
+  let open = null; // a command whose line ended in a backslash
+  for (const p of physical) {
+    const line = open ? { no: open.no, text: `${open.text} ${p.text.trim()}` } : p;
+    if (/\\\s*$/.test(line.text)) {
+      open = { no: line.no, text: line.text.replace(/\\\s*$/, '').trimEnd() };
+    } else {
+      open = null;
+      out.push(line);
+    }
+  }
+  if (open) out.push(open);
+  return out;
+}
+
 /**
  * The steps of a job that run something, as [{ no, text }] per command line: each logical line of a `run:` value (a line that ends in a
- * backslash is joined with the next, and `no` is the first line's), a quoted or one-line `run:`, or the action of a `uses:`.
+ * backslash is joined with the next, and `no` is the first line's), each line of a quoted or one-line `run:` (a double-quoted value can hold
+ * newlines: `"echo hi\ncargo build"`), or the action of a `uses:`.
  */
 function stepCommands(lines, job) {
   const out = [];
@@ -189,21 +263,13 @@ function stepCommands(lines, job) {
     if (kv.key === 'uses' && BUILD_ACTION.test(kv.value)) out.push({ no: body[i].no, text: kv.value, action: true });
     if (kv.key !== 'run') continue;
     if (kv.quoted || !/^[|>][+-]?\d*$/.test(kv.value)) {
-      out.push({ no: body[i].no, text: kv.value });
+      out.push(...joinContinued(kv.value.split(/\r?\n/).map((text) => ({ no: body[i].no, text }))));
       continue;
     }
     const keyIndent = body[i].indent + (dash ? dash[0].length : 0);
-    let open = null; // a command whose line ended in a backslash
-    for (let k = i + 1; k < body.length && body[k].indent > keyIndent; k += 1) {
-      const line = open ? { no: open.no, text: `${open.text} ${body[k].text.trim()}` } : { no: body[k].no, text: body[k].text };
-      if (/\\\s*$/.test(line.text)) {
-        open = { no: line.no, text: line.text.replace(/\\\s*$/, '').trimEnd() };
-      } else {
-        open = null;
-        out.push(line);
-      }
-    }
-    if (open) out.push(open);
+    const physical = [];
+    for (let k = i + 1; k < body.length && body[k].indent > keyIndent; k += 1) physical.push({ no: body[k].no, text: body[k].text });
+    out.push(...joinContinued(physical));
   }
   return out;
 }
@@ -280,8 +346,13 @@ export function checkWorkflow(text) {
         const v = keyValue(perms.text).value;
         if (v === 'write-all' || v === 'read-all') add(perms.no, `job ${kv.key}: permissions: ${v} is too wide; write out the scopes (W2)`);
       }
+      const commands = stepCommands(lines, job);
+      for (const c of commands) {
+        const why = c.action ? null : benchProblem(c.text);
+        if (why) add(c.no, `job ${kv.key} runs \`${c.text.length > 90 ? `${c.text.slice(0, 90)}...` : c.text}\`: ${why} (W7)`);
+      }
       if (perms && holdsIdToken(lines, perms)) {
-        for (const c of stepCommands(lines, job)) {
+        for (const c of commands) {
           const hit = c.action ? c.text : refusedCommand(c.text);
           if (!hit) continue;
           const what = c.action ? `uses ${hit}` : `runs \`${c.text.length > 90 ? `${c.text.slice(0, 90)}...` : c.text}\``;

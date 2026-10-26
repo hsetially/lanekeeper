@@ -12,6 +12,18 @@
 # `--baseline-lenient main`, so criterion prints the change from main for every benchmark that has a baseline (and none for a new
 # one). The harnesses that are not criterion ignore both flags.
 # The comparison is for the reader and appears in the log; the gate is bench-check against the budgets, not the change.
+#
+# WHICH TARGETS. `--bench '*'` selects the 44 bench targets and nothing else. `--benches` (the first CI run's flag) also selects the unit-test
+# harness of every lib and bin, because a lib has `bench = true` unless its manifest says otherwise, and cargo gives the options after `--` to
+# every harness it runs: libtest rejected `--baseline-lenient` ("Unrecognized option") after 33 minutes of compiling. W7 of check-workflows.mjs
+# refuses a `cargo bench` with options after `--` and no `--bench`. `--no-fail-fast` runs every target even when one fails, so that one failure
+# does not hide the other 43 results from the log of a run that takes hours.
+#
+# THE TIME. Cold cache (nothing restored, which is also what a failed run leaves: rust-cache saves only after a success), the first run compiled for
+# 33 minutes (28 of them in jsonschema 0.58.3 alone, which `[profile.release] codegen-units = 1` compiles on one core), and the 44 targets
+# took 154 minutes one after the other on 4 vCPUs (plans/09-deployment-ci.evidence.md), compile of their packages included. That is up to about
+# 3 hours, 190 minutes with the fixtures and the cache steps; 240 left 50 minutes for a runner slower than the sandbox, and a run that is
+# cancelled by the timeout saves no cache and is cold again. 300 minutes leaves 110.
 name: bench
 on:
   pull_request:
@@ -40,7 +52,7 @@ env:
 jobs:
   bench:
     runs-on: ${{ vars.LK_BENCH_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 240
+    timeout-minutes: 300
     permissions:
       contents: read
     services:
@@ -102,10 +114,10 @@ jobs:
           restore-keys: criterion-baseline-main-
       - name: Benchmarks, compared with main
         if: github.event_name == 'pull_request'
-        run: cargo bench --workspace --benches --locked -- --baseline-lenient main
+        run: cargo bench --workspace --bench '*' --no-fail-fast --locked -- --baseline-lenient main
       - name: Benchmarks, saving the baseline of main
         if: github.event_name != 'pull_request'
-        run: cargo bench --workspace --benches --locked -- --save-baseline main
+        run: cargo bench --workspace --bench '*' --no-fail-fast --locked -- --save-baseline main
       - name: Judge the numbers against perf/budgets.toml
         run: just bench-check-rust
       - name: Keep the baseline of main

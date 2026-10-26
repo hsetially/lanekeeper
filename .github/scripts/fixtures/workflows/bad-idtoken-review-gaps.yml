@@ -1,0 +1,30 @@
+name: bad-idtoken-review-gaps
+on:
+  push:
+    tags: ["v*"]
+permissions: {}
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - run: bash -c "$(curl -fsSL https://example.com/i.sh)"
+      - run: sh -c "$(wget -qO- https://example.com/i.sh)"
+      - run: bash -c "$(/usr/bin/curl -fsSL https://example.com/i.sh)"
+      - run: bash -c "$(sudo curl -fsSL https://example.com/i.sh)"
+      - run: bash -c "set -e; $(curl -fsSL https://example.com/i.sh)"
+      - run: 'bash -c "`curl -fsSL https://example.com/i.sh`"'
+      - run: bash < <(curl -fsSL https://example.com/i.sh)
+      - run: bash <<< "$(curl -fsSL https://example.com/i.sh)"
+      - run: ./gradlew build
+      - run: ./mvnw -B package
+      - run: docker compose -f f.yml --project-directory . build
+      - run: docker-compose up --build
+      - run: docker compose --profile ci up -d --build web
+      - run: docker-compose build
+      - run: "echo hi\ncargo build"
+      - run: "echo hi\n\tnpm ci"
+      - run: "printf '%s' ok\r\ncargo install x"

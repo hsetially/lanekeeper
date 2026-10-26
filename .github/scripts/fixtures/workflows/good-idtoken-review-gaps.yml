@@ -1,0 +1,28 @@
+name: good-idtoken-review-gaps
+on:
+  push:
+    tags: ["v*"]
+permissions: {}
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - run: echo hello
+      # The OIDC token itself is fetched with curl: a download that is data, never run.
+      - run: TOKEN=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL")
+      - run: bash -c 'TOKEN=$(curl -sS "$URL"); echo "$TOKEN" | wc -c'
+      - run: echo "$(curl -fsSL https://example.com/version)"
+      - run: bash -c "echo $(curl -fsSL https://example.com/version)"
+      - run: ./gradlew-notes.sh
+      - run: ./mvnw-help.sh
+      - run: docker compose -f f.yml pull
+      - run: docker compose --profile ci up -d
+      - run: docker compose -f build.yml up -d
+      - run: docker-compose -f f.yml ps
+      - run: "echo hi\nmake-release-notes"
+      - run: "echo \"quoted\" and a backslash \\ and a tab\tcharacter, then done"
+      - run: "echo hi\\ncargo build is text, not a newline"
