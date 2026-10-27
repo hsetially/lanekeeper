@@ -6,7 +6,8 @@
 //! None of these names looks like a secret to the pod contract, and none is one.
 //!
 //! The group is all or nothing, as the web certificate is: a pod that sets some of it is a half-written deployment and is
-//! refused by name; a process built from the library's defaults has none, and `require_serving` refuses that.
+//! refused by name; a process built from the library's defaults has none, and `require_serving` refuses that. The two CAs are two
+//! keys and two certificates: one value for both is refused by the name of the second variable (S5).
 
 use std::net::SocketAddr;
 
@@ -72,6 +73,15 @@ impl PlatformSettings {
         let agent_cert = reader.secret_ref("LK_AGENT_CA_CERT_REF")?;
         let replica_kms = kms("LK_REPLICA_CA_KMS_REF")?;
         let replica_cert = reader.secret_ref("LK_REPLICA_CA_CERT_REF")?;
+        // S5: each listener trusts only its own CA, so the two are two keys and two certificates. The same key or the same secret
+        // for both would make the two trust roots one and leave the replica service's name check as the only thing that keeps an
+        // agent's certificate from being a replica's. The second variable read is the one named, and the value is never repeated.
+        if agent_kms.is_some() && agent_kms == replica_kms {
+            return Err(ConfigError::Invalid("LK_REPLICA_CA_KMS_REF"));
+        }
+        if agent_cert.is_some() && agent_cert == replica_cert {
+            return Err(ConfigError::Invalid("LK_REPLICA_CA_CERT_REF"));
+        }
         let replica_name = reader
             .parse("LK_REPLICA_NAME")?
             .map(|text| PeerName::parse(&text).map_err(|_| ConfigError::Invalid("LK_REPLICA_NAME")))

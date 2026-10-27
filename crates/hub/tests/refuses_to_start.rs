@@ -277,6 +277,20 @@ fn without_the_agent_ca() {
 }
 
 #[test]
+fn a_second_ca_that_shares_the_first_ones_key_or_certificate_is_refused_by_name() {
+    // S5: each listener trusts only its own CA. One KMS key or one certificate secret for both is a deployment that has made the two
+    // trust roots one, and it is refused before anything is started (exit 2), by the name of the second variable and never by value.
+    let (code, output, _dir) = run_hub(&[], &[], &[("LK_REPLICA_CA_KMS_REF", rig::AGENT_CA_KMS)]);
+    assert_refused(code, &output, 2, "LK_REPLICA_CA_KMS_REF is not valid");
+    assert!(
+        !output.contains(rig::AGENT_CA_KMS),
+        "the message repeats the key: {output}"
+    );
+    let (code, output, _dir) = run_hub(&[], &[], &[("LK_REPLICA_CA_CERT_REF", "agent-ca-cert")]);
+    assert_refused(code, &output, 2, "LK_REPLICA_CA_CERT_REF is not valid");
+}
+
+#[test]
 fn without_the_replica_name_or_address_or_audience_or_agent_hosts() {
     for missing in [
         "LK_REPLICA_NAME",

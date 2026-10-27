@@ -213,8 +213,8 @@ in memory, with a key made at start, and renews it at half its life of 24 hours.
 | `LK_REPLICA_ADDRESS` | Where the other replicas dial this one: `<pod name>.<headless service>.<namespace>.svc:8445`. Its host is the DNS name on the replica certificate. |
 | `LK_HUB_AUDIENCE` | The audience a Google ID token must carry for `Join`: the hub's own name, which the agents are told to ask Google for. |
 | `LK_AGENT_ENDPOINT_HOSTS` | The DNS names agents reach the agent endpoint by (D25), comma separated, lower case, at most eight. They are on the agent listener's certificate, which the agents verify. |
-| `LK_AGENT_CA_KMS_REF`, `LK_REPLICA_CA_KMS_REF` | The two CA keys (Cloud KMS key versions, `EC_SIGN_P256_SHA256`). |
-| `LK_AGENT_CA_CERT_REF`, `LK_REPLICA_CA_CERT_REF` | The Secret Manager secrets that hold the two CA certificates (PEM, public). |
+| `LK_AGENT_CA_KMS_REF`, `LK_REPLICA_CA_KMS_REF` | The two CA keys (Cloud KMS key versions, `EC_SIGN_P256_SHA256`). They must differ: the same value in both is exit 2, naming `LK_REPLICA_CA_KMS_REF` (S5). |
+| `LK_AGENT_CA_CERT_REF`, `LK_REPLICA_CA_CERT_REF` | The Secret Manager secrets that hold the two CA certificates (PEM, public). They must differ too (exit 2, naming `LK_REPLICA_CA_CERT_REF`). |
 | `LK_AGENT_ADDR`, `LK_REPLICA_ADDR` | The two listeners' bind addresses (8444 and 8445 unless told otherwise). |
 | `LK_GIT_BASE_URL`, `LK_GIT_TENANT_URL`, `LK_GIT_BASE_REPO`, `LK_GIT_TENANT_REPO` | The two repositories the hub mirrors (HTTPS, no credential in the URL) and the `owner/name` GitHub reports for them in webhooks. All four are required. `LK_GIT_READ_REF` and `LK_GIT_WEBHOOK_REF` name the Secret Manager secrets of the read-only credential and the webhook secret (`github-read-token` and `github-webhook-secret` unless set). |
 

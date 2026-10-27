@@ -223,8 +223,9 @@ fn the_ca_certificate_seeds_keep_the_ca_decoders_verdict() {
 #[test]
 fn the_platform_seeds_mean_what_their_names_say() {
     // `accepted_platform` is a complete platform group; the half of one, a replica address in upper case (which would be refused
-    // only when the CA's profile saw it), a wildcard host and a KMS reference that names a key and not a version are each refused
-    // by name. `every_settings_seed_keeps_its_verdict...` holds the verdicts; this holds that the platform group is really read.
+    // only when the CA's profile saw it), a wildcard host, a KMS reference that names a key and not a version, and one key or one
+    // certificate secret for both CAs are each refused by name. `every_settings_seed_keeps_its_verdict...` holds the verdicts; this
+    // holds that the platform group is really read.
     let read = |name: &str| fs::read(corpus("hub_settings").join(name)).unwrap();
     let parse = |data: &[u8]| {
         let text = String::from_utf8_lossy(data).into_owned();
@@ -242,6 +243,11 @@ fn the_platform_seeds_mean_what_their_names_say() {
         ("rejected_replica_address_in_upper_case", "LK_REPLICA_ADDRESS"),
         ("rejected_agent_hosts_with_a_wildcard", "LK_AGENT_ENDPOINT_HOSTS"),
         ("rejected_kms_reference_that_is_a_key", "LK_AGENT_CA_KMS_REF"),
+        ("rejected_the_two_cas_share_a_key", "LK_REPLICA_CA_KMS_REF"),
+        (
+            "rejected_the_two_cas_share_a_certificate",
+            "LK_REPLICA_CA_CERT_REF",
+        ),
     ] {
         let error = parse(&read(name)).unwrap_err().to_string();
         assert!(error.starts_with(variable), "{name}: {error}");
@@ -711,6 +717,15 @@ fn regenerate_the_seeds() {
             (
                 "rejected_kms_reference_that_is_a_key",
                 text(&PLATFORM.replacen("/cryptoKeyVersions/1", "", 1)),
+            ),
+            // S5: the two CAs are two keys and two certificates; one for both is refused, by the name of the second variable.
+            (
+                "rejected_the_two_cas_share_a_key",
+                text(&PLATFORM.replace("cryptoKeys/replica-ca", "cryptoKeys/agent-ca")),
+            ),
+            (
+                "rejected_the_two_cas_share_a_certificate",
+                text(&PLATFORM.replace("lanekeeper-replica-ca", "lanekeeper-agent-ca")),
             ),
             // `hub migrate`'s settings (T2): the serving hub accepts all three, because it reads none of these variables.
             (

@@ -269,6 +269,14 @@ fn check_platform(platform: &hub::config::PlatformSettings) -> Result<(), String
             return Err("a CA certificate reference that is not a secret name".to_owned());
         }
     }
+    // S5: each listener trusts only its own CA, so the two are two keys and two certificates. A group that names one for both is
+    // refused by the settings, never accepted with the separation gone.
+    if platform.agent_ca.kms_ref == platform.replica_ca.kms_ref {
+        return Err("both CAs accepted with one KMS key".to_owned());
+    }
+    if platform.agent_ca.cert_ref == platform.replica_ca.cert_ref {
+        return Err("both CAs accepted with one certificate secret".to_owned());
+    }
     if platform.agent_hosts.is_empty()
         || platform.agent_hosts.len() > hub_platform::ca::profile::MAX_DNS_NAMES
     {

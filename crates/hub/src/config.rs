@@ -922,6 +922,46 @@ mod tests {
     }
 
     #[test]
+    fn the_two_cas_may_not_share_a_key_or_a_certificate() {
+        // Each listener trusts only its own CA (S5). One KMS key (or one certificate secret) for both would make the two trust
+        // roots one, and a certificate for one listener would be taken by the other. The second variable read is the one named.
+        assert_eq!(
+            HubSettings::from_lookup(lookup(&serving_env(&[("LK_REPLICA_CA_KMS_REF", AGENT_KMS)])))
+                .unwrap_err(),
+            ConfigError::Invalid("LK_REPLICA_CA_KMS_REF")
+        );
+        assert_eq!(
+            HubSettings::from_lookup(lookup(&serving_env(&[(
+                "LK_REPLICA_CA_CERT_REF",
+                "lanekeeper-agent-ca"
+            )])))
+            .unwrap_err(),
+            ConfigError::Invalid("LK_REPLICA_CA_CERT_REF")
+        );
+        // The same thing the other way round, and both at once: the first collision found is the one named.
+        assert_eq!(
+            HubSettings::from_lookup(lookup(&serving_env(&[("LK_AGENT_CA_KMS_REF", REPLICA_KMS)])))
+                .unwrap_err(),
+            ConfigError::Invalid("LK_REPLICA_CA_KMS_REF")
+        );
+        assert_eq!(
+            HubSettings::from_lookup(lookup(&serving_env(&[
+                ("LK_REPLICA_CA_KMS_REF", AGENT_KMS),
+                ("LK_REPLICA_CA_CERT_REF", "lanekeeper-agent-ca"),
+            ])))
+            .unwrap_err(),
+            ConfigError::Invalid("LK_REPLICA_CA_KMS_REF")
+        );
+        // Two different keys and two different certificates are what a deployment has, and the settings take it.
+        assert!(
+            HubSettings::from_lookup(lookup(&serving_env(&[])))
+                .unwrap()
+                .platform
+                .is_some()
+        );
+    }
+
+    #[test]
     fn the_kms_references_are_resource_names_and_never_a_secret() {
         // They are names of keys. The pod contract flags any variable that looks like a secret, and these are not named like one.
         for (name, _) in platform_env() {
