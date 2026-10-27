@@ -14,6 +14,30 @@ use crate::tls_pg::{self, TlsPg};
 pub const AGENT_CA_KMS: &str = "projects/p/locations/l/keyRings/r/cryptoKeys/agent-ca/cryptoKeyVersions/1";
 pub const REPLICA_CA_KMS: &str =
     "projects/p/locations/l/keyRings/r/cryptoKeys/replica-ca/cryptoKeyVersions/1";
+/// The key version that signs the audit chain's checkpoints (T4). The dev example makes a software key under this name too.
+pub const CHECKPOINT_KMS: &str =
+    "projects/p/locations/l/keyRings/r/cryptoKeys/audit-checkpoint/cryptoKeyVersions/1";
+
+/// The identity group of the settings (T4): the Entra app registration, the places its two secrets are named (the dev example
+/// writes them into the secrets directory), and the audit checkpoints. Shared by every test that starts a hub.
+#[must_use]
+pub fn identity_env() -> Vec<(&'static str, String)> {
+    vec![
+        ("LK_PUBLIC_ORIGIN", "https://localhost".to_owned()),
+        (
+            "LK_ENTRA_TENANT_ID",
+            "11111111-1111-4111-8111-111111111111".to_owned(),
+        ),
+        (
+            "LK_ENTRA_CLIENT_ID",
+            "22222222-2222-4222-8222-222222222222".to_owned(),
+        ),
+        ("LK_ENTRA_CLIENT_AUTH_REF", "entra-client".to_owned()),
+        ("LK_ENTRA_COOKIE_KEY_REF", "login-cookie".to_owned()),
+        ("LK_AUDIT_CHECKPOINT_BUCKET", "audit-checkpoints".to_owned()),
+        ("LK_AUDIT_CHECKPOINT_KMS_REF", CHECKPOINT_KMS.to_owned()),
+    ]
+}
 
 /// A database, a web certificate, a Git remote, a web root and a secrets directory: everything a hub needs to start.
 pub struct Rig {
@@ -96,6 +120,7 @@ impl Rig {
             ),
         ]
         .into_iter()
+        .chain(identity_env())
         .map(|(name, value)| (name.to_owned(), value))
         .collect();
         for (name, value) in extra {

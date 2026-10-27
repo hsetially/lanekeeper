@@ -27,7 +27,7 @@ use hub_platform::events::fake::FakeEventSource;
 use hub_platform::events::metrics::{EventMetrics, SseEnd, SseRefusal};
 use hub_platform::events::sse::{self, SseSettings, SseState};
 use hub_platform::events::visibility::{EventVisibility, RoleVisibility};
-use hub_platform::session_auth::user_id;
+use hub_platform::session_auth::{SessionAuth, StreamBinding, user_id};
 use hub_platform::{FakeSessionAuth, GuardedRouter, TEST_USER_HEADER};
 use support::sse_client::{Frames, kind_of, parse};
 use tokio::sync::watch;
@@ -871,6 +871,157 @@ async fn the_stream_ends_when_the_role_drops_below_viewer() {
     rig.auth.set("viewer", None, UserStatus::Active);
     assert_eq!(stream.next().await, None);
     assert_eq!(rig.metrics.sse_ended_total(SseEnd::Revoked), 1);
+}
+
+// ------------------------------------------------------------- plan 18, T4 (G2): a stream is bound to its own session
+
+/// The header that carries a test session's name, which stands in for the session cookie.
+const SESSION_HEADER: &str = "x-test-session";
+
+/// `FakeSessionAuth` for the users, and a session binding of the test's own: the hash of the session header. A session is ended by
+/// naming it in `end`, as a logout ends one cookie and not the user's other browsers.
+struct BoundAuth {
+    users: FakeSessionAuth,
+    ended: std::sync::Mutex<std::collections::HashSet<[u8; 32]>>,
+    asked: std::sync::atomic::AtomicUsize,
+}
+
+fn binding_of(session: &str) -> StreamBinding {
+    use sha2::{Digest, Sha256};
+    StreamBinding::new(Sha256::digest(session.as_bytes()).into())
+}
+
+impl BoundAuth {
+    fn end(&self, session: &str) {
+        self.ended.lock().unwrap().insert(*binding_of(session).as_bytes());
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionAuth for BoundAuth {
+    async fn authenticate(&self, parts: &http::request::Parts) -> Result<domain::User, ports::AuthError> {
+        self.users.authenticate(parts).await
+    }
+
+    async fn still_valid(&self, user: &domain::UserId) -> bool {
+        self.users.still_valid(user).await
+    }
+
+    fn stream_binding(&self, headers: &http::HeaderMap) -> Option<StreamBinding> {
+        let session = headers.get(SESSION_HEADER)?.to_str().ok()?;
+        Some(binding_of(session))
+    }
+
+    async fn binding_valid(&self, binding: &StreamBinding) -> bool {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        !self.ended.lock().unwrap().contains(binding.as_bytes())
+    }
+}
+
+/// The router, the auth it asks, the state, the metrics, and the sender that keeps the hub "open".
+type BoundRig = (
+    Router,
+    Arc<BoundAuth>,
+    Arc<SseState>,
+    EventMetrics,
+    watch::Sender<bool>,
+);
+
+fn bound_rig() -> BoundRig {
+    let auth = Arc::new(BoundAuth {
+        users: FakeSessionAuth::new().with_user("viewer", Some(Role::Viewer), UserStatus::Active),
+        ended: std::sync::Mutex::default(),
+        asked: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let (closing, closing_rx) = watch::channel(false);
+    let metrics = EventMetrics::default();
+    let state = SseState::new(
+        Arc::new(FakeEventSource::new(64)) as _,
+        Arc::clone(&auth) as _,
+        Arc::new(RoleVisibility),
+        settings(),
+        closing_rx,
+        metrics.clone(),
+    );
+    let (app, _) = sse::mount(
+        GuardedRouter::new(Arc::clone(&auth) as _, None),
+        Arc::clone(&state),
+    )
+    .into_parts()
+    .unwrap();
+    (app, auth, state, metrics, closing)
+}
+
+async fn open_session(app: &Router, session: Option<&str>) -> Response<Body> {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri("/api/v1/events")
+        .header(TEST_USER_HEADER, "viewer");
+    if let Some(session) = session {
+        request = request.header(SESSION_HEADER, session);
+    }
+    app.clone()
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stream_ends_within_one_heartbeat_when_its_session_ends_though_the_user_is_still_valid() {
+    let (app, auth, state, metrics, _closing) = bound_rig();
+    let mut stream = frames(open_session(&app, Some("laptop")).await);
+    assert_eq!(stream.next().await.unwrap(), RETRY);
+    assert_eq!(stream.next().await.unwrap(), HEARTBEAT, "while the session lives");
+
+    auth.end("laptop");
+    let start = Instant::now();
+    assert_eq!(stream.next().await, None, "the stream is closed");
+    assert!(
+        start.elapsed() <= Duration::from_secs(15),
+        "{:?}",
+        start.elapsed()
+    );
+    assert_eq!(metrics.sse_ended_total(SseEnd::Revoked), 1);
+    assert_eq!(state.active_streams(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn ending_one_session_leaves_the_same_users_other_session_streaming() {
+    let (app, auth, state, metrics, _closing) = bound_rig();
+    let mut laptop = frames(open_session(&app, Some("laptop")).await);
+    let mut phone = frames(open_session(&app, Some("phone")).await);
+    assert_eq!(laptop.next().await.unwrap(), RETRY);
+    assert_eq!(phone.next().await.unwrap(), RETRY);
+
+    auth.end("laptop");
+    assert_eq!(
+        laptop.next().await,
+        None,
+        "the signed-out browser's stream is closed"
+    );
+    assert_eq!(
+        phone.next().await.unwrap(),
+        HEARTBEAT,
+        "the user's other browser keeps its stream"
+    );
+    assert_eq!(state.active_streams(), 1);
+    assert_eq!(metrics.sse_ended_total(SseEnd::Revoked), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_implementation_that_names_no_session_is_asked_nothing_more_than_before() {
+    let (app, auth, _state, metrics, _closing) = bound_rig();
+    // No session header: `stream_binding` answers `None`, and the stream is judged by the user alone, as it always was.
+    let mut stream = frames(open_session(&app, None).await);
+    assert_eq!(stream.next().await.unwrap(), RETRY);
+    assert_eq!(stream.next().await.unwrap(), HEARTBEAT);
+    assert_eq!(stream.next().await.unwrap(), HEARTBEAT);
+    assert_eq!(
+        auth.asked.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "`binding_valid` is not consulted for a stream without a binding"
+    );
+    assert_eq!(metrics.sse_ended_total(SseEnd::Revoked), 0);
 }
 
 #[tokio::test(start_paused = true)]

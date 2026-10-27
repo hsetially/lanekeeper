@@ -82,9 +82,23 @@ async fn the_hub_serves_healthz_and_readyz_and_exits_zero_on_sigterm() {
         csp.contains("'nonce-") && csp.contains("require-trusted-types-for 'script'"),
         "{csp}"
     );
-    // Nothing is guarded yet (the modules arrive in later tasks), so the API prefix answers a typed 404 and not the app.
-    let api = net::https_get(web, &rig.ca.cert_der(), "/api/v1/me").await;
-    assert_eq!(api.status, 404, "{api:?}");
+    // The identity module is composed in (T4): a guarded route answers a request with no session `401`, and a path under a prefix
+    // the server owns that no route answers is a typed `404` and never the app.
+    let me = net::https_get(web, &rig.ca.cert_der(), "/api/v1/me").await;
+    assert_eq!(me.status, 401, "{me:?}");
+    for path in [
+        "/api/v1/nothing-here",
+        "/auth/nothing-here",
+        "/mcp",
+        "/.well-known/nothing-here",
+    ] {
+        let missing = net::https_get(web, &rig.ca.cert_der(), path).await;
+        assert_eq!(missing.status, 404, "{path}: {missing:?}");
+        assert!(
+            !missing.body.contains(r#"<div id="root">"#),
+            "{path} answered with the app"
+        );
+    }
     // The certificate's expiry is exported, and the hub is serving only TLS 1.3.
     let metrics = net::http_get(ops, "/metrics").await.body;
     assert!(
@@ -219,7 +233,10 @@ async fn the_jobs_hold_their_leases_while_the_hub_runs_and_release_them_when_it_
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(holders, 4, "the four platform jobs are held by this hub");
+    assert_eq!(
+        holders, 5,
+        "the four platform jobs and the audit log's shipper (T4) are held by this hub"
+    );
     let names: Vec<String> = sqlx::query_scalar("SELECT name FROM leases ORDER BY name")
         .fetch_all(&pool)
         .await
@@ -227,6 +244,9 @@ async fn the_jobs_hold_their_leases_while_the_hub_runs_and_release_them_when_it_
     assert_eq!(
         names,
         [
+            // The identity module's shipper of the audit log (T4) holds its lease for as long as the hub runs; its checkpoint and its
+            // nightly verification take theirs for the length of one run, which is not now.
+            "audit.shipper",
             "git-poll",
             "git-tree-index",
             "outbox.prune",

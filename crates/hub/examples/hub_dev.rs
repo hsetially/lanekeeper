@@ -59,10 +59,35 @@ fn dev_edges(settings: &HubSettings) -> Result<Edges, StartError> {
         .ok_or(StartError::Config(hub::ConfigError::Missing(
             "LK_AGENT_CA_KMS_REF",
         )))?;
+    let identity = settings
+        .identity
+        .as_ref()
+        .ok_or(StartError::Config(hub::ConfigError::Missing(
+            "LK_ENTRA_TENANT_ID",
+        )))?;
     let kms = Arc::new(SoftKms::new(&[
         &platform.agent_ca.kms_ref,
         &platform.replica_ca.kms_ref,
+        &identity.checkpoint.key,
     ]));
+    // The two secrets of the Entra sign-in: a client secret nobody will present, and the key that seals the login cookie, new on
+    // every start (a login in flight when the hub restarts is simply begun again).
+    let name_of = |client_auth: &hub_identity::ClientAuth| match client_auth {
+        hub_identity::ClientAuth::Secret { name } => name.clone(),
+        hub_identity::ClientAuth::Federated { .. } => String::new(),
+    };
+    let mut key = [0u8; 32];
+    aws_lc_rs::rand::fill(&mut key).map_err(|_| invalid())?;
+    std::fs::write(
+        dir.join(name_of(&identity.config.entra.client_auth)),
+        "dev-entra-client-secret",
+    )
+    .map_err(|_| invalid())?;
+    std::fs::write(
+        dir.join(&identity.config.entra.login_cookie_key_secret),
+        base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, key),
+    )
+    .map_err(|_| invalid())?;
     // The keys are new on every start, so the certificates are too: a certificate left from an earlier run would not match.
     let runtime = tokio::runtime::Handle::current();
     for ca in [&platform.agent_ca, &platform.replica_ca] {
@@ -82,6 +107,8 @@ fn dev_edges(settings: &HubSettings) -> Result<Edges, StartError> {
         kms.clone(),
         kms,
         Arc::new(FakeTokenVerifier::new()),
+        // No identity provider behind the sign-in yet (T8 gives `just dev` one): the routes exist and every sign-in fails.
+        hub::testing::unreachable_identity(),
     ))
 }
 

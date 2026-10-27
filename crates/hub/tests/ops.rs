@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use axum::body::Body;
 use http::{Method, StatusCode};
 use hub::ops::ReadyCheck;
-use hub::{Deps, Hub, HubSettings};
+use hub::{Deps, Hub, HubSettings, SessionEdge};
 use hub_platform::FakeSessionAuth;
 use support::{default_hub, get, header_of, request, send, text};
 
@@ -45,7 +45,8 @@ impl ReadyCheck for Hangs {
 fn hub_with(checks: Vec<(&'static str, Arc<dyn ReadyCheck>)>) -> Hub {
     Hub::build(Deps {
         settings: HubSettings::default(),
-        auth: Arc::new(FakeSessionAuth::new()),
+        session: SessionEdge::without_sessions(Arc::new(FakeSessionAuth::new())),
+        mounted: Vec::new(),
         modules: Vec::new(),
         static_files: None,
         checks,

@@ -9,12 +9,40 @@
 
 use async_trait::async_trait;
 use domain::{User, UserId};
+use http::HeaderMap;
 use http::request::Parts;
 use ports::AuthError;
 
 /// The user a guarded route's handler is running for. Inserted into the request extensions after the guard passed.
 #[derive(Debug, Clone)]
 pub struct AuthenticatedUser(pub User);
+
+/// What ties a long-lived stream to the one session that opened it (plan 18, G2): 32 opaque bytes that the [`SessionAuth`]
+/// implementation chooses (the cookie implementation uses the SHA-256 of the session id, which is what it stores, never the id).
+///
+/// A user can hold several sessions, one per browser. [`SessionAuth::still_valid`] answers for the user, so signing out of one
+/// browser would leave that browser's stream open for as long as the user's other sessions live. The binding lets the stream ask
+/// about its own session instead. It is a secret's hash, so it never prints.
+#[derive(Clone, PartialEq, Eq)]
+pub struct StreamBinding([u8; 32]);
+
+impl StreamBinding {
+    #[must_use]
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for StreamBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StreamBinding(..)")
+    }
+}
 
 #[async_trait]
 pub trait SessionAuth: Send + Sync + 'static {
@@ -26,6 +54,19 @@ pub trait SessionAuth: Send + Sync + 'static {
     /// Whether this user may still hold a stream open: the session has not ended and the role is at least Viewer.
     /// Streams call this on their heartbeat tick, so a revoked user stops receiving within one tick.
     async fn still_valid(&self, user: &UserId) -> bool;
+
+    /// The binding of the session this request carries, taken when a stream opens. `None` (the default) means the
+    /// implementation has no notion of one session apart from its user, and the stream is judged by [`SessionAuth::still_valid`]
+    /// alone, as it always was. Called after [`SessionAuth::authenticate`] has accepted the request.
+    fn stream_binding(&self, _headers: &HeaderMap) -> Option<StreamBinding> {
+        None
+    }
+
+    /// Whether the session that `binding` names is still live. Streams ask on their heartbeat, beside `still_valid`, and end when
+    /// either answers no. The default is yes, so an implementation that returns no binding is never asked.
+    async fn binding_valid(&self, _binding: &StreamBinding) -> bool {
+        true
+    }
 }
 
 /// Per-user request accounting. `hub` implements it with a bounded bucket table; the guard calls it once the user is known.

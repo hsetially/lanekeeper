@@ -175,6 +175,11 @@ fn check_settings(settings: &HubSettings, vars: &BTreeMap<String, String>, file:
     } else if vars.get("LK_REPLICA_NAME").is_some_and(|v| !v.is_empty()) {
         return Err("a replica name was dropped".to_owned());
     }
+    if let Some(identity) = &settings.identity {
+        check_identity(identity)?;
+    } else if vars.get("LK_ENTRA_TENANT_ID").is_some_and(|v| !v.is_empty()) {
+        return Err("an Entra tenant was dropped".to_owned());
+    }
     // The policy names go into a CSP header: nothing else may.
     for name in &settings.trusted_types {
         if name.len() > 64
@@ -237,6 +242,84 @@ fn check_platform(platform: &hub::config::PlatformSettings) -> Result<(), String
     // Nothing in the group is a secret, but nothing in it may print as a value of another setting either: the debug output is
     // the structure and not a copy of the environment.
     if format!("{platform:?}").len() > 4096 {
+        return Err("a debug output out of proportion to its fields".to_owned());
+    }
+    Ok(())
+}
+
+/// What the identity group may hold once it is accepted (T4, S1, S3, S7, S9): the origin is the one string a state-changing request's
+/// `Origin` header is compared with and the host Entra sends the browser back to, so it is `https://host[:port]` and nothing that could
+/// carry a path, a query, a userinfo or a control character; the two secrets are names and not values; the checkpoint key is a key
+/// version and the bucket a bucket name; and the audiences and the first admins are non-empty, distinct and bounded.
+fn check_identity(identity: &hub::config::IdentitySettings) -> Result<(), String> {
+    let entra = &identity.config.entra;
+    let origin = identity.public_origin();
+    let host = origin
+        .strip_prefix("https://")
+        .ok_or_else(|| format!("an origin that is not HTTPS: {origin}"))?;
+    if host.is_empty()
+        || host.bytes().any(|b| {
+            !(b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b':' | b'[' | b']'))
+        })
+    {
+        return Err(format!("an origin with more than a host and a port: {origin}"));
+    }
+    if entra.authority_host.is_empty()
+        || entra
+            .authority_host
+            .bytes()
+            .any(|b| b.is_ascii_uppercase() || b == b'/')
+    {
+        return Err("an authority host that is not a bare lower-case host".to_owned());
+    }
+    if !entra.redirect_path.starts_with('/')
+        || entra.redirect_path.starts_with("//")
+        || entra
+            .redirect_path
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || c == '?' || c == '#')
+    {
+        return Err("a redirect path that could leave the origin".to_owned());
+    }
+    if entra.accepted_api_audiences.is_empty()
+        || entra
+            .accepted_api_audiences
+            .iter()
+            .any(|a| a.is_empty() || a.chars().any(|c| c.is_control() || c.is_whitespace()))
+    {
+        return Err("an API audience that is empty or holds whitespace".to_owned());
+    }
+    if let hub_identity::config::ClientAuth::Secret { name } = &entra.client_auth {
+        if !ports::is_valid_secret_name(name) {
+            return Err("an Entra client secret reference that is not a secret name".to_owned());
+        }
+    } else {
+        return Err(
+            "the federated credential, which the pod contract has no volume for, was accepted".to_owned(),
+        );
+    }
+    if !ports::is_valid_secret_name(&entra.login_cookie_key_secret) {
+        return Err("a login cookie key reference that is not a secret name".to_owned());
+    }
+    let admins = &identity.config.bootstrap_admins;
+    let distinct: std::collections::BTreeSet<_> = admins.iter().collect();
+    if admins.len() > hub_identity::config::MAX_BOOTSTRAP_ADMINS || distinct.len() != admins.len() {
+        return Err("the first admins are too many or not distinct".to_owned());
+    }
+    for key in std::iter::once(&identity.checkpoint.key).chain(&identity.checkpoint.older_keys) {
+        if CryptoKeyVersionName::parse(key).is_none() {
+            return Err("a checkpoint key that is not a key version".to_owned());
+        }
+    }
+    let bucket = identity.checkpoint.bucket.as_str();
+    if !(3..=63).contains(&bucket.len())
+        || !bucket
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err("a bucket name that is not one".to_owned());
+    }
+    if format!("{identity:?}").len() > 8192 {
         return Err("a debug output out of proportion to its fields".to_owned());
     }
     Ok(())

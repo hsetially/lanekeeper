@@ -135,6 +135,20 @@ fn file_response(content_type: &'static str, bytes: Vec<u8>, immutable: bool, he
     response
 }
 
+/// The prefixes the server owns (plan 18, G19): the API, the webhooks, sign-in, MCP and the discovery documents. The web app has
+/// no client-side route under any of them, so a request that reaches the fallback with one of these is a route that does not
+/// exist. `/auth/login`, `/mcp` and `/.well-known/oauth-protected-resource` are real routes and never get here.
+pub const RESERVED_PREFIXES: [&str; 5] = ["/api", "/hooks", "/auth", "/mcp", "/.well-known"];
+
+/// Whether `path` is one of [`RESERVED_PREFIXES`] or below it. `/apiary` and `/authors` are not: the match is on whole segments.
+#[must_use]
+pub fn is_reserved(path: &str) -> bool {
+    RESERVED_PREFIXES.iter().any(|prefix| {
+        path.strip_prefix(prefix)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    })
+}
+
 /// The router's fallback: files, then the single-page app's `index.html` for client-side routes.
 pub async fn serve(State(files): State<Arc<StaticFiles>>, request: Request) -> Response {
     let head_only = request.method() == Method::HEAD;
@@ -146,8 +160,9 @@ pub async fn serve(State(files): State<Arc<StaticFiles>>, request: Request) -> R
         return response;
     }
     let path = request.uri().path();
-    // API and webhook paths that no route matched are errors, never the app.
-    if path.starts_with("/api/") || path.starts_with("/hooks/") || path == "/api" || path == "/hooks" {
+    // Paths that belong to the server and that no route matched are errors, never the app: a page that answers 200 where an API
+    // answers 404 hides a missing route from every client and from every test that looks at status codes (S4).
+    if is_reserved(path) {
         return ApiError::NotFound.into_response();
     }
     let Some(segments) = safe_segments(path) else {
@@ -226,6 +241,40 @@ mod tests {
             "relative",
         ] {
             assert_eq!(safe_segments(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_servers_prefixes_are_reserved_by_whole_segment() {
+        for path in [
+            "/api",
+            "/api/",
+            "/api/v1/x",
+            "/hooks/github",
+            "/hooks",
+            "/auth",
+            "/auth/",
+            "/auth/x",
+            "/mcp",
+            "/mcp/",
+            "/mcp/x",
+            "/.well-known",
+            "/.well-known/x",
+            "/.well-known/oauth-protected-resource",
+        ] {
+            assert!(is_reserved(path), "{path}");
+        }
+        for path in [
+            "/",
+            "/apiary",
+            "/authors",
+            "/mcpx",
+            "/hooksy",
+            "/.well-knownx",
+            "/swimlanes/auth",
+            "/x/api",
+        ] {
+            assert!(!is_reserved(path), "{path}");
         }
     }
 

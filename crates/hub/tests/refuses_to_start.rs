@@ -79,6 +79,7 @@ fn serving() -> (tempfile::TempDir, Vec<(&'static str, String)>) {
         ("LK_GIT_BASE_REPO", "acme/configuration-base-saas".to_owned()),
         ("LK_GIT_TENANT_REPO", "acme/csp-tenant-data".to_owned()),
     ];
+    let settings = settings.into_iter().chain(rig::identity_env()).collect();
     (dir, settings)
 }
 
@@ -207,6 +208,61 @@ fn without_the_git_remotes() {
     // One of four is half a deployment, named.
     let (code, output, _dir) = run_hub(&[], &["LK_GIT_TENANT_REPO"], &[]);
     assert_refused(code, &output, 2, "LK_GIT_TENANT_REPO is required");
+}
+
+// ------------------------------------------------------------------------------------------------ identity (T4)
+
+/// The identity group of `serving()`, the names the tests below take away.
+const IDENTITY_VARIABLES: [&str; 7] = [
+    "LK_PUBLIC_ORIGIN",
+    "LK_ENTRA_TENANT_ID",
+    "LK_ENTRA_CLIENT_ID",
+    "LK_ENTRA_CLIENT_AUTH_REF",
+    "LK_ENTRA_COOKIE_KEY_REF",
+    "LK_AUDIT_CHECKPOINT_BUCKET",
+    "LK_AUDIT_CHECKPOINT_KMS_REF",
+];
+
+#[test]
+fn without_the_entra_settings() {
+    // All of the group gone: a hub that nobody can sign in to is not started, and the first variable it needs is named. There is
+    // no session store of its own to fall back on (S1).
+    let (code, output, _dir) = run_hub(&[], &IDENTITY_VARIABLES, &[]);
+    assert_refused(code, &output, 2, "LK_ENTRA_TENANT_ID is required");
+    // Part of it gone: a half-written deployment is refused by the name of what is missing.
+    for missing in IDENTITY_VARIABLES {
+        let (code, output, _dir) = run_hub(&[], &[missing], &[]);
+        assert_refused(code, &output, 2, &format!("{missing} is required"));
+    }
+}
+
+#[test]
+fn a_malformed_identity_setting_names_the_variable_and_never_the_value() {
+    for (name, value) in [
+        ("LK_ENTRA_TENANT_ID", format!("{PLANTED}-not-a-guid")),
+        ("LK_ENTRA_CLIENT_ID", "1234".to_owned()),
+        // Plain HTTP, and a path: neither can be an origin.
+        ("LK_PUBLIC_ORIGIN", format!("http://{PLANTED}.example")),
+        ("LK_PUBLIC_ORIGIN", format!("https://{PLANTED}.example/app")),
+        // A resource name where a secret's name belongs.
+        (
+            "LK_ENTRA_CLIENT_AUTH_REF",
+            format!("projects/p/secrets/{PLANTED}"),
+        ),
+        ("LK_ENTRA_COOKIE_KEY_REF", format!("has space {PLANTED}")),
+        ("LK_AUDIT_CHECKPOINT_BUCKET", format!("UPPER-{PLANTED}")),
+        // A crypto key and not a version of one: a signature is made by one version.
+        (
+            "LK_AUDIT_CHECKPOINT_KMS_REF",
+            format!("projects/p/locations/l/keyRings/r/cryptoKeys/{PLANTED}"),
+        ),
+        ("LK_BOOTSTRAP_ADMINS", format!("{PLANTED},not-a-guid")),
+        ("LK_ENTRA_AUTHORITY_HOST", format!("UPPER.{PLANTED}")),
+        ("LK_ENTRA_REDIRECT_PATH", format!("//{PLANTED}.example")),
+    ] {
+        let (code, output, _dir) = run_hub(&[], &[], &[(name, &value)]);
+        assert_refused(code, &output, 2, &format!("{name} is not valid"));
+    }
 }
 
 #[test]

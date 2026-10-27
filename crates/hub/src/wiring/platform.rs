@@ -9,6 +9,9 @@
 //! Every task it spawns is adopted by [`Tasks`](crate::wiring::Tasks), stops on the `closing` signal, and is a reason for
 //! `/readyz` to fail if it ends early. No fake is built here: the edges are the only seam, and what ingests the reports is a
 //! parameter ([`Ingest`]) that T5 fills with the registry.
+//!
+//! The event stream is not mounted by `build`. It needs the module that says who the caller is (T4), and that module needs this
+//! one's bus, audit log and leases, so the stream is added afterwards with [`Platform::events_module`].
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -152,8 +155,6 @@ pub struct PlatformInputs {
     pub cas: Cas,
     /// Turns true when the hub stops: every task and stream of the platform ends then.
     pub closing: watch::Receiver<bool>,
-    /// Who the request is, for the event stream.
-    pub auth: Arc<dyn SessionAuth>,
     pub ingest: Ingest,
     /// The agent listener's socket, already bound.
     pub agent_listener: TcpListener,
@@ -173,7 +174,7 @@ impl std::fmt::Debug for PlatformInputs {
 
 /// The platform, built and serving its two gRPC listeners.
 pub struct Platform {
-    /// The routes this adds to the web router: the Git webhook and the event stream.
+    /// The routes this adds to the web router: the Git webhook. The event stream follows with [`Platform::events_module`].
     pub modules: Vec<Arc<dyn Module>>,
     /// Readiness: the mirrors, the bus, the jobs and the tasks.
     pub checks: Vec<(&'static str, Arc<dyn ReadyCheck>)>,
@@ -199,6 +200,7 @@ pub struct Platform {
     pub job_metrics: JobMetrics,
     jobs_running: Arc<AtomicBool>,
     metrics: Metrics,
+    closing: watch::Receiver<bool>,
 }
 
 impl std::fmt::Debug for Platform {
@@ -249,7 +251,6 @@ impl Platform {
             edges,
             cas,
             closing,
-            auth,
             ingest,
             agent_listener,
             replica_listener,
@@ -479,18 +480,7 @@ impl Platform {
             Arc::new(JobsReady::new(move || running.load(Ordering::SeqCst))),
         ));
 
-        let sse = SseState::new(
-            bus.source(),
-            auth,
-            Arc::new(RoleVisibility),
-            SseSettings::default(),
-            closing,
-            metrics.events.clone(),
-        );
-        let modules: Vec<Arc<dyn Module>> = vec![
-            Arc::new(GitModule::new(Arc::new(webhook))),
-            Arc::new(EventsModule::new(sse)),
-        ];
+        let modules: Vec<Arc<dyn Module>> = vec![Arc::new(GitModule::new(Arc::new(webhook)))];
         checks.push(("tasks", Arc::new(tasks.alive())));
         let certificates: Vec<Arc<dyn Expiring>> = vec![
             Arc::new(RotatingExpiry::new(Arc::clone(&cas.agent.cert))),
@@ -519,7 +509,23 @@ impl Platform {
             job_metrics: metrics.jobs.clone(),
             jobs_running,
             metrics,
+            closing,
         })
+    }
+
+    /// `GET /api/v1/events`, answered to the callers `auth` vouches for (T4). Its streams end with the hub, and each ends with the
+    /// session that opened it when `auth` tells sessions apart (G2).
+    #[must_use]
+    pub fn events_module(&self, auth: Arc<dyn SessionAuth>) -> Arc<dyn Module> {
+        let sse = SseState::new(
+            self.bus.source(),
+            auth,
+            Arc::new(RoleVisibility),
+            SseSettings::default(),
+            self.closing.clone(),
+            self.metrics.events.clone(),
+        );
+        Arc::new(EventsModule::new(sse))
     }
 
     /// Start the registered jobs. Call once, after the registry and the write paths have added theirs; a second call returns

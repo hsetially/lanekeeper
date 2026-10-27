@@ -270,7 +270,7 @@ fn known_variables() -> BTreeSet<String> {
 }
 
 /// What the binary refuses to start without (plan 18, T1): a pod that omits one of these is a pod that cannot start.
-const REQUIRED_VARIABLES: [&str; 17] = [
+const REQUIRED_VARIABLES: [&str; 24] = [
     "LK_DATABASE_URL_FILE",
     "LK_DB_CA_FILE",
     "LK_WEB_CERT_REF",
@@ -289,6 +289,14 @@ const REQUIRED_VARIABLES: [&str; 17] = [
     "LK_GIT_TENANT_URL",
     "LK_GIT_BASE_REPO",
     "LK_GIT_TENANT_REPO",
+    // T4 (G1, G26): the Entra sign-in, whose two secrets are Secret Manager names, and the audit chain's checkpoints.
+    "LK_PUBLIC_ORIGIN",
+    "LK_ENTRA_TENANT_ID",
+    "LK_ENTRA_CLIENT_ID",
+    "LK_ENTRA_CLIENT_AUTH_REF",
+    "LK_ENTRA_COOKIE_KEY_REF",
+    "LK_AUDIT_CHECKPOINT_BUCKET",
+    "LK_AUDIT_CHECKPOINT_KMS_REF",
 ];
 
 const WRITABLE_VOLUMES: [&str; 2] = ["tmp", "mirror"];

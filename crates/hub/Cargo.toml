@@ -9,6 +9,13 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+# `SessionEdge::without_sessions` and `DenySessions` (plan 18, T4): a hub whose guard asks a `SessionAuth` and applies no session
+# layers, and a `SessionAuth` that authenticates nobody. They exist so that the tests of the composition need no database. Only
+# this crate's own dev-dependency below switches it on; `tests/release_build.rs` fails if a production dependency does, and
+# `hub-lint` fails if the release graph holds it.
+testing = []
+
 [lib]
 name = "hub"
 path = "src/lib.rs"
@@ -69,6 +76,8 @@ x509-parser.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+# The crate's own `testing` feature, for its tests, examples and benches (the identity crate does the same with `route-table`).
+hub = { path = ".", version = "0.1.0", features = ["testing"] }
 # The platform's smart-HTTP Git server (`tests/support/git_remote.rs` includes it) checks HTTP basic authentication.
 base64.workspace = true
 futures.workspace = true
@@ -93,6 +102,15 @@ sha2.workspace = true
 sqlx = { workspace = true, features = ["postgres", "migrate", "runtime-tokio"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
 tower = { workspace = true, features = ["util"] }
+# T4: the tests include the identity module's mock Entra (`hub-identity/tests/support/mock_oidc.rs`), which parses the token request
+# with `url`, and the composed-authentication benchmark is criterion. Both are workspace pins that are already in the lockfile.
+url.workspace = true
+criterion.workspace = true
+
+# T4 (P7): what authentication adds to a request through the composed hub, with a warm session cache and with a cold one.
+[[bench]]
+name = "auth_adapter"
+harness = false
 
 # T8 (P11): process start to `/readyz` 200 against a real Postgres, populated mirrors of the target-scale fixtures, and the composed hub.
 [[bench]]

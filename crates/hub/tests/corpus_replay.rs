@@ -149,6 +149,49 @@ fn the_platform_seeds_mean_what_their_names_say() {
 }
 
 #[test]
+fn the_identity_seeds_mean_what_their_names_say() {
+    // `accepted_identity` is a complete identity group; a missing client id, an origin over plain HTTP, with a path or with userinfo,
+    // the same first admin twice, a checkpoint key that is a key and not a version, and a secret reference that is a path are each
+    // refused by name. `every_settings_seed_keeps_its_verdict...` holds the verdicts; this holds that the group is really read.
+    let read = |name: &str| fs::read(corpus("hub_settings").join(name)).unwrap();
+    let parse = |data: &[u8]| {
+        let text = String::from_utf8_lossy(data).into_owned();
+        let vars: std::collections::BTreeMap<String, String> = text
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect();
+        hub::HubSettings::from_lookup(move |name| vars.get(name).cloned())
+    };
+    let identity = parse(&read("accepted_identity")).unwrap().identity.unwrap();
+    assert_eq!(identity.public_origin(), "https://hub.lanekeeper.example");
+    let more = parse(&read("accepted_identity_with_the_first_admins_and_an_older_key"))
+        .unwrap()
+        .identity
+        .unwrap();
+    assert_eq!(more.config.bootstrap_admins.len(), 2);
+    assert_eq!(more.checkpoint.older_keys.len(), 1);
+    for (name, variable) in [
+        ("rejected_identity_half", "LK_ENTRA_CLIENT_ID"),
+        ("rejected_identity_origin_over_plain_http", "LK_PUBLIC_ORIGIN"),
+        ("rejected_identity_origin_with_a_path", "LK_PUBLIC_ORIGIN"),
+        ("rejected_identity_origin_with_userinfo", "LK_PUBLIC_ORIGIN"),
+        ("rejected_identity_first_admins_twice", "LK_BOOTSTRAP_ADMINS"),
+        (
+            "rejected_identity_checkpoint_key_that_is_a_key",
+            "LK_AUDIT_CHECKPOINT_KMS_REF",
+        ),
+        (
+            "rejected_identity_secret_name_that_is_a_path",
+            "LK_ENTRA_CLIENT_AUTH_REF",
+        ),
+    ] {
+        let error = parse(&read(name)).unwrap_err().to_string();
+        assert!(error.starts_with(variable), "{name}: {error}");
+    }
+}
+
+#[test]
 fn the_corpus_has_a_directory_for_every_target_and_nothing_else() {
     let targets: BTreeSet<String> = fs::read_dir(fuzz_dir().join("fuzz_targets"))
         .unwrap()

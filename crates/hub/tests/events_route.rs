@@ -17,7 +17,7 @@ use domain::{DomainEvent, Role, SwimlaneId, UserStatus};
 use futures::StreamExt;
 use http::{Method, StatusCode};
 use hub::config::LimitSettings;
-use hub::{Deps, EventsModule, Hub, HubSettings};
+use hub::{Deps, EventsModule, Hub, HubSettings, SessionEdge};
 use hub_platform::events::fake::FakeEventSource;
 use hub_platform::events::metrics::EventMetrics;
 use hub_platform::events::sse::{SseSettings, SseState};
@@ -50,7 +50,8 @@ fn rig(settings: HubSettings) -> Rig {
     );
     let hub = Hub::build(Deps {
         settings,
-        auth,
+        session: SessionEdge::without_sessions(auth),
+        mounted: Vec::new(),
         modules: vec![Arc::new(EventsModule::new(state))],
         static_files: None,
         checks: Vec::new(),

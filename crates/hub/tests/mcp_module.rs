@@ -24,7 +24,7 @@ use domain::{Guid, Role, ShortText, User, UserId, UserStatus};
 use http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt;
 use hub::client_ip::PeerAddr;
-use hub::{Deps, Hub, HubSettings, McpModule};
+use hub::{Deps, Hub, HubSettings, McpModule, SessionEdge};
 use hub_mcp::auth::oauth::OAuthSettings;
 use hub_mcp::config::{AuthMode, McpConfig, PublicOrigin};
 use hub_mcp::{Credentials, McpDeps, McpSettings, McpState};
@@ -110,7 +110,12 @@ fn build(request_timeout: Duration) -> Built {
     hub_settings.limits.request_timeout = request_timeout;
     let hub = Hub::build(Deps {
         settings: hub_settings,
-        auth: Arc::new(FakeSessionAuth::new().with_user("alice", Some(Role::Viewer), UserStatus::Active)),
+        session: SessionEdge::without_sessions(Arc::new(FakeSessionAuth::new().with_user(
+            "alice",
+            Some(Role::Viewer),
+            UserStatus::Active,
+        ))),
+        mounted: Vec::new(),
         modules: vec![Arc::new(McpModule::new(state))],
         static_files: None,
         checks: Vec::new(),

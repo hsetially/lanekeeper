@@ -44,7 +44,7 @@ use hub::edges::{Edges, PublicKeys};
 use hub::session_auth::DenySessions;
 use hub::wiring::jobs::PLATFORM_JOBS;
 use hub::wiring::{CaKind, CaStep, Ingest, Platform, PlatformError, PlatformInputs, prepare_cas};
-use hub::{Deps, Hub, HubSettings};
+use hub::{Deps, Hub, HubSettings, SessionEdge};
 use hub_platform::ca::CaError;
 use hub_platform::ca::profile::PeerName;
 use hub_platform::clock::Clock;
@@ -171,6 +171,7 @@ impl Cluster {
             kms.clone(),
             kms,
             Arc::new(verifier.clone()),
+            hub::testing::unreachable_identity(),
         );
 
         let remote = GitRemote::new();
@@ -254,7 +255,6 @@ impl Cluster {
             edges: self.edges.clone(),
             cas,
             closing: closing_rx,
-            auth: Arc::new(DenySessions),
             ingest: Ingest {
                 agents: Arc::new(FakeReportSink::new()),
                 sentinels: Arc::new(FakeSentinelSink::new()),
@@ -789,7 +789,8 @@ async fn a_push_announced_on_one_replica_reaches_the_other_replicas_bus() {
     // The webhook is a route of the composed hub: a signed push needs no session and a bad signature is refused.
     let hub = Hub::build(Deps {
         settings: HubSettings::default(),
-        auth: Arc::new(DenySessions),
+        session: SessionEdge::without_sessions(Arc::new(DenySessions)),
+        mounted: Vec::new(),
         modules: cluster.replicas[0].platform.modules.clone(),
         static_files: None,
         checks: Vec::new(),

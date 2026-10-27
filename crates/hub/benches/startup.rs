@@ -39,7 +39,7 @@ use domain::RepoKind;
 use hub::blobs::BlobsModule;
 use hub::git::MirrorsReady;
 use hub::serve::{ServeLimits, serve};
-use hub::{Deps, EventsModule, GitModule, Hub, HubSettings};
+use hub::{Deps, EventsModule, GitModule, Hub, HubSettings, SessionEdge};
 use hub_platform::FakeSessionAuth;
 use hub_platform::blobs::endpoint::{BlobState, DenyHashes};
 use hub_platform::blobs::metrics::BlobMetrics;
@@ -278,7 +278,8 @@ async fn child() -> ExitCode {
 
     let hub = Hub::build(Deps {
         settings,
-        auth,
+        session: SessionEdge::without_sessions(auth),
+        mounted: Vec::new(),
         modules: vec![
             Arc::new(EventsModule::new(sse)),
             Arc::new(GitModule::new(Arc::new(webhook))),

@@ -106,15 +106,32 @@ impl TlsPg {
 
     /// The pool of the hub: `lanekeeper_app`, TLS verified.
     pub async fn app_pool(&self) -> sqlx::PgPool {
+        self.app_pool_sized(4).await
+    }
+
+    /// The same, with room for `max_connections`: a hub with the identity module holds more than four (the event bus's listener, the
+    /// sessions' batcher, the audit jobs and the requests).
+    pub async fn app_pool_sized(&self, max_connections: u32) -> sqlx::PgPool {
         hub::db::connect(&hub::config::DatabaseSettings {
             url: domain::Secret::new(self.url()),
             ca_file: self.ca_file(),
-            max_connections: 4,
+            max_connections,
             acquire_timeout: Duration::from_secs(5),
             statement_timeout: Duration::from_secs(30),
         })
         .await
         .unwrap()
+    }
+
+    /// A connection as the superuser, for what the app role may not do (`ANALYZE`, seeding at volume). Never given to code under test.
+    pub async fn superuser_conn(&self) -> sqlx::PgConnection {
+        let options = hub::db::connect_options_for(
+            &domain::Secret::new(self.superuser_url()),
+            &self.ca_file(),
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        hub::db::connect_one(&options).await.unwrap()
     }
 
     /// Run `deploy/dev/init.sql` as the superuser: the same SQL the dev compose file runs, which creates the two roles.

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use domain::RepoKind;
 use http::{Method, Request, StatusCode};
-use hub::{Deps, GitModule, Hub, HubSettings};
+use hub::{Deps, GitModule, Hub, HubSettings, SessionEdge};
 use hub_platform::git::fetch_queue::FetchQueue;
 use hub_platform::git::metrics::GitMetrics;
 use hub_platform::git::payload::RepoFullName;
@@ -45,7 +45,8 @@ fn rig() -> Rig {
     );
     let hub = Hub::build(Deps {
         settings: HubSettings::default(),
-        auth: Arc::new(FakeSessionAuth::new()),
+        session: SessionEdge::without_sessions(Arc::new(FakeSessionAuth::new())),
+        mounted: Vec::new(),
         modules: vec![Arc::new(GitModule::new(Arc::new(state)))],
         static_files: None,
         checks: Vec::new(),

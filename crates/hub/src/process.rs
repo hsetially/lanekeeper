@@ -3,8 +3,8 @@
 //! What this assembles is the shell of the hub and the platform under it: the settings, the database pool, the web certificate,
 //! the two certificate authorities, the web listener (TLS 1.3, the certificate reloaded on a timer), the operations listener
 //! (`/healthz`, `/readyz`, `/metrics`), the agent and replica listeners (mTLS), the event bus, the Git mirrors, the leases and the
-//! platform's jobs, the drain, and readiness. The modules come in later tasks and plug into the same `Deps`: identity (T4),
-//! registry and writes (T5), MCP (T6).
+//! platform's jobs, the identity module (sign-in, sessions, CSRF, users, the audit chain's jobs; T4), the drain, and readiness. The
+//! other modules come in later tasks and plug into the same `Deps`: registry and writes (T5), MCP (T6).
 //!
 //! **It never starts on a fake.** Every start step is a real component or an error with a fixed message that names the
 //! component, never a value. `Edges` is the only place software can be substituted, and the binary fills it with Google.
@@ -23,6 +23,8 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use hub_identity::metrics::CounterSource;
+use hub_platform::RouteSpec;
 use hub_platform::jobs::JobRunnerHandle;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -32,17 +34,20 @@ use tracing::{error, info, warn};
 
 use crate::ca_init;
 use crate::cli::{self, CliError, Command};
-use crate::compose::{BuildError, Deps, Hub};
+use crate::compose::{BuildError, Deps, Hub, Module};
 use crate::config::{
-    ConfigError, DatabaseSettings, GitSettings, HubSettings, PlatformSettings, WebTlsSettings,
+    ConfigError, DatabaseSettings, GitSettings, HubSettings, IdentitySettings, PlatformSettings,
+    WebTlsSettings,
 };
 use crate::db::{self, DbError, PostgresReady};
 use crate::edges::Edges;
+use crate::identity::{AuditSchedule, Identity, IdentityBuildError, IdentityInputs, IdentityMounts};
+use crate::metrics_bridge::SourceCollector;
 use crate::migrate;
+use crate::notify::UnavailableNotifier;
 use crate::ready::{CertsReady, Expiring};
 use crate::schema::{self, SchemaError, SchemaReady};
 use crate::serve::{self, ServeLimits};
-use crate::session_auth::DenySessions;
 use crate::shutdown::{Drain, Stop};
 use crate::static_files::{StaticError, StaticFiles};
 use crate::telemetry;
@@ -76,6 +81,9 @@ pub enum StartError {
     /// A CA, a listener or a job of the platform (T3).
     #[error(transparent)]
     Platform(#[from] PlatformError),
+    /// Sign-in, sessions or the audit chain's jobs (T4).
+    #[error(transparent)]
+    Identity(#[from] IdentityBuildError),
     #[error("the hub could not be composed: {0}")]
     Compose(BuildError),
     #[error("could not listen on the {0} address")]
@@ -170,6 +178,10 @@ pub struct Running {
     /// The platform's tasks and the web certificate's reload. `None` once they have been waited for.
     tasks: Option<Tasks>,
     jobs: Option<JobRunnerHandle>,
+    /// The identity module: its sweeper, batcher and listener stop when it drops, which is after the listeners have drained.
+    identity: Option<Identity>,
+    /// Every route of every module, with its guard: what the S4 tests check against `api/openapi.yaml`.
+    routes: Vec<RouteSpec>,
 }
 
 impl std::fmt::Debug for Running {
@@ -260,7 +272,8 @@ async fn load(
     Ok(Loaded { pool, web_cert, cas })
 }
 
-/// Compose the hub from what was loaded. Until the identity module is wired (T4) nobody has a session.
+/// Compose the hub from what was loaded: the platform's routes and the identity module's, over the identity module's sessions.
+#[allow(clippy::too_many_arguments)]
 async fn compose(
     settings: HubSettings,
     plan: &Plan,
@@ -268,6 +281,9 @@ async fn compose(
     web_cert: &Arc<WebCert>,
     edges: &Edges,
     platform: &Platform,
+    identity: &Identity,
+    mounts: IdentityMounts,
+    events: Arc<dyn Module>,
     drain: Drain,
 ) -> Result<Hub, StartError> {
     let dist = plan.web_dist.clone();
@@ -286,11 +302,15 @@ async fn compose(
         ),
     ];
     checks.extend(platform.checks.iter().cloned());
+    let mut modules = platform.modules.clone();
+    modules.push(events);
+    let IdentityMounts { session, mounted } = mounts;
     let hub = Hub::build_with(
         Deps {
             settings,
-            auth: Arc::new(DenySessions),
-            modules: platform.modules.clone(),
+            session,
+            modules,
+            mounted: vec![mounted],
             static_files: Some(Arc::new(files)),
             checks,
         },
@@ -301,6 +321,9 @@ async fn compose(
         web_cert.metrics().register(registry);
         edges.google_metrics.register(registry);
         platform.register_metrics(registry);
+        registry.register_collector(Box::new(SourceCollector::new(
+            Arc::clone(&identity.metrics) as Arc<dyn CounterSource>
+        )));
     });
     Ok(hub)
 }
@@ -321,6 +344,10 @@ pub async fn start(mut settings: HubSettings, edges: Edges) -> Result<Running, S
         .platform
         .take()
         .ok_or(StartError::Config(ConfigError::Missing("LK_AGENT_CA_KMS_REF")))?;
+    let identity = settings
+        .identity
+        .take()
+        .ok_or(StartError::Config(ConfigError::Missing("LK_ENTRA_TENANT_ID")))?;
     let git = settings
         .git
         .take()
@@ -338,16 +365,18 @@ pub async fn start(mut settings: HubSettings, edges: Edges) -> Result<Running, S
     };
     info!(version = env!("CARGO_PKG_VERSION"), "starting");
     let drain = Drain::new();
-    let started = start_with(
+    // Boxed: the start holds every step's state at once, and a future that large does not belong on the caller's stack.
+    let started = Box::pin(start_with(
         settings,
         edges,
         &plan,
         database,
         web_tls,
         platform,
+        identity,
         git,
         drain.clone(),
-    )
+    ))
     .await;
     if started.is_err() {
         // Whatever was started before the step that failed ends with the process; this makes it end now, in order.
@@ -364,6 +393,7 @@ async fn start_with(
     database: DatabaseSettings,
     web_tls: WebTlsSettings,
     platform_settings: PlatformSettings,
+    identity_settings: IdentitySettings,
     git: GitSettings,
     drain: Drain,
 ) -> Result<Running, StartError> {
@@ -383,7 +413,6 @@ async fn start_with(
             edges: edges.clone(),
             cas,
             closing: drain.closing(),
-            auth: Arc::new(DenySessions),
             // The registry is wired in T5. Until then the hub says plainly that it cannot take a report.
             ingest: Ingest::unavailable(),
             agent_listener: sockets.agent,
@@ -394,7 +423,29 @@ async fn start_with(
         .map_err(StartError::Platform)
     })
     .await?;
-    let hub = compose(settings, plan, &pool, &web_cert, &edges, &platform, drain).await?;
+    // Who the caller is. The event stream, the one route of the platform that needs the answer, is mounted with it.
+    let (identity, mounts) = Identity::build(
+        IdentityInputs {
+            settings: &identity_settings,
+            pool: pool.clone(),
+            edges: &edges,
+            audit: Arc::clone(&platform.audit),
+            leases: Arc::clone(&platform.leases),
+            bus: Arc::new(platform.bus.clone()),
+            // Teams is the write paths' (T5); until it is wired the notifier says it cannot deliver.
+            notifier: Arc::new(UnavailableNotifier),
+            closing: drain.closing(),
+            start_timeout: plan.start_timeout,
+            schedule: AuditSchedule::default(),
+        },
+        &mut platform.tasks,
+    )
+    .await?;
+    let events = platform.events_module(Arc::clone(&identity.auth) as _);
+    let hub = compose(
+        settings, plan, &pool, &web_cert, &edges, &platform, &identity, mounts, events, drain,
+    )
+    .await?;
     // Every module has registered its jobs; the runner starts now, on the leases this replica can win.
     let jobs = platform.start_jobs();
     serve_hub(
@@ -406,6 +457,7 @@ async fn start_with(
         sockets.ops,
         platform,
         jobs,
+        identity,
     )
 }
 
@@ -420,6 +472,7 @@ fn serve_hub(
     ops_listener: TcpListener,
     platform: Platform,
     jobs: Option<JobRunnerHandle>,
+    identity: Identity,
 ) -> Result<Running, StartError> {
     let acceptor =
         TlsAcceptor::from(serve::tls13_resolver_config(web_cert.resolver()).map_err(|_| StartError::Tls)?);
@@ -489,6 +542,8 @@ fn serve_hub(
         ops_stop,
         tasks: Some(tasks),
         jobs,
+        identity: Some(identity),
+        routes: hub.routes.clone(),
     })
 }
 
@@ -515,6 +570,12 @@ impl Running {
     #[must_use]
     pub fn replica_addr(&self) -> SocketAddr {
         self.replica_addr
+    }
+
+    /// Every route of every module on the web listener, with its guard (S4).
+    #[must_use]
+    pub fn routes(&self) -> &[RouteSpec] {
+        &self.routes
     }
 
     /// Resolves with the name of a listener that ended on its own. It never should, until [`Running::drain`] was called.
@@ -547,6 +608,8 @@ impl Running {
                 warn!(tasks = ?overran, "tasks that did not stop in time were cut off");
             }
         }
+        // The sessions' sweeper and batcher and the revocation listener end with the module, after nothing can ask them anything.
+        drop(self.identity.take());
         self.ops_stop.send_replace(true);
         let _ = (&mut self.ops).await;
     }
@@ -814,6 +877,16 @@ mod tests {
             ("LK_GIT_TENANT_URL", "https://github.com/acme/tenant.git"),
             ("LK_GIT_BASE_REPO", "acme/base"),
             ("LK_GIT_TENANT_REPO", "acme/tenant"),
+            ("LK_ENTRA_TENANT_ID", "11111111-1111-4111-8111-111111111111"),
+            ("LK_ENTRA_CLIENT_ID", "22222222-2222-4222-8222-222222222222"),
+            ("LK_PUBLIC_ORIGIN", "https://hub.example"),
+            ("LK_ENTRA_CLIENT_AUTH_REF", "entra-client"),
+            ("LK_ENTRA_COOKIE_KEY_REF", "login-cookie"),
+            ("LK_AUDIT_CHECKPOINT_BUCKET", "audit-checkpoints"),
+            (
+                "LK_AUDIT_CHECKPOINT_KMS_REF",
+                "projects/p/locations/l/keyRings/r/cryptoKeys/audit/cryptoKeyVersions/1",
+            ),
             ("LK_START_TIMEOUT_SECS", "60"),
         ]
         .into_iter()
@@ -825,6 +898,7 @@ mod tests {
             Arc::new(ports::fakes::FakeKmsSigner::new(&[])),
             Arc::new(NoKeys),
             Arc::new(ports::fakes::FakeTokenVerifier::new()),
+            crate::testing::unreachable_identity(),
         );
         let (handle, stop) = Stop::channel();
         handle.stop();

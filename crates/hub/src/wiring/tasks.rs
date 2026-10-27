@@ -6,7 +6,7 @@
 //! its certificate renewal is not a replica to send work to. At shutdown, every task is waited for under a limit and aborted when
 //! it overruns, so the process never hangs on one and never leaves one behind. And a test can see which tasks a replica runs.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -21,8 +21,9 @@ pub struct Tasks {
     closing: watch::Receiver<bool>,
     /// A watcher per task: it ends when the task does, so waiting for the watchers is waiting for the tasks.
     watchers: Vec<(&'static str, JoinHandle<()>)>,
-    /// The tasks whose end, while serving, is a failure.
-    required: Vec<(&'static str, AbortHandle)>,
+    /// The tasks whose end, while serving, is a failure. Shared with [`TasksAlive`], so that a task adopted after the check was
+    /// made (the identity module's, the web certificate's reload) is covered by it too.
+    required: Arc<Mutex<Vec<(&'static str, AbortHandle)>>>,
     /// Every task, so that the ones that overrun the shutdown can be cut off.
     all: Vec<AbortHandle>,
 }
@@ -31,7 +32,7 @@ impl std::fmt::Debug for Tasks {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Tasks")
             .field("tasks", &self.watchers.len())
-            .field("required", &self.required.len())
+            .field("required", &self.required_names().len())
             .finish_non_exhaustive()
     }
 }
@@ -43,14 +44,26 @@ impl Tasks {
         Self {
             closing,
             watchers: Vec::new(),
-            required: Vec::new(),
+            required: Arc::new(Mutex::new(Vec::new())),
             all: Vec::new(),
         }
     }
 
+    fn required_names(&self) -> Vec<&'static str> {
+        self.required
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|(name, _)| *name)
+            .collect()
+    }
+
     /// A task that runs until the hub stops. Its ending before then is logged and turns readiness off.
     pub fn adopt(&mut self, name: &'static str, task: JoinHandle<()>) {
-        self.required.push((name, task.abort_handle()));
+        self.required
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((name, task.abort_handle()));
         self.watch(name, task, true);
     }
 
@@ -87,10 +100,10 @@ impl Tasks {
         self.watchers.push((name, watcher));
     }
 
-    /// The readiness check over the tasks adopted so far. Call after the last `adopt`.
+    /// The readiness check over the tasks adopted so far and the ones adopted after: it shares the list.
     #[must_use]
     pub fn alive(&self) -> TasksAlive {
-        TasksAlive(Arc::new(self.required.clone()))
+        TasksAlive(Arc::clone(&self.required))
     }
 
     /// The names of the tasks, in the order they were adopted.
@@ -123,12 +136,15 @@ impl Tasks {
 
 /// Ready while no task that should run for the life of the process has ended.
 #[derive(Clone)]
-pub struct TasksAlive(Arc<Vec<(&'static str, AbortHandle)>>);
+pub struct TasksAlive(Arc<Mutex<Vec<(&'static str, AbortHandle)>>>);
 
 impl std::fmt::Debug for TasksAlive {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TasksAlive")
-            .field("tasks", &self.0.len())
+            .field(
+                "tasks",
+                &self.0.lock().unwrap_or_else(PoisonError::into_inner).len(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -138,6 +154,8 @@ impl TasksAlive {
     #[must_use]
     pub fn ended(&self) -> Vec<&'static str> {
         self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .filter(|(_, task)| task.is_finished())
             .map(|(name, _)| *name)
@@ -148,7 +166,11 @@ impl TasksAlive {
 #[async_trait]
 impl ReadyCheck for TasksAlive {
     async fn ready(&self) -> bool {
-        self.0.iter().all(|(_, task)| !task.is_finished())
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .all(|(_, task)| !task.is_finished())
     }
 }
 
@@ -187,6 +209,31 @@ mod tests {
         }
         assert!(!alive.ready().await);
         assert_eq!(alive.ended(), vec!["ends-early"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_task_adopted_after_the_check_was_made_is_covered_by_it() {
+        let (_closing, mut tasks) = tasks();
+        tasks.adopt("first", tokio::spawn(pending::<()>()));
+        let alive = tasks.alive();
+        // The identity module and the web certificate's reload are adopted once the platform's check exists.
+        let (end, ended) = tokio::sync::oneshot::channel::<()>();
+        tasks.adopt(
+            "adopted-late",
+            tokio::spawn(async move {
+                let _ = ended.await;
+            }),
+        );
+        assert!(alive.ready().await);
+        end.send(()).unwrap();
+        for _ in 0..50 {
+            if !alive.ready().await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!alive.ready().await);
+        assert_eq!(alive.ended(), vec!["adopted-late"]);
     }
 
     #[tokio::test(start_paused = true)]

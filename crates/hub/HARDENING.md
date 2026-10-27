@@ -141,6 +141,22 @@ spec:
       value: <org>/configuration-base-saas
     - name: LK_GIT_TENANT_REPO
       value: <org>/csp-tenant-data
+    - name: LK_PUBLIC_ORIGIN
+      value: https://<hub hostname>
+    - name: LK_ENTRA_TENANT_ID
+      value: <Entra tenant id, a GUID>
+    - name: LK_ENTRA_CLIENT_ID
+      value: <Entra application (client) id, a GUID>
+    - name: LK_ENTRA_CLIENT_AUTH_REF
+      value: lanekeeper-entra-client
+    - name: LK_ENTRA_COOKIE_KEY_REF
+      value: lanekeeper-login-cookie
+    - name: LK_AUDIT_CHECKPOINT_BUCKET
+      value: <Cloud Storage bucket with a retention lock>
+    - name: LK_AUDIT_CHECKPOINT_KMS_REF
+      value: <audit checkpoint key version, a Cloud KMS resource name>
+    - name: LK_BOOTSTRAP_ADMINS
+      value: <comma separated Entra object ids of the first admins>
     volumeMounts:
     - name: tmp
       mountPath: /tmp
@@ -200,6 +216,37 @@ in memory, with a key made at start, and renews it at half its life of 24 hours.
 The Google identity the pod runs as (Workload Identity) needs `roles/cloudkms.signerVerifier` on the two CA key versions and nothing
 else on KMS, `roles/secretmanager.secretAccessor` on the secrets above, and no other role (S7). The replica listener's NetworkPolicy
 ingress is the hub's own pods only; the agent listener's is the agent load balancer's range.
+
+**Identity: sign-in, sessions and the audit chain's checkpoints (plan 18, T4, G1, G2, G26; S1, S2, S3, S9).** Users sign in with
+Entra (OpenID Connect, authorization code with PKCE) and get a session cookie. The hub holds no credential of its own for it: the
+Entra client secret and the key that seals the login cookie are Secret Manager secrets, named by `*_REF` variables and read at start
+(a wrong name stops the start, exit 1, naming the variable). There is no variable, volume or token file for them. Every route of every
+module is behind the hub's session layer and a CSRF layer (a double-submit token and an exact `Origin`) on every state-changing
+method, so a module cannot omit either.
+
+| Variable | What it is |
+|---|---|
+| `LK_PUBLIC_ORIGIN` | `https://<host>[:port]`, no path: the one origin a state-changing request may name in `Origin`, and the host Entra sends the browser back to. It must be the name the users type. |
+| `LK_ENTRA_TENANT_ID`, `LK_ENTRA_CLIENT_ID` | The Entra tenant and the app registration (GUIDs). A token or a sign-in from another tenant is refused (S1). |
+| `LK_ENTRA_CLIENT_AUTH_REF` | The Secret Manager secret that holds the app registration's client secret (Q25: the federated credential is not offered, because it would need a fifth volume). |
+| `LK_ENTRA_COOKIE_KEY_REF` | The Secret Manager secret that holds 32 random bytes as base64url, which seal the short-lived login-state cookie. Rotating it only ends sign-ins that are in flight. |
+| `LK_AUDIT_CHECKPOINT_BUCKET` | The Cloud Storage bucket, with a retention lock set by whoever owns the project (not by the hub), that takes one object per checkpoint of the audit chain (S9). |
+| `LK_AUDIT_CHECKPOINT_KMS_REF` | The Cloud KMS key version (`EC_SIGN_P256_SHA256`) that signs each checkpoint. The hub signs with it and never holds the key. |
+| `LK_AUDIT_CHECKPOINT_VERIFY_KMS_REFS` | Optional. Older versions of that key, comma separated, at most eight, whose signatures the nightly verification still accepts after a rotation. |
+| `LK_BOOTSTRAP_ADMINS` | Optional. Entra object ids, comma separated, at most the library's limit, that become active admins at their first sign-in. Everyone else starts pending (S1). Remove them once real admins exist. |
+| `LK_ENTRA_AUTHORITY_HOST`, `LK_ENTRA_REDIRECT_PATH`, `LK_ENTRA_API_AUDIENCES` | Optional. The authority (`login.microsoftonline.com`; a sovereign cloud names its own, and the FQDN policy follows), the path Entra returns to (`/auth/callback`) and the audiences an Entra access token for MCP may carry (`api://<client id>` and the client id). |
+
+The sign-in cookie is `__Host-lk_session` (Secure, HttpOnly, SameSite=Lax, Path=/, no Domain), so it cannot be set for, or sent to, another
+host. The hub reserves `/api`, `/hooks`, `/auth`, `/mcp` and `/.well-known` for itself: a path under them that is not a route is a `404`
+and never the web app. A second cookie, `__Host-lk_csrf` (readable by the page on purpose), carries the double-submit token that the page
+sends back in `X-CSRF-Token`. The users' load balancer must pass `Cookie`, `Origin` and `X-CSRF-Token` unchanged and must not cache
+`/api` or `/auth`.
+
+The Google identity the pod runs as also needs, for this group: `roles/cloudkms.signerVerifier` on the checkpoint key version (and on
+each older version named for verifying), `roles/secretmanager.secretAccessor` on the two secrets above, and on the bucket
+`roles/storage.objectCreator` and `roles/storage.objectViewer` (create each checkpoint and read them back for the nightly
+verification) and no more: not `objectAdmin`, not `storage.objects.delete`. Three replicas run one checkpoint job and one verification
+job between them (leases), so the bucket sees one writer at a time.
 
 ### Making a CA certificate (`hub ca-init`)
 

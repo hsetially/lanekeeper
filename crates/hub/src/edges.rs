@@ -4,14 +4,15 @@
 //! software and the real binary fills it with Google. No fake is compiled into the `hub` binary: `Edges::google` is the only
 //! constructor outside tests and examples, and `GoogleEndpoints::production()` is the only value it uses. Each task adds the
 //! edges it needs: T1 the secret source and the clock, T3 the KMS signer (the CA's keys), the public half of a KMS key (only
-//! `hub ca-init` asks) and the verifier of Google ID tokens (agent join). T4 adds identity's HTTPS client and the checkpoint
-//! bucket, T5 GitHub.
+//! `hub ca-init` asks) and the verifier of Google ID tokens (agent join). T4 adds the identity module's three: its HTTPS clients
+//! (Entra, and Google's keys) and the checkpoint bucket. T5 adds GitHub.
 
 use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use domain::Timestamp;
+use hub_identity::audit::{CheckpointBucket, GcsCheckpointBucket, MetadataTokenSource};
 use hub_identity::http::{HttpsClient, HyperHttpsClient};
 use hub_identity::tokens::GoogleIdTokens;
 use hub_platform::clock::{Clock, SystemClock};
@@ -53,6 +54,24 @@ impl PublicKeys for CloudPublicKeys {
 /// The two ports a CA ceremony needs: a signer and the public half of the key it signs with.
 pub type KmsClients = (Arc<dyn KmsSigner>, Arc<dyn PublicKeys>);
 
+/// The ports the identity module reaches outside the process through (T4). Each HTTPS client is allowed to reach the hosts it
+/// needs and no others (S18), so a redirect or a document that names another host is refused by the client and not by luck.
+#[derive(Clone)]
+pub struct IdentityEdges {
+    /// Entra: the discovery document, the tenant's keys and the token endpoint. Allowed to reach the authority host only.
+    pub entra: Arc<dyn HttpsClient>,
+    /// Google's key set, for the ID tokens that agents join with (`www.googleapis.com`).
+    pub google_keys: Arc<dyn HttpsClient>,
+    /// The bucket with the retention lock that takes one object per audit checkpoint (S9): Cloud Storage in production.
+    pub checkpoints: Arc<dyn CheckpointBucket>,
+}
+
+impl fmt::Debug for IdentityEdges {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IdentityEdges").finish_non_exhaustive()
+    }
+}
+
 /// The ports that reach outside the process.
 #[derive(Clone)]
 pub struct Edges {
@@ -64,8 +83,11 @@ pub struct Edges {
     pub signer: Arc<dyn KmsSigner>,
     /// The public key of a CA's KMS key, for `hub ca-init` only.
     pub public_keys: Arc<dyn PublicKeys>,
-    /// Verifies the Google ID token an agent joins with (S5).
+    /// Verifies the Google ID token an agent joins with (S5). In production it accepts Google ID tokens and refuses an Entra token
+    /// outright: the join is not a place an Entra token can mean anything.
     pub tokens: Arc<dyn TokenVerifier>,
+    /// What the identity module reaches Entra, Google's keys and the checkpoint bucket through (T4).
+    pub identity: IdentityEdges,
     /// The Google clients' counters, registered on the hub's metrics. Empty when no Google client exists.
     pub google_metrics: GoogleMetrics,
 }
@@ -115,6 +137,7 @@ impl Edges {
         signer: Arc<dyn KmsSigner>,
         public_keys: Arc<dyn PublicKeys>,
         tokens: Arc<dyn TokenVerifier>,
+        identity: IdentityEdges,
     ) -> Self {
         Self {
             secrets,
@@ -122,6 +145,7 @@ impl Edges {
             signer,
             public_keys,
             tokens,
+            identity,
             google_metrics: GoogleMetrics::default(),
         }
     }
@@ -143,10 +167,25 @@ impl Edges {
         );
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let kms = clients.kms();
-        let http: Arc<dyn HttpsClient> =
-            Arc::new(HyperHttpsClient::new(&[GOOGLE_KEYS_HOST]).map_err(|_| StartError::Google)?);
+        // The identity module (T4): its settings name the authority and the bucket, so a hub without them has no real edges.
+        let identity = settings
+            .identity
+            .as_ref()
+            .ok_or(StartError::Config(ConfigError::Missing("LK_ENTRA_TENANT_ID")))?;
+        let client = |hosts: &[&str]| -> Result<Arc<dyn HttpsClient>, StartError> {
+            Ok(Arc::new(
+                HyperHttpsClient::new(hosts).map_err(|_| StartError::Google)?,
+            ))
+        };
+        let google_keys = client(&[GOOGLE_KEYS_HOST])?;
+        let checkpoints = GcsCheckpointBucket::new(
+            client(&[GcsCheckpointBucket::HOST])?,
+            Arc::new(MetadataTokenSource::new()),
+            &identity.checkpoint.bucket,
+        )
+        .map_err(|_| StartError::Config(ConfigError::Invalid("LK_AUDIT_CHECKPOINT_BUCKET")))?;
         let tokens = GoogleOnly::new(GoogleIdTokens::new(
-            http,
+            Arc::clone(&google_keys),
             Arc::new(IdentityClock(Arc::clone(&clock))),
         ));
         Ok(Self {
@@ -155,6 +194,11 @@ impl Edges {
             signer: Arc::new(kms.clone()),
             public_keys: Arc::new(CloudPublicKeys(kms)),
             tokens: Arc::new(tokens),
+            identity: IdentityEdges {
+                entra: client(&[identity.authority_host()])?,
+                google_keys,
+                checkpoints: Arc::new(checkpoints),
+            },
             google_metrics: clients.metrics,
         })
     }
@@ -180,8 +224,10 @@ impl hub_identity::Clock for IdentityClock {
     }
 }
 
-/// The verifier the platform's `Join` needs until the identity module is wired (T4, G25): Google ID tokens, and nothing else.
-/// An Entra token is refused as unverifiable, never accepted: this is not the verifier of the web or of MCP.
+/// The verifier the platform's `Join` is given: Google ID tokens, and nothing else. An Entra token is refused as unverifiable,
+/// never accepted, and that is on purpose and stays after the identity module is wired (T4): `Join` has no use for an Entra token,
+/// so the one verifier it can reach does not know how to read one. The identity module's own verifier (`Identity::tokens`, Entra
+/// and Google both) is what MCP is given.
 pub struct GoogleOnly {
     google: GoogleIdTokens,
 }
@@ -231,11 +277,36 @@ mod tests {
         assert_eq!(error.exit_code(), 2);
     }
 
+    /// The identity group, as a pod sets it.
+    const IDENTITY_ENV: [(&str, &str); 8] = [
+        ("LK_GCP_PROJECT", "lanekeeper-prod"),
+        ("LK_ENTRA_TENANT_ID", "11111111-1111-4111-8111-111111111111"),
+        ("LK_ENTRA_CLIENT_ID", "22222222-2222-4222-8222-222222222222"),
+        ("LK_PUBLIC_ORIGIN", "https://hub.lanekeeper.example"),
+        ("LK_ENTRA_CLIENT_AUTH_REF", "lanekeeper-entra-client"),
+        ("LK_ENTRA_COOKIE_KEY_REF", "lanekeeper-login-cookie"),
+        ("LK_AUDIT_CHECKPOINT_BUCKET", "lanekeeper-audit-checkpoints"),
+        (
+            "LK_AUDIT_CHECKPOINT_KMS_REF",
+            "projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/audit/cryptoKeyVersions/1",
+        ),
+    ];
+
     #[test]
     fn the_real_edges_are_built_without_a_call() {
         // Building the clients reads the platform's root certificates and nothing else: no network, no credential.
-        let edges = Edges::google(&settings(&[("LK_GCP_PROJECT", "lanekeeper-prod")]));
+        let edges = Edges::google(&settings(&IDENTITY_ENV));
         assert!(edges.is_ok(), "{edges:?}");
+    }
+
+    #[test]
+    fn the_real_edges_need_the_identity_settings_too_and_say_which_variable() {
+        let error = Edges::google(&settings(&[("LK_GCP_PROJECT", "lanekeeper-prod")])).unwrap_err();
+        assert_eq!(
+            error,
+            StartError::Config(ConfigError::Missing("LK_ENTRA_TENANT_ID"))
+        );
+        assert_eq!(error.exit_code(), 2);
     }
 
     #[test]

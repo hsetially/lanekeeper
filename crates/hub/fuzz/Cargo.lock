@@ -2063,6 +2063,7 @@ version = "0.0.0"
 dependencies = [
  "domain",
  "hub",
+ "hub-identity",
  "hub-platform",
  "libfuzzer-sys",
  "ports",

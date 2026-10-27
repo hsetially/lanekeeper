@@ -47,13 +47,15 @@ fn fakes_are_only_enabled_by_dev_dependencies() {
 }
 
 /// Every feature of the workspace that switches on a test double, a probe or a hook that a release build must not contain.
-const TEST_FEATURES: [&str; 6] = [
+const TEST_FEATURES: [&str; 7] = [
     "fakes",
     "conformance",
     "test-doubles",
     "bench-probe",
     "fuzz-hooks",
     "route-table",
+    // Plan 18, T4: the hub's own `SessionEdge::without_sessions`, which applies no authentication and no CSRF layer.
+    "testing",
 ];
 
 /// The test features that a manifest's production dependencies switch on, each with the line that does it.
@@ -132,10 +134,14 @@ fn rust_files(dir: &Path) -> Vec<std::path::PathBuf> {
     found
 }
 
-/// The code of a source file outside its test module and outside comments: from the start to the first `#[cfg(test)]`, without
-/// the lines that are only comments.
+/// The code of a source file outside its test module and outside comments: from the start to the first `#[cfg(test)]` or
+/// `#[cfg(feature = "testing")]` (the crate's own test-only items come after all the production code), without the lines that
+/// are only comments.
 fn production_code(text: &str) -> String {
     text.split("#[cfg(test)]")
+        .next()
+        .unwrap_or("")
+        .split("#[cfg(feature = \"testing\")]")
         .next()
         .unwrap_or("")
         .lines()
@@ -170,10 +176,19 @@ fn no_fake_and_no_dev_knob_is_referenced_outside_cfg_test() {
         "soft_kms",
         "MemorySecrets",
         "RemoteUrl::local",
+        // T4: the identity module's in-memory bucket for checkpoints, and the hub's own session-less composition.
+        "MemoryBucket",
+        "without_sessions",
+        "DenySessions",
     ];
     let files = rust_files(&src);
     assert!(files.len() > 15, "the scan found only {} files", files.len());
     for file in files {
+        // `src/testing.rs` is the crate's test-only software; it is compiled only with the `testing` feature, which the next test
+        // and the manifest check keep out of every release build.
+        if file.file_name().is_some_and(|name| name == "testing.rs") {
+            continue;
+        }
         let code = production_code(&fs::read_to_string(&file).unwrap());
         for word in forbidden {
             assert!(
@@ -183,6 +198,30 @@ fn no_fake_and_no_dev_knob_is_referenced_outside_cfg_test() {
             );
         }
     }
+}
+
+/// The crate's test-only module is declared behind the feature, and the feature is off by default: a release build has neither.
+#[test]
+fn the_test_only_module_and_feature_are_not_in_a_release_build() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let lib = fs::read_to_string(root.join("src/lib.rs")).unwrap();
+    assert!(
+        lib.contains("#[cfg(feature = \"testing\")]\npub mod testing;"),
+        "src/testing.rs must be declared behind the `testing` feature"
+    );
+    let manifest = fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    assert!(manifest.contains("testing = []"));
+    assert!(
+        !manifest.contains("default = ["),
+        "the crate has no default features, so `testing` is never on unless a dev-dependency asks"
+    );
+    // The only line that switches it on is the crate's own dev-dependency.
+    let switching: Vec<&str> = manifest
+        .lines()
+        .filter(|line| line.contains("\"testing\"") && !line.trim_start().starts_with('#'))
+        .collect();
+    assert_eq!(switching.len(), 1, "{switching:?}");
+    assert!(switching[0].starts_with("hub = { path = \".\""), "{switching:?}");
 }
 
 /// The process the tests start (`hub_dev`) has software for secrets. It is an example target: `cargo build --release -p hub`
@@ -211,4 +250,9 @@ fn the_planted_source_is_caught() {
     assert!(!production_code(in_tests).contains("FakeSessionAuth"));
     let in_comment = "// the FakeSessionAuth stays out\nfn f() {}\n";
     assert!(!production_code(in_comment).contains("FakeSessionAuth"));
+    // The crate's own `testing` items are the end of the production code, and a name before them is still caught.
+    let testing_tail = "fn f() {}\n#[cfg(feature = \"testing\")]\nimpl X { fn without_sessions() {} }\n";
+    assert!(!production_code(testing_tail).contains("without_sessions"));
+    let before_it = "fn without_sessions() {}\n#[cfg(feature = \"testing\")]\nimpl X {}\n";
+    assert!(production_code(before_it).contains("without_sessions"));
 }

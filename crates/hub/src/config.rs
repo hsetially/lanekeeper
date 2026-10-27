@@ -5,13 +5,15 @@
 //!
 //! The settings are in groups, one file each under `config/`, and every group is read through [`Reader`]: process and
 //! listeners (this file), request limits, the database, Git, Google Cloud, the web certificate and the platform (the two CAs,
-//! this replica's identity and the agent endpoint); `hub migrate` has its own small group, [`MigratorSettings`], that the
+//! this replica's identity and the agent endpoint) and identity (Entra sign-in, the first admins, the audit checkpoints);
+//! `hub migrate` has its own small group, [`MigratorSettings`], that the
 //! serving hub never reads. A group arrives with the task that needs it, and `tests/hardening.rs` reads every `LK_*` literal in
 //! these files to check the pod contract against them.
 
 mod database;
 mod gcp;
 mod git;
+mod identity;
 mod limits;
 mod migrator;
 mod platform;
@@ -26,6 +28,7 @@ use std::time::Duration;
 pub use database::DatabaseSettings;
 pub use gcp::GcpSettings;
 pub use git::{GitCredentialSource, GitSettings};
+pub use identity::{CheckpointSettings, DEFAULT_AUTHORITY_HOST, DEFAULT_REDIRECT_PATH, IdentitySettings};
 pub use limits::{LimitSettings, Rate};
 pub use migrator::{DEFAULT_TIMEOUT_SECS, JOB_ONLY_VARIABLES, MigratorSettings};
 pub use platform::{CaSettings, DEFAULT_AGENT_ADDR, DEFAULT_REPLICA_ADDR, PlatformSettings};
@@ -70,6 +73,8 @@ pub struct HubSettings {
     /// The two CAs, this replica's identity and the agent endpoint (T3). `None` only in the library's defaults; serving refuses
     /// that.
     pub platform: Option<PlatformSettings>,
+    /// Entra sign-in, the first admins and the audit checkpoints (T4). `None` only in the library's defaults; serving refuses that.
+    pub identity: Option<IdentitySettings>,
     /// What the blob cache may hold (`LK_BLOB_CACHE_MIB`, default 512 MiB), in bytes.
     pub blob_cache_bytes: u64,
     /// OTLP gRPC endpoint of an in-cluster collector. No export when unset.
@@ -133,6 +138,7 @@ impl HubSettings {
             gcp: GcpSettings::read(&reader)?,
             web_tls: WebTlsSettings::read(&reader)?,
             platform: PlatformSettings::read(&reader)?,
+            identity: IdentitySettings::read(&reader)?,
             blob_cache_bytes: reader
                 .number("LK_BLOB_CACHE_MIB", 512, 1, 4096)?
                 .saturating_mul(1024 * 1024),
@@ -160,6 +166,11 @@ impl HubSettings {
         if self.git.is_none() {
             return Err(ConfigError::Missing("LK_GIT_BASE_URL"));
         }
+        // T4 (S1): without the identity provider nobody can sign in, and a hub that serves a guarded API to nobody is not one to
+        // start. It is never replaced by a session store of the hub's own.
+        if self.identity.is_none() {
+            return Err(ConfigError::Missing("LK_ENTRA_TENANT_ID"));
+        }
         Ok(())
     }
 }
@@ -182,6 +193,7 @@ impl Default for HubSettings {
             gcp: None,
             web_tls: None,
             platform: None,
+            identity: None,
             blob_cache_bytes: 512 * 1024 * 1024,
             otlp_endpoint: None,
             start_timeout: Duration::from_secs(8),
@@ -374,8 +386,24 @@ mod tests {
         ]
     }
 
-    /// Everything `hub serve` needs: the database, the web certificate, Google, the platform and the Git remotes. `extra`
-    /// replaces a variable of the same name or adds one.
+    /// The identity group (T4): the Entra app registration, the places the secrets are named, and the audit checkpoints.
+    fn identity_env<'a>() -> Vec<(&'a str, &'a str)> {
+        vec![
+            ("LK_ENTRA_TENANT_ID", "11111111-1111-4111-8111-111111111111"),
+            ("LK_ENTRA_CLIENT_ID", "22222222-2222-4222-8222-222222222222"),
+            ("LK_PUBLIC_ORIGIN", "https://hub.lanekeeper.example"),
+            ("LK_ENTRA_CLIENT_AUTH_REF", "lanekeeper-entra-client"),
+            ("LK_ENTRA_COOKIE_KEY_REF", "lanekeeper-login-cookie"),
+            ("LK_AUDIT_CHECKPOINT_BUCKET", "lanekeeper-audit-checkpoints"),
+            (
+                "LK_AUDIT_CHECKPOINT_KMS_REF",
+                "projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/audit/cryptoKeyVersions/1",
+            ),
+        ]
+    }
+
+    /// Everything `hub serve` needs: the database, the web certificate, Google, the platform, identity and the Git remotes.
+    /// `extra` replaces a variable of the same name or adds one.
     fn serving_env<'a>(extra: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
         let mut env = vec![
             ("LK_DATABASE_URL", "postgres://u:p@db/x"),
@@ -385,6 +413,7 @@ mod tests {
             ("LK_GCP_PROJECT", "lanekeeper-prod"),
         ];
         env.extend(platform_env());
+        env.extend(identity_env());
         env.extend(git_env(&[]));
         for (name, value) in extra {
             env.retain(|(n, _)| n != name);
@@ -411,6 +440,20 @@ mod tests {
         );
         let full = HubSettings::from_lookup(lookup(&serving_env(&[]))).unwrap();
         assert_eq!(full.require_serving(), Ok(()));
+    }
+
+    #[test]
+    fn serving_needs_the_identity_provider_and_says_which_variable_to_set() {
+        let mut env = serving_env(&[]);
+        for (name, _) in identity_env() {
+            env.retain(|(n, _)| *n != name);
+        }
+        let without = HubSettings::from_lookup(lookup(&env)).unwrap();
+        assert!(without.identity.is_none());
+        assert_eq!(
+            without.require_serving().unwrap_err(),
+            ConfigError::Missing("LK_ENTRA_TENANT_ID")
+        );
     }
 
     #[test]
