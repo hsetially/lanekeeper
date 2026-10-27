@@ -9,7 +9,10 @@
 //! What is proved: the large cap is never given to a caller who has no live session (no cookie, a cookie that names no session, a
 //! pending user, a Viewer where an Editor is needed), so an anonymous caller cannot make the hub buffer 12 MiB; the cap is exactly
 //! the constant of `hub-writes` (a body at it passes and one byte more is `413`, with the declared length and without); every other
-//! route keeps 4 MiB with a session; the webhook is 1 MiB with or without one; and the number of large bodies in flight is bounded.
+//! route keeps 4 MiB with a session; the webhook is 1 MiB with or without one; and the number of large bodies in flight is bounded
+//! (`at_most_eight_large_bodies_are_read_at_once`, through `enforce_body_cap`: eight bodies of no declared length are held open, the
+//! ninth large body is `429` with `Retry-After`, a body declared at 4 MiB or less is not counted, and a permit comes back when a body
+//! ends). The unit test in `src/limits.rs` that takes permits off the semaphore by hand proves tokio's semaphore, not that bound.
 #![allow(
     dead_code,
     clippy::unwrap_used,
@@ -36,16 +39,24 @@ mod support;
 #[path = "support/tls_pg.rs"]
 mod tls_pg;
 
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
+use axum::Router;
+use axum::body::Body;
 use bytes::Bytes;
 use domain::{Role, UserStatus};
 use http::{Method, StatusCode};
 use hub::Module;
+use hub::limits::LARGE_BODIES_IN_FLIGHT;
 use hub_platform::GuardedRouter;
 use hub_writes::routes::{DRAFTS_PATH, FILES_PATH, MAX_EDIT_BODY, RESTART_PATH, UPLOAD_PATH};
-use rig::{Cookies, IdentityRig, Options, Reply, Req, send};
+use rig::{Cookies, IdentityRig, Options, Reply, Req, eventually, send, send_built};
+use tokio::sync::mpsc;
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 
 const MIB: usize = 1024 * 1024;
 const GLOBAL: usize = 4 * MIB;
@@ -356,4 +367,178 @@ async fn the_webhook_body_is_capped_at_1_mib() {
         before + 1,
         "only the body at the cap ran"
     );
+}
+
+// ---------------------------------------------------------------------------------------------------------------- bodies in flight
+
+/// A request whose body has no declared length and does not end until the test lets it: the hub reads it, and holds the permit that
+/// the bound on large bodies hands out, for as long as it stays open.
+struct HeldBody {
+    /// Dropping this ends the body.
+    end: mpsc::Sender<Result<Bytes, Infallible>>,
+    reply: tokio::task::JoinHandle<Reply>,
+}
+
+/// The one chunk a held body sends before it waits: a complete JSON object, which the probe handler counts and does not parse.
+const HELD_CHUNK: &str = r#"{"content":"held"}"#;
+
+/// Send `req` with a streamed body. `started` counts the bodies whose first chunk the hub has taken, and the hub takes a chunk only
+/// when it reads the body, which `enforce_body_cap` does after it has the permit for a large body (no layer before it reads a body:
+/// the per-IP bucket looks at the declared length, `AuthLayer` at the cookie, `CsrfLayer` at two headers).
+fn hold_open(app: &Router, req: &Req, started: &Arc<AtomicUsize>) -> HeldBody {
+    let (end, chunks) = mpsc::channel(1);
+    end.try_send(Ok(Bytes::from_static(HELD_CHUNK.as_bytes())))
+        .unwrap();
+    let counted = Arc::clone(started);
+    let stream = ReceiverStream::new(chunks).map(move |chunk| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        chunk
+    });
+    let request = req.build_with_body(Body::from_stream(stream));
+    let app = app.clone();
+    HeldBody {
+        end,
+        reply: tokio::spawn(async move { send_built(&app, request).await }),
+    }
+}
+
+async fn wait_for_started(started: &Arc<AtomicUsize>, count: usize) {
+    eventually(
+        Duration::from_secs(20),
+        &format!("{count} held bodies to be read by the hub"),
+        || {
+            let started = Arc::clone(started);
+            async move { started.load(Ordering::SeqCst) >= count }
+        },
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn at_most_eight_large_bodies_are_read_at_once() {
+    let Some(s) = setup().await else { return };
+    let app = s.rig.app();
+    assert_eq!(
+        LARGE_BODIES_IN_FLIGHT, 8,
+        "the name of this test and D137 say eight"
+    );
+    let started = Arc::new(AtomicUsize::new(0));
+    let files_path = files("sit1");
+    // The Editor's own, eligible request: a live session on an edit route, JSON, and no `Content-Length`.
+    let streamed = || {
+        Req::new(Method::PUT, &files_path)
+            .with_token(&s.editor)
+            .header("content-type", "application/json")
+    };
+
+    // Eight bodies are open and the hub is reading each of them.
+    let mut held: Vec<HeldBody> = (0..LARGE_BODIES_IN_FLIGHT)
+        .map(|_| hold_open(app, &streamed(), &started))
+        .collect();
+    wait_for_started(&started, LARGE_BODIES_IN_FLIGHT).await;
+    let runs_before = s.runs.load(Ordering::SeqCst);
+
+    // The ninth large body, in each of the ways a body is large (no declared length; declared above 4 MiB; on the other edit route)
+    // is told to come back, and its handler does not run.
+    let five = json_of(GLOBAL + MIB);
+    for (what, req) in [
+        (
+            "5 MiB, no declared length",
+            as_page(Method::PUT, &files_path, &s.editor, &five),
+        ),
+        (
+            "5 MiB, declared",
+            as_page(Method::PUT, &files_path, &s.editor, &five)
+                .header("content-length", &five.len().to_string()),
+        ),
+        (
+            "4 MiB + 1 declared",
+            as_page(Method::PUT, &files_path, &s.editor, &json_of(GLOBAL + 1))
+                .header("content-length", &(GLOBAL + 1).to_string()),
+        ),
+        (
+            "the drafts route, no declared length",
+            as_page(Method::POST, DRAFTS_PATH, &s.editor, &five),
+        ),
+        (
+            "an Operator's, no declared length",
+            as_page(Method::PUT, &files_path, &s.operator, &five),
+        ),
+    ] {
+        let reply = send(app, req).await;
+        assert_eq!(
+            reply.status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "{what}: {}",
+            reply.text()
+        );
+        assert_eq!(reply.header("retry-after"), Some("1"), "{what}");
+        assert_eq!(
+            reply.problem_code().as_deref(),
+            Some("too_many_requests"),
+            "{what}"
+        );
+    }
+    assert_eq!(
+        s.runs.load(Ordering::SeqCst),
+        runs_before,
+        "a handler ran for a body that was told to come back"
+    );
+
+    // What is not counted goes through while the eight are open: a body declared at 4 MiB or less (at the cap, and a small one) on
+    // the very route the eight are on, and a body of no declared length on a route that has no larger cap.
+    let at_cap = json_of(GLOBAL);
+    let small = json_of(1024);
+    for (what, req, len) in [
+        (
+            "declared at exactly 4 MiB",
+            as_page(Method::PUT, &files_path, &s.editor, &at_cap)
+                .header("content-length", &at_cap.len().to_string()),
+            at_cap.len(),
+        ),
+        (
+            "declared at 1 KiB",
+            as_page(Method::PUT, &files_path, &s.editor, &small)
+                .header("content-length", &small.len().to_string()),
+            small.len(),
+        ),
+        (
+            "1 KiB, no declared length, on a route with the global cap",
+            as_page(Method::POST, &restart("sit1"), &s.operator, &small),
+            small.len(),
+        ),
+    ] {
+        let reply = send(app, req).await;
+        assert_eq!(reply.status, StatusCode::OK, "{what}: {}", reply.text());
+        assert_eq!(reply.text(), len.to_string(), "{what}");
+    }
+    // A caller who is not eligible for the larger cap has the global cap and no permit to wait for: a Viewer's 5 MiB is `413`, not `429`.
+    let reply = send(app, as_page(Method::PUT, &files_path, &s.viewer, &five)).await;
+    assert_too_large(&reply, "a Viewer's 5 MiB while eight large bodies are open");
+    assert_eq!(s.runs.load(Ordering::SeqCst), runs_before + 3);
+
+    // One body ends: its request is answered, its permit comes back, and the next large body is read.
+    let first = held.remove(0);
+    drop(first.end);
+    let reply = first.reply.await.unwrap();
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    assert_eq!(reply.text(), HELD_CHUNK.len().to_string());
+    let reply = send(app, as_page(Method::PUT, &files_path, &s.editor, &five)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    assert_eq!(reply.text(), five.len().to_string());
+
+    // The bound is eight again and not nine: a new body takes the free permit and the one after it is told to come back.
+    held.push(hold_open(app, &streamed(), &started));
+    wait_for_started(&started, LARGE_BODIES_IN_FLIGHT + 1).await;
+    let reply = send(app, as_page(Method::PUT, &files_path, &s.editor, &five)).await;
+    assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS, "{}", reply.text());
+
+    // Every body that was held ends and is answered, and nothing is left holding a permit.
+    for body in held {
+        drop(body.end);
+        let reply = body.reply.await.unwrap();
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    }
+    let reply = send(app, as_page(Method::PUT, &files_path, &s.editor, &five)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
 }

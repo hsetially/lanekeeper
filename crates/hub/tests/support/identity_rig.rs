@@ -576,6 +576,12 @@ impl Req {
     }
 
     pub fn build(&self) -> Request<Body> {
+        self.build_with_body(self.body.clone().map_or_else(Body::empty, Body::from))
+    }
+
+    /// The request with a body of the caller's own making instead of the text given to [`Req::raw_body`]: a stream that has no
+    /// length and does not end until the test says so.
+    pub fn build_with_body(&self, body: Body) -> Request<Body> {
         let mut builder = Request::builder().method(self.method.clone()).uri(&self.path);
         for (name, value) in &self.headers {
             builder = builder.header(name, value);
@@ -589,9 +595,7 @@ impl Req {
                 .join("; ");
             builder = builder.header(header::COOKIE, line);
         }
-        let mut request = builder
-            .body(self.body.clone().map_or_else(Body::empty, Body::from))
-            .unwrap();
+        let mut request = builder.body(body).unwrap();
         request
             .extensions_mut()
             .insert(PeerAddr(SocketAddr::from((self.ip, 40000))));
@@ -658,7 +662,12 @@ impl Reply {
 
 /// Send `req` through `app` and read the whole reply (not for streams).
 pub async fn send(app: &Router, req: Req) -> Reply {
-    let response = app.clone().oneshot(req.build()).await.unwrap();
+    send_built(app, req.build()).await
+}
+
+/// Send a request that is already built (see [`Req::build_with_body`]) and read the whole reply.
+pub async fn send_built(app: &Router, request: Request<Body>) -> Reply {
+    let response = app.clone().oneshot(request).await.unwrap();
     let (parts, body) = response.into_parts();
     Reply {
         status: parts.status,
