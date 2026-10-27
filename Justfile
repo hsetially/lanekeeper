@@ -392,8 +392,8 @@ hub-lint:
 # walk over every route. LK_REQUIRE_DOCKER=1 turns a missing Docker daemon into a failure, never a skip. Then the two changes plan 18
 # made outside the crate: the per-session end of an event stream (hub-platform) and the registry of budgets (xtask). The committed
 # seeds of the fuzz corpora replay here too (`tests/corpus_replay.rs`). The S5 source scan of hub-platform (`ca_key_use`) reads this
-# crate's source as well, and `just verify` runs it, so this gate does too (D145); it stays red until the allowlist line for the web
-# listener's own TLS key, which is in a separate pull request against prompt 03b's test, is on this branch.
+# crate's source as well, and `just verify` runs it, so this gate does too (D145). It passes: the allowlist line for the web
+# listener's own TLS key (`web_tls.rs::decode`) came in with pull request 39 against prompt 03b's test, merged into main.
 hub-test:
     LK_REQUIRE_DOCKER=1 cargo test -p hub --all-features
     LK_REQUIRE_DOCKER=1 cargo test -p hub-platform --test events_sse
