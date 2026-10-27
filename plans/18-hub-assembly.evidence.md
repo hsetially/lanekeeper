@@ -1,0 +1,144 @@
+# Evidence 18: Hub assembly
+
+Written by the implementer in the FINAL step, 2026-10-27, on the tree after `31588fc` (all run on that tree; nothing below is from an earlier tree unless it says so). Real output only. **The gate is not fully green: `just verify` fails on one test of another prompt's crate (blocker B1 in `plans/18-hub-assembly.blockers.md`). Everything else this prompt owns passes.**
+
+Commits of this step: merge of `origin/main` `0cb2024`; fixes `13a974a`, `3532d31`, `31588fc` (three `18/fix:`, found by the fuzz targets, see "Fuzz findings"); then this file and the blockers file.
+
+## Gates
+
+| Command | Result | Output (tail) |
+|---|---|---|
+| `just verify-18` | **Not run as one command (NOT RUN, disk); every sub-recipe was run as written and passes (see the next table).** One hub test binary is about 716 MB in the debug profile, 34 of them are about 24 GB, and `cargo test -p hub --all-features` links them all before running one; the sandbox had 6 to 12 GB free. | `hub-tools-check` exit 0; `hub-lint` exit 0; `hub-test` as below; `hub-fuzz`: `hub-fuzz: hub_cli_args hub_pem hub_seed_file hub_settings ran 30 s each without a crash`; `hub-bench`: `bench-check (default): 3 pass, 0 fail, 0 unmet of 3 budgets` |
+| `just verify` | **FAIL**, one test: `cargo test --workspace`, `hub-platform` `ca_key_use` (B1). Every other step passes. | `test ca_key_is_only_used_through_kms_signer_source_scan ... FAILED` / `left: [Finding { file: "web_tls.rs", line: 129, what: "PrivateKeyDer:: in decode" }]` / `error: test failed, to rerun pass -p hub-platform --test ca_key_use` |
+| `cargo xtask bench-check` | The ten budgets this prompt claims or must not regress: **10 pass**. The whole registry: `10 pass, 63 fail, 2 unmet of 75 budgets` (the 63 are "registered but no result": other prompts' benchmarks, **NOT RUN**; the 2 unmet are prompt 14's, "no benchmark yet"). | see "Benchmarks against budgets" |
+
+### `just verify-18`, sub-recipe by sub-recipe
+
+| Sub-recipe | How it was run | Result | Output (tail) |
+|---|---|---|---|
+| `hub-tools-check` | `just hub-tools-check` | PASS | exit 0 (Docker up, `nightly-2026-09-14` present, `cargo-fuzz 0.13.2`, cargo-deny 0.19.9, cargo-audit 0.22.2) |
+| `hub-lint` | `just hub-lint`, again on the final tree | PASS | `advisories ok, bans ok, licenses ok, sources ok`; `Loaded 1380 security advisories`; `Scanning Cargo.lock for vulnerabilities (641 crate dependencies)`; `warning: 10 allowed warnings found` (all `zstd-safe 7.3.0` "unsound", D135); `cargo fmt --check` and `clippy -p hub --all-targets --all-features -D warnings` clean; the release graph of `hub` switches on none of `fakes conformance test-doubles bench-probe fuzz-hooks route-table testing`. The first run of this step printed 26 `couldn't check if the package is yanked: ... 503 Service Unavailable` from the crates.io index through the proxy and still exited 0; the later runs (`just verify`'s `cargo audit`, and `hub-lint` again) had none. Nothing was done about the proxy. |
+| `hub-test` 1/3 | `LK_REQUIRE_DOCKER=1 cargo test -p hub --all-features`, **target by target** (disk), `--lib`, `--bins`, the 34 files of `crates/hub/tests/`, an `--examples` build, `--doc`; `CARGO_INCREMENTAL=0`; the big binaries deleted after each | PASS | 38 runs, 0 failed, **516 tests passed**: lib 235, blob_route 7, body_limits 4, ca_init 5, corpus_replay 19, csrf_all_routes 5, dev_login 2, docs_unavailable 8, errors 8, events_route 3, explain 2, git_route 4, guard 8, hardening 7, headers 7, identity_module 16, justfile_gate 8, limits 9, mcp_module 11, migrate 18, mirrors_ready 2, ops 9, pg_tls 5, platform_cluster 10, process 8, refuses_to_start 32, registry_writes 6, release_build 9, route_table_full 7, seed 15, static_files 6, telemetry 6, threat_model 4, tls 5, web_tls 6 (examples build, 0 doc tests). Run twice: before the fixes (513 passed) and again on the final tree (516). |
+| `hub-test` 2/3 | `LK_REQUIRE_DOCKER=1 cargo test -p hub-platform --test events_sse` | PASS | `test result: ok. 32 passed; 0 failed` |
+| `hub-test` 3/3 | `cargo test -p xtask --test budgets_registry` | PASS | `test result: ok. 8 passed; 0 failed` (also right after the merge) |
+| `hub-fuzz` | `just hub-fuzz`, unmodified (`nightly-2026-09-14`, `cargo-fuzz 0.13.2`, 30 s per target) | PASS on the 4th run; **FAILED on the first three** | `Done 1590910 runs` (`hub_cli_args`), `Done 339609 runs` (`hub_pem`), `Done 231250 runs` (`hub_seed_file`), `Done 15973 runs` (`hub_settings`); `cargo deny` on the fuzz lockfile `advisories ok, bans ok, licenses ok, sources ok`; `cargo audit --file crates/hub/fuzz/Cargo.lock` 512 crates, 10 allowed warnings. Then a 75 s fork-mode pass of the three other targets with `-ignore_crashes=1` (about 600k, 594k and 50k executions): no crash. |
+| `hub-bench` | `just hub-bench` (`cargo bench -p hub`, then the recipe's cut of `perf/budgets.toml`) | PASS | `PASS P7.auth_composed 0.031 p95 <= 2 ms`; `PASS P7.auth_composed_cold 1.314 p95 <= 2 ms`; `PASS P11 143.511 p95 <= 10000 ms`; `bench-check (default): 3 pass, 0 fail, 0 unmet of 3 budgets` |
+
+### `just verify`, step by step
+
+| Step | Result | Output (tail) |
+|---|---|---|
+| `cargo fmt --all -- --check` | PASS | exit 0 |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS | `Finished dev profile ... in 4m 18s`, exit 0 |
+| `cargo test --workspace` | **FAIL (1 test)** | Run in slices (disk) as `cargo test --workspace --no-fail-fast` with `--lib`, `--bins`, then `--test` filters of the 305 distinct names six at a time (so feature unification is the real command's), an `--examples` build and `--doc`: 55 invocations, 373 test binaries, **5,826 passed, 1 failed, 20 ignored** (the opt-in `#[ignore]` tests that were there before; not run). The one failure: `hub-platform::ca_key_use::ca_key_is_only_used_through_kms_signer_source_scan` (B1). `LK_REQUIRE_DOCKER` was not set, as in the recipe; Docker was up. |
+| `cargo deny check` | PASS | `advisories ok, bans ok, licenses ok, sources ok` |
+| `cargo audit` | PASS | `Loaded 1380 security advisories`, `Scanning Cargo.lock for vulnerabilities (641 crate dependencies)`, `warning: 10 allowed warnings found`, exit 0, no yank errors |
+| `web-verify` (`pnpm install --frozen-lockfile`, `lint`, `typecheck`, `test --run`, `build`) | PASS | `Lockfile is up to date`; `Test Files 391 passed (391)`; `Tests 9683 passed (9683)`; `built in 24.44s`; exit 0 |
+
+### Not run, and why
+
+- **The literal `just verify-18`**: disk, above. Each sub-recipe ran.
+- **`osv-scanner`**: not installed in the sandbox. NOT RUN.
+- **The kind test and chart checks of prompt 09** (kind, helm, kubeconform, conftest): none installed; prompt 09 has not merged. NOT RUN.
+- **`docker build` of `crates/hub/Dockerfile`**: not part of the gate (`hub-test` lints the Dockerfile and `HARDENING.md`; CI builds the image) and Docker Hub returns 429 here. NOT RUN.
+- **Anything that needs a real Google project, Entra tenant or GitHub**: every test has software at the edges. The real `hub` binary's success path is therefore NOT RUN; its refusals are (`refuses_to_start`).
+- **63 budgets of other prompts' benchmarks** (P1, P6, P7.compare_api, P8, P9.*, P10.*, P14, P15.*, P1.hub_delta_to_drift, P6.hub_full_recompute, P6.adoption_rank): they need `just bench` on every crate and the web build with Lighthouse. They are not claimed by this prompt. NOT RUN.
+- **The 20 `#[ignore]` tests** (real-snapshot and real-Google opt-ins): NOT RUN, as before this prompt.
+
+## Fuzz findings (the first run of these targets)
+
+The sandbox that wrote T1 to T8 had no nightly toolchain and no `cargo-fuzz`, so the `hub_*` targets were only replayed on stable. In this step the pinned nightly was already installed and `cargo-fuzz 0.13.2` installed through the proxy (one attempt, succeeded). `hub_pem` then crashed three times; each was fixed test first (a failing test or seed, watched red with the fuzzer's own message, then green), in its own `18/fix:` commit:
+
+1. `13a974a` (product fix, `crates/hub/src/web_tls.rs`): `decode_ca_certificate` accepted a text with two certificates when the second `BEGIN CERTIFICATE` marker was glued to text before it on its line (the PEM grammar does not see a section there), so the hub would have trusted the first alone without a word, against the function's "refuse and not skip" contract. It now also refuses any text with more than one certificate marker. Test: `ca_init::a_second_certificate_marker_that_the_pem_grammar_skips_is_still_refused`; seed `rejected_ca_second_certificate_glued_to_text`.
+2. `3532d31` and 3. `31588fc` (harness, `crates/hub/fuzz/invariants.rs`): the check that "an error never repeats the secret's text" was unsound twice over (a text that trims to nothing is contained in every message; a piece of the decoder's own fixed phrase is contained in it too). The error type has no field, so the sound check is that the error is one of a closed set (`FIXED_PEM_ERRORS`), now used on the CA path as on the web path; `corpus_replay::the_fixed_pem_errors_are_every_variant_of_the_enum` holds the list to the enum (an exhaustive match). Seeds `rejected_a_chain_of_only_spaces` and `rejected_a_piece_of_the_decoders_own_phrase`. The same commit has a product fix found by reading the invariants against the decoder after three findings in a row: a CA certificate that ends before it begins was accepted although the harness asserts it never is (nothing else in the hub checks the order of the two dates); `decode_ca_certificate` now refuses it as unreadable. Test: `corpus_replay::a_ca_certificate_that_ends_before_it_begins_is_refused_and_the_invariants_agree`, red before.
+
+Both product changes are refusals added to a decoder for a public CA certificate; no valid input changed behaviour.
+
+## Acceptance checklist
+
+- [ ] `just verify-18` passes, and `just verify` passes. **Not ticked.** The sub-recipes of `verify-18` pass (run one by one, see above) but `just verify` fails on one test of `hub-platform` (B1). Both need a human's decision before they can be green.
+- [x] The binary starts against a real Postgres, serves `/readyz` 200, and exits cleanly on SIGTERM within the grace period. Proof: `process::the_hub_serves_healthz_and_readyz_and_exits_zero_on_sigterm`, `::a_second_signal_exits_at_once`, `::sigterm_right_after_the_ops_port_opens_still_exits_cleanly`, `platform_cluster::readiness_of_one_replica_fails_without_failing_the_other` (all passed). **Scope:** the program is the `hub_dev` example (the same `hub::process::entry`, secrets from files), because the release `hub` binary cannot start without Google (plan G23, D144); the Postgres is real (16, TLS 1.3).
+- [x] It refuses to start, with a typed message and no secret, when the database, the CA, the identity provider settings or a required module is missing; no fake is reachable from a release build. Proof: `refuses_to_start` (32 tests: `without_a_database`, `a_malformed_identity_setting_names_the_variable_and_never_the_value`, `both_mcp_authentication_modes_at_once_are_refused_by_name`, `an_unmigrated_database_is_exit_1_names_the_migration_and_is_left_as_it_was`, `a_missing_certificate_secret_is_exit_1_and_names_the_settings`, ...), `platform_cluster::a_ca_certificate_that_does_not_belong_to_the_kms_key_refuses_to_start`, `release_build::no_test_feature_in_any_production_dependency` and `::no_fake_and_no_dev_knob_is_referenced_outside_cfg_test` (9 passed), and `hub-lint`'s release-graph check.
+- [x] One test proves every operation of `api/openapi.yaml` is mounted with a guard or named in the allowance list, and every state-changing route is behind CSRF and `Origin` checks. Proof: `route_table_full::every_operation_is_mounted_or_allowed_with_a_reason_and_an_owner`, `::a_new_unlisted_route_or_operation_fails`, `::the_composed_table_matches_the_golden` (7 passed); `csrf_all_routes::every_non_get_route_refuses_a_session_without_token_or_origin` (5 passed).
+- [x] An agent whose swimlane was seeded joins through the real agent listener and its report reaches a registry read. Proof, in two tests: `seed::a_seeded_agent_joins_through_the_agent_listener` (and `::a_seeded_sentinel_joins`), and `registry_writes::an_agents_report_lands_and_a_read_route_returns_it` (an agent that joined through the real listener lands a report and a read route returns it). Both passed.
+- [x] `hub migrate` and `hub seed` are idempotent, audited where they change state, and refuse the wrong role. Proof: `migrate::a_second_run_changes_nothing`, `::lanekeeper_app_is_refused`, `::a_database_with_a_later_migration_is_refused_with_a_typed_error`; `seed::a_second_run_changes_nothing_and_writes_nothing`, `::the_rows_and_their_events_are_one_transaction`, `::a_new_file_creates_the_rows_and_an_audit_event_for_each_and_the_chain_verifies`, `::the_migrator_the_superuser_and_a_stranger_are_refused_before_anything_is_written` (18 and 15 passed). **`hub migrate` writes no audit event, by the human's decision D138** (the one exception to rule 8; the threat model states it).
+- [x] Startup is under 10 seconds with the real composition, and memory is recorded against P11. Proof: `hub/startup` p95 143.5 ms through `hub::process::run`; RSS 39.7 MiB at ready and 46.9 MiB after 6,000 requests from 100 signed-in users; `hub-platform/memory_at_design_scale` 733.4 MiB (see the benchmark table). With software at the edges, so real Google latency is not in it.
+- [x] `docs/threat-model.md` has the assembly section; the decisions made at the plan gate are in `docs/decisions.md`. Proof: the section "Hub assembly (18)"; D137 to D144; `threat_model` (4 passed: `the_section_has_stride_rows_for_all_six_letters_and_for_every_requirement_of_the_prompt`, `every_test_the_section_names_exists`, `every_decision_the_section_cites_is_in_the_decisions_file_and_the_plan_gate_ones_are_the_humans`, `the_section_names_what_the_composition_does_not_prove_and_the_promised_residual_risks`).
+
+## Security requirements implemented
+
+Each test below was found by name in the log of the final-tree run and passed (checked by script against the logs).
+
+- **S1** (identity, pending and disabled users): `identity_module::sign_in_against_a_local_identity_provider_gives_a_working_cookie`, `::pending_and_disabled_users_get_403_on_every_composed_route`.
+- **S2** (sessions, ended on sign-out and role change): `identity_module::the_session_cookie_has_the_s2_attributes`, `::sign_out_ends_the_session_and_its_live_stream`, `::a_role_change_on_one_replica_ends_sessions_on_the_other_within_a_second`; `hub-platform` `events_sse` (32 passed, including `a_stream_ends_within_one_heartbeat_when_its_session_ends_though_the_user_is_still_valid`, `ending_one_session_leaves_the_same_users_other_session_streaming`, `an_implementation_that_names_no_session_is_asked_nothing_more_than_before`).
+- **S3** (CSRF token and `Origin`): `csrf_all_routes::{every_non_get_route_refuses_a_session_without_token_or_origin, a_request_that_has_the_token_and_the_origin_passes_csrf_on_every_route, a_request_without_a_session_is_stopped_by_the_guard_not_by_csrf, the_layers_run_in_the_order_the_composition_needs}`, `mcp_module::the_personal_token_routes_need_the_csrf_token` (closes D109 D-2).
+- **S4** (default-deny, route table): `route_table_full::{every_operation_is_mounted_or_allowed_with_a_reason_and_an_owner, a_new_unlisted_route_or_operation_fails, the_composed_table_matches_the_golden}`, `identity_module::default_deny_holds_with_static_files_on`.
+- **S5** (agent identity): `platform_cluster::{an_agent_joins_with_a_google_id_token_for_its_registered_account, each_listener_trusts_only_its_own_ca, a_ca_certificate_that_does_not_belong_to_the_kms_key_refuses_to_start}`, `seed::{a_seeded_agent_joins_through_the_agent_listener, a_seeded_sentinel_joins}`. **B1 is S5's source scan, which this prompt's web key trips.**
+- **S6** (TLS 1.3, mTLS, Postgres `verify-full`): `web_tls::{the_web_listener_speaks_tls13_only_with_the_loaded_certificate, a_replaced_certificate_is_served_to_the_next_handshake, an_unusable_replacement_keeps_the_old_certificate}`, `platform_cluster::both_grpc_listeners_require_client_certificates`, `pg_tls` (5), `migrate::the_migrator_connection_verifies_the_server`.
+- **S7** (secrets): `hardening::hardening_md_pod_contract_is_complete` (no variable looks like a secret), `web_tls::certificate_and_key_come_from_the_secrets_source_only`, `process::no_planted_secret_appears_in_the_process_output`, `refuses_to_start` (32), the closed-set check of `hub_pem`.
+- **S9** (audit: one event per change in the transaction, checkpoints): `identity_module::the_checkpoint_and_verify_jobs_run_on_one_replica_and_stop_on_shutdown`, `registry_writes::every_write_has_exactly_one_audit_event_and_the_chain_verifies`, `seed::{a_new_file_creates_the_rows_and_an_audit_event_for_each_and_the_chain_verifies, the_rows_and_their_events_are_one_transaction}`, `platform_cluster::joins_are_audited_and_the_chain_verifies`. Exception: `hub migrate` (D138).
+- **S10** (no content or secrets in logs): `process::no_planted_secret_appears_in_the_process_output`, `migrate::the_binary_applies_the_migrations_prints_the_versions_and_never_a_credential`, `identity_module::metrics_labels_stay_closed_after_composition`.
+- **S12** (security headers on every composed route): `route_table_full::every_composed_route_carries_the_security_headers`, `headers` (7), `static_files` (6).
+- **S16** (hardened container, four volumes): `hardening::{hub_dockerfile_is_hardened, hardening_md_pod_contract_is_complete}`.
+- **S18** (network policy, webhook HMAC): `hardening::hardening_md_network_policy_denies_by_default_and_lists_only_allowed_egress`; the forged-signature refusal (401 or 403) at the end of `registry_writes::push_to_drift_through_the_composed_hub_meets_p2`; `body_limits::the_webhook_body_is_capped_at_1_mib`. (The plan named a test `registry_writes::the_webhook_still_requires_a_valid_hmac_through_the_composed_hub`; it does not exist under that name, the assertion is in the test above.)
+- **S21** (no unsafe, no panics, errors without internals): the workspace lints in `hub-lint` and `cargo clippy --workspace`, `errors::problem_bodies_have_no_internals_for_every_composed_module`, `release_build` (9).
+- Also touched: **S11** (the D137 relaxation: `body_limits::the_12_mib_cap_needs_a_live_session`, `::the_edit_cap_is_the_constant_of_hub_writes_and_not_a_byte_more`, `::every_other_route_keeps_4_mib_with_a_session`; S11's wording in `docs/security.md` needs a follow-up by whoever owns that file), and **S22** (fuzz targets `hub_settings`, `hub_cli_args`, `hub_pem`, `hub_seed_file`, whose committed seeds replay on stable in `corpus_replay`, 19 tests).
+
+## Benchmarks against budgets
+
+Measured on this sandbox (4 vCPU, 15 GB), release/bench profile, target-scale fixtures, Docker Postgres 16; all edges are software. "Before" is the figure recorded by the prompt that owns the benchmark.
+
+| P# | Benchmark | Result | Budget | Before |
+|---|---|---|---|---|
+| P11 (start-up) | `hub/startup` through `hub::process::run`, 10 starts | p50 114 ms, **p95 143.5 ms**, max 143.5 ms; phases of the last start: 42 ms to `starting`, 77 ms to `listening`, 110 ms to `/readyz` 200 | p95 10,000 ms | 40.2 ms (03b, the platform alone) |
+| P11 (memory, whole hub) | `hub/composed_rss_mib` (recorded, not budgeted) | 39.7 MiB at ready; 46.9 MiB after 6,000 requests from 100 signed-in users in 4.5 s (0 not 200); kernel high-water 47 MiB. An empty registry, one replica. | none; P11.memory_mib is the platform at design scale | none |
+| P11.memory_mib | `hub-platform/memory_at_design_scale` | **733.4 MiB** max | 1,536 MiB | 746.2 MiB (03b) |
+| P7 (auth, warm) | `hub/auth_composed_warm`: `AuthLayer`, the adapter, `CsrfLayer`, the platform guard | **0.031 ms** p95 | 2 ms (new id `P7.auth_composed`, CC1) | new |
+| P7 (auth, cold) | `hub/auth_composed_cold` | **1.314 ms** p95 | 2 ms (new id `P7.auth_composed_cold`, CC1) | new |
+| P2 | `hub-platform/push_to_drift_webhook` | 32.4 ms p95 | 10,000 ms | 32.6 ms (03b) |
+| P2 (registry) | `hub-registry/head_moved_to_drift` (`P2.hub_head_moved_to_drift`) | 567.3 ms p95 | 1,000 ms | not recorded here |
+| P12 | `hub-identity/audit_record` | 2.329 ms p95 | 4 ms (D136; it was 3) | 3.2 to 4.6 ms in 03a/03b/06 |
+| P12 | `hub-writes/write_queries` | 9.696 ms p95 | 50 ms | 9.3 ms (06) |
+| P12 | `hub-registry/steady_state_queries` | 16.559 ms p95 | 50 ms | not recorded here |
+| P13 | `hub-platform/sse_delivery` (the handler this branch changed for G2) | 5.405 ms p95 | 1,000 ms | 6.2 ms (03b) |
+
+No regression of P2, P12 or P13 against the figures the owning prompts recorded; all are inside their budgets. The phases of the last start are 42 ms (process, runtime, settings, telemetry), 35 ms (every module built, four listeners bound) and 33 ms (to `/readyz` 200). The real Google calls at start (Secret Manager reads, four KMS calls) are not in these numbers; they run concurrently, each bounded by `LK_START_TIMEOUT_SECS` (8 s), and the first real figure is prompt 09's kind test or the first deployment. The design-scale memory of the whole hub (40 swimlanes, 100 users, 30 MCP sessions) is prompt 16's.
+
+## New dependencies
+
+The root `Cargo.lock` gains **no package**: its 13 added lines are the new dependency edges of `hub` onto packages already in the lockfile. Release ages are from the registry index's publish times, as of 2026-10-27; all are at least 14 days (AGENTS.md rule 15).
+
+| Crate or package | Version | Age in days | Why | `cargo deny` / `osv-scanner` |
+|---|---|---|---|---|
+| `serde-saphyr` (**now a production dependency of `hub`**; a workspace pin, was a dev-dependency) | 1.1.0 | 73 (2026-08-15) | `hub seed` reads a file an operator wrote: a parser with hard budgets (events, nodes, depth, aliases) and no unsafe code; fuzz target `hub_seed_file` | deny PASS / osv-scanner NOT RUN |
+| `x509-parser` (production now; was dev) | 0.18.1 | 264 | the web certificate's `notAfter` for `/readyz` and the CA certificate's checks; rustls does not expose it | PASS / NOT RUN |
+| `zeroize` | 1.9.0 | 137 | wipe the PEM text and the DER copy of the web key once loaded (S7) | PASS / NOT RUN |
+| `fastrand` | 2.5.0 | 100 | jitter for the certificate reload timer | PASS / NOT RUN |
+| `pem` | 3.0.6 | 382 | the PEM text `hub ca-init` prints; `serde` feature off | PASS / NOT RUN |
+| `sqlx` feature `migrate` | 0.8.6 (no new package) | existing | `hub migrate` applies the embedded migrations with the `Migrator` | PASS / NOT RUN |
+| `hub-identity`, `hub-registry`, `hub-writes` | workspace members | n/a | the composition | PASS / NOT RUN |
+| dev: `criterion` | 0.8.2 | 265 | `benches/auth_adapter.rs` (the new P7 ids) | PASS / NOT RUN |
+| dev: `url` | 2.5.8 | 295 | the mock Entra of identity's tests, included by `#[path]` | PASS / NOT RUN |
+| dev: `base64` | 0.22.1 | 910 | the platform's smart-HTTP Git test server | PASS / NOT RUN |
+| dev: `hyper` (features `client server http1 http2`), `tokio-stream`, `tonic` (`codegen`), `proto` | 1.11.1 / 0.1.19 / existing | 60 / 97 | `platform_cluster` speaks the agent protocol to two replicas with the platform's own clients | PASS / NOT RUN |
+| dev: `hub-writes` feature `test-doubles` | existing | n/a | the tests drive the real GitHub client against a local HTTP server | PASS / NOT RUN |
+| `crates/hub/fuzz` (own lockfile: 512 packages, 11 of them this workspace's, 501 external) | 499 of the 501 external packages are identical to the root lockfile in version and checksum (checked by script); the other two are **`arbitrary` 1.4.2 (439 days) and `libfuzzer-sys` 0.4.13 (145 days)** | | the cargo-fuzz pair, at the versions the other crates' fuzz lockfiles pin | deny PASS, audit PASS on that lockfile / NOT RUN |
+| tool (not a dependency): `cargo-fuzz` | 0.13.2 | 140 | pinned by the Justfile (`cargo_fuzz_version`); installed in the sandbox in this step | n/a |
+
+## Assumptions
+
+- **Defaults taken.** The human's answers (`plans/18-hub-assembly.answers.md`) changed three: G2 (per-session end of an SSE stream, with the three `hub-platform` Extra-paths), G8 (S11 relaxed for two routes) and G20 (no merge order). Every other question marked "needs a human" (G1, G3, G4, G5, G10, G15, G16, G19, G23, G24, G28, G29) took the plan's default, and so did the unmarked ones (G6, G7, G9, G11 to G14, G17, G18, G21, G22, G25 to G27); D137 to D144 record them. G7's intervals (30 s, 60 s, 5 s, 1 h) are the plan's numbers, not D63's.
+- **G8 and D137 are narrower and wider than the answer in two ways, and I made both calls.** The answer says the 12 MiB cap applies "only to a request that carries a live session". The code applies it only when the session's user is `Active` and at least an `Editor` (the route's own guard floor, so a Viewer's body above 4 MiB is refused before it is buffered), and it adds a limit of 8 such large bodies in flight per replica (about 100 MiB at most), because the per-user bucket runs after the body is read. If the route's guard floor changes, the table in `limits.rs` has to change with it. S11's wording in `docs/security.md` still says 4 MiB and needs a follow-up by whoever owns that file.
+- **`hub seed` (D139).** It creates and updates and never deletes (a swimlane delete cascades); rows the database has and the file lacks are reported. The file: `version: 1`, at most 256 KiB, one document, unknown keys refused, anchors, aliases, merge keys and deep nesting refused, a service account a lower-case `*.gserviceaccount.com` address. A changed `project` on an existing swimlane moves it (`--dry-run` shows it). At most 200 changed rows per run. Audit: `SentinelEnrolled` for a sentinel row, `SettingsChanged` for a project, a swimlane or a tenant set (one event for a swimlane's tenant set), actor `System { component: "hub-seed" }`, the file's SHA-256 in the `diff`; the operator is not recorded. It runs as `lanekeeper_app` only.
+- **Example-only development helpers.** `crates/hub/examples/support/dev_login.rs` (a loopback-only way to sign a development administrator in through the hub's own sessions, because a browser cannot sign in to a mock Entra) and `crates/hub/examples/dev_pki.rs` (a CA, a database certificate and a web certificate for `localhost`) exist for `just dev`. They are example targets, never built into the image (`release_build::the_dev_example_is_an_example_and_never_a_binary`); `dev_login` (2 tests) passed. `just dev` itself was NOT RUN (it starts a browser-facing stack and needs Docker volumes and `pnpm build`; its pieces are tested).
+- **The stray `*.pending-snap` insta file.** There is none in the tree at the end of this step, and `.gitignore` has no rule for it. Prompt 18 does not own `.gitignore`, so the rule is for whoever does.
+- **Tools.** The pinned nightly (`nightly-2026-09-14`) was already installed; `cargo-fuzz 0.13.2` was installed in this step, through the proxy, which allowed it. No proxy setting and no TLS check was touched. `CARGO_INCREMENTAL=0` throughout; large debug binaries and `target/release` were deleted between runs (the bench results were saved first).
+- **The merge** of `origin/main` (`0cb2024`) had one conflict, in `docs/decisions.md` (both sides append decisions after D135). Both sides were kept in D-number order: main's D136, then this branch's D137 to D144, nothing renumbered. `perf/budgets.toml` and `crates/xtask/tests/budgets_registry.rs` merged cleanly (`P6.index_settings` 80, `P12.audit_record` 4, and this branch's `P7.auth_composed*`); `budgets_registry` passes.
+- **Bench numbers use software edges**, so real Google latency, the production HTTPS leg of Git and the load balancers are not in them.
+
+## Deviations from the plan
+
+- **B1 (blocker, `plans/18-hub-assembly.blockers.md`):** `just verify` is red on `hub-platform`'s S5 source scan, which the plan did not foresee; the fix is an allowlist line in a file outside the plan's Extra-paths, and needs a human's decision. Not worked around.
+- **Three `18/fix:` commits** (the fuzz findings), all inside `crates/hub/**`: two small refusals added to `decode_ca_certificate` and a corrected check in the fuzz invariants, with their tests and seeds.
+- **`just verify-18` and `cargo test --workspace` were run in slices** (disk), not as single commands; the same tests, the same feature unification for the workspace run.
+- **`cargo test -p hub-platform --test ca_key_use` is not in `hub-test`**, so the prompt's own gate does not show B1. Recommended once B1 is decided (this prompt owns the Justfile).
