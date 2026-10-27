@@ -11,6 +11,7 @@ This file says how to operate it. It grows with the tasks of prompt 18.
 ```
 hub [serve]    run the hub until SIGTERM or SIGINT (the default)
 hub migrate    apply the database migrations as lanekeeper_migrator, then exit
+hub ca-init    print the self-signed certificate of a CA whose key is in Cloud KMS (run once for each CA)
 hub help       print the usage
 ```
 
@@ -90,3 +91,49 @@ things in this crate must then change in the same commit, and `cargo test -p hub
 then contract), so the old hub keeps working on the new schema while it rolls; the new hub refuses an old schema. In the chart
 (prompt 09) this is a pre-install and pre-upgrade hook, or an Argo CD `PreSync` hook, with the Job's pod held to the contract in
 `HARDENING.md` ("The migration Job").
+
+### Making the CA certificates
+
+The hub starts only when it has two CA certificates, one for agents and sentinels and one for the replicas, and nothing else makes
+them. Each CA is a Cloud KMS key version (algorithm `EC_SIGN_P256_SHA256`, purpose asymmetric signing, a key used for nothing
+else); the hub never holds the private key, it asks KMS to sign. `hub ca-init` makes the certificate for a key, once:
+
+```
+hub ca-init --kms-ref projects/P/locations/L/keyRings/R/cryptoKeys/agent-ca/cryptoKeyVersions/1 \
+            --common-name "Lanekeeper agent CA" --valid-days 3650 > agent-ca.pem
+hub ca-init --kms-ref projects/P/locations/L/keyRings/R/cryptoKeys/replica-ca/cryptoKeyVersions/1 \
+            --common-name "Lanekeeper replica CA" --valid-days 3650 > replica-ca.pem
+```
+
+Run it from the image, as an identity that may read the key's public half and sign with it (`roles/cloudkms.publicKeyViewer`,
+`roles/cloudkms.signerVerifier` on that key version). Nothing but KMS is needed, no project and no secret. It prints one PEM
+certificate on standard output and its own messages on standard error; store the output in the Secret Manager secret that
+`LK_AGENT_CA_CERT_REF` (or `LK_REPLICA_CA_CERT_REF`) names, and then the hub can start. The certificate is public.
+
+| Option | Meaning |
+|---|---|
+| `--kms-ref` | The key *version*, as a resource name. A key without a version is refused: a signature is made by one version, and the certificate belongs to it. |
+| `--common-name` | The certificate's subject, for people: letters, digits, spaces and `. _ -`, at most 64 characters. |
+| `--valid-days` | How long the certificate lives from now, 1 to 3650. Choose the date to renew the CA by; renewing is a new key version, a new certificate and a rolling restart. |
+
+The certificate may sign leaf certificates and nothing else (a CA with a path length of 0, key usage `keyCertSign` and `cRLSign`).
+Exit codes are the hub's: `0` the certificate is on standard output, `1` KMS refused or was unreachable (the message says which
+step), `2` an option is missing or not valid (the message names the option and never the value). The same command line is covered
+by the `hub_cli_args` fuzz target. At every start the hub proves with one signature that each certificate belongs to its KMS key and
+refuses to start when it does not, so a certificate made for the wrong key, or a secret that holds the wrong one, is found at the
+first rollout and not at the first agent.
+
+### Starting the hub
+
+`hub` (or `hub serve`) reads its settings from the environment (`HARDENING.md` lists them, with the pod that carries them), binds
+all four listeners, loads what it needs and serves. It exits 2 and starts nothing when a setting is missing or malformed, and exits
+1 and names the component when a real one cannot be reached or does not match: the database, the schema (run `hub migrate`
+first), the web certificate, either CA, a listener's address. It never falls back to a fake. On SIGTERM or SIGINT it fails
+`/readyz`, waits `LK_SHUTDOWN_GRACE_SECS`, stops accepting, gives requests and streams `LK_SHUTDOWN_DRAIN_SECS`, releases the leases
+of its jobs, and exits 0; a second signal exits at once with 1.
+
+`/readyz` answers 200 when every one of these holds, and names the first that does not on a 503: `postgres`, `schema`,
+`certificates` (the web, agent and replica certificates held are unexpired), `events` (the event bus holds its `LISTEN`
+connection), `mirrors` (both Git mirrors hold a branch; a replica on an empty volume fills them first and is not ready until it
+has), `jobs` (the job runner is running) and `tasks` (no task that should run for the life of the process has ended). Each answers
+from memory, so the probe costs no call.

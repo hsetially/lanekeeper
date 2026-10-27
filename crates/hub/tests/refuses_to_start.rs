@@ -18,6 +18,8 @@
 
 #[path = "support/child.rs"]
 mod child;
+#[path = "support/git_remote.rs"]
+mod git_remote;
 #[path = "support/net.rs"]
 mod net;
 #[path = "support/rig.rs"]
@@ -55,7 +57,27 @@ fn serving() -> (tempfile::TempDir, Vec<(&'static str, String)>) {
         ("LK_GCP_PROJECT", "lanekeeper-prod".to_owned()),
         ("LK_WEB_ADDR", "127.0.0.1:0".to_owned()),
         ("LK_OPS_ADDR", "127.0.0.1:0".to_owned()),
+        ("LK_AGENT_ADDR", "127.0.0.1:0".to_owned()),
+        ("LK_REPLICA_ADDR", "127.0.0.1:0".to_owned()),
         ("LK_START_TIMEOUT_SECS", "3".to_owned()),
+        ("LK_AGENT_CA_KMS_REF", rig::AGENT_CA_KMS.to_owned()),
+        ("LK_AGENT_CA_CERT_REF", "agent-ca-cert".to_owned()),
+        ("LK_REPLICA_CA_KMS_REF", rig::REPLICA_CA_KMS.to_owned()),
+        ("LK_REPLICA_CA_CERT_REF", "replica-ca-cert".to_owned()),
+        ("LK_REPLICA_NAME", "hub-0".to_owned()),
+        ("LK_REPLICA_ADDRESS", "hub-0.hub.lanekeeper.svc:8445".to_owned()),
+        ("LK_HUB_AUDIENCE", "https://hub.lanekeeper.test".to_owned()),
+        ("LK_AGENT_ENDPOINT_HOSTS", "agents.lanekeeper.test".to_owned()),
+        (
+            "LK_GIT_BASE_URL",
+            "https://github.com/acme/configuration-base-saas.git".to_owned(),
+        ),
+        (
+            "LK_GIT_TENANT_URL",
+            "https://github.com/acme/csp-tenant-data.git".to_owned(),
+        ),
+        ("LK_GIT_BASE_REPO", "acme/configuration-base-saas".to_owned()),
+        ("LK_GIT_TENANT_REPO", "acme/csp-tenant-data".to_owned()),
     ];
     (dir, settings)
 }
@@ -124,6 +146,69 @@ fn without_the_google_project() {
     assert_refused(code, &output, 2, "LK_GCP_PROJECT is required");
 }
 
+// ------------------------------------------------------------------------------------------------ the platform (T3)
+
+#[test]
+fn without_the_agent_ca() {
+    // All of the group gone: the group is absent, and serving names the first variable it needs.
+    let (code, output, _dir) = run_hub(
+        &[],
+        &[
+            "LK_AGENT_CA_KMS_REF",
+            "LK_AGENT_CA_CERT_REF",
+            "LK_REPLICA_CA_KMS_REF",
+            "LK_REPLICA_CA_CERT_REF",
+            "LK_REPLICA_NAME",
+            "LK_REPLICA_ADDRESS",
+            "LK_HUB_AUDIENCE",
+            "LK_AGENT_ENDPOINT_HOSTS",
+        ],
+        &[],
+    );
+    assert_refused(code, &output, 2, "LK_AGENT_CA_KMS_REF is required");
+    // Part of it gone: a half-written deployment is refused by the name of what is missing.
+    for missing in [
+        "LK_AGENT_CA_KMS_REF",
+        "LK_AGENT_CA_CERT_REF",
+        "LK_REPLICA_CA_KMS_REF",
+        "LK_REPLICA_CA_CERT_REF",
+    ] {
+        let (code, output, _dir) = run_hub(&[], &[missing], &[]);
+        assert_refused(code, &output, 2, &format!("{missing} is required"));
+    }
+}
+
+#[test]
+fn without_the_replica_name_or_address_or_audience_or_agent_hosts() {
+    for missing in [
+        "LK_REPLICA_NAME",
+        "LK_REPLICA_ADDRESS",
+        "LK_HUB_AUDIENCE",
+        "LK_AGENT_ENDPOINT_HOSTS",
+    ] {
+        let (code, output, _dir) = run_hub(&[], &[missing], &[]);
+        assert_refused(code, &output, 2, &format!("{missing} is required"));
+    }
+}
+
+#[test]
+fn without_the_git_remotes() {
+    let (code, output, _dir) = run_hub(
+        &[],
+        &[
+            "LK_GIT_BASE_URL",
+            "LK_GIT_TENANT_URL",
+            "LK_GIT_BASE_REPO",
+            "LK_GIT_TENANT_REPO",
+        ],
+        &[],
+    );
+    assert_refused(code, &output, 2, "LK_GIT_BASE_URL is required");
+    // One of four is half a deployment, named.
+    let (code, output, _dir) = run_hub(&[], &["LK_GIT_TENANT_REPO"], &[]);
+    assert_refused(code, &output, 2, "LK_GIT_TENANT_REPO is required");
+}
+
 #[test]
 fn a_malformed_setting_names_the_variable_and_never_the_value() {
     for (name, value) in [
@@ -132,6 +217,12 @@ fn a_malformed_setting_names_the_variable_and_never_the_value() {
         ("LK_WEB_CERT_REF", format!("../{PLANTED}")),
         ("LK_GCP_PROJECT", format!("Not A Project {PLANTED}")),
         ("LK_TRUSTED_TYPES", format!("a; script-src * {PLANTED}")),
+        ("LK_AGENT_CA_KMS_REF", format!("projects/{PLANTED}")),
+        ("LK_REPLICA_CA_CERT_REF", format!("a/{PLANTED}")),
+        ("LK_REPLICA_NAME", format!("pod/{PLANTED}")),
+        ("LK_REPLICA_ADDRESS", format!("{PLANTED}:0")),
+        ("LK_AGENT_ENDPOINT_HOSTS", format!("UPPER.{PLANTED}")),
+        ("LK_AGENT_ADDR", format!("{PLANTED}:x")),
     ] {
         let (code, output, _dir) = run_hub(&[], &[], &[(name, &value)]);
         assert_refused(code, &output, 2, &format!("{name} is not valid"));
@@ -172,10 +263,19 @@ fn an_unreachable_database_is_exit_1_inside_the_start_timeout_and_the_message_na
         !output.contains("127.0.0.1"),
         "the host from the URL is in the message: {output}"
     );
-    // Google is not reachable from the test either, and the start says so as well as the database, not instead of it.
+    // Google is not reachable from the test either, and the start says so as well as the database, not instead of it: the web
+    // certificate and the CA (whose certificate is a secret and whose key is in KMS) are each named.
     assert!(
         output.contains("the web certificate could not be loaded"),
         "{output}"
+    );
+    assert!(
+        output.contains("the agent CA is not usable (LK_AGENT_CA_KMS_REF, LK_AGENT_CA_CERT_REF)"),
+        "{output}"
+    );
+    assert!(
+        !output.contains(rig::AGENT_CA_KMS),
+        "the KMS key's name is in the output: {output}"
     );
 }
 
@@ -276,6 +376,99 @@ fn migrate_against_a_database_that_is_not_there_is_exit_1_and_holds_no_secret() 
 fn migrate_takes_no_arguments() {
     let (code, output) = run_migrate(&["migrate", PLANTED], &[]);
     assert_refused(code, &output, 2, "unexpected argument");
+}
+
+// ------------------------------------------------------------------------------------------------ hub ca-init (T3)
+
+/// Run the real binary as `hub ca-init` with these arguments and no environment.
+fn run_ca_init(args: &[&str]) -> (Option<i32>, String) {
+    let mut all = vec!["ca-init"];
+    all.extend_from_slice(args);
+    let mut hub = Child::spawn(&child::real_binary(), &all, &[]);
+    let status = hub.exit_within(Duration::from_secs(30));
+    (status.code(), hub.output())
+}
+
+const KEY_VERSION: &str = "projects/p/locations/l/keyRings/r/cryptoKeys/agent-ca/cryptoKeyVersions/1";
+
+#[test]
+fn ca_init_names_the_option_that_is_missing() {
+    let (code, output) = run_ca_init(&[]);
+    assert_refused(code, &output, 2, "--kms-ref is required");
+    let (code, output) = run_ca_init(&["--kms-ref", KEY_VERSION]);
+    assert_refused(code, &output, 2, "--common-name is required");
+    let (code, output) = run_ca_init(&["--kms-ref", KEY_VERSION, "--common-name", "CA"]);
+    assert_refused(code, &output, 2, "--valid-days is required");
+}
+
+#[test]
+fn ca_init_never_repeats_a_value_it_refuses() {
+    let secret = format!("{PLANTED}/x");
+    for (option, args) in [
+        (
+            "--kms-ref",
+            vec![
+                "--kms-ref",
+                secret.as_str(),
+                "--common-name",
+                "CA",
+                "--valid-days",
+                "30",
+            ],
+        ),
+        (
+            "--common-name",
+            vec![
+                "--kms-ref",
+                KEY_VERSION,
+                "--common-name",
+                secret.as_str(),
+                "--valid-days",
+                "30",
+            ],
+        ),
+        (
+            "--valid-days",
+            vec![
+                "--kms-ref",
+                KEY_VERSION,
+                "--common-name",
+                "CA",
+                "--valid-days",
+                secret.as_str(),
+            ],
+        ),
+    ] {
+        let (code, output) = run_ca_init(&args);
+        assert_refused(code, &output, 2, &format!("{option} is not valid"));
+    }
+    // An argument it does not know is not echoed either.
+    let (code, output) = run_ca_init(&[PLANTED]);
+    assert_refused(code, &output, 2, "unexpected argument");
+}
+
+#[test]
+fn ca_init_without_google_is_exit_1_names_the_step_and_prints_no_certificate() {
+    // Valid options and no KMS to reach: the command fails whole, and what it prints is a message and no PEM.
+    let (code, output) = run_ca_init(&[
+        "--kms-ref",
+        KEY_VERSION,
+        "--common-name",
+        "CA",
+        "--valid-days",
+        "30",
+    ]);
+    assert_refused(
+        code,
+        &output,
+        1,
+        "the public key of the KMS key could not be read",
+    );
+    assert!(!output.contains("BEGIN CERTIFICATE"), "{output}");
+    assert!(
+        !output.contains(KEY_VERSION),
+        "the key's name is in the message: {output}"
+    );
 }
 
 // ------------------------------------------------------------------------------------------------ with a real database

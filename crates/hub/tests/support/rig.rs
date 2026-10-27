@@ -5,17 +5,27 @@
 use std::path::PathBuf;
 
 use crate::child::{self, Child};
+use crate::git_remote::HttpsRemote;
 use crate::support::pki::{Leaf, TestCa};
 use crate::support::write_dist;
 use crate::tls_pg::{self, TlsPg};
 
-/// A database, a web certificate, a web root and a secrets directory: everything a hub needs to start.
+/// The KMS key versions of the two CAs. The dev example makes software keys under these names.
+pub const AGENT_CA_KMS: &str = "projects/p/locations/l/keyRings/r/cryptoKeys/agent-ca/cryptoKeyVersions/1";
+pub const REPLICA_CA_KMS: &str =
+    "projects/p/locations/l/keyRings/r/cryptoKeys/replica-ca/cryptoKeyVersions/1";
+
+/// A database, a web certificate, a Git remote, a web root and a secrets directory: everything a hub needs to start.
 pub struct Rig {
     pub pg: TlsPg,
     pub ca: TestCa,
     pub leaf: Leaf,
     pub secrets: tempfile::TempDir,
     pub dist: tempfile::TempDir,
+    /// The Git remote both mirrors are filled from, served over HTTPS under `ca`.
+    pub git: HttpsRemote,
+    /// Where the mirrors live.
+    pub mirrors: tempfile::TempDir,
 }
 
 impl Rig {
@@ -34,12 +44,20 @@ impl Rig {
         let secrets = tempfile::tempdir().unwrap();
         std::fs::write(secrets.path().join("web-cert"), &leaf.cert_pem).unwrap();
         std::fs::write(secrets.path().join("web-key"), &leaf.key_pem).unwrap();
+        // The Git remote is public to the test: it asks for no credential, so the token below is never sent. It exists because the
+        // settings name a secret for it and the hub reads that secret before each fetch.
+        std::fs::write(secrets.path().join("github-read-token"), "planted-git-read-token").unwrap();
+        // The child trusts the test CA for the Git remote's certificate (and for nothing it did not trust before).
+        std::fs::write(secrets.path().join("rig-ca.pem"), ca.cert_pem()).unwrap();
+        let git = HttpsRemote::start(&leaf).await;
         Some(Self {
             pg,
             ca,
             leaf,
             secrets,
             dist: write_dist(),
+            git,
+            mirrors: tempfile::tempdir().unwrap(),
         })
     }
 
@@ -57,6 +75,25 @@ impl Rig {
             ("LK_START_TIMEOUT_SECS", "20".to_owned()),
             ("LK_SHUTDOWN_GRACE_SECS", "1".to_owned()),
             ("LK_SHUTDOWN_DRAIN_SECS", "5".to_owned()),
+            ("LK_AGENT_ADDR", "127.0.0.1:0".to_owned()),
+            ("LK_REPLICA_ADDR", "127.0.0.1:0".to_owned()),
+            ("LK_AGENT_CA_KMS_REF", AGENT_CA_KMS.to_owned()),
+            ("LK_AGENT_CA_CERT_REF", "agent-ca-cert".to_owned()),
+            ("LK_REPLICA_CA_KMS_REF", REPLICA_CA_KMS.to_owned()),
+            ("LK_REPLICA_CA_CERT_REF", "replica-ca-cert".to_owned()),
+            ("LK_REPLICA_NAME", "hub-0".to_owned()),
+            ("LK_REPLICA_ADDRESS", "localhost:8445".to_owned()),
+            ("LK_HUB_AUDIENCE", "https://hub.lanekeeper.test".to_owned()),
+            ("LK_AGENT_ENDPOINT_HOSTS", "localhost".to_owned()),
+            ("LK_GIT_BASE_URL", self.git.url()),
+            ("LK_GIT_TENANT_URL", self.git.url()),
+            ("LK_GIT_BASE_REPO", "acme/configuration-base-saas".to_owned()),
+            ("LK_GIT_TENANT_REPO", "acme/csp-tenant-data".to_owned()),
+            ("LK_MIRROR_DIR", self.mirrors.path().display().to_string()),
+            (
+                "SSL_CERT_FILE",
+                self.secrets.path().join("rig-ca.pem").display().to_string(),
+            ),
         ]
         .into_iter()
         .map(|(name, value)| (name.to_owned(), value))

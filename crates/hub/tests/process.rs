@@ -16,6 +16,8 @@
 
 #[path = "support/child.rs"]
 mod child;
+#[path = "support/git_remote.rs"]
+mod git_remote;
 #[path = "support/net.rs"]
 mod net;
 #[path = "support/rig.rs"]
@@ -122,6 +124,128 @@ async fn the_hub_serves_healthz_and_readyz_and_exits_zero_on_sigterm() {
             "not JSON: {line}"
         );
     }
+}
+
+#[tokio::test]
+async fn the_agent_and_replica_listeners_speak_tls_13_under_their_own_cas() {
+    let Some(rig) = Rig::start().await else { return };
+    let mut hub = rig.spawn(&[("LK_SHUTDOWN_GRACE_SECS", "0")]).await;
+    let all = hub.wait_listening_all(Duration::from_secs(30));
+    becomes_ready(all.ops).await;
+
+    // The CA certificates are public: the example wrote them where the hub read them (they are Secret Manager secrets in
+    // production). Each is the only root its listener's certificate chains to.
+    let read_ca = |name: &str| {
+        let pem = std::fs::read_to_string(rig.secrets.path().join(name)).unwrap();
+        rustls::pki_types::CertificateDer::from(
+            hub::web_tls::decode_ca_certificate(&domain::Secret::new(pem)).unwrap(),
+        )
+    };
+    let (agent_ca, replica_ca) = (read_ca("agent-ca-cert"), read_ca("replica-ca-cert"));
+    assert_ne!(agent_ca, replica_ca, "two CAs, two keys");
+    let h2 = |ca: &rustls::pki_types::CertificateDer<'static>, version| {
+        net::client_config_with(ca, &[version], b"h2")
+    };
+    for (what, addr, own, other) in [
+        ("the agent listener", all.agent, &agent_ca, &replica_ca),
+        ("the replica listener", all.replica, &replica_ca, &agent_ca),
+    ] {
+        // Its own CA's certificate, TLS 1.3, h2: the handshake completes, and the client sees it negotiated both.
+        let stream = net::tls_connect(addr, h2(own, &rustls::version::TLS13))
+            .await
+            .unwrap();
+        let (_, connection) = stream.get_ref();
+        assert_eq!(
+            connection.protocol_version(),
+            Some(rustls::ProtocolVersion::TLSv1_3),
+            "{what}"
+        );
+        assert_eq!(connection.alpn_protocol(), Some(b"h2".as_slice()), "{what}");
+        // The other listener's CA does not vouch for it, and neither does TLS 1.2 get in.
+        assert!(
+            net::tls_connect(addr, h2(other, &rustls::version::TLS13))
+                .await
+                .is_err(),
+            "{what} chains to the other CA"
+        );
+        assert!(
+            net::tls_connect(addr, h2(own, &rustls::version::TLS12))
+                .await
+                .is_err(),
+            "{what} accepted TLS 1.2"
+        );
+    }
+    // The web listener's certificate is not the agent CA's: the three trust roots are three.
+    assert!(
+        net::tls_connect(
+            all.agent,
+            net::client_config_with(&rig.ca.cert_der(), &[&rustls::version::TLS13], b"h2")
+        )
+        .await
+        .is_err(),
+        "the agent listener chains to the web CA"
+    );
+
+    // The platform's counters are exported on the hub's registry, and the web app still answers beside them.
+    let metrics = net::http_get(all.ops, "/metrics").await.body;
+    for name in [
+        "lanekeeper_gateway_",
+        "lanekeeper_job_",
+        "lanekeeper_agent_",
+        "lanekeeper_events_",
+    ] {
+        assert!(metrics.contains(name), "no {name} metric in:\n{metrics}");
+    }
+    hub.signal("TERM");
+    assert_eq!(
+        hub.exit_within(Duration::from_secs(15)).code(),
+        Some(0),
+        "{}",
+        hub.output()
+    );
+}
+
+#[tokio::test]
+async fn the_jobs_hold_their_leases_while_the_hub_runs_and_release_them_when_it_stops() {
+    let Some(rig) = Rig::start().await else { return };
+    let mut hub = rig.spawn(&[("LK_SHUTDOWN_GRACE_SECS", "0")]).await;
+    let all = hub.wait_listening_all(Duration::from_secs(30));
+    becomes_ready(all.ops).await;
+    let ready = net::http_get(all.ops, "/readyz").await;
+    assert_eq!((ready.status, ready.body.as_str()), (200, "ready\n"));
+    // The jobs hold their leases while the hub is ready: another holder of the same name cannot take them.
+    let pool = rig.pg.app_pool().await;
+    let holders: i64 = sqlx::query_scalar("SELECT count(*) FROM leases WHERE expires_at > now()")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(holders, 4, "the four platform jobs are held by this hub");
+    let names: Vec<String> = sqlx::query_scalar("SELECT name FROM leases ORDER BY name")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        names,
+        [
+            "git-poll",
+            "git-tree-index",
+            "outbox.prune",
+            "webhook-deliveries-prune"
+        ]
+    );
+    // Stopping releases them at once, so another replica takes them without waiting for the lease to run out.
+    hub.signal("TERM");
+    assert_eq!(
+        hub.exit_within(Duration::from_secs(15)).code(),
+        Some(0),
+        "{}",
+        hub.output()
+    );
+    let still_held: i64 = sqlx::query_scalar("SELECT count(*) FROM leases WHERE expires_at > now()")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(still_held, 0, "a hub that stopped cleanly released its leases");
 }
 
 #[tokio::test]

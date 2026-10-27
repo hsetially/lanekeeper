@@ -12,11 +12,20 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+/// The four addresses a hub says it is listening on.
+#[derive(Debug, Clone, Copy)]
+pub struct Listening {
+    pub web: SocketAddr,
+    pub ops: SocketAddr,
+    pub agent: SocketAddr,
+    pub replica: SocketAddr,
+}
+
 /// Where the output is collected as it arrives.
 #[derive(Default)]
 struct Collected {
     lines: Vec<String>,
-    listening: Option<(SocketAddr, SocketAddr)>,
+    listening: Option<Listening>,
 }
 
 pub struct Child {
@@ -109,6 +118,12 @@ impl Child {
 
     /// The web and operations addresses, once the child says it is listening.
     pub fn wait_listening(&self, within: Duration) -> (SocketAddr, SocketAddr) {
+        let all = self.wait_listening_all(within);
+        (all.web, all.ops)
+    }
+
+    /// All four addresses, once the child says it is listening.
+    pub fn wait_listening_all(&self, within: Duration) -> Listening {
         let (lock, changed) = &*self.collected;
         let deadline = Instant::now() + within;
         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
@@ -192,15 +207,18 @@ impl Drop for Child {
     }
 }
 
-/// `{"fields":{"message":"listening","web":"127.0.0.1:1","ops":"127.0.0.1:2"}, ...}` -> both addresses.
-fn listening_line(line: &str) -> Option<(SocketAddr, SocketAddr)> {
+/// `{"fields":{"message":"listening","web":"127.0.0.1:1","ops":"127.0.0.1:2","agent":...,"replica":...}, ...}` -> the addresses.
+fn listening_line(line: &str) -> Option<Listening> {
     let value: serde_json::Value = serde_json::from_str(line).ok()?;
     let fields = value.get("fields")?;
     if fields.get("message")?.as_str()? != "listening" {
         return None;
     }
-    Some((
-        fields.get("web")?.as_str()?.parse().ok()?,
-        fields.get("ops")?.as_str()?.parse().ok()?,
-    ))
+    let address = |name: &str| fields.get(name)?.as_str()?.parse().ok();
+    Some(Listening {
+        web: address("web")?,
+        ops: address("ops")?,
+        agent: address("agent")?,
+        replica: address("replica")?,
+    })
 }

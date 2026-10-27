@@ -1,25 +1,57 @@
-//! The edges of the process (plan 18, T1): the ports that reach outside it.
+//! The edges of the process (plan 18, T1 and T3): the ports that reach outside it.
 //!
 //! Everything the hub does that leaves the process goes through a port in this struct, so a test fills the struct with
 //! software and the real binary fills it with Google. No fake is compiled into the `hub` binary: `Edges::google` is the only
 //! constructor outside tests and examples, and `GoogleEndpoints::production()` is the only value it uses. Each task adds the
-//! edges it needs (T3 the KMS signer and envelope and the Google ID token verifier, T4 identity's HTTPS client and the
-//! checkpoint bucket, T5 GitHub); T1 needs the secret source and the clock.
+//! edges it needs: T1 the secret source and the clock, T3 the KMS signer (the CA's keys), the public half of a KMS key (only
+//! `hub ca-init` asks) and the verifier of Google ID tokens (agent join). T4 adds identity's HTTPS client and the checkpoint
+//! bucket, T5 GitHub.
 
 use std::fmt;
 use std::sync::Arc;
 
+use async_trait::async_trait;
+use domain::Timestamp;
+use hub_identity::http::{HttpsClient, HyperHttpsClient};
+use hub_identity::tokens::GoogleIdTokens;
 use hub_platform::clock::{Clock, SystemClock};
 use hub_platform::gcp::http::{GoogleHttp, HttpLimits};
 use hub_platform::gcp::secret_manager::{DEFAULT_CACHE_ENTRIES, MAX_CACHE_TTL};
 use hub_platform::gcp::token::WorkloadIdentityTokens;
 use hub_platform::gcp::{
-    CallLimits, GoogleApi, GoogleEndpoints, GoogleMetrics, SecretManagerSource, Transport,
+    CallLimits, CloudKmsSigner, GoogleApi, GoogleEndpoints, GoogleMetrics, SecretManagerSource, Transport,
 };
-use ports::SecretSource;
+use ports::{
+    AuthError, GoogleIdentity, KeyRef, KmsError, KmsSigner, SecretSource, TokenVerifier, VerifiedUser,
+};
 
 use crate::config::{ConfigError, HubSettings};
 use crate::process::StartError;
+
+/// The one host the Google ID token verifier may reach: the keys that sign the tokens (S18).
+const GOOGLE_KEYS_HOST: &str = "www.googleapis.com";
+
+/// The public half of a KMS signing key. Only the one-off CA ceremony (`hub ca-init`) needs it: the runtime never reads a key,
+/// it asks KMS to sign (A8). A port of the hub's own so that the ceremony can be tested with a software key.
+#[async_trait]
+pub trait PublicKeys: Send + Sync + 'static {
+    /// The `SubjectPublicKeyInfo`, DER, of the key version `key`.
+    async fn spki_der(&self, key: &KeyRef) -> Result<Vec<u8>, KmsError>;
+}
+
+/// Cloud KMS as [`PublicKeys`].
+#[derive(Debug, Clone)]
+pub struct CloudPublicKeys(pub CloudKmsSigner);
+
+#[async_trait]
+impl PublicKeys for CloudPublicKeys {
+    async fn spki_der(&self, key: &KeyRef) -> Result<Vec<u8>, KmsError> {
+        Ok(self.0.public_key(key).await?.spki_der().to_vec())
+    }
+}
+
+/// The two ports a CA ceremony needs: a signer and the public half of the key it signs with.
+pub type KmsClients = (Arc<dyn KmsSigner>, Arc<dyn PublicKeys>);
 
 /// The ports that reach outside the process.
 #[derive(Clone)]
@@ -28,6 +60,12 @@ pub struct Edges {
     pub secrets: Arc<dyn SecretSource>,
     /// Wall time for instants that go into data and into expiry checks. Waiting uses tokio's clock.
     pub clock: Arc<dyn Clock>,
+    /// Signs for the two CAs (S5, S6): Cloud KMS in production. The hub never holds a CA's private key.
+    pub signer: Arc<dyn KmsSigner>,
+    /// The public key of a CA's KMS key, for `hub ca-init` only.
+    pub public_keys: Arc<dyn PublicKeys>,
+    /// Verifies the Google ID token an agent joins with (S5).
+    pub tokens: Arc<dyn TokenVerifier>,
     /// The Google clients' counters, registered on the hub's metrics. Empty when no Google client exists.
     pub google_metrics: GoogleMetrics,
 }
@@ -38,45 +76,137 @@ impl fmt::Debug for Edges {
     }
 }
 
+/// The Google clients that need no project: the API with its token, and where the services are.
+struct GoogleClients {
+    api: GoogleApi,
+    endpoints: GoogleEndpoints,
+    metrics: GoogleMetrics,
+}
+
+impl GoogleClients {
+    /// Builds the clients. It makes no call: the first one is the first read, under the start-up timeout.
+    fn production() -> Result<Self, StartError> {
+        let endpoints = GoogleEndpoints::production();
+        let http = GoogleHttp::production(HttpLimits::default()).map_err(|_| StartError::Google)?;
+        let metrics = GoogleMetrics::default();
+        let transport = Transport::new(http, CallLimits::default(), metrics.clone());
+        let tokens = Arc::new(WorkloadIdentityTokens::new(
+            transport.clone(),
+            endpoints.metadata.clone(),
+        ));
+        Ok(Self {
+            api: GoogleApi::new(transport, tokens),
+            endpoints,
+            metrics,
+        })
+    }
+
+    fn kms(&self) -> CloudKmsSigner {
+        CloudKmsSigner::new(self.api.clone(), self.endpoints.kms.clone())
+    }
+}
+
 impl Edges {
     /// Edges from parts the caller made: software in tests and in the dev example.
     #[must_use]
-    pub fn new(secrets: Arc<dyn SecretSource>, clock: Arc<dyn Clock>) -> Self {
+    pub fn new(
+        secrets: Arc<dyn SecretSource>,
+        clock: Arc<dyn Clock>,
+        signer: Arc<dyn KmsSigner>,
+        public_keys: Arc<dyn PublicKeys>,
+        tokens: Arc<dyn TokenVerifier>,
+    ) -> Self {
         Self {
             secrets,
             clock,
+            signer,
+            public_keys,
+            tokens,
             google_metrics: GoogleMetrics::default(),
         }
     }
 
-    /// The real edges: Secret Manager through the workload's identity, and the system clock. It makes no call; the first one
-    /// is the first secret read, under the start-up timeout.
+    /// The real edges: Secret Manager and Cloud KMS through the workload's identity, Google's keys for ID tokens, and the system
+    /// clock. It makes no call; the first one is the first secret read, under the start-up timeout.
     pub fn google(settings: &HubSettings) -> Result<Self, StartError> {
         let gcp = settings
             .gcp
             .as_ref()
             .ok_or(StartError::Config(ConfigError::Missing("LK_GCP_PROJECT")))?;
-        let endpoints = GoogleEndpoints::production();
-        let http = GoogleHttp::production(HttpLimits::default()).map_err(|_| StartError::Google)?;
-        let google_metrics = GoogleMetrics::default();
-        let transport = Transport::new(http, CallLimits::default(), google_metrics.clone());
-        let tokens = Arc::new(WorkloadIdentityTokens::new(
-            transport.clone(),
-            endpoints.metadata.clone(),
-        ));
-        let api = GoogleApi::new(transport, tokens);
+        let clients = GoogleClients::production()?;
         let secrets = SecretManagerSource::new(
-            api,
-            endpoints.secret_manager,
+            clients.api.clone(),
+            clients.endpoints.secret_manager.clone(),
             gcp.project.clone(),
             MAX_CACHE_TTL,
             DEFAULT_CACHE_ENTRIES,
         );
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        let kms = clients.kms();
+        let http: Arc<dyn HttpsClient> =
+            Arc::new(HyperHttpsClient::new(&[GOOGLE_KEYS_HOST]).map_err(|_| StartError::Google)?);
+        let tokens = GoogleOnly::new(GoogleIdTokens::new(
+            http,
+            Arc::new(IdentityClock(Arc::clone(&clock))),
+        ));
         Ok(Self {
             secrets: Arc::new(secrets),
-            clock: Arc::new(SystemClock),
-            google_metrics,
+            clock,
+            signer: Arc::new(kms.clone()),
+            public_keys: Arc::new(CloudPublicKeys(kms)),
+            tokens: Arc::new(tokens),
+            google_metrics: clients.metrics,
         })
+    }
+
+    /// The Cloud KMS client alone, for `hub ca-init`: it needs a KMS key and the workload's identity, no project and no secrets.
+    pub fn google_kms() -> Result<KmsClients, StartError> {
+        let kms = GoogleClients::production()?.kms();
+        Ok((Arc::new(kms.clone()), Arc::new(CloudPublicKeys(kms))))
+    }
+}
+
+/// The hub's clock as the identity module's, so that one injected clock serves both (G14).
+#[derive(Debug)]
+pub struct IdentityClock(pub Arc<dyn Clock>);
+
+impl hub_identity::Clock for IdentityClock {
+    fn now(&self) -> Timestamp {
+        self.0.now()
+    }
+
+    fn instant(&self) -> tokio::time::Instant {
+        tokio::time::Instant::now()
+    }
+}
+
+/// The verifier the platform's `Join` needs until the identity module is wired (T4, G25): Google ID tokens, and nothing else.
+/// An Entra token is refused as unverifiable, never accepted: this is not the verifier of the web or of MCP.
+pub struct GoogleOnly {
+    google: GoogleIdTokens,
+}
+
+impl fmt::Debug for GoogleOnly {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GoogleOnly").finish_non_exhaustive()
+    }
+}
+
+impl GoogleOnly {
+    #[must_use]
+    pub fn new(google: GoogleIdTokens) -> Self {
+        Self { google }
+    }
+}
+
+#[async_trait]
+impl TokenVerifier for GoogleOnly {
+    async fn entra_access_token(&self, _jwt: &str) -> Result<VerifiedUser, AuthError> {
+        Err(AuthError::InvalidToken)
+    }
+
+    async fn google_id_token(&self, jwt: &str, aud: &str) -> Result<GoogleIdentity, AuthError> {
+        self.google.verify(jwt, aud).await
     }
 }
 
@@ -106,5 +236,25 @@ mod tests {
         // Building the clients reads the platform's root certificates and nothing else: no network, no credential.
         let edges = Edges::google(&settings(&[("LK_GCP_PROJECT", "lanekeeper-prod")]));
         assert!(edges.is_ok(), "{edges:?}");
+    }
+
+    #[test]
+    fn the_kms_client_alone_needs_no_project() {
+        assert!(Edges::google_kms().is_ok());
+    }
+
+    #[tokio::test]
+    async fn the_join_verifier_accepts_no_entra_token() {
+        let http: Arc<dyn HttpsClient> = Arc::new(HyperHttpsClient::new(&[GOOGLE_KEYS_HOST]).unwrap());
+        let verifier = GoogleOnly::new(GoogleIdTokens::new(
+            http,
+            Arc::new(IdentityClock(Arc::new(SystemClock))),
+        ));
+        assert_eq!(
+            verifier.entra_access_token("any.token.here").await.unwrap_err(),
+            AuthError::InvalidToken
+        );
+        // And a Google token that is not a token at all is refused before any key is fetched: no network in this test.
+        assert!(verifier.google_id_token("", "aud").await.is_err());
     }
 }

@@ -80,6 +80,15 @@ pub fn client_config(
     ca: &CertificateDer<'static>,
     versions: &[&'static rustls::SupportedProtocolVersion],
 ) -> Arc<ClientConfig> {
+    client_config_with(ca, versions, b"http/1.1")
+}
+
+/// Like [`client_config`], offering `alpn` (the gRPC listeners speak `h2` and nothing else).
+pub fn client_config_with(
+    ca: &CertificateDer<'static>,
+    versions: &[&'static rustls::SupportedProtocolVersion],
+    alpn: &[u8],
+) -> Arc<ClientConfig> {
     let mut roots = RootCertStore::empty();
     roots.add(ca.clone()).unwrap();
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
@@ -88,7 +97,7 @@ pub fn client_config(
         .unwrap()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    config.alpn_protocols = vec![alpn.to_vec()];
     Arc::new(config)
 }
 

@@ -14,6 +14,7 @@
 )]
 
 pub mod blobs;
+pub mod ca_init;
 pub mod cli;
 pub mod client_ip;
 pub mod compose;
@@ -39,6 +40,7 @@ pub mod shutdown;
 pub mod static_files;
 pub mod telemetry;
 pub mod web_tls;
+pub mod wiring;
 
 pub use blobs::BlobsModule;
 pub use compose::{BuildError, Deps, Hub, Module};

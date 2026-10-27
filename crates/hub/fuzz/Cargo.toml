@@ -23,6 +23,8 @@ non_kebab_case_bins = "allow"
 libfuzzer-sys = "=0.4.13"
 hub = { path = "..", version = "0.1.0" }
 domain = { path = "../../domain", version = "0.1.0" }
+# The settings invariants check what the platform's CA profile accepts (T3), so a setting cannot be accepted and then refused.
+hub-platform = { path = "../../hub-platform", version = "0.1.0" }
 ports = { path = "../../ports", version = "0.1.0" }
 # The PEM invariant reads an accepted leaf a second time with the parser the hub itself uses, and then with nothing of the hub's.
 x509-parser = { version = "=0.18.1", default-features = false }

@@ -4,15 +4,17 @@
 //! variable and never prints the value, because the value may be a secret (the database URL holds a password).
 //!
 //! The settings are in groups, one file each under `config/`, and every group is read through [`Reader`]: process and
-//! listeners (this file), request limits, the database, Git, Google Cloud and the web certificate; `hub migrate` has its own
-//! small group, [`MigratorSettings`], that the serving hub never reads. A group arrives with the task that needs it, and
-//! `tests/hardening.rs` reads every `LK_*` literal in these files to check the pod contract against them.
+//! listeners (this file), request limits, the database, Git, Google Cloud, the web certificate and the platform (the two CAs,
+//! this replica's identity and the agent endpoint); `hub migrate` has its own small group, [`MigratorSettings`], that the
+//! serving hub never reads. A group arrives with the task that needs it, and `tests/hardening.rs` reads every `LK_*` literal in
+//! these files to check the pod contract against them.
 
 mod database;
 mod gcp;
 mod git;
 mod limits;
 mod migrator;
+mod platform;
 mod reader;
 mod web_tls;
 
@@ -26,6 +28,7 @@ pub use gcp::GcpSettings;
 pub use git::{GitCredentialSource, GitSettings};
 pub use limits::{LimitSettings, Rate};
 pub use migrator::{DEFAULT_TIMEOUT_SECS, JOB_ONLY_VARIABLES, MigratorSettings};
+pub use platform::{CaSettings, DEFAULT_AGENT_ADDR, DEFAULT_REPLICA_ADDR, PlatformSettings};
 pub use reader::Reader;
 pub use web_tls::{DEFAULT_RELOAD_SECS, WebTlsSettings};
 
@@ -64,6 +67,9 @@ pub struct HubSettings {
     pub gcp: Option<GcpSettings>,
     /// The web certificate's two secret names. `None` only in the library's defaults; serving refuses that.
     pub web_tls: Option<WebTlsSettings>,
+    /// The two CAs, this replica's identity and the agent endpoint (T3). `None` only in the library's defaults; serving refuses
+    /// that.
+    pub platform: Option<PlatformSettings>,
     /// What the blob cache may hold (`LK_BLOB_CACHE_MIB`, default 512 MiB), in bytes.
     pub blob_cache_bytes: u64,
     /// OTLP gRPC endpoint of an in-cluster collector. No export when unset.
@@ -126,6 +132,7 @@ impl HubSettings {
             git: GitSettings::read(&reader)?,
             gcp: GcpSettings::read(&reader)?,
             web_tls: WebTlsSettings::read(&reader)?,
+            platform: PlatformSettings::read(&reader)?,
             blob_cache_bytes: reader
                 .number("LK_BLOB_CACHE_MIB", 512, 1, 4096)?
                 .saturating_mul(1024 * 1024),
@@ -144,6 +151,14 @@ impl HubSettings {
         }
         if self.web_tls.is_none() {
             return Err(ConfigError::Missing("LK_WEB_CERT_REF"));
+        }
+        // T3 (G10): the CAs and the replica's identity. Without them no agent can join and no replica can be reached.
+        if self.platform.is_none() {
+            return Err(ConfigError::Missing("LK_AGENT_CA_KMS_REF"));
+        }
+        // The mirrors are what every read of a commit goes through; a hub without remotes has nothing to serve.
+        if self.git.is_none() {
+            return Err(ConfigError::Missing("LK_GIT_BASE_URL"));
         }
         Ok(())
     }
@@ -166,6 +181,7 @@ impl Default for HubSettings {
             git: None,
             gcp: None,
             web_tls: None,
+            platform: None,
             blob_cache_bytes: 512 * 1024 * 1024,
             otlp_endpoint: None,
             start_timeout: Duration::from_secs(8),
@@ -336,6 +352,30 @@ mod tests {
     }
     // ------------------------------------------------------------------------------------------ T1 (plan 18): serving
 
+    const AGENT_KMS: &str =
+        "projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/agent-ca/cryptoKeyVersions/1";
+    const REPLICA_KMS: &str =
+        "projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/replica-ca/cryptoKeyVersions/3";
+
+    /// The platform group (T3): every variable it needs, with the values a deployment would give them.
+    fn platform_env<'a>() -> Vec<(&'a str, &'a str)> {
+        vec![
+            ("LK_AGENT_CA_KMS_REF", AGENT_KMS),
+            ("LK_AGENT_CA_CERT_REF", "lanekeeper-agent-ca"),
+            ("LK_REPLICA_CA_KMS_REF", REPLICA_KMS),
+            ("LK_REPLICA_CA_CERT_REF", "lanekeeper-replica-ca"),
+            ("LK_REPLICA_NAME", "lanekeeper-hub-0"),
+            (
+                "LK_REPLICA_ADDRESS",
+                "lanekeeper-hub-0.lanekeeper-hub.lanekeeper.svc:8445",
+            ),
+            ("LK_HUB_AUDIENCE", "https://hub.lanekeeper.example"),
+            ("LK_AGENT_ENDPOINT_HOSTS", "agents.lanekeeper.example"),
+        ]
+    }
+
+    /// Everything `hub serve` needs: the database, the web certificate, Google, the platform and the Git remotes. `extra`
+    /// replaces a variable of the same name or adds one.
     fn serving_env<'a>(extra: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
         let mut env = vec![
             ("LK_DATABASE_URL", "postgres://u:p@db/x"),
@@ -344,7 +384,12 @@ mod tests {
             ("LK_WEB_KEY_REF", "web-key"),
             ("LK_GCP_PROJECT", "lanekeeper-prod"),
         ];
-        env.extend_from_slice(extra);
+        env.extend(platform_env());
+        env.extend(git_env(&[]));
+        for (name, value) in extra {
+            env.retain(|(n, _)| n != name);
+            env.push((name, value));
+        }
         env
     }
 
@@ -505,6 +550,9 @@ mod tests {
                 "LK_WEB_CERT_REF", "LK_WEB_KEY_REF", "LK_GCP_PROJECT", "LK_WEB_ADDR", "LK_OPS_ADDR",
                 "LK_START_TIMEOUT_SECS", "LK_WEB_CERT_RELOAD_SECS", "LK_DATABASE_URL_FILE", "LK_DB_CA_FILE",
                 "LK_GIT_BASE_URL", "LK_GIT_READ_REF", "LK_TRUSTED_TYPES", "LK_OTLP_ENDPOINT", "LK_MIRROR_DIR",
+                "LK_AGENT_CA_KMS_REF", "LK_AGENT_CA_CERT_REF", "LK_REPLICA_CA_KMS_REF", "LK_REPLICA_CA_CERT_REF",
+                "LK_REPLICA_NAME", "LK_REPLICA_ADDRESS", "LK_HUB_AUDIENCE", "LK_AGENT_ENDPOINT_HOSTS", "LK_AGENT_ADDR",
+                "LK_REPLICA_ADDR",
             ] {
                 let mut env = serving_env(&[]);
                 env.retain(|(k, _)| *k != name);
@@ -658,6 +706,148 @@ mod tests {
                     proptest::prop_assert!(!shown.contains("zz9q"), "{name}: {shown}");
                 }
             }
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------ T3 (plan 18): the platform
+
+    #[test]
+    fn serving_needs_the_platform_and_then_the_git_remotes_and_names_the_first_that_is_missing() {
+        let base = [
+            ("LK_DATABASE_URL", "postgres://u:p@db/x"),
+            ("LK_DB_CA_FILE", "/ca.pem"),
+            ("LK_WEB_CERT_REF", "web-cert"),
+            ("LK_WEB_KEY_REF", "web-key"),
+        ];
+        let no_platform = HubSettings::from_lookup(lookup(&base)).unwrap();
+        assert!(no_platform.platform.is_none());
+        assert_eq!(
+            no_platform.require_serving().unwrap_err(),
+            ConfigError::Missing("LK_AGENT_CA_KMS_REF")
+        );
+        let mut with_platform = base.to_vec();
+        with_platform.extend(platform_env());
+        let no_git = HubSettings::from_lookup(lookup(&with_platform)).unwrap();
+        assert_eq!(
+            no_git.require_serving().unwrap_err(),
+            ConfigError::Missing("LK_GIT_BASE_URL")
+        );
+    }
+
+    #[test]
+    fn the_platform_is_read_and_the_listeners_default_to_the_ports_of_the_pod_contract() {
+        let platform = HubSettings::from_lookup(lookup(&serving_env(&[])))
+            .unwrap()
+            .platform
+            .unwrap();
+        assert_eq!(platform.agent_addr, "0.0.0.0:8444".parse::<SocketAddr>().unwrap());
+        assert_eq!(
+            platform.replica_addr,
+            "0.0.0.0:8445".parse::<SocketAddr>().unwrap()
+        );
+        assert_eq!(platform.agent_ca.kms_ref.as_str(), AGENT_KMS);
+        assert_eq!(platform.agent_ca.cert_ref, "lanekeeper-agent-ca");
+        assert_eq!(platform.replica_ca.kms_ref.as_str(), REPLICA_KMS);
+        assert_eq!(platform.replica_ca.cert_ref, "lanekeeper-replica-ca");
+        assert_eq!(platform.replica_name.as_str(), "lanekeeper-hub-0");
+        assert_eq!(
+            platform.replica_address.as_str(),
+            "lanekeeper-hub-0.lanekeeper-hub.lanekeeper.svc:8445"
+        );
+        assert_eq!(
+            platform.replica_address.host(),
+            "lanekeeper-hub-0.lanekeeper-hub.lanekeeper.svc"
+        );
+        assert_eq!(platform.audience.as_str(), "https://hub.lanekeeper.example");
+        assert_eq!(platform.agent_hosts, vec!["agents.lanekeeper.example".to_owned()]);
+        let moved = HubSettings::from_lookup(lookup(&serving_env(&[
+            ("LK_AGENT_ADDR", "127.0.0.1:0"),
+            ("LK_REPLICA_ADDR", "127.0.0.1:0"),
+            ("LK_AGENT_ENDPOINT_HOSTS", "a.example, b.example"),
+        ])))
+        .unwrap()
+        .platform
+        .unwrap();
+        assert_eq!(moved.agent_addr.port(), 0);
+        assert_eq!(moved.replica_addr.port(), 0);
+        assert_eq!(
+            moved.agent_hosts,
+            vec!["a.example".to_owned(), "b.example".to_owned()]
+        );
+    }
+
+    #[test]
+    fn the_platform_group_is_all_or_nothing_and_a_missing_variable_is_named() {
+        for (name, _) in platform_env() {
+            let env: Vec<_> = serving_env(&[]).into_iter().filter(|(n, _)| *n != name).collect();
+            let error = HubSettings::from_lookup(lookup(&env)).unwrap_err();
+            assert_eq!(error, ConfigError::Missing(name), "without {name}");
+        }
+        // With none of the group set the settings are fine (the library's defaults); serving is what refuses.
+        let env: Vec<_> = serving_env(&[])
+            .into_iter()
+            .filter(|(n, _)| !platform_env().iter().any(|(p, _)| p == n))
+            .collect();
+        assert!(HubSettings::from_lookup(lookup(&env)).unwrap().platform.is_none());
+    }
+
+    #[test]
+    fn a_malformed_platform_setting_is_refused_by_name() {
+        let toolong = "a".repeat(300);
+        for (name, bad) in [
+            // A key, not a version of it; another resource kind; a path out of the name.
+            (
+                "LK_AGENT_CA_KMS_REF",
+                "projects/lk/locations/l/keyRings/r/cryptoKeys/agent-ca",
+            ),
+            (
+                "LK_AGENT_CA_KMS_REF",
+                "projects/lk/../keyRings/r/cryptoKeys/k/cryptoKeyVersions/1",
+            ),
+            ("LK_AGENT_CA_KMS_REF", "has space"),
+            (
+                "LK_REPLICA_CA_KMS_REF",
+                "projects/lk/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/latest",
+            ),
+            ("LK_AGENT_CA_CERT_REF", "a/b"),
+            ("LK_REPLICA_CA_CERT_REF", "has space"),
+            ("LK_REPLICA_NAME", "pod/0"),
+            ("LK_REPLICA_NAME", "-pod"),
+            ("LK_REPLICA_NAME", toolong.as_str()),
+            ("LK_REPLICA_ADDRESS", "no-port"),
+            ("LK_REPLICA_ADDRESS", "host:0"),
+            ("LK_REPLICA_ADDRESS", "ho st:8445"),
+            ("LK_REPLICA_ADDRESS", "host:99999"),
+            // The host goes on a certificate, which takes lower case only.
+            ("LK_REPLICA_ADDRESS", "Hub-0.hub.svc:8445"),
+            ("LK_HUB_AUDIENCE", toolong.as_str()),
+            ("LK_AGENT_ENDPOINT_HOSTS", "UPPER.example"),
+            ("LK_AGENT_ENDPOINT_HOSTS", "*.example"),
+            ("LK_AGENT_ENDPOINT_HOSTS", "a.example,,"),
+            ("LK_AGENT_ENDPOINT_HOSTS", "1,2,3,4,5,6,7,8,9"),
+            ("LK_AGENT_ADDR", "not-an-address"),
+            ("LK_REPLICA_ADDR", "8445"),
+        ] {
+            assert_eq!(
+                HubSettings::from_lookup(lookup(&serving_env(&[(name, bad)]))).unwrap_err(),
+                ConfigError::Invalid(name),
+                "{name}={bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_kms_references_are_resource_names_and_never_a_secret() {
+        // They are names of keys. The pod contract flags any variable that looks like a secret, and these are not named like one.
+        for (name, _) in platform_env() {
+            let upper = name.to_ascii_uppercase();
+            assert!(
+                !["PASSWORD", "TOKEN", "SECRET", "CREDENTIAL"]
+                    .iter()
+                    .any(|m| upper.contains(m))
+                    && !upper.ends_with("_KEY"),
+                "{name}"
+            );
         }
     }
 

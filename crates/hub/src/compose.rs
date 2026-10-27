@@ -82,6 +82,12 @@ impl std::fmt::Debug for Hub {
 impl Hub {
     /// Compose the hub.
     pub fn build(deps: Deps) -> Result<Self, BuildError> {
+        Self::build_with(deps, Drain::new())
+    }
+
+    /// Compose the hub over a [`Drain`] that already exists. The process makes it first, because the platform's services take its
+    /// `closing` signal and the platform has to be built before the hub it adds routes to.
+    pub fn build_with(deps: Deps, drain: Drain) -> Result<Self, BuildError> {
         let Deps {
             settings,
             auth,
@@ -89,7 +95,6 @@ impl Hub {
             static_files,
             checks,
         } = deps;
-        let drain = Drain::new();
         let metrics = Arc::new(Metrics::new());
         let readiness = Readiness::new(drain.clone());
         for (name, check) in checks {

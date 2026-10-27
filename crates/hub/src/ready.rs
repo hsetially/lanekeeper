@@ -11,12 +11,43 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use domain::Timestamp;
 use hub_platform::clock::Clock;
+use hub_platform::tls::RotatingServerCert;
+use x509_parser::prelude::{FromDer, X509Certificate};
 
 use crate::ops::ReadyCheck;
 
 /// A certificate the process holds and serves with, and the time it stops being valid.
 pub trait Expiring: Send + Sync + 'static {
     fn not_after(&self) -> Timestamp;
+}
+
+/// A server certificate that is replaced as it is renewed (the agent and replica listeners'): the `notAfter` of whatever it holds now.
+///
+/// Read from the certificate on each ask, so a renewal is seen the moment it is swapped in. A certificate that cannot be read
+/// counts as expired, which fails readiness: the safe way to be wrong.
+#[derive(Debug)]
+pub struct RotatingExpiry(Arc<RotatingServerCert>);
+
+impl RotatingExpiry {
+    #[must_use]
+    pub fn new(cell: Arc<RotatingServerCert>) -> Self {
+        Self(cell)
+    }
+}
+
+impl Expiring for RotatingExpiry {
+    fn not_after(&self) -> Timestamp {
+        let held = self.0.current();
+        let Some(leaf) = held.cert.first() else {
+            return Timestamp::from_unix_millis(0);
+        };
+        match X509Certificate::from_der(leaf.as_ref()) {
+            Ok((_, cert)) => {
+                Timestamp::from_unix_millis(cert.validity().not_after.timestamp().saturating_mul(1000))
+            }
+            Err(_) => Timestamp::from_unix_millis(0),
+        }
+    }
 }
 
 /// Ready while every certificate held is still valid. A renewal that keeps failing shows up here when the old certificate

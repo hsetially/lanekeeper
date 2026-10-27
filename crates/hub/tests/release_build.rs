@@ -46,6 +46,62 @@ fn fakes_are_only_enabled_by_dev_dependencies() {
     }
 }
 
+/// Every feature of the workspace that switches on a test double, a probe or a hook that a release build must not contain.
+const TEST_FEATURES: [&str; 6] = [
+    "fakes",
+    "conformance",
+    "test-doubles",
+    "bench-probe",
+    "fuzz-hooks",
+    "route-table",
+];
+
+/// The test features that a manifest's production dependencies switch on, each with the line that does it.
+fn test_features_in_production(manifest: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for line in production_dependency_lines(manifest) {
+        for feature in TEST_FEATURES {
+            if line.contains(&format!("\"{feature}\"")) {
+                found.push((feature.to_owned(), line.clone()));
+            }
+        }
+    }
+    found
+}
+
+/// Plan 18, T3 (acceptance 3): no production dependency of the hub, or of the crates the composition links, enables any of the
+/// features that make a test double constructible. The line that does is named, so that a person sees which edge to cut. The
+/// registry and write path crates join the list when T5 links them.
+#[test]
+fn no_test_feature_in_any_production_dependency() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for crate_dir in [
+        "crates/hub",
+        "crates/hub-platform",
+        "crates/hub-identity",
+        "crates/hub-mcp",
+    ] {
+        let manifest = fs::read_to_string(root.join(crate_dir).join("Cargo.toml")).unwrap();
+        let found = test_features_in_production(&manifest);
+        assert!(
+            found.is_empty(),
+            "{crate_dir} enables a test feature in a production dependency: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn every_test_feature_is_caught_in_a_production_dependency_and_none_in_a_dev_one() {
+    for feature in TEST_FEATURES {
+        let bad = format!("[dependencies]\nx = {{ workspace = true, features = [\"{feature}\"] }}\n");
+        assert_eq!(test_features_in_production(&bad).len(), 1, "{feature}");
+        let dev = format!("[dev-dependencies]\nx = {{ workspace = true, features = [\"{feature}\"] }}\n");
+        assert!(test_features_in_production(&dev).is_empty(), "{feature}");
+        let build = format!("[build-dependencies]\nx = {{ workspace = true, features = [\"{feature}\"] }}\n");
+        assert_eq!(test_features_in_production(&build).len(), 1, "{feature}");
+    }
+}
+
 #[test]
 fn the_planted_manifest_is_caught() {
     let bad = "[dependencies]\nhub-platform = { workspace = true, features = [\"fakes\"] }\n[dev-dependencies]\nx = 1\n";
@@ -103,6 +159,17 @@ fn no_fake_and_no_dev_knob_is_referenced_outside_cfg_test() {
         "test-doubles",
         "LK_DEV_",
         "DirSecrets",
+        // T3: the software behind the edges (a KMS with keys the process holds, a verifier that accepts what it was told to, the
+        // sinks that store what they are given). The real edges are Google's; these are for tests and the dev example only.
+        "FakeTokenVerifier",
+        "FakeKmsSigner",
+        "FakeReportSink",
+        "FakeSentinelSink",
+        "FakeUsers",
+        "SoftKms",
+        "soft_kms",
+        "MemorySecrets",
+        "RemoteUrl::local",
     ];
     let files = rust_files(&src);
     assert!(files.len() > 15, "the scan found only {} files", files.len());

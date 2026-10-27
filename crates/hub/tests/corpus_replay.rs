@@ -99,6 +99,56 @@ fn every_pem_seed_keeps_its_verdict_and_its_invariants() {
 }
 
 #[test]
+fn the_ca_certificate_seeds_keep_the_ca_decoders_verdict() {
+    // The first half of every `hub_pem` seed is also read as a CA certificate secret (T3). The seeds below are the ones whose
+    // verdict there differs from the web decoder's, or that exist for it; a test fails if one stops meaning what it says.
+    for (name, want) in [
+        // One certificate and no key: a fine CA certificate secret, and no web certificate.
+        ("rejected_certificate_without_a_key", Verdict::Accepted),
+        ("rejected_ca_two_certificates", Verdict::Rejected),
+        ("rejected_ca_certificate_beside_a_private_key", Verdict::Rejected),
+        ("rejected_nine_certificates", Verdict::Rejected),
+        ("rejected_chain_with_a_garbage_certificate", Verdict::Rejected),
+        ("rejected_bad_base64_in_the_chain", Verdict::Rejected),
+        ("rejected_not_pem", Verdict::Rejected),
+        ("rejected_empty", Verdict::Rejected),
+    ] {
+        let data = fs::read(corpus("hub_pem").join(name)).unwrap();
+        assert_eq!(invariants::ca_certificate(&data), Ok(want), "{name}");
+        // And the web decoder refuses all of them, as the names say.
+        assert_eq!(invariants::hub_pem(&data), Ok(Verdict::Rejected), "{name}");
+    }
+}
+
+#[test]
+fn the_platform_seeds_mean_what_their_names_say() {
+    // `accepted_platform` is a complete platform group; the half of one, a replica address in upper case (which would be refused
+    // only when the CA's profile saw it), a wildcard host and a KMS reference that names a key and not a version are each refused
+    // by name. `every_settings_seed_keeps_its_verdict...` holds the verdicts; this holds that the platform group is really read.
+    let read = |name: &str| fs::read(corpus("hub_settings").join(name)).unwrap();
+    let parse = |data: &[u8]| {
+        let text = String::from_utf8_lossy(data).into_owned();
+        let vars: std::collections::BTreeMap<String, String> = text
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect();
+        hub::HubSettings::from_lookup(move |name| vars.get(name).cloned())
+    };
+    let platform = parse(&read("accepted_platform")).unwrap().platform.unwrap();
+    assert_eq!(platform.agent_hosts.len(), 2);
+    for (name, variable) in [
+        ("rejected_platform_half", "LK_AGENT_CA_KMS_REF"),
+        ("rejected_replica_address_in_upper_case", "LK_REPLICA_ADDRESS"),
+        ("rejected_agent_hosts_with_a_wildcard", "LK_AGENT_ENDPOINT_HOSTS"),
+        ("rejected_kms_reference_that_is_a_key", "LK_AGENT_CA_KMS_REF"),
+    ] {
+        let error = parse(&read(name)).unwrap_err().to_string();
+        assert!(error.starts_with(variable), "{name}: {error}");
+    }
+}
+
+#[test]
 fn the_corpus_has_a_directory_for_every_target_and_nothing_else() {
     let targets: BTreeSet<String> = fs::read_dir(fuzz_dir().join("fuzz_targets"))
         .unwrap()
@@ -165,6 +215,20 @@ fn the_invariants_notice_a_settings_error_that_repeats_a_value() {
     ] {
         assert!(!invariants::is_fixed_settings_error(bad), "{bad}");
     }
+}
+
+/// A key version for the `ca-init` seeds.
+const KEY_VERSION: &str =
+    "projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/agent-ca/cryptoKeyVersions/1";
+
+/// The platform group, complete (T3).
+const PLATFORM: &str = "LK_AGENT_CA_KMS_REF=projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/agent-ca/cryptoKeyVersions/1\nLK_AGENT_CA_CERT_REF=lanekeeper-agent-ca\nLK_REPLICA_CA_KMS_REF=projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/replica-ca/cryptoKeyVersions/1\nLK_REPLICA_CA_CERT_REF=lanekeeper-replica-ca\nLK_REPLICA_NAME=lanekeeper-hub-0\nLK_REPLICA_ADDRESS=lanekeeper-hub-0.lanekeeper-hub.lanekeeper.svc:8445\nLK_HUB_AUDIENCE=https://hub.lanekeeper.example\nLK_AGENT_ENDPOINT_HOSTS=agents.lanekeeper.example,agents-2.lanekeeper.example\n";
+
+/// `ca-init` followed by `args`, as the NUL-separated input of the `hub_cli_args` target.
+fn ca_init(args: &[&str]) -> String {
+    let mut all = vec!["ca-init"];
+    all.extend_from_slice(args);
+    all.join("\0")
 }
 
 fn write_seeds(target: &str, seeds: &[(&str, Vec<u8>)]) {
@@ -243,6 +307,27 @@ fn regenerate_the_seeds() {
                 "rejected_csp_injection",
                 text("LK_TRUSTED_TYPES=a; script-src *\n"),
             ),
+            // The platform group (T3, G10): the CAs, this replica's identity and the agent endpoint.
+            ("accepted_platform", text(PLATFORM)),
+            (
+                "rejected_platform_half",
+                text("LK_REPLICA_NAME=lanekeeper-hub-0\n"),
+            ),
+            (
+                "rejected_replica_address_in_upper_case",
+                text(&PLATFORM.replace(
+                    "lanekeeper-hub-0.lanekeeper-hub",
+                    "Lanekeeper-Hub-0.lanekeeper-hub",
+                )),
+            ),
+            (
+                "rejected_agent_hosts_with_a_wildcard",
+                text(&PLATFORM.replace("agents.lanekeeper.example", "*.lanekeeper.example")),
+            ),
+            (
+                "rejected_kms_reference_that_is_a_key",
+                text(&PLATFORM.replacen("/cryptoKeyVersions/1", "", 1)),
+            ),
             // `hub migrate`'s settings (T2): the serving hub accepts all three, because it reads none of these variables.
             (
                 "accepted_migrator_job",
@@ -279,6 +364,101 @@ fn regenerate_the_seeds() {
             ("rejected_migrate_extra_argument", text("migrate\0now")),
             ("rejected_migrate_capitalised", text("Migrate")),
             ("rejected_help_then_migrate", text("help\0migrate")),
+            // `ca-init` and its three options (T3, G15).
+            (
+                "accepted_ca_init",
+                text(&ca_init(&[
+                    "--kms-ref",
+                    KEY_VERSION,
+                    "--common-name",
+                    "Lanekeeper agent CA",
+                    "--valid-days",
+                    "3650",
+                ])),
+            ),
+            (
+                "accepted_ca_init_options_in_another_order",
+                text(&ca_init(&[
+                    "--valid-days",
+                    "1",
+                    "--common-name",
+                    "a",
+                    "--kms-ref",
+                    KEY_VERSION,
+                ])),
+            ),
+            ("rejected_ca_init_without_options", text("ca-init")),
+            (
+                "rejected_ca_init_without_days",
+                text(&ca_init(&[
+                    "--kms-ref",
+                    KEY_VERSION,
+                    "--common-name",
+                    "Lanekeeper agent CA",
+                ])),
+            ),
+            (
+                "rejected_ca_init_a_key_and_not_a_version",
+                text(&ca_init(&[
+                    "--kms-ref",
+                    "projects/lk/locations/l/keyRings/r/cryptoKeys/k",
+                    "--common-name",
+                    "a",
+                    "--valid-days",
+                    "30",
+                ])),
+            ),
+            (
+                "rejected_ca_init_an_option_twice",
+                text(&ca_init(&[
+                    "--kms-ref",
+                    KEY_VERSION,
+                    "--kms-ref",
+                    KEY_VERSION,
+                    "--common-name",
+                    "a",
+                    "--valid-days",
+                    "30",
+                ])),
+            ),
+            (
+                "rejected_ca_init_an_unknown_option",
+                text(&ca_init(&[
+                    "--kms-ref",
+                    KEY_VERSION,
+                    "--common-name",
+                    "a",
+                    "--valid-days",
+                    "30",
+                    "--force",
+                ])),
+            ),
+            (
+                "rejected_ca_init_days_out_of_range",
+                text(&ca_init(&[
+                    "--kms-ref",
+                    KEY_VERSION,
+                    "--common-name",
+                    "a",
+                    "--valid-days",
+                    "3651",
+                ])),
+            ),
+            (
+                "rejected_ca_init_a_pasted_secret_as_the_name",
+                text(&ca_init(&[
+                    "--kms-ref",
+                    KEY_VERSION,
+                    "--common-name",
+                    "hunter2:planted/secret",
+                    "--valid-days",
+                    "30",
+                ])),
+            ),
+            (
+                "rejected_ca_init_an_option_without_its_value",
+                text("ca-init\0--valid-days"),
+            ),
         ],
     );
     let key = rcgen::KeyPair::generate().unwrap();
@@ -319,6 +499,15 @@ fn regenerate_the_seeds() {
             (
                 "rejected_bad_base64_in_the_chain",
                 with_key(&framing("CERTIFICATE", "!!!not base64!!!"), ""),
+            ),
+            // A CA certificate secret holds one certificate and no key (T3): two, or one beside a private key, are refused.
+            ("rejected_ca_two_certificates", with_key(&chain.repeat(2), "")),
+            (
+                "rejected_ca_certificate_beside_a_private_key",
+                with_key(
+                    &format!("{chain}{}", framing("PRIVATE KEY", "AAAAAAAAAAAA")),
+                    &framing("PRIVATE KEY", "AAAAAAAAAAAA"),
+                ),
             ),
         ],
     );

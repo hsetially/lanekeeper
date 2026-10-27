@@ -22,6 +22,9 @@ domain.workspace = true
 ports.workspace = true
 hub-platform.workspace = true
 hub-mcp.workspace = true
+# The platform's audit log (`PgAuditLog`), the verifier of Google ID tokens and the HTTPS client that fetches Google's keys (T3);
+# T4 wires the rest of the identity module. A workspace member: it adds no package to the lockfile.
+hub-identity.workspace = true
 async-trait.workspace = true
 aws-lc-rs.workspace = true
 axum.workspace = true
@@ -38,6 +41,8 @@ moka.workspace = true
 opentelemetry.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
+# The PEM text `hub ca-init` prints (T3). Already a workspace pin, used by hub-platform; its `serde` feature stays off.
+pem.workspace = true
 prometheus-client.workspace = true
 rustls.workspace = true
 serde_json.workspace = true
@@ -64,7 +69,16 @@ x509-parser.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+# The platform's smart-HTTP Git server (`tests/support/git_remote.rs` includes it) checks HTTP basic authentication.
+base64.workspace = true
 futures.workspace = true
+# T3: `tests/platform_cluster.rs` runs two replicas through the composition code and speaks the agent protocol to them, with the
+# platform's own test clients (included with `#[path]`): the generated service types, the gRPC types they use, and an HTTP/2
+# client connection. All three are workspace pins that hub-platform already uses; none adds a package to the lockfile.
+hyper = { workspace = true, features = ["client", "server", "http1", "http2"] }
+proto.workspace = true
+tokio-stream.workspace = true
+tonic = { workspace = true, features = ["codegen"] }
 hub-platform = { workspace = true, features = ["fakes"] }
 ports = { workspace = true, features = ["fakes"] }
 insta = { workspace = true, features = ["json"] }

@@ -9,9 +9,11 @@
 use std::collections::BTreeMap;
 
 use domain::Secret;
-use hub::cli::{self, CliError, Command};
+use hub::cli::{self, CaInitArgs, CliError, Command};
 use hub::config::{HubSettings, MigratorSettings};
 use hub::web_tls::{self, MAX_CHAIN_LEN, PemError};
+use hub_platform::ca::profile::{CertProfile, PeerName};
+use hub_platform::gcp::wire::CryptoKeyVersionName;
 
 /// Whether the parser took the input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +170,11 @@ fn check_settings(settings: &HubSettings, vars: &BTreeMap<String, String>, file:
             return Err("a project id with characters a resource name cannot hold".to_owned());
         }
     }
+    if let Some(platform) = &settings.platform {
+        check_platform(platform)?;
+    } else if vars.get("LK_REPLICA_NAME").is_some_and(|v| !v.is_empty()) {
+        return Err("a replica name was dropped".to_owned());
+    }
     // The policy names go into a CSP header: nothing else may.
     for name in &settings.trusted_types {
         if name.len() > 64
@@ -195,6 +202,46 @@ fn check_settings(settings: &HubSettings, vars: &BTreeMap<String, String>, file:
     Ok(())
 }
 
+/// What the platform group may hold once it is accepted (T3, S5, S7): the KMS references name key versions and the certificate
+/// references name secrets; the names that go on certificates are ones the CA's profile takes, so a setting cannot be accepted
+/// here and refused after the CA was reached; and there are as many agent hosts as one certificate carries.
+fn check_platform(platform: &hub::config::PlatformSettings) -> Result<(), String> {
+    for ca in [&platform.agent_ca, &platform.replica_ca] {
+        if CryptoKeyVersionName::parse(&ca.kms_ref).is_none() {
+            return Err("a KMS reference that is not a key version".to_owned());
+        }
+        if !ports::is_valid_secret_name(&ca.cert_ref) {
+            return Err("a CA certificate reference that is not a secret name".to_owned());
+        }
+    }
+    if platform.agent_hosts.is_empty()
+        || platform.agent_hosts.len() > hub_platform::ca::profile::MAX_DNS_NAMES
+    {
+        return Err(format!("{} agent hosts accepted", platform.agent_hosts.len()));
+    }
+    let probe = PeerName::parse("probe").map_err(|_| "the probe name".to_owned())?;
+    if CertProfile::hub_server(&probe, &platform.agent_hosts).is_err() {
+        return Err("an agent host that the CA's profile refuses".to_owned());
+    }
+    if CertProfile::replica(
+        &platform.replica_name,
+        &[platform.replica_address.host().to_owned()],
+    )
+    .is_err()
+    {
+        return Err("a replica identity that the CA's profile refuses".to_owned());
+    }
+    if platform.audience.as_str().is_empty() || platform.audience.as_str().chars().any(char::is_control) {
+        return Err("an audience that is empty or holds a control character".to_owned());
+    }
+    // Nothing in the group is a secret, but nothing in it may print as a value of another setting either: the debug output is
+    // the structure and not a copy of the environment.
+    if format!("{platform:?}").len() > 4096 {
+        return Err("a debug output out of proportion to its fields".to_owned());
+    }
+    Ok(())
+}
+
 // ------------------------------------------------------------------------------------------------ hub_cli_args
 
 /// The input is the arguments, separated by NUL bytes. Compared with a second statement of the grammar, written from the
@@ -208,15 +255,7 @@ pub fn hub_cli_args(data: &[u8]) -> Result<Verdict, String> {
             .collect()
     };
     let got = cli::parse(args.iter().map(String::as_str));
-    let word = |s: &str| matches!(s, "serve" | "migrate" | "help" | "--help" | "-h");
-    let want = match args.as_slice() {
-        [] => Ok(Command::Serve),
-        [one] if one == "serve" => Ok(Command::Serve),
-        [one] if one == "migrate" => Ok(Command::Migrate),
-        [one] if word(one) => Ok(Command::Help),
-        [first, ..] if !word(first) => Err(CliError::UnknownCommand),
-        _ => Err(CliError::UnexpectedArgument),
-    };
+    let want = grammar(&args);
     if got != want {
         return Err(format!(
             "the parser and the grammar disagree: {got:?} against {want:?}"
@@ -225,9 +264,15 @@ pub fn hub_cli_args(data: &[u8]) -> Result<Verdict, String> {
     match got {
         Ok(_) => Ok(Verdict::Accepted),
         Err(error) => {
-            // S10: an argument can be a pasted secret. The message is one of two fixed phrases.
+            // S10: an argument can be a pasted secret. The message is one of the fixed phrases, and the only text in it that is
+            // not fixed is one of the three option names, never a value.
             let shown = error.to_string();
-            if shown != "unknown command" && shown != "unexpected argument" {
+            let fixed = shown == "unknown command"
+                || shown == "unexpected argument"
+                || OPTIONS
+                    .iter()
+                    .any(|o| shown == format!("{o} is required") || shown == format!("{o} is not valid"));
+            if !fixed {
                 return Err(format!("an error with other text in it: {shown}"));
             }
             Ok(Verdict::Rejected)
@@ -235,7 +280,160 @@ pub fn hub_cli_args(data: &[u8]) -> Result<Verdict, String> {
     }
 }
 
+/// The three options of `ca-init`, as the usage text spells them, in the order the usage gives them.
+const OPTIONS: [&str; 3] = ["--kms-ref", "--common-name", "--valid-days"];
+
+/// The usage text, as a grammar: `hub [serve] | hub migrate | hub ca-init <three options, each once, in any order> | hub help`.
+fn grammar(args: &[String]) -> Result<Command, CliError> {
+    let word = |s: &str| matches!(s, "serve" | "migrate" | "help" | "--help" | "-h");
+    match args {
+        [] => Ok(Command::Serve),
+        [one] if one == "serve" => Ok(Command::Serve),
+        [one] if one == "migrate" => Ok(Command::Migrate),
+        [one] if word(one) => Ok(Command::Help),
+        [first, rest @ ..] if first == "ca-init" => ca_init_grammar(rest),
+        [first, ..] if !word(first) => Err(CliError::UnknownCommand),
+        _ => Err(CliError::UnexpectedArgument),
+    }
+}
+
+fn ca_init_grammar(rest: &[String]) -> Result<Command, CliError> {
+    let mut given: [Option<&str>; 3] = [None, None, None];
+    let mut at = 0;
+    while at < rest.len() {
+        let Some(slot) = OPTIONS.iter().position(|o| *o == rest[at]) else {
+            return Err(CliError::UnexpectedArgument);
+        };
+        if given[slot].is_some() {
+            return Err(CliError::UnexpectedArgument);
+        }
+        let name: &'static str = OPTIONS[slot];
+        let Some(value) = rest.get(at + 1) else {
+            return Err(CliError::InvalidOption(name));
+        };
+        let good = match slot {
+            0 => key_version(value),
+            1 => common_name(value),
+            _ => days(value).is_some(),
+        };
+        if !good {
+            return Err(CliError::InvalidOption(name));
+        }
+        given[slot] = Some(value);
+        at += 2;
+    }
+    let [Some(kms), Some(name), Some(valid)] = given else {
+        let missing = given.iter().position(Option::is_none).unwrap_or(0);
+        return Err(CliError::MissingOption(OPTIONS[missing]));
+    };
+    Ok(Command::CaInit(CaInitArgs {
+        kms_ref: ports::KeyRef::parse(kms).map_err(|_| CliError::InvalidOption("--kms-ref"))?,
+        common_name: name.to_owned(),
+        valid_days: days(valid).unwrap_or(0),
+    }))
+}
+
+/// `projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N`: P, L, R and K of letters, digits, `_` and `-` (at most 63),
+/// N of digits (at most 19).
+fn key_version(value: &str) -> bool {
+    let parts: Vec<&str> = value.split('/').collect();
+    let segment = |name: &str| {
+        !name.is_empty()
+            && name.len() <= 63
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    };
+    let [
+        projects,
+        project,
+        locations,
+        location,
+        key_rings,
+        ring,
+        crypto_keys,
+        key,
+        versions,
+        number,
+    ] = parts.as_slice()
+    else {
+        return false;
+    };
+    *projects == "projects"
+        && *locations == "locations"
+        && *key_rings == "keyRings"
+        && *crypto_keys == "cryptoKeys"
+        && *versions == "cryptoKeyVersions"
+        && [project, location, ring, key]
+            .into_iter()
+            .all(|name| segment(name))
+        && !number.is_empty()
+        && number.len() <= 19
+        && number.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Up to 64 characters of letters, digits, space, `.`, `_` and `-`, the first a letter or a digit.
+fn common_name(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes.next().is_some_and(|b| b.is_ascii_alphanumeric())
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'.' | b'_' | b'-'))
+}
+
+/// 1 to 3650, as digits and nothing else.
+fn days(value: &str) -> Option<u32> {
+    if value.is_empty() || value.len() > 5 || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let n: u32 = value.parse().ok()?;
+    (1..=3650).contains(&n).then_some(n)
+}
+
 // ------------------------------------------------------------------------------------------------ hub_pem
+
+/// A CA certificate secret (T3): the text is read as exactly one certificate and nothing else. The verdict is the CA decoder's;
+/// `hub_pem` runs it on the first half of its input too, and the seeds named `*_ca_*` pin it.
+pub fn ca_certificate(data: &[u8]) -> Result<Verdict, String> {
+    let text = match data.iter().position(|b| *b == 0) {
+        Some(at) => &data[..at],
+        None => data,
+    };
+    ca_certificate_text(&Secret::new(String::from_utf8_lossy(text).into_owned()))
+}
+
+fn ca_certificate_text(text: &Secret<String>) -> Result<Verdict, String> {
+    match web_tls::decode_ca_certificate(text) {
+        Err(error) => {
+            // The error is one of the fixed phrases and never the text.
+            let shown = error.to_string();
+            if shown.is_empty() || (text.expose().len() >= 12 && shown.contains(text.expose().trim())) {
+                return Err("an error that repeats the secret's text".to_owned());
+            }
+            Ok(Verdict::Rejected)
+        }
+        Ok(der) => {
+            let (rest, cert) = x509_parser::parse_x509_certificate(&der)
+                .map_err(|_| "an accepted certificate that a second read refuses".to_owned())?;
+            if !rest.is_empty() {
+                return Err("an accepted certificate with bytes after it".to_owned());
+            }
+            // One certificate and no private key: a text with either more or the other is refused, never accepted.
+            if text.expose().matches("-----BEGIN CERTIFICATE-----").count() > 1
+                || text.expose().contains("PRIVATE KEY-----")
+            {
+                return Err(
+                    "an accepted secret that holds more than one certificate or a private key".to_owned(),
+                );
+            }
+            if cert.validity().not_after.timestamp() < cert.validity().not_before.timestamp() {
+                return Err("an accepted certificate that ends before it begins".to_owned());
+            }
+            Ok(Verdict::Accepted)
+        }
+    }
+}
 
 /// The input is the certificate secret's text, a NUL byte, and the key secret's text.
 pub fn hub_pem(data: &[u8]) -> Result<Verdict, String> {
@@ -245,6 +443,8 @@ pub fn hub_pem(data: &[u8]) -> Result<Verdict, String> {
     };
     let chain = Secret::new(String::from_utf8_lossy(chain).into_owned());
     let key = Secret::new(String::from_utf8_lossy(key).into_owned());
+    // The same text read as a CA certificate secret (T3) is held to its own invariants whatever the web decoder says.
+    ca_certificate_text(&chain)?;
     match web_tls::decode(&chain, &key) {
         Err(error) => {
             // S7: the secrets' text is never repeated. Every message is one of the fixed phrases of `PemError`.
@@ -258,6 +458,7 @@ pub fn hub_pem(data: &[u8]) -> Result<Verdict, String> {
                 PemError::KeyUnreadable,
                 PemError::KeyMismatch,
                 PemError::KeyUnusable,
+                PemError::UnexpectedKey,
             ];
             if !known.contains(&error) {
                 return Err("an error that is not one of the fixed ones".to_owned());

@@ -72,6 +72,9 @@ pub enum PemError {
     KeyMismatch,
     #[error("the private key is not one the listener can use")]
     KeyUnusable,
+    /// A secret that should hold only a public certificate holds a private key: the wrong secret was named.
+    #[error("the secret holds a private key where only a certificate belongs")]
+    UnexpectedKey,
 }
 
 /// A certificate that decoded, with the times the leaf is valid.
@@ -136,6 +139,36 @@ pub fn decode(chain_pem: &Secret<String>, key_pem: &Secret<String>) -> Result<De
         Err(RustlsError::InconsistentKeys(InconsistentKeys::KeyMismatch)) => Err(PemError::KeyMismatch),
         Err(_) => Err(PemError::KeyUnusable),
     }
+}
+
+/// The certificate of a CA from its secret (T3, G10): exactly one certificate and no private key, because a CA certificate is
+/// public and the hub holds the key of neither CA (it is in KMS). Anything else in the text is a deployment mistake to refuse and
+/// not to skip: a second certificate would be a second thing to trust, and a private-key block means the wrong secret was named.
+///
+/// Returns the DER. Whether it is a CA certificate for the KMS key is for `CaIssuer::new` to prove, with a signature.
+pub fn decode_ca_certificate(pem: &Secret<String>) -> Result<Vec<u8>, PemError> {
+    let text = pem.expose().as_bytes();
+    if text.len() > MAX_CHAIN_PEM_BYTES {
+        return Err(PemError::ChainTooLarge);
+    }
+    let mut found = None;
+    for item in CertificateDer::pem_slice_iter(text) {
+        let der = item.map_err(|_| PemError::ChainUnreadable)?;
+        if found.replace(der).is_some() {
+            return Err(PemError::TooManyCertificates);
+        }
+    }
+    // A private key beside the certificate is the wrong secret. The key is never decoded, only noticed by its label, so no copy
+    // of it is made here.
+    if pem.expose().contains("PRIVATE KEY-----") {
+        return Err(PemError::UnexpectedKey);
+    }
+    let der = found.ok_or(PemError::NoCertificate)?;
+    let (rest, _) = X509Certificate::from_der(der.as_ref()).map_err(|_| PemError::LeafUnreadable)?;
+    if !rest.is_empty() {
+        return Err(PemError::LeafUnreadable);
+    }
+    Ok(der.as_ref().to_vec())
 }
 
 /// Why the web certificate could not be loaded or replaced. Fixed words; the secret's name is logged next to it.

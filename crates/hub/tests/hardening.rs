@@ -270,12 +270,25 @@ fn known_variables() -> BTreeSet<String> {
 }
 
 /// What the binary refuses to start without (plan 18, T1): a pod that omits one of these is a pod that cannot start.
-const REQUIRED_VARIABLES: [&str; 5] = [
+const REQUIRED_VARIABLES: [&str; 17] = [
     "LK_DATABASE_URL_FILE",
     "LK_DB_CA_FILE",
     "LK_WEB_CERT_REF",
     "LK_WEB_KEY_REF",
     "LK_GCP_PROJECT",
+    // T3 (G10): the two CAs, this replica's identity and the agent endpoint, and the Git remotes.
+    "LK_AGENT_CA_KMS_REF",
+    "LK_AGENT_CA_CERT_REF",
+    "LK_REPLICA_CA_KMS_REF",
+    "LK_REPLICA_CA_CERT_REF",
+    "LK_REPLICA_NAME",
+    "LK_REPLICA_ADDRESS",
+    "LK_HUB_AUDIENCE",
+    "LK_AGENT_ENDPOINT_HOSTS",
+    "LK_GIT_BASE_URL",
+    "LK_GIT_TENANT_URL",
+    "LK_GIT_BASE_REPO",
+    "LK_GIT_TENANT_REPO",
 ];
 
 const WRITABLE_VOLUMES: [&str; 2] = ["tmp", "mirror"];
@@ -483,7 +496,11 @@ fn environment_problems(container: &Value) -> Vec<String> {
     let mut problems = Vec::new();
     let known = known_variables();
     for required in REQUIRED_VARIABLES {
-        if env_value(container, required).is_none() {
+        // Present by name: the replica's name has no `value`, it is the pod's own (checked below).
+        let present = container["env"]
+            .as_array()
+            .is_some_and(|env| env.iter().any(|e| e["name"] == required));
+        if !present {
             problems.push(format!(
                 "{required} is not set: the hub refuses to start without it"
             ));
@@ -496,10 +513,36 @@ fn environment_problems(container: &Value) -> Vec<String> {
                 "{name} is not a variable the hub reads (a typo, or a secret in the environment)"
             ));
         }
-        if !env["valueFrom"].is_null() {
+        // One reference is allowed (T3, G10): the replica's name is the pod's own, from the downward API. Anything else that
+        // takes its value from elsewhere (a Secret, a ConfigMap, another field) is a secret or a setting that is not the pod's.
+        let own_name = name == "LK_REPLICA_NAME"
+            && env["valueFrom"]["fieldRef"]["fieldPath"] == "metadata.name"
+            && env["valueFrom"].as_object().is_some_and(|o| o.len() == 1)
+            && env["valueFrom"]["fieldRef"]
+                .as_object()
+                .is_some_and(|o| o.len() == 1);
+        if !env["valueFrom"].is_null() && !own_name {
             problems.push(format!(
                 "{name} takes its value from a Secret or ConfigMap reference"
             ));
+        }
+        // The replica's address is built from its name, so the two cannot disagree about which pod this is.
+        if name == "LK_REPLICA_ADDRESS" {
+            let value = env["value"].as_str().unwrap_or("");
+            if !value.starts_with("$(LK_REPLICA_NAME).") || !value.ends_with(":8445") {
+                problems.push(
+                    "LK_REPLICA_ADDRESS must be $(LK_REPLICA_NAME).<headless service>.<namespace>.svc:8445"
+                        .to_owned(),
+                );
+            }
+        }
+        // The bind addresses are the pod's declared ports, so a listener cannot move without the contract moving with it.
+        for (variable, port) in [("LK_AGENT_ADDR", "8444"), ("LK_REPLICA_ADDR", "8445")] {
+            if name == variable && !env["value"].as_str().unwrap_or("").ends_with(&format!(":{port}")) {
+                problems.push(format!(
+                    "{variable} must bind port {port}, the one the pod declares"
+                ));
+            }
         }
         let upper = name.to_ascii_uppercase();
         if ["PASSWORD", "TOKEN", "SECRET", "CREDENTIAL"]
@@ -535,6 +578,12 @@ const EXPECTED_HOSTS: [&str; 7] = [
     "www.googleapis.com",
     "<teams webhook host>",
 ];
+
+/// Hosts that plan 18 adds to the list above. The audit-checkpoint writer (`hub-identity`, `GcsCheckpointBucket::HOST`) puts each
+/// checkpoint in a locked Cloud Storage bucket, which default deny would otherwise block (S9). The checks take the union of the two
+/// lists, so that this holds in either order of merging with the deployment plan (09), which names the same host in the list
+/// above.
+const ASSEMBLY_HOSTS: [&str; 1] = ["storage.googleapis.com"];
 
 /// The in-cluster egress destinations of the NetworkPolicy, as words, or why the policy is too open.
 fn egress_destinations(policy: &Value) -> Result<BTreeSet<String>, String> {
@@ -644,7 +693,11 @@ fn network_problems(docs: &[Value]) -> Vec<String> {
                     hosts.insert(host.to_owned());
                 }
             }
-            let expected: BTreeSet<String> = EXPECTED_HOSTS.iter().map(|s| (*s).to_owned()).collect();
+            let expected: BTreeSet<String> = EXPECTED_HOSTS
+                .iter()
+                .chain(&ASSEMBLY_HOSTS)
+                .map(|s| (*s).to_owned())
+                .collect();
             if hosts != expected {
                 problems.push(format!(
                     "external hosts must be exactly {expected:?}, found {hosts:?}"
@@ -797,6 +850,64 @@ fn hardening_lint_rejects_planted_violations() {
                     .as_array_mut()
                     .unwrap()
                     .retain(|e| e["name"] != "LK_GCP_PROJECT")
+            }),
+        ),
+        (
+            "no agent CA key",
+            mutate("Pod", |d| {
+                container(d)["env"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|e| e["name"] != "LK_AGENT_CA_KMS_REF")
+            }),
+        ),
+        (
+            "no replica name",
+            mutate("Pod", |d| {
+                container(d)["env"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|e| e["name"] != "LK_REPLICA_NAME")
+            }),
+        ),
+        (
+            "the replica name from a Secret",
+            mutate("Pod", |d| {
+                for e in container(d)["env"].as_array_mut().unwrap() {
+                    if e["name"] == "LK_REPLICA_NAME" {
+                        *e = serde_json::json!({"name": "LK_REPLICA_NAME", "valueFrom": {"secretKeyRef": {"name": "s", "key": "k"}}});
+                    }
+                }
+            }),
+        ),
+        (
+            "the replica name from another field of the pod",
+            mutate("Pod", |d| {
+                for e in container(d)["env"].as_array_mut().unwrap() {
+                    if e["name"] == "LK_REPLICA_NAME" {
+                        e["valueFrom"]["fieldRef"]["fieldPath"] = "spec.serviceAccountName".into();
+                    }
+                }
+            }),
+        ),
+        (
+            "a replica address that is not built from the replica name",
+            mutate("Pod", |d| {
+                for e in container(d)["env"].as_array_mut().unwrap() {
+                    if e["name"] == "LK_REPLICA_ADDRESS" {
+                        e["value"] = "hub-0.hub.lanekeeper.svc:8445".into();
+                    }
+                }
+            }),
+        ),
+        (
+            "the agent listener bound to another port than the pod declares",
+            mutate("Pod", |d| {
+                for e in container(d)["env"].as_array_mut().unwrap() {
+                    if e["name"] == "LK_AGENT_ADDR" {
+                        e["value"] = "0.0.0.0:9444".into();
+                    }
+                }
             }),
         ),
         (
@@ -1071,6 +1182,15 @@ fn hardening_lint_rejects_planted_violations() {
             "a missing host",
             mutate("FQDNNetworkPolicy", |d| {
                 d["spec"]["egress"][0]["matches"].as_array_mut().unwrap().pop();
+            }),
+        ),
+        (
+            "the audit checkpoints' storage host missing",
+            mutate("FQDNNetworkPolicy", |d| {
+                d["spec"]["egress"][0]["matches"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|m| m["pattern"] != "storage.googleapis.com");
             }),
         ),
         (

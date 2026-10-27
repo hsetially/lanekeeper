@@ -34,8 +34,8 @@ the Kubernetes API, so it mounts no service-account token; Workload Identity rea
 The chart renders this pod as a StatefulSet template.
 
 **Ports.** `web` 8443 (HTTPS, behind the users' load balancer), `agent` 8444 (agents and the NFS sentinel, mTLS), `replica`
-8445 (replica-to-replica, mTLS), `ops` 9090 (plain HTTP: `/healthz`, `/readyz`, `/metrics`, cluster-internal). T3 and T4 add
-the settings that bind 8444 and 8445.
+8445 (replica-to-replica, mTLS), `ops` 9090 (plain HTTP: `/healthz`, `/readyz`, `/metrics`, cluster-internal). `LK_AGENT_ADDR` and
+`LK_REPLICA_ADDR` bind 8444 and 8445 (plan 18, T3).
 
 **Secrets are files, not variables.** The database URL holds a password, so it is read from a mounted Secret file
 (`LK_DATABASE_URL_FILE`); no variable in this contract takes its value from a Secret reference, and none has a name that
@@ -112,6 +112,35 @@ spec:
       value: lanekeeper-web-cert
     - name: LK_WEB_KEY_REF
       value: lanekeeper-web-key
+    - name: LK_AGENT_ADDR
+      value: 0.0.0.0:8444
+    - name: LK_REPLICA_ADDR
+      value: 0.0.0.0:8445
+    - name: LK_REPLICA_NAME
+      valueFrom:
+        fieldRef: {fieldPath: metadata.name}
+    - name: LK_REPLICA_ADDRESS
+      value: $(LK_REPLICA_NAME).lanekeeper-hub.lanekeeper.svc:8445
+    - name: LK_HUB_AUDIENCE
+      value: https://<hub hostname>
+    - name: LK_AGENT_ENDPOINT_HOSTS
+      value: <agent endpoint hostname>
+    - name: LK_AGENT_CA_KMS_REF
+      value: <agent CA key version, a Cloud KMS resource name>
+    - name: LK_AGENT_CA_CERT_REF
+      value: lanekeeper-agent-ca-cert
+    - name: LK_REPLICA_CA_KMS_REF
+      value: <replica CA key version, a Cloud KMS resource name>
+    - name: LK_REPLICA_CA_CERT_REF
+      value: lanekeeper-replica-ca-cert
+    - name: LK_GIT_BASE_URL
+      value: https://github.com/<org>/configuration-base-saas.git
+    - name: LK_GIT_TENANT_URL
+      value: https://github.com/<org>/csp-tenant-data.git
+    - name: LK_GIT_BASE_REPO
+      value: <org>/configuration-base-saas
+    - name: LK_GIT_TENANT_REPO
+      value: <org>/csp-tenant-data
     volumeMounts:
     - name: tmp
       mountPath: /tmp
@@ -146,6 +175,50 @@ counted (`lanekeeper_web_cert_reload_failures_total`). The two secrets are rotat
 certificate beside the old key; that read is refused and the next one succeeds. The certificate in use is exported
 (`lanekeeper_web_cert_not_after_seconds`), and `/readyz` fails once it has expired. The names are `*_REF` and not `*_SECRET` or `*_KEY`
 because the pod contract flags any variable whose name looks like a secret, and these hold a name, not a secret.
+
+**The platform: two CAs and this replica's identity (plan 18, T3, G10; S5, S6).** The hub holds no private key. Agents and sentinels
+prove who they are with a certificate that a CA issues after checking their Google ID token, and replicas prove who they are to each
+other the same way, from a second CA, so that an agent's certificate is never a replica's. Each CA is a Cloud KMS key version
+(`LK_AGENT_CA_KMS_REF`, `LK_REPLICA_CA_KMS_REF`: a resource name, `projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N`)
+and the public certificate that `hub ca-init` made for it, kept in a Secret Manager secret (`LK_AGENT_CA_CERT_REF`,
+`LK_REPLICA_CA_CERT_REF`). At start the hub has KMS sign one probe digest and checks the signature against the certificate's key: a
+certificate that does not belong to the key, a CA that has expired, or a secret that holds anything but one certificate stops the
+start (exit 1, naming the CA and the two variables, never a value). It then has each CA issue this replica's own server certificate,
+in memory, with a key made at start, and renews it at half its life of 24 hours.
+
+| Variable | What it is |
+|---|---|
+| `LK_REPLICA_NAME` | This replica's stable name: the StatefulSet pod name, from the downward API (`fieldRef: metadata.name`, the one `valueFrom` the pod contract allows). It is in the certificate's identity (`spiffe://lanekeeper/hub/<name>`), in `agent_connections` and as the holder of every lease. |
+| `LK_REPLICA_ADDRESS` | Where the other replicas dial this one: `<pod name>.<headless service>.<namespace>.svc:8445`. Its host is the DNS name on the replica certificate. |
+| `LK_HUB_AUDIENCE` | The audience a Google ID token must carry for `Join`: the hub's own name, which the agents are told to ask Google for. |
+| `LK_AGENT_ENDPOINT_HOSTS` | The DNS names agents reach the agent endpoint by (D25), comma separated, lower case, at most eight. They are on the agent listener's certificate, which the agents verify. |
+| `LK_AGENT_CA_KMS_REF`, `LK_REPLICA_CA_KMS_REF` | The two CA keys (Cloud KMS key versions, `EC_SIGN_P256_SHA256`). |
+| `LK_AGENT_CA_CERT_REF`, `LK_REPLICA_CA_CERT_REF` | The Secret Manager secrets that hold the two CA certificates (PEM, public). |
+| `LK_AGENT_ADDR`, `LK_REPLICA_ADDR` | The two listeners' bind addresses (8444 and 8445 unless told otherwise). |
+| `LK_GIT_BASE_URL`, `LK_GIT_TENANT_URL`, `LK_GIT_BASE_REPO`, `LK_GIT_TENANT_REPO` | The two repositories the hub mirrors (HTTPS, no credential in the URL) and the `owner/name` GitHub reports for them in webhooks. All four are required. `LK_GIT_READ_REF` and `LK_GIT_WEBHOOK_REF` name the Secret Manager secrets of the read-only credential and the webhook secret (`github-read-token` and `github-webhook-secret` unless set). |
+
+The Google identity the pod runs as (Workload Identity) needs `roles/cloudkms.signerVerifier` on the two CA key versions and nothing
+else on KMS, `roles/secretmanager.secretAccessor` on the secrets above, and no other role (S7). The replica listener's NetworkPolicy
+ingress is the hub's own pods only; the agent listener's is the agent load balancer's range.
+
+### Making a CA certificate (`hub ca-init`)
+
+Nothing can start without the CA certificates and nothing else makes them, so `hub ca-init` is the first step of a new environment
+(plan 18, T3, G15). A person runs it once for each CA, with an identity that may read the key's public half and sign with it
+(`roles/cloudkms.publicKeyViewer` and `roles/cloudkms.signerVerifier` on that key version), from the same image:
+
+```
+hub ca-init --kms-ref projects/P/locations/L/keyRings/R/cryptoKeys/agent-ca/cryptoKeyVersions/1 \
+            --common-name "Lanekeeper agent CA" --valid-days 3650 > agent-ca.pem
+```
+
+It reads the key's public key, has KMS sign a self-signed certificate that may sign leaf certificates and no other CA (path length 0),
+and prints the certificate (PEM, public) on standard output and nothing else there. It holds no secret, writes no file and changes
+nothing in Google; the person stores the output in the Secret Manager secret that `LK_AGENT_CA_CERT_REF` (or `LK_REPLICA_CA_CERT_REF`)
+names. Exit 0: the certificate is on standard output. Exit 1: KMS refused or was unreachable (the message names the step). Exit 2: an
+option is missing or not valid (the message names the option and never repeats its value). Use a key version that nothing else uses,
+and make the two CAs from two different keys: a hub that is given one key for both would start, and would accept an agent's
+certificate as a replica's.
 
 **Starting and stopping.** A setting that is missing or malformed is exit 2 and nothing starts; anything that cannot be reached while
 starting is exit 1, because the hub never falls back to a fake. Each step of starting is bounded by `LK_START_TIMEOUT_SECS` (8), and
@@ -185,7 +258,8 @@ The root filesystem is read-only. Two mounts are writable, and the code writes n
 | `emptyDir` | none (`/tmp`) | Temporary files of the libraries. Capped at 256 MiB. |
 
 The database credentials and the database CA are read-only Secret mounts (the first with mode `0440`, `defaultMode: 288`).
-The CA certificates of the agent and the replica listeners are public and arrive through the settings of T3 and T4.
+The CA certificates of the agent and the replica listeners are public and arrive from Secret Manager (`LK_AGENT_CA_CERT_REF`,
+`LK_REPLICA_CA_CERT_REF`).
 
 ## The network
 
@@ -204,6 +278,7 @@ destinations.
 | `login.microsoftonline.com` | 443/TCP | Entra sign-in and its signing keys (03a). |
 | `github.com`, `api.github.com` | 443/TCP | Git fetch and the GitHub API (T7, 06). |
 | `secretmanager.googleapis.com`, `cloudkms.googleapis.com`, `www.googleapis.com` | 443/TCP | Secret Manager, Cloud KMS (T2), and the keys that verify Google ID tokens (T3). |
+| `storage.googleapis.com` | 443/TCP | Cloud Storage: the audit-checkpoint writer puts each checkpoint in the locked bucket (`GcsCheckpointBucket::HOST`, S9). |
 | the Teams webhook host | 443/TCP | Notifications (Q9: the host depends on the answer). |
 
 In: the web port from the users' load balancer range, the agent port from the agent load balancer range, the replica port
@@ -296,6 +371,7 @@ spec:
     - pattern: secretmanager.googleapis.com
     - pattern: cloudkms.googleapis.com
     - pattern: www.googleapis.com
+    - pattern: storage.googleapis.com
     - pattern: <teams webhook host>
     ports:
     - {protocol: TCP, port: 443}
