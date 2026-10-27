@@ -9,6 +9,9 @@
 //! the session in the table as it finds any other: nothing in the hub knows this exists, so what it shows is what a real
 //! administrator would see.
 //!
+//! **Never point it at a shared database.** It makes an administrator and a session in whatever database the hub is configured with,
+//! and writes no audit event, so it refuses a database that is not on this machine (a loopback host or a socket) at start.
+//!
 //! The listener serves nobody else: it refuses an address that is not loopback at start, and a request whose `Host` is not a
 //! loopback name (so a web page cannot use DNS rebinding to sign a browser in), and it answers `GET /` only. Cookies are scoped to a
 //! host name and not a port, so the page to open is `http://localhost:<port>/` (the hub's public origin is `https://localhost:8443`):
@@ -16,7 +19,7 @@
 //! secure context); `curl -i http://localhost:<port>/` prints the same two lines for a person to set by hand.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,6 +29,7 @@ use hub::edges::IdentityClock;
 use hub_identity::session::cookie::{csrf_set_cookie, session_set_cookie};
 use hub_identity::session::{SessionPolicy, Sessions};
 use hub_platform::clock::SystemClock;
+use sqlx::postgres::PgConnectOptions;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -47,8 +51,16 @@ pub fn spawn_if_asked(lookup: &dyn Fn(&str) -> Option<String>) -> Result<(), Str
         return Err("LK_DEV_LOGIN_ADDR must be a loopback address".to_owned());
     }
     let settings = HubSettings::from_lookup(lookup).map_err(|e| e.to_string())?;
-    if settings.database.is_none() || settings.identity.is_none() {
+    let Some(database) = settings.database.as_ref().filter(|_| settings.identity.is_some()) else {
         return Err("LK_DEV_LOGIN_ADDR needs the database and the Entra settings".to_owned());
+    };
+    // It signs an administrator in to whatever database it is given, with no audit event: never a shared one. The message repeats
+    // neither the host nor the URL.
+    if !database_is_on_this_machine(database.url.expose()) {
+        return Err(
+            "LK_DEV_LOGIN_ADDR needs a database on this machine; never point it at a shared database"
+                .to_owned(),
+        );
     }
     // Bind now, so that an address that is taken is an error at start and not a thread that died.
     let listener =
@@ -95,6 +107,20 @@ async fn serve(listener: TcpListener, settings: HubSettings) {
         })
         .await;
     }
+}
+
+/// Whether the database URL names a database on this machine: a Unix socket, `localhost`, or a loopback address. A name that only
+/// begins like one (`localhost.example`, `127.0.0.1.example`) is a real host; `0.0.0.0` is not a place; a URL that does not parse is
+/// not believed.
+fn database_is_on_this_machine(url: &str) -> bool {
+    let Ok(options) = url.parse::<PgConnectOptions>() else {
+        return false;
+    };
+    if options.get_socket().is_some() {
+        return true;
+    }
+    let host = options.get_host().trim_matches(['[', ']']).to_ascii_lowercase();
+    host == "localhost" || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// `Host: localhost:8480`, `127.0.0.1` and `[::1]` are loopback names; nothing else is believed.

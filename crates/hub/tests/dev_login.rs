@@ -207,3 +207,45 @@ async fn the_dev_login_is_off_unless_asked_for_and_refuses_an_address_that_is_no
         "the message repeats a value"
     );
 }
+
+#[tokio::test]
+async fn the_dev_login_refuses_a_database_that_is_not_on_this_machine() {
+    let Some(rig) = Rig::start().await else { return };
+    // The shortcut signs an administrator in to whatever database the hub is pointed at, so it must never be pointed at a shared one:
+    // a host that is not a loopback name or address is exit 2, before the hub starts, and the message repeats neither the host nor the
+    // password. Names that only look local (a loopback name as a prefix of a real one) are not local.
+    let port = free_loopback_port();
+    let login = format!("127.0.0.1:{port}");
+    let dir = tempfile::tempdir().unwrap();
+    let url = dir.path().join("db-url");
+    for host in [
+        "db.example.test",
+        "10.0.0.5",
+        "localhost.evil.example",
+        "127.0.0.1.evil.example",
+        "0.0.0.0",
+    ] {
+        std::fs::write(
+            &url,
+            format!("postgres://lanekeeper_app:planted-secret-4821@{host}:5432/lanekeeper"),
+        )
+        .unwrap();
+        let mut refused = rig
+            .spawn(&[
+                ("LK_DEV_LOGIN_ADDR", &login),
+                ("LK_DATABASE_URL_FILE", url.to_str().unwrap()),
+            ])
+            .await;
+        let status = refused.exit_within(Duration::from_secs(30));
+        let output = refused.output();
+        assert_eq!(status.code(), Some(2), "{host}: {output}");
+        assert!(
+            output.contains("LK_DEV_LOGIN_ADDR needs a database on this machine"),
+            "{host}: {output}"
+        );
+        assert!(
+            !output.contains(host) && !output.contains("planted-secret-4821"),
+            "the message repeats a value: {output}"
+        );
+    }
+}
