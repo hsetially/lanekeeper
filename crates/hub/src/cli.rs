@@ -1,10 +1,12 @@
-//! The command line (plan 18, T1 to T3): `hub` and `hub serve` run the hub, `hub migrate` applies the schema, `hub ca-init` makes a
-//! CA certificate, `hub help` prints the usage.
+//! The command line (plan 18, T1 to T3 and T7): `hub` and `hub serve` run the hub, `hub migrate` applies the schema, `hub seed`
+//! registers swimlanes from a file, `hub ca-init` makes a CA certificate, `hub help` prints the usage.
 //!
 //! A hand parser, because there are only a few words and a parser crate would be a dependency on a trust boundary for nothing.
 //! The arguments are untrusted text (rule 10): an error is a fixed message that never repeats the argument, so an argument
-//! that is a pasted secret does not end up in a log. The only text an error names is one of the three option names of
-//! `ca-init`, which are constants. `seed` is T7.
+//! that is a pasted secret does not end up in a log. The only text an error names is one of the option names of `ca-init` or
+//! `<file>` of `seed`, which are constants.
+
+use std::path::PathBuf;
 
 use hub_platform::gcp::wire::CryptoKeyVersionName;
 use ports::KeyRef;
@@ -22,11 +24,23 @@ pub enum Command {
     /// Apply the database migrations as `lanekeeper_migrator` and exit (T2, G4). Run as a Job before the hub rolls: the
     /// serving hub never migrates at start, so the migrator credential is never in its pod.
     Migrate,
+    /// Register the projects, swimlanes, tenants and sentinels that a file lists (T7, G24). Run by a person or a Job, as the application
+    /// role; it creates and updates, never deletes, and a second run with the same file changes nothing.
+    Seed(SeedArgs),
     /// Make the self-signed certificate of a CA whose key is in Cloud KMS, and print it (T3, G15). Run once per CA by a person,
     /// before the first start; the certificate is public.
     CaInit(CaInitArgs),
     /// Print [`USAGE`] and exit 0.
     Help,
+}
+
+/// What `hub seed` was asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeedArgs {
+    /// The seed file (YAML or JSON). A path, not a secret: it is never repeated in an error, but it is a file the operator chose.
+    pub file: PathBuf,
+    /// Print what would change and write nothing (no row and no audit event).
+    pub dry_run: bool,
 }
 
 /// What `hub ca-init` was asked for. All three are required: a CA's name and life are decisions, not defaults.
@@ -47,20 +61,25 @@ pub enum CliError {
     UnknownCommand,
     #[error("unexpected argument")]
     UnexpectedArgument,
-    /// An option of `ca-init` that was not given. The name is one of the constants below.
+    /// An option of `ca-init`, or the `<file>` of `seed`, that was not given. The name is one of the constants below.
     #[error("{0} is required")]
     MissingOption(&'static str),
-    /// An option of `ca-init` whose value is missing or not acceptable. The value is never shown.
+    /// An option of `ca-init`, or the `<file>` of `seed`, whose value is missing or not acceptable. The value is never shown.
     #[error("{0} is not valid")]
     InvalidOption(&'static str),
 }
 
 /// The text `hub help` prints and a usage error points at.
-pub const USAGE: &str = "usage: hub [serve]\n       hub migrate\n       hub ca-init --kms-ref <key version> --common-name <name> --valid-days <days>\n       hub help\n\nserve    run the hub until SIGTERM or SIGINT (the default); settings are the LK_* environment variables\nmigrate  apply the database migrations as lanekeeper_migrator and exit; needs LK_MIGRATOR_URL_FILE and LK_DB_CA_FILE\nca-init  print the self-signed certificate (PEM) of a CA whose key is the given Cloud KMS key version; the key signs it and never\n         leaves KMS. Run once for each CA, then store the output in the Secret Manager secret that LK_AGENT_CA_CERT_REF or\n         LK_REPLICA_CA_CERT_REF names\nhelp     print this text\n";
+pub const USAGE: &str = "usage: hub [serve]\n       hub migrate\n       hub seed [--dry-run] <file>\n       hub ca-init --kms-ref <key version> --common-name <name> --valid-days <days>\n       hub help\n\nserve    run the hub until SIGTERM or SIGINT (the default); settings are the LK_* environment variables\nmigrate  apply the database migrations as lanekeeper_migrator and exit; needs LK_MIGRATOR_URL_FILE and LK_DB_CA_FILE\nseed     register the projects, swimlanes, tenants and sentinels that a YAML or JSON file lists, as lanekeeper_app; it creates and\n         updates and never deletes, and a second run with the same file changes nothing; --dry-run prints what would change and\n         writes nothing; needs LK_DATABASE_URL_FILE and LK_DB_CA_FILE\nca-init  print the self-signed certificate (PEM) of a CA whose key is the given Cloud KMS key version; the key signs it and never\n         leaves KMS. Run once for each CA, then store the output in the Secret Manager secret that LK_AGENT_CA_CERT_REF or\n         LK_REPLICA_CA_CERT_REF names\nhelp     print this text\n";
 
 const KMS_REF: &str = "--kms-ref";
 const COMMON_NAME: &str = "--common-name";
 const VALID_DAYS: &str = "--valid-days";
+const DRY_RUN: &str = "--dry-run";
+/// How `seed` names its positional argument in an error: a constant, never the path that was given.
+const FILE: &str = "<file>";
+/// The longest seed file path accepted: Linux's `PATH_MAX`.
+const MAX_PATH: usize = 4096;
 
 /// Parse the arguments after the program name.
 pub fn parse<I, S>(args: I) -> Result<Command, CliError>
@@ -75,6 +94,7 @@ where
     let command = match first.as_ref() {
         "serve" => Command::Serve,
         "migrate" => Command::Migrate,
+        "seed" => return parse_seed(args),
         "ca-init" => return parse_ca_init(args),
         "help" | "--help" | "-h" => Command::Help,
         _ => return Err(CliError::UnknownCommand),
@@ -83,6 +103,35 @@ where
         return Err(CliError::UnexpectedArgument);
     }
     Ok(command)
+}
+
+/// `seed`: one file and, optionally, `--dry-run`, in either order. A word that starts with a dash is an option, and the only option is
+/// `--dry-run`, so a file whose name starts with a dash is written `./-name`.
+fn parse_seed<I, S>(args: I) -> Result<Command, CliError>
+where
+    I: Iterator<Item = S>,
+    S: AsRef<str>,
+{
+    let (mut file, mut dry_run) = (None, false);
+    for arg in args {
+        let arg = arg.as_ref();
+        if arg == DRY_RUN {
+            if dry_run {
+                return Err(CliError::UnexpectedArgument);
+            }
+            dry_run = true;
+        } else if arg.starts_with('-') || file.is_some() {
+            return Err(CliError::UnexpectedArgument);
+        } else if arg.is_empty() || arg.len() > MAX_PATH {
+            return Err(CliError::InvalidOption(FILE));
+        } else {
+            file = Some(PathBuf::from(arg));
+        }
+    }
+    Ok(Command::Seed(SeedArgs {
+        file: file.ok_or(CliError::MissingOption(FILE))?,
+        dry_run,
+    }))
 }
 
 /// `ca-init` and its three options, in any order, each once, each followed by its value.
@@ -184,7 +233,7 @@ mod tests {
     #[test]
     fn an_unknown_word_is_refused() {
         for word in [
-            "seed", "SERVE", "--serve", "", "serve ", "-x", "--", "ca-init ", "Ca-Init", "ca_init", "cainit",
+            "Seed", "SERVE", "--serve", "", "serve ", "-x", "--", "ca-init ", "Ca-Init", "ca_init", "cainit",
         ] {
             assert_eq!(parse_all(&[word]), Err(CliError::UnknownCommand), "{word:?}");
         }
@@ -211,11 +260,15 @@ mod tests {
         insta::assert_snapshot!(USAGE, @r"
         usage: hub [serve]
                hub migrate
+               hub seed [--dry-run] <file>
                hub ca-init --kms-ref <key version> --common-name <name> --valid-days <days>
                hub help
 
         serve    run the hub until SIGTERM or SIGINT (the default); settings are the LK_* environment variables
         migrate  apply the database migrations as lanekeeper_migrator and exit; needs LK_MIGRATOR_URL_FILE and LK_DB_CA_FILE
+        seed     register the projects, swimlanes, tenants and sentinels that a YAML or JSON file lists, as lanekeeper_app; it creates and
+                 updates and never deletes, and a second run with the same file changes nothing; --dry-run prints what would change and
+                 writes nothing; needs LK_DATABASE_URL_FILE and LK_DB_CA_FILE
         ca-init  print the self-signed certificate (PEM) of a CA whose key is the given Cloud KMS key version; the key signs it and never
                  leaves KMS. Run once for each CA, then store the output in the Secret Manager secret that LK_AGENT_CA_CERT_REF or
                  LK_REPLICA_CA_CERT_REF names
@@ -423,6 +476,97 @@ mod tests {
         ] {
             let error = parse_all(&args).unwrap_err();
             assert!(!format!("{error} {error:?}").contains("hunter2"), "{args:?}");
+        }
+    }
+
+    fn seed(args: &[&str]) -> Result<SeedArgs, CliError> {
+        let mut all = vec!["seed"];
+        all.extend_from_slice(args);
+        match parse_all(&all)? {
+            Command::Seed(parsed) => Ok(parsed),
+            other => panic!("not seed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn seed_takes_a_file_and_an_optional_dry_run_in_either_order() {
+        let apply = SeedArgs {
+            file: PathBuf::from("/etc/lanekeeper/seed/seed.yaml"),
+            dry_run: false,
+        };
+        let dry = SeedArgs {
+            dry_run: true,
+            ..apply.clone()
+        };
+        assert_eq!(seed(&["/etc/lanekeeper/seed/seed.yaml"]), Ok(apply));
+        assert_eq!(
+            seed(&["--dry-run", "/etc/lanekeeper/seed/seed.yaml"]),
+            Ok(dry.clone())
+        );
+        assert_eq!(seed(&["/etc/lanekeeper/seed/seed.yaml", "--dry-run"]), Ok(dry));
+        // A relative path is a path; a file with a dot or a space in its name is too.
+        assert_eq!(
+            seed(&["seed.dev.yaml"]).unwrap().file,
+            PathBuf::from("seed.dev.yaml")
+        );
+        assert_eq!(
+            seed(&["my seed.json"]).unwrap().file,
+            PathBuf::from("my seed.json")
+        );
+    }
+
+    #[test]
+    fn seed_names_the_file_it_is_missing_and_never_a_value() {
+        assert_eq!(seed(&[]), Err(CliError::MissingOption("<file>")));
+        assert_eq!(seed(&["--dry-run"]), Err(CliError::MissingOption("<file>")));
+        // An empty path is a path that is not valid, not one that is missing.
+        assert_eq!(seed(&[""]), Err(CliError::InvalidOption("<file>")));
+        assert_eq!(
+            CliError::MissingOption("<file>").to_string(),
+            "<file> is required"
+        );
+        assert_eq!(
+            CliError::InvalidOption("<file>").to_string(),
+            "<file> is not valid"
+        );
+    }
+
+    #[test]
+    fn seed_refuses_what_it_does_not_know_and_what_is_given_twice() {
+        for args in [
+            vec!["a.yaml", "b.yaml"],
+            vec!["--dry-run", "--dry-run", "a.yaml"],
+            vec!["a.yaml", "--dry-run", "--dry-run"],
+            vec!["--force", "a.yaml"],
+            vec!["a.yaml", "--dry-run=true"],
+            // A path that starts with a dash is an option nobody defined; `./-name` is how to name such a file.
+            vec!["-a.yaml"],
+            vec!["-"],
+            vec!["--"],
+        ] {
+            assert_eq!(seed(&args), Err(CliError::UnexpectedArgument), "{args:?}");
+        }
+        assert!(seed(&["./-a.yaml"]).is_ok());
+    }
+
+    #[test]
+    fn seed_errors_never_repeat_a_path_or_a_pasted_secret() {
+        let planted = "hunter2-planted-secret";
+        for args in [
+            vec!["seed", planted, planted],
+            vec!["seed", "a.yaml", planted],
+            vec!["seed", "--dry-run", "--dry-run", planted],
+            vec!["seed", "-hunter2-planted-secret"],
+        ] {
+            let error = parse_all(&args).unwrap_err();
+            assert!(!format!("{error} {error:?}").contains("hunter2"), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn seed_is_a_word_of_its_own() {
+        for word in ["Seed", "seeds", "--seed", "seed "] {
+            assert_eq!(parse_all(&[word]), Err(CliError::UnknownCommand), "{word:?}");
         }
     }
 

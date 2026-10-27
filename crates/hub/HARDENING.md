@@ -377,6 +377,36 @@ The Job's variables are the Job's alone. `tests/hardening.rs` fails if the hub p
 `LK_MIGRATE_TIMEOUT_SECS`, and its volume allowlist already refuses a pod that mounts a fifth volume, so the migrator's credential
 cannot be in a serving pod. How to run the command, and what it refuses, is in `README.md`.
 
+### The seed Job
+
+The rows that say which Google service account may join as which swimlane's agent, or as which NFS VM's sentinel, are written by
+`hub seed` and by nothing else (plan 18, T7, G24). It is a Job (or a command run by a person) from the same image, like the
+migration Job, and it holds **the hub's own database credential**: it runs as `lanekeeper_app` and refuses every other role, before it
+connects and again once connected, so it can do what the serving hub can do to those four tables and nothing more.
+
+A swimlane whose row has no `agent_service_account` refuses every `Join`, the right token included, and so does a sentinel without a
+`service_account`: until the Job has run with a file that carries the account of each swimlane and sentinel that should have an
+agent, nothing can join. The file must carry them.
+
+| | The Job |
+|---|---|
+| Variables | `LK_DATABASE_URL_FILE` (the path of the mounted Secret that holds the `lanekeeper_app` URL, the same Secret the hub mounts), `LK_DB_CA_FILE` (the same CA file the hub uses), and optionally `LK_SEED_TIMEOUT_SECS` (120 by default) |
+| Arguments | `["seed", "/etc/lanekeeper/seed/seed.yaml"]`, and `--dry-run` for a preview |
+| Volumes | the application role's Secret (mode `0440`) and the database CA, both read-only; the seed file, read-only, from a `ConfigMap` that holds it (it names service accounts and holds no secret); `/tmp` as the only writable mount |
+| Network | Postgres on 5432 and DNS; nothing else, no ingress, no ports |
+| Security context | the hub pod's, unchanged: non-root, read-only root, no capabilities, no service-account token |
+| Exit codes | 0 the database matches the file (or, for `--dry-run`, whatever would change), 1 the run could not be completed, 2 the file or a setting was refused |
+| Order | after the migration Job; the hub starts and serves with no swimlanes, so the rollout need not wait for it (it is what lets agents join, and a missing seed must not stop a deploy); safe to retry, and safe to run twice at once |
+
+**What the Job must never be given.** The migrator's credential (it refuses it), a variable of the hub other than the two database ones,
+a mount other than the four above. `LK_SEED_TIMEOUT_SECS` is the Job's alone: `tests/hardening.rs` fails if the hub pod carries it.
+
+**Why the file is a reviewed change.** Whoever can apply a seed file can make a service account the agent of a swimlane: the file is
+a change of who may join, and is reviewed as one. It is validated (a service account must be a `*.gserviceaccount.com` address, in
+lower case: a person's address is refused), it never deletes, `--dry-run` shows the exact change first, and every changed row is one
+audit event with the SHA-256 of the file. The residual risk: the operator who ran the Job is not in the event (the actor is the
+component), so the hash and the Job's own record (who started it, from which `ConfigMap`) are how a change is traced to a person.
+
 ### Where the hub writes
 
 The root filesystem is read-only. Two mounts are writable, and the code writes nowhere else:

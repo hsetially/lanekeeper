@@ -302,11 +302,11 @@ platform-fuzz: fuzz-tools-check
     done
     echo "platform-fuzz: {{platform_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
 
-# S22, rule 13: the hub binary's own fuzz crate (plan 18, T1; `fuzz-smoke` does not run it): the settings, the command line and the
-# PEM of the web certificate. Its lockfile is complete and passes cargo deny and cargo audit (S19), then each target runs
+# S22, rule 13: the hub binary's own fuzz crate (plan 18, T1 and T7; `fuzz-smoke` does not run it): the settings, the command line, the
+# PEM of the web certificate and the seed file of `hub seed`. Its lockfile is complete and passes cargo deny and cargo audit (S19), then each target runs
 # {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in crates/hub/fuzz/artifacts/. `crates/hub/tests/justfile_gate.rs`
 # fails if this list and fuzz_targets/ drift apart. The committed seeds also replay on stable in `cargo test -p hub --test corpus_replay`.
-hub_fuzz_targets := "hub_cli_args hub_pem hub_settings"
+hub_fuzz_targets := "hub_cli_args hub_pem hub_seed_file hub_settings"
 hub-fuzz: fuzz-tools-check
     #!/usr/bin/env bash
     set -euo pipefail

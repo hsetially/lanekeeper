@@ -7,7 +7,8 @@
 //! nodes, the indexes and the relations, without costs or row estimates, which move with the machine and the statistics.
 //!
 //! T4 holds the two statements the authentication path adds to a request (a session by its hash, a user by its key). The tasks
-//! after it add theirs here: the registry's and the write paths' (T5) and the seed's (T7). The schema probe at start reads
+//! after it add theirs here: the registry's and the write paths' (T5) and the seed's (T7, `the_seed_statements_are_indexed`: the
+//! lookups by key and the updates of `hub seed`, taken from the constants the code runs). The schema probe at start reads
 //! `pg_catalog` only, whose size is the number of migrations and not the data's, so it has no plan to protect.
 //! `LK_REQUIRE_DOCKER=1` (set by `just verify-18`) makes a missing daemon a failure.
 #![allow(
@@ -168,4 +169,117 @@ async fn the_hubs_own_statements_are_indexed() {
     writeln!(report, "user by key\n{}", shape(&plan)).unwrap();
 
     insta::assert_snapshot!("the_hubs_own_statements", report);
+}
+
+/// The statements `hub seed` runs (T7, P12), at a scale no deployment reaches (5,000 swimlanes and sentinels, 10,000 tenant rows, 5,000
+/// projects): the lookups of the rows a file names go by the primary key, the reads of "rows not in the file" walk the key in order and
+/// stop at their limit, and the updates find their row by the key. The seed runs once, by hand or as a Job, so this is not about speed:
+/// it is that no statement of it can ever be the one that reads a whole table because a table grew.
+///
+/// **Why sequential scans are switched off for the plans.** These tables hold tens of rows in a deployment, and at five thousand
+/// rows (about thirty pages) the planner still, rightly, reads a table whole rather than look up forty keys. So the test asks the
+/// question that matters: *is there an index the statement can use*. With `enable_seqscan = off` a statement that has no usable index
+/// still plans a sequential scan (at a prohibitive cost), and one that has one plans the index. The snapshot is those plans.
+#[tokio::test]
+async fn the_seed_statements_are_indexed() {
+    use hub::seed::apply;
+
+    let ca = TestCa::new("lanekeeper-test-ca");
+    let Some(pg) = tls_pg::start(&ca).await else {
+        return;
+    };
+    pg.migrate().await;
+
+    let mut admin = pg.superuser_conn().await;
+    for sql in [
+        "INSERT INTO projects (id, display_name) SELECT 'p' || g, 'P ' || g FROM generate_series(1, 5000) g",
+        "INSERT INTO swimlanes (id, project_id, display_name) SELECT 'sl-' || g, 'p1', 'S ' || g FROM generate_series(1, 5000) g",
+        "INSERT INTO swimlane_tenants (swimlane_id, tenant_id) SELECT 'sl-' || g, 'sit' || k FROM generate_series(1, 5000) g, generate_series(1, 2) k",
+        "INSERT INTO sentinels (vm, swimlane_id, export_root) SELECT 'vm-' || g, 'sl-' || g, '/export' FROM generate_series(1, 5000) g",
+        "ANALYZE projects, swimlanes, swimlane_tenants, sentinels",
+    ] {
+        admin.execute(sql).await.unwrap();
+    }
+
+    let pool = pg.app_pool().await;
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL enable_seqscan = off")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let ids = |prefix: &str| -> Vec<String> { (1..=40).map(|n| format!("{prefix}{n}")).collect() };
+    let mut report = String::new();
+    // A file of 40 swimlanes (the design scale) asks for the rows of its ids.
+    let lookups: [(&str, &str, Vec<String>, Option<i64>); 7] = [
+        ("projects by id", apply::SELECT_PROJECTS, ids("p"), None),
+        ("swimlanes by id", apply::SELECT_SWIMLANES, ids("sl-"), None),
+        (
+            "tenants of the swimlanes",
+            apply::SELECT_TENANTS,
+            ids("sl-"),
+            Some(12_801),
+        ),
+        ("sentinels by vm", apply::SELECT_SENTINELS, ids("vm-"), None),
+        (
+            "projects not in the file",
+            apply::ABSENT_PROJECTS,
+            ids("p"),
+            Some(51),
+        ),
+        (
+            "swimlanes not in the file",
+            apply::ABSENT_SWIMLANES,
+            ids("sl-"),
+            Some(51),
+        ),
+        (
+            "sentinels not in the file",
+            apply::ABSENT_SENTINELS,
+            ids("vm-"),
+            Some(51),
+        ),
+    ];
+    for (name, sql, ids, limit) in lookups {
+        let explain = format!("EXPLAIN (FORMAT JSON) {sql}");
+        let mut query = sqlx::query_as::<_, (serde_json::Value,)>(&explain).bind(ids);
+        if let Some(limit) = limit {
+            query = query.bind(limit);
+        }
+        let plan = query.fetch_one(&mut *tx).await.unwrap().0;
+        assert!(
+            !scans_a_table(&plan),
+            "{name} must not scan a table:\n{}",
+            shape(&plan)
+        );
+        writeln!(report, "{name}\n{}", shape(&plan)).unwrap();
+    }
+    // The writes find their row by the key.
+    let writes: [(&str, &str, [&str; 2]); 3] = [
+        ("project update", apply::UPDATE_PROJECT, ["p1", "P"]),
+        ("swimlane update", apply::UPDATE_SWIMLANE, ["sl-1", "S"]),
+        ("sentinel update", apply::UPDATE_SENTINEL, ["vm-1", "/export"]),
+    ];
+    for (name, sql, [key, value]) in writes {
+        let explain = format!("EXPLAIN (FORMAT JSON) {sql}");
+        let mut query = sqlx::query_as::<_, (serde_json::Value,)>(&explain).bind(key);
+        // The updates take the key and then one value per column they may set; every other bind is NULL.
+        let columns = if name == "swimlane update" {
+            8
+        } else if name == "sentinel update" {
+            3
+        } else {
+            1
+        };
+        for position in 0..columns {
+            query = query.bind(if position == 1 { Some(value) } else { None });
+        }
+        let plan = query.fetch_one(&mut *tx).await.unwrap().0;
+        assert!(
+            !scans_a_table(&plan),
+            "{name} must not scan a table:\n{}",
+            shape(&plan)
+        );
+        writeln!(report, "{name}\n{}", shape(&plan)).unwrap();
+    }
+    insta::assert_snapshot!("the_seed_statements", report);
 }

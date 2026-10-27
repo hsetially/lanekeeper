@@ -74,6 +74,10 @@ tracing.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "json", "std", "registry"] }
 serde.workspace = true
+# The seed file (T7): `hub seed` reads a YAML or JSON file that an operator wrote, so it is parsed by a parser that has hard budgets
+# (events, nodes, depth, aliases) and no unsafe code. A workspace pin that the conformance suite and the tests already use; it is a
+# production dependency of the hub for the first time, and the hub's fuzz lockfile gains it and what it needs.
+serde-saphyr.workspace = true
 # The web certificate's expiry (T1, G11): the readiness check needs the leaf's `notAfter`, which rustls does not expose.
 # Already a workspace pin, used by hub-platform for the same purpose; its `verify` features stay off.
 x509-parser.workspace = true
@@ -101,7 +105,6 @@ insta = { workspace = true, features = ["json"] }
 proptest.workspace = true
 rcgen = { workspace = true, features = ["pem"] }
 rustls = { workspace = true, features = ["tls12"] }
-serde-saphyr.workspace = true
 tempfile.workspace = true
 testcontainers.workspace = true
 # The startup benchmark (T8, P11) includes the platform's Postgres test helper, which migrates a throwaway database.

@@ -54,6 +54,7 @@ use crate::migrate;
 use crate::ready::{CertsReady, Expiring};
 use crate::registry::{Registry, RegistryBuildError, RegistryInputs};
 use crate::schema::{self, SchemaError, SchemaReady};
+use crate::seed;
 use crate::serve::{self, ServeLimits};
 use crate::shutdown::{Drain, Stop};
 use crate::static_files::{StaticError, StaticFiles};
@@ -908,6 +909,9 @@ where
         }
         // The Job that migrates the schema before the hub rolls (T2): it reads its own settings and starts nothing of the hub.
         Ok(Command::Migrate) => return migrate::entry(lookup),
+        // The Job (or the person) that registers swimlanes (T7): it reads its own settings, as the application role, and starts
+        // nothing of the hub.
+        Ok(Command::Seed(args)) => return seed::entry(&args, lookup),
         // The one-off ceremony that makes a CA certificate (T3): it needs KMS and nothing of the hub's settings.
         Ok(Command::CaInit(args)) => return ca_init::entry(&args),
         Ok(Command::Serve) => {}

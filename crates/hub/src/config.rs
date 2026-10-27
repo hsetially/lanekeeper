@@ -22,6 +22,7 @@ mod migrator;
 mod platform;
 mod reader;
 mod registry;
+mod seed;
 mod web_tls;
 mod writes;
 
@@ -40,6 +41,7 @@ pub use migrator::{DEFAULT_TIMEOUT_SECS, JOB_ONLY_VARIABLES, MigratorSettings};
 pub use platform::{CaSettings, DEFAULT_AGENT_ADDR, DEFAULT_REPLICA_ADDR, PlatformSettings};
 pub use reader::Reader;
 pub use registry::RegistrySettings;
+pub use seed::{DEFAULT_TIMEOUT_SECS as DEFAULT_SEED_TIMEOUT_SECS, SEED_JOB_ONLY_VARIABLES, SeedSettings};
 pub use web_tls::{DEFAULT_RELOAD_SECS, WebTlsSettings};
 pub use writes::{
     DEFAULT_BASE_BRANCH, DEFAULT_CONFIG_SERVER_DEPLOYMENT, DEFAULT_GITHUB_API_BASE, WriteJobTimes,

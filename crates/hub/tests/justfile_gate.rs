@@ -200,8 +200,8 @@ fn hub_fuzz_runs_every_target_the_hub_has_and_checks_its_lockfile() {
         listed, on_disk,
         "hub-fuzz must run every target in crates/hub/fuzz/fuzz_targets"
     );
-    // The plan names these three (rule 13): the settings, the command line, and the PEM at the web certificate.
-    for target in ["hub_settings", "hub_cli_args", "hub_pem"] {
+    // The plan names these four (rule 13): the settings, the command line, the PEM at the web certificate, and the seed file.
+    for target in ["hub_settings", "hub_cli_args", "hub_pem", "hub_seed_file"] {
         assert!(listed.contains(target), "{target} is not fuzzed");
     }
     for target in &listed {

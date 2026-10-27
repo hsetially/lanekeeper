@@ -40,6 +40,7 @@ pub mod random;
 pub mod ready;
 pub mod registry;
 pub mod schema;
+pub mod seed;
 pub mod serve;
 pub mod session_auth;
 pub mod shutdown;

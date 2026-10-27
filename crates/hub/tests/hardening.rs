@@ -575,6 +575,13 @@ fn environment_problems(container: &Value) -> Vec<String> {
                 "{name} is a setting of the migration Job; the hub pod must not carry the migrator credential"
             ));
         }
+        // T7 (G24): the seed Job's time limit belongs to the Job. The credential and the CA are the hub's own variables, so they
+        // are not listed: what the Job must not have is more than the pod has, and what the pod must not have is the Job's limit.
+        if hub::config::SEED_JOB_ONLY_VARIABLES.contains(&name) {
+            problems.push(format!(
+                "{name} is a setting of the seed Job; the hub pod must not carry it"
+            ));
+        }
     }
     problems
 }
@@ -986,6 +993,15 @@ fn hardening_lint_rejects_planted_violations() {
                     .as_array_mut()
                     .unwrap()
                     .push(serde_json::json!({"name": "LK_MIGRATE_TIMEOUT_SECS", "value": "600"}))
+            }),
+        ),
+        (
+            "the seed time limit in the hub pod",
+            mutate("Pod", |d| {
+                container(d)["env"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({"name": "LK_SEED_TIMEOUT_SECS", "value": "120"}))
             }),
         ),
         (

@@ -94,6 +94,104 @@ fn the_migrator_seeds_keep_the_migrators_verdict() {
 }
 
 #[test]
+fn every_seed_file_seed_keeps_its_verdict_and_its_invariants() {
+    replay("hub_seed_file", invariants::hub_seed_file);
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(1500))]
+
+    /// A stand-in for the fuzzer on stable: the example, with a few bytes replaced, inserted or cut, satisfies every invariant of
+    /// the target (fixed errors, limits, print and parse, a bounded plan, an idempotent second run).
+    #[test]
+    fn the_example_with_a_few_edits_satisfies_the_seed_file_invariants(
+        edits in proptest::collection::vec((0..4096_usize, proptest::num::u8::ANY, 0..3_u8), 0..6),
+    ) {
+        let mut bytes = include_bytes!("../examples/seed.dev.yaml").to_vec();
+        for (at, byte, kind) in edits {
+            let at = at % bytes.len().max(1);
+            match kind {
+                0 => bytes[at] = byte,
+                1 => bytes.insert(at, byte),
+                _ => { bytes.remove(at); }
+            }
+        }
+        proptest::prop_assert!(invariants::hub_seed_file(&bytes).is_ok(), "{:?}", invariants::hub_seed_file(&bytes));
+    }
+}
+
+#[test]
+fn the_seed_file_seeds_mean_what_their_names_say() {
+    // The accepted ones are the file the example is, and the shapes that matter; each rejected one is refused for the reason in its
+    // name and is not just any bad file, so the replay holds the validators and not only the parser.
+    let read = |name: &str| fs::read(corpus("hub_seed_file").join(name)).unwrap();
+    let file = hub::seed::file::parse(&read("accepted_the_example")).unwrap();
+    assert_eq!(file.swimlanes.as_ref().unwrap().len(), 4);
+    assert_eq!(hub::seed::file::parse(&read("accepted_json")).unwrap(), file);
+    assert_eq!(
+        hub::seed::file::parse(&read("accepted_a_byte_order_mark"))
+            .unwrap()
+            .swimlanes,
+        None
+    );
+    for (name, why) in [
+        (
+            "rejected_a_person_as_the_service_account",
+            "swimlanes[0].agent_service_account",
+        ),
+        ("rejected_a_second_swimlane_with_the_same_id", "swimlanes[1].id"),
+        ("rejected_a_tenant_with_a_dot", "swimlanes[0].tenants[0]"),
+        ("rejected_a_relative_export", "swimlanes[0].nfs_export"),
+        (
+            "rejected_a_bidirectional_override_in_a_name",
+            "swimlanes[0].display_name",
+        ),
+        ("rejected_a_sentinel_name_with_a_slash", "sentinels[0].vm"),
+        ("rejected_an_unsupported_version", "version"),
+    ] {
+        let error = hub::seed::file::parse(&read(name)).unwrap_err().to_string();
+        assert!(error.starts_with(why), "{name}: {error}");
+    }
+    for name in [
+        "rejected_an_unknown_field",
+        "rejected_an_alias",
+        "rejected_a_merge_key",
+        "rejected_two_documents",
+        "rejected_nesting_too_deep",
+        "rejected_a_pasted_secret",
+        "rejected_a_duplicate_key",
+        "rejected_an_unquoted_number",
+        "rejected_empty",
+    ] {
+        let error = hub::seed::file::parse(&read(name)).unwrap_err();
+        assert!(
+            matches!(error, hub::seed::SeedError::Syntax { .. }),
+            "{name}: {error:?}"
+        );
+    }
+    assert_eq!(
+        hub::seed::file::parse(&read("rejected_not_utf8")),
+        Err(hub::seed::SeedError::NotText)
+    );
+}
+
+#[test]
+fn the_seed_job_seeds_keep_the_seed_settings_verdict() {
+    // `hub seed` reads the same shape of input as the hub (T7). A seed's name gives the serving hub's verdict; these exist for the
+    // seed Job's, and a test fails if one stops meaning what it says.
+    for (name, want) in [
+        ("accepted_seed_job", Verdict::Accepted),
+        ("accepted_seed_job_with_a_bad_timeout", Verdict::Rejected),
+        ("accepted_seed_job_without_its_credential", Verdict::Rejected),
+    ] {
+        let data = fs::read(corpus("hub_settings").join(name)).unwrap();
+        assert_eq!(invariants::seed_settings(&data), Ok(want), "{name}");
+        // The serving hub accepts all three: it reads none of the seed Job's variable.
+        assert_eq!(invariants::hub_settings(&data), Ok(Verdict::Accepted), "{name}");
+    }
+}
+
+#[test]
 fn every_pem_seed_keeps_its_verdict_and_its_invariants() {
     replay("hub_pem", invariants::hub_pem);
 }
@@ -293,7 +391,7 @@ fn the_corpus_has_a_directory_for_every_target_and_nothing_else() {
     assert_eq!(targets, dirs);
     assert_eq!(
         targets,
-        ["hub_cli_args", "hub_pem", "hub_settings"]
+        ["hub_cli_args", "hub_pem", "hub_seed_file", "hub_settings"]
             .iter()
             .map(|s| (*s).to_owned())
             .collect()
@@ -385,6 +483,23 @@ fn regenerate_the_seeds() {
         "hub_settings",
         &[
             ("accepted_empty", text("")),
+            // The seed Job (T7): the application role's credential from a file, the CA, and the Job's own time limit.
+            (
+                "accepted_seed_job",
+                text(
+                    "LK_DATABASE_URL_FILE=/run/db/uri\nLK_DB_CA_FILE=/run/ca/ca.pem\nLK_SEED_TIMEOUT_SECS=300\nFILE_CONTENT=postgres://lanekeeper_app:hunter2@db.internal/lanekeeper\n",
+                ),
+            ),
+            (
+                "accepted_seed_job_with_a_bad_timeout",
+                text(
+                    "LK_DATABASE_URL_FILE=/run/db/uri\nLK_DB_CA_FILE=/run/ca/ca.pem\nLK_SEED_TIMEOUT_SECS=0\nFILE_CONTENT=postgres://lanekeeper_app:hunter2@db.internal/lanekeeper\n",
+                ),
+            ),
+            (
+                "accepted_seed_job_without_its_credential",
+                text("LK_DB_CA_FILE=/run/ca/ca.pem\nLK_SEED_TIMEOUT_SECS=300\n"),
+            ),
             (
                 "accepted_serving",
                 text(
@@ -624,6 +739,38 @@ fn regenerate_the_seeds() {
             ("rejected_migrate_extra_argument", text("migrate\0now")),
             ("rejected_migrate_capitalised", text("Migrate")),
             ("rejected_help_then_migrate", text("help\0migrate")),
+            // `seed` and its file and `--dry-run` (T7, G24).
+            ("accepted_seed", text("seed\0seed.yaml")),
+            (
+                "accepted_seed_dry_run_first",
+                text("seed\0--dry-run\0/etc/lanekeeper/seed/seed.yaml"),
+            ),
+            ("accepted_seed_dry_run_last", text("seed\0seed.json\0--dry-run")),
+            (
+                "accepted_seed_a_file_that_starts_with_dot_slash_dash",
+                text("seed\0./-seed.yaml"),
+            ),
+            ("rejected_seed_without_a_file", text("seed")),
+            ("rejected_seed_dry_run_without_a_file", text("seed\0--dry-run")),
+            ("rejected_seed_two_files", text("seed\0a.yaml\0b.yaml")),
+            (
+                "rejected_seed_dry_run_twice",
+                text("seed\0--dry-run\0--dry-run\0a.yaml"),
+            ),
+            (
+                "rejected_seed_an_option_that_does_not_exist",
+                text("seed\0--force\0a.yaml"),
+            ),
+            (
+                "rejected_seed_a_file_that_starts_with_a_dash",
+                text("seed\0-a.yaml"),
+            ),
+            ("rejected_seed_an_empty_file_name", text("seed\0")),
+            (
+                "rejected_seed_a_pasted_secret",
+                text("seed\0a.yaml\0hunter2-planted-secret"),
+            ),
+            ("rejected_seed_capitalised", text("Seed\0a.yaml")),
             // `ca-init` and its three options (T3, G15).
             (
                 "accepted_ca_init",
@@ -719,6 +866,101 @@ fn regenerate_the_seeds() {
                 "rejected_ca_init_an_option_without_its_value",
                 text("ca-init\0--valid-days"),
             ),
+        ],
+    );
+    let example = include_str!("../examples/seed.dev.yaml");
+    let from = |old: &str, new: &str| text(&example.replacen(old, new, 1));
+    let json = hub::seed::file::parse(example.as_bytes()).unwrap().to_json();
+    let mut bom = vec![0xef, 0xbb, 0xbf];
+    bom.extend_from_slice(b"version: 1\n");
+    write_seeds(
+        "hub_seed_file",
+        &[
+            ("accepted_the_example", text(example)),
+            ("accepted_json", text(&json)),
+            ("accepted_version_only", text("version: 1\n")),
+            (
+                "accepted_empty_sections",
+                text("version: 1\nprojects: []\nswimlanes: []\nsentinels: []\n"),
+            ),
+            ("accepted_a_byte_order_mark", bom),
+            (
+                "accepted_a_swimlane_with_only_its_account",
+                text(
+                    "version: 1\nswimlanes:\n  - id: sl-01\n    agent_service_account: agent@p.iam.gserviceaccount.com\n",
+                ),
+            ),
+            (
+                "accepted_a_default_compute_account",
+                from(
+                    "agent-sl-02@lanekeeper-dev.iam.gserviceaccount.com",
+                    "123456789012-compute@developer.gserviceaccount.com",
+                ),
+            ),
+            (
+                "accepted_a_null_field",
+                from("    tier: dev\n", "    tier: null\n"),
+            ),
+            (
+                "accepted_a_sentinel_that_names_a_swimlane_of_the_database",
+                text(
+                    "version: 1\nsentinels:\n  - vm: nfs-vm-09\n    swimlane: sl-77\n    export_root: /export\n",
+                ),
+            ),
+            ("rejected_empty", Vec::new()),
+            ("rejected_not_utf8", vec![0xff, 0xfe, 0x00, 0x61]),
+            ("rejected_a_pasted_secret", text("hunter2-planted-secret")),
+            ("rejected_an_unsupported_version", text("version: 2\n")),
+            (
+                "rejected_an_unknown_field",
+                from("    tier: dev\n", "    tier: dev\n    editing_unlocked: true\n"),
+            ),
+            (
+                "rejected_a_person_as_the_service_account",
+                from(
+                    "agent-sl-01@lanekeeper-dev.iam.gserviceaccount.com",
+                    "alice@gmail.com",
+                ),
+            ),
+            (
+                "rejected_a_second_swimlane_with_the_same_id",
+                from("  - id: sl-02\n", "  - id: sl-01\n"),
+            ),
+            (
+                "rejected_a_tenant_with_a_dot",
+                from("tenants: [sit1]", "tenants: [sit.1]"),
+            ),
+            (
+                "rejected_a_relative_export",
+                from("nfs_export: /export/sl-01", "nfs_export: export/sl-01"),
+            ),
+            (
+                "rejected_a_bidirectional_override_in_a_name",
+                from("display_name: Swimlane 1", "display_name: \"Swimlane \\u202e1\""),
+            ),
+            (
+                "rejected_a_sentinel_name_with_a_slash",
+                from("vm: nfs-vm-01", "vm: nfs/vm-01"),
+            ),
+            (
+                "rejected_an_alias",
+                text("version: 1\nprojects:\n  - &a {id: p}\n  - *a\n"),
+            ),
+            (
+                "rejected_a_merge_key",
+                text("version: 1\nprojects:\n  - <<: {id: p}\n"),
+            ),
+            ("rejected_two_documents", text("version: 1\n---\nversion: 1\n")),
+            (
+                "rejected_nesting_too_deep",
+                text(&format!(
+                    "version: 1\nprojects: {}{}\n",
+                    "[".repeat(100),
+                    "]".repeat(100)
+                )),
+            ),
+            ("rejected_a_duplicate_key", text("version: 1\nversion: 1\n")),
+            ("rejected_an_unquoted_number", from("tier: dev", "tier: 010")),
         ],
     );
     let key = rcgen::KeyPair::generate().unwrap();

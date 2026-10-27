@@ -9,8 +9,10 @@
 use std::collections::BTreeMap;
 
 use domain::Secret;
-use hub::cli::{self, CaInitArgs, CliError, Command};
-use hub::config::{HubSettings, MigratorSettings};
+use hub::cli::{self, CaInitArgs, CliError, Command, SeedArgs};
+use hub::config::{HubSettings, MigratorSettings, SeedSettings};
+use hub::seed::plan::{self as seed_plan, State as SeedState};
+use hub::seed::{FieldPath, MAX_CHANGES, MAX_FILE_BYTES, SeedError};
 use hub::web_tls::{self, MAX_CHAIN_LEN, PemError};
 use hub_platform::ca::profile::{CertProfile, PeerName};
 use hub_platform::gcp::wire::CryptoKeyVersionName;
@@ -35,6 +37,7 @@ pub type Check = fn(&[u8]) -> Result<Verdict, String>;
 pub fn hub_settings(data: &[u8]) -> Result<Verdict, String> {
     let (vars, file) = parse_lines(data);
     migrator_settings_with(&vars, &file)?;
+    seed_settings_with(&vars, &file)?;
     let lookup = |name: &str| vars.get(name).cloned();
     let read_file = |_: &std::path::Path| Ok(file.clone());
     match HubSettings::from_parts(lookup, read_file) {
@@ -109,6 +112,47 @@ fn migrator_settings_with(vars: &BTreeMap<String, String>, file: &str) -> Result
             }
             if settings.url.expose() != url {
                 return Err("the migrator URL is not the file's trimmed text".to_owned());
+            }
+            Ok(Verdict::Accepted)
+        }
+    }
+}
+
+/// The settings of `hub seed` (T7) over the same input shape: the verdict is whether the seed Job would run with them. Seeds of
+/// `hub_settings` that exercise it say so in their names (`*_seed_job*`).
+pub fn seed_settings(data: &[u8]) -> Result<Verdict, String> {
+    let (vars, file) = parse_lines(data);
+    seed_settings_with(&vars, &file)
+}
+
+fn seed_settings_with(vars: &BTreeMap<String, String>, file: &str) -> Result<Verdict, String> {
+    let lookup = |name: &str| vars.get(name).cloned();
+    let read_file = |_: &std::path::Path| Ok(file.to_owned());
+    match SeedSettings::from_parts(lookup, read_file) {
+        Err(error) => {
+            let shown = format!("{error}");
+            if !is_fixed_settings_error(&shown) || format!("{error:?}").len() > 200 {
+                return Err(format!(
+                    "a seed error that is not a variable name and a fixed phrase: {shown}"
+                ));
+            }
+            Ok(Verdict::Rejected)
+        }
+        Ok(settings) => {
+            let secs = settings.timeout.as_secs();
+            if !(1..=3600).contains(&secs) {
+                return Err(format!("the seed time limit accepted outside its range: {secs}"));
+            }
+            // The credential is the file's trimmed text or the plain variable, and is not in the debug output of its settings (S7).
+            let url = settings.url.expose().as_str();
+            let from_file = file.trim();
+            if url != from_file && vars.get("LK_DATABASE_URL").map(String::as_str) != Some(url) {
+                return Err("the seed URL is neither the file's text nor the variable".to_owned());
+            }
+            let shown = format!("{settings:?}");
+            let ca = settings.ca_file.display().to_string();
+            if url.len() >= 12 && shown.contains(url) && !ca.contains(url) {
+                return Err("the seed URL is in the debug output of its settings".to_owned());
             }
             Ok(Verdict::Accepted)
         }
@@ -458,6 +502,7 @@ pub fn hub_cli_args(data: &[u8]) -> Result<Verdict, String> {
                 || shown == "unexpected argument"
                 || OPTIONS
                     .iter()
+                    .chain(std::iter::once(&"<file>"))
                     .any(|o| shown == format!("{o} is required") || shown == format!("{o} is not valid"));
             if !fixed {
                 return Err(format!("an error with other text in it: {shown}"));
@@ -470,7 +515,8 @@ pub fn hub_cli_args(data: &[u8]) -> Result<Verdict, String> {
 /// The three options of `ca-init`, as the usage text spells them, in the order the usage gives them.
 const OPTIONS: [&str; 3] = ["--kms-ref", "--common-name", "--valid-days"];
 
-/// The usage text, as a grammar: `hub [serve] | hub migrate | hub ca-init <three options, each once, in any order> | hub help`.
+/// The usage text, as a grammar: `hub [serve] | hub migrate | hub seed [--dry-run] <file> | hub ca-init <three options, each once, in
+/// any order> | hub help`.
 fn grammar(args: &[String]) -> Result<Command, CliError> {
     let word = |s: &str| matches!(s, "serve" | "migrate" | "help" | "--help" | "-h");
     match args {
@@ -478,10 +524,33 @@ fn grammar(args: &[String]) -> Result<Command, CliError> {
         [one] if one == "serve" => Ok(Command::Serve),
         [one] if one == "migrate" => Ok(Command::Migrate),
         [one] if word(one) => Ok(Command::Help),
+        [first, rest @ ..] if first == "seed" => seed_grammar(rest),
         [first, rest @ ..] if first == "ca-init" => ca_init_grammar(rest),
         [first, ..] if !word(first) => Err(CliError::UnknownCommand),
         _ => Err(CliError::UnexpectedArgument),
     }
+}
+
+/// `seed`: `--dry-run` at most once and one file, in either order, read left to right: the first word that cannot be either decides.
+/// A file is a word of 1 to 4,096 bytes that does not start with a dash.
+fn seed_grammar(rest: &[String]) -> Result<Command, CliError> {
+    let mut file: Option<&String> = None;
+    let mut dry_run = false;
+    for word in rest {
+        match word.as_str() {
+            "--dry-run" if dry_run => return Err(CliError::UnexpectedArgument),
+            "--dry-run" => dry_run = true,
+            w if w.starts_with('-') || file.is_some() => return Err(CliError::UnexpectedArgument),
+            "" => return Err(CliError::InvalidOption("<file>")),
+            w if w.len() > 4096 => return Err(CliError::InvalidOption("<file>")),
+            _ => file = Some(word),
+        }
+    }
+    let file = file.ok_or(CliError::MissingOption("<file>"))?;
+    Ok(Command::Seed(SeedArgs {
+        file: std::path::PathBuf::from(file),
+        dry_run,
+    }))
 }
 
 fn ca_init_grammar(rest: &[String]) -> Result<Command, CliError> {
@@ -576,6 +645,146 @@ fn days(value: &str) -> Option<u32> {
     }
     let n: u32 = value.parse().ok()?;
     (1..=3650).contains(&n).then_some(n)
+}
+
+// ------------------------------------------------------------------------------------------------ hub_seed_file
+
+/// The words a place in an error may be made of: the sections and the fields of the seed file. Nothing else can be in a message of
+/// `SeedError` that is not a number (`FieldPath` is built from constants), and this checks that no input got there.
+const SEED_SECTIONS: [&str; 4] = ["version", "projects", "swimlanes", "sentinels"];
+const SEED_FIELDS: [&str; 14] = [
+    "id",
+    "display_name",
+    "project",
+    "cluster",
+    "tier",
+    "nfs_server",
+    "nfs_export",
+    "mount_root",
+    "agent_service_account",
+    "tenants",
+    "vm",
+    "swimlane",
+    "export_root",
+    "service_account",
+];
+
+fn seed_place_is_fixed(place: &FieldPath) -> bool {
+    SEED_SECTIONS.contains(&place.section) && place.field.is_none_or(|f| SEED_FIELDS.contains(&f))
+}
+
+/// S10: an error of the seed names a place made of constants and a reason that is fixed text, and never a value of the file.
+fn seed_error_is_fixed(error: &SeedError) -> Result<(), String> {
+    let fixed = match error {
+        SeedError::Invalid { field, .. }
+        | SeedError::Duplicate { field }
+        | SeedError::UnknownProject { field }
+        | SeedError::UnknownSwimlane { field }
+        | SeedError::MissingOnCreate { field } => seed_place_is_fixed(field),
+        SeedError::Read | SeedError::TooLarge | SeedError::NotText | SeedError::Syntax { .. } => true,
+        SeedError::TooManyChanges { changes } => *changes > MAX_CHANGES,
+        // The rest need a database and cannot come out of parsing or planning.
+        _ => false,
+    };
+    let shown = format!("{error}");
+    if !fixed || shown.is_empty() || shown.len() > 400 || shown.contains(char::is_control) {
+        return Err(format!(
+            "an error that is not a fixed place and a fixed reason: {shown}"
+        ));
+    }
+    Ok(())
+}
+
+/// The input is the bytes of a seed file. Parsing never panics and never reads more than [`MAX_FILE_BYTES`]; an error is fixed text
+/// (a place and a reason); an accepted file is inside every limit, survives a print and a parse, and plans against an empty database
+/// into at most 200 changes whose events are small enough to record, after which a second plan finds nothing to change (a run is
+/// idempotent for any file there is).
+pub fn hub_seed_file(data: &[u8]) -> Result<Verdict, String> {
+    let parsed = hub::seed::file::parse(data);
+    if data.len() > MAX_FILE_BYTES && parsed != Err(SeedError::TooLarge) {
+        return Err("a file over the size limit was not refused as too large".to_owned());
+    }
+    let file = match parsed {
+        Err(error) => {
+            seed_error_is_fixed(&error)?;
+            return Ok(Verdict::Rejected);
+        }
+        Ok(file) => file,
+    };
+    // The limits.
+    let sections = [
+        file.projects.as_ref().map(Vec::len),
+        file.swimlanes.as_ref().map(Vec::len),
+        file.sentinels.as_ref().map(Vec::len),
+    ];
+    if sections
+        .iter()
+        .flatten()
+        .any(|n| *n > hub::seed::file::MAX_PER_SECTION)
+    {
+        return Err("a section over the limit was accepted".to_owned());
+    }
+    for lane in file.swimlanes.iter().flatten() {
+        if lane
+            .tenants
+            .as_ref()
+            .is_some_and(|t| t.len() > hub::seed::file::MAX_TENANTS)
+        {
+            return Err("more tenants than the limit were accepted".to_owned());
+        }
+        // An address that is accepted is lower case, ASCII, and a Google service account's: it is compared with a token's email.
+        if let Some(account) = &lane.agent_service_account {
+            if !account.is_ascii()
+                || account.to_ascii_lowercase() != *account
+                || !account.ends_with(".gserviceaccount.com")
+                || account.matches('@').count() != 1
+            {
+                return Err("an address that is not a service account was accepted".to_owned());
+            }
+        }
+    }
+    for sentinel in file.sentinels.iter().flatten() {
+        if hub_platform::ca::profile::PeerName::parse(&sentinel.vm).is_err() {
+            return Err("a sentinel name that the CA would refuse was accepted".to_owned());
+        }
+    }
+    // A valid file survives a print and a parse.
+    let json = file.to_json();
+    match hub::seed::file::parse(json.as_bytes()) {
+        Ok(again) if again == file => {}
+        other => {
+            return Err(format!(
+                "the file does not survive a print and a parse: {other:?}"
+            ));
+        }
+    }
+    // The plan against an empty database: refused with fixed text, or a bounded list of changes that each make a recordable event.
+    match seed_plan::plan(&file, &SeedState::default()) {
+        Err(error) => seed_error_is_fixed(&error)?,
+        Ok(plan) => {
+            if plan.changes.len() > MAX_CHANGES {
+                return Err("a plan over the limit on changes was accepted".to_owned());
+            }
+            let events = plan
+                .events(domain::Timestamp::from_unix_millis(0), &"0".repeat(64))
+                .map_err(|e| format!("a change that has no event: {e}"))?;
+            if events.len() != plan.changes.len() {
+                return Err("not one event for each change".to_owned());
+            }
+            for event in &events {
+                if ports::canonical_size(event).is_err() {
+                    return Err("an event that cannot be recorded".to_owned());
+                }
+            }
+            // Idempotence: applied, the same file changes nothing.
+            let next = SeedState::default().after(&plan);
+            match seed_plan::plan(&file, &next) {
+                Ok(second) if second.changes.is_empty() => {}
+                other => return Err(format!("a second run would change something: {other:?}")),
+            }
+        }
+    }
+    Ok(Verdict::Accepted)
 }
 
 // ------------------------------------------------------------------------------------------------ hub_pem

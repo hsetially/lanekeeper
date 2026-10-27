@@ -53,3 +53,10 @@ path = "fuzz_targets/hub_pem.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "hub_seed_file"
+path = "fuzz_targets/hub_seed_file.rs"
+test = false
+doc = false
+bench = false
