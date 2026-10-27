@@ -292,6 +292,14 @@ fn verify_18_runs_every_sub_recipe() {
         );
     }
     assert!(line("cargo test -p xtask").contains("budgets_registry"));
+    // S5's source scan (prompt 03b) reads `crates/hub/src` too, and it is what `just verify` runs and `verify-18` did not: the web
+    // listener's own TLS key (`web_tls::decode`, plan G3) is the one private key built from bytes in this crate. The gate must show
+    // that scan, or the two gates disagree (blocker B1, D145).
+    assert_eq!(
+        line("--test ca_key_use").trim(),
+        "cargo test -p hub-platform --test ca_key_use",
+        "hub-test must run the S5 scan of hub-platform as a command of its own, with nothing that could skip or soften it"
+    );
 
     // The benchmarks run, then they are judged against perf/budgets.toml: P11 and the two composed-authentication budgets.
     let (_, bench) = recipe(&source, "hub-bench").unwrap();

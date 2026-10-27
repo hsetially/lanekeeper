@@ -8,7 +8,8 @@
 //! - **Every decision it cites is in `docs/decisions.md`**, and the decisions of the plan gate are there as decided by the human.
 //! - **It states what the composition does not prove and the residual risks the plan promised** (an unaudited migration run, a seed
 //!   run that does not record its operator, the buffer of the large edit bodies, the MCP session affinity, identity's second CSRF
-//!   check, the admin tables with no route).
+//!   check, the admin tables with no route), and the one that came after it: the web listener's own TLS key, the one private key
+//!   built from bytes (D145).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeSet;
@@ -151,7 +152,14 @@ fn the_section_names_what_the_composition_does_not_prove_and_the_promised_residu
             "identity's own inner layers (G1)",
         ),
         ("request-id generators", "three request-id generators (G17)"),
-        ("same KMS key for both CAs", "one key for both CAs"),
+        (
+            "same KMS key for both CAs is refused only when the two references are equal",
+            "one key for both CAs, now refused when equal as written (D144)",
+        ),
+        (
+            "web listener's private key is in the hub's memory",
+            "the web listener's key and rustls's copy of it (D145, S5)",
+        ),
         (
             "admin tables have no route",
             "the 33 admin operations with no owner (D112)",
@@ -286,7 +294,16 @@ fn every_decision_the_section_cites_is_in_the_decisions_file_and_the_plan_gate_o
             "D{n} does not say who decided it"
         );
     }
-    for n in [137, 138, 139, 140, 141, 142] {
+    for n in [137, 138, 139, 140, 141, 142, 145] {
         assert!(cited.contains(&n.to_string()), "the section does not cite D{n}");
     }
+    // D145 is the human's choice after the plan gate (option A of blocker B1), recorded by an agent from the orchestrator's relay.
+    let d145 = decisions
+        .lines()
+        .find(|l| l.starts_with("- **D145**"))
+        .expect("D145 is not in docs/decisions.md");
+    assert!(
+        d145.contains("Decided by the human, in chat, on 2026-10-27") && d145.contains("pull/39"),
+        "D145 does not say who decided it and where the allowlist line is"
+    );
 }
