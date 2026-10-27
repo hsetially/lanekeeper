@@ -158,6 +158,13 @@ pub fn decode_ca_certificate(pem: &Secret<String>) -> Result<Vec<u8>, PemError> 
             return Err(PemError::TooManyCertificates);
         }
     }
+    // A certificate marker that the PEM grammar did not take for a section (it is glued to the text before it on its line, as when
+    // two files are joined where the first has no final newline) is still a second certificate that somebody meant to be there.
+    // The grammar skips it and the hub would trust the first alone without a word, so it is refused as a second section is. Found
+    // by the fuzz target `hub_pem` on the pinned nightly (plan 18, FINAL).
+    if pem.expose().matches("-----BEGIN CERTIFICATE-----").count() > 1 {
+        return Err(PemError::TooManyCertificates);
+    }
     // A private key beside the certificate is the wrong secret. The key is never decoded, only noticed by its label, so no copy
     // of it is made here.
     if pem.expose().contains("PRIVATE KEY-----") {

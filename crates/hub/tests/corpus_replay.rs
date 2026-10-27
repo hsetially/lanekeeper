@@ -204,6 +204,7 @@ fn the_ca_certificate_seeds_keep_the_ca_decoders_verdict() {
         // One certificate and no key: a fine CA certificate secret, and no web certificate.
         ("rejected_certificate_without_a_key", Verdict::Accepted),
         ("rejected_ca_two_certificates", Verdict::Rejected),
+        ("rejected_ca_second_certificate_glued_to_text", Verdict::Rejected),
         ("rejected_ca_certificate_beside_a_private_key", Verdict::Rejected),
         ("rejected_nine_certificates", Verdict::Rejected),
         ("rejected_chain_with_a_garbage_certificate", Verdict::Rejected),
@@ -1004,6 +1005,12 @@ fn regenerate_the_seeds() {
             ),
             // A CA certificate secret holds one certificate and no key (T3): two, or one beside a private key, are refused.
             ("rejected_ca_two_certificates", with_key(&chain.repeat(2), "")),
+            // Found by the fuzz target on the pinned nightly (plan 18, FINAL): a second certificate whose marker is glued to the text
+            // before it is no PEM section, and the decoder used to skip it and trust the first alone.
+            (
+                "rejected_ca_second_certificate_glued_to_text",
+                with_key(&format!("{chain}not pem att{chain}"), ""),
+            ),
             (
                 "rejected_ca_certificate_beside_a_private_key",
                 with_key(

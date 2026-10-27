@@ -154,3 +154,32 @@ fn a_certificate_secret_holds_one_certificate_and_no_private_key() {
         assert!(decode_ca_certificate(&Secret::new(text)).is_err(), "{why}");
     }
 }
+
+/// Found by the fuzz target `hub_pem` in the FINAL step of plan 18, the first time the targets ran on the pinned nightly. A
+/// second `BEGIN CERTIFICATE` that is glued to the text before it on its line is not a PEM section, so the grammar skips it and the
+/// decoder used to see one certificate and trust it without a word. It is what joining two PEM files where the first has no final
+/// newline produces, and it is a second certificate that somebody meant to be there: refused, as a second section is.
+#[test]
+fn a_second_certificate_marker_that_the_pem_grammar_skips_is_still_refused() {
+    let key = rcgen::KeyPair::generate().unwrap();
+    let one = rcgen::CertificateParams::new(vec!["ca.example".to_owned()])
+        .unwrap()
+        .self_signed(&key)
+        .unwrap()
+        .pem();
+    for (text, why) in [
+        (
+            format!("{one}not pem att{one}"),
+            "a marker glued to text before it",
+        ),
+        (
+            format!("{}{one}", one.trim_end()),
+            "two files joined with no newline between",
+        ),
+        (format!("{one}# {one}"), "a marker after a comment mark"),
+    ] {
+        assert!(decode_ca_certificate(&Secret::new(text)).is_err(), "{why}");
+    }
+    // And the one certificate, with text around it that carries no second marker, is still a fine secret.
+    assert!(decode_ca_certificate(&Secret::new(format!("subject: ca.example\n{one}\n"))).is_ok());
+}
