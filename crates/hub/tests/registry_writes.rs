@@ -709,3 +709,82 @@ async fn push_to_drift_through_the_composed_hub_meets_p2() {
     .await;
     assert!(matches!(forged.status, 401 | 403), "{forged:?}");
 }
+
+// ---------------------------------------------------------------------------------------------------- the webhook's HMAC (S18)
+
+/// One delivery of a `push` event to the web listener of the first hub, over TLS, as GitHub would send it but for the signature, which
+/// the caller gives (or leaves out).
+async fn deliver(c: &Composed, delivery: &str, signature: Option<&str>, body: &[u8]) -> net::Reply {
+    let mut headers = vec![
+        ("Content-Type", "application/json"),
+        ("X-GitHub-Event", "push"),
+        ("X-GitHub-Delivery", delivery),
+    ];
+    if let Some(signature) = signature {
+        headers.push(("X-Hub-Signature-256", signature));
+    }
+    net::https_request(
+        c.hubs[0].web(),
+        &c.rig.ca.cert_der(),
+        "POST",
+        "/hooks/github",
+        &headers,
+        Some(body),
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_webhook_still_requires_a_valid_hmac_through_the_composed_hub() {
+    // S18: the webhook has no session, so the HMAC over the raw body is the whole of its authentication. Through the composed router
+    // (the layers, the body cap, the error normaliser), a delivery whose signature is missing, malformed or made by anyone but the
+    // holder of the secret, or over some other body, is `401` and leaves no trace in the delivery log; the genuine one is taken.
+    let Some(c) = Composed::start(1, &[]).await else {
+        return;
+    };
+    let before = c.rig.git.remote.head("main").unwrap();
+    let after = c
+        .rig
+        .git
+        .remote
+        .commit("main", &[("config/a.yml", Some(b"a: 3\n"))], "change a");
+    let body = git_remote::fake_github::push_body(BASE_REPO, "refs/heads/main", &before, &after);
+    let genuine = git_remote::fake_github::signature(WEBHOOK_SECRET, &body);
+    let other_body = git_remote::fake_github::push_body(BASE_REPO, "refs/heads/main", &after, &before);
+    let deliveries = || c.count("SELECT count(*) FROM webhook_deliveries");
+    let log_before = deliveries().await;
+
+    let wrong_secret = git_remote::fake_github::signature("not-the-webhook-secret", &body);
+    let for_another_body = git_remote::fake_github::signature(WEBHOOK_SECRET, &other_body);
+    let zeros = format!("sha256={}", "0".repeat(64));
+    let no_prefix = genuine.trim_start_matches("sha256=").to_owned();
+    let sha1_form = format!("sha1={}", &genuine["sha256=".len()..][..40]);
+    let upper = genuine.replace("sha256=", "SHA256=");
+    for (what, signature) in [
+        ("no signature header", None),
+        ("an empty signature", Some(String::new())),
+        ("all zeros", Some(zeros)),
+        ("the right digest without its `sha256=` prefix", Some(no_prefix)),
+        ("a `sha1=` header", Some(sha1_form)),
+        ("the prefix in upper case", Some(upper)),
+        ("a signature made under another secret", Some(wrong_secret)),
+        ("a genuine signature over another body", Some(for_another_body)),
+        (
+            "a truncated signature",
+            Some(genuine[..genuine.len() - 2].to_owned()),
+        ),
+    ] {
+        let reply = deliver(&c, "forged-1", signature.as_deref(), &body).await;
+        assert_eq!(reply.status, 401, "{what}: {reply:?}");
+    }
+    assert_eq!(
+        deliveries().await,
+        log_before,
+        "a refused delivery left a row in the delivery log"
+    );
+
+    // The genuine one is taken, so the refusals above are about the signature and not a route that refuses everything.
+    let reply = deliver(&c, "genuine-1", Some(&genuine), &body).await;
+    assert!(matches!(reply.status, 200 | 202), "{reply:?}");
+    assert_eq!(deliveries().await, log_before + 1);
+}

@@ -441,3 +441,112 @@ async fn every_composed_route_carries_the_security_headers() {
     assert_eq!(checked, full.running.routes().len());
     assert!(checked >= 49, "only {checked} routes were checked");
 }
+
+// ------------------------------------------------------------------------------------------------------------------ CSRF, the real routes
+
+/// What kind of problem a `problem+json` body is: its `code`, or the last segment of its `type` (`urn:lanekeeper:problem:csrf`).
+fn problem_code(reply: &net::Reply) -> Option<String> {
+    let body: serde_json::Value = serde_json::from_str(&reply.body).ok()?;
+    body["code"]
+        .as_str()
+        .or_else(|| body["type"].as_str().and_then(|t| t.rsplit(':').next()))
+        .map(str::to_owned)
+}
+
+/// The CSRF walk of `csrf_all_routes.rs` over the table that this test file boots: `Running::routes()` is the identity module's
+/// routes, the registry's reads, the write paths, the webhook, the blob endpoint and the MCP server, not the probe module of the
+/// identity rig. Every state-changing route refuses a request that carries a live session and lacks, or gets wrong, the double-submit
+/// token or the exact `Origin`, and it is `CsrfLayer` that refuses it, before the route's handler. The route list is read from the
+/// table, so a route added tomorrow is walked the day it is added.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_real_state_changing_route_refuses_a_session_without_the_token_and_the_origin() {
+    let Some(full) = Full::start().await else { return };
+    let (_, admin) = full
+        .signed_in(1, Some(domain::Role::Admin), domain::UserStatus::Active)
+        .await;
+    let (_, other) = full
+        .signed_in(2, Some(domain::Role::Viewer), domain::UserStatus::Active)
+        .await;
+    let routes: Vec<&RouteSpec> = full
+        .running
+        .routes()
+        .iter()
+        .filter(|r| !matches!(r.method.as_str(), "GET" | "HEAD" | "OPTIONS"))
+        .collect();
+    // A walk over an empty or a probe-only table would pass, so the real routes of each module are named.
+    assert!(routes.len() >= 24, "{} state-changing routes", routes.len());
+    for (method, path) in [
+        ("PATCH", "/api/v1/admin/users/{id}"),
+        ("POST", "/auth/logout"),
+        ("PUT", "/api/v1/swimlanes/{id}/files"),
+        ("POST", "/api/v1/prs"),
+        ("PUT", "/api/v1/me/github-token"),
+        ("POST", "/api/v1/swimlanes/{id}/restart"),
+        ("POST", "/api/v1/me/mcp-tokens"),
+        ("POST", "/hooks/github"),
+        ("POST", "/mcp"),
+    ] {
+        assert!(
+            routes.iter().any(|r| r.method == method && r.path == path),
+            "{method} {path} is not a state-changing route of the real table"
+        );
+    }
+
+    let own = admin.header();
+    let foreign_token = other.csrf.clone();
+    for route in routes {
+        let name = format!("{} {}", route.method, route.path);
+        let path = concrete(&route.path);
+        // Each variant lacks, or gets wrong, one thing the check needs. All of them carry a live admin session.
+        let variants: Vec<(&str, Vec<(&str, String)>)> = vec![
+            ("the cookies only", vec![("Cookie", own.clone())]),
+            (
+                "a token and no Origin",
+                vec![("Cookie", own.clone()), ("X-CSRF-Token", admin.csrf.clone())],
+            ),
+            (
+                "an Origin and no token",
+                vec![("Cookie", own.clone()), ("Origin", browser::ORIGIN.to_owned())],
+            ),
+            (
+                "a foreign Origin",
+                vec![
+                    ("Cookie", own.clone()),
+                    ("X-CSRF-Token", admin.csrf.clone()),
+                    ("Origin", "https://evil.example".to_owned()),
+                ],
+            ),
+            (
+                "a token that is not the cookie's",
+                vec![
+                    ("Cookie", own.clone()),
+                    ("X-CSRF-Token", foreign_token.clone()),
+                    ("Origin", browser::ORIGIN.to_owned()),
+                ],
+            ),
+        ];
+        for (what, headers) in variants {
+            let mut all: Vec<(&str, &str)> = headers.iter().map(|(n, v)| (*n, v.as_str())).collect();
+            all.push(("Content-Type", "application/json"));
+            let reply = full.web(&route.method, &path, &all, Some(b"{}")).await;
+            assert_eq!(reply.status, 403, "{name} with {what}: {}", reply.body);
+            assert_eq!(
+                problem_code(&reply).as_deref(),
+                Some("csrf"),
+                "{name} with {what} was refused, but not by CSRF: {}",
+                reply.body
+            );
+        }
+    }
+
+    // And the layer is not a blanket refusal: the same session with the token and the Origin gets past it, on the one route that
+    // changes nothing but the session itself.
+    let (_, signing_out) = full
+        .signed_in(3, Some(domain::Role::Viewer), domain::UserStatus::Active)
+        .await;
+    let reply = full
+        .web_as(&signing_out, "POST", "/auth/logout", Some(&serde_json::json!({})))
+        .await;
+    assert_ne!(problem_code(&reply).as_deref(), Some("csrf"), "{}", reply.body);
+    assert!(reply.status < 400, "{}: {}", reply.status, reply.body);
+}

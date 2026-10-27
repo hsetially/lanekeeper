@@ -1,6 +1,7 @@
 //! Hub composition: listeners, security headers, limits, static files, operations.
 //!
-//! Owned by prompt 03b. Read `AGENTS.md` and `prompts/03b*.md` before changing this crate.
+//! Owned by prompt 18 (hub assembly), which built on the headers, limits and operations listener that prompt 03b started this crate
+//! with. Read `AGENTS.md` and `prompts/18-*.md` before changing this crate.
 //!
 //! `hub-platform` and the other hub crates are libraries of components and routes. This crate is what turns them into one
 //! process: it applies the headers and limits that every response and request passes through (S11, S12), serves the web app,

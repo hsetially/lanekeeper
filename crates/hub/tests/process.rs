@@ -57,6 +57,17 @@ async fn becomes_ready(ops: SocketAddr) {
     .await;
 }
 
+/// The hub's own count of the requests it is holding (`lanekeeper_http_requests_in_flight`, on the operations listener), or 0.
+async fn requests_in_flight(ops: SocketAddr) -> u64 {
+    net::http_get(ops, "/metrics")
+        .await
+        .body
+        .lines()
+        .find_map(|line| line.strip_prefix("lanekeeper_http_requests_in_flight "))
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(0)
+}
+
 #[tokio::test]
 async fn the_hub_serves_healthz_and_readyz_and_exits_zero_on_sigterm() {
     let Some(rig) = Rig::start().await else { return };
@@ -326,6 +337,15 @@ async fn a_second_signal_exits_at_once() {
         .await
         .unwrap();
     stuck.flush().await.unwrap();
+    // The hub must hold the request before it is told to stop. When `flush` returns the head may still be on its way, and a
+    // connection whose request has not been read yet is an idle one, which a graceful shutdown closes: the hub would then leave at
+    // once and this test would fail for a reason that is its own (it did, now and then, on a busy machine).
+    eventually(
+        Duration::from_secs(10),
+        "the hub to hold the stuck request",
+        || async move { requests_in_flight(ops).await >= 1 },
+    )
+    .await;
 
     hub.signal("TERM");
     eventually(Duration::from_secs(5), "the drain starting", || async move {
@@ -335,7 +355,8 @@ async fn a_second_signal_exits_at_once() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(
         !hub.has_exited(),
-        "the hub left while a request was in flight, before any second signal"
+        "the hub left while a request was in flight, before any second signal:\n{}",
+        hub.output()
     );
 
     let second = Instant::now();
