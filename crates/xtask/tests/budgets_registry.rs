@@ -299,9 +299,9 @@ fn thresholds_match_docs_performance_md() {
         ),
         (
             "P12.audit_record",
-            3.0,
+            4.0,
             "ms",
-            "Recording an audit event adds at most 3 ms to a transaction (p95), with another replica contending for the chain lock",
+            "Recording an audit event adds at most 4 ms to a transaction (p95), with another replica contending for the chain lock",
         ),
         (
             "P12.hub_writes_queries",
@@ -442,14 +442,14 @@ fn thresholds_match_docs_performance_md() {
             "| `incremental_recompute_per_file_per_swimlane` | `P5.engine_per_file_per_swimlane` | 2 ms |",
         ),
         // The prompt gives no number for the settings index. The plan proposed 40 ms (A1); T3 measured 45.8 ms p95 and a human
-        // set 60 ms (the blockers file of prompt 04), so the plan is the source for the number. This comparison keeps it from
-        // being changed without its source.
+        // set 60 ms (the blockers file of prompt 04), and on 2026-10-26 a human raised it to 80 ms, so the decision that records
+        // it (D136) is the source for the number. This comparison keeps it from being changed without its source.
         (
             "P6.index_settings",
-            60.0,
+            80.0,
             "ms",
-            "plans/04-fact-engine.md",
-            "| `index_settings_6000_lines` | `P6.index_settings` | 60 ms |",
+            "docs/decisions.md",
+            "`P6.index_settings` to 80 ms",
         ),
         // The prompt's T5 figure for the adoption ranking of one swimlane.
         (

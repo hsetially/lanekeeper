@@ -136,15 +136,17 @@ registered = true
 # and tree-sitter reading the text a second time and being checked against the parser. The prompt gives no number for it. The plan
 # proposed 40 ms (plans/04-fact-engine.md, A1); the measured p95 was 45.8 ms (decode, parse and flatten 7 ms; tree-sitter's own
 # parse of the 146 KB file 14 to 21 ms; its tree turned into the parser's shape 3 to 5 ms; flatten 1 ms), so a human set 60 ms
-# (`plans/04-fact-engine.blockers.md`). The docs/performance.md budget table has only the SQL half of the settings search
-# (P7.settings_search, prompt 05).
+# (`plans/04-fact-engine.blockers.md`). On 2026-10-26 a human raised it to 80 ms (docs/decisions.md D136): five runs of
+# the benchmark (the first while another session used the machine, four on a quiet one; prompt 09, plans/09-deployment-ci.blockers.md
+# B15) gave p95 62.4 to 72.1 ms, over 60 ms every time.
+# The docs/performance.md budget table has only the SQL half of the settings search (P7.settings_search, prompt 05).
 
 [[budget]]
 id = "P6.index_settings"
 description = "Settings index of a 6,000-line YAML file (parse, flatten, tree-sitter locations)"
 bench = "engine/index_settings_6000_lines"
 statistic = "p95"
-threshold = 60
+threshold = 80
 unit = "ms"
 scale = "target"
 registered = true
@@ -670,12 +672,14 @@ unit = "mib"
 scale = "target"
 registered = true
 
+# Prompt 03a asked for 3 ms. On 2026-10-26 a human raised it to 4 ms (docs/decisions.md D136, docs/performance.md): five runs
+# (the same machine and loads) gave p95 3.14 to 3.59 ms (prompt 09, plans/09-deployment-ci.blockers.md B15), and prompt 03a's own repeats gave 2.05 to 3.52 ms.
 [[budget]]
 id = "P12.audit_record"
 description = "Recording an audit event adds to a transaction, with a second replica contending for the chain lock"
 bench = "hub-identity/audit_record"
 statistic = "p95"
-threshold = 3
+threshold = 4
 unit = "ms"
 scale = "target"
 registered = true

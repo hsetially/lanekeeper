@@ -70,7 +70,7 @@ Authentication adds at most 2 ms to a request (p95), with a warm session cache a
 - **P11** Hub memory stays under 1.5 GiB per replica at design scale. Startup takes under 10 seconds.
 - **P12** No steady-state query takes longer than 50 ms. List endpoints use keyset pagination. Hot queries have an `EXPLAIN` checked into their tests.
 
-Recording an audit event adds at most 3 ms to a transaction (p95), with another replica contending for the chain lock (part of P12).
+Recording an audit event adds at most 4 ms to a transaction (p95), with another replica contending for the chain lock (part of P12).
 
 The statements the write path runs on every request take at most 50 ms (p95) at design scale: the idempotency claim and its replay, the editing-lock read, and the reconcile scan (part of P12).
 

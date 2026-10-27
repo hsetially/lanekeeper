@@ -1,4 +1,4 @@
-//! P12: recording an audit event adds under 3 ms to a transaction (`P12.audit_record`, `hub-identity/audit_record`).
+//! P12: recording an audit event adds at most 4 ms to a transaction (3 ms until 2026-10-26, D136) (`P12.audit_record`, `hub-identity/audit_record`).
 //!
 //! What is measured is the *added* time. Each sample runs the same transaction twice, back to back, over a real Postgres (a
 //! container, or the server in `LK_TEST_PG_ADMIN_URL`): once with a small change (`BEGIN`, one `INSERT`, `COMMIT`) and once with
