@@ -799,12 +799,21 @@ pub fn ca_certificate(data: &[u8]) -> Result<Verdict, String> {
     ca_certificate_text(&Secret::new(String::from_utf8_lossy(text).into_owned()))
 }
 
+/// Whether an error message repeats the secret's text. The text is trimmed first, because padding is not the secret, and what is
+/// left must be a dozen characters or more, as the URL checks of the settings already require: a shorter piece can match a fixed
+/// phrase by chance. An empty text is contained in every message, so it must never reach `contains`; that was the false alarm that
+/// the fuzz target `hub_pem` raised first on the pinned nightly, with a chain of 26 spaces (plan 18, FINAL).
+pub fn error_repeats_text(shown: &str, text: &str) -> bool {
+    let secret = text.trim();
+    secret.len() >= 12 && shown.contains(secret)
+}
+
 fn ca_certificate_text(text: &Secret<String>) -> Result<Verdict, String> {
     match web_tls::decode_ca_certificate(text) {
         Err(error) => {
             // The error is one of the fixed phrases and never the text.
             let shown = error.to_string();
-            if shown.is_empty() || (text.expose().len() >= 12 && shown.contains(text.expose().trim())) {
+            if shown.is_empty() || error_repeats_text(&shown, text.expose()) {
                 return Err("an error that repeats the secret's text".to_owned());
             }
             Ok(Verdict::Rejected)

@@ -442,6 +442,30 @@ fn the_invariants_notice_a_settings_error_that_repeats_a_value() {
     }
 }
 
+#[test]
+fn the_invariants_notice_a_pem_error_that_repeats_the_secret_and_stay_quiet_when_there_is_nothing_to_repeat()
+{
+    let secret = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----";
+    // A message that carries the secret, whole or with the padding around it, is the leak the check exists for.
+    assert!(invariants::error_repeats_text(
+        &format!("unreadable: {secret}"),
+        secret
+    ));
+    assert!(invariants::error_repeats_text(
+        &format!("unreadable: {secret}"),
+        &format!("  \n{secret}\n  ")
+    ));
+    // A fixed phrase repeats nothing, whatever the padding: whitespace alone (the fuzzer's first false alarm, and `contains("")`
+    // is true for every message), nothing at all, or a word that a phrase happens to hold.
+    let phrase = "the certificate secret holds no certificate";
+    assert!(!invariants::error_repeats_text(phrase, &" ".repeat(26)));
+    assert!(!invariants::error_repeats_text(phrase, ""));
+    assert!(!invariants::error_repeats_text(
+        phrase,
+        &format!("{}certificate{}", " ".repeat(20), " ".repeat(20))
+    ));
+}
+
 /// A key version for the `ca-init` seeds.
 const KEY_VERSION: &str =
     "projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/agent-ca/cryptoKeyVersions/1";
@@ -1003,6 +1027,9 @@ fn regenerate_the_seeds() {
                 "rejected_bad_base64_in_the_chain",
                 with_key(&framing("CERTIFICATE", "!!!not base64!!!"), ""),
             ),
+            // Found by the fuzz target on the pinned nightly (plan 18, FINAL): a chain of nothing but spaces. The check that an error never
+            // repeats the secret's text compared against the trimmed text, which is empty here, and every message "contains" it.
+            ("rejected_a_chain_of_only_spaces", with_key(&" ".repeat(26), "")),
             // A CA certificate secret holds one certificate and no key (T3): two, or one beside a private key, are refused.
             ("rejected_ca_two_certificates", with_key(&chain.repeat(2), "")),
             // Found by the fuzz target on the pinned nightly (plan 18, FINAL): a second certificate whose marker is glued to the text
