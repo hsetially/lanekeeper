@@ -109,6 +109,9 @@ async fn setup() -> Option<Setup> {
         modules: vec![Arc::new(Probe {
             runs: Arc::clone(&runs),
         })],
+        // The MCP server (T6): `/mcp` on three methods, which authenticates by bearer token, and the three personal-token routes,
+        // which ride the cookie sessions. D109's condition for S3 is that the second kind is covered here.
+        mcp: Some(rig::RigMcp::oauth()),
         ..Options::default()
     })
     .await?;
@@ -159,6 +162,10 @@ async fn every_non_get_route_refuses_a_session_without_token_or_origin() {
         "/api/v1/admin/users/{id}",
         "/api/v1/probe/delete",
         "/hooks/probe",
+        // The MCP module (T6): its endpoint (a public route that authenticates itself) and the personal-token routes.
+        "/mcp",
+        "/api/v1/me/mcp-tokens",
+        "/api/v1/me/mcp-tokens/{id}",
     ] {
         assert!(
             routes.iter().any(|r| r.path == needed),

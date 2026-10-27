@@ -32,6 +32,7 @@ use hub::client_ip::PeerAddr;
 use hub::config::{CheckpointSettings, IdentitySettings, LimitSettings};
 use hub::edges::{Edges, IdentityEdges};
 use hub::identity::{AuditSchedule, Identity, IdentityInputs, IdentityMounts};
+use hub::mcp::{Mcp, McpInputs};
 use hub::notify::UnavailableNotifier;
 use hub::static_files::StaticFiles;
 use hub::wiring::Tasks;
@@ -44,8 +45,8 @@ use hub_platform::events::metrics::EventMetrics;
 use hub_platform::events::sse::{SseSettings, SseState};
 use hub_platform::events::visibility::RoleVisibility;
 use hub_platform::leases::PgLeases;
-use ports::fakes::FakeTokenVerifier;
-use ports::{AuditLog, KeyRef, Leases};
+use ports::fakes::{FakeDocSearch, FakeRegistry, FakeTokenVerifier, FakeWriteService};
+use ports::{AuditLog, DocSearch, KeyRef, Leases, RegistryRead, WriteService};
 use sqlx::PgPool;
 use tokio::sync::watch;
 use tower::ServiceExt;
@@ -62,6 +63,36 @@ pub const CHECKPOINT_KEY: &str = "projects/p/locations/l/keyRings/r/cryptoKeys/a
 /// The Entra object id of the person the mock identity provider signs in; the first admin of the rig.
 pub use crate::mock_oidc::OID as FIRST_ADMIN_OID;
 
+/// The MCP server on the rig (T6): the real `Mcp::build`, over the rig's identity module, with the ports the tools stand on given by
+/// the test (port fakes: this is about the hub's layers and credentials, not about the registry). `settings` is the hub's own MCP
+/// group, so the mode, the origin and the audience come out of it as they do in the process.
+#[derive(Clone)]
+pub struct RigMcp {
+    pub settings: hub::config::McpSettings,
+    pub registry: Arc<dyn RegistryRead>,
+    pub writes: Arc<dyn WriteService>,
+    pub docs: Arc<dyn DocSearch>,
+}
+
+impl RigMcp {
+    /// OAuth mode (the default of the switches), over port fakes.
+    pub fn oauth() -> Self {
+        Self {
+            settings: hub::config::McpSettings::default(),
+            registry: Arc::new(FakeRegistry::new()),
+            writes: Arc::new(FakeWriteService::new()),
+            docs: Arc::new(FakeDocSearch::new()),
+        }
+    }
+
+    /// Personal-token mode: `lkpat_` tokens made through the REST routes, hashed under the rig's `mcp-token-hmac-key`.
+    pub fn personal_token() -> Self {
+        let mut rig = Self::oauth();
+        rig.settings.config.auth_mode = hub_mcp::config::AuthMode::PersonalToken;
+        rig
+    }
+}
+
 /// What differs between the tests.
 #[derive(Clone)]
 pub struct Options {
@@ -74,6 +105,8 @@ pub struct Options {
     pub static_files: bool,
     /// Replicas on the one database.
     pub replicas: usize,
+    /// The MCP server (T6). `None`: not mounted.
+    pub mcp: Option<RigMcp>,
 }
 
 impl Default for Options {
@@ -89,6 +122,7 @@ impl Default for Options {
             modules: Vec::new(),
             static_files: true,
             replicas: 1,
+            mcp: None,
         }
     }
 }
@@ -98,6 +132,8 @@ pub struct Replica {
     pub name: String,
     pub hub: Hub,
     pub identity: Identity,
+    /// The MCP server, when the options asked for one.
+    pub mcp: Option<Mcp>,
     pub bus: PgEventBus,
     pub pool: PgPool,
     /// Turns true to stop the replica's tasks.
@@ -167,6 +203,8 @@ impl IdentityRig {
         let secrets = Arc::new(MemorySecrets::default());
         secrets.put("entra-client-secret", CLIENT_SECRET);
         secrets.put("login-cookie-key", &URL_SAFE_NO_PAD.encode([5u8; 32]));
+        // The key that hashes personal MCP tokens (read only in personal-token mode).
+        secrets.put("mcp-token-hmac-key", &URL_SAFE_NO_PAD.encode([9u8; 32]));
         let key = KeyRef::parse(CHECKPOINT_KEY).unwrap();
         let mut rig = Self {
             pg,
@@ -229,7 +267,7 @@ impl IdentityRig {
                 settings: &self.settings,
                 pool: pool.clone(),
                 edges: &edges,
-                audit,
+                audit: Arc::clone(&audit),
                 leases,
                 bus: Arc::new(bus.clone()),
                 notifier: Arc::new(UnavailableNotifier),
@@ -242,6 +280,7 @@ impl IdentityRig {
         .await
         .expect("the identity module is built");
 
+        let stop_rx = closing.clone();
         let sse = SseState::new(
             bus.source(),
             identity.auth.clone(),
@@ -252,6 +291,36 @@ impl IdentityRig {
         );
         let mut modules: Vec<Arc<dyn Module>> = vec![Arc::new(EventsModule::new(sse))];
         modules.extend(options.modules.iter().cloned());
+        let mcp = match &options.mcp {
+            Some(wanted) => {
+                let settings = wanted
+                    .settings
+                    .for_identity(&self.settings)
+                    .expect("the MCP settings fit the Entra settings");
+                let mcp = Mcp::build(
+                    McpInputs {
+                        settings,
+                        pool: pool.clone(),
+                        tokens: Arc::clone(&identity.tokens),
+                        users: Arc::clone(&identity.users),
+                        registry: Arc::clone(&wanted.registry),
+                        writes: Arc::clone(&wanted.writes),
+                        docs: Arc::clone(&wanted.docs),
+                        audit,
+                        secrets: self.secrets.clone(),
+                        clock: self.clock.clone(),
+                        closing: stop_rx.clone(),
+                        start_timeout: Duration::from_secs(20),
+                    },
+                    &mut tasks,
+                )
+                .await
+                .expect("the MCP server is built");
+                modules.push(mcp.module());
+                Some(mcp)
+            }
+            None => None,
+        };
 
         let dist = crate::support::write_dist();
         let static_files = options
@@ -279,6 +348,7 @@ impl IdentityRig {
             name: name.to_owned(),
             hub,
             identity,
+            mcp,
             bus,
             pool,
             stop,

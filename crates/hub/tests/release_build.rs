@@ -187,6 +187,11 @@ fn no_fake_and_no_dev_knob_is_referenced_outside_cfg_test() {
         "FakeKmsEnvelope",
         "for_tests",
         "ManualClock",
+        // T6: the ports the MCP tools stand on. The registry and the write service are the real ones, and the document search is the
+        // one named exception (the next test), never a fake that answers.
+        "FakeDocSearch",
+        "FakeRegistry",
+        "FakeWriteService",
     ];
     let files = rust_files(&src);
     assert!(files.len() > 15, "the scan found only {} files", files.len());
@@ -205,6 +210,42 @@ fn no_fake_and_no_dev_knob_is_referenced_outside_cfg_test() {
             );
         }
     }
+}
+
+/// Plan 18, T6 (G5): there is no document search yet, and the hub does not start on a fake. `UnavailableDocs` is the one
+/// implementation of `DocSearch` in the hub's code, it is named, and the process wires it, so that "the hub never falls back to a
+/// fake" has exactly one stated exception that this test holds. When prompt 14 has a real search the change is made here as well.
+#[test]
+fn the_only_docsearch_in_the_hub_is_the_named_unavailable_one() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut implementors = Vec::new();
+    for file in rust_files(&src) {
+        let code = production_code(&fs::read_to_string(&file).unwrap());
+        for line in code.lines() {
+            let line = line.trim();
+            if line.starts_with("impl") && line.contains("DocSearch for") {
+                implementors.push((
+                    file.file_name().unwrap().to_string_lossy().into_owned(),
+                    line.to_owned(),
+                ));
+            }
+        }
+    }
+    assert_eq!(
+        implementors,
+        [(
+            "docs.rs".to_owned(),
+            "impl DocSearch for UnavailableDocs {".to_owned()
+        )],
+        "the hub's code has another DocSearch"
+    );
+    // And it is what the process gives the MCP server, in the start, once.
+    let process = production_code(&fs::read_to_string(src.join("process.rs")).unwrap());
+    assert_eq!(process.matches("UnavailableDocs::new()").count(), 1);
+    // It answers `Unavailable` in every method and holds nothing that could be returned.
+    let docs = production_code(&fs::read_to_string(src.join("docs.rs")).unwrap());
+    assert!(!docs.contains("Ok("), "UnavailableDocs returns a success");
+    assert_eq!(docs.matches("Err(DocError::Unavailable)").count(), 8);
 }
 
 /// The crate's test-only module is declared behind the feature, and the feature is off by default: a release build has neither.

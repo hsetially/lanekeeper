@@ -137,3 +137,17 @@ of its jobs, and exits 0; a second signal exits at once with 1.
 connection), `mirrors` (both Git mirrors hold a branch; a replica on an empty volume fills them first and is not ready until it
 has), `jobs` (the job runner is running) and `tasks` (no task that should run for the life of the process has ended). Each answers
 from memory, so the probe costs no call.
+
+A ready answer can carry a note. A feature this build does not have is said in the body and never gates readiness: until prompt 14
+lands the hub answers `ready (not available: docs_search)`, and `lanekeeper_docs_search_available` is `0`. A probe that reads the
+status is unaffected; a person who reads the body, or an alert on the gauge, is told. The five docs tools of the MCP server answer a
+typed `unavailable` result in the meantime (`HARDENING.md`, "The document search is not there yet"), never an empty list.
+
+### The MCP server
+
+`/mcp` is served on the web listener, in the one process, as soon as the hub is ready. A client (Cursor) needs: the hub's public
+origin (`LK_PUBLIC_ORIGIN`) as the server URL with `/mcp` appended; in OAuth mode (the default) nothing else, because the `401` it
+gets carries the address of the discovery document and from there Entra's sign-in; in personal-token mode (`LK_MCP_AUTH=personal_token`)
+a token that the person makes in the web app, sent as `Authorization: Bearer lkpat_...`. The two modes are never on together. The
+variables, the one secret of personal-token mode (`mcp-token-hmac-key`), the audience and scope the Entra app registration must
+expose, and the need for `Mcp-Session-Id` affinity across replicas are in `HARDENING.md`, "The MCP server".

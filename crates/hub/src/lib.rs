@@ -20,6 +20,7 @@ pub mod client_ip;
 pub mod compose;
 pub mod config;
 pub mod db;
+pub mod docs;
 pub mod edge;
 pub mod edges;
 pub mod events;

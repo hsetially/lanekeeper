@@ -67,7 +67,11 @@ async fn the_hub_serves_healthz_and_readyz_and_exits_zero_on_sigterm() {
     assert_eq!((health.status, health.body.as_str()), (200, "ok\n"));
     becomes_ready(ops).await;
     let ready = net::http_get(ops, "/readyz").await;
-    assert_eq!((ready.status, ready.body.as_str()), (200, "ready\n"));
+    // Ready, and honest about the one thing this build lacks (T6, G5): the body says so and the status does not change.
+    assert_eq!(
+        (ready.status, ready.body.as_str()),
+        (200, "ready (not available: docs_search)\n")
+    );
 
     // The web listener serves the app over TLS 1.3 with the certificate from the secrets, and the CSP of every page.
     let page = net::https_get(web, &rig.ca.cert_der(), "/").await;
@@ -89,7 +93,7 @@ async fn the_hub_serves_healthz_and_readyz_and_exits_zero_on_sigterm() {
     for path in [
         "/api/v1/nothing-here",
         "/auth/nothing-here",
-        "/mcp",
+        "/mcp/nothing-here",
         "/.well-known/nothing-here",
     ] {
         let missing = net::https_get(web, &rig.ca.cert_der(), path).await;
@@ -99,6 +103,15 @@ async fn the_hub_serves_healthz_and_readyz_and_exits_zero_on_sigterm() {
             "{path} answered with the app"
         );
     }
+    // The MCP server is composed in (T6): `/mcp` is a route now, and asks for a bearer token (the challenge points the client at Entra's
+    // sign-in); it is not the app and not a `404`.
+    let mcp = net::https_get(web, &rig.ca.cert_der(), "/mcp").await;
+    assert_eq!(mcp.status, 401, "{mcp:?}");
+    assert!(
+        mcp.header("www-authenticate")
+            .is_some_and(|challenge| challenge.starts_with("Bearer resource_metadata=")),
+        "{mcp:?}"
+    );
     // The certificate's expiry is exported, and the hub is serving only TLS 1.3.
     let metrics = net::http_get(ops, "/metrics").await.body;
     assert!(
@@ -226,7 +239,11 @@ async fn the_jobs_hold_their_leases_while_the_hub_runs_and_release_them_when_it_
     let all = hub.wait_listening_all(Duration::from_secs(30));
     becomes_ready(all.ops).await;
     let ready = net::http_get(all.ops, "/readyz").await;
-    assert_eq!((ready.status, ready.body.as_str()), (200, "ready\n"));
+    // Ready, and honest about the one thing this build lacks (T6, G5): the body says so and the status does not change.
+    assert_eq!(
+        (ready.status, ready.body.as_str()),
+        (200, "ready (not available: docs_search)\n")
+    );
     // The jobs hold their leases while the hub is ready: another holder of the same name cannot take them.
     let pool = rig.pg.app_pool().await;
     let holders: i64 = sqlx::query_scalar("SELECT count(*) FROM leases WHERE expires_at > now()")

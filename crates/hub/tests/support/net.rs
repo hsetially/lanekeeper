@@ -125,8 +125,15 @@ pub async fn https_request(
 ) -> Reply {
     let config = client_config(ca, &[&rustls::version::TLS13]);
     let mut stream = tls_connect(addr, config).await.unwrap();
-    let mut head =
-        format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAccept: */*\r\n");
+    let mut head = format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
+    // `Accept: */*` unless the caller names its own: a client of the MCP endpoint must say `application/json` and
+    // `text/event-stream` in so many words, and two `Accept` headers are read as the first of them.
+    if !headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("accept"))
+    {
+        head.push_str("Accept: */*\r\n");
+    }
     for (name, value) in headers {
         let _ = write!(head, "{name}: {value}\r\n");
     }

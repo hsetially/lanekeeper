@@ -7,7 +7,8 @@
 //! ceremony `hub ca-init` runs, and written into that directory under the names `LK_AGENT_CA_CERT_REF` and
 //! `LK_REPLICA_CA_CERT_REF` give. No Google ID token is accepted: the verifier knows no token. The write paths' two edges (T5) are
 //! software too: a KMS envelope whose key the process holds, and GitHub's client pointed at `LK_DEV_GITHUB_API`, a plain-HTTP
-//! server of the caller's (nothing listens at the default, so every GitHub call fails the way a GitHub that is down does). It is an
+//! server of the caller's (nothing listens at the default, so every GitHub call fails the way a GitHub that is down does). The MCP
+//! server's one secret, the key that hashes personal tokens, is made at the first start if it is not there. It is an
 //! example target, so it is never part of the image or of a release build of `hub`; `tests/release_build.rs` keeps it that way.
 //!
 //! Settings are the hub's own `LK_*` variables. `LK_DEV_SECRETS_DIR`, `LK_DEV_GITHUB_API` and `LK_DEV_GOOGLE_TOKENS` (comma-separated
@@ -114,6 +115,19 @@ fn dev_edges(settings: &HubSettings) -> Result<Edges, StartError> {
         base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, preview),
     )
     .map_err(|_| invalid())?;
+    // The key that hashes personal MCP tokens (D52), read only when `LK_MCP_AUTH=personal_token`. Unlike the keys above it is kept if it
+    // is there: a token made before a restart should still work, and two replicas of a test share one. A file that is there and is not
+    // a key stays as it is, so that a test of the hub refusing to start on one can put it there.
+    let hmac_key = dir.join(hub_mcp::auth::pat::KEY_SECRET_NAME);
+    if !hmac_key.exists() {
+        let mut key = [0u8; 32];
+        aws_lc_rs::rand::fill(&mut key).map_err(|_| invalid())?;
+        std::fs::write(
+            hmac_key,
+            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, key),
+        )
+        .map_err(|_| invalid())?;
+    }
     // The Google ID tokens an agent may join with, if the caller names any (an agent test does; `just dev` starts none).
     let verifier = FakeTokenVerifier::new();
     let bad_tokens = || StartError::Config(hub::ConfigError::Invalid("LK_DEV_GOOGLE_TOKENS"));

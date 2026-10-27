@@ -306,6 +306,21 @@ impl hub_writes::Clock for WritesClock {
     }
 }
 
+/// The hub's clock as the MCP server's (T6): wall time for expiry, and tokio's clock for intervals, so a test that pauses time moves
+/// the rate limits with it.
+#[derive(Debug)]
+pub struct McpClock(pub Arc<dyn Clock>);
+
+impl hub_mcp::clock::Clock for McpClock {
+    fn now(&self) -> Timestamp {
+        self.0.now()
+    }
+
+    fn instant(&self) -> tokio::time::Instant {
+        tokio::time::Instant::now()
+    }
+}
+
 /// The verifier the platform's `Join` is given: Google ID tokens, and nothing else. An Entra token is refused as unverifiable,
 /// never accepted, and that is on purpose and stays after the identity module is wired (T4): `Join` has no use for an Entra token,
 /// so the one verifier it can reach does not know how to read one. The identity module's own verifier (`Identity::tokens`, Entra

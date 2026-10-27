@@ -229,6 +229,52 @@ fn the_registry_and_write_seeds_mean_what_their_names_say() {
 }
 
 #[test]
+fn the_mcp_seeds_mean_what_their_names_say() {
+    // The switches are really read: the accepted seeds carry their values, each rejected seed is refused by the variable it is about,
+    // and the audience that OAuth builds its scope from is the application id URI.
+    let read = |name: &str| fs::read(corpus("hub_settings").join(name)).unwrap();
+    let parse = |data: &[u8]| {
+        let text = String::from_utf8_lossy(data).into_owned();
+        let vars: std::collections::BTreeMap<String, String> = text
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect();
+        hub::HubSettings::from_lookup(move |name| vars.get(name).cloned())
+    };
+    let all = parse(&read("accepted_mcp_every_switch_set")).unwrap();
+    assert_eq!(all.mcp.config.auth_mode.to_string(), "personal_token");
+    assert_eq!(all.mcp.config.confirm_mode.to_string(), "draft");
+    assert_eq!(all.mcp.config.content_mode.to_string(), "data_block");
+    assert!(all.mcp.notify_services && all.mcp.authorization_server_mirror);
+    let oauth = parse(&read("accepted_identity")).unwrap();
+    assert_eq!(oauth.mcp, hub::config::McpSettings::default());
+    let built = oauth.mcp.for_identity(oauth.identity.as_ref().unwrap()).unwrap();
+    assert_eq!(
+        built.oauth.unwrap().api_audience,
+        "api://22222222-2222-4222-8222-222222222222"
+    );
+    assert!(parse(&read("accepted_mcp_personal_token_mode_with_a_bare_audience")).is_ok());
+    for (name, variable) in [
+        ("rejected_mcp_both_authentication_modes", "LK_MCP_AUTH"),
+        ("rejected_mcp_authentication_list_that_is_too_long", "LK_MCP_AUTH"),
+        ("rejected_mcp_confirm_mode_that_is_not_one", "LK_MCP_CONFIRM"),
+        ("rejected_mcp_content_mode_in_the_wrong_case", "LK_MCP_CONTENT"),
+        (
+            "rejected_mcp_notify_switch_that_is_a_word",
+            "LK_MCP_NOTIFY_SERVICES",
+        ),
+        (
+            "rejected_mcp_oauth_without_an_application_id_uri",
+            "LK_ENTRA_API_AUDIENCES",
+        ),
+    ] {
+        let error = parse(&read(name)).unwrap_err().to_string();
+        assert!(error.starts_with(variable), "{name}: {error}");
+    }
+}
+
+#[test]
 fn the_corpus_has_a_directory_for_every_target_and_nothing_else() {
     let targets: BTreeSet<String> = fs::read_dir(fuzz_dir().join("fuzz_targets"))
         .unwrap()
@@ -413,6 +459,45 @@ fn regenerate_the_seeds() {
             (
                 "rejected_writes_job_interval_zero",
                 text("LK_WRITES_PR_JOBS_SECS=0\n"),
+            ),
+            // The MCP server's switches (T6, G12) and how they fit the Entra settings.
+            (
+                "accepted_mcp_every_switch_set",
+                text(&format!(
+                    "{IDENTITY}LK_MCP_AUTH=personal_token\nLK_MCP_CONFIRM=draft\nLK_MCP_CONTENT=data_block\nLK_MCP_NOTIFY_SERVICES=true\nLK_MCP_AS_MIRROR=true\n"
+                )),
+            ),
+            (
+                "accepted_mcp_personal_token_mode_with_a_bare_audience",
+                text(&format!(
+                    "{IDENTITY}LK_MCP_AUTH=personal_token\nLK_ENTRA_API_AUDIENCES=22222222-2222-4222-8222-222222222222\n"
+                )),
+            ),
+            (
+                "rejected_mcp_both_authentication_modes",
+                text("LK_MCP_AUTH=oauth,personal_token\n"),
+            ),
+            (
+                "rejected_mcp_authentication_list_that_is_too_long",
+                text("LK_MCP_AUTH=oauth,oauth,oauth,oauth,oauth\n"),
+            ),
+            (
+                "rejected_mcp_confirm_mode_that_is_not_one",
+                text("LK_MCP_CONFIRM=ask\n"),
+            ),
+            (
+                "rejected_mcp_content_mode_in_the_wrong_case",
+                text("LK_MCP_CONTENT=Summary\n"),
+            ),
+            (
+                "rejected_mcp_notify_switch_that_is_a_word",
+                text("LK_MCP_NOTIFY_SERVICES=yes\n"),
+            ),
+            (
+                "rejected_mcp_oauth_without_an_application_id_uri",
+                text(&format!(
+                    "{IDENTITY}LK_ENTRA_API_AUDIENCES=22222222-2222-4222-8222-222222222222\n"
+                )),
             ),
             ("rejected_half_a_certificate", text("LK_WEB_CERT_REF=web-cert\n")),
             (

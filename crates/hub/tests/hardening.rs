@@ -790,6 +790,49 @@ fn hardening_md_pod_contract_is_complete() {
     assert!(problems.is_empty(), "{problems:#?}");
 }
 
+/// Plan 18, T6 (G12): every `LK_MCP_*` variable the settings read is explained in `HARDENING.md`, none is a required part of the pod
+/// (each has the design's default), the pod cannot turn on the tool that reaches an unauthenticated endpoint (Q37) or both
+/// authentication modes (D52) by the chart's defaults, and the one secret personal-token mode reads is named as `hub-mcp` names it.
+#[test]
+fn hardening_md_documents_every_mcp_variable_and_the_secret_personal_tokens_need() {
+    let text = read("HARDENING.md");
+    let mcp: Vec<String> = known_variables()
+        .into_iter()
+        .filter(|name| name.starts_with("LK_MCP_"))
+        .collect();
+    assert!(mcp.len() >= 5, "{mcp:?}");
+    for name in &mcp {
+        assert!(
+            text.contains(&format!("`{name}`")),
+            "{name} is read by the settings and not explained in HARDENING.md"
+        );
+        assert!(
+            !REQUIRED_VARIABLES.contains(&name.as_str()),
+            "{name} is optional: the MCP defaults are the design's"
+        );
+    }
+    assert!(
+        text.contains(&format!("`{}`", hub_mcp::auth::pat::KEY_SECRET_NAME)),
+        "the secret personal-token mode reads is not named"
+    );
+    for doc in contract() {
+        for env in doc["spec"]["containers"][0]["env"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            match env["name"].as_str() {
+                Some("LK_MCP_NOTIFY_SERVICES") => assert_ne!(env["value"], "true", "Q37 is not answered"),
+                Some("LK_MCP_AUTH") => assert!(
+                    !env["value"].as_str().unwrap_or("").contains(','),
+                    "one authentication mode, never both"
+                ),
+                _ => {}
+            }
+        }
+    }
+}
+
 #[test]
 fn hardening_md_network_policy_denies_by_default_and_lists_only_allowed_egress() {
     let problems = network_problems(&contract());

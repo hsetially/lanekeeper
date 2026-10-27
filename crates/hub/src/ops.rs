@@ -7,7 +7,8 @@
 //!
 //! - `/healthz` is liveness: the process is up and serving.
 //! - `/readyz` is readiness: shutdown has not begun and every registered check passes (Postgres reachable; mirrors opened
-//!   and the outbox listener connected, once those modules register their checks).
+//!   and the outbox listener connected, once those modules register their checks). A feature this build does not have (the
+//!   document search, until prompt 14) is a *note*: it does not gate readiness, and a ready hub says so in the body (T6).
 
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
@@ -37,6 +38,8 @@ type NamedCheck = (&'static str, Arc<dyn ReadyCheck>);
 #[derive(Clone)]
 pub struct Readiness {
     checks: Arc<RwLock<Vec<NamedCheck>>>,
+    /// Features this build does not have: said in the body of a ready answer, and never a reason to be not ready.
+    notes: Arc<RwLock<Vec<&'static str>>>,
     drain: Drain,
 }
 
@@ -51,8 +54,24 @@ impl Readiness {
     pub fn new(drain: Drain) -> Self {
         Self {
             checks: Arc::new(RwLock::new(Vec::new())),
+            notes: Arc::new(RwLock::new(Vec::new())),
             drain,
         }
+    }
+
+    /// Say that a feature is not available in this build. `what` is a fixed word, listed in the body of `/readyz` once however many
+    /// times it is noted. It does not gate readiness: the hub serves everything else.
+    pub fn note(&self, what: &'static str) {
+        let mut notes = self.notes.write().unwrap_or_else(PoisonError::into_inner);
+        if !notes.contains(&what) {
+            notes.push(what);
+        }
+    }
+
+    /// The features noted, in the order they were noted.
+    #[must_use]
+    pub fn notes(&self) -> Vec<&'static str> {
+        self.notes.read().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     /// Add a condition. `name` is a fixed word; it is what `/readyz` prints when the check fails.
@@ -110,7 +129,13 @@ async fn healthz() -> Response {
 async fn readyz(State(state): State<OpsState>) -> Response {
     let failing = state.readiness.failing().await;
     if failing.is_empty() {
-        plain(StatusCode::OK, "text/plain; charset=utf-8", "ready\n".to_owned())
+        let notes = state.readiness.notes();
+        let body = if notes.is_empty() {
+            "ready\n".to_owned()
+        } else {
+            format!("ready (not available: {})\n", notes.join(", "))
+        };
+        plain(StatusCode::OK, "text/plain; charset=utf-8", body)
     } else {
         plain(
             StatusCode::SERVICE_UNAVAILABLE,

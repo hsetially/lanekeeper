@@ -283,6 +283,48 @@ use the pool of the `lanekeeper_app` role: nothing here needs another credential
 polling, the event listener, the session batcher and the request path, three replicas need `3 x LK_DB_MAX_CONNECTIONS` plus the migration
 Job's and an operator's from the database's `max_connections`.
 
+**The MCP server (plan 18, T6, G5, G12; S1, S3, S4, S14, S14b, S15; D52, D91, D109).** The MCP server is in the one process, on the web
+listener: `/mcp` (POST, GET and DELETE), the OAuth discovery documents under `/.well-known/` and the three personal-token routes under
+`/api/v1/me/mcp-tokens`. It adds no port, no volume and no egress host (Entra's host is already in the list below, for sign-in). Every
+variable is optional and none is in the pod block above: the defaults are the design's.
+
+| Variable | What it is |
+|---|---|
+| `LK_MCP_AUTH` | Optional. `oauth` (the default) or `personal_token`, **never both** (a list that names both is a refused setting, D52). OAuth takes Entra access tokens; personal-token mode takes the 7-day `lkpat_` tokens that a signed-in person makes in the web app. |
+| `LK_MCP_CONFIRM` | Optional. `elicitation` (the default) or `draft`. Whether a write is confirmed by asking the person through MCP, or left as a draft they confirm in the web app (D52). |
+| `LK_MCP_CONTENT` | Optional. `summary` (the default) or `data_block`: whether file and document text also reaches the model inside a delimited block in `content` (D91). |
+| `LK_MCP_NOTIFY_SERVICES` | Optional, `true` or `false`, **off**. Turns on the one tool that reaches the config-server's `/update-resources`, which has no authentication (Q37). Leave it off until Q37 is answered. |
+| `LK_MCP_AS_MIRROR` | Optional, `true` or `false`, off. Also serves a static copy of Entra's authorization-server metadata at `/.well-known/oauth-authorization-server`; turn it on only if the Cursor test (D91, `C1.mirror_needed`) says Cursor needs it. |
+
+**What OAuth takes from the Entra settings above.** There are no MCP variables for the tenant, the audience or the origin. The resource is
+the hub itself at `LK_PUBLIC_ORIGIN`: the `Host` and `Origin` of every request are checked against it, so it must be the name Cursor is
+given. The audience is the first `api://...` entry of `LK_ENTRA_API_AUDIENCES` (by default `api://<LK_ENTRA_CLIENT_ID>`) and the scope a
+client asks for is `<that URI>/mcp.access`; a list with no `api://` entry is a refused setting in OAuth mode. The app registration must
+expose that application ID URI and the `mcp.access` scope, issue v2 access tokens (`accessTokenAcceptedVersion: 2`), and pre-authorize
+Cursor's client ID for the scope (D91). The hub accepts a token only from `LK_ENTRA_TENANT_ID`, for that audience, with that scope, and
+for a user who is active at that moment (S1); a pending or disabled user is a `403` on every call.
+
+**The one secret, in personal-token mode only.** The Secret Manager secret `mcp-token-hmac-key` (the name is a constant of `hub-mcp`):
+at least 32 random bytes as base64url, the key under which tokens are hashed. The hub reads it at start and **does not start** in this
+mode without a usable one (exit 1, naming the secret), so a deployment cannot run with a mode that accepts no token. Every replica
+reads the same secret, since any replica may be asked to check a token, and the pod's identity needs `roles/secretmanager.secretAccessor`
+on it. OAuth mode reads no secret of its own.
+
+**Sessions and the load balancer.** An MCP session lives in the memory of the replica that opened it, and a request that names a session
+another replica opened is answered `404` (it fails closed). Three replicas therefore need the users' load balancer to **keep a client on
+one replica by the `Mcp-Session-Id` header** (a Google backend service with `sessionAffinity: HEADER_FIELD` on that header and a
+consistent-hash policy is the shape; whether the external HTTPS load balancer accepts that was not verified here), or each client
+re-initialises on every `404`. `LK_MCP_CONFIRM=draft` does not remove the need. It only removes the question that is asked through
+the open stream. The load balancer must also pass `Authorization` and `Mcp-Session-Id` unchanged and must not buffer or time out a
+`text/event-stream` response before the hub's keep-alive (15 seconds) and idle limit (30 minutes) do; its backend timeout is the longest
+a stream stays open. A hub that is told to stop ends the open streams at once.
+
+**The document search is not there yet (G5).** `hub-docsearch` is empty until prompt 14, so the five docs tools (`search_docs`,
+`read_doc`, `grep_docs`, `get_docs_for_file`, `get_feature_status`) answer a typed `unavailable` error (retryable, no data), the REST
+docs operations are not routed, `/readyz` stays `200` with the body `ready (not available: docs_search)`, `lanekeeper_docs_search_available`
+is `0`, and the start logs one warning. This is the one stand-in in the hub (`UnavailableDocs`; `tests/release_build.rs` holds that it is
+the only one). A probe that gates on the status is unaffected; an alert on the gauge is the way to notice.
+
 **Request bodies (D137, S11).** 4 MiB for every route, 1 MiB for the GitHub webhook, and 12 MiB + 64 KiB for `PUT /api/v1/swimlanes/{id}/files`
 and `POST /api/v1/drafts` from a request that carries a live session of at least an Editor. An unauthenticated request, a pending user and a
 Viewer have 4 MiB on those two routes too. The users' load balancer must pass a request body of that size and its own timeouts must not be

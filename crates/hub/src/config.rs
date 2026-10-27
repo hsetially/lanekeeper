@@ -5,7 +5,9 @@
 //!
 //! The settings are in groups, one file each under `config/`, and every group is read through [`Reader`]: process and
 //! listeners (this file), request limits, the database, Git, Google Cloud, the web certificate and the platform (the two CAs,
-//! this replica's identity and the agent endpoint) and identity (Entra sign-in, the first admins, the audit checkpoints);
+//! this replica's identity and the agent endpoint), identity (Entra sign-in, the first admins, the audit checkpoints), the
+//! registry and the write paths, and the MCP server (its modes and two switches; the rest of what it needs is the identity
+//! group's, and the two are checked together);
 //! `hub migrate` has its own small group, [`MigratorSettings`], that the
 //! serving hub never reads. A group arrives with the task that needs it, and `tests/hardening.rs` reads every `LK_*` literal in
 //! these files to check the pod contract against them.
@@ -15,6 +17,7 @@ mod gcp;
 mod git;
 mod identity;
 mod limits;
+mod mcp;
 mod migrator;
 mod platform;
 mod reader;
@@ -32,6 +35,7 @@ pub use gcp::GcpSettings;
 pub use git::{GitCredentialSource, GitSettings};
 pub use identity::{CheckpointSettings, DEFAULT_AUTHORITY_HOST, DEFAULT_REDIRECT_PATH, IdentitySettings};
 pub use limits::{LimitSettings, Rate};
+pub use mcp::McpSettings;
 pub use migrator::{DEFAULT_TIMEOUT_SECS, JOB_ONLY_VARIABLES, MigratorSettings};
 pub use platform::{CaSettings, DEFAULT_AGENT_ADDR, DEFAULT_REPLICA_ADDR, PlatformSettings};
 pub use reader::Reader;
@@ -87,6 +91,9 @@ pub struct HubSettings {
     /// The write paths: the vault's KMS key, GitHub, Teams and the jobs' intervals (T5). `None` only in the library's defaults;
     /// serving refuses that.
     pub writes: Option<WritesSettings>,
+    /// The MCP server: how a caller proves who it is, how a write is confirmed, and two switches that are off (T6). Always present:
+    /// every knob has a default, and the rest comes from the identity group.
+    pub mcp: McpSettings,
     /// What the blob cache may hold (`LK_BLOB_CACHE_MIB`, default 512 MiB), in bytes.
     pub blob_cache_bytes: u64,
     /// OTLP gRPC endpoint of an in-cluster collector. No export when unset.
@@ -132,6 +139,13 @@ impl HubSettings {
             return Err(ConfigError::Invalid("LK_TRUSTED_TYPES"));
         }
 
+        // The MCP server is made from two groups, so they are read and checked together: a mismatch is an exit 2 that names a variable.
+        let identity = IdentitySettings::read(&reader)?;
+        let mcp = McpSettings::read(&reader)?;
+        if let Some(identity) = &identity {
+            mcp.for_identity(identity)?;
+        }
+
         Ok(Self {
             web_addr: reader.addr("LK_WEB_ADDR", "0.0.0.0:8443")?,
             ops_addr: reader.addr("LK_OPS_ADDR", "0.0.0.0:9090")?,
@@ -150,9 +164,10 @@ impl HubSettings {
             gcp: GcpSettings::read(&reader)?,
             web_tls: WebTlsSettings::read(&reader)?,
             platform: PlatformSettings::read(&reader)?,
-            identity: IdentitySettings::read(&reader)?,
+            identity,
             registry: RegistrySettings::read(&reader)?,
             writes: WritesSettings::read(&reader)?,
+            mcp,
             blob_cache_bytes: reader
                 .number("LK_BLOB_CACHE_MIB", 512, 1, 4096)?
                 .saturating_mul(1024 * 1024),
@@ -215,6 +230,7 @@ impl Default for HubSettings {
             identity: None,
             registry: RegistrySettings::default(),
             writes: None,
+            mcp: McpSettings::default(),
             blob_cache_bytes: 512 * 1024 * 1024,
             otlp_endpoint: None,
             start_timeout: Duration::from_secs(8),

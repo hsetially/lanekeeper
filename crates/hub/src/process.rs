@@ -4,8 +4,8 @@
 //! the two certificate authorities, the web listener (TLS 1.3, the certificate reloaded on a timer), the operations listener
 //! (`/healthz`, `/readyz`, `/metrics`), the agent and replica listeners (mTLS), the event bus, the Git mirrors, the leases and the
 //! platform's jobs, the identity module (sign-in, sessions, CSRF, users, the audit chain's jobs; T4), the registry (ingestion, the
-//! pipeline, the read API, the blob policy; T5) and the write paths (edits, proposals, the token vault, pull requests, Teams; T5),
-//! the drain, and readiness. MCP (T6) plugs into the same `Deps`.
+//! pipeline, the read API, the blob policy; T5), the write paths (edits, proposals, the token vault, pull requests, Teams; T5) and
+//! the MCP server (T6, with the document search that says it is not there), the drain, and readiness.
 //!
 //! **It never starts on a fake.** Every start step is a real component or an error with a fixed message that names the
 //! component, never a value. `Edges` is the only place software can be substituted, and the binary fills it with Google.
@@ -45,8 +45,10 @@ use crate::config::{
     WebTlsSettings, WritesSettings,
 };
 use crate::db::{self, DbError, PostgresReady};
+use crate::docs::UnavailableDocs;
 use crate::edges::Edges;
 use crate::identity::{AuditSchedule, Identity, IdentityBuildError, IdentityInputs, IdentityMounts};
+use crate::mcp::{Mcp, McpBuildError, McpInputs};
 use crate::metrics_bridge::SourceCollector;
 use crate::migrate;
 use crate::ready::{CertsReady, Expiring};
@@ -98,6 +100,9 @@ pub enum StartError {
     /// The Teams notifier, the write service, the token vault or one of the write jobs (T5).
     #[error(transparent)]
     Writes(#[from] WritesBuildError),
+    /// The MCP server: its settings, or the key that hashes personal tokens (T6).
+    #[error(transparent)]
+    Mcp(#[from] McpBuildError),
     /// The edges carry no KMS envelope or GitHub client for the write path. The real edges always do; a setup that built its own
     /// `Edges` and forgot them is told, and the hub does not start without a vault that can keep a token.
     #[error("the write path has no KMS envelope and GitHub client to use")]
@@ -303,6 +308,9 @@ struct Parts<'a> {
     identity: &'a Identity,
     registry: &'a Registry,
     writes: &'a Writes,
+    mcp: &'a Mcp,
+    /// The document search the MCP server stands on, kept here so that the hub can say that it is not there (T6, G5).
+    docs: &'a UnavailableDocs,
     events: Arc<dyn Module>,
 }
 
@@ -323,6 +331,8 @@ async fn compose(
         identity,
         registry,
         writes,
+        mcp,
+        docs,
         events,
     } = parts;
     let dist = plan.web_dist.clone();
@@ -352,6 +362,7 @@ async fn compose(
     ))));
     modules.push(registry.module());
     modules.push(writes.module());
+    modules.push(mcp.module());
     let IdentityMounts { session, mounted } = mounts;
     let hub = Hub::build_with(
         Deps {
@@ -370,10 +381,14 @@ async fn compose(
         edges.google_metrics.register(metrics);
         platform.register_metrics(metrics);
         registry.metrics.register(metrics);
+        mcp.register_metrics(metrics);
+        docs.register_metrics(metrics);
         metrics.register_collector(Box::new(SourceCollector::new(
             Arc::clone(&identity.metrics) as Arc<dyn CounterSource>
         )));
     });
+    // A feature this hub does not have is said in `/readyz` and does not gate it (G5): the hub serves everything else.
+    hub.readiness.note(UnavailableDocs::NOTE);
     Ok(hub)
 }
 
@@ -579,6 +594,37 @@ async fn start_with(
     })
     .await?;
 
+    // The MCP server, over the real registry and write service and the document search that says it is not there (G5): there is no
+    // other search to give it, and the hub does not start on a fake. A warning says so once, here; `/readyz` and the gauge keep saying.
+    let mcp_settings = settings.mcp.for_identity(&identity_settings)?;
+    let docs = Arc::new(UnavailableDocs::new());
+    warn!(
+        feature = UnavailableDocs::NOTE,
+        "document search is not available in this build (prompt 14): its MCP tools answer 'unavailable'"
+    );
+    let mcp = bounded(plan.start_timeout, "MCP server", async {
+        Mcp::build(
+            McpInputs {
+                settings: mcp_settings,
+                pool: pool.clone(),
+                tokens: Arc::clone(&identity.tokens),
+                users: Arc::clone(&identity.users),
+                registry: Arc::new(registry.service.clone()),
+                writes: Arc::new(writes.hub.clone()),
+                docs: docs.clone(),
+                audit: Arc::clone(&platform.audit),
+                secrets: Arc::clone(&edges.secrets),
+                clock: Arc::clone(&edges.clock),
+                closing: drain.closing(),
+                start_timeout: plan.start_timeout,
+            },
+            &mut platform.tasks,
+        )
+        .await
+        .map_err(StartError::Mcp)
+    })
+    .await?;
+
     // Every job is registered before the runner starts.
     {
         let runner = platform
@@ -599,6 +645,8 @@ async fn start_with(
             identity: &identity,
             registry: &registry,
             writes: &writes,
+            mcp: &mcp,
+            docs: &docs,
             events,
         },
         mounts,
@@ -1024,6 +1072,18 @@ mod tests {
             "{job}"
         );
         assert!(StartError::WriteEdges.to_string().contains("KMS envelope"));
+        // T6: the MCP server names the secret that hashes personal tokens, or the setting at fault, in fixed words (exit 1 for the
+        // secret, which is a component that could not be read; a refused setting is exit 2 and never gets this far).
+        let key = StartError::Mcp(McpBuildError::TokenKey);
+        assert!(key.to_string().contains("mcp-token-hmac-key"), "{key}");
+        assert_eq!(key.exit_code(), 1);
+        let setting = StartError::Mcp(McpBuildError::Settings("LK_MCP_AUTH")).to_string();
+        assert!(setting.contains("LK_MCP_AUTH"), "{setting}");
+        assert!(
+            StartError::TimedOut("MCP server")
+                .to_string()
+                .contains("MCP server")
+        );
         // T2: a schema that is behind names the migration and the command that fixes it, and the hub does not fix it itself.
         assert!(
             shown[4].contains("0004")

@@ -112,6 +112,50 @@ fn assert_refused(code: Option<i32>, output: &str, want_code: i32, must_name: &s
     );
 }
 
+// ------------------------------------------------------------------------------------------------ T6: the MCP server
+
+#[test]
+fn both_mcp_authentication_modes_at_once_are_refused_by_name() {
+    // D52: personal-token mode is never combined with OAuth, and a list that names both is a mistake and not a pick of one.
+    for both in ["oauth,personal_token", "personal_token,oauth"] {
+        let (code, output, _dir) = run_hub(&[], &[], &[("LK_MCP_AUTH", both)]);
+        assert_refused(code, &output, 2, "LK_MCP_AUTH is not valid");
+    }
+}
+
+#[test]
+fn an_mcp_setting_that_is_wrong_is_refused_by_name_and_never_by_value() {
+    for name in [
+        "LK_MCP_AUTH",
+        "LK_MCP_CONFIRM",
+        "LK_MCP_CONTENT",
+        "LK_MCP_NOTIFY_SERVICES",
+        "LK_MCP_AS_MIRROR",
+    ] {
+        let (code, output, _dir) = run_hub(&[], &[], &[(name, PLANTED)]);
+        assert_refused(code, &output, 2, &format!("{name} is not valid"));
+    }
+}
+
+#[test]
+fn oauth_mode_needs_an_application_id_uri_among_the_audiences_and_personal_token_mode_does_not() {
+    // The scope a client asks for is `<application id URI>/mcp.access`: a list of the client id alone has nothing to build it from.
+    let bare = "22222222-2222-4222-8222-222222222222";
+    let (code, output, _dir) = run_hub(&[], &[], &[("LK_ENTRA_API_AUDIENCES", bare)]);
+    assert_refused(code, &output, 2, "LK_ENTRA_API_AUDIENCES is not valid");
+    // In personal-token mode the same list is fine: the settings are accepted, and the start goes on to fail where it always fails in
+    // this test (the database is not there), which is exit 1 and not exit 2.
+    let (code, output, _dir) = run_hub(
+        &[],
+        &[],
+        &[
+            ("LK_ENTRA_API_AUDIENCES", bare),
+            ("LK_MCP_AUTH", "personal_token"),
+        ],
+    );
+    assert_ne!(code, Some(2), "{output}");
+}
+
 // ------------------------------------------------------------------------------------------------ T5: the registry and the write paths
 
 #[test]
