@@ -22,6 +22,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use hub::web_tls::PemError;
 use invariants::{Check, Verdict};
 
 fn fuzz_dir() -> PathBuf {
@@ -443,27 +444,48 @@ fn the_invariants_notice_a_settings_error_that_repeats_a_value() {
 }
 
 #[test]
-fn the_invariants_notice_a_pem_error_that_repeats_the_secret_and_stay_quiet_when_there_is_nothing_to_repeat()
-{
-    let secret = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----";
-    // A message that carries the secret, whole or with the padding around it, is the leak the check exists for.
-    assert!(invariants::error_repeats_text(
-        &format!("unreadable: {secret}"),
-        secret
-    ));
-    assert!(invariants::error_repeats_text(
-        &format!("unreadable: {secret}"),
-        &format!("  \n{secret}\n  ")
-    ));
-    // A fixed phrase repeats nothing, whatever the padding: whitespace alone (the fuzzer's first false alarm, and `contains("")`
-    // is true for every message), nothing at all, or a word that a phrase happens to hold.
-    let phrase = "the certificate secret holds no certificate";
-    assert!(!invariants::error_repeats_text(phrase, &" ".repeat(26)));
-    assert!(!invariants::error_repeats_text(phrase, ""));
-    assert!(!invariants::error_repeats_text(
-        phrase,
-        &format!("{}certificate{}", " ".repeat(20), " ".repeat(20))
-    ));
+fn the_fixed_pem_errors_are_every_variant_of_the_enum() {
+    // The check that an error never carries the secret's text is that it is one of a closed set of values. The match below is
+    // exhaustive, so a variant added to `PemError` stops this test from compiling until it is given an index here, and the
+    // comparison then stops it passing until `FIXED_PEM_ERRORS` lists it too: a new variant cannot slip past the check.
+    fn index(error: PemError) -> usize {
+        match error {
+            PemError::ChainTooLarge => 0,
+            PemError::KeyTooLarge => 1,
+            PemError::NoCertificate => 2,
+            PemError::TooManyCertificates => 3,
+            PemError::ChainUnreadable => 4,
+            PemError::LeafUnreadable => 5,
+            PemError::KeyUnreadable => 6,
+            PemError::KeyMismatch => 7,
+            PemError::KeyUnusable => 8,
+            PemError::UnexpectedKey => 9,
+        }
+    }
+    let mut listed: Vec<usize> = invariants::FIXED_PEM_ERRORS.iter().map(|e| index(*e)).collect();
+    listed.sort_unstable();
+    assert_eq!(listed, (0..10).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_ca_certificate_that_ends_before_it_begins_is_refused_and_the_invariants_agree() {
+    // The invariants hold that no accepted CA certificate ends before it begins. Nothing else in the hub looks at the order of
+    // the two dates, so the decoder has to: such a certificate is valid at no time. Found by reading the invariants against the
+    // decoder after the fuzzer's first three findings (plan 18, FINAL), not by the fuzzer: it is the same kind of gap.
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut params = rcgen::CertificateParams::new(vec!["ca.example".to_owned()]).unwrap();
+    params.not_before = rcgen::date_time_ymd(2030, 1, 1);
+    params.not_after = rcgen::date_time_ymd(2020, 1, 1);
+    let inverted = params.self_signed(&key).unwrap().pem();
+    assert_eq!(
+        invariants::ca_certificate(inverted.as_bytes()),
+        Ok(Verdict::Rejected)
+    );
+    // The same certificate with the dates the right way round is accepted, so the refusal is about the dates.
+    params.not_before = rcgen::date_time_ymd(2020, 1, 1);
+    params.not_after = rcgen::date_time_ymd(2030, 1, 1);
+    let fine = params.self_signed(&key).unwrap().pem();
+    assert_eq!(invariants::ca_certificate(fine.as_bytes()), Ok(Verdict::Accepted));
 }
 
 /// A key version for the `ca-init` seeds.
@@ -1030,6 +1052,12 @@ fn regenerate_the_seeds() {
             // Found by the fuzz target on the pinned nightly (plan 18, FINAL): a chain of nothing but spaces. The check that an error never
             // repeats the secret's text compared against the trimmed text, which is empty here, and every message "contains" it.
             ("rejected_a_chain_of_only_spaces", with_key(&" ".repeat(26), "")),
+            // And the third: the fuzzer fed the decoder a piece of the decoder's own fixed phrase, which a substring test of the
+            // message against the secret takes for a leak. The check is now that the error is one of a closed set.
+            (
+                "rejected_a_piece_of_the_decoders_own_phrase",
+                text("ficate chain holds no certificat"),
+            ),
             // A CA certificate secret holds one certificate and no key (T3): two, or one beside a private key, are refused.
             ("rejected_ca_two_certificates", with_key(&chain.repeat(2), "")),
             // Found by the fuzz target on the pinned nightly (plan 18, FINAL): a second certificate whose marker is glued to the text

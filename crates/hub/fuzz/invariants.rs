@@ -799,22 +799,30 @@ pub fn ca_certificate(data: &[u8]) -> Result<Verdict, String> {
     ca_certificate_text(&Secret::new(String::from_utf8_lossy(text).into_owned()))
 }
 
-/// Whether an error message repeats the secret's text. The text is trimmed first, because padding is not the secret, and what is
-/// left must be a dozen characters or more, as the URL checks of the settings already require: a shorter piece can match a fixed
-/// phrase by chance. An empty text is contained in every message, so it must never reach `contains`; that was the false alarm that
-/// the fuzz target `hub_pem` raised first on the pinned nightly, with a chain of 26 spaces (plan 18, FINAL).
-pub fn error_repeats_text(shown: &str, text: &str) -> bool {
-    let secret = text.trim();
-    secret.len() >= 12 && shown.contains(secret)
-}
+/// Every error the PEM decoders can give (S7). `PemError` has no field, so a message cannot carry the text it was given; the check
+/// is that what comes back is one of these values and not something else, which holds for a variant that is added later only when
+/// it is listed here too (`corpus_replay` fails to compile, and then to pass, until it is). A substring test of the message against
+/// the secret was tried first and is unsound: the fuzzer fed the decoder a piece of its own fixed phrase, and a text that trims to
+/// nothing is contained in every message (plan 18, FINAL).
+pub const FIXED_PEM_ERRORS: [PemError; 10] = [
+    PemError::ChainTooLarge,
+    PemError::KeyTooLarge,
+    PemError::NoCertificate,
+    PemError::TooManyCertificates,
+    PemError::ChainUnreadable,
+    PemError::LeafUnreadable,
+    PemError::KeyUnreadable,
+    PemError::KeyMismatch,
+    PemError::KeyUnusable,
+    PemError::UnexpectedKey,
+];
 
 fn ca_certificate_text(text: &Secret<String>) -> Result<Verdict, String> {
     match web_tls::decode_ca_certificate(text) {
         Err(error) => {
             // The error is one of the fixed phrases and never the text.
-            let shown = error.to_string();
-            if shown.is_empty() || error_repeats_text(&shown, text.expose()) {
-                return Err("an error that repeats the secret's text".to_owned());
+            if !FIXED_PEM_ERRORS.contains(&error) || error.to_string().is_empty() {
+                return Err("an error that is not one of the fixed ones".to_owned());
             }
             Ok(Verdict::Rejected)
         }
@@ -853,19 +861,7 @@ pub fn hub_pem(data: &[u8]) -> Result<Verdict, String> {
     match web_tls::decode(&chain, &key) {
         Err(error) => {
             // S7: the secrets' text is never repeated. Every message is one of the fixed phrases of `PemError`.
-            let known = [
-                PemError::ChainTooLarge,
-                PemError::KeyTooLarge,
-                PemError::NoCertificate,
-                PemError::TooManyCertificates,
-                PemError::ChainUnreadable,
-                PemError::LeafUnreadable,
-                PemError::KeyUnreadable,
-                PemError::KeyMismatch,
-                PemError::KeyUnusable,
-                PemError::UnexpectedKey,
-            ];
-            if !known.contains(&error) {
+            if !FIXED_PEM_ERRORS.contains(&error) {
                 return Err("an error that is not one of the fixed ones".to_owned());
             }
             Ok(Verdict::Rejected)

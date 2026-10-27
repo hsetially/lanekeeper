@@ -171,8 +171,14 @@ pub fn decode_ca_certificate(pem: &Secret<String>) -> Result<Vec<u8>, PemError> 
         return Err(PemError::UnexpectedKey);
     }
     let der = found.ok_or(PemError::NoCertificate)?;
-    let (rest, _) = X509Certificate::from_der(der.as_ref()).map_err(|_| PemError::LeafUnreadable)?;
+    let (rest, cert) = X509Certificate::from_der(der.as_ref()).map_err(|_| PemError::LeafUnreadable)?;
     if !rest.is_empty() {
+        return Err(PemError::LeafUnreadable);
+    }
+    // A certificate that ends before it begins is valid at no time, and nothing else in the hub looks at the order of the two
+    // dates (the CA's own check asks only whether `now` is past the end), so it is refused here as unreadable.
+    let validity = cert.validity();
+    if validity.not_after.timestamp() < validity.not_before.timestamp() {
         return Err(PemError::LeafUnreadable);
     }
     Ok(der.as_ref().to_vec())
