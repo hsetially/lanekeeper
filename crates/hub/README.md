@@ -4,7 +4,9 @@ The Lanekeeper hub: one binary that serves the web app, the API, the live stream
 endpoint on the web listener, and the agent and replica gRPC services on their own mTLS listeners. The contract for the pod and
 the network it runs in is `HARDENING.md`; the design is `plans/18-hub-assembly.md`.
 
-This file says how to operate it. It grows with the tasks of prompt 18.
+This file says how to operate it and what has to be true around it. `HARDENING.md` is the contract for the pod and the network and has
+the detail of every setting; the last section here is the checklist that the deployment (prompt 09's chart and its install guide) is
+matched against.
 
 ## Commands
 
@@ -287,3 +289,131 @@ gets carries the address of the discovery document and from there Entra's sign-i
 a token that the person makes in the web app, sent as `Authorization: Bearer lkpat_...`. The two modes are never on together. The
 variables, the one secret of personal-token mode (`mcp-token-hmac-key`), the audience and scope the Entra app registration must
 expose, and the need for `Mcp-Session-Id` affinity across replicas are in `HARDENING.md`, "The MCP server".
+
+## Local development (`just dev`)
+
+`just dev` starts a hub on a laptop with synthetic data and no Google. It needs Docker, `pnpm` and the Rust toolchain, and it does, in
+this order: it generates the small fixtures (`cargo xtask gen-fixtures --scale small`, the synthetic repositories of rule 12) and the
+certificates (`cargo run -p hub --example dev_pki`, a CA, a database certificate and a web certificate for `localhost`); it starts a
+Postgres 16 with pgvector and **TLS 1.3** (`examples/dev/compose.yaml`, on `127.0.0.1:5433`; the hub's pool verifies the server and has
+no mode that does not, so the plain-text database of `deploy/dev` cannot serve); it runs `hub migrate` with the migrator's credential
+and nothing else of the hub's; it runs `hub seed examples/seed.dev.yaml` as the application role (four synthetic swimlanes, their tenants
+`sit1` to `sit4` and one sentinel); it builds the web app; it copies the fixtures' two repositories into the mirror volume, so that the hub
+starts ready without a network; and it runs the **example** `hub_dev`.
+
+`hub_dev` is the same `hub::process::entry` as the binary, with software where the binary has Google (`examples/support/dev_edges.rs`):
+secrets are files in `target/dev/secrets`, the two CAs' keys and the audit checkpoint key are software keys made at start, GitHub is a
+port nobody listens on, the Entra provider is unreachable, and no Google ID token is accepted. It is an example target: `cargo build
+--release -p hub` builds no example, the image has none, and `tests/release_build.rs` and `just hub-lint` fail if a test-only feature
+reaches a release build. No agent is started and no webhook is exercised.
+
+The web app is at **https://localhost:8443** (trust `target/dev/pki/ca.pem` or accept the warning). A browser cannot sign in to a mock
+Entra (the discovery check demands the authorize endpoint on the authority's host with no port), so the example has its own way in:
+`http://localhost:8480/` makes a development administrator and a session for it through the hub's own `Sessions` and sends the browser to
+the hub with the two cookies (`examples/support/dev_login.rs`; loopback only, and it answers a loopback `Host` and nothing else). Whether
+a browser accepts a `Secure` cookie from `http://localhost` is the browser's decision; `curl -i http://localhost:8480/` prints the same two
+`Set-Cookie` lines to set by hand. Remove `LK_DEV_LOGIN_ADDR` from `examples/dev/dev.env` to run with no way in at all. `just dev-down`
+stops the database; its volume, and the generated files, are under `target/dev` and the Docker volume `lanekeeper-hub-dev_pgdata`.
+
+## What the chart and the install guide must match (for prompt 09)
+
+Everything below is a fact of the code at the commit that wrote it; `HARDENING.md` has the detail and `tests/hardening.rs` holds the
+pod and the policy to it. Where this list and a chart differ, the code wins, and the chart or this list is wrong.
+
+**1. One image, four commands.** The image runs `hub` (the default, `serve`) in the StatefulSet. The same image runs `hub migrate`
+(a Job), `hub seed <file> [--dry-run]` (a Job) and `hub ca-init --kms-ref ... --common-name ... --valid-days ...` (a person, once for each
+CA). Exit codes everywhere: 0 done, 1 could not (a component refused or was unreachable), 2 a setting or the command line was refused.
+
+**2. The order of a first deployment.** (a) The cloud pieces below. (b) The CNPG cluster with the two roles and the extensions
+(`deploy/dev/init.sql` is the shape). (c) `hub ca-init` for the agent CA and for the replica CA, from two different keys, each output
+stored in its Secret Manager secret. (d) The migration Job, to completion. (e) The StatefulSet (the hub refuses to start on an unmigrated
+database and says which migration is missing). (f) The seed Job, with a reviewed file that carries every swimlane's
+`agent_service_account` and every sentinel's `service_account`: until it has run, nothing can join, and the hub serves with no swimlanes
+meanwhile, so the rollout need not wait for it. A new swimlane later is a new seed run. Helm hooks (`pre-install`, `pre-upgrade`) or Argo
+`PreSync` for (d); (f) is a Job, not a hook.
+
+**3. The cloud pieces, made outside the hub.** Cloud KMS: the agent CA key version and the replica CA key version (asymmetric signing,
+`EC_SIGN_P256_SHA256`, used for nothing else), the audit checkpoint key version (the same algorithm; older versions may be named for
+verification), and the vault crypto key *without* a version (symmetric). A Cloud Storage bucket **with a retention lock** for the
+checkpoints (set by whoever owns the project, not by the hub). Secret Manager secrets and their contents, by the names the settings give:
+the web certificate chain and its key (`LK_WEB_CERT_REF`, `LK_WEB_KEY_REF`; rotated by writing a new version, picked up within
+`LK_WEB_CERT_RELOAD_SECS`), the two CA certificates (`LK_AGENT_CA_CERT_REF`, `LK_REPLICA_CA_CERT_REF`), the Entra client secret
+(`LK_ENTRA_CLIENT_AUTH_REF`), the login cookie key (`LK_ENTRA_COOKIE_KEY_REF`, 32 random bytes as base64url), `github-read-token`,
+`github-webhook-secret` (the names `LK_GIT_READ_REF` and `LK_GIT_WEBHOOK_REF` override), `write-preview-key` (at least 32 bytes, **read at
+start: the hub does not start without it**), `mcp-token-hmac-key` (only in `personal_token` mode), and one secret per Teams destination,
+named by an admin in `notification_settings`.
+
+**4. What the pod's Google identity (Workload Identity) may do, and no more.** `roles/cloudkms.signerVerifier` on the two CA key versions
+and the checkpoint key version(s); `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the vault key; `roles/secretmanager.secretAccessor` on
+the secrets above; on the bucket `roles/storage.objectCreator` and `roles/storage.objectViewer` (not `objectAdmin`, no delete). The
+person who runs `hub ca-init` needs `roles/cloudkms.publicKeyViewer` and `roles/cloudkms.signerVerifier` on that one key. The pod mounts
+no service-account token (`automountServiceAccountToken: false`); Workload Identity reaches Google through the metadata server.
+
+**5. The pod.** Exactly the Pod block of `HARDENING.md`: three replicas as a StatefulSet (the stable pod name is `LK_REPLICA_NAME`, from the
+downward API, the one `valueFrom` the contract allows; `LK_REPLICA_ADDRESS` is `$(LK_REPLICA_NAME).<headless service>.<namespace>.svc:8445`,
+lower case); four ports (web 8443 HTTPS, agent 8444 mTLS, replica 8445 mTLS, ops 9090 plain HTTP); `terminationGracePeriodSeconds` 45
+(it must exceed `LK_SHUTDOWN_GRACE_SECS` plus `LK_SHUTDOWN_DRAIN_SECS` plus 10; the test holds it); non-root `65532`, read-only root
+filesystem, all capabilities dropped, `RuntimeDefault` seccomp; **four volumes only**: `/tmp` (an `emptyDir`, 256 MiB), the mirror volume
+(a PVC for each replica, `LK_MIRROR_DIR`), the database credential (a read-only Secret, mode `0440`, `LK_DATABASE_URL_FILE`) and the
+database CA (`LK_DB_CA_FILE`). Probes: liveness `/healthz`, readiness `/readyz`, both on the `ops` port. No variable holds a secret
+(`HARDENING.md` lists the names to avoid), and `LK_MIGRATOR_URL_FILE`, `LK_MIGRATE_TIMEOUT_SECS` and `LK_SEED_TIMEOUT_SECS` are the Jobs'
+alone.
+
+**6. The two Jobs.** `migrate`: the migrator's Secret (`LK_MIGRATOR_URL_FILE`, mode `0440`) and the database CA, nothing else of the hub's;
+egress to Postgres and DNS only; no ports. `seed`: the application role's Secret (the one the hub mounts), the database CA, the seed file
+from a `ConfigMap` at the path in its arguments; egress to Postgres and DNS only. Neither is given the other's credential, and the code
+refuses it. Both: the hub pod's security context unchanged, a retry is safe, two at once take turns.
+
+**7. The settings, by who sets them.** *Required for a start* (exit 2 if absent): the 25 names in `REQUIRED_VARIABLES` of
+`tests/hardening.rs`; the Pod block carries those and a few optional ones. *Optional, with the design's defaults*: the MCP group (`LK_MCP_*`), the registry and
+write-path switches (`LK_RETENTION_ENABLED` off, `LK_RETENTION_DRY_RUN` on, `LK_EXTRA_DENY_GLOBS`, `LK_TEAMS_ALLOWED_HOSTS`,
+`LK_GITHUB_API_BASE`, `LK_GIT_BASE_BRANCH`, `LK_CONFIG_SERVER_DEPLOYMENT`, `LK_WRITES_*_SECS`, `LK_CORPUS_CACHE_MIB`), the identity extras
+(`LK_BOOTSTRAP_ADMINS`, `LK_ENTRA_AUTHORITY_HOST`, `LK_ENTRA_REDIRECT_PATH`, `LK_ENTRA_API_AUDIENCES`,
+`LK_AUDIT_CHECKPOINT_VERIFY_KMS_REFS`), and the tunables in the table below. Change a tunable only with a number in hand.
+
+| Tunable | Default (range) | What it bounds |
+|---|---|---|
+| `LK_DB_MAX_CONNECTIONS` | 16 (1 to 512) | The pool of each replica. Three replicas times this, plus the Jobs' and an operator's, must fit the database's `max_connections`. |
+| `LK_DB_ACQUIRE_TIMEOUT_SECS`, `LK_DB_STATEMENT_TIMEOUT_SECS` | 5 (1 to 60), 30 (1 to 600) | Waiting for a connection, and one statement. |
+| `LK_START_TIMEOUT_SECS` | 8 (1 to 120) | Each step of starting (P11's 10 seconds is the whole). |
+| `LK_SHUTDOWN_GRACE_SECS`, `LK_SHUTDOWN_DRAIN_SECS` | 5 (0 to 60), 25 (1 to 120) | Readiness fails first, then connections drain. |
+| `LK_BODY_MAX_BYTES` | 4 MiB (1 KiB to 64 MiB) | The global body cap (D137 gives two routes more, for a live Editor session). |
+| `LK_REQUEST_TIMEOUT_SECS`, `LK_JSON_DEPTH` | 30 (1 to 600), 64 (1 to 256) | A request's whole exchange; the nesting of a JSON body. |
+| `LK_IP_RATE_PER_SEC`, `LK_IP_BURST`, `LK_USER_RATE_PER_SEC`, `LK_USER_BURST` | 50 and 200, 30 and 120 | The per-address bucket (outside authentication) and the per-user bucket. |
+| `LK_BUCKET_CAPACITY`, `LK_MAX_CONNECTIONS` | 100,000 (100 to 10,000,000), 4,096 (1 to 1,000,000) | The bucket tables, and the connections one replica serves at once. |
+| `LK_BLOB_CACHE_MIB` | 512 (1 to 4096) | The blob cache. |
+| `LK_TREE_INDEX_ENTRIES`, `LK_GIT_QUEUE_CAPACITY`, `LK_GIT_FETCH_TIMEOUT_SECS` | 400,000, 256, 120 | The tree-index cache, the pushes that can wait for the fetch worker, one fetch. |
+| `LK_TRUSTED_TYPES` | `lanekeeper-docs,lanekeeper-monaco` | The Trusted Types policy names in the CSP; the web build must create exactly these. |
+| `LK_GIT_TOKEN_FILE` | unset | Q17's interim: a read-only Git credential from a mounted file **instead of** Secret Manager. It needs a fifth volume, which the contract refuses; use `LK_GIT_READ_REF`. |
+
+**8. The network.** The NetworkPolicy and the FQDN policy of `HARDENING.md` exactly: ingress web 8443 from the users' load balancer range, agent
+8444 from the agent load balancer's range, replica 8445 from the hub's own pods, ops 9090 from `monitoring`; egress DNS, the database,
+the other replicas, the OpenTelemetry collector, the metadata server, and 443 to `login.microsoftonline.com`, `github.com`,
+`api.github.com` (or the GitHub Enterprise host in `LK_GITHUB_API_BASE`), `secretmanager.googleapis.com`, `cloudkms.googleapis.com`,
+`www.googleapis.com`, `storage.googleapis.com` and the Teams webhook host. The GitHub hook ranges on `/hooks/github` are the chart's (S18).
+
+**9. The users' load balancer** must: pass `Cookie`, `Origin` and `X-CSRF-Token` unchanged and not cache `/api` or `/auth`; pass a
+request body of 12 MiB + 64 KiB on `PUT /api/v1/swimlanes/{id}/files` and `POST /api/v1/drafts` and a timeout no shorter than
+`LK_REQUEST_TIMEOUT_SECS`; not buffer or cut `text/event-stream` (`/api/v1/events`, `/mcp`) before the hub's 15-second keep-alive;
+keep an MCP client on one replica by its **`Mcp-Session-Id`** header (not verified for Google's external HTTPS load balancer; D142);
+count two proxies for `LK_TRUSTED_PROXY_HOPS` as the contract says; and serve the name users type, which is `LK_PUBLIC_ORIGIN` (the audience agents ask Google for, `LK_HUB_AUDIENCE`, is the hub's own name and is normally the same).
+The agent load balancer passes TCP to 8444 and does not terminate TLS (the agents verify the hub's certificate by the names in
+`LK_AGENT_ENDPOINT_HOSTS`).
+
+**10. The Entra app registration.** Single tenant (`LK_ENTRA_TENANT_ID`); redirect URI `LK_PUBLIC_ORIGIN` plus `/auth/callback`; a client
+secret stored in Secret Manager (the federated credential is off until Q25 is answered); for MCP, the application ID URI
+`api://<client id>` (or the first `api://` entry of `LK_ENTRA_API_AUDIENCES`), the scope `mcp.access`, v2 access tokens
+(`accessTokenAcceptedVersion: 2`), and Cursor's client ID pre-authorized for the scope (D91). The first administrators are the Entra object
+ids in `LK_BOOTSTRAP_ADMINS`; everyone else starts pending.
+
+**11. The `/readyz` contract.** `200` with the body `ready` when `postgres`, `schema`, `certificates`, `events`, `mirrors`, `jobs` and `tasks`
+all hold; `503` naming the first that does not. A ready hub can say `ready (not available: docs_search)`: a note that never gates and that
+the chart must not treat as a failure (`lanekeeper_docs_search_available` is `0` until prompt 14). A replica on an empty mirror volume is
+not ready until both repositories are fetched, which depends on the network and is outside P11. `/healthz` is `200 ok` while the process
+serves. `/metrics` is Prometheus text on the ops port, with route templates as the only labels.
+
+**12. Sizing and alerts worth having.** Requests 500m CPU and 1536 MiB, limits 4 CPU and 2 GiB (the Pod block; P11 budgets 1536 MiB for the
+whole hub at design scale, and prompt 16 measures it). The database needs room for `3 x LK_DB_MAX_CONNECTIONS` plus the Jobs' and an
+operator's. Alerts: `lanekeeper_docs_search_available == 0` (until prompt 14), `lanekeeper_web_cert_reload_failures_total` rising,
+`lanekeeper_web_cert_not_after_seconds` within a week of now, the audit chain's verification-failure counters (the series `hub_identity`
+names), `/readyz` failing on one replica for longer than a rollout.

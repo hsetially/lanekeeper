@@ -122,6 +122,12 @@ impl Child {
         (all.web, all.ops)
     }
 
+    /// The four addresses if the child has said already, and `None` if it has not (it never waits and never fails).
+    pub fn listening(&self) -> Option<Listening> {
+        let (lock, _) = &*self.collected;
+        lock.lock().unwrap_or_else(PoisonError::into_inner).listening
+    }
+
     /// All four addresses, once the child says it is listening.
     pub fn wait_listening_all(&self, within: Duration) -> Listening {
         let (lock, changed) = &*self.collected;

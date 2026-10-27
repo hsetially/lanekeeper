@@ -13,6 +13,9 @@ apart:
   destinations S18 names, and ingress exactly the four listeners from exactly their callers.
 - `hardening_lint_rejects_planted_violations`: each of those checks is shown to refuse a manifest that breaks it.
 
+The checklist that the chart and the install guide are matched against, in one place and in the order of a first deployment, is the last
+section of `README.md`; this file is the detail behind it.
+
 Values in `<angle brackets>` or marked "from values" are the chart's to fill in. The documentation addresses
 (`203.0.113.0/24`, `198.51.100.0/24`) stand for the real load-balancer ranges.
 
@@ -549,3 +552,9 @@ These stay open after the tests pass. Each is a residual risk in `docs/threat-mo
 - **FQDN policy is name-based.** A destination that shares an address with an allowed name (a CDN) is reachable while the
   name resolves there. The hub's own checks (TLS to the named host, HMAC, signature verification) are what stand behind it.
 - **Digests age.** A pinned base image does not receive security fixes until someone changes the pin.
+- **Everything that needs Google, Entra or GitHub.** The tests run with software at the edges. That the pod's identity holds exactly the
+  roles named above, that Secret Manager and KMS answer as the clients expect, that Entra's tokens carry the claims the hub checks, and
+  that GitHub's API behaves as the faked one does, are shown by prompt 09's kind test and the first deployment (plan 18, T8).
+- **The load balancers.** The requirements in `README.md` ("The users' load balancer") are statements about a product this repository
+  does not run: header-based affinity for MCP sessions, 12 MiB bodies, unbuffered event streams, and the number of proxies behind
+  `LK_TRUSTED_PROXY_HOPS`. Each is a residual risk in `docs/threat-model.md` until someone has tested it on the real path.

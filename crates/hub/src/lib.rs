@@ -13,6 +13,7 @@
     clippy::module_name_repetitions
 )]
 
+pub mod allowances;
 pub mod blobs;
 pub mod ca_init;
 pub mod cli;

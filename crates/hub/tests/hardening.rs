@@ -800,6 +800,43 @@ fn hardening_md_pod_contract_is_complete() {
 /// Plan 18, T6 (G12): every `LK_MCP_*` variable the settings read is explained in `HARDENING.md`, none is a required part of the pod
 /// (each has the design's default), the pod cannot turn on the tool that reaches an unauthenticated endpoint (Q37) or both
 /// authentication modes (D52) by the chart's defaults, and the one secret personal-token mode reads is named as `hub-mcp` names it.
+/// Names the settings still mention that no deployment sets: the spelling `LK_GIT_WEBHOOK_SECRET` had before plan 18 renamed it, which
+/// the settings refuse by name so that a chart that still passes it learns why (a variable called `*_SECRET` is what the pod
+/// contract flags as a secret in the environment).
+///
+/// The other two are strings the settings' own unit tests plant to show that a name is not read (`LK_MIGRATOR_URL`, which is not a way
+/// to give the migrator's credential) and the prefix they test names against (`LK_`).
+const REFUSED_OLD_NAMES: [&str; 3] = ["LK_GIT_WEBHOOK_SECRET", "LK_MIGRATOR_URL", "LK_"];
+
+/// The chart and the install guide are written from `README.md` and `HARDENING.md` (plan 18, T8), so a variable the settings read that
+/// neither names is a variable a deployment cannot know about: a tunable that nobody can find, or a required one that is not in the
+/// Pod block. A name counts when it is in backticks or is the `name:` of an entry of the Pod block.
+#[test]
+fn every_variable_the_settings_read_is_named_in_hardening_md_or_the_readme() {
+    let docs = format!("{}\n{}", read("HARDENING.md"), read("README.md"));
+    let mut missing = Vec::new();
+    for name in known_variables() {
+        if REFUSED_OLD_NAMES.contains(&name.as_str()) {
+            continue;
+        }
+        if !docs.contains(&format!("`{name}`")) && !docs.contains(&format!("name: {name}\n")) {
+            missing.push(name);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "the settings read variables that neither HARDENING.md nor README.md names: {missing:?}"
+    );
+    // And the required ones are in the Pod block, which is what a chart is rendered from.
+    let pod = read("HARDENING.md");
+    for name in REQUIRED_VARIABLES {
+        assert!(
+            pod.contains(&format!("name: {name}\n")),
+            "{name} is required and not in the Pod block"
+        );
+    }
+}
+
 #[test]
 fn hardening_md_documents_every_mcp_variable_and_the_secret_personal_tokens_need() {
     let text = read("HARDENING.md");

@@ -2,8 +2,8 @@
 //!
 //! No secrets and nothing mutable here: three read-only routes, answered in a few bytes, that name no cause beyond a fixed
 //! check name. The port is cluster-internal (the `NetworkPolicy` in `HARDENING.md` lets only the kubelet and the metrics
-//! scraper reach it), so none of these routes is on the web listener and none is an API operation (S4: they are listed as
-//! route-only allowances in the route-table test).
+//! scraper reach it), so none of these routes is on the web listener and none is an API operation (S4: they are not in the web
+//! listener's route table, and `tests/route_table_full.rs` holds that the web listener does not answer them).
 //!
 //! - `/healthz` is liveness: the process is up and serving.
 //! - `/readyz` is readiness: shutdown has not begun and every registered check passes (Postgres reachable; mirrors opened

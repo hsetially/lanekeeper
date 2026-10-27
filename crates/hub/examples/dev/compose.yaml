@@ -1,0 +1,37 @@
+# Local development only (plan 18, T8, G23). Never used in any shared environment.
+#
+# The development database of `just dev`: Postgres 16 with pgvector and TLS 1.3, because the hub's pool verifies the server and has no
+# mode that does not (S6), which `deploy/dev/compose.yaml` (a plain-text server) cannot satisfy. It is on 127.0.0.1:5433 so that it can
+# run beside that one, and it is its own project (`name:` below), so the two never share a container or a volume. The roles come from
+# the same `deploy/dev/init.sql`. The certificate and key are made by `cargo run -p hub --example dev_pki -- target/dev/pki` and mounted
+# read-only; the entrypoint copies the key to where the server may read it (it insists on its own user and mode 0600).
+# The image is pinned by digest (S19), the one `deploy/dev/compose.yaml` and the tests pin.
+name: lanekeeper-hub-dev
+services:
+  postgres:
+    image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        install -d -m 755 /etc/lk-tls-run
+        && install -o postgres -g postgres -m 600 /etc/lk-tls/pg-server.key /etc/lk-tls-run/server.key
+        && install -o postgres -g postgres -m 644 /etc/lk-tls/pg-server.crt /etc/lk-tls-run/server.crt
+        && exec docker-entrypoint.sh postgres -c ssl=on -c ssl_min_protocol_version=TLSv1.3
+        -c ssl_cert_file=/etc/lk-tls-run/server.crt -c ssl_key_file=/etc/lk-tls-run/server.key
+    environment:
+      POSTGRES_USER: lanekeeper
+      POSTGRES_PASSWORD: lanekeeper-dev-only
+      POSTGRES_DB: lanekeeper
+    ports: ["127.0.0.1:5433:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../../../../deploy/dev/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ../../../../target/dev/pki:/etc/lk-tls:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lanekeeper -d lanekeeper"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    security_opt: ["no-new-privileges:true"]
+volumes:
+  pgdata: {}

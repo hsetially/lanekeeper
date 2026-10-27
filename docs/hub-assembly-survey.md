@@ -198,3 +198,65 @@ See "Decisions at the plan gate" in `prompts/18-hub-assembly.md`; the list there
 About 70 constructor calls; about 19 leased jobs, 3 self-spawned identity jobs and 12 plain tasks; 4 listeners; 3 or 4 new `Module`s
 plus an auth adapter; 30 to 40 new settings; 8 to 12 new source files in `crates/hub/src`, 5 to 8 new test files; 3,000 to 6,000 lines
 of code and tests. Unbuilt prompts or owners (14, the admin APIs) add work outside this assembly.
+
+## Corrections after verification (prompt 18, T8)
+
+The survey was written by an agent that ran no code, and said so. Prompt 18 re-read what it relied on (the plan's table "What I
+re-verified" has each line with its evidence) and then built the assembly. This section is what turned out different, in the order the
+survey was wrong or short, so that the next reader does not repeat a claim that was disproved. Line numbers are gone because the
+code moved; the decisions and tests named are where to look.
+
+**Wrong, or incomplete in a way that changed the design.**
+
+- **"One `GuardedRouter` per crate, pick one."** There were two incompatible types, and the platform's was typed into four crates
+  (registry, writes, MCP, and the platform's own routes), so it was the only one that could survive. Identity's router also carried a
+  custom fallback that axum would adopt silently or panic on when merged: it is carried as a mounted sub-router with its fallback taken
+  off (`reset_fallback`). `CsrfLayer` does nothing unless identity's `AuthLayer` runs outside it, so a hub-wide CSRF layer needed a
+  hub-wide `AuthLayer` (D141).
+- **"`SessionAuth` for cookies is missing."** True, and the platform's trait wants a whole `User` while identity's session cache holds
+  ids, a role and a status. The adapter (`CookieAuth`) decides on the role and status in the request's `AuthContext` and takes the
+  profile from a bounded user cache evicted by the same event, because an uncached user read per request would be most of P7's 2 ms
+  (CC1: `P7.auth_composed`, `P7.auth_composed_cold`).
+- **"End the stream on the revocation event for that session."** The event carries a user id, never a session id. The stream is bound
+  to its session by the SHA-256 of the session id and asks on its heartbeat (D143, three `hub-platform` files).
+- **"The migrations can be checked by the migration table."** The application role cannot read `_sqlx_migrations`. The hub probes the
+  catalog for one object per migration (D138).
+- **"The CA material is two key refs and two certificates."** Nothing could make a CA certificate (`hub ca-init` was named in a
+  comment and not built), and the agent listener's certificate needs the hub's agent-endpoint host names (`LK_AGENT_ENDPOINT_HOSTS`).
+- **"Identity's metrics register through `Metrics::register`."** They are plain atomics behind `CounterSource`; a collector in the hub
+  exports them. `hub-writes` has no metrics at all.
+- **"Run `assert_hub_route_table` and `assert_default_deny` in the hub's tests."** Neither can run on a composed router that serves the
+  web app: `assert_default_deny` expects `401` for an unregistered path, and the composed hub answers the shell or `404`. The same
+  facts are asserted with the ports harness and a hub-owned default-deny test, with `/auth`, `/mcp` and `/.well-known` reserved beside
+  `/api` and `/hooks` so that no unknown path under them is answered with the shell.
+- **"The hub-writes workers have intervals in D63 and the doc comments."** D63 is the agent's Merkle tree and no doc comment gives
+  one; the intervals and lease times are the plan's numbers, as settings within bounds (`job_wrappers.rs`).
+- **"`record_sync` has no caller."** The registry's own leased job `registry-sync-watch` runs the pieces of it for closed windows;
+  the explicit-commit entry point is prompt 10's. Nothing is left to wire.
+- **"`lanekeeper_app` can seed."** Confirmed, and nothing else writes the rows that say which service account may join as which
+  swimlane's agent, so `hub seed` was needed for any agent to join (D139).
+
+**Wrong in small ways, or true and worth stating.**
+
+- Fifty of the 99 operations have no route (33 admin, 10 backed by document search, 7 waiting for their owners), which is now a list
+  with a reason and an owner (`hub::allowances`, `route_table_full`). Five routes the hub mounts are not operations of the document (`/mcp` on three methods and two OAuth discovery
+  documents).
+- The web listener's certificate had no source; `RotatingServerCert` already existed in `hub-platform`, and what was missing was a PEM
+  decoder at a trust boundary (a fuzz target, `hub_pem`).
+- A pod contract that flags any variable whose name contains `TOKEN` or `SECRET` caught two of the Git settings; they are
+  `LK_GIT_READ_REF` and `LK_GIT_WEBHOOK_REF` now.
+- The binary links both ring (through sqlx) and aws-lc-rs, and only the agent installed a process-default provider; `main` does it
+  first, and creates the signal streams before anything is spawned.
+- Identity's error bodies are a different shape from the hub's (no `code`, kebab-case in the type, identity's own `req-` request id);
+  the API document describes both, and the error test for the composition checks the document's shape, not one layer's.
+- `deploy/dev/compose.yaml` starts a Postgres without TLS, which the hub's pool refuses by design (S6), so `just dev` has its own
+  development database (`crates/hub/examples/dev/compose.yaml`) with TLS 1.3 and a certificate made by `dev_pki`. Browser sign-in
+  cannot be mocked: the discovery check requires the authorize endpoint on the authority's host with no port, which a laptop cannot
+  serve; the development example has its own loopback sign-in helper instead (see `crates/hub/README.md`).
+- The start-up benchmark of 03b composed a subset by hand (no identity, registry, write paths or MCP) and used `file://` remotes,
+  which settings now refuse. The new one runs the example binary through `process::run`, with HTTPS remotes served from the fixtures.
+
+**Size.** The survey guessed 3,000 to 6,000 lines of code and tests; the plan guessed 5,000 to 7,000. The branch changed about 12,600
+lines under `crates/hub/src` and about 12,500 under its tests, benches, examples and fuzz crate, because each task was test-first
+against a real Postgres and a process, and the documents the tests hold true (the pod contract, the README, the threat model) are
+long. No schedule depended on the guess.
