@@ -1024,6 +1024,64 @@ async fn an_implementation_that_names_no_session_is_asked_nothing_more_than_befo
     assert_eq!(metrics.sse_ended_total(SseEnd::Revoked), 0);
 }
 
+/// An implementation that names the session that opened a stream and forgets to say how to ask whether it still lives: it
+/// overrides `stream_binding` and not `binding_valid`.
+struct NamesASessionOnly {
+    users: FakeSessionAuth,
+}
+
+#[async_trait::async_trait]
+impl SessionAuth for NamesASessionOnly {
+    async fn authenticate(&self, parts: &http::request::Parts) -> Result<domain::User, ports::AuthError> {
+        self.users.authenticate(parts).await
+    }
+
+    async fn still_valid(&self, user: &domain::UserId) -> bool {
+        self.users.still_valid(user).await
+    }
+
+    fn stream_binding(&self, headers: &http::HeaderMap) -> Option<StreamBinding> {
+        let session = headers.get(SESSION_HEADER)?.to_str().ok()?;
+        Some(binding_of(session))
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_implementation_that_names_a_session_and_cannot_answer_for_it_fails_closed() {
+    // A provided `binding_valid` that said yes would keep every stream of such an implementation open for ever, after a sign-out as
+    // well: a missing method is not an answer. It says no, so the stream ends at its first heartbeat and the mistake is seen at once.
+    let auth = Arc::new(NamesASessionOnly {
+        users: FakeSessionAuth::new().with_user("viewer", Some(Role::Viewer), UserStatus::Active),
+    });
+    let (_closing, closing_rx) = watch::channel(false);
+    let metrics = EventMetrics::default();
+    let state = SseState::new(
+        Arc::new(FakeEventSource::new(64)) as _,
+        Arc::clone(&auth) as _,
+        Arc::new(RoleVisibility),
+        settings(),
+        closing_rx,
+        metrics.clone(),
+    );
+    let (app, _) = sse::mount(
+        GuardedRouter::new(Arc::clone(&auth) as _, None),
+        Arc::clone(&state),
+    )
+    .into_parts()
+    .unwrap();
+    let mut stream = frames(open_session(&app, Some("laptop")).await);
+    assert_eq!(stream.next().await.unwrap(), RETRY);
+    let start = Instant::now();
+    assert_eq!(stream.next().await, None, "the stream is closed, not kept open");
+    assert!(
+        start.elapsed() <= Duration::from_secs(15),
+        "{:?}",
+        start.elapsed()
+    );
+    assert_eq!(metrics.sse_ended_total(SseEnd::Revoked), 1);
+    assert_eq!(state.active_streams(), 0);
+}
+
 #[tokio::test(start_paused = true)]
 async fn the_stream_ends_with_a_retry_hint_when_the_hub_shuts_down() {
     let rig = rig(settings());

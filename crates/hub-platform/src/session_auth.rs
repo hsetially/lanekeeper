@@ -57,15 +57,18 @@ pub trait SessionAuth: Send + Sync + 'static {
 
     /// The binding of the session this request carries, taken when a stream opens. `None` (the default) means the
     /// implementation has no notion of one session apart from its user, and the stream is judged by [`SessionAuth::still_valid`]
-    /// alone, as it always was. Called after [`SessionAuth::authenticate`] has accepted the request.
+    /// alone, as it always was. Called after [`SessionAuth::authenticate`] has accepted the request. An implementation that returns
+    /// `Some` must also override [`SessionAuth::binding_valid`], whose default refuses.
     fn stream_binding(&self, _headers: &HeaderMap) -> Option<StreamBinding> {
         None
     }
 
     /// Whether the session that `binding` names is still live. Streams ask on their heartbeat, beside `still_valid`, and end when
-    /// either answers no. The default is yes, so an implementation that returns no binding is never asked.
+    /// either answers no. An implementation that returns no binding is never asked, so the default does not matter to it. The
+    /// default is **no**: an implementation that names a session in [`SessionAuth::stream_binding`] and does not say how to ask
+    /// about it must see its streams end at the first heartbeat, loudly, and not have them stay open for ever after a sign-out.
     async fn binding_valid(&self, _binding: &StreamBinding) -> bool {
-        true
+        false
     }
 }
 
