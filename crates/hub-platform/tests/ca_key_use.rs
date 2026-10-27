@@ -4,7 +4,8 @@
 //! Three independent proofs, as the plan lists them:
 //!
 //! 1. a source scan of `crates/hub-platform/src` and `crates/hub/src` that fails on any constructor of a private key from
-//!    bytes, outside a short allowlist of one function in one file, and on any way to name a CA private key;
+//!    bytes, outside a short allowlist of two functions in two files (neither holds a CA key), and on any way to name a CA
+//!    private key;
 //! 2. a type-level check that [`CaIssuer::new`] takes a signer, a key *name* and a certificate, and nothing that could be
 //!    key bytes, and that the CA module has no `SecretSource`;
 //! 3. a spy `KmsSigner`: every certificate signature the issuer made came from `sign_digest`, over the digest of the
@@ -66,9 +67,16 @@ const CA_KEY_NAMES: &[&str] = &[
     "ca_signing_key_pem",
 ];
 
-/// The only places a private key from bytes is allowed: the throwaway key generated in this process for the hub's own TLS
-/// leaf certificate, which is handed to rustls in the form it takes. It is a fresh key, never a CA key. `(file, function)`.
-const ALLOWED: &[(&str, &str)] = &[("tls.rs", "leaf_certified_key")];
+/// The only places a private key from bytes is allowed, each a key that is not a CA key. `(file, function)`:
+///
+/// - `tls.rs::leaf_certified_key`: the throwaway key generated in this process for the hub's own gRPC leaf certificate,
+///   handed to rustls in the form it takes.
+/// - `web_tls.rs::decode`: the web listener's own TLS key, which the hub reads from Secret Manager (prompt 18, plan G3). It
+///   is read into memory, the PEM and the DER copy are wiped once rustls has its own, and the key is reloaded on a timer. It
+///   is never a CA key: the two CA keys stay in KMS and are only ever used through `KmsSigner`, which the rest of this scan
+///   and the two proofs below keep true. The residual (rustls keeps its own copy of this one key in memory) is recorded in
+///   `docs/threat-model.md`, "Hub assembly (18)".
+const ALLOWED: &[(&str, &str)] = &[("tls.rs", "leaf_certified_key"), ("web_tls.rs", "decode")];
 
 #[derive(Debug, PartialEq, Eq)]
 struct Finding {
@@ -210,6 +218,20 @@ fn the_scan_fails_on_a_planted_private_key_constructor() {
     assert_eq!(scan("ca/mod.rs", leaf).len(), 1);
     let other = "fn something_else(der: Vec<u8>) {\n    let k = PrivatePkcs8KeyDer::from(der);\n}\n";
     assert_eq!(scan("tls.rs", other).len(), 1);
+    // The web listener's own TLS key (never a CA key) is read from Secret Manager in `web_tls.rs`, function `decode`: the
+    // second allowed place. It passes there ...
+    let web = "fn decode(pem: &[u8]) {\n    let k = PrivateKeyDer::from_pem_slice(pem);\n}\n";
+    assert!(scan("web_tls.rs", web).is_empty());
+    // ... and not in another file, another function of that file, or the other allowed file ...
+    assert_eq!(scan("ca/mod.rs", web).len(), 1);
+    assert_eq!(scan("tls.rs", web).len(), 1);
+    let web_other = "fn reload(pem: &[u8]) {\n    let k = PrivateKeyDer::from_pem_slice(pem);\n}\n";
+    assert_eq!(scan("web_tls.rs", web_other).len(), 1);
+    // ... and the allowance does not let a CA key be named there: the name check does not depend on the allowlist.
+    let web_ca = "fn decode(pem: &[u8]) {\n    let ca_key_pem = PrivateKeyDer::from_pem_slice(pem);\n}\n";
+    let findings = scan("web_tls.rs", web_ca);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].what.contains("names a CA private key"));
 }
 
 #[test]
