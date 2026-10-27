@@ -72,8 +72,7 @@ fn test_features_in_production(manifest: &str) -> Vec<(String, String)> {
 }
 
 /// Plan 18, T3 (acceptance 3): no production dependency of the hub, or of the crates the composition links, enables any of the
-/// features that make a test double constructible. The line that does is named, so that a person sees which edge to cut. The
-/// registry and write path crates join the list when T5 links them.
+/// features that make a test double constructible. The line that does is named, so that a person sees which edge to cut.
 #[test]
 fn no_test_feature_in_any_production_dependency() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -82,6 +81,9 @@ fn no_test_feature_in_any_production_dependency() {
         "crates/hub-platform",
         "crates/hub-identity",
         "crates/hub-mcp",
+        // T5: the registry and the write paths, which the composition links now.
+        "crates/hub-registry",
+        "crates/hub-writes",
     ] {
         let manifest = fs::read_to_string(root.join(crate_dir).join("Cargo.toml")).unwrap();
         let found = test_features_in_production(&manifest);
@@ -180,6 +182,11 @@ fn no_fake_and_no_dev_knob_is_referenced_outside_cfg_test() {
         "MemoryBucket",
         "without_sessions",
         "DenySessions",
+        // T5: a KMS envelope whose key the process holds, the write path's constructors for a plain-HTTP GitHub or Teams, and the
+        // clocks that only move when told to.
+        "FakeKmsEnvelope",
+        "for_tests",
+        "ManualClock",
     ];
     let files = rust_files(&src);
     assert!(files.len() > 15, "the scan found only {} files", files.len());

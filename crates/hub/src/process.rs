@@ -3,8 +3,9 @@
 //! What this assembles is the shell of the hub and the platform under it: the settings, the database pool, the web certificate,
 //! the two certificate authorities, the web listener (TLS 1.3, the certificate reloaded on a timer), the operations listener
 //! (`/healthz`, `/readyz`, `/metrics`), the agent and replica listeners (mTLS), the event bus, the Git mirrors, the leases and the
-//! platform's jobs, the identity module (sign-in, sessions, CSRF, users, the audit chain's jobs; T4), the drain, and readiness. The
-//! other modules come in later tasks and plug into the same `Deps`: registry and writes (T5), MCP (T6).
+//! platform's jobs, the identity module (sign-in, sessions, CSRF, users, the audit chain's jobs; T4), the registry (ingestion, the
+//! pipeline, the read API, the blob policy; T5) and the write paths (edits, proposals, the token vault, pull requests, Teams; T5),
+//! the drain, and readiness. MCP (T6) plugs into the same `Deps`.
 //!
 //! **It never starts on a fake.** Every start step is a real component or an error with a fixed message that names the
 //! component, never a value. `Edges` is the only place software can be substituted, and the binary fills it with Google.
@@ -25,27 +26,31 @@ use std::time::{Duration, Instant};
 
 use hub_identity::metrics::CounterSource;
 use hub_platform::RouteSpec;
+use hub_platform::blobs::endpoint::BlobState;
 use hub_platform::jobs::JobRunnerHandle;
+use hub_writes::teams::TeamsNotifier;
+use ports::{AgentGateway, BlobStore, EventBus, GitReader, Notifier};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 
+use crate::blobs::BlobsModule;
 use crate::ca_init;
 use crate::cli::{self, CliError, Command};
 use crate::compose::{BuildError, Deps, Hub, Module};
 use crate::config::{
     ConfigError, DatabaseSettings, GitSettings, HubSettings, IdentitySettings, PlatformSettings,
-    WebTlsSettings,
+    WebTlsSettings, WritesSettings,
 };
 use crate::db::{self, DbError, PostgresReady};
 use crate::edges::Edges;
 use crate::identity::{AuditSchedule, Identity, IdentityBuildError, IdentityInputs, IdentityMounts};
 use crate::metrics_bridge::SourceCollector;
 use crate::migrate;
-use crate::notify::UnavailableNotifier;
 use crate::ready::{CertsReady, Expiring};
+use crate::registry::{Registry, RegistryBuildError, RegistryInputs};
 use crate::schema::{self, SchemaError, SchemaReady};
 use crate::serve::{self, ServeLimits};
 use crate::shutdown::{Drain, Stop};
@@ -53,9 +58,12 @@ use crate::static_files::{StaticError, StaticFiles};
 use crate::telemetry;
 use crate::web_tls::{WebCert, WebTlsError};
 use crate::wiring::{Cas, Ingest, Platform, PlatformError, PlatformInputs, Tasks, prepare_cas};
+use crate::writes::{TeamsInputs, Writes, WritesBuildError, WritesInputs};
 
 /// How long the background tasks get to stop after the listeners have, before the rest are cut off.
 const TASKS_GRACE: Duration = Duration::from_secs(5);
+/// How long the Teams notifier gets to send what is queued once the hub has drained.
+const TEAMS_DRAIN: Duration = Duration::from_secs(5);
 /// How long the runtime waits for blocking calls (a Git fetch) once the hub has drained, before the process leaves without them.
 const RUNTIME_GRACE: Duration = Duration::from_secs(2);
 
@@ -84,6 +92,16 @@ pub enum StartError {
     /// Sign-in, sessions or the audit chain's jobs (T4).
     #[error(transparent)]
     Identity(#[from] IdentityBuildError),
+    /// Ingestion, the pipeline, the read API or one of the registry's jobs (T5).
+    #[error(transparent)]
+    Registry(#[from] RegistryBuildError),
+    /// The Teams notifier, the write service, the token vault or one of the write jobs (T5).
+    #[error(transparent)]
+    Writes(#[from] WritesBuildError),
+    /// The edges carry no KMS envelope or GitHub client for the write path. The real edges always do; a setup that built its own
+    /// `Edges` and forgot them is told, and the hub does not start without a vault that can keep a token.
+    #[error("the write path has no KMS envelope and GitHub client to use")]
+    WriteEdges,
     #[error("the hub could not be composed: {0}")]
     Compose(BuildError),
     #[error("could not listen on the {0} address")]
@@ -180,6 +198,11 @@ pub struct Running {
     jobs: Option<JobRunnerHandle>,
     /// The identity module: its sweeper, batcher and listener stop when it drops, which is after the listeners have drained.
     identity: Option<Identity>,
+    /// The registry's services, kept for as long as the hub serves (its tasks hold what they use, and a person looking at a running
+    /// hub in a test finds them here).
+    registry: Option<Registry>,
+    /// The Teams notifier, which is told to send what it has queued once the listeners have drained.
+    teams: Option<Arc<TeamsNotifier>>,
     /// Every route of every module, with its guard: what the S4 tests check against `api/openapi.yaml`.
     routes: Vec<RouteSpec>,
 }
@@ -272,20 +295,36 @@ async fn load(
     Ok(Loaded { pool, web_cert, cas })
 }
 
-/// Compose the hub from what was loaded: the platform's routes and the identity module's, over the identity module's sessions.
-#[allow(clippy::too_many_arguments)]
+/// What the web router is composed from: the parts of the hub that each task built.
+struct Parts<'a> {
+    web_cert: &'a Arc<WebCert>,
+    edges: &'a Edges,
+    platform: &'a Platform,
+    identity: &'a Identity,
+    registry: &'a Registry,
+    writes: &'a Writes,
+    events: Arc<dyn Module>,
+}
+
+/// Compose the hub from what was loaded: the platform's routes, the identity module's, the registry's read routes, the blob
+/// endpoint (under the registry's policy) and the write paths', over the identity module's sessions.
 async fn compose(
     settings: HubSettings,
     plan: &Plan,
     pool: &sqlx::PgPool,
-    web_cert: &Arc<WebCert>,
-    edges: &Edges,
-    platform: &Platform,
-    identity: &Identity,
+    parts: Parts<'_>,
     mounts: IdentityMounts,
-    events: Arc<dyn Module>,
     drain: Drain,
 ) -> Result<Hub, StartError> {
+    let Parts {
+        web_cert,
+        edges,
+        platform,
+        identity,
+        registry,
+        writes,
+        events,
+    } = parts;
     let dist = plan.web_dist.clone();
     let files = tokio::task::spawn_blocking(move || StaticFiles::open(&dist))
         .await
@@ -304,6 +343,15 @@ async fn compose(
     checks.extend(platform.checks.iter().cloned());
     let mut modules = platform.modules.clone();
     modules.push(events);
+    // The blob endpoint asks the registry before it serves a hash: a denied file's content is never served (D79, S11), and a hub
+    // without the policy would serve it, so the endpoint is not mounted without one.
+    let blobs: Arc<dyn BlobStore> = platform.blobs.clone();
+    modules.push(Arc::new(BlobsModule::new(BlobState::new(
+        blobs,
+        registry.blob_policy.clone(),
+    ))));
+    modules.push(registry.module());
+    modules.push(writes.module());
     let IdentityMounts { session, mounted } = mounts;
     let hub = Hub::build_with(
         Deps {
@@ -317,11 +365,12 @@ async fn compose(
         drain,
     )
     .map_err(StartError::Compose)?;
-    hub.metrics.register(|registry| {
-        web_cert.metrics().register(registry);
-        edges.google_metrics.register(registry);
-        platform.register_metrics(registry);
-        registry.register_collector(Box::new(SourceCollector::new(
+    hub.metrics.register(|metrics| {
+        web_cert.metrics().register(metrics);
+        edges.google_metrics.register(metrics);
+        platform.register_metrics(metrics);
+        registry.metrics.register(metrics);
+        metrics.register_collector(Box::new(SourceCollector::new(
             Arc::clone(&identity.metrics) as Arc<dyn CounterSource>
         )));
     });
@@ -329,7 +378,7 @@ async fn compose(
 }
 
 /// Start the hub: check the settings, bind the listeners, load the database, the web certificate and the CAs, build the platform,
-/// compose the hub, and serve.
+/// the identity module, the registry and the write paths, compose the hub, and serve.
 pub async fn start(mut settings: HubSettings, edges: Edges) -> Result<Running, StartError> {
     settings.require_serving()?;
     let database = settings
@@ -352,6 +401,10 @@ pub async fn start(mut settings: HubSettings, edges: Edges) -> Result<Running, S
         .git
         .take()
         .ok_or(StartError::Config(ConfigError::Missing("LK_GIT_BASE_URL")))?;
+    let writes = settings
+        .writes
+        .take()
+        .ok_or(StartError::Config(ConfigError::Missing("LK_VAULT_KMS_REF")))?;
     let plan = Plan {
         web_addr: settings.web_addr,
         ops_addr: settings.ops_addr,
@@ -370,11 +423,14 @@ pub async fn start(mut settings: HubSettings, edges: Edges) -> Result<Running, S
         settings,
         edges,
         &plan,
-        database,
-        web_tls,
-        platform,
-        identity,
-        git,
+        Groups {
+            database,
+            web_tls,
+            platform,
+            identity,
+            git,
+            writes,
+        },
         drain.clone(),
     ))
     .await;
@@ -385,36 +441,54 @@ pub async fn start(mut settings: HubSettings, edges: Edges) -> Result<Running, S
     started
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The groups of settings the start takes apart, once each.
+struct Groups {
+    database: DatabaseSettings,
+    web_tls: WebTlsSettings,
+    platform: PlatformSettings,
+    identity: IdentitySettings,
+    git: GitSettings,
+    writes: WritesSettings,
+}
+
+#[allow(clippy::too_many_lines)]
 async fn start_with(
     settings: HubSettings,
     edges: Edges,
     plan: &Plan,
-    database: DatabaseSettings,
-    web_tls: WebTlsSettings,
-    platform_settings: PlatformSettings,
-    identity_settings: IdentitySettings,
-    git: GitSettings,
+    groups: Groups,
     drain: Drain,
 ) -> Result<Running, StartError> {
+    let Groups {
+        database,
+        web_tls,
+        platform: platform_settings,
+        identity: identity_settings,
+        git,
+        writes: writes_settings,
+    } = groups;
+    let write_edges = edges.writes.clone().ok_or(StartError::WriteEdges)?;
     let sockets = Sockets::bind(plan).await?;
     let loaded = load(plan, &database, &web_tls, &platform_settings, &edges).await?;
     // The connection URL held the password; the pool has what it needs.
     drop(database);
     let Loaded { pool, web_cert, cas } = loaded;
+    // The registry's sinks are built from the platform's own bus, audit log and blob store, so they cannot exist yet: the platform's
+    // services are given sinks that refuse until the registry fills the slot, a few moments from here (before any listener of the
+    // web serves; an agent that joins in between is told the hub cannot take its report yet, and tries again).
+    let (ingest, ingest_slot) = Ingest::deferred();
     // Bounded like every other step of starting: a bus whose first query hangs is an exit that names the step, not a wait.
     let mut platform = bounded(plan.start_timeout, "platform", async {
         Platform::build(PlatformInputs {
             settings: platform_settings,
-            git,
+            git: git.clone(),
             mirror_dir: settings.mirror_dir.clone(),
             blob_cache_bytes: settings.blob_cache_bytes,
             pool: pool.clone(),
             edges: edges.clone(),
             cas,
             closing: drain.closing(),
-            // The registry is wired in T5. Until then the hub says plainly that it cannot take a report.
-            ingest: Ingest::unavailable(),
+            ingest,
             agent_listener: sockets.agent,
             replica_listener: sockets.replica,
             drain: plan.drain,
@@ -423,6 +497,16 @@ async fn start_with(
         .map_err(StartError::Platform)
     })
     .await?;
+    // The notification channel (Teams) is the write paths' crate's, and the identity module and the registry take it too.
+    let teams = Arc::new(crate::writes::teams(TeamsInputs {
+        settings: &writes_settings,
+        public_origin: identity_settings.public_origin(),
+        pool: pool.clone(),
+        secrets: Arc::clone(&edges.secrets),
+        clock: Arc::clone(&edges.clock),
+    })?);
+    let notifier: Arc<dyn Notifier> = teams.clone();
+    let bus: Arc<dyn EventBus> = Arc::new(platform.bus.clone());
     // Who the caller is. The event stream, the one route of the platform that needs the answer, is mounted with it.
     let (identity, mounts) = Identity::build(
         IdentityInputs {
@@ -431,9 +515,8 @@ async fn start_with(
             edges: &edges,
             audit: Arc::clone(&platform.audit),
             leases: Arc::clone(&platform.leases),
-            bus: Arc::new(platform.bus.clone()),
-            // Teams is the write paths' (T5); until it is wired the notifier says it cannot deliver.
-            notifier: Arc::new(UnavailableNotifier),
+            bus: Arc::clone(&bus),
+            notifier: Arc::clone(&notifier),
             closing: drain.closing(),
             start_timeout: plan.start_timeout,
             schedule: AuditSchedule::default(),
@@ -442,13 +525,89 @@ async fn start_with(
     )
     .await?;
     let events = platform.events_module(Arc::clone(&identity.auth) as _);
+
+    // The registry, and then the agents and sentinels that have joined can be heard.
+    let git_reader: Arc<dyn GitReader> = platform.reader.clone();
+    let gateway: Arc<dyn AgentGateway> = platform.gateway.clone();
+    let mut registry = Registry::build(
+        RegistryInputs {
+            settings: &settings.registry,
+            pool: pool.clone(),
+            blobs: platform.blobs.clone(),
+            git: git_reader,
+            gateway: Arc::clone(&gateway),
+            bus: Arc::clone(&bus),
+            audit: Arc::clone(&platform.audit),
+            notifier: Arc::clone(&notifier),
+            clock: Arc::clone(&edges.clock),
+            closing: drain.closing(),
+        },
+        &mut platform.tasks,
+    )?;
+    ingest_slot.fill(
+        Arc::new(registry.ingest.clone()),
+        Arc::new(registry.sentinels.clone()),
+    );
+
+    // The write paths, over the registry's two ports.
+    let mut writes = bounded(plan.start_timeout, "write paths", async {
+        Writes::build(
+            WritesInputs {
+                settings: &writes_settings,
+                registry: &settings.registry,
+                git: &git,
+                edges: &write_edges,
+                pool: pool.clone(),
+                users: Arc::clone(&identity.users),
+                audit: Arc::clone(&platform.audit),
+                bus: Arc::clone(&bus),
+                gateway,
+                blobs: platform.blobs.clone(),
+                registry_read: Arc::new(registry.service.clone()),
+                tool_writes: Arc::new(registry.tool_writes.clone()),
+                notifier,
+                leases: Arc::clone(&platform.leases),
+                secrets: Arc::clone(&edges.secrets),
+                clock: Arc::clone(&edges.clock),
+                closing: drain.closing(),
+                start_timeout: plan.start_timeout,
+            },
+            &mut platform.tasks,
+        )
+        .await
+        .map_err(StartError::Writes)
+    })
+    .await?;
+
+    // Every job is registered before the runner starts.
+    {
+        let runner = platform
+            .jobs
+            .as_mut()
+            .ok_or(StartError::Platform(PlatformError::Job("job runner")))?;
+        registry.register_jobs(runner)?;
+        writes.register_jobs(runner)?;
+    }
     let hub = compose(
-        settings, plan, &pool, &web_cert, &edges, &platform, &identity, mounts, events, drain,
+        settings,
+        plan,
+        &pool,
+        Parts {
+            web_cert: &web_cert,
+            edges: &edges,
+            platform: &platform,
+            identity: &identity,
+            registry: &registry,
+            writes: &writes,
+            events,
+        },
+        mounts,
+        drain,
     )
     .await?;
-    // Every module has registered its jobs; the runner starts now, on the leases this replica can win.
+    // The runner starts now, on the leases this replica can win.
     let jobs = platform.start_jobs();
-    serve_hub(
+    let mut running = serve_hub(
         plan,
         &hub,
         web_cert,
@@ -458,7 +617,14 @@ async fn start_with(
         platform,
         jobs,
         identity,
-    )
+    )?;
+    // After the listeners are up, so that the warm-up cannot delay readiness (P11).
+    if let Some(tasks) = running.tasks.as_mut() {
+        registry.start_warmup(tasks);
+    }
+    running.registry = Some(registry);
+    running.teams = Some(teams);
+    Ok(running)
 }
 
 /// Serve the composed hub on the web and operations listeners (the platform is already serving its two).
@@ -543,6 +709,8 @@ fn serve_hub(
         tasks: Some(tasks),
         jobs,
         identity: Some(identity),
+        registry: None,
+        teams: None,
         routes: hub.routes.clone(),
     })
 }
@@ -606,6 +774,15 @@ impl Running {
             let overran = tasks.finish(TASKS_GRACE).await;
             if !overran.is_empty() {
                 warn!(tasks = ?overran, "tasks that did not stop in time were cut off");
+            }
+        }
+        // Nothing queues a notification any more: the Teams worker sends what it has, within a limit, and ends.
+        if let Some(teams) = self.teams.take() {
+            if tokio::time::timeout(TEAMS_DRAIN, teams.close_and_drain())
+                .await
+                .is_err()
+            {
+                warn!("the Teams notifier did not finish sending in time");
             }
         }
         // The sessions' sweeper and batcher and the revocation listener end with the module, after nothing can ask them anything.
@@ -777,6 +954,15 @@ mod tests {
                 kind: crate::wiring::CaKind::Replica,
                 step: crate::wiring::CaStep::TimedOut,
             }),
+            // T5: the registry and the write path.
+            StartError::Registry(RegistryBuildError::Config("max_blob_bytes")),
+            StartError::Registry(RegistryBuildError::Index),
+            StartError::Registry(RegistryBuildError::Job("registry-scan".to_owned())),
+            StartError::Writes(WritesBuildError::Teams),
+            StartError::Writes(WritesBuildError::PreviewKey),
+            StartError::Writes(WritesBuildError::Job),
+            StartError::Writes(WritesBuildError::TimedOut),
+            StartError::WriteEdges,
         ] {
             assert_eq!(error.exit_code(), 1, "{error}");
         }
@@ -816,6 +1002,28 @@ mod tests {
         assert!(shown[1].contains("LK_WEB_CERT_REF") && shown[1].contains("does not belong"));
         assert!(shown[2].contains("LK_WEB_DIST"));
         assert!(shown[3].contains("web certificate"));
+        // T5: the write path names the secret or the variables to look at, the registry the job, and neither shows a value.
+        let preview = StartError::Writes(WritesBuildError::PreviewKey).to_string();
+        assert!(
+            preview.contains("write-preview-key") && preview.contains("32 bytes"),
+            "{preview}"
+        );
+        let teams = StartError::Writes(WritesBuildError::Teams).to_string();
+        assert!(
+            teams.contains("LK_TEAMS_ALLOWED_HOSTS") && teams.contains("LK_PUBLIC_ORIGIN"),
+            "{teams}"
+        );
+        let repository = StartError::Writes(WritesBuildError::Repository).to_string();
+        assert!(
+            repository.contains("LK_GIT_BASE_REPO") && repository.contains("LK_GIT_TENANT_REPO"),
+            "{repository}"
+        );
+        let job = StartError::Registry(RegistryBuildError::Job("registry-scan".to_owned())).to_string();
+        assert!(
+            job.contains("registry-scan") && job.contains("registered"),
+            "{job}"
+        );
+        assert!(StartError::WriteEdges.to_string().contains("KMS envelope"));
         // T2: a schema that is behind names the migration and the command that fixes it, and the hub does not fix it itself.
         assert!(
             shown[4].contains("0004")

@@ -3,6 +3,7 @@
 //! One request per connection, `Connection: close`, read to the end. Enough to see a status line, the headers and the body.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -110,6 +111,36 @@ pub async fn tls_connect(
     TlsConnector::from(config)
         .connect(ServerName::try_from("localhost").unwrap(), stream)
         .await
+}
+
+/// A request with any method, extra headers and a body, over TLS 1.3 trusting `ca` (T5: the write routes). One request per
+/// connection, `Connection: close`, read to the end.
+pub async fn https_request(
+    addr: SocketAddr,
+    ca: &CertificateDer<'static>,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Option<&[u8]>,
+) -> Reply {
+    let config = client_config(ca, &[&rustls::version::TLS13]);
+    let mut stream = tls_connect(addr, config).await.unwrap();
+    let mut head =
+        format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAccept: */*\r\n");
+    for (name, value) in headers {
+        let _ = write!(head, "{name}: {value}\r\n");
+    }
+    if let Some(body) = body {
+        let _ = write!(head, "Content-Length: {}\r\n", body.len());
+    }
+    head.push_str("\r\n");
+    stream.write_all(head.as_bytes()).await.unwrap();
+    if let Some(body) = body {
+        stream.write_all(body).await.unwrap();
+    }
+    let mut raw = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(20), stream.read_to_end(&mut raw)).await;
+    parse(&raw)
 }
 
 /// `GET path` over TLS 1.3, trusting `ca`.

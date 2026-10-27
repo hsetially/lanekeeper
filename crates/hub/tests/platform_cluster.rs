@@ -834,12 +834,15 @@ async fn a_push_announced_on_one_replica_reaches_the_other_replicas_bus() {
     assert_eq!(send(&signed).await, http::StatusCode::ACCEPTED);
     assert_eq!(cluster.count("SELECT count(*) FROM webhook_deliveries").await, 1);
 
-    // Replica 0 fetched, announced the move on the bus (through Postgres), and replica 1 heard it.
+    // Replica 0 fetched, announced the move on the bus (through Postgres), and replica 1 heard it. The announcement of the head the
+    // mirrors started on (`before`) can reach replica 1 after it subscribed, because it travels through Postgres too (T5 saw it in
+    // about one run in ten): it is another event, not this push's, so it is skipped and only the move to `after` ends the wait.
+    let after = CommitId::parse(&after).unwrap();
     let moved = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             match events.next().await {
                 Some(DomainEvent::GitHeadMoved { repo, branch, to, .. })
-                    if repo == RepoKind::Base && branch.as_str() == "main" =>
+                    if repo == RepoKind::Base && branch.as_str() == "main" && to == after =>
                 {
                     return to;
                 }
@@ -849,6 +852,6 @@ async fn a_push_announced_on_one_replica_reaches_the_other_replicas_bus() {
         }
     })
     .await
-    .expect("replica 1 heard GitHeadMoved within 20 seconds");
-    assert_eq!(moved, CommitId::parse(&after).unwrap());
+    .expect("replica 1 heard GitHeadMoved to the pushed commit within 20 seconds");
+    assert_eq!(moved, after);
 }

@@ -2725,6 +2725,8 @@ dependencies = [
  "hub-identity",
  "hub-mcp",
  "hub-platform",
+ "hub-registry",
+ "hub-writes",
  "hyper",
  "hyper-util",
  "insta",

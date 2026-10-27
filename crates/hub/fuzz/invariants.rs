@@ -180,6 +180,12 @@ fn check_settings(settings: &HubSettings, vars: &BTreeMap<String, String>, file:
     } else if vars.get("LK_ENTRA_TENANT_ID").is_some_and(|v| !v.is_empty()) {
         return Err("an Entra tenant was dropped".to_owned());
     }
+    check_registry(&settings.registry, vars)?;
+    if let Some(writes) = &settings.writes {
+        check_writes(writes)?;
+    } else if vars.get("LK_VAULT_KMS_REF").is_some_and(|v| !v.is_empty()) {
+        return Err("a vault key was dropped".to_owned());
+    }
     // The policy names go into a CSP header: nothing else may.
     for name in &settings.trusted_types {
         if name.len() > 64
@@ -244,6 +250,104 @@ fn check_platform(platform: &hub::config::PlatformSettings) -> Result<(), String
     if format!("{platform:?}").len() > 4096 {
         return Err("a debug output out of proportion to its fields".to_owned());
     }
+    Ok(())
+}
+
+/// What the registry's knobs may hold once they are accepted (T5, G16, D79, D118): a switch is `true` or `false` and nothing else,
+/// and retention is off unless it was said to be on and reports only unless it was said not to; the deny globs are the variable's
+/// entries and every one of them (none dropped, none added), within the limits the write path also has; the registry's own
+/// validation passes; and the corpora's memory is inside what the variable allows.
+fn check_registry(
+    registry: &hub::config::RegistrySettings,
+    vars: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let var = |name: &str| vars.get(name).map(String::as_str).filter(|v| !v.is_empty());
+    if registry.retention_enabled != (var("LK_RETENTION_ENABLED") == Some("true")) {
+        return Err("retention is on without the switch, or off with it".to_owned());
+    }
+    if registry.config.retention_dry_run != (var("LK_RETENTION_DRY_RUN") != Some("false")) {
+        return Err("the dry run is off without being switched off".to_owned());
+    }
+    let wanted: Vec<String> = var("LK_EXTRA_DENY_GLOBS")
+        .map(|list| list.split(',').map(|g| g.trim().to_owned()).collect())
+        .unwrap_or_default();
+    if registry.config.extra_deny_globs != wanted {
+        return Err("the deny globs are not the variable's entries".to_owned());
+    }
+    if registry.config.extra_deny_globs.len() > hub_writes::MAX_EXTRA_DENY_GLOBS
+        || registry
+            .config
+            .extra_deny_globs
+            .iter()
+            .any(|g| g.is_empty() || g.len() > 256)
+    {
+        return Err("a deny glob outside the limits the write path also has".to_owned());
+    }
+    if registry.config.validate().is_err() {
+        return Err("settings that the registry's own validation refuses".to_owned());
+    }
+    let mib = 1024 * 1024;
+    if !(16 * mib..=4096 * mib).contains(&registry.config.corpus_cache_bytes) {
+        return Err("a corpus cache outside its range".to_owned());
+    }
+    Ok(())
+}
+
+/// What the write paths' group may hold once it is accepted (T5, S8, S18): the vault's key is a Cloud KMS crypto key and not a
+/// version (KMS picks the version, so a rotation needs no change here); GitHub is `https://host` with a host in lower case and
+/// nothing a URL could add (the client reaches that host and no other); the branch and the Deployment name are ones the crates
+/// take; the Teams host patterns are host names or `*.` and a host; and every interval is inside its bounds.
+fn check_writes(writes: &hub::config::WritesSettings) -> Result<(), String> {
+    if hub_platform::gcp::wire::CryptoKeyName::parse(&writes.vault_key).is_none() {
+        return Err("a vault key that is not a crypto key".to_owned());
+    }
+    if !writes.github_api_base.starts_with("https://") || writes.github_api_host.is_empty() {
+        return Err("a GitHub address that is not https and a host".to_owned());
+    }
+    if writes
+        .github_api_host
+        .bytes()
+        .any(|b| !(b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-')))
+        || writes.github_api_base.trim_end_matches('/') != format!("https://{}", writes.github_api_host)
+    {
+        return Err("a GitHub host with something a host does not have".to_owned());
+    }
+    if writes.base_branch.to_string().contains("..") {
+        return Err("a branch with '..'".to_owned());
+    }
+    if domain::ServiceRef::new("config-server", &writes.config_server_deployment).is_err() {
+        return Err("a Deployment name the write path refuses".to_owned());
+    }
+    for host in writes.teams_hosts.iter().flatten() {
+        let name = host.strip_prefix("*.").unwrap_or(host);
+        if name.is_empty()
+            || name.starts_with('.')
+            || name.contains("..")
+            || name
+                .bytes()
+                .any(|b| !(b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-')))
+        {
+            return Err("a Teams host pattern that is not a host name".to_owned());
+        }
+    }
+    if writes
+        .teams_hosts
+        .as_ref()
+        .is_some_and(|hosts| hosts.is_empty() || hosts.len() > 16)
+    {
+        return Err("a Teams host list outside 1 to 16".to_owned());
+    }
+    let secs = |d: std::time::Duration, min: u64, max: u64, what: &str| {
+        if (min..=max).contains(&d.as_secs()) {
+            Ok(())
+        } else {
+            Err(format!("{what} accepted outside its range"))
+        }
+    };
+    secs(writes.jobs.reconcile, 1, 3600, "the reconcile interval")?;
+    secs(writes.jobs.expire, 1, 86_400, "the expiry interval")?;
+    secs(writes.jobs.pr_jobs, 1, 300, "the pull-request interval")?;
+    secs(writes.jobs.cleanup, 60, 7 * 86_400, "the cleanup interval")?;
     Ok(())
 }
 

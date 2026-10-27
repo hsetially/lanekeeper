@@ -5,10 +5,14 @@
 //! secrets are files in a directory, `LK_DEV_SECRETS_DIR`: the secret named `web-cert` is the file `web-cert` there. The CA keys
 //! are software keys made at start (`soft_kms`), and the CA certificates are made for them by `hub::ca_init::run`, the same
 //! ceremony `hub ca-init` runs, and written into that directory under the names `LK_AGENT_CA_CERT_REF` and
-//! `LK_REPLICA_CA_CERT_REF` give. No Google ID token is accepted: the verifier knows no token. It is an example target, so it
-//! is never part of the image or of a release build of `hub`; `tests/release_build.rs` keeps it that way.
+//! `LK_REPLICA_CA_CERT_REF` give. No Google ID token is accepted: the verifier knows no token. The write paths' two edges (T5) are
+//! software too: a KMS envelope whose key the process holds, and GitHub's client pointed at `LK_DEV_GITHUB_API`, a plain-HTTP
+//! server of the caller's (nothing listens at the default, so every GitHub call fails the way a GitHub that is down does). It is an
+//! example target, so it is never part of the image or of a release build of `hub`; `tests/release_build.rs` keeps it that way.
 //!
-//! Settings are the hub's own `LK_*` variables. `LK_DEV_SECRETS_DIR` is the one addition and is read here, not by the hub.
+//! Settings are the hub's own `LK_*` variables. `LK_DEV_SECRETS_DIR`, `LK_DEV_GITHUB_API` and `LK_DEV_GOOGLE_TOKENS` (comma-separated
+//! `token=service-account-email` pairs: the Google ID tokens an agent may join with, for the audience `LK_HUB_AUDIENCE`) are the
+//! additions and are read here, not by the hub.
 
 #[path = "support/soft_kms.rs"]
 mod soft_kms;
@@ -18,14 +22,15 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use domain::Secret;
+use domain::{Secret, ShortText};
 use hub::cli::CaInitArgs;
 use hub::config::HubSettings;
-use hub::edges::Edges;
+use hub::edges::{Edges, WriteEdges};
 use hub::process::StartError;
 use hub_platform::clock::SystemClock;
-use ports::fakes::FakeTokenVerifier;
-use ports::{SecretError, SecretSource, is_valid_secret_name};
+use hub_writes::github::{GithubClient, GithubClientConfig};
+use ports::fakes::{FakeKmsEnvelope, FakeTokenVerifier};
+use ports::{GoogleIdentity, SecretError, SecretSource, is_valid_secret_name};
 use soft_kms::SoftKms;
 
 /// Secrets that are files in one directory.
@@ -101,15 +106,49 @@ fn dev_edges(settings: &HubSettings) -> Result<Edges, StartError> {
             .map_err(|_| invalid())?;
         std::fs::write(dir.join(&ca.cert_ref), pem).map_err(|_| invalid())?;
     }
+    // The write path's preview key (D46): 32 bytes or more, new on every start like the cookie key (a preview in flight is begun again).
+    let mut preview = [0u8; 32];
+    aws_lc_rs::rand::fill(&mut preview).map_err(|_| invalid())?;
+    std::fs::write(
+        dir.join(hub_writes::PREVIEW_KEY_SECRET),
+        base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, preview),
+    )
+    .map_err(|_| invalid())?;
+    // The Google ID tokens an agent may join with, if the caller names any (an agent test does; `just dev` starts none).
+    let verifier = FakeTokenVerifier::new();
+    let bad_tokens = || StartError::Config(hub::ConfigError::Invalid("LK_DEV_GOOGLE_TOKENS"));
+    for pair in std::env::var("LK_DEV_GOOGLE_TOKENS")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|pair| !pair.is_empty())
+    {
+        let (token, email) = pair.split_once('=').ok_or_else(bad_tokens)?;
+        let audience = platform.audience.as_str();
+        verifier.accept_google(
+            token,
+            audience,
+            GoogleIdentity {
+                subject: ShortText::parse("dev-subject").map_err(|_| bad_tokens())?,
+                email: ShortText::parse(email).map_err(|_| bad_tokens())?,
+                audience: ShortText::parse(audience).map_err(|_| bad_tokens())?,
+            },
+        );
+    }
+    let github = GithubClient::for_tests(
+        &std::env::var("LK_DEV_GITHUB_API").unwrap_or_else(|_| "http://127.0.0.1:9".to_owned()),
+        GithubClientConfig::default(),
+    )
+    .map_err(|_| StartError::Config(hub::ConfigError::Invalid("LK_DEV_GITHUB_API")))?;
     Ok(Edges::new(
         Arc::new(DirSecrets(dir)),
         Arc::new(SystemClock),
         kms.clone(),
         kms,
-        Arc::new(FakeTokenVerifier::new()),
+        Arc::new(verifier),
         // No identity provider behind the sign-in yet (T8 gives `just dev` one): the routes exist and every sign-in fails.
         hub::testing::unreachable_identity(),
-    ))
+    )
+    .with_writes(WriteEdges::new(Arc::new(FakeKmsEnvelope::new()), github)))
 }
 
 fn main() -> ExitCode {

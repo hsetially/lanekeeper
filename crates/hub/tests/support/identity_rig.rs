@@ -494,6 +494,12 @@ impl Req {
         self.header("content-type", "application/json")
     }
 
+    /// A body as it is, for a test that needs one of an exact size or one that is not JSON. The content type is the caller's.
+    pub fn raw_body(mut self, body: String) -> Self {
+        self.body = Some(body);
+        self
+    }
+
     pub fn from(mut self, ip: [u8; 4]) -> Self {
         self.ip = ip;
         self

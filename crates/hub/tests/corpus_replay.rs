@@ -192,6 +192,43 @@ fn the_identity_seeds_mean_what_their_names_say() {
 }
 
 #[test]
+fn the_registry_and_write_seeds_mean_what_their_names_say() {
+    // The group is really read: the accepted seeds carry their values, and each rejected seed is refused by the variable it is about.
+    let read = |name: &str| fs::read(corpus("hub_settings").join(name)).unwrap();
+    let parse = |data: &[u8]| {
+        let text = String::from_utf8_lossy(data).into_owned();
+        let vars: std::collections::BTreeMap<String, String> = text
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect();
+        hub::HubSettings::from_lookup(move |name| vars.get(name).cloned())
+    };
+    let defaults = parse(&read("accepted_writes_with_the_defaults")).unwrap();
+    assert!(!defaults.registry.retention_enabled && defaults.registry.config.retention_dry_run);
+    assert_eq!(defaults.writes.unwrap().github_api_host, "api.github.com");
+    let all = parse(&read("accepted_registry_and_writes")).unwrap();
+    assert!(all.registry.retention_enabled && !all.registry.config.retention_dry_run);
+    assert_eq!(all.registry.config.extra_deny_globs, ["secrets/**", "**/*.pem"]);
+    assert_eq!(all.writes.unwrap().github_api_host, "ghe.example.com");
+    for (name, variable) in [
+        ("rejected_vault_key_that_is_a_version", "LK_VAULT_KMS_REF"),
+        ("rejected_retention_switch_with_a_typo", "LK_RETENTION_ENABLED"),
+        ("rejected_dry_run_switch_that_is_a_number", "LK_RETENTION_DRY_RUN"),
+        ("rejected_deny_glob_that_does_not_compile", "LK_EXTRA_DENY_GLOBS"),
+        ("rejected_deny_globs_with_an_empty_entry", "LK_EXTRA_DENY_GLOBS"),
+        ("rejected_corpus_cache_below_its_floor", "LK_CORPUS_CACHE_MIB"),
+        ("rejected_github_base_over_plain_http", "LK_GITHUB_API_BASE"),
+        ("rejected_github_base_with_a_port", "LK_GITHUB_API_BASE"),
+        ("rejected_teams_host_that_is_a_url", "LK_TEAMS_ALLOWED_HOSTS"),
+        ("rejected_writes_job_interval_zero", "LK_WRITES_PR_JOBS_SECS"),
+    ] {
+        let error = parse(&read(name)).unwrap_err().to_string();
+        assert!(error.starts_with(variable), "{name}: {error}");
+    }
+}
+
+#[test]
 fn the_corpus_has_a_directory_for_every_target_and_nothing_else() {
     let targets: BTreeSet<String> = fs::read_dir(fuzz_dir().join("fuzz_targets"))
         .unwrap()
@@ -264,7 +301,13 @@ fn the_invariants_notice_a_settings_error_that_repeats_a_value() {
 const KEY_VERSION: &str =
     "projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/agent-ca/cryptoKeyVersions/1";
 
+/// The key that wraps the token vault (T5): a crypto key, not a version.
+const VAULT_KEY: &str = "projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/vault";
+
 /// The platform group, complete (T3).
+/// The identity group (T4), complete. The identity seeds are this with one line changed, added or dropped.
+const IDENTITY: &str = "LK_ENTRA_TENANT_ID=11111111-1111-4111-8111-111111111111\nLK_ENTRA_CLIENT_ID=22222222-2222-4222-8222-222222222222\nLK_PUBLIC_ORIGIN=https://hub.lanekeeper.example\nLK_ENTRA_CLIENT_AUTH_REF=lanekeeper-entra-client\nLK_ENTRA_COOKIE_KEY_REF=lanekeeper-login-cookie\nLK_AUDIT_CHECKPOINT_BUCKET=lanekeeper-audit-checkpoints\nLK_AUDIT_CHECKPOINT_KMS_REF=projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/audit/cryptoKeyVersions/1\n";
+
 const PLATFORM: &str = "LK_AGENT_CA_KMS_REF=projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/agent-ca/cryptoKeyVersions/1\nLK_AGENT_CA_CERT_REF=lanekeeper-agent-ca\nLK_REPLICA_CA_KMS_REF=projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/replica-ca/cryptoKeyVersions/1\nLK_REPLICA_CA_CERT_REF=lanekeeper-replica-ca\nLK_REPLICA_NAME=lanekeeper-hub-0\nLK_REPLICA_ADDRESS=lanekeeper-hub-0.lanekeeper-hub.lanekeeper.svc:8445\nLK_HUB_AUDIENCE=https://hub.lanekeeper.example\nLK_AGENT_ENDPOINT_HOSTS=agents.lanekeeper.example,agents-2.lanekeeper.example\n";
 
 /// `ca-init` followed by `args`, as the NUL-separated input of the `hub_cli_args` target.
@@ -319,6 +362,57 @@ fn regenerate_the_seeds() {
                 text(
                     "LK_START_TIMEOUT_SECS=120\nLK_WEB_CERT_RELOAD_SECS=86400\nLK_SHUTDOWN_GRACE_SECS=0\nLK_BODY_MAX_BYTES=67108864\nLK_TRUSTED_PROXY_HOPS=8\n",
                 ),
+            ),
+            // T5: the registry's knobs and the write paths' group.
+            (
+                "accepted_writes_with_the_defaults",
+                text(&format!("LK_VAULT_KMS_REF={VAULT_KEY}\n")),
+            ),
+            (
+                "accepted_registry_and_writes",
+                text(&format!(
+                    "LK_VAULT_KMS_REF={VAULT_KEY}\nLK_EXTRA_DENY_GLOBS=secrets/**, **/*.pem\nLK_RETENTION_ENABLED=true\nLK_RETENTION_DRY_RUN=false\nLK_CORPUS_CACHE_MIB=64\nLK_GITHUB_API_BASE=https://ghe.example.com/\nLK_GIT_BASE_BRANCH=release/base\nLK_CONFIG_SERVER_DEPLOYMENT=config-server\nLK_TEAMS_ALLOWED_HOSTS=*.logic.azure.com,hooks.example.com\nLK_WRITES_RECONCILE_SECS=1\nLK_WRITES_EXPIRE_SECS=86400\nLK_WRITES_PR_JOBS_SECS=300\nLK_WRITES_CLEANUP_SECS=60\n"
+                )),
+            ),
+            (
+                "rejected_vault_key_that_is_a_version",
+                text(&format!("LK_VAULT_KMS_REF={VAULT_KEY}/cryptoKeyVersions/1\n")),
+            ),
+            (
+                "rejected_retention_switch_with_a_typo",
+                text("LK_RETENTION_ENABLED=yes\n"),
+            ),
+            (
+                "rejected_dry_run_switch_that_is_a_number",
+                text("LK_RETENTION_DRY_RUN=0\n"),
+            ),
+            (
+                "rejected_deny_glob_that_does_not_compile",
+                text("LK_EXTRA_DENY_GLOBS=[\n"),
+            ),
+            (
+                "rejected_deny_globs_with_an_empty_entry",
+                text("LK_EXTRA_DENY_GLOBS=secrets/**,,x\n"),
+            ),
+            (
+                "rejected_corpus_cache_below_its_floor",
+                text("LK_CORPUS_CACHE_MIB=8\n"),
+            ),
+            (
+                "rejected_github_base_over_plain_http",
+                text("LK_GITHUB_API_BASE=http://api.github.com\n"),
+            ),
+            (
+                "rejected_github_base_with_a_port",
+                text("LK_GITHUB_API_BASE=https://api.github.com:8443\n"),
+            ),
+            (
+                "rejected_teams_host_that_is_a_url",
+                text("LK_TEAMS_ALLOWED_HOSTS=https://hooks.example.com\n"),
+            ),
+            (
+                "rejected_writes_job_interval_zero",
+                text("LK_WRITES_PR_JOBS_SECS=0\n"),
             ),
             ("rejected_half_a_certificate", text("LK_WEB_CERT_REF=web-cert\n")),
             (
@@ -387,6 +481,44 @@ fn regenerate_the_seeds() {
             (
                 "accepted_migrator_job_without_its_credential",
                 text("LK_DB_CA_FILE=/run/db-ca/ca.crt\nLK_MIGRATE_TIMEOUT_SECS=900\n"),
+            ),
+            // The identity group (T4). They were committed by hand and the generator deleted them; they are generated now.
+            ("accepted_identity", text(IDENTITY)),
+            (
+                "accepted_identity_with_the_first_admins_and_an_older_key",
+                text(&format!(
+                    "{IDENTITY}LK_BOOTSTRAP_ADMINS=33333333-3333-4333-8333-333333333333,44444444-4444-4444-8444-444444444444\nLK_AUDIT_CHECKPOINT_VERIFY_KMS_REFS=projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/audit/cryptoKeyVersions/0\nLK_ENTRA_API_AUDIENCES=api://lanekeeper,22222222-2222-4222-8222-222222222222\n"
+                )),
+            ),
+            (
+                "rejected_identity_checkpoint_key_that_is_a_key",
+                text(&IDENTITY.replacen("/cryptoKeyVersions/1", "", 1)),
+            ),
+            (
+                "rejected_identity_first_admins_twice",
+                text(&format!(
+                    "{IDENTITY}LK_BOOTSTRAP_ADMINS=33333333-3333-4333-8333-333333333333,33333333-3333-4333-8333-333333333333\n"
+                )),
+            ),
+            (
+                "rejected_identity_half",
+                text(&IDENTITY.replacen("LK_ENTRA_CLIENT_ID=22222222-2222-4222-8222-222222222222\n", "", 1)),
+            ),
+            (
+                "rejected_identity_origin_over_plain_http",
+                text(&IDENTITY.replacen("https://hub", "http://hub", 1)),
+            ),
+            (
+                "rejected_identity_origin_with_a_path",
+                text(&IDENTITY.replacen("hub.lanekeeper.example\n", "hub.lanekeeper.example/app\n", 1)),
+            ),
+            (
+                "rejected_identity_origin_with_userinfo",
+                text(&IDENTITY.replacen("https://hub", "https://admin@hub", 1)),
+            ),
+            (
+                "rejected_identity_secret_name_that_is_a_path",
+                text(&IDENTITY.replacen("lanekeeper-entra-client", "projects/p/secrets/s", 1)),
             ),
         ],
     );

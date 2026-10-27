@@ -29,6 +29,11 @@ domain.workspace = true
 ports.workspace = true
 hub-platform.workspace = true
 hub-mcp.workspace = true
+# The registry (ingestion, the pipeline, the read API, the blob policy; T5) and the write paths (edits, proposals, the token vault, pull
+# requests; T5). Workspace members: they add no package to the lockfile. `tests/release_build.rs` keeps their test features out of the
+# release graph.
+hub-registry.workspace = true
+hub-writes.workspace = true
 # The platform's audit log (`PgAuditLog`), the verifier of Google ID tokens and the HTTPS client that fetches Google's keys (T3);
 # T4 wires the rest of the identity module. A workspace member: it adds no package to the lockfile.
 hub-identity.workspace = true
@@ -89,6 +94,8 @@ proto.workspace = true
 tokio-stream.workspace = true
 tonic = { workspace = true, features = ["codegen"] }
 hub-platform = { workspace = true, features = ["fakes"] }
+# T5: the tests drive the real GitHub client against a local plain-HTTP server (`GithubClient::for_tests`), which only this feature builds.
+hub-writes = { workspace = true, features = ["test-doubles"] }
 ports = { workspace = true, features = ["fakes"] }
 insta = { workspace = true, features = ["json"] }
 proptest.workspace = true

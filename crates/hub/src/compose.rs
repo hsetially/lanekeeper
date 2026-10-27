@@ -2,8 +2,8 @@
 //!
 //! Other crates plug in as a [`Module`]: it adds routes to a [`GuardedRouter`], which is the only way to register one, so
 //! every route has a declared guard and the route table below cannot disagree with what is mounted (S4). Everything about
-//! the process (headers, limits, authentication, CSRF, static files, errors, metrics, shutdown) is applied here, once, for
-//! every module.
+//! the process (headers, limits, authentication, CSRF, the body cap, static files, errors, metrics, shutdown) is applied here, once,
+//! for every module.
 //!
 //! **Authentication and CSRF are layers of the hub, not of a module** (plan 18, T4, G1). [`SessionEdge`] is a required part of
 //! [`Deps`]: it carries the [`SessionAuth`] that every module's guard asks, and the two layers that make it work, which are applied
@@ -28,7 +28,7 @@ use crate::client_ip::TrustedProxies;
 use crate::config::HubSettings;
 use crate::edge::{ContextState, drain_gate, normalize_errors, record_route, request_context};
 use crate::headers::{HeaderPolicy, security_headers};
-use crate::limits::{Limits, request_limits};
+use crate::limits::{Limits, enforce_body_cap, request_limits};
 use crate::metrics::Metrics;
 use crate::ops::{self, Readiness, ReadyCheck};
 use crate::shutdown::Drain;
@@ -250,14 +250,18 @@ impl Hub {
         let policy = Arc::new(HeaderPolicy {
             trusted_types: settings.trusted_types.clone(),
         });
-        // Authentication, then CSRF, around every route and the fallback, and inside the limits: the per-IP bucket refuses a flood of
-        // unknown cookies before any of them costs a database read. `AuthLayer` is the outer of the two because `CsrfLayer` reads
-        // what it puts in the request, and does nothing without it (`tests/guard.rs` holds the order).
+        // Authentication, then CSRF, then the body cap, around every route and the fallback, and inside the first limits layer: the
+        // per-IP bucket refuses a flood of unknown cookies before any of them costs a database read. `AuthLayer` is the outer of the
+        // two because `CsrfLayer` reads what it puts in the request, and does nothing without it (`tests/csrf_all_routes.rs` holds the
+        // order). The body cap is innermost of the three because its size depends on who is asking (D137): the two edit routes take
+        // 12 MiB from a live session and 4 MiB from anybody else, and a request that CSRF refuses has read nothing.
+        let body_cap = from_fn_with_state(Arc::clone(&limits), enforce_body_cap);
         let web = match layers {
             Some(SessionLayers { sessions, origin }) => web
+                .layer(body_cap)
                 .layer(CsrfLayer::new(&origin, CsrfPolicy::Required))
                 .layer(AuthLayer::new(sessions)),
-            None => web,
+            None => web.layer(body_cap),
         };
         // Innermost first. Every one of these runs after routing, so `MatchedPath` is set for all of them.
         let web = web

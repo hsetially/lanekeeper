@@ -270,7 +270,7 @@ fn known_variables() -> BTreeSet<String> {
 }
 
 /// What the binary refuses to start without (plan 18, T1): a pod that omits one of these is a pod that cannot start.
-const REQUIRED_VARIABLES: [&str; 24] = [
+const REQUIRED_VARIABLES: [&str; 25] = [
     "LK_DATABASE_URL_FILE",
     "LK_DB_CA_FILE",
     "LK_WEB_CERT_REF",
@@ -297,6 +297,8 @@ const REQUIRED_VARIABLES: [&str; 24] = [
     "LK_ENTRA_COOKIE_KEY_REF",
     "LK_AUDIT_CHECKPOINT_BUCKET",
     "LK_AUDIT_CHECKPOINT_KMS_REF",
+    // T5 (S8): the key that wraps the GitHub token vault. A hub without it has no write path to offer and does not start.
+    "LK_VAULT_KMS_REF",
 ];
 
 const WRITABLE_VOLUMES: [&str; 2] = ["tmp", "mirror"];

@@ -78,6 +78,8 @@ fn serving() -> (tempfile::TempDir, Vec<(&'static str, String)>) {
         ),
         ("LK_GIT_BASE_REPO", "acme/configuration-base-saas".to_owned()),
         ("LK_GIT_TENANT_REPO", "acme/csp-tenant-data".to_owned()),
+        // T5 (S8): the key that wraps the GitHub token vault.
+        ("LK_VAULT_KMS_REF", rig::VAULT_KMS.to_owned()),
     ];
     let settings = settings.into_iter().chain(rig::identity_env()).collect();
     (dir, settings)
@@ -108,6 +110,57 @@ fn assert_refused(code: Option<i32>, output: &str, want_code: i32, must_name: &s
         !output.contains(PLANTED),
         "the message holds the planted secret: {output}"
     );
+}
+
+// ------------------------------------------------------------------------------------------------ T5: the registry and the write paths
+
+#[test]
+fn without_the_vault_key() {
+    let (code, output, _dir) = run_hub(&[], &["LK_VAULT_KMS_REF"], &[]);
+    assert_refused(code, &output, 2, "LK_VAULT_KMS_REF is required");
+}
+
+#[test]
+fn a_vault_key_that_is_a_version_or_not_a_key_is_refused_by_name() {
+    // The vault wraps with the key and lets KMS pick the version, so a version is a mistake (a rotation would stop working).
+    for bad in [
+        "projects/p/locations/l/keyRings/r/cryptoKeys/vault/cryptoKeyVersions/1",
+        "vault",
+        "projects/p/locations/l/keyRings/r",
+    ] {
+        let (code, output, _dir) = run_hub(&[], &[], &[("LK_VAULT_KMS_REF", bad)]);
+        assert_refused(code, &output, 2, "LK_VAULT_KMS_REF is not valid");
+    }
+}
+
+#[test]
+fn a_setting_of_the_registry_or_the_write_paths_that_is_wrong_is_refused_by_name_and_never_by_value() {
+    for (name, bad) in [
+        // GitHub is reached over HTTPS at one host: no scheme, a path, a port, a user or an upper-case name is a refused setting.
+        ("LK_GITHUB_API_BASE", "http://api.github.com"),
+        ("LK_GITHUB_API_BASE", "https://api.github.com/v3"),
+        ("LK_GITHUB_API_BASE", "https://user@api.github.com"),
+        ("LK_GIT_BASE_BRANCH", "ma in"),
+        ("LK_CONFIG_SERVER_DEPLOYMENT", "Not A Deployment"),
+        ("LK_TEAMS_ALLOWED_HOSTS", "*.example.com,"),
+        ("LK_TEAMS_ALLOWED_HOSTS", "https://example.com"),
+        // A switch that a typo could turn the wrong way is not a switch.
+        ("LK_RETENTION_ENABLED", "yes"),
+        ("LK_RETENTION_ENABLED", "TRUE"),
+        ("LK_RETENTION_DRY_RUN", "0"),
+        ("LK_EXTRA_DENY_GLOBS", "["),
+        ("LK_EXTRA_DENY_GLOBS", "secrets/*,,x"),
+        ("LK_CORPUS_CACHE_MIB", "1"),
+        ("LK_WRITES_PR_JOBS_SECS", "0"),
+        ("LK_WRITES_CLEANUP_SECS", "10"),
+    ] {
+        let (code, output, _dir) = run_hub(&[], &[], &[(name, bad)]);
+        assert_refused(code, &output, 2, &format!("{name} is not valid"));
+        assert!(
+            !output.contains(bad),
+            "{name}: the message holds the value: {output}"
+        );
+    }
 }
 
 #[test]

@@ -18,7 +18,9 @@ mod limits;
 mod migrator;
 mod platform;
 mod reader;
+mod registry;
 mod web_tls;
+mod writes;
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
@@ -33,7 +35,12 @@ pub use limits::{LimitSettings, Rate};
 pub use migrator::{DEFAULT_TIMEOUT_SECS, JOB_ONLY_VARIABLES, MigratorSettings};
 pub use platform::{CaSettings, DEFAULT_AGENT_ADDR, DEFAULT_REPLICA_ADDR, PlatformSettings};
 pub use reader::Reader;
+pub use registry::RegistrySettings;
 pub use web_tls::{DEFAULT_RELOAD_SECS, WebTlsSettings};
+pub use writes::{
+    DEFAULT_BASE_BRANCH, DEFAULT_CONFIG_SERVER_DEPLOYMENT, DEFAULT_GITHUB_API_BASE, WriteJobTimes,
+    WritesSettings,
+};
 
 /// A setting that could not be read. Carries the variable name only.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -75,6 +82,11 @@ pub struct HubSettings {
     pub platform: Option<PlatformSettings>,
     /// Entra sign-in, the first admins and the audit checkpoints (T4). `None` only in the library's defaults; serving refuses that.
     pub identity: Option<IdentitySettings>,
+    /// The registry's limits and the few knobs of them a deployment sets (T5). Always present: every knob has a default.
+    pub registry: RegistrySettings,
+    /// The write paths: the vault's KMS key, GitHub, Teams and the jobs' intervals (T5). `None` only in the library's defaults;
+    /// serving refuses that.
+    pub writes: Option<WritesSettings>,
     /// What the blob cache may hold (`LK_BLOB_CACHE_MIB`, default 512 MiB), in bytes.
     pub blob_cache_bytes: u64,
     /// OTLP gRPC endpoint of an in-cluster collector. No export when unset.
@@ -139,6 +151,8 @@ impl HubSettings {
             web_tls: WebTlsSettings::read(&reader)?,
             platform: PlatformSettings::read(&reader)?,
             identity: IdentitySettings::read(&reader)?,
+            registry: RegistrySettings::read(&reader)?,
+            writes: WritesSettings::read(&reader)?,
             blob_cache_bytes: reader
                 .number("LK_BLOB_CACHE_MIB", 512, 1, 4096)?
                 .saturating_mul(1024 * 1024),
@@ -171,6 +185,11 @@ impl HubSettings {
         if self.identity.is_none() {
             return Err(ConfigError::Missing("LK_ENTRA_TENANT_ID"));
         }
+        // T5 (S8): the token vault is what lets a person raise a pull request with their own GitHub token. A hub without the key
+        // that wraps the tokens has no write path to offer, and does not start with half of one.
+        if self.writes.is_none() {
+            return Err(ConfigError::Missing("LK_VAULT_KMS_REF"));
+        }
         Ok(())
     }
 }
@@ -194,6 +213,8 @@ impl Default for HubSettings {
             web_tls: None,
             platform: None,
             identity: None,
+            registry: RegistrySettings::default(),
+            writes: None,
             blob_cache_bytes: 512 * 1024 * 1024,
             otlp_endpoint: None,
             start_timeout: Duration::from_secs(8),
@@ -368,6 +389,8 @@ mod tests {
         "projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/agent-ca/cryptoKeyVersions/1";
     const REPLICA_KMS: &str =
         "projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/replica-ca/cryptoKeyVersions/3";
+    /// The key that wraps the GitHub token vault (T5): a crypto key, not a version.
+    const VAULT_KMS: &str = "projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/vault";
 
     /// The platform group (T3): every variable it needs, with the values a deployment would give them.
     fn platform_env<'a>() -> Vec<(&'a str, &'a str)> {
@@ -415,6 +438,7 @@ mod tests {
         env.extend(platform_env());
         env.extend(identity_env());
         env.extend(git_env(&[]));
+        env.push(("LK_VAULT_KMS_REF", VAULT_KMS));
         for (name, value) in extra {
             env.retain(|(n, _)| n != name);
             env.push((name, value));
@@ -1003,5 +1027,136 @@ mod tests {
                 "{name}={value}"
             );
         }
+    }
+    // ------------------------------------------------------------------------------------------ T5 (plan 18): registry and writes
+
+    #[test]
+    fn serving_needs_the_vault_key_and_says_which_variable_to_set() {
+        let mut env = serving_env(&[]);
+        env.retain(|(name, _)| *name != "LK_VAULT_KMS_REF");
+        let without = HubSettings::from_lookup(lookup(&env)).unwrap();
+        assert!(without.writes.is_none());
+        assert_eq!(
+            without.require_serving().unwrap_err(),
+            ConfigError::Missing("LK_VAULT_KMS_REF")
+        );
+    }
+
+    #[test]
+    fn the_vault_key_is_a_crypto_key_and_not_a_version_or_a_ring() {
+        for bad in [
+            "projects/lk/locations/l/keyRings/r/cryptoKeys/vault/cryptoKeyVersions/1",
+            "projects/lk/locations/l/keyRings/r",
+            "vault",
+            "projects/lk/locations/l/keyRings/r/cryptoKeys/va ult",
+        ] {
+            assert_eq!(
+                HubSettings::from_lookup(lookup(&serving_env(&[("LK_VAULT_KMS_REF", bad)]))).unwrap_err(),
+                ConfigError::Invalid("LK_VAULT_KMS_REF"),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_registry_and_write_settings_have_the_documented_defaults() {
+        let settings = HubSettings::from_lookup(lookup(&serving_env(&[]))).unwrap();
+        let registry = &settings.registry;
+        assert!(
+            !registry.retention_enabled,
+            "retention is off until a person switches it on (G16)"
+        );
+        assert!(
+            registry.config.retention_dry_run,
+            "and then it only reports (D118)"
+        );
+        assert!(registry.config.extra_deny_globs.is_empty());
+        assert_eq!(registry.config.corpus_cache_bytes, 256 * 1024 * 1024);
+        let writes = settings.writes.unwrap();
+        assert_eq!(writes.github_api_base, "https://api.github.com");
+        assert_eq!(writes.github_api_host, "api.github.com");
+        assert_eq!(writes.base_branch.to_string(), "main");
+        assert_eq!(writes.config_server_deployment, "csp-configuration-server");
+        assert!(writes.teams_hosts.is_none());
+        assert_eq!(writes.jobs, WriteJobTimes::default());
+        assert_eq!(WriteJobTimes::default().pr_jobs, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn the_knobs_of_the_registry_and_the_write_paths_are_read_and_bounded() {
+        let settings = HubSettings::from_lookup(lookup(&serving_env(&[
+            ("LK_RETENTION_ENABLED", "true"),
+            ("LK_RETENTION_DRY_RUN", "false"),
+            ("LK_EXTRA_DENY_GLOBS", "secrets/**, **/*.pem"),
+            ("LK_CORPUS_CACHE_MIB", "64"),
+            ("LK_GITHUB_API_BASE", "https://ghe.example.com/"),
+            ("LK_GIT_BASE_BRANCH", "release/base"),
+            ("LK_CONFIG_SERVER_DEPLOYMENT", "config-server"),
+            ("LK_TEAMS_ALLOWED_HOSTS", "*.logic.azure.com,hooks.example.com"),
+            ("LK_WRITES_PR_JOBS_SECS", "1"),
+        ])))
+        .unwrap();
+        assert!(settings.registry.retention_enabled);
+        assert!(!settings.registry.config.retention_dry_run);
+        assert_eq!(
+            settings.registry.config.extra_deny_globs,
+            ["secrets/**", "**/*.pem"]
+        );
+        assert_eq!(settings.registry.deny_globs(), ["secrets/**", "**/*.pem"]);
+        assert_eq!(settings.registry.config.corpus_cache_bytes, 64 * 1024 * 1024);
+        let writes = settings.writes.unwrap();
+        assert_eq!(writes.github_api_host, "ghe.example.com");
+        assert_eq!(writes.base_branch.to_string(), "release/base");
+        assert_eq!(writes.config_server_deployment, "config-server");
+        assert_eq!(
+            writes.teams_hosts.unwrap(),
+            ["*.logic.azure.com".to_owned(), "hooks.example.com".to_owned()]
+        );
+        assert_eq!(writes.jobs.pr_jobs, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_registry_or_write_setting_that_is_wrong_is_refused_by_name_and_never_by_value() {
+        for (name, bad) in [
+            ("LK_RETENTION_ENABLED", "yes"),
+            ("LK_RETENTION_ENABLED", "True"),
+            ("LK_RETENTION_DRY_RUN", "1"),
+            ("LK_EXTRA_DENY_GLOBS", "["),
+            ("LK_EXTRA_DENY_GLOBS", "a,,b"),
+            ("LK_EXTRA_DENY_GLOBS", ","),
+            ("LK_CORPUS_CACHE_MIB", "8"),
+            ("LK_CORPUS_CACHE_MIB", "99999"),
+            ("LK_GITHUB_API_BASE", "http://api.github.com"),
+            ("LK_GITHUB_API_BASE", "https://api.github.com:8443"),
+            ("LK_GITHUB_API_BASE", "https://API.github.com"),
+            ("LK_GITHUB_API_BASE", "https://api.github.com/api/v3"),
+            ("LK_GIT_BASE_BRANCH", "a..b"),
+            ("LK_CONFIG_SERVER_DEPLOYMENT", "-bad"),
+            ("LK_TEAMS_ALLOWED_HOSTS", "https://hooks.example.com"),
+            ("LK_TEAMS_ALLOWED_HOSTS", "*.*.example.com"),
+            ("LK_WRITES_RECONCILE_SECS", "0"),
+            ("LK_WRITES_EXPIRE_SECS", "100000"),
+            ("LK_WRITES_PR_JOBS_SECS", "301"),
+            ("LK_WRITES_CLEANUP_SECS", "59"),
+        ] {
+            let error = HubSettings::from_lookup(lookup(&serving_env(&[(name, bad)]))).unwrap_err();
+            assert_eq!(error, ConfigError::Invalid(name), "{name}={bad}");
+            assert!(
+                !format!("{error} {error:?}").contains(bad) || bad.len() < 3,
+                "{name}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn more_deny_globs_than_the_write_path_takes_are_refused() {
+        let many = (0..=hub_writes::MAX_EXTRA_DENY_GLOBS)
+            .map(|n| format!("dir{n}/*"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            HubSettings::from_lookup(lookup(&serving_env(&[("LK_EXTRA_DENY_GLOBS", &many)]))).unwrap_err(),
+            ConfigError::Invalid("LK_EXTRA_DENY_GLOBS")
+        );
     }
 }

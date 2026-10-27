@@ -16,6 +16,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -44,6 +45,7 @@ use hub_platform::git::deliveries::PgDeliveryLog;
 use hub_platform::git::fetch_queue::FetchQueue;
 use hub_platform::git::metrics::GitMetrics;
 use hub_platform::git::mirror::{Mirror, MirrorSettings};
+use hub_platform::git::pr_webhook::PrLinks;
 use hub_platform::git::reader::{GixReader, ReaderSettings};
 use hub_platform::git::sync::{
     Announcer, FetchWorker, MirrorSync, MirrorSyncer, RetrySettings, StartupRetry, spawn_initialize,
@@ -80,9 +82,13 @@ use crate::ready::{EventsReady, Expiring, JobsReady, RotatingExpiry};
 /// How long a replica's claim on an agent connection may go unrenewed before the others call it dead (gateway docs: 30 s).
 const STALE_AFTER: Duration = Duration::from_secs(30);
 
-/// What takes the reports that agents and sentinels send. T5 passes the registry's; until then the hub passes
-/// [`Ingest::unavailable`], which refuses every message with a typed error, so an agent that joins is told the hub cannot take its
-/// report yet and nothing is stored or acknowledged that was not.
+/// What takes the reports that agents and sentinels send. The registry's [`AgentIngest`](hub_registry::AgentIngest) and
+/// [`SentinelIngest`](hub_registry::SentinelIngest) are built from the platform's own bus, audit log and blob store, so they cannot
+/// exist before `Platform::build` and the services that take them cannot be built after it: [`Ingest::deferred`] is the sink the
+/// platform is given and the [`IngestSlot`] that the registry fills once it is built. Until then every message is refused with a
+/// typed error ([`SinkError::Unavailable`]), so an agent that joins in that moment is told the hub cannot take its report yet and
+/// nothing is stored or acknowledged that was not. [`Ingest::unavailable`] is the same refusal with no slot, for a platform whose
+/// registry is never built (the tests of the platform alone).
 #[derive(Clone)]
 pub struct Ingest {
     pub agents: Arc<dyn ReportSink>,
@@ -96,13 +102,103 @@ impl std::fmt::Debug for Ingest {
 }
 
 impl Ingest {
-    /// Refuses everything: the sinks of a hub whose registry is not wired yet (plan 18 G25).
+    /// Refuses everything: the sinks of a platform whose registry is never wired (the tests of the platform alone).
     #[must_use]
     pub fn unavailable() -> Self {
         let sink = Arc::new(UnavailableIngest);
         Self {
             agents: sink.clone(),
             sentinels: sink,
+        }
+    }
+
+    /// Sinks that refuse until the returned slot is filled, and then pass every message to what it was filled with.
+    #[must_use]
+    pub fn deferred() -> (Self, IngestSlot) {
+        let sink = Arc::new(DeferredIngest::default());
+        (
+            Self {
+                agents: sink.clone(),
+                sentinels: sink.clone(),
+            },
+            IngestSlot(sink),
+        )
+    }
+}
+
+/// Where the registry's two sinks are put once it is built, for [`Ingest::deferred`].
+#[derive(Debug, Clone)]
+pub struct IngestSlot(Arc<DeferredIngest>);
+
+impl IngestSlot {
+    /// Give the sinks their targets. `false` if they had them already (the first fill stands).
+    pub fn fill(&self, agents: Arc<dyn ReportSink>, sentinels: Arc<dyn SentinelSink>) -> bool {
+        let agents_set = self.0.agents.set(agents).is_ok();
+        let sentinels_set = self.0.sentinels.set(sentinels).is_ok();
+        agents_set && sentinels_set
+    }
+}
+
+/// Passes each message to its target, or refuses it while there is none.
+#[derive(Default)]
+struct DeferredIngest {
+    agents: OnceLock<Arc<dyn ReportSink>>,
+    sentinels: OnceLock<Arc<dyn SentinelSink>>,
+}
+
+impl std::fmt::Debug for DeferredIngest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeferredIngest")
+            .field("agents", &self.agents.get().is_some())
+            .field("sentinels", &self.sentinels.get().is_some())
+            .finish()
+    }
+}
+
+#[async_trait]
+impl ReportSink for DeferredIngest {
+    async fn hello(&self, id: &AgentIdentity, h: Hello) -> Result<AgentConfig, SinkError> {
+        match self.agents.get() {
+            Some(sink) => sink.hello(id, h).await,
+            None => Err(SinkError::Unavailable),
+        }
+    }
+
+    async fn heartbeat(&self, id: &AgentIdentity, hb: Heartbeat) -> Result<HeartbeatAction, SinkError> {
+        match self.agents.get() {
+            Some(sink) => sink.heartbeat(id, hb).await,
+            None => Err(SinkError::Unavailable),
+        }
+    }
+
+    async fn delta(&self, id: &AgentIdentity, d: ScanDelta) -> Result<(), SinkError> {
+        match self.agents.get() {
+            Some(sink) => sink.delta(id, d).await,
+            None => Err(SinkError::Unavailable),
+        }
+    }
+
+    async fn cluster(&self, id: &AgentIdentity, c: ClusterReport) -> Result<(), SinkError> {
+        match self.agents.get() {
+            Some(sink) => sink.cluster(id, c).await,
+            None => Err(SinkError::Unavailable),
+        }
+    }
+}
+
+#[async_trait]
+impl SentinelSink for DeferredIngest {
+    async fn hello(&self, id: &SentinelIdentity, h: SentinelHello) -> Result<SentinelConfig, SinkError> {
+        match self.sentinels.get() {
+            Some(sink) => sink.hello(id, h).await,
+            None => Err(SinkError::Unavailable),
+        }
+    }
+
+    async fn records(&self, id: &SentinelIdentity, batch: AuditRecordBatch) -> Result<AckSeq, SinkError> {
+        match self.sentinels.get() {
+            Some(sink) => sink.records(id, batch).await,
+            None => Err(SinkError::Unavailable),
         }
     }
 }
@@ -339,7 +435,15 @@ impl Platform {
             Arc::new(deliveries.clone()),
             Arc::clone(&queue),
             metrics.git.clone(),
-        );
+        )
+        // A pull request that was merged or closed moves the link the write path made for it, and the screens are told (D77): the
+        // webhook only needs the pool, the audit log, the bus and the clock, so it is wired here and not by the write path.
+        .with_pull_requests(Arc::new(PrLinks::new(
+            pool.clone(),
+            Arc::clone(&audit),
+            Arc::clone(&bus_port),
+            Arc::clone(&edges.clock),
+        )));
 
         // The agent gateway over the replicas, and the join service every agent and sentinel starts with.
         let replica_roots = roots_from_der(&[cas.replica.root_der.clone()]).map_err(PlatformError::Tls)?;

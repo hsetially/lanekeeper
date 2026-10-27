@@ -14,6 +14,9 @@ use crate::tls_pg::{self, TlsPg};
 pub const AGENT_CA_KMS: &str = "projects/p/locations/l/keyRings/r/cryptoKeys/agent-ca/cryptoKeyVersions/1";
 pub const REPLICA_CA_KMS: &str =
     "projects/p/locations/l/keyRings/r/cryptoKeys/replica-ca/cryptoKeyVersions/1";
+/// The KMS key (not a version) that wraps the data keys of the GitHub token vault (T5). The dev example's envelope is a software one
+/// and ignores the name; the setting still has to be a key's resource name.
+pub const VAULT_KMS: &str = "projects/p/locations/l/keyRings/r/cryptoKeys/vault";
 /// The key version that signs the audit chain's checkpoints (T4). The dev example makes a software key under this name too.
 pub const CHECKPOINT_KMS: &str =
     "projects/p/locations/l/keyRings/r/cryptoKeys/audit-checkpoint/cryptoKeyVersions/1";
@@ -109,6 +112,7 @@ impl Rig {
             ("LK_REPLICA_ADDRESS", "localhost:8445".to_owned()),
             ("LK_HUB_AUDIENCE", "https://hub.lanekeeper.test".to_owned()),
             ("LK_AGENT_ENDPOINT_HOSTS", "localhost".to_owned()),
+            ("LK_VAULT_KMS_REF", VAULT_KMS.to_owned()),
             ("LK_GIT_BASE_URL", self.git.url()),
             ("LK_GIT_TENANT_URL", self.git.url()),
             ("LK_GIT_BASE_REPO", "acme/configuration-base-saas".to_owned()),

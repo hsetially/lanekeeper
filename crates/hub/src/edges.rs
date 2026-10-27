@@ -5,7 +5,8 @@
 //! constructor outside tests and examples, and `GoogleEndpoints::production()` is the only value it uses. Each task adds the
 //! edges it needs: T1 the secret source and the clock, T3 the KMS signer (the CA's keys), the public half of a KMS key (only
 //! `hub ca-init` asks) and the verifier of Google ID tokens (agent join). T4 adds the identity module's three: its HTTPS clients
-//! (Entra, and Google's keys) and the checkpoint bucket. T5 adds GitHub.
+//! (Entra, and Google's keys) and the checkpoint bucket. T5 adds the write paths' two: the KMS key that wraps the token vault, and
+//! GitHub.
 
 use std::fmt;
 use std::sync::Arc;
@@ -20,10 +21,13 @@ use hub_platform::gcp::http::{GoogleHttp, HttpLimits};
 use hub_platform::gcp::secret_manager::{DEFAULT_CACHE_ENTRIES, MAX_CACHE_TTL};
 use hub_platform::gcp::token::WorkloadIdentityTokens;
 use hub_platform::gcp::{
-    CallLimits, CloudKmsSigner, GoogleApi, GoogleEndpoints, GoogleMetrics, SecretManagerSource, Transport,
+    CallLimits, CloudKmsEnvelope, CloudKmsSigner, GoogleApi, GoogleEndpoints, GoogleMetrics,
+    SecretManagerSource, Transport,
 };
+use hub_writes::github::{GitDataApi, GithubApi, GithubClient, GithubClientConfig};
 use ports::{
-    AuthError, GoogleIdentity, KeyRef, KmsError, KmsSigner, SecretSource, TokenVerifier, VerifiedUser,
+    AuthError, GoogleIdentity, KeyRef, KmsEnvelope, KmsError, KmsSigner, SecretSource, TokenVerifier,
+    VerifiedUser,
 };
 
 use crate::config::{ConfigError, HubSettings};
@@ -72,6 +76,35 @@ impl fmt::Debug for IdentityEdges {
     }
 }
 
+/// The ports the write paths reach outside the process through (T5): the KMS key that wraps the data key of each stored GitHub
+/// token (S8), and GitHub's API, which checks a token and makes the pull request with it. GitHub is one client with two faces, so the
+/// pull-request path and the token check cannot be given different hosts.
+#[derive(Clone)]
+pub struct WriteEdges {
+    pub envelope: Arc<dyn KmsEnvelope>,
+    pub github: Arc<dyn GithubApi>,
+    pub git: Arc<dyn GitDataApi>,
+}
+
+impl fmt::Debug for WriteEdges {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WriteEdges").finish_non_exhaustive()
+    }
+}
+
+impl WriteEdges {
+    /// The two faces of one GitHub client, and the envelope.
+    #[must_use]
+    pub fn new(envelope: Arc<dyn KmsEnvelope>, github: GithubClient) -> Self {
+        let github = Arc::new(github);
+        Self {
+            envelope,
+            github: github.clone(),
+            git: github,
+        }
+    }
+}
+
 /// The ports that reach outside the process.
 #[derive(Clone)]
 pub struct Edges {
@@ -90,6 +123,9 @@ pub struct Edges {
     pub identity: IdentityEdges,
     /// The Google clients' counters, registered on the hub's metrics. Empty when no Google client exists.
     pub google_metrics: GoogleMetrics,
+    /// The write paths' envelope and GitHub (T5). `None` is a setup that has none to give: the hub does not start on it (there is
+    /// no stand-in that would accept a token it could not keep).
+    pub writes: Option<WriteEdges>,
 }
 
 impl fmt::Debug for Edges {
@@ -147,7 +183,15 @@ impl Edges {
             tokens,
             identity,
             google_metrics: GoogleMetrics::default(),
+            writes: None,
         }
+    }
+
+    /// The same edges with the write paths' (T5).
+    #[must_use]
+    pub fn with_writes(mut self, writes: WriteEdges) -> Self {
+        self.writes = Some(writes);
+        self
     }
 
     /// The real edges: Secret Manager and Cloud KMS through the workload's identity, Google's keys for ID tokens, and the system
@@ -188,6 +232,23 @@ impl Edges {
             Arc::clone(&google_keys),
             Arc::new(IdentityClock(Arc::clone(&clock))),
         ));
+        // The write paths (T5): the vault's KMS key, and GitHub at the one host the settings name (S18). Neither makes a call here.
+        let writes = settings
+            .writes
+            .as_ref()
+            .ok_or(StartError::Config(ConfigError::Missing("LK_VAULT_KMS_REF")))?;
+        let envelope = CloudKmsEnvelope::new(
+            clients.api.clone(),
+            clients.endpoints.kms.clone(),
+            &writes.vault_key,
+        )
+        .map_err(|_| StartError::Config(ConfigError::Invalid("LK_VAULT_KMS_REF")))?;
+        let github = GithubClient::new(GithubClientConfig {
+            api_base: writes.github_api_base.clone(),
+            allowed_hosts: vec![writes.github_api_host.clone()],
+            ..GithubClientConfig::default()
+        })
+        .map_err(|_| StartError::Config(ConfigError::Invalid("LK_GITHUB_API_BASE")))?;
         Ok(Self {
             secrets: Arc::new(secrets),
             clock,
@@ -200,6 +261,7 @@ impl Edges {
                 checkpoints: Arc::new(checkpoints),
             },
             google_metrics: clients.metrics,
+            writes: Some(WriteEdges::new(Arc::new(envelope), github)),
         })
     }
 
@@ -221,6 +283,26 @@ impl hub_identity::Clock for IdentityClock {
 
     fn instant(&self) -> tokio::time::Instant {
         tokio::time::Instant::now()
+    }
+}
+
+/// The hub's clock as the registry's, so that one injected clock serves it too (G14).
+#[derive(Debug)]
+pub struct RegistryClock(pub Arc<dyn Clock>);
+
+impl hub_registry::Clock for RegistryClock {
+    fn now(&self) -> Timestamp {
+        self.0.now()
+    }
+}
+
+/// The hub's clock as the write paths', for the same reason.
+#[derive(Debug)]
+pub struct WritesClock(pub Arc<dyn Clock>);
+
+impl hub_writes::Clock for WritesClock {
+    fn now(&self) -> Timestamp {
+        self.0.now()
     }
 }
 
@@ -277,8 +359,12 @@ mod tests {
         assert_eq!(error.exit_code(), 2);
     }
 
-    /// The identity group, as a pod sets it.
-    const IDENTITY_ENV: [(&str, &str); 8] = [
+    /// The identity group, as a pod sets it, and the vault's key (T5).
+    const IDENTITY_ENV: [(&str, &str); 9] = [
+        (
+            "LK_VAULT_KMS_REF",
+            "projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/vault",
+        ),
         ("LK_GCP_PROJECT", "lanekeeper-prod"),
         ("LK_ENTRA_TENANT_ID", "11111111-1111-4111-8111-111111111111"),
         ("LK_ENTRA_CLIENT_ID", "22222222-2222-4222-8222-222222222222"),
@@ -292,8 +378,10 @@ mod tests {
         ),
     ];
 
-    #[test]
-    fn the_real_edges_are_built_without_a_call() {
+    // The GitHub client builds a `tower` buffer, which needs a runtime to spawn its worker on (the process builds the edges inside
+    // one: `process::entry` enters it first).
+    #[tokio::test]
+    async fn the_real_edges_are_built_without_a_call() {
         // Building the clients reads the platform's root certificates and nothing else: no network, no credential.
         let edges = Edges::google(&settings(&IDENTITY_ENV));
         assert!(edges.is_ok(), "{edges:?}");
@@ -307,6 +395,40 @@ mod tests {
             StartError::Config(ConfigError::Missing("LK_ENTRA_TENANT_ID"))
         );
         assert_eq!(error.exit_code(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_real_edges_need_the_vault_key_too_and_say_which_variable() {
+        let without: Vec<(&str, &str)> = IDENTITY_ENV
+            .iter()
+            .copied()
+            .filter(|(name, _)| *name != "LK_VAULT_KMS_REF")
+            .collect();
+        let error = Edges::google(&settings(&without)).unwrap_err();
+        assert_eq!(
+            error,
+            StartError::Config(ConfigError::Missing("LK_VAULT_KMS_REF"))
+        );
+        assert_eq!(error.exit_code(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_real_edges_carry_the_write_paths_envelope_and_github() {
+        let edges = Edges::google(&settings(&IDENTITY_ENV)).unwrap();
+        assert!(
+            edges.writes.is_some(),
+            "the real edges always have a vault to keep tokens in"
+        );
+        // And the same edges built by hand have none until they are given one: no stand-in is made on the way.
+        let by_hand = Edges::new(
+            edges.secrets.clone(),
+            edges.clock.clone(),
+            edges.signer.clone(),
+            edges.public_keys.clone(),
+            edges.tokens.clone(),
+            edges.identity.clone(),
+        );
+        assert!(by_hand.writes.is_none());
     }
 
     #[test]

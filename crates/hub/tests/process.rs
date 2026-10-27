@@ -234,25 +234,46 @@ async fn the_jobs_hold_their_leases_while_the_hub_runs_and_release_them_when_it_
         .await
         .unwrap();
     assert_eq!(
-        holders, 5,
-        "the four platform jobs and the audit log's shipper (T4) are held by this hub"
+        holders, 19,
+        "the platform's four jobs, the registry's ten (retention is off unless switched on), the write paths' four and the audit \
+         log's shipper (T4) are held by this hub"
     );
-    let names: Vec<String> = sqlx::query_scalar("SELECT name FROM leases ORDER BY name")
+    let names: std::collections::BTreeSet<String> = sqlx::query_scalar("SELECT name FROM leases")
         .fetch_all(&pool)
         .await
-        .unwrap();
-    assert_eq!(
-        names,
-        [
-            // The identity module's shipper of the audit log (T4) holds its lease for as long as the hub runs; its checkpoint and its
-            // nightly verification take theirs for the length of one run, which is not now.
-            "audit.shipper",
-            "git-poll",
-            "git-tree-index",
-            "outbox.prune",
-            "webhook-deliveries-prune"
-        ]
-    );
+        .unwrap()
+        .into_iter()
+        .collect();
+    let expected: std::collections::BTreeSet<String> = [
+        // The identity module's shipper of the audit log (T4) holds its lease for as long as the hub runs; its checkpoint and its
+        // nightly verification take theirs for the length of one run, which is not now.
+        "audit.shipper",
+        // The platform's four (T3).
+        "git-poll",
+        "git-tree-index",
+        "outbox.prune",
+        "webhook-deliveries-prune",
+        // The registry's ten (T5, D112). `registry-retention` is the eleventh and is not registered: `LK_RETENTION_ENABLED` is off.
+        "registry-attribution-grace",
+        "registry-index-sweeper",
+        "registry-nightly",
+        "registry-pickup-sweeper",
+        "registry-pipeline",
+        "registry-sentinel-partitions",
+        "registry-served-verify",
+        "registry-structure-sweeper",
+        "registry-sync-watch",
+        "registry-tool-write-matcher",
+        // The write paths' four (T5, G7).
+        "writes-credential-cleanup",
+        "writes-expire-proposals",
+        "writes-pr-jobs",
+        "writes-reconcile",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assert_eq!(names, expected);
     // Stopping releases them at once, so another replica takes them without waiting for the lease to run out.
     hub.signal("TERM");
     assert_eq!(

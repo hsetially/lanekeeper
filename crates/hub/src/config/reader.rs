@@ -77,6 +77,38 @@ impl<'a> Reader<'a> {
         u32::try_from(self.number(name, default, min, max)?).map_err(|_| ConfigError::Invalid(name))
     }
 
+    /// `true` or `false`, in lower case and nothing else: a switch that a typo could turn the wrong way is a refused setting.
+    pub fn flag(&self, name: &'static str, default: bool) -> Result<bool, ConfigError> {
+        match self.parse(name)?.as_deref() {
+            None => Ok(default),
+            Some("true") => Ok(true),
+            Some("false") => Ok(false),
+            Some(_) => Err(ConfigError::Invalid(name)),
+        }
+    }
+
+    /// A comma-separated list of at most `max` entries, none empty and none longer than `max_len` characters. An empty entry is a
+    /// stray comma, which is a typo to refuse and not an entry to skip. Unset is `None`.
+    pub fn list(
+        &self,
+        name: &'static str,
+        max: usize,
+        max_len: usize,
+    ) -> Result<Option<Vec<String>>, ConfigError> {
+        let Some(text) = self.parse(name)? else {
+            return Ok(None);
+        };
+        let entries: Vec<String> = text.split(',').map(|entry| entry.trim().to_owned()).collect();
+        if entries.len() > max
+            || entries
+                .iter()
+                .any(|e| e.is_empty() || e.chars().count() > max_len)
+        {
+            return Err(ConfigError::Invalid(name));
+        }
+        Ok(Some(entries))
+    }
+
     /// A positive, finite rate.
     pub fn float(&self, name: &'static str, default: f64) -> Result<f64, ConfigError> {
         let Some(value) = self.parse(name)? else {

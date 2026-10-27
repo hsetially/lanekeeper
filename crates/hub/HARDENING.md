@@ -157,6 +157,8 @@ spec:
       value: <audit checkpoint key version, a Cloud KMS resource name>
     - name: LK_BOOTSTRAP_ADMINS
       value: <comma separated Entra object ids of the first admins>
+    - name: LK_VAULT_KMS_REF
+      value: <vault key, a Cloud KMS crypto key resource name without a version>
     volumeMounts:
     - name: tmp
       mountPath: /tmp
@@ -247,6 +249,44 @@ each older version named for verifying), `roles/secretmanager.secretAccessor` on
 `roles/storage.objectCreator` and `roles/storage.objectViewer` (create each checkpoint and read them back for the nightly
 verification) and no more: not `objectAdmin`, not `storage.objects.delete`. Three replicas run one checkpoint job and one verification
 job between them (leases), so the bucket sees one writer at a time.
+
+**The registry and the write paths (plan 18, T5, G7, G8, G9, G16; S4, S8, S9, S11, S18).** The registry (reports from agents and
+sentinels, the pipeline, the read API, the blob endpoint's policy) and the write paths (edits, proposals, the token vault, pull
+requests, Teams) are in the one process. They need one required variable and four Secret Manager secrets, and they add no volume, no
+port and no egress host: GitHub and the Teams webhook host are already in the egress list below.
+
+| Variable | What it is |
+|---|---|
+| `LK_VAULT_KMS_REF` | **Required.** The Cloud KMS *crypto key* (not a version: `projects/P/locations/L/keyRings/R/cryptoKeys/K`) that wraps the data key of each stored GitHub token (S8). A fresh AES-256-GCM data key seals each token and KMS wraps it with the user and credential ids as associated data. The hub asks KMS to wrap and unwrap and never holds the key. |
+| `LK_GITHUB_API_BASE` | Optional. `https://api.github.com`, or the `https://host` of a GitHub Enterprise Server. The client reaches that host and no other (S18), so the FQDN egress policy must name it too. |
+| `LK_GIT_BASE_BRANCH` | Optional. The default branch of the base repository (`main`): where a pull request for a base file goes. |
+| `LK_CONFIG_SERVER_DEPLOYMENT` | Optional. The config-server's Deployment name (`csp-configuration-server`): the one service a restart for check C11 is offered for (D83). |
+| `LK_TEAMS_ALLOWED_HOSTS` | Optional. The host patterns a Teams webhook URL may name, comma separated (`*.logic.azure.com`, `*.api.powerplatform.com` and `*.webhook.office.com` by default), at most 16. The URLs are Secret Manager secrets named by `notification_settings.destination_ref`; nothing in the environment holds one. |
+| `LK_EXTRA_DENY_GLOBS` | Optional. Globs added to the built-in deny list (D79), comma separated, at most 256. **One list**: agents are told it, the read API withholds it, the blob endpoint refuses its hashes and the write path refuses its paths. A glob that does not compile is a refused setting. |
+| `LK_RETENTION_ENABLED`, `LK_RETENTION_DRY_RUN` | Optional. `registry-retention` deletes blobs, and D116 and D118 are still to be confirmed at review, so the job is **not registered** unless `LK_RETENTION_ENABLED=true`, and then it reports and deletes nothing until `LK_RETENTION_DRY_RUN=false`. Both take `true` or `false` and nothing else. |
+| `LK_CORPUS_CACHE_MIB` | Optional. What the text-search corpora may hold in memory on each replica (256). |
+| `LK_WRITES_RECONCILE_SECS`, `LK_WRITES_EXPIRE_SECS`, `LK_WRITES_PR_JOBS_SECS`, `LK_WRITES_CLEANUP_SECS` | Optional. How often the holder of each write job's lease runs it: 30, 60, 5 and 3600 seconds. |
+
+Secret Manager secrets the write paths read (names are constants of the code, not settings; each needs `roles/secretmanager.secretAccessor`):
+`write-preview-key` (at least 32 bytes: signs the preview ids of an upload or a delete, D46; the hub reads it at start and does not start
+without it), `github-webhook-secret` and `github-read-token` (named by `LK_GIT_WEBHOOK_REF` and `LK_GIT_READ_REF`, above), and one
+secret per Teams destination, named in the `notification_settings` table by an admin. The Google identity the pod runs as also needs
+`roles/cloudkms.cryptoKeyEncrypterDecrypter` on the vault key and nothing more there.
+
+**The leased jobs.** Eighteen jobs (nineteen with retention) run on one replica at a time each, under a lease of their own name, through the platform's runner:
+four of the platform's, the registry's eleven (`registry-pipeline`, `registry-nightly`, `registry-pickup-sweeper`,
+`registry-structure-sweeper`, `registry-index-sweeper`, `registry-tool-write-matcher`, `registry-served-verify`,
+`registry-attribution-grace`, `registry-sentinel-partitions`, `registry-sync-watch`, and `registry-retention` only when switched on) and
+the write paths' four (`writes-reconcile`, `writes-expire-proposals`, `writes-pr-jobs`, `writes-credential-cleanup`). All three replicas
+register all of them; each lease has one holder, and a replica that dies passes its jobs to another within one lease time. The jobs' queries
+use the pool of the `lanekeeper_app` role: nothing here needs another credential. The pool is 16 connections by default; with 19 leased jobs
+polling, the event listener, the session batcher and the request path, three replicas need `3 x LK_DB_MAX_CONNECTIONS` plus the migration
+Job's and an operator's from the database's `max_connections`.
+
+**Request bodies (D137, S11).** 4 MiB for every route, 1 MiB for the GitHub webhook, and 12 MiB + 64 KiB for `PUT /api/v1/swimlanes/{id}/files`
+and `POST /api/v1/drafts` from a request that carries a live session of at least an Editor. An unauthenticated request, a pending user and a
+Viewer have 4 MiB on those two routes too. The users' load balancer must pass a request body of that size and its own timeouts must not be
+shorter than `LK_REQUEST_TIMEOUT_SECS` (30).
 
 ### Making a CA certificate (`hub ca-init`)
 

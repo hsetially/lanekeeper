@@ -21,7 +21,7 @@ use hub_platform::tls::TlsError;
 use ports::GitError;
 
 pub use grpc::{Ca, CaKind, CaStep, Cas, prepare_cas};
-pub use platform::{Ingest, Platform, PlatformInputs};
+pub use platform::{Ingest, IngestSlot, Platform, PlatformInputs};
 pub use tasks::{Tasks, TasksAlive};
 
 /// Why the platform could not be built. Every message is fixed text that names a component or a variable, never a value.
