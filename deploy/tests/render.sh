@@ -557,7 +557,7 @@ planted_hub_jobs() {
     # The order.
     plant "a migration Job that is not a hook" hub kind "$mig"'{/helm\.sh\/hook: /d}' "helm.sh/hook must be pre-install,pre-upgrade"
     plant "a migration Job after the install" hub kind "$mig"'s/helm.sh\/hook: .*/helm.sh\/hook: post-install,post-upgrade/' "helm.sh/hook must be pre-install,pre-upgrade"
-    plant "a seed Job that is a hook" hub kind 's/^(  name: lanekeeper-hub-seed-[0-9a-f]+)$/\1\n  annotations:\n    helm.sh\/hook: pre-install,pre-upgrade/' "the seed Job is a Job, not a hook"
+    plant "a seed Job that is a hook" hub kind '/^kind: Job$/,/^---$/s/^( *)argocd.argoproj.io\/sync-options: Prune=false$/&\n\1helm.sh\/hook: pre-install,pre-upgrade/' "the seed Job is a Job, not a hook"
     plant "a Job account that is not a hook" hub kind "$jb"'{/helm\.sh\/hook: /d}' "it must be a hook of pre-install,pre-upgrade"
     plant "a Job account after the migration" hub kind "$jb"'s/hook-weight: "-10"/hook-weight: "5"/' "must be lower than the migration Job's"
     plant "a Job account that is deleted when the migration succeeds" hub kind "$jb"'s/hook-delete-policy: before-hook-creation/hook-delete-policy: hook-succeeded/' "hook-succeeded would delete it"
