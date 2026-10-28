@@ -213,15 +213,18 @@ spec:
 ```
 
 **Probes.** Start-up is budgeted at 10 s (P11), and the startup probe allows 60 s (30 tries, 2 s apart) so that a slow node is
-not a crash loop. It asks `/healthz`. The hub binds the operations socket first but serves it last (`process.rs`, `serve_hub`),
-so `/healthz` answers only when the whole start has finished: the database connected and its schema checked, the web certificate
+not a crash loop. It asks `/healthz`. The hub binds all four sockets before it loads anything (`Sockets::bind` in `process.rs`: web,
+operations, agent, replica, in that order) but serves the operations socket last (`serve_hub`), so `/healthz` answers only when the
+whole start has finished: the database connected and its schema checked, the web certificate
 loaded and both CAs set up (in parallel), then the platform, sign-in, the audit checkpoint verifier, the write paths and the MCP
 server, six steps in a row that are each bounded by `LK_START_TIMEOUT_SECS` (8). A start that cannot reach the database, Secret
 Manager or KMS is therefore not a probe that fails but an exit 1 and a restart, with the step named in the log, and the chart
 refuses a `LK_START_TIMEOUT_SECS` for which six steps in a row would outlast the 60 s. Once it answers, `/healthz` asks nothing of
 the database or of anything else (it says that the process is up), so a database outage after the start never fails it and never
-restarts the pod; the liveness probe does not begin until the start has succeeded. `/readyz` is readiness only (the database, the
-schema, the certificates, the mirrors), and it is also what the users' load balancer's health check asks.
+restarts the pod; the liveness probe does not begin until the start has succeeded. `/readyz` is readiness only (`postgres`, `schema`,
+`certificates` held by the web, agent and replica listeners, the event bus's `LISTEN` connection as `events`, `mirrors`, the job runner as
+`jobs`, and the background `tasks`: the seven checks of `README.md`, item 11), and it is also what the users' load balancer's health check
+asks.
 
 `LK_TRUSTED_PROXY_HOPS` is 2 behind Google's external HTTPS load balancer, which appends the client address and then its own
 (`client_ip.rs` counts from the right). The value must be re-checked whenever the path to the hub changes.

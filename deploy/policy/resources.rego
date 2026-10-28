@@ -69,7 +69,7 @@ deny contains msg if {
 # --- start-up -----------------------------------------------------------------------------------------------------------
 
 # A pod that is restarted while it is still starting never starts, so the startup probe must allow at least the budgeted time.
-# It asks /healthz. The hub binds the operations socket first but serves it last (crates/hub/src/process.rs, serve_hub), so /healthz answers only
+# It asks /healthz. The hub binds all four sockets first but serves the operations socket last (crates/hub/src/process.rs, Sockets::bind and serve_hub), so /healthz answers only
 # when the whole start has finished, and a start that cannot reach the database, Secret Manager or KMS exits 1 and restarts on its own; the
 # startup probe is what keeps the liveness probe from judging a start that has not finished.
 deny contains msg if {

@@ -158,7 +158,7 @@ Each stops the render and names the value, because "the hub exits 2" is otherwis
 {{- fail (printf "config.tuning: LK_SHUTDOWN_GRACE_SECS (%d) + LK_SHUTDOWN_DRAIN_SECS (%d) + 10 is %d s, and the pod's terminationGracePeriodSeconds is %d: the kubelet would kill a hub that is still draining" $wait $drain (add $wait $drain 10) $period) -}}
 {{- end -}}
 {{- /*
-  The hub answers /healthz only when the whole start has finished (it binds the operations socket first, but serves it last), and the start is
+  The hub answers /healthz only when the whole start has finished (it binds all four sockets first, but serves the operations socket last), and the start is
   a few steps in a row, each bounded by LK_START_TIMEOUT_SECS (8). The kubelet restarts a container whose startup probe has not passed when its
   window ends, so the bounds of all the steps, and 10 s for the process to begin and the probe to ask, have to fit the window: otherwise a start
   in which several steps are slow, and none is slow enough to fail, is killed before the hub can name the step.
