@@ -533,3 +533,50 @@ test, which runs the real `run.sh` and `lib.sh` with a stand-in docker, kind, he
 - `hub_replica_class` puts a failure beside a Google error first (setting, then schema, then database): a replica whose database check failed is a database failure however many Google errors it logged too.
 - The marker `setting it up took too long` (a CA that timed out) is accepted without the CA's name in front of it; it exists in the Rust source only as `CaStep::TimedOut`'s message.
 - `.github/scripts/kind-run.test.mjs` now has 47 tests, and `node --test .github/scripts/*.test.mjs` 174 (the brief expected 157: the A1 tests were replaced by more tests, none removed without a successor).
+
+---
+
+## Status (written after the two fix commits of 2026-10-28, gap I1)
+
+`C5` is `b5db76d` (`09/fix: the gcp chart makes the hub's KMS keys, Secret Manager containers and their IAM`), `C6` is `5a3ab7d` (`09/fix: kind and CI lint findings that came in from main`).
+The tools of the session ran as before (helm 4.3.0, kubeconform, conftest 0.71.1 behind the stand-in for Docker, shellcheck, actionlint, zizmor). The hub binary and `kind` did not run.
+
+### Closed
+
+| Item | Commit | How it is shown |
+|---|---|---|
+| I1: the hub's KMS keys, Secret Manager containers and their IAM (section 9) | C5 | `charts/gcp` renders a `KMSKeyRing`, four `KMSCryptoKey` (agent CA, replica CA, audit checkpoint: `ASYMMETRIC_SIGN`, `EC_SIGN_P256_SHA256`; vault: `ENCRYPT_DECRYPT`), ten `SecretManagerSecret` containers (never a value), and the `IAMPolicyMember`s: `signerVerifier` on the three signing keys, `cryptoKeyEncrypterDecrypter` on the vault key, one `secretAccessor` on each secret, and Secret Manager's service agent on the secrets' key. `helm template | kubeconform -strict` passes for `gcp-storage` staging and prod (the CRD schemas were already vendored: no change to the lock) |
+| Policy for them | C5 | `kms.rego` (new, 61 tests in `kms_test.rego`) checks purpose, algorithm, protection level, no import, kept on delete and prune, a secret is its replication and nothing else, a `SecretManagerSecretVersion` is refused; `iam.rego` learns the two roles and the hub's use of the vault key, each on its own kind and for the hub's account only (`cloudkms.admin`, a `signerVerifier` on the vault key, an `encrypterDecrypter` on a CA key, a `secretAccessor` on the project, a person or a group, a document with no spec: all planted); `argocd.rego` and `projects.yaml` allow `KMSKeyRing`, `KMSCryptoKey` and `SecretManagerSecret` and no version kind. `conftest verify`: 1309 of 1309 (it was 1193) |
+| The two charts cannot disagree on a name | C5 | `render.sh contract` (`cross_check_hub_names`) reads the hub's rendered `LK_*_REF` and `LK_*_KMS_REF` and the four constants of the hub's code (`hub-writes` `PREVIEW_KEY_SECRET`, `hub-mcp` `KEY_SECRET_NAME`, the two defaults in `hub/src/config/git.rs`), and fails for a name with no container or key here, in another project, with no binding for the hub's account, a key used for another purpose, a version where there is none (vault) or none where there should be one (CA, checkpoint), the two CAs as one key, and for a container or key here that the hub does not use. 22 planted cases, all seen failing first |
+| Documented | C5 | `charts/gcp/README.md`: the objects, which value feeds which hub chart value, what a person does in order (first key versions and the `LK_*_KMS_REF` to read off them, `hub ca-init` and the two roles on one key that its runner needs, the values of the eight other secrets, the Teams secrets as a runbook step) and a list of what is not verified. The hub chart's README, `values.yaml` and `NOTES.txt` no longer say that nothing creates the containers and the roles |
+| The `just ci-lint` finding from `main` (SC2016 in `playwright-install.test.sh`) | C6 | a reason and `# shellcheck disable=SC2016` above each of the two lines, as `sign.sh` does; `shellcheck -x` passes, the script's own test passes (73 checks), `just ci-lint` exits 0 (35 shell scripts) and has no other finding |
+
+Checks at this HEAD, each run on the committed tree: `conftest verify` 1309/1309; `node --test .github/scripts/*.test.mjs` 174/174; `render.sh lint` exit 0; `render.sh contract` exit 0
+(the cross-chart check on the real files; its 22 planted cases are run by `render.sh planted` and `data`); `render.sh data` exit 0 (284 ok); `render.sh argocd` exit 0 (67 ok);
+`render.sh planted`: 746 ok, no `PLANTED FAILED` line, exit 1 for the one counted failure (Cloud Armor, B5); `render.sh render` and `policy` fail only for the gcp chart with staging and prod values
+(B5). With a throwaway `githubHookRanges` (documentation addresses in a file outside the repository, not committed) `render.sh all` exits 0 with 749 ok and nothing failed, so the whole
+gcp chart, Cloud Armor included, passes lint, kubeconform, the policies, the scope against `lanekeeper-cloud` and the planted cases.
+
+### Left open, on purpose
+
+- **B5** (GitHub's hook ranges) as before: a person runs `node deploy/tools/github-hook-ranges.mjs --write`.
+- **Nothing was applied.** That Config Connector makes the ring and the keys, makes a first version of each signing key (number 1) and accepts HSM keys in `location`, that Secret Manager takes a regional key
+  for a one-replica secret, and the name of its service agent are **not verified** (Google's documentation could not be read: B6). The README lists each; the first apply is the test.
+- **`LK_AUDIT_CHECKPOINT_VERIFY_KMS_REFS` is still not a setting of the hub chart**, so a rotation of the checkpoint key needs it first. The role covers the old versions.
+- **The install guide** (section 9, last bullet) is still not written. The README of the gcp chart holds the steps for the keys and secrets and is what it should link to.
+- **A stale `docs/threat-model.md`** (not editable here) has no row for the keys and the secrets the chart now makes; nor does anything in `docs/` list the decision on HSM keys in prod.
+- **Teams webhook secrets** are a runbook step (container, value, one `secretAccessor` binding for the hub's account), because their names are chosen at run time.
+
+### Assumptions made
+
+- No key convention existed in the chart (the keys were external). The names are the ones the hub's example values already had: ring `lanekeeper`, keys `lanekeeper-agent-ca-<env>`, `lanekeeper-replica-ca-<env>`, `lanekeeper-audit-checkpoint-<env>`,
+  `lanekeeper-vault-<env>`. The ring name is an example (Q29 is open) and cannot be deleted once made.
+- Protection level is HSM, written out (it is immutable) and required in prod by `kms.rego`; staging may say SOFTWARE. A human relaxes the prod rule in `docs/decisions.md`. The destroy delay is 30 days; the vault key
+  rotates every 90 days (the older versions stay enabled); the signing keys do not rotate, because the hub pins a key version.
+- The secrets are `userManaged` with one replica in the chart's `location`, encrypted with `secrets.cmekKey`, a key of its own (not the vault key and not a signing key: those are used for nothing else). Without it they fall back
+  to Google-managed encryption with the warning that fails prod and staging, like the buckets.
+- One Google project for each environment: the secret names are constants of the hub's code and cannot carry an environment. The names in `secrets.hub.*` are Kubernetes names; the hub chart allows more.
+- `mcp-token-hmac-key` has a container although the default MCP mode (`oauth`) never reads it, because the brief lists it and the personal-token mode does not start without it.
+- The `lanekeeper.io/purpose` label of the checkpoint key is `audit-checkpoint-signing`, not `audit-checkpoint`: the bucket has that value, and `render.sh` finds documents by this label.
+- `iam.rego` now reads `member`, `role` and the reference from the document's root, so a binding whose `spec:` is empty is refused (it was skipped before). `.github/workflows/deploy.yml` also runs for
+  `crates/hub-writes/src/config.rs` and `crates/hub-mcp/src/auth/pat.rs`, which `render.sh contract` now reads.
