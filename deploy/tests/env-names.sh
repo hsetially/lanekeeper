@@ -4,10 +4,11 @@
 #   deploy/tests/env-names.sh              check each chart and its values against the config.rs of its crate
 #   deploy/tests/env-names.sh --self-test  the check must refuse a misspelt variable and a secret-looking one
 #
-# crates/hub/src/config.rs and crates/agent/src/config.rs are where the binaries read their settings: every LK_* they know is a
-# string literal there, so the names are found with grep. A variable in a chart that the binary does not read is a typo that turns
-# a setting off silently, or a secret smuggled into the environment under a name nobody reads. The same lists exist in
-# crates/hub/tests/hardening.rs and crates/agent/tests/hardening.rs for HARDENING.md; this is the check for the charts.
+# crates/hub/src/config.rs and the files of crates/hub/src/config/ (prompt 18 moved the settings of each group there), and
+# crates/agent/src/config.rs, are where the binaries read their settings: every LK_* they know is a string literal there, so the
+# names are found with grep. A variable in a chart that the binary does not read is a typo that turns a setting off silently, or a
+# secret smuggled into the environment under a name nobody reads. The same lists exist in crates/hub/tests/hardening.rs and
+# crates/agent/tests/hardening.rs for HARDENING.md; this is the check for the charts.
 #
 # The agent has two variables whose names look like secrets and are not: LK_CERT_SECRET and LK_JOIN_TOKEN_SECRET hold the NAME of a
 # Secret that the agent reads through the Kubernetes API (crates/agent/RBAC.md). They are the only exceptions, they are named
@@ -15,10 +16,31 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
-known_names() { grep -oE '"LK_[A-Z0-9_]+"' "$1" | tr -d '"' | sort -u; }
+# sources SPEC: the Rust files of SPEC, which is a colon separated list of files and directories (a directory contributes its *.rs
+# files, one level down: a settings group is a file of crates/hub/src/config/, never a subdirectory).
+sources() {
+    local entry
+    local -a entries
+    IFS=: read -r -a entries <<<"$1"
+    for entry in "${entries[@]}"; do
+        if [ -d "$entry" ]; then
+            find "$entry" -maxdepth 1 -type f -name '*.rs' | sort
+        else
+            printf '%s\n' "$entry"
+        fi
+    done
+}
 
-# check CONFIG_RS PATH...: names under PATH... that CONFIG_RS does not know, one per line, and secret-looking names. The names in
-# $secret_names (space separated) are the exceptions: they name a Secret and are not one.
+known_names() {
+    local -a files
+    mapfile -t files < <(sources "$1")
+    [ "${#files[@]}" -gt 0 ] || return 0
+    grep -hoE '"LK_[A-Z0-9_]+"' "${files[@]}" | tr -d '"' | sort -u
+}
+
+# check CONFIG PATH...: names under PATH... that CONFIG does not know, one per line, and secret-looking names. CONFIG is a file, a
+# directory of files, or a colon separated list of both (see `sources`). The names in $secret_names (space separated) are the
+# exceptions: they name a Secret and are not one.
 secret_names=""
 check() {
     local config="$1"
@@ -73,6 +95,25 @@ if [ "${1:-}" = "--self-test" ]; then
         echo "env-names self-test: a secret-looking variable was accepted" >&2
         exit 1
     fi
+    # The hub's settings are in crates/hub/src/config.rs and in the files of crates/hub/src/config/: a name that only a file of the
+    # directory knows is read by the hub, and a name that neither knows is a typo.
+    mkdir "$tmp/config"
+    printf 'let a = "LK_ENTRA_TENANT_ID";\n' >"$tmp/config/identity.rs"
+    printf 'let b = "LK_NOT_A_SETTING";\n' >"$tmp/config/notes.txt"
+    printf 'env:\n  - name: LK_WEB_ADDR\n  - name: LK_ENTRA_TENANT_ID\n' >"$tmp/group.yaml"
+    printf 'env:\n  - name: LK_WEB_ADDR\n  - name: LK_NOT_A_SETTING\n' >"$tmp/not-a-setting.yaml"
+    if check "$tmp/config.rs" "$tmp/group.yaml" 2>/dev/null; then
+        echo "env-names self-test: a name that only the config directory knows was accepted when only config.rs was read" >&2
+        exit 1
+    fi
+    check "$tmp/config.rs:$tmp/config" "$tmp/group.yaml" || {
+        echo "env-names self-test: a name that a file of the config directory reads was refused" >&2
+        exit 1
+    }
+    if check "$tmp/config.rs:$tmp/config" "$tmp/not-a-setting.yaml" 2>/dev/null; then
+        echo "env-names self-test: a name that no file of the config directory reads was accepted" >&2
+        exit 1
+    fi
     # The agent's two Secret-name variables: allowed when named, and only those.
     printf 'let a = "LK_CERT_SECRET"; let b = "LK_HUB_TOKEN"; let c = "LK_SWIMLANE";\n' >"$tmp/config-agent.rs"
     printf 'env:\n  - name: LK_CERT_SECRET\n  - name: LK_SWIMLANE\n' >"$tmp/agent-good.yaml"
@@ -94,8 +135,8 @@ if [ "${1:-}" = "--self-test" ]; then
     exit 0
 fi
 
-check crates/hub/src/config.rs "${hub_paths[@]}"
-echo "env-names: every LK_* variable of the hub chart is read by crates/hub/src/config.rs"
+check crates/hub/src/config.rs:crates/hub/src/config "${hub_paths[@]}"
+echo "env-names: every LK_* variable of the hub chart is read by crates/hub/src/config.rs or crates/hub/src/config/*.rs"
 secret_names="LK_CERT_SECRET LK_JOIN_TOKEN_SECRET"
 check crates/agent/src/config.rs "${agent_paths[@]}"
 echo "env-names: every LK_* variable of the agent chart is read by crates/agent/src/config.rs"

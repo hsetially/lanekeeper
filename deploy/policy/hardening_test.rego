@@ -237,6 +237,161 @@ test_deny_readiness_missing if {
 	refused(fixtures.sts_remove("/spec/template/spec/containers/0/readinessProbe"), "probes")
 }
 
+# --- what a reference may be in the environment (crates/hub/HARDENING.md; 09/fix, R2)
+#
+# The pod contract allows one `valueFrom`: the replica's name, from the downward API, as exactly `fieldRef: {fieldPath: metadata.name}`
+# on exactly LK_REPLICA_NAME. Anything else that takes its value from elsewhere is a secret or a setting that is not the pod's.
+
+env_add(entry) := fixtures.patch("StatefulSet", "lanekeeper-hub", [{"op": "add", "path": "/spec/template/spec/containers/0/env/-", "value": entry}])
+
+test_the_replica_name_from_the_pods_own_name_passes if {
+	count(deny) == 0 with input as fixtures.hub
+}
+
+test_deny_config_map_key_ref if {
+	planted := env_add({"name": "LK_WEB_DIST", "valueFrom": {"configMapKeyRef": {"name": "c", "key": "k"}}})
+	refused(planted, "valueFrom")
+}
+
+test_deny_resource_field_ref if {
+	planted := env_add({"name": "LK_BLOB_CACHE_MIB", "valueFrom": {"resourceFieldRef": {"resource": "limits.memory"}}})
+	refused(planted, "valueFrom")
+}
+
+test_deny_field_ref_on_another_variable if {
+	planted := env_add({"name": "LK_OPS_ADDR", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}})
+	refused(planted, "LK_OPS_ADDR")
+}
+
+test_deny_field_ref_to_another_field if {
+	planted := fixtures.sts_set("/spec/template/spec/containers/0/env/12/valueFrom/fieldRef/fieldPath", "metadata.namespace")
+	refused(planted, "valueFrom")
+}
+
+# The contract test holds the reference to exactly one key, so a fieldRef that adds an apiVersion is another shape.
+test_deny_field_ref_with_more_keys if {
+	planted := fixtures.sts_set("/spec/template/spec/containers/0/env/12/valueFrom/fieldRef", {"apiVersion": "v1", "fieldPath": "metadata.name"})
+	refused(planted, "valueFrom")
+}
+
+test_deny_value_from_beside_another_reference if {
+	planted := fixtures.sts_set("/spec/template/spec/containers/0/env/12/valueFrom", {"fieldRef": {"fieldPath": "metadata.name"}, "secretKeyRef": {"name": "s", "key": "k"}})
+	refused(planted, "valueFrom")
+}
+
+# The Jobs of the hub's image are held to the same (their names start with lanekeeper-hub-).
+job_with_env(job_name, entry) := fixtures.with_doc({
+	"apiVersion": "batch/v1",
+	"kind": "Job",
+	"metadata": {"name": job_name, "namespace": "lanekeeper"},
+	"spec": {"template": {"spec": {"containers": [{"name": "hub", "image": "x", "env": [entry]}]}}},
+})
+
+test_deny_config_map_key_ref_in_the_migration_job if {
+	planted := job_with_env("lanekeeper-hub-migrate", {"name": "LK_DB_CA_FILE", "valueFrom": {"configMapKeyRef": {"name": "c", "key": "k"}}})
+	refused(planted, "Job/lanekeeper-hub-migrate, container hub: LK_DB_CA_FILE takes its value from a valueFrom")
+}
+
+test_deny_field_ref_on_another_variable_in_the_seed_job if {
+	planted := job_with_env("lanekeeper-hub-seed-0123456789", {"name": "LK_SEED_TIMEOUT_SECS", "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}})
+	refused(planted, "Job/lanekeeper-hub-seed-0123456789, container hub: LK_SEED_TIMEOUT_SECS takes its value from a valueFrom")
+}
+
+test_deny_resource_field_ref_in_the_seed_job if {
+	planted := job_with_env("lanekeeper-hub-seed-0123456789", {"name": "LK_DB_CA_FILE", "valueFrom": {"resourceFieldRef": {"resource": "limits.memory"}}})
+	refused(planted, "valueFrom")
+}
+
+# A Job that is not the hub's is not this rule's business (another policy holds every Job to the hardening fields).
+test_a_job_of_another_name_is_not_a_hub_job if {
+	planted := job_with_env("other", {"name": "X", "valueFrom": {"configMapKeyRef": {"name": "c", "key": "k"}}})
+	msgs := deny with input as planted
+	count([m | some m in msgs; contains(m, "valueFrom")]) == 0
+}
+
+# Every replica has its own name: a fixed one would give three replicas one identity and one lease holder.
+test_deny_replica_name_fixed if {
+	planted := fixtures.sts_set("/spec/template/spec/containers/0/env/12", {"name": "LK_REPLICA_NAME", "value": "lanekeeper-hub-0"})
+	refused(planted, "LK_REPLICA_NAME must come from the pod's own name")
+}
+
+test_deny_replica_name_missing if {
+	refused(fixtures.sts_remove("/spec/template/spec/containers/0/env/12"), "LK_REPLICA_NAME must come from the pod's own name")
+}
+
+# --- the Jobs' variables are the Jobs' alone (HARDENING.md, README item 5; 09/fix, E4)
+
+test_deny_migrator_url_file_in_the_hub if {
+	refused(env_add({"name": "LK_MIGRATOR_URL_FILE", "value": "/etc/lanekeeper/migrator/uri"}), "LK_MIGRATOR_URL_FILE")
+}
+
+test_deny_migrate_timeout_in_the_hub if {
+	refused(env_add({"name": "LK_MIGRATE_TIMEOUT_SECS", "value": "600"}), "LK_MIGRATE_TIMEOUT_SECS")
+}
+
+test_deny_seed_timeout_in_the_hub if {
+	refused(env_add({"name": "LK_SEED_TIMEOUT_SECS", "value": "120"}), "LK_SEED_TIMEOUT_SECS")
+}
+
+# --- one name for the users and for Google (LK_PUBLIC_ORIGIN, LK_HUB_AUDIENCE; README item 9)
+
+test_the_origin_and_the_audience_are_one_name if {
+	planted := fixtures.sts_set("/spec/template/spec/containers/0/env/15/value", "https://other.example.com")
+	refused(planted, "LK_HUB_AUDIENCE")
+}
+
+test_deny_origin_that_is_not_https if {
+	planted := fixtures.sts_set("/spec/template/spec/containers/0/env/14/value", "http://lanekeeper.example.com")
+	refused(planted, "LK_PUBLIC_ORIGIN")
+}
+
+test_deny_origin_with_a_path if {
+	planted := fixtures.sts_set("/spec/template/spec/containers/0/env/14/value", "https://lanekeeper.example.com/app")
+	refused(planted, "LK_PUBLIC_ORIGIN")
+}
+
+# The Gateway serves the name the users type; the hub checks Host and Origin against LK_PUBLIC_ORIGIN.
+test_deny_origin_other_than_the_gateways_host if {
+	planted := fixtures.patch("StatefulSet", "lanekeeper-hub", [
+		{"op": "replace", "path": "/spec/template/spec/containers/0/env/14/value", "value": "https://elsewhere.example.com"},
+		{"op": "replace", "path": "/spec/template/spec/containers/0/env/15/value", "value": "https://elsewhere.example.com"},
+	])
+	refused(planted, "the Gateway serves")
+}
+
+# --- the grace period outlasts the shutdown the hub does (README item 5; 09/fix, T1)
+
+test_the_grace_period_of_the_contract_is_enough_for_the_defaults if {
+	count(deny) == 0 with input as fixtures.hub
+}
+
+test_deny_grace_period_shorter_than_the_shutdown if {
+	refused(fixtures.sts_set("/spec/template/spec/terminationGracePeriodSeconds", 39), "terminationGracePeriodSeconds")
+}
+
+test_a_grace_period_that_just_fits_passes if {
+	planted := fixtures.sts_set("/spec/template/spec/terminationGracePeriodSeconds", 40)
+	count(deny) == 0 with input as planted
+}
+
+test_deny_a_longer_drain_than_the_grace_period_allows if {
+	planted := env_add({"name": "LK_SHUTDOWN_DRAIN_SECS", "value": "40"})
+	refused(planted, "terminationGracePeriodSeconds")
+}
+
+test_deny_a_longer_grace_than_the_grace_period_allows if {
+	planted := env_add({"name": "LK_SHUTDOWN_GRACE_SECS", "value": "31"})
+	refused(planted, "terminationGracePeriodSeconds")
+}
+
+test_a_shorter_drain_passes_with_a_shorter_grace_period if {
+	planted := fixtures.patch("StatefulSet", "lanekeeper-hub", [
+		{"op": "add", "path": "/spec/template/spec/containers/0/env/-", "value": {"name": "LK_SHUTDOWN_DRAIN_SECS", "value": "10"}},
+		{"op": "replace", "path": "/spec/template/spec/terminationGracePeriodSeconds", "value": 25},
+	])
+	count(deny) == 0 with input as planted
+}
+
 # ============================================================================================================================
 # The agent (09/T4; S16, S17): the same fields as the hub, one planted case per field, and the agent's own contract
 # (crates/agent/HARDENING.md): it calls the Kubernetes API, so its token is mounted; one replica; the writable mounts are the NFS

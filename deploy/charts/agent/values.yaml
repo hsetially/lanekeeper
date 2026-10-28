@@ -18,7 +18,9 @@ swimlane:
   project: ""
 
 # The hub, as the agent dials it: https://host[:port] (LK_HUB_ENDPOINT). The host names the hub's agent load balancer, whose address
-# is network.hubAddresses; it is not the users' host. The audience of the ID token is the hub (S5); empty means the endpoint.
+# is network.hubAddresses; it is not the users' host, and it is one of the hub's config.agentEndpointHosts. The audience of
+# the ID token is the hub (S5): the hub's own name, https://<the hub's gateway.hostname> (LK_HUB_AUDIENCE), which is not the agents' host, so
+# set it; empty means the endpoint. deploy/tests/render.sh contract checks both against the hub chart.
 hub:
   endpoint: ""
   audience: ""

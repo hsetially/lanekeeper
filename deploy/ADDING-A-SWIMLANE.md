@@ -31,7 +31,8 @@ joins, or it is refused.
 | the cluster's outbound IP | step 5 | Q1: run the command in `docs/open-questions.md` from a pod |
 | the Cloud KMS key for the spool's disk, and the number of the cluster's project | `spool.cmekKey`, and the grant in step 2 | Q29: the platform team's key ring; `gcloud projects describe <project> --format='value(projectNumber)'` |
 | the cluster's control-plane address | `network.kubeApiAddresses` | `gcloud container clusters describe <cluster> --format='value(endpoint)'` |
-| the address of the hub's agent load balancer | `network.hubAddresses`, `hub.endpoint` | the hub's `Service/lanekeeper-hub-agent`, and the DNS name that points at it |
+| the address of the hub's agent load balancer | `network.hubAddresses`, `hub.endpoint` | the hub's `Service/lanekeeper-hub-agent`, and the DNS name that points at it; the host of `hub.endpoint` must be one of the hub's `config.agentEndpointHosts` (`LK_AGENT_ENDPOINT_HOSTS`: the names on the certificate the agent verifies) |
+| the hub's own name, for the token's audience | `hub.audience` | `https://` and the hub's `gateway.hostname` (`LK_HUB_AUDIENCE`): the hub refuses every join whose token is for another audience, and an empty `hub.audience` is the endpoint, which is not that name. `deploy/tests/render.sh contract` checks both |
 | the NFS VM's outbound IP | step 5 | the platform team (plan 09 A28: the sentinel reaches the agent port too) |
 | the published image digest | `image.digest` | the job summary of the `publish` job of `images.yml` (plan 09 A29) |
 | the hub's agent CA certificate, public | `hubCa.pem` | step 3 |

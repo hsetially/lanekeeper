@@ -133,6 +133,44 @@ deny contains msg if {
 	msg := sprintf("%s: serviceName must be %s, the headless Service (D62)", [lk.who(sts), headless_name])
 }
 
+# --- where the other replicas dial this one (crates/hub/HARDENING.md, README item 5; 09/fix, P1, P2) ----------------------------------------
+#
+# LK_REPLICA_ADDRESS is $(LK_REPLICA_NAME).<headless service>.<namespace>.svc:8445, the DNS name the StatefulSet's own service gives
+# the pod: its host is the name on the replica certificate. The contract's example spells the service lanekeeper-hub; the chart's
+# (above) is the headless Service that this policy requires. Kubernetes expands $(NAME) only for variables defined earlier in the same
+# list, so LK_REPLICA_NAME comes first.
+
+replica_address(sts) := sprintf("$(LK_REPLICA_NAME).%s.%s.svc:8445", [headless_name, sts.metadata.namespace])
+
+deny contains msg if {
+	some sts in lk.hub_statefulsets
+	some c in sts.spec.template.spec.containers
+	got := lk.env_value(c, "LK_REPLICA_ADDRESS")
+	got != replica_address(sts)
+	msg := sprintf("%s: LK_REPLICA_ADDRESS is %q and must be %q: the host is the pod's DNS name behind the headless Service, which is the name on the replica certificate (HARDENING.md)", [lk.who(sts), got, replica_address(sts)])
+}
+
+deny contains msg if {
+	some sts in lk.hub_statefulsets
+	some c in sts.spec.template.spec.containers
+	not lk.env_value(c, "LK_REPLICA_ADDRESS")
+	msg := sprintf("%s: LK_REPLICA_ADDRESS is not set to a value; the other replicas dial this one there (HARDENING.md)", [lk.who(sts)])
+}
+
+env_index(c, name) := i if {
+	some i, e in c.env
+	e.name == name
+}
+
+name_before_address(c) if env_index(c, "LK_REPLICA_NAME") < env_index(c, "LK_REPLICA_ADDRESS")
+
+deny contains msg if {
+	some sts in lk.hub_statefulsets
+	some c in sts.spec.template.spec.containers
+	not name_before_address(c)
+	msg := sprintf("%s: LK_REPLICA_NAME must be defined before LK_REPLICA_ADDRESS: Kubernetes expands $(LK_REPLICA_NAME) only for variables defined earlier in the list", [lk.who(sts)])
+}
+
 # --- the agent (09/T8; D74) ---------------------------------------------------------------------------------------------------------
 #
 # The agent's spool is a ReadWriteOnce volume that one agent writes. A rolling update (Kubernetes' default) starts the new pod beside the

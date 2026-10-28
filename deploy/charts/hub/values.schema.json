@@ -31,6 +31,53 @@
       "properties": {
         "trustedProxyHops": { "type": "integer", "minimum": 0, "maximum": 8 },
         "otlpEndpoint": { "type": "string", "pattern": "^(https?://[^\\s]+)?$" },
+        "gcpProject": { "type": "string", "pattern": "^([A-Za-z0-9-]{1,63})?$", "description": "The Google project of the secrets and keys (LK_GCP_PROJECT). Required: the template says so by name." },
+        "entra": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "tenantId": { "type": "string", "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})?$", "description": "The Entra tenant (LK_ENTRA_TENANT_ID), a GUID. Required." },
+            "clientId": { "type": "string", "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})?$", "description": "The app registration (LK_ENTRA_CLIENT_ID), a GUID. Required." }
+          }
+        },
+        "kms": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "agentCa": { "type": "string", "pattern": "^(projects/[A-Za-z0-9_-]{1,63}/locations/[A-Za-z0-9_-]{1,63}/keyRings/[A-Za-z0-9_-]{1,63}/cryptoKeys/[A-Za-z0-9_-]{1,63}/cryptoKeyVersions/[0-9]{1,19})?$", "description": "A Cloud KMS key version (LK_AGENT_CA_KMS_REF). Required." },
+            "replicaCa": { "type": "string", "pattern": "^(projects/[A-Za-z0-9_-]{1,63}/locations/[A-Za-z0-9_-]{1,63}/keyRings/[A-Za-z0-9_-]{1,63}/cryptoKeys/[A-Za-z0-9_-]{1,63}/cryptoKeyVersions/[0-9]{1,19})?$", "description": "A Cloud KMS key version (LK_REPLICA_CA_KMS_REF), another key than agentCa. Required." },
+            "auditCheckpoint": { "type": "string", "pattern": "^(projects/[A-Za-z0-9_-]{1,63}/locations/[A-Za-z0-9_-]{1,63}/keyRings/[A-Za-z0-9_-]{1,63}/cryptoKeys/[A-Za-z0-9_-]{1,63}/cryptoKeyVersions/[0-9]{1,19})?$", "description": "A Cloud KMS key version (LK_AUDIT_CHECKPOINT_KMS_REF). Required." },
+            "vault": { "type": "string", "pattern": "^(projects/[A-Za-z0-9_-]{1,63}/locations/[A-Za-z0-9_-]{1,63}/keyRings/[A-Za-z0-9_-]{1,63}/cryptoKeys/[A-Za-z0-9_-]{1,63})?$", "description": "A Cloud KMS crypto key WITHOUT a version (LK_VAULT_KMS_REF). Required." }
+          }
+        },
+        "auditCheckpointBucket": { "type": "string", "pattern": "^([a-z0-9][a-z0-9._-]{1,61}[a-z0-9])?$", "description": "The Cloud Storage bucket with a retention lock (LK_AUDIT_CHECKPOINT_BUCKET). Required." },
+        "agentEndpointHosts": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "type": "string", "maxLength": 253, "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$" },
+          "description": "The DNS names the agents reach the agent endpoint by (LK_AGENT_ENDPOINT_HOSTS): lower case, at most 8. Required."
+        },
+        "bootstrapAdmins": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" },
+          "description": "Entra object ids that become active admins at their first sign-in (LK_BOOTSTRAP_ADMINS)."
+        },
+        "secretManager": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The NAMES of Secret Manager secrets. The chart creates none of them and the values are never secrets.",
+          "properties": {
+            "webCert": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" },
+            "webKey": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" },
+            "agentCaCert": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" },
+            "replicaCaCert": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" },
+            "entraClient": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" },
+            "loginCookie": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,255}$" }
+          }
+        },
         "git": {
           "type": "object",
           "additionalProperties": false,
@@ -43,28 +90,41 @@
         },
         "tuning": {
           "type": "object",
-          "description": "The tunables of crates/hub/src/config.rs. Addresses, paths, files and secrets are the chart's, not tunables.",
+          "description": "The tunables of the hub (crates/hub/src/config.rs and config/*.rs) that a deployment may set, within the ranges the hub accepts. Addresses, paths, files and secrets are the chart's, and so are the switches that turn on a write the design has not confirmed (LK_MCP_NOTIFY_SERVICES, LK_RETENTION_ENABLED, LK_RETENTION_DRY_RUN) and the settings that widen what the hub may reach or write (LK_EXTRA_DENY_GLOBS, LK_TEAMS_ALLOWED_HOSTS, LK_GITHUB_API_BASE, LK_ENTRA_AUTHORITY_HOST, LK_ENTRA_REDIRECT_PATH, LK_AUDIT_CHECKPOINT_VERIFY_KMS_REFS): none of them can be set from a values file.",
           "additionalProperties": false,
           "properties": {
             "LK_BLOB_CACHE_MIB": { "type": ["integer", "string"] },
             "LK_BODY_MAX_BYTES": { "type": ["integer", "string"] },
             "LK_BUCKET_CAPACITY": { "type": ["integer", "string"] },
+            "LK_CONFIG_SERVER_DEPLOYMENT": { "type": "string", "maxLength": 253, "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$" },
+            "LK_CORPUS_CACHE_MIB": { "type": "integer", "minimum": 16, "maximum": 4096 },
             "LK_DB_ACQUIRE_TIMEOUT_SECS": { "type": ["integer", "string"] },
             "LK_DB_MAX_CONNECTIONS": { "type": ["integer", "string"] },
             "LK_DB_STATEMENT_TIMEOUT_SECS": { "type": ["integer", "string"] },
+            "LK_ENTRA_API_AUDIENCES": { "type": "string", "maxLength": 512, "pattern": "^[A-Za-z0-9:/._@-]+(,[A-Za-z0-9:/._@-]+){0,7}$" },
+            "LK_GIT_BASE_BRANCH": { "type": "string", "maxLength": 200, "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*(\\.[A-Za-z0-9_-]+)*(/[A-Za-z0-9_][A-Za-z0-9_-]*(\\.[A-Za-z0-9_-]+)*)*$", "not": { "pattern": "\\.lock(/|$)" } },
             "LK_GIT_FETCH_TIMEOUT_SECS": { "type": ["integer", "string"] },
             "LK_GIT_QUEUE_CAPACITY": { "type": ["integer", "string"] },
             "LK_IP_BURST": { "type": ["integer", "string"] },
             "LK_IP_RATE_PER_SEC": { "type": ["integer", "number", "string"] },
             "LK_JSON_DEPTH": { "type": ["integer", "string"] },
             "LK_MAX_CONNECTIONS": { "type": ["integer", "string"] },
+            "LK_MCP_AUTH": { "type": "string", "enum": ["oauth", "personal_token"] },
+            "LK_MCP_CONFIRM": { "type": "string", "enum": ["elicitation", "draft"] },
+            "LK_MCP_CONTENT": { "type": "string", "enum": ["summary", "data_block"] },
             "LK_REQUEST_TIMEOUT_SECS": { "type": ["integer", "string"] },
-            "LK_SHUTDOWN_DRAIN_SECS": { "type": ["integer", "string"] },
-            "LK_SHUTDOWN_GRACE_SECS": { "type": ["integer", "string"] },
+            "LK_SHUTDOWN_DRAIN_SECS": { "type": "integer", "minimum": 1, "maximum": 120 },
+            "LK_SHUTDOWN_GRACE_SECS": { "type": "integer", "minimum": 0, "maximum": 60 },
+            "LK_START_TIMEOUT_SECS": { "type": "integer", "minimum": 1, "maximum": 120 },
             "LK_TREE_INDEX_ENTRIES": { "type": ["integer", "string"] },
             "LK_TRUSTED_TYPES": { "type": "string", "pattern": "^[A-Za-z0-9_.#=,-]*$" },
             "LK_USER_BURST": { "type": ["integer", "string"] },
-            "LK_USER_RATE_PER_SEC": { "type": ["integer", "number", "string"] }
+            "LK_USER_RATE_PER_SEC": { "type": ["integer", "number", "string"] },
+            "LK_WEB_CERT_RELOAD_SECS": { "type": "integer", "minimum": 1, "maximum": 86400 },
+            "LK_WRITES_CLEANUP_SECS": { "type": "integer", "minimum": 60, "maximum": 604800 },
+            "LK_WRITES_EXPIRE_SECS": { "type": "integer", "minimum": 1, "maximum": 86400 },
+            "LK_WRITES_PR_JOBS_SECS": { "type": "integer", "minimum": 1, "maximum": 300 },
+            "LK_WRITES_RECONCILE_SECS": { "type": "integer", "minimum": 1, "maximum": 3600 }
           }
         }
       }

@@ -46,6 +46,13 @@ hub_name := "lanekeeper-hub"
 
 hub_statefulsets := named("StatefulSet", hub_name)
 
+# The hub image's Jobs (crates/hub/HARDENING.md, "The migration Job" and "The seed Job"): `lanekeeper-hub-migrate` and
+# `lanekeeper-hub-seed-<hash>`. They run the hub's image with another command, so the rules about the hub's variables reach them too.
+hub_jobs := [d | some d in of_kind("Job"); startswith(d.metadata.name, "lanekeeper-hub-")]
+
+# The hub's workloads: the pods that serve and the Jobs that run the same image.
+hub_workloads := array.concat(hub_statefulsets, hub_jobs)
+
 agent_name := "lanekeeper-agent"
 
 agent_deployments := named("Deployment", agent_name)

@@ -18,6 +18,10 @@ swimlane:
 hub:
   # EXAMPLE host name of the hub's agent load balancer (Q1), which hubAddresses below resolves to. Not the users' host (Q2).
   endpoint: https://agents.lanekeeper-prod.example.com
+  # EXAMPLE. The audience the agent asks Google for a token for is the hub's own name, https://<the hub's gateway.hostname>
+  # (LK_HUB_AUDIENCE, which charts/hub derives from gateway.hostname), not the agents' host: the hub refuses every Join whose token is for
+  # another audience. deploy/tests/render.sh contract checks that the two agree.
+  audience: https://lanekeeper-prod.example.com
 
 nfs:
   # EXAMPLE address and path (Q11); the uid and gid are the defaults, 1010 (Q4).

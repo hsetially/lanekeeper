@@ -5,7 +5,9 @@
 #   deploy/tests/render.sh render    helm template | kubeconform -strict, offline, with the vendored schemas
 #   deploy/tests/render.sh policy    helm template | conftest (deploy/policy), with perf/budgets.toml and the values files
 #   deploy/tests/render.sh contract  the agent chart's Roles, NetworkPolicy and pod against crates/agent/RBAC.md and HARDENING.md,
-#                                    and the db, gcp and hub charts against one another (bucket, service account, disk keys)
+#                                    the hub chart's environment against the variables the hub requires (crates/hub/tests/hardening.rs),
+#                                    and the db, gcp, hub and agent charts against one another (bucket, service account, disk keys,
+#                                    the hub's names for the agents)
 #   deploy/tests/render.sh planted   the checks above must FAIL on planted violations, each for its own reason
 #   deploy/tests/render.sh data      the data layer (09/T5) alone: the db chart and the gcp chart without Cloud Armor, through lint,
 #                                    kubeconform and the policies, their planted violations, and the cross-chart check. A SUBSET of
@@ -13,6 +15,9 @@
 #   deploy/tests/render.sh argocd    the Argo CD files (09/T6) alone: kubeconform, the policies, the paths, the scope of each project against the
 #                                    rendered charts, and their planted violations. A SUBSET of `all`: the scope of the gcp chart with Cloud
 #                                    Armor waits for GitHub's ranges (B5) and is left out of it; it is never the gate.
+#   deploy/tests/render.sh hub       the hub chart (09/fix) alone: lint, kubeconform, the policies, the hub's variables against the
+#                                    contract, the chart agreeing with the db, gcp and agent charts, and the planted cases of the hub's
+#                                    templates, schema and policies. A SUBSET of `all`, for working on the chart; it is never the gate.
 #   deploy/tests/render.sh all       all of them
 #
 # The Argo CD files (deploy/argocd, 09/T6) go through the same stages: kubeconform (render), then the argocd policy, the files each Application
@@ -37,8 +42,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 export PATH="$PWD/target/ops-tools/bin:$PATH"
 
 mode="${1:-all}"
-case "$mode" in lint | render | policy | contract | planted | data | argocd | all) ;; *)
-    echo "usage: deploy/tests/render.sh lint|render|policy|contract|planted|data|argocd|all" >&2
+case "$mode" in lint | render | policy | contract | planted | data | argocd | hub | all) ;; *)
+    echo "usage: deploy/tests/render.sh lint|render|policy|contract|planted|data|argocd|hub|all" >&2
     exit 2
     ;;
 esac
@@ -206,13 +211,77 @@ policy_one() {
     check_policy "$work/$chart-$env.yaml" "$chart" "$env" || return 1
 }
 
-# Only the agent chart has a contract file (RBAC.md, HARDENING.md); the other charts' contracts are in their policies.
+# The agent chart has contract files (RBAC.md, HARDENING.md) that conftest compares with the render. The hub's contract is crates/hub/HARDENING.md
+# and the tests of crates/hub/tests/hardening.rs; its policies are in deploy/policy, and the variables the hub requires to start (exit 2
+# without one) are read from REQUIRED_VARIABLES of that test, so the list cannot drift from the one the hub is held to (09/fix, E1).
+# The other charts' contracts are in their policies.
 contract_one() {
     local chart="$1" env="$2"
-    [ "$chart" = agent ] || return 0
-    echo "== contract $chart ($env)"
-    render "$chart" "$env" >"$work/$chart-$env.yaml" || return 1
-    check_contract "$work/$chart-$env.yaml" || return 1
+    case "$chart" in
+        agent)
+            echo "== contract $chart ($env)"
+            render "$chart" "$env" >"$work/$chart-$env.yaml" || return 1
+            check_contract "$work/$chart-$env.yaml" || return 1
+            ;;
+        hub)
+            echo "== contract $chart ($env)"
+            render "$chart" "$env" >"$work/$chart-$env.yaml" || return 1
+            check_hub_variables "$work/$chart-$env.yaml" || return 1
+            ;;
+        *) return 0 ;;
+    esac
+}
+
+# required_hub_variables: the variables the hub requires to start, one per line: REQUIRED_VARIABLES of crates/hub/tests/hardening.rs. The
+# count the test declares (`[&str; 25]`) must equal the number of names read, so that a list this reader no longer understands is an
+# error and never an empty list that every chart passes.
+required_hub_variables() {
+    local names declared count
+    names="$(sed -n '/^const REQUIRED_VARIABLES/,/^];/p' crates/hub/tests/hardening.rs | grep -oE '"LK_[A-Z0-9_]+"' | tr -d '"' || true)"
+    declared="$(sed -nE 's/^const REQUIRED_VARIABLES: \[&str; ([0-9]+)\].*/\1/p' crates/hub/tests/hardening.rs)"
+    count="$(grep -c . <<<"$names" || true)"
+    if [ -z "$declared" ] || [ "$count" != "$declared" ]; then
+        echo "render.sh: read $count names from REQUIRED_VARIABLES of crates/hub/tests/hardening.rs and it declares '${declared:-nothing}'" >&2
+        return 1
+    fi
+    printf '%s\n' "$names"
+}
+
+# sts_env_names FILE: the names of the variables that the hub StatefulSet's container sets, in order (not the Jobs').
+sts_env_names() {
+    awk '/^---$/ { sts = 0 } /^kind: StatefulSet$/ { sts = 1 } sts && /^ +- name: LK_[A-Z0-9_]+$/ { sub(/^ +- name: /, ""); print }' "$1"
+}
+
+# check_hub_variables FILE: the StatefulSet in FILE sets every variable the hub requires. Prints each one that is missing.
+check_hub_variables() {
+    local file="$1" required have name status=0
+    required="$(required_hub_variables)" || return 1
+    have="$(sts_env_names "$file")"
+    while IFS= read -r name; do
+        grep -qxF "$name" <<<"$have" || {
+            echo "the StatefulSet of the hub chart does not set $name, which the hub requires (REQUIRED_VARIABLES of crates/hub/tests/hardening.rs): it exits 2 without it"
+            status=1
+        }
+    done <<<"$required"
+    return "$status"
+}
+
+# drop_env FILE NAME: FILE without the environment entries called NAME (the `- name:` line and the lines indented under it).
+drop_env() {
+    awk -v name="$2" '
+        skip { match($0, /^ */); if (RLENGTH > indent) next; skip = 0 }
+        match($0, /^ +- name: /) && substr($0, RLENGTH + 1) == name { indent = RLENGTH - 8; skip = 1; next }
+        { print }
+    ' "$1"
+}
+
+# hub_env FILE NAME: the value of the variable NAME in the hub StatefulSet of FILE, quotes stripped (empty when it has none).
+hub_env() {
+    awk -v name="$2" '
+        /^---$/ { sts = 0 }
+        /^kind: StatefulSet$/ { sts = 1 }
+        sts && $0 ~ ("^ +- name: " name "$") { getline; if ($0 ~ /^ +value: /) { sub(/^ +value: /, ""); gsub(/^"|"$/, ""); print; exit } }
+    ' "$1"
 }
 
 lint() { each_combo lint_one; }
@@ -253,6 +322,37 @@ plant() {
         return
     fi
     expect_policy_failure "$name" "$bad" "$chart" "$env" "$fragment"
+}
+
+# plant_cmd NAME CHART ENV FRAGMENT COMMAND [ARG...]: like plant, for a change that sed cannot make: COMMAND reads the rendered output on
+# standard input and writes the changed output, which must differ.
+plant_cmd() {
+    local name="$1" chart="$2" env="$3" fragment="$4"
+    shift 4
+    local good="$work/good-$chart-$env.yaml" bad="$work/planted.yaml"
+    [ -f "$good" ] || render "$chart" "$env" >"$good"
+    "$@" <"$good" >"$bad"
+    if cmp -s "$good" "$bad"; then
+        fail "$name: the command changed nothing, so the case tests nothing"
+        return
+    fi
+    expect_policy_failure "$name" "$bad" "$chart" "$env" "$fragment"
+}
+
+# The LK_REPLICA_NAME entry moved after LK_REPLICA_ADDRESS, whose $(LK_REPLICA_NAME) Kubernetes then does not expand.
+move_replica_name_after_address() {
+    awk '
+        /^ +- name: LK_REPLICA_NAME$/ {
+            hold = $0
+            while ((getline line) > 0 && line !~ /^ +- name: /) hold = hold "\n" line
+            print line
+            getline line
+            print line
+            print hold
+            next
+        }
+        { print }
+    '
 }
 
 planted_hardening() {
@@ -318,6 +418,54 @@ planted_hardening() {
 
     # S10: the disks.
     plant "an unencrypted volume class" hub prod 's/storageClassName: lanekeeper-hub-cmek/storageClassName: standard-rwo/' "customer-managed"
+
+    # 09/fix, R2: the one reference the contract allows is the replica's own name, as exactly fieldRef metadata.name on LK_REPLICA_NAME.
+    plant "a configMapKeyRef in the environment" hub kind '/^ +- name: LK_WEB_DIST$/{n;s/value: .*/valueFrom: {configMapKeyRef: {name: c, key: k}}/}' "LK_WEB_DIST takes its value from a valueFrom"
+    plant "a resourceFieldRef in the environment" hub kind '/^ +- name: LK_WEB_DIST$/{n;s/value: .*/valueFrom: {resourceFieldRef: {resource: limits.memory}}/}' "LK_WEB_DIST takes its value from a valueFrom"
+    plant "a fieldRef on another variable" hub kind '/^ +- name: LK_OPS_ADDR$/{n;s/value: .*/valueFrom: {fieldRef: {fieldPath: metadata.name}}/}' "LK_OPS_ADDR takes its value from a valueFrom"
+    plant "the replica's name from another field" hub kind 's/fieldPath: metadata.name/fieldPath: metadata.namespace/' "LK_REPLICA_NAME takes its value from a valueFrom"
+    plant "the replica's name fixed" hub kind '/^ +- name: LK_REPLICA_NAME$/{n;N;N;s/.*/              value: lanekeeper-hub-0/}' "LK_REPLICA_NAME must come from the pod's own name"
+
+    # 09/fix, E4: the Jobs' variables are the Jobs' alone.
+    plant "the migrator's credential in the hub" hub kind 's/^( *)- name: LK_WEB_DIST$/\1- name: LK_MIGRATOR_URL_FILE/' "LK_MIGRATOR_URL_FILE is a variable of the Jobs"
+    plant "the migration timeout in the hub" hub kind 's/^( *)- name: LK_WEB_DIST$/\1- name: LK_MIGRATE_TIMEOUT_SECS/' "LK_MIGRATE_TIMEOUT_SECS is a variable of the Jobs"
+    plant "the seed timeout in the hub" hub kind 's/^( *)- name: LK_WEB_DIST$/\1- name: LK_SEED_TIMEOUT_SECS/' "LK_SEED_TIMEOUT_SECS is a variable of the Jobs"
+
+    # 09/fix, P1, P2: where the other replicas dial this one.
+    plant "the replica address in the contract's example service" hub kind 's/lanekeeper-hub-replicas\.lanekeeper\.svc:8445/lanekeeper-hub.lanekeeper.svc:8445/' "LK_REPLICA_ADDRESS is"
+    plant "the replica address in another namespace" hub kind 's/lanekeeper-hub-replicas\.lanekeeper\.svc:8445/lanekeeper-hub-replicas.other.svc:8445/' "LK_REPLICA_ADDRESS is"
+    plant_cmd "the replica's name after the address" hub kind "LK_REPLICA_NAME must be defined before LK_REPLICA_ADDRESS" move_replica_name_after_address
+
+    # 09/fix, README item 9: one name for the users and for Google, and it is the Gateway's.
+    plant "an audience that is not the origin" hub kind '/^ +- name: LK_HUB_AUDIENCE$/{n;s#value: .*#value: "https://other.example.com"#}' "LK_PUBLIC_ORIGIN and LK_HUB_AUDIENCE must be one name"
+    plant "an origin that is not https" hub kind '/^ +- name: LK_PUBLIC_ORIGIN$/{n;s#https://#http://#}' "LK_PUBLIC_ORIGIN must be https://<host>"
+    plant "an origin that is not the Gateway's host" hub prod 's#https://lanekeeper-prod\.example\.com#https://elsewhere.example.com#' "the Gateway serves"
+
+    # 09/fix, T1: the kubelet kills a hub that is still draining when the grace period is shorter than the shutdown.
+    plant "a grace period shorter than the shutdown" hub kind 's/terminationGracePeriodSeconds: 45/terminationGracePeriodSeconds: 39/' "terminationGracePeriodSeconds is 39"
+}
+
+# --- the hub's variables against the contract (09/fix, E1) ---------------------------------------------------------------------------------
+
+planted_hub_variables() {
+    echo "== planted: the hub's contract check refuses a StatefulSet that leaves out a variable the hub requires"
+    local good="$work/good-hub-kind.yaml" bad="$work/planted-vars.yaml" name out count=0
+    [ -f "$good" ] || render hub kind >"$good"
+    check_hub_variables "$good" >/dev/null || fail "the unchanged kind render of the hub chart lacks a variable the hub requires"
+    while IFS= read -r name; do
+        drop_env "$good" "$name" >"$bad"
+        count=$((count + 1))
+        if cmp -s "$good" "$bad"; then
+            fail "$name: the case changed nothing, so the render has no such variable"
+        elif out="$(check_hub_variables "$bad" 2>&1)"; then
+            fail "$name: the contract check accepted a StatefulSet without it"
+        elif ! grep -qF -- "does not set $name," <<<"$out"; then
+            fail "$name: refused, but not for it:"$'\n'"$out"
+        else
+            echo "  ok  without $name"
+        fi
+    done < <(required_hub_variables)
+    [ "$count" -gt 0 ] || fail "no required variable was read from crates/hub/tests/hardening.rs"
 }
 
 # --- the agent chart (09/T4): the same checks on the real output, one planted change at a time -----------------------------------------
@@ -1292,6 +1440,16 @@ cross_check() {
         status=1
     fi
 
+    # S9: the bucket that takes the audit checkpoints is the one the gcp chart makes (with a retention lock in prod), and that the hub's
+    # account may create objects in. A hub that names another bucket cannot write a checkpoint (09/fix, E1).
+    local audit_bucket hub_bucket
+    audit_bucket="$(doc_field "$gcp" '^    lanekeeper.io/purpose: audit-checkpoint$' name)"
+    hub_bucket="$(hub_env "$hub" LK_AUDIT_CHECKPOINT_BUCKET)"
+    if [ -z "$audit_bucket" ] || [ "$audit_bucket" != "$hub_bucket" ]; then
+        echo "the hub writes its audit checkpoints to bucket '$hub_bucket' (LK_AUDIT_CHECKPOINT_BUCKET) and the gcp chart makes the audit-checkpoint bucket '$audit_bucket'"
+        status=1
+    fi
+
     # Workload Identity: PROJECT.svc.id.goog[NAMESPACE/NAME] of the gcp chart is where the hub's and the database's service accounts are.
     local hub_ns hub_ksa db_ns
     hub_ns="$(awk '/^kind: ServiceAccount$/ {f = 1} f && /^  namespace: / {print $2; exit}' "$hub")"
@@ -1320,14 +1478,43 @@ cross_check() {
     return "$status"
 }
 
+# cross_check_agent VALUES HUB...: the agent of a swimlane (its values file) and the hubs (rendered output) that it may be pointed at
+# agree on the names that the agent verifies (09/fix, P4). The agent dials hub.endpoint and checks the hub's certificate against its host,
+# which the hub puts on the agent listener's certificate from LK_AGENT_ENDPOINT_HOSTS; and it asks Google for a token for hub.audience (the
+# endpoint when empty), which the hub accepts for Join only if it is LK_HUB_AUDIENCE. A mismatch in either is an agent that cannot join.
+cross_check_agent() {
+    local values="$1" endpoint audience host hub hosts hub_audience matched=0 status=0
+    shift
+    endpoint="$(yaml_scalar "$values" endpoint)"
+    audience="$(yaml_scalar "$values" audience)"
+    host="${endpoint#https://}"
+    host="${host%%[:/]*}"
+    for hub in "$@"; do
+        hosts="$(hub_env "$hub" LK_AGENT_ENDPOINT_HOSTS)"
+        tr ',' '\n' <<<"$hosts" | grep -qxF -- "$host" || continue
+        matched=1
+        hub_audience="$(hub_env "$hub" LK_HUB_AUDIENCE)"
+        if [ "${audience:-$endpoint}" != "$hub_audience" ]; then
+            echo "$values: the agent asks Google for a token for '${audience:-$endpoint}' (hub.audience, or hub.endpoint when it is empty) and the hub that serves its endpoint accepts '$hub_audience' (LK_HUB_AUDIENCE): every Join would be refused"
+            status=1
+        fi
+    done
+    if [ "$matched" = 0 ]; then
+        echo "$values: the host '$host' of hub.endpoint is none of the LK_AGENT_ENDPOINT_HOSTS of the hub (staging, prod): the agent verifies the hub's certificate by that name, and the certificate would not carry it"
+        status=1
+    fi
+    return "$status"
+}
+
 cross_chart() {
-    local env status=0
+    local env status=0 hubs=() values
     for env in staging prod; do
         [ -f "deploy/values/db/$env.yaml" ] && [ -f "deploy/values/gcp/$env.yaml" ] && [ -f "deploy/values/hub/$env.yaml" ] || continue
         echo "== the db, gcp and hub charts agree ($env)"
         render db "$env" >"$work/x-db-$env.yaml" || return 1
         render gcp-storage "$env" >"$work/x-gcp-$env.yaml" || return 1
         render hub "$env" >"$work/x-hub-$env.yaml" || return 1
+        hubs+=("$work/x-hub-$env.yaml")
         cross_check "$work/x-db-$env.yaml" "$work/x-gcp-$env.yaml" "$work/x-hub-$env.yaml" || status=1
         # The Cloud Armor policy the hub's backend policy names is the one the gcp chart makes: values on both sides.
         local hub_policy gcp_policy
@@ -1337,6 +1524,12 @@ cross_chart() {
             echo "the hub attaches Cloud Armor policy '$hub_policy' and the gcp chart makes '$gcp_policy'"
             status=1
         fi
+    done
+    # The agents of the swimlanes (one values file each) are pointed at one of these hubs.
+    for values in deploy/values/agent/*.yaml; do
+        [ -f "$values" ] || continue
+        echo "== the agent of $(basename "$values" .yaml) and the hub agree on the hub's names"
+        cross_check_agent "$values" "${hubs[@]}" || status=1
     done
     return "$status"
 }
@@ -1359,6 +1552,7 @@ planted_cross() {
     render db prod >"$db"
     render gcp-storage prod >"$gcp"
     render hub prod >"$hub"
+    render hub staging >"$work/x-hub-staging.yaml"
     cross_check "$db" "$gcp" "$hub" >/dev/null || fail "the unchanged prod renders of the db, gcp and hub charts disagree"
 
     sed -E 's#gs://example-project-lanekeeper-backup-prod/#gs://example-project-lanekeeper-backup-prd/#' "$db" >"$bad"
@@ -1375,6 +1569,34 @@ planted_cross() {
     expect_cross_failure "a disk key that Compute Engine may not use" "$bad" "$gcp" "$hub" "encrypts a disk"
     sed -E 's#(disk-encryption-kms-key: ".*cryptoKeys/)lanekeeper-disk-prod#\1other-disk#' "$hub" >"$bad"
     expect_cross_failure "the hub's disk key that Compute Engine may not use" "$db" "$gcp" "$bad" "encrypts a disk"
+    sed -E 's#(value: "example-project-lanekeeper-audit-)prod"#\1prd"#' "$hub" >"$bad"
+    expect_cross_failure "audit checkpoints to a bucket that the gcp chart does not make" "$db" "$gcp" "$bad" "the hub writes its audit checkpoints to bucket"
+    sed -E 's#^(  name: example-project-lanekeeper-audit-)prod$#\1prd#' "$gcp" >"$bad"
+    expect_cross_failure "an audit-checkpoint bucket that the hub does not name" "$db" "$bad" "$hub" "the hub writes its audit checkpoints to bucket"
+
+    # P4: the agent and the hub agree on the names the agent verifies.
+    local agent=deploy/values/agent/sit1.yaml hubs=("$hub" "$work/x-hub-staging.yaml") out
+    cross_check_agent "$agent" "${hubs[@]}" >/dev/null || fail "the unchanged sit1 values and the staging and prod hubs disagree"
+    expect_agent_cross_failure() {
+        local name="$1" fragment="$2"
+        shift 2
+        if out="$(cross_check_agent "$bad" "$@" 2>&1)"; then
+            fail "$name: the cross-chart check accepted it"
+        elif ! grep -qF -- "$fragment" <<<"$out"; then
+            fail "$name: refused, but not for '$fragment':"$'\n'"$out"
+        else
+            echo "  ok  $name"
+        fi
+    }
+    sed -E 's#agents\.lanekeeper-prod\.example\.com#agents.lanekeeper-elsewhere.example.com#' "$agent" >"$bad"
+    expect_agent_cross_failure "an agent that dials a host the hub's certificate does not carry" "is none of the LK_AGENT_ENDPOINT_HOSTS" "${hubs[@]}"
+    sed -E 's#^( *audience:).*#\1 https://other.example.com#' "$agent" >"$bad"
+    expect_agent_cross_failure "an agent that asks Google for another audience" "every Join would be refused" "${hubs[@]}"
+    sed -E '/^ *audience:/d' "$agent" >"$bad"
+    expect_agent_cross_failure "an agent whose audience is its endpoint, not the hub's name" "every Join would be refused" "${hubs[@]}"
+    cp "$agent" "$bad"
+    sed -E 's#(value: )"agents\.lanekeeper-prod\.example\.com"#\1"agents.lanekeeper-other.example.com"#' "$hub" >"$work/x-hub-bad.yaml"
+    expect_agent_cross_failure "a hub that no longer carries the agent's host" "is none of the LK_AGENT_ENDPOINT_HOSTS" "$work/x-hub-bad.yaml" "$work/x-hub-staging.yaml"
 }
 
 planted_kubeconform() {
@@ -1421,12 +1643,126 @@ planted_templates() {
     expect_helm_failure "an unknown value" "not_a_value" --set not_a_value=1
     expect_helm_failure "no Google service account" "gcpServiceAccount" --set serviceAccount.gcpServiceAccount=
     expect_helm_failure "a CA secret that is not CloudNativePG's" "caSecretName" --set database.caSecretName=anything
+
+    # 09/fix, E1: what the hub requires to start has no default, and the chart names the value that is missing.
+    expect_helm_failure "no Google project" "config.gcpProject is required" --set config.gcpProject=
+    expect_helm_failure "a Google project that is not one" "gcpProject" --set config.gcpProject=Bad_Project
+    expect_helm_failure "no Entra tenant" "config.entra.tenantId is required" --set config.entra.tenantId=
+    expect_helm_failure "no Entra client" "config.entra.clientId is required" --set config.entra.clientId=
+    expect_helm_failure "an Entra tenant that is not a GUID" "tenantId" --set config.entra.tenantId=not-a-guid
+    expect_helm_failure "an Entra client that is not a GUID" "clientId" --set config.entra.clientId=22222222-2222-4222-8222
+    expect_helm_failure "no key for the agent CA" "config.kms.agentCa is required" --set config.kms.agentCa=
+    expect_helm_failure "no key for the replica CA" "config.kms.replicaCa is required" --set config.kms.replicaCa=
+    expect_helm_failure "no key for the audit checkpoints" "config.kms.auditCheckpoint is required" --set config.kms.auditCheckpoint=
+    expect_helm_failure "no key for the vault" "config.kms.vault is required" --set config.kms.vault=
+    expect_helm_failure "a CA key that is a key and not a version" "agentCa" --set config.kms.agentCa=projects/p/locations/l/keyRings/r/cryptoKeys/k
+    expect_helm_failure "a checkpoint key that is a key and not a version" "auditCheckpoint" --set config.kms.auditCheckpoint=projects/p/locations/l/keyRings/r/cryptoKeys/k
+    expect_helm_failure "a vault key that is a version" "vault" --set config.kms.vault=projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1
+    expect_helm_failure "one CA key for both CAs" "LK_REPLICA_CA_KMS_REF" --set config.kms.agentCa=projects/p/locations/l/keyRings/r/cryptoKeys/ca/cryptoKeyVersions/1 --set config.kms.replicaCa=projects/p/locations/l/keyRings/r/cryptoKeys/ca/cryptoKeyVersions/1
+    expect_helm_failure "one CA certificate for both CAs" "LK_REPLICA_CA_CERT_REF" --set config.secretManager.replicaCaCert=lanekeeper-agent-ca-cert
+    expect_helm_failure "no bucket for the audit checkpoints" "config.auditCheckpointBucket is required" --set config.auditCheckpointBucket=
+    expect_helm_failure "a bucket name that is not one" "auditCheckpointBucket" --set config.auditCheckpointBucket=Bad_Bucket
+    expect_helm_failure "no host for the agents" "config.agentEndpointHosts is required" --set-json 'config.agentEndpointHosts=[]'
+    expect_helm_failure "an agent host in capitals" "agentEndpointHosts" --set-json 'config.agentEndpointHosts=["Agents.Example.com"]'
+    expect_helm_failure "a wildcard agent host" "agentEndpointHosts" --set-json 'config.agentEndpointHosts=["*.example.com"]'
+    expect_helm_failure "nine agent hosts" "agentEndpointHosts" --set-json 'config.agentEndpointHosts=["a.example.com","b.example.com","c.example.com","d.example.com","e.example.com","f.example.com","g.example.com","h.example.com","i.example.com"]'
+    expect_helm_failure "no base repository URL" "config.git.baseUrl is required" --set config.git.baseUrl=
+    expect_helm_failure "no tenant repository URL" "config.git.tenantUrl is required" --set config.git.tenantUrl=
+    expect_helm_failure "no base repository name" "config.git.baseRepo is required" --set config.git.baseRepo=
+    expect_helm_failure "no tenant repository name" "config.git.tenantRepo is required" --set config.git.tenantRepo=
+    expect_helm_failure "a Secret Manager name with a slash" "webCert" --set config.secretManager.webCert=a/b
+    expect_helm_failure "a Secret Manager name with a space" "entraClient" --set 'config.secretManager.entraClient=has space'
+    expect_helm_failure "a Secret Manager name that does not exist" "apiKey" --set config.secretManager.apiKey=x
+    expect_helm_failure "a first administrator that is not a GUID" "bootstrapAdmins" --set-json 'config.bootstrapAdmins=["someone@example.com"]'
+    expect_helm_failure "the same first administrator twice" "bootstrapAdmins" --set-json 'config.bootstrapAdmins=["33333333-3333-4333-8333-333333333333","33333333-3333-4333-8333-333333333333"]'
+
+    # 09/fix, E3: the optional settings a deployment needs are tunables, within the ranges the hub accepts; the ones it must not be able to
+    # switch on from a values file are not.
+    local name
+    for name in LK_MCP_NOTIFY_SERVICES LK_RETENTION_ENABLED LK_RETENTION_DRY_RUN LK_EXTRA_DENY_GLOBS LK_TEAMS_ALLOWED_HOSTS LK_GITHUB_API_BASE LK_ENTRA_AUTHORITY_HOST LK_ENTRA_REDIRECT_PATH LK_AUDIT_CHECKPOINT_VERIFY_KMS_REFS LK_GIT_TOKEN_FILE; do
+        expect_helm_failure "the tunable $name is not the chart's to set" "$name" --set-json "config.tuning={\"$name\":\"true\"}"
+    done
+    expect_helm_failure "a start timeout of zero" "LK_START_TIMEOUT_SECS" --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":0}'
+    expect_helm_failure "a start timeout over the hub's limit" "LK_START_TIMEOUT_SECS" --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":121}'
+    expect_helm_failure "a certificate reload of zero" "LK_WEB_CERT_RELOAD_SECS" --set-json 'config.tuning={"LK_WEB_CERT_RELOAD_SECS":0}'
+    expect_helm_failure "a certificate reload over a day" "LK_WEB_CERT_RELOAD_SECS" --set-json 'config.tuning={"LK_WEB_CERT_RELOAD_SECS":86401}'
+    expect_helm_failure "a reconcile interval of zero" "LK_WRITES_RECONCILE_SECS" --set-json 'config.tuning={"LK_WRITES_RECONCILE_SECS":0}'
+    expect_helm_failure "an expiry interval over a day" "LK_WRITES_EXPIRE_SECS" --set-json 'config.tuning={"LK_WRITES_EXPIRE_SECS":86401}'
+    expect_helm_failure "a pull-request interval over five minutes" "LK_WRITES_PR_JOBS_SECS" --set-json 'config.tuning={"LK_WRITES_PR_JOBS_SECS":301}'
+    expect_helm_failure "a cleanup interval under a minute" "LK_WRITES_CLEANUP_SECS" --set-json 'config.tuning={"LK_WRITES_CLEANUP_SECS":59}'
+    expect_helm_failure "a corpus cache under 16 MiB" "LK_CORPUS_CACHE_MIB" --set-json 'config.tuning={"LK_CORPUS_CACHE_MIB":15}'
+    expect_helm_failure "a corpus cache over 4 GiB" "LK_CORPUS_CACHE_MIB" --set-json 'config.tuning={"LK_CORPUS_CACHE_MIB":4097}'
+    expect_helm_failure "a base branch with a space" "LK_GIT_BASE_BRANCH" --set-json 'config.tuning={"LK_GIT_BASE_BRANCH":"a b"}'
+    expect_helm_failure "a base branch that climbs" "LK_GIT_BASE_BRANCH" --set-json 'config.tuning={"LK_GIT_BASE_BRANCH":"a/../b"}'
+    expect_helm_failure "a base branch Git would refuse (a .lock ref)" "LK_GIT_BASE_BRANCH" --set-json 'config.tuning={"LK_GIT_BASE_BRANCH":"main.lock"}'
+    expect_helm_failure "a config-server that is not a name" "LK_CONFIG_SERVER_DEPLOYMENT" --set-json 'config.tuning={"LK_CONFIG_SERVER_DEPLOYMENT":"Config Server"}'
+    expect_helm_failure "MCP in both modes" "LK_MCP_AUTH" --set-json 'config.tuning={"LK_MCP_AUTH":"oauth,personal_token"}'
+    expect_helm_failure "an MCP mode that does not exist" "LK_MCP_AUTH" --set-json 'config.tuning={"LK_MCP_AUTH":"basic"}'
+    expect_helm_failure "an MCP confirmation that does not exist" "LK_MCP_CONFIRM" --set-json 'config.tuning={"LK_MCP_CONFIRM":"never"}'
+    expect_helm_failure "an MCP content mode that does not exist" "LK_MCP_CONTENT" --set-json 'config.tuning={"LK_MCP_CONTENT":"everything"}'
+    expect_helm_failure "API audiences with a space" "LK_ENTRA_API_AUDIENCES" --set-json 'config.tuning={"LK_ENTRA_API_AUDIENCES":"api://x, y"}'
+    expect_helm_failure "OAuth with audiences that have no application ID URI" "LK_ENTRA_API_AUDIENCES" --set-json 'config.tuning={"LK_ENTRA_API_AUDIENCES":"22222222-2222-4222-8222-222222222222"}'
+
+    # 09/fix, T1: the grace period (45 s, the contract's) must outlast the hub's shutdown by 10 s.
+    expect_helm_failure "a drain that outlasts the grace period" "terminationGracePeriodSeconds" --set-json 'config.tuning={"LK_SHUTDOWN_DRAIN_SECS":40}'
+    expect_helm_failure "a wait for the load balancer that outlasts it" "terminationGracePeriodSeconds" --set-json 'config.tuning={"LK_SHUTDOWN_GRACE_SECS":31}'
+    expect_helm_failure "two waits that together outlast it" "terminationGracePeriodSeconds" --set-json 'config.tuning={"LK_SHUTDOWN_GRACE_SECS":20,"LK_SHUTDOWN_DRAIN_SECS":20}'
+    expect_helm_failure "a drain that is not a number" "LK_SHUTDOWN_DRAIN_SECS" --set-json 'config.tuning={"LK_SHUTDOWN_DRAIN_SECS":"long"}'
+    expect_helm_failure "a drain over the hub's limit" "LK_SHUTDOWN_DRAIN_SECS" --set-json 'config.tuning={"LK_SHUTDOWN_DRAIN_SECS":121}'
+}
+
+# accept_hub_variant NAME HELM_ARG...: the hub chart (prod values) with other values must still pass every check (kubeconform, the
+# policies and the variables of the contract), so that the checks above are not passing only because the chart has one shape. The output is
+# left in $work/variant.yaml.
+accept_hub_variant() {
+    local name="$1"
+    shift
+    local out="$work/variant.yaml" ok=1
+    if ! render hub prod "$@" >"$out" 2>"$work/variant.err"; then
+        fail "$name: the chart did not render: $(tail -n1 "$work/variant.err")"
+        return 0
+    fi
+    kubeconform "${schema_args[@]}" "$out" >/dev/null || { fail "$name: kubeconform refused it"; ok=0; }
+    check_policy "$out" hub prod >/dev/null 2>&1 || { fail "$name: the policies refused it"; ok=0; }
+    check_hub_variables "$out" >/dev/null 2>&1 || { fail "$name: the StatefulSet lacks a variable the hub requires"; ok=0; }
+    [ "$ok" = 1 ] && echo "  ok  $name"
+    return 0
+}
+
+hub_variants() {
+    echo "== the hub chart with other values still passes every check"
+    accept_hub_variant "the settings of 09/fix, E3"  --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":12,"LK_WEB_CERT_RELOAD_SECS":600,"LK_WRITES_RECONCILE_SECS":45,"LK_WRITES_EXPIRE_SECS":120,"LK_WRITES_PR_JOBS_SECS":10,"LK_WRITES_CLEANUP_SECS":7200,"LK_CORPUS_CACHE_MIB":512,"LK_GIT_BASE_BRANCH":"develop","LK_CONFIG_SERVER_DEPLOYMENT":"csp-configuration-server","LK_ENTRA_API_AUDIENCES":"api://22222222-2222-4222-8222-222222222222,22222222-2222-4222-8222-222222222222"}'
+    in_variant '^ +- name: LK_START_TIMEOUT_SECS$' "the settings of E3: the start timeout"
+    in_variant '^ +- name: LK_WRITES_CLEANUP_SECS$' "the settings of E3: the cleanup interval"
+    in_variant '^ +value: "develop"$' "the settings of E3: the base branch"
+    in_variant '^ +value: "api://22222222-2222-4222-8222-222222222222,22222222-2222-4222-8222-222222222222"$' "the settings of E3: the audiences"
+    accept_hub_variant "MCP in personal-token mode, with drafts and data blocks" --set-json 'config.tuning={"LK_MCP_AUTH":"personal_token","LK_MCP_CONFIRM":"draft","LK_MCP_CONTENT":"data_block"}'
+    in_variant '^ +value: "personal_token"$' "MCP in personal-token mode"
+    accept_hub_variant "audiences without an application ID URI, in personal-token mode" --set-json 'config.tuning={"LK_MCP_AUTH":"personal_token","LK_ENTRA_API_AUDIENCES":"22222222-2222-4222-8222-222222222222"}'
+    accept_hub_variant "the longest shutdown that the grace period allows" --set-json 'config.tuning={"LK_SHUTDOWN_GRACE_SECS":10,"LK_SHUTDOWN_DRAIN_SECS":25}'
+    in_variant '^ +terminationGracePeriodSeconds: 45$' "the longest shutdown that the grace period allows"
+    accept_hub_variant "a wait of zero for the load balancer" --set-json 'config.tuning={"LK_SHUTDOWN_GRACE_SECS":0}'
+    in_variant '^ +value: "0"$' "a wait of zero for the load balancer"
+    accept_hub_variant "two first administrators" --set-json 'config.bootstrapAdmins=["33333333-3333-4333-8333-333333333333","44444444-4444-4444-8444-444444444444"]'
+    in_variant '^ +value: "33333333-3333-4333-8333-333333333333,44444444-4444-4444-8444-444444444444"$' "two first administrators"
+    accept_hub_variant "two agent hosts" --set-json 'config.agentEndpointHosts=["agents.lanekeeper-prod.example.com","agents2.lanekeeper-prod.example.com"]'
+    in_variant '^ +value: "agents.lanekeeper-prod.example.com,agents2.lanekeeper-prod.example.com"$' "two agent hosts"
+    accept_hub_variant "other Secret Manager names" --set config.secretManager.webCert=my-web-cert --set config.secretManager.loginCookie=my_login_cookie
+    in_variant '^ +value: "my-web-cert"$' "other Secret Manager names"
+    accept_hub_variant "numbers of a million or more, and a fraction" --set-json 'config.tuning={"LK_BODY_MAX_BYTES":67108864,"LK_BUCKET_CAPACITY":10000000,"LK_IP_RATE_PER_SEC":0.5}'
+    in_variant '^ +value: "67108864"$' "numbers of a million or more are printed whole (Go prints 6.7108864e+07)"
+    in_variant '^ +value: "10000000"$' "numbers of a million or more are printed whole (Go prints 1e+07)"
+    in_variant '^ +value: "0.5"$' "a fraction"
+    accept_hub_variant "a collector" --set config.otlpEndpoint=http://otel-collector.monitoring.svc:4317
+    in_variant '^ +- name: LK_OTLP_ENDPOINT$' "a collector"
 }
 
 planted_all() {
     planted_kubeconform
     planted_templates
+    hub_variants
     planted_hardening
+    planted_hub_variables
     planted_agent_templates
     planted_agent
     agent_variants
@@ -1470,6 +1806,28 @@ data_all() {
     return "$status"
 }
 
+# The hub chart alone (09/fix), and nothing else: for working on the chart. It reports every failure and exits non-zero on any.
+hub_only() {
+    local status=0
+    combo_filter='^hub:'
+    lint || status=1
+    kubeconform_all || status=1
+    policy_all || status=1
+    contract_all || status=1
+    cross_chart || status=1
+    planted_templates
+    hub_variants
+    planted_hardening
+    planted_hub_variables
+    planted_cross
+    if [ "$failures" -ne 0 ]; then
+        echo "render.sh: $failures planted case(s) failed" >&2
+        status=1
+    fi
+    [ "$status" -eq 0 ] && echo "render.sh: the hub chart passes every check, and every planted case was refused for its own reason"
+    return "$status"
+}
+
 # The Argo CD files alone (09/T6), and nothing else. It reports every failure and exits non-zero on any.
 argocd_only() {
     local status=0
@@ -1500,9 +1858,16 @@ case "$mode" in
         argocd_policy_all || status=1
         exit "$status"
         ;;
-    contract) contract_all && cross_chart ;;
+    contract)
+        # Both run and both are reported: the agent's contract failing must not hide the charts disagreeing, as `&&` did.
+        status=0
+        contract_all || status=1
+        cross_chart || status=1
+        exit "$status"
+        ;;
     planted) planted_all ;;
     argocd) argocd_only ;;
+    hub) hub_only ;;
     all)
         status=0
         lint || status=1

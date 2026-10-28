@@ -148,6 +148,46 @@ test_headless_service_selects_other_pods if {
 	refused(planted, "selects")
 }
 
+# --- where the other replicas dial this one (crates/hub/HARDENING.md, README item 5; 09/fix, P1, P2)
+#
+# LK_REPLICA_ADDRESS is $(LK_REPLICA_NAME).<headless service>.<namespace>.svc:8445. The host is the DNS name on the replica certificate,
+# so it is the name the StatefulSet's own DNS makes: <pod>.<serviceName>.<namespace>.svc. Kubernetes expands $(NAME) only for variables
+# defined earlier in the same list, so the name comes first.
+
+env_c := "/spec/template/spec/containers/0/env/"
+
+test_deny_replica_address_in_the_contracts_example_service if {
+	planted := fixtures.sts_set(concat("", [env_c, "13/value"]), "$(LK_REPLICA_NAME).lanekeeper-hub.lanekeeper.svc:8445")
+	refused(planted, "LK_REPLICA_ADDRESS")
+}
+
+test_deny_replica_address_in_another_namespace if {
+	planted := fixtures.sts_set(concat("", [env_c, "13/value"]), "$(LK_REPLICA_NAME).lanekeeper-hub-replicas.other.svc:8445")
+	refused(planted, "LK_REPLICA_ADDRESS")
+}
+
+test_deny_replica_address_on_another_port if {
+	planted := fixtures.sts_set(concat("", [env_c, "13/value"]), "$(LK_REPLICA_NAME).lanekeeper-hub-replicas.lanekeeper.svc:8444")
+	refused(planted, "LK_REPLICA_ADDRESS")
+}
+
+test_deny_replica_address_with_a_fixed_pod if {
+	planted := fixtures.sts_set(concat("", [env_c, "13/value"]), "lanekeeper-hub-0.lanekeeper-hub-replicas.lanekeeper.svc:8445")
+	refused(planted, "LK_REPLICA_ADDRESS")
+}
+
+test_deny_replica_address_missing if {
+	refused(fixtures.sts_remove(concat("", [env_c, "13"])), "LK_REPLICA_ADDRESS")
+}
+
+# $(LK_REPLICA_NAME) in a variable defined before the name is not expanded: the address would be dialled literally.
+test_deny_replica_name_after_the_address if {
+	planted := fixtures.patch("StatefulSet", "lanekeeper-hub", [
+		{"op": "move", "from": concat("", [env_c, "12"]), "path": concat("", [env_c, "13"])},
+	])
+	refused(planted, "LK_REPLICA_NAME must be defined before LK_REPLICA_ADDRESS")
+}
+
 # --- the agent (09/T8; D74): its spool is a ReadWriteOnce volume that one agent writes, so the pod is replaced, never surged
 
 test_agent_recreate if {

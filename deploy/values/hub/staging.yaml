@@ -1,7 +1,9 @@
 # The hub in staging (09/T3). Every value that names something of ours is a documentation or example value until the question that
 # decides it is answered, and says which: the digest (plan 09 A29: images.yml prints it after the first publish), the project and
 # the Google service account (the GCP project is not named yet), the CMEK key (Q29), the agents' source ranges (Q1, Q2), the
-# host name, address and certificate (Q2). Documentation addresses only (RFC 5737); no real tenant or cluster data (rule 12).
+# host name, address and certificate (Q2), and the Entra app registration, the Cloud KMS keys, the audit bucket, the Git repositories
+# and the agents' host names (all EXAMPLE values below: whoever creates them replaces them). Documentation addresses only (RFC 5737); no
+# real tenant or cluster data (rule 12).
 image:
   repository: ghcr.io/hsetially/lanekeeper/hub
   # PLACEHOLDER, 64 zeros: it cannot be pulled, and the images policy warns about it. Replace with the published digest (A29).
@@ -9,6 +11,31 @@ image:
 
 serviceAccount:
   gcpServiceAccount: lanekeeper-hub@example-project.iam.gserviceaccount.com
+
+config:
+  # EXAMPLE project (the GCP project is not named yet): the one that holds the secrets and the keys.
+  gcpProject: example-project
+  # EXAMPLE GUIDs: the Entra tenant and the app registration (single tenant, S1). Whoever registers the app replaces them.
+  entra:
+    tenantId: 11111111-1111-4111-8111-111111111111
+    clientId: 22222222-2222-4222-8222-222222222222
+  # EXAMPLE keys (Q29: the key ring is not chosen yet). The two CAs are two keys (S5). The vault key has no version.
+  kms:
+    agentCa: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-agent-ca-staging/cryptoKeyVersions/1
+    replicaCa: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-replica-ca-staging/cryptoKeyVersions/1
+    auditCheckpoint: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-audit-checkpoint-staging/cryptoKeyVersions/1
+    vault: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/lanekeeper-vault-staging
+  # The bucket that charts/gcp makes (buckets.auditCheckpoint.name in deploy/values/gcp/staging.yaml): deploy/tests/render.sh contract checks it.
+  auditCheckpointBucket: example-project-lanekeeper-audit-staging
+  # EXAMPLE host name of the agents' load balancer (Q1): the host of hub.endpoint in deploy/values/agent/*.yaml, which render.sh contract checks.
+  agentEndpointHosts:
+    - agents.lanekeeper-staging.example.com
+  # EXAMPLE repositories (D8).
+  git:
+    baseUrl: https://github.com/example-org/configuration-base-saas.git
+    tenantUrl: https://github.com/example-org/csp-tenant-data.git
+    baseRepo: example-org/configuration-base-saas
+    tenantRepo: example-org/csp-tenant-data
 
 storage:
   size: 50Gi

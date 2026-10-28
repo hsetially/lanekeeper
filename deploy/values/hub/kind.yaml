@@ -1,5 +1,8 @@
 # The hub in kind (the kind job of images.yml, plan 09 T5). No GKE: no Gateway, no load balancer, no FQDN policy, one zone.
-# Documentation addresses only (RFC 5737).
+# Documentation addresses only (RFC 5737). Every setting the hub requires is here with an obviously synthetic value that PARSES: the
+# release hub reads them all at start (exit 2 for one that is missing or malformed), and in kind it then stops at its first call to Google
+# (exit 1), because there is no Secret Manager, KMS or Entra here and the release binary has no fake (prompt 18, G23). Nothing here names
+# anything real (rule 12).
 image:
   repository: ghcr.io/hsetially/lanekeeper/hub
   # The kind job builds the image and passes the digest it loaded: --set image.digest=sha256:...
@@ -10,6 +13,23 @@ serviceAccount:
 
 config:
   trustedProxyHops: 0
+  gcpProject: example-project
+  entra:
+    tenantId: 11111111-1111-4111-8111-111111111111
+    clientId: 22222222-2222-4222-8222-222222222222
+  kms:
+    agentCa: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/agent-ca/cryptoKeyVersions/1
+    replicaCa: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/replica-ca/cryptoKeyVersions/1
+    auditCheckpoint: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/audit-checkpoint/cryptoKeyVersions/1
+    vault: projects/example-project/locations/example-location/keyRings/lanekeeper/cryptoKeys/vault
+  auditCheckpointBucket: example-project-lanekeeper-audit-kind
+  agentEndpointHosts:
+    - agents.lanekeeper-kind.example.com
+  git:
+    baseUrl: https://github.com/example-org/configuration-base-saas.git
+    tenantUrl: https://github.com/example-org/csp-tenant-data.git
+    baseRepo: example-org/configuration-base-saas
+    tenantRepo: example-org/csp-tenant-data
 
 topology:
   mode: kind
@@ -29,3 +49,5 @@ agentLoadBalancer:
 
 gateway:
   enabled: false
+  # The name LK_PUBLIC_ORIGIN and LK_HUB_AUDIENCE are made from. There is no Gateway to serve it in kind; the hub still requires it.
+  hostname: lanekeeper-kind.example.com

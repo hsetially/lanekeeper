@@ -1066,7 +1066,7 @@ contract-check: (ops-tools-check "helm") images-tools-check
     deploy/tests/contract-extract.sh --self-test
     deploy/tests/render.sh contract
 
-# The charts name only variables that the binaries read (crates/hub/src/config.rs, crates/agent/src/config.rs), and the tool that
+# The charts name only variables that the binaries read (crates/hub/src/config.rs and config/*.rs, crates/agent/src/config.rs), and the tool that
 # finds them is shown to refuse a typo.
 env-names-test:
     deploy/tests/env-names.sh --self-test

@@ -205,6 +205,100 @@ probes_ok(c) if {
 	probe_port(c, "readinessProbe") == "ops"
 }
 
+# --- what the hub's environment may hold (crates/hub/HARDENING.md, README items 5, 7 and 9; 09/fix) ----------------------------------------
+#
+# The pod contract allows one reference in the environment: the replica's name, from the downward API, as exactly
+# `fieldRef: {fieldPath: metadata.name}` on exactly LK_REPLICA_NAME (crates/hub/tests/hardening.rs holds the Pod block to it). The
+# StatefulSet and the Jobs of the hub's image are held to the same: a `configMapKeyRef`, a `resourceFieldRef`, a fieldRef on another
+# variable or to another field is a secret or a setting that is not the pod's.
+
+hub_workload_containers := [{"doc": d, "container": c} |
+	some d in lk.hub_workloads
+	some c in lk.all_containers(lk.pod_spec(d))
+]
+
+own_name(e) if {
+	e.name == "LK_REPLICA_NAME"
+	e.valueFrom == {"fieldRef": {"fieldPath": "metadata.name"}}
+}
+
+deny contains msg if {
+	some x in hub_workload_containers
+	some e in object.get(x.container, "env", [])
+	"valueFrom" in object.keys(e)
+	not own_name(e)
+	msg := sprintf("%s, container %s: %s takes its value from a valueFrom reference; the only one the contract allows is LK_REPLICA_NAME from fieldRef metadata.name, exactly (HARDENING.md)", [lk.who(x.doc), x.container.name, e.name])
+}
+
+# Every replica has its own name. A fixed one would give three replicas one identity (the certificate's, the leases', agent_connections').
+deny contains msg if {
+	some sts in lk.hub_statefulsets
+	some c in sts.spec.template.spec.containers
+	not replica_name_from_pod(c)
+	msg := sprintf("%s, container %s: LK_REPLICA_NAME must come from the pod's own name (fieldRef metadata.name), so that each replica has its own (HARDENING.md)", [lk.who(sts), c.name])
+}
+
+replica_name_from_pod(c) if {
+	some e in object.get(c, "env", [])
+	own_name(e)
+}
+
+# The Jobs' variables are the Jobs' alone: the migrator's credential must never be in a pod that faces users, and the seed's timeout
+# is not the hub's (README item 5, HARDENING.md "The migration Job" and "The seed Job").
+job_only_variables := {"LK_MIGRATOR_URL_FILE", "LK_MIGRATE_TIMEOUT_SECS", "LK_SEED_TIMEOUT_SECS"}
+
+deny contains msg if {
+	some sts in lk.hub_statefulsets
+	some c in sts.spec.template.spec.containers
+	some e in object.get(c, "env", [])
+	e.name in job_only_variables
+	msg := sprintf("%s, container %s: %s is a variable of the Jobs; the serving hub does not carry it (HARDENING.md)", [lk.who(sts), c.name, e.name])
+}
+
+# The users' name and Google's: LK_PUBLIC_ORIGIN is the origin a request may name in Origin and the host Entra sends the browser back
+# to; LK_HUB_AUDIENCE is what agents ask Google for a token for. The chart derives both from gateway.hostname, so they cannot diverge, and
+# the Gateway serves the same name.
+deny contains msg if {
+	some sts in lk.hub_statefulsets
+	some c in sts.spec.template.spec.containers
+	lk.env_value(c, "LK_PUBLIC_ORIGIN") != lk.env_value(c, "LK_HUB_AUDIENCE")
+	msg := sprintf("%s, container %s: LK_PUBLIC_ORIGIN and LK_HUB_AUDIENCE must be one name, https://<the hub's host name> (README item 9)", [lk.who(sts), c.name])
+}
+
+deny contains msg if {
+	some sts in lk.hub_statefulsets
+	some c in sts.spec.template.spec.containers
+	origin := lk.env_value(c, "LK_PUBLIC_ORIGIN")
+	not regex.match(`^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`, origin)
+	msg := sprintf("%s, container %s: LK_PUBLIC_ORIGIN must be https://<host> in lower case, with no port, path or credential (HARDENING.md)", [lk.who(sts), c.name])
+}
+
+deny contains msg if {
+	some sts in lk.hub_statefulsets
+	some c in sts.spec.template.spec.containers
+	origin := lk.env_value(c, "LK_PUBLIC_ORIGIN")
+	some g in lk.of_kind("Gateway")
+	some l in object.get(g.spec, "listeners", [])
+	origin != concat("", ["https://", l.hostname])
+	msg := sprintf("%s: the Gateway serves %q and LK_PUBLIC_ORIGIN is %q; the users type the name the Gateway serves, and the hub checks Host and Origin against LK_PUBLIC_ORIGIN (README item 9)", [lk.who(g), l.hostname, origin])
+}
+
+# The kubelet stops a hub that is still draining when terminationGracePeriodSeconds runs out. The hub fails /readyz, waits
+# LK_SHUTDOWN_GRACE_SECS, drains for LK_SHUTDOWN_DRAIN_SECS and exits; the period must be longer than the two by 10 s
+# (crates/hub/tests/hardening.rs holds the Pod block to the same sum). The defaults are the hub's: 5 and 25.
+env_seconds(c, name, fallback) := to_number(lk.env_value(c, name))
+
+env_seconds(c, name, fallback) := fallback if not lk.env_value(c, name)
+
+deny contains msg if {
+	some sts in lk.hub_statefulsets
+	some c in sts.spec.template.spec.containers
+	need := (env_seconds(c, "LK_SHUTDOWN_GRACE_SECS", 5) + env_seconds(c, "LK_SHUTDOWN_DRAIN_SECS", 25)) + 10
+	got := object.get(sts.spec.template.spec, "terminationGracePeriodSeconds", 30)
+	got < need
+	msg := sprintf("%s: terminationGracePeriodSeconds is %v and the hub needs %v (LK_SHUTDOWN_GRACE_SECS + LK_SHUTDOWN_DRAIN_SECS + 10); the kubelet would kill a hub that is still draining (README item 5)", [lk.who(sts), got, need])
+}
+
 # --- the agent's own contract (crates/agent/HARDENING.md; 09/T4) ----------------------------------------------------------------
 #
 # One replica, its own service account (the Roles are bound to it), one port (ops 9090), the probes of the contract, volumes from

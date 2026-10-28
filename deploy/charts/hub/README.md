@@ -19,11 +19,52 @@ The chart refuses to render (`helm template` stops) without an image digest, a G
 ranges, and, for the Gateway, a host name, an address name and exactly one certificate. `values.schema.json` refuses unknown
 values, a tunable the hub does not have, and a CA Secret that is not CloudNativePG's.
 
+## The hub's settings
+
+The hub exits 2 and starts nothing unless 25 variables are set and valid (`REQUIRED_VARIABLES` in `crates/hub/tests/hardening.rs`; the
+contract is `crates/hub/HARDENING.md` and the checklist is the last section of `crates/hub/README.md`). The chart renders all of them, and
+`deploy/tests/render.sh contract` reads that list from the test and shows each one in the rendered StatefulSet. Nothing is a secret: a
+Secret Manager entry is the NAME of a secret, a KMS entry is a resource name, and the database URL is a mounted file (S7).
+
+| Value | Variable | Default |
+|---|---|---|
+| `gateway.hostname` | `LK_PUBLIC_ORIGIN` and `LK_HUB_AUDIENCE`, both `https://<hostname>` | none, required (also where the Gateway is off) |
+| `config.gcpProject` | `LK_GCP_PROJECT` | none, required |
+| `config.entra.tenantId`, `config.entra.clientId` | `LK_ENTRA_TENANT_ID`, `LK_ENTRA_CLIENT_ID` | none, required (GUIDs) |
+| `config.kms.agentCa`, `config.kms.replicaCa` | `LK_AGENT_CA_KMS_REF`, `LK_REPLICA_CA_KMS_REF` | none, required: key *versions*, two different keys (S5) |
+| `config.kms.auditCheckpoint` | `LK_AUDIT_CHECKPOINT_KMS_REF` | none, required: a key version |
+| `config.kms.vault` | `LK_VAULT_KMS_REF` | none, required: a crypto key *without* a version |
+| `config.auditCheckpointBucket` | `LK_AUDIT_CHECKPOINT_BUCKET` | none, required: the bucket `charts/gcp` makes (`render.sh contract` compares them) |
+| `config.agentEndpointHosts` | `LK_AGENT_ENDPOINT_HOSTS` | none, required: the host of `hub.endpoint` of every agent values file is one of them (`render.sh contract`) |
+| `config.git.*` | `LK_GIT_BASE_URL`, `LK_GIT_TENANT_URL`, `LK_GIT_BASE_REPO`, `LK_GIT_TENANT_REPO` | none, required |
+| `config.secretManager.*` | `LK_WEB_CERT_REF`, `LK_WEB_KEY_REF`, `LK_AGENT_CA_CERT_REF`, `LK_REPLICA_CA_CERT_REF`, `LK_ENTRA_CLIENT_AUTH_REF`, `LK_ENTRA_COOKIE_KEY_REF` | `lanekeeper-web-cert`, `lanekeeper-web-key`, `lanekeeper-agent-ca-cert`, `lanekeeper-replica-ca-cert`, `lanekeeper-entra-client`, `lanekeeper-login-cookie`; the two CA certificates must differ |
+| `config.bootstrapAdmins` | `LK_BOOTSTRAP_ADMINS` | none (optional): Entra object ids; remove them once real administrators exist |
+| (the pod itself) | `LK_REPLICA_NAME` from the downward API (`metadata.name`), then `LK_REPLICA_ADDRESS` = `$(LK_REPLICA_NAME).lanekeeper-hub-replicas.<namespace>.svc:8445` | the one `valueFrom` the contract allows; it must come first, because Kubernetes expands `$(NAME)` only for variables defined earlier |
+
+`config.tuning` takes the optional settings, by variable name, within the ranges the hub accepts: the limits and timeouts of the hub, the
+write paths' intervals (`LK_WRITES_*_SECS`), `LK_START_TIMEOUT_SECS`, `LK_WEB_CERT_RELOAD_SECS`, `LK_CORPUS_CACHE_MIB`, `LK_GIT_BASE_BRANCH`,
+`LK_CONFIG_SERVER_DEPLOYMENT`, `LK_ENTRA_API_AUDIENCES` and the three MCP switches (`LK_MCP_AUTH`, `LK_MCP_CONFIRM`, `LK_MCP_CONTENT`).
+Not settable on purpose, because the hub's defaults are the safe state and a change is a decision of a person: `LK_MCP_NOTIFY_SERVICES`
+(it reaches the config-server's unauthenticated `/update-resources`, Q37), `LK_RETENTION_ENABLED` and `LK_RETENTION_DRY_RUN` (they delete
+blobs, D116, D118), `LK_EXTRA_DENY_GLOBS`, `LK_TEAMS_ALLOWED_HOSTS`, `LK_GITHUB_API_BASE`, `LK_ENTRA_AUTHORITY_HOST` (each of the hosts
+would need the FQDN egress policy to name it too, gap N1), `LK_ENTRA_REDIRECT_PATH` and `LK_AUDIT_CHECKPOINT_VERIFY_KMS_REFS`.
+
+`terminationGracePeriodSeconds` is 45, the contract's number. The chart refuses a `LK_SHUTDOWN_GRACE_SECS` and `LK_SHUTDOWN_DRAIN_SECS` whose sum
+plus 10 s is more than that (the hub's defaults, 5 and 25, are used for the one that is not set).
+
+**Made outside the chart** (the chart creates none of it; `crates/hub/README.md` items 2 to 4 are the checklist): the Secret Manager
+secrets of the table and their first versions, `write-preview-key` (the hub does not start without it), `github-read-token` and
+`github-webhook-secret`; with `LK_MCP_AUTH=personal_token` also `mcp-token-hmac-key` (at least 32 random bytes as base64url; the hub does not
+start in that mode without it); the KMS keys and their roles for the hub's Google service account; the CA certificates, made once with
+`hub ca-init`; the Entra app registration.
+
 ## Values files
 
 `deploy/values/hub/{kind,staging,prod}.yaml`. They hold documentation addresses and example names until Q1, Q2, Q29 and the
 GCP project are answered (rule 12), and the image digest is a placeholder of 64 zeros until the first image is published
-(plan 09 A29): it cannot be pulled, and the images policy warns about it.
+(plan 09 A29): it cannot be pulled, and the images policy warns about it. The Entra GUIDs, the KMS keys, the audit bucket, the Git
+repositories and the agents' host names are EXAMPLE values too; kind's are obviously synthetic and parse, so that the release hub, which
+cannot reach Google in kind, stops at its first call to Google (exit 1) and not at a setting (exit 2).
 
 ## Checks
 

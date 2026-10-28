@@ -69,7 +69,9 @@ deny contains msg if {
 # --- start-up -----------------------------------------------------------------------------------------------------------
 
 # A pod that is restarted while it is still starting never starts, so the startup probe must allow at least the budgeted time.
-# It asks /healthz, which does not depend on the database: a database outage must not look like a failed start.
+# It asks /healthz. The hub binds the operations socket first but answers on it only after the database, the schema, the web certificate and
+# both CAs have loaded (crates/hub/src/process.rs), so a start that cannot reach one of them exits 1 and restarts; the startup probe is what
+# keeps the liveness probe from judging a start that has not finished.
 deny contains msg if {
 	some x in hub_containers
 	not x.container.startupProbe

@@ -16,20 +16,65 @@ serviceAccount:
   # and Cloud Trace are reached with it.
   gcpServiceAccount: ""
 
-# Settings for the hub; only variables that crates/hub/src/config.rs reads (deploy/tests/env-names.sh checks that).
+# Settings for the hub; only variables that the hub reads (crates/hub/src/config.rs and crates/hub/src/config/*.rs; deploy/tests/env-names.sh
+# checks that). The hub exits 2 and starts nothing without 25 of them (REQUIRED_VARIABLES in crates/hub/tests/hardening.rs), so the chart
+# refuses to render without the ones that have no usable default, and says which. Nothing here is a secret: the Secret Manager entries are
+# the NAMES of secrets, the keys are Cloud KMS resource names, and the hub asks Google for the rest at run time (S7).
 config:
   # How many proxies sit in front of the hub. 2 behind Google's external HTTPS load balancer (HARDENING.md); 0 where nothing is.
   trustedProxyHops: 2
   # The OpenTelemetry collector (OTLP/gRPC). Empty: no collector is deployed and the hub exports nothing (plan 09 A30).
   otlpEndpoint: ""
-  # The Git repositories (D8): all four or none.
+  # The Google project of the Secret Manager secrets and the Cloud KMS keys (LK_GCP_PROJECT). Required.
+  gcpProject: ""
+  # The Entra app registration that users sign in through (single tenant, S1): two GUIDs. Required.
+  entra:
+    tenantId: ""
+    clientId: ""
+  # Cloud KMS resource names (LK_AGENT_CA_KMS_REF, LK_REPLICA_CA_KMS_REF, LK_AUDIT_CHECKPOINT_KMS_REF, LK_VAULT_KMS_REF). Required.
+  # The three signing keys are key VERSIONS (projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N, EC_SIGN_P256_SHA256);
+  # the two CAs must be two different keys, or an agent's certificate would be a replica's (S5). The vault key is a crypto key WITHOUT a
+  # version (symmetric): KMS picks the version, so a key can be rotated without a change here.
+  kms:
+    agentCa: ""
+    replicaCa: ""
+    auditCheckpoint: ""
+    vault: ""
+  # The Cloud Storage bucket, with a retention lock, that takes the audit checkpoints (LK_AUDIT_CHECKPOINT_BUCKET). Required; it is the
+  # bucket that the gcp chart makes (buckets.auditCheckpoint.name), which deploy/tests/render.sh contract checks.
+  auditCheckpointBucket: ""
+  # The DNS names the agents reach the agent endpoint by (LK_AGENT_ENDPOINT_HOSTS): at most 8, lower case. They go on the agent
+  # listener's certificate, which the agents verify, so the host of hub.endpoint of every agent values file is one of them. Required.
+  agentEndpointHosts: []
+  # Entra object ids of the first administrators (LK_BOOTSTRAP_ADMINS): they become active admins at their first sign-in, and everyone
+  # else starts pending (S1). Remove them once real administrators exist.
+  bootstrapAdmins: []
+  # The NAMES of the Secret Manager secrets the hub reads at start. The hub's Google account needs roles/secretmanager.secretAccessor on
+  # each, and the secrets need a first version: the chart creates neither. The two CA certificates must be two secrets.
+  secretManager:
+    webCert: lanekeeper-web-cert
+    webKey: lanekeeper-web-key
+    agentCaCert: lanekeeper-agent-ca-cert
+    replicaCaCert: lanekeeper-replica-ca-cert
+    entraClient: lanekeeper-entra-client
+    loginCookie: lanekeeper-login-cookie
+  # The Git repositories (D8): all four. Required.
   git:
     baseUrl: ""
     tenantUrl: ""
     baseRepo: ""
     tenantRepo: ""
-  # Other LK_* tunables, by variable name. The schema allows exactly the tunables the hub has; the addresses, paths and secrets
-  # are the chart's.
+  # Other LK_* tunables, by variable name. The schema allows exactly the tunables the hub has that a deployment may need, within the
+  # ranges the hub accepts; the addresses, paths, files and secrets are the chart's. Not settable on purpose (the hub's defaults are the
+  # safe state, and a change is a decision of a person, in docs/decisions.md): LK_MCP_NOTIFY_SERVICES (it reaches the config-server's
+  # unauthenticated /update-resources, Q37), LK_RETENTION_ENABLED and LK_RETENTION_DRY_RUN (they delete blobs, D116, D118),
+  # LK_EXTRA_DENY_GLOBS, LK_TEAMS_ALLOWED_HOSTS, LK_GITHUB_API_BASE and LK_ENTRA_AUTHORITY_HOST (each needs the FQDN egress policy to name
+  # the new host too), LK_ENTRA_REDIRECT_PATH and LK_AUDIT_CHECKPOINT_VERIFY_KMS_REFS.
+  # LK_MCP_AUTH=personal_token also needs the Secret Manager secret mcp-token-hmac-key (at least 32 random bytes as base64url) and the
+  # hub's account needs roles/secretmanager.secretAccessor on it: the hub does not start in that mode without it. The chart does not
+  # create it.
+  # LK_SHUTDOWN_GRACE_SECS + LK_SHUTDOWN_DRAIN_SECS + 10 must not exceed the pod's terminationGracePeriodSeconds, 45: the chart refuses
+  # to render otherwise.
   tuning: {}
 
 database:
