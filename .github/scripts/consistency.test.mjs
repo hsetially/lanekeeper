@@ -97,7 +97,11 @@ test('every tool image of tools.env is pinned by digest', () => {
 // left on device": the debug build of the workspace and the Postgres containers with large seeded tables share the runner's root
 // disk. The job that ran those tests moved from ci.yml to rust.yml and lost the two steps that PR added, so a job that does the same
 // kind of work must carry them: remove what the job never uses before the first heavy step, and print `df` at the end even on failure.
-const HEAVY = /cargo test --workspace|cargo bench --workspace|reproducible-check\.sh|just kind-e2e/;
+//
+// The fuzz jobs run `just "$RECIPE"` for a recipe of their matrix, and the largest of them, hub-fuzz, builds the whole hub next to the
+// nightly toolchain and cargo-fuzz (09 review round 2, NB-5: the check did not see them, so the steps could have been removed with no
+// failing test). So a job that runs a recipe from its matrix is heavy as well.
+const HEAVY = /cargo test --workspace|cargo bench --workspace|reproducible-check\.sh|just kind-e2e|just (?:[A-Za-z_]+=\S+ )*"\$RECIPE"/;
 const FREE_STEP = /^ +- name: Free disk space\n(?: +if: .*\n)? +run: \|\n +df -h \/\n +(sudo rm -rf [^\n]+)\n +df -h \/\n/m;
 
 /** The jobs of a workflow as [{ name, text }], from the `jobs:` block (job keys sit at two spaces). */
@@ -110,10 +114,12 @@ function jobsOf(text) {
   return jobs;
 }
 
-test('a job that runs the workspace tests, the benchmarks or the reproducible image build frees disk first and prints what is left', () => {
-  let heavy = 0;
+/** What is wrong with the heavy jobs of a list of workflows ([{ name, text }]), how many there are, and the paths their steps remove. */
+function heavyJobProblems(list) {
+  const problems = [];
   const removals = new Set();
-  for (const { name: file, text } of workflows) {
+  let heavy = 0;
+  for (const { name: file, text } of list) {
     for (const j of jobsOf(text)) {
       const job = { name: j.name, text: j.text.replace(/^ *#.*\n/gm, '') }; // a comment that names a command is not a step
       const first = job.text.search(HEAVY);
@@ -121,15 +127,70 @@ test('a job that runs the workspace tests, the benchmarks or the reproducible im
       heavy += 1;
       const where = `${file} job ${job.name}`;
       const free = FREE_STEP.exec(job.text);
-      assert.ok(free, `${where} has no "Free disk space" step (df, sudo rm -rf of the unused toolchains, df) before its heavy step`);
-      assert.ok(free.index < first, `${where}: the "Free disk space" step comes after the first heavy step`);
-      removals.add(free[1]);
-      assert.match(job.text, /^ +- name: Disk left\n +if: always\(\)\n +run: df -h \/\n/m, `${where} has no "Disk left" step with if: always()`);
+      if (!free) {
+        problems.push(`${where} has no "Free disk space" step (df, sudo rm -rf of the unused toolchains, df) before its heavy step`);
+      } else {
+        if (free.index > first) problems.push(`${where}: the "Free disk space" step comes after the first heavy step`);
+        removals.add(free[1]);
+      }
+      if (!/^ +- name: Disk left\n +if: always\(\)\n +run: df -h \/\n/m.test(job.text)) problems.push(`${where} has no "Disk left" step with if: always()`);
     }
   }
-  assert.ok(heavy >= 5, `only ${heavy} heavy jobs were found (rust test, images image, images kind-e2e, bench, nightly bench): the check is not reading the workflows`);
+  return { problems, heavy, removals };
+}
+
+test('a job that runs the workspace tests, the benchmarks, the reproducible image build or a fuzz recipe frees disk first and prints what is left', () => {
+  const { problems, heavy, removals } = heavyJobProblems(workflows);
+  assert.deepEqual(problems, []);
+  assert.ok(heavy >= 7, `only ${heavy} heavy jobs were found (rust test, rust fuzz, nightly fuzz, images image, images kind-e2e, bench, nightly bench): the check is not reading the workflows`);
   assert.equal(removals.size, 1, `the jobs remove different paths, so the copies of the step have drifted apart: ${[...removals].join(' | ')}`);
 });
+
+test('the fuzz jobs of rust.yml and nightly.yml are heavy jobs to the disk check (they run a recipe of their matrix)', () => {
+  assert.ok(HEAVY.test('        run: just "$RECIPE"'), 'rust.yml runs the recipe as just "$RECIPE"');
+  assert.ok(HEAVY.test('        run: just fuzz_seconds=600 "$RECIPE"'), 'nightly.yml runs the recipe as just fuzz_seconds=600 "$RECIPE"');
+  for (const file of ['rust.yml', 'nightly.yml']) {
+    const text = workflows.find((w) => w.name === file).text;
+    const fuzz = jobsOf(text).find((j) => j.name === 'fuzz');
+    assert.ok(fuzz, `${file} has no job fuzz`);
+    assert.ok(HEAVY.test(fuzz.text), `${file}: the fuzz job is not a heavy job to the disk check`);
+  }
+});
+
+// The disk check must fail when a step goes. Each mutant changes a copy of the real workflow in memory the way a careless edit would.
+/** `text` with `change` applied to the text of the job `jobName` only. */
+function inJob(text, jobName, change) {
+  const start = text.search(new RegExp(`^ {2}${jobName}:\\s*$`, 'm'));
+  assert.ok(start >= 0, `no job ${jobName}`);
+  const next = text.slice(start + 1).search(/^ {2}[A-Za-z0-9_-]+:\s*$/m);
+  const end = next < 0 ? text.length : start + 1 + next;
+  const out = text.slice(0, start) + change(text.slice(start, end)) + text.slice(end);
+  assert.notEqual(out, text, `the mutant of ${jobName} changed nothing`);
+  return out;
+}
+
+const withWorkflow = (file, mutate) => workflows.map((w) => (w.name === file ? { name: w.name, text: mutate(w.text) } : w));
+
+const DISK_MUTANTS = [
+  ['rust.yml', 'fuzz', 'a fuzz job without its "Free disk space" step', (t) => t.replace(FREE_STEP, ''), /rust\.yml job fuzz has no "Free disk space" step/],
+  ['nightly.yml', 'fuzz', 'a nightly fuzz job without its "Free disk space" step', (t) => t.replace(FREE_STEP, ''), /nightly\.yml job fuzz has no "Free disk space" step/],
+  ['rust.yml', 'fuzz', 'a fuzz job that frees disk after it fuzzes', (t) => {
+    const free = FREE_STEP.exec(t);
+    assert.ok(free);
+    return t.replace(free[0], '').replace(/(^ +- name: Fuzz\n(?: +.*\n)+?)( +- name: Disk left)/m, `$1${free[0]}$2`);
+  }, /rust\.yml job fuzz: the "Free disk space" step comes after the first heavy step/],
+  ['nightly.yml', 'fuzz', 'a nightly fuzz job that does not print the disk left', (t) => t.replace(/^ +- name: Disk left\n +if: always\(\)\n +run: df -h \/\n/m, ''), /nightly\.yml job fuzz has no "Disk left" step/],
+  ['rust.yml', 'fuzz', 'a fuzz job whose "Disk left" step does not run on failure', (t) => t.replace(/(- name: Disk left\n) +if: always\(\)\n/, '$1'), /rust\.yml job fuzz has no "Disk left" step/],
+  ['rust.yml', 'test', 'the test job without its "Free disk space" step', (t) => t.replace(FREE_STEP, ''), /rust\.yml job test has no "Free disk space" step/],
+];
+
+for (const [file, job, what, change, expected] of DISK_MUTANTS) {
+  test(`the disk check fails for ${what}`, () => {
+    const mutated = withWorkflow(file, (text) => inJob(text, job, change));
+    const { problems } = heavyJobProblems(mutated);
+    assert.ok(problems.some((p) => expected.test(p)), `the disk check did not notice ${what}: ${JSON.stringify(problems)}`);
+  });
+}
 
 // The kind end-to-end test (09 acceptance 3) names what it installs in deploy/tests/kind/pins.env, so a person can read every pin in
 // one place. Each is a version and a digest or a hash, read from the registry or the release and never guessed (S19).
