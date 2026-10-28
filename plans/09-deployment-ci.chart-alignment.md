@@ -687,3 +687,27 @@ Each finding was checked against the code first; all eight were real and none wa
 ### Left for a person
 
 Residuals 37 and 38 are new and a person's: keep every seed ConfigMap (and decide whether to make them `immutable: true` by a manifest), review each change of `seed.revision` for a reused number, and look at the new seed Job after each sync. The `ca-init` pods' network is not limited and no policy for them is given (what it should allow is not verified). The ranges in the hub chart's schema are copied from the hub's code and nothing compares them. The items of round 1 still stand: HSM in prod is `kms.rego`'s reading of S5 and is in no decision; a start timeout above 8 needs a wider startup window (a contract change); the 768 MiB cache default and the six start steps are read from the hub and not measured; Argo CD's hooks and `Prune=false`, and Config Connector with HSM keys, are never observed; `hub-fuzz` on the new head has not run; and the items in "Needs a human before merge" in `plans/09-deployment-ci.pr.md`.
+
+## Status (written after review round 3: the FIX step after the third independent review, APPROVE at `a387842`)
+
+The verdict was **APPROVE**: no blocking finding and five non-blocking items (NB-1 to NB-5); its item 6 (housekeeping) was not asked for, and the orchestrator declined NB-4(a) (a mechanical check that a seed revision only rises). Each item was checked against the code first; all five were real and none was rejected. Every rule and test was written first and seen red, and each new Rego rule was removed from a copy to show it can fail.
+
+### Closed
+
+| Finding | Commit | How it is shown |
+|---|---|---|
+| NB-1 `kms.rego` held a replica's `location` only as non-empty and no key under `replication`, `userManaged`, `replicas[]`, `customerManagedEncryption` or `kmsKeyRef` (`location: hunter2`, a `note`, and `replicas: hunter2` passed all ten namespaces); the header and the S7 text overclaimed | `97627fa` | a replica's location is the key ring's; an allowlist of keys at each of the five levels; a level that is not a mapping, or `replicas` that is not a list, is refused; the header lists what is held and what is not; 22 Rego tests (17 red first), 8 planted cases; the reviewer's script refuses all 29 of its changed cases; removing a new rule fails 2 to 7 tests |
+| NB-2 two rules (`helm.sh/chart` and the project annotation, for a value that is not text) were held by no test; "six value rules, each 1 to 4 failures" was wrong | `f5305c1` | 4 Rego tests and 2 planted cases; the block has nine deny rules, and removing each fails 4, 2, 5, 2, 1, 1, 1, 3 and 1 tests (before: 4, 0, 2, 0, 1, 1, 1, 3, 1) |
+| NB-3 the guide's rules `ca-binding`, `secret-print` and `secret-file` were narrower than the threat model's words | `9da2173` | a signing role is bound on a key or a service account only; a secret read goes into `"$dir/..."` of a `mktemp -d` directory of the same block, to `read`, or to a command that does not show it; a later command that shows the file fails; 14 mutants (all passed before) and one test that the safe forms stay accepted; the words in the threat model and the evidence are narrowed to the forms checked |
+| NB-4(b) a failed seed Job is not re-created by a sync, and the guide did not say what to do | `fd16362` | 17.3 "If the seed Job failed" (a new ConfigMap named with N+1, `seed.revision` N+1, never reuse N), a pointer from 12.7, the rule `seed-failed` and four mutants; NB-4(a) declined |
+| NB-5 `chart_label_pattern` took digits of any length and refused a prerelease; a second ring would make the secret rules compare with the wrong one | `38fc292` | 1 to 4 digits and `-alpha.N`, `-beta.N`, `-rc.N`; the policy requires exactly one `KMSKeyRing` where there are keys or secrets; 6 Rego tests (4 red first), 3 planted cases |
+
+### Checks at this HEAD (every command ran on the tree at `fd16362`; the commits after it change `docs/threat-model.md` and `plans/` only)
+
+`conftest verify --policy deploy/policy`: 1396 of 1396 (1364 before). `node --test .github/scripts/*.test.mjs`: 242 of 242 (223 before; `install-guide.test.mjs` 61, `consistency.test.mjs` 17). `render.sh lint`, `contract`, `data` (307 cases), `argocd` (67 cases): exit 0.
+`render.sh render` and `policy`: exit 1 for the gcp chart with staging and prod values only (B5). `render.sh planted`: exit 1 for the one counted Cloud Armor group (B5), 860 cases ok (847 before), no `PLANTED FAILED` line. `just ci-lint`: exit 0. `node deploy/schemas/verify.mjs`: exit 0 (38 files equal the lock).
+The two hub tests (`hardening` 7 of 7, `justfile_gate` 8 of 8) were not re-run: no Rust file and not `HARDENING.md` changed since `a387842`.
+
+### Left for a person
+
+Nothing new. The rules of the guide's test that read a secret and a signing role read named forms, and the header of `install-guide.test.mjs` lists what they do not see (a second CA key under another name, a grant built in a variable or a file, a secret kept in a shell variable and shown later, a command in prose). That Argo CD leaves a failed seed Job alone and how it reports one is not verified. The items of rounds 1 and 2 still stand (see the sections above and "Needs a human before merge" in `plans/09-deployment-ci.pr.md`). No fourth review has run on the round 3 commits.
