@@ -2273,7 +2273,25 @@ planted_templates() {
     expect_helm_failure "a start timeout one second over what six steps allow" "outlasts the startup probe" --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":9}'
     expect_helm_failure "a corpus cache the memory limit cannot hold" "memory limit" --set-json 'config.tuning={"LK_CORPUS_CACHE_MIB":4096}'
     expect_helm_failure "a blob cache the memory limit cannot hold" "memory limit" --set-json 'config.tuning={"LK_BLOB_CACHE_MIB":4096}'
-    expect_helm_failure "a blob cache given as a string" "memory limit" --set-json 'config.tuning={"LK_BLOB_CACHE_MIB":"4096"}'
+    # A number is a number: a string is read by Sprig's `int` (base 0: "04096" is octal and does not parse, "02000" is 1024) and by the hub's u64
+    # parse (4096 and 2000), so the guard above would see another number than the hub. The schema takes an integer in the hub's own range.
+    expect_helm_failure "a blob cache given as a string" "LK_BLOB_CACHE_MIB" --set-json 'config.tuning={"LK_BLOB_CACHE_MIB":"4096"}'
+    expect_helm_failure "a blob cache given as a string with a leading zero, which the guard reads as nothing" "LK_BLOB_CACHE_MIB" --set-json 'config.tuning={"LK_BLOB_CACHE_MIB":"04096"}'
+    expect_helm_failure "a blob cache given as a string with a leading zero, which the guard reads as octal" "LK_BLOB_CACHE_MIB" --set-json 'config.tuning={"LK_BLOB_CACHE_MIB":"02000"}'
+    expect_helm_failure "a blob cache of zero" "LK_BLOB_CACHE_MIB" --set-json 'config.tuning={"LK_BLOB_CACHE_MIB":0}'
+    expect_helm_failure "a blob cache over 4 GiB" "LK_BLOB_CACHE_MIB" --set-json 'config.tuning={"LK_BLOB_CACHE_MIB":4097}'
+    expect_helm_failure "a corpus cache given as a string" "LK_CORPUS_CACHE_MIB" --set-json 'config.tuning={"LK_CORPUS_CACHE_MIB":"0256"}'
+    # Every other number of the hub is held to the same shape, so that the next guard on one of them cannot be walked round the same way.
+    for name in LK_BODY_MAX_BYTES LK_BUCKET_CAPACITY LK_DB_ACQUIRE_TIMEOUT_SECS LK_DB_MAX_CONNECTIONS LK_DB_STATEMENT_TIMEOUT_SECS LK_GIT_FETCH_TIMEOUT_SECS LK_GIT_QUEUE_CAPACITY LK_IP_BURST LK_JSON_DEPTH LK_MAX_CONNECTIONS LK_REQUEST_TIMEOUT_SECS LK_TREE_INDEX_ENTRIES LK_USER_BURST; do
+        expect_helm_failure "the number $name given as a string with a leading zero" "$name" --set-json "config.tuning={\"$name\":\"0100\"}"
+        expect_helm_failure "the number $name given as a string" "$name" --set-json "config.tuning={\"$name\":\"100\"}"
+        expect_helm_failure "the number $name of zero" "$name" --set-json "config.tuning={\"$name\":0}"
+    done
+    for name in LK_IP_RATE_PER_SEC LK_USER_RATE_PER_SEC; do
+        expect_helm_failure "the rate $name given as a string" "$name" --set-json "config.tuning={\"$name\":\"0.5\"}"
+        expect_helm_failure "the rate $name of zero" "$name" --set-json "config.tuning={\"$name\":0}"
+        expect_helm_failure "the rate $name over the hub's limit" "$name" --set-json "config.tuning={\"$name\":1000001}"
+    done
     expect_helm_failure "two caches that are each fine and together are not" "memory limit" --set-json 'config.tuning={"LK_BLOB_CACHE_MIB":1024,"LK_CORPUS_CACHE_MIB":1024}'
     expect_helm_failure "a corpus cache one MiB over the headroom" "memory limit" --set-json 'config.tuning={"LK_CORPUS_CACHE_MIB":769}'
     expect_helm_failure "a memory limit in a unit the guard cannot read" "Mi or Gi" --set resources.limits.memory=2G
