@@ -20,12 +20,21 @@
 //   placeholders  every <UPPER_CASE> placeholder is defined in the table of step 0, and every one defined there is used
 //   identifiers   nothing looks like a real secret, key, token, project id, host name, address or tenant id
 //   gaps          the list of known gaps names what the inventory and the blockers say is open
-//   ca-binding    a block that grants a role on a Cloud KMS key names at most one of the two CA keys, so that no identity can sign with both
-//                 CAs at once (S5): the roles go on one key at a time and come off before the next
-//   secret-print  a command that reads a secret value (gcloud secrets versions access, kubectl get secret -o ...) does not print it: it
-//                 redirects it to a file or pipes it to something that is not cat, tee or a pager
-//   secret-file   the file such a command writes is in a directory made by mktemp -d under umask 077, not in the current directory
-//                 (which may be a checkout of this repository), and the block removes the directory
+//   ca-binding    (1) a block with a `gcloud kms keys add-iam-policy-binding` (or set-iam-policy) names at most one of the two CA key
+//                 placeholders, <AGENT_CA_KEY_NAME> and <REPLICA_CA_KEY_NAME>, so that the roles go on one key at a time and come off before
+//                 the next; (2) in a block that names a role that signs (roles/cloudkms.signer or signerVerifier), every add-iam-policy-binding
+//                 or set-iam-policy is a `gcloud kms keys` or `gcloud iam service-accounts` command, never a key ring, a project or anything
+//                 above a key, which would cover both keys (S5). Not seen: a second CA key under another name than the two placeholders, and
+//                 a grant that is built in a variable or in a file
+//   secret-print  a command that reads a secret value (`gcloud secrets versions access`, `kubectl get secret ... -o yaml|json|jsonpath|
+//                 go-template|custom-columns`, the flag before or after the resource) puts it in a file under the directory that the block made
+//                 with mktemp -d, or gives it to `read`, or pipes it to a command that does not show it (`gcloud secrets versions add`,
+//                 `kubectl apply|create`, sha256sum, shasum, wc); any other pipe (base64 -d, head, jq, grep, cat, tee ...) or none is a failure;
+//                 and a later command of the block that shows that file (cat, head, base64, grep ...) is a failure. Not seen: a secret that is
+//                 put in a shell variable and shown later, one that a script of the repository prints, a file shown by a program that is not in
+//                 the list, and a command that is written in prose or in an inline span and not in a fenced block
+//   secret-file   the file such a command writes is "$dir/..." where dir is the variable that holds the output of `mktemp -d` in the same
+//                 block (not $PWD, $(pwd), ~, /tmp, a relative name, or a path with ..), the block has umask 077, and it removes the directory
 //   fqdn          `network.fqdnPolicy: false` is offered nowhere but as "for kind only"; it is never in a command or a values block
 //   links         deploy/argocd/README.md and deploy/ADDING-A-SWIMLANE.md point to the guide
 //   triggers      deploy.yml and ci.yml run when the guide changes, and deploy-check runs this test
@@ -444,34 +453,75 @@ function check(text, repo) {
     }
   });
 
-  // ca-binding: the two CA keys are never bound at once
+  // ca-binding: the two CA keys are never bound at once, and a role that signs is never bound above a key
+  const bindsIam = /\b(?:add-iam-policy-binding|set-iam-policy)\b/;
+  const signingRole = /\broles\/cloudkms\.signer(?:Verifier)?\b/;
   for (const b of md.blocks) {
     const block = b.lines.join('\n');
-    if (!/kms\s+keys\s+add-iam-policy-binding/.test(block)) continue;
-    const named = ['<AGENT_CA_KEY_NAME>', '<REPLICA_CA_KEY_NAME>'].filter((k) => block.includes(k));
-    if (named.length > 1) {
-      fail('ca-binding', `line ${b.start + 1}: a block that grants a role on a Cloud KMS key names both CA keys (${named.join(', ')}); the roles go on one key at a time and come off before the next, so that no identity can sign with both CAs at once (S5)`);
+    if (/kms\s+keys\s+(?:add-iam-policy-binding|set-iam-policy)\b/.test(block)) {
+      const named = ['<AGENT_CA_KEY_NAME>', '<REPLICA_CA_KEY_NAME>'].filter((k) => block.includes(k));
+      if (named.length > 1) {
+        fail('ca-binding', `line ${b.start + 1}: a block that grants a role on a Cloud KMS key names both CA keys (${named.join(', ')}); the roles go on one key at a time and come off before the next, so that no identity can sign with both CAs at once (S5)`);
+      }
+    }
+    // A binding on the key ring, the project or anything above a key covers every key below it, both CAs among them. In a block that names a
+    // role that signs (the role may be in a loop's list and the command only name "$role"), a binding is on a key or on a service account.
+    if (signingRole.test(block)) {
+      for (const command of commandsOf(b.lines)) {
+        for (const part of command.split(/;|&&|\|\||\|/)) {
+          if (bindsIam.test(part) && !/\bgcloud\s+(?:kms\s+keys|iam\s+service-accounts)\s/.test(part)) {
+            fail('ca-binding', `line ${b.start + 1}: a block with a role that signs binds a role on something that is not a Cloud KMS key or a service account, and a binding above a key covers both CA keys (S5): ${part.trim().slice(0, 90)}`);
+          }
+        }
+      }
     }
   }
 
   // secret-print and secret-file
-  const readsSecret = /gcloud\s+secrets\s+versions\s+access\b|\bkubectl\b.*\bget\s+secrets?\b.*(?:-o|--output)[ =]?(?:yaml|json|jsonpath|go-template)/;
+  const readsSecret = (command) =>
+    /\bgcloud\s+secrets\s+versions\s+access\b/.test(command) ||
+    (/\bkubectl\b/.test(command) &&
+      /\bget\s+(?:[^|;]*\s)?secrets?(?=[\s/]|$)/.test(command) &&
+      /(?:^|\s)(?:-o|--output)[ =]?(?:yaml|json|jsonpath|go-template|custom-columns)/.test(command));
+  // What may take a secret from a pipe and not show it: read, another secret version, kubectl apply or create (they print names), a hash or a count.
+  const quietSink = /^\s*(?:read\b|gcloud\s+secrets\s+versions\s+add\b|kubectl\b[^|;]*\b(?:apply|create)\b|sha256sum\b|shasum\b|wc\b)/;
+  // A command that shows a file on the terminal (or passes it on to something that does).
+  const showsFile = /^\s*(?:cat|less|more|head|tail|xxd|od|strings|bat|nl|tac|base64|grep|awk|sed|cut|tr|jq|yq|paste|sort|uniq)\b/;
   for (const b of md.blocks) {
     const block = b.lines.join('\n');
-    for (const raw of commandsOf(b.lines)) {
+    // The variable that holds the directory made by `mktemp -d`: the one place a secret may be written to.
+    const privateDir = /\b([A-Za-z_][A-Za-z0-9_]*)=["']?\$\([^)]*\bmktemp\s+-d\b[^)]*\)["']?/.exec(block)?.[1];
+    const commands = commandsOf(b.lines);
+    let writesSecretFile = false;
+    for (const raw of commands) {
       // <PLACEHOLDER> has angle brackets, which are not a redirect.
       const command = raw.replace(/<[A-Z][A-Z0-9_]*>/g, 'PLACEHOLDER');
-      if (!readsSecret.test(command)) continue;
-      const redirect = /(?:^|[^>0-9&])>\s*("[^"]*"|'[^']*'|[^\s;|)&]+)/.exec(command);
-      const piped = /\|\s*(?!cat\b|tee\b|less\b|more\b)\S/.test(command);
-      if (!redirect && !piped) {
-        fail('secret-print', `line ${b.start + 1}: a command prints a secret value to the terminal, where the scrollback and the shell's history keep it: ${command.slice(0, 90)}`);
-      } else if (redirect) {
-        if (!/^["']?(\$|\/|~)/.test(redirect[1])) {
-          fail('secret-file', `line ${b.start + 1}: a secret value is written into ${redirect[1]}, which is in the current directory (it may be a checkout of this repository); write it into a directory made by mktemp -d`);
+      if (!readsSecret(command)) continue;
+      const redirect = /(?:^|[^>0-9&])>{1,2}\|?\s*("[^"]*"|'[^']*'|[^\s;|)&]+)/.exec(command);
+      const lastStage = command.split(/(?<!\|)\|(?!\|)/).pop();
+      const quiet = /^\s*read\b/.test(command) || (lastStage !== command && quietSink.test(lastStage));
+      if (redirect) {
+        writesSecretFile = true;
+        const target = redirect[1].replace(/^["']|["']$/g, '');
+        const inside = privateDir !== undefined && new RegExp(`^\\$\\{?${privateDir}\\}?/[^/]`).test(target) && !/(^|\/)\.\.(\/|$)/.test(target);
+        if (!inside) {
+          fail('secret-file', `line ${b.start + 1}: a secret value is written into ${redirect[1]}, which is not inside the directory that the block made with mktemp -d (the current directory may be a checkout of this repository, and $PWD, $(pwd), ~ and /tmp are not private); write it into "$dir/..." of a directory made by mktemp -d`);
         }
         for (const [re, what] of [[/\bmktemp\s+-d\b/, 'mktemp -d'], [/\bumask\s+077\b/, 'umask 077'], [/\brm\s+-r\w*\s/, 'rm -r of the directory']]) {
           if (!re.test(block)) fail('secret-file', `line ${b.start + 1}: the block that writes a secret value to a file has no ${what}`);
+        }
+      } else if (!quiet) {
+        fail('secret-print', `line ${b.start + 1}: a command reads a secret value and does not put it in a file in a private directory, or give it to read or to a command that does not print it, so it may print it where the scrollback and the shell's history keep it: ${command.slice(0, 90)}`);
+      }
+    }
+    // The file that holds a secret is not shown afterwards by a later command of the block.
+    if (writesSecretFile && privateDir !== undefined) {
+      for (const command of commands) {
+        if (readsSecret(command)) continue; // the command that writes the file is judged above, with its own pipe
+        for (const part of command.split(/;|&&|\|\||\|/)) {
+          if (showsFile.test(part) && new RegExp(`\\$\\{?${privateDir}\\b`).test(part)) {
+            fail('secret-print', `line ${b.start + 1}: a command shows the file that holds a secret value: ${part.trim().slice(0, 90)}`);
+          }
         }
       }
     }
@@ -599,6 +649,21 @@ const MUTANTS = [
   ['secret-file', 'the webhook secret written into the current directory', (t) => replaceFirst(t, /> "\$dir\/webhook-secret\.txt"\)/, () => '> webhook-secret.txt)')],
   ['secret-file', 'the private directory not made', (t) => replaceFirst(t, /dir="\$\(umask 077; mktemp -d\)"\n/, () => 'dir=/tmp/hook\n')],
   ['secret-file', 'the directory not removed', (t) => replaceFirst(t, /\nrm -r "\$dir"/, () => '')],
+  // 09/fix, round 3 (NB-3): forms that the first versions of the three rules let through.
+  ['ca-binding', 'a signing role granted on the key ring, which covers both CA keys', (t) => `${t}\n\`\`\`bash\ngcloud kms keyrings add-iam-policy-binding <KEYRING> --location=<LOCATION> --role=roles/cloudkms.signerVerifier --member=serviceAccount:<CA_INIT_GSA>@<PROJECT_ID>.iam.gserviceaccount.com\n\`\`\`\n`],
+  ['ca-binding', 'a signing role granted on the key ring in a loop', (t) => `${t}\n\`\`\`bash\nfor role in roles/cloudkms.publicKeyViewer roles/cloudkms.signerVerifier; do\n  gcloud kms keyrings add-iam-policy-binding <KEYRING> --location=<LOCATION> --role="$role" \\\n    --member=serviceAccount:<CA_INIT_GSA>@<PROJECT_ID>.iam.gserviceaccount.com\ndone\n\`\`\`\n`],
+  ['ca-binding', 'a signing role granted on the project', (t) => `${t}\n\`\`\`bash\ngcloud projects add-iam-policy-binding <PROJECT_ID> --role=roles/cloudkms.signer --member=serviceAccount:<CA_INIT_GSA>@<PROJECT_ID>.iam.gserviceaccount.com\n\`\`\`\n`],
+  ['ca-binding', 'a signing role granted on a key and on the key ring in one line', (t) => `${t}\n\`\`\`bash\ngcloud kms keys add-iam-policy-binding <AGENT_CA_KEY_NAME> --keyring=<KEYRING> --location=<LOCATION> --role=roles/cloudkms.signerVerifier --member=serviceAccount:<CA_INIT_GSA>@<PROJECT_ID>.iam.gserviceaccount.com; gcloud kms keyrings add-iam-policy-binding <KEYRING> --location=<LOCATION> --role=roles/cloudkms.signerVerifier --member=serviceAccount:<CA_INIT_GSA>@<PROJECT_ID>.iam.gserviceaccount.com\n\`\`\`\n`],
+  ['secret-print', 'a secret read and piped to base64 -d, which prints it decoded', (t) => `${t}\n\`\`\`bash\ngcloud secrets versions access latest --secret=github-webhook-secret --project=<PROJECT_ID> | base64 -d\n\`\`\`\n`],
+  ['secret-print', 'a secret read and piped to head, which prints its start', (t) => `${t}\n\`\`\`bash\ngcloud secrets versions access latest --secret=github-webhook-secret --project=<PROJECT_ID> | head -c 40\n\`\`\`\n`],
+  ['secret-print', 'a Kubernetes Secret piped to jq', (t) => `${t}\n\`\`\`bash\nkubectl -n lanekeeper get secret lanekeeper-db-app -o json | jq -r .data\n\`\`\`\n`],
+  ['secret-print', 'a Kubernetes Secret with the output flag before the resource', (t) => `${t}\n\`\`\`bash\nkubectl -n lanekeeper get -o yaml secret lanekeeper-db-app\n\`\`\`\n`],
+  ['secret-print', 'the secret file shown with cat after it is written', (t) => replaceFirst(t, /\nshred -u "\$dir\/webhook-secret\.txt"/, () => '\ncat "$dir/webhook-secret.txt"\nshred -u "$dir/webhook-secret.txt"')],
+  ['secret-file', 'the webhook secret written into $PWD', (t) => replaceFirst(t, /> "\$dir\/webhook-secret\.txt"\)/, () => '> "$PWD/webhook-secret.txt")')],
+  ['secret-file', 'the webhook secret written into $(pwd)', (t) => replaceFirst(t, /> "\$dir\/webhook-secret\.txt"\)/, () => '> "$(pwd)/webhook-secret.txt")')],
+  ['secret-file', 'the webhook secret written into /tmp, which is not the directory that mktemp -d made', (t) => replaceFirst(t, /> "\$dir\/webhook-secret\.txt"\)/, () => '> /tmp/webhook-secret.txt)')],
+  ['secret-file', 'the webhook secret written into the home directory', (t) => replaceFirst(t, /> "\$dir\/webhook-secret\.txt"\)/, () => '> ~/webhook-secret.txt)')],
+  ['secret-file', 'the webhook secret written above the private directory', (t) => replaceFirst(t, /> "\$dir\/webhook-secret\.txt"\)/, () => '> "$dir/../webhook-secret.txt")')],
   ['fqdn', 'fqdnPolicy false set in a values block', (t) => `${t}\n\`\`\`yaml\nnetwork:\n  fqdnPolicy: false\n\`\`\`\n`],
   ['fqdn', 'fqdnPolicy false in a values block that says it is for kind only', (t) => `${t}\nA value for kind only:\n\`\`\`yaml\nnetwork:\n  fqdnPolicy: false\n\`\`\`\n`],
   ['fqdn', 'fqdnPolicy false offered for any cluster', (t) => replaceFirst(t, /is for\nkind only/, () => 'is for\nclusters without the feature')],
@@ -613,6 +678,25 @@ for (const [rule, what, mutate] of MUTANTS) {
     assert.ok(after > before, `the checker did not notice ${what}: ${after} ${rule} problems against ${before} before`);
   });
 }
+
+// What the three rules accept must stay accepted: a secret that is read and not shown. Each form is added to a copy of the guide, and the
+// number of problems of the two rules must not move.
+test('the secret rules accept a secret that is consumed by read, by a command that does not print it, or written into the private directory', () => {
+  const forms = [
+    'read -rs token < <(gcloud secrets versions access latest --secret=github-webhook-secret --project=<PROJECT_ID>)',
+    'gcloud secrets versions access latest --secret=github-webhook-secret --project=<PROJECT_ID> | gcloud secrets versions add github-webhook-secret --data-file=- --project=<PROJECT_ID>',
+    'dir="$(umask 077; mktemp -d)"\n(umask 077; gcloud secrets versions access latest --secret=github-webhook-secret --project=<PROJECT_ID> | base64 -d > "$dir/secret.bin")\nrm -r "$dir"',
+    'dir="$(umask 077; mktemp -d)"\n(umask 077; kubectl -n lanekeeper get secret lanekeeper-db-app -o jsonpath=\'{.data.uri}\' >> "${dir}/uri.b64")\nrm -r "$dir"',
+  ];
+  for (const form of forms) {
+    const mutated = `${guide}\n\`\`\`bash\n${form}\n\`\`\`\n`;
+    for (const rule of ['secret-print', 'secret-file']) {
+      const before = rulesOf(check(guide, repo), rule).length;
+      const after = rulesOf(check(mutated, repo), rule).length;
+      assert.equal(after, before, `the checker refuses a form that does not show the secret (${rule}): ${form}`);
+    }
+  }
+});
 
 test('a guide that is empty fails every structural rule', () => {
   const problems = check('# nothing\n', repo);
