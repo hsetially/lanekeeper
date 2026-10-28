@@ -127,6 +127,9 @@ db_ingress(from, port) := {"from": from, "ports": [{"protocol": "TCP", "port": p
 
 db_hub_caller := [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": "lanekeeper-hub"}}}]
 
+# The pods of the hub image's Jobs (charts/hub): a label of their own, so that the hub's policy does not select them.
+db_jobs_caller := [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": "lanekeeper-hub-jobs"}}}]
+
 db_operator_caller := [{
 	"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "cnpg-system"}},
 	"podSelector": {"matchLabels": {"app.kubernetes.io/name": "cloudnative-pg"}},
@@ -147,6 +150,7 @@ db_networkpolicy := {
 			db_ingress(db_operator_caller, 8000),
 			db_ingress(db_peer_caller, 5432),
 			db_ingress(db_peer_caller, 8000),
+			db_ingress(db_jobs_caller, 5432),
 		],
 	},
 }

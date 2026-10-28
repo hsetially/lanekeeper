@@ -575,6 +575,27 @@ test_deny_a_project_that_cannot_deploy_what_its_chart_makes if {
 	refused(fixtures.ac_workloads_patch([{"op": "remove", "path": "/spec/namespaceResourceWhitelist/0"}]), "namespaceResourceWhitelist")
 }
 
+# The hub image's Jobs and the ConfigMap of the seed file (09/fix, J5): `batch/Job` and `ConfigMap`, and nothing wider.
+test_deny_the_workloads_project_without_jobs if {
+	refused(fixtures.ac_workloads_patch([{"op": "remove", "path": "/spec/namespaceResourceWhitelist/12"}]), "missing [\"batch/Job\"]")
+}
+
+test_deny_the_workloads_project_without_config_maps if {
+	refused(fixtures.ac_workloads_patch([{"op": "remove", "path": "/spec/namespaceResourceWhitelist/13"}]), "missing [\"/ConfigMap\"]")
+}
+
+test_deny_the_workloads_project_with_cron_jobs if {
+	refused(fixtures.ac_workloads_patch([{"op": "add", "path": "/spec/namespaceResourceWhitelist/-", "value": {"group": "batch", "kind": "CronJob"}}]), "extra [\"batch/CronJob\"]")
+}
+
+test_deny_the_workloads_project_with_every_kind_of_batch if {
+	refused(fixtures.ac_workloads_patch([{"op": "add", "path": "/spec/namespaceResourceWhitelist/-", "value": {"group": "batch", "kind": "*"}}]), "namespaceResourceWhitelist")
+}
+
+test_deny_the_cloud_project_with_jobs if {
+	refused(fixtures.ac_cloud_patch([{"op": "add", "path": "/spec/namespaceResourceWhitelist/-", "value": {"group": "batch", "kind": "Job"}}]), "extra [\"batch/Job\"]")
+}
+
 test_deny_project_roles if {
 	refused(fixtures.ac_workloads_patch([{"op": "add", "path": "/spec/roles", "value": [{"name": "ci", "policies": ["p, proj:x:ci, applications, sync, x/*, allow"]}]}]), "roles")
 }

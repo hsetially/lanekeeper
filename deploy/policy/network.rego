@@ -630,6 +630,72 @@ deny contains msg if {
 	msg := sprintf("%s: two rules have one priority; the order of evaluation would be undefined (S18)", [lk.who(p)])
 }
 
+# --- the hub image's Jobs: their own pods and their own policy (crates/hub/HARDENING.md; 09/fix, J3) ----------------------------------------
+#
+# The Jobs (`hub migrate`, `hub seed`) reach the database and nothing else: DNS and Postgres on 5432, no ingress, no ports. Their pods carry a
+# label of their own, so the hub's policy (the other replicas, the metadata server, the external hosts) does not select them, and the
+# database's policy admits them by that label (database.rego).
+jobs_selector := {"app.kubernetes.io/name": "lanekeeper-hub-jobs"}
+
+jobs_policies := lk.named("NetworkPolicy", "lanekeeper-hub-jobs")
+
+deny contains msg if {
+	count(lk.hub_jobs) > 0
+	count(jobs_policies) == 0
+	msg := "NetworkPolicy/lanekeeper-hub-jobs is missing: the Jobs' pods would be selected by no policy, and reach everything (S18)"
+}
+
+deny contains msg if {
+	some p in jobs_policies
+	missing := {"Ingress", "Egress"} - {t | some t in object.get(p.spec, "policyTypes", [])}
+	count(missing) > 0
+	msg := sprintf("%s: not default deny: policyTypes must list Ingress and Egress, %v is missing (S18)", [lk.who(p), sort(missing)])
+}
+
+deny contains msg if {
+	some p in jobs_policies
+	object.get(p.spec.podSelector, "matchLabels", {}) != jobs_selector
+	msg := sprintf("%s: it selects pods other than the Jobs'; an empty selector is every pod, and the hub's label would give the hub's network to the policy (S18)", [lk.who(p)])
+}
+
+deny contains msg if {
+	some p in jobs_policies
+	count(ingress_rules(p)) > 0
+	msg := sprintf("%s: ingress must be empty: the Jobs listen on nothing, so the policy admits nothing in (S18)", [lk.who(p)])
+}
+
+deny contains msg if {
+	some p in jobs_policies
+	some rule in egress_rules(p)
+	count(object.get(rule, "to", [])) == 0
+	msg := sprintf("%s: an egress rule allows every destination (it has no `to`) (S18)", [lk.who(p)])
+}
+
+deny contains msg if {
+	some p in jobs_policies
+	some rule in egress_rules(p)
+	count(object.get(rule, "ports", [])) == 0
+	msg := sprintf("%s: an egress rule allows every port (it has no `ports`) (S18)", [lk.who(p)])
+}
+
+jobs_destination(d) := destination(d) if destination(d) in {"dns", "postgres"}
+
+deny contains msg if {
+	some p in jobs_policies
+	some rule in egress_rules(p)
+	some d in object.get(rule, "to", [])
+	not jobs_destination(d)
+	msg := sprintf("%s: an unrecognised egress destination: %v; the Jobs reach kube-dns and the database (S18)", [lk.who(p), d])
+}
+
+expected_jobs_egress := {"dns UDP/53", "dns TCP/53", "postgres TCP/5432"}
+
+deny contains msg if {
+	some p in jobs_policies
+	egress_pairs(p) != expected_jobs_egress
+	msg := sprintf("%s: egress must be exactly %v; found %v (S18)", [lk.who(p), sort(expected_jobs_egress), sort(egress_pairs(p))])
+}
+
 # --- the agent: default deny, and the five destinations of crates/agent/HARDENING.md (S17, S18) ----------------------------------
 
 # Everything the agent says goes to one of five places: the hub and the Kubernetes API server (two IP blocks on 443, each no wider

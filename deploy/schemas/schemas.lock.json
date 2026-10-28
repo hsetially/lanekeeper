@@ -182,6 +182,13 @@
    "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/deployment-apps-v1.json",
    "sourceSha256": "92b7a333a49124f5300095d3e7786ca2038b7d6e602c309f73e90631377e4b0a"
   },
+  "k8s/v1.34.0-standalone-strict/job-batch-v1.json": {
+   "bytes": 706024,
+   "how": "copied",
+   "sha256": "967234ab9eb5477fd8e5538c83c85817a560aecc1aaf886fafbe8a4ac0972023",
+   "source": "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/5f1fa4f7908afc9b6641c62d282a4a22437626e1/v1.34.0-standalone-strict/job-batch-v1.json",
+   "sourceSha256": "967234ab9eb5477fd8e5538c83c85817a560aecc1aaf886fafbe8a4ac0972023"
+  },
   "k8s/v1.34.0-standalone-strict/namespace-v1.json": {
    "bytes": 18892,
    "how": "copied",

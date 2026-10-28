@@ -78,9 +78,13 @@ config:
   tuning: {}
 
 database:
-  # The CloudNativePG cluster the hub talks to, and the two Secrets it reads one file from each (HARDENING.md, plan 09 A7, A9).
+  # The CloudNativePG cluster the hub talks to, and the Secrets it reads one file from each (HARDENING.md, plan 09 A7, A9).
   clusterName: lanekeeper-db
+  # The application role's (lanekeeper_app): the hub reads its connection URL, key `uri`, and so does the seed Job.
   credentialsSecretName: lanekeeper-db-app
+  # The migrator's (lanekeeper_migrator, the database's owner): only the migration Job reads its connection URL, key `uri`. Made out of
+  # band like the other (charts/db README, step 2); it is never the application role's Secret.
+  migratorSecretName: lanekeeper-db-migrator
   caSecretName: lanekeeper-db-ca
 
 # The Git mirror: a volume per replica (D62).
@@ -147,3 +151,43 @@ gateway:
   securityPolicyName: lanekeeper-hub
   # A server-sent-events stream is one request; the default 30 s would cut every live view.
   timeoutSec: 3600
+
+# The hub image's two Jobs (crates/hub/HARDENING.md, "The migration Job" and "The seed Job"). Both run `hub <command>` from the StatefulSet's
+# image (by the same digest), as the hub pod's security context says, with their own pod label, ServiceAccount (no Google identity, no token)
+# and NetworkPolicy (DNS and the database, nothing in), and the volumes of their table, so that the migrator's credential is never in a pod
+# that faces users.
+jobs:
+  # Not measured: `hub migrate` and `hub seed` each hold one database connection and a few files. Raise them if a run is killed for memory.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+# `hub migrate` as lanekeeper_migrator (LK_MIGRATE_TIMEOUT_SECS, 1 to 7200): a Helm pre-install and pre-upgrade hook, which Argo CD runs as
+# PreSync, so the schema is complete before the hub rolls out. Safe to retry, and safe to run twice at once. The Job's deadline is the
+# timeout and five minutes, so that the process ends itself with a message that names the step.
+migrate:
+  timeoutSeconds: 600
+  backoffLimit: 2
+
+# `hub seed` as lanekeeper_app (LK_SEED_TIMEOUT_SECS, 1 to 3600): writes the rows that say which Google service account may join as which
+# swimlane's agent or as which NFS VM's sentinel. A Job and not a hook: it runs after the migration, and a missing seed must not stop a
+# deploy. Until it has run with a file that carries every swimlane's agent_service_account and every sentinel's service_account, nothing
+# can join.
+seed:
+  enabled: false
+  # The file is a reviewed change (whoever applies it makes a service account the agent of a swimlane) and the real one lives outside this
+  # repository (AGENTS.md rule 12). Give it as the name of a ConfigMap that holds it under the key seed.yaml, made out of band
+  # (kubectl create configmap NAME --from-file=seed.yaml=FILE) ...
+  existingConfigMap: ""
+  # ... or as text here, which the chart makes a ConfigMap of. Only a synthetic file (kind) belongs in the repository. Exactly one of the two.
+  content: ""
+  # A Job's pod template cannot change, so the Job is named with a short hash of the image digest, this revision, the file (or the name of
+  # its ConfigMap) and the timeout: a new image or file is a new Job. Change this to run the same file again, e.g. after editing a
+  # ConfigMap that was made out of band.
+  revision: ""
+  timeoutSeconds: 120
+  backoffLimit: 2

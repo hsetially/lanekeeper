@@ -37,7 +37,13 @@ hooks_rule_text(expression) := {"action": "allow", "priority": 2000, "descriptio
 weaker_rule := {"to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"]}}], "ports": [tcp(443)]}
 
 # The hub's policy in kind: no FQDN policy, a 443 egress rule that skips private and link-local ranges, and the annotation.
-weaker_input := [{"path": "rendered/hub.yaml", "contents": [d | some d in fixtures.hub_docs; d.kind != "FQDNNetworkPolicy"; d.kind != "NetworkPolicy"]}, fixtures.budgets]
+weaker_input := [{"path": "rendered/hub.yaml", "contents": [d | some d in fixtures.hub_docs; d.kind != "FQDNNetworkPolicy"; not is_hubs_policy(d)]}, fixtures.budgets]
+
+# The hub's own policy (the Jobs' stays: it is another policy, and the Jobs are in the input).
+is_hubs_policy(d) if {
+	d.kind == "NetworkPolicy"
+	d.metadata.name == "lanekeeper-hub"
+}
 
 weaker_policy(rule) := json.patch(fixtures.networkpolicy, [
 	{"op": "add", "path": "/metadata/annotations", "value": {"lanekeeper.io/weaker-egress": "true"}},
@@ -709,4 +715,85 @@ test_deny_agent_ingress_from_the_cluster if {
 test_deny_agent_load_balancer if {
 	lb := {"apiVersion": "v1", "kind": "Service", "metadata": {"name": "lanekeeper-agent", "namespace": "lanekeeper"}, "spec": {"type": "LoadBalancer", "ports": [{"port": 9090}]}}
 	refused(fixtures.agent_with_doc(lb), "LoadBalancer")
+}
+
+# --- the hub image's Jobs: their own pods, their own policy (crates/hub/HARDENING.md; 09/fix, J3) ---------------------------------------------
+#
+# The Jobs' pods do not carry the hub's label, so the hub's policy does not select them (it would give them the other replicas, the metadata
+# server and the external hosts). Their own policy admits nothing in, and lets out the names (kube-dns) and the database, and nothing else.
+
+jobs_policy(ops) := fixtures.patch("NetworkPolicy", fixtures.jobs_name, ops)
+
+test_the_jobs_policy_passes if {
+	count(deny) == 0 with input as fixtures.hub
+}
+
+test_deny_jobs_without_their_policy if {
+	refused(fixtures.without_named("NetworkPolicy", fixtures.jobs_name), "NetworkPolicy/lanekeeper-hub-jobs is missing")
+}
+
+test_deny_jobs_policy_without_egress_deny if {
+	refused(jobs_policy([{"op": "replace", "path": "/spec/policyTypes", "value": ["Ingress"]}]), "lanekeeper-hub-jobs: not default deny")
+}
+
+test_deny_jobs_policy_without_ingress_deny if {
+	refused(jobs_policy([{"op": "replace", "path": "/spec/policyTypes", "value": ["Egress"]}]), "lanekeeper-hub-jobs: not default deny")
+}
+
+test_deny_jobs_policy_that_selects_every_pod if {
+	refused(jobs_policy([{"op": "replace", "path": "/spec/podSelector", "value": {}}]), "lanekeeper-hub-jobs: it selects pods other than the Jobs'")
+}
+
+test_deny_jobs_policy_that_selects_the_hub if {
+	refused(jobs_policy([{"op": "replace", "path": "/spec/podSelector/matchLabels", "value": fixtures.selector}]), "lanekeeper-hub-jobs: it selects pods other than the Jobs'")
+}
+
+test_deny_jobs_policy_with_ingress if {
+	refused(jobs_policy([{"op": "add", "path": "/spec/ingress", "value": [{"from": [{"podSelector": {}}], "ports": [tcp(8443)]}]}]), "admits nothing in")
+}
+
+test_deny_jobs_policy_with_an_empty_ingress_rule if {
+	refused(jobs_policy([{"op": "add", "path": "/spec/ingress", "value": [{}]}]), "admits nothing in")
+}
+
+test_deny_jobs_policy_to_the_other_replicas if {
+	refused(jobs_policy([{"op": "add", "path": "/spec/egress/-", "value": {"to": [{"podSelector": {"matchLabels": fixtures.selector}}], "ports": [tcp(8445)]}}]), "lanekeeper-hub-jobs: egress must be exactly")
+}
+
+test_deny_jobs_policy_to_the_metadata_server if {
+	refused(jobs_policy([{"op": "add", "path": "/spec/egress/-", "value": {"to": [{"ipBlock": {"cidr": "169.254.169.254/32"}}], "ports": [tcp(80)]}}]), "lanekeeper-hub-jobs: egress must be exactly")
+}
+
+test_deny_jobs_policy_to_the_internet if {
+	refused(jobs_policy([{"op": "add", "path": "/spec/egress/-", "value": weaker_rule}]), "lanekeeper-hub-jobs")
+}
+
+test_deny_jobs_policy_to_every_destination if {
+	refused(jobs_policy([{"op": "add", "path": "/spec/egress/-", "value": {"ports": [tcp(5432)]}}]), "allows every destination")
+}
+
+test_deny_jobs_policy_on_every_port if {
+	refused(jobs_policy([{"op": "add", "path": "/spec/egress/-", "value": {"to": [{"podSelector": {"matchLabels": {"cnpg.io/cluster": "lanekeeper-db"}}}]}}]), "allows every port")
+}
+
+test_deny_jobs_policy_to_the_database_on_another_port if {
+	refused(jobs_policy([{"op": "replace", "path": "/spec/egress/1/ports/0/port", "value": 8000}]), "lanekeeper-hub-jobs: egress must be exactly")
+}
+
+test_deny_jobs_policy_to_the_database_of_every_namespace if {
+	refused(jobs_policy([{"op": "add", "path": "/spec/egress/1/to/0/namespaceSelector", "value": {}}]), "unrecognised egress destination")
+}
+
+test_deny_jobs_policy_without_dns if {
+	refused(jobs_policy([{"op": "remove", "path": "/spec/egress/0"}]), "lanekeeper-hub-jobs: egress must be exactly")
+}
+
+test_deny_jobs_policy_without_the_database if {
+	refused(jobs_policy([{"op": "remove", "path": "/spec/egress/1"}]), "lanekeeper-hub-jobs: egress must be exactly")
+}
+
+# The hub's own policy is not widened for the Jobs: it keeps its ingress and its egress, and still selects only the hub.
+test_the_hubs_policy_does_not_admit_the_jobs_pods if {
+	planted := netpol([{"op": "replace", "path": "/spec/ingress/2/from/0/podSelector/matchLabels", "value": fixtures.jobs_selector}])
+	refused(planted, "ingress must be exactly")
 }

@@ -135,6 +135,7 @@
       "properties": {
         "clusterName": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$" },
         "credentialsSecretName": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$" },
+        "migratorSecretName": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$" },
         "caSecretName": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9.-]*-db-ca)$" }
       }
     },
@@ -155,6 +156,41 @@
       "properties": {
         "requests": { "type": "object", "required": ["cpu", "memory"], "additionalProperties": false, "properties": { "cpu": { "type": ["string", "number"] }, "memory": { "type": "string" } } },
         "limits": { "type": "object", "required": ["cpu", "memory"], "additionalProperties": false, "properties": { "cpu": { "type": ["string", "number"] }, "memory": { "type": "string" } } }
+      }
+    },
+    "jobs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requests", "limits"],
+          "properties": {
+            "requests": { "type": "object", "required": ["cpu", "memory"], "additionalProperties": false, "properties": { "cpu": { "type": ["string", "number"] }, "memory": { "type": "string" } } },
+            "limits": { "type": "object", "required": ["cpu", "memory"], "additionalProperties": false, "properties": { "cpu": { "type": ["string", "number"] }, "memory": { "type": "string" } } }
+          }
+        }
+      }
+    },
+    "migrate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 7200, "description": "LK_MIGRATE_TIMEOUT_SECS: the longest the whole run may take." },
+        "backoffLimit": { "type": "integer", "minimum": 0, "maximum": 3 }
+      }
+    },
+    "seed": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "existingConfigMap": { "type": "string", "pattern": "^([a-z0-9]([a-z0-9.-]*[a-z0-9])?)?$", "maxLength": 253 },
+        "content": { "type": "string", "maxLength": 262144, "description": "The seed file, YAML, at most 256 KiB (the hub refuses more)." },
+        "revision": { "type": ["string", "integer"], "pattern": "^[A-Za-z0-9._-]{0,63}$", "minimum": 0 },
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600, "description": "LK_SEED_TIMEOUT_SECS: the longest the whole run may take." },
+        "backoffLimit": { "type": "integer", "minimum": 0, "maximum": 3 }
       }
     },
     "topology": {

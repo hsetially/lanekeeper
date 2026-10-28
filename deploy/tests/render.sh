@@ -275,6 +275,16 @@ drop_env() {
     ' "$1"
 }
 
+# volume_secret FILE VOLUME: the Secret that the pod volume VOLUME reads, in the first document that has one (empty when none).
+volume_secret() {
+    awk -v vol="$2" '/^ +- name: / { f = ($0 ~ ("^ +- name: " vol "$")) } f && /^ +secretName: / { print $2; exit }' "$1"
+}
+
+# seed_job_name FILE: the name of the seed Job in FILE (empty when there is none).
+seed_job_name() {
+    awk '/^---$/ { job = 0 } /^kind: Job$/ { job = 1 } job && /^  name: lanekeeper-hub-seed-/ { sub(/^  name: /, ""); print; exit }' "$1"
+}
+
 # hub_env FILE NAME: the value of the variable NAME in the hub StatefulSet of FILE, quotes stripped (empty when it has none).
 hub_env() {
     awk -v name="$2" '
@@ -337,6 +347,21 @@ plant_cmd() {
         return
     fi
     expect_policy_failure "$name" "$bad" "$chart" "$env" "$fragment"
+}
+
+# drop_doc KIND NAME: the rendered output (standard input) without the document of that kind and name.
+drop_doc() {
+    awk -v kind="$1" -v name="$2" '
+        function flush() {
+            if (n > 0 && !(is_kind && is_name)) { for (i = 1; i <= n; i++) print buf[i] }
+            n = 0; is_kind = 0; is_name = 0
+        }
+        /^---$/ { flush(); buf[++n] = $0; next }
+        { buf[++n] = $0 }
+        $0 == "kind: " kind { is_kind = 1 }
+        $0 == "  name: " name { is_name = 1 }
+        END { flush() }
+    '
 }
 
 # The LK_REPLICA_NAME entry moved after LK_REPLICA_ADDRESS, whose $(LK_REPLICA_NAME) Kubernetes then does not expand.
@@ -443,6 +468,90 @@ planted_hardening() {
 
     # 09/fix, T1: the kubelet kills a hub that is still draining when the grace period is shorter than the shutdown.
     plant "a grace period shorter than the shutdown" hub kind 's/terminationGracePeriodSeconds: 45/terminationGracePeriodSeconds: 39/' "terminationGracePeriodSeconds is 39"
+
+    planted_hub_jobs
+}
+
+# --- the hub image's Jobs (09/fix, J1 to J6): the real output with one thing wrong ---------------------------------------------------------
+#
+# The sed expressions are anchored to one document: the migration Job, the seed Job (and its ConfigMap, which has the same name), or the
+# account and policy of the Jobs (both named lanekeeper-hub-jobs). In kind the seed is on, so the output has both Jobs.
+planted_hub_jobs() {
+    echo "== planted: the policies refuse the real output of the hub chart's Jobs with one thing wrong"
+    local mig='/^  name: lanekeeper-hub-migrate$/,/^---$/' sd='/^  name: lanekeeper-hub-seed-[0-9a-f]+$/,/^---$/' jb='/^  name: lanekeeper-hub-jobs$/,/^---$/'
+    local other='sha256:1111111111111111111111111111111111111111111111111111111111111111'
+
+    # The image, the command and the ports.
+    plant "a migration Job on another image" hub kind "$mig"'s/@sha256:0{64}/@'"$other"'/' "it must run the hub's image"
+    plant "a seed Job on another image" hub kind "$sd"'s/@sha256:0{64}/@'"$other"'/' "it must run the hub's image"
+    plant "a migration Job that serves" hub kind "$mig"'s/args: \["migrate"\]/args: ["serve"]/' "args must be exactly"
+    plant "a seed Job with a dry run" hub kind "$sd"'s#args: \["seed", "/etc/lanekeeper/seed/seed.yaml"\]#args: ["seed", "--dry-run", "/etc/lanekeeper/seed/seed.yaml"]#' "args must be exactly"
+    plant "a Job with a command" hub kind "$mig"'s/^( *)args: \["migrate"\]$/\1command: ["\/bin\/sh"]\n&/' "command is set"
+    plant "a Job with a port" hub kind "$mig"'s/^( *)args: \["migrate"\]$/&\n\1ports:\n\1  - {name: debug, containerPort: 6060}/' "a Job has no ports"
+    plant "a Job with a second container" hub kind "$mig"'s/^( *)containers:$/&\n\1  - name: sidecar\n\1    image: x/' "exactly one container"
+
+    # The variables.
+    plant "a migration Job with a variable of the hub" hub kind "$mig"'s/^( *)- name: LK_DB_CA_FILE$/\1- name: LK_GCP_PROJECT\n\1  value: x\n&/' "LK_GCP_PROJECT is not a variable this Job may carry"
+    plant "a migration Job with the application credential" hub kind "$mig"'s/LK_MIGRATOR_URL_FILE/LK_DATABASE_URL_FILE/' "LK_DATABASE_URL_FILE is not a variable this Job may carry"
+    plant "a seed Job with the migrator's credential" hub kind "$sd"'s/- name: LK_DATABASE_URL_FILE/- name: LK_MIGRATOR_URL_FILE/' "LK_MIGRATOR_URL_FILE is not a variable this Job may carry"
+    plant "a seed Job with the migration timeout" hub kind "$sd"'s/- name: LK_SEED_TIMEOUT_SECS/- name: LK_MIGRATE_TIMEOUT_SECS/' "LK_MIGRATE_TIMEOUT_SECS is not a variable this Job may carry"
+    plant "a migration credential outside its mount" hub kind "$mig"'s#value: /etc/lanekeeper/migrator/uri#value: /tmp/uri#' "LK_MIGRATOR_URL_FILE must be /etc/lanekeeper/migrator/uri"
+    plant "a migration timeout over the hub's limit" hub kind "$mig"'{/- name: LK_MIGRATE_TIMEOUT_SECS$/{n;s/value: .*/value: "7201"/}}' "LK_MIGRATE_TIMEOUT_SECS must be a whole number"
+    plant "a seed timeout over the hub's limit" hub kind "$sd"'{/- name: LK_SEED_TIMEOUT_SECS$/{n;s/value: .*/value: "3601"/}}' "LK_SEED_TIMEOUT_SECS must be a whole number"
+    plant "a reference in the migration Job" hub kind "$mig"'{/- name: LK_DB_CA_FILE$/{n;s/value: .*/valueFrom: {configMapKeyRef: {name: c, key: k}}/}}' "LK_DB_CA_FILE takes its value from a valueFrom"
+
+    # The volumes.
+    plant "a Job with a volume it does not mount" hub kind "$mig"'s/^( *)volumes:$/&\n\1  - name: scratch\n\1    emptyDir: {}/' "volumes must be exactly"
+    plant "the migrator's credential mounted writable" hub kind "$mig"'{/mountPath: \/etc\/lanekeeper\/migrator$/{n;d}}' "volumeMounts must be exactly"
+    plant "the migrator's credential mounted elsewhere" hub kind "$mig"'s#mountPath: /etc/lanekeeper/migrator#mountPath: /etc/lanekeeper/db#' "volumeMounts must be exactly"
+    plant "every key of the migrator's Secret" hub kind "$mig"'{/secretName: lanekeeper-db-migrator/,/path: uri/{/items:/d;/- key: uri/d;/path: uri/d}}' "only the uri key"
+    plant "the migrator's credential readable by everyone" hub kind "$mig"'{/secretName: lanekeeper-db-migrator/,/path: uri/s/defaultMode: 288/defaultMode: 420/}' "world-readable"
+    plant "every key of the Secret the seed reads" hub kind "$sd"'{/secretName: lanekeeper-db-app/,/path: uri/{/items:/d;/- key: uri/d;/path: uri/d}}' "only the uri key"
+    plant "the whole CA secret in a Job" hub kind "$mig"'{/secretName: lanekeeper-db-ca/,/path: ca.crt/{/items:/d;/- key: ca.crt/d;/path: ca.crt/d}}' "ca.key"
+    plant "the application role's Secret as the migrator's" hub kind "$mig"'s/secretName: lanekeeper-db-migrator/secretName: lanekeeper-db-app/' "the application role's Secret"
+    plant "the migrator's Secret as the seed's" hub kind "$sd"'s/secretName: lanekeeper-db-app/secretName: lanekeeper-db-migrator/' "the Secret the hub mounts"
+    plant "a seed file of another key" hub kind "$sd"'s/- key: seed.yaml/- key: other.yaml/' "the seed file must come from a ConfigMap"
+
+    # The Job's own life.
+    plant "a Job that restarts in place" hub kind "$mig"'s/restartPolicy: Never/restartPolicy: OnFailure/' "restartPolicy must be Never"
+    plant "a Job without a backoff limit" hub kind "$mig"'{/^  backoffLimit:/d}' "backoffLimit is not set"
+    plant "a Job that tries twenty times" hub kind "$mig"'s/^  backoffLimit: .*/  backoffLimit: 20/' "backoffLimit is 20"
+    plant "a Job without a deadline" hub kind "$mig"'{/^  activeDeadlineSeconds:/d}' "activeDeadlineSeconds is not set"
+    plant "a deadline that is the timeout" hub kind "$mig"'s/^  activeDeadlineSeconds: .*/  activeDeadlineSeconds: 600/' "activeDeadlineSeconds (600) must be longer"
+    plant "a seed deadline that is the timeout" hub kind "$sd"'s/^  activeDeadlineSeconds: .*/  activeDeadlineSeconds: 120/' "activeDeadlineSeconds (120) must be longer"
+    plant "a deadline of a day" hub kind "$mig"'s/^  activeDeadlineSeconds: .*/  activeDeadlineSeconds: 86400/' "a Job that has not finished"
+    plant "a Job without resources" hub kind "$mig"'{/^ +memory: 512Mi$/d}' "resources.limits.memory"
+
+    # Who the Jobs are.
+    plant "a Job as the hub's account" hub kind "$mig"'s/serviceAccountName: lanekeeper-hub-jobs/serviceAccountName: lanekeeper-hub/' "serviceAccountName must be lanekeeper-hub-jobs"
+    plant "a Job account with a Google identity" hub kind "$jb"'s/^  annotations:$/&\n    iam.gke.io\/gcp-service-account: x@example-project.iam.gserviceaccount.com/' "gives it a Google identity"
+    plant "a Job account that mounts a token" hub kind "$jb"'s/^automountServiceAccountToken: false$/automountServiceAccountToken: true/' "automountServiceAccountToken must be stated and false; the Jobs"
+    plant "a Job pod with the hub's label" hub kind "$mig"'s#app.kubernetes.io/name: lanekeeper-hub-jobs#app.kubernetes.io/name: lanekeeper-hub#' "the pod's label app.kubernetes.io/name must be lanekeeper-hub-jobs"
+    plant_cmd "a Job account that is not rendered" hub kind "ServiceAccount/lanekeeper-hub-jobs is missing" drop_doc ServiceAccount lanekeeper-hub-jobs
+    plant_cmd "a hub without its migration Job" hub kind "there is no migration Job" drop_doc Job lanekeeper-hub-migrate
+    plant_append "a third Job of the hub's image" hub kind $'apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: lanekeeper-hub-backfill\n  namespace: lanekeeper\nspec:\n  template:\n    spec:\n      containers:\n        - name: c\n          image: x' "only two Jobs"
+
+    # The order.
+    plant "a migration Job that is not a hook" hub kind "$mig"'{/helm\.sh\/hook: /d}' "helm.sh/hook must be pre-install,pre-upgrade"
+    plant "a migration Job after the install" hub kind "$mig"'s/helm.sh\/hook: .*/helm.sh\/hook: post-install,post-upgrade/' "helm.sh/hook must be pre-install,pre-upgrade"
+    plant "a seed Job that is a hook" hub kind 's/^(  name: lanekeeper-hub-seed-[0-9a-f]+)$/\1\n  annotations:\n    helm.sh\/hook: pre-install,pre-upgrade/' "the seed Job is a Job, not a hook"
+    plant "a Job account that is not a hook" hub kind "$jb"'{/helm\.sh\/hook: /d}' "it must be a hook of pre-install,pre-upgrade"
+    plant "a Job account after the migration" hub kind "$jb"'s/hook-weight: "-10"/hook-weight: "5"/' "must be lower than the migration Job's"
+    plant "a Job account that is deleted when the migration succeeds" hub kind "$jb"'s/hook-delete-policy: before-hook-creation/hook-delete-policy: hook-succeeded/' "hook-succeeded would delete it"
+
+    # The Jobs' network (J3).
+    plant_cmd "Jobs without their NetworkPolicy" hub kind "NetworkPolicy/lanekeeper-hub-jobs is missing" drop_doc NetworkPolicy lanekeeper-hub-jobs
+    plant "a Jobs policy with an ingress rule" hub kind "$jb"'s/^  policyTypes: \[Ingress, Egress\]$/&\n  ingress:\n    - from:\n        - podSelector: {}\n      ports:\n        - {protocol: TCP, port: 8443}/' "admits nothing in"
+    plant "a Jobs policy without egress deny" hub kind "$jb"'s/^  policyTypes: \[Ingress, Egress\]$/  policyTypes: [Ingress]/' "lanekeeper-hub-jobs: not default deny"
+    plant "a Jobs policy to the metadata server" hub kind "$jb"'s/^  egress:$/&\n    - to:\n        - ipBlock: {cidr: 169.254.169.254\/32}\n      ports:\n        - {protocol: TCP, port: 80}/' "lanekeeper-hub-jobs: egress must be exactly"
+    plant "a Jobs policy to the other replicas" hub kind "$jb"'s/^  egress:$/&\n    - to:\n        - podSelector:\n            matchLabels:\n              app.kubernetes.io\/name: lanekeeper-hub\n      ports:\n        - {protocol: TCP, port: 8445}/' "lanekeeper-hub-jobs: egress must be exactly"
+    plant "a Jobs policy to the database on another port" hub kind "$jb"'s/port: 5432\}/port: 8000}/' "lanekeeper-hub-jobs: egress must be exactly"
+    plant "a Jobs policy that selects the hub" hub kind "$jb"'s#app.kubernetes.io/name: lanekeeper-hub-jobs#app.kubernetes.io/name: lanekeeper-hub#' "it selects pods other than the Jobs'"
+
+    # R2 and the seed's file: a ConfigMap is not a place for a key.
+    local out="$work/seed-key.yaml"
+    render hub kind --set-literal $'seed.content=version: 1\n# -----BEGIN PRIVATE KEY-----\nabc\n# -----END PRIVATE KEY-----\n' >"$out"
+    expect_policy_failure "a private key in the seed file" "$out" hub kind "holds a private key"
 }
 
 # --- the hub's variables against the contract (09/fix, E1) ---------------------------------------------------------------------------------
@@ -874,6 +983,10 @@ planted_db() {
     plant "another app than the hub" db prod 's#app.kubernetes.io/name: lanekeeper-hub#app.kubernetes.io/name: other#' "ingress must be exactly"
     plant "the hub on ssh" db prod '0,/port: 5432/s/port: 5432/port: 22/' "ingress must be exactly"
     plant "the operator of any namespace" db prod 's#^( *)kubernetes.io/metadata.name: cnpg-system$#\1foo: bar#' "ingress must be exactly"
+    # 09/fix, J3: the pods of the hub image's Jobs, by their own label and on 5432 only.
+    plant "the Jobs missing from the callers" db prod '/^    - from:$/{N;N;N;N;N;/lanekeeper-hub-jobs/d}' "ingress must be exactly"
+    plant "the Jobs on the status port" db prod '/lanekeeper-hub-jobs/,/port: 5432\}/s/port: 5432\}/port: 8000}/' "ingress must be exactly"
+    plant "every pod of the part for the Jobs" db prod 's#app.kubernetes.io/name: lanekeeper-hub-jobs#app.kubernetes.io/part-of: lanekeeper#' "ingress must be exactly"
     plant "an environment that is not one" db prod 's#lanekeeper.io/environment: prod#lanekeeper.io/environment: dev#' "lanekeeper.io/environment"
     plant_append "a second policy that admits everyone" db prod $'apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: lanekeeper-db-open\n  namespace: lanekeeper\nspec:\n  podSelector:\n    matchLabels:\n      cnpg.io/cluster: lanekeeper-db\n  policyTypes: [Ingress]\n  ingress:\n    - ports:\n        - {protocol: TCP, port: 5432}' "policies add up"
     plant_append "a second cluster" db prod $'apiVersion: postgresql.cnpg.io/v1\nkind: Cluster\nmetadata:\n  name: other-db\n  namespace: lanekeeper\nspec:\n  instances: 3' "the only database is lanekeeper-db"
@@ -1381,6 +1494,33 @@ planted_argocd() {
     else
         echo "  ok  a Secret in the hub's output is not allowed by its project"
     fi
+    # 09/fix, J5: the workloads project allows the hub's Jobs and the ConfigMap of the seed file, and a project without them refuses the chart.
+    local weaker="$work/projects-weaker.yaml"
+    render hub kind >"$rendered"
+    sed -E '/^    - group: batch$/{N;d}' deploy/argocd/platform/projects.yaml >"$weaker"
+    if out="$(argocd_conftest argocd_scope "/work/scope-planted.yaml" "/work/projects-weaker.yaml" 2>&1)"; then
+        fail "the hub's Jobs were accepted by a project without batch/Job"
+    elif ! grep -qF "no project allows the kind Job" <<<"$out"; then
+        fail "the hub's Jobs were refused by a project without batch/Job, but not for their kind:"$'\n'"$out"
+    else
+        echo "  ok  the hub's Jobs are not allowed by a project without batch/Job"
+    fi
+    sed -E '/^    - group: ""$/{N;/kind: ConfigMap/d}' deploy/argocd/platform/projects.yaml >"$weaker"
+    if out="$(argocd_conftest argocd_scope "/work/scope-planted.yaml" "/work/projects-weaker.yaml" 2>&1)"; then
+        fail "the seed's ConfigMap was accepted by a project without ConfigMap"
+    elif ! grep -qF "no project allows the kind ConfigMap" <<<"$out"; then
+        fail "the seed's ConfigMap was refused by a project without ConfigMap, but not for its kind:"$'\n'"$out"
+    else
+        echo "  ok  the seed's ConfigMap is not allowed by a project without ConfigMap"
+    fi
+    printf -- '---\napiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: planted\n  namespace: lanekeeper\n' >>"$rendered"
+    if out="$(argocd_conftest argocd_scope "/work/scope-planted.yaml" deploy/argocd/platform/projects.yaml 2>&1)"; then
+        fail "a CronJob in the hub's output was accepted by the scope check"
+    elif ! grep -qF "no project allows the kind CronJob" <<<"$out"; then
+        fail "a CronJob in the hub's output was refused, but not for its kind:"$'\n'"$out"
+    else
+        echo "  ok  a CronJob in the hub's output is not allowed by its project"
+    fi
     render agent sit1 >"$rendered"
     printf -- '---\napiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: planted\n' >>"$rendered"
     if out="$(argocd_conftest argocd_scope "/work/scope-planted.yaml" deploy/argocd/swimlanes/sit1.yaml 2>&1)"; then
@@ -1447,6 +1587,28 @@ cross_check() {
     hub_bucket="$(hub_env "$hub" LK_AUDIT_CHECKPOINT_BUCKET)"
     if [ -z "$audit_bucket" ] || [ "$audit_bucket" != "$hub_bucket" ]; then
         echo "the hub writes its audit checkpoints to bucket '$hub_bucket' (LK_AUDIT_CHECKPOINT_BUCKET) and the gcp chart makes the audit-checkpoint bucket '$audit_bucket'"
+        status=1
+    fi
+
+    # The Secrets the hub's pods read, and the pods the database admits (09/fix, J2, J3): the migration Job reads the owner's credential from
+    # the Secret that the database's bootstrap names, the hub and the seed Job read the application role's from the one its managed role names,
+    # and the Jobs' pods carry a label that the database's NetworkPolicy admits on 5432.
+    local want got label
+    want="$(awk '/^ +initdb:$/ { f = 1 } f && /^ +secret:$/ { s = 1; next } f && s && /^ +name: / { print $2; exit }' "$db")"
+    got="$(volume_secret "$hub" migrator-credentials)"
+    if [ -z "$got" ] || [ "$got" != "$want" ]; then
+        echo "the hub's migration Job reads the migrator's credential from Secret '$got' and the database makes the owner's credential in '$want' (initdb.secret.name)"
+        status=1
+    fi
+    want="$(awk '/^ +passwordSecret:$/ { s = 1; next } s && /^ +name: / { print $2; exit }' "$db")"
+    got="$(volume_secret "$hub" db-credentials)"
+    if [ -z "$got" ] || [ "$got" != "$want" ]; then
+        echo "the hub reads the application role's credential from Secret '$got' and the database's managed role lanekeeper_app has its password in '$want' (passwordSecret)"
+        status=1
+    fi
+    label="$(awk '/^---$/ { job = 0 } /^kind: Job$/ { job = 1 } job && /^ +app.kubernetes.io\/name: / { print $2; exit }' "$hub")"
+    if [ -z "$label" ] || ! awk '/^---$/ { np = 0 } /^kind: NetworkPolicy$/ { np = 1 } np' "$db" | grep -qxF "              app.kubernetes.io/name: $label"; then
+        echo "the pods of the hub's Jobs are labelled app.kubernetes.io/name '$label' and the database's NetworkPolicy does not admit that label on 5432"
         status=1
     fi
 
@@ -1569,6 +1731,14 @@ planted_cross() {
     expect_cross_failure "a disk key that Compute Engine may not use" "$bad" "$gcp" "$hub" "encrypts a disk"
     sed -E 's#(disk-encryption-kms-key: ".*cryptoKeys/)lanekeeper-disk-prod#\1other-disk#' "$hub" >"$bad"
     expect_cross_failure "the hub's disk key that Compute Engine may not use" "$db" "$gcp" "$bad" "encrypts a disk"
+    sed -E 's#^( *)name: lanekeeper-db-migrator$#\1name: lanekeeper-db-owner#' "$db" >"$bad"
+    expect_cross_failure "an owner's credential in a Secret the migration Job does not read" "$bad" "$gcp" "$hub" "the hub's migration Job reads the migrator's credential from Secret"
+    sed -E 's#^( *)name: lanekeeper-db-app$#\1name: lanekeeper-db-application#' "$db" >"$bad"
+    expect_cross_failure "an application credential in a Secret the hub does not read" "$bad" "$gcp" "$hub" "the hub reads the application role's credential from Secret"
+    sed -E 's#app.kubernetes.io/name: lanekeeper-hub-jobs#app.kubernetes.io/name: lanekeeper-hub-batch#' "$hub" >"$bad"
+    expect_cross_failure "Jobs whose label the database does not admit" "$db" "$gcp" "$bad" "the database's NetworkPolicy does not admit that label"
+    sed -E '/^    - from:$/{N;N;N;N;N;/lanekeeper-hub-jobs/d}' "$db" >"$bad"
+    expect_cross_failure "a database that does not admit the Jobs" "$bad" "$gcp" "$hub" "the database's NetworkPolicy does not admit that label"
     sed -E 's#(value: "example-project-lanekeeper-audit-)prod"#\1prd"#' "$hub" >"$bad"
     expect_cross_failure "audit checkpoints to a bucket that the gcp chart does not make" "$db" "$gcp" "$bad" "the hub writes its audit checkpoints to bucket"
     sed -E 's#^(  name: example-project-lanekeeper-audit-)prod$#\1prd#' "$gcp" >"$bad"
@@ -1605,7 +1775,7 @@ planted_kubeconform() {
     out="$(kubeconform "${schema_args[@]}" deploy/tests/planted/kubeconform.yaml 2>&1)" || status=$?
     [ "$status" -ne 0 ] || fail "kubeconform accepted deploy/tests/planted/kubeconform.yaml"
     local kind
-    for kind in GCPBackendPolicy HealthCheckPolicy FQDNNetworkPolicy ComputeSecurityPolicy Gateway StatefulSet Deployment Role RoleBinding NetworkPolicy ConfigMap Cluster ScheduledBackup StorageBucket IAMPolicyMember IAMServiceAccount BinaryAuthorizationPolicy BinaryAuthorizationAttestor ContainerAnalysisNote Application AppProject; do
+    for kind in GCPBackendPolicy HealthCheckPolicy FQDNNetworkPolicy ComputeSecurityPolicy Gateway StatefulSet Job Deployment Role RoleBinding NetworkPolicy ConfigMap Cluster ScheduledBackup StorageBucket IAMPolicyMember IAMServiceAccount BinaryAuthorizationPolicy BinaryAuthorizationAttestor ContainerAnalysisNote Application AppProject; do
         grep -E -q -- "- $kind planted is invalid" <<<"$out" || fail "kubeconform did not refuse the planted $kind:"$'\n'"$out"
     done
     grep -q -- "could not find schema for SomethingWithoutASchema" <<<"$out" || fail "a kind without a schema was skipped, not refused"
@@ -1709,6 +1879,26 @@ planted_templates() {
     expect_helm_failure "two waits that together outlast it" "terminationGracePeriodSeconds" --set-json 'config.tuning={"LK_SHUTDOWN_GRACE_SECS":20,"LK_SHUTDOWN_DRAIN_SECS":20}'
     expect_helm_failure "a drain that is not a number" "LK_SHUTDOWN_DRAIN_SECS" --set-json 'config.tuning={"LK_SHUTDOWN_DRAIN_SECS":"long"}'
     expect_helm_failure "a drain over the hub's limit" "LK_SHUTDOWN_DRAIN_SECS" --set-json 'config.tuning={"LK_SHUTDOWN_DRAIN_SECS":121}'
+
+    # 09/fix, J1 to J3, J6, J7: the migration Job and the seed Job.
+    expect_helm_failure "a seed with no file" "seed.content or seed.existingConfigMap is required" --set seed.enabled=true --set seed.existingConfigMap=
+    expect_helm_failure "a seed with two files" "set only one of seed.content and seed.existingConfigMap" --set seed.enabled=true --set-literal seed.content='version: 1' --set seed.existingConfigMap=my-seed
+    expect_helm_failure "a seed ConfigMap that is not a name" "existingConfigMap" --set seed.enabled=true --set seed.existingConfigMap='My Seed'
+    # 256 KiB and a byte: over the file the hub reads. It goes in a values file, because an argument that long is refused by the shell.
+    printf 'seed:\n  enabled: true\n  existingConfigMap: ""\n  content: "%s"\n' "$(head -c 262145 /dev/zero | tr '\0' 'a')" >"$work/seed-too-long.yaml"
+    expect_helm_failure "a seed file over the hub's limit" "content" -f "$work/seed-too-long.yaml"
+    expect_helm_failure "a seed revision with a space" "revision" --set seed.revision='a b'
+    expect_helm_failure "a migration timeout of zero" "timeoutSeconds" --set migrate.timeoutSeconds=0
+    expect_helm_failure "a migration timeout over the hub's limit" "timeoutSeconds" --set migrate.timeoutSeconds=7201
+    expect_helm_failure "a seed timeout over the hub's limit" "timeoutSeconds" --set seed.timeoutSeconds=3601
+    expect_helm_failure "a migration that tries ten times" "backoffLimit" --set migrate.backoffLimit=10
+    expect_helm_failure "a seed that tries ten times" "backoffLimit" --set seed.backoffLimit=10
+    expect_helm_failure "the migrator's Secret that is the application role's" "database.migratorSecretName is the same Secret as database.credentialsSecretName" --set database.migratorSecretName=lanekeeper-db-app
+    expect_helm_failure "a migrator's Secret that is not a name" "migratorSecretName" --set database.migratorSecretName='Bad Name'
+    expect_helm_failure "Jobs without limits" "limits" --set-json 'jobs.resources.limits=null'
+    expect_helm_failure "Jobs without requests" "requests" --set-json 'jobs.resources.requests=null'
+    expect_helm_failure "a Job value that does not exist" "hook" --set migrate.hook=false
+    expect_helm_failure "a seed value that does not exist" "hook" --set seed.hook=true
 }
 
 # accept_hub_variant NAME HELM_ARG...: the hub chart (prod values) with other values must still pass every check (kubeconform, the
@@ -1753,6 +1943,55 @@ hub_variants() {
     in_variant '^ +value: "67108864"$' "numbers of a million or more are printed whole (Go prints 6.7108864e+07)"
     in_variant '^ +value: "10000000"$' "numbers of a million or more are printed whole (Go prints 1e+07)"
     in_variant '^ +value: "0.5"$' "a fraction"
+    # J1, J2, J7: the timeouts the Jobs are told and the deadlines they are given (the timeout and five minutes).
+    accept_hub_variant "longer timeouts for the Jobs" --set migrate.timeoutSeconds=1800 --set seed.enabled=true --set seed.existingConfigMap=my-seed --set seed.timeoutSeconds=300
+    in_variant '^ +value: "1800"$' "longer timeouts for the Jobs: the migration timeout"
+    in_variant '^  activeDeadlineSeconds: 2100$' "longer timeouts for the Jobs: the migration deadline is the timeout and five minutes"
+    in_variant '^  activeDeadlineSeconds: 600$' "longer timeouts for the Jobs: the seed deadline is the timeout and five minutes"
+    # J7: no seed unless it is on; the file comes from a ConfigMap that exists, or from one the chart makes.
+    accept_hub_variant "no seed" --set seed.enabled=false
+    ! grep -q 'lanekeeper-hub-seed' "$work/variant.yaml" || fail "no seed: the output has a seed Job or a ConfigMap for it"
+    grep -q '^  name: lanekeeper-hub-migrate$' "$work/variant.yaml" || fail "no seed: there is no migration Job"
+    accept_hub_variant "a seed from a ConfigMap made out of band" --set seed.enabled=true --set seed.existingConfigMap=my-seed
+    in_variant '^ +name: my-seed$' "a seed from a ConfigMap made out of band"
+    ! grep -q '^kind: ConfigMap$' "$work/variant.yaml" || fail "a seed from a ConfigMap made out of band: the chart rendered a ConfigMap"
+    accept_hub_variant "a seed from a file in the values" --set seed.enabled=true --set seed.existingConfigMap= --set-literal seed.content=$'version: 1\nprojects: []\n'
+    in_variant '^kind: ConfigMap$' "a seed from a file in the values"
+    local first named
+    first="$(seed_job_name "$work/variant.yaml")"
+    [[ "$first" =~ ^lanekeeper-hub-seed-[0-9a-f]{10}$ ]] || fail "a seed from a file in the values: the Job is called '$first'"
+    # The Job's pod template cannot change, so everything that changes it changes the name: the file, the revision, the image, the ConfigMap.
+    # The same inputs, the same name.
+    # (Not in a command substitution: a `fail` in a subshell would not be counted.)
+    seed_name=""
+    seed_name_of() {
+        seed_name=""
+        if render hub prod --set seed.enabled=true --set seed.existingConfigMap= "$@" >"$work/variant2.yaml" 2>"$work/variant.err"; then
+            seed_name="$(seed_job_name "$work/variant2.yaml")"
+        else
+            fail "a seed with $*: the chart did not render: $(tail -n1 "$work/variant.err")"
+        fi
+    }
+    local file=$'version: 1\nprojects: []\n'
+    seed_name_of --set-literal seed.content="$file"
+    [ "$seed_name" = "$first" ] || fail "the same seed in two renders has two names ('$seed_name' and '$first')"
+    seed_name_of --set-literal seed.content="$file# changed"
+    [ -n "$seed_name" ] && [ "$seed_name" != "$first" ] || fail "a changed seed file has the name of the old Job: the sync would try to change a Job's pod template"
+    seed_name_of --set seed.revision=2 --set-literal seed.content="$file"
+    [ -n "$seed_name" ] && [ "$seed_name" != "$first" ] || fail "a new seed revision has the name of the old Job"
+    seed_name_of --set-string seed.revision=2 --set-literal seed.content="$file"
+    [ -n "$seed_name" ] && [ "$seed_name" != "$first" ] || fail "a new seed revision (a string) has the name of the old Job"
+    seed_name_of --set image.digest=sha256:2222222222222222222222222222222222222222222222222222222222222222 --set-literal seed.content="$file"
+    [ -n "$seed_name" ] && [ "$seed_name" != "$first" ] || fail "a new image has the name of the old seed Job"
+    seed_name_of --set seed.timeoutSeconds=300 --set-literal seed.content="$file"
+    [ -n "$seed_name" ] && [ "$seed_name" != "$first" ] || fail "a new timeout has the name of the old seed Job"
+    seed_name_of --set jobs.resources.limits.memory=1Gi --set-literal seed.content="$file"
+    [ -n "$seed_name" ] && [ "$seed_name" != "$first" ] || fail "new resources have the name of the old seed Job"
+    seed_name_of --set seed.existingConfigMap=my-seed
+    named="$seed_name"
+    [ -n "$named" ] || fail "a seed from a ConfigMap has no Job"
+    seed_name_of --set seed.existingConfigMap=my-other-seed
+    [ -n "$seed_name" ] && [ "$seed_name" != "$named" ] || fail "a seed from another ConfigMap has the name of the old Job"
     accept_hub_variant "a collector" --set config.otlpEndpoint=http://otel-collector.monitoring.svc:4317
     in_variant '^ +- name: LK_OTLP_ENDPOINT$' "a collector"
 }

@@ -55,6 +55,9 @@ ac_workloads_kinds := [
 	{"group": "gateway.networking.k8s.io", "kind": "HTTPRoute"},
 	{"group": "postgresql.cnpg.io", "kind": "Cluster"},
 	{"group": "postgresql.cnpg.io", "kind": "ScheduledBackup"},
+	# The hub image's Jobs (the migration, a hook; the seed) and the ConfigMap of the seed file (09/fix, J5).
+	{"group": "batch", "kind": "Job"},
+	{"group": "", "kind": "ConfigMap"},
 ]
 
 ac_cloud_kinds := [

@@ -13,7 +13,7 @@ metadata:
   labels:
     app.kubernetes.io/part-of: lanekeeper
 spec:
-  description: The Lanekeeper hub and its database (charts/hub, charts/db)
+  description: The Lanekeeper hub, its migration and seed Jobs, and its database (charts/hub, charts/db)
   sourceRepos:
     - https://github.com/hsetially/lanekeeper
   destinations:
@@ -52,6 +52,12 @@ spec:
       kind: Cluster
     - group: postgresql.cnpg.io
       kind: ScheduledBackup
+    # The hub image's Jobs: `hub migrate` (a Helm pre-install and pre-upgrade hook, which Argo CD runs as PreSync) and `hub seed`, and the
+    # ConfigMap that holds the seed file. batch/Job and nothing else of batch.
+    - group: batch
+      kind: Job
+    - group: ""
+      kind: ConfigMap
   orphanedResources:
     warn: true
 ---

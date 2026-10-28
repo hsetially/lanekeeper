@@ -50,13 +50,7 @@ spec:
         {{- end }}
       {{- end }}
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        runAsGroup: 65532
-        fsGroup: 65532
-        fsGroupChangePolicy: OnRootMismatch
-        seccompProfile:
-          type: RuntimeDefault
+        {{- include "lanekeeper-hub.podSecurityContext" . | nindent 8 }}
       affinity:
         podAntiAffinity:
           {{- if eq .Values.topology.mode "kind" }}
@@ -79,11 +73,7 @@ spec:
           image: {{ $image | quote }}
           imagePullPolicy: IfNotPresent
           securityContext:
-            allowPrivilegeEscalation: false
-            privileged: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
+            {{- include "lanekeeper-hub.containerSecurityContext" . | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           ports:

@@ -86,6 +86,14 @@ spec:
     metadata: {labels: {a: b}}
     spec: {containers: [{name: c, image: x}]}
 ---
+apiVersion: batch/v1
+kind: Job
+metadata: {name: planted, namespace: planted-ns}
+spec:
+  bogusField: 1
+  template:
+    spec: {restartPolicy: Never, containers: [{name: c, image: x}]}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata: {name: planted, namespace: planted-ns}

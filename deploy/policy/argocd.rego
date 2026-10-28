@@ -320,6 +320,9 @@ approved_namespaced := {
 		"networking.gke.io/FQDNNetworkPolicy", "networking.gke.io/GCPBackendPolicy", "networking.gke.io/HealthCheckPolicy",
 		"gateway.networking.k8s.io/Gateway", "gateway.networking.k8s.io/HTTPRoute",
 		"postgresql.cnpg.io/Cluster", "postgresql.cnpg.io/ScheduledBackup",
+		# The hub image's Jobs (`hub migrate`, a hook; `hub seed`) and the ConfigMap of the seed file (09/fix, J5): batch/Job and nothing else of
+		# batch (no CronJob), and ConfigMaps, which hold no secret (secrets.rego refuses a private key in one) and are not Secrets.
+		"batch/Job", "/ConfigMap",
 	},
 	"lanekeeper-cloud": {
 		"storage.cnrm.cloud.google.com/StorageBucket", "iam.cnrm.cloud.google.com/IAMServiceAccount",

@@ -347,6 +347,200 @@ fqdnpolicy := {
 	},
 }
 
+# --- the hub image's Jobs (09/fix, J1 to J4) -------------------------------------------------------------------------------------------------
+#
+# `hub migrate` and `hub seed` run from the hub's image as Jobs (crates/hub/HARDENING.md, "The migration Job" and "The seed Job"). They are
+# pods of their own: another label than the hub's (so the hub's NetworkPolicy does not select them, and the database admits them by their own),
+# a ServiceAccount of their own with no Google identity, the hub pod's security context, and four volumes at most.
+
+jobs_name := "lanekeeper-hub-jobs"
+
+jobs_selector := {"app.kubernetes.io/name": "lanekeeper-hub-jobs"}
+
+jobs_labels(component) := {
+	"app.kubernetes.io/name": "lanekeeper-hub-jobs",
+	"app.kubernetes.io/instance": "lanekeeper",
+	"app.kubernetes.io/part-of": "lanekeeper",
+	"app.kubernetes.io/component": component,
+}
+
+seed_job_name := "lanekeeper-hub-seed-0123456789"
+
+# The Jobs' ServiceAccount and NetworkPolicy are hooks of the same events as the migration Job, with a lower weight, so that on a first
+# install they exist when the migration pod is made.
+hook_annotations(weight) := {
+	"helm.sh/hook": "pre-install,pre-upgrade",
+	"helm.sh/hook-weight": weight,
+	"helm.sh/hook-delete-policy": "before-hook-creation",
+	"argocd.argoproj.io/sync-wave": weight,
+}
+
+job_security_context := hardened_container.securityContext
+
+job_pod_security_context := statefulset.spec.template.spec.securityContext
+
+jobs_serviceaccount := {
+	"apiVersion": "v1",
+	"kind": "ServiceAccount",
+	"metadata": {"name": jobs_name, "namespace": namespace, "labels": jobs_labels("jobs"), "annotations": hook_annotations("-10")},
+	"automountServiceAccountToken": false,
+}
+
+jobs_networkpolicy := {
+	"apiVersion": "networking.k8s.io/v1",
+	"kind": "NetworkPolicy",
+	"metadata": {"name": jobs_name, "namespace": namespace, "labels": jobs_labels("jobs"), "annotations": hook_annotations("-10")},
+	"spec": {
+		"podSelector": {"matchLabels": jobs_selector},
+		"policyTypes": ["Ingress", "Egress"],
+		"egress": [
+			{
+				"to": [{
+					"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
+					"podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+				}],
+				"ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}],
+			},
+			{"to": [{"podSelector": {"matchLabels": {"cnpg.io/cluster": "lanekeeper-db"}}}], "ports": [{"protocol": "TCP", "port": 5432}]},
+		],
+	},
+}
+
+job_resources := {
+	"requests": {"cpu": "100m", "memory": "128Mi"},
+	"limits": {"cpu": "1", "memory": "512Mi"},
+}
+
+job_container(name, args, env, mounts) := {
+	"name": name,
+	"image": hardened_container.image,
+	"imagePullPolicy": "IfNotPresent",
+	"args": args,
+	"securityContext": job_security_context,
+	"resources": job_resources,
+	"env": env,
+	"volumeMounts": mounts,
+}
+
+job_pod_spec(container, volumes) := {
+	"serviceAccountName": jobs_name,
+	"automountServiceAccountToken": false,
+	"enableServiceLinks": false,
+	"restartPolicy": "Never",
+	"securityContext": job_pod_security_context,
+	"containers": [container],
+	"volumes": volumes,
+}
+
+job_tmp_volume := {"name": "tmp", "emptyDir": {"sizeLimit": "256Mi"}}
+
+job_ca_volume := {"name": "db-ca", "secret": {
+	"secretName": "lanekeeper-db-ca",
+	"items": [{"key": "ca.crt", "path": "ca.crt"}],
+}}
+
+job_tmp_mount := {"name": "tmp", "mountPath": "/tmp"}
+
+job_ca_mount := {"name": "db-ca", "mountPath": "/etc/lanekeeper/db-ca", "readOnly": true}
+
+migrate_job := {
+	"apiVersion": "batch/v1",
+	"kind": "Job",
+	"metadata": {
+		"name": "lanekeeper-hub-migrate",
+		"namespace": namespace,
+		"labels": jobs_labels("migrate"),
+		"annotations": hook_annotations("0"),
+	},
+	"spec": {
+		"backoffLimit": 2,
+		"activeDeadlineSeconds": 900,
+		"template": {
+			"metadata": {"labels": jobs_labels("migrate")},
+			"spec": job_pod_spec(
+				job_container(
+					"migrate",
+					["migrate"],
+					[
+						{"name": "LK_MIGRATOR_URL_FILE", "value": "/etc/lanekeeper/migrator/uri"},
+						{"name": "LK_DB_CA_FILE", "value": "/etc/lanekeeper/db-ca/ca.crt"},
+						{"name": "LK_MIGRATE_TIMEOUT_SECS", "value": "600"},
+					],
+					[
+						job_tmp_mount,
+						{"name": "migrator-credentials", "mountPath": "/etc/lanekeeper/migrator", "readOnly": true},
+						job_ca_mount,
+					],
+				),
+				[
+					job_tmp_volume,
+					{"name": "migrator-credentials", "secret": {
+						"secretName": "lanekeeper-db-migrator",
+						"defaultMode": 288,
+						"items": [{"key": "uri", "path": "uri"}],
+					}},
+					job_ca_volume,
+				],
+			),
+		},
+	},
+}
+
+seed_job := {
+	"apiVersion": "batch/v1",
+	"kind": "Job",
+	"metadata": {
+		"name": seed_job_name,
+		"namespace": namespace,
+		"labels": jobs_labels("seed"),
+	},
+	"spec": {
+		"backoffLimit": 2,
+		"activeDeadlineSeconds": 420,
+		"template": {
+			"metadata": {"labels": jobs_labels("seed")},
+			"spec": job_pod_spec(
+				job_container(
+					"seed",
+					["seed", "/etc/lanekeeper/seed/seed.yaml"],
+					[
+						{"name": "LK_DATABASE_URL_FILE", "value": "/etc/lanekeeper/db/uri"},
+						{"name": "LK_DB_CA_FILE", "value": "/etc/lanekeeper/db-ca/ca.crt"},
+						{"name": "LK_SEED_TIMEOUT_SECS", "value": "120"},
+					],
+					[
+						job_tmp_mount,
+						{"name": "db-credentials", "mountPath": "/etc/lanekeeper/db", "readOnly": true},
+						job_ca_mount,
+						{"name": "seed", "mountPath": "/etc/lanekeeper/seed", "readOnly": true},
+					],
+				),
+				[
+					job_tmp_volume,
+					{"name": "db-credentials", "secret": {
+						"secretName": "lanekeeper-db-app",
+						"defaultMode": 288,
+						"items": [{"key": "uri", "path": "uri"}],
+					}},
+					job_ca_volume,
+					{"name": "seed", "configMap": {
+						"name": seed_job_name,
+						"items": [{"key": "seed.yaml", "path": "seed.yaml"}],
+					}},
+				],
+			),
+		},
+	},
+}
+
+seed_configmap := {
+	"apiVersion": "v1",
+	"kind": "ConfigMap",
+	"metadata": {"name": seed_job_name, "namespace": namespace, "labels": jobs_labels("seed")},
+	"immutable": true,
+	"data": {"seed.yaml": "version: 1\n"},
+}
+
 # The Cloud Armor policy of the gcp chart.
 armor_rule_users := {
 	"action": "allow",
@@ -404,6 +598,11 @@ hub_docs := [
 	healthcheckpolicy,
 	networkpolicy,
 	fqdnpolicy,
+	jobs_serviceaccount,
+	jobs_networkpolicy,
+	migrate_job,
+	seed_job,
+	seed_configmap,
 ]
 
 # The input of a conftest run over the hub chart's output.
@@ -433,6 +632,9 @@ without(kind) := [{"path": "rendered/hub.yaml", "contents": [d | some d in hub_d
 
 # The hub input with one more document.
 with_doc(doc) := [{"path": "rendered/hub.yaml", "contents": array.concat(hub_docs, [doc])}, budgets]
+
+# The hub input without the one document of a kind and name.
+without_named(kind, doc_name) := [{"path": "rendered/hub.yaml", "contents": [d | some d in hub_docs; not is_target(d, kind, doc_name)]}, budgets]
 
 # The hub input without the budgets file.
 without_budgets := [{"path": "rendered/hub.yaml", "contents": hub_docs}]

@@ -14,6 +14,8 @@ The platform cluster's Argo CD deploys it with `deploy/argocd/platform/hub.yaml`
 | `Service/lanekeeper-hub-agent` | `LoadBalancer` on **443**, the port the agents dial, forwarding to the container port named `agent` (8444, which the NetworkPolicy admits); `externalTrafficPolicy: Local`, `loadBalancerSourceRanges` = `network.agentSourceRanges` (never empty) |
 | `Service/lanekeeper-hub-web`, `Gateway`, `HTTPRoute`, `GCPBackendPolicy`, `HealthCheckPolicy` | the users' door: HTTPS only, a named certificate (never a Secret), Cloud Armor attached, health check `/readyz` on 9090 |
 | `NetworkPolicy/lanekeeper-hub`, `FQDNNetworkPolicy/lanekeeper-hub-external` | default deny; only what HARDENING.md lists. Without FQDN policy (`network.fqdnPolicy: false`) the external hosts are reached by address, which is weaker and marked |
+| `Job/lanekeeper-hub-migrate`, `ServiceAccount/lanekeeper-hub-jobs`, `NetworkPolicy/lanekeeper-hub-jobs` | `hub migrate` as the migrator, a Helm `pre-install,pre-upgrade` hook (Argo CD: PreSync); its account and policy are hooks with a lower weight, so that a first install has them. See "The Jobs" |
+| `Job/lanekeeper-hub-seed-<hash>`, `ConfigMap/lanekeeper-hub-seed-<hash>` | with `seed.enabled`: `hub seed` as the application role, after the migration; not a hook. The ConfigMap only with `seed.content` |
 
 The chart refuses to render (`helm template` stops) without an image digest, a Google service account, non-empty agent source
 ranges, and, for the Gateway, a host name, an address name and exactly one certificate. `values.schema.json` refuses unknown
@@ -58,6 +60,40 @@ secrets of the table and their first versions, `write-preview-key` (the hub does
 start in that mode without it); the KMS keys and their roles for the hub's Google service account; the CA certificates, made once with
 `hub ca-init`; the Entra app registration.
 
+## The Jobs
+
+`crates/hub/HARDENING.md` ("The migration Job", "The seed Job") is the contract; `deploy/policy/hardening.rego`, `network.rego` and
+`database.rego` hold the rendering to it, and `render.sh planted` shows each rule refusing a change.
+
+| | `hub migrate` | `hub seed` |
+|---|---|---|
+| Runs | before the hub rolls out: Helm `pre-install` and `pre-upgrade` hook; Argo CD makes it a `PreSync` hook and the weight its sync wave | after the migration, in the sync itself: **a Job, not a hook** (a missing seed must not stop a deploy) |
+| As | `lanekeeper_migrator`: the Secret `database.migratorSecretName`, key `uri` only, mode `0440`, at `/etc/lanekeeper/migrator` | `lanekeeper_app`: the Secret the hub mounts (`database.credentialsSecretName`), key `uri` only, at `/etc/lanekeeper/db` |
+| Variables | `LK_MIGRATOR_URL_FILE`, `LK_DB_CA_FILE`, `LK_MIGRATE_TIMEOUT_SECS` (`migrate.timeoutSeconds`, 600) | `LK_DATABASE_URL_FILE`, `LK_DB_CA_FILE`, `LK_SEED_TIMEOUT_SECS` (`seed.timeoutSeconds`, 120) |
+| Other volumes | `/tmp`, the database CA (`ca.crt` only) | `/tmp`, the database CA, the seed file at `/etc/lanekeeper/seed/seed.yaml` from a ConfigMap |
+| Arguments | `["migrate"]` | `["seed", "/etc/lanekeeper/seed/seed.yaml"]` |
+| Life | `restartPolicy: Never`, `backoffLimit` 2, deadline = timeout + 300 s | the same |
+
+Both run the StatefulSet's image by the same digest, with the hub pod's security context, `jobs.resources` (not measured), no ports, no
+service-account token and no Google identity. Their pods carry `app.kubernetes.io/name: lanekeeper-hub-jobs`, not the hub's label: the hub's
+NetworkPolicy does not select them, their own (`lanekeeper-hub-jobs`) admits nothing in and lets out kube-dns and the database on 5432,
+and the database chart's policy admits that label on 5432 and nothing wider. The Jobs' account and policy are hooks of the same events with
+weight -10 (the Job's is 0), kept after the sync (`before-hook-creation`, never `hook-succeeded`, which would delete them before the seed Job
+runs): on a first install a pre-install hook runs before the rest of the chart exists.
+
+**The seed file** names the service account of every swimlane's agent and of every NFS VM's sentinel; until the Job has run with it, no agent can
+join. It is a reviewed change, and the real one lives outside this repository (AGENTS.md rule 12): give `seed.existingConfigMap` (a ConfigMap
+that holds it under the key `seed.yaml`, made out of band) or, for a synthetic file such as kind's, `seed.content`, which the chart makes a ConfigMap
+of. Exactly one. A Job's pod template cannot change, so the Job is named with a short hash of its pod template (the image, the resources, the
+timeout, the Secrets), the revision, the file or the name of its ConfigMap, and the number of tries: a new image or file is a new Job, and
+Argo CD prunes the old one. A ConfigMap that was edited in place is run again by changing `seed.revision`. `hub seed --dry-run FILE`, run by a
+person before the change, prints what it would do (`crates/hub/README.md`).
+
+**Argo CD's handling of the hook annotations** was written from the source of gitops-engine and not read from its documentation
+(`argo-cd.readthedocs.io` is not reachable from where this was written): `pre-install` and `pre-upgrade` become `PreSync`; the weight
+(`helm.sh/hook-weight`) orders the hooks of a phase, and the chart also sets `argocd.argoproj.io/sync-wave` to the same number, so the order does not
+rest on that mapping; `before-hook-creation` is the same policy under Argo CD's name. The first sync is the test of it.
+
 ## Values files
 
 `deploy/values/hub/{kind,staging,prod}.yaml`. They hold documentation addresses and example names until Q1, Q2, Q29 and the
@@ -84,6 +120,10 @@ Helm 4.3.0 (`just ops-tools-install helm`). The output also equals Helm 3.21.4's
 an ArgoCD that renders with Helm 3 gets the same manifests.
 
 ## Not verified here
+
+- the memory and CPU of the Jobs (`jobs.resources`), and that the migration Job finds the database ready on a first install: it waits up to
+  `migrate.timeoutSeconds` for a database that CloudNativePG has not made yet, and then fails the sync, which runs again;
+- Argo CD's PreSync handling of the hook account and policy as described above;
 
 The sandbox that wrote this has no GKE cluster and could not read Google's documentation (`docs.cloud.google.com` is refused),
 so the Google-specific shapes follow the vendored schemas and what is known of GKE, and the first real apply is their test:

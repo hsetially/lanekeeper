@@ -141,27 +141,33 @@ deny contains msg if {
 	msg := sprintf("%s: volume %s mounts more of the CloudNativePG CA Secret than ca.crt; it also holds ca.key (S6, plan 09 A9)", [lk.who(p.doc), v.name])
 }
 
-# The database credentials Secret is mounted for one key, the connection URL, and no world can read it (HARDENING.md).
+# The database credentials Secret is mounted for one key, the connection URL, and no world can read it (HARDENING.md). The hub mounts the
+# application role's (db-credentials); the migration Job the migrator's (migrator-credentials); the seed Job the application role's again.
+credential_volumes := {"db-credentials", "migrator-credentials"}
+
 uri_only(v) if {
 	count(v.secret.items) == 1
 	v.secret.items[0].key == "uri"
 }
 
+credential_volume_of(w) := [v |
+	some v in object.get(lk.pod_spec(w), "volumes", [])
+	v.name in credential_volumes
+]
+
 deny contains msg if {
-	some sts in lk.hub_statefulsets
-	some v in sts.spec.template.spec.volumes
-	v.name == "db-credentials"
+	some w in lk.hub_workloads
+	some v in credential_volume_of(w)
 	not uri_only(v)
-	msg := sprintf("%s: volume db-credentials must mount only the uri key of the database Secret, not its other keys (S7)", [lk.who(sts)])
+	msg := sprintf("%s: volume %s must mount only the uri key of the database Secret, not its other keys (S7)", [lk.who(w), v.name])
 }
 
 deny contains msg if {
-	some sts in lk.hub_statefulsets
-	some v in sts.spec.template.spec.volumes
-	v.name == "db-credentials"
+	some w in lk.hub_workloads
+	some v in credential_volume_of(w)
 	mode := object.get(v, ["secret", "defaultMode"], 420)
 	bits.and(mode, 7) != 0
-	msg := sprintf("%s: volume db-credentials is world-readable (mode %d); it must be 0440 or tighter (S7)", [lk.who(sts), mode])
+	msg := sprintf("%s: volume %s is world-readable (mode %d); it must be 0440 or tighter (S7)", [lk.who(w), v.name, mode])
 }
 
 # --- the hub's own contract (crates/hub/HARDENING.md) ------------------------------------------------------------------
@@ -297,6 +303,366 @@ deny contains msg if {
 	got := object.get(sts.spec.template.spec, "terminationGracePeriodSeconds", 30)
 	got < need
 	msg := sprintf("%s: terminationGracePeriodSeconds is %v and the hub needs %v (LK_SHUTDOWN_GRACE_SECS + LK_SHUTDOWN_DRAIN_SECS + 10); the kubelet would kill a hub that is still draining (README item 5)", [lk.who(sts), got, need])
+}
+
+# --- the hub image's Jobs (crates/hub/HARDENING.md, "The migration Job" and "The seed Job"; 09/fix, J1 to J6) -------------------------------
+#
+# `hub migrate` runs as the migrator, before the hub rolls out; `hub seed` runs as the application role, after the migration. Each is a Job
+# from the hub's own image with `args` only, no port, the hub pod's security context, and the volumes of its table: the migrator's credential
+# (or the application role's) and the database CA, read-only, and `/tmp`; the seed adds its file, from a ConfigMap. Neither is given the other's
+# credential, and neither has a Google identity, so a Job pod cannot reach Secret Manager or KMS. The code refuses the wrong role as well; this
+# is the second wall.
+
+migrate_job_name := "lanekeeper-hub-migrate"
+
+jobs_name := "lanekeeper-hub-jobs"
+
+jobs_hook_events := "pre-install,pre-upgrade"
+
+job_kind(d) := "migrate" if d.metadata.name == migrate_job_name
+
+job_kind(d) := "seed" if startswith(d.metadata.name, "lanekeeper-hub-seed-")
+
+job_contracts := {
+	"migrate": {
+		"args": ["migrate"],
+		"env": {"LK_MIGRATOR_URL_FILE": "/etc/lanekeeper/migrator/uri", "LK_DB_CA_FILE": "/etc/lanekeeper/db-ca/ca.crt"},
+		"timeout": "LK_MIGRATE_TIMEOUT_SECS",
+		"timeout_default": 600,
+		"timeout_max": 7200,
+		"mounts": {
+			["tmp", "/tmp", false],
+			["migrator-credentials", "/etc/lanekeeper/migrator", true],
+			["db-ca", "/etc/lanekeeper/db-ca", true],
+		},
+	},
+	"seed": {
+		"args": ["seed", "/etc/lanekeeper/seed/seed.yaml"],
+		"env": {"LK_DATABASE_URL_FILE": "/etc/lanekeeper/db/uri", "LK_DB_CA_FILE": "/etc/lanekeeper/db-ca/ca.crt"},
+		"timeout": "LK_SEED_TIMEOUT_SECS",
+		"timeout_default": 120,
+		"timeout_max": 3600,
+		"mounts": {
+			["tmp", "/tmp", false],
+			["db-credentials", "/etc/lanekeeper/db", true],
+			["db-ca", "/etc/lanekeeper/db-ca", true],
+			["seed", "/etc/lanekeeper/seed", true],
+		},
+	},
+}
+
+# The Jobs by kind, with their contract. A Job of the hub's image that is neither is refused below.
+hub_job_list := [{"doc": d, "kind": job_kind(d), "spec": d.spec.template.spec, "contract": job_contracts[job_kind(d)]} |
+	some d in lk.hub_jobs
+	job_kind(d)
+]
+
+job_containers := [{"job": j, "container": c} |
+	some j in hub_job_list
+	some c in lk.all_containers(j.spec)
+]
+
+deny contains msg if {
+	some d in lk.hub_jobs
+	not job_kind(d)
+	msg := sprintf("%s: the hub's image has only two Jobs, %s and lanekeeper-hub-seed-<hash> (HARDENING.md)", [lk.who(d), migrate_job_name])
+}
+
+# The hub refuses to start on an unmigrated database and nothing else changes the schema (S9, S21).
+deny contains msg if {
+	count(lk.hub_statefulsets) > 0
+	count(lk.named("Job", migrate_job_name)) == 0
+	msg := "Job/lanekeeper-hub-migrate is missing: there is no migration Job, and nothing else changes the schema; the hub exits 1 on an unmigrated database (HARDENING.md)"
+}
+
+deny contains msg if {
+	some j in hub_job_list
+	count(lk.all_containers(j.spec)) != 1
+	msg := sprintf("%s: a Job has exactly one container and no init container (HARDENING.md)", [lk.who(j.doc)])
+}
+
+# --- the image, the command and the ports
+
+hub_images := {c.image | some sts in lk.hub_statefulsets; some c in sts.spec.template.spec.containers}
+
+deny contains msg if {
+	some x in job_containers
+	not x.container.image in hub_images
+	msg := sprintf("%s, container %s: it must run the hub's image, the very digest the StatefulSet runs (HARDENING.md)", [lk.who(x.job.doc), x.container.name])
+}
+
+deny contains msg if {
+	some x in job_containers
+	object.get(x.container, "args", null) != x.job.contract.args
+	msg := sprintf("%s, container %s: args must be exactly %v (HARDENING.md)", [lk.who(x.job.doc), x.container.name, x.job.contract.args])
+}
+
+deny contains msg if {
+	some x in job_containers
+	"command" in object.keys(x.container)
+	msg := sprintf("%s, container %s: command is set; the image's ENTRYPOINT is the hub, and a Job passes only args (HARDENING.md)", [lk.who(x.job.doc), x.container.name])
+}
+
+deny contains msg if {
+	some x in job_containers
+	count(object.get(x.container, "ports", [])) > 0
+	msg := sprintf("%s, container %s: a Job has no ports; it listens on nothing (HARDENING.md)", [lk.who(x.job.doc), x.container.name])
+}
+
+# --- the volumes: only the table's, each read-only but /tmp
+
+deny contains msg if {
+	some x in job_containers
+	got := {[m.name, m.mountPath, object.get(m, "readOnly", false)] | some m in object.get(x.container, "volumeMounts", [])}
+	got != x.job.contract.mounts
+	msg := sprintf("%s, container %s: volumeMounts must be exactly %v (name, path, readOnly); found %v (HARDENING.md)", [lk.who(x.job.doc), x.container.name, sort(x.job.contract.mounts), sort(got)])
+}
+
+deny contains msg if {
+	some j in hub_job_list
+	got := {v.name | some v in object.get(j.spec, "volumes", [])}
+	want := {m[0] | some m in j.contract.mounts}
+	got != want
+	msg := sprintf("%s: volumes must be exactly %v; found %v (HARDENING.md)", [lk.who(j.doc), sort(want), sort(got)])
+}
+
+# The migrator's credential is never in a pod that is given the application role's, and the seed runs as the role the hub runs as: the
+# Secret it mounts is the one the hub mounts.
+hub_app_secrets := {v.secret.secretName |
+	some sts in lk.hub_statefulsets
+	some v in sts.spec.template.spec.volumes
+	v.name == "db-credentials"
+}
+
+deny contains msg if {
+	some j in hub_job_list
+	j.kind == "migrate"
+	some v in object.get(j.spec, "volumes", [])
+	v.name == "migrator-credentials"
+	v.secret.secretName in hub_app_secrets
+	msg := sprintf("%s: volume migrator-credentials is the application role's Secret; the migrator has a Secret of its own, and the hub's credential must not run migrations (S9, S21)", [lk.who(j.doc)])
+}
+
+deny contains msg if {
+	some j in hub_job_list
+	j.kind == "seed"
+	some v in object.get(j.spec, "volumes", [])
+	v.name == "db-credentials"
+	not v.secret.secretName in hub_app_secrets
+	msg := sprintf("%s: volume db-credentials must be the Secret the hub mounts, the application role's; the seed refuses any other role, and the migrator's credential does not belong in it (HARDENING.md)", [lk.who(j.doc)])
+}
+
+seed_items := [{"key": "seed.yaml", "path": "seed.yaml"}]
+
+deny contains msg if {
+	some j in hub_job_list
+	j.kind == "seed"
+	some v in object.get(j.spec, "volumes", [])
+	v.name == "seed"
+	not seed_file_volume(v)
+	msg := sprintf("%s: the seed file must come from a ConfigMap, through the one key seed.yaml (it names service accounts and holds no secret; HARDENING.md)", [lk.who(j.doc)])
+}
+
+seed_file_volume(v) if {
+	v.configMap.items == seed_items
+	not v.secret
+}
+
+# --- the variables: the Job's own, with the values of its mounts
+
+deny contains msg if {
+	some x in job_containers
+	some e in object.get(x.container, "env", [])
+	allowed := object.union({n: true | some n, _ in x.job.contract.env}, {x.job.contract.timeout: true})
+	not e.name in object.keys(allowed)
+	msg := sprintf("%s, container %s: %s is not a variable this Job may carry; only %v (HARDENING.md)", [lk.who(x.job.doc), x.container.name, e.name, sort(object.keys(allowed))])
+}
+
+deny contains msg if {
+	some x in job_containers
+	some name, _ in x.job.contract.env
+	not lk.env_value(x.container, name)
+	msg := sprintf("%s, container %s: %s is not set to a value (HARDENING.md)", [lk.who(x.job.doc), x.container.name, name])
+}
+
+deny contains msg if {
+	some x in job_containers
+	some name, want in x.job.contract.env
+	got := lk.env_value(x.container, name)
+	got != want
+	msg := sprintf("%s, container %s: %s must be %s, the file its volume mounts (HARDENING.md)", [lk.who(x.job.doc), x.container.name, name, want])
+}
+
+deny contains msg if {
+	some x in job_containers
+	value := lk.env_value(x.container, x.job.contract.timeout)
+	not job_timeout_ok(value, x.job.contract.timeout_max)
+	msg := sprintf("%s, container %s: %s must be a whole number of seconds from 1 to %d, as the hub reads it (HARDENING.md)", [lk.who(x.job.doc), x.container.name, x.job.contract.timeout, x.job.contract.timeout_max])
+}
+
+job_timeout_ok(value, max) if {
+	regex.match(`^[0-9]{1,5}$`, value)
+	n := to_number(value)
+	n >= 1
+	n <= max
+}
+
+# --- the Job's own life: no restart in place, a few tries, and a deadline after the process's own timeout
+
+deny contains msg if {
+	some j in hub_job_list
+	object.get(j.spec, "restartPolicy", "") != "Never"
+	msg := sprintf("%s: restartPolicy must be Never: a retry is a new pod with its own log, and the Job counts the tries (HARDENING.md)", [lk.who(j.doc)])
+}
+
+max_backoff := 3
+
+deny contains msg if {
+	some j in hub_job_list
+	n := object.get(j.doc.spec, "backoffLimit", null)
+	not is_number(n)
+	msg := sprintf("%s: backoffLimit is not set, and Kubernetes would try 6 times; set at most %d", [lk.who(j.doc), max_backoff])
+}
+
+deny contains msg if {
+	some j in hub_job_list
+	n := object.get(j.doc.spec, "backoffLimit", null)
+	is_number(n)
+	n > max_backoff
+	msg := sprintf("%s: backoffLimit is %v; a few tries are enough, at most %d", [lk.who(j.doc), n, max_backoff])
+}
+
+# What the process is told it may take (its own timeout, which ends it with a message that names the step) and what the Job allows: the
+# Job's deadline is longer, so that the process's message is what the log shows, and bounded, so that a stuck Job ends.
+max_deadline := 10800
+
+job_timeout_secs(j) := to_number(lk.env_value(c, j.contract.timeout)) if {
+	some c in j.spec.containers
+	lk.env_value(c, j.contract.timeout)
+}
+
+job_timeout_secs(j) := j.contract.timeout_default if {
+	every c in object.get(j.spec, "containers", []) {
+		not lk.env_value(c, j.contract.timeout)
+	}
+}
+
+deny contains msg if {
+	some j in hub_job_list
+	not is_number(object.get(j.doc.spec, "activeDeadlineSeconds", null))
+	msg := sprintf("%s: activeDeadlineSeconds is not set, so a stuck Job would run for ever (HARDENING.md)", [lk.who(j.doc)])
+}
+
+deny contains msg if {
+	some j in hub_job_list
+	deadline := j.doc.spec.activeDeadlineSeconds
+	is_number(deadline)
+	timeout := job_timeout_secs(j)
+	deadline <= timeout
+	msg := sprintf("%s: activeDeadlineSeconds (%v) must be longer than %s (%v), so that the process ends itself with a message that names the step", [lk.who(j.doc), deadline, j.contract.timeout, timeout])
+}
+
+deny contains msg if {
+	some j in hub_job_list
+	deadline := j.doc.spec.activeDeadlineSeconds
+	is_number(deadline)
+	deadline > max_deadline
+	msg := sprintf("%s: activeDeadlineSeconds is %v; a Job that has not finished in %d s is stuck", [lk.who(j.doc), deadline, max_deadline])
+}
+
+# --- who the Jobs are: their own account, with no Google identity and no token (S5, S7, S16)
+
+job_accounts := lk.named("ServiceAccount", jobs_name)
+
+deny contains msg if {
+	some j in hub_job_list
+	object.get(j.spec, "serviceAccountName", "default") != jobs_name
+	msg := sprintf("%s: serviceAccountName must be %s, the ServiceAccount of the Jobs; the hub's has a Google identity (Secret Manager and KMS), which a Job must not have (S5, S7)", [lk.who(j.doc), jobs_name])
+}
+
+deny contains msg if {
+	count(lk.hub_jobs) > 0
+	count(job_accounts) == 0
+	msg := sprintf("ServiceAccount/%s is missing: the Jobs run as it, and on a first install it must exist before the migration pod is made (HARDENING.md)", [jobs_name])
+}
+
+deny contains msg if {
+	some sa in job_accounts
+	some key, _ in object.get(sa.metadata, "annotations", {})
+	startswith(key, "iam.gke.io/")
+	msg := sprintf("%s: the annotation %s gives it a Google identity; a Job reaches the database and nothing in Google (S5, S7)", [lk.who(sa), key])
+}
+
+deny contains msg if {
+	some j in hub_job_list
+	some key, _ in object.get(j.doc.spec.template.metadata, "annotations", {})
+	startswith(key, "iam.gke.io/")
+	msg := sprintf("%s: the pod's annotation %s gives it a Google identity (S5, S7)", [lk.who(j.doc), key])
+}
+
+deny contains msg if {
+	some sa in job_accounts
+	object.get(sa, "automountServiceAccountToken", null) != false
+	msg := sprintf("%s: automountServiceAccountToken must be stated and false; the Jobs never call the Kubernetes API (S16)", [lk.who(sa)])
+}
+
+# The label the Jobs' NetworkPolicy selects and the database admits. It is not the hub's, or the hub's policy (the other replicas, the
+# metadata server, the external hosts) would select the Jobs' pods too.
+deny contains msg if {
+	some j in hub_job_list
+	object.get(j.doc.spec.template.metadata, ["labels", "app.kubernetes.io/name"], "") != jobs_name
+	msg := sprintf("%s: the pod's label app.kubernetes.io/name must be %s, which the Jobs' NetworkPolicy selects and the database admits; the hub's label would give it the hub's network (S18)", [lk.who(j.doc), jobs_name])
+}
+
+# --- the order: the account and the policy first, then the migration (hooks), then the seed (not a hook) ---------------------------------------
+
+hook_weight(d) := to_number(object.get(d.metadata, ["annotations", "helm.sh/hook-weight"], "0"))
+
+deny contains msg if {
+	some j in hub_job_list
+	j.kind == "migrate"
+	object.get(j.doc.metadata, ["annotations", "helm.sh/hook"], "") != jobs_hook_events
+	msg := sprintf("%s: helm.sh/hook must be %s (Argo CD runs it as PreSync): the schema is complete before the hub rolls out (HARDENING.md)", [lk.who(j.doc), jobs_hook_events])
+}
+
+deny contains msg if {
+	some j in hub_job_list
+	j.kind == "seed"
+	some key, _ in object.get(j.doc.metadata, "annotations", {})
+	startswith(key, "helm.sh/hook")
+	msg := sprintf("%s: the seed Job is a Job, not a hook (%s): it runs after the migration, and a missing seed must not stop a deploy (README item 2, step f)", [lk.who(j.doc), key])
+}
+
+deny contains msg if {
+	some j in hub_job_list
+	j.kind == "seed"
+	"argocd.argoproj.io/hook" in object.keys(object.get(j.doc.metadata, "annotations", {}))
+	msg := sprintf("%s: the seed Job is a Job, not a hook (argocd.argoproj.io/hook): it runs after the migration, and a missing seed must not stop a deploy (README item 2, step f)", [lk.who(j.doc)])
+}
+
+# What the Jobs need before the migration pod is made: on a first install nothing of the chart's other resources exists yet. Each is a hook
+# of the same events with a lower weight. It is kept (before-hook-creation): the seed Job, which is not a hook, runs as it and under its policy.
+jobs_prerequisites := array.concat(job_accounts, lk.named("NetworkPolicy", jobs_name))
+
+deny contains msg if {
+	count(lk.named("Job", migrate_job_name)) > 0
+	some d in jobs_prerequisites
+	object.get(d.metadata, ["annotations", "helm.sh/hook"], "") != jobs_hook_events
+	msg := sprintf("%s: it must be a hook of %s, like the migration Job, so that it exists on a first install when the migration pod is made (helm.sh/hook)", [lk.who(d), jobs_hook_events])
+}
+
+deny contains msg if {
+	some d in jobs_prerequisites
+	some job in lk.named("Job", migrate_job_name)
+	hook_weight(d) >= hook_weight(job)
+	msg := sprintf("%s: its helm.sh/hook-weight (%v) must be lower than the migration Job's (%v), so that it exists when the migration pod is made", [lk.who(d), hook_weight(d), hook_weight(job)])
+}
+
+deny contains msg if {
+	some d in jobs_prerequisites
+	object.get(d.metadata, ["annotations", "helm.sh/hook"], "") == jobs_hook_events
+	object.get(d.metadata, ["annotations", "helm.sh/hook-delete-policy"], "") != "before-hook-creation"
+	msg := sprintf("%s: helm.sh/hook-delete-policy must be before-hook-creation; hook-succeeded would delete it after the migration, before the seed Job (which is not a hook) uses it", [lk.who(d)])
 }
 
 # --- the agent's own contract (crates/agent/HARDENING.md; 09/T4) ----------------------------------------------------------------

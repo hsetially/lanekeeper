@@ -568,6 +568,37 @@ test_deny_the_operator_missing_from_the_callers if {
 	refused(planted, "ingress must be exactly")
 }
 
+# The hub image's Jobs (migrate and seed; 09/fix, J3) reach the database from pods that carry a label of their own, on 5432 and nothing else.
+test_deny_the_jobs_missing_from_the_callers if {
+	planted := netpol([{"op": "remove", "path": "/spec/ingress/5"}])
+	refused(planted, "ingress must be exactly")
+}
+
+test_deny_the_jobs_on_the_status_port if {
+	planted := netpol([{"op": "add", "path": "/spec/ingress/-", "value": fixtures.db_ingress(fixtures.db_jobs_caller, 8000)}])
+	refused(planted, "ingress must be exactly")
+}
+
+test_deny_the_jobs_pods_of_every_namespace if {
+	planted := netpol([{"op": "replace", "path": "/spec/ingress/5/from/0", "value": {"namespaceSelector": {}, "podSelector": {"matchLabels": {"app.kubernetes.io/name": "lanekeeper-hub-jobs"}}}}])
+	refused(planted, "ingress must be exactly")
+}
+
+test_deny_every_pod_of_the_lanekeeper_part if {
+	planted := netpol([{"op": "replace", "path": "/spec/ingress/5/from/0/podSelector/matchLabels", "value": {"app.kubernetes.io/part-of": "lanekeeper"}}])
+	refused(planted, "ingress must be exactly")
+}
+
+test_deny_the_jobs_label_with_a_wildcard_selector if {
+	planted := netpol([{"op": "replace", "path": "/spec/ingress/5/from/0", "value": {"podSelector": {}}}])
+	refused(planted, "ingress must be exactly")
+}
+
+test_deny_the_jobs_on_ssh if {
+	planted := netpol([{"op": "replace", "path": "/spec/ingress/5/ports/0/port", "value": 22}])
+	refused(planted, "ingress must be exactly")
+}
+
 test_deny_a_second_policy_that_opens_the_database if {
 	open_policy := {
 		"apiVersion": "networking.k8s.io/v1",

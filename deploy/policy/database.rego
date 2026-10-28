@@ -501,6 +501,10 @@ db_selector := {"cnpg.io/cluster": cluster_name}
 
 hub_selector := {"app.kubernetes.io/name": "lanekeeper-hub"}
 
+# The pods of the hub image's Jobs (`hub migrate`, `hub seed`; charts/hub): a label of their own, so that the hub's NetworkPolicy does not
+# select them, and so that nothing wider than they are admitted to the database.
+jobs_selector := {"app.kubernetes.io/name": "lanekeeper-hub-jobs"}
+
 operator_selector := {"app.kubernetes.io/name": "cloudnative-pg"}
 
 db_policies := lk.named("NetworkPolicy", cluster_name)
@@ -548,10 +552,19 @@ deny contains msg if {
 	msg := sprintf("%s: an ingress rule must name exactly one port, so that each port has its own callers (S18)", [lk.who(p)])
 }
 
-# The three callers: the hub's pods (same namespace), the operator's pod (named namespace and pod), and the instances themselves.
+# The callers: the hub's pods and the pods of the hub image's Jobs (same namespace), the operator's pod (named namespace and pod), and the
+# instances themselves.
 caller(from) := "hub" if {
 	every f in from {
 		f.podSelector.matchLabels == hub_selector
+		not f.namespaceSelector
+		not f.ipBlock
+	}
+}
+
+caller(from) := "jobs" if {
+	every f in from {
+		f.podSelector.matchLabels == jobs_selector
 		not f.namespaceSelector
 		not f.ipBlock
 	}
@@ -578,7 +591,7 @@ caller_name(from) := caller(from)
 
 caller_name(from) := "UNRECOGNISED" if not caller(from)
 
-expected_ingress := {"5432 hub", "5432 operator", "8000 operator", "5432 peers", "8000 peers"}
+expected_ingress := {"5432 hub", "5432 jobs", "5432 operator", "8000 operator", "5432 peers", "8000 peers"}
 
 ingress_pairs(p) := {sprintf("%d %s", [port.port, caller_name(rule.from)]) |
 	some rule in ingress_rules(p)

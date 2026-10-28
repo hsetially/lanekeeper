@@ -11,6 +11,7 @@
       "clusterrolebinding-rbac-v1",
       "configmap-v1",
       "deployment-apps-v1",
+      "job-batch-v1",
       "namespace-v1",
       "networkpolicy-networking-v1",
       "persistentvolumeclaim-v1",

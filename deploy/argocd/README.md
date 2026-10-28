@@ -36,6 +36,11 @@ pair, and refuses `prod` values under a `staging` label).
   (`argocd_scope.rego`): without that, the first sync would stop at the first kind the project does not know. A project allows no
   repository but this one and no destination namespace but its own: not `kube-system`, and not `argocd` (a project that could deploy
   there could rewrite its own restrictions).
+- **The hub's Jobs are in the workloads project, and nothing else of `batch` is.** The migration Job is a Helm `pre-install,pre-upgrade` hook, which
+  Argo CD runs as `PreSync` (the hook's weight is its sync wave; the chart sets `argocd.argoproj.io/sync-wave` as well), with its account and its
+  NetworkPolicy as hooks of a lower weight, so that the first sync has them; the seed Job is an ordinary Job of the same sync, named with a hash so that a
+  new image or seed file is a new Job (a Job's pod template cannot change) and the old one is pruned. `lanekeeper-workloads` therefore allows
+  `batch/Job` and `ConfigMap` (the seed file), not `CronJob` and not `Secret`.
 - **Automated, self-healing sync.** What is in Git is what runs, and a change made in the cluster by hand is put back. `allowEmpty` is
   refused: a broken template that renders nothing would otherwise prune everything. `Replace` and `Force` (they delete and recreate) and
   skipping the dry run are not sync options here.

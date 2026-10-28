@@ -51,3 +51,36 @@ gateway:
   enabled: false
   # The name LK_PUBLIC_ORIGIN and LK_HUB_AUDIENCE are made from. There is no Gateway to serve it in kind; the hub still requires it.
   hostname: lanekeeper-kind.example.com
+
+# The seed (crates/hub/HARDENING.md, "The seed Job"): a synthetic file in the values, derived from crates/hub/examples/seed.dev.yaml, so that
+# the Job runs in kind against the migrated database. Everything in it is invented: the service accounts do not exist. A real seed file lives
+# outside the repository (AGENTS.md rule 12) and is given as seed.existingConfigMap.
+seed:
+  enabled: true
+  content: |
+    version: 1
+    projects:
+      - id: lanekeeper-kind
+        display_name: Lanekeeper (kind)
+    swimlanes:
+      - id: sl-01
+        project: lanekeeper-kind
+        display_name: Swimlane 1
+        cluster: gke-kind-1
+        tier: dev
+        nfs_server: nfs-1.corp.example
+        nfs_export: /export/sl-01
+        mount_root: /mnt/config
+        agent_service_account: agent-sl-01@example-project.iam.gserviceaccount.com
+        tenants: [sit1]
+      - id: sl-02
+        project: lanekeeper-kind
+        display_name: Swimlane 2
+        tier: sit
+        agent_service_account: agent-sl-02@example-project.iam.gserviceaccount.com
+        tenants: [sit2]
+    sentinels:
+      - vm: nfs-vm-01
+        swimlane: sl-01
+        export_root: /export
+        service_account: sentinel-01@example-project.iam.gserviceaccount.com

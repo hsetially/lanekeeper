@@ -1,5 +1,6 @@
-# Who may reach the database (S18). Nothing is admitted but the hub's pods on 5432, the operator on 8000 and 5432 (its own documented
-# needs), and the instances among themselves on both. Egress is not restricted here: see README.md ("Not done here").
+# Who may reach the database (S18). Nothing is admitted but the hub's pods on 5432, the pods of the hub image's Jobs on 5432, the operator on
+# 8000 and 5432 (its own documented needs), and the instances among themselves on both. Egress is not restricted here: see README.md
+# ("Not done here").
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -52,3 +53,12 @@ spec:
               cnpg.io/cluster: lanekeeper-db
       ports:
         - {protocol: TCP, port: 8000}
+    # The pods of the hub image's Jobs (charts/hub: `hub migrate` as the migrator, `hub seed` as the application role), on 5432 and nothing else.
+    # They carry a label of their own, not the hub's, so that the hub's NetworkPolicy does not select them; nothing wider than that label is
+    # admitted. deploy/tests/render.sh contract checks that the label is the one the hub chart's Jobs have.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: lanekeeper-hub-jobs
+      ports:
+        - {protocol: TCP, port: 5432}

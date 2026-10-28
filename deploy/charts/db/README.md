@@ -35,14 +35,19 @@ are answered (rule 12). The image is real: the digest of a published CloudNative
    migrator_pw="$(openssl rand -hex 32)"
    app_pw="$(openssl rand -hex 32)"
    kubectl -n "$ns" create secret generic lanekeeper-db-migrator --type=kubernetes.io/basic-auth \
-     --from-literal=username=lanekeeper_migrator --from-literal=password="$migrator_pw"
+     --from-literal=username=lanekeeper_migrator --from-literal=password="$migrator_pw" \
+     --from-literal=uri="postgresql://lanekeeper_migrator:${migrator_pw}@lanekeeper-db-rw:5432/lanekeeper"
    kubectl -n "$ns" create secret generic lanekeeper-db-app --type=kubernetes.io/basic-auth \
      --from-literal=username=lanekeeper_app --from-literal=password="$app_pw" \
      --from-literal=uri="postgresql://lanekeeper_app:${app_pw}@lanekeeper-db-rw:5432/lanekeeper"
    unset migrator_pw app_pw
    ```
 
-   `uri` is what the hub reads (`LK_DATABASE_URL_FILE`). It names no `sslmode`: the hub always connects with `verify-full` against the
+   `uri` of the application role's Secret is what the hub reads (`LK_DATABASE_URL_FILE`), and the seed Job with it. `uri` of the
+   migrator's is what the migration Job reads (`hub migrate`, `LK_MIGRATOR_URL_FILE`; charts/hub, `database.migratorSecretName`): the operator
+   reads only `username` and `password` of a `basic-auth` Secret, so the extra key is the chart's own, and the Job mounts that one key and no
+   other. `hub migrate` refuses a URL whose role is not `lanekeeper_migrator`, and `hub seed` one whose role is not `lanekeeper_app`. The URLs
+   name no `sslmode`: the hub always connects with `verify-full` against the
    CA in `lanekeeper-db-ca` (`LK_DB_CA_FILE`), whatever the URL says (`crates/hub/src/db.rs`). The migrator has a Secret of its own
    because, left to the operator, the owner's credentials would be made in `lanekeeper-db-app`, the name the hub reads: the app would
    log in as the owner of the database.

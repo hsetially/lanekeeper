@@ -46,9 +46,27 @@ test_nothing_to_check_without_rendered_documents if {
 	count(deny) == 0 with input as fixtures.ac_swimlane
 }
 
+# The hub chart's Jobs and the ConfigMap of the seed file are allowed (fixtures.hub_docs holds them); a wider batch kind is not.
 test_deny_a_kind_no_project_knows if {
-	planted := array.concat(fixtures.hub_docs, [{"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": "x", "namespace": "lanekeeper"}}])
+	planted := array.concat(fixtures.hub_docs, [{"apiVersion": "batch/v1", "kind": "CronJob", "metadata": {"name": "x", "namespace": "lanekeeper"}}])
+	refused(platform(planted), "CronJob")
+}
+
+test_the_hub_chart_has_jobs_and_a_config_map_and_both_are_allowed if {
+	kinds := {d.kind | some d in fixtures.hub_docs}
+	"Job" in kinds
+	"ConfigMap" in kinds
+	count(deny) == 0 with input as platform(fixtures.hub_docs)
+}
+
+test_deny_a_job_in_the_clouds_namespace if {
+	planted := array.concat(fixtures.gs_docs, [{"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": "x", "namespace": "lanekeeper-gcp"}}])
 	refused(platform(planted), "Job")
+}
+
+test_deny_a_job_in_a_namespace_no_project_deploys_to if {
+	planted := array.concat(fixtures.hub_docs, [{"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": "x", "namespace": "elsewhere"}}])
+	refused(platform(planted), "elsewhere")
 }
 
 test_deny_a_secret_in_the_workloads if {

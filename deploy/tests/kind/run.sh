@@ -417,7 +417,10 @@ apiVersion: v1
 kind: Secret
 metadata: {name: lanekeeper-db-migrator, namespace: $NS}
 type: kubernetes.io/basic-auth
-stringData: {username: lanekeeper_migrator, password: "$migrator_pw"}
+stringData:
+  username: lanekeeper_migrator
+  password: "$migrator_pw"
+  uri: "postgresql://lanekeeper_migrator:$migrator_pw@lanekeeper-db-rw:5432/lanekeeper"
 ---
 apiVersion: v1
 kind: Secret

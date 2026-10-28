@@ -1,0 +1,53 @@
+{{- /* crates/hub/HARDENING.md, "The seed Job": `hub seed` as lanekeeper_app, after the migration. */ -}}
+{{- if .Values.seed.enabled -}}
+{{- $seed := .Values.seed -}}
+{{- if and $seed.content $seed.existingConfigMap -}}
+{{- fail "set only one of seed.content and seed.existingConfigMap: the seed file comes from a ConfigMap that the chart makes, or from one that exists" -}}
+{{- end -}}
+{{- if not (or $seed.content $seed.existingConfigMap) -}}
+{{- fail "seed.content or seed.existingConfigMap is required when seed.enabled: until the seed has run with the swimlanes' service accounts, no agent can join" -}}
+{{- end -}}
+{{- /*
+  A Job's pod template cannot change, so everything that changes it changes the name. The name is a short hash of the pod template as it
+  would be made for this ConfigMap (the image, the resources, the timeout, the Secrets, the labels: a change of the chart too), the revision,
+  the file and the number of tries. The ConfigMap the chart makes carries the same hash, so a new file is a new ConfigMap and a new Job; an
+  existing ConfigMap is named in the hash, and a file edited in place is run again by changing seed.revision.
+*/ -}}
+{{- $fromContent := not $seed.existingConfigMap -}}
+{{- $probe := include "lanekeeper-hub.jobPodTemplate" (dict "root" . "kind" "seed" "configMap" ($seed.existingConfigMap | default "-")) -}}
+{{- $hash := printf "%s|%v|%s|%d" $probe $seed.revision $seed.content ($seed.backoffLimit | int) | sha256sum | trunc 10 -}}
+{{- $name := printf "lanekeeper-hub-seed-%s" $hash -}}
+{{- $configMap := $seed.existingConfigMap | default $name -}}
+{{- if $fromContent }}
+# The seed file of this release, for a synthetic file such as kind's. A real one lives outside the repository and is given as
+# seed.existingConfigMap. It names service accounts and holds no secret (a private key in it is refused by the policy).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-hub.jobLabels" (list . "seed") | nindent 4 }}
+# The name carries the hash of the file, so this ConfigMap never changes: a new file is a new ConfigMap.
+immutable: true
+data:
+  seed.yaml: |
+    {{- $seed.content | nindent 4 }}
+---
+{{ end -}}
+# Not a hook: it runs after the migration (a PreSync hook of the same sync), and a missing or failed seed must not stop a deploy. The hub
+# starts and serves with no swimlanes meanwhile; an agent can join once this has run with its service account. Safe to retry, and safe to
+# run twice at once. A finished Job is left (a log of who applied which file), and a new image, file or revision is a new Job.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lanekeeper-hub.jobLabels" (list . "seed") | nindent 4 }}
+spec:
+  backoffLimit: {{ $seed.backoffLimit | int }}
+  activeDeadlineSeconds: {{ add ($seed.timeoutSeconds | int) (include "lanekeeper-hub.jobDeadlineMargin" . | int) }}
+  template:
+    {{- include "lanekeeper-hub.jobPodTemplate" (dict "root" . "kind" "seed" "configMap" $configMap) | nindent 4 }}
+{{- end }}

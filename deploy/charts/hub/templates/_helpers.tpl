@@ -115,6 +115,10 @@ Each stops the render and names the value, because "the hub exits 2" is otherwis
 {{- if eq $c.secretManager.agentCaCert $c.secretManager.replicaCaCert -}}
 {{- fail "config.secretManager.replicaCaCert is the same secret as config.secretManager.agentCaCert (LK_REPLICA_CA_CERT_REF): the two CAs are two certificates (S5)" -}}
 {{- end -}}
+{{- /* The migrator's credential is never the application role's (S9, S21): the migration Job reads one Secret, the hub and the seed Job the other. */ -}}
+{{- if eq .Values.database.migratorSecretName .Values.database.credentialsSecretName -}}
+{{- fail "database.migratorSecretName is the same Secret as database.credentialsSecretName: the migrator's credential would be the application role's, and the hub's credential would change the schema (S9, S21)" -}}
+{{- end -}}
 {{- /* The OAuth mode of MCP needs an application ID URI (api://...) among the audiences; the hub refuses a list without one. */ -}}
 {{- $tuning := $c.tuning -}}
 {{- if and (hasKey $tuning "LK_ENTRA_API_AUDIENCES") (ne (index $tuning "LK_MCP_AUTH" | default "oauth") "personal_token") (not (regexMatch "(^|,)api://" (index $tuning "LK_ENTRA_API_AUDIENCES"))) -}}
@@ -129,4 +133,186 @@ Each stops the render and names the value, because "the hub exits 2" is otherwis
 {{- if gt (add $wait $drain 10) $period -}}
 {{- fail (printf "config.tuning: LK_SHUTDOWN_GRACE_SECS (%d) + LK_SHUTDOWN_DRAIN_SECS (%d) + 10 is %d s, and the pod's terminationGracePeriodSeconds is %d: the kubelet would kill a hub that is still draining" $wait $drain (add $wait $drain 10) $period) -}}
 {{- end -}}
+{{- end }}
+
+{{/*
+The security context of the hub's pod and of its container, for the StatefulSet and for the Jobs of the same image alike (crates/hub/HARDENING.md:
+"the hub pod's, unchanged"): non-root, a read-only root, no capabilities, RuntimeDefault, and the group that the Secret files (mode 0440) are read by.
+*/}}
+{{- define "lanekeeper-hub.podSecurityContext" -}}
+runAsNonRoot: true
+runAsUser: 65532
+runAsGroup: 65532
+fsGroup: 65532
+fsGroupChangePolicy: OnRootMismatch
+seccompProfile:
+  type: RuntimeDefault
+{{- end }}
+
+{{- define "lanekeeper-hub.containerSecurityContext" -}}
+allowPrivilegeEscalation: false
+privileged: false
+readOnlyRootFilesystem: true
+capabilities:
+  drop: ["ALL"]
+{{- end }}
+
+{{/*
+The Jobs of the hub's image (`hub migrate`, `hub seed`) have a pod label of their own, not the hub's: the hub's NetworkPolicy selects
+app.kubernetes.io/name: lanekeeper-hub and would give them the other replicas, the metadata server and the external hosts. Their own policy
+selects this label, and the database's policy admits it on 5432 (charts/db).
+*/}}
+{{- define "lanekeeper-hub.jobSelectorLabels" -}}
+app.kubernetes.io/name: lanekeeper-hub-jobs
+{{- end }}
+
+{{/* Takes (list $ "migrate"|"seed"|"jobs"). */}}
+{{- define "lanekeeper-hub.jobPodLabels" -}}
+{{ include "lanekeeper-hub.jobSelectorLabels" (index . 0) }}
+app.kubernetes.io/instance: {{ (index . 0).Release.Name }}
+app.kubernetes.io/part-of: lanekeeper
+app.kubernetes.io/component: {{ index . 1 }}
+{{- end }}
+
+{{- define "lanekeeper-hub.jobLabels" -}}
+{{ include "lanekeeper-hub.jobPodLabels" . }}
+app.kubernetes.io/managed-by: {{ (index . 0).Release.Service }}
+helm.sh/chart: {{ printf "%s-%s" (index . 0).Chart.Name (index . 0).Chart.Version | quote }}
+{{- end }}
+
+{{/*
+Helm hooks of the events before the hub rolls out, and the Argo CD sync wave that Argo CD makes of the weight (Argo CD runs pre-install and
+pre-upgrade hooks as PreSync; the weight orders the hooks of a phase). Takes the weight, a string: the Jobs' ServiceAccount and NetworkPolicy
+have -10 and the migration Job 0, so that on a first install, when nothing else of the chart exists yet, the migration pod has both. They
+are kept (before-hook-creation, never hook-succeeded): the seed Job, which is not a hook, runs as that account and under that policy.
+*/}}
+{{- define "lanekeeper-hub.jobHook" -}}
+helm.sh/hook: pre-install,pre-upgrade
+helm.sh/hook-weight: {{ . | quote }}
+helm.sh/hook-delete-policy: before-hook-creation
+argocd.argoproj.io/sync-wave: {{ . | quote }}
+{{- end }}
+
+{{/*
+The seconds a Job may take beyond the timeout it tells its process (LK_MIGRATE_TIMEOUT_SECS, LK_SEED_TIMEOUT_SECS): pulling the image and
+starting the process. The deadline is longer than the timeout, so that the process ends itself with a message that names the step.
+*/}}
+{{- define "lanekeeper-hub.jobDeadlineMargin" -}}300{{- end }}
+
+{{/*
+The pod template of a Job of the hub's image (the part under `template:`). The command is the image's ENTRYPOINT, the hub; the Job passes
+only `args`. Takes (dict "root" $ "kind" "migrate"|"seed" "configMap" <the ConfigMap that holds the seed file>).
+
+Four volumes at most (crates/hub/HARDENING.md): /tmp, the database CA and the one credential (the migrator's for `migrate`, the application
+role's for `seed`, each mounted through its `uri` key only, mode 0440), and for `seed` its file from a ConfigMap, read-only. No service-account
+token, no Google identity: the account is the chart's own, with neither.
+*/}}
+{{- define "lanekeeper-hub.jobPodTemplate" -}}
+{{- $root := .root -}}
+{{- $kind := .kind -}}
+metadata:
+  labels:
+    {{- include "lanekeeper-hub.jobPodLabels" (list $root $kind) | nindent 4 }}
+spec:
+  serviceAccountName: lanekeeper-hub-jobs
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  restartPolicy: Never
+  {{- with $root.Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- range . }}
+    - name: {{ . | quote }}
+    {{- end }}
+  {{- end }}
+  securityContext:
+    {{- include "lanekeeper-hub.podSecurityContext" $root | nindent 4 }}
+  containers:
+    - name: {{ $kind }}
+      image: {{ include "lanekeeper-hub.image" $root | quote }}
+      imagePullPolicy: IfNotPresent
+      {{- if eq $kind "migrate" }}
+      args: ["migrate"]
+      {{- else }}
+      args: ["seed", "/etc/lanekeeper/seed/seed.yaml"]
+      {{- end }}
+      securityContext:
+        {{- include "lanekeeper-hub.containerSecurityContext" $root | nindent 8 }}
+      resources:
+        {{- toYaml $root.Values.jobs.resources | nindent 8 }}
+      env:
+        {{- if eq $kind "migrate" }}
+        # The migrator's connection URL is a mounted file, never a variable (S7). Only this Job has it (the hub refuses it in the pod).
+        - name: LK_MIGRATOR_URL_FILE
+          value: /etc/lanekeeper/migrator/uri
+        {{- else }}
+        - name: LK_DATABASE_URL_FILE
+          value: /etc/lanekeeper/db/uri
+        {{- end }}
+        - name: LK_DB_CA_FILE
+          value: /etc/lanekeeper/db-ca/ca.crt
+        {{- if eq $kind "migrate" }}
+        - name: LK_MIGRATE_TIMEOUT_SECS
+          value: {{ $root.Values.migrate.timeoutSeconds | int | toString | quote }}
+        {{- else }}
+        - name: LK_SEED_TIMEOUT_SECS
+          value: {{ $root.Values.seed.timeoutSeconds | int | toString | quote }}
+        {{- end }}
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        {{- if eq $kind "migrate" }}
+        - name: migrator-credentials
+          mountPath: /etc/lanekeeper/migrator
+          readOnly: true
+        {{- else }}
+        - name: db-credentials
+          mountPath: /etc/lanekeeper/db
+          readOnly: true
+        {{- end }}
+        - name: db-ca
+          mountPath: /etc/lanekeeper/db-ca
+          readOnly: true
+        {{- if eq $kind "seed" }}
+        - name: seed
+          mountPath: /etc/lanekeeper/seed
+          readOnly: true
+        {{- end }}
+  volumes:
+    - name: tmp
+      emptyDir:
+        sizeLimit: 256Mi
+    {{- if eq $kind "migrate" }}
+    # Only the connection URL of the migrator's Secret, readable by the group (0440).
+    - name: migrator-credentials
+      secret:
+        secretName: {{ $root.Values.database.migratorSecretName }}
+        defaultMode: 288
+        items:
+          - key: uri
+            path: uri
+    {{- else }}
+    # The application role's Secret, the one the hub mounts, through its uri key only.
+    - name: db-credentials
+      secret:
+        secretName: {{ $root.Values.database.credentialsSecretName }}
+        defaultMode: 288
+        items:
+          - key: uri
+            path: uri
+    {{- end }}
+    - name: db-ca
+      secret:
+        secretName: {{ $root.Values.database.caSecretName }}
+        items:
+          - key: ca.crt
+            path: ca.crt
+    {{- if eq $kind "seed" }}
+    # The seed file names service accounts and holds no secret, so a ConfigMap is right.
+    - name: seed
+      configMap:
+        name: {{ .configMap }}
+        items:
+          - key: seed.yaml
+            path: seed.yaml
+    {{- end }}
 {{- end }}

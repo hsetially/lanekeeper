@@ -393,6 +393,349 @@ test_a_shorter_drain_passes_with_a_shorter_grace_period if {
 }
 
 # ============================================================================================================================
+# The hub image's Jobs (crates/hub/HARDENING.md, "The migration Job" and "The seed Job"; 09/fix, J1 to J6): `hub migrate` as the migrator
+# and `hub seed` as the application role, from the hub's image. Each has a planted case, so a rule that stops firing fails here.
+# ============================================================================================================================
+
+migrate := "lanekeeper-hub-migrate"
+
+seed := fixtures.seed_job_name
+
+job_c := "/spec/template/spec/containers/0/"
+
+job_pod_path := "/spec/template/spec/"
+
+job_set(name, path, value) := fixtures.patch("Job", name, [{"op": "replace", "path": path, "value": value}])
+
+job_add(name, path, value) := fixtures.patch("Job", name, [{"op": "add", "path": path, "value": value}])
+
+job_remove(name, path) := fixtures.patch("Job", name, [{"op": "remove", "path": path}])
+
+test_jobs_good_pass if {
+	count(deny) == 0 with input as fixtures.hub
+}
+
+# --- which Jobs there are
+
+test_deny_a_hub_job_that_is_neither if {
+	other := json.patch(fixtures.migrate_job, [{"op": "replace", "path": "/metadata/name", "value": "lanekeeper-hub-backfill"}])
+	refused(fixtures.with_doc(other), "only two Jobs")
+}
+
+test_deny_a_hub_without_its_migration_job if {
+	refused(fixtures.without_named("Job", migrate), "no migration Job")
+}
+
+# --- the image, the command and the ports
+
+test_deny_job_with_another_image if {
+	refused(job_set(migrate, concat("", [job_c, "image"]), "ghcr.io/hsetially/lanekeeper/hub@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), "the hub's image")
+}
+
+test_deny_seed_job_with_another_image if {
+	refused(job_set(seed, concat("", [job_c, "image"]), "ghcr.io/other/tool@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), "the hub's image")
+}
+
+test_deny_migration_job_that_serves if {
+	refused(job_set(migrate, concat("", [job_c, "args"]), ["serve"]), "args must be exactly")
+}
+
+test_deny_migration_job_without_args if {
+	refused(job_remove(migrate, concat("", [job_c, "args"])), "args must be exactly")
+}
+
+test_deny_migration_job_that_seeds if {
+	refused(job_set(migrate, concat("", [job_c, "args"]), ["seed", "/etc/lanekeeper/seed/seed.yaml"]), "args must be exactly")
+}
+
+test_deny_seed_job_with_a_dry_run if {
+	refused(job_set(seed, concat("", [job_c, "args"]), ["seed", "--dry-run", "/etc/lanekeeper/seed/seed.yaml"]), "args must be exactly")
+}
+
+test_deny_seed_job_with_another_file if {
+	refused(job_set(seed, concat("", [job_c, "args"]), ["seed", "/etc/lanekeeper/seed/other.yaml"]), "args must be exactly")
+}
+
+test_deny_job_with_a_command if {
+	refused(job_add(migrate, concat("", [job_c, "command"]), ["/bin/sh"]), "command")
+}
+
+test_deny_job_with_a_port if {
+	refused(job_add(migrate, concat("", [job_c, "ports"]), [{"name": "debug", "containerPort": 6060}]), "no ports")
+}
+
+test_deny_job_with_a_second_container if {
+	refused(job_add(seed, concat("", [job_pod_path, "containers/-"]), {"name": "sidecar", "image": "x"}), "exactly one container")
+}
+
+test_deny_job_with_an_init_container if {
+	refused(job_add(seed, concat("", [job_pod_path, "initContainers"]), [{"name": "init", "image": "x"}]), "exactly one container")
+}
+
+test_deny_job_without_resources if {
+	refused(job_remove(migrate, concat("", [job_c, "resources"])), "resources.requests.cpu")
+}
+
+# --- the variables: the migrator's, never the application role's, and no other of the hub's
+
+test_deny_migration_job_with_the_application_credential if {
+	planted := job_add(migrate, concat("", [job_c, "env/-"]), {"name": "LK_DATABASE_URL_FILE", "value": "/etc/lanekeeper/db/uri"})
+	refused(planted, "LK_DATABASE_URL_FILE")
+}
+
+test_deny_seed_job_with_the_migrator_credential if {
+	planted := job_add(seed, concat("", [job_c, "env/-"]), {"name": "LK_MIGRATOR_URL_FILE", "value": "/etc/lanekeeper/migrator/uri"})
+	refused(planted, "LK_MIGRATOR_URL_FILE")
+}
+
+test_deny_migration_job_with_a_variable_of_the_hub if {
+	planted := job_add(migrate, concat("", [job_c, "env/-"]), {"name": "LK_GCP_PROJECT", "value": "example-project"})
+	refused(planted, "LK_GCP_PROJECT")
+}
+
+test_deny_seed_job_with_the_migration_timeout if {
+	planted := job_add(seed, concat("", [job_c, "env/-"]), {"name": "LK_MIGRATE_TIMEOUT_SECS", "value": "600"})
+	refused(planted, "LK_MIGRATE_TIMEOUT_SECS")
+}
+
+test_deny_migration_job_without_the_credential if {
+	refused(job_remove(migrate, concat("", [job_c, "env/0"])), "LK_MIGRATOR_URL_FILE is not set")
+}
+
+test_deny_migration_job_without_the_database_ca if {
+	refused(job_remove(migrate, concat("", [job_c, "env/1"])), "LK_DB_CA_FILE is not set")
+}
+
+test_deny_migration_credential_outside_its_mount if {
+	refused(job_set(migrate, concat("", [job_c, "env/0/value"]), "/tmp/uri"), "LK_MIGRATOR_URL_FILE must be /etc/lanekeeper/migrator/uri")
+}
+
+test_deny_seed_credential_outside_its_mount if {
+	refused(job_set(seed, concat("", [job_c, "env/0/value"]), "/tmp/uri"), "LK_DATABASE_URL_FILE must be /etc/lanekeeper/db/uri")
+}
+
+test_deny_job_ca_outside_its_mount if {
+	refused(job_set(seed, concat("", [job_c, "env/1/value"]), "/tmp/ca.crt"), "LK_DB_CA_FILE must be /etc/lanekeeper/db-ca/ca.crt")
+}
+
+test_deny_job_credential_from_a_reference if {
+	planted := job_set(migrate, concat("", [job_c, "env/0"]), {"name": "LK_MIGRATOR_URL_FILE", "valueFrom": {"configMapKeyRef": {"name": "c", "key": "k"}}})
+	refused(planted, "valueFrom")
+}
+
+test_deny_a_migration_timeout_that_is_not_a_number if {
+	refused(job_set(migrate, concat("", [job_c, "env/2/value"]), "long"), "LK_MIGRATE_TIMEOUT_SECS")
+}
+
+test_deny_a_migration_timeout_over_the_hubs_limit if {
+	refused(job_set(migrate, concat("", [job_c, "env/2/value"]), "7201"), "LK_MIGRATE_TIMEOUT_SECS")
+}
+
+test_deny_a_seed_timeout_over_the_hubs_limit if {
+	refused(job_set(seed, concat("", [job_c, "env/2/value"]), "3601"), "LK_SEED_TIMEOUT_SECS")
+}
+
+# --- the volumes: four at most, each read-only but /tmp
+
+test_deny_job_with_an_extra_volume if {
+	planted := fixtures.patch("Job", migrate, [
+		{"op": "add", "path": "/spec/template/spec/volumes/-", "value": {"name": "scratch", "emptyDir": {}}},
+		{"op": "add", "path": "/spec/template/spec/containers/0/volumeMounts/-", "value": {"name": "scratch", "mountPath": "/scratch"}},
+	])
+	refused(planted, "volumeMounts must be exactly")
+}
+
+test_deny_job_with_a_volume_it_does_not_mount if {
+	refused(job_add(migrate, concat("", [job_pod_path, "volumes/-"]), {"name": "mirror", "emptyDir": {}}), "volumes must be exactly")
+}
+
+test_deny_migration_job_with_the_application_secret_volume if {
+	planted := fixtures.patch("Job", migrate, [
+		{"op": "replace", "path": "/spec/template/spec/volumes/1/name", "value": "db-credentials"},
+		{"op": "replace", "path": "/spec/template/spec/containers/0/volumeMounts/1/name", "value": "db-credentials"},
+	])
+	refused(planted, "volumeMounts must be exactly")
+}
+
+test_deny_job_with_a_host_path if {
+	planted := job_add(seed, concat("", [job_pod_path, "volumes/-"]), {"name": "host", "hostPath": {"path": "/"}})
+	refused(planted, "hostPath")
+}
+
+test_deny_migrator_credential_mounted_writable if {
+	refused(job_remove(migrate, concat("", [job_c, "volumeMounts/1/readOnly"])), "volumeMounts must be exactly")
+}
+
+test_deny_migrator_credential_mounted_elsewhere if {
+	refused(job_set(migrate, concat("", [job_c, "volumeMounts/1/mountPath"]), "/etc/lanekeeper/db"), "volumeMounts must be exactly")
+}
+
+test_deny_job_with_the_whole_migrator_secret if {
+	refused(job_remove(migrate, concat("", [job_pod_path, "volumes/1/secret/items"])), "only the uri")
+}
+
+test_deny_job_with_the_migrators_password_key if {
+	planted := job_set(migrate, concat("", [job_pod_path, "volumes/1/secret/items"]), [{"key": "uri", "path": "uri"}, {"key": "password", "path": "password"}])
+	refused(planted, "only the uri")
+}
+
+test_deny_migrator_credential_world_readable if {
+	refused(job_set(migrate, concat("", [job_pod_path, "volumes/1/secret/defaultMode"]), 420), "world-readable")
+}
+
+test_deny_seed_credential_world_readable if {
+	refused(job_set(seed, concat("", [job_pod_path, "volumes/1/secret/defaultMode"]), 420), "world-readable")
+}
+
+test_deny_seed_job_with_the_whole_application_secret if {
+	refused(job_remove(seed, concat("", [job_pod_path, "volumes/1/secret/items"])), "only the uri")
+}
+
+test_deny_job_with_the_whole_ca_secret if {
+	refused(job_remove(migrate, concat("", [job_pod_path, "volumes/2/secret/items"])), "ca.key")
+}
+
+# The migrator's credential is never in a pod that is given the application role's, and the seed runs as the role the hub runs as.
+test_deny_migration_job_given_the_application_secret if {
+	refused(job_set(migrate, concat("", [job_pod_path, "volumes/1/secret/secretName"]), "lanekeeper-db-app"), "the application role's Secret")
+}
+
+test_deny_seed_job_given_the_migrators_secret if {
+	refused(job_set(seed, concat("", [job_pod_path, "volumes/1/secret/secretName"]), "lanekeeper-db-migrator"), "the Secret the hub mounts")
+}
+
+test_deny_seed_file_from_a_secret if {
+	planted := job_set(seed, concat("", [job_pod_path, "volumes/3"]), {"name": "seed", "secret": {"secretName": "seed", "items": [{"key": "seed.yaml", "path": "seed.yaml"}]}})
+	refused(planted, "the seed file must come from a ConfigMap")
+}
+
+test_deny_seed_file_of_another_key if {
+	planted := job_set(seed, concat("", [job_pod_path, "volumes/3/configMap/items"]), [{"key": "seed.yaml", "path": "seed.yaml"}, {"key": "other", "path": "other"}])
+	refused(planted, "the seed file must come from a ConfigMap")
+}
+
+# --- the Job's own life: no restart, a few tries, and a deadline after the process's own timeout
+
+test_deny_job_that_restarts_in_place if {
+	refused(job_set(migrate, concat("", [job_pod_path, "restartPolicy"]), "OnFailure"), "restartPolicy")
+}
+
+test_deny_job_without_a_restart_policy if {
+	refused(job_remove(seed, concat("", [job_pod_path, "restartPolicy"])), "restartPolicy")
+}
+
+test_deny_job_without_a_backoff_limit if {
+	refused(job_remove(migrate, "/spec/backoffLimit"), "backoffLimit")
+}
+
+test_deny_job_that_tries_ten_times if {
+	refused(job_set(migrate, "/spec/backoffLimit", 10), "backoffLimit")
+}
+
+test_deny_job_without_a_deadline if {
+	refused(job_remove(migrate, "/spec/activeDeadlineSeconds"), "activeDeadlineSeconds")
+}
+
+test_deny_migration_deadline_not_after_the_timeout if {
+	refused(job_set(migrate, "/spec/activeDeadlineSeconds", 600), "activeDeadlineSeconds")
+}
+
+test_deny_seed_deadline_not_after_the_timeout if {
+	refused(job_set(seed, "/spec/activeDeadlineSeconds", 120), "activeDeadlineSeconds")
+}
+
+test_deny_a_deadline_of_a_day if {
+	refused(job_set(migrate, "/spec/activeDeadlineSeconds", 86400), "activeDeadlineSeconds")
+}
+
+test_a_longer_timeout_with_a_longer_deadline_passes if {
+	planted := fixtures.patch("Job", migrate, [
+		{"op": "replace", "path": "/spec/template/spec/containers/0/env/2/value", "value": "3600"},
+		{"op": "replace", "path": "/spec/activeDeadlineSeconds", "value": 3900},
+	])
+	count(deny) == 0 with input as planted
+}
+
+# --- who the Jobs are: their own account, with no Google identity and no token
+
+test_deny_job_as_the_hubs_account if {
+	refused(job_set(migrate, concat("", [job_pod_path, "serviceAccountName"]), "lanekeeper-hub"), "ServiceAccount")
+}
+
+test_deny_job_as_the_default_account if {
+	refused(job_remove(seed, concat("", [job_pod_path, "serviceAccountName"])), "ServiceAccount")
+}
+
+test_deny_job_whose_account_is_not_rendered if {
+	refused(fixtures.without_named("ServiceAccount", fixtures.jobs_name), "ServiceAccount")
+}
+
+test_deny_job_account_with_a_google_identity if {
+	planted := fixtures.patch("ServiceAccount", fixtures.jobs_name, [{"op": "add", "path": "/metadata/annotations/iam.gke.io~1gcp-service-account", "value": "lanekeeper-hub@example-project.iam.gserviceaccount.com"}])
+	refused(planted, "Google")
+}
+
+test_deny_job_account_that_mounts_a_token if {
+	refused(fixtures.patch("ServiceAccount", fixtures.jobs_name, [{"op": "replace", "path": "/automountServiceAccountToken", "value": true}]), "automountServiceAccountToken")
+}
+
+test_deny_job_account_without_a_token_statement if {
+	refused(fixtures.patch("ServiceAccount", fixtures.jobs_name, [{"op": "remove", "path": "/automountServiceAccountToken"}]), "automountServiceAccountToken")
+}
+
+test_deny_job_pod_with_a_google_identity_annotation if {
+	refused(job_add(migrate, "/spec/template/metadata/annotations", {"iam.gke.io/gcp-service-account": "x"}), "Google")
+}
+
+test_deny_job_pod_with_the_hubs_label if {
+	planted := fixtures.patch("Job", migrate, [{"op": "replace", "path": "/spec/template/metadata/labels/app.kubernetes.io~1name", "value": "lanekeeper-hub"}])
+	refused(planted, "label")
+}
+
+test_deny_job_pod_the_jobs_policy_does_not_select if {
+	planted := fixtures.patch("Job", seed, [{"op": "replace", "path": "/spec/template/metadata/labels/app.kubernetes.io~1name", "value": "lanekeeper-hub-seed"}])
+	refused(planted, "label")
+}
+
+# --- the order: the migration first (a hook), the seed after it (not a hook), and what the migration needs before it (hooks)
+
+test_deny_migration_job_that_is_not_a_hook if {
+	refused(fixtures.patch("Job", migrate, [{"op": "remove", "path": "/metadata/annotations"}]), "pre-install,pre-upgrade")
+}
+
+test_deny_migration_job_that_runs_after_install if {
+	refused(job_set(migrate, "/metadata/annotations/helm.sh~1hook", "post-install,post-upgrade"), "pre-install,pre-upgrade")
+}
+
+test_deny_seed_job_that_is_a_hook if {
+	refused(job_add(seed, "/metadata/annotations", {"helm.sh/hook": "pre-install,pre-upgrade"}), "not a hook")
+}
+
+test_deny_seed_job_that_is_an_argo_hook if {
+	refused(job_add(seed, "/metadata/annotations", {"argocd.argoproj.io/hook": "PreSync"}), "not a hook")
+}
+
+test_deny_job_account_that_is_not_a_hook if {
+	refused(fixtures.patch("ServiceAccount", fixtures.jobs_name, [{"op": "remove", "path": "/metadata/annotations"}]), "hook")
+}
+
+test_deny_job_account_that_runs_after_the_migration if {
+	refused(fixtures.patch("ServiceAccount", fixtures.jobs_name, [{"op": "replace", "path": "/metadata/annotations/helm.sh~1hook-weight", "value": "5"}]), "weight")
+}
+
+test_deny_job_policy_that_runs_with_the_migration if {
+	refused(fixtures.patch("NetworkPolicy", fixtures.jobs_name, [{"op": "replace", "path": "/metadata/annotations/helm.sh~1hook-weight", "value": "0"}]), "weight")
+}
+
+test_deny_job_policy_that_is_not_a_hook if {
+	refused(fixtures.patch("NetworkPolicy", fixtures.jobs_name, [{"op": "remove", "path": "/metadata/annotations"}]), "hook")
+}
+
+test_deny_job_account_that_is_deleted_when_the_migration_succeeds if {
+	refused(fixtures.patch("ServiceAccount", fixtures.jobs_name, [{"op": "replace", "path": "/metadata/annotations/helm.sh~1hook-delete-policy", "value": "hook-succeeded"}]), "hook-succeeded")
+}
+
+# ============================================================================================================================
 # The agent (09/T4; S16, S17): the same fields as the hub, one planted case per field, and the agent's own contract
 # (crates/agent/HARDENING.md): it calls the Kubernetes API, so its token is mounted; one replica; the writable mounts are the NFS
 # export, /tmp and the spool; the paths it is given are the paths of its mounts.
