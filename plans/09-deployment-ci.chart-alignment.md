@@ -482,3 +482,54 @@ the statements below about the chart are from a render, not from reading. `kind`
 - The seed Job's name hashes the pod template as the chart renders it, so a chart change that alters the template is a new Job too.
 - `render.sh contract` no longer stops after the agent's failure (`&&`), so a cross-chart disagreement is reported even while B8 is open; `render.sh hub` runs the hub chart alone and is never the gate.
 - `.github/workflows/deploy.yml` now also runs for `crates/hub/src/config/**` and `crates/hub/tests/hardening.rs`, which `env-names.sh` and `render.sh contract` read.
+
+---
+
+## Status (written after the two fix commits of 2026-10-28)
+
+`C3` is `972b361` (`09/fix: the kind hub stage asserts what the production image can do`), `C4` is `77481be` (`09/fix: the agent chart names the config-server's namespace`).
+The tools of the session ran as before (helm 4.3.0, kubeconform, conftest 0.71.1 behind a stand-in for Docker, shellcheck, actionlint; zizmor was installed with
+`just ops-tools-install zizmor`). **`kind` did not run, and the `hub` stage of `kind-e2e` has not run at all** (no Docker daemon, a cgroup v1 kernel): what shows the script is the node
+test, which runs the real `run.sh` and `lib.sh` with a stand-in docker, kind, helm, curl and crane and a fake `kubectl` behind `docker exec`, for each state, plus `shellcheck -x`, `bash -n` and `actionlint`.
+
+### Closed
+
+| Item | Commit | How it is shown |
+|---|---|---|
+| Section 10, option 1 (the kind job asserts what the production image can do) | C3 | `run.sh`/`lib.sh`: the migration Job (helm waits for the hook; then a bounded `kubectl wait` and `.status.succeeded`), the seed Job (found by label), then each replica: exit code 1, a Google marker, no setting, database or schema error. Classes `google`, `setting`, `schema`, `database`, `ready`, `wrong-exit`, `unknown`, `unlogged` (`hub_replica_class`, `hub_verdict`); 17 node tests more than before in `kind-run.test.mjs` (47), each class run through the real script, the bounds, the order, and the Jobs' failures |
+| The `HUB_REFUSAL_TEXT` of the old stub and its check against `main.rs` | C3 | gone. One block of `lib.sh` holds every string looked for in a hub log; `kind-run.test.mjs` extracts the string literals of the non-test code of `crates/hub/src` (comments and `#[cfg(test)]` left out), requires each marker's anchors to be literals, and requires the marker list and the anchors to be the same set. Shown to fail: a reworded literal (on a copy of the source), a database marker that never matches, a migration Job not waited for, an exit code not checked |
+| The summary says what is not measured | C3 | `KIND_NOT_MEASURED` in `lib.sh`: "`/readyz` on 3 replicas and P11 on the pod are NOT MEASURED in kind (the production image cannot be Ready without Google and Entra), acceptance 3 is not met by this job". `run.sh` puts it and three table rows in the summary; the `kind-e2e` job of `images.yml` has an `if: always()` step that appends it. Nothing ticks acceptance 3 |
+| Section 11, `hub-fuzz` in the fuzz matrices | C3 | one line in `rust.yml` and `nightly.yml`; `consistency.test.mjs:71` passes. The recipe depends on `fuzz-tools-check`, which the job's install step covers (the nightly, `cargo-fuzz`, `cargo-deny`, `cargo-audit`, a C compiler on the runner) |
+| Section 11, the stale A1 sentences | C3 | `kind/README.md`, `images.yml`, the `Justfile` recipe comment, the hub and gcp chart READMEs and `ADDING-A-SWIMLANE.md`; a test fails on a return of the old wording |
+| Section 12 / B8 (the agent's config-server egress) | C4 | `configServer.namespace` (required) and `configServer.service` in the agent chart, one helper for the rule and the URL; `network.rego` (each wrong shape its own message; 31 more policy tests, 1193 in all), `contract.rego` (the namespace is a value, the shape is compared), `sit1.yaml` (`latest-pci`), the runbook, `render.sh` (35 more planted or variant cases that pass: 648 ok against 613). `render.sh contract`: 34 of 34, exit 0 (it had 1 failure). `render.sh planted`: no `PLANTED FAILED` line (it had 12) |
+| B11 (step 1 of the runbook says nothing creates the swimlane row) | C4 | the runbook now says `hub seed` does, with the file's shape and the Job; text only, nothing in the repository holds the real seed file |
+
+### Left open, on purpose
+
+- **`render.sh planted` still exits 1, for one reason: the gcp chart cannot render (B5, the hook ranges), so the Cloud Armor cases are not run and the run counts that as one failure.** `render` and `policy` fail
+  for the gcp staging and prod values, and `argocd`'s full scope for gcp prod, for the same reason. Nothing else is red in `render.sh lint|render|policy|contract|planted|argocd`.
+- **`LK_CONFIG_SERVER_DEPLOYMENT` is not rendered.** The contract's pod does not list it and the agent treats it as optional, so the agent does not report when the config-server's pods started (C11,
+  `crates/agent/tests/kube_configserver.rs`). Adding it is a contract decision: HARDENING.md's pod gets the variable, and `latest-pci` goes into `namespaces` (the agent refuses to start otherwise), which
+  also renders a workload Role there and a destination in the Argo CD project. Recorded in the B8 section of the blockers file.
+- **No policy knows which namespace is the right one.** The runbook asks for it and says how to check it (`kubectl get pods -A -l app=csp-configuration-server`).
+- **`crates/hub/fuzz/Cargo.lock` has `rustls-webpki` 0.103.16 and `webpki-root-certs` 1.0.10**, as the root `Cargo.lock` has; the other fuzz lockfiles have 0.103.15 and 1.0.9. They are not 14 days old until
+  2026-11-02 and 2026-11-03. Nothing checks the age of a locked version (only Renovate's `minimumReleaseAge` for proposals), and `cargo deny --manifest-path crates/hub/fuzz/Cargo.toml check` and
+  `cargo audit --file crates/hub/fuzz/Cargo.lock` exit 0. Not changed.
+- **`just ci-lint` fails on one file that is not 09's change:** `.github/scripts/playwright-install.test.sh` lines 247 and 248 (SC2016, info), which came with the merge of `main` (`22f1416`). `actionlint`,
+  `check-pins.mjs`, `check-workflows.mjs` and zizmor (offline, with `.github/zizmor.yml`) pass, and `shellcheck -x` passes on every other script.
+- **Stale in files this step may not edit:** `docs/threat-model.md` (the "Never run" row and item 13 of the residual risks still describe A1 and the old kind test), and the records `plans/09-deployment-ci.pr.md` and
+  `plans/09-deployment-ci.evidence.md`. A person should refresh them with the PR text.
+- **What the kind `hub` stage will show on its first real run is a guess in two places:** the exact first Google error (a failed read, or `starting took too long: web certificate`: both are accepted), and that
+  Helm 4 waits for a Job hook with `--timeout` as described. A log with a different first error fails the stage, prints the log, and is the thing to read.
+
+### Assumptions made
+
+- The config-server of a swimlane runs in **one** namespace; the agent's own namespace is never that one. The contract says so in its paragraph on the namespace ("the config-server does not run in the agent's
+  namespace"), so the chart and the policy refuse it, though the table above that paragraph says "usually".
+- `configServer.service` is optional with the default of the contract's example; a Service named otherwise is accepted by the URL rule (any DNS label).
+- A missing `LK_CONFIG_SERVER_URL` is refused: the NetworkPolicy lets the agent reach a config-server that it would then never call, and the chart always sets it.
+- "Pod Ready" in the kind `hub` stage is a failure ("unexpected"); if all three replicas are Ready, P11 is still measured and printed for whoever reads it (`p11_verdict` is kept for that).
+- A log is judged over the current and the previous container together, so an error in either counts; `kubectl logs --tail=40` of each.
+- `hub_replica_class` puts a failure beside a Google error first (setting, then schema, then database): a replica whose database check failed is a database failure however many Google errors it logged too.
+- The marker `setting it up took too long` (a CA that timed out) is accepted without the CA's name in front of it; it exists in the Rust source only as `CaStep::TimedOut`'s message.
+- `.github/scripts/kind-run.test.mjs` now has 47 tests, and `node --test .github/scripts/*.test.mjs` 174 (the brief expected 157: the A1 tests were replaced by more tests, none removed without a successor).
