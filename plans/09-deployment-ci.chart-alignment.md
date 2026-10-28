@@ -411,3 +411,74 @@ Files that B8 touches (not changed in this step):
 
 The settings (E1) and the Jobs with their network and policy pieces (J1 to J5) are needed by everything in section 10. The kind decision (section 10) can be taken before them. The gcp objects (I1) and the
 install guide are independent of the chart and are the longest to review. B8 is independent of the hub chart.
+
+---
+
+## Status (written after the two fix commits)
+
+`C1` is `30b53a1` (`09/fix: the hub chart renders every setting prompt 18 requires`), `C2` is `66ba049` (`09/fix: migration Job and seed Job for the hub chart`).
+This time `helm` 4.3.0, `kubeconform`, `conftest` 0.71.1, `shellcheck` and `actionlint` ran (there is no Docker daemon: a stand-in runs the pinned conftest binary), so
+the statements below about the chart are from a render, not from reading. `kind` did not run (no Docker), and the hub binary did not run at all.
+
+### Closed
+
+| Gap | Commit | How it is shown |
+|---|---|---|
+| E1 (the 25 variables, the Secret Manager names, the derived origin and audience) | C1 | `render.sh contract` reads `REQUIRED_VARIABLES` from `crates/hub/tests/hardening.rs` and finds each in the StatefulSet of kind, staging and prod; `planted_hub_variables` drops each of the 25 in turn and the check names it |
+| E2 (`env-names.sh` reads `config/*.rs`) | C1 | its self-test refuses a name no file knows and accepts one that only the directory knows |
+| E3 (the tunables, `config.bootstrapAdmins`) | C1 | the schema takes the ones asked for within the hub's ranges; each of the ten that stay out is refused by a planted case; the audiences need an `api://` entry in OAuth mode (the hub refuses a list without one) |
+| E4 (the Jobs' variables out of the StatefulSet) | C1 | `hardening.rego`, three planted cases |
+| E5 (no new name looks like a secret) | C1 | `env-names.sh` and `secrets.rego` run over the new names and pass |
+| P1, P2 (the replica address, the order of the two variables) | C1 | `topology.rego`: the address is `$(LK_REPLICA_NAME).lanekeeper-hub-replicas.<namespace>.svc:8445` and the name comes first; planted cases for the contract's example service, another namespace, and the swapped order |
+| P4 (the agent's endpoint host in `LK_AGENT_ENDPOINT_HOSTS`) | C1 | `render.sh contract`, four planted cases |
+| P5 (new: the agent's audience is the hub's, `LK_HUB_AUDIENCE`) | C1 | the agent chart's `hub.audience` defaults to the endpoint, which is not the hub's name (`https://<gateway.hostname>`), so every `Join` would have been refused; `sit1.yaml` now sets it, and `render.sh contract` checks it |
+| R1, R2 (`LK_REPLICA_NAME`, the one `valueFrom`) | C1 (C2 for the Jobs) | `hardening.rego`: only `fieldRef: {fieldPath: metadata.name}` on `LK_REPLICA_NAME`, in the StatefulSet and the hub's Jobs; planted `configMapKeyRef`, `resourceFieldRef`, a fieldRef on another variable and to another field |
+| T1 (45 s, and the sum of the shutdown tunables) | C1 | template `fail`, `hardening.rego` on the rendered output, planted cases for both |
+| B1 (the stale comment in `statefulset.yaml`) | C1 | the same stale sentence in `deploy/policy/resources.rego` is corrected too |
+| J1, J6 (the migration Job as a hook, with its account and policy) | C2 | rendered; `hardening.rego` holds the hook events, the weights and the delete policy |
+| J2 (the migrator's `uri`) | C2 | `deploy/charts/db/README.md`, `deploy/tests/kind/run.sh` `install_database`; `render.sh contract` compares the Secret names of the Jobs with the database's bootstrap and managed role |
+| J3 (label, policy, the database admits it) | C2 | `network.rego`, `database.rego`, `render.sh contract` |
+| J4 (rules for the Jobs) | C2 | 71 `_test.rego` cases in `hardening_test.rego` (and more in `network_test.rego`, `database_test.rego` and the two Argo CD tests), and 53 planted cases on the real output |
+| J5 (the Argo CD project) | C2 | `projects.yaml`, `argocd.rego`, the tests, and three planted scope cases (without `batch/Job`, without `ConfigMap`, a `CronJob`) |
+| J7 (the seed file) | C2 | `seed.existingConfigMap` or `seed.content`; the Job's name is a hash, shown to change with the file, revision, image, timeout, resources and ConfigMap |
+| (new) the `Job` schema | C2 | `kubeconform -strict` had no schema for `Job`: `job-batch-v1.json` is vendored from the pinned commit with `fetch.py` (nothing else changed in the lock), and a planted `Job` is refused |
+| N2 | C2 | it is J3 |
+
+### Left as known gaps, on purpose
+
+- **P3** (`publishNotReadyAddresses` on the headless Service), **T2** (the load balancer's health check against the shutdown), **N1** (the egress policy for `LK_GITHUB_API_BASE` and
+  `LK_ENTRA_AUTHORITY_HOST`, which are not settable for that reason), and **section 8** (the load balancer): not touched, as asked. The install guide lists them.
+- `LK_MCP_AS_MIRROR`, `LK_GIT_READ_REF` and `LK_GIT_WEBHOOK_REF` are still not settable from a values file (the hub's defaults, `github-read-token` and `github-webhook-secret`, apply). Nobody asked for them.
+- **B8** (the agent's config-server egress). It is why `render.sh contract` and `render.sh planted` are red at this HEAD and were red at `1f31164`: the agent chart
+  against `crates/agent/HARDENING.md` is one failure, and it makes the unchanged-agent check and 11 agent variants `PLANTED FAILED` lines. With the one line for Cloud Armor
+  (B5: the gcp chart cannot render, so its planted cases are not run) that is the 13 that `render.sh planted` reports. They are the same lines before and after both commits (diffed).
+- **B5** (GitHub's hook ranges): the gcp chart with Cloud Armor cannot render, so `render`, `policy` and `planted` show the gcp staging and prod failures, as before.
+- **Section 10** (the kind job) and **section 11** (`hub-fuzz` in the matrices, the kind refusal text): not touched. `kind.yaml` now has every setting and a seed file, and the kind
+  script's `install_database` makes the migrator's `uri`, but the hub stage still encodes the A1 refusal.
+
+### For another PR
+
+- **Prompt 18's `crates/hub/HARDENING.md`** (not edited here): the "Probes" paragraph says `/healthz` does not depend on the database (it answers only after the database, schema, web
+  certificate and CAs have loaded: B1); the `LK_REPLICA_ADDRESS` example spells the headless Service `lanekeeper-hub` (the chart's is `lanekeeper-hub-replicas`, which `topology.rego`
+  requires: P1); and its paragraph on the Jobs could say that the Jobs' pods carry `app.kubernetes.io/name: lanekeeper-hub-jobs`.
+- **Section 9** (KMS keys, Secret Manager secrets and their IAM in the gcp chart, `iam.rego`, the project `lanekeeper-cloud`) and the **install guide**: the settings are now known and rendered,
+  nothing creates what they name. `ADDING-A-SWIMLANE.md` still says that nothing creates the swimlane row (B11); `hub seed` does.
+- **Resources of the Jobs** are a guess (100m/128Mi requests, 1/512Mi limits): measure them in the first real run.
+
+### Assumptions made
+
+- Argo CD's documentation (`argo-cd.readthedocs.io`) could not be fetched (the host is not on the session's network allow-list). The mapping is from memory of gitops-engine:
+  `pre-install` and `pre-upgrade` are `PreSync`, the Helm weight orders hooks as a sync wave unless `argocd.argoproj.io/sync-wave` is set, and the delete policies map one to one. The chart sets
+  the Argo CD wave as well as the Helm weight, so the order does not rest on the weight mapping, and uses only `before-hook-creation`. The first real sync is the test.
+- The hook account and policy (`lanekeeper-hub-jobs`) are hooks kept after the sync, so a first install has them and the seed Job (not a hook) can use them. Argo CD does not manage hooks
+  after the sync, so a deleted hook policy returns at the next sync, not at a self-heal.
+- `LK_PUBLIC_ORIGIN` and `LK_HUB_AUDIENCE` are both `https://<gateway.hostname>`; `gateway.hostname` is required even where the Gateway is off (kind sets a synthetic one).
+- staging and prod set `seed.enabled: true` with `existingConfigMap: lanekeeper-hub-seed-<env>`, a placeholder name for a ConfigMap that a person makes out of band; until it exists the
+  seed Job waits and fails at its deadline, and the hub is not held back. The default in `values.yaml` is `false`, as asked.
+- The Job's `activeDeadlineSeconds` is the timeout plus 300 s; `backoffLimit` at most 3 (policy); a deadline over 10800 s is refused.
+- `LK_SHUTDOWN_GRACE_SECS` and `LK_SHUTDOWN_DRAIN_SECS` are now integers in the hub's ranges (they were `integer|string`), because the template adds them.
+- A Helm number is a float, and Go prints a million as `1e+06`: tunables go through one helper that prints whole numbers whole.
+- Schema errors differ between Helm 4 (`at '/config/entra/tenantId'`) and Helm 3 (`config.entra.tenantId:`): the planted cases look for the last key (`tenantId`), which both print.
+- The seed Job's name hashes the pod template as the chart renders it, so a chart change that alters the template is a new Job too.
+- `render.sh contract` no longer stops after the agent's failure (`&&`), so a cross-chart disagreement is reported even while B8 is open; `render.sh hub` runs the hub chart alone and is never the gate.
+- `.github/workflows/deploy.yml` now also runs for `crates/hub/src/config/**` and `crates/hub/tests/hardening.rs`, which `env-names.sh` and `render.sh contract` read.
