@@ -16,7 +16,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use domain::{Role, UserStatus};
 use http::{Method, StatusCode};
-use hub::{Deps, Hub, HubSettings, Module};
+use hub::{Deps, Hub, HubSettings, Module, SessionEdge};
 use hub_platform::{FakeSessionAuth, GuardedRouter, RouteError, RouteGuard};
 use support::{anonymous, default_hub, request, request_as, send};
 
@@ -127,7 +127,8 @@ impl Module for Registers {
 fn build_with(f: fn(GuardedRouter) -> GuardedRouter) -> Result<Hub, hub::BuildError> {
     Hub::build(Deps {
         settings: HubSettings::default(),
-        auth: Arc::new(FakeSessionAuth::new()),
+        session: SessionEdge::without_sessions(Arc::new(FakeSessionAuth::new())),
+        mounted: Vec::new(),
         modules: vec![Arc::new(Registers(f))],
         static_files: None,
         checks: Vec::new(),
@@ -228,4 +229,84 @@ fn the_route_table_lists_every_mounted_route_with_its_guard() {
             }),
     );
     assert!(violations.is_empty(), "{violations:?}");
+}
+
+// ------------------------------------------------------------------------------------------------ mounted routers (plan 18, T4)
+
+fn mounted(name: &'static str, path: &'static str, fallback: &'static str) -> hub::MountedRouter {
+    let router = axum::Router::new()
+        .route(path, axum::routing::get(|| async { "mounted" }))
+        .fallback(move || async move { fallback });
+    hub::MountedRouter {
+        name,
+        router,
+        specs: vec![hub_platform::RouteSpec::new(
+            &Method::GET,
+            path,
+            RouteGuard::Public {
+                reason: "a route of a router built elsewhere, for the test".to_owned(),
+            },
+        )],
+    }
+}
+
+fn build_mounted(routers: Vec<hub::MountedRouter>) -> Result<Hub, hub::BuildError> {
+    Hub::build(Deps {
+        settings: HubSettings::default(),
+        session: SessionEdge::without_sessions(Arc::new(FakeSessionAuth::new())),
+        mounted: routers,
+        modules: Vec::new(),
+        static_files: None,
+        checks: Vec::new(),
+    })
+}
+
+#[tokio::test]
+async fn routers_built_elsewhere_are_merged_and_their_own_fallbacks_never_answer() {
+    // Two routers that each answer an unmatched path themselves: `Router::merge` would panic on the second, and adopt the first's
+    // for every module. The hub drops both, so its own answer is the only one, whichever module a path was meant for.
+    let hub = build_mounted(vec![
+        mounted("one", "/one", "one's fallback"),
+        mounted("two", "/two", "two's fallback"),
+    ])
+    .unwrap();
+    assert_eq!(hub.routes.len(), 2, "both routers' tables are in the hub's");
+    for path in ["/one", "/two"] {
+        let reply = send(&hub.web, anonymous(Method::GET, path, Body::empty())).await;
+        assert_eq!(reply.status(), StatusCode::OK, "{path}");
+    }
+    for path in ["/three", "/one/x", "/api/v1/none"] {
+        let reply = send(&hub.web, anonymous(Method::GET, path, Body::empty())).await;
+        assert_eq!(reply.status(), StatusCode::NOT_FOUND, "{path}");
+        let body = support::text(reply).await;
+        assert!(
+            !body.contains("fallback"),
+            "{path}: a mounted router answered: {body}"
+        );
+    }
+}
+
+#[test]
+fn a_mounted_router_that_repeats_a_route_is_refused_and_the_module_is_named() {
+    let error = build_mounted(vec![mounted("one", "/same", "x"), mounted("two", "/same", "x")]).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            hub::BuildError::Route {
+                module: "two",
+                error: RouteError::Duplicate { .. }
+            }
+        ),
+        "{error:?}"
+    );
+    // The same route with a differently named parameter is the same route to the router.
+    let error = build_mounted(vec![
+        mounted("one", "/a/{id}", "x"),
+        mounted("two", "/a/{name}", "x"),
+    ])
+    .unwrap_err();
+    assert!(
+        matches!(error, hub::BuildError::Route { module: "two", .. }),
+        "{error:?}"
+    );
 }

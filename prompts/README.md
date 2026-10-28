@@ -38,6 +38,7 @@ Agents within a wave run in parallel. Each depends only on contracts and fakes, 
 | 2 | 17 NFS VM sentinel | 01, using fakes. Integrates with 03b and 05. Install needs Q30. |
 | 3 | 15 Security verification | Waves 1 and 2 merged |
 | 3 | 16 Performance verification | Waves 1 and 2 merged; staging deployed |
+| 3 | 18 Hub assembly | 01, 03a, 03b, 05, 06, 07 merged. Makes the `hub` binary start; nobody owned it before (`docs/hub-assembly-survey.md`). |
 | Investigation | 10 Sync job reporting | Any time. Implementation waits for a decision. |
 | v2 | 12 GLiNER, 13 v2 features | v1 |
 

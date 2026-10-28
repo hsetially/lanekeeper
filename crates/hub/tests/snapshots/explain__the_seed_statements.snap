@@ -1,0 +1,45 @@
+---
+source: crates/hub/tests/explain.rs
+expression: report
+---
+projects by id
+Bitmap Heap Scan on projects
+  Bitmap Index Scan using projects_pkey [Index Cond: (id = ANY (?::text[]))]
+
+swimlanes by id
+Bitmap Heap Scan on swimlanes
+  Bitmap Index Scan using swimlanes_pkey [Index Cond: (id = ANY (?::text[]))]
+
+tenants of the swimlanes
+Limit
+  Sort
+    Bitmap Heap Scan on swimlane_tenants
+      Bitmap Index Scan using swimlane_tenants_pkey [Index Cond: (swimlane_id = ANY (?::text[]))]
+
+sentinels by vm
+Bitmap Heap Scan on sentinels
+  Bitmap Index Scan using sentinels_vm_key [Index Cond: (vm = ANY (?::text[]))]
+
+projects not in the file
+Limit
+  Index Only Scan using projects_pkey on projects [Filter: (id <> ALL (?::text[]))]
+
+swimlanes not in the file
+Limit
+  Index Only Scan using swimlanes_pkey on swimlanes [Filter: (id <> ALL (?::text[]))]
+
+sentinels not in the file
+Limit
+  Index Only Scan using sentinels_vm_key on sentinels [Filter: (vm <> ALL (?::text[]))]
+
+project update
+ModifyTable on projects
+  Index Scan using projects_pkey on projects [Index Cond: (id = ?::text)]
+
+swimlane update
+ModifyTable on swimlanes
+  Index Scan using swimlanes_pkey on swimlanes [Index Cond: (id = ?::text)]
+
+sentinel update
+ModifyTable on sentinels
+  Index Scan using sentinels_vm_key on sentinels [Index Cond: (vm = ?::text)]

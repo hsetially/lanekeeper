@@ -1,0 +1,4 @@
+LK_MIGRATOR_URL_FILE=/run/migrator/uri
+LK_DB_CA_FILE=/run/db-ca/ca.crt
+LK_MIGRATE_TIMEOUT_SECS=900
+FILE_CONTENT=postgres://lanekeeper_migrator:not-a-real-password@db.example/lanekeeper

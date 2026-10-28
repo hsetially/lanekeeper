@@ -1,0 +1,13 @@
+LK_VAULT_KMS_REF=projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/vault
+LK_EXTRA_DENY_GLOBS=secrets/**, **/*.pem
+LK_RETENTION_ENABLED=true
+LK_RETENTION_DRY_RUN=false
+LK_CORPUS_CACHE_MIB=64
+LK_GITHUB_API_BASE=https://ghe.example.com/
+LK_GIT_BASE_BRANCH=release/base
+LK_CONFIG_SERVER_DEPLOYMENT=config-server
+LK_TEAMS_ALLOWED_HOSTS=*.logic.azure.com,hooks.example.com
+LK_WRITES_RECONCILE_SECS=1
+LK_WRITES_EXPIRE_SECS=86400
+LK_WRITES_PR_JOBS_SECS=300
+LK_WRITES_CLEANUP_SECS=60

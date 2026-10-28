@@ -250,14 +250,56 @@ fn strings(value: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The `LK_*` variables the settings read: every string literal of that form in `src/config.rs`.
+/// The `LK_*` variables the settings read: every string literal of that form in `src/config.rs` and in each file of
+/// `src/config/` (the groups of settings).
 fn known_variables() -> BTreeSet<String> {
-    read("src/config.rs")
-        .split('"')
+    let mut text = read("src/config.rs");
+    let mut groups: Vec<_> = fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    groups.sort();
+    for group in groups {
+        text.push('\n');
+        text.push_str(&fs::read_to_string(group).unwrap());
+    }
+    text.split('"')
         .filter(|s| s.starts_with("LK_") && s.bytes().all(|b| b.is_ascii_uppercase() || b == b'_'))
         .map(str::to_owned)
         .collect()
 }
+
+/// What the binary refuses to start without (plan 18, T1): a pod that omits one of these is a pod that cannot start.
+const REQUIRED_VARIABLES: [&str; 25] = [
+    "LK_DATABASE_URL_FILE",
+    "LK_DB_CA_FILE",
+    "LK_WEB_CERT_REF",
+    "LK_WEB_KEY_REF",
+    "LK_GCP_PROJECT",
+    // T3 (G10): the two CAs, this replica's identity and the agent endpoint, and the Git remotes.
+    "LK_AGENT_CA_KMS_REF",
+    "LK_AGENT_CA_CERT_REF",
+    "LK_REPLICA_CA_KMS_REF",
+    "LK_REPLICA_CA_CERT_REF",
+    "LK_REPLICA_NAME",
+    "LK_REPLICA_ADDRESS",
+    "LK_HUB_AUDIENCE",
+    "LK_AGENT_ENDPOINT_HOSTS",
+    "LK_GIT_BASE_URL",
+    "LK_GIT_TENANT_URL",
+    "LK_GIT_BASE_REPO",
+    "LK_GIT_TENANT_REPO",
+    // T4 (G1, G26): the Entra sign-in, whose two secrets are Secret Manager names, and the audit chain's checkpoints.
+    "LK_PUBLIC_ORIGIN",
+    "LK_ENTRA_TENANT_ID",
+    "LK_ENTRA_CLIENT_ID",
+    "LK_ENTRA_CLIENT_AUTH_REF",
+    "LK_ENTRA_COOKIE_KEY_REF",
+    "LK_AUDIT_CHECKPOINT_BUCKET",
+    "LK_AUDIT_CHECKPOINT_KMS_REF",
+    // T5 (S8): the key that wraps the GitHub token vault. A hub without it has no write path to offer and does not start.
+    "LK_VAULT_KMS_REF",
+];
 
 const WRITABLE_VOLUMES: [&str; 2] = ["tmp", "mirror"];
 const ALLOWED_VOLUMES: [&str; 4] = ["tmp", "mirror", "db-credentials", "db-ca"];
@@ -297,6 +339,18 @@ fn pod_level_problems(spec: &Value) -> Vec<String> {
             "automountServiceAccountToken must be stated, and false: the hub never calls the Kubernetes API"
                 .to_owned(),
         );
+    }
+    // The hub drains for the grace and the drain period after SIGTERM (plan 18, T1). A pod whose termination period is not
+    // longer is killed by the kubelet while it is still draining, which is a dropped request and not a clean exit.
+    let (grace, drain) = shutdown_periods(spec);
+    let needed = grace + drain + 10;
+    if spec["terminationGracePeriodSeconds"]
+        .as_u64()
+        .is_none_or(|secs| secs < needed)
+    {
+        problems.push(format!(
+            "terminationGracePeriodSeconds must be at least {needed} (grace {grace} + drain {drain} + 10)"
+        ));
     }
     let security = &spec["securityContext"];
     if security["runAsNonRoot"] != Value::Bool(true) {
@@ -362,6 +416,21 @@ fn container_problems(container: &Value) -> Vec<String> {
         ));
     }
     problems
+}
+
+/// The shutdown grace and drain the container will run with, in seconds: its variables, or the hub's defaults.
+fn shutdown_periods(spec: &Value) -> (u64, u64) {
+    let defaults = hub::HubSettings::default();
+    let container = &spec["containers"][0];
+    let seconds = |name: &str, default: u64| {
+        env_value(container, name)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    };
+    (
+        seconds("LK_SHUTDOWN_GRACE_SECS", defaults.shutdown_grace.as_secs()),
+        seconds("LK_SHUTDOWN_DRAIN_SECS", defaults.shutdown_drain.as_secs()),
+    )
 }
 
 fn env_value(container: &Value, name: &str) -> Option<String> {
@@ -436,6 +505,17 @@ fn volume_problems(spec: &Value, container: &Value) -> Vec<String> {
 fn environment_problems(container: &Value) -> Vec<String> {
     let mut problems = Vec::new();
     let known = known_variables();
+    for required in REQUIRED_VARIABLES {
+        // Present by name: the replica's name has no `value`, it is the pod's own (checked below).
+        let present = container["env"]
+            .as_array()
+            .is_some_and(|env| env.iter().any(|e| e["name"] == required));
+        if !present {
+            problems.push(format!(
+                "{required} is not set: the hub refuses to start without it"
+            ));
+        }
+    }
     for env in container["env"].as_array().into_iter().flatten() {
         let name = env["name"].as_str().unwrap_or("");
         if !known.contains(name) {
@@ -443,10 +523,36 @@ fn environment_problems(container: &Value) -> Vec<String> {
                 "{name} is not a variable the hub reads (a typo, or a secret in the environment)"
             ));
         }
-        if !env["valueFrom"].is_null() {
+        // One reference is allowed (T3, G10): the replica's name is the pod's own, from the downward API. Anything else that
+        // takes its value from elsewhere (a Secret, a ConfigMap, another field) is a secret or a setting that is not the pod's.
+        let own_name = name == "LK_REPLICA_NAME"
+            && env["valueFrom"]["fieldRef"]["fieldPath"] == "metadata.name"
+            && env["valueFrom"].as_object().is_some_and(|o| o.len() == 1)
+            && env["valueFrom"]["fieldRef"]
+                .as_object()
+                .is_some_and(|o| o.len() == 1);
+        if !env["valueFrom"].is_null() && !own_name {
             problems.push(format!(
                 "{name} takes its value from a Secret or ConfigMap reference"
             ));
+        }
+        // The replica's address is built from its name, so the two cannot disagree about which pod this is.
+        if name == "LK_REPLICA_ADDRESS" {
+            let value = env["value"].as_str().unwrap_or("");
+            if !value.starts_with("$(LK_REPLICA_NAME).") || !value.ends_with(":8445") {
+                problems.push(
+                    "LK_REPLICA_ADDRESS must be $(LK_REPLICA_NAME).<headless service>.<namespace>.svc:8445"
+                        .to_owned(),
+                );
+            }
+        }
+        // The bind addresses are the pod's declared ports, so a listener cannot move without the contract moving with it.
+        for (variable, port) in [("LK_AGENT_ADDR", "8444"), ("LK_REPLICA_ADDR", "8445")] {
+            if name == variable && !env["value"].as_str().unwrap_or("").ends_with(&format!(":{port}")) {
+                problems.push(format!(
+                    "{variable} must bind port {port}, the one the pod declares"
+                ));
+            }
         }
         let upper = name.to_ascii_uppercase();
         if ["PASSWORD", "TOKEN", "SECRET", "CREDENTIAL"]
@@ -462,6 +568,20 @@ fn environment_problems(container: &Value) -> Vec<String> {
                     .to_owned(),
             );
         }
+        // T2 (G4): the migrator can change the schema. Its settings belong to the migration Job; a serving pod that carried
+        // them would be a pod that could be asked to.
+        if hub::config::JOB_ONLY_VARIABLES.contains(&name) {
+            problems.push(format!(
+                "{name} is a setting of the migration Job; the hub pod must not carry the migrator credential"
+            ));
+        }
+        // T7 (G24): the seed Job's time limit belongs to the Job. The credential and the CA are the hub's own variables, so they
+        // are not listed: what the Job must not have is more than the pod has, and what the pod must not have is the Job's limit.
+        if hub::config::SEED_JOB_ONLY_VARIABLES.contains(&name) {
+            problems.push(format!(
+                "{name} is a setting of the seed Job; the hub pod must not carry it"
+            ));
+        }
     }
     problems
 }
@@ -475,6 +595,12 @@ const EXPECTED_HOSTS: [&str; 7] = [
     "www.googleapis.com",
     "<teams webhook host>",
 ];
+
+/// Hosts that plan 18 adds to the list above. The audit-checkpoint writer (`hub-identity`, `GcsCheckpointBucket::HOST`) puts each
+/// checkpoint in a locked Cloud Storage bucket, which default deny would otherwise block (S9). The checks take the union of the two
+/// lists, so that this holds in either order of merging with the deployment plan (09), which names the same host in the list
+/// above.
+const ASSEMBLY_HOSTS: [&str; 1] = ["storage.googleapis.com"];
 
 /// The in-cluster egress destinations of the NetworkPolicy, as words, or why the policy is too open.
 fn egress_destinations(policy: &Value) -> Result<BTreeSet<String>, String> {
@@ -584,7 +710,11 @@ fn network_problems(docs: &[Value]) -> Vec<String> {
                     hosts.insert(host.to_owned());
                 }
             }
-            let expected: BTreeSet<String> = EXPECTED_HOSTS.iter().map(|s| (*s).to_owned()).collect();
+            let expected: BTreeSet<String> = EXPECTED_HOSTS
+                .iter()
+                .chain(&ASSEMBLY_HOSTS)
+                .map(|s| (*s).to_owned())
+                .collect();
             if hosts != expected {
                 problems.push(format!(
                     "external hosts must be exactly {expected:?}, found {hosts:?}"
@@ -667,6 +797,86 @@ fn hardening_md_pod_contract_is_complete() {
     assert!(problems.is_empty(), "{problems:#?}");
 }
 
+/// Plan 18, T6 (G12): every `LK_MCP_*` variable the settings read is explained in `HARDENING.md`, none is a required part of the pod
+/// (each has the design's default), the pod cannot turn on the tool that reaches an unauthenticated endpoint (Q37) or both
+/// authentication modes (D52) by the chart's defaults, and the one secret personal-token mode reads is named as `hub-mcp` names it.
+/// Names the settings still mention that no deployment sets: the spelling `LK_GIT_WEBHOOK_SECRET` had before plan 18 renamed it, which
+/// the settings refuse by name so that a chart that still passes it learns why (a variable called `*_SECRET` is what the pod
+/// contract flags as a secret in the environment).
+///
+/// The other two are strings the settings' own unit tests plant to show that a name is not read (`LK_MIGRATOR_URL`, which is not a way
+/// to give the migrator's credential) and the prefix they test names against (`LK_`).
+const REFUSED_OLD_NAMES: [&str; 3] = ["LK_GIT_WEBHOOK_SECRET", "LK_MIGRATOR_URL", "LK_"];
+
+/// The chart and the install guide are written from `README.md` and `HARDENING.md` (plan 18, T8), so a variable the settings read that
+/// neither names is a variable a deployment cannot know about: a tunable that nobody can find, or a required one that is not in the
+/// Pod block. A name counts when it is in backticks or is the `name:` of an entry of the Pod block.
+#[test]
+fn every_variable_the_settings_read_is_named_in_hardening_md_or_the_readme() {
+    let docs = format!("{}\n{}", read("HARDENING.md"), read("README.md"));
+    let mut missing = Vec::new();
+    for name in known_variables() {
+        if REFUSED_OLD_NAMES.contains(&name.as_str()) {
+            continue;
+        }
+        if !docs.contains(&format!("`{name}`")) && !docs.contains(&format!("name: {name}\n")) {
+            missing.push(name);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "the settings read variables that neither HARDENING.md nor README.md names: {missing:?}"
+    );
+    // And the required ones are in the Pod block, which is what a chart is rendered from.
+    let pod = read("HARDENING.md");
+    for name in REQUIRED_VARIABLES {
+        assert!(
+            pod.contains(&format!("name: {name}\n")),
+            "{name} is required and not in the Pod block"
+        );
+    }
+}
+
+#[test]
+fn hardening_md_documents_every_mcp_variable_and_the_secret_personal_tokens_need() {
+    let text = read("HARDENING.md");
+    let mcp: Vec<String> = known_variables()
+        .into_iter()
+        .filter(|name| name.starts_with("LK_MCP_"))
+        .collect();
+    assert!(mcp.len() >= 5, "{mcp:?}");
+    for name in &mcp {
+        assert!(
+            text.contains(&format!("`{name}`")),
+            "{name} is read by the settings and not explained in HARDENING.md"
+        );
+        assert!(
+            !REQUIRED_VARIABLES.contains(&name.as_str()),
+            "{name} is optional: the MCP defaults are the design's"
+        );
+    }
+    assert!(
+        text.contains(&format!("`{}`", hub_mcp::auth::pat::KEY_SECRET_NAME)),
+        "the secret personal-token mode reads is not named"
+    );
+    for doc in contract() {
+        for env in doc["spec"]["containers"][0]["env"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            match env["name"].as_str() {
+                Some("LK_MCP_NOTIFY_SERVICES") => assert_ne!(env["value"], "true", "Q37 is not answered"),
+                Some("LK_MCP_AUTH") => assert!(
+                    !env["value"].as_str().unwrap_or("").contains(','),
+                    "one authentication mode, never both"
+                ),
+                _ => {}
+            }
+        }
+    }
+}
+
 #[test]
 fn hardening_md_network_policy_denies_by_default_and_lists_only_allowed_egress() {
     let problems = network_problems(&contract());
@@ -710,6 +920,149 @@ fn hardening_lint_rejects_planted_violations() {
             "no seccomp",
             mutate("Pod", |d| {
                 d["spec"]["securityContext"]["seccompProfile"]["type"] = "Unconfined".into()
+            }),
+        ),
+        (
+            "no web certificate reference",
+            mutate("Pod", |d| {
+                container(d)["env"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|e| e["name"] != "LK_WEB_CERT_REF")
+            }),
+        ),
+        (
+            "no web key reference",
+            mutate("Pod", |d| {
+                container(d)["env"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|e| e["name"] != "LK_WEB_KEY_REF")
+            }),
+        ),
+        (
+            "no Google project",
+            mutate("Pod", |d| {
+                container(d)["env"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|e| e["name"] != "LK_GCP_PROJECT")
+            }),
+        ),
+        (
+            "no agent CA key",
+            mutate("Pod", |d| {
+                container(d)["env"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|e| e["name"] != "LK_AGENT_CA_KMS_REF")
+            }),
+        ),
+        (
+            "no replica name",
+            mutate("Pod", |d| {
+                container(d)["env"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|e| e["name"] != "LK_REPLICA_NAME")
+            }),
+        ),
+        (
+            "the replica name from a Secret",
+            mutate("Pod", |d| {
+                for e in container(d)["env"].as_array_mut().unwrap() {
+                    if e["name"] == "LK_REPLICA_NAME" {
+                        *e = serde_json::json!({"name": "LK_REPLICA_NAME", "valueFrom": {"secretKeyRef": {"name": "s", "key": "k"}}});
+                    }
+                }
+            }),
+        ),
+        (
+            "the replica name from another field of the pod",
+            mutate("Pod", |d| {
+                for e in container(d)["env"].as_array_mut().unwrap() {
+                    if e["name"] == "LK_REPLICA_NAME" {
+                        e["valueFrom"]["fieldRef"]["fieldPath"] = "spec.serviceAccountName".into();
+                    }
+                }
+            }),
+        ),
+        (
+            "a replica address that is not built from the replica name",
+            mutate("Pod", |d| {
+                for e in container(d)["env"].as_array_mut().unwrap() {
+                    if e["name"] == "LK_REPLICA_ADDRESS" {
+                        e["value"] = "hub-0.hub.lanekeeper.svc:8445".into();
+                    }
+                }
+            }),
+        ),
+        (
+            "the agent listener bound to another port than the pod declares",
+            mutate("Pod", |d| {
+                for e in container(d)["env"].as_array_mut().unwrap() {
+                    if e["name"] == "LK_AGENT_ADDR" {
+                        e["value"] = "0.0.0.0:9444".into();
+                    }
+                }
+            }),
+        ),
+        (
+            "the web certificate as a variable",
+            mutate("Pod", |d| {
+                container(d)["env"].as_array_mut().unwrap().push(
+                    serde_json::json!({"name": "LK_WEB_CERT_PEM", "value": "-----BEGIN CERTIFICATE-----"}),
+                )
+            }),
+        ),
+        (
+            "the migrator credential in the hub pod",
+            mutate("Pod", |d| {
+                container(d)["env"].as_array_mut().unwrap().push(
+                    serde_json::json!({"name": "LK_MIGRATOR_URL_FILE", "value": "/etc/lanekeeper/migrator/uri"}),
+                )
+            }),
+        ),
+        (
+            "the migration time limit in the hub pod",
+            mutate("Pod", |d| {
+                container(d)["env"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({"name": "LK_MIGRATE_TIMEOUT_SECS", "value": "600"}))
+            }),
+        ),
+        (
+            "the seed time limit in the hub pod",
+            mutate("Pod", |d| {
+                container(d)["env"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({"name": "LK_SEED_TIMEOUT_SECS", "value": "120"}))
+            }),
+        ),
+        (
+            "no termination grace period",
+            mutate("Pod", |d| {
+                let _ = d["spec"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("terminationGracePeriodSeconds");
+            }),
+        ),
+        (
+            "a termination grace period shorter than the drain",
+            mutate("Pod", |d| {
+                d["spec"]["terminationGracePeriodSeconds"] = Value::from(30)
+            }),
+        ),
+        (
+            "a longer drain than the termination period allows",
+            mutate("Pod", |d| {
+                container(d)["env"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({"name": "LK_SHUTDOWN_DRAIN_SECS", "value": "60"}))
             }),
         ),
         (
@@ -935,6 +1288,15 @@ fn hardening_lint_rejects_planted_violations() {
             "a missing host",
             mutate("FQDNNetworkPolicy", |d| {
                 d["spec"]["egress"][0]["matches"].as_array_mut().unwrap().pop();
+            }),
+        ),
+        (
+            "the audit checkpoints' storage host missing",
+            mutate("FQDNNetworkPolicy", |d| {
+                d["spec"]["egress"][0]["matches"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|m| m["pattern"] != "storage.googleapis.com");
             }),
         ),
         (

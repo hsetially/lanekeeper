@@ -1,0 +1,8 @@
+LK_AGENT_CA_KMS_REF=projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/agent-ca/cryptoKeyVersions/1
+LK_AGENT_CA_CERT_REF=lanekeeper-agent-ca
+LK_REPLICA_CA_KMS_REF=projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/replica-ca/cryptoKeyVersions/1
+LK_REPLICA_CA_CERT_REF=lanekeeper-agent-ca
+LK_REPLICA_NAME=lanekeeper-hub-0
+LK_REPLICA_ADDRESS=lanekeeper-hub-0.lanekeeper-hub.lanekeeper.svc:8445
+LK_HUB_AUDIENCE=https://hub.lanekeeper.example
+LK_AGENT_ENDPOINT_HOSTS=agents.lanekeeper.example,agents-2.lanekeeper.example

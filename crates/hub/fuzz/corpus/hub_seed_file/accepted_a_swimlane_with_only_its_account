@@ -1,0 +1,4 @@
+version: 1
+swimlanes:
+  - id: sl-01
+    agent_service_account: agent@p.iam.gserviceaccount.com

@@ -100,6 +100,14 @@ pub fn tracer_provider(endpoint: &str) -> Result<SdkTracerProvider, TelemetryErr
         .build())
 }
 
+/// Install the process-wide subscriber with the JSON lines on stdout and no exporter: for the commands that run once and exit
+/// (`hub migrate`), which have no collector to send spans to and no settings of the serving hub.
+pub fn init_stdout() -> Result<Telemetry, TelemetryError> {
+    tracing::subscriber::set_global_default(subscriber(std::io::stdout, None))
+        .map_err(|_| TelemetryError::AlreadyInstalled)?;
+    Ok(Telemetry { provider: None })
+}
+
 /// Install the process-wide subscriber.
 pub fn init(settings: &HubSettings) -> Result<Telemetry, TelemetryError> {
     let provider = settings

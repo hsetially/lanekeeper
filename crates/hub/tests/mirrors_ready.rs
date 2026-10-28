@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use hub::git::MirrorsReady;
 use hub::ops::ReadyCheck;
-use hub::{Deps, Hub, HubSettings};
+use hub::{Deps, Hub, HubSettings, SessionEdge};
 use hub_platform::FakeSessionAuth;
 use hub_platform::git::credentials::NoCredentials;
 use hub_platform::git::metrics::GitMetrics;
@@ -116,7 +116,8 @@ async fn readyz_names_the_mirrors_while_they_are_empty() {
     .unwrap();
     let hub = Hub::build(Deps {
         settings: HubSettings::default(),
-        auth: Arc::new(FakeSessionAuth::new()),
+        session: SessionEdge::without_sessions(Arc::new(FakeSessionAuth::new())),
+        mounted: Vec::new(),
         modules: Vec::new(),
         static_files: None,
         checks: vec![("mirrors", Arc::new(MirrorsReady::new(Arc::clone(&mirror))))],

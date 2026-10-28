@@ -1,0 +1,57 @@
+# A synthetic seed file for local development (`just dev`) and for the tests of `hub seed`. Everything in it is invented: the swimlanes and
+# the tenants are the ones `cargo xtask gen-fixtures` makes (swimlane `sl-0N` has tenant `sitN`), and the service accounts do not exist.
+# A real seed file lives outside the repository (AGENTS.md rule 12) and is reviewed like any change of who may join as an agent.
+#
+#   hub seed --dry-run seed.dev.yaml    print what would change, write nothing
+#   hub seed seed.dev.yaml              create and update; a second run changes nothing
+#
+# The rules, in short (crates/hub/README.md has them in full):
+#   - a field the file does not carry is never touched, and a field cannot be cleared, only set;
+#   - nothing is ever deleted: what the database has and the file does not list is reported;
+#   - a swimlane without `agent_service_account` cannot have an agent join; a sentinel without `service_account` cannot join;
+#   - a value that YAML would read as a number or a boolean (`010`, `1e3`) must be quoted.
+version: 1
+
+projects:
+  - id: lanekeeper-dev
+    display_name: Lanekeeper (development)
+
+swimlanes:
+  # The first swimlane carries every field there is. The agent's first hello fills `cluster`, `nfs_server`, `nfs_export` and
+  # `mount_root` when they are empty, so a swimlane that is already running needs none of the four in its entry.
+  - id: sl-01
+    project: lanekeeper-dev
+    display_name: "Swimlane \u202e1"
+    cluster: gke-dev-1
+    tier: dev
+    nfs_server: nfs-1.corp.example
+    nfs_export: /export/sl-01
+    mount_root: /mnt/config
+    agent_service_account: agent-sl-01@lanekeeper-dev.iam.gserviceaccount.com
+    tenants: [sit1]
+  - id: sl-02
+    project: lanekeeper-dev
+    display_name: Swimlane 2
+    tier: sit
+    agent_service_account: agent-sl-02@lanekeeper-dev.iam.gserviceaccount.com
+    tenants: [sit2]
+  - id: sl-03
+    project: lanekeeper-dev
+    display_name: Swimlane 3
+    tier: uat
+    agent_service_account: agent-sl-03@lanekeeper-dev.iam.gserviceaccount.com
+    tenants: [sit3]
+  - id: sl-04
+    project: lanekeeper-dev
+    display_name: Swimlane 4
+    tier: prod
+    agent_service_account: agent-sl-04@lanekeeper-dev.iam.gserviceaccount.com
+    tenants: [sit4]
+
+sentinels:
+  # The sentinel of the NFS VM that serves swimlane 1. `export_root` is the directory the VM exports; the sentinel's paths are made
+  # relative to the swimlane's `nfs_export` below it.
+  - vm: nfs-vm-01
+    swimlane: sl-01
+    export_root: /export
+    service_account: sentinel-01@lanekeeper-dev.iam.gserviceaccount.com

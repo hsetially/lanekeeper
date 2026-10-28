@@ -2,15 +2,51 @@
 //!
 //! Every setting has a typed field and a default that is safe for production. A malformed value is an error that names the
 //! variable and never prints the value, because the value may be a secret (the database URL holds a password).
+//!
+//! The settings are in groups, one file each under `config/`, and every group is read through [`Reader`]: process and
+//! listeners (this file), request limits, the database, Git, Google Cloud, the web certificate and the platform (the two CAs,
+//! this replica's identity and the agent endpoint), identity (Entra sign-in, the first admins, the audit checkpoints), the
+//! registry and the write paths, and the MCP server (its modes and two switches; the rest of what it needs is the identity
+//! group's, and the two are checked together);
+//! `hub migrate` has its own small group, [`MigratorSettings`], that the
+//! serving hub never reads. A group arrives with the task that needs it, and `tests/hardening.rs` reads every `LK_*` literal in
+//! these files to check the pod contract against them.
+
+mod database;
+mod gcp;
+mod git;
+mod identity;
+mod limits;
+mod mcp;
+mod migrator;
+mod platform;
+mod reader;
+mod registry;
+mod seed;
+mod web_tls;
+mod writes;
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use domain::Secret;
-use hub_platform::git::mirror::RemoteUrl;
-use hub_platform::git::payload::RepoFullName;
+pub use database::DatabaseSettings;
+pub use gcp::GcpSettings;
+pub use git::{GitCredentialSource, GitSettings};
+pub use identity::{CheckpointSettings, DEFAULT_AUTHORITY_HOST, DEFAULT_REDIRECT_PATH, IdentitySettings};
+pub use limits::{LimitSettings, Rate};
+pub use mcp::McpSettings;
+pub use migrator::{DEFAULT_TIMEOUT_SECS, JOB_ONLY_VARIABLES, MigratorSettings};
+pub use platform::{CaSettings, DEFAULT_AGENT_ADDR, DEFAULT_REPLICA_ADDR, PlatformSettings};
+pub use reader::Reader;
+pub use registry::RegistrySettings;
+pub use seed::{DEFAULT_TIMEOUT_SECS as DEFAULT_SEED_TIMEOUT_SECS, SEED_JOB_ONLY_VARIABLES, SeedSettings};
+pub use web_tls::{DEFAULT_RELOAD_SECS, WebTlsSettings};
+pub use writes::{
+    DEFAULT_BASE_BRANCH, DEFAULT_CONFIG_SERVER_DEPLOYMENT, DEFAULT_GITHUB_API_BASE, WriteJobTimes,
+    WritesSettings,
+};
 
 /// A setting that could not be read. Carries the variable name only.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -19,88 +55,6 @@ pub enum ConfigError {
     Missing(&'static str),
     #[error("{0} is not valid")]
     Invalid(&'static str),
-}
-
-/// How fast one client may call, as a token bucket: `per_second` refills, up to `burst` at once.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Rate {
-    pub per_second: f64,
-    pub burst: u32,
-}
-
-/// Everything about request limits (T1). The defaults are the ones in the plan.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LimitSettings {
-    /// Largest request body (S11). Applies to chunked bodies too.
-    pub body_max: usize,
-    /// Longest time to produce a response head (the body of an SSE stream is not covered).
-    pub request_timeout: Duration,
-    /// Deepest JSON nesting a request body may have.
-    pub json_depth: usize,
-    pub per_ip: Rate,
-    pub per_user: Rate,
-    /// How many buckets each limiter keeps. A flood of new addresses evicts old buckets instead of growing memory.
-    pub bucket_capacity: u64,
-    /// A bucket nobody has used for this long is dropped.
-    pub bucket_idle: Duration,
-}
-
-impl Default for LimitSettings {
-    fn default() -> Self {
-        Self {
-            body_max: 4 * 1024 * 1024,
-            request_timeout: Duration::from_secs(30),
-            json_depth: 64,
-            per_ip: Rate {
-                per_second: 50.0,
-                burst: 200,
-            },
-            per_user: Rate {
-                per_second: 30.0,
-                burst: 120,
-            },
-            bucket_capacity: 100_000,
-            bucket_idle: Duration::from_secs(600),
-        }
-    }
-}
-
-/// Where Postgres is and how it is reached (S6): TLS with full verification against the cluster's own CA.
-#[derive(Debug)]
-pub struct DatabaseSettings {
-    pub url: Secret<String>,
-    /// The CA that signed the server's certificate (`CloudNativePG`'s own CA). Required: there is no "trust the system" mode.
-    pub ca_file: PathBuf,
-    pub max_connections: u32,
-    pub acquire_timeout: Duration,
-    pub statement_timeout: Duration,
-}
-
-/// Where the read-only Git credential comes from (Q17, A12).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GitCredentialSource {
-    /// The token is this secret in Secret Manager (the default, S7).
-    SecretManager(String),
-    /// The token is in this mounted file (Q17's interim: a Kubernetes Secret volume).
-    MountedFile(PathBuf),
-}
-
-/// The Git mirrors and the webhook (T7). All of it is absent unless the remotes are set.
-#[derive(Debug, Clone)]
-pub struct GitSettings {
-    pub base_url: RemoteUrl,
-    pub tenant_url: RemoteUrl,
-    /// `owner/name` as GitHub reports it in webhook payloads.
-    pub base_repo: RepoFullName,
-    pub tenant_repo: RepoFullName,
-    /// The name of the webhook secret in Secret Manager.
-    pub webhook_secret: String,
-    pub credential: GitCredentialSource,
-    pub fetch_timeout: Duration,
-    /// Distinct pushes that can wait for the fetch worker.
-    pub queue_capacity: usize,
-    /// Index entries the tree-index cache holds.
-    pub tree_index_entries: u64,
 }
 
 /// Process-wide settings.
@@ -121,13 +75,33 @@ pub struct HubSettings {
     pub limits: LimitSettings,
     /// Open connections the web listener accepts at once.
     pub max_connections: usize,
+    /// The database. `None` only in the library's defaults; [`HubSettings::require_serving`] refuses that.
     pub database: Option<DatabaseSettings>,
     /// The Git mirrors and the webhook. `None` when no remote is configured.
     pub git: Option<GitSettings>,
+    /// Google Cloud: the project the secrets live in. `None` when unset; the real edges refuse that.
+    pub gcp: Option<GcpSettings>,
+    /// The web certificate's two secret names. `None` only in the library's defaults; serving refuses that.
+    pub web_tls: Option<WebTlsSettings>,
+    /// The two CAs, this replica's identity and the agent endpoint (T3). `None` only in the library's defaults; serving refuses
+    /// that.
+    pub platform: Option<PlatformSettings>,
+    /// Entra sign-in, the first admins and the audit checkpoints (T4). `None` only in the library's defaults; serving refuses that.
+    pub identity: Option<IdentitySettings>,
+    /// The registry's limits and the few knobs of them a deployment sets (T5). Always present: every knob has a default.
+    pub registry: RegistrySettings,
+    /// The write paths: the vault's KMS key, GitHub, Teams and the jobs' intervals (T5). `None` only in the library's defaults;
+    /// serving refuses that.
+    pub writes: Option<WritesSettings>,
+    /// The MCP server: how a caller proves who it is, how a write is confirmed, and two switches that are off (T6). Always present:
+    /// every knob has a default, and the rest comes from the identity group.
+    pub mcp: McpSettings,
     /// What the blob cache may hold (`LK_BLOB_CACHE_MIB`, default 512 MiB), in bytes.
     pub blob_cache_bytes: u64,
     /// OTLP gRPC endpoint of an in-cluster collector. No export when unset.
     pub otlp_endpoint: Option<String>,
+    /// The longest any one step of starting may take (a secret read, the database), so a hang is an exit and not a wait (P11).
+    pub start_timeout: Duration,
     /// Seconds readiness fails before connections stop (lets the load balancer notice).
     pub shutdown_grace: Duration,
     /// Seconds in-flight requests get after connections stop.
@@ -142,167 +116,13 @@ impl HubSettings {
     }
 
     /// Like [`HubSettings::from_lookup`], with the file reader given (a map in tests).
-    #[allow(clippy::too_many_lines)]
     pub fn from_parts(
         lookup: impl Fn(&str) -> Option<String>,
         read_file: impl Fn(&std::path::Path) -> std::io::Result<String>,
     ) -> Result<Self, ConfigError> {
-        let get = |name: &'static str| lookup(name).filter(|v| !v.is_empty());
-        let parse = |name: &'static str| -> Result<Option<String>, ConfigError> {
-            let Some(value) = get(name) else { return Ok(None) };
-            // A value with a control character is never a valid setting, and would make a log line ambiguous.
-            if value.chars().any(char::is_control) {
-                return Err(ConfigError::Invalid(name));
-            }
-            Ok(Some(value))
-        };
-        let addr = |name: &'static str, default: &str| -> Result<SocketAddr, ConfigError> {
-            parse(name)?
-                .unwrap_or_else(|| default.to_owned())
-                .parse()
-                .map_err(|_| ConfigError::Invalid(name))
-        };
-        let number = |name: &'static str, default: u64, min: u64, max: u64| -> Result<u64, ConfigError> {
-            let Some(value) = parse(name)? else {
-                return Ok(default);
-            };
-            let n: u64 = value.parse().map_err(|_| ConfigError::Invalid(name))?;
-            if (min..=max).contains(&n) {
-                Ok(n)
-            } else {
-                Err(ConfigError::Invalid(name))
-            }
-        };
-        let float = |name: &'static str, default: f64| -> Result<f64, ConfigError> {
-            let Some(value) = parse(name)? else {
-                return Ok(default);
-            };
-            let n: f64 = value.parse().map_err(|_| ConfigError::Invalid(name))?;
-            if n.is_finite() && n > 0.0 && n <= 1_000_000.0 {
-                Ok(n)
-            } else {
-                Err(ConfigError::Invalid(name))
-            }
-        };
-        let defaults = LimitSettings::default();
-        let limits = LimitSettings {
-            body_max: usize::try_from(number(
-                "LK_BODY_MAX_BYTES",
-                defaults.body_max as u64,
-                1024,
-                64 * 1024 * 1024,
-            )?)
-            .map_err(|_| ConfigError::Invalid("LK_BODY_MAX_BYTES"))?,
-            request_timeout: Duration::from_secs(number(
-                "LK_REQUEST_TIMEOUT_SECS",
-                defaults.request_timeout.as_secs(),
-                1,
-                600,
-            )?),
-            json_depth: usize::try_from(number("LK_JSON_DEPTH", defaults.json_depth as u64, 1, 256)?)
-                .map_err(|_| ConfigError::Invalid("LK_JSON_DEPTH"))?,
-            per_ip: Rate {
-                per_second: float("LK_IP_RATE_PER_SEC", defaults.per_ip.per_second)?,
-                burst: u32::try_from(number(
-                    "LK_IP_BURST",
-                    u64::from(defaults.per_ip.burst),
-                    1,
-                    100_000,
-                )?)
-                .map_err(|_| ConfigError::Invalid("LK_IP_BURST"))?,
-            },
-            per_user: Rate {
-                per_second: float("LK_USER_RATE_PER_SEC", defaults.per_user.per_second)?,
-                burst: u32::try_from(number(
-                    "LK_USER_BURST",
-                    u64::from(defaults.per_user.burst),
-                    1,
-                    100_000,
-                )?)
-                .map_err(|_| ConfigError::Invalid("LK_USER_BURST"))?,
-            },
-            bucket_capacity: number("LK_BUCKET_CAPACITY", defaults.bucket_capacity, 100, 10_000_000)?,
-            bucket_idle: defaults.bucket_idle,
-        };
-
-        // The database URL holds a password. It is read from a mounted file (`LK_DATABASE_URL_FILE`), so it is never in the
-        // process environment, where a child process, a crash dump or `/proc/<pid>/environ` could show it. The plain
-        // variable exists for local development and is refused when the file variable is also set.
-        let database_url = match (parse("LK_DATABASE_URL_FILE")?, parse("LK_DATABASE_URL")?) {
-            (Some(_), Some(_)) => return Err(ConfigError::Invalid("LK_DATABASE_URL")),
-            (Some(path), None) => {
-                let text = read_file(std::path::Path::new(&path))
-                    .map_err(|_| ConfigError::Invalid("LK_DATABASE_URL_FILE"))?;
-                let url = text.trim().to_owned();
-                if url.is_empty() || url.chars().any(char::is_control) {
-                    return Err(ConfigError::Invalid("LK_DATABASE_URL_FILE"));
-                }
-                Some(url)
-            }
-            (None, url) => url,
-        };
-        let database = match database_url {
-            None => None,
-            Some(url) => Some(DatabaseSettings {
-                url: Secret::new(url),
-                ca_file: parse("LK_DB_CA_FILE")?
-                    .map(PathBuf::from)
-                    .ok_or(ConfigError::Missing("LK_DB_CA_FILE"))?,
-                max_connections: u32::try_from(number("LK_DB_MAX_CONNECTIONS", 16, 1, 512)?)
-                    .map_err(|_| ConfigError::Invalid("LK_DB_MAX_CONNECTIONS"))?,
-                acquire_timeout: Duration::from_secs(number("LK_DB_ACQUIRE_TIMEOUT_SECS", 5, 1, 60)?),
-                statement_timeout: Duration::from_secs(number("LK_DB_STATEMENT_TIMEOUT_SECS", 30, 1, 600)?),
-            }),
-        };
-
-        let git_settings = {
-            let url = |name: &'static str| -> Result<Option<RemoteUrl>, ConfigError> {
-                parse(name)?
-                    .map(|v| RemoteUrl::https(&v).map_err(|_| ConfigError::Invalid(name)))
-                    .transpose()
-            };
-            let repo = |name: &'static str| -> Result<Option<RepoFullName>, ConfigError> {
-                parse(name)?
-                    .map(|v| RepoFullName::parse(&v).map_err(|_| ConfigError::Invalid(name)))
-                    .transpose()
-            };
-            let secret_name = |name: &'static str, default: &str| -> Result<String, ConfigError> {
-                let value = parse(name)?.unwrap_or_else(|| default.to_owned());
-                if ports::is_valid_secret_name(&value) {
-                    Ok(value)
-                } else {
-                    Err(ConfigError::Invalid(name))
-                }
-            };
-            let (base_url, tenant_url) = (url("LK_GIT_BASE_URL")?, url("LK_GIT_TENANT_URL")?);
-            let (base_repo, tenant_repo) = (repo("LK_GIT_BASE_REPO")?, repo("LK_GIT_TENANT_REPO")?);
-            if base_url.is_none() && tenant_url.is_none() && base_repo.is_none() && tenant_repo.is_none() {
-                None
-            } else {
-                let credential = match (parse("LK_GIT_TOKEN_FILE")?, parse("LK_GIT_TOKEN_SECRET")?) {
-                    (Some(_), Some(_)) => return Err(ConfigError::Invalid("LK_GIT_TOKEN_FILE")),
-                    (Some(path), None) => GitCredentialSource::MountedFile(PathBuf::from(path)),
-                    (None, _) => GitCredentialSource::SecretManager(secret_name(
-                        "LK_GIT_TOKEN_SECRET",
-                        "github-read-token",
-                    )?),
-                };
-                Some(GitSettings {
-                    base_url: base_url.ok_or(ConfigError::Missing("LK_GIT_BASE_URL"))?,
-                    tenant_url: tenant_url.ok_or(ConfigError::Missing("LK_GIT_TENANT_URL"))?,
-                    base_repo: base_repo.ok_or(ConfigError::Missing("LK_GIT_BASE_REPO"))?,
-                    tenant_repo: tenant_repo.ok_or(ConfigError::Missing("LK_GIT_TENANT_REPO"))?,
-                    webhook_secret: secret_name("LK_GIT_WEBHOOK_SECRET", "github-webhook-secret")?,
-                    credential,
-                    fetch_timeout: Duration::from_secs(number("LK_GIT_FETCH_TIMEOUT_SECS", 120, 5, 1800)?),
-                    queue_capacity: usize::try_from(number("LK_GIT_QUEUE_CAPACITY", 256, 1, 100_000)?)
-                        .map_err(|_| ConfigError::Invalid("LK_GIT_QUEUE_CAPACITY"))?,
-                    tree_index_entries: number("LK_TREE_INDEX_ENTRIES", 400_000, 1_000, 50_000_000)?,
-                })
-            }
-        };
-
-        let trusted_types: Vec<String> = parse("LK_TRUSTED_TYPES")?
+        let reader = Reader::new(&lookup, &read_file);
+        let trusted_types: Vec<String> = reader
+            .parse("LK_TRUSTED_TYPES")?
             .unwrap_or_else(|| "lanekeeper-docs,lanekeeper-monaco".to_owned())
             .split(',')
             .map(|s| s.trim().to_owned())
@@ -321,25 +141,73 @@ impl HubSettings {
             return Err(ConfigError::Invalid("LK_TRUSTED_TYPES"));
         }
 
+        // The MCP server is made from two groups, so they are read and checked together: a mismatch is an exit 2 that names a variable.
+        let identity = IdentitySettings::read(&reader)?;
+        let mcp = McpSettings::read(&reader)?;
+        if let Some(identity) = &identity {
+            mcp.for_identity(identity)?;
+        }
+
         Ok(Self {
-            web_addr: addr("LK_WEB_ADDR", "0.0.0.0:8443")?,
-            ops_addr: addr("LK_OPS_ADDR", "0.0.0.0:9090")?,
-            mirror_dir: parse("LK_MIRROR_DIR")?
+            web_addr: reader.addr("LK_WEB_ADDR", "0.0.0.0:8443")?,
+            ops_addr: reader.addr("LK_OPS_ADDR", "0.0.0.0:9090")?,
+            mirror_dir: reader
+                .parse("LK_MIRROR_DIR")?
                 .map_or_else(|| PathBuf::from("/var/lib/lanekeeper/mirror"), PathBuf::from),
-            web_dist: parse("LK_WEB_DIST")?.map_or_else(|| PathBuf::from("/app/web/dist"), PathBuf::from),
-            trusted_proxy_hops: usize::try_from(number("LK_TRUSTED_PROXY_HOPS", 1, 0, 8)?)
-                .map_err(|_| ConfigError::Invalid("LK_TRUSTED_PROXY_HOPS"))?,
+            web_dist: reader
+                .parse("LK_WEB_DIST")?
+                .map_or_else(|| PathBuf::from("/app/web/dist"), PathBuf::from),
+            trusted_proxy_hops: reader.size("LK_TRUSTED_PROXY_HOPS", 1, 0, 8)?,
             trusted_types,
-            limits,
-            max_connections: usize::try_from(number("LK_MAX_CONNECTIONS", 4096, 1, 1_000_000)?)
-                .map_err(|_| ConfigError::Invalid("LK_MAX_CONNECTIONS"))?,
-            database,
-            git: git_settings,
-            blob_cache_bytes: number("LK_BLOB_CACHE_MIB", 512, 1, 4096)?.saturating_mul(1024 * 1024),
-            otlp_endpoint: parse("LK_OTLP_ENDPOINT")?,
-            shutdown_grace: Duration::from_secs(number("LK_SHUTDOWN_GRACE_SECS", 5, 0, 60)?),
-            shutdown_drain: Duration::from_secs(number("LK_SHUTDOWN_DRAIN_SECS", 25, 1, 120)?),
+            limits: LimitSettings::read(&reader)?,
+            max_connections: reader.size("LK_MAX_CONNECTIONS", 4096, 1, 1_000_000)?,
+            database: DatabaseSettings::read(&reader)?,
+            git: GitSettings::read(&reader)?,
+            gcp: GcpSettings::read(&reader)?,
+            web_tls: WebTlsSettings::read(&reader)?,
+            platform: PlatformSettings::read(&reader)?,
+            identity,
+            registry: RegistrySettings::read(&reader)?,
+            writes: WritesSettings::read(&reader)?,
+            mcp,
+            blob_cache_bytes: reader
+                .number("LK_BLOB_CACHE_MIB", 512, 1, 4096)?
+                .saturating_mul(1024 * 1024),
+            otlp_endpoint: reader.parse("LK_OTLP_ENDPOINT")?,
+            start_timeout: Duration::from_secs(reader.number("LK_START_TIMEOUT_SECS", 8, 1, 120)?),
+            shutdown_grace: Duration::from_secs(reader.number("LK_SHUTDOWN_GRACE_SECS", 5, 0, 60)?),
+            shutdown_drain: Duration::from_secs(reader.number("LK_SHUTDOWN_DRAIN_SECS", 25, 1, 120)?),
         })
+    }
+
+    /// What `hub serve` needs and the library's defaults leave out. A settings value built for a test or the web fixture may
+    /// have no database and no certificate; the process may not, and it says which variable is missing and starts nothing.
+    pub fn require_serving(&self) -> Result<(), ConfigError> {
+        if self.database.is_none() {
+            return Err(ConfigError::Missing("LK_DATABASE_URL_FILE"));
+        }
+        if self.web_tls.is_none() {
+            return Err(ConfigError::Missing("LK_WEB_CERT_REF"));
+        }
+        // T3 (G10): the CAs and the replica's identity. Without them no agent can join and no replica can be reached.
+        if self.platform.is_none() {
+            return Err(ConfigError::Missing("LK_AGENT_CA_KMS_REF"));
+        }
+        // The mirrors are what every read of a commit goes through; a hub without remotes has nothing to serve.
+        if self.git.is_none() {
+            return Err(ConfigError::Missing("LK_GIT_BASE_URL"));
+        }
+        // T4 (S1): without the identity provider nobody can sign in, and a hub that serves a guarded API to nobody is not one to
+        // start. It is never replaced by a session store of the hub's own.
+        if self.identity.is_none() {
+            return Err(ConfigError::Missing("LK_ENTRA_TENANT_ID"));
+        }
+        // T5 (S8): the token vault is what lets a person raise a pull request with their own GitHub token. A hub without the key
+        // that wraps the tokens has no write path to offer, and does not start with half of one.
+        if self.writes.is_none() {
+            return Err(ConfigError::Missing("LK_VAULT_KMS_REF"));
+        }
+        Ok(())
     }
 }
 
@@ -358,8 +226,16 @@ impl Default for HubSettings {
             max_connections: 4096,
             database: None,
             git: None,
+            gcp: None,
+            web_tls: None,
+            platform: None,
+            identity: None,
+            registry: RegistrySettings::default(),
+            writes: None,
+            mcp: McpSettings::default(),
             blob_cache_bytes: 512 * 1024 * 1024,
             otlp_endpoint: None,
+            start_timeout: Duration::from_secs(8),
             shutdown_grace: Duration::from_secs(5),
             shutdown_drain: Duration::from_secs(25),
         })
@@ -525,6 +401,581 @@ mod tests {
             );
         }
     }
+    // ------------------------------------------------------------------------------------------ T1 (plan 18): serving
+
+    const AGENT_KMS: &str =
+        "projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/agent-ca/cryptoKeyVersions/1";
+    const REPLICA_KMS: &str =
+        "projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/replica-ca/cryptoKeyVersions/3";
+    /// The key that wraps the GitHub token vault (T5): a crypto key, not a version.
+    const VAULT_KMS: &str = "projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/vault";
+
+    /// The platform group (T3): every variable it needs, with the values a deployment would give them.
+    fn platform_env<'a>() -> Vec<(&'a str, &'a str)> {
+        vec![
+            ("LK_AGENT_CA_KMS_REF", AGENT_KMS),
+            ("LK_AGENT_CA_CERT_REF", "lanekeeper-agent-ca"),
+            ("LK_REPLICA_CA_KMS_REF", REPLICA_KMS),
+            ("LK_REPLICA_CA_CERT_REF", "lanekeeper-replica-ca"),
+            ("LK_REPLICA_NAME", "lanekeeper-hub-0"),
+            (
+                "LK_REPLICA_ADDRESS",
+                "lanekeeper-hub-0.lanekeeper-hub.lanekeeper.svc:8445",
+            ),
+            ("LK_HUB_AUDIENCE", "https://hub.lanekeeper.example"),
+            ("LK_AGENT_ENDPOINT_HOSTS", "agents.lanekeeper.example"),
+        ]
+    }
+
+    /// The identity group (T4): the Entra app registration, the places the secrets are named, and the audit checkpoints.
+    fn identity_env<'a>() -> Vec<(&'a str, &'a str)> {
+        vec![
+            ("LK_ENTRA_TENANT_ID", "11111111-1111-4111-8111-111111111111"),
+            ("LK_ENTRA_CLIENT_ID", "22222222-2222-4222-8222-222222222222"),
+            ("LK_PUBLIC_ORIGIN", "https://hub.lanekeeper.example"),
+            ("LK_ENTRA_CLIENT_AUTH_REF", "lanekeeper-entra-client"),
+            ("LK_ENTRA_COOKIE_KEY_REF", "lanekeeper-login-cookie"),
+            ("LK_AUDIT_CHECKPOINT_BUCKET", "lanekeeper-audit-checkpoints"),
+            (
+                "LK_AUDIT_CHECKPOINT_KMS_REF",
+                "projects/lk/locations/europe-west2/keyRings/lanekeeper/cryptoKeys/audit/cryptoKeyVersions/1",
+            ),
+        ]
+    }
+
+    /// Everything `hub serve` needs: the database, the web certificate, Google, the platform, identity and the Git remotes.
+    /// `extra` replaces a variable of the same name or adds one.
+    fn serving_env<'a>(extra: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+        let mut env = vec![
+            ("LK_DATABASE_URL", "postgres://u:p@db/x"),
+            ("LK_DB_CA_FILE", "/ca.pem"),
+            ("LK_WEB_CERT_REF", "web-cert"),
+            ("LK_WEB_KEY_REF", "web-key"),
+            ("LK_GCP_PROJECT", "lanekeeper-prod"),
+        ];
+        env.extend(platform_env());
+        env.extend(identity_env());
+        env.extend(git_env(&[]));
+        env.push(("LK_VAULT_KMS_REF", VAULT_KMS));
+        for (name, value) in extra {
+            env.retain(|(n, _)| n != name);
+            env.push((name, value));
+        }
+        env
+    }
+
+    #[test]
+    fn the_library_defaults_are_not_enough_to_serve_and_the_error_names_the_variable() {
+        let empty = HubSettings::from_lookup(lookup(&[])).unwrap();
+        assert_eq!(
+            empty.require_serving().unwrap_err(),
+            ConfigError::Missing("LK_DATABASE_URL_FILE")
+        );
+        let no_cert = HubSettings::from_lookup(lookup(&[
+            ("LK_DATABASE_URL", "postgres://u:p@db/x"),
+            ("LK_DB_CA_FILE", "/ca.pem"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            no_cert.require_serving().unwrap_err(),
+            ConfigError::Missing("LK_WEB_CERT_REF")
+        );
+        let full = HubSettings::from_lookup(lookup(&serving_env(&[]))).unwrap();
+        assert_eq!(full.require_serving(), Ok(()));
+    }
+
+    #[test]
+    fn serving_needs_the_identity_provider_and_says_which_variable_to_set() {
+        let mut env = serving_env(&[]);
+        for (name, _) in identity_env() {
+            env.retain(|(n, _)| *n != name);
+        }
+        let without = HubSettings::from_lookup(lookup(&env)).unwrap();
+        assert!(without.identity.is_none());
+        assert_eq!(
+            without.require_serving().unwrap_err(),
+            ConfigError::Missing("LK_ENTRA_TENANT_ID")
+        );
+    }
+
+    #[test]
+    fn the_web_certificate_is_two_secret_manager_names_and_needs_both() {
+        let only_cert = HubSettings::from_lookup(lookup(&[("LK_WEB_CERT_REF", "web-cert")])).unwrap_err();
+        assert_eq!(only_cert, ConfigError::Missing("LK_WEB_KEY_REF"));
+        let only_key = HubSettings::from_lookup(lookup(&[("LK_WEB_KEY_REF", "web-key")])).unwrap_err();
+        assert_eq!(only_key, ConfigError::Missing("LK_WEB_CERT_REF"));
+        let tls = HubSettings::from_lookup(lookup(&serving_env(&[])))
+            .unwrap()
+            .web_tls
+            .unwrap();
+        assert_eq!(tls.cert_ref, "web-cert");
+        assert_eq!(tls.key_ref, "web-key");
+        // G3: reloaded every five minutes unless told otherwise.
+        assert_eq!(tls.reload_every, Duration::from_secs(300));
+        for (name, bad) in [
+            ("LK_WEB_CERT_REF", "has space"),
+            ("LK_WEB_CERT_REF", "../x"),
+            ("LK_WEB_KEY_REF", "a/b"),
+            ("LK_WEB_CERT_RELOAD_SECS", "0"),
+            ("LK_WEB_CERT_RELOAD_SECS", "86401"),
+            ("LK_WEB_CERT_RELOAD_SECS", "soon"),
+        ] {
+            assert_eq!(
+                HubSettings::from_lookup(lookup(&serving_env(&[(name, bad)]))).unwrap_err(),
+                ConfigError::Invalid(name),
+                "{name}={bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_google_project_is_checked_and_the_start_timeout_is_bounded() {
+        let settings = HubSettings::from_lookup(lookup(&serving_env(&[]))).unwrap();
+        assert_eq!(
+            settings.gcp.as_ref().map(|g| g.project.as_str()),
+            Some("lanekeeper-prod")
+        );
+        assert_eq!(settings.start_timeout, Duration::from_secs(8));
+        for bad in ["", "Has Space", "a/b", "p?x", "under_score", "example.com:proj"] {
+            let result = HubSettings::from_lookup(lookup(&[("LK_GCP_PROJECT", bad)]));
+            // An empty value counts as not set; every other bad value is refused by name.
+            if bad.is_empty() {
+                assert!(result.unwrap().gcp.is_none());
+            } else {
+                assert_eq!(
+                    result.unwrap_err(),
+                    ConfigError::Invalid("LK_GCP_PROJECT"),
+                    "{bad}"
+                );
+            }
+        }
+        for bad in ["0", "121", "x", "-1"] {
+            assert_eq!(
+                HubSettings::from_lookup(lookup(&[("LK_START_TIMEOUT_SECS", bad)])).unwrap_err(),
+                ConfigError::Invalid("LK_START_TIMEOUT_SECS"),
+                "{bad}"
+            );
+        }
+        let two = HubSettings::from_lookup(lookup(&[("LK_START_TIMEOUT_SECS", "2")])).unwrap();
+        assert_eq!(two.start_timeout, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn the_git_secret_names_are_references_and_the_old_names_are_gone() {
+        let git = HubSettings::from_lookup(lookup(&git_env(&[
+            ("LK_GIT_READ_REF", "my-read-token"),
+            ("LK_GIT_WEBHOOK_REF", "my-hook-secret"),
+        ])))
+        .unwrap()
+        .git
+        .unwrap();
+        assert_eq!(git.webhook_secret, "my-hook-secret");
+        assert_eq!(
+            git.credential,
+            GitCredentialSource::SecretManager("my-read-token".to_owned())
+        );
+        // The old names are not read any more, so a leftover is ignored rather than half-honoured.
+        let old = HubSettings::from_lookup(lookup(&git_env(&[("LK_GIT_WEBHOOK_SECRET", "x y")])))
+            .unwrap()
+            .git
+            .unwrap();
+        assert_eq!(old.webhook_secret, "github-webhook-secret");
+    }
+
+    /// Every `LK_*` name in the settings source files.
+    fn variable_names() -> BTreeSet<String> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![root.join("config.rs")];
+        for entry in std::fs::read_dir(root.join("config")).unwrap() {
+            files.push(entry.unwrap().path());
+        }
+        let mut names = BTreeSet::new();
+        for file in files {
+            let text = std::fs::read_to_string(&file).unwrap();
+            // Only the code above the tests: a test may spell a bad name on purpose.
+            let code = text.split("#[cfg(test)]").next().unwrap_or("");
+            names.extend(
+                code.split('"')
+                    .filter(|s| {
+                        s.starts_with("LK_")
+                            && s.bytes()
+                                .all(|b| b.is_ascii_uppercase() || b == b'_' || b.is_ascii_digit())
+                    })
+                    .map(str::to_owned),
+            );
+        }
+        names
+    }
+
+    #[test]
+    fn no_setting_name_looks_like_a_secret() {
+        // S7, G9: a variable that carries a secret would be flagged by the pod contract, so none is named like one. The one
+        // exception is a path: `LK_GIT_TOKEN_FILE` names a mounted file (Q17's interim), it does not hold a token.
+        let exceptions = ["LK_GIT_TOKEN_FILE"];
+        let names = variable_names();
+        assert!(names.len() > 30, "the scan found only {} names", names.len());
+        for name in &names {
+            let looks = ["PASSWORD", "TOKEN", "SECRET", "CREDENTIAL"]
+                .iter()
+                .any(|m| name.contains(m))
+                || name.ends_with("_KEY");
+            assert!(
+                !looks || exceptions.contains(&name.as_str()),
+                "{name} looks like a secret"
+            );
+        }
+    }
+
+    proptest::proptest! {
+        /// S7, S10: a value that is refused is never in the error, whatever the variable. The marker cannot occur in a fixed message.
+        #[test]
+        fn secret_settings_are_names_or_files_and_errors_never_print_values(tail in "[ -~]{0,40}") {
+            let value = format!("zz9q{tail}");
+            for name in [
+                "LK_WEB_CERT_REF", "LK_WEB_KEY_REF", "LK_GCP_PROJECT", "LK_WEB_ADDR", "LK_OPS_ADDR",
+                "LK_START_TIMEOUT_SECS", "LK_WEB_CERT_RELOAD_SECS", "LK_DATABASE_URL_FILE", "LK_DB_CA_FILE",
+                "LK_GIT_BASE_URL", "LK_GIT_READ_REF", "LK_TRUSTED_TYPES", "LK_OTLP_ENDPOINT", "LK_MIRROR_DIR",
+                "LK_AGENT_CA_KMS_REF", "LK_AGENT_CA_CERT_REF", "LK_REPLICA_CA_KMS_REF", "LK_REPLICA_CA_CERT_REF",
+                "LK_REPLICA_NAME", "LK_REPLICA_ADDRESS", "LK_HUB_AUDIENCE", "LK_AGENT_ENDPOINT_HOSTS", "LK_AGENT_ADDR",
+                "LK_REPLICA_ADDR",
+            ] {
+                let mut env = serving_env(&[]);
+                env.retain(|(k, _)| *k != name);
+                env.push((name, value.as_str()));
+                if let Err(error) = with_files(&env, &[]) {
+                    let shown = format!("{error} {error:?}");
+                    proptest::prop_assert!(!shown.contains("zz9q"), "{name}: {shown}");
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------ T2 (plan 18): hub migrate
+
+    fn migrator(env: &[(&str, &str)], files: &[(&str, &str)]) -> Result<MigratorSettings, ConfigError> {
+        let env: HashMap<String, String> = env
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        let files: HashMap<String, String> = files
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        MigratorSettings::from_parts(
+            move |name| env.get(name).cloned(),
+            move |path| {
+                files
+                    .get(path.to_string_lossy().as_ref())
+                    .cloned()
+                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+            },
+        )
+    }
+
+    #[test]
+    fn the_migrator_credential_is_a_mounted_file_read_trimmed_and_redacted() {
+        let settings = migrator(
+            &[
+                ("LK_MIGRATOR_URL_FILE", "/run/migrator/uri"),
+                ("LK_DB_CA_FILE", "/run/ca/ca.pem"),
+            ],
+            &[(
+                "/run/migrator/uri",
+                "postgres://lanekeeper_migrator:hunter2@db/x\n",
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            settings.url.expose(),
+            "postgres://lanekeeper_migrator:hunter2@db/x"
+        );
+        assert_eq!(settings.ca_file, PathBuf::from("/run/ca/ca.pem"));
+        assert_eq!(settings.timeout, Duration::from_secs(DEFAULT_TIMEOUT_SECS));
+        assert!(!format!("{settings:?}").contains("hunter2"));
+    }
+
+    #[test]
+    fn the_migrator_settings_name_what_is_missing_before_they_read_the_file() {
+        assert_eq!(
+            migrator(&[], &[]).unwrap_err(),
+            ConfigError::Missing("LK_MIGRATOR_URL_FILE")
+        );
+        // The credential is a file and only a file: the plain variable of the hub's own pool is not an alternative.
+        assert_eq!(
+            migrator(
+                &[
+                    ("LK_MIGRATOR_URL", "postgres://m:x@db/y"),
+                    ("LK_DB_CA_FILE", "/ca")
+                ],
+                &[]
+            )
+            .unwrap_err(),
+            ConfigError::Missing("LK_MIGRATOR_URL_FILE")
+        );
+        assert_eq!(
+            migrator(&[("LK_MIGRATOR_URL_FILE", "/u")], &[("/u", "postgres://m@db/y")]).unwrap_err(),
+            ConfigError::Missing("LK_DB_CA_FILE")
+        );
+    }
+
+    #[test]
+    fn a_missing_empty_or_unreadable_migrator_file_is_refused_without_naming_the_path() {
+        let env = [
+            ("LK_MIGRATOR_URL_FILE", "/run/migrator/uri"),
+            ("LK_DB_CA_FILE", "/ca"),
+        ];
+        let missing = migrator(&env, &[]).unwrap_err();
+        assert_eq!(missing, ConfigError::Invalid("LK_MIGRATOR_URL_FILE"));
+        assert!(!format!("{missing}").contains("/run/migrator"));
+        assert_eq!(
+            migrator(&env, &[("/run/migrator/uri", " \n")]).unwrap_err(),
+            ConfigError::Invalid("LK_MIGRATOR_URL_FILE")
+        );
+        assert_eq!(
+            migrator(&env, &[("/run/migrator/uri", "postgres://a\nb")]).unwrap_err(),
+            ConfigError::Invalid("LK_MIGRATOR_URL_FILE")
+        );
+    }
+
+    #[test]
+    fn the_migration_time_limit_is_bounded() {
+        let base = [("LK_MIGRATOR_URL_FILE", "/u"), ("LK_DB_CA_FILE", "/ca")];
+        let files = [("/u", "postgres://lanekeeper_migrator@db/x")];
+        let with = |value: &str| {
+            let mut env = base.to_vec();
+            env.push(("LK_MIGRATE_TIMEOUT_SECS", value));
+            migrator(&env, &files)
+        };
+        assert_eq!(with("90").unwrap().timeout, Duration::from_secs(90));
+        assert_eq!(with("7200").unwrap().timeout, Duration::from_secs(7200));
+        for bad in ["0", "7201", "soon", "-1", "1.5"] {
+            assert_eq!(
+                with(bad).unwrap_err(),
+                ConfigError::Invalid("LK_MIGRATE_TIMEOUT_SECS"),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_job_only_variables_are_the_ones_the_migrator_reads_and_the_hub_does_not() {
+        let source = include_str!("config/migrator.rs");
+        let code = source.split("impl MigratorSettings").nth(1).unwrap();
+        for name in JOB_ONLY_VARIABLES {
+            assert!(code.contains(&format!("\"{name}\"")), "{name} is not read");
+        }
+        // Nothing of the serving settings reads them.
+        let serving = include_str!("config.rs").split("#[cfg(test)]").next().unwrap();
+        for name in JOB_ONLY_VARIABLES {
+            assert!(
+                !serving.contains(&format!("\"{name}\"")),
+                "{name} is read by the hub"
+            );
+        }
+    }
+
+    proptest::proptest! {
+        /// S7, S10: whatever a migrator variable holds, a refusal names the variable and never the value.
+        #[test]
+        fn the_migrator_errors_never_print_a_value(tail in "[ -~]{0,40}") {
+            let value = format!("zz9q{tail}");
+            for name in ["LK_MIGRATOR_URL_FILE", "LK_DB_CA_FILE", "LK_MIGRATE_TIMEOUT_SECS"] {
+                let mut env = vec![
+                    ("LK_MIGRATOR_URL_FILE", "/u"),
+                    ("LK_DB_CA_FILE", "/ca"),
+                ];
+                env.retain(|(k, _)| *k != name);
+                env.push((name, value.as_str()));
+                if let Err(error) = migrator(&env, &[("/u", value.as_str())]) {
+                    let shown = format!("{error} {error:?}");
+                    proptest::prop_assert!(!shown.contains("zz9q"), "{name}: {shown}");
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------ T3 (plan 18): the platform
+
+    #[test]
+    fn serving_needs_the_platform_and_then_the_git_remotes_and_names_the_first_that_is_missing() {
+        let base = [
+            ("LK_DATABASE_URL", "postgres://u:p@db/x"),
+            ("LK_DB_CA_FILE", "/ca.pem"),
+            ("LK_WEB_CERT_REF", "web-cert"),
+            ("LK_WEB_KEY_REF", "web-key"),
+        ];
+        let no_platform = HubSettings::from_lookup(lookup(&base)).unwrap();
+        assert!(no_platform.platform.is_none());
+        assert_eq!(
+            no_platform.require_serving().unwrap_err(),
+            ConfigError::Missing("LK_AGENT_CA_KMS_REF")
+        );
+        let mut with_platform = base.to_vec();
+        with_platform.extend(platform_env());
+        let no_git = HubSettings::from_lookup(lookup(&with_platform)).unwrap();
+        assert_eq!(
+            no_git.require_serving().unwrap_err(),
+            ConfigError::Missing("LK_GIT_BASE_URL")
+        );
+    }
+
+    #[test]
+    fn the_platform_is_read_and_the_listeners_default_to_the_ports_of_the_pod_contract() {
+        let platform = HubSettings::from_lookup(lookup(&serving_env(&[])))
+            .unwrap()
+            .platform
+            .unwrap();
+        assert_eq!(platform.agent_addr, "0.0.0.0:8444".parse::<SocketAddr>().unwrap());
+        assert_eq!(
+            platform.replica_addr,
+            "0.0.0.0:8445".parse::<SocketAddr>().unwrap()
+        );
+        assert_eq!(platform.agent_ca.kms_ref.as_str(), AGENT_KMS);
+        assert_eq!(platform.agent_ca.cert_ref, "lanekeeper-agent-ca");
+        assert_eq!(platform.replica_ca.kms_ref.as_str(), REPLICA_KMS);
+        assert_eq!(platform.replica_ca.cert_ref, "lanekeeper-replica-ca");
+        assert_eq!(platform.replica_name.as_str(), "lanekeeper-hub-0");
+        assert_eq!(
+            platform.replica_address.as_str(),
+            "lanekeeper-hub-0.lanekeeper-hub.lanekeeper.svc:8445"
+        );
+        assert_eq!(
+            platform.replica_address.host(),
+            "lanekeeper-hub-0.lanekeeper-hub.lanekeeper.svc"
+        );
+        assert_eq!(platform.audience.as_str(), "https://hub.lanekeeper.example");
+        assert_eq!(platform.agent_hosts, vec!["agents.lanekeeper.example".to_owned()]);
+        let moved = HubSettings::from_lookup(lookup(&serving_env(&[
+            ("LK_AGENT_ADDR", "127.0.0.1:0"),
+            ("LK_REPLICA_ADDR", "127.0.0.1:0"),
+            ("LK_AGENT_ENDPOINT_HOSTS", "a.example, b.example"),
+        ])))
+        .unwrap()
+        .platform
+        .unwrap();
+        assert_eq!(moved.agent_addr.port(), 0);
+        assert_eq!(moved.replica_addr.port(), 0);
+        assert_eq!(
+            moved.agent_hosts,
+            vec!["a.example".to_owned(), "b.example".to_owned()]
+        );
+    }
+
+    #[test]
+    fn the_platform_group_is_all_or_nothing_and_a_missing_variable_is_named() {
+        for (name, _) in platform_env() {
+            let env: Vec<_> = serving_env(&[]).into_iter().filter(|(n, _)| *n != name).collect();
+            let error = HubSettings::from_lookup(lookup(&env)).unwrap_err();
+            assert_eq!(error, ConfigError::Missing(name), "without {name}");
+        }
+        // With none of the group set the settings are fine (the library's defaults); serving is what refuses.
+        let env: Vec<_> = serving_env(&[])
+            .into_iter()
+            .filter(|(n, _)| !platform_env().iter().any(|(p, _)| p == n))
+            .collect();
+        assert!(HubSettings::from_lookup(lookup(&env)).unwrap().platform.is_none());
+    }
+
+    #[test]
+    fn a_malformed_platform_setting_is_refused_by_name() {
+        let toolong = "a".repeat(300);
+        for (name, bad) in [
+            // A key, not a version of it; another resource kind; a path out of the name.
+            (
+                "LK_AGENT_CA_KMS_REF",
+                "projects/lk/locations/l/keyRings/r/cryptoKeys/agent-ca",
+            ),
+            (
+                "LK_AGENT_CA_KMS_REF",
+                "projects/lk/../keyRings/r/cryptoKeys/k/cryptoKeyVersions/1",
+            ),
+            ("LK_AGENT_CA_KMS_REF", "has space"),
+            (
+                "LK_REPLICA_CA_KMS_REF",
+                "projects/lk/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/latest",
+            ),
+            ("LK_AGENT_CA_CERT_REF", "a/b"),
+            ("LK_REPLICA_CA_CERT_REF", "has space"),
+            ("LK_REPLICA_NAME", "pod/0"),
+            ("LK_REPLICA_NAME", "-pod"),
+            ("LK_REPLICA_NAME", toolong.as_str()),
+            ("LK_REPLICA_ADDRESS", "no-port"),
+            ("LK_REPLICA_ADDRESS", "host:0"),
+            ("LK_REPLICA_ADDRESS", "ho st:8445"),
+            ("LK_REPLICA_ADDRESS", "host:99999"),
+            // The host goes on a certificate, which takes lower case only.
+            ("LK_REPLICA_ADDRESS", "Hub-0.hub.svc:8445"),
+            ("LK_HUB_AUDIENCE", toolong.as_str()),
+            ("LK_AGENT_ENDPOINT_HOSTS", "UPPER.example"),
+            ("LK_AGENT_ENDPOINT_HOSTS", "*.example"),
+            ("LK_AGENT_ENDPOINT_HOSTS", "a.example,,"),
+            ("LK_AGENT_ENDPOINT_HOSTS", "1,2,3,4,5,6,7,8,9"),
+            ("LK_AGENT_ADDR", "not-an-address"),
+            ("LK_REPLICA_ADDR", "8445"),
+        ] {
+            assert_eq!(
+                HubSettings::from_lookup(lookup(&serving_env(&[(name, bad)]))).unwrap_err(),
+                ConfigError::Invalid(name),
+                "{name}={bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_cas_may_not_share_a_key_or_a_certificate() {
+        // Each listener trusts only its own CA (S5). One KMS key (or one certificate secret) for both would make the two trust
+        // roots one, and a certificate for one listener would be taken by the other. The second variable read is the one named.
+        assert_eq!(
+            HubSettings::from_lookup(lookup(&serving_env(&[("LK_REPLICA_CA_KMS_REF", AGENT_KMS)])))
+                .unwrap_err(),
+            ConfigError::Invalid("LK_REPLICA_CA_KMS_REF")
+        );
+        assert_eq!(
+            HubSettings::from_lookup(lookup(&serving_env(&[(
+                "LK_REPLICA_CA_CERT_REF",
+                "lanekeeper-agent-ca"
+            )])))
+            .unwrap_err(),
+            ConfigError::Invalid("LK_REPLICA_CA_CERT_REF")
+        );
+        // The same thing the other way round, and both at once: the first collision found is the one named.
+        assert_eq!(
+            HubSettings::from_lookup(lookup(&serving_env(&[("LK_AGENT_CA_KMS_REF", REPLICA_KMS)])))
+                .unwrap_err(),
+            ConfigError::Invalid("LK_REPLICA_CA_KMS_REF")
+        );
+        assert_eq!(
+            HubSettings::from_lookup(lookup(&serving_env(&[
+                ("LK_REPLICA_CA_KMS_REF", AGENT_KMS),
+                ("LK_REPLICA_CA_CERT_REF", "lanekeeper-agent-ca"),
+            ])))
+            .unwrap_err(),
+            ConfigError::Invalid("LK_REPLICA_CA_KMS_REF")
+        );
+        // Two different keys and two different certificates are what a deployment has, and the settings take it.
+        assert!(
+            HubSettings::from_lookup(lookup(&serving_env(&[])))
+                .unwrap()
+                .platform
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn the_kms_references_are_resource_names_and_never_a_secret() {
+        // They are names of keys. The pod contract flags any variable that looks like a secret, and these are not named like one.
+        for (name, _) in platform_env() {
+            let upper = name.to_ascii_uppercase();
+            assert!(
+                !["PASSWORD", "TOKEN", "SECRET", "CREDENTIAL"]
+                    .iter()
+                    .any(|m| upper.contains(m))
+                    && !upper.ends_with("_KEY"),
+                "{name}"
+            );
+        }
+    }
+
     #[test]
     fn git_settings_are_absent_unless_a_remote_is_set() {
         assert!(HubSettings::from_lookup(lookup(&[])).unwrap().git.is_none());
@@ -572,7 +1023,7 @@ mod tests {
         );
         let both = HubSettings::from_lookup(lookup(&git_env(&[
             ("LK_GIT_TOKEN_FILE", "/run/git/token"),
-            ("LK_GIT_TOKEN_SECRET", "x"),
+            ("LK_GIT_READ_REF", "x"),
         ])))
         .unwrap_err();
         assert_eq!(both, ConfigError::Invalid("LK_GIT_TOKEN_FILE"));
@@ -624,8 +1075,8 @@ mod tests {
         for (name, value) in [
             ("LK_GIT_BASE_REPO", "no-slash"),
             ("LK_GIT_TENANT_REPO", "a/b/c"),
-            ("LK_GIT_WEBHOOK_SECRET", "has space"),
-            ("LK_GIT_TOKEN_SECRET", "../x"),
+            ("LK_GIT_WEBHOOK_REF", "has space"),
+            ("LK_GIT_READ_REF", "../x"),
             ("LK_GIT_FETCH_TIMEOUT_SECS", "0"),
             ("LK_GIT_QUEUE_CAPACITY", "0"),
         ] {
@@ -634,5 +1085,136 @@ mod tests {
                 "{name}={value}"
             );
         }
+    }
+    // ------------------------------------------------------------------------------------------ T5 (plan 18): registry and writes
+
+    #[test]
+    fn serving_needs_the_vault_key_and_says_which_variable_to_set() {
+        let mut env = serving_env(&[]);
+        env.retain(|(name, _)| *name != "LK_VAULT_KMS_REF");
+        let without = HubSettings::from_lookup(lookup(&env)).unwrap();
+        assert!(without.writes.is_none());
+        assert_eq!(
+            without.require_serving().unwrap_err(),
+            ConfigError::Missing("LK_VAULT_KMS_REF")
+        );
+    }
+
+    #[test]
+    fn the_vault_key_is_a_crypto_key_and_not_a_version_or_a_ring() {
+        for bad in [
+            "projects/lk/locations/l/keyRings/r/cryptoKeys/vault/cryptoKeyVersions/1",
+            "projects/lk/locations/l/keyRings/r",
+            "vault",
+            "projects/lk/locations/l/keyRings/r/cryptoKeys/va ult",
+        ] {
+            assert_eq!(
+                HubSettings::from_lookup(lookup(&serving_env(&[("LK_VAULT_KMS_REF", bad)]))).unwrap_err(),
+                ConfigError::Invalid("LK_VAULT_KMS_REF"),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_registry_and_write_settings_have_the_documented_defaults() {
+        let settings = HubSettings::from_lookup(lookup(&serving_env(&[]))).unwrap();
+        let registry = &settings.registry;
+        assert!(
+            !registry.retention_enabled,
+            "retention is off until a person switches it on (G16)"
+        );
+        assert!(
+            registry.config.retention_dry_run,
+            "and then it only reports (D118)"
+        );
+        assert!(registry.config.extra_deny_globs.is_empty());
+        assert_eq!(registry.config.corpus_cache_bytes, 256 * 1024 * 1024);
+        let writes = settings.writes.unwrap();
+        assert_eq!(writes.github_api_base, "https://api.github.com");
+        assert_eq!(writes.github_api_host, "api.github.com");
+        assert_eq!(writes.base_branch.to_string(), "main");
+        assert_eq!(writes.config_server_deployment, "csp-configuration-server");
+        assert!(writes.teams_hosts.is_none());
+        assert_eq!(writes.jobs, WriteJobTimes::default());
+        assert_eq!(WriteJobTimes::default().pr_jobs, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn the_knobs_of_the_registry_and_the_write_paths_are_read_and_bounded() {
+        let settings = HubSettings::from_lookup(lookup(&serving_env(&[
+            ("LK_RETENTION_ENABLED", "true"),
+            ("LK_RETENTION_DRY_RUN", "false"),
+            ("LK_EXTRA_DENY_GLOBS", "secrets/**, **/*.pem"),
+            ("LK_CORPUS_CACHE_MIB", "64"),
+            ("LK_GITHUB_API_BASE", "https://ghe.example.com/"),
+            ("LK_GIT_BASE_BRANCH", "release/base"),
+            ("LK_CONFIG_SERVER_DEPLOYMENT", "config-server"),
+            ("LK_TEAMS_ALLOWED_HOSTS", "*.logic.azure.com,hooks.example.com"),
+            ("LK_WRITES_PR_JOBS_SECS", "1"),
+        ])))
+        .unwrap();
+        assert!(settings.registry.retention_enabled);
+        assert!(!settings.registry.config.retention_dry_run);
+        assert_eq!(
+            settings.registry.config.extra_deny_globs,
+            ["secrets/**", "**/*.pem"]
+        );
+        assert_eq!(settings.registry.deny_globs(), ["secrets/**", "**/*.pem"]);
+        assert_eq!(settings.registry.config.corpus_cache_bytes, 64 * 1024 * 1024);
+        let writes = settings.writes.unwrap();
+        assert_eq!(writes.github_api_host, "ghe.example.com");
+        assert_eq!(writes.base_branch.to_string(), "release/base");
+        assert_eq!(writes.config_server_deployment, "config-server");
+        assert_eq!(
+            writes.teams_hosts.unwrap(),
+            ["*.logic.azure.com".to_owned(), "hooks.example.com".to_owned()]
+        );
+        assert_eq!(writes.jobs.pr_jobs, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_registry_or_write_setting_that_is_wrong_is_refused_by_name_and_never_by_value() {
+        for (name, bad) in [
+            ("LK_RETENTION_ENABLED", "yes"),
+            ("LK_RETENTION_ENABLED", "True"),
+            ("LK_RETENTION_DRY_RUN", "1"),
+            ("LK_EXTRA_DENY_GLOBS", "["),
+            ("LK_EXTRA_DENY_GLOBS", "a,,b"),
+            ("LK_EXTRA_DENY_GLOBS", ","),
+            ("LK_CORPUS_CACHE_MIB", "8"),
+            ("LK_CORPUS_CACHE_MIB", "99999"),
+            ("LK_GITHUB_API_BASE", "http://api.github.com"),
+            ("LK_GITHUB_API_BASE", "https://api.github.com:8443"),
+            ("LK_GITHUB_API_BASE", "https://API.github.com"),
+            ("LK_GITHUB_API_BASE", "https://api.github.com/api/v3"),
+            ("LK_GIT_BASE_BRANCH", "a..b"),
+            ("LK_CONFIG_SERVER_DEPLOYMENT", "-bad"),
+            ("LK_TEAMS_ALLOWED_HOSTS", "https://hooks.example.com"),
+            ("LK_TEAMS_ALLOWED_HOSTS", "*.*.example.com"),
+            ("LK_WRITES_RECONCILE_SECS", "0"),
+            ("LK_WRITES_EXPIRE_SECS", "100000"),
+            ("LK_WRITES_PR_JOBS_SECS", "301"),
+            ("LK_WRITES_CLEANUP_SECS", "59"),
+        ] {
+            let error = HubSettings::from_lookup(lookup(&serving_env(&[(name, bad)]))).unwrap_err();
+            assert_eq!(error, ConfigError::Invalid(name), "{name}={bad}");
+            assert!(
+                !format!("{error} {error:?}").contains(bad) || bad.len() < 3,
+                "{name}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn more_deny_globs_than_the_write_path_takes_are_refused() {
+        let many = (0..=hub_writes::MAX_EXTRA_DENY_GLOBS)
+            .map(|n| format!("dir{n}/*"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            HubSettings::from_lookup(lookup(&serving_env(&[("LK_EXTRA_DENY_GLOBS", &many)]))).unwrap_err(),
+            ConfigError::Invalid("LK_EXTRA_DENY_GLOBS")
+        );
     }
 }

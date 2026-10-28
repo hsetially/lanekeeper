@@ -255,6 +255,18 @@ fn thresholds_match_docs_performance_md() {
             "ms",
             "Authentication adds at most 2 ms to a request (p95), with a warm session cache and with a cold one",
         ),
+        (
+            "P7.auth_composed",
+            2.0,
+            "ms",
+            "Authentication adds at most 2 ms to a request (p95), with a warm session cache and with a cold one",
+        ),
+        (
+            "P7.auth_composed_cold",
+            2.0,
+            "ms",
+            "Authentication adds at most 2 ms to a request (p95), with a warm session cache and with a cold one",
+        ),
         ("P8", 1_500.0, "ms", "acknowledged within 1.5 seconds"),
         ("P9", 300.0, "ms", "respond within 300 ms"),
         ("P10.initial_js_gzip_kb", 250.0, "kb", "under 250 KB gzipped"),
@@ -524,6 +536,9 @@ fn only_budgets_with_a_harness_are_registered() {
     // (T11, `cargo bench -p hub-platform --bench ack_throughput`: the hub acknowledging a replayed spool).
     // Prompt 03a (identity): `cargo bench -p hub-identity` produces P7.auth_middleware and P7.auth_middleware_cold (T3) and
     // P12.audit_record (T5).
+    // Prompt 18 (hub assembly): `cargo bench -p hub --bench auth_adapter` produces P7.auth_composed and P7.auth_composed_cold (T4):
+    // what authentication adds to a request through the composed hub, with identity's layers, the platform's guard and the cookie
+    // adapter (the same 2 ms as the two above, which measure identity's layers alone).
     // Prompt 07 (MCP server): `cargo bench -p hub-mcp` produces P9 (the rotation over the read tools, `hub-mcp/read_tools`) and
     // P9.<tool> for the 20 read tools (T2), on fakes at target scale: this layer's share of a call (plan A7).
     // Prompt 04 (fact engine): `cargo bench -p engine` produces P6.parse_flatten (T2), P7.compare and P7.engine_grid (T5),
@@ -559,6 +574,8 @@ fn only_budgets_with_a_harness_are_registered() {
         "P5.engine_per_file_per_swimlane",
         "P7.auth_middleware",
         "P7.auth_middleware_cold",
+        "P7.auth_composed",
+        "P7.auth_composed_cold",
         "P12.audit_record",
         "P1",
         "P2",

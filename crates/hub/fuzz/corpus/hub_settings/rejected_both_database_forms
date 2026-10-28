@@ -1,0 +1,4 @@
+LK_DATABASE_URL_FILE=/u
+LK_DATABASE_URL=postgres://x/y
+LK_DB_CA_FILE=/ca
+FILE_CONTENT=postgres://a/b

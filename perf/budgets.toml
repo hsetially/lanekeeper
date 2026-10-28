@@ -361,6 +361,26 @@ scale = "target"
 registered = true
 
 [[budget]]
+id = "P7.auth_composed"
+description = "Authentication adds to a request through the composed hub (hub-wide AuthLayer, CsrfLayer, the platform guard and the cookie adapter), session and user caches warm (100 signed-in users)"
+bench = "hub/auth_composed_warm"
+statistic = "p95"
+threshold = 2
+unit = "ms"
+scale = "target"
+registered = true
+
+[[budget]]
+id = "P7.auth_composed_cold"
+description = "Authentication adds to a request through the composed hub, session and user caches cold (two indexed reads)"
+bench = "hub/auth_composed_cold"
+statistic = "p95"
+threshold = 2
+unit = "ms"
+scale = "target"
+registered = true
+
+[[budget]]
 id = "P8"
 description = "Edit applied on NFS"
 bench = "hub-writes/edit_applied"

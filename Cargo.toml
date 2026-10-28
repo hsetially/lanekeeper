@@ -25,6 +25,8 @@ xtask = { path = "crates/xtask", version = "0.1.0" }
 hub-platform = { path = "crates/hub-platform", version = "0.1.0" }
 hub-identity = { path = "crates/hub-identity", version = "0.1.0" }
 hub-mcp = { path = "crates/hub-mcp", version = "0.1.0" }
+hub-registry = { path = "crates/hub-registry", version = "0.1.0" }
+hub-writes = { path = "crates/hub-writes", version = "0.1.0" }
 # Every version is an exact pin, at least 14 days old when chosen (S19). Default features are off; member crates enable what they use.
 # Data and errors
 serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }

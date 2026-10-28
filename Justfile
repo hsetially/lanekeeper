@@ -63,13 +63,49 @@ fuzz-smoke: fuzz-tools-check
     done
     echo "fuzz-smoke: {{fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
 
-# Local dev: Postgres (pgvector + pg_trgm), hub, web
+# Local dev (plan 18, T8, G23): Postgres 16 with pgvector and TLS 1.3 (the hub's pool verifies the server and has no mode that does not),
+# the schema (`hub migrate`, as the migrator), the synthetic swimlanes (`hub seed`, as the application role), the web app, and the hub
+# with software edges (`crates/hub/examples/hub_dev.rs`: the same start, serve and drain code as the binary, with secrets in files,
+# a software KMS and no Google). No agent is started and no webhook is exercised. Everything it writes is under target/dev/; `just
+# dev-down` stops the database. The web app is at https://localhost:8443 (trust target/dev/pki/ca.pem, or accept the warning), and
+# http://localhost:8480/ signs a development administrator in (the example's own shortcut: a browser cannot sign in to a mock Entra).
 dev:
-    docker compose -f deploy/dev/compose.yaml up -d --wait
-    @echo "the hub dev server is added by prompt 03b; the web app: 'just web-dev' (Vite with a proxy to a running hub) or 'just web-mock' (the production build behind the hub's headers with mock data)"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dev="$PWD/target/dev"
+    mkdir -p "$dev/secrets" "$dev/mirror"
+    # The synthetic repositories the mirrors are filled from (rule 12: never a real tenant's configuration).
+    if [ ! -f target/fixtures/small/manifest.json ]; then
+        cargo xtask gen-fixtures --scale small --out target/fixtures/small
+    fi
+    cargo run --quiet -p hub --example dev_pki -- "$dev/pki"
+    docker compose -f crates/hub/examples/dev/compose.yaml up -d --wait
+    umask 077
+    printf '%s' 'postgres://lanekeeper_app:lanekeeper-app-dev-only@localhost:5433/lanekeeper' > "$dev/db-url"
+    printf '%s' 'postgres://lanekeeper_migrator:lanekeeper-migrator-dev-only@localhost:5433/lanekeeper' > "$dev/migrator-url"
+    umask 022
+    # The schema is changed by its own command with its own credential, and the hub never sees that credential (S9, S16).
+    LK_MIGRATOR_URL_FILE="$dev/migrator-url" LK_DB_CA_FILE="$dev/pki/ca.pem" cargo run --quiet -p hub -- migrate
+    # The swimlanes are registered as the application role, and an agent can join only once they are.
+    LK_DATABASE_URL_FILE="$dev/db-url" LK_DB_CA_FILE="$dev/pki/ca.pem" cargo run --quiet -p hub -- seed crates/hub/examples/seed.dev.yaml
+    (cd web && pnpm install --frozen-lockfile && pnpm build)
+    # The mirrors are the synthetic repositories, copied once into the volume (a bare repository is its own mirror): the hub starts
+    # ready with no network, and its fetches from the remotes in dev.env, which it cannot reach, fail and are logged.
+    if [ ! -f "$dev/mirror/base.git/HEAD" ]; then
+        cp -r target/fixtures/small/repos/configuration-base-saas.git "$dev/mirror/base.git"
+        cp -r target/fixtures/small/repos/csp-tenant-data.git "$dev/mirror/tenant.git"
+    fi
+    cp "$dev/pki/web-cert.pem" "$dev/secrets/web-cert"
+    cp "$dev/pki/web-key.pem" "$dev/secrets/web-key"
+    set -a
+    . crates/hub/examples/dev/dev.env
+    set +a
+    export LK_DATABASE_URL_FILE="$dev/db-url" LK_DB_CA_FILE="$dev/pki/ca.pem" LK_DEV_SECRETS_DIR="$dev/secrets"
+    export LK_MIRROR_DIR="$dev/mirror" LK_WEB_DIST="$PWD/web/dist"
+    exec cargo run -p hub --example hub_dev
 
 dev-down:
-    docker compose -f deploy/dev/compose.yaml down
+    docker compose -f crates/hub/examples/dev/compose.yaml down
 
 # Fail early, with the install command, when a pinned gate tool is missing or has the wrong version.
 tools-check:
@@ -301,6 +337,90 @@ platform-fuzz: fuzz-tools-check
         cargo +{{fuzz_nightly}} fuzz run "$target" --fuzz-dir crates/hub-platform/fuzz "target/fuzz-corpus/$target" "crates/hub-platform/fuzz/corpus/$target" -- -max_total_time={{fuzz_seconds}}
     done
     echo "platform-fuzz: {{platform_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
+
+# S22, rule 13: the hub binary's own fuzz crate (plan 18, T1 and T7; `fuzz-smoke` does not run it): the settings, the command line, the
+# PEM of the web certificate and the seed file of `hub seed`. Its lockfile is complete and passes cargo deny and cargo audit (S19), then each target runs
+# {{fuzz_seconds}} s on the pinned nightly. A crash leaves its input in crates/hub/fuzz/artifacts/. `crates/hub/tests/justfile_gate.rs`
+# fails if this list and fuzz_targets/ drift apart. The committed seeds also replay on stable in `cargo test -p hub --test corpus_replay`.
+hub_fuzz_targets := "hub_cli_args hub_pem hub_seed_file hub_settings"
+hub-fuzz: fuzz-tools-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo +{{fuzz_nightly}} metadata --locked --format-version 1 --manifest-path crates/hub/fuzz/Cargo.toml > /dev/null
+    cargo deny --manifest-path crates/hub/fuzz/Cargo.toml check --config deny.toml
+    cargo audit --file crates/hub/fuzz/Cargo.lock
+    for target in {{hub_fuzz_targets}}; do
+        mkdir -p "target/fuzz-corpus/$target"
+        cargo +{{fuzz_nightly}} fuzz run "$target" --fuzz-dir crates/hub/fuzz "target/fuzz-corpus/$target" "crates/hub/fuzz/corpus/$target" -- -max_total_time={{fuzz_seconds}}
+    done
+    echo "hub-fuzz: {{hub_fuzz_targets}} ran {{fuzz_seconds}} s each without a crash"
+
+# Prompt 18 gate (the hub assembly; S1 to S7, S9, S10, S12, S16, S18, S21; P11, and P2, P12, P13 through the wiring): every sub-recipe, in
+# order, stopping at the first failure. Run `just verify` and `cargo xtask bench-check` after it (AGENTS.md, protocol step 4). Not part of
+# the gate, and said so rather than skipped silently: `docker build` of crates/hub/Dockerfile (`hub-test` lints the Dockerfile and
+# HARDENING.md; CI builds the image), the kind test of prompt 09 (the chart and the cluster are 09's), osv-scanner (not installed here),
+# and anything that needs a real Google project, Entra tenant or GitHub (the edges are software in every test; the real binary's refusals are
+# tested in `crates/hub/tests/refuses_to_start.rs`).
+verify-18: hub-tools-check hub-lint hub-test hub-fuzz hub-bench
+
+# The pinned tools the gate needs (the fuzz step's nightly toolchain, cargo-fuzz and a C++ compiler too, so that a missing one fails
+# before the slow database tests and not after them), and a Docker daemon, or the command that fixes it. Never skips.
+hub-tools-check: docker-check fuzz-tools-check
+    @cargo deny --version | grep -qx 'cargo-deny {{cargo_deny_version}}' || { echo "need cargo-deny {{cargo_deny_version}}: cargo install --locked cargo-deny --version {{cargo_deny_version}}"; exit 1; }
+    @cargo audit --version | grep -qx 'cargo-audit-audit {{cargo_audit_version}}' || { echo "need cargo-audit {{cargo_audit_version}}: cargo install --locked cargo-audit --version {{cargo_audit_version}}"; exit 1; }
+
+# Every feature that makes a test double constructible. A release build of the hub switches none on (S16, S21): `tests/release_build.rs`
+# reads the manifests, and this reads the resolved graph, where a feature that a transitive dependency enables shows up too.
+hub_test_features := "fakes conformance test-doubles bench-probe fuzz-hooks route-table testing"
+hub-lint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo fmt --all -- --check
+    cargo clippy -p hub --all-targets --all-features -- -D warnings
+    graph="$(cargo tree -p hub -e no-dev,features --locked)"
+    for feature in {{hub_test_features}}; do
+        if grep -q "feature \"$feature\"" <<< "$graph"; then
+            echo "hub-lint: the release graph of hub switches on the test feature $feature"
+            exit 1
+        fi
+    done
+    cargo deny check
+    cargo audit
+
+# Unit, property, golden and integration tests of the hub binary's crate: the process, the settings and the hardening contract, the
+# migration and the seed, the platform, identity, registry, write and MCP wiring, the route table over all 99 operations and the CSRF
+# walk over every route. LK_REQUIRE_DOCKER=1 turns a missing Docker daemon into a failure, never a skip. Then the two changes plan 18
+# made outside the crate: the per-session end of an event stream (hub-platform) and the registry of budgets (xtask). The committed
+# seeds of the fuzz corpora replay here too (`tests/corpus_replay.rs`). The S5 source scan of hub-platform (`ca_key_use`) reads this
+# crate's source as well, and `just verify` runs it, so this gate does too (D145). It passes: the allowlist line for the web
+# listener's own TLS key (`web_tls.rs::decode`) came in with pull request 39 against prompt 03b's test, merged into main.
+hub-test:
+    LK_REQUIRE_DOCKER=1 cargo test -p hub --all-features
+    LK_REQUIRE_DOCKER=1 cargo test -p hub-platform --test events_sse
+    cargo test -p hub-platform --test ca_key_use
+    cargo test -p xtask --test budgets_registry
+
+# P11 (`benches/startup.rs`: process start to `/readyz` 200 through `hub::process::run`, with the RSS recorded) and P7 (`benches/auth_adapter.rs`:
+# what authentication adds through the composed hub), at target scale (the fixtures are generated into target/fixtures/target when
+# missing), then `cargo xtask bench-check` on those budgets only. The full registry needs every other prompt's benchmarks to have run
+# (`just bench`), and `bench-check` has no filter, so the recipe cuts a registry with just the budgets below and judges that; the full
+# `cargo xtask bench-check` is run by the FINAL step after `just bench`. The benchmarks need a Docker daemon for the Postgres they
+# measure. `tests/justfile_gate.rs` fails if this list and the registered `hub/` budgets drift apart.
+hub_budgets := "P11 P7.auth_composed P7.auth_composed_cold"
+hub-bench: agent-fixtures
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Only this run's numbers may satisfy the check: a benchmark that dies at teardown must not pass on an earlier run's data.
+    rm -rf target/criterion/hub
+    rm -f target/perf-results/hub_startup.json target/perf-results/hub_composed_rss_mib.json
+    cargo bench -p hub
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    awk -v ids="{{hub_budgets}}" 'BEGIN { RS = ""; ORS = "\n\n"; n = split(ids, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 } /(^|\n)\[\[budget\]\]/ { if (match($0, /\nid = "[^"]+"/)) { id = substr($0, RSTART + 7, RLENGTH - 8); if (id in want) print } }' perf/budgets.toml > "$tmp/budgets.toml"
+    found="$(grep -c '^\[\[budget\]\]' "$tmp/budgets.toml" || true)"
+    wanted="$(wc -w <<< "{{hub_budgets}}")"
+    if [ "$found" -ne "$wanted" ]; then echo "hub-bench: found $found of $wanted budgets in perf/budgets.toml"; exit 1; fi
+    cargo xtask bench-check --budgets "$tmp/budgets.toml"
 
 # P2, P7 (blob), P11, P13 and P15 (acks): the criterion benchmarks and the harnesses that write target/perf-results/, at target
 # scale (`cargo xtask gen-fixtures --scale target` first, as `agent-fixtures` does), then the check against perf/budgets.toml. A

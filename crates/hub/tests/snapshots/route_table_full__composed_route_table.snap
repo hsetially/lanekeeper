@@ -1,0 +1,118 @@
+---
+source: crates/hub/tests/route_table_full.rs
+expression: golden(&registered(full.running.routes()))
+---
+# mounted on the web listener: 54 routes
+DELETE  /api/v1/me/github-token  [role editor]
+DELETE  /api/v1/me/mcp-tokens/{id}  [role viewer]
+DELETE  /api/v1/swimlanes/{id}/files  [role editor]
+DELETE  /mcp  [public (bearer token (Entra access token or personal token) checked by the MCP gate before the handler on every method, with the user's status re-read on every request; a role is checked per tool)]
+GET     /.well-known/oauth-protected-resource  [public (OAuth discovery metadata (RFC 9728): static, public by design, no secret and no user data)]
+GET     /.well-known/oauth-protected-resource/mcp  [public (OAuth discovery metadata (RFC 9728): static, public by design, no secret and no user data)]
+GET     /api/v1/admin/access-requests  [role admin]
+GET     /api/v1/admin/users  [role admin]
+GET     /api/v1/blobs/{hash}  [role viewer]
+GET     /api/v1/compare  [role viewer]
+GET     /api/v1/compare/tree  [role viewer]
+GET     /api/v1/events  [role viewer]
+GET     /api/v1/findings  [role viewer]
+GET     /api/v1/grid  [role viewer]
+GET     /api/v1/me  [role viewer]
+GET     /api/v1/me/mcp-tokens  [role viewer]
+GET     /api/v1/pr-jobs/{id}  [role viewer]
+GET     /api/v1/proposals  [role viewer]
+GET     /api/v1/prs  [role viewer]
+GET     /api/v1/search/settings  [role viewer]
+GET     /api/v1/search/text  [role viewer]
+GET     /api/v1/swimlanes  [role viewer]
+GET     /api/v1/swimlanes/{id}  [role viewer]
+GET     /api/v1/swimlanes/{id}/drift  [role viewer]
+GET     /api/v1/swimlanes/{id}/effective  [role viewer]
+GET     /api/v1/swimlanes/{id}/files/content  [role viewer]
+GET     /api/v1/swimlanes/{id}/files/history  [role viewer]
+GET     /api/v1/swimlanes/{id}/pending-restarts  [role viewer]
+GET     /api/v1/swimlanes/{id}/served  [role viewer]
+GET     /api/v1/swimlanes/{id}/tree  [role viewer]
+GET     /auth/callback  [public (no session exists before sign-in; the sealed state, the nonce and the code authenticate the response (S1))]
+GET     /auth/login  [public (no session exists before sign-in; the redirect carries state, nonce and PKCE (S1))]
+GET     /mcp  [public (bearer token (Entra access token or personal token) checked by the MCP gate before the handler on every method, with the user's status re-read on every request; a role is checked per tool)]
+PATCH   /api/v1/admin/users/{id}  [role admin]
+POST    /api/v1/admin/access-requests/{id}/approve  [role admin]
+POST    /api/v1/admin/access-requests/{id}/reject  [role admin]
+POST    /api/v1/drafts  [role editor]
+POST    /api/v1/drafts/{id}/apply  [role editor]
+POST    /api/v1/me/access-request  [role viewer]
+POST    /api/v1/me/mcp-tokens  [role viewer]
+POST    /api/v1/proposals/{id}/approve  [role admin]
+POST    /api/v1/proposals/{id}/reject  [role admin]
+POST    /api/v1/prs  [role editor]
+POST    /api/v1/swimlanes/{id}/files/preview  [role editor]
+POST    /api/v1/swimlanes/{id}/files/reveal  [role editor]
+POST    /api/v1/swimlanes/{id}/files/revert  [role editor]
+POST    /api/v1/swimlanes/{id}/files/upload  [role editor]
+POST    /api/v1/swimlanes/{id}/notify  [role operator]
+POST    /api/v1/swimlanes/{id}/restart  [role operator]
+POST    /auth/logout  [public (with no session there is nothing to end; with one, the CSRF check applies (S3))]
+POST    /hooks/github  [public (no session: verified by an HMAC over the raw body and a replay guard keyed on that HMAC)]
+POST    /mcp  [public (bearer token (Entra access token or personal token) checked by the MCP gate before the handler on every method, with the user's status re-read on every request; a role is checked per tool)]
+PUT     /api/v1/me/github-token  [role editor]
+PUT     /api/v1/swimlanes/{id}/files  [role editor]
+
+# operations of api/openapi.yaml that are not mounted: 50
+DELETE  /api/v1/admin/agents/{swimlane}  [owner unassigned] The admin operations on agents and their join tokens are in the specification and nobody owns them (D112 A7): the platform's `JoinService` and the agents table exist and no route reaches them.
+DELETE  /api/v1/admin/folder-mappings/{id}  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+DELETE  /api/v1/admin/host-tiers/{id}  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+DELETE  /api/v1/admin/merge-modes/{id}  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+DELETE  /api/v1/admin/notifications/{id}  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+DELETE  /api/v1/admin/os-login-users/{login}  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+DELETE  /api/v1/admin/path-mappings/{id}  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+DELETE  /api/v1/admin/severity-rules/{id}  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+DELETE  /api/v1/docs/{id}  [owner 14] Document search is prompt 14. Until it lands, `UnavailableDocs` answers every docs tool of the MCP server with a typed `unavailable` error and the hub mounts no REST docs route (decision D140).
+GET     /api/v1/admin/agents  [owner unassigned] The admin operations on agents and their join tokens are in the specification and nobody owns them (D112 A7): the platform's `JoinService` and the agents table exist and no route reaches them.
+GET     /api/v1/admin/audit  [owner unassigned] The admin read of the audit log is in the specification and nobody owns it (D112 A7): identity writes and verifies the chain and no route lists it.
+GET     /api/v1/admin/folder-mappings  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+GET     /api/v1/admin/host-tiers  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+GET     /api/v1/admin/merge-modes  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+GET     /api/v1/admin/notifications  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+GET     /api/v1/admin/os-login-users  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+GET     /api/v1/admin/path-mappings  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+GET     /api/v1/admin/retention  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+GET     /api/v1/admin/sentinels  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+GET     /api/v1/admin/severity-rules  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+GET     /api/v1/admin/swimlanes/{id}/auto-notify  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+GET     /api/v1/admin/swimlanes/{id}/tenants  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+GET     /api/v1/docs  [owner 14] Document search is prompt 14. Until it lands, `UnavailableDocs` answers every docs tool of the MCP server with a typed `unavailable` error and the hub mounts no REST docs route (decision D140).
+GET     /api/v1/docs/for-file  [owner 14] Document search is prompt 14. Until it lands, `UnavailableDocs` answers every docs tool of the MCP server with a typed `unavailable` error and the hub mounts no REST docs route (decision D140).
+GET     /api/v1/docs/fs/grep  [owner 14] Document search is prompt 14. Until it lands, `UnavailableDocs` answers every docs tool of the MCP server with a typed `unavailable` error and the hub mounts no REST docs route (decision D140).
+GET     /api/v1/docs/fs/read  [owner 14] Document search is prompt 14. Until it lands, `UnavailableDocs` answers every docs tool of the MCP server with a typed `unavailable` error and the hub mounts no REST docs route (decision D140).
+GET     /api/v1/docs/fs/render  [owner 14] Document search is prompt 14. Until it lands, `UnavailableDocs` answers every docs tool of the MCP server with a typed `unavailable` error and the hub mounts no REST docs route (decision D140).
+GET     /api/v1/docs/search  [owner 14] Document search is prompt 14. Until it lands, `UnavailableDocs` answers every docs tool of the MCP server with a typed `unavailable` error and the hub mounts no REST docs route (decision D140).
+GET     /api/v1/drafts/{id}  [owner 06] `getDraft` is backed by `WriteService::draft`, which exists; the route is a `LATER` row of prompt 06's route test and fails that test when mounted.
+GET     /api/v1/features/status  [owner 14] Document search is prompt 14. Until it lands, `UnavailableDocs` answers every docs tool of the MCP server with a typed `unavailable` error and the hub mounts no REST docs route (decision D140).
+GET     /api/v1/git/refs  [owner 03b] `listGitRefs` is backed by `GitReader::branches` and `tags`, which exist; no test pins the missing route, so this line is its only reminder.
+GET     /api/v1/me/github-token  [owner 06] `getGithubCredential` is backed by `TokenVault::status`, which exists; the route is a `LATER` row of prompt 06's route test.
+GET     /api/v1/proposals/{id}  [owner 06] `getProposal` is backed by `ProposalDesk::get_proposal`, which exists; the route is a `LATER` row of prompt 06's route test.
+GET     /api/v1/swimlanes/{id}/config-server-restart  [owner 06] `getConfigServerRestartOffer` is backed by `WriteHub::config_server_restart_offer`; the route is a `LATER` row of prompt 06's route test.
+GET     /api/v1/swimlanes/{id}/restart-offer  [owner 06] `getRestartOffer` is backed by `WriteHub::restart_offer`; the route is a `LATER` row of prompt 06's route test.
+POST    /api/v1/admin/agents/{swimlane}/join-token  [owner unassigned] The admin operations on agents and their join tokens are in the specification and nobody owns them (D112 A7): the platform's `JoinService` and the agents table exist and no route reaches them.
+POST    /api/v1/docs  [owner 14] Document search is prompt 14. Until it lands, `UnavailableDocs` answers every docs tool of the MCP server with a typed `unavailable` error and the hub mounts no REST docs route (decision D140).
+POST    /api/v1/prs/preview  [owner 06] `previewPr` is backed by `PrService::plan` without side effects; the route is a `LATER` row of prompt 06's route test.
+PUT     /api/v1/admin/agents/{swimlane}  [owner unassigned] The admin operations on agents and their join tokens are in the specification and nobody owns them (D112 A7): the platform's `JoinService` and the agents table exist and no route reaches them.
+PUT     /api/v1/admin/folder-mappings/{id}  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+PUT     /api/v1/admin/host-tiers/{id}  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+PUT     /api/v1/admin/merge-modes/{id}  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+PUT     /api/v1/admin/notifications/{id}  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+PUT     /api/v1/admin/os-login-users/{login}  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+PUT     /api/v1/admin/path-mappings/{id}  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+PUT     /api/v1/admin/retention  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+PUT     /api/v1/admin/severity-rules/{id}  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+PUT     /api/v1/admin/swimlanes/{id}/auto-notify  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+PUT     /api/v1/admin/swimlanes/{id}/tenants  [owner unassigned] The admin operation for a registry table is in the specification and nobody owns it (D112 A7): the registry reads the table and its tests seed the rows with SQL, and `hub seed` covers projects, swimlanes, tenants and sentinels.
+PUT     /api/v1/docs/{id}  [owner 14] Document search is prompt 14. Until it lands, `UnavailableDocs` answers every docs tool of the MCP server with a typed `unavailable` error and the hub mounts no REST docs route (decision D140).
+
+# routes that are not operations of the document: 5
+DELETE  /mcp  The end of an MCP session, not an API operation; it authenticates itself with a bearer token (D109 D-1).
+GET     /.well-known/oauth-protected-resource  OAuth protected-resource metadata (RFC 9728) for the MCP server: a client reads it before it has a credential, so it is public by design.
+GET     /.well-known/oauth-protected-resource/mcp  The same document at the path RFC 9728 derives from the resource `/mcp`: public by design.
+GET     /mcp  The MCP endpoint's stream, not an API operation; it authenticates itself with a bearer token (D109 D-1).
+POST    /mcp  The MCP endpoint speaks the protocol of docs/mcp-tools.md, not an API operation; it is public to the guard and authenticates itself with a bearer token (D109 D-1).

@@ -18,9 +18,11 @@
 //!
 //! **Authorisation (S4).** The route is registered through [`GuardedRouter`] at Viewer, so pending and disabled users never reach the
 //! handler. A stream outlives the request that opened it, so on every heartbeat the handler asks [`SessionAuth::still_valid`] and
-//! ends the stream when the session has ended or the role dropped below Viewer (within one heartbeat, 15 seconds). A stream also
-//! ends at its maximum age (30 minutes by default), so a role change that only narrows what a user may see takes effect when the
-//! client reconnects with its `Last-Event-ID`.
+//! ends the stream when the user's role dropped below Viewer or the user is gone (within one heartbeat, 15 seconds). When the
+//! implementation names the session that opened the stream ([`SessionAuth::stream_binding`]), the heartbeat also asks
+//! [`SessionAuth::binding_valid`], so signing out of one browser ends that browser's stream and not the user's other ones. A stream
+//! also ends at its maximum age (30 minutes by default), so a role change that only narrows what a user may see takes effect when
+//! the client reconnects with its `Last-Event-ID`.
 //!
 //! **Internal events never reach a browser.** The bus carries events that exist only so that hub replicas can coordinate
 //! ([`DomainEvent::is_internal`]: today `UserSessionsRevoked`, which names a user). They are global events with an id in them, so the
@@ -54,7 +56,7 @@ use super::visibility::EventVisibility;
 use super::wire::EventId;
 use crate::error::ApiError;
 use crate::routes::{EVENTS_PATH, GuardedRouter};
-use crate::session_auth::{AuthenticatedUser, SessionAuth};
+use crate::session_auth::{AuthenticatedUser, SessionAuth, StreamBinding};
 use domain::Role;
 
 /// The most swimlanes a request may name.
@@ -369,6 +371,9 @@ fn open(state: &Arc<SseState>, user: User, uri: &Uri, headers: &HeaderMap) -> Re
             return refuse(state, SseRefusal::TooManyTotal, ApiError::TooManyRequests);
         }
     };
+    // The session that opens the stream, if the implementation tells sessions apart (G2). Taken once, now: the stream is for this
+    // session and ends with it.
+    let binding = state.auth.stream_binding(headers);
     // Subscribe before anything is replayed, so that no event falls between the replay and the live stream.
     let live = state.source.subscribe(filter.clone());
     let (tx, rx) = mpsc::channel::<Bytes>(state.settings.outbound_queue.max(1));
@@ -377,6 +382,7 @@ fn open(state: &Arc<SseState>, user: User, uri: &Uri, headers: &HeaderMap) -> Re
     let stream = Stream {
         state: Arc::clone(state),
         user,
+        binding,
         filter,
         resume,
         out: Out::new(tx),
@@ -465,6 +471,8 @@ impl Out {
 struct Stream {
     state: Arc<SseState>,
     user: User,
+    /// The session this stream belongs to, when the implementation names one.
+    binding: Option<StreamBinding>,
     filter: EventFilter,
     resume: Resume,
     out: Out,
@@ -595,12 +603,18 @@ impl Stream {
         }
     }
 
-    /// Whether the user may still listen. No answer in time counts as no: a stream stays open only on a positive answer.
+    /// Whether the user may still listen, and whether the session that opened the stream is still live. No answer in time counts
+    /// as no: a stream stays open only on a positive answer, and the two questions share the one timeout.
     async fn still_valid(&self) -> bool {
-        tokio::time::timeout(
-            self.state.settings.auth_timeout,
-            self.state.auth.still_valid(&self.user.id),
-        )
+        tokio::time::timeout(self.state.settings.auth_timeout, async {
+            if !self.state.auth.still_valid(&self.user.id).await {
+                return false;
+            }
+            match &self.binding {
+                Some(binding) => self.state.auth.binding_valid(binding).await,
+                None => true,
+            }
+        })
         .await
         .unwrap_or(false)
     }

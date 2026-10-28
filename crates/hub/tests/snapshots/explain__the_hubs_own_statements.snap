@@ -1,0 +1,11 @@
+---
+source: crates/hub/tests/explain.rs
+expression: report
+---
+session by hash
+Nested Loop
+  Index Scan using sessions_pkey on sessions [Index Cond: ((session_hash)::bytea = ?::bytea)]
+  Index Scan using users_pkey on users [Index Cond: ((tid = s.user_tid) AND (oid = s.user_oid))]
+
+user by key
+Index Scan using users_pkey on users [Index Cond: ((tid = ?::text) AND (oid = ?::text))]

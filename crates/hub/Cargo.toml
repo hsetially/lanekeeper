@@ -9,6 +9,13 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+# `SessionEdge::without_sessions` and `DenySessions` (plan 18, T4): a hub whose guard asks a `SessionAuth` and applies no session
+# layers, and a `SessionAuth` that authenticates nobody. They exist so that the tests of the composition need no database. Only
+# this crate's own dev-dependency below switches it on; `tests/release_build.rs` fails if a production dependency does, and
+# `hub-lint` fails if the release graph holds it.
+testing = []
+
 [lib]
 name = "hub"
 path = "src/lib.rs"
@@ -22,10 +29,20 @@ domain.workspace = true
 ports.workspace = true
 hub-platform.workspace = true
 hub-mcp.workspace = true
+# The registry (ingestion, the pipeline, the read API, the blob policy; T5) and the write paths (edits, proposals, the token vault, pull
+# requests; T5). Workspace members: they add no package to the lockfile. `tests/release_build.rs` keeps their test features out of the
+# release graph.
+hub-registry.workspace = true
+hub-writes.workspace = true
+# The platform's audit log (`PgAuditLog`), the verifier of Google ID tokens and the HTTPS client that fetches Google's keys (T3);
+# T4 wires the rest of the identity module. A workspace member: it adds no package to the lockfile.
+hub-identity.workspace = true
 async-trait.workspace = true
 aws-lc-rs.workspace = true
 axum.workspace = true
 bytes.workspace = true
+# Jitter for the web certificate's reload timer (T1, G3); already in the graph through hub-platform's retry delays.
+fastrand.workspace = true
 futures.workspace = true
 hex.workspace = true
 http.workspace = true
@@ -36,6 +53,8 @@ moka.workspace = true
 opentelemetry.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
+# The PEM text `hub ca-init` prints (T3). Already a workspace pin, used by hub-platform; its `serde` feature stays off.
+pem.workspace = true
 prometheus-client.workspace = true
 rustls.workspace = true
 serde_json.workspace = true
@@ -43,7 +62,10 @@ serde_json.workspace = true
 # webpki-roots (CDLA-Permissive-2.0), which deny.toml does not allow, so this is the nearest variant that passes
 # `cargo deny`: it uses ring for the database leg only (the hub's own listeners are rustls on aws-lc-rs, built with
 # `builder_with_provider`) and trusts only the CA file in the settings, never the system roots. Escalated in the PR.
-sqlx = { workspace = true, features = ["postgres", "runtime-tokio", "tls-rustls-ring-native-roots"] }
+# `migrate` (T2): `hub migrate` applies the compiled-in migrations with sqlx's `Migrator`. It adds no package to the root lockfile
+# (the dev-dependency below already enabled it); the hub's fuzz lockfile gains the packages that feature lists, each at the version
+# and checksum the root lockfile has.
+sqlx = { workspace = true, features = ["migrate", "postgres", "runtime-tokio", "tls-rustls-ring-native-roots"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-rustls.workspace = true
@@ -52,16 +74,37 @@ tracing.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "json", "std", "registry"] }
 serde.workspace = true
+# The seed file (T7): `hub seed` reads a YAML or JSON file that an operator wrote, so it is parsed by a parser that has hard budgets
+# (events, nodes, depth, aliases) and no unsafe code. A workspace pin that the conformance suite and the tests already use; it is a
+# production dependency of the hub for the first time, and the hub's fuzz lockfile gains it and what it needs.
+serde-saphyr.workspace = true
+# The web certificate's expiry (T1, G11): the readiness check needs the leaf's `notAfter`, which rustls does not expose.
+# Already a workspace pin, used by hub-platform for the same purpose; its `verify` features stay off.
+x509-parser.workspace = true
+# The PEM text of the key and the DER copy made from it are wiped once the certificate is loaded (S7).
+zeroize.workspace = true
 
 [dev-dependencies]
+# The crate's own `testing` feature, for its tests, examples and benches (the identity crate does the same with `route-table`).
+hub = { path = ".", version = "0.1.0", features = ["testing"] }
+# The platform's smart-HTTP Git server (`tests/support/git_remote.rs` includes it) checks HTTP basic authentication.
+base64.workspace = true
 futures.workspace = true
+# T3: `tests/platform_cluster.rs` runs two replicas through the composition code and speaks the agent protocol to them, with the
+# platform's own test clients (included with `#[path]`): the generated service types, the gRPC types they use, and an HTTP/2
+# client connection. All three are workspace pins that hub-platform already uses; none adds a package to the lockfile.
+hyper = { workspace = true, features = ["client", "server", "http1", "http2"] }
+proto.workspace = true
+tokio-stream.workspace = true
+tonic = { workspace = true, features = ["codegen"] }
 hub-platform = { workspace = true, features = ["fakes"] }
+# T5: the tests drive the real GitHub client against a local plain-HTTP server (`GithubClient::for_tests`), which only this feature builds.
+hub-writes = { workspace = true, features = ["test-doubles"] }
 ports = { workspace = true, features = ["fakes"] }
 insta = { workspace = true, features = ["json"] }
 proptest.workspace = true
 rcgen = { workspace = true, features = ["pem"] }
 rustls = { workspace = true, features = ["tls12"] }
-serde-saphyr.workspace = true
 tempfile.workspace = true
 testcontainers.workspace = true
 # The startup benchmark (T8, P11) includes the platform's Postgres test helper, which migrates a throwaway database.
@@ -69,7 +112,15 @@ sha2.workspace = true
 sqlx = { workspace = true, features = ["postgres", "migrate", "runtime-tokio"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
 tower = { workspace = true, features = ["util"] }
-x509-parser.workspace = true
+# T4: the tests include the identity module's mock Entra (`hub-identity/tests/support/mock_oidc.rs`), which parses the token request
+# with `url`, and the composed-authentication benchmark is criterion. Both are workspace pins that are already in the lockfile.
+url.workspace = true
+criterion.workspace = true
+
+# T4 (P7): what authentication adds to a request through the composed hub, with a warm session cache and with a cold one.
+[[bench]]
+name = "auth_adapter"
+harness = false
 
 # T8 (P11): process start to `/readyz` 200 against a real Postgres, populated mirrors of the target-scale fixtures, and the composed hub.
 [[bench]]
