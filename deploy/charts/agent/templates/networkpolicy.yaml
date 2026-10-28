@@ -1,6 +1,6 @@
 # Default deny for the agent's pod, and the five places it talks to (crates/agent/HARDENING.md, S17, S18): the hub and the Kubernetes
-# API server by address, the config-server's pods in this namespace, the metadata server and kube-dns. Both policy types are set, so
-# everything not listed is denied. network.rego checks the rendering, and contract.rego that it equals HARDENING.md.
+# API server by address, the config-server's pods in the config-server's one namespace, the metadata server and kube-dns. Both policy
+# types are set, so everything not listed is denied. network.rego checks the rendering, and contract.rego that it equals HARDENING.md.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -37,9 +37,15 @@ spec:
       ports:
         - {protocol: TCP, port: 443}
     # NotifyConfigServer and FetchServed, only when the hub asks. The endpoint has no authentication (Q37), which is why nothing else
-    # may reach it from here, and why the hub requires the Operator role and audits the call.
+    # may reach it from here, and why the hub requires the Operator role and audits the call. The config-server does not run in the
+    # agent's namespace, and a podSelector alone selects pods in the policy's own, so the namespace is named: ONE explicit namespace,
+    # chosen by the label Kubernetes sets itself, in the same `to` entry as the pods (both must hold). Never `namespaceSelector: {}`, never
+    # an expression or another label, never a namespace of the cluster's own components (configServer.namespace, _helpers.tpl).
     - to:
-        - podSelector:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "lanekeeper-agent.configServerNamespace" . }}
+          podSelector:
             matchLabels:
               app: csp-configuration-server
       ports:

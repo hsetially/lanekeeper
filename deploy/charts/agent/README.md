@@ -16,12 +16,29 @@ The Application for a swimlane is `deploy/argocd/swimlanes/<swimlane>.yaml`, and
 | `Role` and `RoleBinding` `lanekeeper-agent-secrets`, in the agent's namespace | get and update on `lanekeeper-agent-cert`, and get on `lanekeeper-agent-join-token` only with `joinToken.enabled`. By name; **no list, no watch, no create** (S17) |
 | `Secret/lanekeeper-agent-cert` | empty and `helm.sh/resource-policy: keep`. The agent may update a Secret but cannot create one (`create` cannot be limited by name), so the chart makes it; the agent writes its certificate into it |
 | `ConfigMap/lanekeeper-hub-ca` | the hub's CA certificate (`hubCa.pem`), public. The Deployment's `checksum/hub-ca` restarts the agent when it changes |
-| `NetworkPolicy/lanekeeper-agent` | default deny; egress to exactly five places: the hub and the API server (address blocks on 443), the config-server's pods (8888), the metadata server (80) and kube-dns (53). Ingress: Prometheus, on the health port |
+| `NetworkPolicy/lanekeeper-agent` | default deny; egress to exactly five places: the hub and the API server (address blocks on 443), the config-server's pods in `configServer.namespace` (8888), the metadata server (80) and kube-dns (53). Ingress: Prometheus, on the health port |
 
 The chart refuses to render (`helm template` stops) without an image digest, a hub CA that is a certificate and not a key, a way to
 join (Workload Identity or the join token), a swimlane, an NFS export, at least one watched namespace, and an address block for
-the hub and for the API server. `values.schema.json` refuses unknown values, a replica count, a tunable the agent does not have,
-`kube-system` as a watched namespace, a block wider than a /24, and root as the export's owner.
+the hub and for the API server, and the namespace of the config-server. `values.schema.json` refuses unknown values, a replica count, a
+tunable the agent does not have, `kube-system` as a watched namespace, a block wider than a /24, and root as the export's owner.
+
+## The config-server's namespace
+
+The config-server does not run in the agent's namespace (`crates/agent/HARDENING.md`, "The config-server's namespace"), and a `podSelector` alone
+selects pods in the policy's own namespace. So `configServer.namespace` is a **required** value of the swimlane, one explicit namespace, and the
+chart uses it twice, from one place (`lanekeeper-agent.configServerNamespace`): in the egress rule, where `namespaceSelector` (the label
+`kubernetes.io/metadata.name`, alone) and `podSelector` (`app: csp-configuration-server`) are in the **same** `to` entry, so both must hold; and
+in `LK_CONFIG_SERVER_URL`, `http://<configServer.service>.<namespace>.svc.cluster.local:8888`, in full because a short name resolves only in the
+agent's own namespace. The service defaults to `csp-configuration-server`.
+
+The endpoint has no authentication (Q37), so this rule alone decides which pods the agent's requests reach and which pods answer them. The
+schema and the template refuse `kube-system`, `kube-public`, `kube-node-lease`, a name that is not a name, and the agent's own namespace;
+`network.rego` refuses a rule with no namespace, with every namespace (`{}`), with an expression or another label, a cluster namespace, the
+agent's own namespace, and a `LK_CONFIG_SERVER_URL` that is short, for another port, or for another namespace than the rule's; `contract.rego`
+compares the rule's shape with HARDENING.md and treats the namespace as the value it is. `deploy/tests/render.sh planted` shows each refusal on
+the real output. **No policy can know which namespace is the right one**: that is a fact of the cluster, and `deploy/ADDING-A-SWIMLANE.md` says how to
+ask for it. The chart does not set `LK_CONFIG_SERVER_DEPLOYMENT` (the pod of HARDENING.md does not list it).
 
 ## The join token
 
@@ -77,8 +94,13 @@ StorageClass, by name, and nothing else outside the namespace (`argocd.rego`).
   run the two charts together.
 - That the cluster enforces NetworkPolicy at all, and that the metadata server and the control plane are reachable from the pod
   network as the policy assumes (a property of each cluster, Q1).
-- That the config-server runs in the agent's own namespace. The contract allows its pods in the agent's namespace only; if it runs
-  elsewhere the policy needs a `namespaceSelector` and HARDENING.md changes first.
+- That `configServer.namespace` is where the swimlane's config-server really runs. The tests fix the shape of the rule and refuse the
+  namespaces it must not name, not the value: a wrong one denies the config-server calls (the rule matches nothing) or, if the namespace holds
+  another service labelled `app: csp-configuration-server`, sends the agent's requests there. A person checks it against the cluster when the
+  swimlane is added.
+- That the agent reports when the config-server's pods started (check C11). That needs `LK_CONFIG_SERVER_DEPLOYMENT`, which the contract's pod
+  does not list and the chart does not set; setting it would put the config-server's namespace into `namespaces` (the agent refuses to start
+  otherwise), and with it a workload Role there.
 
 ## Rendered with
 

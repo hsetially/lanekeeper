@@ -272,6 +272,59 @@ test_deny_contract_whose_config_server_port_moved if {
 	refused(hardening_changed("NetworkPolicy", "lanekeeper-agent", [{"op": "replace", "path": "/spec/egress/2/ports/0/port", "value": 9999}]), "differs from HARDENING.md")
 }
 
+# The config-server's namespace is a value per swimlane (HARDENING.md: "latest-pci here"): the example stands for any one explicit
+# namespace, chosen by kubernetes.io/metadata.name in the same entry as the pods, on the chart's side and on the contract's. What is still
+# compared is the shape: a rule that is wider, or chosen by anything else, is not the contract's.
+config_server_namespace_path := "/spec/egress/2/to/0/namespaceSelector"
+
+config_server_name_path := concat("", [config_server_namespace_path, "/matchLabels/kubernetes.io~1metadata.name"])
+
+test_the_config_servers_namespace_is_a_value if {
+	planted := patched("NetworkPolicy", "lanekeeper-agent", [{"op": "replace", "path": config_server_name_path, "value": "other-pci"}])
+	count(deny) == 0 with input as planted
+}
+
+test_the_config_servers_namespace_in_the_contract_is_a_value_too if {
+	planted := hardening_changed("NetworkPolicy", "lanekeeper-agent", [{"op": "replace", "path": config_server_name_path, "value": "another-pci"}])
+	count(deny) == 0 with input as planted
+}
+
+test_deny_a_config_server_rule_without_a_namespace if {
+	refused(patched("NetworkPolicy", "lanekeeper-agent", [{"op": "remove", "path": config_server_namespace_path}]), "differs from HARDENING.md")
+}
+
+test_deny_a_config_server_rule_in_every_namespace if {
+	refused(patched("NetworkPolicy", "lanekeeper-agent", [{"op": "replace", "path": config_server_namespace_path, "value": {}}]), "differs from HARDENING.md")
+}
+
+test_deny_a_config_server_rule_in_namespaces_chosen_by_an_expression if {
+	selector := {"matchExpressions": [{"key": "kubernetes.io/metadata.name", "operator": "In", "values": ["latest-pci"]}]}
+	refused(patched("NetworkPolicy", "lanekeeper-agent", [{"op": "replace", "path": config_server_namespace_path, "value": selector}]), "differs from HARDENING.md")
+}
+
+test_deny_a_config_server_rule_in_namespaces_chosen_by_another_label if {
+	refused(patched("NetworkPolicy", "lanekeeper-agent", [{"op": "replace", "path": config_server_namespace_path, "value": {"matchLabels": {"team": "pci"}}}]), "differs from HARDENING.md")
+}
+
+test_deny_a_config_server_rule_in_namespaces_chosen_by_two_labels if {
+	selector := {"matchLabels": {"kubernetes.io/metadata.name": "latest-pci", "team": "pci"}}
+	refused(patched("NetworkPolicy", "lanekeeper-agent", [{"op": "replace", "path": config_server_namespace_path, "value": selector}]), "differs from HARDENING.md")
+}
+
+test_deny_a_config_server_rule_whose_namespace_is_not_a_string if {
+	selector := {"matchLabels": {"kubernetes.io/metadata.name": ["latest-pci"]}}
+	refused(patched("NetworkPolicy", "lanekeeper-agent", [{"op": "replace", "path": config_server_namespace_path, "value": selector}]), "differs from HARDENING.md")
+}
+
+# The contract moves first: HARDENING.md widens the rule, or drops the namespace, and the chart does not follow.
+test_deny_contract_that_widens_the_config_servers_namespace if {
+	refused(hardening_changed("NetworkPolicy", "lanekeeper-agent", [{"op": "replace", "path": config_server_namespace_path, "value": {}}]), "differs from HARDENING.md")
+}
+
+test_deny_contract_that_drops_the_config_servers_namespace if {
+	refused(hardening_changed("NetworkPolicy", "lanekeeper-agent", [{"op": "remove", "path": config_server_namespace_path}]), "differs from HARDENING.md")
+}
+
 # --- the pod equals HARDENING.md
 
 test_deny_pod_token_not_mounted if {

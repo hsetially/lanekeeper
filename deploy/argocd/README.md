@@ -118,4 +118,4 @@ To go back, put the old commit back the same way.
 - **Pod Security admission.** The namespaces are made without Pod Security labels. The agent mounts the NFS export as a volume, and
   the `restricted` profile limits volume types to a list that, as far as the authors remember (not checked here), does not include NFS,
   so a `restricted` label on the agent's namespace needs a decision first.
-- **The Applications for staging** (above) **and the config-server's namespace** (plan 09 blockers, B8). The agent load balancer's port (B7) was decided on 2026-10-26: 443 for the agents and the sentinel.
+- **The Applications for staging** (above). The config-server's namespace (plan 09 blockers, B8) is a value of the agent chart, `configServer.namespace`; it is not a destination of the project, because the chart renders nothing there. The agent load balancer's port (B7) was decided on 2026-10-26: 443 for the agents and the sentinel.

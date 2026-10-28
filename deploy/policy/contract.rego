@@ -9,7 +9,9 @@
 # What is compared, and what is not.
 #   - Roles: the rules as sets (order is not part of the contract), the RoleBindings, and one workload Role per watched namespace.
 #   - NetworkPolicy: the pod selector, the policy types, ingress and egress as sets of rules. The hub's and the API server's
-#     addresses are values, so the contract's blocks stand for "an address block"; the metadata server's address is literal.
+#     addresses are values, so the contract's blocks stand for "an address block"; the metadata server's address is literal; the
+#     config-server's namespace is a value per swimlane, so the contract's example stands for "one explicit namespace" (the shape of
+#     the rule is compared, the value is not).
 #   - Pod: the service account, the token, the host fields, seccomp, the container's security context, ports and probes.
 #     The ids and the resources are values (HARDENING.md says its numbers are to be confirmed on the pilot).
 #   - Volumes, mounts and paths (09/T8): each volume by name with its kind and the one detail that is not a value (the claim, the
@@ -252,7 +254,29 @@ normal_destination(d) := d if d.ipBlock.cidr == metadata_cidr
 
 normal_destination(d) := d if d.ipBlock.except
 
-normal_destination(d) := d if not d.ipBlock
+# The config-server's rule: its namespace is a value per swimlane (HARDENING.md: "latest-pci here", chosen by the label Kubernetes sets
+# itself, in the same `to` entry as the pods), so the contract's example stands for any ONE explicit namespace, as the hub's addresses stand
+# for any address block. The shape is still compared, to the letter: the namespace by kubernetes.io/metadata.name alone, the pods by their
+# one label, no expression on either. A rule with no namespace, with `{}` (every namespace), with an expression, another label or a second
+# label is not of that shape, stays as it is, and so differs from the contract. That the value is a name, and neither a namespace of the
+# cluster's own components nor the agent's own, is network.rego's.
+config_server_shape(d) if {
+	d.podSelector.matchLabels == {"app": "csp-configuration-server"}
+	not d.podSelector.matchExpressions
+	not d.namespaceSelector.matchExpressions
+	count(d.namespaceSelector.matchLabels) == 1
+	is_string(d.namespaceSelector.matchLabels["kubernetes.io/metadata.name"])
+}
+
+normal_destination(d) := {
+	"podSelector": d.podSelector,
+	"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "<config-server namespace>"}},
+} if config_server_shape(d)
+
+normal_destination(d) := d if {
+	not d.ipBlock
+	not config_server_shape(d)
+}
 
 normal_ports(rule) := {{"protocol": object.get(p, "protocol", "TCP"), "port": p.port} | some p in object.get(rule, "ports", [])}
 

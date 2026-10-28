@@ -1,5 +1,10 @@
 # Plan 09 blockers
 
+**Update 2026-10-28: B8 is resolved** by the commit `09/fix: the agent chart names the config-server's namespace` (section B8 below, and the table row). The lines
+below that call B8 open were written on 2026-10-26 and are history. B5 stays open. A1 is not a blocker of the kind job any more: since the human decision of
+2026-10-28 the kind job asserts what the production image can do (commit `09/fix: the kind hub stage asserts what the production image can do`), and acceptance 3 is
+not met by it.
+
 Status on 2026-10-26, T8 run: **B1 to B4 are resolved; B5 is open by a human's decision and stops `just verify-09` (and nothing else of T3 to T8); B7 is resolved on 2026-10-26 (the agent load balancer listens on 443) and B8 is informational and needs a human before a swimlane is deployed; B9 is informational; B10 is decided (a human confirmed the interim image, below); B11 and B12 are informational findings of T6; B13 is an informational finding of T8: the RPM release key and its trust root do not exist, and the Rocky and Debian repositories are refused, so the real `audit` package and a musl C toolchain could not be installed.**
 **Review round 1 (FIX step, 2026-10-26, commits `643a896` to `df624a6`): four blocking findings fixed in the repository (disk steps lost in the merge with `origin/main`, a build step in the `sign-release` job, `storage.googleapis.com` missing from the hub's egress, the kind test missing) and one non-blocking one; one new blocker, B16 (no kind cluster can start in this sandbox); B5, B14, B15 and A19 untouched, as instructed. Status stays PARTIAL. See the last section.**
 **Review round 2 (FIX step, 2026-10-26, commits `077e32e` to `3a67982`): one blocking finding fixed (the `sign-release` job compiled the sentinel through `build.sh --tools`; the tools image is now a stage of its own that builds nothing of ours) and three non-blocking ones (the workflow rule's quoting and shell blind spots, the kind test's `/readyz` proxy read and its P11 assertion, Renovate's coverage of the kind pins). B14 is resolved by PR 30 (merge `7e53bf5`, brought in by `9eef6b4`): `just verify` passes. B5, B15, A1 and A19 were left alone, as instructed. Status stays PARTIAL. See the last section.**
@@ -16,7 +21,7 @@ T1 is complete; the commit `e2c199d` holds the code and the measurements were ta
 | B5 | **open** (T3) | `api.github.com/meta` is refused, so GitHub's webhook ranges cannot be written; the gcp chart refuses to render until a person runs one command (section B5, T3 notes below) |
 | B6 | informational (T3) | `docs.cloud.google.com` and `registry.k8s.io` are refused; Google-specific shapes in the hub chart are unverified (T3 notes below) |
 | B7 | **resolved (human decision of 2026-10-26)** | the agent contract dials the hub on 443; the hub chart's agent load balancer listened on 8444. `Service/lanekeeper-hub-agent` now listens on 443 and forwards to the container port `agent` (8444); neither contract file changed (section B7 below) |
-| B8 | **open, informational (T4)** | the agent contract lets the agent reach the config-server only in the agent's own namespace (T4 notes below) |
+| B8 | **resolved (2026-10-28, human decision; `09/fix: the agent chart names the config-server's namespace`)** | the agent contract now names the config-server's one namespace (PR 42); the agent chart has a required `configServer.namespace` (sit1: `latest-pci`, not the agent's namespace), the egress rule and `LK_CONFIG_SERVER_URL` use it, and the policies and `render.sh planted` guard the shape (section B8 below) |
 | B9 | **open, informational (T5)** | `pkg-containers.githubusercontent.com` (where `ghcr.io` keeps image layers) is refused: the database image's layers and config cannot be read here (T5 notes below) |
 | B10 | **decided (T6 run)** | the plan names CloudNativePG's `standard` image for the database and built-in barman for the backups; the `standard` image has no barman. **A human confirmed the interim image** (`16.15-202610050823-system-trixie`, built-in barman). Moving to the Barman Cloud plugin is a later open question (B10 section below) |
 | B11 | **open, informational (T6)** | no operation creates a swimlane in the hub, so step 1 of `deploy/ADDING-A-SWIMLANE.md` cannot be completed by following it (T6 notes below) |
@@ -384,6 +389,30 @@ T3 deliverable and a possible contract change, so it is left for a human. Until 
 charts do not talk to each other.
 
 ## B8 (T4): the config-server egress selects pods in the agent's own namespace
+
+**RESOLVED on 2026-10-28 by the commit `09/fix: the agent chart names the config-server's namespace`.** The finding below is kept as it was written (2026-10-26).
+
+What changed. PR 42 (now on `origin/main`, in this branch since `cb4367c`) changed `crates/agent/HARDENING.md`: the config-server runs in its swimlane's namespace,
+and the egress rule names that one namespace, `kubernetes.io/metadata.name: latest-pci` in the example, in the same `to` entry as the pods, never `namespaceSelector: {}`,
+never an expression or another label, never `kube-system`, `kube-public` or `kube-node-lease`; `LK_CONFIG_SERVER_URL` is spelled
+`http://<service>.<namespace>.svc.cluster.local:8888`. The human decisions of 2026-10-28: the config-server of sit1 runs in `latest-pci`, and the agent runs in a different namespace.
+
+| Where | What |
+|---|---|
+| `deploy/charts/agent` | `values.yaml` and `values.schema.json`: a required `configServer.namespace` (a name; not `kube-system`, `kube-public` or `kube-node-lease`) and `configServer.service` (default `csp-configuration-server`). `_helpers.tpl` is the one place that reads them, stops the render for the agent's own namespace too, and builds the URL. `networkpolicy.yaml` and `deployment.yaml` take the namespace from there |
+| `deploy/values/agent/sit1.yaml` | `configServer.namespace: latest-pci` |
+| `deploy/policy/network.rego` | the "config-server" destination is exactly the contract's shape with one explicit namespace; a rule with none, `{}`, an expression, another label, a second label, an expression on the pods, two config-server rules, a cluster namespace, the agent's own namespace, a missing `LK_CONFIG_SERVER_URL` or one that is short, for another port or scheme, or for another namespace than the rule's, each has its own message |
+| `deploy/policy/contract.rego` | `normal_destination` treats the namespace as a value (the contract's `latest-pci` stands for any one explicit namespace, on both sides) and keeps comparing the shape |
+| tests | `network_test.rego` (the old "another namespace" case, which expected a refusal, is replaced by the cases above and one that accepts another explicit namespace), `contract_test.rego`, `fixtures_agent_test.rego` (1193 policy tests, from 1162); `deploy/tests/render.sh planted` and `contract` (the real output with the rule widened, narrowed, moved, or the URL changed; the chart with other values; the chart's own refusals) |
+| `deploy/ADDING-A-SWIMLANE.md` | asks for the namespace (and the service name) and says how to check it against the cluster; step 1 now says that `hub seed` creates the swimlane's row (B11 is answered), and the A1 sentences are gone |
+
+What stays open, for a human. (1) **No policy can know which namespace is the right one** (HARDENING.md says so): a wrong value denies the calls or sends them to another service
+labelled `app: csp-configuration-server`; the runbook asks for the check. (2) **`LK_CONFIG_SERVER_DEPLOYMENT` is not rendered.** The contract's Pod block does not list it and the
+agent treats it as optional, so the chart does not set it; without it the agent does not report when the config-server's pods started (`crates/agent/tests/kube_configserver.rs`,
+check C11, D83/D85). If a person wants C11, HARDENING.md's pod block gets the variable, the chart sets it, and `latest-pci` goes into `namespaces` (the agent refuses to start otherwise),
+which also renders a workload Role in `latest-pci`, and the Argo CD project's destinations must then include it.
+
+The original finding (2026-10-26):
 
 HARDENING.md's rule for `NotifyConfigServer` and `FetchServed` is `podSelector: {matchLabels: {app: csp-configuration-server}}` with no
 `namespaceSelector`, which selects pods **in the policy's namespace**, the agent's own (`lanekeeper` in the examples). The config-server
@@ -1149,7 +1178,7 @@ A human answered the open questions in chat on 2026-10-26. This section records 
 | B17 | a time-boxed ignore until 2026-11-30 (zstd) and 2027-04-30 (rsa) | **Decided; not complete on this branch.** `deny.toml` and `.cargo/audit.toml` are carried by a **separate PR on `main`**, so this branch does not touch them (`git diff fb35dff..HEAD -- deny.toml .cargo/audit.toml` is empty). **`cargo deny check` and `cargo audit` therefore still fail here, and the supply-chain job stays red until that PR is merged into this branch.** This branch carries the osv-scanner half (`10a1ae9`). |
 | B19 | wait for the 14-day dates; no ignore for the npm findings | **Decided; open until the dates.** undici 7.30.1 and @vitest/mocker 4.1.12 on 2026-10-29, fast-uri 3.1.9 on 2026-11-02; the dompurify fix 3.4.17 is a separate PR; for zod the human gave no date (the fix named in B19 above is 4.6.6). The `domain` name collision is excluded (`10a1ae9`). The `osv` job stays red for the npm findings until the bumps are merged. |
 | B15 | the two budget thresholds are loosened by a separate contract-change PR | **Decided; still open here.** `perf/budgets.toml` is a contract path and this branch does not touch it, so `cargo xtask bench-check` still fails on `P6.index_settings` and `P12.audit_record` until that PR is merged. `bench-check` was not re-run. |
-| A1, B5, B8 | no answer | **Still open.** A1: the hub binary exits 1, so `kind-e2e` is red by design. B5: `githubHookRanges: []` is still the committed marker, so `deploy-render`, `policy-check`, `deploy-planted` and `verify-09` fail on purpose; the failures are exactly the baseline's (below). B8 (the config-server's namespace) was not part of the B7 change. |
+| A1, B5, B8 | no answer | **Still open.** A1: the hub binary exits 1, so `kind-e2e` is red by design. B5: `githubHookRanges: []` is still the committed marker, so `deploy-render`, `policy-check`, `deploy-planted` and `verify-09` fail on purpose; the failures are exactly the baseline's (below). B8 (the config-server's namespace) was not part of the B7 change; it was resolved on 2026-10-28 (section B8). |
 | Branch protection | required-check names | A person changes them **after the merge**: `ci.yml` no longer holds the `rust`, `web` and `pinned-actions` jobs (they moved to path-filtered workflows). No setting was changed from here. |
 
 ### What each commit did, and the evidence

@@ -46,6 +46,33 @@ a file that is not a certificate is no CA. Stops the render otherwise.
 {{- end }}
 
 {{/*
+The namespace the config-server runs in (crates/agent/HARDENING.md, "The config-server's namespace"): one explicit name, required. The schema
+already refuses a name that is not one and the three namespaces of the cluster's own components; this stops the render again for those, and for
+the agent's own namespace, which the config-server does not run in. The egress rule and LK_CONFIG_SERVER_URL both take it from here, so the two
+cannot differ.
+*/}}
+{{- define "lanekeeper-agent.configServerNamespace" -}}
+{{- $ns := required "configServer.namespace is required: the namespace the swimlane's config-server runs in (crates/agent/HARDENING.md)" .Values.configServer.namespace -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" $ns) -}}
+{{- fail (printf "configServer.namespace %q is not a namespace name" $ns) -}}
+{{- end -}}
+{{- if has $ns (list "kube-system" "kube-public" "kube-node-lease") -}}
+{{- fail (printf "configServer.namespace is %s, a namespace of the cluster's own components: the config-server runs in its swimlane's namespace, and a rule there would reach whatever is labelled like it (S17)" $ns) -}}
+{{- end -}}
+{{- if eq $ns .Release.Namespace -}}
+{{- fail (printf "configServer.namespace is %s, the agent's own namespace: the config-server does not run in the agent's namespace (crates/agent/HARDENING.md)" $ns) -}}
+{{- end -}}
+{{- $ns -}}
+{{- end }}
+
+{{/*
+LK_CONFIG_SERVER_URL: the service by its full name, because a short name resolves only in the agent's own namespace.
+*/}}
+{{- define "lanekeeper-agent.configServerUrl" -}}
+{{- printf "http://%s.%s.svc.cluster.local:8888" (.Values.configServer.service | default "csp-configuration-server") (include "lanekeeper-agent.configServerNamespace" .) -}}
+{{- end }}
+
+{{/*
 How the agent joins (S5, Q26): Workload Identity, the join token, or Workload Identity first and the token when it is not
 available. One of the two is required; stops the render otherwise.
 */}}

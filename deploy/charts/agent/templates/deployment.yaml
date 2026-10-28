@@ -128,8 +128,9 @@ spec:
               value: {{ .Values.spool.maxBytes | int64 | quote }}
             - name: LK_TMP_DIR
               value: /tmp
+            # The service by its full name: a short name resolves only in the agent's own namespace. The namespace is the rule's.
             - name: LK_CONFIG_SERVER_URL
-              value: http://csp-configuration-server:8888
+              value: {{ include "lanekeeper-agent.configServerUrl" . | quote }}
             - name: LK_HEALTH_ADDR
               value: 0.0.0.0:9090
             {{- range $name, $value := .Values.config.tuning }}

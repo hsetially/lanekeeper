@@ -690,6 +690,22 @@ planted_agent() {
     plant "the config-server on another port" agent sit1 's/port: 8888/port: 8889/' "egress must be exactly"
     plant "ssh to the hub" agent sit1 '0,/port: 443/s/port: 443/port: 22/' "egress must be exactly"
     plant "ingress from another namespace" agent sit1 's#kubernetes.io/metadata.name: monitoring#kubernetes.io/metadata.name: default#' "monitoring"
+    # B8, crates/agent/HARDENING.md ("The config-server's namespace"): the rule for the config-server names ONE explicit namespace, chosen by
+    # kubernetes.io/metadata.name, in the same `to` entry as the pods (latest-pci in sit1's values). A rule that is wider lets the agent's
+    # requests reach, and be answered by, anything labelled app: csp-configuration-server in the cluster, and the endpoint has no
+    # authentication (Q37). The seds change the lines of the NetworkPolicy's config-server entry only (the dns and ingress entries have other names).
+    plant "the config-server in every namespace" agent sit1 '/^( *)- namespaceSelector:$/{N;N;/latest-pci/s/^( *)- namespaceSelector:\n[^\n]*\n[^\n]*$/\1- namespaceSelector: {}/}' "exactly one explicit namespace"
+    plant "the config-server with no namespace" agent sit1 '/^( *)- namespaceSelector:$/{N;N;/latest-pci/{N;s/^( *)- namespaceSelector:\n[^\n]*\n[^\n]*\n *podSelector:/\1- podSelector:/}}' "exactly one explicit namespace"
+    plant "the config-server's namespace chosen by an expression" agent sit1 '/^( *)matchLabels:$/{N;/latest-pci/s/^( *)matchLabels:\n( *)kubernetes.io\/metadata.name: latest-pci/\1matchExpressions:\n\2- {key: kubernetes.io\/metadata.name, operator: In, values: [latest-pci]}/}' "exactly one explicit namespace"
+    plant "the config-server's namespace chosen by another label" agent sit1 's#kubernetes.io/metadata.name: latest-pci$#team: pci#' "exactly one explicit namespace"
+    plant "the config-server's pods chosen by an expression" agent sit1 '/^( *)podSelector:$/{N;N;/csp-configuration-server/s/^( *)podSelector:\n( *)matchLabels:\n/\1podSelector:\n\2matchExpressions:\n\2- {key: app, operator: Exists}\n\2matchLabels:\n/}' "exactly one explicit namespace"
+    plant "every pod of the config-server's namespace" agent sit1 '/^ *podSelector:$/{N;N;/csp-configuration-server/d}' "unrecognised"
+    plant "the config-server in kube-system" agent sit1 's#kubernetes.io/metadata.name: latest-pci$#kubernetes.io/metadata.name: kube-system#' "namespace of the cluster's own components"
+    plant "the config-server in kube-public" agent sit1 's#kubernetes.io/metadata.name: latest-pci$#kubernetes.io/metadata.name: kube-public#' "namespace of the cluster's own components"
+    plant "the config-server in kube-node-lease" agent sit1 's#kubernetes.io/metadata.name: latest-pci$#kubernetes.io/metadata.name: kube-node-lease#' "namespace of the cluster's own components"
+    plant "the config-server in the agent's own namespace" agent sit1 's#kubernetes.io/metadata.name: latest-pci$#kubernetes.io/metadata.name: lanekeeper#' "agent's own namespace"
+    plant "the URL of the config-server by its short name" agent sit1 's#http://csp-configuration-server\.latest-pci\.svc\.cluster\.local:8888#http://csp-configuration-server:8888#' "LK_CONFIG_SERVER_URL"
+    plant "the URL of the config-server in another namespace" agent sit1 's#\.latest-pci\.svc\.cluster\.local#.other-pci.svc.cluster.local#' "LK_CONFIG_SERVER_URL"
     plant "ingress on another port" agent sit1 's/port: 9090}/port: 8080}/' "9090"
     plant_append "a FQDN policy" agent sit1 $'apiVersion: networking.gke.io/v1alpha1\nkind: FQDNNetworkPolicy\nmetadata:\n  name: lanekeeper-agent-external\n  namespace: lanekeeper\nspec:\n  podSelector:\n    matchLabels:\n      app.kubernetes.io/name: lanekeeper-agent\n  egress:\n    - matches:\n        - pattern: example.com\n      ports:\n        - {protocol: TCP, port: 443}' "FQDNNetworkPolicy"
     plant_append "a second door" agent sit1 $'apiVersion: v1\nkind: Service\nmetadata:\n  name: lanekeeper-agent\n  namespace: lanekeeper\nspec:\n  type: LoadBalancer\n  ports:\n    - {port: 9090}' "LoadBalancer"
@@ -707,6 +723,9 @@ planted_agent() {
     plant_contract "the workload Role gives more than RBAC.md" 's/resources: \["jobs"\]/resources: ["jobs", "cronjobs"]/' "differs from RBAC.md"
     plant_contract "a watched namespace without a Role" 's/^( *)value: "sit1"$/\1value: "sit1,sit2"/' "sit2"
     plant_contract "the config-server's port" 's/port: 8888/port: 8889/' "differs from HARDENING.md"
+    plant_contract "the config-server in every namespace" '/^( *)- namespaceSelector:$/{N;N;/latest-pci/s/^( *)- namespaceSelector:\n[^\n]*\n[^\n]*$/\1- namespaceSelector: {}/}' "differs from HARDENING.md"
+    plant_contract "the config-server's namespace chosen by another label" 's#kubernetes.io/metadata.name: latest-pci$#team: pci#' "differs from HARDENING.md"
+    plant_contract "the config-server's rule without a namespace" '/^( *)- namespaceSelector:$/{N;N;/latest-pci/{N;s/^( *)- namespaceSelector:\n[^\n]*\n[^\n]*\n *podSelector:/\1- podSelector:/}}' "differs from HARDENING.md"
     plant_contract "the health port" 's/port: 9090}/port: 8080}/' "differs from HARDENING.md"
     plant_contract "the liveness probe" 's/periodSeconds: 20/periodSeconds: 60/' "livenessProbe"
     plant_contract "the readiness probe" 's#path: /readyz#path: /healthz#' "readinessProbe"
@@ -754,6 +773,9 @@ agent_variants() {
     accept_variant "the join token alone, on a cluster without Workload Identity" --set joinToken.enabled=true --set serviceAccount.gcpServiceAccount=
     in_variant '^ +value: "token"$' "the join token alone"
     ! grep -q 'iam.gke.io/gcp-service-account' "$work/variant.yaml" || fail "the join token alone: the service account has a Workload Identity annotation"
+    accept_variant "another namespace and service for the config-server" --set configServer.namespace=other-pci --set configServer.service=config-server
+    in_variant '^ +kubernetes.io/metadata.name: other-pci$' "another namespace and service for the config-server"
+    in_variant '^ +value: "http://config-server.other-pci.svc.cluster.local:8888"$' "another namespace and service for the config-server"
     accept_variant "two watched namespaces" --set-json 'namespaces=["sit1","sit2"]'
     local ns
     for ns in sit1 sit2; do
@@ -822,6 +844,15 @@ planted_agent_templates() {
     expect_agent_failure "no address for the API server" "kubeApiAddresses" --set-json 'network.kubeApiAddresses=[]'
     expect_agent_failure "the internet as the API server" "kubeApiAddresses" --set-json 'network.kubeApiAddresses=["0.0.0.0/0"]'
     expect_agent_failure "no namespace" "namespaces" --set-json 'namespaces=[]'
+    # B8: the config-server's namespace is a required value of the swimlane, one explicit name; never one of the cluster's own, never the agent's.
+    expect_agent_failure "no namespace for the config-server" "namespace" --set configServer.namespace=
+    expect_agent_failure "the config-server in kube-system" "namespace" --set configServer.namespace=kube-system
+    expect_agent_failure "the config-server in kube-public" "namespace" --set configServer.namespace=kube-public
+    expect_agent_failure "the config-server in kube-node-lease" "namespace" --set configServer.namespace=kube-node-lease
+    expect_agent_failure "the config-server in the agent's own namespace" "agent's own namespace" --set configServer.namespace=lanekeeper
+    expect_agent_failure "a namespace for the config-server that is not a name" "namespace" --set configServer.namespace="Latest PCI"
+    expect_agent_failure "a service for the config-server that is not a name" "service" --set configServer.service=Bad_Service
+    expect_agent_failure "an unknown value of the config-server" "url" --set configServer.url=http://x
     expect_agent_failure "kube-system" "namespaces" --set-json 'namespaces=["kube-system"]'
     expect_agent_failure "a namespace twice" "namespaces" --set-json 'namespaces=["sit1","sit1"]'
     expect_agent_failure "a namespace that is not a name" "namespaces" --set-json 'namespaces=["Sit 1"]'

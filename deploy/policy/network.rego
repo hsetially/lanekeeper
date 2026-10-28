@@ -699,8 +699,8 @@ deny contains msg if {
 # --- the agent: default deny, and the five destinations of crates/agent/HARDENING.md (S17, S18) ----------------------------------
 
 # Everything the agent says goes to one of five places: the hub and the Kubernetes API server (two IP blocks on 443, each no wider
-# than a /24), the config-server's pods in its own namespace (8888), the metadata server (80) and kube-dns (53). Everything else is
-# denied, and the agent has no external host by name.
+# than a /24), the config-server's pods in the config-server's one explicit namespace (8888), the metadata server (80) and kube-dns
+# (53). Everything else is denied, and the agent has no external host by name.
 agent_selector := {"app.kubernetes.io/name": "lanekeeper-agent"}
 
 agent_policies := lk.named("NetworkPolicy", lk.agent_name)
@@ -734,9 +734,115 @@ agent_destination(d) := "dns" if {
 	d.podSelector.matchLabels == {"k8s-app": "kube-dns"}
 }
 
+# --- the config-server (crates/agent/HARDENING.md, "The config-server's namespace") ---
+# The config-server does not run in the agent's namespace: it runs in its swimlane's, which is a value per swimlane, and the rule names
+# that one namespace. A `podSelector` alone selects pods in the policy's own namespace, so the config-server's pods would not match, and
+# every NotifyConfigServer and FetchServed would be denied by default. And a rule wider than one namespace lets the agent's requests
+# reach, and be answered by, anything labelled app: csp-configuration-server in the cluster; the endpoint has no authentication (Q37), so
+# nothing in the protocol tells the agent whether the pods that answer are the config-server's. So the rule is exactly this shape: the
+# namespace chosen by the label Kubernetes sets itself, kubernetes.io/metadata.name, alone, and the pods by their one label, in the SAME
+# `to` entry (so both must hold), with no expression on either selector. The value is checked here; the contract (contract.rego) compares
+# the shape and treats the value as a value.
+config_server_labels := {"app": "csp-configuration-server"}
+
+# The namespaces of the cluster's own components: no config-server runs there, and a rule that named one would let the agent's requests
+# reach whatever is labelled like it there.
+cluster_namespaces := {"kube-system", "kube-public", "kube-node-lease"}
+
+# A destination that selects the config-server's pods, whatever else it says (the namespace, if it says any).
+config_server_pods(d) if d.podSelector.matchLabels == config_server_labels
+
+# The one explicit namespace of a destination of the contract's shape, as a name (a DNS label). Undefined for any other shape: no
+# namespaceSelector, an empty one (every namespace), an expression on either selector, another label, a second label, a value that is
+# not a name.
+config_server_namespace(d) := ns if {
+	config_server_pods(d)
+	not d.podSelector.matchExpressions
+	not d.namespaceSelector.matchExpressions
+	count(d.namespaceSelector.matchLabels) == 1
+	ns := d.namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+	is_string(ns)
+	regex.match(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`, ns)
+}
+
 agent_destination(d) := "config-server" if {
-	d.podSelector.matchLabels == {"app": "csp-configuration-server"}
-	not d.namespaceSelector
+	ns := config_server_namespace(d)
+	not ns in cluster_namespaces
+}
+
+config_server_destinations(p) := [d |
+	some rule in egress_rules(p)
+	some d in object.get(rule, "to", [])
+	config_server_pods(d)
+]
+
+config_server_namespaces(p) := {ns |
+	some d in config_server_destinations(p)
+	ns := config_server_namespace(d)
+}
+
+deny contains msg if {
+	some p in agent_policies
+	some d in config_server_destinations(p)
+	not config_server_namespace(d)
+	msg := sprintf("%s: the config-server's rule must choose exactly one explicit namespace by kubernetes.io/metadata.name, in the same `to` entry as its pods: not no namespace, every namespace (`{}`), an expression, another label or a second label, and no expression on the pods; found %v (S17, crates/agent/HARDENING.md)", [lk.who(p), d])
+}
+
+deny contains msg if {
+	some p in agent_policies
+	some d in config_server_destinations(p)
+	ns := config_server_namespace(d)
+	ns in cluster_namespaces
+	msg := sprintf("%s: the config-server's rule names %s, a namespace of the cluster's own components; the config-server runs in its swimlane's namespace, and a rule there would reach whatever is labelled like it (S17, crates/agent/HARDENING.md)", [lk.who(p), ns])
+}
+
+deny contains msg if {
+	some p in agent_policies
+	some d in config_server_destinations(p)
+	config_server_namespace(d) == p.metadata.namespace
+	msg := sprintf("%s: the config-server's rule names the agent's own namespace, %s; the config-server does not run in the agent's namespace (S17, crates/agent/HARDENING.md)", [lk.who(p), p.metadata.namespace])
+}
+
+deny contains msg if {
+	some p in agent_policies
+	count(config_server_destinations(p)) > 1
+	msg := sprintf("%s: the config-server has exactly one rule, in one namespace; found %d destinations for its pods (S17, crates/agent/HARDENING.md)", [lk.who(p), count(config_server_destinations(p))])
+}
+
+# The service in LK_CONFIG_SERVER_URL is written out in full, <service>.<namespace>.svc.cluster.local, because a short name resolves only in
+# the agent's own namespace; and its namespace is the rule's: the chart writes the same value into both. A URL for another namespace
+# sends the agent's requests there, where the rule does not let them go (or, worse, where another service answers).
+config_server_url_label := `^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`
+
+config_server_url_namespace(url) := ns if {
+	startswith(url, "http://")
+	endswith(url, ":8888")
+	parts := split(trim_suffix(trim_prefix(url, "http://"), ":8888"), ".")
+	count(parts) == 5
+	array.slice(parts, 2, 5) == ["svc", "cluster", "local"]
+	regex.match(config_server_url_label, parts[0])
+	regex.match(config_server_url_label, parts[1])
+	ns := parts[1]
+}
+
+url_in(url, namespaces) if config_server_url_namespace(url) in namespaces
+
+has_config_server_url if lk.agent_env("LK_CONFIG_SERVER_URL")
+
+deny contains msg if {
+	some p in agent_policies
+	count(lk.agent_deployments) > 0
+	not has_config_server_url
+	msg := sprintf("%s: the agent's container does not set LK_CONFIG_SERVER_URL, so it never calls the config-server that the NetworkPolicy lets it reach (crates/agent/HARDENING.md)", [lk.who(p)])
+}
+
+deny contains msg if {
+	some p in agent_policies
+	namespaces := config_server_namespaces(p)
+	count(namespaces) == 1
+	url := lk.agent_env("LK_CONFIG_SERVER_URL")
+	not url_in(url, namespaces)
+	msg := sprintf("%s: LK_CONFIG_SERVER_URL is %q; it must be http://<service>.<namespace>.svc.cluster.local:8888 with the namespace of the config-server's rule, %v: a short name resolves only in the agent's own namespace (S17, crates/agent/HARDENING.md)", [lk.who(p), url, sort(namespaces)])
 }
 
 deny contains msg if {
@@ -777,6 +883,7 @@ deny contains msg if {
 	some rule in egress_rules(p)
 	some d in object.get(rule, "to", [])
 	not agent_destination(d)
+	not config_server_pods(d)
 	msg := sprintf("%s: an unrecognised egress destination: %v; an address block is a /24 at most and has no exceptions (S17)", [lk.who(p), d])
 }
 

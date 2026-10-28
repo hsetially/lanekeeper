@@ -6,12 +6,11 @@ Most of them are a pull request that `just deploy-check` (the `deploy` workflow)
 
 **Read this first.** None of the steps that use the hub (1, the registration in 2, and 6) has been run against a running hub: the binary is
 composed (prompt 18) but becomes Ready only with real Google (Secret Manager, KMS) and Entra, and the one test cluster of this repository
-(kind) has neither. They describe the contract in `api/openapi.yaml`, `db/migrations/0001_init.sql` and `crates/hub/README.md`. Step 1 has a
-gap that is not this runbook's to close (below).
+(kind) has neither. They describe the contract in `api/openapi.yaml`, `db/migrations/0001_init.sql` and `crates/hub/README.md`.
 
 | Step | Who | Changes | Checked by |
 |---|---|---|---|
-| 1. Create the swimlane | platform team, then an Admin | the cluster, its NFS export, its Argo CD; the swimlane in the hub | nothing in this repository |
+| 1. Create the swimlane | platform team, then an Admin | the cluster, its NFS export, its Argo CD; the swimlane's row in the hub, with `hub seed` | `hub seed --dry-run` for the row; nothing in this repository for the rest |
 | 2. Workload Identity, or a join token | platform team, then an Admin | a Google service account and its binding; the agent's registration in the hub | nothing in this repository |
 | 3. The values file | a developer, in a pull request | `deploy/values/agent/<swimlane>.yaml` | `deploy/tests/render.sh`: lint, kubeconform, the policies, the contract with `crates/agent/RBAC.md` and `HARDENING.md` |
 | 4. The Argo CD Application | a developer, in a pull request; then the cluster's Argo CD admin | `deploy/argocd/swimlanes/<swimlane>.yaml` | `argocd.rego`, and the project against the chart's output |
@@ -29,6 +28,7 @@ joins, or it is refused.
 | the Google project and the cluster's name | `swimlane.project`, `swimlane.cluster` | the platform team |
 | the NFS server address, export path, mount path, the uid and gid that own the files, the NFS version | `nfs.*` | Q11 (`docs/open-questions.md`); the uid and gid default to 1010 (D82), and `root_squash` and `anonuid` in `/etc/exports` decide which uid the agent must run as |
 | the namespaces the config-server's files belong to | `namespaces` | the cluster; one Role and one RoleBinding are made in each (`crates/agent/RBAC.md`). `kube-system` cannot be watched |
+| **the one namespace the swimlane's config-server runs in**, and the name of its Service if it is not `csp-configuration-server` | `configServer.namespace` (required), `configServer.service` | the platform team. `kubectl --context <cluster> get pods -A -l app=csp-configuration-server` must list the config-server's pods in **one** namespace, and `kubectl --context <cluster> -n <namespace> get service` its Service. It is not the agent's namespace (the config-server does not run there), and never `kube-system`, `kube-public` or `kube-node-lease`. Step 3 says what the value does |
 | the cluster's outbound IP | step 5 | Q1: run the command in `docs/open-questions.md` from a pod |
 | the Cloud KMS key for the spool's disk, and the number of the cluster's project | `spool.cmekKey`, and the grant in step 2 | Q29: the platform team's key ring; `gcloud projects describe <project> --format='value(projectNumber)'` |
 | the cluster's control-plane address | `network.kubeApiAddresses` | `gcloud container clusters describe <cluster> --format='value(endpoint)'` |
@@ -47,12 +47,29 @@ the question that decides it is answered** (Q1, Q2, Q11), and no real tenant dat
 config-server, and the cluster's own Argo CD in the namespace `argocd`. The agent needs a CNI that enforces NetworkPolicy, because the
 chart's egress limits (`crates/agent/HARDENING.md`) are NetworkPolicy.
 
-**In the hub** a swimlane is a row of `swimlanes`: its id, project, display name, cluster, tier (the environment tier for check C6), and
-the NFS server, export and mount root. Nothing in this repository can create that row, and **nothing in the hub's code does either yet**:
-the API registers an agent's service account for a swimlane (`PUT /api/v1/admin/agents/{swimlane}`, `adminPutAgent`) and edits a
-swimlane's tenant set and auto-notify, and the hub reads `swimlanes.agent_service_account` when an agent joins, but no operation
-creates the swimlane itself, and `INSERT INTO swimlanes` appears only in tests (plan 09 blockers, B11). Until a person decides how the
-swimlane registry is filled (an endpoint, a seed, a migration), this step cannot be completed by following this runbook.
+**In the hub** a swimlane is a row of `swimlanes`: its id, project, display name, cluster, tier (the environment tier for check C6), the
+NFS server, export and mount root, and the Google service account of its agent. **`hub seed` creates that row** (`crates/hub/README.md`,
+"Registering swimlanes"; no API route does, and nothing in this repository holds the file): add the swimlane to the seed file, which is
+kept outside the repository (AGENTS.md rule 12) and given to the hub chart as the ConfigMap `seed.existingConfigMap` names
+(`deploy/values/hub/prod.yaml`, `staging.yaml`), then run it:
+
+```yaml
+swimlanes:
+  - id: <swimlane>
+    project: <the hub's project id>
+    display_name: <name>
+    cluster: <cluster>
+    tier: <dev|sit|...>
+    nfs_server: <address>
+    nfs_export: <export path>
+    mount_root: <mount path>
+    agent_service_account: lanekeeper-agent-<swimlane>@<project>.iam.gserviceaccount.com   # step 2; without it the agent cannot join
+    tenants: [<tenant>]
+```
+
+Run `hub seed --dry-run <file>` first and read the list it prints (it writes nothing); then the hub chart's seed Job applies it (bump
+`seed.revision` when you edited the ConfigMap in place; a new file is a new Job). It writes one audit event for each row it changes and
+never deletes. The agent can join once the row carries its service account, and not before.
 
 ## 2. Workload Identity, or a join token
 
@@ -70,7 +87,8 @@ gcloud iam service-accounts add-iam-policy-binding lanekeeper-agent-<swimlane>@<
 
 `<project>` is the project of the **cluster**: its Workload Identity pool is `<project>.svc.id.goog`. Check the cluster has one:
 `gcloud container clusters describe <cluster> --format='value(workloadIdentityConfig.workloadPool)'`. An Admin then registers the account
-in the hub: `PUT /api/v1/admin/agents/<swimlane>` with `{"service_account_email": "lanekeeper-agent-<swimlane>@<project>.iam.gserviceaccount.com"}`.
+in the hub: it is the `agent_service_account` of the swimlane's entry in the seed file (step 1), and `PUT /api/v1/admin/agents/<swimlane>` with
+`{"service_account_email": "lanekeeper-agent-<swimlane>@<project>.iam.gserviceaccount.com"}` changes it later.
 The hub checks the `email` of the agent's Google-signed ID token (audience: the hub) against that account.
 
 **The join token (the fallback).** Set `joinToken.enabled: true` in the values (step 3), and leave `serviceAccount.gcpServiceAccount`
@@ -110,12 +128,26 @@ Copy `deploy/values/agent/sit1.yaml` to `deploy/values/agent/<swimlane>.yaml` an
 | `hub.endpoint` | `https://` and a host name only; the agent dials it |
 | `nfs.server`, `nfs.exportPath` (and `nfs.uid`, `nfs.gid` if they are not 1010) | Q11. The agent mounts the export read-write, as the uid and gid that own its files; the config-server mounts the same export read-only (D82) |
 | `namespaces` | the namespaces to watch |
+| `configServer.namespace` | the namespace the config-server runs in, from "What to collect first": **required, one explicit name**. The chart refuses `kube-system`, `kube-public`, `kube-node-lease` and the agent's own namespace |
+| `configServer.service` | only if the Service is not called `csp-configuration-server` |
 | `serviceAccount.gcpServiceAccount` | step 2; empty only with `joinToken.enabled` |
 | `network.hubAddresses` | the hub's agent load balancer, as `/32` or a small block; the agent can reach nothing else of the hub's |
 | `network.kubeApiAddresses` | the cluster's control plane |
 | `spool.cmekKey` | the Cloud KMS key of step 2, `projects/P/locations/L/keyRings/R/cryptoKeys/K`. The size (1 GiB) and the bound (512 MiB) are the defaults; the policy keeps the size larger than the bound |
 | `imagePullSecrets` | the name of the pull secret for GHCR, made out of band in the cluster (Q8) |
 | `hubCa.pem` | the **public** certificate of the hub's agent CA, below |
+
+**What `configServer.namespace` does.** The config-server does not run in the agent's namespace, and a NetworkPolicy `podSelector` alone selects the
+pods of the policy's own namespace, so the chart's egress rule for `NotifyConfigServer` and `FetchServed` names the config-server's namespace, in
+the same `to` entry as the pods (`app: csp-configuration-server`), chosen by the label Kubernetes sets itself (`kubernetes.io/metadata.name`). The
+chart writes the same value into `LK_CONFIG_SERVER_URL`, in full: `http://<service>.<namespace>.svc.cluster.local:8888`, because a short name
+resolves only in the agent's own namespace. Never anything wider: the endpoint has no authentication (Q37), so this rule alone decides which
+pods the agent's requests reach and which pods answer them. A wrong value either denies every call (nothing matches) or sends the agent's requests
+to whatever else in that namespace carries the label: check it against the cluster, as above, before the pull request merges. The policies refuse
+a rule that is wider, an expression, another label, a cluster namespace, the agent's own namespace, and a URL that names another namespace
+(`deploy/policy/network.rego`, `contract.rego`); they cannot tell which namespace is the right one. The chart does not set
+`LK_CONFIG_SERVER_DEPLOYMENT` (the pod of `crates/agent/HARDENING.md` does not list it), so the agent does not report when the config-server's
+pods started (check C11) until a person decides to add it to the contract, with its namespace in `namespaces`.
 
 **The hub's CA certificate** is the output of the one-off ceremony `hub ca-init` (plan 03b A8: the CA key is made inside Cloud KMS and
 never leaves it; the certificate is public configuration, kept in Secret Manager or a ConfigMap). The subcommand is in the hub image
@@ -130,7 +162,8 @@ one, so the check passes before the real certificate is in.
 
 Copy `deploy/argocd/swimlanes/sit1.yaml` to `deploy/argocd/swimlanes/<swimlane>.yaml` (the file is named after the swimlane, and the policy
 refuses one that is not) and change: the label `lanekeeper.io/swimlane` in both documents, the project's destinations (the agent's namespace
-and **exactly** the namespaces of the values file; the policy compares them), and `valueFiles`. Leave `targetRevision` as the placeholder
+and **exactly** the namespaces of the values file; the policy compares them), and `valueFiles`. The config-server's namespace is not a destination:
+the chart renders nothing there (the rule that names it is in the agent's own namespace). Leave `targetRevision` as the placeholder
 until the values are merged: a commit cannot name the commit that contains it.
 
 After the pull request merges, **move the revision** to the commit that holds the values (`deploy/argocd/README.md`, "Moving a revision"),

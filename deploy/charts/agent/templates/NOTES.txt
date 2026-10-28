@@ -1,4 +1,5 @@
 lanekeeper-agent: swimlane {{ .Values.swimlane.id }}, watching {{ join ", " .Values.namespaces }}, in {{ .Release.Namespace }}.
+The config-server is called at {{ include "lanekeeper-agent.configServerUrl" . }}, and the egress policy lets the agent reach its pods in {{ include "lanekeeper-agent.configServerNamespace" . }} and nowhere else.
 {{- if .Values.joinToken.enabled }}
 
 NOTE: joinToken.enabled is true. The agent may read the Secret lanekeeper-agent-join-token (key `token`) in {{ .Release.Namespace }},

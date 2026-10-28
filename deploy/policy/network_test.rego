@@ -659,9 +659,142 @@ test_deny_agent_egress_to_the_config_server_on_another_port if {
 	refused(agent_netpol([{"op": "replace", "path": "/spec/egress/2/ports/0/port", "value": 8080}]), "exactly")
 }
 
-test_deny_agent_egress_to_the_config_server_in_another_namespace if {
-	planted := agent_netpol([{"op": "add", "path": "/spec/egress/2/to/0/namespaceSelector", "value": {"matchLabels": {"kubernetes.io/metadata.name": "other"}}}])
+# --- the config-server's namespace (crates/agent/HARDENING.md, "The config-server's namespace"): one explicit namespace, chosen by the
+# label Kubernetes sets itself, in the same `to` entry as the pods. It is a value per swimlane, so another explicit namespace passes;
+# the shapes below are refused each with the message of the rule, and a rule wider than one namespace would let the agent's requests
+# reach, and be answered by, anything labelled app: csp-configuration-server in the cluster (Q37: the endpoint has no authentication).
+
+config_server_to(ops) := agent_netpol([{"op": "add", "path": "/spec/egress/2/to/0/namespaceSelector", "value": ops}])
+
+config_server_url(namespace) := concat("", ["http://csp-configuration-server.", namespace, ".svc.cluster.local:8888"])
+
+# The URL follows the namespace: the chart writes the same value into both.
+agent_config_server_in(namespace) := fixtures.agent_patch_all([
+	{"kind": "NetworkPolicy", "name": "lanekeeper-agent", "ops": [{"op": "replace", "path": "/spec/egress/2/to/0/namespaceSelector/matchLabels/kubernetes.io~1metadata.name", "value": namespace}]},
+	{"kind": "Deployment", "name": "lanekeeper-agent", "ops": [{"op": "replace", "path": "/spec/template/spec/containers/0/env/15/value", "value": config_server_url(namespace)}]},
+])
+
+test_agent_egress_to_the_config_server_in_another_explicit_namespace_is_allowed if {
+	count(deny) == 0 with input as agent_config_server_in("other-pci")
+	count(warn) == 0 with input as agent_config_server_in("other-pci")
+}
+
+test_deny_agent_egress_to_the_config_server_without_a_namespace if {
+	refused(agent_netpol([{"op": "remove", "path": "/spec/egress/2/to/0/namespaceSelector"}]), "exactly one explicit namespace")
+}
+
+test_deny_agent_egress_to_the_config_server_in_every_namespace if {
+	refused(config_server_to({}), "exactly one explicit namespace")
+}
+
+test_deny_agent_egress_to_the_config_server_in_namespaces_chosen_by_an_expression if {
+	planted := config_server_to({"matchExpressions": [{"key": "kubernetes.io/metadata.name", "operator": "In", "values": ["latest-pci"]}]})
+	refused(planted, "exactly one explicit namespace")
+}
+
+test_deny_agent_egress_to_the_config_server_in_namespaces_with_an_expression_beside_the_name if {
+	planted := config_server_to({
+		"matchLabels": {"kubernetes.io/metadata.name": "latest-pci"},
+		"matchExpressions": [{"key": "team", "operator": "Exists"}],
+	})
+	refused(planted, "exactly one explicit namespace")
+}
+
+test_deny_agent_egress_to_the_config_server_in_namespaces_chosen_by_another_label if {
+	refused(config_server_to({"matchLabels": {"team": "pci"}}), "exactly one explicit namespace")
+}
+
+test_deny_agent_egress_to_the_config_server_in_namespaces_chosen_by_two_labels if {
+	planted := config_server_to({"matchLabels": {"kubernetes.io/metadata.name": "latest-pci", "team": "pci"}})
+	refused(planted, "exactly one explicit namespace")
+}
+
+test_deny_agent_egress_to_the_config_server_in_a_namespace_that_is_not_a_name if {
+	every bad in ["", "Latest PCI", "latest_pci", "-pci", "pci-", "a.b", "*"] {
+		refused(config_server_to({"matchLabels": {"kubernetes.io/metadata.name": bad}}), "exactly one explicit namespace")
+	}
+}
+
+test_deny_agent_egress_to_the_config_server_in_a_namespace_that_is_not_a_string if {
+	refused(config_server_to({"matchLabels": {"kubernetes.io/metadata.name": ["latest-pci"]}}), "exactly one explicit namespace")
+}
+
+# The cluster's own components: a config-server there would not be one.
+test_deny_agent_egress_to_the_config_server_in_a_namespace_of_the_cluster if {
+	every ns in ["kube-system", "kube-public", "kube-node-lease"] {
+		refused(agent_config_server_in(ns), "namespace of the cluster's own components")
+	}
+}
+
+# The config-server does not run in the agent's namespace (the agent's is `lanekeeper`).
+test_deny_agent_egress_to_the_config_server_in_the_agents_own_namespace if {
+	refused(agent_config_server_in("lanekeeper"), "agent's own namespace")
+}
+
+# The pods are chosen in the same entry, by their one label.
+test_deny_agent_egress_to_the_config_server_pods_chosen_by_an_expression if {
+	planted := agent_netpol([{"op": "add", "path": "/spec/egress/2/to/0/podSelector/matchExpressions", "value": [{"key": "app", "operator": "Exists"}]}])
+	refused(planted, "exactly one explicit namespace")
+}
+
+# The namespace alone, with every pod of it, is not the config-server's rule.
+test_deny_agent_egress_to_every_pod_of_the_config_servers_namespace if {
+	refused(agent_netpol([{"op": "remove", "path": "/spec/egress/2/to/0/podSelector"}]), "unrecognised")
+}
+
+# Two entries are alternatives (OR): the namespace without the pods, and the pods without the namespace, in the agent's own.
+test_deny_agent_egress_to_the_config_server_split_in_two_entries if {
+	planted := agent_netpol([{"op": "replace", "path": "/spec/egress/2/to", "value": [
+		{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "latest-pci"}}},
+		{"podSelector": {"matchLabels": {"app": "csp-configuration-server"}}},
+	]}])
 	refused(planted, "unrecognised")
+	refused(planted, "exactly one explicit namespace")
+}
+
+# Two config-server rules are another agent (the namespaces would be two).
+test_deny_agent_egress_to_the_config_server_in_two_namespaces if {
+	second := {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "other-pci"}}, "podSelector": {"matchLabels": {"app": "csp-configuration-server"}}}
+	refused(agent_netpol([{"op": "add", "path": "/spec/egress/2/to/-", "value": second}]), "exactly one")
+}
+
+# --- LK_CONFIG_SERVER_URL names the namespace of the rule, in full: a short name resolves only in the agent's own namespace.
+
+agent_config_server_url(url) := fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "replace", "path": "/spec/template/spec/containers/0/env/15/value", "value": url}])
+
+test_deny_agent_config_server_url_with_a_short_name if {
+	refused(agent_config_server_url("http://csp-configuration-server:8888"), "LK_CONFIG_SERVER_URL")
+	refused(agent_config_server_url("http://csp-configuration-server.latest-pci:8888"), "LK_CONFIG_SERVER_URL")
+	refused(agent_config_server_url("http://csp-configuration-server.latest-pci.svc:8888"), "LK_CONFIG_SERVER_URL")
+}
+
+test_deny_agent_config_server_url_in_another_namespace if {
+	refused(agent_config_server_url(config_server_url("other-pci")), "LK_CONFIG_SERVER_URL")
+}
+
+test_deny_agent_config_server_url_in_the_agents_own_namespace if {
+	refused(agent_config_server_url(config_server_url("lanekeeper")), "LK_CONFIG_SERVER_URL")
+}
+
+test_deny_agent_config_server_url_on_another_port_scheme_or_path if {
+	refused(agent_config_server_url("http://csp-configuration-server.latest-pci.svc.cluster.local:8889"), "LK_CONFIG_SERVER_URL")
+	refused(agent_config_server_url("http://csp-configuration-server.latest-pci.svc.cluster.local"), "LK_CONFIG_SERVER_URL")
+	refused(agent_config_server_url("https://csp-configuration-server.latest-pci.svc.cluster.local:8888"), "LK_CONFIG_SERVER_URL")
+	refused(agent_config_server_url("http://csp-configuration-server.latest-pci.svc.cluster.local:8888/update-resources"), "LK_CONFIG_SERVER_URL")
+	refused(agent_config_server_url("http://user@csp-configuration-server.latest-pci.svc.cluster.local:8888"), "LK_CONFIG_SERVER_URL")
+}
+
+test_deny_agent_config_server_url_on_another_cluster_domain if {
+	refused(agent_config_server_url("http://csp-configuration-server.latest-pci.svc.example.com:8888"), "LK_CONFIG_SERVER_URL")
+}
+
+test_deny_agent_config_server_url_that_is_not_set if {
+	planted := fixtures.agent_patch("Deployment", "lanekeeper-agent", [{"op": "remove", "path": "/spec/template/spec/containers/0/env/15"}])
+	refused(planted, "does not set LK_CONFIG_SERVER_URL")
+}
+
+test_agent_config_server_url_with_another_service_name_is_allowed if {
+	count(deny) == 0 with input as agent_config_server_url("http://config-server.latest-pci.svc.cluster.local:8888")
 }
 
 test_deny_agent_egress_to_other_pods_on_the_config_server_port if {

@@ -23,6 +23,11 @@ hub:
   # another audience. deploy/tests/render.sh contract checks that the two agree.
   audience: https://lanekeeper-prod.example.com
 
+configServer:
+  # Where the swimlane's config-server runs (a human decision, 2026-10-28): latest-pci, which is not the agent's namespace. The egress rule
+  # and LK_CONFIG_SERVER_URL name it. The service is the default, csp-configuration-server.
+  namespace: latest-pci
+
 nfs:
   # EXAMPLE address and path (Q11); the uid and gid are the defaults, 1010 (Q4).
   server: 192.0.2.10

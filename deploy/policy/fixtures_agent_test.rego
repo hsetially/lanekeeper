@@ -12,6 +12,10 @@ import rego.v1
 
 agent_name := "lanekeeper-agent"
 
+# The namespace the config-server runs in (crates/agent/HARDENING.md: latest-pci in its example). It is a value per swimlane, and it is not
+# the agent's own namespace, `namespace` below.
+agent_config_server_namespace := "latest-pci"
+
 agent_selector := {"app.kubernetes.io/name": "lanekeeper-agent"}
 
 agent_pod_labels := {
@@ -62,7 +66,7 @@ agent_container := {
 		{"name": "LK_SPOOL_DIR", "value": "/var/lib/lanekeeper/spool"},
 		{"name": "LK_SPOOL_MAX_BYTES", "value": "536870912"},
 		{"name": "LK_TMP_DIR", "value": "/tmp"},
-		{"name": "LK_CONFIG_SERVER_URL", "value": "http://csp-configuration-server:8888"},
+		{"name": "LK_CONFIG_SERVER_URL", "value": concat("", ["http://csp-configuration-server.", agent_config_server_namespace, ".svc.cluster.local:8888"])},
 		{"name": "LK_HEALTH_ADDR", "value": "0.0.0.0:9090"},
 	],
 	"volumeMounts": [
@@ -216,7 +220,13 @@ agent_networkpolicy := {
 		"egress": [
 			{"to": [{"ipBlock": {"cidr": "203.0.113.10/32"}}], "ports": [{"protocol": "TCP", "port": 443}]},
 			{"to": [{"ipBlock": {"cidr": "198.51.100.2/32"}}], "ports": [{"protocol": "TCP", "port": 443}]},
-			{"to": [{"podSelector": {"matchLabels": {"app": "csp-configuration-server"}}}], "ports": [{"protocol": "TCP", "port": 8888}]},
+			{
+				"to": [{
+					"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": agent_config_server_namespace}},
+					"podSelector": {"matchLabels": {"app": "csp-configuration-server"}},
+				}],
+				"ports": [{"protocol": "TCP", "port": 8888}],
+			},
 			{"to": [{"ipBlock": {"cidr": "169.254.169.254/32"}}], "ports": [{"protocol": "TCP", "port": 80}]},
 			{
 				"to": [{
@@ -249,6 +259,16 @@ agent := [{"path": "rendered/agent.yaml", "contents": agent_docs}]
 # The agent input with one document changed by a JSON patch. A patch whose path is not in the document is undefined, and the test
 # that asked for it fails: that is how a test that no longer matches the chart shows itself.
 agent_patch(kind, doc_name, ops) := [{"path": "rendered/agent.yaml", "contents": changed(agent_docs, kind, doc_name, ops)}]
+
+# The same, with several documents changed at once: [{"kind": ..., "name": ..., "ops": [...]}]. For a value that two documents carry, such as the
+# config-server's namespace, which the NetworkPolicy and LK_CONFIG_SERVER_URL both name.
+agent_patch_all(changes) := [{"path": "rendered/agent.yaml", "contents": [patched_by_all(d, changes) | some d in agent_docs]}]
+
+patched_by_all(d, changes) := json.patch(d, [op |
+	some c in changes
+	is_target(d, c.kind, c.name)
+	some op in c.ops
+])
 
 # The agent input with these documents.
 agent_with(docs) := [{"path": "rendered/agent.yaml", "contents": docs}]
