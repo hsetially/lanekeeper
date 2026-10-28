@@ -284,6 +284,25 @@ test_deny_a_secret_whose_project_annotation_holds_a_value if {
 	refused(fixtures.gs_secret_set(secret_name, "/metadata/annotations/cnrm.cloud.google.com~1project-id", "Hunter 2"), "is not a Google project id")
 }
 
+# 09/fix, round 3 of the review (NB-2): a value that is not text (a number, a list, a mapping) is a value too, and the two rules that say so were
+# never needed by any test: another rule (the project of the key ring) refuses a number in the project annotation anyway, and the pattern
+# rule cannot read a number at all. The message is what these tests hold.
+test_deny_a_secret_whose_chart_label_is_a_number if {
+	refused(fixtures.gs_secret_add(secret_name, "/metadata/labels/helm.sh~1chart", 20261028), "helm.sh/chart is not text")
+}
+
+test_deny_a_secret_whose_chart_label_is_a_list if {
+	refused(fixtures.gs_secret_add(secret_name, "/metadata/labels/helm.sh~1chart", ["lanekeeper-gcp-0.1.0"]), "helm.sh/chart is not text")
+}
+
+test_deny_a_secret_whose_project_annotation_is_a_number if {
+	refused(fixtures.gs_secret_set(secret_name, "/metadata/annotations/cnrm.cloud.google.com~1project-id", 123456), "project-id is not text")
+}
+
+test_deny_a_secret_whose_project_annotation_is_a_mapping if {
+	refused(fixtures.gs_secret_set(secret_name, "/metadata/annotations/cnrm.cloud.google.com~1project-id", {"id": "example-project"}), "project-id is not text")
+}
+
 # A word that has the shape of a project id is still not the project of the key ring that the same chart makes.
 test_deny_a_secret_in_another_project_than_the_key_ring if {
 	refused(fixtures.gs_secret_set(secret_name, "/metadata/annotations/cnrm.cloud.google.com~1project-id", "hunter2"), "the key ring is in the project")
