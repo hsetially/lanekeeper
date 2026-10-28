@@ -1,5 +1,7 @@
 # Argo CD (09/T6)
 
+The whole install, in order, is `deploy/INSTALL-GKE.md`; this file is the detail of the Argo CD part.
+
 The Applications and projects that deploy Lanekeeper (D23, D26). **The platform cluster's Argo CD** deploys the hub, the database and the
 Google Cloud resources; **each swimlane cluster's own Argo CD** deploys that swimlane's agent from the one shared chart, with one values
 file per swimlane. Nothing here is applied by CI: these files are read by `deploy/tests/render.sh` and by people, and a person with

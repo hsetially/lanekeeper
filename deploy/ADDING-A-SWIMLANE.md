@@ -1,5 +1,7 @@
 # Adding a swimlane
 
+The first install of the hub comes first: `deploy/INSTALL-GKE.md`, whose step 15 gives the order of the steps below and the hand-offs to it.
+
 A swimlane is exactly one GKE cluster, with one NFS VM, one config-server, one Argo CD and one Lanekeeper agent (`docs/domain-model.md`).
 Adding one means the hub learns the swimlane, trusts its agent, lets its network in, and a baseline is adopted. Six steps, in order.
 Most of them are a pull request that `just deploy-check` (the `deploy` workflow) checks; two are done in the cluster or the hub.
