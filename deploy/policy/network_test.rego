@@ -930,3 +930,46 @@ test_the_hubs_policy_does_not_admit_the_jobs_pods if {
 	planted := netpol([{"op": "replace", "path": "/spec/ingress/2/from/0/podSelector/matchLabels", "value": fixtures.jobs_selector}])
 	refused(planted, "ingress must be exactly")
 }
+
+# ============================================================================================================================
+# 09/fix, round 1 of the review (NB-3): network policies add up, so a second one that selects the hub's pods (or the Jobs') and admits
+# everyone opens what the two default-deny policies close. The hub chart makes two, lanekeeper-hub and lanekeeper-hub-jobs (and the FQDN
+# policy, which the rules above hold to the seven hosts). The database chart has the same rule for its own.
+# ============================================================================================================================
+
+second_policy(selector, spec_extra) := {
+	"apiVersion": "networking.k8s.io/v1",
+	"kind": "NetworkPolicy",
+	"metadata": {"name": "lanekeeper-hub-open", "namespace": "lanekeeper"},
+	"spec": object.union({"podSelector": selector}, spec_extra),
+}
+
+open_egress := {"policyTypes": ["Egress"], "egress": [{}]}
+
+open_ingress := {"policyTypes": ["Ingress"], "ingress": [{}]}
+
+test_deny_a_second_policy_that_opens_the_hubs_egress if {
+	refused(fixtures.with_doc(second_policy({"matchLabels": fixtures.selector}, open_egress)), "policies add up")
+}
+
+test_deny_a_second_policy_that_opens_the_hubs_ingress if {
+	refused(fixtures.with_doc(second_policy({"matchLabels": fixtures.selector}, open_ingress)), "policies add up")
+}
+
+test_deny_a_second_policy_that_opens_the_jobs_egress if {
+	refused(fixtures.with_doc(second_policy({"matchLabels": fixtures.jobs_selector}, open_egress)), "policies add up")
+}
+
+test_deny_a_second_policy_that_selects_every_pod if {
+	refused(fixtures.with_doc(second_policy({}, open_egress)), "policies add up")
+}
+
+test_the_hubs_two_policies_pass if {
+	msgs := deny with input as fixtures.hub
+	count([m | some m in msgs; contains(m, "policies add up")]) == 0
+}
+
+test_a_network_policy_of_the_agent_chart_is_not_judged_here if {
+	msgs := deny with input as fixtures.agent
+	count([m | some m in msgs; contains(m, "policies add up")]) == 0
+}

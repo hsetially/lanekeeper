@@ -561,6 +561,11 @@ planted_hub_jobs() {
     plant "a Jobs policy to the database on another port" hub kind "$jb"'s/port: 5432\}/port: 8000}/' "lanekeeper-hub-jobs: egress must be exactly"
     plant "a Jobs policy that selects the hub" hub kind "$jb"'s#app.kubernetes.io/name: lanekeeper-hub-jobs#app.kubernetes.io/name: lanekeeper-hub#' "it selects pods other than the Jobs'"
 
+    # 09/fix, round 1 (NB-3): network policies add up, so a second policy that selects the hub's or the Jobs' pods opens what the two close.
+    plant_append "a second policy that opens the hub's egress" hub kind $'apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: lanekeeper-hub-open\n  namespace: lanekeeper\nspec:\n  podSelector:\n    matchLabels:\n      app.kubernetes.io/name: lanekeeper-hub\n  policyTypes: [Egress]\n  egress:\n    - {}' "the hub chart makes two NetworkPolicies"
+    plant_append "a second policy that opens the Jobs' egress" hub kind $'apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: lanekeeper-hub-jobs-open\n  namespace: lanekeeper\nspec:\n  podSelector:\n    matchLabels:\n      app.kubernetes.io/name: lanekeeper-hub-jobs\n  policyTypes: [Egress]\n  egress:\n    - {}' "the hub chart makes two NetworkPolicies"
+    plant_append "a second policy that admits everyone to every pod" hub kind $'apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: allow-all\n  namespace: lanekeeper\nspec:\n  podSelector: {}\n  policyTypes: [Ingress]\n  ingress:\n    - {}' "the hub chart makes two NetworkPolicies"
+
     # R2 and the seed's file: a ConfigMap is not a place for a key.
     local out="$work/seed-key.yaml"
     render hub kind --set-literal $'seed.content=version: 1\n# -----BEGIN PRIVATE KEY-----\nabc\n# -----END PRIVATE KEY-----\n' >"$out"

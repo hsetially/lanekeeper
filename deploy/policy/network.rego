@@ -40,6 +40,19 @@ deny contains msg if {
 	msg := sprintf("%s: it selects pods other than the hub's; an empty selector is every pod (S18)", [lk.who(p)])
 }
 
+# Network policies add up: a second one that selects the hub's pods (or the Jobs', or every pod) and admits everyone opens what these two
+# close. The hub chart makes two NetworkPolicies, the hub's and the Jobs', and any other in its output is refused (the database chart's
+# policy does the same for its own: database.rego). The agent's output has its own policy and is not judged here: the rule applies
+# where the hub's StatefulSet or its Jobs are.
+hub_policy_names := {lk.hub_name, "lanekeeper-hub-jobs"}
+
+deny contains msg if {
+	count(array.concat(lk.hub_statefulsets, lk.hub_jobs)) > 0
+	some p in lk.of_kind("NetworkPolicy")
+	not p.metadata.name in hub_policy_names
+	msg := sprintf("%s: the hub chart makes two NetworkPolicies, %s; policies add up, so another could admit what these two close (S18)", [lk.who(p), concat(" and ", sort(hub_policy_names))])
+}
+
 # --- egress: exactly the destinations of HARDENING.md --------------------------------------------------------------------
 
 # Without the FQDN policy, external hosts are reached by 443 to everything but these ranges (plan 09 A11). Weaker, so it is
