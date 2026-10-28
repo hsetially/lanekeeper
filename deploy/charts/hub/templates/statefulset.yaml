@@ -84,9 +84,9 @@ spec:
           # Without the startup probe the liveness probe would judge a start that has not finished.
           startupProbe:
             httpGet: {path: /healthz, port: ops}
-            periodSeconds: 2
+            periodSeconds: {{ include "lanekeeper-hub.startupProbePeriodSeconds" . }}
             timeoutSeconds: 2
-            failureThreshold: 30
+            failureThreshold: {{ include "lanekeeper-hub.startupProbeFailureThreshold" . }}
           livenessProbe:
             httpGet: {path: /healthz, port: ops}
             periodSeconds: 10

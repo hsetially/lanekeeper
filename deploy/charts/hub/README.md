@@ -52,7 +52,12 @@ blobs, D116, D118), `LK_EXTRA_DENY_GLOBS`, `LK_TEAMS_ALLOWED_HOSTS`, `LK_GITHUB_
 would need the FQDN egress policy to name it too, gap N1), `LK_ENTRA_REDIRECT_PATH` and `LK_AUDIT_CHECKPOINT_VERIFY_KMS_REFS`.
 
 `terminationGracePeriodSeconds` is 45, the contract's number. The chart refuses a `LK_SHUTDOWN_GRACE_SECS` and `LK_SHUTDOWN_DRAIN_SECS` whose sum
-plus 10 s is more than that (the hub's defaults, 5 and 25, are used for the one that is not set).
+plus 10 s is more than that (the hub's defaults, 5 and 25, are used for the one that is not set). In the same way it refuses a pod that the
+kubelet would kill, whatever the schema allows: a `LK_START_TIMEOUT_SECS` above 50 (the startup probe gives the hub 60 s to answer `/healthz`,
+which it does once the database, the schema, the web certificate and both CAs have loaded, and the chart keeps 10 s for the process to begin), and
+`LK_BLOB_CACHE_MIB` plus `LK_CORPUS_CACHE_MIB` more than the memory limit's headroom over the request above their defaults (512 and 256 MiB: the
+request, 1536 MiB, is the P11 budget at design scale, so with the limit at 2 Gi the two together may be 1280 MiB). **Not verified:** that the P11
+memory figure was measured with the default caches; a person who measures the pod should confirm the 768 MiB that the check subtracts.
 
 **Made outside this chart** (this chart creates none of it; `crates/hub/README.md` items 2 to 4 are the checklist). `charts/gcp` makes the
 KMS keys, the Secret Manager containers of the table, `write-preview-key`, `github-read-token`, `github-webhook-secret` and

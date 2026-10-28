@@ -70,6 +70,22 @@ by 10 s, or the kubelet kills a hub that is still draining (lanekeeper-hub.requi
 {{- define "lanekeeper-hub.terminationGracePeriodSeconds" -}}45{{- end }}
 
 {{/*
+The startup probe's window: it asks /healthz every 2 s and the kubelet restarts the container after 30 failures, so a start that is still going
+after 60 s is killed (statefulset.yaml). One place for the two numbers, because requireSettings checks LK_START_TIMEOUT_SECS against their product.
+*/}}
+{{- define "lanekeeper-hub.startupProbePeriodSeconds" -}}2{{- end }}
+{{- define "lanekeeper-hub.startupProbeFailureThreshold" -}}30{{- end }}
+
+{{/* A memory quantity in Gi or Mi as mebibytes (the units resources.rego reads); anything else stops the render. */}}
+{{- define "lanekeeper-hub.mebibytes" -}}
+{{- $q := toString .quantity -}}
+{{- if hasSuffix "Gi" $q -}}{{ mulf (float64 (trimSuffix "Gi" $q)) 1024 | int }}
+{{- else if hasSuffix "Mi" $q -}}{{ float64 (trimSuffix "Mi" $q) | int }}
+{{- else -}}{{ fail (printf "%s is %q: the chart checks the caches against the memory limit and reads only Mi or Gi" .name $q) }}
+{{- end -}}
+{{- end }}
+
+{{/*
 The origin the users type: https://<gateway.hostname>. It is LK_PUBLIC_ORIGIN (the origin a request may name in Origin, and the host Entra
 sends the browser back to) and LK_HUB_AUDIENCE (what the agents ask Google for a token for), so that the two cannot diverge. gateway.hostname
 is required even where the Gateway is off (kind): the hub checks Host and Origin against it.
@@ -132,6 +148,32 @@ Each stops the render and names the value, because "the hub exits 2" is otherwis
 {{- $period := int (include "lanekeeper-hub.terminationGracePeriodSeconds" .) -}}
 {{- if gt (add $wait $drain 10) $period -}}
 {{- fail (printf "config.tuning: LK_SHUTDOWN_GRACE_SECS (%d) + LK_SHUTDOWN_DRAIN_SECS (%d) + 10 is %d s, and the pod's terminationGracePeriodSeconds is %d: the kubelet would kill a hub that is still draining" $wait $drain (add $wait $drain 10) $period) -}}
+{{- end -}}
+{{- /*
+  The hub answers /healthz after the database, the schema, the web certificate and both CAs have loaded, each bounded by LK_START_TIMEOUT_SECS (8),
+  and the kubelet restarts a container whose startup probe has not passed when its window ends. A bound that outlasts the window (with 10 s for
+  the process to begin and the probe to ask) would have the pod killed before the hub's own timeout can name the step that is slow.
+*/ -}}
+{{- $window := mul (int (include "lanekeeper-hub.startupProbePeriodSeconds" .)) (int (include "lanekeeper-hub.startupProbeFailureThreshold" .)) -}}
+{{- $start := 8 -}}
+{{- if hasKey $tuning "LK_START_TIMEOUT_SECS" -}}{{- $start = int (index $tuning "LK_START_TIMEOUT_SECS") -}}{{- end -}}
+{{- if gt (add $start 10) $window -}}
+{{- fail (printf "config.tuning: LK_START_TIMEOUT_SECS (%d) + 10 s is %d s, which outlasts the startup probe's %d s: the kubelet would kill a hub that is still starting, before its own timeout names the step that is slow" $start (add $start 10) $window) -}}
+{{- end -}}
+{{- /*
+  The caches fill memory. The request is the P11 budget for the hub at design scale with the default caches (blob 512 MiB, corpus 256 MiB), and the limit
+  is the most the kubelet lets the container use: whatever the caches are raised above their defaults has to fit between the two, or a full cache
+  gets the pod OOM-killed. (That the budget was measured with the default caches is the assumption; the schema alone allows 4 GiB for each.)
+*/ -}}
+{{- $blob := 512 -}}
+{{- if hasKey $tuning "LK_BLOB_CACHE_MIB" -}}{{- $blob = int (index $tuning "LK_BLOB_CACHE_MIB") -}}{{- end -}}
+{{- $corpus := 256 -}}
+{{- if hasKey $tuning "LK_CORPUS_CACHE_MIB" -}}{{- $corpus = int (index $tuning "LK_CORPUS_CACHE_MIB") -}}{{- end -}}
+{{- $request := int (include "lanekeeper-hub.mebibytes" (dict "name" "resources.requests.memory" "quantity" .Values.resources.requests.memory)) -}}
+{{- $limit := int (include "lanekeeper-hub.mebibytes" (dict "name" "resources.limits.memory" "quantity" .Values.resources.limits.memory)) -}}
+{{- $raised := sub (add $blob $corpus) 768 -}}
+{{- if gt $raised (sub $limit $request) -}}
+{{- fail (printf "config.tuning: LK_BLOB_CACHE_MIB (%d) + LK_CORPUS_CACHE_MIB (%d) is %d MiB above the defaults, and the memory limit (%d MiB) is only %d MiB above the request (%d MiB, the P11 budget): a full cache would get the pod OOM-killed" $blob $corpus $raised $limit (sub $limit $request) $request) -}}
 {{- end -}}
 {{- end }}
 

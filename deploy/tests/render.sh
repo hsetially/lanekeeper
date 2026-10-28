@@ -2254,6 +2254,17 @@ planted_templates() {
     expect_helm_failure "a cleanup interval under a minute" "LK_WRITES_CLEANUP_SECS" --set-json 'config.tuning={"LK_WRITES_CLEANUP_SECS":59}'
     expect_helm_failure "a corpus cache under 16 MiB" "LK_CORPUS_CACHE_MIB" --set-json 'config.tuning={"LK_CORPUS_CACHE_MIB":15}'
     expect_helm_failure "a corpus cache over 4 GiB" "LK_CORPUS_CACHE_MIB" --set-json 'config.tuning={"LK_CORPUS_CACHE_MIB":4097}'
+    # 09/fix, round 1 (NB-8): no value the schema lets through may get the pod killed. The startup probe gives the hub 60 s (2 s x 30) to answer
+    # /healthz, which it does after the database, the schema, the web certificate and both CAs have loaded, each bounded by
+    # LK_START_TIMEOUT_SECS; and the caches fill the memory limit's headroom over the request, which is the P11 budget at the default caches.
+    expect_helm_failure "a start timeout that outlasts the startup probe" "outlasts the startup probe" --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":120}'
+    expect_helm_failure "a start timeout one second over the startup probe's room" "outlasts the startup probe" --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":51}'
+    expect_helm_failure "a corpus cache the memory limit cannot hold" "memory limit" --set-json 'config.tuning={"LK_CORPUS_CACHE_MIB":4096}'
+    expect_helm_failure "a blob cache the memory limit cannot hold" "memory limit" --set-json 'config.tuning={"LK_BLOB_CACHE_MIB":4096}'
+    expect_helm_failure "a blob cache given as a string" "memory limit" --set-json 'config.tuning={"LK_BLOB_CACHE_MIB":"4096"}'
+    expect_helm_failure "two caches that are each fine and together are not" "memory limit" --set-json 'config.tuning={"LK_BLOB_CACHE_MIB":1024,"LK_CORPUS_CACHE_MIB":1024}'
+    expect_helm_failure "a corpus cache one MiB over the headroom" "memory limit" --set-json 'config.tuning={"LK_CORPUS_CACHE_MIB":769}'
+    expect_helm_failure "a memory limit in a unit the guard cannot read" "Mi or Gi" --set resources.limits.memory=2G
     expect_helm_failure "a base branch with a space" "LK_GIT_BASE_BRANCH" --set-json 'config.tuning={"LK_GIT_BASE_BRANCH":"a b"}'
     expect_helm_failure "a base branch that climbs" "LK_GIT_BASE_BRANCH" --set-json 'config.tuning={"LK_GIT_BASE_BRANCH":"a/../b"}'
     expect_helm_failure "a base branch Git would refuse (a .lock ref)" "LK_GIT_BASE_BRANCH" --set-json 'config.tuning={"LK_GIT_BASE_BRANCH":"main.lock"}'
@@ -2384,6 +2395,9 @@ hub_variants() {
     [ -n "$named" ] || fail "a seed from a ConfigMap has no Job"
     seed_name_of --set seed.existingConfigMap=my-other-seed
     [ -n "$seed_name" ] && [ "$seed_name" != "$named" ] || fail "a seed from another ConfigMap has the name of the old Job"
+    accept_hub_variant "the longest start the startup probe has room for" --set-json 'config.tuning={"LK_START_TIMEOUT_SECS":50}'
+    accept_hub_variant "caches that use all the headroom the limit has" --set-json 'config.tuning={"LK_CORPUS_CACHE_MIB":768}'
+    accept_hub_variant "bigger caches under a bigger limit" --set-json 'config.tuning={"LK_BLOB_CACHE_MIB":1024,"LK_CORPUS_CACHE_MIB":2048}' --set resources.limits.memory=4Gi
     accept_hub_variant "a collector" --set config.otlpEndpoint=http://otel-collector.monitoring.svc:4317
     in_variant '^ +- name: LK_OTLP_ENDPOINT$' "a collector"
 }
